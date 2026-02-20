@@ -1553,6 +1553,12 @@ def register_api_discovery_routes(app, start_scheduler=True):
 
     @discovery_bp.route('/api/discovery/run', methods=['POST'])
     def run_api_discovery():
+        admin_key = os.environ.get('DCHUB_ADMIN_KEY', '')
+        provided_key = request.headers.get('Authorization', '').replace('Bearer ', '') or \
+                       request.headers.get('X-API-Key', '') or \
+                       request.headers.get('X-Internal-Key', '')
+        if not admin_key or provided_key != admin_key:
+            return jsonify({'error': 'Unauthorized — use POST /api/jobs/discovery instead'}), 401
         mode = request.args.get('mode', 'async')
         if mode == 'sync':
             results = _discovery_instance.run_discovery_cycle()
