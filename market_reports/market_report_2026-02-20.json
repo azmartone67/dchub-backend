@@ -1,6 +1,6 @@
 {
   "report_date": "2026-02-20",
-  "generated_at": "2026-02-20T06:20:50.682350",
+  "generated_at": "2026-02-20T15:54:27.134178",
   "summary": {
     "total_facilities": 11009,
     "total_providers": 3932,
@@ -89,54 +89,54 @@
   ],
   "recent_news": [
     {
-      "title": "Tech Data Appointed Primary Distributor of Equinix in India",
-      "source": "Bisinfotech",
-      "date": "2026-02-20T05:56:43"
+      "title": "Urban vs. Rural: Why Data Centers Are Built Where They Are",
+      "source": "Data Center Knowledge",
+      "date": "2026-02-20T10:00:00"
     },
     {
-      "title": "Vantage Data Centers Appoints Alicia Ruckteschler as Chief Procurement Officer",
-      "source": "The National Law Review",
-      "date": "2026-02-20T05:25:55"
+      "title": "NexWafe, Talon PV sign 7 GW solar wafer supply agreement",
+      "source": "PV Magazine",
+      "date": "2026-02-20T09:42:52"
     },
     {
-      "title": "Op-Ed: Make AI data centers bear the cost of power grid pressure",
-      "source": "NJ Spotlight News",
-      "date": "2026-02-20T05:18:19"
-    },
-    {
-      "title": "India\u2019s top telco tackles AI with $110 billion build plan and proven fast market dominance playbook",
+      "title": "HMRC spares 661 from Making Tax Digital as rollout nears",
       "source": "The Register DC",
-      "date": "2026-02-20T03:11:08"
+      "date": "2026-02-20T09:30:09"
     },
     {
-      "title": "'A Big F*ck You to Big Tech': New Jersey Residents Defeat AI Data Center",
-      "source": "Common Dreams",
-      "date": "2026-02-20T00:27:19"
+      "title": "Proposal for 200-acre data center rejected in southern Texas",
+      "source": "Data Center Dynamics",
+      "date": "2026-02-20T09:20:03"
     },
     {
-      "title": "Big Tech is building its own \u2018power grid\u2019 to help fuel data centers desperately needed for AI",
-      "source": "The Independent",
-      "date": "2026-02-20T00:15:00"
+      "title": "Neocloud Nebul to offer Speedata's Analytics Processing Units",
+      "source": "Data Center Dynamics",
+      "date": "2026-02-20T08:50:03"
     },
     {
-      "title": "CRH CEO on Their AI, Data Center Strategy",
-      "source": "Bloomberg Tech",
-      "date": "2026-02-19T23:13:33"
+      "title": "Johnson Controls: Strategic Acquisition of Alloy Enterprises",
+      "source": "Data Centre Magazine",
+      "date": "2026-02-20T08:47:35"
     },
     {
-      "title": "Fiber Seen as Critical Infrastructure for AI-Driven Data Center Expansion",
-      "source": "Broadband Breakfast",
-      "date": "2026-02-19T22:48:33"
+      "title": "Samsung pairs with Canadian carrier Vid\u00e9otron on 4G LTE, 5G",
+      "source": "Data Center Dynamics",
+      "date": "2026-02-20T08:32:58"
     },
     {
-      "title": "New bill would ban nondisclosure agreements for new Wisconsin data centers",
-      "source": "WPR",
-      "date": "2026-02-19T22:37:24"
+      "title": "India adds 7.8 GW of open-access solar in 2025",
+      "source": "PV Magazine",
+      "date": "2026-02-20T08:30:22"
     },
     {
-      "title": "Aurora considers new data center regulations around noise, water and power",
-      "source": "Chicago Tribune",
-      "date": "2026-02-19T22:31:15"
+      "title": "L&T and NVIDIA's Data Centre Deal to Hyperscale India's AI",
+      "source": "Data Centre Magazine",
+      "date": "2026-02-20T08:07:22"
+    },
+    {
+      "title": "South Africa adds 1.6 GW of solar in 2025",
+      "source": "PV Magazine",
+      "date": "2026-02-20T08:04:51"
     }
   ],
   "data_sources": [
