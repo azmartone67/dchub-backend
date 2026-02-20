@@ -1036,6 +1036,22 @@ ENABLE_DISCOVERY_THREADS = False
 
 _deferred_bg_threads = []
 
+# Detect Railway vs Replit environment
+IS_RAILWAY = bool(os.environ.get("RAILWAY_ENVIRONMENT"))
+IS_PRIMARY = IS_RAILWAY  # Railway is primary, runs all background tasks
+if IS_RAILWAY:
+    logger.info("🚂 RAILWAY ENVIRONMENT DETECTED — Running as PRIMARY with all background tasks")
+else:
+    logger.info("🔄 REPLIT ENVIRONMENT DETECTED — Running as FAILOVER (background tasks disabled)")
+
+# Detect Railway vs Replit environment
+IS_RAILWAY = bool(os.environ.get("RAILWAY_ENVIRONMENT"))
+IS_PRIMARY = IS_RAILWAY  # Railway is primary, runs all background tasks
+if IS_RAILWAY:
+    logger.info("🚂 RAILWAY ENVIRONMENT DETECTED — Running as PRIMARY with all background tasks")
+else:
+    logger.info("🔄 REPLIT ENVIRONMENT DETECTED — Running as FAILOVER (background tasks disabled)")
+
 _news_last_sync = None
 _pipeline_last_sync = None
 
@@ -15116,7 +15132,7 @@ if ENABLE_DISCOVERY_THREADS:
                 print(f"[DISCOVERY] Cache warm failed: {e}")
 
         # DISABLED: Heavy task - run as separate cron job
-        # _deferred_bg_threads.append(('Discovery Cache Warm', _deferred_cache_warm))
+        if IS_RAILWAY: _deferred_bg_threads.append(('Discovery Cache Warm', _deferred_cache_warm))
 
         def _auto_approval_loop():
             import time as _time
@@ -15138,7 +15154,7 @@ if ENABLE_DISCOVERY_THREADS:
                 _time.sleep(300)
 
         # DISABLED: Heavy task - run as separate cron job
-        # _deferred_bg_threads.append(('Auto-Approval', _auto_approval_loop))
+        if IS_RAILWAY: _deferred_bg_threads.append(('Auto-Approval', _auto_approval_loop))
         print("[DISCOVERY] Auto-approval thread DISABLED (run via cron)")
 
         def _facility_discovery_loop():
@@ -15168,7 +15184,7 @@ if ENABLE_DISCOVERY_THREADS:
                 _time.sleep(7200)
 
         # DISABLED: Heavy task - run as separate cron job
-        # _deferred_bg_threads.append(('Facility Discovery', _facility_discovery_loop))
+        if IS_RAILWAY: _deferred_bg_threads.append(('Facility Discovery', _facility_discovery_loop))
         print("[DISCOVERY] Facility discovery thread DISABLED (run via cron)")
 
     except FileExistsError:
@@ -15224,8 +15240,8 @@ try:
             _tb.print_exc()
             _s.stderr.flush()
 
-    # DISABLED: News scraping pulls 389+ articles into memory - run as separate cron job
-    # _deferred_bg_threads.append(('News Scheduler', _news_staggered_startup))
+    # Railway runs news scheduler, Replit skips it
+    if IS_RAILWAY: _deferred_bg_threads.append(('News Scheduler', _news_staggered_startup))
     print("NEWS SCHEDULER: DISABLED (run via cron)")
 except ImportError:
     print("NEWS SCHEDULER: Not installed (auto_sync missing)")
