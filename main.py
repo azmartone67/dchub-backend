@@ -1044,14 +1044,6 @@ if IS_RAILWAY:
 else:
     logger.info("🔄 REPLIT ENVIRONMENT DETECTED — Running as FAILOVER (background tasks disabled)")
 
-# Detect Railway vs Replit environment
-IS_RAILWAY = bool(os.environ.get("RAILWAY_ENVIRONMENT"))
-IS_PRIMARY = IS_RAILWAY  # Railway is primary, runs all background tasks
-if IS_RAILWAY:
-    logger.info("🚂 RAILWAY ENVIRONMENT DETECTED — Running as PRIMARY with all background tasks")
-else:
-    logger.info("🔄 REPLIT ENVIRONMENT DETECTED — Running as FAILOVER (background tasks disabled)")
-
 _news_last_sync = None
 _pipeline_last_sync = None
 
@@ -12565,7 +12557,19 @@ def determine_market(city, state, country):
 
 @app.route('/api/discovery/run', methods=['POST'])
 def run_discovery():
-    """Trigger a discovery run"""
+    """Trigger a discovery run — Railway only, requires admin secret"""
+    # GUARD: Discovery is heavy — only allow on Railway with auth
+    if not IS_RAILWAY:
+        return jsonify({
+            'success': False,
+            'error': 'Discovery disabled on Replit. Use Railway instance.',
+            'hint': 'Set RAILWAY_ENVIRONMENT env var on your Railway deployment'
+        }), 403
+    # Require admin secret to prevent unauthorized triggers
+    admin_secret = os.environ.get('ADMIN_SECRET', '')
+    provided = request.headers.get('X-Admin-Secret') or (request.get_json() or {}).get('admin_secret', '')
+    if admin_secret and provided != admin_secret:
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 401
     try:
         # Ensure tables exist first
         try:
@@ -12870,7 +12874,16 @@ def process_discovery_source(source_name, discovery_func, conn):
 
 @app.route('/api/discovery/auto', methods=['POST'])
 def trigger_auto_discovery():
-    """Trigger auto-discovery of deals and capacity from news"""
+    """Trigger auto-discovery of deals and capacity from news — Railway only"""
+    if not IS_RAILWAY:
+        return jsonify({
+            'success': False,
+            'error': 'Auto-discovery disabled on Replit. Use Railway instance.'
+        }), 403
+    admin_secret = os.environ.get('ADMIN_SECRET', '')
+    provided = request.headers.get('X-Admin-Secret') or (request.get_json() or {}).get('admin_secret', '')
+    if admin_secret and provided != admin_secret:
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 401
     try:
         from auto_pilot import auto_discover_from_news
         stats = auto_discover_from_news()

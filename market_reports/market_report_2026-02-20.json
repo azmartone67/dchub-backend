@@ -1,6 +1,6 @@
 {
   "report_date": "2026-02-20",
-  "generated_at": "2026-02-20T16:23:12.385456",
+  "generated_at": "2026-02-20T18:15:48.918466",
   "summary": {
     "total_facilities": 11009,
     "total_providers": 3932,
@@ -89,54 +89,54 @@
   ],
   "recent_news": [
     {
-      "title": "Urban vs. Rural: Why Data Centers Are Built Where They Are",
-      "source": "Data Center Knowledge",
-      "date": "2026-02-20T10:00:00"
+      "title": "Google explores expansion of AI chip market through data center partnerships",
+      "source": "Investing.com South Africa",
+      "date": "2026-02-20T17:47:13"
     },
     {
-      "title": "NexWafe, Talon PV sign 7 GW solar wafer supply agreement",
-      "source": "PV Magazine",
-      "date": "2026-02-20T09:42:52"
+      "title": "Texas could be the data center capital of the world by 2030",
+      "source": "qz.com",
+      "date": "2026-02-20T17:43:51"
     },
     {
-      "title": "HMRC spares 661 from Making Tax Digital as rollout nears",
-      "source": "The Register DC",
-      "date": "2026-02-20T09:30:09"
-    },
-    {
-      "title": "Proposal for 200-acre data center rejected in southern Texas",
+      "title": "Deutsche Telekom carries out quantum teleportation test over live Berlin network",
       "source": "Data Center Dynamics",
-      "date": "2026-02-20T09:20:03"
+      "date": "2026-02-20T17:41:06"
     },
     {
-      "title": "Neocloud Nebul to offer Speedata's Analytics Processing Units",
+      "title": "AI chip startup Taalas raises $169m, unveils HC1 processor optimized for Llama 3.1 8B",
       "source": "Data Center Dynamics",
-      "date": "2026-02-20T08:50:03"
+      "date": "2026-02-20T17:34:42"
     },
     {
-      "title": "Johnson Controls: Strategic Acquisition of Alloy Enterprises",
-      "source": "Data Centre Magazine",
-      "date": "2026-02-20T08:47:35"
+      "title": "Array Digital Infrastructure, Inc. Q4 2025 Earnings Call Summary",
+      "source": "Yahoo Finance",
+      "date": "2026-02-20T17:31:38"
     },
     {
-      "title": "Samsung pairs with Canadian carrier Vid\u00e9otron on 4G LTE, 5G",
-      "source": "Data Center Dynamics",
-      "date": "2026-02-20T08:32:58"
+      "title": "Nextpower (NXT) Announces Multi-Year Supply Agreement With Jinko Solar for Gigawatt-Scale Steel Frames",
+      "source": "Yahoo Finance",
+      "date": "2026-02-20T17:13:22"
     },
     {
-      "title": "India adds 7.8 GW of open-access solar in 2025",
+      "title": "Battle over data centers in Illinois pits consumer costs vs. state competitiveness",
+      "source": "1470 & 100.3 WMBD",
+      "date": "2026-02-20T17:10:59"
+    },
+    {
+      "title": "Amazon blames human employees for an AI coding agent&#8217;s mistake",
+      "source": "The Verge",
+      "date": "2026-02-20T16:52:48"
+    },
+    {
+      "title": "The Hydrogen Stream: Dutch agribusiness installs 1 MW electrolyzer",
       "source": "PV Magazine",
-      "date": "2026-02-20T08:30:22"
+      "date": "2026-02-20T16:50:30"
     },
     {
-      "title": "L&T and NVIDIA's Data Centre Deal to Hyperscale India's AI",
-      "source": "Data Centre Magazine",
-      "date": "2026-02-20T08:07:22"
-    },
-    {
-      "title": "South Africa adds 1.6 GW of solar in 2025",
-      "source": "PV Magazine",
-      "date": "2026-02-20T08:04:51"
+      "title": "Best: Data centers in Colorado, yes, but on what terms?",
+      "source": "VailDaily.com",
+      "date": "2026-02-20T16:35:41"
     }
   ],
   "data_sources": [
