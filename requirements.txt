@@ -43,6 +43,5 @@ mcp
 gevent
 sendgrid
 uvicorn
-replit-object-storage
 psycopg2-binary
 psutil
