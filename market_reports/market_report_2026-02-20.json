@@ -1,6 +1,6 @@
 {
   "report_date": "2026-02-20",
-  "generated_at": "2026-02-20T18:36:18.981499",
+  "generated_at": "2026-02-20T22:38:08.918581",
   "summary": {
     "total_facilities": 11009,
     "total_providers": 3932,
@@ -89,54 +89,54 @@
   ],
   "recent_news": [
     {
-      "title": "Google explores expansion of AI chip market through data center partnerships",
-      "source": "Investing.com South Africa",
-      "date": "2026-02-20T17:47:13"
+      "title": "Virginia data center tax reform passes House as other sales tax bills stall",
+      "source": "Virginia Business",
+      "date": "2026-02-20T20:56:24"
     },
     {
-      "title": "Texas could be the data center capital of the world by 2030",
-      "source": "qz.com",
-      "date": "2026-02-20T17:43:51"
+      "title": "Texas Tech joins NVIDIA to launch next-generation AI infrastructure",
+      "source": "Odessa American",
+      "date": "2026-02-20T20:23:30"
     },
     {
-      "title": "Deutsche Telekom carries out quantum teleportation test over live Berlin network",
-      "source": "Data Center Dynamics",
-      "date": "2026-02-20T17:41:06"
-    },
-    {
-      "title": "AI chip startup Taalas raises $169m, unveils HC1 processor optimized for Llama 3.1 8B",
-      "source": "Data Center Dynamics",
-      "date": "2026-02-20T17:34:42"
-    },
-    {
-      "title": "Array Digital Infrastructure, Inc. Q4 2025 Earnings Call Summary",
-      "source": "Yahoo Finance",
-      "date": "2026-02-20T17:31:38"
-    },
-    {
-      "title": "Nextpower (NXT) Announces Multi-Year Supply Agreement With Jinko Solar for Gigawatt-Scale Steel Frames",
-      "source": "Yahoo Finance",
-      "date": "2026-02-20T17:13:22"
-    },
-    {
-      "title": "Battle over data centers in Illinois pits consumer costs vs. state competitiveness",
-      "source": "1470 & 100.3 WMBD",
-      "date": "2026-02-20T17:10:59"
-    },
-    {
-      "title": "Amazon blames human employees for an AI coding agent&#8217;s mistake",
+      "title": "Trump is making coal plants even dirtier as AI demands more energy",
       "source": "The Verge",
-      "date": "2026-02-20T16:52:48"
+      "date": "2026-02-20T20:18:34"
     },
     {
-      "title": "The Hydrogen Stream: Dutch agribusiness installs 1 MW electrolyzer",
-      "source": "PV Magazine",
-      "date": "2026-02-20T16:50:30"
+      "title": "Data centers are creating a manufacturing boom across the Magnolia State",
+      "source": "Vicksburg Daily News",
+      "date": "2026-02-20T20:08:12"
     },
     {
-      "title": "Best: Data centers in Colorado, yes, but on what terms?",
-      "source": "VailDaily.com",
-      "date": "2026-02-20T16:35:41"
+      "title": "US Supreme Court strikes down Trump tariffs",
+      "source": "Data Center Dynamics",
+      "date": "2026-02-20T19:51:02"
+    },
+    {
+      "title": "Washtenaw court denies reopening of Saline data center lawsuit",
+      "source": "The Detroit News",
+      "date": "2026-02-20T19:30:00"
+    },
+    {
+      "title": "Microsoft\u2019s Glass Breakthrough: Coming to a Data Center Near You?",
+      "source": "Data Center Knowledge",
+      "date": "2026-02-20T19:03:12"
+    },
+    {
+      "title": "Canadian utility Hydro-Qu\u00e9bec proposes electricity tariff for data centers",
+      "source": "Data Center Dynamics",
+      "date": "2026-02-20T19:00:03"
+    },
+    {
+      "title": "South Dakota Senate committee kills data center moratorium bill targeting 50-megawatt projects",
+      "source": "Mitchell Now",
+      "date": "2026-02-20T18:25:38"
+    },
+    {
+      "title": "Member of legislature in Ontario, Canada, claims data center could come to Sarnia-Lambton",
+      "source": "Data Center Dynamics",
+      "date": "2026-02-20T18:00:04"
     }
   ],
   "data_sources": [
