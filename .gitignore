@@ -1,0 +1,33 @@
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Replit
+.cache/
+.upm/
+.config/
+.local/
+.replit
+replit.nix
+.breakpoints
+
+# Logs
+*.log
+
+# Large files
+node_modules/
+output/
+attached_assets/
+facility-pages.zip
+*.backup*
+*.backup_*
+main.py.backup*
+
+# OS
+.DS_Store

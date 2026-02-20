@@ -1,0 +1,28 @@
+{
+  "version": "1.0",
+  "name": "DC Hub Nexus",
+  "description": "Data Center Intelligence Platform - 20,000+ facilities, M&A tracking, market intelligence",
+  "url": "https://dc-hub-replit-fixedzip--azmartone1.replit.app",
+  "capabilities": [
+    "data_center_search",
+    "facility_lookup",
+    "market_analysis",
+    "transaction_tracking",
+    "site_scoring",
+    "real_time_news"
+  ],
+  "mcpServers": {
+    "dchub": {
+      "httpUrl": "https://dc-hub-replit-fixedzip--azmartone1.replit.app/mcp",
+      "description": "DC Hub Nexus MCP Server - Streamable HTTP transport"
+    }
+  },
+  "endpoints": {
+    "mcp": "/mcp",
+    "facilities": "/api/v1/facilities",
+    "transactions": "/api/v1/transactions",
+    "news": "/api/v1/news",
+    "market_intelligence": "/api/market-intelligence"
+  },
+  "contact": "api@dchub.cloud"
+}

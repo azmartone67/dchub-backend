@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DC Hub Intelligence Dashboard</title>
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #0a0a0f;
+            --bg-secondary: #12121a;
+            --bg-card: #1a1a25;
+            --text-primary: #ffffff;
+            --text-secondary: #a0a0b0;
+            --accent: #00d4ff;
+            --accent-green: #00ff88;
+            --accent-orange: #ff8800;
+            --accent-purple: #8855ff;
+            --border: #2a2a35;
+        }
+        
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        
+        body {
+            font-family: 'Outfit', sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        
+        .header h1 {
+            font-size: 2.5rem;
+            background: linear-gradient(135deg, var(--accent), var(--accent-purple));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 10px;
+        }
+        
+        .header p { color: var(--text-secondary); }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .stat-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+        }
+        
+        .stat-value {
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: var(--accent);
+        }
+        
+        .stat-value.green { color: var(--accent-green); }
+        .stat-value.orange { color: var(--accent-orange); }
+        .stat-value.purple { color: var(--accent-purple); }
+        
+        .stat-label {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            margin-top: 5px;
+        }
+        
+        .section {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 25px;
+            margin-bottom: 25px;
+        }
+        
+        .section-title {
+            font-size: 1.4rem;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .section-title .icon {
+            width: 30px;
+            height: 30px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1rem;
+        }
+        
+        .icon.blue { background: rgba(0, 212, 255, 0.2); }
+        .icon.green { background: rgba(0, 255, 136, 0.2); }
+        .icon.orange { background: rgba(255, 136, 0, 0.2); }
+        .icon.purple { background: rgba(136, 85, 255, 0.2); }
+        
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        .data-table th, .data-table td {
+            padding: 12px 15px;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+        
+        .data-table th {
+            color: var(--text-secondary);
+            font-weight: 500;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+        }
+        
+        .data-table td { font-family: 'JetBrains Mono', monospace; font-size: 0.9rem; }
+        
+        .badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        
+        .badge.active { background: rgba(0, 255, 136, 0.2); color: var(--accent-green); }
+        .badge.pending { background: rgba(255, 136, 0, 0.2); color: var(--accent-orange); }
+        
+        .progress-bar {
+            height: 8px;
+            background: var(--bg-primary);
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 10px;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent), var(--accent-green));
+            border-radius: 4px;
+            transition: width 0.5s ease;
+        }
+        
+        .activity-item {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            padding: 12px 0;
+            border-bottom: 1px solid var(--border);
+        }
+        
+        .activity-item:last-child { border-bottom: none; }
+        
+        .activity-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--accent-green);
+        }
+        
+        .activity-text { flex: 1; }
+        .activity-time { color: var(--text-secondary); font-size: 0.85rem; }
+        
+        .btn {
+            background: linear-gradient(135deg, var(--accent), var(--accent-purple));
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            margin-right: 10px;
+            margin-bottom: 10px;
+        }
+        
+        .btn:hover { opacity: 0.9; }
+        .btn.secondary { background: var(--bg-card); border: 1px solid var(--border); }
+        
+        .refresh-indicator {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: var(--bg-card);
+            padding: 10px 20px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .pulse {
+            width: 10px;
+            height: 10px;
+            background: var(--accent-green);
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(1.2); }
+        }
+        
+        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 25px; }
+        @media (max-width: 900px) { .grid-2 { grid-template-columns: 1fr; } }
+        
+        .log-box {
+            background: var(--bg-primary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 15px;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+            line-height: 1.6;
+        }
+        
+        .log-entry { margin-bottom: 8px; }
+        .log-time { color: var(--text-secondary); }
+        .log-action { color: var(--accent); }
+        .log-result { color: var(--accent-green); }
+    </style>
+    <script src="/static/js/api-config.js"></script>
+<script>
+(function() {
+    var b = window.DCHUB_API_BASE || '';
+    window.API_BASE = b;
+    window.DCHUB_CONFIG = { apiBase: b, version: 'v93' };
+    if (!window.dchubFetch) {
+        window.dchubFetch = function(path, opts) {
+            opts = opts || {};
+            if (b) { opts.mode = opts.mode || 'cors'; opts.credentials = opts.credentials || 'include'; }
+            return fetch(b + path, opts);
+        };
+    }
+})();
+</script>
+</head>
+<body>
+    <div class="refresh-indicator">
+        <div class="pulse"></div>
+        <span>Auto-refresh: <span id="countdown">30</span>s</span>
+    </div>
+    
+    <div class="header">
+        <h1>DC Hub Intelligence Dashboard</h1>
+        <p>Real-time view of autonomous learning, discovery, and research progress</p>
+    </div>
+    
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="stat-value" id="total-facilities">-</div>
+            <div class="stat-label">Total Facilities</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value green" id="total-news">-</div>
+            <div class="stat-label">News Articles</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value orange" id="pipeline-mw">-</div>
+            <div class="stat-label">MW in Pipeline</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value purple" id="patterns-learned">-</div>
+            <div class="stat-label">Patterns Learned</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value" id="fiber-routes">-</div>
+            <div class="stat-label">Fiber Routes</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value green" id="substations">-</div>
+            <div class="stat-label">Power Substations</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value orange" id="knowledge-items">-</div>
+            <div class="stat-label">Knowledge Items</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value purple" id="total-runs">-</div>
+            <div class="stat-label">Learning Runs</div>
+        </div>
+    </div>
+    
+    <div class="grid-2">
+        <div class="section">
+            <div class="section-title">
+                <div class="icon blue">&#x1F9E0;</div>
+                Evolution Engine Status
+            </div>
+            <div id="evolution-status">Loading...</div>
+        </div>
+        
+        <div class="section">
+            <div class="section-title">
+                <div class="icon green">&#x1F30D;</div>
+                Global Intelligence
+            </div>
+            <div id="global-status">Loading...</div>
+        </div>
+    </div>
+    
+    <div class="section">
+        <div class="section-title">
+            <div class="icon orange">&#x26A1;</div>
+            Capacity Pipeline - MW Announcements
+        </div>
+        <div style="margin-bottom: 15px;">
+            <button class="btn" onclick="trackCapacity()">Refresh Pipeline</button>
+        </div>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Operator</th>
+                    <th>MW Capacity</th>
+                    <th>% of Total</th>
+                </tr>
+            </thead>
+            <tbody id="capacity-table">
+                <tr><td colspan="3">Loading...</td></tr>
+            </tbody>
+        </table>
+    </div>
+    
+    <div class="grid-2">
+        <div class="section">
+            <div class="section-title">
+                <div class="icon purple">&#x1F4E1;</div>
+                Infrastructure Discovery
+            </div>
+            <div id="infrastructure-status">Loading...</div>
+        </div>
+        
+        <div class="section">
+            <div class="section-title">
+                <div class="icon blue">&#x1F50D;</div>
+                Proactive Discovery
+            </div>
+            <div style="margin-bottom: 15px;">
+                <button class="btn" onclick="runFiberDiscovery()">Search Fiber Sources</button>
+                <button class="btn secondary" onclick="runUtilityDiscovery()">Search Utility Sources</button>
+            </div>
+            <div id="proactive-status">Loading...</div>
+        </div>
+    </div>
+    
+    <div class="section">
+        <div class="section-title">
+            <div class="icon green">&#x1F4CA;</div>
+            Recent Learning Activity
+        </div>
+        <div class="log-box" id="activity-log">
+            Loading activity log...
+        </div>
+    </div>
+    
+    <div class="section">
+        <div class="section-title">
+            <div class="icon orange">&#x1F4A1;</div>
+            AI Insights & Suggestions
+        </div>
+        <div id="insights-section">Loading...</div>
+    </div>
+
+    <script>
+        const API_BASE = window.DCHUB_API_BASE || '';
+        
+        async function fetchJSON(url) {
+            try {
+                const resp = await fetch(url);
+                return await resp.json();
+            } catch (e) {
+                console.error('Fetch error:', e);
+                return null;
+            }
+        }
+        
+        async function loadDashboard() {
+            const [evolution, intelligence, infrastructure, proactive, insights] = await Promise.all([
+                fetchJSON('/api/evolution/status'),
+                fetchJSON('/api/intelligence/status'),
+                fetchJSON('/api/infrastructure/status'),
+                fetchJSON('/api/discovery/proactive/status'),
+                fetchJSON('/api/evolution/suggestions')
+            ]);
+            
+            if (intelligence) {
+                document.getElementById('total-facilities').textContent = (intelligence.ambassador?.total_facilities || 0).toLocaleString();
+                document.getElementById('total-news').textContent = (intelligence.ambassador?.total_news || 0).toLocaleString();
+                document.getElementById('pipeline-mw').textContent = (intelligence.ambassador?.pipeline_mw || 0).toLocaleString();
+                document.getElementById('patterns-learned').textContent = intelligence.stats?.patterns || 0;
+                document.getElementById('fiber-routes').textContent = intelligence.ambassador?.fiber_routes || 0;
+                document.getElementById('substations').textContent = intelligence.ambassador?.substations || 0;
+                
+                document.getElementById('global-status').innerHTML = `
+                    <div class="activity-item">
+                        <div class="activity-dot"></div>
+                        <div class="activity-text">Capacity Announcements: <strong>${intelligence.ambassador?.capacity_announcements || 0}</strong></div>
+                    </div>
+                    <div class="activity-item">
+                        <div class="activity-dot" style="background: var(--accent-orange)"></div>
+                        <div class="activity-text">KMZ Routes Parsed: <strong>${intelligence.stats?.kmz_routes || 0}</strong></div>
+                    </div>
+                    <div class="activity-item">
+                        <div class="activity-dot" style="background: var(--accent-purple)"></div>
+                        <div class="activity-text">Global Sources: <strong>${intelligence.stats?.global_sources || 0}</strong></div>
+                    </div>
+                `;
+            }
+            
+            if (evolution) {
+                document.getElementById('knowledge-items').textContent = evolution.knowledge_items || 0;
+                document.getElementById('total-runs').textContent = evolution.stats?.total_runs || 0;
+                
+                const actions = evolution.recent_actions_24h || {};
+                const actionsHtml = Object.entries(actions).map(([action, count]) => `
+                    <div class="activity-item">
+                        <div class="activity-dot"></div>
+                        <div class="activity-text">${action.replace(/_/g, ' ')}</div>
+                        <div class="activity-time">${count}x</div>
+                    </div>
+                `).join('');
+                
+                document.getElementById('evolution-status').innerHTML = `
+                    <p style="margin-bottom: 15px;">
+                        <span class="badge active">AI Enabled</span>
+                        Last run: ${evolution.stats?.last_run ? new Date(evolution.stats.last_run).toLocaleString() : 'Never'}
+                    </p>
+                    <p style="margin-bottom: 10px; color: var(--text-secondary);">Items Learned: <strong style="color: var(--accent)">${evolution.stats?.items_learned || 0}</strong></p>
+                    ${actionsHtml}
+                `;
+            }
+            
+            if (infrastructure?.data) {
+                const inf = infrastructure.data;
+                document.getElementById('infrastructure-status').innerHTML = `
+                    <div class="activity-item">
+                        <div class="activity-dot"></div>
+                        <div class="activity-text">Fiber Routes</div>
+                        <div class="activity-time">${inf.fiber_routes}</div>
+                    </div>
+                    <div class="activity-item">
+                        <div class="activity-dot" style="background: var(--accent-orange)"></div>
+                        <div class="activity-text">Power Substations</div>
+                        <div class="activity-time">${inf.substations}</div>
+                    </div>
+                    <div class="activity-item">
+                        <div class="activity-dot" style="background: var(--accent-purple)"></div>
+                        <div class="activity-text">Construction Permits</div>
+                        <div class="activity-time">${inf.construction_permits}</div>
+                    </div>
+                    <div class="activity-item">
+                        <div class="activity-dot" style="background: var(--accent)"></div>
+                        <div class="activity-text">DC Properties</div>
+                        <div class="activity-time">${inf.dc_properties}</div>
+                    </div>
+                    <p style="margin-top: 15px;">
+                        <span class="badge ${inf.scheduler_running ? 'active' : 'pending'}">${inf.scheduler_running ? 'Scheduler Running' : 'Scheduler Stopped'}</span>
+                    </p>
+                `;
+            }
+            
+            if (proactive?.data) {
+                const p = proactive.data;
+                document.getElementById('proactive-status').innerHTML = `
+                    <div class="activity-item">
+                        <div class="activity-dot"></div>
+                        <div class="activity-text">Fiber Sources Found</div>
+                        <div class="activity-time">${p.fiber_sources || 0}</div>
+                    </div>
+                    <div class="activity-item">
+                        <div class="activity-dot" style="background: var(--accent-orange)"></div>
+                        <div class="activity-text">Utility Sources Found</div>
+                        <div class="activity-time">${p.utility_sources || 0}</div>
+                    </div>
+                    <div class="activity-item">
+                        <div class="activity-dot" style="background: var(--accent-purple)"></div>
+                        <div class="activity-text">Files Downloaded</div>
+                        <div class="activity-time">${p.processed_files || 0}</div>
+                    </div>
+                `;
+            }
+            
+            if (insights?.data) {
+                const suggHtml = (insights.data || []).slice(0, 5).map(s => `
+                    <div class="activity-item">
+                        <div class="activity-dot" style="background: var(--accent-orange)"></div>
+                        <div class="activity-text">${s.suggestion || s}</div>
+                        <div class="activity-time">${s.priority || ''}</div>
+                    </div>
+                `).join('') || '<p style="color: var(--text-secondary)">No suggestions yet</p>';
+                document.getElementById('insights-section').innerHTML = suggHtml;
+            }
+            
+            loadCapacityData();
+            loadActivityLog();
+        }
+        
+        async function loadCapacityData() {
+            const data = await fetchJSON('/api/intelligence/global/capacity');
+            if (data?.data?.by_operator) {
+                const operators = data.data.by_operator;
+                const total = data.data.total_mw || 1;
+                const sorted = Object.entries(operators)
+                    .filter(([op]) => op !== 'Unknown')
+                    .sort((a, b) => b[1] - a[1])
+                    .slice(0, 15);
+                
+                const html = sorted.map(([op, mw]) => `
+                    <tr>
+                        <td>${op}</td>
+                        <td>${mw.toLocaleString()} MW</td>
+                        <td>
+                            <div class="progress-bar">
+                                <div class="progress-fill" style="width: ${(mw/total*100).toFixed(1)}%"></div>
+                            </div>
+                        </td>
+                    </tr>
+                `).join('');
+                
+                document.getElementById('capacity-table').innerHTML = html || '<tr><td colspan="3">No data</td></tr>';
+            }
+        }
+        
+        async function loadActivityLog() {
+            const knowledge = await fetchJSON('/api/evolution/knowledge');
+            if (knowledge?.data) {
+                const items = (knowledge.data || []).slice(0, 20);
+                const html = items.map(item => `
+                    <div class="log-entry">
+                        <span class="log-time">[${item.category}]</span>
+                        <span class="log-action">${item.key}</span>: 
+                        <span class="log-result">${typeof item.value === 'object' ? JSON.stringify(item.value).slice(0,100) : String(item.value).slice(0,100)}</span>
+                    </div>
+                `).join('');
+                document.getElementById('activity-log').innerHTML = html || 'No activity yet';
+            }
+        }
+        
+        async function trackCapacity() {
+            document.getElementById('capacity-table').innerHTML = '<tr><td colspan="3">Tracking...</td></tr>';
+            await dchubFetch('/api/intelligence/global/capacity/track', { method: 'POST' });
+            await loadCapacityData();
+        }
+        
+        async function runFiberDiscovery() {
+            alert('Starting fiber source discovery...');
+            await dchubFetch('/api/discovery/proactive/fiber', { method: 'POST' });
+            loadDashboard();
+        }
+        
+        async function runUtilityDiscovery() {
+            alert('Starting utility source discovery...');
+            await dchubFetch('/api/discovery/proactive/utility', { method: 'POST' });
+            loadDashboard();
+        }
+        
+        let countdown = 30;
+        setInterval(() => {
+            countdown--;
+            document.getElementById('countdown').textContent = countdown;
+            if (countdown <= 0) {
+                countdown = 30;
+                loadDashboard();
+            }
+        }, 1000);
+        
+        loadDashboard();
+    </script>
+</body>
+</html>

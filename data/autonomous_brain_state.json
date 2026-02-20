@@ -1,0 +1,713 @@
+{
+  "total_cycles": 2102,
+  "capacity_extracted": 141,
+  "deals_found": 40,
+  "quality_fixes": 0,
+  "apis_discovered": 4,
+  "last_cycle": "2026-02-12T05:03:39.111630",
+  "insights": [],
+  "autonomous_actions": [
+    {
+      "timestamp": "2026-02-08T08:52:49.202515",
+      "cycle": 2003,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-08T09:01:59.170897",
+      "cycle": 2004,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-08T09:05:34.953898",
+      "cycle": 2005,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-08T09:12:10.296861",
+      "cycle": 2006,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-08T09:21:22.427791",
+      "cycle": 2007,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-08T10:07:32.997021",
+      "cycle": 2008,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-08T10:14:24.145638",
+      "cycle": 2009,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-08T10:28:16.704257",
+      "cycle": 2010,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-08T21:07:39.854344",
+      "cycle": 2011,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-08T23:43:48.821457",
+      "cycle": 2012,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-08T23:50:48.870294",
+      "cycle": 2013,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-09T01:25:28.224455",
+      "cycle": 2014,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-09T01:33:33.249672",
+      "cycle": 2015,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-09T01:46:24.110068",
+      "cycle": 2016,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-09T04:11:16.151598",
+      "cycle": 2017,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-09T04:19:25.079363",
+      "cycle": 2018,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-09T04:32:17.735098",
+      "cycle": 2019,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-09T06:20:21.952173",
+      "cycle": 2020,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-09T08:40:15.685953",
+      "cycle": 2021,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-09T08:51:37.724650",
+      "cycle": 2022,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-09T09:00:58.175576",
+      "cycle": 2023,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-09T09:09:49.829180",
+      "cycle": 2024,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-09T09:19:10.221473",
+      "cycle": 2025,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-09T09:25:10.394544",
+      "cycle": 2026,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-09T09:30:10.987001",
+      "cycle": 2027,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-09T09:44:19.926626",
+      "cycle": 2028,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-09T09:53:40.372868",
+      "cycle": 2029,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-09T10:03:00.752138",
+      "cycle": 2030,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-09T18:32:53.054989",
+      "cycle": 2031,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-09T18:42:13.593735",
+      "cycle": 2032,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-09T18:51:34.036496",
+      "cycle": 2033,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-09T18:58:45.269653",
+      "cycle": 2034,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-09T19:08:07.704444",
+      "cycle": 2035,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-09T19:17:28.606007",
+      "cycle": 2036,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-09T19:26:48.968400",
+      "cycle": 2037,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-09T19:36:09.340826",
+      "cycle": 2038,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-09T20:21:59.894795",
+      "cycle": 2039,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-09T20:31:20.205161",
+      "cycle": 2040,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-09T22:51:10.920008",
+      "cycle": 2041,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-09T23:00:31.839087",
+      "cycle": 2042,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-09T23:08:28.771246",
+      "cycle": 2043,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-09T23:18:36.495748",
+      "cycle": 2044,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-09T23:27:56.967343",
+      "cycle": 2045,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-09T23:33:10.785096",
+      "cycle": 2046,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-09T23:42:31.281735",
+      "cycle": 2047,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-09T23:50:37.029233",
+      "cycle": 2048,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-10T00:01:05.430657",
+      "cycle": 2049,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-10T00:09:25.645855",
+      "cycle": 2050,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-10T04:50:04.166761",
+      "cycle": 2051,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-10T04:58:24.670057",
+      "cycle": 2052,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-10T05:06:45.223401",
+      "cycle": 2053,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-10T05:14:58.576470",
+      "cycle": 2054,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-10T05:23:20.705252",
+      "cycle": 2055,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-10T05:28:54.890891",
+      "cycle": 2056,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-10T05:30:51.273113",
+      "cycle": 2057,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-10T05:39:11.507326",
+      "cycle": 2058,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-10T05:47:32.249189",
+      "cycle": 2059,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-10T05:55:52.657150",
+      "cycle": 2060,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-10T06:13:27.597187",
+      "cycle": 2061,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-10T06:23:43.702243",
+      "cycle": 2062,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-10T06:34:34.412570",
+      "cycle": 2063,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-10T06:41:27.850938",
+      "cycle": 2064,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-10T06:52:18.370763",
+      "cycle": 2065,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-10T07:03:09.027313",
+      "cycle": 2066,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-10T07:09:24.774524",
+      "cycle": 2067,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-10T07:20:15.258944",
+      "cycle": 2068,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-10T07:27:07.174572",
+      "cycle": 2069,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-10T07:37:57.616021",
+      "cycle": 2070,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-10T07:55:39.429434",
+      "cycle": 2071,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-10T08:06:29.816360",
+      "cycle": 2072,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-12T00:36:51.810346",
+      "cycle": 2073,
+      "capacity_added": 49,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-12T00:41:51.879306",
+      "cycle": 2074,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-12T00:56:11.326610",
+      "cycle": 2075,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-12T01:01:12.713167",
+      "cycle": 2076,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-12T01:14:06.108230",
+      "cycle": 2077,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-12T01:21:08.981965",
+      "cycle": 2078,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-12T01:26:09.094943",
+      "cycle": 2079,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-12T01:38:59.841407",
+      "cycle": 2080,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-12T01:42:46.580982",
+      "cycle": 2081,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-12T01:54:46.840276",
+      "cycle": 2082,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-12T01:58:13.980793",
+      "cycle": 2083,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-12T02:03:14.386062",
+      "cycle": 2084,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-12T02:17:09.329136",
+      "cycle": 2085,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-12T02:22:09.412149",
+      "cycle": 2086,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-12T02:26:00.309832",
+      "cycle": 2087,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-12T02:31:00.557518",
+      "cycle": 2088,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-12T02:47:13.825230",
+      "cycle": 2089,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-12T02:53:44.483333",
+      "cycle": 2090,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-12T03:01:19.174699",
+      "cycle": 2091,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-12T03:06:19.240581",
+      "cycle": 2092,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-12T03:22:11.330420",
+      "cycle": 2093,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-12T03:37:47.621099",
+      "cycle": 2094,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-12T03:42:47.672073",
+      "cycle": 2095,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-12T03:58:38.555236",
+      "cycle": 2096,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-12T04:10:16.459183",
+      "cycle": 2097,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-12T04:15:16.589552",
+      "cycle": 2098,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-12T04:31:07.597218",
+      "cycle": 2099,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-12T04:40:16.853045",
+      "cycle": 2100,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-12T04:58:39.010272",
+      "cycle": 2101,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    },
+    {
+      "timestamp": "2026-02-12T05:03:39.111646",
+      "cycle": 2102,
+      "capacity_added": 0,
+      "deals_found": 0,
+      "quality_fixes": 0
+    }
+  ],
+  "learning_rate": 1.0,
+  "infrastructure_syncs": 211
+}

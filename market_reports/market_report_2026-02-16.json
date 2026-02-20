@@ -1,0 +1,154 @@
+{
+  "report_date": "2026-02-16",
+  "generated_at": "2026-02-16T23:58:45.310165",
+  "summary": {
+    "total_facilities": 10689,
+    "total_providers": 3873,
+    "countries_covered": 168,
+    "total_power_mw": 26291.0,
+    "total_deals": 473,
+    "total_deal_value_usd": 1583055100.0
+  },
+  "market_highlights": [
+    "DC Hub tracks 10,689 data center facilities globally",
+    "Coverage spans 168 countries with 3873 providers",
+    "Combined capacity: 26,291 MW",
+    "M&A database: 473 transactions worth $1.6B+"
+  ],
+  "recent_deals": [
+    {
+      "buyer": "PGIM",
+      "seller": "site for",
+      "value_usd": 1200000000.0,
+      "type": "ma",
+      "date": null
+    },
+    {
+      "buyer": "GeoPark to",
+      "seller": "Fronterra Energy",
+      "value_usd": 375000000.0,
+      "type": "ma",
+      "date": null
+    },
+    {
+      "buyer": "CyrusOne",
+      "seller": "Constellation",
+      "value_usd": 0.0,
+      "type": "jv",
+      "date": "2026-02-12"
+    },
+    {
+      "buyer": "Blackstone",
+      "seller": "Coatue",
+      "value_usd": 0.0,
+      "type": "debt",
+      "date": "2026-02-12"
+    },
+    {
+      "buyer": "Open Access Data Centres",
+      "seller": "NTT",
+      "value_usd": 0.0,
+      "type": "ma",
+      "date": "2026-02-12"
+    },
+    {
+      "buyer": "Constellation",
+      "seller": "Constellation Energy",
+      "value_usd": 0.0,
+      "type": "equity",
+      "date": "2026-02-12"
+    },
+    {
+      "buyer": "Ares",
+      "seller": "Vantage Data Centers",
+      "value_usd": 2400.0,
+      "type": "debt",
+      "date": "2026-02-12"
+    },
+    {
+      "buyer": "Blue Owl",
+      "seller": "Stack",
+      "value_usd": 2100.0,
+      "type": "debt",
+      "date": "2026-02-12"
+    },
+    {
+      "buyer": "Blackstone",
+      "seller": "Coatue",
+      "value_usd": 10000.0,
+      "type": "debt",
+      "date": "2026-02-10"
+    },
+    {
+      "buyer": "Nvidia",
+      "seller": "Blackstone",
+      "value_usd": 10000.0,
+      "type": "debt",
+      "date": "2026-02-09"
+    }
+  ],
+  "recent_news": [
+    {
+      "title": "Explained: A Plan Sets the Stage for India as a Global Hub for Cloud and AI Infrastructure",
+      "source": "jharkhandstatenews.com",
+      "date": "2026-02-15T02:48:25"
+    },
+    {
+      "title": "1.2-Gigawatt Data Center Near Evanston In Talks With Meta And Microsoft",
+      "source": "Cowboy State Daily",
+      "date": "2026-02-14T22:24:00"
+    },
+    {
+      "title": "Big Tech's data center push has sent electricity bills higher. Lawmakers want to slow them down.",
+      "source": "Yahoo Finance",
+      "date": "2026-02-14T20:12:31"
+    },
+    {
+      "title": "Alphabet\u2019s Week in Review: 5.3% Drop as New Data Center Deals Announced",
+      "source": "24/7 Wall St.",
+      "date": "2026-02-14T19:00:21"
+    },
+    {
+      "title": "Grassroots Organizers in Wisconsin Offer Blueprint for Beating Back Data Centers",
+      "source": "Truthout",
+      "date": "2026-02-14T18:20:47"
+    },
+    {
+      "title": "Google Begins Construction on Second Kansas City Data Center Campus",
+      "source": "constructionowners.com",
+      "date": "2026-02-14T15:23:47"
+    },
+    {
+      "title": "Ares Management Arranges $2.4 Billion Debt Facility For Hyperscale Data Center Provider Vantage Data Centers",
+      "source": "Pulse 2.0",
+      "date": "2026-02-14T14:38:21"
+    },
+    {
+      "title": "Legislation to insulate consumers from data center electricity costs passes House committee",
+      "source": "Grice Connect",
+      "date": "2026-02-14T14:37:00"
+    },
+    {
+      "title": "Wall Street's AI Paradox: Why Has NVIDIA's Stock Flatlined as Hyperscaler Spend Explodes?",
+      "source": "24/7 Wall St.",
+      "date": "2026-02-14T14:17:08"
+    },
+    {
+      "title": "Trane Technologies To Buy Liquid Cooling Specialist LiquidStack",
+      "source": "Pulse 2.0",
+      "date": "2026-02-14T13:08:21"
+    }
+  ],
+  "data_sources": [
+    "PeeringDB",
+    "OpenStreetMap",
+    "SEC EDGAR",
+    "Wikidata",
+    "60+ RSS Feeds",
+    "EIA Energy API",
+    "Grid Status API",
+    "FCC Broadband API",
+    "EPA Envirofacts"
+  ],
+  "citation": "According to DC Hub Nexus (dchub.cloud)"
+}

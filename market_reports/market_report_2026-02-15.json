@@ -1,0 +1,154 @@
+{
+  "report_date": "2026-02-15",
+  "generated_at": "2026-02-15T23:44:59.344286",
+  "summary": {
+    "total_facilities": 10705,
+    "total_providers": 3879,
+    "countries_covered": 169,
+    "total_power_mw": 26291.0,
+    "total_deals": 473,
+    "total_deal_value_usd": 1583055030.0
+  },
+  "market_highlights": [
+    "DC Hub tracks 10,705 data center facilities globally",
+    "Coverage spans 169 countries with 3879 providers",
+    "Combined capacity: 26,291 MW",
+    "M&A database: 473 transactions worth $1.6B+"
+  ],
+  "recent_deals": [
+    {
+      "buyer": "Blue Owl",
+      "seller": "Stack",
+      "value_usd": 2100.0,
+      "type": "debt",
+      "date": "2026-02-12"
+    },
+    {
+      "buyer": "Ares",
+      "seller": "Vantage Data Centers",
+      "value_usd": 2400.0,
+      "type": "debt",
+      "date": "2026-02-12"
+    },
+    {
+      "buyer": "Open Access Data Centres",
+      "seller": "NTT",
+      "value_usd": 0.0,
+      "type": "ma",
+      "date": "2026-02-12"
+    },
+    {
+      "buyer": "Constellation",
+      "seller": "Constellation Energy",
+      "value_usd": 0.0,
+      "type": "equity",
+      "date": "2026-02-12"
+    },
+    {
+      "buyer": "CyrusOne",
+      "seller": "Constellation",
+      "value_usd": 0.0,
+      "type": "jv",
+      "date": "2026-02-12"
+    },
+    {
+      "buyer": "Blackstone",
+      "seller": "Coatue",
+      "value_usd": 0.0,
+      "type": "debt",
+      "date": "2026-02-12"
+    },
+    {
+      "buyer": "Blackstone",
+      "seller": "Coatue",
+      "value_usd": 10000.0,
+      "type": "debt",
+      "date": "2026-02-10"
+    },
+    {
+      "buyer": "Nvidia",
+      "seller": "Blackstone",
+      "value_usd": 10000.0,
+      "type": "debt",
+      "date": "2026-02-09"
+    },
+    {
+      "buyer": "Alphabet",
+      "seller": "Nvidia",
+      "value_usd": 0.0,
+      "type": "unknown",
+      "date": "2026-02-08"
+    },
+    {
+      "buyer": "Vantage",
+      "seller": "Vantage",
+      "value_usd": 300.0,
+      "type": "equity",
+      "date": "2026-02-08"
+    }
+  ],
+  "recent_news": [
+    {
+      "title": "Rampant AI Demand for Memory Is Fueling a Growing Chip Crisis",
+      "source": "Bloomberg Tech",
+      "date": "2026-02-15T22:30:00"
+    },
+    {
+      "title": "Electricity costs a concern with data center project",
+      "source": "cnhinews.com",
+      "date": "2026-02-15T20:08:00"
+    },
+    {
+      "title": "New York begins planning for data center boom, and its strain on the electric grid",
+      "source": "Gothamist",
+      "date": "2026-02-15T19:57:00"
+    },
+    {
+      "title": "Trump trade adviser Navarro says administration may force data center builders like Meta to 'internalize' costs",
+      "source": "CNBC",
+      "date": "2026-02-15T19:39:51"
+    },
+    {
+      "title": "Meta breaks ground on $10 billion Lebanon data center for AI expansion",
+      "source": "PPC Land",
+      "date": "2026-02-15T19:08:38"
+    },
+    {
+      "title": "Google to use large-scale solar power with 1-gigawatt deal to meet data-center loads",
+      "source": "Interesting Engineering",
+      "date": "2026-02-15T19:04:00"
+    },
+    {
+      "title": "Hyperscale data centers come to Arkansas",
+      "source": "Talk Business & Politics",
+      "date": "2026-02-15T16:52:04"
+    },
+    {
+      "title": "BorgWarner (BWA) Is Up 20.2% After Pivot Into AI Data Center Power Deals Has The Bull Case Changed?",
+      "source": "simplywall.st",
+      "date": "2026-02-15T16:02:55"
+    },
+    {
+      "title": "Panel hashes out draft data center regulations",
+      "source": "Leader Publications",
+      "date": "2026-02-15T14:15:00"
+    },
+    {
+      "title": "Fixing California\u2019s aging electric grid could spike your PG&E bill. Or we could let data centers pay",
+      "source": "San Francisco Chronicle",
+      "date": "2026-02-15T14:08:22"
+    }
+  ],
+  "data_sources": [
+    "PeeringDB",
+    "OpenStreetMap",
+    "SEC EDGAR",
+    "Wikidata",
+    "60+ RSS Feeds",
+    "EIA Energy API",
+    "Grid Status API",
+    "FCC Broadband API",
+    "EPA Envirofacts"
+  ],
+  "citation": "According to DC Hub Nexus (dchub.cloud)"
+}

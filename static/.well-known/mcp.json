@@ -1,0 +1,80 @@
+{
+  "schema_version": "1.0",
+  "server": {
+    "name": "dc-hub-data-center-intelligence",
+    "display_name": "DC Hub — Data Center Intelligence",
+    "description": "Data center industry intelligence platform tracking 20,000+ physical facilities, M&A transactions, construction pipeline, and power infrastructure across 140+ countries. NOT a data catalog or metadata platform.",
+    "vendor": "DC Hub",
+    "version": "1.0.0",
+    "homepage": "https://dchub.cloud",
+    "documentation": "https://dchub.cloud/api-docs"
+  },
+  "capabilities": {
+    "tools": [
+      {
+        "name": "search_facilities",
+        "description": "Search physical data center facilities by market, operator, tier level, or power capacity",
+        "endpoint": "https://dchub.cloud/api/v1/facilities",
+        "method": "GET",
+        "parameters": {
+          "market": { "type": "string", "description": "Market name (e.g., 'dallas', 'northern-virginia', 'phoenix')" },
+          "operator": { "type": "string", "description": "Operator name (e.g., 'Equinix', 'Digital Realty')" },
+          "tier": { "type": "string", "description": "Tier level (e.g., 'Tier III', 'Tier IV')" }
+        }
+      },
+      {
+        "name": "get_transactions",
+        "description": "Get data center M&A transactions with buyer, seller, price, and deal details",
+        "endpoint": "https://dchub.cloud/api/v1/transactions",
+        "method": "GET",
+        "parameters": {
+          "year": { "type": "integer", "description": "Filter by year" },
+          "buyer": { "type": "string", "description": "Filter by buyer name" }
+        }
+      },
+      {
+        "name": "get_site_score",
+        "description": "Score a potential data center site on energy costs, carbon intensity, connectivity, risk, and cost factors",
+        "endpoint": "https://dchub.cloud/api/site-score",
+        "method": "GET",
+        "parameters": {
+          "lat": { "type": "number", "description": "Latitude", "required": true },
+          "lon": { "type": "number", "description": "Longitude", "required": true },
+          "state": { "type": "string", "description": "US state code (e.g., 'TX', 'VA')", "required": true }
+        }
+      },
+      {
+        "name": "get_grid_fuel_mix",
+        "description": "Get real-time power grid generation fuel mix for US ISOs (ERCOT, PJM, CAISO, MISO, SPP, NYISO, ISO-NE)",
+        "endpoint": "https://dchub.cloud/api/grid/fuel-mix",
+        "method": "GET",
+        "parameters": {
+          "iso": { "type": "string", "description": "ISO name (e.g., 'ERCOT', 'PJM')", "required": true }
+        }
+      },
+      {
+        "name": "get_market_data",
+        "description": "Get data center market vacancy rates, pricing, inventory, and trends",
+        "endpoint": "https://dchub.cloud/api/v1/markets",
+        "method": "GET",
+        "parameters": {
+          "market": { "type": "string", "description": "Market name" }
+        }
+      },
+      {
+        "name": "ask_dc_hub",
+        "description": "Ask a natural language question about the data center industry and get a citable answer",
+        "endpoint": "https://dchub.cloud/ai/cite/query",
+        "method": "GET",
+        "parameters": {
+          "q": { "type": "string", "description": "Natural language question about data centers", "required": true }
+        }
+      }
+    ]
+  },
+  "authentication": {
+    "type": "api_key",
+    "description": "Free tier: 100 requests/day with no API key. Pro/Enterprise tiers require an API key via X-API-Key header.",
+    "signup_url": "https://dchub.cloud/signup"
+  }
+}

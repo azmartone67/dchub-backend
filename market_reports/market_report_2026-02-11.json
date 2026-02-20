@@ -1,0 +1,154 @@
+{
+  "report_date": "2026-02-11",
+  "generated_at": "2026-02-11T23:52:56.982314",
+  "summary": {
+    "total_facilities": 9628,
+    "total_providers": 3814,
+    "countries_covered": 178,
+    "total_power_mw": 16383.0,
+    "total_deals": 1407,
+    "total_deal_value_usd": 267172671902.16
+  },
+  "market_highlights": [
+    "DC Hub tracks 9,628 data center facilities globally",
+    "Coverage spans 178 countries with 3814 providers",
+    "Combined capacity: 16,383 MW",
+    "M&A database: 1407 transactions worth $267.2B+"
+  ],
+  "recent_deals": [
+    {
+      "buyer": "Blackstone",
+      "seller": "Coatue",
+      "value_usd": 10000.0,
+      "type": "debt",
+      "date": "2026-02-10"
+    },
+    {
+      "buyer": "Nvidia",
+      "seller": "Blackstone",
+      "value_usd": 10000.0,
+      "type": "debt",
+      "date": "2026-02-09"
+    },
+    {
+      "buyer": "Apple",
+      "seller": "Intel",
+      "value_usd": 0.0,
+      "type": "equity",
+      "date": "2026-02-08"
+    },
+    {
+      "buyer": "Intel",
+      "seller": "AMD",
+      "value_usd": 0.0,
+      "type": "capex",
+      "date": "2026-02-08"
+    },
+    {
+      "buyer": "KKR",
+      "seller": "Undisclosed",
+      "value_usd": 10000.0,
+      "type": "ma",
+      "date": "2026-02-08"
+    },
+    {
+      "buyer": "Morgan Stanley",
+      "seller": "JPMorgan",
+      "value_usd": 0.0,
+      "type": "unknown",
+      "date": "2026-02-08"
+    },
+    {
+      "buyer": "GIC",
+      "seller": "Mubadala",
+      "value_usd": 10000.0,
+      "type": "unknown",
+      "date": "2026-02-08"
+    },
+    {
+      "buyer": "Microsoft",
+      "seller": "Azure",
+      "value_usd": 0.0,
+      "type": "equity",
+      "date": "2026-02-08"
+    },
+    {
+      "buyer": "Bain Capital",
+      "seller": "Undisclosed",
+      "value_usd": 1300.0,
+      "type": "ma",
+      "date": "2026-02-08"
+    },
+    {
+      "buyer": "JPMorgan",
+      "seller": "Apple",
+      "value_usd": 0.0,
+      "type": "equity",
+      "date": "2026-02-08"
+    }
+  ],
+  "recent_news": [
+    {
+      "title": "Microsoft touts far-off high-temperature superconducting tech for datacenter efficiency",
+      "source": "The Register DC",
+      "date": "2026-02-10T21:45:48"
+    },
+    {
+      "title": "llinois: current and future data center sites",
+      "source": "The National Law Review",
+      "date": "2026-02-10T21:21:07"
+    },
+    {
+      "title": "Martindale Brightwood residents call on Mayor Hogsett to stop data center development",
+      "source": "WFYI",
+      "date": "2026-02-10T21:12:00"
+    },
+    {
+      "title": "Duke Energy sets record $103 billion capital plan, fueled by data center demand",
+      "source": "Charlotte Observer",
+      "date": "2026-02-10T20:58:48"
+    },
+    {
+      "title": "Brookfield's Compass To Securitize 6 Big Tech Data Centers, Raise $830M",
+      "source": "Bisnow",
+      "date": "2026-02-10T20:52:20"
+    },
+    {
+      "title": "Duke Energy's data center pipeline hits 4.5 gigawatts as demand soars",
+      "source": "The Business Journals",
+      "date": "2026-02-10T19:58:00"
+    },
+    {
+      "title": "Rep. Mark Born on expansion of data centers in Wisconsin",
+      "source": "PBS Wisconsin",
+      "date": "2026-02-10T19:41:31"
+    },
+    {
+      "title": "Wisconsin couple has near-constant layer of dust from data center construction",
+      "source": "news8000.com",
+      "date": "2026-02-10T19:23:00"
+    },
+    {
+      "title": "China's Data Center Boom: A View from Zhangjiakou (2025)",
+      "source": "Hacker News",
+      "date": "2026-02-10T19:19:56"
+    },
+    {
+      "title": "Ares Commits $2.4 Billion to Fund AI-Linked Data Center Expansion",
+      "source": "TradingView",
+      "date": "2026-02-10T19:11:56"
+    }
+  ],
+  "data_sources": [
+    "PeeringDB",
+    "OpenStreetMap",
+    "SEC EDGAR",
+    "Wikidata",
+    "60+ RSS Feeds",
+    "EIA Energy API",
+    "Grid Status API",
+    "FCC Broadband API",
+    "EPA Envirofacts"
+  ],
+  "citation": "According to DC Hub Nexus (dchub.cloud)"
+}

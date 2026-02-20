@@ -1,0 +1,29 @@
+{
+  "mcpServers": {
+    "dchub-nexus": {
+      "url": "https://dchub.cloud/mcp",
+      "transport": "streamable-http",
+      "headers": {
+        "X-API-Key": "dchub_meta_2026_verify",
+        "User-Agent": "Meta-AI-DC-Hub/1.0"
+      },
+      "description": "DC Hub Nexus — 10,706+ data centers, $185B+ M&A, 7 ISO energy markets",
+      "tools": [
+        "search_facilities",
+        "get_facility",
+        "get_market_data",
+        "search_deals",
+        "get_news",
+        "analyze_site"
+      ],
+      "metadata": {
+        "provider": "DC Hub Nexus",
+        "version": "2.1.0",
+        "tier": "pro",
+        "rate_limit": "300 req/min",
+        "platform": "meta",
+        "llama_compatible": true
+      }
+    }
+  }
+}

@@ -1,0 +1,154 @@
+{
+  "report_date": "2026-02-14",
+  "generated_at": "2026-02-14T23:43:33.884103",
+  "summary": {
+    "total_facilities": 10689,
+    "total_providers": 3873,
+    "countries_covered": 168,
+    "total_power_mw": 26291.0,
+    "total_deals": 473,
+    "total_deal_value_usd": 1583055030.0
+  },
+  "market_highlights": [
+    "DC Hub tracks 10,689 data center facilities globally",
+    "Coverage spans 168 countries with 3873 providers",
+    "Combined capacity: 26,291 MW",
+    "M&A database: 473 transactions worth $1.6B+"
+  ],
+  "recent_deals": [
+    {
+      "buyer": "Blue Owl",
+      "seller": "Stack",
+      "value_usd": 2100.0,
+      "type": "debt",
+      "date": "2026-02-12"
+    },
+    {
+      "buyer": "Ares",
+      "seller": "Vantage Data Centers",
+      "value_usd": 2400.0,
+      "type": "debt",
+      "date": "2026-02-12"
+    },
+    {
+      "buyer": "Open Access Data Centres",
+      "seller": "NTT",
+      "value_usd": 0.0,
+      "type": "ma",
+      "date": "2026-02-12"
+    },
+    {
+      "buyer": "Constellation",
+      "seller": "Constellation Energy",
+      "value_usd": 0.0,
+      "type": "equity",
+      "date": "2026-02-12"
+    },
+    {
+      "buyer": "CyrusOne",
+      "seller": "Constellation",
+      "value_usd": 0.0,
+      "type": "jv",
+      "date": "2026-02-12"
+    },
+    {
+      "buyer": "Blackstone",
+      "seller": "Coatue",
+      "value_usd": 0.0,
+      "type": "debt",
+      "date": "2026-02-12"
+    },
+    {
+      "buyer": "Blackstone",
+      "seller": "Coatue",
+      "value_usd": 10000.0,
+      "type": "debt",
+      "date": "2026-02-10"
+    },
+    {
+      "buyer": "Nvidia",
+      "seller": "Blackstone",
+      "value_usd": 10000.0,
+      "type": "debt",
+      "date": "2026-02-09"
+    },
+    {
+      "buyer": "Oracle",
+      "seller": "OpenAI",
+      "value_usd": 0.0,
+      "type": "unknown",
+      "date": "2026-02-08"
+    },
+    {
+      "buyer": "xAI",
+      "seller": "Undisclosed",
+      "value_usd": 20000.0,
+      "type": "equity",
+      "date": "2026-02-08"
+    }
+  ],
+  "recent_news": [
+    {
+      "title": "1.2-Gigawatt Data Center Near Evanston In Talks With Meta And Microsoft",
+      "source": "Cowboy State Daily",
+      "date": "2026-02-14T22:24:00"
+    },
+    {
+      "title": "Google Begins Construction on Second Kansas City Data Center Campus",
+      "source": "constructionowners.com",
+      "date": "2026-02-14T15:23:47"
+    },
+    {
+      "title": "Ares Management Arranges $2.4 Billion Debt Facility For Hyperscale Data Center Provider Vantage Data Centers",
+      "source": "Pulse 2.0",
+      "date": "2026-02-14T14:38:21"
+    },
+    {
+      "title": "Wall Street's AI Paradox: Why Has NVIDIA's Stock Flatlined as Hyperscaler Spend Explodes?",
+      "source": "24/7 Wall St.",
+      "date": "2026-02-14T14:17:08"
+    },
+    {
+      "title": "Trane Technologies To Buy Liquid Cooling Specialist LiquidStack",
+      "source": "Pulse 2.0",
+      "date": "2026-02-14T13:08:21"
+    },
+    {
+      "title": "New York begins planning for data center boom, and its strain on the electric grid",
+      "source": "Gothamist",
+      "date": "2026-02-14T13:01:00"
+    },
+    {
+      "title": "Could Superconductors Impact Microsoft Data Centre Power?",
+      "source": "Sustainability Magazine",
+      "date": "2026-02-14T12:17:06"
+    },
+    {
+      "title": "State Rep. Knodl testifies at PSC hearing on proposed data center rates",
+      "source": "GMToday.com",
+      "date": "2026-02-14T12:00:00"
+    },
+    {
+      "title": "Google confirms $10B, 500-acre data center in Kansas City\u2019s Northland",
+      "source": "Kansas City Star",
+      "date": "2026-02-14T12:00:00"
+    },
+    {
+      "title": "First PCIe 6.0 SSD enters mass production with 28GB/s speeds, 5.5 million IOPS, and liquid cooling \u2014 Micron 9650 Series SSDs support air and liquid cooling",
+      "source": "Tom's Hardware",
+      "date": "2026-02-14T12:00:00"
+    }
+  ],
+  "data_sources": [
+    "PeeringDB",
+    "OpenStreetMap",
+    "SEC EDGAR",
+    "Wikidata",
+    "60+ RSS Feeds",
+    "EIA Energy API",
+    "Grid Status API",
+    "FCC Broadband API",
+    "EPA Envirofacts"
+  ],
+  "citation": "According to DC Hub Nexus (dchub.cloud)"
+}

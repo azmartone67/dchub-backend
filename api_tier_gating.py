@@ -1,0 +1,1031 @@
+"""
+DC Hub API Tier Gating System
+==============================
+Drop-in module for main.py that adds:
+  1. Plan-aware decorators: @require_plan('pro'), @require_plan('enterprise')
+  2. API key authentication with tier enforcement
+  3. Tiered rate limiting (Free: 100/day, Pro: 10K/day, Enterprise: 100K/day)
+  4. Graceful upgrade prompts on 403 responses
+  5. Updated Stripe prices/webhooks for Enterprise tier
+
+INSTALLATION:
+  1. Copy this file to your Replit project root
+  2. In main.py, add: from api_tier_gating import init_tier_gating
+  3. After app creation: init_tier_gating(app)
+  4. Replace @rate_limit on Pro endpoints with @require_plan('pro')
+  5. Replace @rate_limit on Enterprise endpoints with @require_plan('enterprise')
+  6. Create Stripe products for Enterprise tier (see STRIPE SETUP below)
+
+STRIPE SETUP:
+  In Stripe Dashboard:
+  1. Create Product: "DC Hub Enterprise" 
+  2. Add Price: $699/month (recurring) → copy price_id → set STRIPE_PRICE_ENTERPRISE_MONTHLY
+  3. Add Price: $5,990/year (recurring) → copy price_id → set STRIPE_PRICE_ENTERPRISE_ANNUAL
+  4. Create Product: "DC Hub Pro" (if not already created)
+  5. Add Price: $199/month → set STRIPE_PRICE_PRO_MONTHLY  
+  6. Add Price: $1,590/year → set STRIPE_PRICE_PRO_ANNUAL
+  7. Update Payment Links in PAYMENT_LINKS below
+"""
+
+import os
+import time
+import secrets
+import hashlib
+from datetime import datetime, timedelta, timezone
+from functools import wraps
+from flask import request, jsonify, g
+from collections import defaultdict
+import threading
+from db_utils import get_db
+
+# ═══════════════════════════════════════════════════════════════
+#  CONFIGURATION
+# ═══════════════════════════════════════════════════════════════
+
+DB_PATH = "dc_nexus.db"
+
+# Stripe Price IDs — set these as Replit Secrets after creating products
+STRIPE_PRICES_V2 = {
+    'free':                 None,
+    'pro_monthly':          os.environ.get('STRIPE_PRICE_PRO_MONTHLY', 'price_XXXXX'),
+    'pro_annual':           os.environ.get('STRIPE_PRICE_PRO_ANNUAL', 'price_XXXXX'),
+    'enterprise_monthly':   os.environ.get('STRIPE_PRICE_ENTERPRISE_MONTHLY', 'price_XXXXX'),
+    'enterprise_annual':    os.environ.get('STRIPE_PRICE_ENTERPRISE_ANNUAL', 'price_XXXXX'),
+    'founding':             os.environ.get('STRIPE_PRICE_FOUNDING', 'price_XXXXX'),
+}
+
+# Stripe Payment Links — fallback if price IDs not configured
+PAYMENT_LINKS = {
+    'pro_monthly':        'https://buy.stripe.com/dRm7sMbRgcfPg97buiaZi02',
+    'pro_annual':         'https://buy.stripe.com/4gM3cwcVk3JjbSR9maaZi01',
+    'enterprise_monthly': '',  # TODO: Create in Stripe Dashboard
+    'enterprise_annual':  '',  # TODO: Create in Stripe Dashboard
+    'founding':           'https://buy.stripe.com/9B6fZi1cCdjT3ml8i6aZi00',
+}
+
+# Plan hierarchy (higher = more access)
+PLAN_LEVELS = {
+    'free': 0,
+    'founding': 1,  # Founding members get Pro access
+    'pro': 2,
+    'enterprise': 3,
+    'admin': 99,
+}
+
+# Rate limits per tier (requests per day)
+TIER_RATE_LIMITS = {
+    'free':       10,
+    'founding':   10000,
+    'pro':        10000,
+    'enterprise': 100000,
+    'admin':      999999,
+}
+
+# Plan display info
+PLAN_INFO = {
+    'free': {
+        'name': 'Free',
+        'price_monthly': 0,
+        'price_annual': 0,
+        'rate_limit': 10,
+        'features': {
+            'headline_stats': True,
+            'news_feed': True,
+            'ai_discovery': True,
+            'market_list': True,
+            'facility_search': False,
+            'deal_database': False,
+            'pipeline_tracker': False,
+            'energy_data': False,
+            'connectivity_score': False,
+            'site_analysis': False,
+            'market_compare': False,
+            'pdf_reports': False,
+            'ai_brain': False,
+            'grid_monitoring': False,
+            'land_power': False,
+            'api_key': False,
+            'priority_support': False,
+        }
+    },
+    'pro': {
+        'name': 'Pro',
+        'price_monthly': 199,
+        'price_annual': 1590,
+        'rate_limit': 10000,
+        'features': {
+            'headline_stats': True,
+            'news_feed': True,
+            'ai_discovery': True,
+            'market_list': True,
+            'facility_search': True,
+            'deal_database': True,
+            'pipeline_tracker': True,
+            'energy_data': True,
+            'connectivity_score': True,
+            'site_analysis': False,
+            'market_compare': True,
+            'pdf_reports': True,
+            'ai_brain': False,
+            'grid_monitoring': False,
+            'land_power': False,
+            'api_key': True,
+            'priority_support': True,
+        }
+    },
+    'enterprise': {
+        'name': 'Enterprise',
+        'price_monthly': 699,
+        'price_annual': 5990,
+        'rate_limit': 100000,
+        'features': {
+            'headline_stats': True,
+            'news_feed': True,
+            'ai_discovery': True,
+            'market_list': True,
+            'facility_search': True,
+            'deal_database': True,
+            'pipeline_tracker': True,
+            'energy_data': True,
+            'connectivity_score': True,
+            'site_analysis': True,
+            'market_compare': True,
+            'pdf_reports': True,
+            'ai_brain': True,
+            'grid_monitoring': True,
+            'land_power': True,
+            'api_key': True,
+            'priority_support': True,
+        }
+    },
+}
+
+
+# ═══════════════════════════════════════════════════════════════
+#  API KEY TABLE
+# ═══════════════════════════════════════════════════════════════
+
+def init_api_keys_table():
+    """Create/migrate the api_keys table with tier support."""
+    conn = get_db()
+    c = conn.cursor()
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS api_keys (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            key_hash TEXT UNIQUE NOT NULL,
+            key_prefix TEXT NOT NULL,
+            user_id TEXT,
+            email TEXT,
+            plan TEXT DEFAULT 'free',
+            name TEXT DEFAULT 'Default',
+            calls_today INTEGER DEFAULT 0,
+            calls_total INTEGER DEFAULT 0,
+            last_used TEXT,
+            last_reset_date TEXT,
+            is_active INTEGER DEFAULT 1,
+            created_at TEXT,
+            expires_at TEXT
+        )
+    """)
+
+    conn.commit()
+    conn.close()
+
+    for col_sql in [
+        "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS plan TEXT DEFAULT 'free'",
+        "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS last_reset_date TEXT",
+    ]:
+        try:
+            mc = get_db()
+            mc.execute(col_sql)
+            mc.commit()
+            mc.close()
+        except:
+            try: mc.close()
+            except: pass
+
+    print("  ✅ api_keys table ready (with tier support)")
+
+
+def generate_api_key(user_id, email, plan='free', name='Default'):
+    """Generate a new API key for a user, return the raw key (only shown once)."""
+    raw_key = f"dchub_{plan[:2]}_{secrets.token_hex(24)}"
+    key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+    key_prefix = raw_key[:16]
+
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO api_keys (key_hash, key_prefix, user_id, email, plan, name, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (key_hash, key_prefix, user_id, email, plan, name, datetime.now(timezone.utc).isoformat()))
+    conn.commit()
+    conn.close()
+
+    return raw_key
+
+
+def validate_api_key(raw_key):
+    """
+    Validate an API key.
+    Returns (valid: bool, key_info: dict or None)
+    """
+    if not raw_key or not raw_key.startswith('dchub_'):
+        return False, None
+
+    key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+
+    conn = get_db()
+    
+    c = conn.cursor()
+    c.execute("""
+        SELECT * FROM api_keys WHERE key_hash = ? AND is_active = 1
+    """, (key_hash,))
+    row = c.fetchone()
+
+    if not row:
+        conn.close()
+        return False, None
+
+    info = dict(row)
+
+    # Reset daily counter if new day
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if info.get('last_reset_date') != today:
+        c.execute("""
+            UPDATE api_keys SET calls_today = 0, last_reset_date = ? WHERE key_hash = ?
+        """, (today, key_hash))
+
+    # Increment usage
+    c.execute("""
+        UPDATE api_keys SET calls_today = calls_today + 1, calls_total = calls_total + 1, last_used = ?
+        WHERE key_hash = ?
+    """, (datetime.now(timezone.utc).isoformat(), key_hash))
+    conn.commit()
+    conn.close()
+
+    # Check daily limit
+    plan = info.get('plan', 'free')
+    limit = TIER_RATE_LIMITS.get(plan, 100)
+    if info.get('calls_today', 0) >= limit:
+        return False, {**info, 'error': 'daily_limit_exceeded', 'limit': limit, 'plan': plan}
+
+    return True, info
+
+
+# ═══════════════════════════════════════════════════════════════
+#  USER PLAN HELPERS
+# ═══════════════════════════════════════════════════════════════
+
+def get_user_plan(user_id=None, email=None):
+    """Get a user's current plan from the database — PostgreSQL first, SQLite fallback."""
+    if not user_id and not email:
+        return 'free'
+
+    row = None
+
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        if user_id:
+            c.execute("SELECT plan, subscription_status, role FROM users WHERE id = %s", (str(user_id),))
+            row = c.fetchone()
+        if not row and email:
+            c.execute("SELECT plan, subscription_status, role FROM users WHERE email = %s", (email,))
+            row = c.fetchone()
+        if not row and user_id and isinstance(user_id, str) and '@' in str(user_id):
+            c.execute("SELECT plan, subscription_status, role FROM users WHERE email = %s", (user_id,))
+            row = c.fetchone()
+        if row:
+            plan_val = row[0] or 'free'
+            status_val = row[1] or ''
+            role_val = row[2] or ''
+            if role_val == 'admin':
+                conn.close()
+                return 'admin'
+            if status_val in ('canceled', 'unpaid'):
+                conn.close()
+                return 'free'
+            conn.close()
+            return plan_val
+        conn.close()
+    except Exception as e:
+        import logging
+        logging.warning(f"get_user_plan PG lookup failed: {e}")
+
+    conn = get_db()
+    
+    c = conn.cursor()
+
+    if user_id:
+        c.execute("SELECT plan, subscription_status, role FROM users WHERE id = ?", (user_id,))
+        row = c.fetchone()
+
+    if not row and email:
+        c.execute("SELECT plan, subscription_status, role FROM users WHERE email = ?", (email,))
+        row = c.fetchone()
+
+    if not row and user_id and isinstance(user_id, str) and '@' in str(user_id):
+        c.execute("SELECT plan, subscription_status, role FROM users WHERE email = ?", (user_id,))
+        row = c.fetchone()
+
+    conn.close()
+
+    if not row:
+        return 'free'
+
+    role = row['role'] or ''
+    if role == 'admin':
+        return 'admin'
+
+    plan = row['plan'] or 'free'
+    status = row['subscription_status'] or ''
+
+    if status in ('canceled', 'unpaid'):
+        return 'free'
+
+    return plan
+
+
+def user_has_access(user_plan, required_plan):
+    """Check if a user's plan meets the required access level."""
+    user_level = PLAN_LEVELS.get(user_plan, 0)
+    required_level = PLAN_LEVELS.get(required_plan, 0)
+    return user_level >= required_level
+
+
+# ═══════════════════════════════════════════════════════════════
+#  DECORATORS
+# ═══════════════════════════════════════════════════════════════
+
+def require_plan(min_plan='pro'):
+    """
+    Decorator that enforces a minimum plan level.
+    Checks web session cookies, JWT Bearer tokens, AND API keys.
+    
+    Usage:
+        @app.route('/api/v1/deals')
+        @require_plan('pro')
+        def get_deals():
+            ...
+    
+    Authentication flow:
+        1. Check for web session cookies (dchub.cloud logged-in users)
+        2. Check for JWT Bearer token in Authorization header
+        3. Check for API key (X-API-Key header or ?api_key= param)
+        4. If neither, return 401 with upgrade prompt
+        5. If found but wrong tier, return 403 with upgrade prompt
+        6. On ANY error, fail closed (503)
+    """
+    def decorator(f):
+        @wraps(f)
+        def decorated(*args, **kwargs):
+            user_plan = 'free'
+            auth_method = None
+
+            try:
+                # ── STEP 0: Check for internal bypass ──────────────────
+                internal_key = request.headers.get('X-Internal-Key', '')
+                if internal_key == 'dchub-internal-sync-2026':
+                    return f(*args, **kwargs)
+                
+                # ── STEP 1: Check web session cookies ──────────────────
+                # dchub.cloud frontend may store JWT in a cookie after
+                # Google OAuth login. Check common cookie names.
+                session_token = (
+                    request.cookies.get('session_token') or
+                    request.cookies.get('dchub_session') or
+                    request.cookies.get('dchub_token') or
+                    request.cookies.get('token')
+                )
+                if session_token:
+                    decode_jwt = _get_decode_jwt()
+                    if decode_jwt:
+                        try:
+                            payload = decode_jwt(session_token)
+                            if payload:
+                                uid = (payload.get('user_id') or
+                                       payload.get('sub') or
+                                       payload.get('email'))
+                                user_plan = get_user_plan(
+                                    user_id=uid,
+                                    email=payload.get('email')
+                                )
+                                auth_method = 'web_session'
+                                request.user = payload
+                                request.user_plan = user_plan
+                        except Exception:
+                            pass  # Fall through to next auth method
+
+                # ── STEP 2: Check JWT Bearer token ─────────────────────
+                if not auth_method:
+                    auth_header = request.headers.get('Authorization')
+                    if auth_header and auth_header.startswith('Bearer '):
+                        decode_jwt = _get_decode_jwt()
+                        if decode_jwt:
+                            token = auth_header.split(' ', 1)[1]
+                            payload = decode_jwt(token)
+                            if payload:
+                                uid = (payload.get('user_id') or
+                                       payload.get('sub') or
+                                       payload.get('email'))
+                                user_plan = get_user_plan(
+                                    user_id=uid,
+                                    email=payload.get('email')
+                                )
+                                auth_method = 'jwt'
+                                request.user = payload
+                                request.user_plan = user_plan
+
+                # ── STEP 3: Check API Key ──────────────────────────────
+                if not auth_method:
+                    api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
+                    if api_key:
+                        valid, info = validate_api_key(api_key)
+                        if not valid:
+                            if info and info.get('error') == 'daily_limit_exceeded':
+                                return jsonify({
+                                    'success': False,
+                                    'error': 'rate_limit_exceeded',
+                                    'message': f"Daily API limit reached ({info['limit']} calls/day on {info['plan']} plan)",
+                                    'upgrade_url': 'https://dchub.cloud/pricing',
+                                    'current_plan': info['plan'],
+                                }), 429
+                            # Check AI Wars verification keys (inline to avoid circular import)
+                            AI_WARS_KEYS_TIER = {
+                                "dchub_chatgpt_2026_verify", "dchub_grok_2026_verify",
+                                "dchub_gemini_2026_verify", "dchub_perplexity_2026_verify",
+                                "dchub_mistral_2026_verify", "dchub_claude_2026_verify",
+                                "dchub_copilot_2026_verify", "dchub_meta_2026_verify",
+                                "dchub_poe_2026_verify", "dchub_openrouter_2026_verify",
+                                "dchub_pi_2026_verify", "dchub_phind_2026_verify",
+                                "dchub_nvidia_2026_verify"
+                            }
+                            _ai_key = request.headers.get('X-API-Key') or request.args.get('api_key') or (request.headers.get('Authorization', '')[7:].strip() if request.headers.get('Authorization', '').startswith('Bearer ') else '')
+                            if _ai_key in AI_WARS_KEYS_TIER:
+                                auth_method = 'api_key'
+                                request.api_key_info = {'plan': 'pro', 'key': _ai_key}
+                                request.user_plan = 'pro'
+
+                            if not auth_method:
+                                return jsonify({
+                                    'success': False,
+                                    'error': 'invalid_api_key',
+                                    'message': 'Invalid or inactive API key',
+                                    'get_key_url': 'https://dchub.cloud/dashboard.html#api-keys',
+                                }), 401
+
+                        user_plan = info.get('plan', 'free')
+                        auth_method = 'api_key'
+                        request.api_key_info = info
+                        request.user_plan = user_plan
+
+                # ── STEP 4: No auth at all ─────────────────────────────
+                if not auth_method:
+                    return jsonify({
+                        'success': False,
+                        'error': 'plan_required',
+                        'message': f'This endpoint requires a {min_plan.title()} plan or higher.',
+                        'plans': {
+                            'free': 'Sign up at https://dchub.cloud/signup for 10 free API calls/day',
+                            'pro': '$199/mo — Full facility DB, deals, pipeline, energy data',
+                            'enterprise': '$699/mo — AI Brain, site analysis, real-time grid monitoring',
+                        },
+                        'signup_url': 'https://dchub.cloud/signup',
+                        'pricing_url': 'https://dchub.cloud/pricing',
+                        'free_alternative': _get_free_alternative(request.path),
+                    }), 403
+
+                # ── STEP 5: Check tier level ───────────────────────────
+                if not user_has_access(user_plan, min_plan):
+                    return jsonify({
+                        'success': False,
+                        'error': 'plan_upgrade_required',
+                        'message': f'This endpoint requires {min_plan.title()} plan. You are on {user_plan.title()}.',
+                        'current_plan': user_plan,
+                        'required_plan': min_plan,
+                        'upgrade_url': 'https://dchub.cloud/pricing',
+                        'free_alternative': _get_free_alternative(request.path),
+                    }), 403
+
+                # ── STEP 6: Authorized — add headers and proceed ───────
+                plan_limit = TIER_RATE_LIMITS.get(user_plan, 100)
+                g.tier_headers = {
+                    'X-RateLimit-Limit': str(plan_limit),
+                    'X-RateLimit-Tier': user_plan,
+                    'X-Auth-Method': auth_method,
+                    'X-Powered-By': 'DC Hub Nexus',
+                }
+
+                return f(*args, **kwargs)
+
+            except Exception as e:
+                # FAIL CLOSED — never leak data on errors
+                import logging
+                logging.getLogger(__name__).error(
+                    f"Tier gating error on {request.path}: {e}"
+                )
+                return jsonify({
+                    'error': 'Authentication service unavailable',
+                    'success': False,
+                }), 503
+
+        return decorated
+    return decorator
+
+
+def _get_free_alternative(path):
+    """Suggest a free endpoint the user can use instead."""
+    alternatives = {
+        '/api/v1/facilities': '/api/v1/stats (aggregate stats, no auth required)',
+        '/api/v1/map': '/api/v1/stats (facility counts by region)',
+        '/api/v1/search': '/api/v1/stats (summary statistics)',
+        '/api/v1/deals': '/api/ai/query?type=stats (aggregate deal count)',
+        '/api/deals': '/api/ai/query?type=stats (aggregate deal count)',
+        '/api/v1/transactions': '/api/ai/query?type=stats (aggregate deal count)',
+        '/api/v1/pipeline': '/api/ai/query?type=stats (capacity pipeline total)',
+        '/api/v1/markets/': '/api/v1/markets/list (market list, free)',
+        '/api/v1/connectivity': '/api/v1/stats (basic connectivity info)',
+        '/api/v1/energy': '/api/grid/supported-isos (ISO list, free)',
+        '/api/brain/': '/api/ai/query?type=stats (basic stats, free)',
+        '/api/reports/generate': '/api/market-report (JSON summary, free)',
+    }
+    for prefix, alt in alternatives.items():
+        if path.startswith(prefix):
+            return alt
+    return '/api/v1/stats (free, no auth required)'
+
+
+# ═══════════════════════════════════════════════════════════════
+#  AFTER-REQUEST: ADD TIER HEADERS
+# ═══════════════════════════════════════════════════════════════
+
+def add_tier_headers(response):
+    """Add rate limit and tier headers to response."""
+    headers = getattr(g, 'tier_headers', None)
+    if headers:
+        for k, v in headers.items():
+            response.headers[k] = v
+    return response
+
+
+# ═══════════════════════════════════════════════════════════════
+#  UPDATED STRIPE INTEGRATION
+# ═══════════════════════════════════════════════════════════════
+
+def register_stripe_v2_routes(app):
+    """Register updated Stripe routes with Enterprise support."""
+
+    @app.route('/api/v2/stripe/config', methods=['GET'])
+    def stripe_config_v2():
+        """Get Stripe config with all tier pricing."""
+        return jsonify({
+            'publishableKey': os.environ.get('STRIPE_PUBLISHABLE_KEY', ''),
+            'configured': bool(os.environ.get('STRIPE_SECRET_KEY')),
+            'plans': PLAN_INFO,
+            'payment_links': {k: v for k, v in PAYMENT_LINKS.items() if v},
+        })
+
+    @app.route('/api/v2/stripe/create-checkout', methods=['POST'])
+    def create_checkout_v2():
+        """Create checkout session — supports Free/Pro/Enterprise."""
+        try:
+            import stripe
+        except ImportError:
+            return jsonify({'error': 'Stripe not available'}), 503
+
+        stripe.api_key = os.environ.get('STRIPE_SECRET_KEY', '')
+        if not stripe.api_key:
+            return jsonify({'error': 'Stripe not configured'}), 503
+
+        data = request.get_json() or {}
+        plan = data.get('plan', 'pro_monthly')
+
+        # Map plan to Stripe price ID
+        price_id = STRIPE_PRICES_V2.get(plan)
+
+        if not price_id or price_id.startswith('price_XXXXX'):
+            # Fall back to payment links
+            link = PAYMENT_LINKS.get(plan)
+            if link:
+                return jsonify({'redirect': True, 'url': link})
+            return jsonify({'error': f'Plan {plan} not configured in Stripe'}), 400
+
+        # Get user email from JWT or request body
+        email = data.get('email', '')
+        auth_header = request.headers.get('Authorization')
+        if auth_header and auth_header.startswith('Bearer '):
+            decode_jwt = _get_decode_jwt()
+            if decode_jwt:
+                token = auth_header.split(' ')[1]
+                payload = decode_jwt(token)
+                if payload:
+                    email = email or payload.get('email', '')
+
+        try:
+            session = stripe.checkout.Session.create(
+                customer_email=email or None,
+                payment_method_types=['card'],
+                line_items=[{'price': price_id, 'quantity': 1}],
+                mode='subscription',
+                success_url=f'https://dchub.cloud/dashboard.html?payment=success&plan={plan}',
+                cancel_url='https://dchub.cloud/pricing?payment=cancelled',
+                metadata={'plan': plan, 'email': email},
+                allow_promotion_codes=True,
+            )
+            return jsonify({'sessionId': session.id, 'url': session.url})
+        except Exception as e:
+            print(f"Stripe checkout error: {e}")
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/v2/stripe/webhook', methods=['POST'])
+    def stripe_webhook_v2():
+        """Handle Stripe webhooks with Enterprise tier mapping."""
+        try:
+            import stripe
+        except ImportError:
+            return jsonify({'error': 'Stripe not available'}), 503
+
+        stripe.api_key = os.environ.get('STRIPE_SECRET_KEY', '')
+        payload = request.get_data(as_text=True)
+        sig_header = request.headers.get('Stripe-Signature')
+        webhook_secret = os.environ.get('STRIPE_WEBHOOK_SECRET', '')
+
+        if webhook_secret:
+            try:
+                event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
+            except Exception as e:
+                return jsonify({'error': str(e)}), 400
+        else:
+            import json
+            event = json.loads(payload)
+
+        event_type = event.get('type', '')
+        data = event.get('data', {}).get('object', {})
+
+        print(f"💳 Stripe v2 webhook: {event_type}")
+
+        if event_type == 'checkout.session.completed':
+            _handle_checkout_v2(data)
+        elif event_type == 'customer.subscription.updated':
+            _handle_sub_updated_v2(data)
+        elif event_type == 'customer.subscription.deleted':
+            _handle_sub_deleted_v2(data)
+
+        return jsonify({'received': True})
+
+    print("  ✅ Stripe v2 routes registered (with Enterprise tier)")
+
+
+def _map_stripe_plan_to_tier(plan_key):
+    """Map Stripe plan metadata to database tier name."""
+    mapping = {
+        'pro_monthly': 'pro',
+        'pro_annual': 'pro',
+        'enterprise_monthly': 'enterprise',
+        'enterprise_annual': 'enterprise',
+        'founding': 'founding',
+    }
+    return mapping.get(plan_key, 'pro')
+
+
+def _handle_checkout_v2(session):
+    """Handle checkout completion — set correct tier."""
+    email = session.get('customer_email', '').lower()
+    metadata = session.get('metadata', {})
+    plan_key = metadata.get('plan', 'pro_monthly')
+    tier = _map_stripe_plan_to_tier(plan_key)
+    customer_id = session.get('customer', '')
+
+    conn = get_db()
+    c = conn.cursor()
+
+    if email:
+        c.execute("""
+            UPDATE users SET plan = ?, stripe_customer_id = ?, subscription_status = 'active'
+            WHERE email = ?
+        """, (tier, customer_id, email))
+
+    conn.commit()
+    conn.close()
+    print(f"✅ User upgraded to {tier}: {email}")
+
+    # Auto-generate API key for Pro/Enterprise users
+    if tier in ('pro', 'enterprise', 'founding'):
+        try:
+            _auto_provision_api_key(email, tier)
+        except Exception as e:
+            print(f"⚠️ Auto-provision API key failed: {e}")
+
+
+def _auto_provision_api_key(email, plan):
+    """Auto-generate an API key when a user subscribes."""
+    conn = get_db()
+    
+    c = conn.cursor()
+
+    # Find user
+    c.execute("SELECT id FROM users WHERE email = ?", (email,))
+    user = c.fetchone()
+    if not user:
+        conn.close()
+        return
+
+    user_id = user['id']
+
+    # Check if they already have a key
+    c.execute("SELECT id FROM api_keys WHERE user_id = ? AND is_active = 1", (user_id,))
+    existing = c.fetchone()
+
+    if existing:
+        # Upgrade existing key's plan
+        c.execute("UPDATE api_keys SET plan = ? WHERE user_id = ? AND is_active = 1", (plan, user_id))
+        conn.commit()
+        conn.close()
+        print(f"  ↑ Upgraded existing API key to {plan} for {email}")
+    else:
+        conn.close()
+        key = generate_api_key(user_id, email, plan, f'{plan.title()} API Key')
+        print(f"  🔑 New {plan} API key generated for {email}: {key[:16]}...")
+
+
+def _handle_sub_updated_v2(subscription):
+    """Handle subscription changes — map price to tier."""
+    customer_id = subscription.get('customer', '')
+    status = subscription.get('status', '')
+
+    # Try to determine the plan from the price
+    items = subscription.get('items', {}).get('data', [])
+    plan = 'pro'  # default
+    for item in items:
+        price_id = item.get('price', {}).get('id', '')
+        for plan_key, stripe_price in STRIPE_PRICES_V2.items():
+            if price_id == stripe_price:
+                plan = _map_stripe_plan_to_tier(plan_key)
+                break
+
+    conn = get_db()
+    c = conn.cursor()
+
+    if status in ('active', 'trialing'):
+        c.execute("""
+            UPDATE users SET plan = ?, subscription_status = ? WHERE stripe_customer_id = ?
+        """, (plan, status, customer_id))
+        # Also upgrade API keys
+        c.execute("SELECT id FROM users WHERE stripe_customer_id = ?", (customer_id,))
+        user = c.fetchone()
+        if user:
+            c.execute("UPDATE api_keys SET plan = ? WHERE user_id = ? AND is_active = 1",
+                      (plan, user[0]))
+    elif status in ('past_due', 'unpaid'):
+        c.execute("UPDATE users SET subscription_status = ? WHERE stripe_customer_id = ?",
+                  (status, customer_id))
+    elif status == 'canceled':
+        c.execute("""
+            UPDATE users SET plan = 'free', subscription_status = 'canceled' 
+            WHERE stripe_customer_id = ?
+        """, (customer_id,))
+        # Downgrade API keys
+        c.execute("SELECT id FROM users WHERE stripe_customer_id = ?", (customer_id,))
+        user = c.fetchone()
+        if user:
+            c.execute("UPDATE api_keys SET plan = 'free' WHERE user_id = ? AND is_active = 1",
+                      (user[0],))
+
+    conn.commit()
+    conn.close()
+    print(f"📝 Subscription updated: customer={customer_id}, status={status}, plan={plan}")
+
+
+def _handle_sub_deleted_v2(subscription):
+    """Handle subscription deletion — downgrade to free."""
+    customer_id = subscription.get('customer', '')
+
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""
+        UPDATE users SET plan = 'free', subscription_status = 'canceled' 
+        WHERE stripe_customer_id = ?
+    """, (customer_id,))
+    # Downgrade API keys
+    c.execute("SELECT id FROM users WHERE stripe_customer_id = ?", (customer_id,))
+    user = c.fetchone()
+    if user:
+        c.execute("UPDATE api_keys SET plan = 'free' WHERE user_id = ? AND is_active = 1",
+                  (user[0],))
+    conn.commit()
+    conn.close()
+    print(f"❌ Subscription canceled: customer={customer_id}")
+
+
+# ═══════════════════════════════════════════════════════════════
+#  API KEY MANAGEMENT ROUTES
+# ═══════════════════════════════════════════════════════════════
+
+def register_api_key_routes(app):
+    """Register API key management endpoints."""
+
+    def _auth_from_jwt():
+        """Extract user payload from JWT Bearer token. Returns (payload, error_response)."""
+        auth_header = request.headers.get('Authorization')
+        if not auth_header or not auth_header.startswith('Bearer '):
+            return None, (jsonify({'error': 'Auth required'}), 401)
+        decode_jwt = _get_decode_jwt()
+        if not decode_jwt:
+            return None, (jsonify({'error': 'Auth system not available'}), 503)
+        token = auth_header.split(' ')[1]
+        payload = decode_jwt(token)
+        if not payload:
+            return None, (jsonify({'error': 'Invalid or expired token'}), 401)
+        return payload, None
+
+    @app.route('/api/v2/keys', methods=['GET'])
+    def list_api_keys():
+        """List user's API keys (requires auth)."""
+        payload, err = _auth_from_jwt()
+        if err:
+            return err
+
+        user_id = payload.get('user_id')
+        conn = get_db()
+        
+        c = conn.cursor()
+        c.execute("""
+            SELECT id, key_prefix, plan, name, calls_today, calls_total, last_used, is_active, created_at
+            FROM api_keys WHERE user_id = ?
+            ORDER BY created_at DESC
+        """, (user_id,))
+        keys = [dict(r) for r in c.fetchall()]
+        conn.close()
+
+        return jsonify({'success': True, 'keys': keys})
+
+    @app.route('/api/v2/keys', methods=['POST'])
+    def create_api_key():
+        """Generate a new API key (requires auth, plan determines tier)."""
+        payload, err = _auth_from_jwt()
+        if err:
+            return err
+
+        user_id = payload.get('user_id')
+        email = payload.get('email', '')
+        plan = get_user_plan(user_id=user_id)
+
+        data = request.get_json() or {}
+        name = data.get('name', 'API Key')
+
+        # Limit: 3 keys for free, 10 for pro, 25 for enterprise
+        limits = {'free': 3, 'founding': 10, 'pro': 10, 'enterprise': 25}
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM api_keys WHERE user_id = ? AND is_active = 1", (user_id,))
+        count = c.fetchone()[0]
+        conn.close()
+
+        if count >= limits.get(plan, 3):
+            return jsonify({
+                'error': f'Key limit reached ({limits.get(plan, 3)} keys on {plan} plan)',
+                'upgrade_url': 'https://dchub.cloud/pricing',
+            }), 403
+
+        raw_key = generate_api_key(user_id, email, plan, name)
+
+        return jsonify({
+            'success': True,
+            'key': raw_key,
+            'plan': plan,
+            'rate_limit': TIER_RATE_LIMITS.get(plan, 100),
+            'warning': 'Save this key now — it will not be shown again.',
+        })
+
+    @app.route('/api/v2/keys/<int:key_id>', methods=['DELETE'])
+    def revoke_api_key(key_id):
+        """Revoke an API key."""
+        payload, err = _auth_from_jwt()
+        if err:
+            return err
+
+        user_id = payload.get('user_id')
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("UPDATE api_keys SET is_active = 0 WHERE id = ? AND user_id = ?", (key_id, user_id))
+        conn.commit()
+        affected = c.rowcount
+        conn.close()
+
+        if affected:
+            return jsonify({'success': True, 'message': 'API key revoked'})
+        return jsonify({'error': 'Key not found'}), 404
+
+    @app.route('/api/v2/usage', methods=['GET'])
+    def get_api_usage():
+        """Get API usage stats for current user."""
+        payload, err = _auth_from_jwt()
+        if err:
+            return err
+
+        user_id = payload.get('user_id')
+        plan = get_user_plan(user_id=user_id)
+
+        conn = get_db()
+        
+        c = conn.cursor()
+        c.execute("""
+            SELECT SUM(calls_today) as today, SUM(calls_total) as total
+            FROM api_keys WHERE user_id = ? AND is_active = 1
+        """, (user_id,))
+        usage = dict(c.fetchone())
+        conn.close()
+
+        limit = TIER_RATE_LIMITS.get(plan, 100)
+
+        return jsonify({
+            'success': True,
+            'plan': plan,
+            'calls_today': usage.get('today') or 0,
+            'calls_total': usage.get('total') or 0,
+            'daily_limit': limit,
+            'remaining_today': max(0, limit - (usage.get('today') or 0)),
+            'usage_pct': round(((usage.get('today') or 0) / limit) * 100, 1) if limit else 0,
+        })
+
+    @app.route('/api/v2/plans', methods=['GET'])
+    def get_plans():
+        """Get all available plans with features and pricing."""
+        return jsonify({
+            'success': True,
+            'plans': PLAN_INFO,
+            'payment_links': {k: v for k, v in PAYMENT_LINKS.items() if v},
+        })
+
+    print("  ✅ API Key management routes registered")
+
+
+# ═══════════════════════════════════════════════════════════════
+#  SHARED DECODE_JWT REFERENCE (set at init time, avoids circular import)
+# ═══════════════════════════════════════════════════════════════
+
+_decode_jwt_fn = None  # Set by init_tier_gating()
+
+def _get_decode_jwt():
+    """Get the decode_jwt function (passed in at init to avoid circular import)."""
+    global _decode_jwt_fn
+    if _decode_jwt_fn:
+        return _decode_jwt_fn
+    # Fallback: try lazy import (works if file is literally named main.py and importable)
+    try:
+        import main
+        return main.decode_jwt
+    except:
+        return None
+
+
+# ═══════════════════════════════════════════════════════════════
+#  INITIALIZATION
+# ═══════════════════════════════════════════════════════════════
+
+def init_tier_gating(app, decode_jwt_func=None):
+    """
+    Initialize the full tier gating system.
+    Call this after creating your Flask app.
+    
+    Usage in main.py:
+        from api_tier_gating import init_tier_gating, require_plan
+        init_tier_gating(app, decode_jwt_func=decode_jwt)
+    """
+    global _decode_jwt_fn
+
+    print("\n🔐 Initializing API Tier Gating...")
+
+    # Store decode_jwt reference to avoid circular imports
+    if decode_jwt_func:
+        _decode_jwt_fn = decode_jwt_func
+        print("  ✅ JWT decoder linked (no circular import)")
+
+    # 1. Create tables
+    init_api_keys_table()
+
+    # 2. Register after_request handler for tier headers
+    app.after_request(add_tier_headers)
+
+    # 3. Register Stripe v2 routes
+    register_stripe_v2_routes(app)
+
+    # 4. Register API key management routes
+    register_api_key_routes(app)
+
+    # 5. Add plan migration for users table
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        conn.close()
+    except:
+        pass
+
+    print("🔐 Tier Gating: Ready")
+    print(f"   Free:       {TIER_RATE_LIMITS['free']:,} calls/day")
+    print(f"   Pro:        {TIER_RATE_LIMITS['pro']:,} calls/day")
+    print(f"   Enterprise: {TIER_RATE_LIMITS['enterprise']:,} calls/day")
+    print("   Decorators: @require_plan('pro'), @require_plan('enterprise')")
+    print()

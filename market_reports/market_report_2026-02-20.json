@@ -1,0 +1,154 @@
+{
+  "report_date": "2026-02-20",
+  "generated_at": "2026-02-20T06:20:50.682350",
+  "summary": {
+    "total_facilities": 11009,
+    "total_providers": 3932,
+    "countries_covered": 170,
+    "total_power_mw": 26291.0,
+    "total_deals": 473,
+    "total_deal_value_usd": 1583055100.0
+  },
+  "market_highlights": [
+    "DC Hub tracks 11,009 data center facilities globally",
+    "Coverage spans 170 countries with 3932 providers",
+    "Combined capacity: 26,291 MW",
+    "M&A database: 473 transactions worth $1.6B+"
+  ],
+  "recent_deals": [
+    {
+      "buyer": "PGIM",
+      "seller": "site for",
+      "value_usd": 1200000000.0,
+      "type": "ma",
+      "date": null
+    },
+    {
+      "buyer": "GeoPark to",
+      "seller": "Fronterra Energy",
+      "value_usd": 375000000.0,
+      "type": "ma",
+      "date": null
+    },
+    {
+      "buyer": "CyrusOne",
+      "seller": "Constellation",
+      "value_usd": 0.0,
+      "type": "jv",
+      "date": "2026-02-12"
+    },
+    {
+      "buyer": "Blackstone",
+      "seller": "Coatue",
+      "value_usd": 0.0,
+      "type": "debt",
+      "date": "2026-02-12"
+    },
+    {
+      "buyer": "Open Access Data Centres",
+      "seller": "NTT",
+      "value_usd": 0.0,
+      "type": "ma",
+      "date": "2026-02-12"
+    },
+    {
+      "buyer": "Constellation",
+      "seller": "Constellation Energy",
+      "value_usd": 0.0,
+      "type": "equity",
+      "date": "2026-02-12"
+    },
+    {
+      "buyer": "Ares",
+      "seller": "Vantage Data Centers",
+      "value_usd": 2400.0,
+      "type": "debt",
+      "date": "2026-02-12"
+    },
+    {
+      "buyer": "Blue Owl",
+      "seller": "Stack",
+      "value_usd": 2100.0,
+      "type": "debt",
+      "date": "2026-02-12"
+    },
+    {
+      "buyer": "Blackstone",
+      "seller": "Coatue",
+      "value_usd": 10000.0,
+      "type": "debt",
+      "date": "2026-02-10"
+    },
+    {
+      "buyer": "Nvidia",
+      "seller": "Blackstone",
+      "value_usd": 10000.0,
+      "type": "debt",
+      "date": "2026-02-09"
+    }
+  ],
+  "recent_news": [
+    {
+      "title": "Tech Data Appointed Primary Distributor of Equinix in India",
+      "source": "Bisinfotech",
+      "date": "2026-02-20T05:56:43"
+    },
+    {
+      "title": "Vantage Data Centers Appoints Alicia Ruckteschler as Chief Procurement Officer",
+      "source": "The National Law Review",
+      "date": "2026-02-20T05:25:55"
+    },
+    {
+      "title": "Op-Ed: Make AI data centers bear the cost of power grid pressure",
+      "source": "NJ Spotlight News",
+      "date": "2026-02-20T05:18:19"
+    },
+    {
+      "title": "India\u2019s top telco tackles AI with $110 billion build plan and proven fast market dominance playbook",
+      "source": "The Register DC",
+      "date": "2026-02-20T03:11:08"
+    },
+    {
+      "title": "'A Big F*ck You to Big Tech': New Jersey Residents Defeat AI Data Center",
+      "source": "Common Dreams",
+      "date": "2026-02-20T00:27:19"
+    },
+    {
+      "title": "Big Tech is building its own \u2018power grid\u2019 to help fuel data centers desperately needed for AI",
+      "source": "The Independent",
+      "date": "2026-02-20T00:15:00"
+    },
+    {
+      "title": "CRH CEO on Their AI, Data Center Strategy",
+      "source": "Bloomberg Tech",
+      "date": "2026-02-19T23:13:33"
+    },
+    {
+      "title": "Fiber Seen as Critical Infrastructure for AI-Driven Data Center Expansion",
+      "source": "Broadband Breakfast",
+      "date": "2026-02-19T22:48:33"
+    },
+    {
+      "title": "New bill would ban nondisclosure agreements for new Wisconsin data centers",
+      "source": "WPR",
+      "date": "2026-02-19T22:37:24"
+    },
+    {
+      "title": "Aurora considers new data center regulations around noise, water and power",
+      "source": "Chicago Tribune",
+      "date": "2026-02-19T22:31:15"
+    }
+  ],
+  "data_sources": [
+    "PeeringDB",
+    "OpenStreetMap",
+    "SEC EDGAR",
+    "Wikidata",
+    "60+ RSS Feeds",
+    "EIA Energy API",
+    "Grid Status API",
+    "FCC Broadband API",
+    "EPA Envirofacts"
+  ],
+  "citation": "According to DC Hub Nexus (dchub.cloud)"
+}

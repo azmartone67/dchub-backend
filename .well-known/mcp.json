@@ -1,0 +1,84 @@
+{
+  "name": "dc-hub-nexus",
+  "version": "2.0.0",
+  "protocol_version": "2025-11-25",
+  "description": "Data center intelligence platform with 10,400+ facilities, M&A deal tracking, capacity pipeline, and infrastructure mapping worldwide",
+  "mcp_server": "/mcp/manifest",
+  "api_base": "https://dchub.cloud",
+  "tools": [
+    {
+      "name": "search_facilities",
+      "description": "Search data center facilities by location, operator, or capacity. Returns facility details including name, coordinates, power capacity, and provider.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {"type": "string", "description": "Search query - city, state, country, or operator name"},
+          "limit": {"type": "integer", "description": "Max results (default 10)", "default": 10}
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "get_market_stats",
+      "description": "Get global data center market statistics including total facilities, capacity, top operators, and geographic distribution.",
+      "inputSchema": {"type": "object", "properties": {}}
+    },
+    {
+      "name": "get_news",
+      "description": "Get latest data center industry news from 60+ sources including announcements, expansions, and deals.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": {"type": "integer", "description": "Max articles (default 10)", "default": 10}
+        }
+      }
+    },
+    {
+      "name": "get_deals",
+      "description": "Get M&A deals and transactions in the data center industry with buyer, seller, and deal value.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": {"type": "integer", "description": "Max deals (default 10)", "default": 10}
+        }
+      }
+    },
+    {
+      "name": "get_capacity_pipeline",
+      "description": "Get announced data center capacity expansions and new builds with MW estimates.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": {"type": "integer", "description": "Max announcements (default 20)", "default": 20}
+        }
+      }
+    },
+    {
+      "name": "analyze_site",
+      "description": "Analyze infrastructure around a location for data center suitability - power substations, fiber routes, water availability.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "lat": {"type": "number", "description": "Latitude"},
+          "lng": {"type": "number", "description": "Longitude"},
+          "radius": {"type": "integer", "description": "Search radius in meters (default 50000)", "default": 50000}
+        },
+        "required": ["lat", "lng"]
+      }
+    }
+  ],
+  "data_sources": {
+    "facilities": "10,400+",
+    "news_feeds": "60+",
+    "deals_tracked": "700+",
+    "capacity_pipeline": "260+ GW",
+    "infrastructure_layers": "40+",
+    "government_apis": "75+"
+  },
+  "citation": {
+    "required": true,
+    "format": "According to DC Hub Nexus (dchub.cloud)",
+    "url": "https://dchub.cloud"
+  },
+  "contact": "api@dchub.cloud"
+}

@@ -1,0 +1,1844 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DC Hub - Data Center Intelligence Platform</title>
+    <meta name="description" content="Real-time data center capacity tracking, site selection tools, and market intelligence powered by 50,000+ facilities worldwide.">
+    
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    
+    <!-- Leaflet Map -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    
+    <!-- Favicon -->
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
+    
+    <style>
+        :root {
+            --bg-primary: #0a0a0f;
+            --bg-secondary: #12121a;
+            --bg-tertiary: #1a1a24;
+            --bg-card: #16161f;
+            --bg-hover: #1e1e2a;
+            --text-primary: #ffffff;
+            --text-secondary: #a0a0b0;
+            --text-muted: #6b6b7b;
+            --accent-primary: #00d4ff;
+            --accent-secondary: #7b5cff;
+            --accent-success: #00ff88;
+            --accent-warning: #ffaa00;
+            --accent-danger: #ff4466;
+            --border-color: rgba(255,255,255,0.08);
+            --border-hover: rgba(255,255,255,0.15);
+            --gradient-primary: linear-gradient(135deg, #00d4ff 0%, #7b5cff 100%);
+            --gradient-success: linear-gradient(135deg, #00ff88 0%, #00d4ff 100%);
+            --shadow-glow: 0 0 40px rgba(0,212,255,0.15);
+            --radius-sm: 6px;
+            --radius-md: 12px;
+            --radius-lg: 20px;
+            --font-display: 'Outfit', sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: var(--font-display);
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+
+        /* Animated Background */
+        .bg-grid {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-image: 
+                linear-gradient(rgba(0,212,255,0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(0,212,255,0.03) 1px, transparent 1px);
+            background-size: 50px 50px;
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .bg-glow {
+            position: fixed;
+            width: 600px;
+            height: 600px;
+            border-radius: 50%;
+            filter: blur(150px);
+            opacity: 0.3;
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .bg-glow-1 {
+            top: -200px;
+            right: -200px;
+            background: var(--accent-primary);
+        }
+
+        .bg-glow-2 {
+            bottom: -200px;
+            left: -200px;
+            background: var(--accent-secondary);
+        }
+
+        /* Header */
+        header {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 1000;
+            background: rgba(10,10,15,0.85);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .header-inner {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 0 24px;
+            height: 70px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            text-decoration: none;
+        }
+
+        .logo-icon {
+            font-size: 1.8rem;
+        }
+
+        nav {
+            display: flex;
+            gap: 32px;
+        }
+
+        nav a {
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-size: 0.9rem;
+            font-weight: 500;
+            transition: color 0.2s;
+        }
+
+        nav a:hover {
+            color: var(--accent-primary);
+        }
+
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .api-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 14px;
+            background: rgba(0,255,136,0.1);
+            border: 1px solid rgba(0,255,136,0.3);
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-family: var(--font-mono);
+            color: var(--accent-success);
+        }
+
+        .api-status-dot {
+            width: 8px;
+            height: 8px;
+            background: var(--accent-success);
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        /* Main Content */
+        main {
+            position: relative;
+            z-index: 1;
+            padding-top: 70px;
+        }
+
+        /* Hero Section */
+        .hero {
+            padding: 80px 24px 60px;
+            text-align: center;
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+
+        .hero h1 {
+            font-size: clamp(2.5rem, 5vw, 4rem);
+            font-weight: 800;
+            line-height: 1.1;
+            margin-bottom: 20px;
+            background: var(--gradient-primary);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .hero p {
+            font-size: 1.2rem;
+            color: var(--text-secondary);
+            max-width: 600px;
+            margin: 0 auto 30px;
+        }
+
+        /* Live Stats Bar */
+        .live-stats {
+            display: flex;
+            justify-content: center;
+            gap: 40px;
+            flex-wrap: wrap;
+            margin-bottom: 40px;
+        }
+
+        .live-stat {
+            text-align: center;
+        }
+
+        .live-stat-value {
+            font-size: 2.5rem;
+            font-weight: 700;
+            font-family: var(--font-mono);
+            background: var(--gradient-primary);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .live-stat-value.loading {
+            background: var(--text-muted);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            animation: shimmer 1.5s infinite;
+        }
+
+        @keyframes shimmer {
+            0%, 100% { opacity: 0.5; }
+            50% { opacity: 1; }
+        }
+
+        .live-stat-label {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        /* Search Section */
+        .search-section {
+            max-width: 800px;
+            margin: 0 auto 60px;
+            padding: 0 24px;
+        }
+
+        .search-container {
+            position: relative;
+        }
+
+        .search-input {
+            width: 100%;
+            padding: 18px 24px 18px 50px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-lg);
+            color: var(--text-primary);
+            font-size: 1.1rem;
+            font-family: var(--font-display);
+            outline: none;
+            transition: all 0.3s;
+        }
+
+        .search-input:focus {
+            border-color: var(--accent-primary);
+            box-shadow: var(--shadow-glow);
+        }
+
+        .search-input::placeholder {
+            color: var(--text-muted);
+        }
+
+        .search-icon {
+            position: absolute;
+            left: 18px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: var(--text-muted);
+            font-size: 1.2rem;
+        }
+
+        .search-results {
+            position: absolute;
+            top: calc(100% + 8px);
+            left: 0;
+            right: 0;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            max-height: 400px;
+            overflow-y: auto;
+            display: none;
+            z-index: 100;
+        }
+
+        .search-results.active {
+            display: block;
+        }
+
+        .search-result-item {
+            padding: 14px 20px;
+            border-bottom: 1px solid var(--border-color);
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .search-result-item:hover {
+            background: var(--bg-hover);
+        }
+
+        .search-result-item:last-child {
+            border-bottom: none;
+        }
+
+        .search-result-name {
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .search-result-meta {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            display: flex;
+            gap: 16px;
+        }
+
+        /* Map Section */
+        .map-section {
+            padding: 0 24px 60px;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+        }
+
+        .section-title {
+            font-size: 1.5rem;
+            font-weight: 700;
+        }
+
+        .map-controls {
+            display: flex;
+            gap: 8px;
+        }
+
+        .map-control-btn {
+            padding: 8px 16px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .map-control-btn:hover,
+        .map-control-btn.active {
+            background: var(--accent-primary);
+            color: var(--bg-primary);
+            border-color: var(--accent-primary);
+        }
+
+        .map-container {
+            height: 500px;
+            border-radius: var(--radius-lg);
+            overflow: hidden;
+            border: 1px solid var(--border-color);
+        }
+
+        #map {
+            height: 100%;
+            width: 100%;
+            background: var(--bg-secondary);
+        }
+
+        /* Facilities Grid */
+        .facilities-section {
+            padding: 60px 24px;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .facilities-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+            gap: 20px;
+        }
+
+        .facility-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            padding: 24px;
+            transition: all 0.3s;
+        }
+
+        .facility-card:hover {
+            border-color: var(--accent-primary);
+            transform: translateY(-4px);
+            box-shadow: var(--shadow-glow);
+        }
+
+        .facility-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 16px;
+        }
+
+        .facility-name {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .facility-provider {
+            font-size: 0.85rem;
+            color: var(--accent-primary);
+        }
+
+        .facility-badge {
+            padding: 4px 10px;
+            background: rgba(0,255,136,0.1);
+            color: var(--accent-success);
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            border-radius: 4px;
+        }
+
+        .facility-badge.construction {
+            background: rgba(255,170,0,0.1);
+            color: var(--accent-warning);
+        }
+
+        .facility-stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+            margin-bottom: 16px;
+        }
+
+        .facility-stat {
+            text-align: center;
+        }
+
+        .facility-stat-value {
+            font-size: 1.2rem;
+            font-weight: 700;
+            font-family: var(--font-mono);
+            color: var(--text-primary);
+        }
+
+        .facility-stat-label {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+        }
+
+        .facility-location {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+        }
+
+        /* Announcements Section */
+        .announcements-section {
+            padding: 60px 24px;
+            max-width: 1400px;
+            margin: 0 auto;
+            background: var(--bg-secondary);
+            border-radius: var(--radius-lg);
+        }
+
+        .announcements-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+            gap: 20px;
+        }
+
+        .announcement-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            padding: 24px;
+            transition: all 0.3s;
+        }
+
+        .announcement-card:hover {
+            border-color: var(--accent-secondary);
+        }
+
+        .announcement-type {
+            display: inline-block;
+            padding: 4px 10px;
+            background: rgba(123,92,255,0.1);
+            color: var(--accent-secondary);
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            border-radius: 4px;
+            margin-bottom: 12px;
+        }
+
+        .announcement-type.new_build {
+            background: rgba(0,255,136,0.1);
+            color: var(--accent-success);
+        }
+
+        .announcement-type.expansion {
+            background: rgba(0,212,255,0.1);
+            color: var(--accent-primary);
+        }
+
+        .announcement-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 8px;
+            line-height: 1.4;
+        }
+
+        .announcement-summary {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            margin-bottom: 16px;
+            line-height: 1.6;
+        }
+
+        .announcement-meta {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+
+        .announcement-companies {
+            display: flex;
+            gap: 8px;
+        }
+
+        .company-tag {
+            padding: 2px 8px;
+            background: var(--bg-hover);
+            border-radius: 4px;
+        }
+
+        /* Stats Dashboard */
+        .stats-section {
+            padding: 60px 24px;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 40px;
+        }
+
+        .stat-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            padding: 24px;
+            text-align: center;
+        }
+
+        .stat-card-icon {
+            font-size: 2rem;
+            margin-bottom: 12px;
+        }
+
+        .stat-card-value {
+            font-size: 2rem;
+            font-weight: 700;
+            font-family: var(--font-mono);
+            margin-bottom: 4px;
+        }
+
+        .stat-card-label {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+        }
+
+        /* Charts */
+        .charts-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 24px;
+        }
+
+        .chart-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            padding: 24px;
+        }
+
+        .chart-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 20px;
+        }
+
+        .chart-bars {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .chart-bar-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .chart-bar-label {
+            width: 100px;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            text-align: right;
+        }
+
+        .chart-bar-container {
+            flex: 1;
+            height: 24px;
+            background: var(--bg-hover);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .chart-bar {
+            height: 100%;
+            background: var(--gradient-primary);
+            border-radius: 4px;
+            transition: width 1s ease-out;
+        }
+
+        .chart-bar-value {
+            width: 60px;
+            font-size: 0.85rem;
+            font-family: var(--font-mono);
+            color: var(--text-primary);
+        }
+
+        /* API Section */
+        .api-section {
+            padding: 60px 24px;
+            max-width: 1000px;
+            margin: 0 auto;
+            text-align: center;
+        }
+
+        .api-section h2 {
+            font-size: 2rem;
+            margin-bottom: 16px;
+        }
+
+        .api-section p {
+            color: var(--text-secondary);
+            margin-bottom: 32px;
+        }
+
+        .api-demo {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            text-align: left;
+            overflow: hidden;
+        }
+
+        .api-demo-header {
+            padding: 12px 20px;
+            background: var(--bg-tertiary);
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .api-demo-method {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .method-badge {
+            padding: 4px 10px;
+            background: rgba(0,255,136,0.2);
+            color: var(--accent-success);
+            font-size: 0.75rem;
+            font-weight: 600;
+            border-radius: 4px;
+            font-family: var(--font-mono);
+        }
+
+        .api-demo-url {
+            font-family: var(--font-mono);
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+        }
+
+        .api-demo-body {
+            padding: 20px;
+        }
+
+        .api-demo pre {
+            background: var(--bg-primary);
+            padding: 16px;
+            border-radius: var(--radius-sm);
+            overflow-x: auto;
+            font-family: var(--font-mono);
+            font-size: 0.85rem;
+            line-height: 1.6;
+        }
+
+        .api-demo code {
+            color: var(--text-secondary);
+        }
+
+        .api-demo .json-key {
+            color: var(--accent-primary);
+        }
+
+        .api-demo .json-value {
+            color: var(--accent-success);
+        }
+
+        .api-demo .json-number {
+            color: var(--accent-warning);
+        }
+
+        .api-buttons {
+            display: flex;
+            justify-content: center;
+            gap: 16px;
+            margin-top: 32px;
+        }
+
+        .btn {
+            padding: 14px 28px;
+            border-radius: var(--radius-md);
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .btn-primary {
+            background: var(--gradient-primary);
+            color: var(--bg-primary);
+            border: none;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-glow);
+        }
+
+        .btn-secondary {
+            background: transparent;
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+        }
+
+        .btn-secondary:hover {
+            border-color: var(--accent-primary);
+            color: var(--accent-primary);
+        }
+
+        /* Footer */
+        footer {
+            background: var(--bg-secondary);
+            border-top: 1px solid var(--border-color);
+            padding: 60px 24px 30px;
+            margin-top: 80px;
+        }
+
+        .footer-inner {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .footer-grid {
+            display: grid;
+            grid-template-columns: 2fr repeat(3, 1fr);
+            gap: 48px;
+            margin-bottom: 48px;
+        }
+
+        .footer-brand h3 {
+            font-size: 1.3rem;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .footer-brand p {
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            line-height: 1.7;
+        }
+
+        .footer-links h4 {
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-muted);
+            margin-bottom: 16px;
+        }
+
+        .footer-links ul {
+            list-style: none;
+        }
+
+        .footer-links li {
+            margin-bottom: 10px;
+        }
+
+        .footer-links a {
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-size: 0.9rem;
+            transition: color 0.2s;
+        }
+
+        .footer-links a:hover {
+            color: var(--accent-primary);
+        }
+
+        .footer-bottom {
+            padding-top: 24px;
+            border-top: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.85rem;
+            color: var(--text-muted);
+        }
+
+        /* Loading States */
+        .skeleton {
+            background: linear-gradient(90deg, var(--bg-tertiary) 25%, var(--bg-hover) 50%, var(--bg-tertiary) 75%);
+            background-size: 200% 100%;
+            animation: skeleton-loading 1.5s infinite;
+            border-radius: var(--radius-sm);
+        }
+
+        @keyframes skeleton-loading {
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+        }
+
+        .skeleton-text {
+            height: 16px;
+            margin-bottom: 8px;
+        }
+
+        .skeleton-text.short {
+            width: 60%;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            nav {
+                display: none;
+            }
+
+            .live-stats {
+                gap: 24px;
+            }
+
+            .live-stat-value {
+                font-size: 1.8rem;
+            }
+
+            .facilities-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .announcements-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .footer-grid {
+                grid-template-columns: 1fr;
+                gap: 32px;
+            }
+        }
+
+        /* Notification Toast */
+        .toast {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            padding: 16px 24px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+            transform: translateY(100px);
+            opacity: 0;
+            transition: all 0.3s;
+            z-index: 2000;
+        }
+
+        .toast.show {
+            transform: translateY(0);
+            opacity: 1;
+        }
+
+        .toast-icon {
+            font-size: 1.5rem;
+        }
+
+        .toast-content h4 {
+            font-size: 0.9rem;
+            margin-bottom: 2px;
+        }
+
+        .toast-content p {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+    </style>
+<script src="/static/js/api-config.js"></script>
+</head>
+<body>
+    <!-- Background Effects -->
+    <div class="bg-grid"></div>
+    <div class="bg-glow bg-glow-1"></div>
+    <div class="bg-glow bg-glow-2"></div>
+
+    <!-- Header -->
+    <header>
+        <div class="header-inner">
+            <a href="#" class="logo">
+                <span class="logo-icon">⚡</span>
+                <span>DC Hub</span>
+            </a>
+            <nav>
+                <a href="#map">Map</a>
+                <a href="#facilities">Facilities</a>
+                <a href="#announcements">News</a>
+                <a href="#stats">Analytics</a>
+                <a href="#api">API</a>
+            </nav>
+            <div class="header-right">
+                <div class="api-status" id="apiStatus">
+                    <span class="api-status-dot"></span>
+                    <span>API CONNECTED</span>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <!-- Hero -->
+        <section class="hero">
+            <h1>Data Center Intelligence</h1>
+            <p>Real-time capacity tracking, site selection, and market intelligence powered by live API data from 50,000+ facilities worldwide.</p>
+            
+            <div class="live-stats">
+                <div class="live-stat">
+                    <div class="live-stat-value loading" id="statFacilities">--</div>
+                    <div class="live-stat-label">Facilities</div>
+                </div>
+                <div class="live-stat">
+                    <div class="live-stat-value loading" id="statPower">--</div>
+                    <div class="live-stat-label">Total MW</div>
+                </div>
+                <div class="live-stat">
+                    <div class="live-stat-value loading" id="statCountries">--</div>
+                    <div class="live-stat-label">Countries</div>
+                </div>
+                <div class="live-stat">
+                    <div class="live-stat-value loading" id="statAnnouncements">--</div>
+                    <div class="live-stat-label">Announcements</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Search -->
+        <section class="search-section">
+            <div class="search-container">
+                <span class="search-icon">🔍</span>
+                <input type="text" class="search-input" id="searchInput" placeholder="Search facilities by name, provider, city, or country...">
+                <div class="search-results" id="searchResults"></div>
+            </div>
+        </section>
+
+        <!-- Map -->
+        <section class="map-section" id="map-section">
+            <div class="section-header">
+                <h2 class="section-title">🗺️ Live Facility Map</h2>
+                <div class="map-controls">
+                    <button class="map-control-btn active" data-filter="all">All</button>
+                    <button class="map-control-btn" data-filter="active">Active</button>
+                    <button class="map-control-btn" data-filter="construction">Construction</button>
+                </div>
+            </div>
+            <div class="map-container">
+                <div id="map"></div>
+            </div>
+        </section>
+
+        <!-- Facilities Grid -->
+        <section class="facilities-section" id="facilities">
+            <div class="section-header">
+                <h2 class="section-title">🏢 Latest Facilities</h2>
+                <button class="btn btn-secondary" onclick="loadMoreFacilities()">Load More</button>
+            </div>
+            <div class="facilities-grid" id="facilitiesGrid">
+                <!-- Populated by JavaScript -->
+            </div>
+        </section>
+
+        <!-- Announcements -->
+        <section class="announcements-section" id="announcements">
+            <div class="section-header">
+                <h2 class="section-title">📰 Market Announcements</h2>
+            </div>
+            <div class="announcements-grid" id="announcementsGrid">
+                <!-- Populated by JavaScript -->
+            </div>
+        </section>
+
+        <!-- Stats Dashboard -->
+        <section class="stats-section" id="stats">
+            <div class="section-header">
+                <h2 class="section-title">📊 Analytics Dashboard</h2>
+            </div>
+            
+            <div class="stats-grid" id="statsGrid">
+                <!-- Populated by JavaScript -->
+            </div>
+
+            <div class="charts-grid">
+                <div class="chart-card">
+                    <h3 class="chart-title">Top Countries by Facilities</h3>
+                    <div class="chart-bars" id="countryChart">
+                        <!-- Populated by JavaScript -->
+                    </div>
+                </div>
+                <div class="chart-card">
+                    <h3 class="chart-title">Top Providers</h3>
+                    <div class="chart-bars" id="providerChart">
+                        <!-- Populated by JavaScript -->
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- API Section -->
+        <section class="api-section" id="api">
+            <h2>🔌 Developer API</h2>
+            <p>Access real-time data center intelligence via our REST API. Free tier includes 100 requests/day.</p>
+            
+            <div class="api-demo">
+                <div class="api-demo-header">
+                    <div class="api-demo-method">
+                        <span class="method-badge">GET</span>
+                        <span class="api-demo-url">/api/v1/facilities?country=USA&limit=10</span>
+                    </div>
+                </div>
+                <div class="api-demo-body">
+                    <pre><code id="apiResponse">{
+  <span class="json-key">"success"</span>: <span class="json-value">true</span>,
+  <span class="json-key">"data"</span>: [
+    {
+      <span class="json-key">"id"</span>: <span class="json-value">"abc123"</span>,
+      <span class="json-key">"name"</span>: <span class="json-value">"Equinix DC15"</span>,
+      <span class="json-key">"provider"</span>: <span class="json-value">"Equinix"</span>,
+      <span class="json-key">"city"</span>: <span class="json-value">"Ashburn"</span>,
+      <span class="json-key">"country"</span>: <span class="json-value">"USA"</span>,
+      <span class="json-key">"power_mw"</span>: <span class="json-number">42.5</span>
+    }
+  ],
+  <span class="json-key">"pagination"</span>: {
+    <span class="json-key">"total"</span>: <span class="json-number">15234</span>,
+    <span class="json-key">"page"</span>: <span class="json-number">1</span>
+  }
+}</code></pre>
+                </div>
+            </div>
+
+            <div class="api-buttons">
+                <a href="#" class="btn btn-primary" onclick="showApiKeyModal()">
+                    🔑 Get API Key
+                </a>
+                <a href="#" class="btn btn-secondary">
+                    📖 Documentation
+                </a>
+            </div>
+        </section>
+    </main>
+
+    <!-- Footer -->
+    <footer>
+        <div class="footer-inner">
+            <div class="footer-grid">
+                <div class="footer-brand">
+                    <h3>⚡ DC Hub</h3>
+                    <p>The comprehensive data center intelligence platform. Real-time capacity tracking, site selection tools, and market intelligence powered by our global discovery network.</p>
+                </div>
+                <div class="footer-links">
+                    <h4>Platform</h4>
+                    <ul>
+                        <li><a href="#map">Live Map</a></li>
+                        <li><a href="#facilities">Facilities</a></li>
+                        <li><a href="#announcements">News</a></li>
+                        <li><a href="#stats">Analytics</a></li>
+                    </ul>
+                </div>
+                <div class="footer-links">
+                    <h4>Developers</h4>
+                    <ul>
+                        <li><a href="#api">API Access</a></li>
+                        <li><a href="#">Documentation</a></li>
+                        <li><a href="#">Webhooks</a></li>
+                        <li><a href="#">Status</a></li>
+                    </ul>
+                </div>
+                <div class="footer-links">
+                    <h4>Company</h4>
+                    <ul>
+                        <li><a href="#">About</a></li>
+                        <li><a href="mailto:jonathan@dchub.cloud">Contact</a></li>
+                        <li><a href="#">Partnerships</a></li>
+                        <li><a href="#">Careers</a></li>
+                    </ul>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <span>© 2025 DC Hub. All rights reserved.</span>
+                <span id="lastUpdate">Last API sync: --</span>
+            </div>
+        </div>
+    </footer>
+
+    <!-- Toast Notification -->
+    <div class="toast" id="toast">
+        <span class="toast-icon">✅</span>
+        <div class="toast-content">
+            <h4 id="toastTitle">Success</h4>
+            <p id="toastMessage">Operation completed</p>
+        </div>
+    </div>
+
+    <script>
+        // =============================================================================
+        // DC HUB NEXUS API CLIENT
+        // =============================================================================
+        
+        const DCHub = {
+            // API Configuration
+            config: {
+                // For development/demo, use local or Replit URL
+                // For production, point to your deployed API
+                baseUrl: window.DCHUB_API_BASE || '',
+                apiKey: null,
+                timeout: 10000,
+                retryAttempts: 3,
+                cacheTimeout: 60000 // 1 minute cache
+            },
+            
+            // Cache for API responses
+            cache: new Map(),
+            
+            // State
+            state: {
+                facilities: [],
+                announcements: [],
+                stats: null,
+                map: null,
+                markers: [],
+                currentPage: 1,
+                isLoading: false
+            },
+
+            // =================================================================
+            // CORE API METHODS
+            // =================================================================
+            
+            async fetch(endpoint, options = {}) {
+                const url = `${this.config.baseUrl}${endpoint}`;
+                const cacheKey = url + JSON.stringify(options);
+                
+                // Check cache
+                const cached = this.cache.get(cacheKey);
+                if (cached && Date.now() - cached.timestamp < this.config.cacheTimeout) {
+                    return cached.data;
+                }
+                
+                const headers = {
+                    'Content-Type': 'application/json',
+                };
+                
+                if (this.config.apiKey) {
+                    headers['X-API-Key'] = this.config.apiKey;
+                }
+                
+                try {
+                    const response = await fetch(url, {
+                        ...options,
+                        headers: { ...headers, ...options.headers }
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`API Error: ${response.status}`);
+                    }
+                    
+                    const data = await response.json();
+                    
+                    // Cache successful response
+                    this.cache.set(cacheKey, {
+                        data,
+                        timestamp: Date.now()
+                    });
+                    
+                    return data;
+                } catch (error) {
+                    console.error('API fetch error:', error);
+                    // Return demo data if API unavailable
+                    return this.getDemoData(endpoint);
+                }
+            },
+
+            // =================================================================
+            // API ENDPOINTS
+            // =================================================================
+            
+            async getStats() {
+                return this.fetch('/api/v1/stats');
+            },
+            
+            async getFacilities(params = {}) {
+                const query = new URLSearchParams(params).toString();
+                return this.fetch(`/api/v1/facilities?${query}`);
+            },
+            
+            async searchFacilities(query) {
+                return this.fetch(`/api/v1/search?q=${encodeURIComponent(query)}&limit=20`);
+            },
+            
+            async getAnnouncements(params = {}) {
+                const query = new URLSearchParams(params).toString();
+                return this.fetch(`/api/v1/announcements?${query}`);
+            },
+            
+            async submitFacility(data) {
+                return this.fetch('/api/v1/facilities', {
+                    method: 'POST',
+                    body: JSON.stringify(data)
+                });
+            },
+
+            // =================================================================
+            // DEMO DATA (Fallback when API unavailable)
+            // =================================================================
+            
+            getDemoData(endpoint) {
+                console.log('⚠️ Using demo data for:', endpoint);
+                
+                const demoFacilities = [
+                    { id: '1', name: 'Equinix DC15', provider: 'Equinix', city: 'Ashburn', state: 'VA', country: 'USA', latitude: 39.0438, longitude: -77.4874, power_mw: 42.5, status: 'active', source: 'PeeringDB' },
+                    { id: '2', name: 'Digital Realty IAD01', provider: 'Digital Realty', city: 'Ashburn', state: 'VA', country: 'USA', latitude: 39.0335, longitude: -77.4838, power_mw: 65.0, status: 'active', source: 'PeeringDB' },
+                    { id: '3', name: 'CyrusOne Chandler', provider: 'CyrusOne', city: 'Phoenix', state: 'AZ', country: 'USA', latitude: 33.3062, longitude: -111.8413, power_mw: 55.0, status: 'active', source: 'DatacenterHawk' },
+                    { id: '4', name: 'QTS Dallas Fort Worth', provider: 'QTS', city: 'Dallas', state: 'TX', country: 'USA', latitude: 32.8998, longitude: -97.0403, power_mw: 80.0, status: 'construction', source: 'ProviderWebsites' },
+                    { id: '5', name: 'CoreSite LA2', provider: 'CoreSite', city: 'Los Angeles', state: 'CA', country: 'USA', latitude: 34.0522, longitude: -118.2437, power_mw: 28.0, status: 'active', source: 'PeeringDB' },
+                    { id: '6', name: 'Vantage Santa Clara', provider: 'Vantage', city: 'Santa Clara', state: 'CA', country: 'USA', latitude: 37.3541, longitude: -121.9552, power_mw: 48.0, status: 'active', source: 'Cloudscene' },
+                    { id: '7', name: 'EdgeConneX Atlanta', provider: 'EdgeConneX', city: 'Atlanta', state: 'GA', country: 'USA', latitude: 33.7490, longitude: -84.3880, power_mw: 35.0, status: 'active', source: 'PeeringDB' },
+                    { id: '8', name: 'Switch Las Vegas', provider: 'Switch', city: 'Las Vegas', state: 'NV', country: 'USA', latitude: 36.0544, longitude: -115.1532, power_mw: 120.0, status: 'active', source: 'ProviderWebsites' },
+                    { id: '9', name: 'Interxion Frankfurt', provider: 'Interxion', city: 'Frankfurt', state: '', country: 'Germany', latitude: 50.1109, longitude: 8.6821, power_mw: 45.0, status: 'active', source: 'PeeringDB' },
+                    { id: '10', name: 'Equinix London LD8', provider: 'Equinix', city: 'London', state: '', country: 'UK', latitude: 51.5074, longitude: -0.1278, power_mw: 38.0, status: 'active', source: 'PeeringDB' },
+                    { id: '11', name: 'NTT Singapore', provider: 'NTT', city: 'Singapore', state: '', country: 'Singapore', latitude: 1.3521, longitude: 103.8198, power_mw: 52.0, status: 'active', source: 'Cloudscene' },
+                    { id: '12', name: 'Google Taiwan', provider: 'Google', city: 'Taipei', state: '', country: 'Taiwan', latitude: 25.0330, longitude: 121.5654, power_mw: 100.0, status: 'construction', source: 'RSS-News' },
+                ];
+                
+                const demoAnnouncements = [
+                    { id: 'a1', title: 'Microsoft Announces $10B Data Center Investment in Phoenix', summary: 'Microsoft will build a new hyperscale campus with 500MW of capacity to support AI workloads.', announcement_type: 'new_build', companies: ['Microsoft'], locations: ['Phoenix'], power_mw: 500, published_date: '2025-01-15', source: 'Data Center Frontier' },
+                    { id: 'a2', title: 'Equinix Expands Ashburn Campus with DC16', summary: 'New 48MW facility to address continued cloud demand in Northern Virginia market.', announcement_type: 'expansion', companies: ['Equinix'], locations: ['Ashburn'], power_mw: 48, published_date: '2025-01-14', source: 'Data Center Knowledge' },
+                    { id: 'a3', title: 'Digital Realty Acquires European Portfolio for $2.3B', summary: 'Transaction includes 15 facilities across Frankfurt, Amsterdam, and Dublin.', announcement_type: 'acquisition', companies: ['Digital Realty'], locations: ['Frankfurt', 'Amsterdam', 'Dublin'], investment_usd: 2300000000, published_date: '2025-01-12', source: 'Reuters' },
+                    { id: 'a4', title: 'AWS Breaks Ground on Oregon Expansion', summary: 'Fourth phase of development adds 200MW to existing campus infrastructure.', announcement_type: 'new_build', companies: ['AWS', 'Amazon'], locations: ['Oregon'], power_mw: 200, published_date: '2025-01-10', source: 'Data Center Dynamics' },
+                ];
+
+                const demoStats = {
+                    total_facilities: 15234,
+                    total_power_mw: 42567.5,
+                    total_announcements: 892,
+                    by_source: { 'PeeringDB': 5102, 'OpenStreetMap': 4234, 'Cloudscene': 2890, 'DatacenterHawk': 1508, 'ProviderWebsites': 1500 },
+                    top_countries: { 'USA': 4521, 'Germany': 892, 'UK': 756, 'Netherlands': 623, 'Japan': 512, 'Singapore': 445, 'France': 398, 'Australia': 312 },
+                    top_providers: { 'Equinix': 245, 'Digital Realty': 198, 'NTT': 156, 'CyrusOne': 89, 'QTS': 78, 'CoreSite': 67, 'Vantage': 54 },
+                    by_status: { 'active': 14102, 'construction': 892, 'planned': 240 },
+                    new_last_7_days: 127
+                };
+
+                // Mark all responses as demo data
+                if (endpoint.includes('/stats')) {
+                    return { success: true, data: demoStats, _fromDemo: true };
+                } else if (endpoint.includes('/facilities')) {
+                    return { success: true, data: demoFacilities, pagination: { total: 15234, page: 1, pages: 762 }, _fromDemo: true };
+                } else if (endpoint.includes('/search')) {
+                    return { success: true, data: demoFacilities.slice(0, 5), count: 5, _fromDemo: true };
+                } else if (endpoint.includes('/announcements')) {
+                    return { success: true, data: demoAnnouncements, _fromDemo: true };
+                }
+                
+                return { success: false, error: 'Unknown endpoint', _fromDemo: true };
+            },
+
+            // =================================================================
+            // UI RENDERING
+            // =================================================================
+            
+            renderStats(stats) {
+                // Update hero stats
+                document.getElementById('statFacilities').textContent = stats.total_facilities.toLocaleString();
+                document.getElementById('statFacilities').classList.remove('loading');
+                
+                document.getElementById('statPower').textContent = Math.round(stats.total_power_mw).toLocaleString();
+                document.getElementById('statPower').classList.remove('loading');
+                
+                document.getElementById('statCountries').textContent = Object.keys(stats.top_countries || {}).length;
+                document.getElementById('statCountries').classList.remove('loading');
+                
+                document.getElementById('statAnnouncements').textContent = stats.total_announcements.toLocaleString();
+                document.getElementById('statAnnouncements').classList.remove('loading');
+                
+                // Render stat cards
+                const statsGrid = document.getElementById('statsGrid');
+                statsGrid.innerHTML = `
+                    <div class="stat-card">
+                        <div class="stat-card-icon">🏢</div>
+                        <div class="stat-card-value">${stats.total_facilities.toLocaleString()}</div>
+                        <div class="stat-card-label">Total Facilities</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-card-icon">⚡</div>
+                        <div class="stat-card-value">${Math.round(stats.total_power_mw).toLocaleString()}</div>
+                        <div class="stat-card-label">Total MW</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-card-icon">🌍</div>
+                        <div class="stat-card-value">${Object.keys(stats.top_countries || {}).length}</div>
+                        <div class="stat-card-label">Countries</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-card-icon">🆕</div>
+                        <div class="stat-card-value">${stats.new_last_7_days || 0}</div>
+                        <div class="stat-card-label">New This Week</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-card-icon">📰</div>
+                        <div class="stat-card-value">${stats.total_announcements}</div>
+                        <div class="stat-card-label">Announcements</div>
+                    </div>
+                `;
+                
+                // Render country chart
+                this.renderBarChart('countryChart', stats.top_countries || {});
+                
+                // Render provider chart
+                this.renderBarChart('providerChart', stats.top_providers || {});
+            },
+            
+            renderBarChart(containerId, data) {
+                const container = document.getElementById(containerId);
+                const entries = Object.entries(data).slice(0, 6);
+                const maxValue = Math.max(...entries.map(([, v]) => v));
+                
+                container.innerHTML = entries.map(([label, value]) => `
+                    <div class="chart-bar-row">
+                        <div class="chart-bar-label">${label}</div>
+                        <div class="chart-bar-container">
+                            <div class="chart-bar" style="width: ${(value / maxValue * 100)}%"></div>
+                        </div>
+                        <div class="chart-bar-value">${value.toLocaleString()}</div>
+                    </div>
+                `).join('');
+            },
+            
+            renderFacilities(facilities) {
+                const grid = document.getElementById('facilitiesGrid');
+                
+                const html = facilities.map(f => `
+                    <div class="facility-card" data-id="${f.id}">
+                        <div class="facility-header">
+                            <div>
+                                <div class="facility-name">${f.name}</div>
+                                <div class="facility-provider">${f.provider || 'Unknown Provider'}</div>
+                            </div>
+                            <span class="facility-badge ${f.status === 'construction' ? 'construction' : ''}">${f.status}</span>
+                        </div>
+                        <div class="facility-stats">
+                            <div class="facility-stat">
+                                <div class="facility-stat-value">${f.power_mw || '--'}</div>
+                                <div class="facility-stat-label">MW</div>
+                            </div>
+                            <div class="facility-stat">
+                                <div class="facility-stat-value">${f.source || '--'}</div>
+                                <div class="facility-stat-label">Source</div>
+                            </div>
+                            <div class="facility-stat">
+                                <div class="facility-stat-value">${Math.round((f.confidence || 0.8) * 100)}%</div>
+                                <div class="facility-stat-label">Confidence</div>
+                            </div>
+                        </div>
+                        <div class="facility-location">
+                            📍 ${[f.city, f.state, f.country].filter(Boolean).join(', ')}
+                        </div>
+                    </div>
+                `).join('');
+                
+                grid.innerHTML = html;
+            },
+            
+            renderAnnouncements(announcements) {
+                const grid = document.getElementById('announcementsGrid');
+                
+                const html = announcements.map(a => `
+                    <div class="announcement-card">
+                        <span class="announcement-type ${a.announcement_type}">${a.announcement_type?.replace('_', ' ') || 'news'}</span>
+                        <h3 class="announcement-title">${a.title}</h3>
+                        <p class="announcement-summary">${a.summary || ''}</p>
+                        <div class="announcement-meta">
+                            <div class="announcement-companies">
+                                ${(a.companies || []).map(c => `<span class="company-tag">${c}</span>`).join('')}
+                            </div>
+                            <span>${a.published_date || ''}</span>
+                        </div>
+                    </div>
+                `).join('');
+                
+                grid.innerHTML = html;
+            },
+            
+            renderSearchResults(results) {
+                const container = document.getElementById('searchResults');
+                
+                if (!results || results.length === 0) {
+                    container.innerHTML = '<div class="search-result-item">No results found</div>';
+                    container.classList.add('active');
+                    return;
+                }
+                
+                const html = results.map(f => `
+                    <div class="search-result-item" onclick="DCHub.focusFacility('${f.id}', ${f.latitude}, ${f.longitude})">
+                        <div class="search-result-name">${f.name}</div>
+                        <div class="search-result-meta">
+                            <span>${f.provider || ''}</span>
+                            <span>📍 ${[f.city, f.country].filter(Boolean).join(', ')}</span>
+                            ${f.power_mw ? `<span>⚡ ${f.power_mw} MW</span>` : ''}
+                        </div>
+                    </div>
+                `).join('');
+                
+                container.innerHTML = html;
+                container.classList.add('active');
+            },
+
+            // =================================================================
+            // MAP
+            // =================================================================
+            
+            initMap() {
+                // Initialize Leaflet map
+                this.state.map = L.map('map', {
+                    center: [39.8283, -98.5795], // US center
+                    zoom: 4,
+                    zoomControl: true
+                });
+                
+                // Dark tile layer
+                L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+                    attribution: '© OpenStreetMap © CARTO',
+                    maxZoom: 19
+                }).addTo(this.state.map);
+            },
+            
+            addFacilitiesToMap(facilities) {
+                // Clear existing markers
+                this.state.markers.forEach(m => this.state.map.removeLayer(m));
+                this.state.markers = [];
+                
+                // Add new markers
+                facilities.forEach(f => {
+                    if (f.latitude && f.longitude) {
+                        const color = f.status === 'construction' ? '#ffaa00' : '#00d4ff';
+                        
+                        const marker = L.circleMarker([f.latitude, f.longitude], {
+                            radius: Math.min(12, 5 + (f.power_mw || 0) / 20),
+                            fillColor: color,
+                            color: color,
+                            weight: 2,
+                            opacity: 0.8,
+                            fillOpacity: 0.4
+                        });
+                        
+                        marker.bindPopup(`
+                            <div style="min-width: 200px;">
+                                <strong style="font-size: 14px;">${f.name}</strong><br>
+                                <span style="color: #00d4ff;">${f.provider || ''}</span><br>
+                                <hr style="border-color: rgba(255,255,255,0.1); margin: 8px 0;">
+                                📍 ${[f.city, f.state, f.country].filter(Boolean).join(', ')}<br>
+                                ${f.power_mw ? `⚡ ${f.power_mw} MW` : ''}<br>
+                                📊 Source: ${f.source || 'Unknown'}
+                            </div>
+                        `, {
+                            className: 'dark-popup'
+                        });
+                        
+                        marker.addTo(this.state.map);
+                        this.state.markers.push(marker);
+                    }
+                });
+            },
+            
+            focusFacility(id, lat, lng) {
+                document.getElementById('searchResults').classList.remove('active');
+                if (lat && lng) {
+                    this.state.map.flyTo([lat, lng], 12);
+                }
+            },
+
+            // =================================================================
+            // INITIALIZATION
+            // =================================================================
+            
+            async init() {
+                console.log('🚀 DC Hub Nexus initializing...');
+                
+                // Initialize map
+                this.initMap();
+                
+                // Load data and check if API is live
+                const isLive = await this.loadAllData();
+                
+                // Update API status indicator
+                this.updateApiStatus(isLive);
+                
+                // Set up search
+                this.setupSearch();
+                
+                // Set up map controls
+                this.setupMapControls();
+                
+                // Set up facility submission form
+                this.setupFacilityForm();
+                
+                // Update timestamp
+                document.getElementById('lastUpdate').textContent = `Last sync: ${new Date().toLocaleTimeString()}`;
+                
+                // Show appropriate toast
+                if (isLive) {
+                    this.showToast('Connected', 'Live API connected - Real data loaded');
+                } else {
+                    this.showToast('Demo Mode', 'Showing sample data - Deploy backend for live data');
+                }
+                
+                // Start auto-refresh (every 60 seconds)
+                this.startAutoRefresh();
+                
+                console.log('✅ DC Hub Nexus ready!');
+            },
+            
+            // =================================================================
+            // AUTO-REFRESH SYSTEM
+            // =================================================================
+            
+            startAutoRefresh() {
+                // Refresh announcements and stats every 60 seconds
+                setInterval(async () => {
+                    console.log('🔄 Auto-refreshing data...');
+                    
+                    try {
+                        // Update stats
+                        const statsRes = await this.getStats();
+                        if (statsRes.success && statsRes.data) {
+                            this.renderStats(statsRes.data);
+                        }
+                        
+                        // Update announcements
+                        const annRes = await this.getAnnouncements({ limit: 10 });
+                        if (annRes.success && annRes.data) {
+                            this.renderAnnouncements(annRes.data);
+                        }
+                        
+                        // Update timestamp
+                        document.getElementById('lastUpdate').textContent = 
+                            `Last sync: ${new Date().toLocaleTimeString()}`;
+                        
+                    } catch (error) {
+                        console.warn('Auto-refresh failed:', error);
+                    }
+                }, 60000); // 60 seconds
+                
+                console.log('⏰ Auto-refresh started (60s interval)');
+            },
+            
+            // =================================================================
+            // API STATUS INDICATOR
+            // =================================================================
+            
+            updateApiStatus(isLive) {
+                const statusEl = document.querySelector('.api-status');
+                if (!statusEl) return;
+                
+                if (isLive) {
+                    statusEl.innerHTML = `
+                        <span class="api-status-dot"></span>
+                        LIVE DATA CONNECTED
+                    `;
+                    statusEl.style.borderColor = 'rgba(0,255,136,0.3)';
+                    statusEl.style.background = 'rgba(0,255,136,0.1)';
+                } else {
+                    statusEl.innerHTML = `
+                        <span class="api-status-dot" style="background:#ffaa00; animation:pulse 1s infinite;"></span>
+                        DEMO MODE
+                    `;
+                    statusEl.style.borderColor = 'rgba(255,170,0,0.3)';
+                    statusEl.style.background = 'rgba(255,170,0,0.1)';
+                    statusEl.style.color = '#ffaa00';
+                }
+            },
+            
+            // =================================================================
+            // FACILITY SUBMISSION FORM
+            // =================================================================
+            
+            setupFacilityForm() {
+                const form = document.querySelector('form');
+                if (!form) return;
+                
+                form.addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    
+                    const formData = new FormData(e.target);
+                    const data = {
+                        name: formData.get('facility-name'),
+                        provider: formData.get('provider'),
+                        city: formData.get('city'),
+                        state: formData.get('state'),
+                        country: formData.get('country'),
+                        power_mw: parseFloat(formData.get('power')) || 0,
+                        status: formData.get('status') || 'active',
+                        tier: parseInt(formData.get('tier')) || 0,
+                        address: formData.get('address'),
+                        submitter_email: formData.get('email'),
+                        submitter_name: formData.get('name'),
+                        notes: formData.get('notes')
+                    };
+                    
+                    try {
+                        const result = await this.submitFacility(data);
+                        
+                        if (result.success) {
+                            this.showToast('Success! ✅', 'Facility submitted for review');
+                            e.target.reset();
+                        } else {
+                            this.showToast('Submitted', 'Saved locally - will sync when API connected');
+                            // Store locally for later sync
+                            const pending = JSON.parse(localStorage.getItem('pendingSubmissions') || '[]');
+                            pending.push({ ...data, submitted_at: new Date().toISOString() });
+                            localStorage.setItem('pendingSubmissions', JSON.stringify(pending));
+                            e.target.reset();
+                        }
+                    } catch (error) {
+                        console.error('Submission error:', error);
+                        this.showToast('Error', 'Submission failed - please try again');
+                    }
+                });
+            },
+            
+            async loadAllData() {
+                let isLiveData = false;
+                
+                try {
+                    // Load stats
+                    const statsRes = await this.getStats();
+                    if (statsRes.success) {
+                        this.state.stats = statsRes.data;
+                        this.renderStats(statsRes.data);
+                        // Check if we got real data (real API returns different structure)
+                        if (statsRes.data.total_facilities > 0 && statsRes.data.by_source) {
+                            isLiveData = !statsRes._fromDemo;
+                        }
+                    }
+                    
+                    // Load facilities
+                    const facilitiesRes = await this.getFacilities({ limit: 50 });
+                    if (facilitiesRes.success) {
+                        this.state.facilities = facilitiesRes.data;
+                        this.renderFacilities(facilitiesRes.data);
+                        this.addFacilitiesToMap(facilitiesRes.data);
+                    }
+                    
+                    // Load announcements
+                    const announcementsRes = await this.getAnnouncements({ limit: 10 });
+                    if (announcementsRes.success) {
+                        this.state.announcements = announcementsRes.data;
+                        this.renderAnnouncements(announcementsRes.data);
+                    }
+                    
+                    return isLiveData;
+                } catch (error) {
+                    console.error('Error loading data:', error);
+                    return false;
+                }
+            },
+            
+            setupSearch() {
+                const input = document.getElementById('searchInput');
+                const results = document.getElementById('searchResults');
+                let debounceTimer;
+                
+                input.addEventListener('input', (e) => {
+                    clearTimeout(debounceTimer);
+                    const query = e.target.value.trim();
+                    
+                    if (query.length < 2) {
+                        results.classList.remove('active');
+                        return;
+                    }
+                    
+                    debounceTimer = setTimeout(async () => {
+                        const res = await this.searchFacilities(query);
+                        if (res.success) {
+                            this.renderSearchResults(res.data);
+                        }
+                    }, 300);
+                });
+                
+                // Close results on outside click
+                document.addEventListener('click', (e) => {
+                    if (!e.target.closest('.search-container')) {
+                        results.classList.remove('active');
+                    }
+                });
+            },
+            
+            setupMapControls() {
+                document.querySelectorAll('.map-control-btn').forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        document.querySelectorAll('.map-control-btn').forEach(b => b.classList.remove('active'));
+                        e.target.classList.add('active');
+                        
+                        const filter = e.target.dataset.filter;
+                        let filtered = this.state.facilities;
+                        
+                        if (filter !== 'all') {
+                            filtered = this.state.facilities.filter(f => f.status === filter);
+                        }
+                        
+                        this.addFacilitiesToMap(filtered);
+                    });
+                });
+            },
+            
+            showToast(title, message) {
+                const toast = document.getElementById('toast');
+                document.getElementById('toastTitle').textContent = title;
+                document.getElementById('toastMessage').textContent = message;
+                toast.classList.add('show');
+                
+                setTimeout(() => {
+                    toast.classList.remove('show');
+                }, 3000);
+            }
+        };
+
+        // Global functions
+        function loadMoreFacilities() {
+            DCHub.state.currentPage++;
+            DCHub.showToast('Loading', 'Fetching more facilities...');
+        }
+
+        function showApiKeyModal() {
+            alert('API Key Registration\n\nEmail: api@dchub.cloud\n\nFree tier: 100 requests/day\nPro tier: 10,000 requests/day ($99/mo)\nEnterprise: Unlimited ($499/mo)');
+        }
+
+        // Initialize on DOM ready
+        document.addEventListener('DOMContentLoaded', () => {
+            DCHub.init();
+        });
+
+        // Add dark popup styles for Leaflet
+        const style = document.createElement('style');
+        style.textContent = `
+            .dark-popup .leaflet-popup-content-wrapper {
+                background: rgba(22, 22, 31, 0.95);
+                color: #fff;
+                border: 1px solid rgba(255,255,255,0.1);
+                border-radius: 8px;
+            }
+            .dark-popup .leaflet-popup-tip {
+                background: rgba(22, 22, 31, 0.95);
+            }
+            .dark-popup .leaflet-popup-close-button {
+                color: #fff;
+            }
+        `;
+        document.head.appendChild(style);
+    </script>
+</body>
+</html>
+        

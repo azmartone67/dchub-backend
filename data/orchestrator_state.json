@@ -1,0 +1,111 @@
+{
+  "market_pulse": {
+    "sentiment": "neutral",
+    "sentiment_score": 0.5,
+    "bullish_signals": 0,
+    "bearish_signals": 0,
+    "trending_operators": [],
+    "trending_markets": [],
+    "hot_deals": [],
+    "capacity_pipeline_mw": 0,
+    "capacity_momentum": "slow",
+    "last_analysis": "2026-02-10T08:01:05.377136"
+  },
+  "predictions": {
+    "next_deals": [
+      {
+        "buyer": "Digital Realty Trust",
+        "target": "Regional colocation provider",
+        "confidence": 0.6,
+        "rationale": "Market consolidation continues despite neutral sentiment, large REITs seeking geographic expansion"
+      },
+      {
+        "buyer": "Equinix",
+        "target": "Edge computing specialist",
+        "confidence": 0.55,
+        "rationale": "Edge infrastructure demand driving strategic acquisitions to expand metropolitan presence"
+      },
+      {
+        "buyer": "Private equity consortium",
+        "target": "Mid-tier hyperscale facility",
+        "confidence": 0.5,
+        "rationale": "Neutral market conditions create opportunities for financial buyers to acquire undervalued assets"
+      }
+    ],
+    "capacity_forecast": [
+      {
+        "market": "Northern Virginia",
+        "expected_mw_growth": 850,
+        "rationale": "Established hyperscale hub with consistent cloud provider demand"
+      },
+      {
+        "market": "Phoenix",
+        "expected_mw_growth": 650,
+        "rationale": "Cost-effective expansion market for major cloud providers"
+      },
+      {
+        "market": "Dallas",
+        "expected_mw_growth": 500,
+        "rationale": "Central US connectivity hub attracting enterprise workloads"
+      },
+      {
+        "market": "Atlanta",
+        "expected_mw_growth": 425,
+        "rationale": "Southeast regional gateway with strong fiber infrastructure"
+      },
+      {
+        "market": "Chicago",
+        "expected_mw_growth": 380,
+        "rationale": "Midwest hub benefiting from edge computing deployments"
+      }
+    ],
+    "emerging_hotspots": [
+      {
+        "name": "Columbus, Ohio",
+        "why": "Low-cost power, central location, and growing tech sector creating demand inflection point",
+        "confidence": 0.65
+      },
+      {
+        "name": "Salt Lake City",
+        "why": "Mountain West expansion target with favorable business climate and renewable energy access",
+        "confidence": 0.6
+      },
+      {
+        "name": "Nashville",
+        "why": "Southeast secondary market with improving connectivity and enterprise growth",
+        "confidence": 0.55
+      }
+    ],
+    "risk_alerts": [
+      {
+        "issue": "Power grid constraints and utility approval delays",
+        "affected_markets": [
+          "Northern Virginia",
+          "Phoenix",
+          "Dallas"
+        ],
+        "severity": 7
+      },
+      {
+        "issue": "Interest rate volatility impacting development financing",
+        "affected_markets": [
+          "All markets"
+        ],
+        "severity": 6
+      }
+    ],
+    "ai_generated": true,
+    "confidence_overall": 0.75,
+    "last_updated": "2026-02-10T08:01:17.010610"
+  },
+  "stats": {
+    "orchestrations": 704,
+    "predictions_made": 704,
+    "opportunities_found": 1152,
+    "alerts_generated": 562,
+    "patterns_shared": 0,
+    "ai_calls": 663,
+    "last_run": "2026-02-10T08:07:47.556978"
+  },
+  "saved_at": "2026-02-10T08:07:47.557159"
+}

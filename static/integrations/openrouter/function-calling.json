@@ -1,0 +1,107 @@
+{
+  "platform": "openrouter",
+  "description": "DC Hub tool declarations for OpenRouter model routing",
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "search_facilities",
+        "description": "Search DC Hub's database of 10,706+ data center facilities across 140+ countries.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "q": {"type": "string", "description": "Search query — operator name, city, or market"},
+            "country": {"type": "string", "description": "ISO 3166-1 alpha-2 country code"},
+            "market": {"type": "string", "description": "Market name (e.g., Northern Virginia, Dallas-Fort Worth)"},
+            "limit": {"type": "integer", "description": "Max results (default: 10, max: 100)"}
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_facility",
+        "description": "Get detailed profile for a single data center facility.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "facility_id": {"type": "string", "description": "DC Hub facility ID"}
+          },
+          "required": ["facility_id"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_market_data",
+        "description": "Get market intelligence — vacancy rates, pricing, inventory, capacity under construction.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "market": {"type": "string", "description": "Market name"}
+          },
+          "required": ["market"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "search_deals",
+        "description": "Search M&A transactions from DC Hub's $185B+ deal database.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "limit": {"type": "integer", "description": "Number of results"},
+            "buyer": {"type": "string", "description": "Filter by buyer"},
+            "seller": {"type": "string", "description": "Filter by seller"}
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_news",
+        "description": "Get latest data center industry news from 40+ sources.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "limit": {"type": "integer", "description": "Number of articles (default: 5)"},
+            "topic": {"type": "string", "description": "Filter by topic"}
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "analyze_site",
+        "description": "Score a geographic location for data center suitability.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "latitude": {"type": "number", "description": "Latitude coordinate"},
+            "longitude": {"type": "number", "description": "Longitude coordinate"}
+          },
+          "required": ["latitude", "longitude"]
+        }
+      }
+    }
+  ],
+  "api_config": {
+    "base_url": "https://dchub.cloud/api",
+    "auth_header": "X-API-Key",
+    "auth_value": "dchub_openrouter_2026_verify",
+    "endpoint_mapping": {
+      "search_facilities": "/agent/facilities",
+      "get_facility": "/agent/facilities/{facility_id}",
+      "get_market_data": "/v1/markets/list",
+      "search_deals": "/transactions",
+      "get_news": "/news",
+      "analyze_site": "/v1/analyze-site"
+    }
+  }
+}

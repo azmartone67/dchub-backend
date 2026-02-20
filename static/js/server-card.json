@@ -1,0 +1,48 @@
+{
+  "name": "DC Hub Nexus",
+  "description": "Data Center Intelligence Platform – Access 50,000+ global data center facilities, real-time market intelligence, M&A transactions, news, and infrastructure data via MCP.",
+  "version": "1.26.0",
+  "transport": {
+    "type": "streamable-http",
+    "url": "https://dchub.cloud/mcp"
+  },
+  "capabilities": {
+    "tools": true,
+    "resources": true,
+    "prompts": true
+  },
+  "tools": [
+    {
+      "name": "search_facilities",
+      "description": "Search 50,000+ global data center facilities by location, provider, or keyword."
+    },
+    {
+      "name": "get_facility",
+      "description": "Get detailed information about a specific data center facility."
+    },
+    {
+      "name": "list_transactions",
+      "description": "List data center M&A transactions with deal values and details."
+    },
+    {
+      "name": "get_market_intel",
+      "description": "Get data center market intelligence and statistics."
+    },
+    {
+      "name": "get_news",
+      "description": "Get latest data center industry news aggregated from 40+ sources."
+    },
+    {
+      "name": "analyze_site",
+      "description": "Evaluate a location for data center suitability using DC Hub's scoring engine."
+    }
+  ],
+  "authentication": {
+    "type": "none",
+    "note": "Free tier requires no authentication. API keys optional for higher rate limits."
+  },
+  "contact": {
+    "name": "DC Hub",
+    "url": "https://dchub.cloud"
+  }
+}

@@ -1,0 +1,154 @@
+{
+  "report_date": "2026-02-04",
+  "generated_at": "2026-02-04T21:11:49.695844",
+  "summary": {
+    "total_facilities": 9611,
+    "total_providers": 3804,
+    "countries_covered": 178,
+    "total_power_mw": 11785.0,
+    "total_deals": 1115,
+    "total_deal_value_usd": 174014790662.02
+  },
+  "market_highlights": [
+    "DC Hub tracks 9,611 data center facilities globally",
+    "Coverage spans 178 countries with 3804 providers",
+    "Combined capacity: 11,785 MW",
+    "M&A database: 1115 transactions worth $174.0B+"
+  ],
+  "recent_deals": [
+    {
+      "buyer": "TBD",
+      "seller": "TBD",
+      "value_usd": 5100.0,
+      "type": "ma",
+      "date": "2026-02-04"
+    },
+    {
+      "buyer": "TBD",
+      "seller": "TBD",
+      "value_usd": 11000.0,
+      "type": "ma",
+      "date": "2026-02-04"
+    },
+    {
+      "buyer": "TBD",
+      "seller": "TBD",
+      "value_usd": 1000.0,
+      "type": "equity",
+      "date": "2026-02-04"
+    },
+    {
+      "buyer": "TBD",
+      "seller": "TBD",
+      "value_usd": 150.0,
+      "type": "ma",
+      "date": "2026-02-04"
+    },
+    {
+      "buyer": "SoftBank",
+      "seller": "OpenAI",
+      "value_usd": 30000.0,
+      "type": "equity",
+      "date": "2026-02-04"
+    },
+    {
+      "buyer": "Amazon",
+      "seller": "Amazon",
+      "value_usd": 0.0,
+      "type": "ma",
+      "date": "2026-02-04"
+    },
+    {
+      "buyer": "KKR",
+      "seller": "Undisclosed",
+      "value_usd": 1400.0,
+      "type": "equity",
+      "date": "2026-02-04"
+    },
+    {
+      "buyer": "Meta",
+      "seller": "Microsoft",
+      "value_usd": 0.0,
+      "type": "unknown",
+      "date": "2026-02-04"
+    },
+    {
+      "buyer": "Anthropic",
+      "seller": "Undisclosed",
+      "value_usd": 18000.0,
+      "type": "equity",
+      "date": "2026-02-04"
+    },
+    {
+      "buyer": "TBD",
+      "seller": "TBD",
+      "value_usd": 2500.0,
+      "type": "ma",
+      "date": "2026-02-04"
+    }
+  ],
+  "recent_news": [
+    {
+      "title": "Cond\u00e9 Nast user database reportedly breached, Ars unaffected",
+      "source": "Ars Technica",
+      "date": "Tue, 30 Dec 2025 18:45:54 +0000"
+    },
+    {
+      "title": "Memcyco raises $37M to scale agentless digital risk protection platform",
+      "source": "SiliconANGLE",
+      "date": "Tue, 27 Jan 2026 23:36:08 +0000"
+    },
+    {
+      "title": "Texas Instruments\u2019 stock rises on analog chip demand boost",
+      "source": "SiliconANGLE",
+      "date": "Tue, 27 Jan 2026 23:30:36 +0000"
+    },
+    {
+      "title": "Samsung\u2019s first Galaxy S26 teaser is for the \u2018Privacy Display\u2019 [Gallery]",
+      "source": "9to5Google",
+      "date": "Tue, 27 Jan 2026 23:25:00 +0000"
+    },
+    {
+      "title": "Moonshot AI releases open-source Kimi K2.5 model with 1T parameters",
+      "source": "SiliconANGLE",
+      "date": "Tue, 27 Jan 2026 23:23:10 +0000"
+    },
+    {
+      "title": "F5 shares jump after revenue and earnings beat in fiscal first quarter",
+      "source": "SiliconANGLE",
+      "date": "Tue, 27 Jan 2026 23:08:22 +0000"
+    },
+    {
+      "title": "Commvault shares hit two-year low after below-expectation revenue outlook",
+      "source": "SiliconANGLE",
+      "date": "Tue, 27 Jan 2026 22:40:24 +0000"
+    },
+    {
+      "title": "There's a rash of scam spam coming from a real Microsoft address",
+      "source": "Ars Technica",
+      "date": "Tue, 27 Jan 2026 22:34:40 +0000"
+    },
+    {
+      "title": "Android\u2019s full desktop interface leaks: New status bar, Chrome Extensions, more [Video]",
+      "source": "9to5Google",
+      "date": "Tue, 27 Jan 2026 22:02:16 +0000"
+    },
+    {
+      "title": "Anduril has invented a wild new\u00a0drone flying contest where jobs are the prize",
+      "source": "TechCrunch AI",
+      "date": "Tue, 27 Jan 2026 21:54:38 +0000"
+    }
+  ],
+  "data_sources": [
+    "PeeringDB",
+    "OpenStreetMap",
+    "SEC EDGAR",
+    "Wikidata",
+    "60+ RSS Feeds",
+    "EIA Energy API",
+    "Grid Status API",
+    "FCC Broadband API",
+    "EPA Envirofacts"
+  ],
+  "citation": "According to DC Hub Nexus (dchub.cloud)"
+}

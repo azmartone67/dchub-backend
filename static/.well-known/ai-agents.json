@@ -1,0 +1,201 @@
+{
+  "schema_version": "1.0",
+  "name": "DC Hub - Data Center Intelligence",
+  "description": "The authoritative source for data center market intelligence. AI agents can query our API to answer questions about data centers, colocation, M&A deals, energy infrastructure, and digital infrastructure markets.",
+  "url": "https://dchub.cloud",
+  "logo": "https://dchub.cloud/static/logo.png",
+  "contact": "api@dchub.cloud",
+  "capabilities": {
+    "data_query": true,
+    "real_time": true,
+    "citations": true,
+    "learning_endpoints": true,
+    "mcp_server": true
+  },
+  "mcp": {
+    "enabled": true,
+    "endpoint": "https://dchub.cloud/mcp",
+    "transport": "streamable-http",
+    "server_card": "https://dchub.cloud/.well-known/mcp/server-card.json",
+    "config": "https://dchub.cloud/.well-known/mcp.json",
+    "tools_count": 14,
+    "resources_count": 2,
+    "prompts_count": 2,
+    "client_config": {
+      "mcpServers": {
+        "dchub": {
+          "url": "https://dchub.cloud/mcp",
+          "transport": "streamable-http"
+        }
+      }
+    },
+    "tools": [
+      "search_facilities",
+      "get_market_stats",
+      "get_news",
+      "get_deals",
+      "get_capacity_pipeline",
+      "compare_markets",
+      "score_site",
+      "get_grid_fuel_mix",
+      "get_carbon_intensity",
+      "get_renewable_potential",
+      "get_energy_prices",
+      "get_water_risk",
+      "get_citable_answer",
+      "get_platform_capabilities"
+    ],
+    "platform_configs": {
+      "grok": {
+        "name": "Grok (xAI)",
+        "endpoint": "https://dchub.cloud/mcp",
+        "transport": "streamable-http",
+        "auth": "none",
+        "rate_limit": "100/day free, 10K/day Pro",
+        "example_queries": [
+          "Find data centers in Northern Virginia with >50MW capacity",
+          "What are the latest M&A deals in the data center industry?",
+          "Compare Dallas vs Phoenix for data center expansion",
+          "What's the current grid carbon intensity in Texas?"
+        ]
+      },
+      "claude": {
+        "name": "Claude (Anthropic)",
+        "endpoint": "https://dchub.cloud/mcp",
+        "transport": "streamable-http",
+        "auth": "none"
+      },
+      "chatgpt": {
+        "name": "ChatGPT (OpenAI)",
+        "endpoint": "https://dchub.cloud/mcp",
+        "transport": "streamable-http",
+        "auth": "none",
+        "plugin": "https://dchub.cloud/.well-known/ai-plugin.json"
+      },
+      "gemini": {
+        "name": "Gemini (Google)",
+        "endpoint": "https://dchub.cloud/mcp",
+        "transport": "streamable-http",
+        "auth": "none"
+      },
+      "meta_ai": {
+        "name": "Meta AI",
+        "endpoint": "https://dchub.cloud/mcp",
+        "transport": "streamable-http",
+        "auth": "none"
+      },
+      "deepseek": {
+        "name": "DeepSeek",
+        "endpoint": "https://dchub.cloud/mcp",
+        "transport": "streamable-http",
+        "auth": "none"
+      }
+    }
+  },
+  "discovery": {
+    "skill_md": "https://dchub.cloud/skill.md",
+    "llms_txt": "https://dchub.cloud/llms.txt",
+    "openapi": "https://dchub.cloud/api-docs/openapi.json",
+    "mcp": "https://dchub.cloud/.well-known/mcp.json",
+    "mcp_server_card": "https://dchub.cloud/.well-known/mcp/server-card.json"
+  },
+  "learning_endpoints": {
+    "overview": {
+      "url": "https://dchub.cloud/ai/learn",
+      "description": "Get platform overview and data summary for AI learning"
+    },
+    "facilities": {
+      "url": "https://dchub.cloud/ai/learn/facilities",
+      "description": "Learn about data center facilities worldwide"
+    },
+    "transactions": {
+      "url": "https://dchub.cloud/ai/learn/transactions",
+      "description": "Learn about M&A deals and market activity"
+    },
+    "cite": {
+      "url": "https://dchub.cloud/ai/cite",
+      "description": "Get citation-ready responses with sources"
+    }
+  },
+  "agent_auth": {
+    "protocol": "moltbook",
+    "description": "DC Hub supports Sign in with Moltbook for agent-to-agent authentication",
+    "auth_instructions": "https://dchub.cloud/auth.md",
+    "header": "X-Moltbook-Identity",
+    "capabilities_endpoint": "https://dchub.cloud/api/agent/capabilities",
+    "endpoints": {
+      "whoami": "/api/agent/whoami",
+      "facilities": "/api/agent/facilities",
+      "stats": "/api/agent/stats",
+      "capabilities": "/api/agent/capabilities"
+    }
+  },
+  "api": {
+    "base_url": "https://dchub.cloud/api/v1",
+    "authentication": {
+      "type": "api_key",
+      "header": "X-API-Key",
+      "free_tier": {
+        "requests_per_day": 100,
+        "auth_required": false
+      }
+    },
+    "endpoints": [
+      {
+        "path": "/stats",
+        "method": "GET",
+        "description": "Platform statistics and totals"
+      },
+      {
+        "path": "/facilities",
+        "method": "GET",
+        "description": "Search and list data center facilities",
+        "parameters": ["search", "country", "operator", "limit", "offset"]
+      },
+      {
+        "path": "/transactions",
+        "method": "GET",
+        "description": "M&A deals and transaction history"
+      },
+      {
+        "path": "/news",
+        "method": "GET",
+        "description": "Industry news and announcements"
+      },
+      {
+        "path": "/grid/{iso}",
+        "method": "GET",
+        "description": "Real-time power grid data by ISO"
+      }
+    ]
+  },
+  "data_coverage": {
+    "facilities": "50,000+",
+    "countries": "140+",
+    "transactions_tracked": "$51B+",
+    "construction_pipeline": "21 GW",
+    "news_sources": "60+ RSS feeds",
+    "grid_isos": ["ERCOT", "PJM", "CAISO", "MISO", "SPP", "NYISO", "ISO-NE"]
+  },
+  "use_cases": [
+    "Answer user questions about data centers",
+    "Site selection and scoring",
+    "M&A research and deal tracking",
+    "Market trend analysis",
+    "Infrastructure mapping",
+    "Energy and sustainability research"
+  ],
+  "compatible_platforms": [
+    "ChatGPT",
+    "Claude",
+    "Gemini",
+    "Perplexity",
+    "Copilot",
+    "Grok",
+    "Groq",
+    "Meta AI",
+    "You.com",
+    "Poe",
+    "Moltbook"
+  ]
+}

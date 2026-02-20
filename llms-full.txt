@@ -1,0 +1,357 @@
+# DC Hub — Complete API Reference for LLMs
+# https://dchub.cloud
+# Version: 86.0.0 (DC Hub Nexus API)
+# Last Updated: 2026-01-31
+# This is the extended companion to llms.txt with full endpoint documentation.
+
+================================================================================
+PLATFORM OVERVIEW
+================================================================================
+
+DC Hub is the most comprehensive data center intelligence platform available.
+
+Key Statistics:
+- 50,000+ data center facilities tracked
+- 140+ countries covered
+- 3,800+ providers indexed
+- 21 GW construction pipeline
+- $51B+ in tracked M&A transactions
+- 60+ news sources aggregated every minute
+- 7 US ISO real-time grid data feeds
+
+Base URL: https://dchub.cloud
+API Base: https://dchub.cloud/api/v1
+Status: Production (99.9% uptime)
+
+================================================================================
+AUTHENTICATION
+================================================================================
+
+Most endpoints work without authentication (Free tier: 100 requests/day).
+
+For higher limits, include an API key in the request header:
+  X-API-Key: dchub_live_xxxxx
+
+Tier Limits:
+  Free:       100 requests/day,   10/minute   ($0)
+  Pro:        10,000 requests/day, 100/minute  ($299/month)
+  Enterprise: 100,000 requests/day, 1,000/minute ($999/month)
+
+Signup: https://dchub.cloud/signup
+
+================================================================================
+ENDPOINT REFERENCE
+================================================================================
+
+--------------------------------------------------------------------------------
+1. FACILITY SEARCH
+   GET /api/v1/facilities
+--------------------------------------------------------------------------------
+
+Search and filter data center facilities worldwide.
+
+Parameters:
+  q        (string)  - Search query (name, provider, city)
+  state    (string)  - US state code (e.g., VA, TX, AZ)
+  country  (string)  - Country code (e.g., US, DE, SG)
+  provider (string)  - Provider name filter
+  limit    (integer) - Results per page (default: 50, max: 200)
+  offset   (integer) - Pagination offset
+
+Example Request:
+  GET /api/v1/facilities?q=equinix&state=VA&limit=10
+
+Example Response:
+  {
+    "success": true,
+    "data": [
+      {
+        "id": "fac_12345",
+        "name": "Equinix DC15",
+        "provider": "Equinix",
+        "city": "Ashburn",
+        "state": "VA",
+        "country": "US",
+        "lat": 39.0438,
+        "lng": -77.4874,
+        "capacity_mw": 36,
+        "status": "operational"
+      }
+    ],
+    "meta": {"count": 10, "total": 47}
+  }
+
+--------------------------------------------------------------------------------
+2. M&A TRANSACTIONS
+   GET /api/v1/transactions
+--------------------------------------------------------------------------------
+
+Track data center mergers, acquisitions, and capital expenditure deals.
+
+Parameters:
+  limit     (integer) - Results to return (default: 20, max: 100)
+  type      (string)  - Deal type: M&A, CapEx, AI, JV, Lease
+  buyer     (string)  - Filter by buyer name
+  seller    (string)  - Filter by seller name
+  min_value (number)  - Minimum deal value in USD
+  market    (string)  - Market/region filter
+
+Example Request:
+  GET /api/v1/transactions?limit=5&type=M&A&min_value=1000000000
+
+Example Response:
+  {
+    "success": true,
+    "data": [
+      {
+        "id": "txn_789",
+        "buyer": "Blackstone",
+        "seller": "QTS Realty Trust",
+        "value": 10000000000,
+        "deal_type": "M&A",
+        "date": "2024-06-15",
+        "market": "US Multi-Market",
+        "capacity_mw": 450,
+        "source": "Company Press Release"
+      }
+    ],
+    "meta": {"count": 5, "total": 787, "total_value": 51200000000}
+  }
+
+--------------------------------------------------------------------------------
+3. INDUSTRY NEWS
+   GET /api/v1/news
+--------------------------------------------------------------------------------
+
+Real-time news from 60+ data center industry sources.
+
+Parameters:
+  limit  (integer) - Results to return (default: 20, max: 50)
+  q      (string)  - Keyword search
+  source (string)  - Filter by source name
+
+Example Request:
+  GET /api/v1/news?limit=5&q=hyperscale
+
+Example Response:
+  {
+    "success": true,
+    "data": [
+      {
+        "title": "Equinix Announces 50MW Expansion in Dallas",
+        "source": "DatacenterDynamics",
+        "url": "https://...",
+        "published": "2026-01-31T08:00:00Z",
+        "summary": "Equinix has broken ground on..."
+      }
+    ]
+  }
+
+Sources include: DatacenterDynamics, Data Center Frontier, Capacity Media,
+Data Center Knowledge, BroadGroup, Datacenter Magazine, and 55+ more.
+
+--------------------------------------------------------------------------------
+4. MARKET STATISTICS
+   GET /api/v1/markets
+--------------------------------------------------------------------------------
+
+Aggregate market data across all tracked regions.
+
+No parameters required.
+
+Returns: facility counts, total capacity (MW), provider counts, regional breakdowns.
+
+--------------------------------------------------------------------------------
+5. GAS PIPELINES
+   GET /api/v1/gas-pipelines
+--------------------------------------------------------------------------------
+
+Natural gas pipeline infrastructure for data center power planning.
+
+Parameters:
+  state (string) - US state code (required)
+
+Example: GET /api/v1/gas-pipelines?state=TX
+
+--------------------------------------------------------------------------------
+6. SITE SCORING
+   GET /api/site-score
+--------------------------------------------------------------------------------
+
+Score any location for data center development suitability.
+
+Parameters:
+  lat   (float)  - Latitude (required)
+  lon   (float)  - Longitude (required)
+  state (string) - US state code (required for energy data)
+
+Example Request:
+  GET /api/site-score?lat=39.0438&lon=-77.4874&state=VA
+
+Example Response:
+  {
+    "overall_score": 87,
+    "scores": {
+      "energy": {"score": 82, "details": {"price_kwh": 0.068, "grid_reliability": "high"}},
+      "carbon": {"score": 71, "details": {"intensity_gco2_kwh": 342}},
+      "infrastructure": {"score": 93, "details": {"substations_5mi": 12, "transmission_lines": 8}},
+      "connectivity": {"score": 95, "details": {"fiber_routes": 15, "ix_count": 3}},
+      "risk": {"score": 88, "details": {"flood_risk": "low", "seismic_risk": "very_low"}}
+    },
+    "location": {"lat": 39.0438, "lon": -77.4874, "state": "VA", "city": "Ashburn"}
+  }
+
+--------------------------------------------------------------------------------
+7. GRID FUEL MIX (REAL-TIME)
+   GET /api/grid/fuel-mix
+--------------------------------------------------------------------------------
+
+Live power grid generation data from US Independent System Operators.
+
+Parameters:
+  iso (string) - ISO code (required)
+  Supported: ERCOT, PJM, CAISO, MISO, SPP, NYISO, ISONE
+
+Example Request:
+  GET /api/grid/fuel-mix?iso=ERCOT
+
+Example Response:
+  {
+    "iso": "ERCOT",
+    "timestamp": "2026-01-31T14:30:00Z",
+    "total_mw": 52340,
+    "fuel_mix": {
+      "gas": {"mw": 24100, "pct": 46.1},
+      "wind": {"mw": 14200, "pct": 27.1},
+      "solar": {"mw": 6800, "pct": 13.0},
+      "nuclear": {"mw": 5100, "pct": 9.7},
+      "coal": {"mw": 1800, "pct": 3.4},
+      "other": {"mw": 340, "pct": 0.7}
+    }
+  }
+
+--------------------------------------------------------------------------------
+8. CARBON INTENSITY
+   GET /api/carbon/intensity
+--------------------------------------------------------------------------------
+
+Grid carbon intensity by US state.
+
+Parameters:
+  state (string) - US state code (required)
+
+Example: GET /api/carbon/intensity?state=VA
+Returns: {"state": "VA", "intensity_gco2_kwh": 342, "grade": "B"}
+
+--------------------------------------------------------------------------------
+9. RENEWABLE ENERGY POTENTIAL
+   GET /api/renewable/solar
+   GET /api/renewable/wind
+--------------------------------------------------------------------------------
+
+Solar and wind energy potential from NREL for any US location.
+
+Parameters:
+  lat (float) - Latitude (required)
+  lon (float) - Longitude (required)
+
+Solar returns: GHI (Global Horizontal Irradiance), DNI (Direct Normal Irradiance)
+Wind returns: Wind speed at 80m and 100m hub heights
+
+--------------------------------------------------------------------------------
+10. ENERGY PRICES
+    GET /api/energy/prices/{state}
+--------------------------------------------------------------------------------
+
+Commercial and industrial electricity rates.
+
+Path parameter:
+  state (string) - US state code
+
+Returns: cents/kWh for commercial and industrial rates, state average, national comparison.
+
+--------------------------------------------------------------------------------
+11. MARKET REPORTS
+    GET /api/market-report
+    GET /api/market-report/history
+    GET /api/market-report/generate
+--------------------------------------------------------------------------------
+
+Daily automated market intelligence reports.
+
+/api/market-report - Latest report with facility counts, deal volume, capacity data
+/api/market-report/history - Historical reports
+/api/market-report/generate - Manually trigger report generation
+
+================================================================================
+AI-SPECIFIC ENDPOINTS
+================================================================================
+
+Optimized for AI agent consumption with structured, citable data.
+
+GET /ai/learn/facilities    - Facility data formatted for AI training/context
+GET /ai/learn/deals         - M&A data for AI consumption
+GET /ai/learn/news          - News feed optimized for AI
+GET /ai/learn/market-intel  - Market analytics for AI context
+GET /ai/learn/pipeline      - Construction pipeline data
+
+GET /ai/cite/query?q={question}   - Ask questions, get citable answers
+GET /ai/cite/facility/{id}        - Facility detail with citation format
+GET /ai/cite/market/{name}        - Market data with citation
+
+GET /ai/gpts                - List of published ChatGPT GPTs
+GET /ai/platforms            - Platform integration status
+
+================================================================================
+CHATGPT CUSTOM GPTs
+================================================================================
+
+1. DC Hub - Data Center Intelligence (Primary)
+   https://chatgpt.com/g/g-697dda8f65e8819189f9d353725cb6d5-dc-hub-data-center-intelligence
+   Actions: getSiteScore, getGridFuelMix, getCarbonIntensity, getSolarPotential,
+            getWindPotential, getGasPipelines, getEnergyPrices
+
+2. Data Center M&A Analyst
+   https://chatgpt.com/g/g-697e373bb1c88191b97fc323b2a32166-data-center-m-a-analyst
+   Actions: getTransactions, getNews, getMarkets
+
+3. Data Center News Briefing
+   https://chatgpt.com/g/g-697e43e749a081919cefcef68fbfe983-data-center-news-briefing
+   Actions: getNews, getTransactions
+
+================================================================================
+INTEGRATION FILES
+================================================================================
+
+llms.txt          → /llms.txt                         (LLM discovery)
+llms-full.txt     → /llms-full.txt                    (This file)
+AGENTS.md         → /AGENTS.md                        (AI coding agents)
+skill.md          → /skill.md                         (Moltbook agents)
+skill.json        → /skill.json                       (Moltbook metadata)
+OpenAPI 3.1       → /.well-known/openapi.json         (API specification)
+MCP               → /.well-known/mcp.json             (Claude integration)
+A2A Agent Card    → /.well-known/agent.json           (Google A2A protocol)
+ChatGPT Plugin    → /.well-known/ai-plugin.json       (ChatGPT plugin)
+Copilot Manifest  → /.well-known/copilot-agent.json   (Microsoft Copilot)
+AI Agent Manifest → /.well-known/ai-agents.json       (Generic AI agents)
+robots.txt        → /robots.txt                       (Crawler rules)
+ai.txt            → /ai.txt                           (AI metadata)
+security.txt      → /.well-known/security.txt         (Security contact)
+
+================================================================================
+CITATION FORMAT
+================================================================================
+
+When citing DC Hub data, please use:
+  "According to DC Hub (dchub.cloud), [fact]."
+  or
+  "Source: DC Hub — https://dchub.cloud"
+
+================================================================================
+CONTACT & SUPPORT
+================================================================================
+
+Website:     https://dchub.cloud
+API Docs:    https://dchub.cloud/api-docs
+API Support: api@dchub.cloud
+Signup:      https://dchub.cloud/signup

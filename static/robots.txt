@@ -1,0 +1,174 @@
+# DC Hub - Data Center Intelligence Platform
+# https://dchub.cloud
+
+User-agent: *
+Allow: /
+
+# Sitemap
+Sitemap: https://dchub.cloud/sitemap.xml
+
+# AI Discovery Files - IMPORTANT
+Allow: /llms.txt
+Allow: /ai.txt
+Allow: /.well-known/
+Allow: /ai/
+Allow: /ai-hub
+Allow: /api-docs
+
+# ===========================================
+# AI CRAWLERS - WELCOME!
+# ===========================================
+
+# OpenAI / ChatGPT
+User-agent: GPTBot
+Allow: /
+Allow: /llms.txt
+Allow: /ai.txt
+Allow: /.well-known/ai-plugin.json
+Allow: /.well-known/openapi.json
+Allow: /ai/learn/
+Allow: /ai/cite/
+Crawl-delay: 1
+
+# Anthropic / Claude
+User-agent: Claude-Web
+Allow: /
+Allow: /llms.txt
+Allow: /ai.txt
+Allow: /.well-known/mcp.json
+Allow: /ai/learn/
+Allow: /ai/cite/
+Crawl-delay: 1
+
+User-agent: anthropic-ai
+Allow: /
+Allow: /llms.txt
+Allow: /.well-known/mcp.json
+Crawl-delay: 1
+
+# Perplexity
+User-agent: PerplexityBot
+Allow: /
+Allow: /llms.txt
+Allow: /ai.txt
+Allow: /ai/learn/
+Allow: /ai/cite/
+Crawl-delay: 1
+
+# Google Gemini
+User-agent: Google-Extended
+Allow: /
+Allow: /llms.txt
+Allow: /ai.txt
+Crawl-delay: 1
+
+# Meta AI
+User-agent: FacebookBot
+Allow: /
+Crawl-delay: 2
+
+User-agent: Meta-ExternalAgent
+Allow: /
+Crawl-delay: 2
+
+User-agent: meta-externalagent
+Allow: /
+Crawl-delay: 2
+
+# xAI / Grok
+User-agent: Grok
+Allow: /
+Allow: /llms.txt
+Allow: /ai.txt
+Crawl-delay: 1
+
+User-agent: xAI
+Allow: /
+Crawl-delay: 1
+
+# Microsoft Copilot
+User-agent: bingbot
+Allow: /
+Allow: /llms.txt
+Allow: /ai.txt
+Crawl-delay: 1
+
+User-agent: MicrosoftPreview
+Allow: /
+Crawl-delay: 1
+
+# Groq
+User-agent: GroqBot
+Allow: /
+Crawl-delay: 1
+
+# You.com
+User-agent: YouBot
+Allow: /
+Allow: /llms.txt
+Crawl-delay: 1
+
+# Quora / Poe
+User-agent: Quora-Bot
+Allow: /
+Crawl-delay: 1
+
+User-agent: PoeBot
+Allow: /
+Allow: /llms.txt
+Crawl-delay: 1
+
+# Cohere
+User-agent: cohere-ai
+Allow: /
+Crawl-delay: 1
+
+# Common Crawl (used by many AI systems)
+User-agent: CCBot
+Allow: /
+Crawl-delay: 2
+
+# ===========================================
+# SEARCH ENGINE CRAWLERS
+# ===========================================
+
+User-agent: Googlebot
+Allow: /
+Crawl-delay: 0
+
+User-agent: Bingbot
+Allow: /
+Crawl-delay: 1
+
+User-agent: Slurp
+Allow: /
+Crawl-delay: 1
+
+User-agent: DuckDuckBot
+Allow: /
+Crawl-delay: 1
+
+# ===========================================
+# SOCIAL MEDIA CRAWLERS
+# ===========================================
+
+User-agent: Twitterbot
+Allow: /
+
+User-agent: facebookexternalhit
+Allow: /
+
+User-agent: LinkedInBot
+Allow: /
+
+# ===========================================
+# BLOCKED
+# ===========================================
+
+# Block raw API responses from indexing (use /api-docs for documentation)
+Disallow: /api/v1/
+Disallow: /api/grid/
+Disallow: /api/renewable/
+Disallow: /api/carbon/
+Disallow: /api/site-score
+Disallow: /cdn-cgi/

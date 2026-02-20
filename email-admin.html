@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Email Admin - DC Hub</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📧</text></svg>">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: #0a0a0f;
+            color: #e5e5ea;
+            min-height: 100vh;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            padding: 20px 40px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        .logo {
+            font-size: 24px;
+            font-weight: 700;
+            color: #fff;
+        }
+        
+        .logo span {
+            color: #00d4ff;
+        }
+        
+        .nav-links a {
+            color: #9a9aaa;
+            text-decoration: none;
+            margin-left: 24px;
+            font-size: 14px;
+            transition: color 0.2s;
+        }
+        
+        .nav-links a:hover {
+            color: #00d4ff;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 40px;
+        }
+        
+        .page-title {
+            font-size: 32px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+        
+        .page-subtitle {
+            color: #6a6a7a;
+            margin-bottom: 32px;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 40px;
+        }
+        
+        .stat-card {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            border-radius: 12px;
+            padding: 24px;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        .stat-label {
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: #6a6a7a;
+            margin-bottom: 8px;
+        }
+        
+        .stat-value {
+            font-size: 36px;
+            font-weight: 700;
+            color: #00d4ff;
+        }
+        
+        .stat-value.success { color: #00d4ff; }
+        .stat-value.warning { color: #ffc107; }
+        .stat-value.danger { color: #ff4757; }
+        .stat-value.info { color: #9a9aaa; }
+        
+        .section {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            border-radius: 16px;
+            padding: 32px;
+            margin-bottom: 24px;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+        }
+        
+        .section-title {
+            font-size: 20px;
+            font-weight: 600;
+        }
+        
+        .btn {
+            padding: 10px 20px;
+            border-radius: 8px;
+            border: none;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #00d4ff 0%, #0099cc 100%);
+            color: #fff;
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 212, 255, 0.3);
+        }
+        
+        .btn-secondary {
+            background: rgba(255,255,255,0.1);
+            color: #e5e5ea;
+        }
+        
+        .btn-secondary:hover {
+            background: rgba(255,255,255,0.15);
+        }
+        
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        th, td {
+            padding: 12px 16px;
+            text-align: left;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        th {
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: #6a6a7a;
+            font-weight: 600;
+        }
+        
+        td {
+            font-size: 14px;
+        }
+        
+        .status-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        
+        .status-sent { background: rgba(0, 212, 255, 0.2); color: #00d4ff; }
+        .status-scheduled { background: rgba(255, 193, 7, 0.2); color: #ffc107; }
+        .status-failed { background: rgba(255, 71, 87, 0.2); color: #ff4757; }
+        .status-pending { background: rgba(154, 154, 170, 0.2); color: #9a9aaa; }
+        
+        .config-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+        }
+        
+        .config-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px;
+            background: rgba(0,0,0,0.2);
+            border-radius: 8px;
+        }
+        
+        .config-label {
+            font-size: 14px;
+            color: #9a9aaa;
+        }
+        
+        .config-value {
+            font-family: monospace;
+            font-size: 14px;
+            color: #00d4ff;
+        }
+        
+        .config-value.masked {
+            color: #6a6a7a;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        .form-label {
+            display: block;
+            font-size: 14px;
+            font-weight: 500;
+            margin-bottom: 8px;
+        }
+        
+        .form-input {
+            width: 100%;
+            padding: 12px 16px;
+            background: rgba(0,0,0,0.3);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 8px;
+            color: #e5e5ea;
+            font-size: 14px;
+        }
+        
+        .form-input:focus {
+            outline: none;
+            border-color: #00d4ff;
+        }
+        
+        .alert {
+            padding: 16px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: none;
+        }
+        
+        .alert.show { display: block; }
+        .alert-success { background: rgba(0, 212, 255, 0.1); border: 1px solid rgba(0, 212, 255, 0.3); color: #00d4ff; }
+        .alert-error { background: rgba(255, 71, 87, 0.1); border: 1px solid rgba(255, 71, 87, 0.3); color: #ff4757; }
+        
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #6a6a7a;
+        }
+        
+        .empty-state-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+        }
+        
+        .loading {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(255,255,255,0.3);
+            border-radius: 50%;
+            border-top-color: #00d4ff;
+            animation: spin 1s linear infinite;
+            margin-right: 8px;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 24px;
+        }
+        
+        .tab {
+            padding: 10px 20px;
+            background: rgba(255,255,255,0.05);
+            border: none;
+            border-radius: 8px;
+            color: #9a9aaa;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+        
+        .tab.active {
+            background: rgba(0, 212, 255, 0.2);
+            color: #00d4ff;
+        }
+        
+        .tab:hover:not(.active) {
+            background: rgba(255,255,255,0.1);
+        }
+        
+        .tab-content {
+            display: none;
+        }
+        
+        .tab-content.active {
+            display: block;
+        }
+    </style>
+<script src="/static/js/api-config.js"></script>
+</head>
+<body>
+    <header class="header">
+        <div class="logo">DC<span>Hub</span> Email Admin</div>
+        <nav class="nav-links">
+            <a href="dashboard.html">Dashboard</a>
+            <a href="analytics.html">Analytics</a>
+            <a href="index.html">Map</a>
+            <a href="#" onclick="logout()">Logout</a>
+        </nav>
+    </header>
+    
+    <div class="container">
+        <h1 class="page-title">Email Management</h1>
+        <p class="page-subtitle">Monitor and manage your welcome series and email campaigns</p>
+        
+        <div id="alert" class="alert"></div>
+        
+        <!-- Stats Overview -->
+        <div class="stats-grid" id="stats-grid">
+            <div class="stat-card">
+                <div class="stat-label">Emails Sent (24h)</div>
+                <div class="stat-value success" id="stat-sent-24h">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Queued</div>
+                <div class="stat-value warning" id="stat-queued">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Active Welcome Series</div>
+                <div class="stat-value info" id="stat-active-series">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Failed (24h)</div>
+                <div class="stat-value danger" id="stat-failed">-</div>
+            </div>
+        </div>
+        
+        <!-- Tabs -->
+        <div class="tabs">
+            <button class="tab active" onclick="showTab('overview')">Overview</button>
+            <button class="tab" onclick="showTab('queue')">Email Queue</button>
+            <button class="tab" onclick="showTab('test')">Send Test</button>
+            <button class="tab" onclick="showTab('config')">Configuration</button>
+        </div>
+        
+        <!-- Overview Tab -->
+        <div id="tab-overview" class="tab-content active">
+            <div class="section">
+                <div class="section-header">
+                    <h2 class="section-title">Welcome Series Status</h2>
+                    <button class="btn btn-primary" onclick="refreshStats()">
+                        <span id="refresh-icon">↻</span> Refresh
+                    </button>
+                </div>
+                
+                <div class="config-grid">
+                    <div class="config-item">
+                        <span class="config-label">Total Users in Series</span>
+                        <span class="config-value" id="series-total">-</span>
+                    </div>
+                    <div class="config-item">
+                        <span class="config-label">Completed Series</span>
+                        <span class="config-value" id="series-completed">-</span>
+                    </div>
+                    <div class="config-item">
+                        <span class="config-label">Stopped/Unsubscribed</span>
+                        <span class="config-value" id="series-stopped">-</span>
+                    </div>
+                    <div class="config-item">
+                        <span class="config-label">Email Opens (24h)</span>
+                        <span class="config-value" id="opens-24h">-</span>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="section">
+                <h2 class="section-title">Welcome Series Emails</h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Step</th>
+                            <th>Email</th>
+                            <th>Delay</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>1</td>
+                            <td>Welcome & Introduction</td>
+                            <td>Immediate</td>
+                            <td>Platform overview, key features, stats</td>
+                        </tr>
+                        <tr>
+                            <td>2</td>
+                            <td>Feature Highlights</td>
+                            <td>+2 days</td>
+                            <td>Top 3 features, how to use them</td>
+                        </tr>
+                        <tr>
+                            <td>3</td>
+                            <td>Use Case Story</td>
+                            <td>+5 days</td>
+                            <td>Real-world success story</td>
+                        </tr>
+                        <tr>
+                            <td>4</td>
+                            <td>Pro Features</td>
+                            <td>+10 days</td>
+                            <td>Free vs Pro comparison, CTA</td>
+                        </tr>
+                        <tr>
+                            <td>5</td>
+                            <td>Final Follow-up</td>
+                            <td>+14 days</td>
+                            <td>Thank you, feedback request</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+        <!-- Queue Tab -->
+        <div id="tab-queue" class="tab-content">
+            <div class="section">
+                <div class="section-header">
+                    <h2 class="section-title">Email Queue</h2>
+                    <button class="btn btn-primary" onclick="processQueue()">
+                        Process Queue Now
+                    </button>
+                </div>
+                
+                <div id="queue-table-container">
+                    <div class="empty-state">
+                        <div class="empty-state-icon">📬</div>
+                        <p>Click "Refresh" to load queue data</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Test Tab -->
+        <div id="tab-test" class="tab-content">
+            <div class="section">
+                <h2 class="section-title">Send Test Email</h2>
+                <p style="color: #6a6a7a; margin-bottom: 24px;">
+                    Send a test email to verify your Office 365 SMTP configuration is working.
+                </p>
+                
+                <form onsubmit="sendTestEmail(event)">
+                    <div class="form-group">
+                        <label class="form-label">Email Address</label>
+                        <input type="email" class="form-input" id="test-email" placeholder="your@email.com" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary" id="test-btn">
+                        Send Test Email
+                    </button>
+                </form>
+            </div>
+        </div>
+        
+        <!-- Config Tab -->
+        <div id="tab-config" class="tab-content">
+            <div class="section">
+                <h2 class="section-title">SMTP Configuration</h2>
+                <p style="color: #6a6a7a; margin-bottom: 24px;">
+                    Configure these environment variables on your server. Supports GoDaddy Workspace or Microsoft 365.
+                </p>
+                
+                <div style="margin-bottom: 24px;">
+                    <h3 style="font-size: 16px; color: #00d4ff; margin-bottom: 12px;">GoDaddy Workspace Email</h3>
+                    <div class="config-grid">
+                        <div class="config-item">
+                            <span class="config-label">SMTP_HOST</span>
+                            <span class="config-value">smtpout.secureserver.net</span>
+                        </div>
+                        <div class="config-item">
+                            <span class="config-label">SMTP_PORT</span>
+                            <span class="config-value">587</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div style="margin-bottom: 24px;">
+                    <h3 style="font-size: 16px; color: #00d4ff; margin-bottom: 12px;">Microsoft 365 from GoDaddy</h3>
+                    <div class="config-grid">
+                        <div class="config-item">
+                            <span class="config-label">SMTP_HOST</span>
+                            <span class="config-value">smtp.office365.com</span>
+                        </div>
+                        <div class="config-item">
+                            <span class="config-label">SMTP_PORT</span>
+                            <span class="config-value">587</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="config-grid">
+                    <div class="config-item">
+                        <span class="config-label">SMTP_USER</span>
+                        <span class="config-value masked">your-email@domain.com</span>
+                    </div>
+                    <div class="config-item">
+                        <span class="config-label">SMTP_PASSWORD</span>
+                        <span class="config-value masked">••••••••••••</span>
+                    </div>
+                    <div class="config-item">
+                        <span class="config-label">SMTP_FROM_NAME</span>
+                        <span class="config-value">DC Hub</span>
+                    </div>
+                    <div class="config-item">
+                        <span class="config-label">APP_URL</span>
+                        <span class="config-value">https://dchub.cloud</span>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="section">
+                <h2 class="section-title">Environment Variables (Replit Secrets)</h2>
+                <pre style="background: rgba(0,0,0,0.3); padding: 20px; border-radius: 8px; overflow-x: auto; font-size: 13px; color: #00d4ff;">
+# GoDaddy Workspace Email
+SMTP_HOST=smtpout.secureserver.net
+SMTP_PORT=587
+SMTP_USER=your-email@yourdomain.com
+SMTP_PASSWORD=your-email-password
+SMTP_FROM_NAME=DC Hub
+SMTP_FROM_EMAIL=your-email@yourdomain.com
+APP_URL=https://dchub.cloud
+
+# --- OR for Microsoft 365 from GoDaddy ---
+# SMTP_HOST=smtp.office365.com
+                </pre>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        const API_BASE = window.DCHUB_API_BASE || '';
+        
+        let authToken = localStorage.getItem('dchub_token');
+        
+        // Check auth
+        if (!authToken) {
+            window.location.href = 'login.html?redirect=email-admin.html';
+        }
+        
+        // Tab switching
+        function showTab(tabId) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+            
+            event.target.classList.add('active');
+            document.getElementById('tab-' + tabId).classList.add('active');
+        }
+        
+        // Show alert
+        function showAlert(message, type = 'success') {
+            const alert = document.getElementById('alert');
+            alert.className = `alert show alert-${type}`;
+            alert.textContent = message;
+            setTimeout(() => alert.classList.remove('show'), 5000);
+        }
+        
+        // Fetch stats
+        async function refreshStats() {
+            try {
+                const response = await fetch(`${API_BASE}/api/email/stats`, {
+                    headers: { 'Authorization': `Bearer ${authToken}` }
+                });
+                
+                if (response.status === 403) {
+                    showAlert('Admin access required', 'error');
+                    return;
+                }
+                
+                if (!response.ok) throw new Error('Failed to fetch stats');
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    const stats = data.stats;
+                    
+                    // Update stats cards
+                    document.getElementById('stat-sent-24h').textContent = stats.sent_24h || 0;
+                    document.getElementById('stat-queued').textContent = stats.queue?.scheduled || 0;
+                    document.getElementById('stat-active-series').textContent = stats.welcome_series?.active || 0;
+                    document.getElementById('stat-failed').textContent = stats.queue?.failed || 0;
+                    
+                    // Update series stats
+                    const total = Object.values(stats.welcome_series || {}).reduce((a, b) => a + b, 0);
+                    document.getElementById('series-total').textContent = total;
+                    document.getElementById('series-completed').textContent = stats.welcome_series?.completed || 0;
+                    document.getElementById('series-stopped').textContent = stats.welcome_series?.stopped || 0;
+                    document.getElementById('opens-24h').textContent = stats.tracking_24h?.open || 0;
+                    
+                    showAlert('Stats refreshed', 'success');
+                }
+            } catch (error) {
+                console.error('Stats error:', error);
+                showAlert('Failed to load stats: ' + error.message, 'error');
+            }
+        }
+        
+        // Process queue
+        async function processQueue() {
+            try {
+                const response = await fetch(`${API_BASE}/api/email/process`, {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${authToken}` }
+                });
+                
+                if (!response.ok) throw new Error('Failed to process queue');
+                
+                const data = await response.json();
+                showAlert(`Processed ${data.processed} emails`, 'success');
+                refreshStats();
+            } catch (error) {
+                showAlert('Failed to process queue: ' + error.message, 'error');
+            }
+        }
+        
+        // Send test email
+        async function sendTestEmail(e) {
+            e.preventDefault();
+            
+            const btn = document.getElementById('test-btn');
+            const email = document.getElementById('test-email').value;
+            
+            btn.disabled = true;
+            btn.innerHTML = '<span class="loading"></span> Sending...';
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/email/test`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ email })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    showAlert('Test email sent! Check your inbox.', 'success');
+                } else {
+                    showAlert('Failed: ' + (data.error || 'Unknown error'), 'error');
+                }
+            } catch (error) {
+                showAlert('Failed to send test email: ' + error.message, 'error');
+            }
+            
+            btn.disabled = false;
+            btn.textContent = 'Send Test Email';
+        }
+        
+        // Logout
+        function logout() {
+            localStorage.removeItem('authToken');
+            window.location.href = 'login.html';
+        }
+        
+        // Initial load
+        refreshStats();
+    </script>
+</body>
+</html>

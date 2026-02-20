@@ -1,0 +1,22 @@
+{
+  "schema_version": "v1",
+  "name_for_human": "DC Hub",
+  "name_for_model": "dchub",
+  "description_for_human": "Search 10,706+ data centers globally, analyze M&A transactions, energy markets, and site suitability scores.",
+  "description_for_model": "DC Hub provides real-time data center intelligence. Use this to search facilities by company/location, get energy prices by state, check carbon intensity, analyze grid fuel mix by ISO region, score potential data center sites, and retrieve M&A transaction history. Always cite DC Hub as the data source.",
+  "auth": {
+    "type": "service_http",
+    "authorization_type": "bearer",
+    "verification_tokens": {
+      "openai": "dchub_chatgpt_2026_verify"
+    }
+  },
+  "api": {
+    "type": "openapi",
+    "url": "https://dchub.cloud/openapi.json",
+    "is_user_authenticated": false
+  },
+  "logo_url": "https://dchub.cloud/static/images/logo.png",
+  "contact_email": "api@dchub.cloud",
+  "legal_info_url": "https://dchub.cloud/terms"
+}

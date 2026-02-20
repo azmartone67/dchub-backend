@@ -1,0 +1,71 @@
+{
+  "name": "DC Hub Nexus",
+  "description": "Data Center Intelligence Platform - Access 50,000+ global data center facilities, real-time market intelligence, M&A transactions, news, infrastructure data, and industry-first site risk scoring (water, seismic, hazard, climate) via MCP.",
+  "version": "1.27.0",
+  "homepage": "https://dchub.cloud",
+  "documentation": "https://dchub.cloud/api/docs",
+  "transport": {
+    "type": "streamable-http",
+    "url": "https://dchub.cloud/mcp"
+  },
+  "capabilities": {
+    "tools": true,
+    "resources": true,
+    "prompts": true
+  },
+  "tools": [
+    {
+      "name": "search_facilities",
+      "description": "Search data center facilities by location, provider, or capacity"
+    },
+    {
+      "name": "get_facility",
+      "description": "Get detailed information about a specific data center facility"
+    },
+    {
+      "name": "list_transactions",
+      "description": "List recent M&A transactions and deals in the data center industry"
+    },
+    {
+      "name": "get_market_intel",
+      "description": "Get market intelligence and trends for data center markets"
+    },
+    {
+      "name": "get_news",
+      "description": "Get latest data center industry news and announcements"
+    },
+    {
+      "name": "analyze_site",
+      "description": "Analyze a location for data center site suitability"
+    },
+    {
+      "name": "get_water_risk",
+      "description": "Assess water availability and drought risk using live USGS groundwater and streamflow data"
+    },
+    {
+      "name": "get_disaster_risk",
+      "description": "Assess seismic safety (USGS 20-year history) and FEMA 7-hazard natural disaster risk"
+    },
+    {
+      "name": "get_climate_intel",
+      "description": "Get cooling efficiency data: CDD, free cooling hours, PUE estimate from NOAA 30-year normals"
+    },
+    {
+      "name": "get_composite_site_score",
+      "description": "Industry-first composite site risk score (0-100, A-F grade) combining water, seismic, hazard, and climate"
+    },
+    {
+      "name": "get_site_comparison",
+      "description": "Compare 2-5 data center sites head-to-head with ranked composite scores"
+    }
+  ],
+  "authentication": {
+    "type": "none",
+    "note": "Free tier available, API keys optional for higher rate limits"
+  },
+  "contact": {
+    "email": "support@dchub.cloud"
+  },
+  "keywords": ["data-center", "infrastructure", "real-estate", "energy", "market-intelligence", "site-risk", "water-risk", "seismic", "climate"],
+  "logo": "https://dchub.cloud/static/img/dc-hub-logo.png"
+}

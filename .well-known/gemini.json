@@ -1,0 +1,22 @@
+{
+  "name": "DC Hub Nexus",
+  "description": "Data Center Intelligence Platform — 20,000+ facilities, M&A tracking, market intel via MCP",
+  "mcpServers": {
+    "dchub-nexus": {
+      "httpUrl": "https://dc-hub-replit-fixedzip--azmartone1.replit.app/mcp",
+      "timeout": 30000
+    }
+  },
+  "usage": {
+    "gemini_cli": "gemini mcp add --transport http dchub-nexus https://dc-hub-replit-fixedzip--azmartone1.replit.app/mcp",
+    "settings_json": {"mcpServers": {"dchub-nexus": {"httpUrl": "https://dc-hub-replit-fixedzip--azmartone1.replit.app/mcp"}}}
+  },
+  "tools": [
+    {"name": "search_facilities", "description": "Search 20,000+ data center facilities"},
+    {"name": "get_facility", "description": "Get detailed facility info"},
+    {"name": "list_transactions", "description": "List M&A transactions ($51B+)"},
+    {"name": "get_market_intel", "description": "Market intelligence and trends"},
+    {"name": "get_news", "description": "Real-time industry news from 40+ sources"},
+    {"name": "analyze_site", "description": "Evaluate location for DC suitability"}
+  ]
+}
