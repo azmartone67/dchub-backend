@@ -14182,7 +14182,7 @@ def seed_serverfarm_facilities():
 
 # Defer seeding to background task startup
 # DISABLED: Heavy background tasks moved out of web server process
-# _deferred_bg_threads.append(('ServerFarm Seed', seed_serverfarm_facilities))
+if IS_RAILWAY: _deferred_bg_threads.append(('ServerFarm Seed', seed_serverfarm_facilities))
 
 # =============================================================================
 # AGENT HUB REGISTRATION (runs on import, not just __main__)
@@ -16156,7 +16156,7 @@ def uptime_check():
     return jsonify(result)
 
 # DISABLED: Hits 71+ endpoints at startup - unnecessary overhead
-# _deferred_bg_threads.append(('Tier Gate Verification', verify_tier_gating))
+if IS_RAILWAY: _deferred_bg_threads.append(('Tier Gate Verification', verify_tier_gating))
 
 # =============================================================================
 # STARTUP HEALTH CHECK - Log only, non-blocking
