@@ -16246,3 +16246,46 @@ logger.info("⏳ Background tasks deferred: %d tasks will start in 60s with 10s 
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+
+# =============================================================================
+# WORKER-LEVEL AI TRACKING ENDPOINT
+# Receives fire-and-forget tracking from Cloudflare Worker for all requests,
+# including those served by Neon-direct or cache.
+# =============================================================================
+@app.route('/api/ai/track-request', methods=['POST'])
+def track_worker_request():
+    try:
+        from ai_tracking import detect_platform, is_ai_endpoint
+        data = request.get_json(silent=True) or {}
+        path = data.get('path', '')
+        user_agent = data.get('user_agent', '')
+        
+        if not path or not user_agent:
+            return jsonify({"status": "skipped"}), 200
+        
+        platform = detect_platform(user_agent)
+        if platform in ('unknown', 'generic_bot', 'direct'):
+            return jsonify({"status": "skipped", "platform": platform}), 200
+        
+        # Log to Neon
+        try:
+            with get_db_connection() as conn:
+                cur = conn.cursor()
+                cur.execute("""
+                    INSERT INTO ai_usage_tracking (platform, endpoint, user_agent, timestamp)
+                    VALUES (%s, %s, %s, NOW())
+                """, (platform, path, user_agent[:200]))
+                # Update cumulative
+                cur.execute("""
+                    INSERT INTO ai_cumulative (platform, total_requests, last_seen)
+                    VALUES (%s, 1, NOW())
+                    ON CONFLICT (platform) DO UPDATE 
+                    SET total_requests = ai_cumulative.total_requests + 1, last_seen = NOW()
+                """, (platform,))
+                conn.commit()
+        except Exception as db_err:
+            logger.warning(f"Track-request DB error: {db_err}")
+        
+        return jsonify({"status": "tracked", "platform": platform}), 200
+    except Exception as e:
+        return jsonify({"status": "error"}), 200
