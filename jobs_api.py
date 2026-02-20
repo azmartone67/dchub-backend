@@ -111,6 +111,12 @@ def job_discovery():
                 errors.append(f"{source_name}: {str(e)}")
                 sources[source_name] = {'error': str(e)}
 
+        try:
+            from discovery_monitoring import record_facility_count_snapshot
+            record_facility_count_snapshot()
+        except Exception as e:
+            logger.warning(f"Facility count snapshot: {e}")
+
         duration = time.time() - start
         _record_run('discovery', len(errors) == 0, duration, {
             'facilities_found': total_found,

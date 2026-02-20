@@ -2159,6 +2159,20 @@ except Exception as e:
     logger.error(f"⚠️ Jobs API failed: {e}")
 
 try:
+    from discovery_monitoring import discovery_monitor_bp, init_facility_count_history
+    app.register_blueprint(discovery_monitor_bp)
+    init_facility_count_history()
+    logger.info("✅ Discovery Monitoring API registered")
+    logger.info("   GET  /api/admin/discovery/status")
+    logger.info("   GET  /api/admin/discovery/queue")
+    logger.info("   GET  /api/admin/discovery/recent")
+    logger.info("   GET  /api/admin/discovery/metrics")
+    logger.info("   POST /api/admin/discovery/trigger")
+    logger.info("   GET  /api/admin/discovery/ai-tracking")
+except Exception as e:
+    logger.error(f"⚠️ Discovery Monitoring API failed: {e}")
+
+try:
     from site_risk_apis import register_site_risk_routes
     register_site_risk_routes(app)
     logger.info("✅ Site Risk Assessment API registered")
