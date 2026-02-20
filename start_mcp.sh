@@ -2,14 +2,6 @@
 
 echo "=== Self-healing startup ==="
 
-# Kill any stale processes holding port 5000 (not our parent)
-STALE_PIDS=$(lsof -i :5000 -t 2>/dev/null)
-if [ -n "$STALE_PIDS" ]; then
-    echo "Clearing stale processes on port 5000: $STALE_PIDS"
-    echo "$STALE_PIDS" | xargs kill -9 2>/dev/null
-    sleep 2
-fi
-
 # Kill any stale MCP server on port 8888
 echo "Clearing port 8888..."
 pkill -f "python dchub_mcp_server.py" 2>/dev/null

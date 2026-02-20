@@ -26,7 +26,7 @@ Preferred communication style: Simple, everyday language.
 The backend is built with Flask, combining a multi-source discovery engine and a REST API server. Key components include:
 -   **Discovery Engine:** Aggregates data from 15+ sources and 60+ RSS feeds.
 -   **API Server:** Provides public and authenticated endpoints.
--   **Auto-Pilot & Schedulers:** Automates scheduling for data synchronization and processing.
+-   **Jobs API (Feb 2026):** All background tasks converted to one-shot POST `/api/jobs/*` endpoints with `DCHUB_ADMIN_KEY` auth. External cron triggers: news-refresh, discovery, global-intel, ecosystem, evolution, outreach, promotion, content-publish, ai-wars. Only health watchdog, Neon keepalive, and periodic GC remain as in-process daemon threads.
 -   **Deep Learning Engine:** AI-powered system for pattern learning, transaction detection, capacity tracking, and market trend analysis.
 -   **Self-Learning Discovery:** Autonomously crawls the web for new data sources, including an API Auto-Discovery & Registration Engine for government/industry data APIs, and a KMZ Auto-Discovery Engine for fiber route data.
 -   **AI Agent & Orchestrator:** Manages AI features, coordinates AI agents, performs market sentiment analysis, predictive intelligence, and anomaly detection.

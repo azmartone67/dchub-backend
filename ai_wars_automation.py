@@ -931,21 +931,21 @@ def register_wars_automation(app):
             }
         })
 
-    # ─── Background scheduler ───
+    # ─── Background scheduler ─── DISABLED: Use POST /api/jobs/ai-wars (Feb 2026)
     def _wars_scheduler_loop():
-        """Background thread: run weekly battles on Mondays."""
-        time.sleep(180)  # Wait 3 min after startup
+        """Background thread: DISABLED — use POST /api/jobs/ai-wars instead."""
+        pass  # No-op: converted to one-shot job endpoint
+    if False:  # Dead code preserved for reference
+        time.sleep(180)
         logger.info("⚔️ AI Wars scheduler started")
 
         while True:
             try:
                 now = datetime.now(timezone.utc)
 
-                # Run daily battles between 6-7 AM UTC
                 if now.hour == 6:
                     conn = _get_db()
                     c = conn.cursor()
-                    # Check if we already ran today
                     today = now.strftime('%Y-%m-%d')
                     c.execute("SELECT COUNT(*) FROM wars_battles WHERE date = ? AND category = 'weekly-brief'", (today,))
                     ran_today = c.fetchone()[0]
@@ -955,7 +955,6 @@ def register_wars_automation(app):
                         logger.info("⚔️ Monday detected — running weekly battles")
                         _weekly_battle_runner()
 
-                # Process pending challenges every 30 min
                 try:
                     conn = _get_db()
                     c = conn.cursor()

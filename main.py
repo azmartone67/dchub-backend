@@ -2161,6 +2161,12 @@ except Exception as e:
     logger.error(f"⚠️ AI Wars API failed: {e}")
 
 try:
+    from jobs_api import register_jobs_api
+    register_jobs_api(app)
+except Exception as e:
+    logger.error(f"⚠️ Jobs API failed: {e}")
+
+try:
     from site_risk_apis import register_site_risk_routes
     register_site_risk_routes(app)
     logger.info("✅ Site Risk Assessment API registered")
@@ -16180,15 +16186,17 @@ def _startup_health_check():
 _deferred_bg_threads.append(('Startup Health Check', _startup_health_check))
 
 # --- Staggered Discovery Scheduler ---
-def _start_discovery_scheduler():
-    try:
-        from scheduled_discovery import start_scheduled_discovery
-        start_scheduled_discovery()
-        logger.info("SCHEDULER: Staggered discovery scheduler activated")
-    except Exception as e:
-        logger.error("SCHEDULER: Failed to start: %s", e)
-
-_deferred_bg_threads.append(('Discovery Scheduler', _start_discovery_scheduler))
+# DISABLED: Converted to one-shot /api/jobs/* endpoints (Feb 2026)
+# External cron triggers POST /api/jobs/news-refresh, /api/jobs/discovery, etc.
+# def _start_discovery_scheduler():
+#     try:
+#         from scheduled_discovery import start_scheduled_discovery
+#         start_scheduled_discovery()
+#         logger.info("SCHEDULER: Staggered discovery scheduler activated")
+#     except Exception as e:
+#         logger.error("SCHEDULER: Failed to start: %s", e)
+# _deferred_bg_threads.append(('Discovery Scheduler', _start_discovery_scheduler))
+logger.info("SCHEDULER: Discovery scheduler DISABLED — use POST /api/jobs/* with external cron")
 
 @app.route('/api/scheduler/status', methods=['GET'])
 def scheduler_status():
