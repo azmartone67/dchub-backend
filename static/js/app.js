@@ -88,7 +88,7 @@ async function loadStats() {
 
 async function loadAITracking() {
     try {
-        const result = await fetchAPI('/ai/tracking');
+        const result = await fetchAPI('/api/v1/ai-tracking/stats');
         if (result) {
             const activePlatforms = result.platforms_active || 3;
             const totalRequests = result.total_requests_all_time || 0;

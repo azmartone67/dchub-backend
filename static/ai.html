@@ -1747,7 +1747,7 @@ dchub_tool = Tool(
     // FETCH: Platform Registry from /ai/platforms
     // ═══════════════════════════════════════════════════════
     async function fetchPlatforms() {
-        const paths = ['/ai/platforms', '/api/ai-ecosystem/platforms'];
+        const paths = ['/api/ai-ecosystem/platforms', '/ai/platforms'];
         for (const base of API_URLS) {
             for (const p of paths) {
                 try {
@@ -1958,7 +1958,7 @@ dchub_tool = Tool(
     // FETCH: Live Tracking Data from Persistent Backend
     // ═══════════════════════════════════════════════════════
     async function fetchTrackingData() {
-        const paths = ['/api/v1/ai-tracking/stats', '/ai/tracking', '/api/ai/tracking'];
+        const paths = ['/api/v1/ai-tracking/stats', '/api/ai/tracking', '/ai/tracking'];
         for (const base of API_URLS) {
         for (const p of paths) {
             try {
