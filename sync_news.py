@@ -214,7 +214,7 @@ if source == 'replit_pg':
     errors = 0
     for row in rows:
         try:
-            nc.execute(f'INSERT INTO news_articles ({col_list}) VALUES ({placeholders})', row)
+            nc.execute(f'INSERT INTO news_articles ({col_list}) VALUES ({placeholders}) ON CONFLICT (id) DO NOTHING', row)
             synced += 1
         except Exception as e:
             errors += 1
@@ -282,7 +282,7 @@ elif source == 'sqlite':
     errors = 0
     for row in rows:
         try:
-            nc.execute(f'INSERT INTO news_articles ({col_list}) VALUES ({placeholders})', tuple(row))
+            nc.execute(f'INSERT INTO news_articles ({col_list}) VALUES ({placeholders}) ON CONFLICT (id) DO NOTHING', tuple(row))
             synced += 1
         except Exception as e:
             errors += 1
