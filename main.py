@@ -10355,13 +10355,39 @@ def serve_frontend():
 
 @app.route('/api/health', methods=['GET'])
 def api_health():
-    """Lightweight health check — responds instantly without database access."""
-    return jsonify({
+    """Health check with data counts for monitoring and failover validation."""
+    health = {
         'status': 'healthy',
         'timestamp': datetime.utcnow().isoformat() + 'Z',
         'version': APP_VERSION,
-        'uptime_seconds': round(time.time() - APP_START_TIME)
-    })
+        'uptime_seconds': round(time.time() - APP_START_TIME),
+        'environment': 'railway' if IS_RAILWAY else 'replit',
+        'source': 'neon',
+        'facility_count': 0,
+        'deal_count': 0,
+        'news_count': 0,
+    }
+    try:
+        with pg_connection() as conn:
+            cur = conn.cursor()
+            try:
+                cur.execute("SELECT COUNT(*) FROM facilities")
+                health['facility_count'] = cur.fetchone()[0] or 0
+            except Exception:
+                pass
+            try:
+                cur.execute("SELECT COUNT(*) FROM deals")
+                health['deal_count'] = cur.fetchone()[0] or 0
+            except Exception:
+                pass
+            try:
+                cur.execute("SELECT COUNT(*) FROM announcements")
+                health['news_count'] = cur.fetchone()[0] or 0
+            except Exception:
+                pass
+    except Exception:
+        health['source'] = 'neon-unreachable'
+    return jsonify(health)
 
 
 # =============================================================================
