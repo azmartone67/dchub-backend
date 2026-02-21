@@ -353,8 +353,8 @@ def _init_pg_pool():
     for attempt in range(3):
         try:
             _pg_pool_obj = _pg_pool.ThreadedConnectionPool(
-                minconn=2,
-                maxconn=20,
+                minconn=int(os.environ.get('DB_POOL_MIN', 2)),
+                maxconn=int(os.environ.get('DB_POOL_MAX', 20)),
                 dsn=pg_url,
                 connect_timeout=15,
             )
