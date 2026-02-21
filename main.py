@@ -1825,7 +1825,10 @@ MCP_PLATFORM_MAP = {
 
 def _log_mcp_analytics(rpc_method, rpc_params, platform, client_name, duration_ms, success=True):
     try:
-        db = get_db()
+        from db_utils import try_get_db
+        db = try_get_db()
+        if db is None:
+            return
         if rpc_method in ('initialize', 'tools/list', 'resources/list', 'prompts/list'):
             db.execute('''INSERT INTO mcp_connections 
                 (platform, client_name, client_version, protocol_version, method, 
@@ -1837,7 +1840,7 @@ def _log_mcp_analytics(rpc_method, rpc_params, platform, client_name, duration_m
                  rpc_method,
                  request.remote_addr,
                  request.headers.get('User-Agent', ''),
-                 1 if success else 0))
+                 True if success else False))
         if rpc_method == 'tools/call':
             tool_name = rpc_params.get('name', 'unknown') if rpc_params else 'unknown'
             db.execute('''INSERT INTO mcp_tool_calls
@@ -1846,7 +1849,7 @@ def _log_mcp_analytics(rpc_method, rpc_params, platform, client_name, duration_m
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
                 (tool_name, platform, client_name,
                  json.dumps(rpc_params.get('arguments', {})) if rpc_params else '{}',
-                 1 if success else 0, duration_ms,
+                 True if success else False, duration_ms,
                  request.remote_addr,
                  request.headers.get('User-Agent', '')))
         db.commit()
