@@ -8683,8 +8683,7 @@ def get_stats():
         cache_for_degradation('v1_stats', result)
         return jsonify(result)
     except Exception as e:
-        import traceback; logger.error(f"Stats endpoint error: {e}
-{traceback.format_exc()}")
+        import traceback; logger.error(f"Stats endpoint error: {e}\n{traceback.format_exc()}")
         cached, age = get_degraded_data('v1_stats')
         if cached:
             cached['degraded'] = True

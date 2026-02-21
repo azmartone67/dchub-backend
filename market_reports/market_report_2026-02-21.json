@@ -1,21 +1,56 @@
 {
   "report_date": "2026-02-21",
-  "generated_at": "2026-02-21T04:46:48.435994",
+  "generated_at": "2026-02-21T07:01:26.865738",
   "summary": {
-    "total_facilities": 10746,
-    "total_providers": 3891,
-    "countries_covered": 169,
-    "total_power_mw": 26291.0,
-    "total_deals": 471,
-    "total_deal_value_usd": 8055030.0
+    "total_facilities": 11422,
+    "total_providers": 3955,
+    "countries_covered": 170,
+    "total_power_mw": 51325.0,
+    "total_deals": 473,
+    "total_deal_value_usd": 1583055100.0
   },
   "market_highlights": [
-    "DC Hub tracks 10,746 data center facilities globally",
-    "Coverage spans 169 countries with 3891 providers",
-    "Combined capacity: 26,291 MW",
-    "M&A database: 471 transactions worth $0.0B+"
+    "DC Hub tracks 11,422 data center facilities globally",
+    "Coverage spans 170 countries with 3955 providers",
+    "Combined capacity: 51,325 MW",
+    "M&A database: 473 transactions worth $1.6B+"
   ],
   "recent_deals": [
+    {
+      "buyer": "PGIM",
+      "seller": "site for",
+      "value_usd": 1200000000.0,
+      "type": "ma",
+      "date": null
+    },
+    {
+      "buyer": "GeoPark to",
+      "seller": "Fronterra Energy",
+      "value_usd": 375000000.0,
+      "type": "ma",
+      "date": null
+    },
+    {
+      "buyer": "CyrusOne",
+      "seller": "Constellation",
+      "value_usd": 0.0,
+      "type": "jv",
+      "date": "2026-02-12"
+    },
+    {
+      "buyer": "Blackstone",
+      "seller": "Coatue",
+      "value_usd": 0.0,
+      "type": "debt",
+      "date": "2026-02-12"
+    },
+    {
+      "buyer": "Open Access Data Centres",
+      "seller": "NTT",
+      "value_usd": 0.0,
+      "type": "ma",
+      "date": "2026-02-12"
+    },
     {
       "buyer": "Constellation",
       "seller": "Constellation Energy",
@@ -38,27 +73,6 @@
       "date": "2026-02-12"
     },
     {
-      "buyer": "Open Access Data Centres",
-      "seller": "NTT",
-      "value_usd": 0.0,
-      "type": "ma",
-      "date": "2026-02-12"
-    },
-    {
-      "buyer": "CyrusOne",
-      "seller": "Constellation",
-      "value_usd": 0.0,
-      "type": "jv",
-      "date": "2026-02-12"
-    },
-    {
-      "buyer": "Blackstone",
-      "seller": "Coatue",
-      "value_usd": 0.0,
-      "type": "debt",
-      "date": "2026-02-12"
-    },
-    {
       "buyer": "Blackstone",
       "seller": "Coatue",
       "value_usd": 10000.0,
@@ -71,72 +85,58 @@
       "value_usd": 10000.0,
       "type": "debt",
       "date": "2026-02-09"
-    },
-    {
-      "buyer": "Oracle",
-      "seller": "OpenAI",
-      "value_usd": 0.0,
-      "type": "unknown",
-      "date": "2026-02-08"
-    },
-    {
-      "buyer": "Oracle",
-      "seller": "xAI",
-      "value_usd": 50000.0,
-      "type": "unknown",
-      "date": "2026-02-08"
     }
   ],
   "recent_news": [
     {
-      "title": "Exowatt taps DG Matrix solid-state transformers to route power for gigawatt-scale solar data center builds",
-      "source": "Data Center Dynamics",
-      "date": "2026-02-16T08:25:42"
+      "title": "Tucson hosts first public meeting on proposed data center regulations",
+      "source": "AZPM News",
+      "date": "2026-02-21T00:48:58"
     },
     {
-      "title": "Why the Data Center Cooling Market Is Redefining Digital Infrastructure Efficiency?",
-      "source": "vocal.media",
-      "date": "2026-02-16T07:03:00"
+      "title": "Better Data Center Stock: Applied Digital vs. Riot Platforms",
+      "source": "The Motley Fool",
+      "date": "2026-02-21T00:30:00"
     },
     {
-      "title": "Blackstone Invests $600M in Neysa to Boost India\u2019s AI Infrastructure",
-      "source": "techi.com",
-      "date": "2026-02-16T06:51:58"
+      "title": "GMI Cloud Highlights Cisco Collaboration on NVIDIA-Native AI Infrastructure",
+      "source": "TipRanks",
+      "date": "2026-02-21T00:23:19"
     },
     {
-      "title": "Maryland counties to data center industry: Slow down",
-      "source": "Bay Journal",
-      "date": "2026-02-16T06:15:00"
+      "title": "Power\u2011Hungry, Grid\u2011Locked : Where Hyperscalers Go To Find Their Next Megawatts",
+      "source": "Energy News Beat",
+      "date": "2026-02-20T23:59:44"
     },
     {
-      "title": "Cisco set to release home-brew hypervisor as a VMware alternative",
-      "source": "The Register DC",
-      "date": "2026-02-16T05:39:06"
+      "title": "Can an Algorithm Solve Data Centers\u2019 Power Problem?",
+      "source": "Heatmap News",
+      "date": "2026-02-20T23:44:22"
     },
     {
-      "title": "Legrand Acquires Power Equipment Manufacturer Kratos Industries And Invests In Liquid Cooling Firm Accelsius",
-      "source": "Pulse 2.0",
-      "date": "2026-02-16T05:26:15"
+      "title": "Data center concerns won't derail sale of Minnesota Power",
+      "source": "Duluth News Tribune",
+      "date": "2026-02-20T23:18:09"
     },
     {
-      "title": "US appears open to reversing some China tech bans",
-      "source": "The Register DC",
-      "date": "2026-02-16T04:35:08"
+      "title": "Community group to discuss data centers",
+      "source": "DerbyInformer.com",
+      "date": "2026-02-20T22:50:00"
     },
     {
-      "title": "How HVDC is Rewriting the Data Center Architecture Playbook",
-      "source": "The Fast Mode",
-      "date": "2026-02-16T03:58:56"
+      "title": "Meta announces plans to build 1-gigawatt data center in Indiana as part of AI build-out",
+      "source": "AOL.com",
+      "date": "2026-02-20T22:20:02"
     },
     {
-      "title": "Telkom Indonesia Is Said to Revive Plan for Data Center Stake Sale",
-      "source": "Bloomberg Tech",
-      "date": "2026-02-16T03:19:45"
+      "title": "Crusoe is building an easy button for AI infrastructure",
+      "source": "fiercewireless.com",
+      "date": "2026-02-20T22:11:00"
     },
     {
-      "title": "C2i Semiconductors raises $15M funding round to cut AI data center power use",
-      "source": "Communications Today",
-      "date": "2026-02-16T03:16:56"
+      "title": "Crusoe is building an easy button for AI infrastructure",
+      "source": "Fierce Network",
+      "date": "2026-02-20T22:11:00"
     }
   ],
   "data_sources": [
