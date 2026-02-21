@@ -353,8 +353,8 @@ def _init_pg_pool():
     for attempt in range(3):
         try:
             _pg_pool_obj = _pg_pool.ThreadedConnectionPool(
-                minconn=1,
-                maxconn=8,
+                minconn=2,
+                maxconn=20,
                 dsn=pg_url,
                 connect_timeout=15,
             )
@@ -524,7 +524,7 @@ def get_pool_health():
                     'stack': info['stack'][:300],
                 })
 
-    max_conn = 8
+    max_conn = 20
     estimated_available = max(0, max_conn - checked_out)
     utilization = round(checked_out / max_conn * 100, 1) if max_conn else 0
 
