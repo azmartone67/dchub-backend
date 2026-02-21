@@ -5,8 +5,6 @@
   },
   "deploy": {
     "startCommand": "gunicorn main:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120 --max-requests 1000 --max-requests-jitter 50",
-    "healthcheckPath": "/api/v1/version",
-    "healthcheckTimeout": 120,
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 10
   }
