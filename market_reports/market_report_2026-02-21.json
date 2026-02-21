@@ -1,6 +1,6 @@
 {
   "report_date": "2026-02-21",
-  "generated_at": "2026-02-21T01:19:06.162032",
+  "generated_at": "2026-02-21T02:08:33.035612",
   "summary": {
     "total_facilities": 11422,
     "total_providers": 3955,
@@ -89,6 +89,41 @@
   ],
   "recent_news": [
     {
+      "title": "Better Data Center Stock: Applied Digital vs. Riot Platforms",
+      "source": "The Motley Fool",
+      "date": "2026-02-21T00:30:00"
+    },
+    {
+      "title": "GMI Cloud Highlights Cisco Collaboration on NVIDIA-Native AI Infrastructure",
+      "source": "TipRanks",
+      "date": "2026-02-21T00:23:19"
+    },
+    {
+      "title": "Power\u2011Hungry, Grid\u2011Locked : Where Hyperscalers Go To Find Their Next Megawatts",
+      "source": "Energy News Beat",
+      "date": "2026-02-20T23:59:44"
+    },
+    {
+      "title": "Data center concerns won't derail sale of Minnesota Power",
+      "source": "Duluth News Tribune",
+      "date": "2026-02-20T23:18:09"
+    },
+    {
+      "title": "Crusoe is building an easy button for AI infrastructure",
+      "source": "fiercewireless.com",
+      "date": "2026-02-20T22:11:00"
+    },
+    {
+      "title": "A new task force in Champaign County will set parameters for large-scale data center development",
+      "source": "IPM Newsroom",
+      "date": "2026-02-20T22:01:30"
+    },
+    {
+      "title": "CoreWeave Stock Falls Amid Blue Owl Doubts, Data Center Debt Financing Report",
+      "source": "Investor's Business Daily",
+      "date": "2026-02-20T21:15:00"
+    },
+    {
       "title": "Virginia data center tax reform passes House as other sales tax bills stall",
       "source": "Virginia Business",
       "date": "2026-02-20T20:56:24"
@@ -102,41 +137,6 @@
       "title": "Trump is making coal plants even dirtier as AI demands more energy",
       "source": "The Verge",
       "date": "2026-02-20T20:18:34"
-    },
-    {
-      "title": "Data centers are creating a manufacturing boom across the Magnolia State",
-      "source": "Vicksburg Daily News",
-      "date": "2026-02-20T20:08:12"
-    },
-    {
-      "title": "US Supreme Court strikes down Trump tariffs",
-      "source": "Data Center Dynamics",
-      "date": "2026-02-20T19:51:02"
-    },
-    {
-      "title": "Washtenaw court denies reopening of Saline data center lawsuit",
-      "source": "The Detroit News",
-      "date": "2026-02-20T19:30:00"
-    },
-    {
-      "title": "Microsoft\u2019s Glass Breakthrough: Coming to a Data Center Near You?",
-      "source": "Data Center Knowledge",
-      "date": "2026-02-20T19:03:12"
-    },
-    {
-      "title": "Canadian utility Hydro-Qu\u00e9bec proposes electricity tariff for data centers",
-      "source": "Data Center Dynamics",
-      "date": "2026-02-20T19:00:03"
-    },
-    {
-      "title": "South Dakota Senate committee kills data center moratorium bill targeting 50-megawatt projects",
-      "source": "Mitchell Now",
-      "date": "2026-02-20T18:25:38"
-    },
-    {
-      "title": "Member of legislature in Ontario, Canada, claims data center could come to Sarnia-Lambton",
-      "source": "Data Center Dynamics",
-      "date": "2026-02-20T18:00:04"
     }
   ],
   "data_sources": [
