@@ -358,7 +358,7 @@ def _init_pg_pool():
                 dsn=pg_url,
                 connect_timeout=15,
             )
-            print(f"DATABASE POOL: ✅ Single pool initialized (attempt {attempt+1}) — 1-8 connections")
+            print(f"DATABASE POOL: ✅ Single pool initialized (attempt {attempt+1}) — 2-20 connections")
             return
         except Exception as e:
             print(f"DATABASE POOL: ⚠️ Pool init attempt {attempt+1}/3 failed: {e}")

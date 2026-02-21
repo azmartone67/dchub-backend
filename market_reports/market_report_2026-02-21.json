@@ -1,6 +1,6 @@
 {
   "report_date": "2026-02-21",
-  "generated_at": "2026-02-21T07:01:26.865738",
+  "generated_at": "2026-02-21T09:31:55.342842",
   "summary": {
     "total_facilities": 11422,
     "total_providers": 3955,
@@ -89,6 +89,21 @@
   ],
   "recent_news": [
     {
+      "title": "Ofcom's grumble-o-meter lights up for EE, TalkTalk, Vodafone",
+      "source": "The Register DC",
+      "date": "2026-02-21T08:27:08"
+    },
+    {
+      "title": "Clean the Sky - European AI Infrastructure Parnterships",
+      "source": "Trend Hunter",
+      "date": "2026-02-21T08:20:59"
+    },
+    {
+      "title": "Nvidia and Broadcom Compete in AI Infrastructure",
+      "source": "Intellectia AI",
+      "date": "2026-02-21T08:19:49"
+    },
+    {
       "title": "Tucson hosts first public meeting on proposed data center regulations",
       "source": "AZPM News",
       "date": "2026-02-21T00:48:58"
@@ -122,21 +137,6 @@
       "title": "Community group to discuss data centers",
       "source": "DerbyInformer.com",
       "date": "2026-02-20T22:50:00"
-    },
-    {
-      "title": "Meta announces plans to build 1-gigawatt data center in Indiana as part of AI build-out",
-      "source": "AOL.com",
-      "date": "2026-02-20T22:20:02"
-    },
-    {
-      "title": "Crusoe is building an easy button for AI infrastructure",
-      "source": "fiercewireless.com",
-      "date": "2026-02-20T22:11:00"
-    },
-    {
-      "title": "Crusoe is building an easy button for AI infrastructure",
-      "source": "Fierce Network",
-      "date": "2026-02-20T22:11:00"
     }
   ],
   "data_sources": [
