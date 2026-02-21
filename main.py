@@ -8626,7 +8626,7 @@ def get_stats():
         except:
             stats['total_announcements'] = 0
         
-        c.execute("SELECT source, COUNT(*) FROM facilities GROUP BY source ORDER BY COUNT(*) DESC")
+        c.execute("SELECT source, COUNT(*) FROM facilities WHERE source IS NOT NULL AND source != '' GROUP BY source ORDER BY COUNT(*) DESC")
         stats['by_source'] = dict(c.fetchall())
         
         c.execute("SELECT country, COUNT(*) FROM facilities WHERE country != '' GROUP BY country ORDER BY COUNT(*) DESC LIMIT 10")
@@ -8640,7 +8640,7 @@ def get_stats():
         """)
         stats['top_providers'] = dict(c.fetchall())
         
-        c.execute("SELECT status, COUNT(*) FROM facilities GROUP BY status")
+        c.execute("SELECT status, COUNT(*) FROM facilities WHERE status IS NOT NULL GROUP BY status")
         stats['by_status'] = dict(c.fetchall())
         
         c.execute("SELECT COUNT(*) FROM facilities WHERE first_seen::timestamp > NOW() - INTERVAL '7 days'")
@@ -11180,7 +11180,7 @@ def api_facilities_stats():
     total = c.fetchone()[0]
     
     # By status
-    c.execute("SELECT status, COUNT(*) FROM facilities GROUP BY status")
+    c.execute("SELECT status, COUNT(*) FROM facilities WHERE status IS NOT NULL GROUP BY status")
     by_status = dict(c.fetchall())
     
     # By region (top 10)
