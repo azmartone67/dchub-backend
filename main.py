@@ -8643,7 +8643,7 @@ def get_stats():
         c.execute("SELECT status, COUNT(*) FROM facilities GROUP BY status")
         stats['by_status'] = dict(c.fetchall())
         
-        c.execute("SELECT COUNT(*) FROM facilities WHERE first_seen > NOW() - INTERVAL '7 days'")
+        c.execute("SELECT COUNT(*) FROM facilities WHERE first_seen::timestamp > NOW() - INTERVAL '7 days'")
         stats['new_last_7_days'] = c.fetchone()[0] or 0
         
         c.execute("""
