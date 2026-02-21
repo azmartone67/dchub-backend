@@ -15277,7 +15277,7 @@ try:
             _s.stderr.flush()
 
     # Railway runs news scheduler, Replit skips it
-    if IS_RAILWAY: _deferred_bg_threads.append(('News Scheduler', _news_staggered_startup))
+    if IS_RAILWAY and not os.environ.get('NEWS_VIA_CRON'): _deferred_bg_threads.append(('News Scheduler', _news_staggered_startup))
     print("NEWS SCHEDULER: DISABLED (run via cron)")
 except ImportError:
     print("NEWS SCHEDULER: Not installed (auto_sync missing)")
