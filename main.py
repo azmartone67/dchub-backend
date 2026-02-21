@@ -8608,7 +8608,7 @@ def get_stats():
         main_count = c.fetchone()[0] or 0
         
         try:
-            c.execute("SELECT COUNT(*) FROM discovered_facilities WHERE is_duplicate = false OR is_duplicate = 0")
+            c.execute("SELECT COUNT(*) FROM discovered_facilities WHERE is_duplicate = 0")
             discovered_count = c.fetchone()[0] or 0
         except:
             discovered_count = 0
@@ -14659,7 +14659,7 @@ def data_freshness():
 
         facilities_count = safe_query("SELECT COUNT(*) FROM facilities", 0)
         facilities_with_coords = safe_query("SELECT COUNT(*) FROM facilities WHERE latitude IS NOT NULL AND longitude IS NOT NULL", 0)
-        discovered_count = safe_query("SELECT COUNT(*) FROM discovered_facilities WHERE is_duplicate = false OR is_duplicate = 0", 0)
+        discovered_count = safe_query("SELECT COUNT(*) FROM discovered_facilities WHERE is_duplicate = 0", 0)
         facilities_newest = safe_query("SELECT MAX(first_seen) FROM facilities")
         feeds['facilities'] = {
             'record_count': facilities_count,
