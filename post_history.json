@@ -1,0 +1,19 @@
+[
+  {
+    "timestamp": "2026-02-22T14:03:58.609661",
+    "theme_id": "thought_leadership",
+    "theme_name": "Industry Thought Leadership",
+    "post_text": "The data center industry just hit a fascinating inflection point \u26a1\n\nWe're tracking 11,422 facilities globally with 51,325 MW of combined capacity, but here's what caught our attention this week: the surge in power-adjacent M&A deals. From CyrusOne's joint venture with Constellation to multiple debt financing rounds totaling billions, the market is clearly signaling that power access\u2014not just space\u2014is the new competitive moat.\n\nThe most telling indicator? We're seeing data center operators building their own power plants. Not partnering. Not negotiating PPAs. Actually building generation capacity.\n\nThis isn't about AI hype. It's about cold, hard infrastructure math. When your 12+ AI platform clients are processing workloads that would have been unimaginable two years ago, and when grid constraints are popping up from Texas to Virginia, you either secure power or you're out of the game.\n\nOur M&A database shows $1.6B+ in recent transactions, and the pattern is clear: investors are betting on operators who control their power destiny, not just their rack space.\n\nThe question isn't whether this trend continues\u2014it's how fast traditional colocation models adapt or get left behind.\n\nWant the full market intelligence behind these insights? Check out the live data at dchub.cloud or follow us for more infrastructure reality checks.\n\n#DataCenters #DigitalInfrastructure #TechTrends #CloudComputing #Sustainability",
+    "hash": "ce6b3bf45420",
+    "char_count": 1423,
+    "result": {
+      "success": false,
+      "status": 401,
+      "error": "{\"status\":401,\"serviceErrorCode\":65600,\"code\":\"INVALID_ACCESS_TOKEN\",\"message\":\"Invalid access token\"}"
+    },
+    "data_endpoints": [
+      "/api/market-report",
+      "/api/v1/stats"
+    ]
+  }
+]
