@@ -314,38 +314,40 @@ def get_user_plan(user_id=None, email=None):
         import logging
         logging.warning(f"get_user_plan PG lookup failed: {e}")
 
-    conn = get_db()
-    
-    c = conn.cursor()
+    try:
+        conn = get_db()
+        c = conn.cursor()
 
-    if user_id:
-        c.execute("SELECT plan, subscription_status, role FROM users WHERE id = ?", (user_id,))
-        row = c.fetchone()
+        if user_id:
+            c.execute("SELECT plan, subscription_status, role FROM users WHERE id = %s", (str(user_id),))
+            row = c.fetchone()
 
-    if not row and email:
-        c.execute("SELECT plan, subscription_status, role FROM users WHERE email = ?", (email,))
-        row = c.fetchone()
+        if not row and email:
+            c.execute("SELECT plan, subscription_status, role FROM users WHERE email = %s", (email,))
+            row = c.fetchone()
 
-    if not row and user_id and isinstance(user_id, str) and '@' in str(user_id):
-        c.execute("SELECT plan, subscription_status, role FROM users WHERE email = ?", (user_id,))
-        row = c.fetchone()
+        if not row and user_id and isinstance(user_id, str) and '@' in str(user_id):
+            c.execute("SELECT plan, subscription_status, role FROM users WHERE email = %s", (user_id,))
+            row = c.fetchone()
 
-    conn.close()
+        conn.close()
 
-    if not row:
+        if not row:
+            return 'free'
+
+        plan_val = row[0] or 'free'
+        status_val = row[1] or ''
+        role_val = row[2] or ''
+
+        if role_val == 'admin':
+            return 'admin'
+        if status_val in ('canceled', 'unpaid'):
+            return 'free'
+        return plan_val
+    except Exception as e:
+        import logging
+        logging.warning(f"get_user_plan fallback lookup failed: {e}")
         return 'free'
-
-    role = row['role'] or ''
-    if role == 'admin':
-        return 'admin'
-
-    plan = row['plan'] or 'free'
-    status = row['subscription_status'] or ''
-
-    if status in ('canceled', 'unpaid'):
-        return 'free'
-
-    return plan
 
 
 def user_has_access(user_plan, required_plan):

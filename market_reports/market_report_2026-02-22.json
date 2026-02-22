@@ -1,6 +1,6 @@
 {
   "report_date": "2026-02-22",
-  "generated_at": "2026-02-22T00:38:45.743151",
+  "generated_at": "2026-02-22T00:49:30.284848",
   "summary": {
     "total_facilities": 11422,
     "total_providers": 3955,
@@ -91,7 +91,17 @@
     {
       "title": "Botetourt community seeks answers, plans action on Google data center proposal",
       "source": "WSLS",
+      "date": "2026-02-22T00:34:20"
+    },
+    {
+      "title": "Botetourt community seeks answers, plans action on Google data center proposal",
+      "source": "WSLS",
       "date": "2026-02-21T23:59:34"
+    },
+    {
+      "title": "Sam Altman says Elon Musk's idea of putting data centers in space is 'ridiculous'",
+      "source": "Business Insider",
+      "date": "2026-02-21T22:57:00"
     },
     {
       "title": "Big Tech wants more data centers. Residents in this New Jersey city said not here.",
@@ -127,16 +137,6 @@
       "title": "Data centers uniting some on the political extremes",
       "source": "The Dakota Scout",
       "date": "2026-02-21T17:40:52"
-    },
-    {
-      "title": "Alberta Data Center News: IIOSC Developments",
-      "source": "thedetroitbureau.com",
-      "date": "2026-02-21T15:28:41"
-    },
-    {
-      "title": "Texas Could Become World\u2019s Largest Data Center Hub By 2030",
-      "source": "Dallas Express",
-      "date": "2026-02-21T14:50:43"
     }
   ],
   "data_sources": [

@@ -14495,7 +14495,7 @@ CAPACITY_HEATMAP_MARKETS = [
 ]
 
 @app.route('/api/v1/land-power/data', methods=['GET'])
-@require_plan('enterprise')
+@require_plan('pro')
 def land_power_consolidated():
     """
     Consolidated data endpoint for Land & Power page.

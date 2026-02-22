@@ -7949,16 +7949,16 @@ var markets = {
             modal.innerHTML = '\
                 <div style="background:#0f1119;border:1px solid #252836;border-radius:16px;padding:32px;max-width:420px;width:90%;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,0.5);">\
                     <div style="font-size:48px;margin-bottom:16px;">🔒</div>\
-                    <h2 style="color:#fff;font-size:24px;margin-bottom:12px;">Daily Limit Reached</h2>\
+                    <h2 style="color:#fff;font-size:24px;margin-bottom:12px;">Monthly Limit Reached</h2>\
                     <p style="color:#9ca3af;font-size:14px;line-height:1.6;margin-bottom:24px;">\
-                        Free users get <strong style="color:#f59e0b;">1 site evaluation per day</strong>.<br>\
+                        Free users get <strong style="color:#f59e0b;">1 site evaluation per month</strong>.<br>\
                         Upgrade to Pro for unlimited Land & Power access.\
                     </p>\
                     <div style="display:flex;flex-direction:column;gap:12px;">\
-                        <a href="pricing.html" style="display:block;padding:14px 24px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;border-radius:8px;font-weight:600;text-decoration:none;font-size:14px;">Upgrade to Pro →</a>\
+                        <a href="/pricing.html" style="display:block;padding:14px 24px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;border-radius:8px;font-weight:600;text-decoration:none;font-size:14px;">Upgrade to Pro →</a>\
                         <button id="close-upgrade-modal" style="padding:10px;background:transparent;border:none;color:#6b7280;cursor:pointer;font-size:13px;">Maybe Later</button>\
                     </div>\
-                    <p style="color:#6b7280;font-size:11px;margin-top:20px;">Your free evaluation resets tomorrow at midnight.</p>\
+                    <p style="color:#6b7280;font-size:11px;margin-top:20px;">Your free evaluation resets on the 1st of each month.</p>\
                 </div>\
             ';
             
@@ -7993,11 +7993,11 @@ var markets = {
                     <h2 style="color:#fff;font-size:24px;margin-bottom:12px;">Sign In Required</h2>\
                     <p style="color:#9ca3af;font-size:14px;line-height:1.6;margin-bottom:24px;">\
                         Create a free account to access Land & Power tools.<br>\
-                        <strong style="color:#10b981;">Free users get 1 evaluation/day.</strong>\
+                        <strong style="color:#10b981;">Free users get 1 evaluation/month.</strong>\
                     </p>\
                     <div style="display:flex;flex-direction:column;gap:12px;">\
-                        <a href="login.html" style="display:block;padding:14px 24px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;border-radius:8px;font-weight:600;text-decoration:none;font-size:14px;">Sign In / Sign Up →</a>\
-                        <a href="pricing.html" style="display:block;padding:14px 24px;background:#181a25;color:#fff;border:1px solid #252836;border-radius:8px;font-weight:600;text-decoration:none;font-size:14px;">View Plans</a>\
+                        <a href="/login.html" style="display:block;padding:14px 24px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;border-radius:8px;font-weight:600;text-decoration:none;font-size:14px;">Sign In / Sign Up →</a>\
+                        <a href="/pricing.html" style="display:block;padding:14px 24px;background:#181a25;color:#fff;border:1px solid #252836;border-radius:8px;font-weight:600;text-decoration:none;font-size:14px;">View Plans</a>\
                         <button id="close-login-modal" style="padding:10px;background:transparent;border:none;color:#6b7280;cursor:pointer;font-size:13px;">Just Browsing</button>\
                     </div>\
                 </div>\
@@ -8141,38 +8141,46 @@ var markets = {
         
         function evaluateSite(lat, lng, address) {
             // ============================================
-            // RATE LIMITING: Guest=0, Free=1/day, Pro=Unlimited
+            // RATE LIMITING: Verify auth with backend
+            // Guest=login prompt, Free=1/month, Pro=Unlimited
             // ============================================
             console.log('🔒 Rate limit check starting...');
             
             var userToken = localStorage.getItem('dchub_token');
             var sessionAuth = sessionStorage.getItem('dchub_auth');
             var userData = localStorage.getItem('dchub_user');
+            var authToken = userToken || sessionAuth || '';
             
             console.log('🔒 Auth check:', { userToken: !!userToken, sessionAuth: !!sessionAuth, userData: !!userData });
             
-            // Must have a valid token or user data to be considered logged in
-            var isLoggedIn = false;
-            if (userToken && userToken.length > 10) {
-                isLoggedIn = true;
-            } else if (sessionAuth && sessionAuth.length > 10) {
-                isLoggedIn = true;
-            } else if (userData) {
-                try {
-                    var user = JSON.parse(userData);
-                    if (user && user.email) {
-                        isLoggedIn = true;
+            if (!authToken || authToken.length < 10) {
+                if (userData) {
+                    try {
+                        var user = JSON.parse(userData);
+                        if (!user || !user.email) {
+                            console.log('🔒 BLOCKED: No valid token or user data');
+                            showLoginPrompt();
+                            return;
+                        }
+                    } catch(e) {
+                        console.log('🔒 BLOCKED: Invalid user data');
+                        showLoginPrompt();
+                        return;
                     }
-                } catch(e) {
-                    console.log('🔒 Invalid user data in localStorage');
+                } else {
+                    console.log('🔒 BLOCKED: User not logged in');
+                    showLoginPrompt();
+                    return;
                 }
             }
             
-            console.log('🔒 isLoggedIn:', isLoggedIn);
+            var headers = {};
+            if (authToken && authToken.length > 10) {
+                headers['Authorization'] = 'Bearer ' + authToken;
+            }
             
-            // Check if user is Pro
             var isPro = false;
-            if (isLoggedIn && userData) {
+            if (userData) {
                 try {
                     var user = JSON.parse(userData);
                     isPro = user.tier === 'pro' || user.tier === 'enterprise' || user.plan === 'pro' || user.plan === 'enterprise' || user.isPro === true;
@@ -8184,40 +8192,73 @@ var markets = {
             
             console.log('🔒 isPro:', isPro);
             
-            // NOT LOGGED IN - Cannot use tool at all
-            if (!isLoggedIn) {
-                console.log('🔒 BLOCKED: User not logged in');
-                showLoginPrompt();
+            if (isPro) {
+                console.log('🔒 ALLOWED: Pro user, skipping limit check');
+                _doEvaluateSite(lat, lng, address, headers);
                 return;
             }
             
-            // FREE USER - 1 evaluation per day
-            if (!isPro) {
-                var today = new Date().toISOString().split('T')[0];
-                var usageKey = 'dchub_landpower_usage';
-                var usage = JSON.parse(localStorage.getItem(usageKey) || '{}');
+            fetch('/api/v1/land-power/usage', { headers: headers })
+            .then(function(res) { return res.json(); })
+            .then(function(data) {
+                console.log('🔒 Backend usage check:', data);
                 
-                if (usage.date !== today) {
-                    usage = { date: today, count: 0 };
+                if (!data.authenticated) {
+                    console.log('🔒 BLOCKED: Backend says not authenticated');
+                    showLoginPrompt();
+                    return;
                 }
                 
-                console.log('🔒 Free user usage:', usage);
-                
-                var FREE_DAILY_LIMIT = 1;
-                if (usage.count >= FREE_DAILY_LIMIT) {
-                    console.log('🔒 BLOCKED: Daily limit reached');
+                if (data.searches_remaining === 0 && data.searches_limit > 0) {
+                    console.log('🔒 BLOCKED: Monthly limit reached');
                     showUpgradePrompt();
                     return;
                 }
                 
+                fetch('/api/v1/land-power/track', {
+                    method: 'POST',
+                    headers: Object.assign({ 'Content-Type': 'application/json' }, headers),
+                    body: JSON.stringify({ filters: [] })
+                })
+                .then(function(trackRes) { return trackRes.json(); })
+                .then(function(trackData) {
+                    if (trackData.allowed === false) {
+                        if (trackData.error === 'AUTH_REQUIRED') {
+                            showLoginPrompt();
+                        } else {
+                            showUpgradePrompt();
+                        }
+                        return;
+                    }
+                    
+                    if (trackData.searches_remaining === 0) {
+                        showToast('⚠️ You\'ve used your free monthly evaluation. Upgrade for unlimited!', 'warning');
+                    }
+                    
+                    _doEvaluateSite(lat, lng, address, headers);
+                })
+                .catch(function(err) {
+                    console.log('🔒 Track call failed, allowing (offline fallback):', err);
+                    _doEvaluateSite(lat, lng, address, headers);
+                });
+            })
+            .catch(function(err) {
+                console.log('🔒 Usage check failed, falling back to localStorage:', err);
+                var today = new Date().toISOString().split('T')[0];
+                var usageKey = 'dchub_landpower_usage';
+                var usage = JSON.parse(localStorage.getItem(usageKey) || '{}');
+                if (usage.date !== today) { usage = { date: today, count: 0 }; }
+                if (usage.count >= 1) {
+                    showUpgradePrompt();
+                    return;
+                }
                 usage.count++;
                 localStorage.setItem(usageKey, JSON.stringify(usage));
-                
-                if (usage.count >= FREE_DAILY_LIMIT) {
-                    showToast('⚠️ You\'ve used your free daily evaluation. Upgrade for unlimited!', 'warning');
-                }
-            }
-            
+                _doEvaluateSite(lat, lng, address, headers);
+            });
+        }
+        
+        function _doEvaluateSite(lat, lng, address, headers) {
             console.log('🔒 ALLOWED: Proceeding with evaluation');
             // ============================================
             
