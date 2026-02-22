@@ -693,6 +693,12 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 
 # =============================================================================
+# AGENT NETWORK EFFECT - Registry + Intelligence Index endpoints
+# =============================================================================
+from agent_network_effect import register_agent_network
+register_agent_network(app)
+
+# =============================================================================
 # EARLY require_plan STUB - Must be available before first @app.route usage
 # The real enforcer is loaded at the bottom of this file via init_tier_gating.
 # =============================================================================
