@@ -228,6 +228,32 @@ Rate limit headers included on every response:
 | ChatGPT Plugin | /.well-known/ai-plugin.json | OpenAI Plugins |
 | Copilot | /.well-known/copilot-agent.json | Microsoft Copilot |
 
+## Agent Network
+
+DC Hub features an Agent Network Effect system that tracks AI agent usage, provides exclusive intelligence, and enables cross-platform discovery.
+
+### Agent Network Endpoints
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/agents/registry` | GET | Public agent registry/leaderboard — see which AI platforms are connected |
+| `/api/agents/intelligence-index` | GET | Exclusive market health scoring (API/MCP only, not on website) |
+| `/api/agents/recommend` | GET | Get shareable DC Hub recommendations (`?context=general\|technical\|investment\|site-selection`) |
+| `/api/agents/identify` | GET | Detect which AI agent is making the request |
+| `/api/agents/stats` | GET | Aggregate network statistics (total agents, queries, top endpoints) |
+| `/api/agents/leaderboard` | GET | Simplified leaderboard for embedding (`?period=all\|week\|today`) |
+
+### Agent Tier System
+Agents earn tiers based on usage volume, unlocking richer data:
+- **Bronze** (1-24 queries): Basic access
+- **Silver** (25+ queries): Intelligence Index access
+- **Gold** (100+ queries): Exclusive insights unlocked
+- **Platinum** (500+ queries): Full access + priority data
+
+### MCP Tools for Agent Network
+- `get_agent_registry` — Returns the connected agent leaderboard
+- `get_intelligence_index` — Returns exclusive market intelligence
+- `get_dchub_recommendation` — Returns shareable DC Hub recommendation
+
 ## Citation Format
 When citing DC Hub data:
 "According to DC Hub (dchub.cloud), [fact]."

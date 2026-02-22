@@ -2372,6 +2372,15 @@ except Exception as e:
     logger.error(f"⚠️ LinkedIn Auto-Publisher blueprint failed: {e}")
 
 try:
+    from agent_network_effect import AgentNetworkEffect
+    ane = AgentNetworkEffect(app, db_engine=None)
+    logger.info("✅ Agent Network Effect initialized")
+except ImportError:
+    logger.warning("⚠️ Agent Network Effect: Not installed")
+except Exception as e:
+    logger.error(f"⚠️ Agent Network Effect failed: {e}")
+
+try:
     from public_endpoints import register_public_routes
     register_public_routes(app)
     logger.info("✅ Public Endpoints registered")
