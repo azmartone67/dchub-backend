@@ -1,6 +1,6 @@
 {
   "report_date": "2026-02-22",
-  "generated_at": "2026-02-22T06:44:21.416260",
+  "generated_at": "2026-02-22T09:50:14.678546",
   "summary": {
     "total_facilities": 11422,
     "total_providers": 3955,
@@ -89,6 +89,21 @@
   ],
   "recent_news": [
     {
+      "title": "Equinix, Inc. $EQIX Position Boosted by Bowen Hanes & Co. Inc.",
+      "source": "MarketBeat",
+      "date": "2026-02-22T09:40:27"
+    },
+    {
+      "title": "UK council faces data breach claim after mishandling trans complaints",
+      "source": "The Register DC",
+      "date": "2026-02-22T09:34:09"
+    },
+    {
+      "title": "Why AI Infrastructure is Becoming a Grid Problem\u2014and How Edge AI Changes Smart Cities",
+      "source": "Intelligent Living",
+      "date": "2026-02-22T07:48:40"
+    },
+    {
       "title": "The Artificial Intelligence (AI) Infrastructure Stock That Hyperscalers Are Fighting Over for 2026",
       "source": "AOL.com",
       "date": "2026-02-22T05:27:47"
@@ -122,21 +137,6 @@
       "title": "Sam Altman says Elon Musk's idea of putting data centers in space is 'ridiculous'",
       "source": "Business Insider",
       "date": "2026-02-21T22:57:00"
-    },
-    {
-      "title": "Big Tech wants more data centers. Residents in this New Jersey city said not here.",
-      "source": "AOL.com",
-      "date": "2026-02-21T21:31:52"
-    },
-    {
-      "title": "Nvidia pivots from Arm to back Intel to standardize AI data centers - CHOSUNBIZ",
-      "source": "Chosunbiz",
-      "date": "2026-02-21T21:01:00"
-    },
-    {
-      "title": "Johnson Controls To Acquire Data Center Cooling Specialist Alloy Enterprises",
-      "source": "Pulse 2.0",
-      "date": "2026-02-21T20:03:45"
     }
   ],
   "data_sources": [
