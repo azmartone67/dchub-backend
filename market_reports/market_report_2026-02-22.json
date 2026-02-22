@@ -1,6 +1,6 @@
 {
   "report_date": "2026-02-22",
-  "generated_at": "2026-02-22T01:31:08.287003",
+  "generated_at": "2026-02-22T06:44:21.416260",
   "summary": {
     "total_facilities": 11422,
     "total_providers": 3955,
@@ -89,6 +89,26 @@
   ],
   "recent_news": [
     {
+      "title": "The Artificial Intelligence (AI) Infrastructure Stock That Hyperscalers Are Fighting Over for 2026",
+      "source": "AOL.com",
+      "date": "2026-02-22T05:27:47"
+    },
+    {
+      "title": "The Artificial Intelligence (AI) Infrastructure Stock That Hyperscalers Are Fighting Over for 2026",
+      "source": "The Motley Fool",
+      "date": "2026-02-22T05:00:00"
+    },
+    {
+      "title": "My native intelligence considers AI data centers, Yes, they\u2019re fast, and yes it\u2019s time to slow the heck down",
+      "source": "Countercurrents",
+      "date": "2026-02-22T04:39:32"
+    },
+    {
+      "title": "Insider: Ex-lawmaker has warning for Michigan Democrats on data centers",
+      "source": "The Detroit News",
+      "date": "2026-02-22T04:00:00"
+    },
+    {
       "title": "Botetourt community seeks answers, plans action on Google data center proposal",
       "source": "WSLS",
       "date": "2026-02-22T00:34:20"
@@ -117,26 +137,6 @@
       "title": "Johnson Controls To Acquire Data Center Cooling Specialist Alloy Enterprises",
       "source": "Pulse 2.0",
       "date": "2026-02-21T20:03:45"
-    },
-    {
-      "title": "GMI Cloud Highlights AI Infrastructure Capabilities as Silver Sponsor at NVIDIA GTC 2026",
-      "source": "TipRanks",
-      "date": "2026-02-21T18:18:01"
-    },
-    {
-      "title": "GMI Cloud Highlights Cisco Collaboration on NVIDIA-Native AI Infrastructure",
-      "source": "TipRanks",
-      "date": "2026-02-21T18:18:00"
-    },
-    {
-      "title": "115-acre data center could come to Osawatomie, Kansas, says local government",
-      "source": "Data Center Dynamics",
-      "date": "2026-02-21T18:09:44"
-    },
-    {
-      "title": "Data centers uniting some on the political extremes",
-      "source": "The Dakota Scout",
-      "date": "2026-02-21T17:40:52"
     }
   ],
   "data_sources": [

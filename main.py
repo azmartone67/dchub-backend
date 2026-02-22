@@ -2,6 +2,7 @@
 DC HUB NEXUS - ENHANCED API SERVER v90
 # LinkedIn Auto-Posting
 from linkedin_autopost import linkedin_auto_bp, init_linkedin_tables, start_linkedin_scheduler, on_new_deal, on_weekly_digest
+# LinkedIn Daily Poster (linkedin_poster.py + linkedin_scheduler.py)
 ======================================
 Features Added (v90):
   - AI Agent Discovery v2 (AGENTS.md, Google A2A, llms-full.txt, security.txt)
@@ -636,6 +637,7 @@ sys.stdout.flush()
 from flask import Flask, request, jsonify, Response, send_from_directory, send_file, stream_with_context, make_response, render_template, redirect
 from google_integration_routes import setup_google_routes
 from google_meta_integration import setup_google_meta_routes
+from linkedin_scheduler import integrate_with_flask as integrate_linkedin_poster
 
 import gc
 
@@ -691,6 +693,8 @@ logger = logging.getLogger(__name__)
 # CREATE FLASK APP IMMEDIATELY - Before any heavy imports
 # =============================================================================
 app = Flask(__name__, static_folder='static', static_url_path='/static')
+
+integrate_linkedin_poster(app)
 
 # =============================================================================
 # EARLY require_plan STUB - Must be available before first @app.route usage
