@@ -1032,13 +1032,14 @@ SCHEDULER_DELAYS = {
 
 ENABLE_BACKGROUND_SCHEDULERS = False
 ENABLE_DISCOVERY_SCHEDULERS = False
-ENABLE_DISCOVERY_THREADS = False
 
 _deferred_bg_threads = []
 
 # Detect Railway vs Replit environment
 IS_RAILWAY = bool(os.environ.get("RAILWAY_ENVIRONMENT"))
 IS_PRIMARY = IS_RAILWAY  # Railway is primary, runs all background tasks
+
+ENABLE_DISCOVERY_THREADS = IS_RAILWAY
 if IS_RAILWAY:
     logger.info("🚂 RAILWAY ENVIRONMENT DETECTED — Running as PRIMARY with all background tasks")
 else:
