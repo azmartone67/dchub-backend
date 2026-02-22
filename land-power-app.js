@@ -8198,7 +8198,10 @@ var markets = {
                 return;
             }
             
-            fetch('/api/v1/land-power/usage', { headers: headers })
+            var _fetch = window.dchubFetch || fetch;
+            console.log('🔒 Using dchubFetch:', !!window.dchubFetch, 'API base:', window.DCHUB_API_BASE || '(relative)');
+            
+            _fetch('/api/v1/land-power/usage', { headers: headers, credentials: 'include' })
             .then(function(res) { return res.json(); })
             .then(function(data) {
                 console.log('🔒 Backend usage check:', data);
@@ -8215,10 +8218,11 @@ var markets = {
                     return;
                 }
                 
-                fetch('/api/v1/land-power/track', {
+                _fetch('/api/v1/land-power/track', {
                     method: 'POST',
                     headers: Object.assign({ 'Content-Type': 'application/json' }, headers),
-                    body: JSON.stringify({ filters: [] })
+                    body: JSON.stringify({ filters: [] }),
+                    credentials: 'include'
                 })
                 .then(function(trackRes) { return trackRes.json(); })
                 .then(function(trackData) {
