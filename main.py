@@ -5841,6 +5841,12 @@ def register_user():
         except Exception as e:
             print(f"⚠️ Failed to start welcome series: {e}")
     
+    try:
+        send_free_welcome_email_sendgrid(email, name)
+        print(f"📧 Free tier welcome email queued for {email}")
+    except Exception as e:
+        print(f"⚠️ Failed to queue free welcome email: {e}")
+    
     return jsonify({
         'success': True,
         'message': 'Account created successfully',
@@ -7447,6 +7453,107 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
             print(f"📧 Welcome email sent to {to_email} CC jonathan@dchub.cloud (status: {response.status_code})")
         except Exception as e:
             print(f"❌ Welcome email failed for {to_email}: {e}")
+    threading.Thread(target=_send, daemon=True).start()
+
+def send_free_welcome_email_sendgrid(to_email, name=''):
+    """Send welcome email for free tier signups via SendGrid"""
+    import threading
+    def _send():
+        try:
+            sg_key = os.environ.get('SENDGRID_API_KEY', '')
+            if not sg_key:
+                print(f"⚠️ SENDGRID_API_KEY not set, skipping free welcome email for {to_email}")
+                return
+            from sendgrid import SendGridAPIClient
+            from sendgrid.helpers.mail import Mail, Email, To, Content, HtmlContent, Cc
+
+            display_name = name if name else to_email.split('@')[0]
+            subject = "Welcome to DC Hub – Your Free Account is Active"
+
+            html = f"""<!DOCTYPE html>
+<html>
+<head>
+<style>
+body {{ font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; margin: 0; padding: 0; background: #f5f5f7; color: #1a1a2e; }}
+.wrapper {{ max-width: 600px; margin: 0 auto; background: #fff; }}
+.header {{ background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); padding: 32px 40px; text-align: center; }}
+.logo {{ font-size: 28px; font-weight: 700; color: #fff; }}
+.logo span {{ color: #00d4ff; }}
+.body {{ padding: 40px; }}
+h1 {{ font-size: 24px; font-weight: 700; margin-bottom: 16px; }}
+p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
+.feature-box {{ background: #f8f9fa; border-radius: 8px; padding: 16px 20px; margin: 12px 0; border-left: 4px solid #00d4ff; }}
+.feature-box h3 {{ margin: 0 0 4px 0; font-size: 15px; color: #1a1a2e; }}
+.feature-box p {{ margin: 0; font-size: 14px; color: #6a6a7a; }}
+.cta {{ display: inline-block; background: linear-gradient(135deg, #00d4ff, #0099cc); color: #fff !important; padding: 14px 32px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 16px; margin: 20px 0; }}
+.upgrade-box {{ background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); border-radius: 8px; padding: 24px; margin: 24px 0; text-align: center; }}
+.upgrade-box h2 {{ color: #00d4ff; margin: 0 0 8px 0; font-size: 20px; }}
+.upgrade-box p {{ color: #ccc; margin: 0 0 16px 0; font-size: 14px; }}
+.upgrade-cta {{ display: inline-block; background: linear-gradient(135deg, #ff6b35, #ff4500); color: #fff !important; padding: 12px 28px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 15px; }}
+.footer {{ background: #f8f9fa; padding: 24px 40px; text-align: center; font-size: 12px; color: #9a9aaa; }}
+</style>
+</head>
+<body>
+<div class="wrapper">
+  <div class="header">
+    <div class="logo">DC<span>Hub</span></div>
+  </div>
+  <div class="body">
+    <h1>Welcome to DC Hub, {display_name}!</h1>
+    <p>Your free account is now active. You have access to the world's largest data center intelligence platform with <strong>11,000+ facilities</strong> across <strong>100+ countries</strong>.</p>
+
+    <h2 style="margin-top: 32px;">Your Free Plan Includes</h2>
+    <div class="feature-box">
+      <h3>10 API Calls / Day</h3>
+      <p>Search and explore data center facilities, news, and market data</p>
+    </div>
+    <div class="feature-box">
+      <h3>Interactive Map &amp; Search</h3>
+      <p>Browse our global data center map with filtering by location, provider, and capacity</p>
+    </div>
+    <div class="feature-box">
+      <h3>Industry News Feed</h3>
+      <p>Stay updated with the latest data center news, M&amp;A deals, and market trends</p>
+    </div>
+    <div class="feature-box">
+      <h3>Basic Market Intelligence</h3>
+      <p>Access aggregate market statistics and facility counts by region</p>
+    </div>
+
+    <p style="text-align: center;">
+      <a href="https://dchub.cloud/dashboard" class="cta">Go to Your Dashboard →</a>
+    </p>
+
+    <div class="upgrade-box">
+      <h2>Unlock the Full Platform</h2>
+      <p>Upgrade to Pro for 10,000 API calls/day, energy infrastructure data, site analysis tools, and priority support.</p>
+      <a href="https://dchub.cloud/dashboard#upgrade" class="upgrade-cta">Upgrade to Pro →</a>
+    </div>
+
+    <p>Full API docs: <a href="https://dchub.cloud/api" style="color: #00d4ff;">dchub.cloud/api</a></p>
+    <p>Questions? Just reply to this email.</p>
+    <p>— The DC Hub Team</p>
+  </div>
+  <div class="footer">
+    &copy; 2025 DC Hub. All rights reserved.<br>
+    <a href="https://dchub.cloud" style="color: #9a9aaa;">dchub.cloud</a>
+  </div>
+</div>
+</body>
+</html>"""
+
+            message = Mail(
+                from_email=Email('alerts@dchub.cloud', 'DC Hub'),
+                to_emails=To(to_email),
+                subject=subject,
+                html_content=HtmlContent(html)
+            )
+            message.add_cc(Cc('jonathan@dchub.cloud'))
+            sg = SendGridAPIClient(sg_key)
+            response = sg.send(message)
+            print(f"📧 Free welcome email sent to {to_email} CC jonathan@dchub.cloud (status: {response.status_code})")
+        except Exception as e:
+            print(f"❌ Free welcome email failed for {to_email}: {e}")
     threading.Thread(target=_send, daemon=True).start()
 
 def _pg_execute(query, params=(), fetch=False):
