@@ -152,15 +152,36 @@ def public_map_data():
 def public_map_view():
     conn = None
     try:
+        from flask import request as req
+        load_all = req.args.get('all', '').lower() in ('true', '1', 'yes')
+        limit = min(int(req.args.get('limit', 2000)), 50000)
+        offset = int(req.args.get('offset', 0))
+
         conn = get_read_db()
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT id, name, city, state, country, latitude, longitude,
-                   provider, power_mw, tier, status
-            FROM facilities
-            WHERE latitude IS NOT NULL AND longitude IS NOT NULL
-            LIMIT 500
-        """)
+
+        cursor.execute("SELECT COUNT(*) FROM facilities WHERE latitude IS NOT NULL AND longitude IS NOT NULL")
+        total = cursor.fetchone()[0] or 0
+
+        if load_all:
+            cursor.execute("""
+                SELECT id, name, city, state, country, latitude, longitude,
+                       provider, power_mw, tier, status
+                FROM facilities
+                WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+                ORDER BY id
+                LIMIT %s OFFSET %s
+            """, (limit, offset))
+        else:
+            cursor.execute("""
+                SELECT id, name, city, state, country, latitude, longitude,
+                       provider, power_mw, tier, status
+                FROM facilities
+                WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+                ORDER BY id
+                LIMIT %s OFFSET %s
+            """, (limit, offset))
+
         facilities = []
         for row in cursor.fetchall():
             facilities.append({
@@ -169,9 +190,7 @@ def public_map_view():
                 'longitude': row[6], 'provider': row[7], 'power_mw': row[8],
                 'tier': row[9], 'status': row[10]
             })
-        cursor.execute("SELECT COUNT(*) FROM facilities")
-        total = cursor.fetchone()[0] or 0
-        return jsonify({'success': True, 'facilities': facilities, 'total': total})
+        return jsonify({'success': True, 'data': facilities, 'facilities': facilities, 'total': total, 'count': len(facilities), 'offset': offset, 'has_more': (offset + len(facilities)) < total})
     except Exception as e:
         logger.error(f"/api/v1/map error: {e}")
         return jsonify({'success': False, 'error': str(e), 'facilities': [], 'total': 0}), 500

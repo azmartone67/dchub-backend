@@ -113,24 +113,51 @@ async function loadAITracking() {
 // ========================================
 
 async function loadFacilities() {
-    // Use lightweight map endpoint to load all facilities (increased limit)
-    const result = await fetchAPI('/api/v1/map?limit=5000');
-    
-    if (result && result.data) {
-        facilities = result.data;
+    const result = await fetchAPI('/api/v1/map?all=true&limit=2000');
+
+    if (result && (result.data || result.facilities)) {
+        facilities = result.data || result.facilities;
         filteredFacilities = [...facilities];
-        
-        console.log('🏢 Loaded', facilities.length, 'facilities for map');
-        
-        // Update map with real data
+
+        console.log('🏢 Initial load:', facilities.length, 'facilities for map');
+
         updateMapMarkers();
-        
-        // Render facilities grid
         renderFacilities();
+
+        if (result.has_more) {
+            loadRemainingFacilities(facilities.length, result.total);
+        }
     } else {
         console.warn('⚠️ Using fallback facilities data');
         document.getElementById('facilities-grid').innerHTML = '<div class="loading">Unable to load facilities. Check API connection.</div>';
     }
+}
+
+async function loadRemainingFacilities(offset, total) {
+    const BATCH = 5000;
+    let currentOffset = offset;
+    while (currentOffset < total) {
+        try {
+            const batch = await fetchAPI(`/api/v1/map?all=true&limit=${BATCH}&offset=${currentOffset}`);
+            if (!batch || !(batch.data || batch.facilities)) break;
+            const newFacilities = batch.data || batch.facilities;
+            if (newFacilities.length === 0) break;
+
+            facilities = facilities.concat(newFacilities);
+            filteredFacilities = [...facilities];
+
+            addMarkersToMap(newFacilities);
+            currentOffset += newFacilities.length;
+            console.log('🏢 Background load:', facilities.length, '/', total, 'facilities');
+
+            document.getElementById('map-filtered').textContent = filteredFacilities.length.toLocaleString();
+        } catch (e) {
+            console.error('Background load error:', e);
+            break;
+        }
+    }
+    console.log('✅ All facilities loaded:', facilities.length);
+    renderFacilities();
 }
 
 function renderFacilities() {
@@ -434,6 +461,34 @@ function updateMapMarkers() {
     document.getElementById('map-filtered').textContent = filteredFacilities.length.toLocaleString();
     
     console.log('🗺️ Map updated:', displayed, 'markers');
+}
+
+function createMarker(f) {
+    const statusColor = (f.status || '').toLowerCase().includes('construction') ? '#f59e0b' :
+                        (f.status || '').toLowerCase().includes('planned') ? '#6366f1' : '#10b981';
+    const marker = L.circleMarker([f.latitude, f.longitude], {
+        radius: 6, fillColor: statusColor, color: '#fff',
+        weight: 1, opacity: 1, fillOpacity: 0.8
+    });
+    marker.bindPopup(`
+        <div style="min-width: 200px;">
+            <strong style="font-size: 14px;">${escapeHtml(f.name)}</strong><br>
+            <span style="color: #a8a8b3;">${escapeHtml(f.provider || 'Unknown')}</span><br>
+            <div style="margin-top: 8px; font-size: 13px;">
+                📍 ${escapeHtml(f.city || '')} ${escapeHtml(f.country || '')}<br>
+                ${f.power_mw ? `⚡ ${f.power_mw} MW` : ''}
+            </div>
+        </div>
+    `);
+    return marker;
+}
+
+function addMarkersToMap(newFacilities) {
+    const validFacilities = newFacilities.filter(f => f.latitude && f.longitude);
+    const newMarkers = validFacilities.map(f => createMarker(f));
+    markers.addLayers(newMarkers);
+    const totalDisplayed = markers.getLayers().length;
+    document.getElementById('map-displayed').textContent = totalDisplayed.toLocaleString();
 }
 
 // ========================================
