@@ -90,15 +90,21 @@ def _echo_request(endpoint, params=None):
     import urllib.parse
     import urllib.error
 
-    base_url = f"https://echodata.epa.gov/echo/{endpoint}"
+    base_url = f"https://echo.epa.gov/api/{endpoint}"
     if params:
         base_url += '?' + urllib.parse.urlencode(params, doseq=True)
 
+    logger.info(f"ECHO request: {base_url[:200]}")
     try:
-        req = urllib.request.Request(base_url, headers={'User-Agent': 'DCHub/1.0'})
+        req = urllib.request.Request(base_url, headers={'User-Agent': 'DCHub/1.0', 'Accept': 'application/json'})
         with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode('utf-8'))
+            body = resp.read().decode('utf-8')
+            try:
+                return json.loads(body)
+            except json.JSONDecodeError:
+                return {'error': 'Invalid JSON response', 'raw': body[:500]}
     except Exception as e:
+        logger.warning(f"ECHO API error: {e}")
         return {'error': str(e)}
 
 
@@ -254,15 +260,21 @@ def power_plant_detail(plant_id):
     params = {
         'frequency': 'monthly',
         'data[0]': 'nameplate-capacity-mw',
-        'facets[plantCode][]': plant_id,
-        'sort[0][column]': 'nameplate-capacity-mw',
+        'facets[plantid][]': plant_id,
+        'sort[0][column]': 'period',
         'sort[0][direction]': 'desc',
         'length': 100,
     }
 
     data = _eia_request('electricity/operating-generator-capacity/data/', params)
     if 'error' in data:
-        return jsonify({'success': False, 'error': data['error']}), 500
+        # Fallback: try plantCode facet name
+        params2 = dict(params)
+        del params2['facets[plantid][]']
+        params2['facets[plantCode][]'] = plant_id
+        data = _eia_request('electricity/operating-generator-capacity/data/', params2)
+        if 'error' in data:
+            return jsonify({'success': False, 'error': data['error'], 'detail': data.get('detail', '')}), 500
 
     rows = data.get('response', {}).get('data', [])
     if not rows:
@@ -338,7 +350,6 @@ def power_plant_generation():
     params = {
         'frequency': 'annual',
         'data[0]': 'generation',
-        'data[1]': 'total-consumption-btu',
         'facets[stateid][]': state,
         'sort[0][column]': 'generation',
         'sort[0][direction]': 'desc',
@@ -349,7 +360,20 @@ def power_plant_generation():
 
     data = _eia_request('electricity/facility-fuel/data/', params)
     if 'error' in data:
-        return jsonify({'success': False, 'error': data['error']}), 500
+        # Fallback: try electric-power-operational-data route
+        params2 = {
+            'frequency': 'annual',
+            'data[0]': 'generation',
+            'facets[location][]': state,
+            'sort[0][column]': 'generation',
+            'sort[0][direction]': 'desc',
+            'length': limit,
+        }
+        if fuel:
+            params2['facets[fueltypeid][]'] = fuel
+        data = _eia_request('electricity/electric-power-operational-data/data/', params2)
+        if 'error' in data:
+            return jsonify({'success': False, 'error': data['error'], 'detail': data.get('detail', '')}), 500
 
     plants = []
     for row in data.get('response', {}).get('data', []):
@@ -405,34 +429,38 @@ def discharge_permits_nearby():
     if cached:
         return jsonify(cached)
 
-    # EPA ECHO CWA facility search by lat/lng
+    # EPA ECHO CWA facility search — use get_facility_info (self-contained endpoint)
     params = {
         'output': 'JSON',
         'p_lat': str(lat),
         'p_long': str(lng),
         'p_radius': str(radius),
-        'p_act': 'Y',  # Active permits only
         'responseset': str(limit),
     }
 
-    data = _echo_request('cwa_rest_services.get_facilities', params)
+    data = _echo_request('cwa_rest_services.get_facility_info', params)
     if 'error' in data:
-        # Fallback: try alternate endpoint format
-        params2 = {
-            'output': 'JSON',
-            'p_lat': str(lat),
-            'p_long': str(lng),
-            'p_radius': str(radius),
-            'responseset': str(limit),
-        }
-        data = _echo_request('cwa_rest_services.get_facility_info', params2)
-        if 'error' in data:
-            return jsonify({'success': False, 'error': data['error'], 'note': 'EPA ECHO API may be temporarily unavailable'}), 502
+        # Try alternate base URL format
+        import urllib.request, urllib.parse, urllib.error
+        alt_url = f"https://echo.epa.gov/api/cwa_rest_services.get_facility_info?{urllib.parse.urlencode(params)}"
+        logger.info(f"ECHO fallback: trying {alt_url[:200]}")
+        try:
+            req = urllib.request.Request(alt_url, headers={'User-Agent': 'DCHub/1.0', 'Accept': 'application/json'})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+        except Exception as e2:
+            return jsonify({'success': False, 'error': str(data.get('error', '')), 'fallback_error': str(e2), 'note': 'EPA ECHO API may be temporarily unavailable'}), 502
 
     facilities = []
-    # Parse ECHO response (nested structure)
-    results = data.get('Results', data.get('results', {}))
-    facility_list = results.get('Facilities', results.get('FacilityInfo', []))
+    # Parse ECHO response — get_facility_info returns nested Results.Facilities
+    results = data.get('Results', data.get('results', data))
+    facility_list = results.get('Facilities', results.get('FacilityInfo', results.get('ClusterOutput', [])))
+
+    # If we got a cluster response, look for individual facilities
+    if not isinstance(facility_list, list):
+        facility_list = []
+
+    logger.info(f"ECHO returned {len(facility_list)} facilities")
 
     if isinstance(facility_list, list):
         for fac in facility_list:
@@ -542,12 +570,14 @@ def water_risk_assessment():
         'p_lat': str(lat),
         'p_long': str(lng),
         'p_radius': str(radius),
-        'p_act': 'Y',
         'responseset': '50',
     }
-    echo_data = _echo_request('cwa_rest_services.get_facilities', echo_params)
-    results = echo_data.get('Results', echo_data.get('results', {}))
-    for fac in results.get('Facilities', results.get('FacilityInfo', [])):
+    echo_data = _echo_request('cwa_rest_services.get_facility_info', echo_params)
+    results = echo_data.get('Results', echo_data.get('results', echo_data))
+    fac_list = results.get('Facilities', results.get('FacilityInfo', []))
+    if not isinstance(fac_list, list):
+        fac_list = []
+    for fac in fac_list:
         fac_lat = _safe_float(fac.get('FacLat'))
         fac_lng = _safe_float(fac.get('FacLong'))
         permits_data.append({
