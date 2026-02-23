@@ -1,17 +1,17 @@
 {
   "report_date": "2026-02-23",
-  "generated_at": "2026-02-23T14:51:28.723192",
+  "generated_at": "2026-02-23T21:29:21.070317",
   "summary": {
-    "total_facilities": 11427,
-    "total_providers": 3956,
+    "total_facilities": 11433,
+    "total_providers": 3958,
     "countries_covered": 170,
     "total_power_mw": 51325.0,
     "total_deals": 473,
     "total_deal_value_usd": 1583055100.0
   },
   "market_highlights": [
-    "DC Hub tracks 11,427 data center facilities globally",
-    "Coverage spans 170 countries with 3956 providers",
+    "DC Hub tracks 11,433 data center facilities globally",
+    "Coverage spans 170 countries with 3958 providers",
     "Combined capacity: 51,325 MW",
     "M&A database: 473 transactions worth $1.6B+"
   ],
@@ -89,54 +89,54 @@
   ],
   "recent_news": [
     {
-      "title": "Sam Altman Would Like To Remind You That Humans Use a Lot of Energy, Too",
-      "source": "Slashdot",
-      "date": "2026-02-23T14:40:00"
+      "title": "Amazon invests $12B in Louisiana AI data center in Caddo-Bossier",
+      "source": "Shreveport Times",
+      "date": "2026-02-23T21:05:00"
     },
     {
-      "title": "Is PDF Solutions (PDFS) an EGC that Provides Exposure to the AI Infrastructure Buildout?",
-      "source": "Yahoo Finance",
-      "date": "2026-02-23T14:27:06"
+      "title": "Amazon announces $12B data center expansion in Louisiana",
+      "source": "New Orleans CityBusiness",
+      "date": "2026-02-23T21:00:00"
     },
     {
-      "title": "O say, can you see: FCC pushes patriotic programming for US 250th",
-      "source": "The Register DC",
-      "date": "2026-02-23T14:26:55"
+      "title": "Data center incentive bill gains industry support, rival measure seen as barrier to growth",
+      "source": "Denver Gazette",
+      "date": "2026-02-23T20:54:44"
     },
     {
-      "title": "Starwood looks to buy county-owned land in Fairfax, Virginia, for data center development",
-      "source": "Data Center Dynamics",
-      "date": "2026-02-23T14:16:54"
+      "title": "Amazon invests $12B for data centers in Louisiana to cater to cloud and AI demand (AMZN:NASDAQ)",
+      "source": "Seeking Alpha",
+      "date": "2026-02-23T20:49:01"
     },
     {
-      "title": "Staffing and consulting company Tryfacta signs MoU to develop 1GW data center",
-      "source": "Data Center Dynamics",
-      "date": "2026-02-23T14:13:18"
+      "title": "Amazon data center brings grid upgrades, no added costs for SWEPCO users",
+      "source": "Stock Titan",
+      "date": "2026-02-23T20:45:00"
     },
     {
-      "title": "Data Center Rush Spurs Earnings Windfall for Power-Gear Makers",
-      "source": "Bloomberg Tech",
-      "date": "2026-02-23T14:00:00"
+      "title": "Amazon shares slip amid $12 billion Louisiana data center bet",
+      "source": "Investing.com",
+      "date": "2026-02-23T20:42:10"
     },
     {
-      "title": "Ex-Amazon UK boss lined up to chair Britain's competition watchdog",
-      "source": "The Register DC",
-      "date": "2026-02-23T13:55:04"
+      "title": "What Amazon\u2019s latest data center announcement says about AI right now",
+      "source": "Sherwood News",
+      "date": "2026-02-23T20:33:34"
     },
     {
-      "title": "5 AI-Infrastructure Giants to Buy for 2026 on Massive Data Center Boom",
-      "source": "Zacks Investment Research",
-      "date": "2026-02-23T13:01:18"
+      "title": "Amazon Selects Northwest Louisiana for Major Data Center Investment",
+      "source": "TXK Today",
+      "date": "2026-02-23T20:28:06"
     },
     {
-      "title": "MEDIA ALERT: Equinix to Speak at Upcoming Investor Conferences",
-      "source": "PR Newswire",
-      "date": "2026-02-23T13:01:00"
+      "title": "Altman calls Musk's space data center plans 'ridiculous' for current AI computing needs",
+      "source": "Fox Business",
+      "date": "2026-02-23T20:04:00"
     },
     {
-      "title": "New data center in north Denver sparks calls for accountability from concerned neighbors",
-      "source": "The Denver Post",
-      "date": "2026-02-23T13:00:59"
+      "title": "Key facts: Burry warns of Meta's AI costs; stock compensation issues; Blue Owl partners on $27B data center",
+      "source": "TradingView",
+      "date": "2026-02-23T20:03:46"
     }
   ],
   "data_sources": [
