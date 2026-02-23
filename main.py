@@ -1,4 +1,5 @@
 """
+# v74.1 — Power Plant Intelligence module added
 DC HUB NEXUS - ENHANCED API SERVER v90
 # LinkedIn Auto-Posting
 from linkedin_autopost import linkedin_auto_bp, init_linkedin_tables, start_linkedin_scheduler, on_new_deal, on_weekly_digest
