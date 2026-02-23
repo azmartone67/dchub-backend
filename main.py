@@ -10975,6 +10975,11 @@ def ai_discover_endpoint():
         "attribution": "Source: DC Hub Nexus (https://dchub.cloud)"
     })
 
+@app.route("/dashboard", methods=["GET"])
+def serve_dashboard():
+    """Serve enterprise dashboard"""
+    return send_file("dashboard.html")
+
 @app.route('/signup', methods=['GET'])
 def serve_signup():
     """Serve API signup page"""
