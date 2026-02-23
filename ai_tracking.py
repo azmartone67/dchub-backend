@@ -1,26 +1,78 @@
 """
-DC Hub - Persistent AI Platform Tracking
-==========================================
+DC Hub - Persistent AI Platform Tracking (Railway/Neon Edition)
+================================================================
 Drop-in module for cumulative AI agent request tracking.
-Stores all requests in SQLite so counts survive Replit restarts.
+Writes directly to Neon PostgreSQL — no SQLite, no ephemeral storage issues.
 
 Usage in main.py:
     from ai_tracking import init_ai_tracking
     init_ai_tracking(app)
 
-That's it. All existing /api/v1/ai-tracking/* routes are replaced
-with persistent versions, and a middleware auto-logs every request
-that looks like it came from an AI platform.
+Requires: DATABASE_URL env var pointing to your Neon PostgreSQL instance.
 """
 
 import os
 import re
 import json
-import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from flask import Flask, request, jsonify, g, make_response
+
+# ─── Neon PostgreSQL connection ──────────────────────────────
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+
+_pg_pool = None
+_pg_lock = threading.Lock()
+
+
+def _get_pg():
+    """Get a psycopg2 connection to Neon with auto-reconnect."""
+    global _pg_pool
+    import psycopg2
+    try:
+        if _pg_pool is None or _pg_pool.closed:
+            with _pg_lock:
+                if _pg_pool is None or _pg_pool.closed:
+                    _pg_pool = psycopg2.connect(DATABASE_URL, connect_timeout=5)
+                    _pg_pool.autocommit = False
+        # Test connection is alive
+        try:
+            _pg_pool.cursor().execute("SELECT 1")
+        except Exception:
+            _pg_pool = psycopg2.connect(DATABASE_URL, connect_timeout=5)
+            _pg_pool.autocommit = False
+        return _pg_pool
+    except Exception as e:
+        print(f"[AI Tracking] Neon connection failed: {e}")
+        raise
+
+
+def _execute(sql, params=None, fetch=False, fetchall=False):
+    """Execute SQL against Neon with auto-reconnect."""
+    conn = _get_pg()
+    cur = conn.cursor()
+    try:
+        cur.execute(sql, params)
+        if fetchall:
+            cols = [d[0] for d in cur.description] if cur.description else []
+            rows = cur.fetchall()
+            conn.commit()
+            return [dict(zip(cols, r)) for r in rows]
+        elif fetch:
+            cols = [d[0] for d in cur.description] if cur.description else []
+            row = cur.fetchone()
+            conn.commit()
+            return dict(zip(cols, row)) if row else None
+        else:
+            conn.commit()
+            return None
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise e
 
 
 def cors_jsonify(data, status=200):
@@ -37,173 +89,53 @@ def cors_jsonify(data, status=200):
     resp.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-API-Key, Accept, X-Requested-With'
     return resp
 
-# ─── Database path ─────────────────────────────────────────────
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai_tracking.db")
 
 # ─── Known AI platforms & their User-Agent signatures ──────────
 AI_PLATFORMS = {
-    "claude":      {"name": "Claude",      "company": "Anthropic",  "color": "#d97706", "ua_patterns": ["claude", "anthropic"]},
-    "chatgpt":     {"name": "ChatGPT",     "company": "OpenAI",     "color": "#10b981", "ua_patterns": ["chatgpt", "openai", "gptbot"]},
-    "gemini":      {"name": "Gemini",       "company": "Google",     "color": "#4285f4", "ua_patterns": ["gemini", "google-extended", "googleother"]},
-    "perplexity":  {"name": "Perplexity",   "company": "Perplexity", "color": "#06b6d4", "ua_patterns": ["perplexity", "perplexitybot"]},
-    "grok":        {"name": "Grok",         "company": "xAI",        "color": "#ef4444", "ua_patterns": ["grok", "xai"]},
-    "copilot":     {"name": "Copilot",      "company": "Microsoft",  "color": "#8b5cf6", "ua_patterns": ["copilot", "bingbot", "microsoft"]},
-    "groq":        {"name": "Groq",         "company": "Groq",       "color": "#f97316", "ua_patterns": ["groq"]},
-    "youcom":      {"name": "You.com",      "company": "You.com",    "color": "#eab308", "ua_patterns": ["you.com", "youchat", "youbot"]},
-    "poe":         {"name": "Poe",          "company": "Quora",      "color": "#a855f7", "ua_patterns": ["poe", "quora"]},
-    "meta":        {"name": "Meta AI",      "company": "Meta",       "color": "#3b82f6", "ua_patterns": ["meta-externalagent", "facebookexternalhit", "meta.ai"]},
-    "cohere":      {"name": "Cohere",       "company": "Cohere",     "color": "#14b8a6", "ua_patterns": ["cohere"]},
-    "huggingface": {"name": "HuggingFace",  "company": "Hugging Face","color": "#fbbf24", "ua_patterns": ["huggingface", "hugging"]},
-    "deepseek":    {"name": "DeepSeek",     "company": "DeepSeek",   "color": "#6366f1", "ua_patterns": ["deepseek"]},
-    "mistral":     {"name": "Mistral",      "company": "Mistral AI", "color": "#f43f5e", "ua_patterns": ["mistral", "le-chat", "lechat"]},
+    "claude":      {"name": "Claude",      "company": "Anthropic",   "color": "#d97706", "ua_patterns": ["claude", "anthropic"]},
+    "chatgpt":     {"name": "ChatGPT",     "company": "OpenAI",      "color": "#10b981", "ua_patterns": ["chatgpt", "openai", "gptbot"]},
+    "gemini":      {"name": "Gemini",      "company": "Google",      "color": "#4285f4", "ua_patterns": ["gemini", "google-extended", "googleother"]},
+    "perplexity":  {"name": "Perplexity",  "company": "Perplexity",  "color": "#06b6d4", "ua_patterns": ["perplexity", "perplexitybot"]},
+    "grok":        {"name": "Grok",        "company": "xAI",         "color": "#ef4444", "ua_patterns": ["grok", "xai"]},
+    "copilot":     {"name": "Copilot",     "company": "Microsoft",   "color": "#8b5cf6", "ua_patterns": ["copilot", "bingbot", "microsoft"]},
+    "groq":        {"name": "Groq",        "company": "Groq",        "color": "#f97316", "ua_patterns": ["groq"]},
+    "youcom":      {"name": "You.com",     "company": "You.com",     "color": "#eab308", "ua_patterns": ["you.com", "youchat", "youbot"]},
+    "poe":         {"name": "Poe",         "company": "Quora",       "color": "#a855f7", "ua_patterns": ["poe", "quora"]},
+    "meta":        {"name": "Meta AI",     "company": "Meta",        "color": "#3b82f6", "ua_patterns": ["meta-externalagent", "facebookexternalhit", "meta.ai"]},
+    "cohere":      {"name": "Cohere",      "company": "Cohere",      "color": "#14b8a6", "ua_patterns": ["cohere"]},
+    "huggingface": {"name": "HuggingFace", "company": "Hugging Face","color": "#fbbf24", "ua_patterns": ["huggingface", "hugging"]},
+    "deepseek":    {"name": "DeepSeek",    "company": "DeepSeek",    "color": "#6366f1", "ua_patterns": ["deepseek"]},
+    "mistral":     {"name": "Mistral",     "company": "Mistral AI",  "color": "#f43f5e", "ua_patterns": ["mistral", "le-chat", "lechat"]},
 }
 
 # ─── SEO bots / media crawlers (classified separately from AI) ─
 SEO_BOTS = {
-    "awariosmartbot": "seo_bot",
-    "awariobot":      "seo_bot",
-    "googlebot":      "seo_bot",
-    "adsbot-google":  "seo_bot",
-    "bravebot":       "seo_bot",
-    "amazonbot":      "seo_bot",
-    "serankingbot":   "seo_bot",
-    "seranking":      "seo_bot",
-    "mj12bot":        "seo_bot",
-    "majestic":       "seo_bot",
-    "ahrefsbot":      "seo_bot",
-    "semrushbot":     "seo_bot",
-    "dotbot":         "seo_bot",
-    "yandexbot":      "seo_bot",
-    "baiduspider":    "seo_bot",
-    "sogou":          "seo_bot",
-    "ev-crawler":     "media_crawler",
-    "headline.com":   "media_crawler",
-    "newsbot":        "media_crawler",
+    "awariosmartbot": "seo_bot", "awariobot": "seo_bot", "googlebot": "seo_bot",
+    "adsbot-google": "seo_bot", "bravebot": "seo_bot", "amazonbot": "seo_bot",
+    "serankingbot": "seo_bot", "seranking": "seo_bot", "mj12bot": "seo_bot",
+    "majestic": "seo_bot", "ahrefsbot": "seo_bot", "semrushbot": "seo_bot",
+    "dotbot": "seo_bot", "yandexbot": "seo_bot", "baiduspider": "seo_bot",
+    "sogou": "seo_bot", "ev-crawler": "media_crawler", "headline.com": "media_crawler",
+    "newsbot": "media_crawler",
 }
 
 UNKNOWN_AI_INDICATORS = re.compile(
     r"(?:^|[\s/\-_.])"
     r"(?:ai|llm|agent|mcp|gpt|claude|copilot|assistant|chatbot|"
     r"model|inference|embedding|genai|langchain|autogpt)"
-    r"(?:$|[\s/\-_.])",
-    re.IGNORECASE
+    r"(?:$|[\s/\-_.])", re.IGNORECASE
 )
 
 # Endpoints that count as AI-relevant (used for "direct" traffic attribution)
 AI_ENDPOINT_PATTERNS = [
-    r"^/api/ai/",
-    r"^/api/v1/ai",
-    r"^/api/v1/discovery",
-    r"^/api/market-report",
-    r"^/api/news",
-    r"^/api/v1/deals",
-    r"^/api/v1/pipeline",
-    r"^/api/v2/infrastructure",
-    r"^/api/v1/energy",
-    r"^/a2a/",
-    r"^/ai/",
-    r"^/llms\.txt",
-    r"^/llms-full\.txt",
-    r"^/AGENTS\.md",
-    r"^/\.well-known/",
-    r"^/api/facilities",
-    r"^/api/intelligence",
-    r"^/robots\.txt",
-    r"^/sitemap",
-    r"^/api/v1/stats",
-    r"^/api/ecosystem",
-    r"^/api/health",
-    r"^/health",
-    r"^/api/v1/facilities",
-    r"^/api/grid/",
-    r"^/api/site-score",
-    r"^/$",
-    r"^/for-ai",
+    r"^/api/ai/", r"^/api/v1/ai", r"^/api/v1/discovery", r"^/api/market-report",
+    r"^/api/news", r"^/api/v1/deals", r"^/api/v1/pipeline", r"^/api/v2/infrastructure",
+    r"^/api/v1/energy", r"^/a2a/", r"^/ai/", r"^/llms\.txt", r"^/llms-full\.txt",
+    r"^/AGENTS\.md", r"^/\.well-known/", r"^/api/facilities", r"^/api/intelligence",
+    r"^/robots\.txt", r"^/sitemap", r"^/api/v1/stats", r"^/api/ecosystem",
+    r"^/api/health", r"^/health", r"^/api/v1/facilities", r"^/api/grid/",
+    r"^/api/site-score", r"^/$", r"^/for-ai",
 ]
-
-
-# ═══════════════════════════════════════════════════════════════
-#  DATABASE SETUP
-# ═══════════════════════════════════════════════════════════════
-
-def _get_ai_db():
-    """Get a connection to the AI tracking database with WAL mode and busy timeout."""
-    conn = sqlite3.connect(DB_PATH, timeout=30)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=30000")
-    return conn
-
-
-def get_tracking_db():
-    """Get a thread-local database connection."""
-    if not hasattr(g, '_ai_tracking_db'):
-        g._ai_tracking_db = _get_ai_db()
-    return g._ai_tracking_db
-
-
-def init_db():
-    """Create tables if they don't exist."""
-    conn = _get_ai_db()
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS ai_requests (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            platform    TEXT NOT NULL,
-            endpoint    TEXT NOT NULL,
-            user_agent  TEXT,
-            ip_address  TEXT,
-            status_code INTEGER,
-            response_ms INTEGER,
-            created_at  TEXT NOT NULL
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_ai_requests_platform
-            ON ai_requests(platform);
-
-        CREATE INDEX IF NOT EXISTS idx_ai_requests_created
-            ON ai_requests(created_at);
-
-        CREATE INDEX IF NOT EXISTS idx_ai_requests_platform_created
-            ON ai_requests(platform, created_at);
-
-        -- MCP connection tracking
-        CREATE TABLE IF NOT EXISTS mcp_connections (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            platform    TEXT NOT NULL,
-            method      TEXT NOT NULL,
-            user_agent  TEXT,
-            ip_address  TEXT,
-            tool_name   TEXT,
-            params      TEXT,
-            status_code INTEGER,
-            response_ms INTEGER,
-            created_at  TEXT NOT NULL
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_mcp_connections_created
-            ON mcp_connections(created_at);
-
-        CREATE INDEX IF NOT EXISTS idx_mcp_connections_platform
-            ON mcp_connections(platform);
-
-        -- Daily rollup table for fast chart queries
-        CREATE TABLE IF NOT EXISTS ai_daily_stats (
-            date        TEXT NOT NULL,
-            platform    TEXT NOT NULL,
-            request_count INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY (date, platform)
-        );
-
-        -- All-time cumulative totals (single source of truth)
-        CREATE TABLE IF NOT EXISTS ai_cumulative (
-            platform    TEXT PRIMARY KEY,
-            total_requests INTEGER NOT NULL DEFAULT 0,
-            first_seen  TEXT NOT NULL,
-            last_seen   TEXT NOT NULL
-        );
-    """)
-    conn.commit()
-    conn.close()
-    print("   📊 AI Tracking DB initialized at", DB_PATH)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -235,18 +167,17 @@ def detect_platform(user_agent: str, query_params: dict = None) -> str:
                 if explicit == key or explicit == info["name"].lower():
                     return key
 
-    # 3. Check SEO bots and media crawlers (keep separate from AI)
+    # 3. Check SEO bots and media crawlers
     for bot_pattern, category in SEO_BOTS.items():
         if bot_pattern in ua_lower:
             return category
 
-    # 4. Only flag as "unknown_ai" if UA contains actual AI-related terms (word-boundary match)
+    # 4. Only flag as "unknown_ai" if UA contains actual AI-related terms
     if UNKNOWN_AI_INDICATORS.search(ua_lower):
         return "unknown_ai"
 
-    # 5. Generic bots/crawlers without AI indicators → not tracked as AI
-    bot_patterns = ["bot", "crawler", "spider", "scraper", "fetch"]
-    if any(p in ua_lower for p in bot_patterns):
+    # 5. Generic bots/crawlers without AI indicators
+    if any(p in ua_lower for p in ["bot", "crawler", "spider", "scraper", "fetch"]):
         return "generic_bot"
 
     return "unknown"
@@ -254,70 +185,132 @@ def detect_platform(user_agent: str, query_params: dict = None) -> str:
 
 def is_ai_endpoint(path: str) -> bool:
     """Check if the request path is an AI-relevant endpoint."""
-    for pattern in AI_ENDPOINT_PATTERNS:
-        if re.match(pattern, path):
-            return True
-    return False
+    return any(re.match(p, path) for p in AI_ENDPOINT_PATTERNS)
+
+
+# ═══════════════════════════════════════════════════════════════
+#  DATABASE SETUP (Neon PostgreSQL)
+# ═══════════════════════════════════════════════════════════════
+
+def init_db():
+    """Create tracking tables in Neon if they don't exist."""
+    if not DATABASE_URL:
+        print("   ⚠️  AI Tracking: No DATABASE_URL set — tracking disabled")
+        return False
+
+    try:
+        _execute("""
+            CREATE TABLE IF NOT EXISTS ai_requests (
+                id SERIAL PRIMARY KEY,
+                platform VARCHAR(50) NOT NULL,
+                endpoint VARCHAR(500) NOT NULL,
+                user_agent VARCHAR(500),
+                ip_address VARCHAR(50),
+                status_code INTEGER,
+                response_ms INTEGER,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        _execute("""
+            CREATE TABLE IF NOT EXISTS ai_daily_stats (
+                date DATE NOT NULL,
+                platform VARCHAR(50) NOT NULL,
+                request_count INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (date, platform)
+            )
+        """)
+        _execute("""
+            CREATE TABLE IF NOT EXISTS ai_cumulative (
+                platform VARCHAR(50) PRIMARY KEY,
+                total_requests INTEGER NOT NULL DEFAULT 0,
+                first_seen TIMESTAMPTZ NOT NULL,
+                last_seen TIMESTAMPTZ NOT NULL,
+                requests_7d INTEGER DEFAULT 0,
+                name VARCHAR(100),
+                color VARCHAR(20),
+                company VARCHAR(100)
+            )
+        """)
+        _execute("""
+            CREATE TABLE IF NOT EXISTS mcp_connections (
+                id SERIAL PRIMARY KEY,
+                platform VARCHAR(50) NOT NULL,
+                method VARCHAR(100) NOT NULL,
+                user_agent VARCHAR(500),
+                ip_address VARCHAR(50),
+                tool_name VARCHAR(200),
+                params TEXT,
+                status_code INTEGER,
+                response_ms INTEGER,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        # Indexes for performance
+        _execute("CREATE INDEX IF NOT EXISTS idx_ai_requests_platform ON ai_requests(platform)")
+        _execute("CREATE INDEX IF NOT EXISTS idx_ai_requests_created ON ai_requests(created_at)")
+        _execute("CREATE INDEX IF NOT EXISTS idx_ai_requests_platform_created ON ai_requests(platform, created_at)")
+        _execute("CREATE INDEX IF NOT EXISTS idx_mcp_connections_created ON mcp_connections(created_at)")
+        _execute("CREATE INDEX IF NOT EXISTS idx_mcp_connections_platform ON mcp_connections(platform)")
+
+        print("   📊 AI Tracking DB initialized (Neon PostgreSQL)")
+        return True
+    except Exception as e:
+        print(f"   ❌ AI Tracking DB init failed: {e}")
+        return False
 
 
 # ═══════════════════════════════════════════════════════════════
 #  LOGGING
 # ═══════════════════════════════════════════════════════════════
 
-def log_ai_request(platform: str, endpoint: str, user_agent: str = "",
-                   ip_address: str = "", status_code: int = 200,
-                   response_ms: int = 0):
-    """
-    Record a single AI request and update all cumulative counters.
-    Thread-safe via SQLite WAL mode.
-    """
+def log_ai_request(platform, endpoint, user_agent="", ip_address="",
+                   status_code=200, response_ms=0):
+    """Record a single AI request directly in Neon."""
+    if not DATABASE_URL:
+        return
     now = datetime.now(timezone.utc)
     today = now.strftime("%Y-%m-%d")
-
     try:
-        conn = _get_ai_db()
-        # 1. Insert raw request log
-        conn.execute("""
+        _execute("""
             INSERT INTO ai_requests (platform, endpoint, user_agent, ip_address, status_code, response_ms, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (platform, endpoint, user_agent, ip_address, status_code, response_ms, now.isoformat()))
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """, (platform, endpoint, user_agent[:500], ip_address, status_code, response_ms, now))
 
-        # 2. Upsert daily rollup
-        conn.execute("""
+        _execute("""
             INSERT INTO ai_daily_stats (date, platform, request_count)
-            VALUES (?, ?, 1)
-            ON CONFLICT(date, platform) DO UPDATE SET request_count = request_count + 1
+            VALUES (%s, %s, 1)
+            ON CONFLICT(date, platform) DO UPDATE SET request_count = ai_daily_stats.request_count + 1
         """, (today, platform))
 
-        # 3. Upsert cumulative totals
-        conn.execute("""
-            INSERT INTO ai_cumulative (platform, total_requests, first_seen, last_seen)
-            VALUES (?, 1, ?, ?)
+        _execute("""
+            INSERT INTO ai_cumulative (platform, total_requests, first_seen, last_seen, requests_7d, name, color, company)
+            VALUES (%s, 1, %s, %s, 1, %s, %s, %s)
             ON CONFLICT(platform) DO UPDATE SET
-                total_requests = total_requests + 1,
-                last_seen = ?
-        """, (platform, now.isoformat(), now.isoformat(), now.isoformat()))
-
-        conn.commit()
-        conn.close()
+                total_requests = ai_cumulative.total_requests + 1,
+                last_seen = EXCLUDED.last_seen,
+                name = EXCLUDED.name,
+                color = EXCLUDED.color,
+                company = EXCLUDED.company
+        """, (platform, now, now,
+              AI_PLATFORMS.get(platform, {}).get("name", platform.title()),
+              AI_PLATFORMS.get(platform, {}).get("color", "#64748b"),
+              AI_PLATFORMS.get(platform, {}).get("company", "")))
     except Exception as e:
         print(f"[AI Tracking] Error logging request: {e}")
 
 
-def log_mcp_connection(platform: str, method: str, user_agent: str = "",
-                       ip_address: str = "", tool_name: str = "",
-                       params: str = "", status_code: int = 200,
-                       response_ms: int = 0):
+def log_mcp_connection(platform, method, user_agent="", ip_address="",
+                       tool_name="", params="", status_code=200, response_ms=0):
     """Log an MCP JSON-RPC connection with method details."""
-    now = datetime.now(timezone.utc)
+    if not DATABASE_URL:
+        return
     try:
-        conn = _get_ai_db()
-        conn.execute("""
+        _execute("""
             INSERT INTO mcp_connections (platform, method, user_agent, ip_address, tool_name, params, status_code, response_ms, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (platform, method, user_agent[:500], ip_address, tool_name, params[:1000] if params else "", status_code, response_ms, now.isoformat()))
-        conn.commit()
-        conn.close()
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (platform, method, user_agent[:500], ip_address, tool_name,
+              params[:1000] if params else "", status_code, response_ms,
+              datetime.now(timezone.utc)))
     except Exception as e:
         print(f"[AI Tracking] Error logging MCP connection: {e}")
 
@@ -327,287 +320,122 @@ def log_mcp_connection(platform: str, method: str, user_agent: str = "",
 # ═══════════════════════════════════════════════════════════════
 
 def get_cumulative_totals():
-    """Get all-time totals per platform."""
-    conn = _get_ai_db()
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute("""
-        SELECT platform, total_requests, first_seen, last_seen
-        FROM ai_cumulative
-        ORDER BY total_requests DESC
-    """).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    try:
+        return _execute(
+            "SELECT platform, total_requests, first_seen, last_seen FROM ai_cumulative ORDER BY total_requests DESC",
+            fetchall=True) or []
+    except Exception:
+        return []
 
 
-def get_daily_stats(days: int = 7):
-    """Get daily breakdown for the last N days."""
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
-    conn = _get_ai_db()
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute("""
-        SELECT date, platform, request_count
-        FROM ai_daily_stats
-        WHERE date >= ?
-        ORDER BY date DESC, request_count DESC
-    """, (cutoff,)).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+def get_daily_stats(days=7):
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+        return _execute(
+            "SELECT date, platform, request_count FROM ai_daily_stats WHERE date >= %s ORDER BY date DESC, request_count DESC",
+            (cutoff,), fetchall=True) or []
+    except Exception:
+        return []
 
 
 def get_requests_today():
-    """Get total request count for today."""
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    conn = _get_ai_db()
-    result = conn.execute("""
-        SELECT COALESCE(SUM(request_count), 0) as total
-        FROM ai_daily_stats
-        WHERE date = ?
-    """, (today,)).fetchone()
-    conn.close()
-    return result[0] if result else 0
+    try:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        r = _execute("SELECT COALESCE(SUM(request_count), 0) as total FROM ai_daily_stats WHERE date = %s",
+                     (today,), fetch=True)
+        return r["total"] if r else 0
+    except Exception:
+        return 0
 
 
 def get_all_time_total():
-    """Get grand total of all AI requests ever."""
-    conn = _get_ai_db()
-    result = conn.execute("""
-        SELECT COALESCE(SUM(total_requests), 0) as total
-        FROM ai_cumulative
-    """).fetchone()
-    conn.close()
-    return result[0] if result else 0
+    try:
+        r = _execute("SELECT COALESCE(SUM(total_requests), 0) as total FROM ai_cumulative", fetch=True)
+        return r["total"] if r else 0
+    except Exception:
+        return 0
 
 
-def get_recent_activity(limit: int = 20):
-    """Get the most recent AI requests."""
-    conn = _get_ai_db()
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute("""
-        SELECT platform, endpoint, user_agent, created_at
-        FROM ai_requests
-        ORDER BY id DESC
-        LIMIT ?
-    """, (limit,)).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+def get_recent_activity(limit=20):
+    try:
+        return _execute(
+            "SELECT platform, endpoint, user_agent, created_at FROM ai_requests ORDER BY created_at DESC LIMIT %s",
+            (limit,), fetchall=True) or []
+    except Exception:
+        return []
 
 
-def get_platform_chart_data(days: int = 7):
-    """
-    Build chart-ready data: per-platform totals for the last N days.
-    Returns cumulative totals (what you want for the bar chart).
-    """
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
-    conn = _get_ai_db()
-    conn.row_factory = sqlite3.Row
-
-    # Sum each platform's requests over the period
-    rows = conn.execute("""
-        SELECT platform, SUM(request_count) as total
-        FROM ai_daily_stats
-        WHERE date >= ?
-        GROUP BY platform
-        ORDER BY total DESC
-    """, (cutoff,)).fetchall()
-    conn.close()
-
-    result = {}
-    for r in rows:
-        p = r["platform"]
-        if p in AI_PLATFORMS:
-            result[p] = {
-                "name": AI_PLATFORMS[p]["name"],
-                "color": AI_PLATFORMS[p]["color"],
-                "requests_7d": r["total"],
-            }
-
-    # Include platforms with zero recent requests
-    for key, info in AI_PLATFORMS.items():
-        if key not in result:
-            result[key] = {
-                "name": info["name"],
-                "color": info["color"],
-                "requests_7d": 0,
-            }
-
-    return result
+def get_platform_chart_data(days=7):
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+        rows = _execute(
+            "SELECT platform, SUM(request_count) as total FROM ai_daily_stats WHERE date >= %s GROUP BY platform ORDER BY total DESC",
+            (cutoff,), fetchall=True) or []
+        result = {}
+        for r in rows:
+            p = r["platform"]
+            if p in AI_PLATFORMS:
+                result[p] = {
+                    "name": AI_PLATFORMS[p]["name"],
+                    "color": AI_PLATFORMS[p]["color"],
+                    "requests_7d": r["total"],
+                }
+        # Include platforms with zero recent requests
+        for key, info in AI_PLATFORMS.items():
+            if key not in result:
+                result[key] = {"name": info["name"], "color": info["color"], "requests_7d": 0}
+        return result
+    except Exception:
+        return {}
 
 
-def get_hourly_breakdown(hours: int = 24):
+def get_hourly_breakdown(hours=24):
     """Get request counts per hour for the last N hours."""
-    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
-    conn = _get_ai_db()
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute("""
-        SELECT strftime('%Y-%m-%d %H:00', created_at) as hour, 
-               platform, 
-               COUNT(*) as count
-        FROM ai_requests
-        WHERE created_at >= ?
-        GROUP BY hour, platform
-        ORDER BY hour DESC
-    """, (cutoff,)).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        return _execute("""
+            SELECT to_char(created_at, 'YYYY-MM-DD HH24:00') as hour,
+                   platform,
+                   COUNT(*) as count
+            FROM ai_requests
+            WHERE created_at >= %s
+            GROUP BY hour, platform
+            ORDER BY hour DESC
+        """, (cutoff,), fetchall=True) or []
+    except Exception:
+        return []
 
 
 # ═══════════════════════════════════════════════════════════════
-#  NEON STATS CACHE (so Cloudflare Worker serves correct format)
+#  UTILITIES
 # ═══════════════════════════════════════════════════════════════
 
-_last_neon_sync = 0
-
-def _sync_stats_to_neon(stats_data):
-    """Cache computed AI tracking stats in Neon for Cloudflare Worker to read.
-    Also syncs ai_cumulative and ai_daily_stats rows so Worker queries get fresh data."""
-    global _last_neon_sync
-    import time
-    now = time.time()
-    if now - _last_neon_sync < 30:
-        return
-    _last_neon_sync = now
+def _time_ago(ts_input) -> str:
+    """Convert timestamp to human-readable 'X ago' string."""
     try:
-        from db_utils import get_db
-        conn = get_db()
-        try:
-            cache_json = json.dumps(stats_data, default=str)
-            conn.execute("""
-                INSERT INTO ai_tracking_stats_cache (id, stats_json, updated_at)
-                VALUES (1, ?, datetime('now'))
-                ON CONFLICT (id) DO UPDATE SET stats_json = EXCLUDED.stats_json, updated_at = datetime('now')
-            """, (cache_json,))
-            conn.commit()
-        finally:
-            conn.close()
-
-        _sync_raw_tables_to_neon()
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).debug(f"Neon stats cache sync skipped: {e}")
-
-
-def _sync_raw_tables_to_neon():
-    """Sync ai_cumulative and ai_daily_stats from SQLite to Neon so Worker queries return fresh data."""
-    try:
-        from db_utils import try_get_db
-        import sqlite3 as _sqlite3
-
-        sqlite_conn = _get_ai_db()
-        sqlite_conn.row_factory = _sqlite3.Row
-
-        cumulative_rows = sqlite_conn.execute(
-            "SELECT platform, total_requests, first_seen, last_seen FROM ai_cumulative"
-        ).fetchall()
-
-        cutoff_7d = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d")
-        cutoff_14d = (datetime.now(timezone.utc) - timedelta(days=14)).strftime("%Y-%m-%d")
-
-        seven_day_rows = sqlite_conn.execute(
-            "SELECT platform, SUM(request_count) as total FROM ai_daily_stats WHERE date >= ? GROUP BY platform",
-            (cutoff_7d,)
-        ).fetchall()
-        requests_7d_map = {r["platform"]: r["total"] for r in seven_day_rows}
-
-        daily_rows = sqlite_conn.execute(
-            "SELECT platform, date, request_count FROM ai_daily_stats WHERE date >= ?",
-            (cutoff_14d,)
-        ).fetchall()
-        sqlite_conn.close()
-
-        pg = try_get_db()
-        if pg is None:
-            return
-        try:
-            raw_conn = pg._conn
-            raw_cur = raw_conn.cursor()
-            try:
-                raw_conn.rollback()
-            except Exception:
-                pass
-            for r in cumulative_rows:
-                p = r["platform"]
-                info = AI_PLATFORMS.get(p, {})
-                r7d = requests_7d_map.get(p, 0)
-                try:
-                    raw_cur.execute("SAVEPOINT ai_cum_sp")
-                    raw_cur.execute("""
-                        INSERT INTO ai_cumulative (platform, total_requests, first_seen, last_seen, requests_7d, name, color, company)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (platform) DO UPDATE SET
-                            total_requests = EXCLUDED.total_requests,
-                            last_seen = EXCLUDED.last_seen,
-                            requests_7d = EXCLUDED.requests_7d,
-                            name = EXCLUDED.name,
-                            color = EXCLUDED.color,
-                            company = EXCLUDED.company
-                    """, (p, r["total_requests"], r["first_seen"], r["last_seen"],
-                          r7d, info.get("name", p.title()), info.get("color", "#64748b"), info.get("company", "")))
-                    raw_cur.execute("RELEASE SAVEPOINT ai_cum_sp")
-                except Exception:
-                    try:
-                        raw_cur.execute("ROLLBACK TO SAVEPOINT ai_cum_sp")
-                    except Exception:
-                        try:
-                            raw_conn.rollback()
-                        except Exception:
-                            pass
-
-            for r in daily_rows:
-                try:
-                    raw_cur.execute("SAVEPOINT ai_daily_sp")
-                    raw_cur.execute("""
-                        INSERT INTO ai_daily_stats (platform, date, request_count)
-                        VALUES (%s, %s, %s)
-                        ON CONFLICT (date, platform) DO UPDATE SET
-                            request_count = EXCLUDED.request_count
-                    """, (r["platform"], r["date"], r["request_count"]))
-                    raw_cur.execute("RELEASE SAVEPOINT ai_daily_sp")
-                except Exception:
-                    try:
-                        raw_cur.execute("ROLLBACK TO SAVEPOINT ai_daily_sp")
-                    except Exception:
-                        try:
-                            raw_conn.rollback()
-                        except Exception:
-                            pass
-
-            try:
-                raw_conn.commit()
-            except Exception:
-                try:
-                    raw_conn.rollback()
-                except Exception:
-                    pass
-        finally:
-            pg.close()
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).debug(f"Raw table sync to Neon skipped: {e}")
+        if isinstance(ts_input, str):
+            then = datetime.fromisoformat(ts_input.replace("Z", "+00:00"))
+        else:
+            then = ts_input
+        if then.tzinfo is None:
+            then = then.replace(tzinfo=timezone.utc)
+        diff = datetime.now(timezone.utc) - then
+        seconds = int(diff.total_seconds())
+        if seconds < 60:
+            return "Just now"
+        elif seconds < 3600:
+            return f"{seconds // 60}m ago"
+        elif seconds < 86400:
+            return f"{seconds // 3600}h ago"
+        else:
+            return f"{seconds // 86400}d ago"
+    except Exception:
+        return "recently"
 
 
 # ═══════════════════════════════════════════════════════════════
 #  FLASK INTEGRATION
 # ═══════════════════════════════════════════════════════════════
-
-def _init_neon_cache_table():
-    """Ensure ai_tracking_stats_cache exists in Neon (pool connection)."""
-    try:
-        from db_utils import get_db
-        conn = get_db()
-        try:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS ai_tracking_stats_cache (
-                    id INTEGER PRIMARY KEY DEFAULT 1,
-                    stats_json TEXT NOT NULL DEFAULT '{}',
-                    updated_at TIMESTAMP DEFAULT NOW()
-                )
-            """)
-            conn.commit()
-        finally:
-            conn.close()
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(f"Could not init ai_tracking_stats_cache: {e}")
 
 def init_ai_tracking(app: Flask):
     """
@@ -615,21 +443,13 @@ def init_ai_tracking(app: Flask):
         from ai_tracking import init_ai_tracking
         init_ai_tracking(app)
     """
-    init_db()
-    _init_neon_cache_table()
-
-    # ── Close DB connections at end of request ──────────────
-    @app.teardown_appcontext
-    def close_ai_tracking_db(exception):
-        db = getattr(g, '_ai_tracking_db', None)
-        if db is not None:
-            db.close()
+    db_ok = init_db()
 
     # ── Auto-log middleware ─────────────────────────────────
     @app.after_request
     def track_ai_request(response):
         """Automatically log requests from AI platforms.
-        
+
         Logic:
         - Recognized AI platform (by User-Agent)? ALWAYS log, any endpoint.
         - SEO bots / media crawlers? Log with their category.
@@ -639,6 +459,8 @@ def init_ai_tracking(app: Flask):
         - Generic bots without AI indicators? Skip (not interesting).
         - Everything else? Skip.
         """
+        if not DATABASE_URL:
+            return response
         try:
             path = request.path
             ua = request.headers.get("User-Agent", "")
@@ -672,58 +494,37 @@ def init_ai_tracking(app: Flask):
                     mcp_method = "parse_error"
                 mcp_platform = platform if platform in AI_PLATFORMS else (platform if platform == "mcp" else "mcp")
                 log_mcp_connection(
-                    platform=mcp_platform,
-                    method=mcp_method,
-                    user_agent=ua[:500],
-                    ip_address=ip or "",
-                    tool_name=tool_name,
-                    params=params_str,
-                    status_code=response.status_code,
-                    response_ms=response_ms
+                    platform=mcp_platform, method=mcp_method, user_agent=ua[:500],
+                    ip_address=ip or "", tool_name=tool_name, params=params_str,
+                    status_code=response.status_code, response_ms=response_ms
                 )
                 log_ai_request(
-                    platform=mcp_platform,
-                    endpoint=path,
-                    user_agent=ua[:500],
-                    ip_address=ip or "",
-                    status_code=response.status_code,
-                    response_ms=response_ms
+                    platform=mcp_platform, endpoint=path, user_agent=ua[:500],
+                    ip_address=ip or "", status_code=response.status_code, response_ms=response_ms
                 )
                 return response
 
             # ALWAYS log recognized AI platforms, regardless of endpoint
             if platform in AI_PLATFORMS:
                 log_ai_request(
-                    platform=platform,
-                    endpoint=path,
-                    user_agent=ua[:500],
-                    ip_address=ip or "",
-                    status_code=response.status_code,
-                    response_ms=response_ms
+                    platform=platform, endpoint=path, user_agent=ua[:500],
+                    ip_address=ip or "", status_code=response.status_code, response_ms=response_ms
                 )
                 return response
 
             # Log SEO bots and media crawlers with their category
             if platform in ("seo_bot", "media_crawler"):
                 log_ai_request(
-                    platform=platform,
-                    endpoint=path,
-                    user_agent=ua[:500],
-                    ip_address=ip or "",
-                    status_code=response.status_code,
-                    response_ms=response_ms
+                    platform=platform, endpoint=path, user_agent=ua[:500],
+                    ip_address=ip or "", status_code=response.status_code, response_ms=response_ms
                 )
                 return response
 
             # Log unknown_ai only if hitting AI-relevant endpoints
             if platform == "unknown_ai" and is_ai_endpoint(path):
                 log_ai_request(
-                    platform="unknown_ai",
-                    endpoint=path,
-                    user_agent=ua[:500],
-                    ip_address=ip or "",
-                    status_code=response.status_code,
-                    response_ms=response_ms
+                    platform="unknown_ai", endpoint=path, user_agent=ua[:500],
+                    ip_address=ip or "", status_code=response.status_code, response_ms=response_ms
                 )
                 return response
 
@@ -731,14 +532,9 @@ def init_ai_tracking(app: Flask):
 
             # For unknown UAs, only log if hitting an AI-relevant endpoint
             if platform == "unknown" and is_ai_endpoint(path):
-                label = "direct"
                 log_ai_request(
-                    platform=label,
-                    endpoint=path,
-                    user_agent=ua[:500],
-                    ip_address=ip or "",
-                    status_code=response.status_code,
-                    response_ms=response_ms
+                    platform="direct", endpoint=path, user_agent=ua[:500],
+                    ip_address=ip or "", status_code=response.status_code, response_ms=response_ms
                 )
 
         except Exception as e:
@@ -769,12 +565,14 @@ def init_ai_tracking(app: Flask):
 
     # ── API Routes ──────────────────────────────────────────
 
-    @app.route("/api/v1/ai-tracking/stats")
+    @app.route("/api/v1/ai-tracking/stats", methods=["GET", "OPTIONS"])
     def ai_tracking_stats():
-        """
-        Main stats endpoint — returns everything the frontend needs.
-        Cumulative totals, daily breakdown, and recent activity.
-        """
+        """Main stats endpoint — returns everything the frontend needs."""
+        if request.method == "OPTIONS":
+            return cors_jsonify({})
+        if not DATABASE_URL:
+            return cors_jsonify({"error": "Tracking not configured", "tracking": "disabled"}, 503)
+
         days = request.args.get("days", 7, type=int)
         cumulative = get_cumulative_totals()
         daily = get_daily_stats(days)
@@ -793,8 +591,8 @@ def init_ai_tracking(app: Flask):
                     "company": AI_PLATFORMS[p]["company"],
                     "color": AI_PLATFORMS[p]["color"],
                     "total_requests": entry["total_requests"],
-                    "first_seen": entry["first_seen"],
-                    "last_seen": entry["last_seen"],
+                    "first_seen": str(entry["first_seen"]) if entry["first_seen"] else None,
+                    "last_seen": str(entry["last_seen"]) if entry["last_seen"] else None,
                     "requests_7d": chart.get(p, {}).get("requests_7d", 0),
                 }
 
@@ -802,30 +600,23 @@ def init_ai_tracking(app: Flask):
         for key, info in AI_PLATFORMS.items():
             if key not in platforms:
                 platforms[key] = {
-                    "name": info["name"],
-                    "company": info["company"],
-                    "color": info["color"],
-                    "total_requests": 0,
-                    "first_seen": None,
-                    "last_seen": None,
-                    "requests_7d": 0,
+                    "name": info["name"], "company": info["company"], "color": info["color"],
+                    "total_requests": 0, "first_seen": None, "last_seen": None, "requests_7d": 0,
                 }
 
-        # Format recent activity with time-ago
+        # Format recent activity
         recent_formatted = []
         for r in recent:
             p = r["platform"]
             info = AI_PLATFORMS.get(p, {"name": p.title(), "color": "#64748b"})
             recent_formatted.append({
-                "platform": info["name"],
-                "platform_key": p,
-                "endpoint": r["endpoint"],
-                "color": info.get("color", "#64748b"),
-                "timestamp": r["created_at"],
+                "platform": info["name"], "platform_key": p,
+                "endpoint": r["endpoint"], "color": info.get("color", "#64748b"),
+                "timestamp": str(r["created_at"]),
                 "time_ago": _time_ago(r["created_at"]),
             })
 
-        response_data = {
+        return cors_jsonify({
             "status": "live",
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "total_requests_today": today_count,
@@ -837,186 +628,142 @@ def init_ai_tracking(app: Flask):
             "daily_breakdown": daily,
             "recent_activity": recent_formatted,
             "tracking": "persistent",
-            "note": "Cumulative totals stored in SQLite — survives restarts"
-        }
+            "note": "Direct Neon PostgreSQL tracking — Railway edition"
+        })
 
-        _sync_stats_to_neon(response_data)
-
-        return cors_jsonify(response_data)
-
-    @app.route("/api/v1/ai-tracking/chart")
+    @app.route("/api/v1/ai-tracking/chart", methods=["GET", "OPTIONS"])
     def ai_tracking_chart():
         """Chart-specific endpoint for the 7-day bar chart."""
+        if request.method == "OPTIONS":
+            return cors_jsonify({})
         days = request.args.get("days", 7, type=int)
         chart = get_platform_chart_data(days)
-
-        # Sort by request count descending
         sorted_platforms = sorted(chart.items(), key=lambda x: x[1]["requests_7d"], reverse=True)
-
         return cors_jsonify({
             "days": days,
             "platforms": [
-                {
-                    "key": key,
-                    "name": data["name"],
-                    "color": data["color"],
-                    "requests": data["requests_7d"],
-                }
+                {"key": key, "name": data["name"], "color": data["color"], "requests": data["requests_7d"]}
                 for key, data in sorted_platforms
             ],
             "total": sum(d["requests_7d"] for d in chart.values()),
         })
 
-    @app.route("/api/v1/ai-tracking/cumulative")
+    @app.route("/api/v1/ai-tracking/cumulative", methods=["GET", "OPTIONS"])
     def ai_tracking_cumulative():
         """All-time cumulative totals per platform."""
-        totals = get_cumulative_totals()
+        if request.method == "OPTIONS":
+            return cors_jsonify({})
         return cors_jsonify({
             "all_time_total": get_all_time_total(),
-            "platforms": totals,
+            "platforms": get_cumulative_totals(),
         })
 
-    @app.route("/api/v1/ai-tracking/recent")
+    @app.route("/api/v1/ai-tracking/recent", methods=["GET", "OPTIONS"])
     def ai_tracking_recent():
         """Recent activity feed."""
+        if request.method == "OPTIONS":
+            return cors_jsonify({})
         limit = request.args.get("limit", 20, type=int)
         recent = get_recent_activity(min(limit, 100))
-
         formatted = []
         for r in recent:
             p = r["platform"]
             info = AI_PLATFORMS.get(p, {"name": p.title(), "color": "#64748b"})
             formatted.append({
-                "platform": info["name"],
-                "platform_key": p,
-                "endpoint": r["endpoint"],
-                "color": info.get("color", "#64748b"),
-                "timestamp": r["created_at"],
+                "platform": info["name"], "platform_key": p,
+                "endpoint": r["endpoint"], "color": info.get("color", "#64748b"),
+                "timestamp": str(r["created_at"]),
                 "time_ago": _time_ago(r["created_at"]),
             })
-
         return cors_jsonify({"recent": formatted})
 
-    @app.route("/api/v1/ai-tracking/hourly")
+    @app.route("/api/v1/ai-tracking/hourly", methods=["GET", "OPTIONS"])
     def ai_tracking_hourly():
         """Hourly breakdown for the last 24h."""
+        if request.method == "OPTIONS":
+            return cors_jsonify({})
         return cors_jsonify({"hourly": get_hourly_breakdown(24)})
 
-    @app.route("/api/v1/ai-tracking/health")
+    @app.route("/api/v1/ai-tracking/health", methods=["GET", "OPTIONS"])
     def ai_tracking_health():
         """Health check for the tracking system."""
+        if request.method == "OPTIONS":
+            return cors_jsonify({})
         try:
-            conn = _get_ai_db()
-            total = conn.execute("SELECT COUNT(*) FROM ai_requests").fetchone()[0]
-            platforms = conn.execute("SELECT COUNT(DISTINCT platform) FROM ai_cumulative WHERE total_requests > 0").fetchone()[0]
-            conn.close()
+            r = _execute("SELECT COUNT(*) as total FROM ai_requests", fetch=True)
+            p = _execute("SELECT COUNT(*) as total FROM ai_cumulative WHERE total_requests > 0", fetch=True)
             return cors_jsonify({
                 "status": "healthy",
-                "db_path": DB_PATH,
-                "total_logged": total,
-                "platforms_seen": platforms,
-                "tracking_mode": "persistent_sqlite",
+                "storage": "neon_postgresql",
+                "total_logged": r["total"] if r else 0,
+                "platforms_seen": p["total"] if p else 0,
+                "tracking_mode": "persistent_neon",
             })
         except Exception as e:
             return cors_jsonify({"status": "error", "error": str(e)}, 500)
 
-    @app.route("/api/v1/ai-tracking/mcp")
+    @app.route("/api/v1/ai-tracking/mcp", methods=["GET", "OPTIONS"])
     def ai_tracking_mcp():
         """MCP connection stats — shows which platforms are making real MCP calls."""
+        if request.method == "OPTIONS":
+            return cors_jsonify({})
         days = request.args.get("days", 7, type=int)
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
         try:
-            conn = _get_ai_db()
-            conn.row_factory = sqlite3.Row
-
-            summary = conn.execute("""
+            summary = _execute("""
                 SELECT method, COUNT(*) as count, COUNT(DISTINCT platform) as platforms
-                FROM mcp_connections WHERE created_at >= ?
+                FROM mcp_connections WHERE created_at >= %s
                 GROUP BY method ORDER BY count DESC
-            """, (cutoff,)).fetchall()
+            """, (cutoff,), fetchall=True) or []
 
-            by_platform = conn.execute("""
-                SELECT platform, method, COUNT(*) as count,
-                       MAX(created_at) as last_seen
-                FROM mcp_connections WHERE created_at >= ?
+            by_platform = _execute("""
+                SELECT platform, method, COUNT(*) as count, MAX(created_at) as last_seen
+                FROM mcp_connections WHERE created_at >= %s
                 GROUP BY platform, method ORDER BY count DESC
-            """, (cutoff,)).fetchall()
+            """, (cutoff,), fetchall=True) or []
 
-            recent = conn.execute("""
+            recent = _execute("""
                 SELECT platform, method, tool_name, user_agent, created_at, status_code
-                FROM mcp_connections
-                ORDER BY id DESC LIMIT 20
-            """).fetchall()
+                FROM mcp_connections ORDER BY id DESC LIMIT 20
+            """, fetchall=True) or []
 
-            tool_usage = conn.execute("""
+            tool_usage = _execute("""
                 SELECT tool_name, COUNT(*) as count, COUNT(DISTINCT platform) as platforms
                 FROM mcp_connections
-                WHERE method = 'tools/call' AND tool_name != '' AND created_at >= ?
+                WHERE method = 'tools/call' AND tool_name != '' AND created_at >= %s
                 GROUP BY tool_name ORDER BY count DESC
-            """, (cutoff,)).fetchall()
-
-            conn.close()
+            """, (cutoff,), fetchall=True) or []
 
             return cors_jsonify({
                 "period_days": days,
-                "method_summary": [dict(r) for r in summary],
-                "by_platform": [dict(r) for r in by_platform],
-                "tool_usage": [dict(r) for r in tool_usage],
+                "method_summary": summary,
+                "by_platform": by_platform,
+                "tool_usage": tool_usage,
                 "recent_connections": [{
-                    "platform": r["platform"],
-                    "method": r["method"],
-                    "tool_name": r["tool_name"] or None,
-                    "user_agent": r["user_agent"][:80] if r["user_agent"] else None,
-                    "timestamp": r["created_at"],
+                    "platform": r["platform"], "method": r["method"],
+                    "tool_name": r.get("tool_name") or None,
+                    "user_agent": (r.get("user_agent") or "")[:80] or None,
+                    "timestamp": str(r["created_at"]),
                     "time_ago": _time_ago(r["created_at"]),
-                    "status_code": r["status_code"],
+                    "status_code": r.get("status_code"),
                 } for r in recent],
             })
         except Exception as e:
             return cors_jsonify({"error": str(e)}, 500)
 
-    # Also register as /ai/tracking for backward compatibility
-    @app.route("/ai/tracking")
+    # ── Legacy compat routes ────────────────────────────────
+    @app.route("/ai/tracking", methods=["GET", "OPTIONS"])
     def ai_tracking_compat():
-        """Legacy compat — redirects to the stats endpoint."""
         return ai_tracking_stats()
 
-    @app.route("/api/ai/tracking")
+    @app.route("/api/ai/tracking", methods=["GET", "OPTIONS"])
     def ai_tracking_compat2():
-        """Legacy compat v2."""
         return ai_tracking_stats()
 
-    print("   📊 AI Tracking: Persistent SQLite tracking loaded")
-    print(f"   📊 AI Tracking: DB at {DB_PATH}")
-    print(f"   📊 AI Tracking: Monitoring {len(AI_PLATFORMS)} platforms")
-    print(f"   📊 AI Tracking: SEO/media bots classified separately ({len(SEO_BOTS)} patterns)")
-    print(f"   📊 AI Tracking: MCP connection tracking enabled")
-
-
-# ═══════════════════════════════════════════════════════════════
-#  UTILITIES
-# ═══════════════════════════════════════════════════════════════
-
-def _time_ago(iso_str: str) -> str:
-    """Convert ISO timestamp to human-readable 'X ago' string."""
-    try:
-        then = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
-        if then.tzinfo is None:
-            then = then.replace(tzinfo=timezone.utc)
-        now = datetime.now(timezone.utc)
-        diff = now - then
-
-        seconds = int(diff.total_seconds())
-        if seconds < 60:
-            return "Just now"
-        elif seconds < 3600:
-            mins = seconds // 60
-            return f"{mins}m ago"
-        elif seconds < 86400:
-            hours = seconds // 3600
-            return f"{hours}h ago"
-        else:
-            days = seconds // 86400
-            return f"{days}d ago"
-    except Exception:
-        return "recently"
+    if db_ok:
+        print("   📊 AI Tracking: Neon PostgreSQL tracking active (Railway)")
+        print(f"   📊 AI Tracking: Monitoring {len(AI_PLATFORMS)} platforms")
+        print(f"   📊 AI Tracking: SEO/media bots classified separately ({len(SEO_BOTS)} patterns)")
+        print(f"   📊 AI Tracking: MCP connection tracking enabled")
+    else:
+        print("   ⚠️  AI Tracking: Disabled (no DATABASE_URL)")
