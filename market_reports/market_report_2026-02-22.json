@@ -1,8 +1,8 @@
 {
   "report_date": "2026-02-22",
-  "generated_at": "2026-02-22T22:34:45.168616",
+  "generated_at": "2026-02-22T23:08:30.269933",
   "summary": {
-    "total_facilities": 11422,
+    "total_facilities": 11423,
     "total_providers": 3955,
     "countries_covered": 170,
     "total_power_mw": 51325.0,
@@ -10,7 +10,7 @@
     "total_deal_value_usd": 1583055100.0
   },
   "market_highlights": [
-    "DC Hub tracks 11,422 data center facilities globally",
+    "DC Hub tracks 11,423 data center facilities globally",
     "Coverage spans 170 countries with 3955 providers",
     "Combined capacity: 51,325 MW",
     "M&A database: 473 transactions worth $1.6B+"

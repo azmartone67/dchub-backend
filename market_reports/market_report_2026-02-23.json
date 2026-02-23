@@ -1,0 +1,154 @@
+{
+  "report_date": "2026-02-23",
+  "generated_at": "2026-02-23T06:42:06.395987",
+  "summary": {
+    "total_facilities": 11425,
+    "total_providers": 3956,
+    "countries_covered": 170,
+    "total_power_mw": 51325.0,
+    "total_deals": 473,
+    "total_deal_value_usd": 1583055100.0
+  },
+  "market_highlights": [
+    "DC Hub tracks 11,425 data center facilities globally",
+    "Coverage spans 170 countries with 3956 providers",
+    "Combined capacity: 51,325 MW",
+    "M&A database: 473 transactions worth $1.6B+"
+  ],
+  "recent_deals": [
+    {
+      "buyer": "PGIM",
+      "seller": "site for",
+      "value_usd": 1200000000.0,
+      "type": "ma",
+      "date": null
+    },
+    {
+      "buyer": "GeoPark to",
+      "seller": "Fronterra Energy",
+      "value_usd": 375000000.0,
+      "type": "ma",
+      "date": null
+    },
+    {
+      "buyer": "CyrusOne",
+      "seller": "Constellation",
+      "value_usd": 0.0,
+      "type": "jv",
+      "date": "2026-02-12"
+    },
+    {
+      "buyer": "Blackstone",
+      "seller": "Coatue",
+      "value_usd": 0.0,
+      "type": "debt",
+      "date": "2026-02-12"
+    },
+    {
+      "buyer": "Open Access Data Centres",
+      "seller": "NTT",
+      "value_usd": 0.0,
+      "type": "ma",
+      "date": "2026-02-12"
+    },
+    {
+      "buyer": "Constellation",
+      "seller": "Constellation Energy",
+      "value_usd": 0.0,
+      "type": "equity",
+      "date": "2026-02-12"
+    },
+    {
+      "buyer": "Ares",
+      "seller": "Vantage Data Centers",
+      "value_usd": 2400.0,
+      "type": "debt",
+      "date": "2026-02-12"
+    },
+    {
+      "buyer": "Blue Owl",
+      "seller": "Stack",
+      "value_usd": 2100.0,
+      "type": "debt",
+      "date": "2026-02-12"
+    },
+    {
+      "buyer": "Blackstone",
+      "seller": "Coatue",
+      "value_usd": 10000.0,
+      "type": "debt",
+      "date": "2026-02-10"
+    },
+    {
+      "buyer": "Nvidia",
+      "seller": "Blackstone",
+      "value_usd": 10000.0,
+      "type": "debt",
+      "date": "2026-02-09"
+    }
+  ],
+  "recent_news": [
+    {
+      "title": "NASA repurposes Mars Helicopter\u2019s ancient Snapdragon SoC to help Perseverance rover navigate",
+      "source": "The Register DC",
+      "date": "2026-02-23T06:15:47"
+    },
+    {
+      "title": "Data Center Refrigerant Market Current Trends Analysis 2026 to 2035",
+      "source": "Insightace Analytic",
+      "date": "2026-02-23T06:15:24"
+    },
+    {
+      "title": "Johnson Controls to acquire Alloy to expand data centre cooling portfolio",
+      "source": "Telecompaper",
+      "date": "2026-02-23T06:08:30"
+    },
+    {
+      "title": "Belimo's 2025 revenue and EBIT rise, helped by data center demand",
+      "source": "TradingView",
+      "date": "2026-02-23T05:35:00"
+    },
+    {
+      "title": "Did AMD's (AMD) India Helios AI Data Center Blueprint Just Recast Its Infrastructure Ambitions?",
+      "source": "simplywall.st",
+      "date": "2026-02-23T05:25:15"
+    },
+    {
+      "title": "Sharon AI & Cisco Launch Australia\u2019s First Cisco Secure AI Factory with NVIDIA",
+      "source": "Cisco Newsroom",
+      "date": "2026-02-23T05:07:10"
+    },
+    {
+      "title": "Anaplan launches AWS Data Center in Singapore",
+      "source": "TNGlobal",
+      "date": "2026-02-23T05:04:10"
+    },
+    {
+      "title": "Anaplan launches AWS data center in Singapore",
+      "source": "W.Media",
+      "date": "2026-02-23T04:19:00"
+    },
+    {
+      "title": "SK Hynix Boss Pledges to Boost Output of AI Memory Chips",
+      "source": "Bloomberg Tech",
+      "date": "2026-02-23T03:40:12"
+    },
+    {
+      "title": "Anaplan opens AWS data center in Singapore for SEA firms",
+      "source": "Tech in Asia",
+      "date": "2026-02-23T03:23:00"
+    }
+  ],
+  "data_sources": [
+    "PeeringDB",
+    "OpenStreetMap",
+    "SEC EDGAR",
+    "Wikidata",
+    "60+ RSS Feeds",
+    "EIA Energy API",
+    "Grid Status API",
+    "FCC Broadband API",
+    "EPA Envirofacts"
+  ],
+  "citation": "According to DC Hub Nexus (dchub.cloud)"
+}
