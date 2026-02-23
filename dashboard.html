@@ -741,81 +741,55 @@
             <!-- Overview Section -->
             <div id="section-overview" class="section">
                 <div class="page-header">
-                    <h1 class="page-title">Welcome back! 👋</h1>
-                    <p class="page-subtitle">Here's what's happening in your monitored markets</p>
+                    <h1 class="page-title" id="welcomeTitle">Welcome! 👋</h1>
+                    <p class="page-subtitle" id="welcomeSubtitle">Your data center intelligence dashboard</p>
                 </div>
                 
-                <!-- Stats Grid -->
+                <!-- Stats Grid - Live from API -->
                 <div class="stats-grid">
                     <div class="stat-card">
-                        <div class="stat-label">Markets Tracked</div>
-                        <div class="stat-value">12</div>
-                        <div class="stat-change up">↑ 2 new this week</div>
+                        <div class="stat-label">Global Facilities</div>
+                        <div class="stat-value" id="dashFacilities">--</div>
+                        <div class="stat-change up" id="dashCountries">Loading...</div>
                     </div>
                     <div class="stat-card">
-                        <div class="stat-label">Queue Projects</div>
-                        <div class="stat-value">847</div>
-                        <div class="stat-change up">↑ 23 new projects</div>
+                        <div class="stat-label">M&A Deals Tracked</div>
+                        <div class="stat-value" id="dashDeals">--</div>
+                        <div class="stat-change">$185B+ total value</div>
                     </div>
                     <div class="stat-card">
-                        <div class="stat-label">Active Alerts</div>
-                        <div class="stat-value">12</div>
-                        <div class="stat-change">3 triggered today</div>
+                        <div class="stat-label">News Articles</div>
+                        <div class="stat-value" id="dashNews">--</div>
+                        <div class="stat-change" id="dashNewsSub">Updated live</div>
                     </div>
                     <div class="stat-card">
-                        <div class="stat-label">API Calls</div>
-                        <div class="stat-value">2,341</div>
-                        <div class="stat-change">of 10,000 this month</div>
+                        <div class="stat-label">Pipeline Projects</div>
+                        <div class="stat-value" id="dashPipeline">--</div>
+                        <div class="stat-change" id="dashPipelineSub">Interconnection queue</div>
                     </div>
                 </div>
                 
-                <!-- Recent Activity -->
+                <!-- Recent News - Live from API -->
                 <div class="card">
                     <div class="card-header">
-                        <h3 class="card-title">📬 Recent Activity</h3>
-                        <button class="btn btn-secondary btn-sm">View All</button>
+                        <h3 class="card-title">📬 Latest Industry News</h3>
+                        <a href="/news" class="btn btn-secondary btn-sm">View All</a>
                     </div>
-                    <div class="card-body">
-                        <div class="activity-item">
-                            <div class="activity-icon queue">📋</div>
-                            <div class="activity-content">
-                                <div class="activity-title">New DC load project in Loudoun County</div>
-                                <div class="activity-desc">Microsoft filed 150 MW interconnection request in PJM queue</div>
-                            </div>
-                            <div class="activity-time">2 hours ago</div>
-                        </div>
+                    <div class="card-body" id="dashActivityFeed">
                         <div class="activity-item">
                             <div class="activity-icon news">📰</div>
                             <div class="activity-content">
-                                <div class="activity-title">AWS announces Phoenix expansion</div>
-                                <div class="activity-desc">$15B investment planned for 3 new data center campuses</div>
+                                <div class="activity-title" style="color:#64748b">Loading latest news...</div>
                             </div>
-                            <div class="activity-time">5 hours ago</div>
-                        </div>
-                        <div class="activity-item">
-                            <div class="activity-icon market">📊</div>
-                            <div class="activity-content">
-                                <div class="activity-title">Dallas power rates increased</div>
-                                <div class="activity-desc">ERCOT wholesale rates up 12% month-over-month</div>
-                            </div>
-                            <div class="activity-time">1 day ago</div>
-                        </div>
-                        <div class="activity-item">
-                            <div class="activity-icon queue">📋</div>
-                            <div class="activity-content">
-                                <div class="activity-title">Queue milestone: New Albany Google campus</div>
-                                <div class="activity-desc">Interconnection agreement signed for 200 MW facility</div>
-                            </div>
-                            <div class="activity-time">2 days ago</div>
                         </div>
                     </div>
                 </div>
                 
-                <!-- Watched Markets -->
+                <!-- Top Markets - Platform Data -->
                 <div class="card">
                     <div class="card-header">
-                        <h3 class="card-title">📍 Watched Markets</h3>
-                        <button class="btn btn-primary btn-sm" onclick="openModal('add-market')">+ Add Market</button>
+                        <h3 class="card-title">📍 Top Markets</h3>
+                        <a href="/land-power" class="btn btn-primary btn-sm">Explore on Map</a>
                     </div>
                     <div class="card-body">
                         <div class="market-grid">
@@ -903,9 +877,38 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- Quick Actions for New Users -->
+                <div class="card" id="quickActionsCard">
+                    <div class="card-header">
+                        <h3 class="card-title">🚀 Get Started</h3>
+                    </div>
+                    <div class="card-body">
+                        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;">
+                            <a href="/land-power" class="btn btn-secondary btn-sm" style="padding:16px;text-align:center;text-decoration:none;display:flex;flex-direction:column;gap:6px;align-items:center;">
+                                <span style="font-size:24px;">🗺️</span>
+                                <strong>Land & Power Map</strong>
+                                <span style="font-size:12px;color:#94a3b8;">50+ live energy data layers</span>
+                            </a>
+                            <a href="/news" class="btn btn-secondary btn-sm" style="padding:16px;text-align:center;text-decoration:none;display:flex;flex-direction:column;gap:6px;align-items:center;">
+                                <span style="font-size:24px;">📰</span>
+                                <strong>Industry News</strong>
+                                <span style="font-size:12px;color:#94a3b8;">40+ sources, updated live</span>
+                            </a>
+                            <a href="/connect" class="btn btn-secondary btn-sm" style="padding:16px;text-align:center;text-decoration:none;display:flex;flex-direction:column;gap:6px;align-items:center;">
+                                <span style="font-size:24px;">🤖</span>
+                                <strong>Connect AI Tools</strong>
+                                <span style="font-size:12px;color:#94a3b8;">MCP, ChatGPT, Claude</span>
+                            </a>
+                            <a href="/pricing" class="btn btn-secondary btn-sm" style="padding:16px;text-align:center;text-decoration:none;display:flex;flex-direction:column;gap:6px;align-items:center;">
+                                <span style="font-size:24px;">⚡</span>
+                                <strong>Upgrade to Pro</strong>
+                                <span style="font-size:12px;color:#94a3b8;">Unlimited access & API</span>
+                            </a>
+                        </div>
+                    </div>
+                </div>
             </div>
-            
-            <!-- Saved Searches Section -->
             <div id="section-searches" class="section" style="display:none">
                 <div class="page-header">
                     <h1 class="page-title">🔍 Saved Searches</h1>
@@ -1716,6 +1719,60 @@
         
         // Initialize dashboard
         DashboardData.init();
+
+        // Load live dashboard data
+        async function loadDashboardOverview() {
+            try {
+                const user = JSON.parse(localStorage.getItem("dchub_user") || "{}");
+                const name = user.name || user.email || "";
+                const firstName = name.split(/[\s@]/)[0];
+                if (firstName) {
+                    document.getElementById("welcomeTitle").textContent = "Welcome back, " + firstName + "! 👋";
+                }
+                if (user.plan === "pro" || user.role === "admin" || user.role === "pro") {
+                    var qa = document.getElementById("quickActionsCard");
+                    if (qa) { var ul = qa.querySelector("a[href=\"/pricing\"]"); if (ul) ul.style.display = "none"; }
+                    document.getElementById("welcomeSubtitle").textContent = "Here is what is happening in your monitored markets";
+                }
+                var statsRes = await dchubFetch("/api/v1/stats");
+                var statsData = await statsRes.json();
+                if (statsData.success && statsData.stats) {
+                    var s = statsData.stats;
+                    document.getElementById("dashFacilities").textContent = s.facilities ? s.facilities.toLocaleString() : "--";
+                    document.getElementById("dashCountries").textContent = "Across " + (s.countries || "170") + "+ countries";
+                    document.getElementById("dashDeals").textContent = s.deals ? s.deals.toLocaleString() : "--";
+                    document.getElementById("dashNews").textContent = s.news_articles ? s.news_articles.toLocaleString() : "--";
+                    document.getElementById("dashPipeline").textContent = s.pipeline_projects ? s.pipeline_projects.toLocaleString() : "--";
+                }
+                var newsRes = await dchubFetch("/api/v1/news?limit=4");
+                var newsData = await newsRes.json();
+                if (newsData.articles && newsData.articles.length > 0) {
+                    var feed = document.getElementById("dashActivityFeed");
+                    feed.innerHTML = newsData.articles.map(function(a) {
+                        var icons = { "M\&A": "💰", "Industry": "📰", "Cooling": "❄️", "Power": "⚡", "Construction": "🏗️" };
+                        var icon = icons[a.category] || "📋";
+                        var ago = dashTimeAgo(a.published_at);
+                        var title = a.title.length > 80 ? a.title.substring(0, 80) + "..." : a.title;
+                        var desc = a.summary ? (a.summary.length > 100 ? a.summary.substring(0, 100) + "..." : a.summary) : a.source;
+                        return "<div class=\"activity-item\" style=\"cursor:pointer\" onclick=\"window.open(\x27" + a.url + "\x27,\x27_blank\x27)\">" +
+                            "<div class=\"activity-icon news\">" + icon + "</div>" +
+                            "<div class=\"activity-content\">" +
+                            "<div class=\"activity-title\">" + title + "</div>" +
+                            "<div class=\"activity-desc\">" + desc + "</div></div>" +
+                            "<div class=\"activity-time\">" + ago + "</div></div>";
+                    }).join("");
+                }
+            } catch (e) { console.warn("Dashboard data load error:", e); }
+        }
+        function dashTimeAgo(dateStr) {
+            var now = new Date(), then = new Date(dateStr);
+            var mins = Math.floor((now - then) / 60000);
+            if (mins < 60) return mins + "m ago";
+            var hrs = Math.floor(mins / 60);
+            if (hrs < 24) return hrs + "h ago";
+            return Math.floor(hrs / 24) + "d ago";
+        }
+        if (document.getElementById("dashFacilities")) { loadDashboardOverview(); }
         
         console.log('🎯 DC Hub Enterprise Dashboard loaded');
         console.log('📊 Subscriber: Enterprise tier');
