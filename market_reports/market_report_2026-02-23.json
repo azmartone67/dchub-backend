@@ -1,8 +1,8 @@
 {
   "report_date": "2026-02-23",
-  "generated_at": "2026-02-23T06:42:06.395987",
+  "generated_at": "2026-02-23T14:51:28.723192",
   "summary": {
-    "total_facilities": 11425,
+    "total_facilities": 11427,
     "total_providers": 3956,
     "countries_covered": 170,
     "total_power_mw": 51325.0,
@@ -10,7 +10,7 @@
     "total_deal_value_usd": 1583055100.0
   },
   "market_highlights": [
-    "DC Hub tracks 11,425 data center facilities globally",
+    "DC Hub tracks 11,427 data center facilities globally",
     "Coverage spans 170 countries with 3956 providers",
     "Combined capacity: 51,325 MW",
     "M&A database: 473 transactions worth $1.6B+"
@@ -89,54 +89,54 @@
   ],
   "recent_news": [
     {
-      "title": "NASA repurposes Mars Helicopter\u2019s ancient Snapdragon SoC to help Perseverance rover navigate",
+      "title": "Sam Altman Would Like To Remind You That Humans Use a Lot of Energy, Too",
+      "source": "Slashdot",
+      "date": "2026-02-23T14:40:00"
+    },
+    {
+      "title": "Is PDF Solutions (PDFS) an EGC that Provides Exposure to the AI Infrastructure Buildout?",
+      "source": "Yahoo Finance",
+      "date": "2026-02-23T14:27:06"
+    },
+    {
+      "title": "O say, can you see: FCC pushes patriotic programming for US 250th",
       "source": "The Register DC",
-      "date": "2026-02-23T06:15:47"
+      "date": "2026-02-23T14:26:55"
     },
     {
-      "title": "Data Center Refrigerant Market Current Trends Analysis 2026 to 2035",
-      "source": "Insightace Analytic",
-      "date": "2026-02-23T06:15:24"
+      "title": "Starwood looks to buy county-owned land in Fairfax, Virginia, for data center development",
+      "source": "Data Center Dynamics",
+      "date": "2026-02-23T14:16:54"
     },
     {
-      "title": "Johnson Controls to acquire Alloy to expand data centre cooling portfolio",
-      "source": "Telecompaper",
-      "date": "2026-02-23T06:08:30"
+      "title": "Staffing and consulting company Tryfacta signs MoU to develop 1GW data center",
+      "source": "Data Center Dynamics",
+      "date": "2026-02-23T14:13:18"
     },
     {
-      "title": "Belimo's 2025 revenue and EBIT rise, helped by data center demand",
-      "source": "TradingView",
-      "date": "2026-02-23T05:35:00"
-    },
-    {
-      "title": "Did AMD's (AMD) India Helios AI Data Center Blueprint Just Recast Its Infrastructure Ambitions?",
-      "source": "simplywall.st",
-      "date": "2026-02-23T05:25:15"
-    },
-    {
-      "title": "Sharon AI & Cisco Launch Australia\u2019s First Cisco Secure AI Factory with NVIDIA",
-      "source": "Cisco Newsroom",
-      "date": "2026-02-23T05:07:10"
-    },
-    {
-      "title": "Anaplan launches AWS Data Center in Singapore",
-      "source": "TNGlobal",
-      "date": "2026-02-23T05:04:10"
-    },
-    {
-      "title": "Anaplan launches AWS data center in Singapore",
-      "source": "W.Media",
-      "date": "2026-02-23T04:19:00"
-    },
-    {
-      "title": "SK Hynix Boss Pledges to Boost Output of AI Memory Chips",
+      "title": "Data Center Rush Spurs Earnings Windfall for Power-Gear Makers",
       "source": "Bloomberg Tech",
-      "date": "2026-02-23T03:40:12"
+      "date": "2026-02-23T14:00:00"
     },
     {
-      "title": "Anaplan opens AWS data center in Singapore for SEA firms",
-      "source": "Tech in Asia",
-      "date": "2026-02-23T03:23:00"
+      "title": "Ex-Amazon UK boss lined up to chair Britain's competition watchdog",
+      "source": "The Register DC",
+      "date": "2026-02-23T13:55:04"
+    },
+    {
+      "title": "5 AI-Infrastructure Giants to Buy for 2026 on Massive Data Center Boom",
+      "source": "Zacks Investment Research",
+      "date": "2026-02-23T13:01:18"
+    },
+    {
+      "title": "MEDIA ALERT: Equinix to Speak at Upcoming Investor Conferences",
+      "source": "PR Newswire",
+      "date": "2026-02-23T13:01:00"
+    },
+    {
+      "title": "New data center in north Denver sparks calls for accountability from concerned neighbors",
+      "source": "The Denver Post",
+      "date": "2026-02-23T13:00:59"
     }
   ],
   "data_sources": [
