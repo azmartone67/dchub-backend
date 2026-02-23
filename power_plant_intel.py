@@ -136,7 +136,8 @@ def power_plants_nearby():
         return jsonify(cached)
 
     # EIA API v2: operating-generator-capacity provides plant-level data
-    # We query by state (derived from coordinates) since EIA doesn't support geo queries
+    # Note: EIA API doesn't return lat/lng — we supplement with HIFLD or return state-level
+    # We use length=1 per generator to get latest month only (avoids monthly duplication)
     state = _coords_to_state(lat, lng)
     if not state:
         return jsonify({'error': 'Could not determine state from coordinates'}), 400
@@ -144,8 +145,11 @@ def power_plants_nearby():
     params = {
         'frequency': 'monthly',
         'data[0]': 'nameplate-capacity-mw',
+        'data[1]': 'county',
+        'data[2]': 'latitude',
+        'data[3]': 'longitude',
         'facets[stateid][]': state,
-        'sort[0][column]': 'nameplate-capacity-mw',
+        'sort[0][column]': 'period',
         'sort[0][direction]': 'desc',
         'length': 5000,
     }
@@ -158,15 +162,24 @@ def power_plants_nearby():
     if 'error' in data:
         return jsonify({'success': False, 'error': data['error']}), 500
 
-    # Filter by distance and capacity
+    # Deduplicate: only keep the most recent period per plant+generator combo
+    seen_generators = set()
     plants = {}
     for row in data.get('response', {}).get('data', []):
         plant_id = row.get('plantid') or row.get('plantCode')
+        gen_id = row.get('generatorid', row.get('generator_id', ''))
         if not plant_id:
             continue
 
-        plant_lat = _safe_float(row.get('latitude'))
-        plant_lng = _safe_float(row.get('longitude'))
+        # Skip if we already saw this generator (we sorted by period desc, so first = newest)
+        dedup_key = f"{plant_id}:{gen_id}"
+        if dedup_key in seen_generators:
+            continue
+        seen_generators.add(dedup_key)
+
+        # Try multiple possible field names for coordinates
+        plant_lat = _safe_float(row.get('latitude') or row.get('lat') or row.get('plantLatitude'))
+        plant_lng = _safe_float(row.get('longitude') or row.get('lon') or row.get('long') or row.get('plantLongitude'))
         capacity = _safe_float(row.get('nameplate-capacity-mw', 0))
 
         if capacity < min_mw:
@@ -179,7 +192,7 @@ def power_plants_nearby():
         else:
             dist = None
 
-        # Aggregate by plant (may have multiple generators)
+        # Aggregate by plant (each generator counted once due to dedup above)
         if plant_id not in plants:
             plants[plant_id] = {
                 'plant_id': plant_id,
@@ -194,13 +207,16 @@ def power_plants_nearby():
                 'prime_movers': set(),
                 'generators': 0,
                 'status': row.get('status', ''),
-                'operating_year': row.get('operating_year_month', ''),
                 'balancing_authority': row.get('balancing_authority_code', ''),
             }
         plants[plant_id]['total_capacity_mw'] += capacity
         plants[plant_id]['fuel_types'].add(row.get('energy_source_code', row.get('energy-source-code', '')))
         plants[plant_id]['prime_movers'].add(row.get('prime_mover_code', row.get('prime-mover-code', '')))
         plants[plant_id]['generators'] += 1
+        # Update lat/lng if we got it for this row but not previous
+        if plant_lat and not plants[plant_id].get('latitude'):
+            plants[plant_id]['latitude'] = plant_lat
+            plants[plant_id]['longitude'] = plant_lng
 
     # Convert sets to lists, sort by distance
     result_list = []
