@@ -16705,12 +16705,236 @@ def job_status():
         'global-intelligence': {'endpoint': '/api/jobs/global-intelligence', 'method': 'POST', 'registry': _scheduler_registry.get('global_intelligence', {})},
         'content-publish': {'endpoint': '/api/jobs/content-publish', 'method': 'POST', 'registry': _scheduler_registry.get('promotion_engine', {})},
         'keep-alive': {'endpoint': '/api/jobs/keep-alive', 'method': 'POST/GET', 'registry': _scheduler_registry.get('keep_alive', {})},
+        'autopilot': {'endpoint': '/api/jobs/autopilot', 'method': 'POST', 'registry': _scheduler_registry.get('autopilot', {})},
+        'autonomous-brain': {'endpoint': '/api/jobs/autonomous-brain', 'method': 'POST', 'registry': _scheduler_registry.get('autonomous_brain', {})},
+        'alert-emails': {'endpoint': '/api/jobs/alert-emails', 'method': 'POST', 'registry': _scheduler_registry.get('alert_email_checker', {})},
+        'simple-alerts': {'endpoint': '/api/jobs/simple-alerts', 'method': 'POST', 'registry': _scheduler_registry.get('simple_alerts_processor', {})},
+        'market-report': {'endpoint': '/api/jobs/market-report', 'method': 'POST', 'registry': _scheduler_registry.get('daily_market_report', {})},
+        'infrastructure-sync': {'endpoint': '/api/jobs/infrastructure-sync', 'method': 'POST', 'registry': _scheduler_registry.get('infrastructure_sync', {})},
+        'energy-discovery': {'endpoint': '/api/jobs/energy-discovery', 'method': 'POST', 'registry': _scheduler_registry.get('energy_discovery', {})},
+        'capacity-headroom': {'endpoint': '/api/jobs/capacity-headroom', 'method': 'POST', 'registry': _scheduler_registry.get('capacity_headroom', {})},
+        'ambassador': {'endpoint': '/api/jobs/ambassador', 'method': 'POST', 'registry': _scheduler_registry.get('ambassador', {})},
     }
     return jsonify({'success': True, 'jobs': jobs, 'total': len(jobs), 'ts': datetime.utcnow().isoformat()})
 
 
 logger.info("SCHEDULER: ✅ 9 cron job endpoints registered at /api/jobs/*")
 logger.info("SCHEDULER: Auth via X-Admin-Key header or ?admin_key= param (DCHUB_ADMIN_KEY)")
+
+# =============================================================================
+# ADDITIONAL CRON JOB ENDPOINTS — /api/jobs/* (Phase 2)
+# Re-enables previously disabled schedulers as one-shot HTTP endpoints.
+# These were disabled on Replit due to memory/thread crashes.
+# On Railway with external scheduler, they run safely as one-shot calls.
+# =============================================================================
+
+
+@app.route('/api/jobs/autopilot', methods=['POST'])
+def job_autopilot():
+    """Cron: Auto-Pilot — deal discovery from news + facility updates"""
+    auth_err = _require_admin_key()
+    if auth_err:
+        return auth_err
+    try:
+        results = {}
+        try:
+            from auto_pilot import auto_discover_from_news
+            news_result = auto_discover_from_news()
+            results['news_discovery'] = news_result
+        except ImportError:
+            results['news_discovery'] = {'status': 'not_available'}
+        except Exception as e:
+            results['news_discovery'] = {'error': str(e)[:200]}
+        try:
+            conn = get_db()
+            c = conn.cursor()
+            total = c.execute("SELECT COUNT(*) FROM deals").fetchone()[0] or 0
+            conn.close()
+            results['deals_count'] = total
+        except Exception as e:
+            results['deals_error'] = str(e)[:200]
+        if 'autopilot' in _scheduler_registry:
+            _scheduler_registry['autopilot']['last_run'] = datetime.utcnow().isoformat()
+            _scheduler_registry['autopilot']['total_runs'] += 1
+        logger.info("JOB autopilot: ✅ %s", results)
+        return jsonify({'success': True, 'job': 'autopilot', 'results': results, 'ts': datetime.utcnow().isoformat()})
+    except Exception as e:
+        logger.error("JOB autopilot: ❌ %s", e)
+        return jsonify({'success': False, 'job': 'autopilot', 'error': str(e)}), 500
+
+
+@app.route('/api/jobs/autonomous-brain', methods=['POST'])
+def job_autonomous_brain():
+    """Cron: Autonomous Brain — self-learning & pattern detection"""
+    auth_err = _require_admin_key()
+    if auth_err:
+        return auth_err
+    try:
+        from autonomous_brain import init_autonomous_brain
+        result = init_autonomous_brain()
+        if 'autonomous_brain' in _scheduler_registry:
+            _scheduler_registry['autonomous_brain']['last_run'] = datetime.utcnow().isoformat()
+            _scheduler_registry['autonomous_brain']['total_runs'] += 1
+        logger.info("JOB autonomous-brain: ✅")
+        return jsonify({'success': True, 'job': 'autonomous-brain', 'result': str(result)[:500] if result else 'ok', 'ts': datetime.utcnow().isoformat()})
+    except ImportError:
+        return jsonify({'success': False, 'job': 'autonomous-brain', 'error': 'autonomous_brain not available'}), 503
+    except Exception as e:
+        logger.error("JOB autonomous-brain: ❌ %s", e)
+        return jsonify({'success': False, 'job': 'autonomous-brain', 'error': str(e)}), 500
+
+
+@app.route('/api/jobs/alert-emails', methods=['POST'])
+def job_alert_emails():
+    """Cron: Alert email notification checker"""
+    auth_err = _require_admin_key()
+    if auth_err:
+        return auth_err
+    try:
+        result = check_and_send_alert_emails()
+        if 'alert_email_checker' in _scheduler_registry:
+            _scheduler_registry['alert_email_checker']['last_run'] = datetime.utcnow().isoformat()
+            _scheduler_registry['alert_email_checker']['total_runs'] += 1
+        logger.info("JOB alert-emails: ✅ %s", result)
+        return jsonify({'success': True, 'job': 'alert-emails', 'result': str(result)[:500] if result else 'ok', 'ts': datetime.utcnow().isoformat()})
+    except Exception as e:
+        logger.error("JOB alert-emails: ❌ %s", e)
+        return jsonify({'success': False, 'job': 'alert-emails', 'error': str(e)}), 500
+
+
+@app.route('/api/jobs/simple-alerts', methods=['POST'])
+def job_simple_alerts():
+    """Cron: Simple alerts processing"""
+    auth_err = _require_admin_key()
+    if auth_err:
+        return auth_err
+    try:
+        from simple_alerts import process_alerts
+        result = process_alerts()
+        if 'simple_alerts_processor' in _scheduler_registry:
+            _scheduler_registry['simple_alerts_processor']['last_run'] = datetime.utcnow().isoformat()
+            _scheduler_registry['simple_alerts_processor']['total_runs'] += 1
+        logger.info("JOB simple-alerts: ✅")
+        return jsonify({'success': True, 'job': 'simple-alerts', 'result': str(result)[:500] if result else 'ok', 'ts': datetime.utcnow().isoformat()})
+    except ImportError:
+        return jsonify({'success': False, 'job': 'simple-alerts', 'error': 'simple_alerts not available'}), 503
+    except Exception as e:
+        logger.error("JOB simple-alerts: ❌ %s", e)
+        return jsonify({'success': False, 'job': 'simple-alerts', 'error': str(e)}), 500
+
+
+@app.route('/api/jobs/market-report', methods=['POST'])
+def job_market_report():
+    """Cron: Daily market intelligence report generation"""
+    auth_err = _require_admin_key()
+    if auth_err:
+        return auth_err
+    try:
+        result = generate_market_report()
+        if 'daily_market_report' in _scheduler_registry:
+            _scheduler_registry['daily_market_report']['last_run'] = datetime.utcnow().isoformat()
+            _scheduler_registry['daily_market_report']['total_runs'] += 1
+        logger.info("JOB market-report: ✅")
+        return jsonify({'success': True, 'job': 'market-report', 'result': 'generated', 'ts': datetime.utcnow().isoformat()})
+    except Exception as e:
+        logger.error("JOB market-report: ❌ %s", e)
+        return jsonify({'success': False, 'job': 'market-report', 'error': str(e)}), 500
+
+
+@app.route('/api/jobs/infrastructure-sync', methods=['POST'])
+def job_infrastructure_sync():
+    """Cron: Infrastructure sync — fiber, properties, permits, substations"""
+    auth_err = _require_admin_key()
+    if auth_err:
+        return auth_err
+    results = {}
+    try:
+        from fiber_network_discovery import run_fiber_discovery
+        results['fiber'] = run_fiber_discovery()
+    except ImportError:
+        results['fiber'] = {'status': 'not_available'}
+    except Exception as e:
+        results['fiber'] = {'error': str(e)[:200]}
+    try:
+        from construction_permit_tracker import run_permit_scan
+        results['permits'] = run_permit_scan()
+    except ImportError:
+        results['permits'] = {'status': 'not_available'}
+    except Exception as e:
+        results['permits'] = {'error': str(e)[:200]}
+    if 'infrastructure_sync' in _scheduler_registry:
+        _scheduler_registry['infrastructure_sync']['last_run'] = datetime.utcnow().isoformat()
+        _scheduler_registry['infrastructure_sync']['total_runs'] += 1
+    logger.info("JOB infrastructure-sync: ✅ %s", {k: 'ok' if 'error' not in v else 'err' for k, v in results.items()})
+    return jsonify({'success': True, 'job': 'infrastructure-sync', 'results': results, 'ts': datetime.utcnow().isoformat()})
+
+
+@app.route('/api/jobs/energy-discovery', methods=['POST'])
+def job_energy_discovery():
+    """Cron: Energy infrastructure auto-discovery"""
+    auth_err = _require_admin_key()
+    if auth_err:
+        return auth_err
+    try:
+        from energy_auto_discovery import run_energy_discovery
+        result = run_energy_discovery()
+        if 'energy_discovery' in _scheduler_registry:
+            _scheduler_registry['energy_discovery']['last_run'] = datetime.utcnow().isoformat()
+            _scheduler_registry['energy_discovery']['total_runs'] += 1
+        logger.info("JOB energy-discovery: ✅")
+        return jsonify({'success': True, 'job': 'energy-discovery', 'result': str(result)[:500] if result else 'ok', 'ts': datetime.utcnow().isoformat()})
+    except ImportError:
+        return jsonify({'success': False, 'job': 'energy-discovery', 'error': 'energy_auto_discovery not available'}), 503
+    except Exception as e:
+        logger.error("JOB energy-discovery: ❌ %s", e)
+        return jsonify({'success': False, 'job': 'energy-discovery', 'error': str(e)}), 500
+
+
+@app.route('/api/jobs/capacity-headroom', methods=['POST'])
+def job_capacity_headroom():
+    """Cron: Capacity headroom scoring refresh"""
+    auth_err = _require_admin_key()
+    if auth_err:
+        return auth_err
+    try:
+        from capacity_headroom_api import refresh_headroom_scores
+        result = refresh_headroom_scores()
+        if 'capacity_headroom' in _scheduler_registry:
+            _scheduler_registry['capacity_headroom']['last_run'] = datetime.utcnow().isoformat()
+            _scheduler_registry['capacity_headroom']['total_runs'] += 1
+        logger.info("JOB capacity-headroom: ✅")
+        return jsonify({'success': True, 'job': 'capacity-headroom', 'result': str(result)[:500] if result else 'ok', 'ts': datetime.utcnow().isoformat()})
+    except ImportError:
+        return jsonify({'success': False, 'job': 'capacity-headroom', 'error': 'capacity_headroom_api not available'}), 503
+    except Exception as e:
+        logger.error("JOB capacity-headroom: ❌ %s", e)
+        return jsonify({'success': False, 'job': 'capacity-headroom', 'error': str(e)}), 500
+
+
+@app.route('/api/jobs/ambassador', methods=['POST'])
+def job_ambassador():
+    """Cron: Agentic ambassador outreach system"""
+    auth_err = _require_admin_key()
+    if auth_err:
+        return auth_err
+    try:
+        from agentic_ambassador import run_ambassador_cycle
+        result = run_ambassador_cycle()
+        if 'ambassador' in _scheduler_registry:
+            _scheduler_registry['ambassador']['last_run'] = datetime.utcnow().isoformat()
+            _scheduler_registry['ambassador']['total_runs'] += 1
+        logger.info("JOB ambassador: ✅")
+        return jsonify({'success': True, 'job': 'ambassador', 'result': str(result)[:500] if result else 'ok', 'ts': datetime.utcnow().isoformat()})
+    except ImportError:
+        return jsonify({'success': False, 'job': 'ambassador', 'error': 'agentic_ambassador not available'}), 503
+    except Exception as e:
+        logger.error("JOB ambassador: ❌ %s", e)
+        return jsonify({'success': False, 'job': 'ambassador', 'error': str(e)}), 500
+
+
+logger.info("SCHEDULER: ✅ 9 additional cron job endpoints registered (Phase 2)")
+logger.info("SCHEDULER:    autopilot, autonomous-brain, alert-emails, simple-alerts")
+logger.info("SCHEDULER:    market-report, infrastructure-sync, energy-discovery, capacity-headroom, ambassador")
 
 @app.route('/api/scheduler/status', methods=['GET'])
 def scheduler_status():
