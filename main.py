@@ -1120,6 +1120,13 @@ except ImportError as e:
     logger.warning(f"  ⚠️ fiber_network_discovery: {e}")
 
 try:
+    from power_plant_intel import register_power_plant_intel
+    logger.info("  ✅ power_plant_intel")
+except ImportError as e:
+    register_power_plant_intel = None
+    logger.warning(f"  ⚠️ power_plant_intel: {e}")
+
+try:
     from sec_edgar_tracker import register_sec_tracker
     logger.info("  ✅ sec_edgar_tracker")
 except ImportError as e:
@@ -14551,6 +14558,9 @@ try:
     
     if register_fiber_discovery:
         register_fiber_discovery(app)
+    
+    if register_power_plant_intel:
+        register_power_plant_intel(app)
     
     if register_sec_tracker:
         register_sec_tracker(app)
