@@ -369,6 +369,314 @@ def job_ai_wars():
         return jsonify({'status': 'error', 'job': 'ai-wars', 'error': str(e)}), 500
 
 
+@jobs_bp.route('/api/jobs/global-intelligence', methods=['POST'])
+@require_admin_key
+def job_global_intelligence_alias():
+    return job_global_intel()
+
+
+@jobs_bp.route('/api/jobs/ai-ecosystem', methods=['POST'])
+@require_admin_key
+def job_ai_ecosystem_alias():
+    return job_ecosystem()
+
+
+@jobs_bp.route('/api/jobs/ai-outreach', methods=['POST'])
+@require_admin_key
+def job_ai_outreach_alias():
+    return job_outreach()
+
+
+@jobs_bp.route('/api/jobs/auto-approve', methods=['POST'])
+@require_admin_key
+def job_auto_approve():
+    start = time.time()
+    try:
+        try:
+            from discovery_auto_approve import run_auto_approval
+            result = run_auto_approval()
+        except ImportError:
+            result = {'status': 'skipped', 'reason': 'discovery_auto_approve module not available'}
+
+        duration = time.time() - start
+        _record_run('auto-approve', True, duration, result if isinstance(result, dict) else {})
+        _gc_cleanup()
+        return jsonify({
+            'status': 'complete',
+            'job': 'auto-approve',
+            'result': result if isinstance(result, dict) else str(result),
+            'duration_seconds': round(duration, 2)
+        })
+    except Exception as e:
+        duration = time.time() - start
+        _record_run('auto-approve', False, duration, {'error': str(e)})
+        logger.error(f"Job auto-approve failed: {e}")
+        return jsonify({'status': 'error', 'job': 'auto-approve', 'error': str(e)}), 500
+
+
+@jobs_bp.route('/api/jobs/keep-alive', methods=['POST'])
+@require_admin_key
+def job_keep_alive():
+    start = time.time()
+    _record_run('keep-alive', True, time.time() - start)
+    return jsonify({'status': 'ok', 'job': 'keep-alive', 'uptime_seconds': round(time.time() - APP_START_TIME, 1)})
+
+
+@jobs_bp.route('/api/jobs/autopilot', methods=['POST'])
+@require_admin_key
+def job_autopilot():
+    start = time.time()
+    try:
+        try:
+            from autonomous_brain import run_autopilot_cycle
+            result = run_autopilot_cycle()
+        except ImportError:
+            result = {'status': 'skipped', 'reason': 'autonomous_brain module not available'}
+
+        duration = time.time() - start
+        _record_run('autopilot', True, duration, result if isinstance(result, dict) else {})
+        _gc_cleanup()
+        return jsonify({
+            'status': 'complete',
+            'job': 'autopilot',
+            'result': result if isinstance(result, dict) else str(result),
+            'duration_seconds': round(duration, 2)
+        })
+    except Exception as e:
+        duration = time.time() - start
+        _record_run('autopilot', False, duration, {'error': str(e)})
+        logger.error(f"Job autopilot failed: {e}")
+        return jsonify({'status': 'error', 'job': 'autopilot', 'error': str(e)}), 500
+
+
+@jobs_bp.route('/api/jobs/autonomous-brain', methods=['POST'])
+@require_admin_key
+def job_autonomous_brain():
+    start = time.time()
+    try:
+        try:
+            from autonomous_brain import run_brain_cycle
+            result = run_brain_cycle()
+        except ImportError:
+            result = {'status': 'skipped', 'reason': 'autonomous_brain module not available'}
+
+        duration = time.time() - start
+        _record_run('autonomous-brain', True, duration, result if isinstance(result, dict) else {})
+        _gc_cleanup()
+        return jsonify({
+            'status': 'complete',
+            'job': 'autonomous-brain',
+            'result': result if isinstance(result, dict) else str(result),
+            'duration_seconds': round(duration, 2)
+        })
+    except Exception as e:
+        duration = time.time() - start
+        _record_run('autonomous-brain', False, duration, {'error': str(e)})
+        logger.error(f"Job autonomous-brain failed: {e}")
+        return jsonify({'status': 'error', 'job': 'autonomous-brain', 'error': str(e)}), 500
+
+
+@jobs_bp.route('/api/jobs/alert-emails', methods=['POST'])
+@require_admin_key
+def job_alert_emails():
+    start = time.time()
+    try:
+        try:
+            from intelligence_engine import send_queued_alerts
+            result = send_queued_alerts()
+        except ImportError:
+            result = {'status': 'skipped', 'reason': 'intelligence_engine alert module not available'}
+
+        duration = time.time() - start
+        _record_run('alert-emails', True, duration, result if isinstance(result, dict) else {})
+        _gc_cleanup()
+        return jsonify({
+            'status': 'complete',
+            'job': 'alert-emails',
+            'result': result if isinstance(result, dict) else str(result),
+            'duration_seconds': round(duration, 2)
+        })
+    except Exception as e:
+        duration = time.time() - start
+        _record_run('alert-emails', False, duration, {'error': str(e)})
+        logger.error(f"Job alert-emails failed: {e}")
+        return jsonify({'status': 'error', 'job': 'alert-emails', 'error': str(e)}), 500
+
+
+@jobs_bp.route('/api/jobs/simple-alerts', methods=['POST'])
+@require_admin_key
+def job_simple_alerts():
+    start = time.time()
+    try:
+        try:
+            from intelligence_engine import check_alert_conditions
+            result = check_alert_conditions()
+        except ImportError:
+            result = {'status': 'skipped', 'reason': 'intelligence_engine alert module not available'}
+
+        duration = time.time() - start
+        _record_run('simple-alerts', True, duration, result if isinstance(result, dict) else {})
+        _gc_cleanup()
+        return jsonify({
+            'status': 'complete',
+            'job': 'simple-alerts',
+            'result': result if isinstance(result, dict) else str(result),
+            'duration_seconds': round(duration, 2)
+        })
+    except Exception as e:
+        duration = time.time() - start
+        _record_run('simple-alerts', False, duration, {'error': str(e)})
+        logger.error(f"Job simple-alerts failed: {e}")
+        return jsonify({'status': 'error', 'job': 'simple-alerts', 'error': str(e)}), 500
+
+
+@jobs_bp.route('/api/jobs/market-report', methods=['POST'])
+@require_admin_key
+def job_market_report():
+    start = time.time()
+    try:
+        try:
+            from market_report import generate_market_report
+            result = generate_market_report()
+        except ImportError:
+            from db_utils import get_db
+            conn = get_db()
+            stats = conn.execute(
+                "SELECT COUNT(*) as facilities, COUNT(DISTINCT provider) as providers, "
+                "ROUND(SUM(COALESCE(power_mw,0))::numeric) as total_mw FROM facilities"
+            ).fetchone()
+            conn.close()
+            result = {
+                'status': 'generated',
+                'facilities': stats[0] if stats else 0,
+                'providers': stats[1] if stats else 0,
+                'total_mw': float(stats[2]) if stats and stats[2] else 0
+            }
+
+        duration = time.time() - start
+        _record_run('market-report', True, duration, result if isinstance(result, dict) else {})
+        _gc_cleanup()
+        return jsonify({
+            'status': 'complete',
+            'job': 'market-report',
+            'result': result if isinstance(result, dict) else str(result),
+            'duration_seconds': round(duration, 2)
+        })
+    except Exception as e:
+        duration = time.time() - start
+        _record_run('market-report', False, duration, {'error': str(e)})
+        logger.error(f"Job market-report failed: {e}")
+        return jsonify({'status': 'error', 'job': 'market-report', 'error': str(e)}), 500
+
+
+@jobs_bp.route('/api/jobs/infrastructure-sync', methods=['POST'])
+@require_admin_key
+def job_infrastructure_sync():
+    start = time.time()
+    try:
+        try:
+            from infrastructure_discovery import run_infrastructure_sync
+            result = run_infrastructure_sync()
+        except ImportError:
+            result = {'status': 'skipped', 'reason': 'infrastructure_discovery module not available'}
+
+        duration = time.time() - start
+        _record_run('infrastructure-sync', True, duration, result if isinstance(result, dict) else {})
+        _gc_cleanup()
+        return jsonify({
+            'status': 'complete',
+            'job': 'infrastructure-sync',
+            'result': result if isinstance(result, dict) else str(result),
+            'duration_seconds': round(duration, 2)
+        })
+    except Exception as e:
+        duration = time.time() - start
+        _record_run('infrastructure-sync', False, duration, {'error': str(e)})
+        logger.error(f"Job infrastructure-sync failed: {e}")
+        return jsonify({'status': 'error', 'job': 'infrastructure-sync', 'error': str(e)}), 500
+
+
+@jobs_bp.route('/api/jobs/energy-discovery', methods=['POST'])
+@require_admin_key
+def job_energy_discovery():
+    start = time.time()
+    try:
+        try:
+            from infrastructure_discovery import run_energy_discovery
+            result = run_energy_discovery()
+        except ImportError:
+            result = {'status': 'skipped', 'reason': 'infrastructure_discovery energy module not available'}
+
+        duration = time.time() - start
+        _record_run('energy-discovery', True, duration, result if isinstance(result, dict) else {})
+        _gc_cleanup()
+        return jsonify({
+            'status': 'complete',
+            'job': 'energy-discovery',
+            'result': result if isinstance(result, dict) else str(result),
+            'duration_seconds': round(duration, 2)
+        })
+    except Exception as e:
+        duration = time.time() - start
+        _record_run('energy-discovery', False, duration, {'error': str(e)})
+        logger.error(f"Job energy-discovery failed: {e}")
+        return jsonify({'status': 'error', 'job': 'energy-discovery', 'error': str(e)}), 500
+
+
+@jobs_bp.route('/api/jobs/capacity-headroom', methods=['POST'])
+@require_admin_key
+def job_capacity_headroom():
+    start = time.time()
+    try:
+        try:
+            from capacity_headroom import calculate_headroom
+            result = calculate_headroom()
+        except ImportError:
+            result = {'status': 'skipped', 'reason': 'capacity_headroom module not available'}
+
+        duration = time.time() - start
+        _record_run('capacity-headroom', True, duration, result if isinstance(result, dict) else {})
+        _gc_cleanup()
+        return jsonify({
+            'status': 'complete',
+            'job': 'capacity-headroom',
+            'result': result if isinstance(result, dict) else str(result),
+            'duration_seconds': round(duration, 2)
+        })
+    except Exception as e:
+        duration = time.time() - start
+        _record_run('capacity-headroom', False, duration, {'error': str(e)})
+        logger.error(f"Job capacity-headroom failed: {e}")
+        return jsonify({'status': 'error', 'job': 'capacity-headroom', 'error': str(e)}), 500
+
+
+@jobs_bp.route('/api/jobs/ambassador', methods=['POST'])
+@require_admin_key
+def job_ambassador():
+    start = time.time()
+    try:
+        try:
+            from ai_outreach_agent import run_ambassador_cycle
+            result = run_ambassador_cycle()
+        except ImportError:
+            result = {'status': 'skipped', 'reason': 'ai_outreach_agent ambassador module not available'}
+
+        duration = time.time() - start
+        _record_run('ambassador', True, duration, result if isinstance(result, dict) else {})
+        _gc_cleanup()
+        return jsonify({
+            'status': 'complete',
+            'job': 'ambassador',
+            'result': result if isinstance(result, dict) else str(result),
+            'duration_seconds': round(duration, 2)
+        })
+    except Exception as e:
+        duration = time.time() - start
+        _record_run('ambassador', False, duration, {'error': str(e)})
+        logger.error(f"Job ambassador failed: {e}")
+        return jsonify({'status': 'error', 'job': 'ambassador', 'error': str(e)}), 500
+
+
 @jobs_bp.route('/api/jobs/status', methods=['GET'])
 @require_admin_key
 def job_status():
@@ -391,22 +699,38 @@ def job_status():
         'uptime_seconds': round(time.time() - APP_START_TIME, 1),
         'last_runs': _last_runs,
         'available_jobs': [
-            'news-refresh', 'discovery', 'global-intel', 'ecosystem',
-            'evolution', 'outreach', 'promotion', 'content-publish', 'ai-wars'
+            'news-refresh', 'discovery', 'global-intel', 'global-intelligence',
+            'ecosystem', 'ai-ecosystem', 'evolution', 'outreach', 'ai-outreach',
+            'promotion', 'content-publish', 'ai-wars',
+            'auto-approve', 'keep-alive', 'autopilot', 'autonomous-brain',
+            'alert-emails', 'simple-alerts', 'market-report',
+            'infrastructure-sync', 'energy-discovery', 'capacity-headroom',
+            'ambassador'
         ]
     })
 
 
 def register_jobs_api(app):
     app.register_blueprint(jobs_bp)
-    logger.info("✅ Jobs API registered (external scheduler endpoints)")
+    logger.info("✅ Jobs API registered (18 job endpoints + 3 aliases)")
     logger.info("   POST /api/jobs/news-refresh")
     logger.info("   POST /api/jobs/discovery")
-    logger.info("   POST /api/jobs/global-intel")
-    logger.info("   POST /api/jobs/ecosystem")
+    logger.info("   POST /api/jobs/global-intel (alias: global-intelligence)")
+    logger.info("   POST /api/jobs/ecosystem (alias: ai-ecosystem)")
     logger.info("   POST /api/jobs/evolution")
-    logger.info("   POST /api/jobs/outreach")
+    logger.info("   POST /api/jobs/outreach (alias: ai-outreach)")
     logger.info("   POST /api/jobs/promotion")
     logger.info("   POST /api/jobs/content-publish")
     logger.info("   POST /api/jobs/ai-wars")
+    logger.info("   POST /api/jobs/auto-approve")
+    logger.info("   POST /api/jobs/keep-alive")
+    logger.info("   POST /api/jobs/autopilot")
+    logger.info("   POST /api/jobs/autonomous-brain")
+    logger.info("   POST /api/jobs/alert-emails")
+    logger.info("   POST /api/jobs/simple-alerts")
+    logger.info("   POST /api/jobs/market-report")
+    logger.info("   POST /api/jobs/infrastructure-sync")
+    logger.info("   POST /api/jobs/energy-discovery")
+    logger.info("   POST /api/jobs/capacity-headroom")
+    logger.info("   POST /api/jobs/ambassador")
     logger.info("   GET  /api/jobs/status")

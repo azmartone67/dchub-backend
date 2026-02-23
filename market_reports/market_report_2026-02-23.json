@@ -1,6 +1,6 @@
 {
   "report_date": "2026-02-23",
-  "generated_at": "2026-02-23T21:29:21.070317",
+  "generated_at": "2026-02-23T21:47:52.079816",
   "summary": {
     "total_facilities": 11433,
     "total_providers": 3958,
@@ -89,6 +89,16 @@
   ],
   "recent_news": [
     {
+      "title": "Data Center Rush Spurs Earnings Windfall for Power-Gear Makers",
+      "source": "Data Center Knowledge",
+      "date": "2026-02-23T21:20:05"
+    },
+    {
+      "title": "Nvidia Meta Deal Tests Intel\u2019s Hold On AI Data Center CPUs",
+      "source": "Yahoo Finance",
+      "date": "2026-02-23T21:12:13"
+    },
+    {
       "title": "Amazon invests $12B in Louisiana AI data center in Caddo-Bossier",
       "source": "Shreveport Times",
       "date": "2026-02-23T21:05:00"
@@ -127,16 +137,6 @@
       "title": "Amazon Selects Northwest Louisiana for Major Data Center Investment",
       "source": "TXK Today",
       "date": "2026-02-23T20:28:06"
-    },
-    {
-      "title": "Altman calls Musk's space data center plans 'ridiculous' for current AI computing needs",
-      "source": "Fox Business",
-      "date": "2026-02-23T20:04:00"
-    },
-    {
-      "title": "Key facts: Burry warns of Meta's AI costs; stock compensation issues; Blue Owl partners on $27B data center",
-      "source": "TradingView",
-      "date": "2026-02-23T20:03:46"
     }
   ],
   "data_sources": [
