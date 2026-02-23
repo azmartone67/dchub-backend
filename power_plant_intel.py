@@ -90,7 +90,7 @@ def _echo_request(endpoint, params=None):
     import urllib.parse
     import urllib.error
 
-    base_url = f"https://echo.epa.gov/api/{endpoint}"
+    base_url = f"https://ofmpub.epa.gov/echo/{endpoint}"
     if params:
         base_url += '?' + urllib.parse.urlencode(params, doseq=True)
 
@@ -281,21 +281,25 @@ def power_plant_detail(plant_id):
         return jsonify({'success': False, 'error': f'No data found for plant ID {plant_id}'}), 404
 
     first = rows[0]
-    generators = []
+    generators = {}
     total_mw = 0
 
+    # Deduplicate: rows sorted by period desc, keep first (newest) per generator
     for row in rows:
-        cap = _safe_float(row.get('nameplate-capacity-mw', 0))
+        gen_id = row.get('generatorid', row.get('generator_id', ''))
+        if gen_id in generators:
+            continue
+        cap = _safe_float(row.get('nameplate-capacity-mw', 0)) or 0
         total_mw += cap
-        generators.append({
-            'generator_id': row.get('generatorid', row.get('generator_id', '')),
+        generators[gen_id] = {
+            'generator_id': gen_id,
             'capacity_mw': cap,
             'fuel_type': row.get('energy_source_code', row.get('energy-source-code', '')),
             'prime_mover': row.get('prime_mover_code', row.get('prime-mover-code', '')),
             'status': row.get('status', ''),
             'operating_month': row.get('operating_year_month', ''),
             'technology': row.get('technology', ''),
-        })
+        }
 
     result = {
         'success': True,
@@ -311,7 +315,7 @@ def power_plant_detail(plant_id):
             'sector': first.get('sector', first.get('sector_name', '')),
             'total_capacity_mw': round(total_mw, 1),
             'generator_count': len(generators),
-            'generators': generators,
+            'generators': list(generators.values()),
         },
         'queried_at': datetime.utcnow().isoformat()
     }
@@ -383,8 +387,8 @@ def power_plant_generation():
             'state': row.get('stateid', state),
             'fuel_type': row.get('fuel2002', row.get('fueltypeid', '')),
             'fuel_name': row.get('fuelTypeDescription', ''),
-            'generation_mwh': _safe_float(row.get('generation', 0)),
-            'consumption_btu': _safe_float(row.get('total-consumption-btu', 0)),
+            'generation_mwh': _safe_float(row.get('generation', 0)) or 0,
+            'consumption_btu': _safe_float(row.get('total-consumption-btu', 0)) or 0,
             'period': row.get('period', ''),
         })
 
@@ -442,7 +446,7 @@ def discharge_permits_nearby():
     if 'error' in data:
         # Try alternate base URL format
         import urllib.request, urllib.parse, urllib.error
-        alt_url = f"https://echo.epa.gov/api/cwa_rest_services.get_facility_info?{urllib.parse.urlencode(params)}"
+        alt_url = f"https://ofmpub.epa.gov/echo/cwa_rest_services.get_facility_info?{urllib.parse.urlencode(params)}"
         logger.info(f"ECHO fallback: trying {alt_url[:200]}")
         try:
             req = urllib.request.Request(alt_url, headers={'User-Agent': 'DCHub/1.0', 'Accept': 'application/json'})
