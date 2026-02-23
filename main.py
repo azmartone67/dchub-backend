@@ -16477,18 +16477,240 @@ def _startup_health_check():
 
 _deferred_bg_threads.append(('Startup Health Check', _startup_health_check))
 
-# --- Staggered Discovery Scheduler ---
-# DISABLED: Converted to one-shot /api/jobs/* endpoints (Feb 2026)
-# External cron triggers POST /api/jobs/news-refresh, /api/jobs/discovery, etc.
-# def _start_discovery_scheduler():
-#     try:
-#         from scheduled_discovery import start_scheduled_discovery
-#         start_scheduled_discovery()
-#         logger.info("SCHEDULER: Staggered discovery scheduler activated")
-#     except Exception as e:
-#         logger.error("SCHEDULER: Failed to start: %s", e)
-# _deferred_bg_threads.append(('Discovery Scheduler', _start_discovery_scheduler))
-logger.info("SCHEDULER: Discovery scheduler DISABLED — use POST /api/jobs/* with external cron")
+# =============================================================================
+# EXTERNAL CRON JOB ENDPOINTS — /api/jobs/*
+# Called by Railway scheduler service. Auth: X-Admin-Key header or
+# ?admin_key= query param, validated against DCHUB_ADMIN_KEY env var.
+# Each endpoint wraps existing internal logic as a one-shot trigger.
+# =============================================================================
+
+def _require_admin_key():
+    """Validate admin key from header or query param. Returns error tuple or None."""
+    provided = (
+        request.headers.get('X-Admin-Key', '')
+        or request.headers.get('Authorization', '').replace('Bearer ', '')
+        or request.args.get('admin_key', '')
+        or request.args.get('key', '')
+    )
+    expected = os.environ.get('DCHUB_ADMIN_KEY', '')
+    if not provided or not expected or provided.strip() != expected.strip():
+        logger.warning("JOBS AUTH: ❌ failed (provided=%d chars, expected=%d chars)", len(provided.strip()), len(expected.strip()))
+        return jsonify({'success': False, 'error': '🔒 authentication failed. Check DCHUB_ADMIN_KEY'}), 401
+    return None
+
+
+@app.route('/api/jobs/news-refresh', methods=['POST'])
+def job_news_refresh():
+    """Cron: Refresh news from all RSS sources"""
+    auth_err = _require_admin_key()
+    if auth_err:
+        return auth_err
+    try:
+        from auto_sync import sync_news
+        saved = sync_news()
+        if 'news_sync' in _scheduler_registry:
+            _scheduler_registry['news_sync']['last_run'] = datetime.utcnow().isoformat()
+            _scheduler_registry['news_sync']['last_success'] = datetime.utcnow().isoformat()
+            _scheduler_registry['news_sync']['items_last_cycle'] = saved if isinstance(saved, int) else 0
+            _scheduler_registry['news_sync']['total_runs'] += 1
+        logger.info("JOB news-refresh: ✅ %s new articles", saved)
+        return jsonify({'success': True, 'job': 'news-refresh', 'new_articles': saved, 'ts': datetime.utcnow().isoformat()})
+    except Exception as e:
+        logger.error("JOB news-refresh: ❌ %s", e)
+        return jsonify({'success': False, 'job': 'news-refresh', 'error': str(e)}), 500
+
+
+@app.route('/api/jobs/discovery', methods=['POST'])
+def job_discovery():
+    """Cron: Run facility discovery (PeeringDB, OSM, datacentermap)"""
+    auth_err = _require_admin_key()
+    if auth_err:
+        return auth_err
+    try:
+        total_added = 0
+        total_found = 0
+        errors = []
+        try:
+            init_discovery_tables()
+        except Exception:
+            pass
+        for source_name, run_func in [('peeringdb', run_peeringdb_discovery), ('openstreetmap', run_osm_discovery), ('datacentermap', run_datacentermap_discovery)]:
+            try:
+                result = run_func()
+                total_found += result.get('found', 0)
+                total_added += result.get('added', 0)
+            except Exception as e:
+                errors.append(f"{source_name}: {str(e)[:100]}")
+        if 'facility_discovery' in _scheduler_registry:
+            _scheduler_registry['facility_discovery']['last_run'] = datetime.utcnow().isoformat()
+            _scheduler_registry['facility_discovery']['last_success'] = datetime.utcnow().isoformat()
+            _scheduler_registry['facility_discovery']['items_last_cycle'] = total_added
+            _scheduler_registry['facility_discovery']['total_runs'] += 1
+        logger.info("JOB discovery: ✅ found=%d added=%d errors=%d", total_found, total_added, len(errors))
+        return jsonify({'success': True, 'job': 'discovery', 'found': total_found, 'added': total_added, 'errors': errors or None, 'ts': datetime.utcnow().isoformat()})
+    except Exception as e:
+        logger.error("JOB discovery: ❌ %s", e)
+        return jsonify({'success': False, 'job': 'discovery', 'error': str(e)}), 500
+
+
+@app.route('/api/jobs/auto-approve', methods=['POST'])
+def job_auto_approve():
+    """Cron: Auto-approve staged discoveries into facilities"""
+    auth_err = _require_admin_key()
+    if auth_err:
+        return auth_err
+    try:
+        from discovery_auto_approve import run_auto_approval
+        result = run_auto_approval(max_records=100)
+        if 'auto_approval' in _scheduler_registry:
+            _scheduler_registry['auto_approval']['last_run'] = datetime.utcnow().isoformat()
+            _scheduler_registry['auto_approval']['total_runs'] += 1
+        logger.info("JOB auto-approve: ✅ %s", result)
+        return jsonify({'success': True, 'job': 'auto-approve', 'result': result, 'ts': datetime.utcnow().isoformat()})
+    except Exception as e:
+        logger.error("JOB auto-approve: ❌ %s", e)
+        return jsonify({'success': False, 'job': 'auto-approve', 'error': str(e)}), 500
+
+
+@app.route('/api/jobs/evolution', methods=['POST'])
+def job_evolution():
+    """Cron: Run Evolution Engine cycle"""
+    auth_err = _require_admin_key()
+    if auth_err:
+        return auth_err
+    try:
+        if not EVOLUTION_AVAILABLE:
+            return jsonify({'success': False, 'job': 'evolution', 'error': 'Evolution Engine not available'}), 503
+        result = run_evolution_cycle()
+        logger.info("JOB evolution: ✅")
+        return jsonify({'success': True, 'job': 'evolution', 'result': result, 'ts': datetime.utcnow().isoformat()})
+    except Exception as e:
+        logger.error("JOB evolution: ❌ %s", e)
+        return jsonify({'success': False, 'job': 'evolution', 'error': str(e)}), 500
+
+
+@app.route('/api/jobs/ai-ecosystem', methods=['POST'])
+def job_ai_ecosystem():
+    """Cron: AI Ecosystem Agent enrichment cycle"""
+    auth_err = _require_admin_key()
+    if auth_err:
+        return auth_err
+    try:
+        from ai_ecosystem_agent import agent as ecosystem_agent
+        result = ecosystem_agent.run_cycle()
+        if 'ai_ecosystem' in _scheduler_registry:
+            _scheduler_registry['ai_ecosystem']['last_run'] = datetime.utcnow().isoformat()
+            _scheduler_registry['ai_ecosystem']['total_runs'] += 1
+        logger.info("JOB ai-ecosystem: ✅")
+        return jsonify({'success': True, 'job': 'ai-ecosystem', 'result': str(result)[:500] if result else 'ok', 'ts': datetime.utcnow().isoformat()})
+    except ImportError:
+        return jsonify({'success': False, 'job': 'ai-ecosystem', 'error': 'ai_ecosystem_agent not available'}), 503
+    except Exception as e:
+        logger.error("JOB ai-ecosystem: ❌ %s", e)
+        return jsonify({'success': False, 'job': 'ai-ecosystem', 'error': str(e)}), 500
+
+
+@app.route('/api/jobs/ai-outreach', methods=['POST'])
+def job_ai_outreach():
+    """Cron: AI Outreach Agent — ping directories & platforms"""
+    auth_err = _require_admin_key()
+    if auth_err:
+        return auth_err
+    try:
+        if run_outreach_cycle is None:
+            return jsonify({'success': False, 'job': 'ai-outreach', 'error': 'ai_outreach_agent not available'}), 503
+        result = run_outreach_cycle()
+        if 'ai_outreach' in _scheduler_registry:
+            _scheduler_registry['ai_outreach']['last_run'] = datetime.utcnow().isoformat()
+            _scheduler_registry['ai_outreach']['total_runs'] += 1
+        logger.info("JOB ai-outreach: ✅")
+        return jsonify({'success': True, 'job': 'ai-outreach', 'result': str(result)[:500] if result else 'ok', 'ts': datetime.utcnow().isoformat()})
+    except Exception as e:
+        logger.error("JOB ai-outreach: ❌ %s", e)
+        return jsonify({'success': False, 'job': 'ai-outreach', 'error': str(e)}), 500
+
+
+@app.route('/api/jobs/global-intelligence', methods=['POST'])
+def job_global_intelligence():
+    """Cron: Global Intelligence Agent — market analysis & enrichment"""
+    auth_err = _require_admin_key()
+    if auth_err:
+        return auth_err
+    try:
+        from global_intelligence_agent import run_intelligence_cycle
+        result = run_intelligence_cycle()
+        logger.info("JOB global-intelligence: ✅")
+        return jsonify({'success': True, 'job': 'global-intelligence', 'result': str(result)[:500] if result else 'ok', 'ts': datetime.utcnow().isoformat()})
+    except ImportError:
+        return jsonify({'success': False, 'job': 'global-intelligence', 'error': 'global_intelligence_agent not available'}), 503
+    except Exception as e:
+        logger.error("JOB global-intelligence: ❌ %s", e)
+        return jsonify({'success': False, 'job': 'global-intelligence', 'error': str(e)}), 500
+
+
+@app.route('/api/jobs/content-publish', methods=['POST'])
+def job_content_publish():
+    """Cron: Content publishing — social posts, SEO updates"""
+    auth_err = _require_admin_key()
+    if auth_err:
+        return auth_err
+    results = {}
+    # SEO promotion
+    try:
+        from seo_promotion_engine import run_seo_promotion
+        results['seo'] = run_seo_promotion()
+    except Exception as e:
+        results['seo'] = {'error': str(e)[:200]}
+    # Social posting (if autopilot available)
+    try:
+        if AUTOPILOT_AVAILABLE and discovery_engine and hasattr(discovery_engine, 'social_poster'):
+            # Auto-generate a post about latest news or deals
+            results['social'] = {'status': 'available', 'note': 'Use /api/autopilot/social/test to trigger'}
+        else:
+            results['social'] = {'status': 'not_available'}
+    except Exception as e:
+        results['social'] = {'error': str(e)[:200]}
+    if 'promotion_engine' in _scheduler_registry:
+        _scheduler_registry['promotion_engine']['last_run'] = datetime.utcnow().isoformat()
+        _scheduler_registry['promotion_engine']['total_runs'] += 1
+    logger.info("JOB content-publish: ✅ %s", results)
+    return jsonify({'success': True, 'job': 'content-publish', 'results': results, 'ts': datetime.utcnow().isoformat()})
+
+
+@app.route('/api/jobs/keep-alive', methods=['POST', 'GET'])
+def job_keep_alive():
+    """Cron: Keep-alive ping — prevents idle timeout"""
+    auth_err = _require_admin_key()
+    if auth_err:
+        return auth_err
+    if 'keep_alive' in _scheduler_registry:
+        _scheduler_registry['keep_alive']['last_run'] = datetime.utcnow().isoformat()
+        _scheduler_registry['keep_alive']['total_runs'] += 1
+    return jsonify({'success': True, 'job': 'keep-alive', 'status': 'alive', 'version': APP_VERSION, 'ts': datetime.utcnow().isoformat()})
+
+
+@app.route('/api/jobs/status', methods=['GET'])
+def job_status():
+    """List all available cron job endpoints and their last run status"""
+    auth_err = _require_admin_key()
+    if auth_err:
+        return auth_err
+    jobs = {
+        'news-refresh': {'endpoint': '/api/jobs/news-refresh', 'method': 'POST', 'registry': _scheduler_registry.get('news_sync', {})},
+        'discovery': {'endpoint': '/api/jobs/discovery', 'method': 'POST', 'registry': _scheduler_registry.get('facility_discovery', {})},
+        'auto-approve': {'endpoint': '/api/jobs/auto-approve', 'method': 'POST', 'registry': _scheduler_registry.get('auto_approval', {})},
+        'evolution': {'endpoint': '/api/jobs/evolution', 'method': 'POST', 'registry': _scheduler_registry.get('evolution', {})},
+        'ai-ecosystem': {'endpoint': '/api/jobs/ai-ecosystem', 'method': 'POST', 'registry': _scheduler_registry.get('ai_ecosystem', {})},
+        'ai-outreach': {'endpoint': '/api/jobs/ai-outreach', 'method': 'POST', 'registry': _scheduler_registry.get('ai_outreach', {})},
+        'global-intelligence': {'endpoint': '/api/jobs/global-intelligence', 'method': 'POST', 'registry': _scheduler_registry.get('global_intelligence', {})},
+        'content-publish': {'endpoint': '/api/jobs/content-publish', 'method': 'POST', 'registry': _scheduler_registry.get('promotion_engine', {})},
+        'keep-alive': {'endpoint': '/api/jobs/keep-alive', 'method': 'POST/GET', 'registry': _scheduler_registry.get('keep_alive', {})},
+    }
+    return jsonify({'success': True, 'jobs': jobs, 'total': len(jobs), 'ts': datetime.utcnow().isoformat()})
+
+
+logger.info("SCHEDULER: ✅ 9 cron job endpoints registered at /api/jobs/*")
+logger.info("SCHEDULER: Auth via X-Admin-Key header or ?admin_key= param (DCHUB_ADMIN_KEY)")
 
 @app.route('/api/scheduler/status', methods=['GET'])
 def scheduler_status():
