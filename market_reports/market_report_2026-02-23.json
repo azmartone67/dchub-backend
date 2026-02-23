@@ -1,6 +1,6 @@
 {
   "report_date": "2026-02-23",
-  "generated_at": "2026-02-23T21:47:52.079816",
+  "generated_at": "2026-02-23T23:41:18.268578",
   "summary": {
     "total_facilities": 11433,
     "total_providers": 3958,
@@ -89,9 +89,24 @@
   ],
   "recent_news": [
     {
+      "title": "Water, power, and transparency: Amazon\u2019s $12B data center deal signals a new era of accountability",
+      "source": "GeekWire",
+      "date": "2026-02-23T22:43:00"
+    },
+    {
+      "title": "Amazon plans to spend $12bn on Louisiana data center campuses, developed by Stack Infrastructure",
+      "source": "Data Center Dynamics",
+      "date": "2026-02-23T22:34:23"
+    },
+    {
       "title": "Data Center Rush Spurs Earnings Windfall for Power-Gear Makers",
       "source": "Data Center Knowledge",
       "date": "2026-02-23T21:20:05"
+    },
+    {
+      "title": "Amazon\u2019s $12B Investment In Louisiana Data Center Buildout To Create More Jobs",
+      "source": "Stocktwits",
+      "date": "2026-02-23T21:16:00"
     },
     {
       "title": "Nvidia Meta Deal Tests Intel\u2019s Hold On AI Data Center CPUs",
@@ -122,21 +137,6 @@
       "title": "Amazon data center brings grid upgrades, no added costs for SWEPCO users",
       "source": "Stock Titan",
       "date": "2026-02-23T20:45:00"
-    },
-    {
-      "title": "Amazon shares slip amid $12 billion Louisiana data center bet",
-      "source": "Investing.com",
-      "date": "2026-02-23T20:42:10"
-    },
-    {
-      "title": "What Amazon\u2019s latest data center announcement says about AI right now",
-      "source": "Sherwood News",
-      "date": "2026-02-23T20:33:34"
-    },
-    {
-      "title": "Amazon Selects Northwest Louisiana for Major Data Center Investment",
-      "source": "TXK Today",
-      "date": "2026-02-23T20:28:06"
     }
   ],
   "data_sources": [
