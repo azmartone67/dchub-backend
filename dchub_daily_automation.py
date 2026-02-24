@@ -172,19 +172,24 @@ def post_to_linkedin(text, article_url=None):
 # ===========================================================================
 
 def get_db_connection():
-    """Get database connection - tries Neon PostgreSQL first, then SQLite.
-    Uses a short-lived connection with statement timeout to prevent hangs."""
-    neon_url = os.environ.get('DATABASE_URL') or os.environ.get('NEON_DATABASE_URL')
-    if neon_url:
+    """Get database connection - uses DATABASE_URL (cleaned by main.py at startup).
+    Short-lived connection with statement timeout to prevent hangs."""
+    # main.py cleans NEON_DATABASE_URL and sets DATABASE_URL at startup
+    db_url = os.environ.get('DATABASE_URL', '')
+    if not db_url:
+        # Fallback: try NEON_DATABASE_URL directly
+        db_url = os.environ.get('NEON_DATABASE_URL', '')
+    
+    if db_url and db_url.startswith(('postgresql://', 'postgres://')):
         try:
             import psycopg2
             import psycopg2.extras
-            conn = psycopg2.connect(neon_url, connect_timeout=5,
+            conn = psycopg2.connect(db_url, connect_timeout=5,
                                      options='-c statement_timeout=10000')  # 10s statement timeout
             conn.autocommit = True
             return conn, 'postgres'
         except Exception as e:
-            log.warning(f"Neon connection failed: {e}")
+            log.warning(f"PostgreSQL connection failed: {e}")
 
     try:
         import sqlite3
@@ -992,6 +997,12 @@ def run_daily_jobs():
 @daily_bp.route('/api/v1/daily/status', methods=['GET'])
 def daily_status():
     """Check configuration status of all daily automation systems."""
+    # Debug: show what DB URLs the module sees
+    raw_db_url = os.environ.get('DATABASE_URL', '')
+    raw_neon_url = os.environ.get('NEON_DATABASE_URL', '')
+    db_url_type = 'postgres' if raw_db_url.startswith(('postgresql://', 'postgres://')) else ('set-but-not-pg' if raw_db_url else 'empty')
+    neon_url_type = 'postgres' if raw_neon_url.startswith(('postgresql://', 'postgres://')) else ('set-but-not-pg' if raw_neon_url else 'empty')
+    
     conn, db_type = get_db_connection()
     db_ok = conn is not None
     if conn:
@@ -1037,6 +1048,11 @@ def daily_status():
             'database': db_ok,
             'db_type': db_type if db_ok else None,
             'admin_key_set': bool(DAILY_ADMIN_KEY),
+            'db_debug': {
+                'DATABASE_URL': db_url_type,
+                'DATABASE_URL_prefix': raw_db_url[:30] + '...' if len(raw_db_url) > 30 else raw_db_url,
+                'NEON_DATABASE_URL': neon_url_type,
+            },
         },
         'recent_linkedin_posts': recent_posts,
         'cron_setup': {
