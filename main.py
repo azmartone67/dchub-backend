@@ -1,5 +1,4 @@
 """
-# v92.1 — AI Tracking Cumulative Endpoints (Neon + SQLite consolidated) Feb 24 2026
 # v92 — Daily Automation Engine (alerts, LinkedIn, market brief) Feb 24 2026
 # v91 — AI Discovery Routes (inline) integrated Feb 24 2026
 DC HUB NEXUS - ENHANCED API SERVER v92
@@ -442,10 +441,8 @@ def get_pg_connection(retries=3, pool_type=None):
                 _track_checkout(conn)
                 
                 used = _pool_stats['acquired'] - _pool_stats['returned']
-                _pool_max = int(os.environ.get('DB_POOL_MAX', 20))
-                _pool_warn = int(_pool_max * 0.75)
-                if used >= _pool_warn:
-                    logging.getLogger('db_pool').warning(f"⚠️ Pool at {used}/{_pool_max} ({int(used/_pool_max*100)}%) — high usage (threshold: {_pool_warn}/{_pool_max})")
+                if used >= 6:
+                    logging.getLogger('db_pool').warning(f"⚠️ Pool at {used}/8 ({int(used/8*100)}%) — high usage (threshold: 6/8)")
                 
                 return conn
             else:
@@ -1791,8 +1788,13 @@ except Exception as e:
 
 # Daily Automation Engine (alert digests, LinkedIn auto-posts, market brief emails)
 try:
-    from dchub_daily_automation import register_daily_automation
-    register_daily_automation(app)
+    from dchub_daily_automation import daily_bp
+    app.register_blueprint(daily_bp)
+    logger.info("📧 Daily Automation Engine: ✅ Registered (tables init deferred)")
+    logger.info("   📍 POST /api/v1/daily/run?job=all        — Trigger all daily jobs")
+    logger.info("   📍 GET  /api/v1/daily/status              — Check config status")
+    logger.info("   📍 POST /api/v1/daily/test?system=all     — Test systems")
+    logger.info("   📍 GET  /api/v1/daily/preview/<type>      — Preview content")
 except ImportError:
     logger.warning("⚠️ Daily Automation Engine: Not installed (upload dchub_daily_automation.py)")
 except Exception as e:
@@ -16270,7 +16272,7 @@ def verify_tier_gating():
 import psutil as _psutil_mod
 _SERVER_RESTART_TS = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
 
-_MEMORY_LIMIT_MB = int(os.environ.get('MEMORY_LIMIT_MB', 512))
+_MEMORY_LIMIT_MB = 200
 _GC_INTERVAL = 60
 
 try:
@@ -16898,149 +16900,6 @@ def _start_background_tasks():
 
 threading.Timer(60, _start_background_tasks).start()
 logger.info("⏳ Background tasks deferred: %d tasks will start in 60s with 10s stagger", len(_deferred_bg_threads))
-
-# =============================================================================
-# AI TRACKING — NEON CUMULATIVE ENDPOINTS (v92.1)
-# Reads from ai_cumulative table in Neon for all-time platform totals.
-# Also provides consolidated stats merging SQLite real-time + Neon cumulative.
-# =============================================================================
-
-@app.route('/api/v1/ai-tracking/cumulative', methods=['GET'])
-def ai_tracking_cumulative():
-    """Return all-time cumulative stats per platform from Neon ai_cumulative table."""
-    try:
-        conn = get_pg_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT platform, total_requests, first_seen, last_seen FROM ai_cumulative ORDER BY total_requests DESC")
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-        return jsonify([
-            {
-                'platform': r[0],
-                'total_requests': r[1] or 0,
-                'first_seen': r[2].isoformat() if hasattr(r[2], 'isoformat') else str(r[2]) if r[2] else None,
-                'last_seen': r[3].isoformat() if hasattr(r[3], 'isoformat') else str(r[3]) if r[3] else None
-            } for r in rows
-        ])
-    except Exception as e:
-        logger.error("ai_tracking_cumulative error: %s", e)
-        return jsonify({'error': str(e)}), 500
-
-
-def _consolidated_ai_stats():
-    """Consolidated AI tracking stats — merges Neon cumulative + SQLite real-time."""
-    try:
-        platforms = []
-        chart_data = {}
-        total_all_time = 0
-        today_count = 0
-        recent_activity = []
-
-        # ── Source 1: Neon ai_cumulative (all-time totals) ──
-        try:
-            conn = get_pg_connection()
-            cur = conn.cursor()
-
-            cur.execute("SELECT COALESCE(SUM(total_requests), 0) FROM ai_cumulative")
-            total_all_time = cur.fetchone()[0] or 0
-
-            cur.execute("SELECT platform, total_requests, first_seen, last_seen FROM ai_cumulative ORDER BY total_requests DESC")
-            for r in cur.fetchall():
-                plat = {
-                    'platform': r[0], 'name': r[0],
-                    'total_requests': r[1] or 0, 'total': r[1] or 0,
-                    'requests_7d': 0, 'requests_today': 0,
-                    'first_seen': r[2].isoformat() if hasattr(r[2], 'isoformat') else str(r[2]) if r[2] else None,
-                    'last_seen': r[3].isoformat() if hasattr(r[3], 'isoformat') else str(r[3]) if r[3] else None
-                }
-                platforms.append(plat)
-                chart_data[r[0]] = {'requests_7d': r[1] or 0, 'total': r[1] or 0}
-
-            # Today count
-            try:
-                cur.execute("SELECT COUNT(*) FROM ai_usage_tracking WHERE timestamp::date = CURRENT_DATE")
-                today_count = cur.fetchone()[0] or 0
-            except Exception:
-                pass
-
-            # 7-day breakdown
-            try:
-                cur.execute("""
-                    SELECT platform, COUNT(*) as cnt 
-                    FROM ai_usage_tracking 
-                    WHERE timestamp::date >= CURRENT_DATE - INTERVAL '7 days'
-                    GROUP BY platform
-                """)
-                for r in cur.fetchall():
-                    key = r[0]
-                    for p in platforms:
-                        if p['platform'] == key:
-                            p['requests_7d'] = r[1]
-                            break
-                    if key in chart_data:
-                        chart_data[key]['requests_7d'] = r[1]
-            except Exception:
-                pass
-
-            cur.close()
-            conn.close()
-        except Exception as e:
-            logger.warning("ai_tracking_stats Neon read failed: %s", e)
-
-        # ── Source 2: SQLite real-time (recent activity feed) ──
-        try:
-            if init_ai_tracking:
-                from ai_tracking import get_tracking_db
-                db = get_tracking_db()
-                rows = db.execute(
-                    "SELECT platform, endpoint, created_at FROM ai_requests ORDER BY id DESC LIMIT 30"
-                ).fetchall()
-                for row in rows:
-                    recent_activity.append({
-                        'platform': row['platform'] if hasattr(row, '__getitem__') else row[0],
-                        'endpoint': row['endpoint'] if hasattr(row, '__getitem__') else row[1],
-                        'timestamp': row['created_at'] if hasattr(row, '__getitem__') else row[2],
-                    })
-
-                try:
-                    today_sqlite = db.execute(
-                        "SELECT COUNT(*) FROM ai_requests WHERE date(created_at) = date('now')"
-                    ).fetchone()[0]
-                    today_count = max(today_count, today_sqlite or 0)
-                except Exception:
-                    pass
-        except Exception as e:
-            logger.warning("ai_tracking_stats SQLite read failed: %s", e)
-
-        return jsonify({
-            'total_all_time': total_all_time,
-            'total_requests_all_time': total_all_time,
-            'today_count': today_count,
-            'requests_today': today_count,
-            'platforms': platforms,
-            'chart_data': chart_data,
-            'recent_activity': recent_activity,
-            'tracking': 'persistent',
-            'sources': ['neon_cumulative', 'sqlite_realtime'],
-            'generated_at': datetime.utcnow().isoformat()
-        })
-    except Exception as e:
-        logger.error("ai_tracking_stats_consolidated error: %s", e)
-        return jsonify({'error': str(e)}), 500
-
-# Override the ai_tracking.py stats route (if it exists) with our consolidated version,
-# otherwise register it fresh.
-try:
-    app.view_functions['ai_tracking_stats'] = _consolidated_ai_stats
-    logger.info("   📈 AI Tracking Stats: OVERRIDDEN with consolidated Neon+SQLite version")
-except KeyError:
-    app.add_url_rule('/api/v1/ai-tracking/stats', endpoint='ai_tracking_stats', view_func=_consolidated_ai_stats, methods=['GET'])
-    logger.info("   📈 AI Tracking Stats: registered /api/v1/ai-tracking/stats (consolidated)")
-
-logger.info("   📈 AI Tracking Cumulative: /api/v1/ai-tracking/cumulative")
-
-# =============================================================================
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
