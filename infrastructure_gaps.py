@@ -39,8 +39,11 @@ infra_gaps_bp = Blueprint('infrastructure_gaps', __name__)
 EIA_API_KEY = os.environ.get('EIA_API_KEY', '')
 EIA_BASE = 'https://api.eia.gov/v2'
 
-# ArcGIS endpoints
-GAS_PIPELINE_ARCGIS = 'https://geo.dot.gov/server/rest/services/Hosted/Natural_Gas_Pipelines_US_EIA/FeatureServer/0/query'
+# ArcGIS endpoints (with fallbacks)
+GAS_PIPELINE_ARCGIS_URLS = [
+    'https://geo.dot.gov/server/rest/services/Hosted/Natural_Gas_Pipelines_US_EIA/FeatureServer/0/query',
+    'https://services7.arcgis.com/FGr1D95XCGALKXqM/arcgis/rest/services/Natural_Gas_Interstate_and_Intrastate_Pipelines_in_the_United_States/FeatureServer/0/query',
+]
 PHMSA_REGIONS_ARCGIS = 'https://geo.dot.gov/mapping/rest/services/NTAD/DOT_PHMSA_Regions/MapServer/1/query'
 
 # Simple cache
@@ -77,6 +80,35 @@ def _haversine(lat1, lng1, lat2, lng2):
     return R * 2 * math.asin(math.sqrt(min(1, a)))
 
 
+def _estimate_state(lat, lng):
+    """Rough state estimation from coordinates for EIA state filter."""
+    state_centers = {
+        'AZ': (34.05, -111.09), 'CA': (36.78, -119.42), 'TX': (31.97, -99.90),
+        'NV': (38.80, -116.42), 'NM': (34.52, -105.87), 'CO': (39.55, -105.78),
+        'UT': (39.32, -111.09), 'FL': (27.66, -81.52), 'GA': (32.16, -82.90),
+        'VA': (37.43, -78.66), 'NC': (35.76, -79.02), 'OH': (40.42, -82.91),
+        'IL': (40.63, -89.40), 'PA': (41.20, -77.19), 'NY': (43.30, -74.22),
+        'NJ': (40.06, -74.41), 'WA': (47.75, -120.74), 'OR': (43.80, -120.55),
+        'ID': (44.07, -114.74), 'MT': (46.80, -110.36), 'WY': (43.08, -107.29),
+        'ND': (47.55, -101.00), 'SD': (43.97, -99.90), 'NE': (41.49, -99.90),
+        'KS': (38.50, -98.00), 'OK': (35.47, -97.52), 'MN': (46.73, -94.69),
+        'IA': (41.88, -93.10), 'MO': (38.57, -92.60), 'AR': (34.97, -92.37),
+        'LA': (31.17, -91.87), 'MS': (32.35, -89.40), 'AL': (32.32, -86.90),
+        'SC': (33.84, -81.16), 'TN': (35.52, -86.58), 'KY': (37.67, -84.67),
+        'WV': (38.60, -80.95), 'IN': (40.27, -86.13), 'MI': (44.35, -85.41),
+        'WI': (43.78, -88.79), 'MA': (42.41, -71.38), 'CT': (41.60, -72.76),
+        'MD': (39.05, -76.64), 'ME': (45.25, -69.45),
+    }
+    best = None
+    best_dist = 9999
+    for st, (slat, slng) in state_centers.items():
+        d = _haversine(lat, lng, slat, slng)
+        if d < best_dist:
+            best_dist = d
+            best = st
+    return best
+
+
 def _arcgis_query(base_url, params):
     """Generic ArcGIS REST query — returns parsed JSON."""
     url = f"{base_url}?{urllib.parse.urlencode(params)}"
@@ -108,25 +140,16 @@ def _eia_request(path, params=None):
 
 
 def _bbox_from_coords(lat, lng, radius_miles):
-    """Create bounding box envelope from center + radius for ArcGIS spatial query.
-    Returns xmin,ymin,xmax,ymax in Web Mercator (EPSG:3857).
+    """Create bounding box envelope from center + radius.
+    Returns xmin,ymin,xmax,ymax in WGS84 degrees (EPSG:4326).
     """
-    # Approx degrees per mile at given latitude
     lat_per_mile = 1.0 / 69.0
     lng_per_mile = 1.0 / (69.0 * math.cos(math.radians(lat)))
     lat_min = lat - radius_miles * lat_per_mile
     lat_max = lat + radius_miles * lat_per_mile
     lng_min = lng - radius_miles * lng_per_mile
     lng_max = lng + radius_miles * lng_per_mile
-    # Convert to Web Mercator 3857
-    def to_mercator(lon, lat_deg):
-        x = lon * 20037508.34 / 180
-        y_rad = math.radians(lat_deg)
-        y = math.log(math.tan(math.pi / 4 + y_rad / 2)) * 20037508.34 / math.pi
-        return x, y
-    xmin, ymin = to_mercator(lng_min, lat_min)
-    xmax, ymax = to_mercator(lng_max, lat_max)
-    return f"{xmin},{ymin},{xmax},{ymax}"
+    return f"{lng_min},{lat_min},{lng_max},{lat_max}"
 
 
 # =============================================================================
@@ -161,7 +184,7 @@ def gas_pipeline_geojson():
     params = {
         'geometry': bbox,
         'geometryType': 'esriGeometryEnvelope',
-        'inSR': '3857',
+        'inSR': '4326',
         'spatialRel': 'esriSpatialRelIntersects',
         'outFields': 'typepipe,operator,Shape__Length',
         'returnGeometry': 'true',
@@ -170,10 +193,20 @@ def gas_pipeline_geojson():
         'resultRecordCount': str(limit),
     }
 
-    data = _arcgis_query(GAS_PIPELINE_ARCGIS, params)
-    if 'error' in data and 'features' not in data:
-        return jsonify({'success': False, 'error': data.get('error', 'ArcGIS query failed'),
-                        'note': 'DOT/EIA pipeline FeatureServer may be unavailable'}), 502
+    data = None
+    last_error = None
+    for arcgis_url in GAS_PIPELINE_ARCGIS_URLS:
+        logger.info(f"Trying pipeline ArcGIS: {arcgis_url[:80]}")
+        data = _arcgis_query(arcgis_url, params)
+        if 'features' in data:
+            break
+        last_error = data.get('error', 'Unknown error')
+        logger.warning(f"Pipeline fallback: {last_error}")
+        data = None
+
+    if data is None:
+        return jsonify({'success': False, 'error': last_error or 'All pipeline sources failed',
+                        'note': 'DOT/EIA pipeline FeatureServers may be unavailable'}), 502
 
     features = data.get('features', [])
     # Summarize by type
@@ -228,20 +261,12 @@ def phmsa_pipeline_data():
     if cached:
         return jsonify(cached)
 
-    # Convert to Web Mercator for point query
-    def to_mercator(lon, lat_deg):
-        x = lon * 20037508.34 / 180
-        y_rad = math.radians(lat_deg)
-        y = math.log(math.tan(math.pi / 4 + y_rad / 2)) * 20037508.34 / math.pi
-        return x, y
-
-    mx, my = to_mercator(lng, lat)
-    # Use small envelope around point
-    buf = 5000  # ~3 miles buffer
+    # Use WGS84 envelope around point (~3 mile buffer in degrees)
+    buf = 0.05  # ~3 miles in degrees
     params = {
-        'geometry': f"{mx-buf},{my-buf},{mx+buf},{my+buf}",
+        'geometry': f"{lng-buf},{lat-buf},{lng+buf},{lat+buf}",
         'geometryType': 'esriGeometryEnvelope',
-        'inSR': '3857',
+        'inSR': '4326',
         'spatialRel': 'esriSpatialRelIntersects',
         'outFields': '*',
         'returnGeometry': 'false',
@@ -398,15 +423,22 @@ def interconnection_projects_nearby():
     else:
         statuses = ['P', 'U', 'TS', 'T', 'L', 'OT']  # Planned, Under Const, Testing, Standby, Other
 
-    for s in statuses:
-        params[f'facets[status][]'] = statuses
+    params['facets[status][]'] = statuses
 
     if fuel_filter:
-        params['facets[energy_source_code][]'] = fuel_filter
+        params['facets[energy_source_code][]'] = [fuel_filter]
 
+    # Add state filter for efficiency
+    state = request.args.get('state', '').upper()
+    if not state:
+        state = _estimate_state(lat, lng)
+    if state:
+        params['facets[stateid][]'] = [state]
+
+    logger.info(f"Interconnection query: statuses={statuses}, fuel={fuel_filter}, state={state}")
     eia_data = _eia_request('electricity/operating-generator-capacity/data/', params)
     rows = eia_data.get('response', {}).get('data', [])
-
+    logger.info(f"Interconnection: got {len(rows)} rows from EIA")
     # Deduplicate by plant_id:generator_id, keep most recent
     seen = set()
     projects = []
@@ -666,20 +698,30 @@ def renewable_projects_nearby():
     else:
         query_fuels = renewable_fuels
 
+    # Determine state from coordinates for more efficient query
+    state = request.args.get('state', '').upper()
+    if not state:
+        state = _estimate_state(lat, lng)
+
     params = {
         'frequency': 'monthly',
         'data[0]': 'nameplate-capacity-mw',
+        'facets[energy_source_code][]': query_fuels,
         'sort[0][column]': 'nameplate-capacity-mw',
         'sort[0][direction]': 'desc',
         'length': 5000,
     }
-    for f in query_fuels:
-        params.setdefault('facets[energy_source_code][]', [])
-    params['facets[energy_source_code][]'] = query_fuels
+    if state:
+        params['facets[stateid][]'] = [state]
 
+    logger.info(f"Renewable query: fuels={query_fuels}, state={state}")
     eia_data = _eia_request('electricity/operating-generator-capacity/data/', params)
+    
+    if 'error' in eia_data:
+        logger.warning(f"EIA renewable error: {eia_data['error']}")
+    
     rows = eia_data.get('response', {}).get('data', [])
-
+    logger.info(f"Renewable: got {len(rows)} rows from EIA")
     # Deduplicate
     seen = set()
     projects = []
