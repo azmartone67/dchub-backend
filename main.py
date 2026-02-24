@@ -1688,6 +1688,13 @@ try:
 except Exception as e:
     logger.error(f"⚠️ KMZ Auto-Discovery failed: {e}")
 
+try:
+    from ai_discovery_routes import register_discovery_routes
+    register_discovery_routes(app)
+    logger.info("✅ AI Discovery Routes (inline) registered")
+except Exception as e:
+    logger.error(f"⚠️ AI Discovery Routes failed: {e}")
+
 if ENABLE_BACKGROUND_SCHEDULERS:
     try:
         from global_intelligence_agent import register_global_intelligence_routes
@@ -10639,61 +10646,16 @@ def api_health():
 # AI DISCOVERY & SIGNUP ROUTES (v90)
 # =============================================================================
 
-@app.route('/robots.txt', methods=['GET'])
-def serve_robots():
-    """Serve robots.txt for AI crawlers"""
-    try:
-        with open('static/robots.txt', 'r') as f:
-            content = f.read()
-        return content, 200, {'Content-Type': 'text/plain'}
-    except:
-        return 'User-agent: *\nAllow: /', 200, {'Content-Type': 'text/plain'}
-
-@app.route('/llms.txt', methods=['GET'])
-def serve_llms_txt():
-    """Serve llms.txt for LLM discovery"""
-    try:
-        with open('static/llms.txt', 'r') as f:
-            content = f.read()
-        return content, 200, {'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-cache, must-revalidate'}
-    except:
-        return 'DC Hub - Data Center Intelligence Platform', 200, {'Content-Type': 'text/plain; charset=utf-8'}
+# OLD robots.txt, llms.txt routes REMOVED — now served by ai_discovery_routes.py (inline)
 
 @app.route('/dchub2026.txt', methods=['GET'])
 def serve_indexnow_key():
     """Serve IndexNow verification key for rapid search engine indexing"""
     return 'dchub2026', 200, {'Content-Type': 'text/plain'}
 
-@app.route('/llms-full.txt', methods=['GET'])
-def serve_llms_full_txt():
-    """Serve llms-full.txt - extended LLM documentation"""
-    import os
-    for path in ['static/llms-full.txt', 'llms-full.txt', os.path.join(os.getcwd(), 'static', 'llms-full.txt')]:
-        if os.path.exists(path):
-            try:
-                with open(path, 'r') as f:
-                    content = f.read()
-                if len(content) > 50:
-                    return content, 200, {'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-cache, must-revalidate'}
-            except:
-                continue
-    return '# DC Hub Full API Documentation\n# See /llms.txt', 200, {'Content-Type': 'text/plain; charset=utf-8'}
+# OLD llms-full.txt route REMOVED — now served by ai_discovery_routes.py (inline)
 
-@app.route('/AGENTS.md', methods=['GET'])
-@app.route('/agents.md', methods=['GET'])
-def serve_agents_md():
-    """Serve AGENTS.md for AI coding agents (Linux Foundation standard)"""
-    import os
-    for path in ['static/AGENTS.md', 'AGENTS.md', os.path.join(os.getcwd(), 'static', 'AGENTS.md')]:
-        if os.path.exists(path):
-            try:
-                with open(path, 'r') as f:
-                    content = f.read()
-                if len(content) > 50:
-                    return content, 200, {'Content-Type': 'text/markdown'}
-            except:
-                continue
-    return '# DC Hub - Data Center Intelligence', 200, {'Content-Type': 'text/markdown'}
+# OLD AGENTS.md route REMOVED — now served by ai_discovery_routes.py (inline)
 
 @app.route('/skill.md', methods=['GET'])
 def serve_skill_md():
@@ -10745,102 +10707,15 @@ def serve_ai_txt():
     except:
         return '{"name": "DC Hub"}', 200, {'Content-Type': 'application/json'}
 
-@app.route('/.well-known/ai-plugin.json', methods=['GET'])
-def serve_ai_plugin():
-    """Serve ai-plugin.json for ChatGPT/OpenAI plugin discovery"""
-    try:
-        with open('static/.well-known/ai-plugin.json', 'r') as f:
-            return f.read(), 200, {'Content-Type': 'application/json'}
-    except:
-        return '{"error": "not found"}', 404, {'Content-Type': 'application/json'}
+# OLD ai-plugin.json route REMOVED — now served by ai_discovery_routes.py (inline)
 
-@app.route('/.well-known/mcp.json', methods=['GET'])
-def serve_mcp():
-    """Serve mcp.json for Model Context Protocol discovery"""
-    try:
-        with open('static/.well-known/mcp.json', 'r') as f:
-            return f.read(), 200, {'Content-Type': 'application/json', 'Cache-Control': 'no-cache, no-store, must-revalidate', 'Access-Control-Allow-Origin': '*'}
-    except:
-        return '{"error": "not found"}', 404, {'Content-Type': 'application/json'}
+# OLD mcp.json route REMOVED — now served by ai_discovery_routes.py (inline)
 
-@app.route('/.well-known/mcp/server-card.json', methods=['GET'])
-def serve_mcp_server_card():
-    """Serve MCP server card for AI agent discovery"""
-    try:
-        with open('static/.well-known/mcp/server-card.json', 'r') as f:
-            return f.read(), 200, {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'}
-    except:
-        return '{"error": "not found"}', 404, {'Content-Type': 'application/json'}
+# OLD mcp/server-card.json route REMOVED — now served by ai_discovery_routes.py (inline)
 
-@app.route('/.well-known/openapi.json', methods=['GET'])
-@app.route('/openapi.json', methods=['GET'])
-@app.route('/openapi-chatgpt.json', methods=['GET'])
-def serve_openapi():
-    """Serve OpenAPI spec for ChatGPT Actions, Copilot, Grok, and all AI platforms"""
-    # Try file first (if static/openapi-chatgpt.json exists)
-    try:
-        with open('static/openapi-chatgpt.json', 'r') as f:
-            return f.read(), 200, {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'}
-    except:
-        pass
-    # Also try openapi.json in project root
-    try:
-        with open('openapi.json', 'r') as f:
-            return f.read(), 200, {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'}
-    except:
-        pass
-    # Inline fallback — full spec covering all 8 verification endpoints
-    import json as _json_spec
-    spec = {
-        "openapi": "3.0.3",
-        "info": {
-            "title": "DC Hub — Data Center Intelligence API",
-            "description": "Programmatic access to 20,000+ data center facilities, M&A deals, energy pricing, construction pipeline, and market intelligence across 140+ countries.",
-            "version": "2.1.0",
-            "contact": {"name": "DC Hub", "url": "https://dchub.cloud"}
-        },
-        "servers": [{"url": "https://dchub.cloud", "description": "Production"}],
-        "security": [{}],
-        "paths": {
-            "/api/agent/facilities": {"get": {"summary": "Search 20,000+ data center facilities", "description": "Search by name, provider, city, or country. Free tier returns 2 results, Pro returns up to 100.", "parameters": [
-                {"name": "q", "in": "query", "schema": {"type": "string"}, "description": "Search query"},
-                {"name": "country", "in": "query", "schema": {"type": "string"}, "description": "Filter by country"},
-                {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 20}, "description": "Max results (Pro: up to 100)"}
-            ], "responses": {"200": {"description": "Facility search results"}}}},
-            "/api/agent/stats": {"get": {"summary": "Platform overview stats", "responses": {"200": {"description": "Global stats"}}}},
-            "/api/agent/capabilities": {"get": {"summary": "Agent capability spec", "responses": {"200": {"description": "Full capability list"}}}},
-            "/api/transactions": {"get": {"summary": "M&A deals ($51B+ tracked)", "parameters": [
-                {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 100}},
-                {"name": "deal_type", "in": "query", "schema": {"type": "string", "enum": ["acquisition", "investment", "merger"]}}
-            ], "responses": {"200": {"description": "Transaction list"}}}},
-            "/api/news": {"get": {"summary": "Industry news from 40+ sources", "parameters": [
-                {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 50}}
-            ], "responses": {"200": {"description": "News articles"}}}},
-            "/api/stats": {"get": {"summary": "Platform statistics", "responses": {"200": {"description": "High-level stats"}}}},
-            "/api/v1/markets/list": {"get": {"summary": "All tracked markets", "responses": {"200": {"description": "Market list"}}}},
-            "/api/v1/markets/{market_name}": {"get": {"summary": "Single market details", "parameters": [
-                {"name": "market_name", "in": "path", "required": True, "schema": {"type": "string"}}
-            ], "responses": {"200": {"description": "Market detail"}}}},
-            "/api/v1/lmp/prices": {"get": {"summary": "Energy pricing by ISO", "description": "LMP data for ERCOT, PJM, CAISO, MISO, NYISO, SPP, ISO-NE", "parameters": [
-                {"name": "iso", "in": "query", "schema": {"type": "string", "enum": ["ERCOT", "PJM", "CAISO", "MISO", "NYISO", "SPP", "ISONE"]}}
-            ], "responses": {"200": {"description": "Energy pricing data"}}}},
-            "/api/v1/pipeline": {"get": {"summary": "Construction pipeline (~7.8 GW)", "responses": {"200": {"description": "Pipeline data"}}}},
-        }
-    }
-    return _json_spec.dumps(spec, indent=2), 200, {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'}
+# OLD openapi.json route REMOVED — now served by ai_discovery_routes.py (inline)
 
-@app.route('/.well-known/<path:filename>', methods=['GET'])
-def serve_well_known(filename):
-    """Serve other .well-known files for AI platform discovery"""
-    import os
-    for base in ['static/.well-known', '.well-known']:
-        filepath = os.path.join(base, filename)
-        if os.path.exists(filepath):
-            with open(filepath, 'r') as f:
-                content = f.read()
-            ctype = 'application/json' if filename.endswith('.json') else 'text/plain'
-            return content, 200, {'Content-Type': ctype, 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-cache, no-store, must-revalidate'}
-    return '{"error": "not found"}', 404, {'Content-Type': 'application/json'}
+# OLD .well-known catch-all route REMOVED — now served by ai_discovery_routes.py (inline)
 
 # =============================================================================
 # AI AGENT DISCOVERY & TRACKING (v90)
