@@ -693,17 +693,92 @@ def register_water_routes(app):
 
             layer_counts[ltype] = count
 
-        all_facilities.sort(key=lambda x: x['distance_miles'])
+        # ----- EIA FALLBACK: If HIFLD returned nothing, query EIA for gas plants -----
+        source_used = 'NASA HIFLD Open Energy FeatureServer'
+        eia_fallback_used = False
+
+        if not all_facilities and errors:
+            eia_key = os.environ.get('EIA_API_KEY', '')
+            if eia_key:
+                logger.info("HIFLD failed — trying EIA natural gas plant fallback")
+                est_state = _estimate_state(lat, lng)
+                if est_state:
+                    try:
+                        eia_url = (
+                            f'https://api.eia.gov/v2/electricity/operating-generator-capacity/data/'
+                            f'?api_key={eia_key}'
+                            f'&frequency=monthly'
+                            f'&data[0]=nameplate-capacity-mw'
+                            f'&facets[stateid][]={est_state}'
+                            f'&facets[energy_source_code][]=NG'
+                            f'&sort[0][column]=nameplate-capacity-mw'
+                            f'&sort[0][direction]=desc'
+                            f'&length=200'
+                        )
+                        eia_resp = _fetch_json(eia_url, timeout=10)
+                        eia_records = eia_resp.get('response', {}).get('data', [])
+
+                        seen_plants = set()
+                        for rec in eia_records:
+                            plant_name = rec.get('plantName', rec.get('plantname', 'Unknown'))
+                            plant_id = rec.get('plantid', rec.get('plantId', ''))
+                            plant_state = rec.get('stateid', rec.get('stateId', est_state))
+                            capacity_mw = _safe_float(rec.get('nameplate-capacity-mw', 0))
+                            county = rec.get('county', '')
+                            tech = rec.get('technology', '')
+
+                            # Deduplicate by plant ID
+                            dedup_key = f"{plant_id}_{plant_name}"
+                            if dedup_key in seen_plants:
+                                continue
+                            seen_plants.add(dedup_key)
+
+                            facility = {
+                                'type': 'gas_plant',
+                                'type_label': f'Natural Gas Power Plant ({tech})' if tech else 'Natural Gas Power Plant',
+                                'name': plant_name,
+                                'operator': rec.get('entityName', rec.get('entityname', '')),
+                                'state': plant_state,
+                                'county': county,
+                                'latitude': None,
+                                'longitude': None,
+                                'distance_miles': None,
+                                'status': rec.get('status', rec.get('statusDescription', '')),
+                                'capacity_mw': capacity_mw,
+                                'plant_id': plant_id,
+                                'energy_source': 'Natural Gas (NG)',
+                                'technology': tech,
+                            }
+                            all_facilities.append(facility)
+
+                        layer_counts['gas_plant'] = len(all_facilities)
+                        source_used = 'EIA Operating Generator Capacity (HIFLD fallback)'
+                        eia_fallback_used = True
+                        # Clear HIFLD errors since we got EIA data
+                        if all_facilities:
+                            errors = [f"{e} (EIA fallback used)" for e in errors]
+                        logger.info(f"EIA fallback: {len(all_facilities)} gas plants in {est_state}")
+                    except Exception as e:
+                        logger.warning(f"EIA gas fallback failed: {e}")
+                        errors.append(f"EIA fallback: {e}")
+
+        all_facilities.sort(key=lambda x: x.get('distance_miles') or 9999)
 
         result = {
             'success': True,
-            'source': 'NASA HIFLD Open Energy FeatureServer',
-            'source_url': base_url,
+            'source': source_used,
+            'source_url': base_url if not eia_fallback_used else 'https://api.eia.gov/v2/electricity/operating-generator-capacity/',
             'query': {'lat': lat, 'lng': lng, 'radius_miles': radius, 'type_filter': infra_type or 'all'},
             'total_facilities': len(all_facilities),
             'by_type': layer_counts,
             'facilities': all_facilities[:50],
             'errors': errors if errors else None,
+            'eia_fallback': eia_fallback_used,
+            'eia_note': (
+                'HIFLD sources unavailable. Showing EIA natural gas power plants as proxy '
+                'for gas infrastructure density. Plants fueled by natural gas indicate '
+                'nearby pipeline access and gas delivery infrastructure.'
+            ) if eia_fallback_used else None,
             'data_center_note': (
                 'Gas infrastructure proximity supports on-site power generation. '
                 'Compressor stations indicate pipeline pressure points; '
