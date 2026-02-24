@@ -1,5 +1,5 @@
 """
-DC Hub - Google & AI Platform Integration Routes
+DC Hub - Google & AI Platform Integration Routes 2026
 =================================================
 Adds structured data, Swagger UI, and enhanced discovery endpoints.
 
