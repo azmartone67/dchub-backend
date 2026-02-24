@@ -442,8 +442,10 @@ def get_pg_connection(retries=3, pool_type=None):
                 _track_checkout(conn)
                 
                 used = _pool_stats['acquired'] - _pool_stats['returned']
-                if used >= 6:
-                    logging.getLogger('db_pool').warning(f"⚠️ Pool at {used}/8 ({int(used/8*100)}%) — high usage (threshold: 6/8)")
+                _pool_max = int(os.environ.get('DB_POOL_MAX', 20))
+                _pool_warn = int(_pool_max * 0.75)
+                if used >= _pool_warn:
+                    logging.getLogger('db_pool').warning(f"⚠️ Pool at {used}/{_pool_max} ({int(used/_pool_max*100)}%) — high usage (threshold: {_pool_warn}/{_pool_max})")
                 
                 return conn
             else:
@@ -16268,7 +16270,7 @@ def verify_tier_gating():
 import psutil as _psutil_mod
 _SERVER_RESTART_TS = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
 
-_MEMORY_LIMIT_MB = 200
+_MEMORY_LIMIT_MB = int(os.environ.get('MEMORY_LIMIT_MB', 512))
 _GC_INTERVAL = 60
 
 try:
