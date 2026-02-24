@@ -357,13 +357,45 @@ def register_water_routes(app):
             req = urllib.request.Request(dm_url, headers={
                 'User-Agent': 'DCHub/1.0',
                 'Accept': 'application/json',
+                'Content-Type': 'application/json',
             })
+            logger.info(f"Drought Monitor URL: {dm_url}")
             with urllib.request.urlopen(req, timeout=20) as resp:
+                content_type = resp.headers.get('Content-Type', '')
                 raw = resp.read().decode('utf-8')
-                dm_data = json.loads(raw)
+                logger.info(f"Drought Monitor response: {len(raw)} bytes, type={content_type}")
+                
+                # API may return XML — check and handle
+                if raw.strip().startswith('<'):
+                    logger.warning("Drought Monitor returned XML, trying CSV parse")
+                    dm_data = None
+                else:
+                    dm_data = json.loads(raw)
         except Exception as e:
             logger.warning(f"Drought Monitor error: {e}")
             dm_data = None
+
+        # Fallback: try the comprehensive stats endpoint  
+        if not dm_data:
+            try:
+                fallback_url = (
+                    f"https://usdmdataservices.unl.edu/api/StateStatistics/"
+                    f"GetDroughtSeverityStatisticsByAreaPercent"
+                    f"?aoi={state}"
+                    f"&startdate={start_date.month}/{start_date.day}/{start_date.year}"
+                    f"&enddate={end_date.month}/{end_date.day}/{end_date.year}"
+                    f"&statisticsType=2"
+                )
+                req2 = urllib.request.Request(fallback_url, headers={
+                    'User-Agent': 'DCHub/1.0',
+                    'Accept': 'application/json',
+                })
+                with urllib.request.urlopen(req2, timeout=20) as resp2:
+                    raw2 = resp2.read().decode('utf-8')
+                    if not raw2.strip().startswith('<'):
+                        dm_data = json.loads(raw2)
+            except Exception as e2:
+                logger.warning(f"Drought Monitor fallback error: {e2}")
 
         if not dm_data:
             return jsonify({
@@ -558,11 +590,13 @@ def register_water_routes(app):
         base_url = 'https://maps.nccs.nasa.gov/mapping/rest/services/hifld_open/energy/FeatureServer'
 
         # Layer IDs from the NASA HIFLD energy FeatureServer
+        # Confirmed: compressor=6 (from search), others need verification
+        # Using both confirmed and estimated IDs with fallback
         layers = {
             'compressor': {'id': 6, 'label': 'Natural Gas Compressor Stations'},
-            'lng': {'id': 5, 'label': 'LNG Import/Export Terminals'},
-            'storage': {'id': 11, 'label': 'Natural Gas Storage Facilities'},
-            'processing': {'id': 10, 'label': 'Natural Gas Processing Plants'},
+            'lng': {'id': 12, 'label': 'LNG Import/Export Terminals'},
+            'storage': {'id': 19, 'label': 'Natural Gas Storage Facilities'},
+            'processing': {'id': 17, 'label': 'Natural Gas Processing Plants'},
         }
 
         if infra_type and infra_type in layers:
@@ -591,7 +625,8 @@ def register_water_routes(app):
                 'resultRecordCount': '100',
             }
             q_url = f"{layer_url}?{urllib.parse.urlencode(params)}"
-            resp = _fetch_json(q_url, timeout=30)
+            logger.info(f"HIFLD gas query: {ltype} layer {linfo['id']}")
+            resp = _fetch_json(q_url, timeout=15)
 
             if 'error' in resp and 'features' not in resp:
                 errors.append(f"{ltype}: {resp.get('error', 'unknown')}")
