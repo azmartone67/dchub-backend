@@ -637,7 +637,7 @@ def register_water_routes(app):
             for try_url in urls_to_try:
                 q_url = f"{try_url}?{urllib.parse.urlencode(params)}"
                 logger.info(f"HIFLD gas query: {ltype} → {try_url[:80]}")
-                resp = _fetch_json(q_url, timeout=15)
+                resp = _fetch_json(q_url, timeout=5)
                 if 'features' in resp:
                     break
                 logger.warning(f"HIFLD {ltype} failed: {resp.get('error', 'no features')}")
