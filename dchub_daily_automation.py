@@ -173,23 +173,21 @@ def post_to_linkedin(text, article_url=None):
 
 def get_db_connection():
     """Get database connection - uses DATABASE_URL (cleaned by main.py at startup).
-    Short-lived connection with statement timeout to prevent hangs."""
+    Short-lived connection for daily automation queries."""
     # main.py cleans NEON_DATABASE_URL and sets DATABASE_URL at startup
     db_url = os.environ.get('DATABASE_URL', '')
     if not db_url:
-        # Fallback: try NEON_DATABASE_URL directly
         db_url = os.environ.get('NEON_DATABASE_URL', '')
     
     if db_url and db_url.startswith(('postgresql://', 'postgres://')):
         try:
             import psycopg2
             import psycopg2.extras
-            conn = psycopg2.connect(db_url, connect_timeout=5,
-                                     options='-c statement_timeout=10000')  # 10s statement timeout
+            conn = psycopg2.connect(db_url, connect_timeout=10)
             conn.autocommit = True
             return conn, 'postgres'
         except Exception as e:
-            log.warning(f"PostgreSQL connection failed: {e}")
+            log.error(f"PostgreSQL connection FAILED: {type(e).__name__}: {e}")
 
     try:
         import sqlite3
