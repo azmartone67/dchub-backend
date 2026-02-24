@@ -1,5 +1,5 @@
 """
-DC Hub — AI Discovery Routes (Inline, No Static Files)
+DC Hub — AI Discovery Routes (Inline, No Static Files
 =======================================================
 All AI discovery endpoints serve content directly from code.
 No send_file(), no static file dependencies. Works on Railway, Replit, or anywhere.
