@@ -1,6 +1,6 @@
 {
   "report_date": "2026-02-24",
-  "generated_at": "2026-02-24T07:38:08.047846",
+  "generated_at": "2026-02-24T20:35:56.546526",
   "summary": {
     "total_facilities": 11433,
     "total_providers": 3958,
@@ -89,54 +89,54 @@
   ],
   "recent_news": [
     {
-      "title": "Data Center Switch Market Size | Industry Report, 2033",
-      "source": "Grand View Research",
-      "date": "2026-02-24T06:53:34"
+      "title": "Mississippi's governor calls data center moratoria \"civilizational suicide\"",
+      "source": "Data Center Dynamics",
+      "date": "2026-02-24T19:33:44"
     },
     {
-      "title": "Accelsius Strengthens R&D Team for Data Center Liquid Cooling Development",
-      "source": "TipRanks",
-      "date": "2026-02-24T06:29:45"
+      "title": "KSLA gets one-on-one interview AWS director of economic development as massive data center project announced",
+      "source": "KSLA",
+      "date": "2026-02-24T19:29:00"
     },
     {
-      "title": "Europe Data Center GPU Market Size, Share and Analysis, 2034",
-      "source": "Market Data Forecast",
-      "date": "2026-02-24T06:07:42"
-    },
-    {
-      "title": "How Data Centers Are Quietly Redefining the Future of Technology?",
-      "source": "vocal.media",
-      "date": "2026-02-24T05:51:15"
-    },
-    {
-      "title": "Ormat Technologies Signs Up To 150 Million MW Portfolio PPA With NV Energy To Support Google Data Centers",
-      "source": "Pulse 2.0",
-      "date": "2026-02-24T05:16:24"
-    },
-    {
-      "title": "IBM to Invest in Quantum Computing and Cloud Infrastructure in India, Says Ashwini Vaishnaw",
-      "source": "Open Magazine",
-      "date": "2026-02-24T05:12:21"
-    },
-    {
-      "title": "South Korea faces growing strain from AI data centers",
-      "source": "upi.com",
-      "date": "2026-02-24T04:49:11"
-    },
-    {
-      "title": "Cisco turns to titanium spoons and sand dunes to build a better \u2026 box?",
+      "title": "'Merica-made Mac Minis marked for manufacturing",
       "source": "The Register DC",
-      "date": "2026-02-24T04:39:40"
+      "date": "2026-02-24T19:26:56"
     },
     {
-      "title": "NorthWestern Energy: 11 more data center firms eyeing Montana, South Dakota",
-      "source": "Bozeman Daily Chronicle",
-      "date": "2026-02-24T03:45:00"
+      "title": "Florida on board with state data center regulations, defying Trump",
+      "source": "Tallahassee Democrat",
+      "date": "2026-02-24T19:25:00"
     },
     {
-      "title": "5 AI-Infrastructure Giants to Buy for 2026 on Massive Data Center Boom",
-      "source": "The Globe and Mail",
-      "date": "2026-02-24T03:38:31"
+      "title": "Google Bets Big on Self-Powered Minnesota Data Center",
+      "source": "The Tech Buzz",
+      "date": "2026-02-24T19:20:00"
+    },
+    {
+      "title": "Trump to announce data center energy deals during State of the Union",
+      "source": "Politico",
+      "date": "2026-02-24T19:15:46"
+    },
+    {
+      "title": "Nvidia\u2019s $67 Billion Reckoning: The \u2018Do or Die\u2019 Moment for AI Infrastructure",
+      "source": "FinancialContent",
+      "date": "2026-02-24T19:13:00"
+    },
+    {
+      "title": "Proposed tax breaks for data centers would increase taxes for poor Coloradans, analysts say",
+      "source": "KUNC",
+      "date": "2026-02-24T19:00:00"
+    },
+    {
+      "title": "Amazon built huge data centers in Indiana farm country. Can Michigan learn from it?",
+      "source": "MLive.com",
+      "date": "2026-02-24T18:52:00"
+    },
+    {
+      "title": "Amazon built huge data centers in Indiana farm country. Can Michigan learn from it?",
+      "source": "MLive.com",
+      "date": "2026-02-24T18:52:00"
     }
   ],
   "data_sources": [
