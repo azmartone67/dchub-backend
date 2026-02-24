@@ -1087,7 +1087,7 @@ except ImportError as e:
 try:
     from water_drought_routes import register_water_routes
     logger.info("  ✅ water_drought_routes")
-except ImportError as e:
+except Exception as e:
     register_water_routes = None
     logger.warning(f"  ⚠️ water_drought_routes: {e}")
 
