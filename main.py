@@ -801,7 +801,7 @@ def api_facilities_shortcut():
 APP_START_TIME = time.time()
 from nav_config import register_nav_config_route
 register_nav_config_route(app)
-APP_VERSION = '2.5.0'
+APP_VERSION = '2.5.1'
 STARTUP_COMPLETE = False
 
 last_webhook_time = None
@@ -8887,6 +8887,14 @@ def get_stats():
         
         c.execute("SELECT COALESCE(SUM(power_mw), 0) FROM facilities")
         stats['total_power_mw'] = round(c.fetchone()[0] or 0, 1)
+        stats['total_mw'] = stats['total_power_mw']  # alias for frontends
+        
+        c.execute(f"SELECT COUNT(DISTINCT provider) FROM facilities WHERE provider != '' AND provider IS NOT NULL {RAILWAY_EXCLUSION}")
+        stats['total_providers'] = c.fetchone()[0] or 0
+        
+        c.execute("SELECT COUNT(DISTINCT country) FROM facilities WHERE country != '' AND country IS NOT NULL")
+        stats['total_countries'] = c.fetchone()[0] or 0
+        stats['countries'] = stats['total_countries']  # alias for frontends
         
         try:
             c.execute("SELECT COUNT(*) FROM announcements")
@@ -8970,6 +8978,70 @@ def get_stats():
                 conn.close()
             except:
                 pass
+
+# ─── Aggregate endpoints for dashboard charts ────────────────────────────
+
+@app.route('/api/v1/facilities/by-market', methods=['GET'])
+def facilities_by_market():
+    """Aggregate facility counts by market/city for dashboard charts."""
+    limit = request.args.get('limit', 15, type=int)
+    limit = min(limit, 50)
+    conn = None
+    try:
+        conn = get_read_db()
+        c = conn.cursor()
+        c.execute(f"""
+            SELECT city as market, COUNT(*) as count, 
+                   COALESCE(SUM(power_mw), 0) as total_mw
+            FROM facilities 
+            WHERE city IS NOT NULL AND city != ''
+            {RAILWAY_EXCLUSION}
+            GROUP BY city 
+            ORDER BY count DESC 
+            LIMIT %s
+        """, (limit,))
+        rows = c.fetchall()
+        data = [{'market': r[0], 'count': r[1], 'total_mw': round(r[2], 1)} for r in rows]
+        return jsonify({'success': True, 'data': data})
+    except Exception as e:
+        logger.error(f"by-market error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        if conn:
+            try: conn.close()
+            except: pass
+
+
+@app.route('/api/v1/facilities/by-provider', methods=['GET'])
+def facilities_by_provider():
+    """Aggregate facility counts by provider for dashboard charts."""
+    limit = request.args.get('limit', 15, type=int)
+    limit = min(limit, 50)
+    conn = None
+    try:
+        conn = get_read_db()
+        c = conn.cursor()
+        c.execute(f"""
+            SELECT provider, COUNT(*) as count,
+                   COALESCE(SUM(power_mw), 0) as total_mw
+            FROM facilities 
+            WHERE provider IS NOT NULL AND provider != ''
+            {RAILWAY_EXCLUSION}
+            GROUP BY provider 
+            ORDER BY count DESC 
+            LIMIT %s
+        """, (limit,))
+        rows = c.fetchall()
+        data = [{'provider': r[0], 'count': r[1], 'total_mw': round(r[2], 1)} for r in rows]
+        return jsonify({'success': True, 'data': data})
+    except Exception as e:
+        logger.error(f"by-provider error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        if conn:
+            try: conn.close()
+            except: pass
+
 
 @app.route('/api/v1/facilities', methods=['GET'])
 def list_facilities():
