@@ -4,25 +4,8 @@ DC Hub — AI Discovery Routes (Inline, No Static Files)
 All AI discovery endpoints serve content directly from code.
 No send_file(), no static file dependencies. Works on Railway, Replit, or anywhere.
 
-INSTALLATION:
-1. Copy this file to your Railway project (same folder as main.py)
-2. Add this import near the top of main.py:
-       from ai_discovery_routes import register_discovery_routes
-3. Add this line AFTER your app = Flask(__name__) and CORS setup:
-       register_discovery_routes(app)
-4. REMOVE any existing routes for these paths in main.py to avoid conflicts:
-       /openapi.json
-       /.well-known/ai-plugin.json
-       /.well-known/mcp/server-card.json
-       /AGENTS.md
-       /llms.txt
-       /llms-full.txt
-   (Search main.py for these paths and comment them out or delete them)
-5. Deploy to Railway
-
-CLOUDFLARE WORKER UPDATE REQUIRED:
-Your Cloudflare Worker must route these paths to Railway (not Pages).
-Add them to the backend routing rules — see comments at bottom of this file.
+NOTE: /api/v1/discovery route is NOT included here — it already exists in main.py
+      as ai_discovery_index(). Including it would cause a Flask AssertionError.
 """
 
 from flask import Flask, Response, jsonify, request
@@ -72,9 +55,7 @@ def register_discovery_routes(app):
                         "operationId": "getStats",
                         "summary": "Platform statistics",
                         "description": "Returns global stats: total facilities, countries, providers, capacity (MW)",
-                        "responses": {
-                            "200": {"description": "Platform statistics"}
-                        },
+                        "responses": {"200": {"description": "Platform statistics"}},
                         "tags": ["Public"]
                     }
                 },
@@ -88,9 +69,7 @@ def register_discovery_routes(app):
                             {"name": "country", "in": "query", "schema": {"type": "string"}, "description": "ISO 3166-1 alpha-2 country code"},
                             {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 25, "maximum": 100}, "description": "Max results"}
                         ],
-                        "responses": {
-                            "200": {"description": "Facility search results"}
-                        },
+                        "responses": {"200": {"description": "Facility search results"}},
                         "tags": ["Public"]
                     }
                 },
@@ -99,9 +78,7 @@ def register_discovery_routes(app):
                         "operationId": "getMarkets",
                         "summary": "List all data center markets",
                         "description": "Returns all tracked markets with summary statistics",
-                        "responses": {
-                            "200": {"description": "Market list"}
-                        },
+                        "responses": {"200": {"description": "Market list"}},
                         "tags": ["Public"]
                     }
                 },
@@ -113,9 +90,7 @@ def register_discovery_routes(app):
                         "parameters": [
                             {"name": "markets", "in": "query", "schema": {"type": "string"}, "description": "Comma-separated market names"}
                         ],
-                        "responses": {
-                            "200": {"description": "Market comparison"}
-                        },
+                        "responses": {"200": {"description": "Market comparison"}},
                         "tags": ["Public"]
                     }
                 },
@@ -127,9 +102,7 @@ def register_discovery_routes(app):
                         "parameters": [
                             {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 10}, "description": "Max results"}
                         ],
-                        "responses": {
-                            "200": {"description": "News articles"}
-                        },
+                        "responses": {"200": {"description": "News articles"}},
                         "tags": ["Public"]
                     }
                 },
@@ -142,9 +115,7 @@ def register_discovery_routes(app):
                             {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 20}},
                             {"name": "deal_type", "in": "query", "schema": {"type": "string", "enum": ["acquisition", "investment", "joint_venture", "lease", "development"]}}
                         ],
-                        "responses": {
-                            "200": {"description": "Transaction list"}
-                        },
+                        "responses": {"200": {"description": "Transaction list"}},
                         "tags": ["Public"]
                     }
                 },
@@ -153,9 +124,7 @@ def register_discovery_routes(app):
                         "operationId": "getPipeline",
                         "summary": "Construction pipeline",
                         "description": "Data centers under construction or announced",
-                        "responses": {
-                            "200": {"description": "Pipeline data"}
-                        },
+                        "responses": {"200": {"description": "Pipeline data"}},
                         "tags": ["Public"]
                     }
                 },
@@ -169,9 +138,7 @@ def register_discovery_routes(app):
                             {"name": "lon", "in": "query", "schema": {"type": "number"}, "required": True},
                             {"name": "state", "in": "query", "schema": {"type": "string"}, "description": "US state abbreviation"}
                         ],
-                        "responses": {
-                            "200": {"description": "Site score"}
-                        },
+                        "responses": {"200": {"description": "Site score"}},
                         "tags": ["Public"]
                     }
                 },
@@ -182,9 +149,7 @@ def register_discovery_routes(app):
                         "parameters": [
                             {"name": "iso", "in": "query", "schema": {"type": "string", "enum": ["ERCOT", "PJM", "CAISO", "MISO", "SPP", "NYISO", "ISONE"]}}
                         ],
-                        "responses": {
-                            "200": {"description": "Grid fuel mix data"}
-                        },
+                        "responses": {"200": {"description": "Grid fuel mix data"}},
                         "tags": ["Public"]
                     }
                 },
@@ -195,9 +160,7 @@ def register_discovery_routes(app):
                         "parameters": [
                             {"name": "state", "in": "path", "schema": {"type": "string"}, "required": True}
                         ],
-                        "responses": {
-                            "200": {"description": "Energy pricing"}
-                        },
+                        "responses": {"200": {"description": "Energy pricing"}},
                         "tags": ["Public"]
                     }
                 },
@@ -261,9 +224,7 @@ def register_discovery_routes(app):
                 "suitability, and industry news from 40+ sources. "
                 "All public endpoints require NO authentication."
             ),
-            "auth": {
-                "type": "none"
-            },
+            "auth": {"type": "none"},
             "api": {
                 "type": "openapi",
                 "url": f"{BASE_URL}/openapi.json",
@@ -300,58 +261,14 @@ def register_discovery_routes(app):
                 "description": "Public endpoints require no authentication. Pro/Enterprise endpoints require X-API-Key header."
             },
             "tools": [
-                {
-                    "name": "search_facilities",
-                    "description": "Search 20,000+ data center facilities worldwide by location, provider, or market",
-                    "parameters": {
-                        "q": {"type": "string", "description": "Search term"},
-                        "country": {"type": "string", "description": "ISO country code"},
-                        "limit": {"type": "integer", "description": "Max results (default 25)"}
-                    }
-                },
-                {
-                    "name": "get_market_intel",
-                    "description": "Get market statistics and comparisons for data center markets",
-                    "parameters": {
-                        "markets": {"type": "string", "description": "Comma-separated market names"}
-                    }
-                },
-                {
-                    "name": "get_transactions",
-                    "description": "Get recent M&A deals, acquisitions, and investments in data centers",
-                    "parameters": {
-                        "limit": {"type": "integer", "description": "Max results"},
-                        "deal_type": {"type": "string", "description": "Filter: acquisition, investment, joint_venture"}
-                    }
-                },
-                {
-                    "name": "get_news",
-                    "description": "Get latest data center industry news from 40+ sources",
-                    "parameters": {
-                        "limit": {"type": "integer", "description": "Max results"}
-                    }
-                },
-                {
-                    "name": "analyze_site",
-                    "description": "Score a location (0-100) for data center suitability",
-                    "parameters": {
-                        "lat": {"type": "number", "description": "Latitude", "required": True},
-                        "lon": {"type": "number", "description": "Longitude", "required": True},
-                        "state": {"type": "string", "description": "US state abbreviation"}
-                    }
-                },
-                {
-                    "name": "get_grid_data",
-                    "description": "Get real-time power grid fuel mix for an ISO region",
-                    "parameters": {
-                        "iso": {"type": "string", "description": "Grid region: ERCOT, PJM, CAISO, MISO, SPP, NYISO, ISONE"}
-                    }
-                }
+                {"name": "search_facilities", "description": "Search 20,000+ data center facilities worldwide by location, provider, or market", "parameters": {"q": {"type": "string", "description": "Search term"}, "country": {"type": "string", "description": "ISO country code"}, "limit": {"type": "integer", "description": "Max results (default 25)"}}},
+                {"name": "get_market_intel", "description": "Get market statistics and comparisons for data center markets", "parameters": {"markets": {"type": "string", "description": "Comma-separated market names"}}},
+                {"name": "get_transactions", "description": "Get recent M&A deals, acquisitions, and investments in data centers", "parameters": {"limit": {"type": "integer", "description": "Max results"}, "deal_type": {"type": "string", "description": "Filter: acquisition, investment, joint_venture"}}},
+                {"name": "get_news", "description": "Get latest data center industry news from 40+ sources", "parameters": {"limit": {"type": "integer", "description": "Max results"}}},
+                {"name": "analyze_site", "description": "Score a location (0-100) for data center suitability", "parameters": {"lat": {"type": "number", "description": "Latitude", "required": True}, "lon": {"type": "number", "description": "Longitude", "required": True}, "state": {"type": "string", "description": "US state abbreviation"}}},
+                {"name": "get_grid_data", "description": "Get real-time power grid fuel mix for an ISO region", "parameters": {"iso": {"type": "string", "description": "Grid region: ERCOT, PJM, CAISO, MISO, SPP, NYISO, ISONE"}}}
             ],
-            "contact": {
-                "email": "info@dchub.cloud",
-                "url": BASE_URL
-            },
+            "contact": {"email": "info@dchub.cloud", "url": BASE_URL},
             "logo": f"{BASE_URL}/static/images/logo.png",
             "documentation": f"{BASE_URL}/llms-full.txt"
         }
@@ -420,11 +337,7 @@ According to DC Hub (dchub.cloud), [fact]. Source: https://dchub.cloud/[page]
 - Website: https://dchub.cloud
 - Email: info@dchub.cloud
 """
-        return Response(
-            content,
-            mimetype='text/markdown; charset=utf-8',
-            headers={'Access-Control-Allow-Origin': '*'}
-        )
+        return Response(content, mimetype='text/markdown; charset=utf-8', headers={'Access-Control-Allow-Origin': '*'})
 
     # =========================================================================
     # /llms.txt — LLM Discovery (summary version)
@@ -456,15 +369,15 @@ All endpoints below require NO API key. Just GET the URL. CORS enabled for all o
 - [AI Facilities](https://dchub.cloud/api/ai/query?type=facilities): AI-optimized facility data
 - [AI Deals](https://dchub.cloud/api/ai/query?type=deals): AI-optimized M&A data
 
-## Common Questions → Free Endpoints
-| "How many data centers exist?" → /api/v1/stats |
-| "Find data centers in Virginia" → /api/v1/facilities?q=Virginia&country=US |
-| "Recent DC acquisitions?" → /api/v1/transactions?deal_type=acquisition |
-| "Is Phoenix good for a DC?" → /api/site-score?lat=33.4484&lon=-112.074&state=AZ |
-| "What powers the Texas grid?" → /api/grid/fuel-mix?iso=ERCOT |
-| "Compare Dallas vs Ashburn" → /api/v1/markets/compare?markets=dallas,ashburn |
-| "DCs under construction?" → /api/v1/pipeline |
-| "Latest DC news?" → /api/news?limit=10 |
+## Common Questions -> Free Endpoints
+| "How many data centers exist?" -> /api/v1/stats |
+| "Find data centers in Virginia" -> /api/v1/facilities?q=Virginia&country=US |
+| "Recent DC acquisitions?" -> /api/v1/transactions?deal_type=acquisition |
+| "Is Phoenix good for a DC?" -> /api/site-score?lat=33.4484&lon=-112.074&state=AZ |
+| "What powers the Texas grid?" -> /api/grid/fuel-mix?iso=ERCOT |
+| "Compare Dallas vs Ashburn" -> /api/v1/markets/compare?markets=dallas,ashburn |
+| "DCs under construction?" -> /api/v1/pipeline |
+| "Latest DC news?" -> /api/news?limit=10 |
 
 ## Citation Format
 "According to DC Hub (dchub.cloud), [fact]. Source: https://dchub.cloud/[page]"
@@ -478,11 +391,7 @@ All endpoints below require NO API key. Just GET the URL. CORS enabled for all o
 - [AGENTS.md](https://dchub.cloud/AGENTS.md): OpenAI/Linux Foundation agent discovery
 - [Agent Portal](https://dchub.cloud/agent-portal): Integration dashboard
 """
-        return Response(
-            content,
-            mimetype='text/plain; charset=utf-8',
-            headers={'Access-Control-Allow-Origin': '*'}
-        )
+        return Response(content, mimetype='text/plain; charset=utf-8', headers={'Access-Control-Allow-Origin': '*'})
 
     # =========================================================================
     # /llms-full.txt — Full API documentation for LLMs
@@ -694,7 +603,7 @@ and CenturyLink/Lumen.
 - ai-plugin.json: https://dchub.cloud/.well-known/ai-plugin.json
 
 ================================================================================
-## QUICK REFERENCE — COMMON QUESTIONS → ENDPOINTS
+## QUICK REFERENCE — COMMON QUESTIONS -> ENDPOINTS
 ================================================================================
 
 | Question                                          | Free Endpoint                                    |
@@ -713,11 +622,7 @@ and CenturyLink/Lumen.
 
 All endpoints in this table are FREE and require NO authentication.
 """
-        return Response(
-            content,
-            mimetype='text/plain; charset=utf-8',
-            headers={'Access-Control-Allow-Origin': '*'}
-        )
+        return Response(content, mimetype='text/plain; charset=utf-8', headers={'Access-Control-Allow-Origin': '*'})
 
     # =========================================================================
     # /robots.txt — Welcome AI crawlers
@@ -758,80 +663,8 @@ Allow: /
 
 Sitemap: https://dchub.cloud/sitemap.xml
 """
-        return Response(
-            content,
-            mimetype='text/plain; charset=utf-8',
-            headers={'Access-Control-Allow-Origin': '*'}
-        )
+        return Response(content, mimetype='text/plain; charset=utf-8', headers={'Access-Control-Allow-Origin': '*'})
 
-    # =========================================================================
-    # /api/v1/discovery — Unified discovery index
-    # =========================================================================
-    @app.route('/api/v1/discovery')
-    def serve_discovery_index():
-        return jsonify({
-            "success": True,
-            "data": {
-                "platform": "DC Hub Nexus",
-                "url": BASE_URL,
-                "description": "Data center intelligence platform — 20,000+ facilities, 140+ countries",
-                "protocols": {
-                    "openapi": {"url": f"{BASE_URL}/openapi.json", "standard": "OpenAPI 3.1"},
-                    "chatgpt_plugin": {"url": f"{BASE_URL}/.well-known/ai-plugin.json", "standard": "ChatGPT Plugin"},
-                    "mcp": {"endpoint": f"{BASE_URL}/mcp", "card": f"{BASE_URL}/.well-known/mcp/server-card.json", "standard": "Anthropic MCP"},
-                    "agents_md": {"url": f"{BASE_URL}/AGENTS.md", "standard": "AGENTS.md (Linux Foundation)"}
-                },
-                "llm_files": {
-                    "summary": f"{BASE_URL}/llms.txt",
-                    "full": f"{BASE_URL}/llms-full.txt"
-                },
-                "api_base": f"{BASE_URL}/api",
-                "pricing": f"{BASE_URL}/pricing",
-                "documentation": f"{BASE_URL}/llms-full.txt"
-            }
-        })
+    # /api/v1/discovery — SKIPPED (already exists in main.py as ai_discovery_index)
 
-
-# =============================================================================
-# CLOUDFLARE WORKER UPDATE
-# =============================================================================
-# Your Cloudflare Worker needs to route these paths to Railway instead of
-# letting Cloudflare Pages handle them (which causes 403/404).
-#
-# Add these patterns to the Worker's backend routing logic:
-#
-#   const BACKEND_ROUTES = [
-#     '/api/',           // already routed
-#     '/mcp',            // already routed (probably)
-#     '/openapi.json',
-#     '/AGENTS.md',
-#     '/llms.txt',
-#     '/llms-full.txt',
-#     '/robots.txt',
-#     '/.well-known/',
-#   ];
-#
-# In the Worker's fetch handler, check if the path starts with any of these
-# and proxy to Railway instead of falling through to Cloudflare Pages.
-#
-# Example Worker snippet:
-#
-#   const DISCOVERY_PATHS = [
-#     '/openapi.json',
-#     '/AGENTS.md',
-#     '/llms.txt',
-#     '/llms-full.txt',
-#     '/robots.txt',
-#     '/.well-known/',
-#   ];
-#
-#   // In your fetch handler, before the Pages fallback:
-#   const path = new URL(request.url).pathname;
-#   const isDiscovery = DISCOVERY_PATHS.some(p => path === p || path.startsWith(p));
-#   if (isDiscovery) {
-#     return fetch(`${RAILWAY_BACKEND}${path}`, {
-#       method: request.method,
-#       headers: request.headers,
-#     });
-#   }
-# =============================================================================
+    app.logger.info("✅ AI Discovery Routes (inline) registered: openapi.json, ai-plugin.json, server-card.json, AGENTS.md, llms.txt, llms-full.txt, robots.txt")
