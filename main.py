@@ -1,4 +1,5 @@
 """
+# v91 — AI Discovery Routes (inline) integrated Feb 24 2026
 DC HUB NEXUS - ENHANCED API SERVER v90
 # LinkedIn Auto-Posting
 from linkedin_autopost import linkedin_auto_bp, init_linkedin_tables, start_linkedin_scheduler, on_new_deal, on_weekly_digest
