@@ -1,6 +1,7 @@
 """
+# v92 — Daily Automation Engine (alerts, LinkedIn, market brief) Feb 24 2026
 # v91 — AI Discovery Routes (inline) integrated Feb 24 2026
-DC HUB NEXUS - ENHANCED API SERVER v90
+DC HUB NEXUS - ENHANCED API SERVER v92
 # LinkedIn Auto-Posting
 from linkedin_autopost import linkedin_auto_bp, init_linkedin_tables, start_linkedin_scheduler, on_new_deal, on_weekly_digest
 # LinkedIn Daily Poster (linkedin_poster.py + linkedin_scheduler.py)
@@ -1784,6 +1785,15 @@ try:
         logger.info("✅ MCP Auto-Registration system initialized")
 except Exception as e:
     logger.error(f"⚠️ MCP Auto-Registration failed: {e}")
+
+# Daily Automation Engine (alert digests, LinkedIn auto-posts, market brief emails)
+try:
+    from dchub_daily_automation import register_daily_automation
+    register_daily_automation(app)
+except ImportError:
+    logger.warning("⚠️ Daily Automation Engine: Not installed (upload dchub_daily_automation.py)")
+except Exception as e:
+    logger.error(f"⚠️ Daily Automation Engine failed: {e}")
 
 # NOTE: Old Flask-based MCP routes disabled — replaced by real MCP server
 # running as a separate process on port 8888 (Streamable HTTP transport).
@@ -8927,8 +8937,8 @@ def get_stats():
             'success': True,
             'data': stats,
             'generated_at': datetime.utcnow().isoformat(),
-            'version': 'v90',
-            'build': '90',
+            'version': 'v92',
+            'build': '92',
             'facilities': stats.get('total_facilities', 20000),
             'markets': len(stats.get('top_countries', {})),
             'deals': stats.get('total_announcements', 673)
