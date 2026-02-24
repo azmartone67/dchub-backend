@@ -338,69 +338,63 @@ def register_water_routes(app):
         if cached:
             return jsonify(cached)
 
+        # Convert state abbreviation to FIPS code — USDM API accepts both
+        # but FIPS is more reliable
+        state_fips = _STATE_FIPS.get(state, state)
+
         end_date = datetime.now(timezone.utc)
         start_date = end_date - timedelta(weeks=weeks)
 
         # US Drought Monitor REST API — state-level comprehensive stats
         sd = f"{start_date.month}/{start_date.day}/{start_date.year}"
         ed = f"{end_date.month}/{end_date.day}/{end_date.year}"
-        dm_url = (
-            f"https://usdmdataservices.unl.edu/api/StateStatistics/"
-            f"GetDroughtSeverityStatisticsByAreaPercent"
-            f"?aoi={state}"
-            f"&startdate={sd}"
-            f"&enddate={ed}"
-            f"&statisticsType=1"
-        )
+        
+        # Try both FIPS and abbreviation
+        urls_to_try = [
+            (
+                f"https://usdmdataservices.unl.edu/api/StateStatistics/"
+                f"GetDroughtSeverityStatisticsByAreaPercent"
+                f"?aoi={state_fips}&startdate={sd}&enddate={ed}&statisticsType=1"
+            ),
+            (
+                f"https://usdmdataservices.unl.edu/api/StateStatistics/"
+                f"GetDroughtSeverityStatisticsByAreaPercent"
+                f"?aoi={state}&startdate={sd}&enddate={ed}&statisticsType=1"
+            ),
+        ]
 
-        try:
-            req = urllib.request.Request(dm_url, headers={
-                'User-Agent': 'DCHub/1.0',
-                'Accept': 'application/json',
-                'Content-Type': 'application/json',
-            })
-            logger.info(f"Drought Monitor URL: {dm_url}")
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                content_type = resp.headers.get('Content-Type', '')
-                raw = resp.read().decode('utf-8')
-                logger.info(f"Drought Monitor response: {len(raw)} bytes, type={content_type}")
-                
-                # API may return XML — check and handle
-                if raw.strip().startswith('<'):
-                    logger.warning("Drought Monitor returned XML, trying CSV parse")
-                    dm_data = None
-                else:
-                    dm_data = json.loads(raw)
-        except Exception as e:
-            logger.warning(f"Drought Monitor error: {e}")
-            dm_data = None
-
-        # Fallback: try the comprehensive stats endpoint  
-        if not dm_data:
+        dm_data = None
+        last_error = None
+        for dm_url in urls_to_try:
             try:
-                fallback_url = (
-                    f"https://usdmdataservices.unl.edu/api/StateStatistics/"
-                    f"GetDroughtSeverityStatisticsByAreaPercent"
-                    f"?aoi={state}"
-                    f"&startdate={start_date.month}/{start_date.day}/{start_date.year}"
-                    f"&enddate={end_date.month}/{end_date.day}/{end_date.year}"
-                    f"&statisticsType=2"
-                )
-                req2 = urllib.request.Request(fallback_url, headers={
+                logger.info(f"Drought Monitor trying: {dm_url}")
+                req = urllib.request.Request(dm_url, headers={
                     'User-Agent': 'DCHub/1.0',
                     'Accept': 'application/json',
+                    'Content-Type': 'application/json',
                 })
-                with urllib.request.urlopen(req2, timeout=20) as resp2:
-                    raw2 = resp2.read().decode('utf-8')
-                    if not raw2.strip().startswith('<'):
-                        dm_data = json.loads(raw2)
-            except Exception as e2:
-                logger.warning(f"Drought Monitor fallback error: {e2}")
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    content_type = resp.headers.get('Content-Type', '')
+                    raw = resp.read().decode('utf-8')
+                    logger.info(f"USDM response: {len(raw)} bytes, type={content_type}, preview={raw[:200]}")
+                    
+                    if raw.strip().startswith('<'):
+                        logger.warning("USDM returned XML/HTML, skipping")
+                        last_error = 'API returned XML instead of JSON'
+                        continue
+                    if raw.strip().startswith('[') or raw.strip().startswith('{'):
+                        dm_data = json.loads(raw)
+                        if dm_data:
+                            break
+            except Exception as e:
+                last_error = str(e)
+                logger.warning(f"USDM error: {e}")
 
         if not dm_data:
             return jsonify({
                 'success': False,
-                'error': 'US Drought Monitor API unavailable',
+                'error': last_error or 'US Drought Monitor API unavailable',
+                'debug_urls_tried': urls_to_try,
                 'source_url': 'https://droughtmonitor.unl.edu/',
             }), 502
 
@@ -588,15 +582,21 @@ def register_water_routes(app):
             return jsonify(cached)
 
         base_url = 'https://maps.nccs.nasa.gov/mapping/rest/services/hifld_open/energy/FeatureServer'
-
-        # Layer IDs from the NASA HIFLD energy FeatureServer
-        # Confirmed: compressor=6 (from search), others need verification
-        # Using both confirmed and estimated IDs with fallback
+        # Fallback: HIFLD data also hosted on ArcGIS Online
+        fallback_url = 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services'
+        
+        # Layer config: NASA IDs + ArcGIS Online service names
         layers = {
-            'compressor': {'id': 6, 'label': 'Natural Gas Compressor Stations'},
-            'lng': {'id': 12, 'label': 'LNG Import/Export Terminals'},
-            'storage': {'id': 19, 'label': 'Natural Gas Storage Facilities'},
-            'processing': {'id': 17, 'label': 'Natural Gas Processing Plants'},
+            'compressor': {
+                'id': 6,
+                'label': 'Natural Gas Compressor Stations',
+                'arcgis_service': 'Natural_Gas_Compressor_Stations',
+            },
+            'storage': {
+                'id': 19,
+                'label': 'Natural Gas Storage Facilities',
+                'arcgis_service': 'Natural_Gas_Storage',
+            },
         }
 
         if infra_type and infra_type in layers:
@@ -611,25 +611,40 @@ def register_water_routes(app):
         layer_counts = {}
         errors = []
 
-        for ltype, linfo in query_layers.items():
-            layer_url = f"{base_url}/{linfo['id']}/query"
-            params = {
-                'geometry': bbox,
-                'geometryType': 'esriGeometryEnvelope',
-                'inSR': '4326',
-                'spatialRel': 'esriSpatialRelIntersects',
-                'outFields': '*',
-                'returnGeometry': 'true',
-                'outSR': '4326',
-                'f': 'json',
-                'resultRecordCount': '100',
-            }
-            q_url = f"{layer_url}?{urllib.parse.urlencode(params)}"
-            logger.info(f"HIFLD gas query: {ltype} layer {linfo['id']}")
-            resp = _fetch_json(q_url, timeout=15)
+        params = {
+            'geometry': bbox,
+            'geometryType': 'esriGeometryEnvelope',
+            'inSR': '4326',
+            'spatialRel': 'esriSpatialRelIntersects',
+            'outFields': '*',
+            'returnGeometry': 'true',
+            'outSR': '4326',
+            'f': 'json',
+            'resultRecordCount': '100',
+        }
 
-            if 'error' in resp and 'features' not in resp:
-                errors.append(f"{ltype}: {resp.get('error', 'unknown')}")
+        for ltype, linfo in query_layers.items():
+            # Try NASA first, then ArcGIS Online fallback
+            urls_to_try = [
+                f"{base_url}/{linfo['id']}/query",
+            ]
+            if 'arcgis_service' in linfo:
+                urls_to_try.append(
+                    f"{fallback_url}/{linfo['arcgis_service']}/FeatureServer/0/query"
+                )
+            
+            resp = None
+            for try_url in urls_to_try:
+                q_url = f"{try_url}?{urllib.parse.urlencode(params)}"
+                logger.info(f"HIFLD gas query: {ltype} → {try_url[:80]}")
+                resp = _fetch_json(q_url, timeout=15)
+                if 'features' in resp:
+                    break
+                logger.warning(f"HIFLD {ltype} failed: {resp.get('error', 'no features')}")
+                resp = None
+            
+            if resp is None:
+                errors.append(f"{ltype}: all sources failed")
                 layer_counts[ltype] = 0
                 continue
 
