@@ -108,6 +108,58 @@ def _echo_request(endpoint, params=None):
         return {'error': str(e)}
 
 
+def _frs_request(lat, lng, radius_miles):
+    """Fallback: EPA Facility Registry Service (FRS) — search by lat/lng for NPDES facilities.
+    Works when ECHO ofmpub ECHO endpoints are down.
+    """
+    import urllib.request
+    import urllib.parse
+    import urllib.error
+
+    params = {
+        'latitude83': str(lat),
+        'longitude83': str(lng),
+        'search_radius': str(radius_miles),
+        'pgm_sys_acrnm': 'NPDES',
+        'output': 'JSON',
+    }
+    base_url = f"https://ofmpub.epa.gov/enviro/frs_rest_services.get_facilities?{urllib.parse.urlencode(params)}"
+    logger.info(f"FRS fallback request: {base_url[:200]}")
+    try:
+        req = urllib.request.Request(base_url, headers={'User-Agent': 'DCHub/1.0', 'Accept': 'application/json'})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = resp.read().decode('utf-8')
+            try:
+                return json.loads(body)
+            except json.JSONDecodeError:
+                return {'error': 'Invalid JSON from FRS', 'raw': body[:500]}
+    except Exception as e:
+        logger.warning(f"FRS API error: {e}")
+        return {'error': str(e)}
+
+
+def _envirofacts_cwa(state, rows=200):
+    """Fallback 2: EPA Envirofacts / data.epa.gov — query ICIS NPDES permits by state.
+    This is a completely separate EPA server from ofmpub.
+    """
+    import urllib.request
+    import urllib.error
+
+    url = f"https://data.epa.gov/efservice/ICIS_PERMITS/FACILITY_STATE_CODE/{state}/JSON/0:{rows}"
+    logger.info(f"Envirofacts CWA fallback: {url[:200]}")
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'DCHub/1.0', 'Accept': 'application/json'})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = resp.read().decode('utf-8')
+            try:
+                return json.loads(body)
+            except json.JSONDecodeError:
+                return {'error': 'Invalid JSON from Envirofacts', 'raw': body[:500]}
+    except Exception as e:
+        logger.warning(f"Envirofacts CWA error: {e}")
+        return {'error': str(e)}
+
+
 # =============================================================================
 # EIA Form 860 — Operating Generator Capacity (Plant-Level Data)
 # =============================================================================
@@ -412,7 +464,8 @@ def power_plant_generation():
 
 @power_plant_bp.route('/api/v1/power-plants/permits')
 def discharge_permits_nearby():
-    """Find EPA ECHO facilities with NPDES discharge permits near coordinates.
+    """Find EPA facilities with NPDES discharge permits near coordinates.
+    Uses 3-tier fallback: ECHO → FRS → Envirofacts (data.epa.gov).
 
     Query params:
         lat (float): Latitude (required)
@@ -433,7 +486,11 @@ def discharge_permits_nearby():
     if cached:
         return jsonify(cached)
 
-    # EPA ECHO CWA facility search — use get_facility_info (self-contained endpoint)
+    facilities = []
+    source_used = 'EPA ECHO (NPDES Discharge Permits)'
+
+    # ── Tier 1: ECHO CWA get_facility_info ──
+    echo_ok = False
     params = {
         'output': 'JSON',
         'p_lat': str(lat),
@@ -441,66 +498,150 @@ def discharge_permits_nearby():
         'p_radius': str(radius),
         'responseset': str(limit),
     }
-
     data = _echo_request('cwa_rest_services.get_facility_info', params)
-    if 'error' in data:
-        # Try alternate base URL format
-        import urllib.request, urllib.parse, urllib.error
-        alt_url = f"https://ofmpub.epa.gov/echo/cwa_rest_services.get_facility_info?{urllib.parse.urlencode(params)}"
-        logger.info(f"ECHO fallback: trying {alt_url[:200]}")
-        try:
-            req = urllib.request.Request(alt_url, headers={'User-Agent': 'DCHub/1.0', 'Accept': 'application/json'})
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                data = json.loads(resp.read().decode('utf-8'))
-        except Exception as e2:
-            return jsonify({'success': False, 'error': str(data.get('error', '')), 'fallback_error': str(e2), 'note': 'EPA ECHO API may be temporarily unavailable'}), 502
+    if 'error' not in data:
+        results = data.get('Results', data.get('results', data))
+        facility_list = results.get('Facilities', results.get('FacilityInfo', results.get('ClusterOutput', [])))
+        if isinstance(facility_list, list) and len(facility_list) > 0:
+            echo_ok = True
+            logger.info(f"ECHO returned {len(facility_list)} CWA facilities")
+            for fac in facility_list:
+                fac_lat = _safe_float(fac.get('FacLat', fac.get('Latitude')))
+                fac_lng = _safe_float(fac.get('FacLong', fac.get('Longitude')))
+                dist = _haversine(lat, lng, fac_lat, fac_lng) if fac_lat and fac_lng else None
+                facilities.append({
+                    'registry_id': fac.get('RegistryID', fac.get('FacFRSID', '')),
+                    'npdes_id': fac.get('CWPSourceID', fac.get('SourceID', fac.get('CWPPermitNumber', ''))),
+                    'facility_name': fac.get('FacName', fac.get('CWPName', '')),
+                    'address': fac.get('FacStreet', ''),
+                    'city': fac.get('FacCity', ''),
+                    'state': fac.get('FacState', ''),
+                    'zip': fac.get('FacZip', ''),
+                    'latitude': fac_lat,
+                    'longitude': fac_lng,
+                    'distance_miles': round(dist, 1) if dist else None,
+                    'permit_status': fac.get('CWPPermitStatusDesc', fac.get('PermitStatus', '')),
+                    'permit_type': fac.get('CWPPermitTypeDesc', ''),
+                    'facility_type': fac.get('CWPFacilityTypeIndicator', ''),
+                    'sic_code': fac.get('CWPSICCodes', fac.get('SICCodes', '')),
+                    'naics_code': fac.get('CWPNAICCodes', fac.get('NAICSCodes', '')),
+                    'compliance_status': fac.get('CWPSNCStatus', fac.get('ComplianceStatus', '')),
+                    'major_minor': fac.get('CWPMajorMinorStatusFlag', ''),
+                    'receiving_water': fac.get('CWPReceivingWaters', ''),
+                    'total_penalties': fac.get('CWPTotalPenalties', ''),
+                    'last_inspection': fac.get('CWPLastInspDate', ''),
+                    'is_power_plant': _is_power_sic(fac.get('CWPSICCodes', '')),
+                })
+    else:
+        logger.warning(f"ECHO Tier 1 failed: {data.get('error', 'unknown')}")
 
-    facilities = []
-    # Parse ECHO response — get_facility_info returns nested Results.Facilities
-    results = data.get('Results', data.get('results', data))
-    facility_list = results.get('Facilities', results.get('FacilityInfo', results.get('ClusterOutput', [])))
+    # ── Tier 2: FRS (Envirofacts FRS REST) — same ofmpub server, different path ──
+    if not echo_ok:
+        frs_data = _frs_request(lat, lng, radius)
+        if 'error' not in frs_data:
+            frs_results = frs_data.get('Results', frs_data)
+            frs_list = frs_results.get('FRSFacility', [])
+            if isinstance(frs_list, list) and len(frs_list) > 0:
+                echo_ok = True
+                source_used = 'EPA FRS (Facility Registry Service — NPDES)'
+                logger.info(f"FRS Tier 2 returned {len(frs_list)} facilities")
+                for fac in frs_list[:limit]:
+                    fac_lat = _safe_float(fac.get('Latitude83', fac.get('LATITUDE83')))
+                    fac_lng = _safe_float(fac.get('Longitude83', fac.get('LONGITUDE83')))
+                    dist = _haversine(lat, lng, fac_lat, fac_lng) if fac_lat and fac_lng else None
 
-    # If we got a cluster response, look for individual facilities
-    if not isinstance(facility_list, list):
-        facility_list = []
+                    # Extract NPDES ID from program interest list
+                    npdes_id = ''
+                    pgm_list = fac.get('ProgramInterest', fac.get('EnvironmentalInterest', []))
+                    if isinstance(pgm_list, list):
+                        for pgm in pgm_list:
+                            if isinstance(pgm, dict) and 'NPDES' in str(pgm.get('PgmSystemAcrnm', pgm.get('PGM_SYS_ACRNM', ''))):
+                                npdes_id = pgm.get('PgmSystemId', pgm.get('PGM_SYS_ID', ''))
+                                break
 
-    logger.info(f"ECHO returned {len(facility_list)} facilities")
+                    sic = fac.get('SicCodes', fac.get('SIC_CODES', ''))
+                    facilities.append({
+                        'registry_id': fac.get('RegistryId', fac.get('REGISTRY_ID', '')),
+                        'npdes_id': npdes_id,
+                        'facility_name': fac.get('PrimaryName', fac.get('PRIMARY_NAME', '')),
+                        'address': fac.get('LocationAddress', fac.get('LOCATION_ADDRESS', '')),
+                        'city': fac.get('CityName', fac.get('CITY_NAME', '')),
+                        'state': fac.get('StateCode', fac.get('STATE_CODE', '')),
+                        'zip': fac.get('PostalCode', fac.get('POSTAL_CODE', '')),
+                        'latitude': fac_lat,
+                        'longitude': fac_lng,
+                        'distance_miles': round(dist, 1) if dist else None,
+                        'permit_status': '',
+                        'permit_type': '',
+                        'facility_type': fac.get('FederalFacilityIndicator', ''),
+                        'sic_code': sic,
+                        'naics_code': fac.get('NaicsCodes', fac.get('NAICS_CODES', '')),
+                        'compliance_status': '',
+                        'major_minor': '',
+                        'receiving_water': '',
+                        'total_penalties': '',
+                        'last_inspection': '',
+                        'is_power_plant': _is_power_sic(sic),
+                    })
+        else:
+            logger.warning(f"FRS Tier 2 failed: {frs_data.get('error', 'unknown')}")
 
-    if isinstance(facility_list, list):
-        for fac in facility_list:
-            fac_lat = _safe_float(fac.get('FacLat', fac.get('Latitude')))
-            fac_lng = _safe_float(fac.get('FacLong', fac.get('Longitude')))
-            dist = _haversine(lat, lng, fac_lat, fac_lng) if fac_lat and fac_lng else None
+    # ── Tier 3: Envirofacts data.epa.gov (completely separate server) ──
+    if not echo_ok:
+        state = _coords_to_state(lat, lng)
+        if state:
+            ef_data = _envirofacts_cwa(state, 500)
+            if isinstance(ef_data, list) and len(ef_data) > 0:
+                echo_ok = True
+                source_used = 'EPA Envirofacts ICIS-NPDES (data.epa.gov)'
+                logger.info(f"Envirofacts Tier 3 returned {len(ef_data)} permits for {state}")
+                for fac in ef_data:
+                    fac_lat = _safe_float(fac.get('FACILITY_LATITUDE', fac.get('FAC_LAT')))
+                    fac_lng = _safe_float(fac.get('FACILITY_LONGITUDE', fac.get('FAC_LONG')))
+                    dist = _haversine(lat, lng, fac_lat, fac_lng) if fac_lat and fac_lng else None
+                    if dist is not None and dist > radius:
+                        continue  # Envirofacts returns whole state, filter by radius
 
-            facilities.append({
-                'registry_id': fac.get('RegistryID', fac.get('FacFRSID', '')),
-                'npdes_id': fac.get('CWPSourceID', fac.get('SourceID', fac.get('CWPPermitNumber', ''))),
-                'facility_name': fac.get('FacName', fac.get('CWPName', '')),
-                'address': fac.get('FacStreet', ''),
-                'city': fac.get('FacCity', ''),
-                'state': fac.get('FacState', ''),
-                'zip': fac.get('FacZip', ''),
-                'latitude': fac_lat,
-                'longitude': fac_lng,
-                'distance_miles': round(dist, 1) if dist else None,
-                'permit_status': fac.get('CWPPermitStatusDesc', fac.get('PermitStatus', '')),
-                'permit_type': fac.get('CWPPermitTypeDesc', ''),
-                'facility_type': fac.get('CWPFacilityTypeIndicator', ''),
-                'sic_code': fac.get('CWPSICCodes', fac.get('SICCodes', '')),
-                'naics_code': fac.get('CWPNAICCodes', fac.get('NAICSCodes', '')),
-                'compliance_status': fac.get('CWPSNCStatus', fac.get('ComplianceStatus', '')),
-                'major_minor': fac.get('CWPMajorMinorStatusFlag', ''),
-                'receiving_water': fac.get('CWPReceivingWaters', ''),
-                'total_penalties': fac.get('CWPTotalPenalties', ''),
-                'last_inspection': fac.get('CWPLastInspDate', ''),
-                'is_power_plant': _is_power_sic(fac.get('CWPSICCodes', '')),
-            })
+                    sic = fac.get('SIC_CODE', fac.get('STANDARD_INDUSTRIAL_CLASSIFICATION', ''))
+                    facilities.append({
+                        'registry_id': fac.get('REGISTRY_ID', ''),
+                        'npdes_id': fac.get('EXTERNAL_PERMIT_NMBR', fac.get('NPDES_ID', '')),
+                        'facility_name': fac.get('FACILITY_NAME', ''),
+                        'address': fac.get('FACILITY_ADDRESS', fac.get('LOCATION_ADDRESS', '')),
+                        'city': fac.get('FACILITY_CITY', ''),
+                        'state': fac.get('FACILITY_STATE_CODE', state),
+                        'zip': fac.get('FACILITY_ZIP_CODE', ''),
+                        'latitude': fac_lat,
+                        'longitude': fac_lng,
+                        'distance_miles': round(dist, 1) if dist else None,
+                        'permit_status': fac.get('PERMIT_STATUS_CODE', ''),
+                        'permit_type': fac.get('PERMIT_TYPE_CODE', ''),
+                        'facility_type': fac.get('FACILITY_TYPE_CODE', ''),
+                        'sic_code': sic,
+                        'naics_code': fac.get('NAICS_CODE', ''),
+                        'compliance_status': '',
+                        'major_minor': fac.get('MAJOR_MINOR_FLAG', ''),
+                        'receiving_water': '',
+                        'total_penalties': '',
+                        'last_inspection': '',
+                        'is_power_plant': _is_power_sic(sic),
+                    })
+        else:
+            logger.warning(f"Envirofacts Tier 3 skipped — could not map coords to state")
+
+    if not echo_ok:
+        return jsonify({
+            'success': False,
+            'error': 'All EPA data sources unavailable (ECHO, FRS, Envirofacts)',
+            'note': 'EPA APIs may be experiencing outages. Try again later.',
+        }), 502
 
     facilities.sort(key=lambda x: x.get('distance_miles') or 9999)
+    facilities = facilities[:limit]
 
     result = {
         'success': True,
-        'source': 'EPA ECHO (NPDES Discharge Permits)',
+        'source': source_used,
         'query': {'lat': lat, 'lng': lng, 'radius_miles': radius},
         'total_facilities': len(facilities),
         'power_plants': sum(1 for f in facilities if f.get('is_power_plant')),
@@ -567,7 +708,7 @@ def water_risk_assessment():
                         'distance_miles': round(dist, 1),
                     })
 
-    # Get NPDES permits nearby
+    # Get NPDES permits nearby — 3-tier fallback
     permits_data = []
     echo_params = {
         'output': 'JSON',
@@ -576,23 +717,72 @@ def water_risk_assessment():
         'p_radius': str(radius),
         'responseset': '50',
     }
+
+    permits_ok = False
+
+    # Tier 1: ECHO
     echo_data = _echo_request('cwa_rest_services.get_facility_info', echo_params)
-    results = echo_data.get('Results', echo_data.get('results', echo_data))
-    fac_list = results.get('Facilities', results.get('FacilityInfo', []))
-    if not isinstance(fac_list, list):
-        fac_list = []
-    for fac in fac_list:
-        fac_lat = _safe_float(fac.get('FacLat'))
-        fac_lng = _safe_float(fac.get('FacLong'))
-        permits_data.append({
-            'npdes_id': fac.get('CWPSourceID', ''),
-            'name': fac.get('FacName', ''),
-            'receiving_water': fac.get('CWPReceivingWaters', ''),
-            'permit_status': fac.get('CWPPermitStatusDesc', ''),
-            'compliance': fac.get('CWPSNCStatus', ''),
-            'is_power_plant': _is_power_sic(fac.get('CWPSICCodes', '')),
-            'distance_miles': round(_haversine(lat, lng, fac_lat, fac_lng), 1) if fac_lat and fac_lng else None,
-        })
+    if 'error' not in echo_data:
+        results = echo_data.get('Results', echo_data.get('results', echo_data))
+        fac_list = results.get('Facilities', results.get('FacilityInfo', []))
+        if isinstance(fac_list, list) and len(fac_list) > 0:
+            permits_ok = True
+            for fac in fac_list:
+                fac_lat = _safe_float(fac.get('FacLat'))
+                fac_lng = _safe_float(fac.get('FacLong'))
+                permits_data.append({
+                    'npdes_id': fac.get('CWPSourceID', ''),
+                    'name': fac.get('FacName', ''),
+                    'receiving_water': fac.get('CWPReceivingWaters', ''),
+                    'permit_status': fac.get('CWPPermitStatusDesc', ''),
+                    'compliance': fac.get('CWPSNCStatus', ''),
+                    'is_power_plant': _is_power_sic(fac.get('CWPSICCodes', '')),
+                    'distance_miles': round(_haversine(lat, lng, fac_lat, fac_lng), 1) if fac_lat and fac_lng else None,
+                })
+
+    # Tier 2: FRS
+    if not permits_ok:
+        frs_data = _frs_request(lat, lng, radius)
+        if 'error' not in frs_data:
+            frs_results = frs_data.get('Results', frs_data)
+            frs_list = frs_results.get('FRSFacility', [])
+            if isinstance(frs_list, list) and len(frs_list) > 0:
+                permits_ok = True
+                for fac in frs_list[:50]:
+                    fac_lat = _safe_float(fac.get('Latitude83', fac.get('LATITUDE83')))
+                    fac_lng = _safe_float(fac.get('Longitude83', fac.get('LONGITUDE83')))
+                    sic = fac.get('SicCodes', fac.get('SIC_CODES', ''))
+                    permits_data.append({
+                        'npdes_id': '',
+                        'name': fac.get('PrimaryName', fac.get('PRIMARY_NAME', '')),
+                        'receiving_water': '',
+                        'permit_status': '',
+                        'compliance': '',
+                        'is_power_plant': _is_power_sic(sic),
+                        'distance_miles': round(_haversine(lat, lng, fac_lat, fac_lng), 1) if fac_lat and fac_lng else None,
+                    })
+
+    # Tier 3: Envirofacts
+    if not permits_ok and state:
+        ef_data = _envirofacts_cwa(state, 500)
+        if isinstance(ef_data, list) and len(ef_data) > 0:
+            permits_ok = True
+            for fac in ef_data:
+                fac_lat = _safe_float(fac.get('FACILITY_LATITUDE', fac.get('FAC_LAT')))
+                fac_lng = _safe_float(fac.get('FACILITY_LONGITUDE', fac.get('FAC_LONG')))
+                dist = _haversine(lat, lng, fac_lat, fac_lng) if fac_lat and fac_lng else None
+                if dist is not None and dist > radius:
+                    continue
+                sic = fac.get('SIC_CODE', '')
+                permits_data.append({
+                    'npdes_id': fac.get('EXTERNAL_PERMIT_NMBR', ''),
+                    'name': fac.get('FACILITY_NAME', ''),
+                    'receiving_water': '',
+                    'permit_status': fac.get('PERMIT_STATUS_CODE', ''),
+                    'compliance': '',
+                    'is_power_plant': _is_power_sic(sic),
+                    'distance_miles': round(dist, 1) if dist else None,
+                })
 
     # Calculate risk score
     water_using_plants = [p for p in plants_data if p.get('fuel') in ('NUC', 'COL', 'NG', 'BIT', 'SUB', 'LIG', 'PC')]
@@ -663,10 +853,13 @@ def power_plant_summary():
             },
             'epa_echo': {
                 'name': 'EPA ECHO — Enforcement & Compliance History Online',
-                'description': 'NPDES discharge permits, compliance status, inspection history, receiving waters',
+                'description': 'NPDES discharge permits, compliance status, inspection history. 3-tier fallback: ECHO → FRS → Envirofacts',
                 'api': 'https://echo.epa.gov/tools/web-services',
-                'update_frequency': 'Weekly',
+                'fallback_1': 'https://ofmpub.epa.gov/enviro/frs_rest_services.get_facilities (FRS)',
+                'fallback_2': 'https://data.epa.gov/efservice/ICIS_PERMITS (Envirofacts)',
+                'update_frequency': 'Weekly (when available)',
                 'requires_key': False,
+                'note': 'Primary ECHO API may be intermittently unavailable due to EPA infrastructure changes',
             },
         },
         'endpoints': {
