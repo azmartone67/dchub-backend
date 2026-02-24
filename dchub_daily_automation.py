@@ -46,6 +46,19 @@ log = logging.getLogger('dchub-daily')
 
 daily_bp = Blueprint('daily_automation', __name__)
 
+_tables_initialized = False
+
+def _ensure_tables():
+    """Lazy init — create tables on first use, not at startup."""
+    global _tables_initialized
+    if _tables_initialized:
+        return
+    try:
+        init_daily_tables()
+        _tables_initialized = True
+    except Exception as e:
+        log.warning(f"Lazy table init failed (non-fatal): {e}")
+
 
 # ===========================================================================
 # UTILITY: SendGrid Email Sender
@@ -947,6 +960,7 @@ def run_daily_jobs():
     if not _check_admin_auth():
         return jsonify({'error': 'Unauthorized'}), 401
 
+    _ensure_tables()
     job = request.args.get('job', 'all')
     results = {'timestamp': datetime.now(timezone.utc).isoformat(), 'jobs': {}}
 
