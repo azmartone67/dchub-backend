@@ -159,13 +159,15 @@ def post_to_linkedin(text, article_url=None):
 # ===========================================================================
 
 def get_db_connection():
-    """Get database connection - tries Neon PostgreSQL first, then SQLite."""
+    """Get database connection - tries Neon PostgreSQL first, then SQLite.
+    Uses a short-lived connection with statement timeout to prevent hangs."""
     neon_url = os.environ.get('DATABASE_URL') or os.environ.get('NEON_DATABASE_URL')
     if neon_url:
         try:
             import psycopg2
             import psycopg2.extras
-            conn = psycopg2.connect(neon_url, connect_timeout=10)
+            conn = psycopg2.connect(neon_url, connect_timeout=5,
+                                     options='-c statement_timeout=10000')  # 10s statement timeout
             conn.autocommit = True
             return conn, 'postgres'
         except Exception as e:
@@ -173,7 +175,7 @@ def get_db_connection():
 
     try:
         import sqlite3
-        conn = sqlite3.connect('dchub.db')
+        conn = sqlite3.connect('dchub.db', timeout=5)
         conn.row_factory = sqlite3.Row
         return conn, 'sqlite'
     except Exception as e:
@@ -305,12 +307,17 @@ def fetch_platform_stats():
         # Total deal value
         try:
             if db_type == 'postgres':
-                cur.execute("SELECT COALESCE(SUM(value_usd::numeric), 0) FROM transactions WHERE value_usd IS NOT NULL AND value_usd != ''")
+                cur.execute("""
+                    SELECT COALESCE(SUM(CAST(value_usd AS DOUBLE PRECISION)), 0) 
+                    FROM transactions 
+                    WHERE value_usd IS NOT NULL AND value_usd != '' AND value_usd ~ '^[0-9eE.+\-]+$'
+                """)
             else:
                 cur.execute("SELECT COALESCE(SUM(CAST(value_usd AS REAL)), 0) FROM transactions WHERE value_usd IS NOT NULL AND value_usd != ''")
             row = cur.fetchone()
             stats['total_value'] = float(row[0]) if row else 0
-        except:
+        except Exception as e:
+            log.warning(f"Total value query failed: {e}")
             stats['total_value'] = 0
 
         stats['markets'] = '140+'
@@ -1094,11 +1101,13 @@ def preview_content(post_type):
 # ===========================================================================
 
 def init_daily_tables():
-    """Create tables needed for daily automation."""
-    conn, db_type = get_db_connection()
-    if not conn:
-        return
+    """Create tables needed for daily automation. Non-blocking with short timeout."""
+    conn = None
     try:
+        conn, db_type = get_db_connection()
+        if not conn:
+            log.warning("Daily Automation: No DB connection for table init — will retry on first use")
+            return
         cur = conn.cursor()
         if db_type == 'postgres':
             cur.execute("""
@@ -1161,9 +1170,13 @@ def init_daily_tables():
             conn.commit()
         log.info("Daily automation tables initialized")
     except Exception as e:
-        log.warning(f"Table init warning: {e}")
+        log.warning(f"Daily table init (non-fatal): {e}")
     finally:
-        conn.close()
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
 
 
 # ===========================================================================
