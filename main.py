@@ -1,5 +1,4 @@
 """
-# v74.1 — Power Plant Intelligence module added
 DC HUB NEXUS - ENHANCED API SERVER v90
 # LinkedIn Auto-Posting
 from linkedin_autopost import linkedin_auto_bp, init_linkedin_tables, start_linkedin_scheduler, on_new_deal, on_weekly_digest
@@ -1126,6 +1125,13 @@ try:
 except ImportError as e:
     register_power_plant_intel = None
     logger.warning(f"  ⚠️ power_plant_intel: {e}")
+
+try:
+    from infrastructure_gaps import register_infrastructure_gaps
+    logger.info("  ✅ infrastructure_gaps")
+except ImportError as e:
+    register_infrastructure_gaps = None
+    logger.warning(f"  ⚠️ infrastructure_gaps: {e}")
 
 try:
     from sec_edgar_tracker import register_sec_tracker
@@ -5629,7 +5635,7 @@ def subscribe_lead():
     email = data['email'].lower().strip()
     
     # Basic email validation
-    if not re.match(r'^[\w.+\-]+@[\w.\-]+\.\w+$', email):
+    if not re.match(r'^[\w\.-]+@[\w\.-]+\.\w+$', email):
         return jsonify({'error': 'Invalid email format', 'code': 'VALIDATION_ERROR'}), 400
     
     conn = get_db()
@@ -5826,7 +5832,7 @@ def register_user():
     if len(password) < 8:
         return jsonify({'error': 'Password must be at least 8 characters', 'code': 'VALIDATION_ERROR'}), 400
     
-    if not re.match(r'^[\w.+\-]+@[\w.\-]+\.\w+$', email):
+    if not re.match(r'^[\w\.-]+@[\w\.-]+\.\w+$', email):
         return jsonify({'error': 'Invalid email format', 'code': 'VALIDATION_ERROR'}), 400
     
     user_id = secrets.token_hex(12)
@@ -6372,7 +6378,7 @@ def submit_partner_inquiry():
     message = data.get('message', '').strip()
     
     # Basic email validation
-    if not re.match(r'^[\w.+\-]+@[\w.\-]+\.\w+$', email):
+    if not re.match(r'^[\w\.-]+@[\w\.-]+\.\w+$', email):
         return jsonify({'error': 'Invalid email format', 'code': 'VALIDATION_ERROR'}), 400
     
     inquiry_id = secrets.token_hex(8)
@@ -8941,205 +8947,6 @@ def get_stats():
                 conn.close()
             except:
                 pass
-
-# =============================================================================
-# USER-SPECIFIC DASHBOARD ENDPOINTS
-# Added: Feb 23, 2026 — Supports dynamic dashboard stats & watched markets
-# =============================================================================
-
-@app.route('/api/v1/user/stats', methods=['GET'])
-@require_auth
-def user_dashboard_stats():
-    """Get user-specific dashboard stats (watched markets, alerts, API calls)"""
-    conn = None
-    try:
-        user_id = request.user.get('user_id') or request.user.get('sub') or request.user.get('id')
-        email = request.user.get('email', '')
-        
-        if not user_id and not email:
-            return jsonify({'error': 'User not identified'}), 401
-        
-        conn = get_read_db()
-        c = conn.cursor()
-        
-        # Get user record
-        user_row = None
-        if email:
-            c.execute("SELECT id, saved_markets, api_calls_today, api_calls_total, plan FROM users WHERE email = %s", (email,))
-            user_row = c.fetchone()
-        if not user_row and user_id:
-            c.execute("SELECT id, saved_markets, api_calls_today, api_calls_total, plan FROM users WHERE id = %s", (user_id,))
-            user_row = c.fetchone()
-        
-        if not user_row:
-            return jsonify({
-                'watched_markets': 0,
-                'active_alerts': 0,
-                'triggered_today': 0,
-                'api_calls_30d': 0
-            })
-        
-        db_user_id = user_row[0]
-        saved_markets_raw = user_row[1]
-        api_calls_today = user_row[2] or 0
-        api_calls_total = user_row[3] or 0
-        
-        # Count watched markets from saved_markets JSON field
-        watched_count = 0
-        if saved_markets_raw:
-            try:
-                markets = json.loads(saved_markets_raw)
-                if isinstance(markets, list):
-                    watched_count = len(markets)
-                elif isinstance(markets, dict):
-                    watched_count = len(markets.keys())
-            except:
-                pass
-        
-        # Count active alerts
-        active_alerts = 0
-        triggered_today = 0
-        try:
-            c.execute("SELECT COUNT(*) FROM user_alerts WHERE user_id = %s AND enabled = 1", (db_user_id,))
-            active_alerts = c.fetchone()[0] or 0
-            
-            c.execute("""
-                SELECT COUNT(*) FROM user_alerts 
-                WHERE user_id = %s AND last_triggered IS NOT NULL 
-                AND last_triggered::timestamp > NOW() - INTERVAL '1 day'
-            """, (db_user_id,))
-            triggered_today = c.fetchone()[0] or 0
-        except Exception as e:
-            logger.debug("Alert count error (table may not exist): %s", e)
-        
-        return jsonify({
-            'watched_markets': watched_count,
-            'active_alerts': active_alerts,
-            'triggered_today': triggered_today,
-            'api_calls_30d': api_calls_total,
-            'api_calls_today': api_calls_today
-        })
-    
-    except Exception as e:
-        logger.error("User stats error: %s", e)
-        return jsonify({
-            'watched_markets': 0,
-            'active_alerts': 0,
-            'triggered_today': 0,
-            'api_calls_30d': 0
-        })
-    finally:
-        if conn:
-            try: conn.close()
-            except: pass
-
-
-@app.route('/api/v1/user/watched-markets', methods=['GET'])
-@require_auth
-def get_user_watched_markets():
-    """Get user's watched markets list"""
-    conn = None
-    try:
-        user_id = request.user.get('user_id') or request.user.get('sub') or request.user.get('id')
-        email = request.user.get('email', '')
-        
-        conn = get_read_db()
-        c = conn.cursor()
-        
-        # Get saved_markets from user record
-        user_row = None
-        if email:
-            c.execute("SELECT saved_markets FROM users WHERE email = %s", (email,))
-            user_row = c.fetchone()
-        if not user_row and user_id:
-            c.execute("SELECT saved_markets FROM users WHERE id = %s", (user_id,))
-            user_row = c.fetchone()
-        
-        if not user_row or not user_row[0]:
-            return jsonify({'markets': []})
-        
-        try:
-            markets = json.loads(user_row[0])
-            if isinstance(markets, list):
-                return jsonify({'markets': markets})
-            elif isinstance(markets, dict):
-                market_list = []
-                for key, val in markets.items():
-                    if isinstance(val, dict):
-                        val['name'] = val.get('name', key)
-                        market_list.append(val)
-                    else:
-                        market_list.append({'name': key})
-                return jsonify({'markets': market_list})
-            return jsonify({'markets': []})
-        except:
-            return jsonify({'markets': []})
-    
-    except Exception as e:
-        logger.error("Watched markets error: %s", e)
-        return jsonify({'markets': []})
-    finally:
-        if conn:
-            try: conn.close()
-            except: pass
-
-
-@app.route('/api/v1/user/watched-markets', methods=['POST'])
-@require_auth
-def add_user_watched_market():
-    """Add a market to user's watchlist"""
-    conn = None
-    try:
-        user_id = request.user.get('user_id') or request.user.get('sub') or request.user.get('id')
-        email = request.user.get('email', '')
-        data = request.get_json() or {}
-        market = data.get('market', {})
-        
-        if not market:
-            return jsonify({'error': 'market object required'}), 400
-        
-        conn = get_db()
-        c = conn.cursor()
-        
-        # Get current saved_markets
-        if email:
-            c.execute("SELECT id, saved_markets FROM users WHERE email = %s", (email,))
-        else:
-            c.execute("SELECT id, saved_markets FROM users WHERE id = %s", (user_id,))
-        user_row = c.fetchone()
-        
-        if not user_row:
-            return jsonify({'error': 'User not found'}), 404
-        
-        db_user_id = user_row[0]
-        existing = []
-        if user_row[1]:
-            try:
-                existing = json.loads(user_row[1])
-                if not isinstance(existing, list):
-                    existing = []
-            except:
-                existing = []
-        
-        # Add market if not already in list
-        market_name = market.get('name', market.get('market', ''))
-        if not any(m.get('name', m.get('market', '')) == market_name for m in existing):
-            existing.append(market)
-        
-        c.execute("UPDATE users SET saved_markets = %s WHERE id = %s", 
-                   (json.dumps(existing), db_user_id))
-        conn.commit()
-        
-        return jsonify({'success': True, 'markets': existing})
-    
-    except Exception as e:
-        logger.error("Add watched market error: %s", e)
-        return jsonify({'error': str(e)}), 500
-    finally:
-        if conn:
-            try: conn.close()
-            except: pass
-
 
 @app.route('/api/v1/facilities', methods=['GET'])
 def list_facilities():
@@ -14761,6 +14568,9 @@ try:
     
     if register_power_plant_intel:
         register_power_plant_intel(app)
+    
+    if register_infrastructure_gaps:
+        register_infrastructure_gaps(app)
     
     if register_sec_tracker:
         register_sec_tracker(app)
