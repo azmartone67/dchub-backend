@@ -190,16 +190,16 @@ def fetch_latest_news(limit=10):
         cur = conn.cursor()
         if db_type == 'postgres':
             cur.execute("""
-                SELECT title, url, source, published_date, summary
+                SELECT title, url, source, published_at, summary, category
                 FROM news_articles
-                ORDER BY published_date DESC
+                ORDER BY published_at DESC
                 LIMIT %s
             """, (limit,))
         else:
             cur.execute("""
-                SELECT title, url, source, published_date, summary
+                SELECT title, url, source, published_at, summary, category
                 FROM news_articles
-                ORDER BY published_date DESC
+                ORDER BY published_at DESC
                 LIMIT ?
             """, (limit,))
         rows = cur.fetchall()
@@ -224,24 +224,52 @@ def fetch_recent_deals(limit=5):
         if db_type == 'postgres':
             cur.execute("""
                 SELECT buyer, seller, deal_type, value_usd, market, 
-                       capacity_mw, announcement_date
+                       mw as capacity_mw, date as announcement_date, notes
                 FROM transactions
-                ORDER BY announcement_date DESC
+                ORDER BY date DESC NULLS LAST
                 LIMIT %s
             """, (limit,))
         else:
             cur.execute("""
                 SELECT buyer, seller, deal_type, value_usd, market, 
-                       capacity_mw, announcement_date
+                       mw as capacity_mw, date as announcement_date, notes
                 FROM transactions
-                ORDER BY announcement_date DESC
+                ORDER BY date DESC
                 LIMIT ?
             """, (limit,))
         rows = cur.fetchall()
         if db_type == 'postgres':
             cols = [desc[0] for desc in cur.description]
-            return [dict(zip(cols, row)) for row in rows]
-        return [dict(row) for row in rows]
+            results = [dict(zip(cols, row)) for row in rows]
+        else:
+            results = [dict(row) for row in rows]
+        
+        # Normalize value_usd from scientific notation strings to float
+        for deal in results:
+            try:
+                val = deal.get('value_usd')
+                if val and isinstance(val, str):
+                    deal['value_usd'] = float(val)
+                elif val:
+                    deal['value_usd'] = float(val)
+                else:
+                    deal['value_usd'] = 0
+            except (ValueError, TypeError):
+                deal['value_usd'] = 0
+            
+            # Normalize capacity_mw
+            try:
+                mw = deal.get('capacity_mw')
+                if mw and isinstance(mw, str):
+                    deal['capacity_mw'] = float(mw)
+                elif mw:
+                    deal['capacity_mw'] = float(mw)
+                else:
+                    deal['capacity_mw'] = 0
+            except (ValueError, TypeError):
+                deal['capacity_mw'] = 0
+        
+        return results
     except Exception as e:
         log.error(f"Error fetching deals: {e}")
         return []
@@ -277,11 +305,11 @@ def fetch_platform_stats():
         # Total deal value
         try:
             if db_type == 'postgres':
-                cur.execute("SELECT COALESCE(SUM(value_usd), 0) FROM transactions WHERE value_usd > 0")
+                cur.execute("SELECT COALESCE(SUM(value_usd::numeric), 0) FROM transactions WHERE value_usd IS NOT NULL AND value_usd != ''")
             else:
-                cur.execute("SELECT COALESCE(SUM(value_usd), 0) FROM transactions WHERE value_usd > 0")
+                cur.execute("SELECT COALESCE(SUM(CAST(value_usd AS REAL)), 0) FROM transactions WHERE value_usd IS NOT NULL AND value_usd != ''")
             row = cur.fetchone()
-            stats['total_value'] = row[0] if row else 0
+            stats['total_value'] = float(row[0]) if row else 0
         except:
             stats['total_value'] = 0
 
@@ -418,12 +446,13 @@ def generate_alert_digest_html(news, deals, stats):
         dtype = deal.get('deal_type', 'Transaction')
         value = deal.get('value_usd', 0)
         market = deal.get('market', '')
+        notes = deal.get('notes', '')
         value_str = f"${value/1e9:.1f}B" if value >= 1e9 else f"${value/1e6:.0f}M" if value >= 1e6 else "Undisclosed"
+        headline = notes if (notes and len(notes) > 20) else f"{buyer} → {seller}"
         deal_items += f"""
         <tr>
           <td style="padding: 10px 0; border-bottom: 1px solid #334155;">
-            <span style="color: #f1f5f9; font-weight: 600;">{buyer}</span>
-            <span style="color: #94a3b8;"> → {seller}</span>
+            <span style="color: #f1f5f9; font-weight: 600; font-size: 13px;">{headline}</span>
             <br><span style="color: #10b981; font-size: 12px;">{dtype} • {value_str} {f'• {market}' if market else ''}</span>
           </td>
         </tr>"""
@@ -543,20 +572,28 @@ def generate_daily_linkedin_post():
         value = deal.get('value_usd', 0)
         market = deal.get('market', '')
         capacity = deal.get('capacity_mw', 0)
+        notes = deal.get('notes', '')
 
         value_str = f"${value/1e9:.1f}B" if value >= 1e9 else f"${value/1e6:.0f}M" if value >= 1e6 else ""
-        capacity_str = f"⚡ {capacity} MW" if capacity else ""
+        capacity_str = f"⚡ {capacity:.0f} MW" if capacity else ""
+
+        # Use notes as headline if available (often cleaner than parsed buyer/seller)
+        if notes and len(notes) > 20:
+            headline = notes
+        else:
+            headline = f"{dtype.title()}: {buyer} → {seller} {f'for {value_str}' if value_str else ''}"
 
         post = f"""🏢 Data Center Deal Alert
 
-{dtype.title()}: {buyer} → {seller} {f'for {value_str}' if value_str else ''}
+{headline}
+{f'💰 {value_str}' if value_str else ''}
 {'📍 ' + market if market else ''}
 {capacity_str}
 
-DC Hub is tracking {facility_count}+ facilities across 140+ countries with real-time M&A intelligence.
+DC Hub tracks {facility_count}+ facilities across 140+ countries with real-time M&A intelligence.
 
 📊 Full M&A tracker: dchub.cloud/transactions
-🤖 Try our AI: dchub.cloud
+🔍 Explore: dchub.cloud
 
 #DataCenter #Infrastructure #DigitalInfrastructure #RealEstate #CloudComputing"""
 
@@ -746,15 +783,17 @@ def generate_market_brief_html():
         value = deal.get('value_usd', 0)
         market = deal.get('market', '')
         capacity = deal.get('capacity_mw', 0)
+        notes = deal.get('notes', '')
         value_str = f"${value/1e9:.1f}B" if value >= 1e9 else f"${value/1e6:.0f}M" if value >= 1e6 else "Undisclosed"
+        headline = notes if (notes and len(notes) > 20) else f"{buyer} → {seller}"
 
         deals_html += f"""
         <div style="padding: 10px 0; border-bottom: 1px solid #334155;">
-          <div style="color: #f1f5f9; font-size: 14px; font-weight: 600;">{buyer} → {seller}</div>
+          <div style="color: #f1f5f9; font-size: 14px; font-weight: 600;">{headline}</div>
           <div style="color: #10b981; font-size: 12px; margin-top: 2px;">
             {dtype.title()} • {value_str}
             {f'• {market}' if market else ''}
-            {f'• {capacity} MW' if capacity else ''}
+            {f'• {capacity:.0f} MW' if capacity else ''}
           </div>
         </div>"""
 
