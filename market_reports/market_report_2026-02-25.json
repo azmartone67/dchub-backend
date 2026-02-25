@@ -1,6 +1,6 @@
 {
   "report_date": "2026-02-25",
-  "generated_at": "2026-02-25T15:56:09.031114",
+  "generated_at": "2026-02-25T16:04:07.231742",
   "summary": {
     "total_facilities": 11433,
     "total_providers": 3958,
@@ -89,8 +89,28 @@
   ],
   "recent_news": [
     {
+      "title": "Indian construction conglomerate Larsen and Toubro signs MoU for 250MW data center",
+      "source": "Data Center Dynamics",
+      "date": "2026-02-25T16:00:03"
+    },
+    {
+      "title": "US tech giant Anthropic blasts China\u2019s top AI labs for stealing its model",
+      "source": "Capacity Media",
+      "date": "2026-02-25T15:57:39"
+    },
+    {
       "title": "3 AI data centers planned for Louisiana. What is impact on small towns?",
       "source": "dailyworld.com",
+      "date": "2026-02-25T15:49:00"
+    },
+    {
+      "title": "3 AI data centers planned for Louisiana. What is impact on small towns?",
+      "source": "Houma Today",
+      "date": "2026-02-25T15:49:00"
+    },
+    {
+      "title": "3 AI data centers planned for Louisiana. What is impact on small towns?",
+      "source": "Daily Comet",
       "date": "2026-02-25T15:49:00"
     },
     {
@@ -117,26 +137,6 @@
       "title": "Data Center Networking Market worth $139.08 billion by 2031 | MarketsandMarkets\u2122",
       "source": "PR Newswire",
       "date": "2026-02-25T15:15:00"
-    },
-    {
-      "title": "Nvidia Stock Edges Higher Ahead of Earnings. Data Center Revenue Is Key.",
-      "source": "Barron's",
-      "date": "2026-02-25T15:12:00"
-    },
-    {
-      "title": "Nvidia Stock Edges Higher Ahead of Earnings. Data Center Revenue Is Key.",
-      "source": "Barron's",
-      "date": "2026-02-25T15:12:00"
-    },
-    {
-      "title": "Nvidia Stock Edges Higher Ahead of Earnings. Data Center Revenue Is Key.",
-      "source": "Barron's",
-      "date": "2026-02-25T15:12:00"
-    },
-    {
-      "title": "Nvidia Stock Edges Higher Ahead of Earnings. Data Center Revenue Is Key.",
-      "source": "Barron's",
-      "date": "2026-02-25T15:12:00"
     }
   ],
   "data_sources": [
