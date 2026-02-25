@@ -1,6 +1,6 @@
 {
   "report_date": "2026-02-25",
-  "generated_at": "2026-02-25T10:01:16.273396",
+  "generated_at": "2026-02-25T14:42:06.180299",
   "summary": {
     "total_facilities": 11433,
     "total_providers": 3958,
@@ -89,54 +89,54 @@
   ],
   "recent_news": [
     {
-      "title": "US solar assets lose average $5,070 per MW from power losses",
-      "source": "PV Magazine",
-      "date": "2026-02-25T09:42:20"
+      "title": "Alcoa looks to sell 10 aluminum smelting plants to data center developers",
+      "source": "Data Center Dynamics",
+      "date": "2026-02-25T14:35:36"
     },
     {
-      "title": "\u2018Coming at us way too fast\u2019: Montgomery Co. council hears from the public on data center construction",
-      "source": "WTOP",
-      "date": "2026-02-25T09:41:51"
+      "title": "The Market Awaits Nvidia, But This Data Center Builder Already Soars On Earnings",
+      "source": "Yahoo Finance",
+      "date": "2026-02-25T14:07:07"
     },
     {
-      "title": "AMD, Meta sign 6-gigawatt, multi-year AI infrastructure deal with Meta",
-      "source": "Capacity Media",
-      "date": "2026-02-25T09:40:37"
+      "title": "The Market Awaits Nvidia But This Data Center Builder Is Already Soaring On Earnings",
+      "source": "Investor's Business Daily",
+      "date": "2026-02-25T14:07:00"
     },
     {
-      "title": "Google promises its upcoming Texas data center won't use any water for cooling",
-      "source": "New Atlas",
-      "date": "2026-02-25T09:35:16"
+      "title": "US Roundup: FlexGen updates EMS, LandGate\u2019s BESS site selection tool, ON.Energy-Shoals target data centres, Sunrun\u2019s season of VPP dispatching",
+      "source": "Energy Storage News",
+      "date": "2026-02-25T14:02:10"
     },
     {
-      "title": "Europe AI Data Center Market Size, Share & Growth, 2034",
-      "source": "Market Data Forecast",
-      "date": "2026-02-25T09:26:45"
+      "title": "Data centres are \u2018convenient scapegoats\u2019 for grid failures, says energy consultant",
+      "source": "Energy Storage News",
+      "date": "2026-02-25T13:57:57"
     },
     {
-      "title": "In perfect harmony: How Emerald AI is turning data centers into flexible grid assets",
-      "source": "BeBeez International",
-      "date": "2026-02-25T08:09:47"
-    },
-    {
-      "title": "Aew Capital Management L P Cuts Position in Equinix, Inc. $EQIX",
-      "source": "MarketBeat",
-      "date": "2026-02-25T08:08:08"
-    },
-    {
-      "title": "Google to deploy world\u2019s largest iron-air battery for US data center",
-      "source": "PV Magazine",
-      "date": "2026-02-25T07:45:44"
-    },
-    {
-      "title": "Italy\u2019s new energy provisions could boost gas use, undermine renewables and storage competitiveness",
-      "source": "PV Magazine",
-      "date": "2026-02-25T07:39:12"
+      "title": "Ex-L3Harris exec jailed 7 years for selling exploits to Russia",
+      "source": "The Register DC",
+      "date": "2026-02-25T13:44:56"
     },
     {
       "title": "Nvidia Earnings Are Almost Here. Data Center Revenue Is Key.",
       "source": "Barron's",
-      "date": "2026-02-25T07:09:00"
+      "date": "2026-02-25T13:44:00"
+    },
+    {
+      "title": "Nvidia Earnings Are Almost Here. Data Center Revenue Is Key.",
+      "source": "Barron's",
+      "date": "2026-02-25T13:44:00"
+    },
+    {
+      "title": "Nvidia Earnings Are Almost Here. Data Center Revenue Is Key.",
+      "source": "Barron's",
+      "date": "2026-02-25T13:44:00"
+    },
+    {
+      "title": "Nvidia Earnings Are Almost Here. Data Center Revenue Is Key.",
+      "source": "Barron's",
+      "date": "2026-02-25T13:44:00"
     }
   ],
   "data_sources": [
