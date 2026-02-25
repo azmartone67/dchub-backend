@@ -1,4 +1,4 @@
-# DC Hub Nexus - Dependencies  v3.0
+# DC Hub Nexus - Dependencies  v3.01
 
 # Core HTTP
 requests>=2.28.0
