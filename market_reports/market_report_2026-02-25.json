@@ -1,6 +1,6 @@
 {
   "report_date": "2026-02-25",
-  "generated_at": "2026-02-25T08:48:01.155373",
+  "generated_at": "2026-02-25T10:01:16.273396",
   "summary": {
     "total_facilities": 11433,
     "total_providers": 3958,
@@ -89,6 +89,31 @@
   ],
   "recent_news": [
     {
+      "title": "US solar assets lose average $5,070 per MW from power losses",
+      "source": "PV Magazine",
+      "date": "2026-02-25T09:42:20"
+    },
+    {
+      "title": "\u2018Coming at us way too fast\u2019: Montgomery Co. council hears from the public on data center construction",
+      "source": "WTOP",
+      "date": "2026-02-25T09:41:51"
+    },
+    {
+      "title": "AMD, Meta sign 6-gigawatt, multi-year AI infrastructure deal with Meta",
+      "source": "Capacity Media",
+      "date": "2026-02-25T09:40:37"
+    },
+    {
+      "title": "Google promises its upcoming Texas data center won't use any water for cooling",
+      "source": "New Atlas",
+      "date": "2026-02-25T09:35:16"
+    },
+    {
+      "title": "Europe AI Data Center Market Size, Share & Growth, 2034",
+      "source": "Market Data Forecast",
+      "date": "2026-02-25T09:26:45"
+    },
+    {
       "title": "In perfect harmony: How Emerald AI is turning data centers into flexible grid assets",
       "source": "BeBeez International",
       "date": "2026-02-25T08:09:47"
@@ -111,32 +136,7 @@
     {
       "title": "Nvidia Earnings Are Almost Here. Data Center Revenue Is Key.",
       "source": "Barron's",
-      "date": "2026-02-25T07:08:00"
-    },
-    {
-      "title": "Nvidia Earnings Are Almost Here. Data Center Revenue Is Key.",
-      "source": "Barron's",
-      "date": "2026-02-25T07:08:00"
-    },
-    {
-      "title": "Nvidia Earnings Are Almost Here. Data Center Revenue Is Key.",
-      "source": "Barron's",
-      "date": "2026-02-25T07:08:00"
-    },
-    {
-      "title": "Nvidia Earnings Are Almost Here. Data Center Revenue Is Key.",
-      "source": "Barron's",
-      "date": "2026-02-25T07:08:00"
-    },
-    {
-      "title": "Nvidia Earnings Are Almost Here. Data Center Revenue Is Key.",
-      "source": "Barron's",
-      "date": "2026-02-25T07:08:00"
-    },
-    {
-      "title": "Digital Realty Expands Innovation Labs into Singapore and Japan",
-      "source": "Asia Business Outlook",
-      "date": "2026-02-25T05:12:00"
+      "date": "2026-02-25T07:09:00"
     }
   ],
   "data_sources": [
