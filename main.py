@@ -16205,6 +16205,7 @@ if __name__ == '__main__':
         print("📱 LinkedIn Poster: ❌ Not installed")
     except Exception as e:
         print(f"📱 LinkedIn Poster: ⚠️ Error: {e}")
+    print("🔍 DEBUG: About to register Energy Auto-Discovery...")
 
     # Try to register Energy Auto-Discovery (syncs power, gas, capacity every 10 min)
     try:
