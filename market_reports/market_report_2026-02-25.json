@@ -1,6 +1,6 @@
 {
   "report_date": "2026-02-25",
-  "generated_at": "2026-02-25T14:59:25.675958",
+  "generated_at": "2026-02-25T15:56:09.031114",
   "summary": {
     "total_facilities": 11433,
     "total_providers": 3958,
@@ -89,54 +89,54 @@
   ],
   "recent_news": [
     {
-      "title": "Alcoa looks to sell 10 aluminum smelting plants to data center developers",
+      "title": "3 AI data centers planned for Louisiana. What is impact on small towns?",
+      "source": "dailyworld.com",
+      "date": "2026-02-25T15:49:00"
+    },
+    {
+      "title": "Infrastructure problems and low occupancy hamper growth of Africa's data center industry - report",
       "source": "Data Center Dynamics",
-      "date": "2026-02-25T14:35:36"
+      "date": "2026-02-25T15:47:29"
     },
     {
-      "title": "The Market Awaits Nvidia, But This Data Center Builder Already Soars On Earnings",
-      "source": "Yahoo Finance",
-      "date": "2026-02-25T14:07:07"
+      "title": "Why Community is Key in Amazon\u2019s US$12bn Data Centre Plan",
+      "source": "Data Centre Magazine",
+      "date": "2026-02-25T15:40:02"
     },
     {
-      "title": "The Market Awaits Nvidia But This Data Center Builder Is Already Soaring On Earnings",
-      "source": "Investor's Business Daily",
-      "date": "2026-02-25T14:07:00"
-    },
-    {
-      "title": "Citigroup Assembles Banking Team Focused on AI Infrastructure",
-      "source": "Bloomberg Tech",
-      "date": "2026-02-25T14:05:00"
-    },
-    {
-      "title": "US Roundup: FlexGen updates EMS, LandGate\u2019s BESS site selection tool, ON.Energy-Shoals target data centres, Sunrun\u2019s season of VPP dispatching",
-      "source": "Energy Storage News",
-      "date": "2026-02-25T14:02:10"
-    },
-    {
-      "title": "Data centres are \u2018convenient scapegoats\u2019 for grid failures, says energy consultant",
-      "source": "Energy Storage News",
-      "date": "2026-02-25T13:57:57"
-    },
-    {
-      "title": "Ex-L3Harris exec jailed 7 years for selling exploits to Russia",
+      "title": "Firefox 148 adds master switch for browser bot bother",
       "source": "The Register DC",
-      "date": "2026-02-25T13:44:56"
+      "date": "2026-02-25T15:31:29"
     },
     {
-      "title": "Nvidia Earnings Are Almost Here. Data Center Revenue Is Key.",
-      "source": "Barron's",
-      "date": "2026-02-25T13:44:00"
+      "title": "Execs love AI, just not enough to pay for user training",
+      "source": "The Register DC",
+      "date": "2026-02-25T15:24:02"
     },
     {
-      "title": "Nvidia Earnings Are Almost Here. Data Center Revenue Is Key.",
-      "source": "Barron's",
-      "date": "2026-02-25T13:44:00"
+      "title": "Data Center Networking Market worth $139.08 billion by 2031 | MarketsandMarkets\u2122",
+      "source": "PR Newswire",
+      "date": "2026-02-25T15:15:00"
     },
     {
-      "title": "Nvidia Earnings Are Almost Here. Data Center Revenue Is Key.",
+      "title": "Nvidia Stock Edges Higher Ahead of Earnings. Data Center Revenue Is Key.",
       "source": "Barron's",
-      "date": "2026-02-25T13:44:00"
+      "date": "2026-02-25T15:12:00"
+    },
+    {
+      "title": "Nvidia Stock Edges Higher Ahead of Earnings. Data Center Revenue Is Key.",
+      "source": "Barron's",
+      "date": "2026-02-25T15:12:00"
+    },
+    {
+      "title": "Nvidia Stock Edges Higher Ahead of Earnings. Data Center Revenue Is Key.",
+      "source": "Barron's",
+      "date": "2026-02-25T15:12:00"
+    },
+    {
+      "title": "Nvidia Stock Edges Higher Ahead of Earnings. Data Center Revenue Is Key.",
+      "source": "Barron's",
+      "date": "2026-02-25T15:12:00"
     }
   ],
   "data_sources": [
