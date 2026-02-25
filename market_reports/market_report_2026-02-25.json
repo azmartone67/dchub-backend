@@ -1,6 +1,6 @@
 {
   "report_date": "2026-02-25",
-  "generated_at": "2026-02-25T16:04:07.231742",
+  "generated_at": "2026-02-25T16:07:26.984073",
   "summary": {
     "total_facilities": 11433,
     "total_providers": 3958,
@@ -114,6 +114,11 @@
       "date": "2026-02-25T15:49:00"
     },
     {
+      "title": "3 AI data centers planned for Louisiana. What is impact on small towns?",
+      "source": "Shreveport Times",
+      "date": "2026-02-25T15:49:00"
+    },
+    {
       "title": "Infrastructure problems and low occupancy hamper growth of Africa's data center industry - report",
       "source": "Data Center Dynamics",
       "date": "2026-02-25T15:47:29"
@@ -132,11 +137,6 @@
       "title": "Execs love AI, just not enough to pay for user training",
       "source": "The Register DC",
       "date": "2026-02-25T15:24:02"
-    },
-    {
-      "title": "Data Center Networking Market worth $139.08 billion by 2031 | MarketsandMarkets\u2122",
-      "source": "PR Newswire",
-      "date": "2026-02-25T15:15:00"
     }
   ],
   "data_sources": [
