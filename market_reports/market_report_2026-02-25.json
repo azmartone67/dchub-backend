@@ -1,6 +1,6 @@
 {
   "report_date": "2026-02-25",
-  "generated_at": "2026-02-25T16:07:26.984073",
+  "generated_at": "2026-02-25T21:44:21.077725",
   "summary": {
     "total_facilities": 11433,
     "total_providers": 3958,
@@ -89,54 +89,54 @@
   ],
   "recent_news": [
     {
-      "title": "Indian construction conglomerate Larsen and Toubro signs MoU for 250MW data center",
-      "source": "Data Center Dynamics",
-      "date": "2026-02-25T16:00:03"
+      "title": "Nvidia reports earnings beat as AI boom pushes data center revenue up 75%",
+      "source": "CNBC Tech",
+      "date": "2026-02-25T21:40:03"
     },
     {
-      "title": "US tech giant Anthropic blasts China\u2019s top AI labs for stealing its model",
-      "source": "Capacity Media",
-      "date": "2026-02-25T15:57:39"
+      "title": "Georgia Today: Second potential detention center; Cell phone ban; Columbus data center",
+      "source": "Georgia Public Broadcasting",
+      "date": "2026-02-25T21:27:29"
     },
     {
-      "title": "3 AI data centers planned for Louisiana. What is impact on small towns?",
-      "source": "dailyworld.com",
-      "date": "2026-02-25T15:49:00"
+      "title": "A data center developer ditched a meeting over \u2018safety concerns.\u2019 Hundreds of neighbors showed up anyway",
+      "source": "Denverite",
+      "date": "2026-02-25T21:22:01"
     },
     {
-      "title": "3 AI data centers planned for Louisiana. What is impact on small towns?",
-      "source": "Houma Today",
-      "date": "2026-02-25T15:49:00"
+      "title": "Eagan plans to use data center pause to study potential impacts",
+      "source": "Pioneer Press",
+      "date": "2026-02-25T21:16:22"
     },
     {
-      "title": "3 AI data centers planned for Louisiana. What is impact on small towns?",
-      "source": "Daily Comet",
-      "date": "2026-02-25T15:49:00"
+      "title": "The White House wants AI companies to cover rate hikes. Most have already said they would.",
+      "source": "TechCrunch AI",
+      "date": "2026-02-25T20:42:14"
     },
     {
-      "title": "3 AI data centers planned for Louisiana. What is impact on small towns?",
-      "source": "Shreveport Times",
-      "date": "2026-02-25T15:49:00"
+      "title": "Trump claims he\u2019ll make data centers pay for their own power supply",
+      "source": "The Verge",
+      "date": "2026-02-25T20:37:25"
     },
     {
-      "title": "Infrastructure problems and low occupancy hamper growth of Africa's data center industry - report",
-      "source": "Data Center Dynamics",
-      "date": "2026-02-25T15:47:29"
+      "title": "Hearing set for Midtown St. Louis data center in March as city mulls zoning rules",
+      "source": "STLPR",
+      "date": "2026-02-25T20:30:58"
     },
     {
-      "title": "Why Community is Key in Amazon\u2019s US$12bn Data Centre Plan",
-      "source": "Data Centre Magazine",
-      "date": "2026-02-25T15:40:02"
+      "title": "Consultant lays out AI risks and data center concerns for Michigan House Oversight subcommittee",
+      "source": "Michigan Advance",
+      "date": "2026-02-25T20:17:42"
     },
     {
-      "title": "Firefox 148 adds master switch for browser bot bother",
+      "title": "How Your Business Can Cash in on the Amazon Data Center Construction in Louisiana",
+      "source": "News Radio 710 KEEL",
+      "date": "2026-02-25T20:10:22"
+    },
+    {
+      "title": "AMD challenges Intel with an 84-core Epyc processor aimed at telcos, edge",
       "source": "The Register DC",
-      "date": "2026-02-25T15:31:29"
-    },
-    {
-      "title": "Execs love AI, just not enough to pay for user training",
-      "source": "The Register DC",
-      "date": "2026-02-25T15:24:02"
+      "date": "2026-02-25T19:50:09"
     }
   ],
   "data_sources": [
