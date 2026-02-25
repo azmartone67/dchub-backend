@@ -1,6 +1,6 @@
 {
   "report_date": "2026-02-24",
-  "generated_at": "2026-02-24T20:35:56.546526",
+  "generated_at": "2026-02-24T22:15:32.815201",
   "summary": {
     "total_facilities": 11433,
     "total_providers": 3958,
@@ -89,9 +89,19 @@
   ],
   "recent_news": [
     {
+      "title": "Assessing Equinix (EQIX) Valuation After Upgraded 2026 Outlook And AI Data Center Growth Plans",
+      "source": "simplywall.st",
+      "date": "2026-02-24T20:35:11"
+    },
+    {
       "title": "Mississippi's governor calls data center moratoria \"civilizational suicide\"",
       "source": "Data Center Dynamics",
       "date": "2026-02-24T19:33:44"
+    },
+    {
+      "title": "AMD, Meta Strike $100B, 6 GW Chip Deal as AI Race Heats Up",
+      "source": "Data Center Knowledge",
+      "date": "2026-02-24T19:32:41"
     },
     {
       "title": "KSLA gets one-on-one interview AWS director of economic development as massive data center project announced",
@@ -127,16 +137,6 @@
       "title": "Proposed tax breaks for data centers would increase taxes for poor Coloradans, analysts say",
       "source": "KUNC",
       "date": "2026-02-24T19:00:00"
-    },
-    {
-      "title": "Amazon built huge data centers in Indiana farm country. Can Michigan learn from it?",
-      "source": "MLive.com",
-      "date": "2026-02-24T18:52:00"
-    },
-    {
-      "title": "Amazon built huge data centers in Indiana farm country. Can Michigan learn from it?",
-      "source": "MLive.com",
-      "date": "2026-02-24T18:52:00"
     }
   ],
   "data_sources": [
