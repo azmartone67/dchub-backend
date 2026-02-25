@@ -716,11 +716,11 @@ _real_require_plan = None
 def require_plan(min_plan='pro'):
     def decorator(f):
         @_early_wraps(f)
+        def wrapper(*args, **kwargs):
             # Origin bypass — dchub.cloud frontend skips plan check
             origin = request.headers.get("Origin", "") or request.headers.get("Referer", "")
             if "dchub.cloud" in origin:
                 return f(*args, **kwargs)
-        def wrapper(*args, **kwargs):
             try:
                 ai_info = get_ai_wars_key_info()
                 if ai_info:
