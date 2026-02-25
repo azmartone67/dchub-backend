@@ -1,18 +1,23 @@
 """
-DC Hub Energy Auto-Discovery System v2.1 (PostgreSQL + Coordinates)
+DC Hub Energy Auto-Discovery System v2.2 (PostgreSQL + Coordinates)
 ====================================================================
 Automatically discovers and syncs:
-- Power plants (HIFLD with lat/lng + EIA capacity data)
-- Substations (HIFLD with coordinates)
+- Power plants (EIA capacity + market-center coords, upgradeable to exact lat/lng)
 - Transmission lines (HIFLD)
 - Gas pipelines (built-in + FERC data)
 - Wind projects (HIFLD)
 
-Runs every 10 minutes. HIFLD provides map coordinates, EIA provides capacity data.
+Runs every 10 minutes. EIA provides capacity data. Coordinates assigned via
+market-center jitter (Phase 1) — will be refined with HIFLD/EIA-860M exact
+coordinates once stable endpoints are confirmed (Phase 2).
+
+Note: HIFLD Power_Plants FeatureServer URL changed to hash-based names in 2024.
+Old URL (Power_Plants/FeatureServer) is dead. Using EIA-only approach for now.
 """
 
 import os
 import json
+import random
 import requests
 import threading
 import time
@@ -34,8 +39,9 @@ IS_RAILWAY = bool(os.environ.get('RAILWAY_ENVIRONMENT'))
 # API Endpoints
 HIFLD_TRANSMISSION = "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Power_Transmission_Lines/FeatureServer/0/query"
 HIFLD_WIND_TURBINES = "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/US_Wind_Turbines/FeatureServer/0/query"
-HIFLD_POWER_PLANTS = "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Power_Plants/FeatureServer/0/query"
-HIFLD_SUBSTATIONS = "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Substations/FeatureServer/0/query"
+# DEAD URLs — HIFLD moved these to hash-based service names in 2024
+# HIFLD_POWER_PLANTS = "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Power_Plants/FeatureServer/0/query"
+# HIFLD_SUBSTATIONS = "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Substations/FeatureServer/0/query"
 EIA_POWER_PLANTS = "https://api.eia.gov/v2/electricity/operating-generator-capacity/data/"
 
 # Key markets to monitor
@@ -232,93 +238,17 @@ def query_transmission_lines(bounds, limit=500):
 
 
 def query_hifld_power_plants(bounds, limit=500):
-    """Query HIFLD for power plants WITH lat/lng coordinates"""
-    try:
-        params = {
-            'geometry': f'{bounds[0]},{bounds[1]},{bounds[2]},{bounds[3]}',
-            'geometryType': 'esriGeometryEnvelope',
-            'spatialRel': 'esriSpatialRelIntersects',
-            'outFields': 'NAME,PRIM_FUEL,TOTAL_MW,OPER_CAP,OPERATOR,STATE,STATUS,COUNTY,SECTOR_NAM',
-            'returnGeometry': 'true',
-            'f': 'json',
-            'resultRecordCount': limit
-        }
-        response = requests.get(HIFLD_POWER_PLANTS, params=params, timeout=60)
-        data = response.json()
-
-        if 'features' in data:
-            plants = []
-            for f in data['features']:
-                attrs = f.get('attributes', {})
-                geom = f.get('geometry', {})
-                name = attrs.get('NAME', 'Unknown')
-                cap = attrs.get('TOTAL_MW') or attrs.get('OPER_CAP') or 0
-
-                # Skip tiny plants
-                if cap < 1:
-                    continue
-
-                plants.append({
-                    'id': f"hifld-{hash(name + str(geom.get('x', ''))) % 10000000}",
-                    'name': name,
-                    'fuel_type': attrs.get('PRIM_FUEL', 'Unknown'),
-                    'capacity_mw': float(cap),
-                    'generation_mwh': 0,
-                    'operator': attrs.get('OPERATOR', 'Unknown'),
-                    'state': attrs.get('STATE', ''),
-                    'sector': attrs.get('SECTOR_NAM', 'Unknown'),
-                    'lat': geom.get('y'),
-                    'lng': geom.get('x'),
-                    'source': 'HIFLD',
-                })
-            logger.info(f"   📡 HIFLD: {len(plants)} power plants with coordinates")
-            return plants
-        return []
-    except Exception as e:
-        logger.warning(f"⚠️ HIFLD Power Plants error: {e}")
-        return []
+    """HIFLD Power_Plants FeatureServer URL is dead (moved to hash-based names 2024).
+    Returns empty. Phase 2: use NASA NCCS mirror or EIA-860M for exact coords."""
+    logger.info("   ℹ️ HIFLD Power Plants URL deprecated — using EIA + market-center coords")
+    return []
 
 
 def query_hifld_substations(bounds, limit=500):
-    """Query HIFLD for substations with coordinates"""
-    try:
-        params = {
-            'geometry': f'{bounds[0]},{bounds[1]},{bounds[2]},{bounds[3]}',
-            'geometryType': 'esriGeometryEnvelope',
-            'spatialRel': 'esriSpatialRelIntersects',
-            'outFields': 'NAME,STATE,STATUS,OWNER,MAX_VOLT,MIN_VOLT,LINES,TYPE',
-            'returnGeometry': 'true',
-            'f': 'json',
-            'resultRecordCount': limit
-        }
-        response = requests.get(HIFLD_SUBSTATIONS, params=params, timeout=60)
-        data = response.json()
-
-        if 'features' in data:
-            subs = []
-            for f in data['features']:
-                attrs = f.get('attributes', {})
-                geom = f.get('geometry', {})
-                name = attrs.get('NAME', 'Unknown')
-                subs.append({
-                    'id': f"sub-{hash(name + str(geom.get('x', ''))) % 10000000}",
-                    'name': name,
-                    'owner': attrs.get('OWNER', 'Unknown'),
-                    'voltage_kv': attrs.get('MAX_VOLT', 0),
-                    'min_voltage_kv': attrs.get('MIN_VOLT', 0),
-                    'status': attrs.get('STATUS', 'Unknown'),
-                    'lines': attrs.get('LINES', 0),
-                    'type': attrs.get('TYPE', 'Unknown'),
-                    'state': attrs.get('STATE', ''),
-                    'lat': geom.get('y'),
-                    'lng': geom.get('x'),
-                })
-            logger.info(f"   📡 HIFLD: {len(subs)} substations with coordinates")
-            return subs
-        return []
-    except Exception as e:
-        logger.warning(f"⚠️ HIFLD Substations error: {e}")
-        return []
+    """HIFLD Substations FeatureServer URL is dead (moved to hash-based names 2024).
+    Returns empty. Phase 2: find new hash-based URL."""
+    logger.info("   ℹ️ HIFLD Substations URL deprecated — skipping")
+    return []
 
 
 def query_wind_turbines(bounds, limit=500):
@@ -411,6 +341,8 @@ def query_eia_power_plants(state, api_key=None):
             'api_key': eia_key,
             'frequency': 'monthly',
             'data[0]': 'nameplate-capacity-mw',
+            'data[1]': 'latitude',
+            'data[2]': 'longitude',
             'facets[stateid][]': state,
             'facets[status][]': 'OP',
             'sort[0][column]': 'period',
@@ -436,6 +368,9 @@ def query_eia_power_plants(state, api_key=None):
                     continue
                 cap = float(r.get('nameplate-capacity-mw', 0) or 0)
                 if pid not in plants_agg:
+                    # EIA API may return latitude/longitude as data columns
+                    lat_val = r.get('latitude')
+                    lng_val = r.get('longitude')
                     plants_agg[pid] = {
                         'id': f"eia-{pid}",
                         'name': r.get('plantName', 'Unknown'),
@@ -445,6 +380,8 @@ def query_eia_power_plants(state, api_key=None):
                         'operator': r.get('entityName', 'Unknown'),
                         'state': r.get('stateid', state),
                         'sector': r.get('sectorName', 'Unknown'),
+                        'lat': float(lat_val) if lat_val else None,
+                        'lng': float(lng_val) if lng_val else None,
                         'source': 'EIA',
                     }
                 else:
@@ -564,6 +501,16 @@ def sync_market(market_key, market_info):
 
         plants_list = list(all_plants.values())
         results['power_plants']['found'] = len(plants_list)
+
+        # Assign market-center jitter coordinates to plants missing lat/lng
+        for plant in plants_list:
+            if not plant.get('lat') or not plant.get('lng'):
+                center_lat = (bounds[1] + bounds[3]) / 2
+                center_lng = (bounds[0] + bounds[2]) / 2
+                plant['lat'] = center_lat + random.uniform(-0.35, 0.35)
+                plant['lng'] = center_lng + random.uniform(-0.35, 0.35)
+                if not plant.get('source') or plant['source'] == 'EIA':
+                    plant['source'] = 'EIA+jitter'
 
         for plant in plants_list:
             c.execute("SELECT id, capacity_mw FROM discovered_power_plants WHERE id = %s", (plant['id'],))
@@ -980,65 +927,46 @@ def register_energy_discovery_routes(app):
 
     @app.route('/api/energy-discovery/backfill-coords', methods=['POST'])
     def energy_discovery_backfill_coords():
-        """Backfill lat/lng for existing plants using HIFLD"""
+        """Backfill lat/lng for plants using market center + jitter"""
+        import random
         updated = 0
-        errors = []
         conn = None
         try:
             conn = get_db()
             c = conn.cursor()
 
             # Get plants missing coordinates
-            c.execute("SELECT id, name, state, market FROM discovered_power_plants WHERE lat IS NULL OR lng IS NULL LIMIT 500")
+            c.execute("SELECT id, market FROM discovered_power_plants WHERE lat IS NULL OR lng IS NULL")
             cols = [d[0] for d in c.description]
             missing = [dict(zip(cols, row)) for row in c.fetchall()]
 
             if not missing:
-                return jsonify({'success': True, 'message': 'All plants already have coordinates', 'updated': 0})
+                c.execute("SELECT COUNT(*) FROM discovered_power_plants WHERE lat IS NOT NULL")
+                with_coords = c.fetchone()[0]
+                c.execute("SELECT COUNT(*) FROM discovered_power_plants")
+                total = c.fetchone()[0]
+                return jsonify({'success': True, 'message': 'All plants already have coordinates',
+                                'updated': 0, 'with_coordinates': with_coords, 'total_plants': total,
+                                'coverage_pct': round(with_coords / total * 100, 1) if total > 0 else 0})
 
-            # Group by market and query HIFLD for each
-            markets_done = set()
+            # Assign market center coordinates with small random offset
+            # so plants don't stack on top of each other
             for plant in missing:
                 market_key = plant.get('market', '')
-                if market_key in markets_done or market_key not in MONITORED_MARKETS:
+                if market_key not in MONITORED_MARKETS:
                     continue
-                markets_done.add(market_key)
-
                 bounds = MONITORED_MARKETS[market_key]['bounds']
-                hifld_plants = query_hifld_power_plants(bounds, limit=1000)
-
-                # Match by name
-                for hp in hifld_plants:
-                    if not hp.get('lat') or not hp.get('lng'):
-                        continue
-                    hp_name = (hp.get('name') or '').lower().strip()
-                    for mp in missing:
-                        if mp.get('market') != market_key:
-                            continue
-                        mp_name = (mp.get('name') or '').lower().strip()
-                        if hp_name and mp_name and (hp_name in mp_name or mp_name in hp_name):
-                            c.execute("UPDATE discovered_power_plants SET lat = %s, lng = %s, last_updated = %s WHERE id = %s AND lat IS NULL",
-                                      (hp['lat'], hp['lng'], datetime.utcnow().isoformat(), mp['id']))
-                            updated += 1
-
-                # Also insert HIFLD plants we don't have yet
-                for hp in hifld_plants:
-                    if hp.get('lat') and hp.get('lng'):
-                        c.execute("""INSERT INTO discovered_power_plants
-                            (id, name, fuel_type, capacity_mw, generation_mwh, operator, state, sector, market, lat, lng, discovered_at, last_updated, source)
-                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                            ON CONFLICT (id) DO UPDATE SET
-                                lat = COALESCE(EXCLUDED.lat, discovered_power_plants.lat),
-                                lng = COALESCE(EXCLUDED.lng, discovered_power_plants.lng)""",
-                            (hp['id'], hp['name'], hp['fuel_type'], hp.get('capacity_mw', 0),
-                             0, hp.get('operator', ''), hp['state'], hp.get('sector', ''),
-                             market_key, hp['lat'], hp['lng'],
-                             datetime.utcnow().isoformat(), datetime.utcnow().isoformat(), 'HIFLD'))
-                        updated += 1
+                center_lat = (bounds[1] + bounds[3]) / 2
+                center_lng = (bounds[0] + bounds[2]) / 2
+                # Add jitter within market bounds so dots spread out
+                lat = center_lat + random.uniform(-0.35, 0.35)
+                lng = center_lng + random.uniform(-0.35, 0.35)
+                c.execute("UPDATE discovered_power_plants SET lat = %s, lng = %s WHERE id = %s AND lat IS NULL",
+                          (lat, lng, plant['id']))
+                updated += 1
 
             conn.commit()
 
-            # Count how many now have coords
             c.execute("SELECT COUNT(*) FROM discovered_power_plants WHERE lat IS NOT NULL AND lng IS NOT NULL")
             with_coords = c.fetchone()[0]
             c.execute("SELECT COUNT(*) FROM discovered_power_plants")
@@ -1049,10 +977,10 @@ def register_energy_discovery_routes(app):
                 'updated': updated,
                 'with_coordinates': with_coords,
                 'total_plants': total,
-                'coverage_pct': round(with_coords / total * 100, 1) if total > 0 else 0
+                'coverage_pct': round(with_coords / total * 100, 1) if total > 0 else 0,
+                'note': 'Coordinates are market-center approximations. Will be refined with HIFLD exact data.'
             })
         except Exception as e:
-            errors.append(str(e))
             return jsonify({'success': False, 'error': str(e), 'updated': updated})
         finally:
             if conn:
