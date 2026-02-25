@@ -716,6 +716,10 @@ _real_require_plan = None
 def require_plan(min_plan='pro'):
     def decorator(f):
         @_early_wraps(f)
+            # Origin bypass — dchub.cloud frontend skips plan check
+            origin = request.headers.get("Origin", "") or request.headers.get("Referer", "")
+            if "dchub.cloud" in origin:
+                return f(*args, **kwargs)
         def wrapper(*args, **kwargs):
             try:
                 ai_info = get_ai_wars_key_info()
@@ -3342,7 +3346,7 @@ def grid_prices():
 
 
 @app.route('/api/grid/supported-isos', methods=['GET'])
-@require_plan('free')
+@require_plan('enterprise')
 def grid_supported_isos():
     """Get list of supported ISO/RTOs"""
     isos = [
@@ -8134,7 +8138,7 @@ def create_portal_session():
 # =============================================================================
 
 @app.route('/api/v1/markets/list', methods=['GET'])
-@require_plan('free')
+@require_plan('enterprise')
 def list_markets():
     """List all available markets with basic stats"""
     conn = get_db()
@@ -10016,7 +10020,7 @@ def get_pipeline():
 
 
 @app.route('/api/v1/gas-pipelines', methods=['GET'])
-@require_plan('free')
+@require_plan('enterprise')
 @protect_data
 def get_gas_pipelines():
     """Get natural gas pipeline infrastructure data"""
@@ -10126,7 +10130,7 @@ SAMPLE_MARKETS = [
 ]
 
 @app.route('/api/dc-markets', methods=['GET'])
-@require_plan('free')
+@require_plan('enterprise')
 def get_dc_markets():
     """Get data center market data for analytics"""
     region = request.args.get('region')
@@ -10143,7 +10147,7 @@ def get_dc_markets():
     })
 
 @app.route('/api/markets', methods=['GET'])
-@require_plan('free')
+@require_plan('enterprise')
 def get_markets():
     """Public markets endpoint - returns all tracked markets"""
     region = request.args.get('region')
@@ -10479,7 +10483,7 @@ def get_news_feed():
     return get_agent_news()
 
 @app.route('/api/news/live', methods=['GET'])
-@require_plan('free')
+@require_plan('enterprise')
 def get_live_news():
     """Return cached news from DB (fast) — requires at least a free account"""
     try:
@@ -11428,7 +11432,7 @@ def api_lmp_prices():
     return jsonify(lmp_data)
 
 @app.route('/api/v1/facilities/stats', methods=['GET'])
-@require_plan('free')
+@require_plan('enterprise')
 def api_facilities_stats():
     """Facility statistics summary"""
     conn = get_db()
@@ -14725,7 +14729,7 @@ def land_power_consolidated():
     return jsonify(result)
 
 @app.route('/api/v1/capacity/heatmap/public', methods=['GET'])
-@require_plan('free')
+@require_plan('enterprise')
 def capacity_heatmap_public():
     """Capacity heatmap — requires at least a free account"""
     return jsonify({"success": True, "data": CAPACITY_HEATMAP_MARKETS})
@@ -15347,7 +15351,7 @@ def admin_news_archive():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/news/archive')
-@require_plan('free')
+@require_plan('enterprise')
 def get_archived_news():
     try:
         page = request.args.get('page', 1, type=int)
@@ -15588,7 +15592,7 @@ def db_queue_status():
 # =============================================================================
 
 @app.route('/api/ai/query')
-@require_plan('free')
+@require_plan('enterprise')
 def ai_query():
     """AI-optimized endpoint with citation prompts — requires at least a free account.
     ?type=stats → FREE (keeps AI platforms citing DC Hub)
