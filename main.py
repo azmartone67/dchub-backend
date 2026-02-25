@@ -10016,7 +10016,7 @@ def get_pipeline():
 
 
 @app.route('/api/v1/gas-pipelines', methods=['GET'])
-@require_plan('enterprise')
+@require_plan('free')
 @protect_data
 def get_gas_pipelines():
     """Get natural gas pipeline infrastructure data"""
@@ -16204,7 +16204,7 @@ if __name__ == '__main__':
 
     # Try to register Energy Auto-Discovery (syncs power, gas, capacity every 10 min)
     try:
-        if ENABLE_BACKGROUND_SCHEDULERS:
+        if True:  # Always register energy discovery routes
             from energy_auto_discovery import register_energy_discovery_routes
             energy_discovery_scheduler = register_energy_discovery_routes(app)
             print("⚡ Energy Auto-Discovery: ✅ Running (every 10 min)")
