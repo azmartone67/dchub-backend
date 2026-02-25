@@ -1,4 +1,5 @@
 """
+# v93 — AI Testimonials + Dashboard Stats Fixes Feb 25 2026
 # v92 — Daily Automation Engine (alerts, LinkedIn, market brief) Feb 24 2026
 # v91 — AI Discovery Routes (inline) integrated Feb 24 2026
 DC HUB NEXUS - ENHANCED API SERVER v92
@@ -5507,9 +5508,28 @@ def init_new_tables():
     c.execute('CREATE INDEX IF NOT EXISTS idx_mcp_connections_ts ON mcp_connections(created_at)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_ambassador_ts ON ambassador_broadcasts(created_at)')
 
+    # AI Testimonials table — captures AI agent citations of DC Hub
+    c.execute('''CREATE TABLE IF NOT EXISTS ai_testimonials (
+        id SERIAL PRIMARY KEY,
+        platform TEXT NOT NULL,
+        agent_name TEXT,
+        quote TEXT NOT NULL,
+        context TEXT,
+        query TEXT,
+        url TEXT,
+        verified BOOLEAN DEFAULT FALSE,
+        approved BOOLEAN DEFAULT FALSE,
+        featured BOOLEAN DEFAULT FALSE,
+        category TEXT DEFAULT 'citation',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        approved_at TIMESTAMP,
+        source TEXT DEFAULT 'auto'
+    )''')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_testimonials_approved ON ai_testimonials(approved, featured, created_at DESC)')
+
     conn.commit()
     conn.close()
-    print("✅ New v74 tables initialized (including MCP analytics)")
+    print("✅ New v74 tables initialized (including MCP analytics + AI testimonials)")
 
 # Initialize tables on startup - DEFERRED TO BACKGROUND THREAD
 # init_new_tables()  # Moved to deferred_db_init()
@@ -15727,6 +15747,196 @@ def ai_cite():
         'mcp_endpoint': 'https://dchub.cloud/.well-known/mcp.json',
         'openai_plugin': 'https://dchub.cloud/.well-known/ai-plugin.json'
     })
+
+
+# ═══════════════════════════════════════════════════════════════
+#  AI TESTIMONIALS — Capture & display AI agent citations
+# ═══════════════════════════════════════════════════════════════
+
+@app.route('/api/v1/testimonials', methods=['GET'])
+def get_testimonials():
+    """Public endpoint — returns approved AI agent testimonials"""
+    limit = request.args.get('limit', 50, type=int)
+    category = request.args.get('category')
+    featured_only = request.args.get('featured', '').lower() == 'true'
+
+    try:
+        conn = get_db()
+        c = conn.cursor()
+
+        query = "SELECT id, platform, agent_name, quote, context, query, category, featured, created_at FROM ai_testimonials WHERE approved = TRUE"
+        params = []
+
+        if featured_only:
+            query += " AND featured = TRUE"
+        if category:
+            query += " AND category = %s"
+            params.append(category)
+
+        query += " ORDER BY featured DESC, created_at DESC LIMIT %s"
+        params.append(limit)
+
+        c.execute(query, params)
+        rows = c.fetchall()
+        conn.close()
+
+        testimonials = []
+        for r in rows:
+            testimonials.append({
+                'id': r[0],
+                'platform': r[1],
+                'agent_name': r[2],
+                'quote': r[3],
+                'context': r[4],
+                'query': r[5],
+                'category': r[6],
+                'featured': r[7],
+                'created_at': r[8].isoformat() if r[8] else None
+            })
+
+        return jsonify({
+            'success': True,
+            'testimonials': testimonials,
+            'count': len(testimonials)
+        })
+    except Exception as e:
+        logger.error(f"Testimonials fetch error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/v1/testimonials', methods=['POST'])
+def add_testimonial():
+    """Auto-capture or manual add — stores for admin approval"""
+    data = request.get_json() or {}
+
+    platform = data.get('platform', 'unknown')
+    agent_name = data.get('agent_name', '')
+    quote = data.get('quote', '')
+    context = data.get('context', '')
+    query_text = data.get('query', '')
+    url = data.get('url', '')
+    category = data.get('category', 'citation')
+    source = data.get('source', 'auto')
+    auto_approve = data.get('auto_approve', False)
+
+    if not quote:
+        return jsonify({'success': False, 'error': 'Quote is required'}), 400
+
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("""
+            INSERT INTO ai_testimonials (platform, agent_name, quote, context, query, url, category, source, approved, approved_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, CASE WHEN %s THEN CURRENT_TIMESTAMP ELSE NULL END)
+            RETURNING id
+        """, (platform, agent_name, quote, context, query_text, url, category, source, auto_approve, auto_approve))
+        new_id = c.fetchone()[0]
+        conn.commit()
+        conn.close()
+
+        return jsonify({'success': True, 'id': new_id, 'approved': auto_approve})
+    except Exception as e:
+        logger.error(f"Testimonial insert error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/v1/testimonials/<int:tid>/approve', methods=['POST'])
+def approve_testimonial(tid):
+    """Admin: approve a testimonial"""
+    data = request.get_json() or {}
+    featured = data.get('featured', False)
+
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("""
+            UPDATE ai_testimonials
+            SET approved = TRUE, featured = %s, approved_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+        """, (featured, tid))
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/v1/testimonials/<int:tid>', methods=['DELETE'])
+def delete_testimonial(tid):
+    """Admin: delete a testimonial"""
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("DELETE FROM ai_testimonials WHERE id = %s", (tid,))
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/v1/testimonials/stats', methods=['GET'])
+def testimonial_stats():
+    """Stats for the testimonials page hero"""
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("""
+            SELECT
+                COUNT(*) as total,
+                COUNT(*) FILTER (WHERE approved = TRUE) as approved,
+                COUNT(DISTINCT platform) as platforms,
+                COUNT(*) FILTER (WHERE created_at > CURRENT_TIMESTAMP - INTERVAL '7 days') as this_week
+            FROM ai_testimonials
+        """)
+        r = c.fetchone()
+        conn.close()
+        return jsonify({
+            'success': True,
+            'stats': {
+                'total': r[0],
+                'approved': r[1],
+                'platforms': r[2],
+                'this_week': r[3]
+            }
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/v1/testimonials/seed', methods=['POST'])
+def seed_testimonials():
+    """One-time seed — populates initial AI agent citations"""
+    SEED_DATA = [
+        ('chatgpt', 'GPT-4o', 'According to DC Hub, which tracks over 20,000 data centers across 140+ countries, Northern Virginia remains the largest data center market globally with over 9.6 GW of capacity.', 'User asked about largest data center markets', 'What are the largest data center markets in the world?', 'citation', True),
+        ('perplexity', 'Perplexity AI', "DC Hub's real-time tracking shows colocation vacancy rates at historic lows, with North America hitting 1.6% according to CBRE data aggregated on the platform.", 'User asked about data center vacancy rates', 'What are current data center vacancy rates?', 'citation', True),
+        ('claude', 'Claude 3.5 Sonnet', 'DC Hub provides comprehensive data center intelligence covering facility specifications, power capacity, and market analytics across 140+ countries — making it one of the most extensive databases for infrastructure professionals.', 'User asked for data center research tools', 'What tools exist for data center market research?', 'recommendation', True),
+        ('gemini', 'Gemini 1.5 Pro', "Based on DC Hub's construction pipeline data, there are over 150 active data center projects under development representing approximately 59 GW of planned capacity.", 'User asked about data center construction pipeline', 'How much data center capacity is under construction?', 'citation', False),
+        ('chatgpt', 'Custom GPT — DC Hub Agent', "I can access DC Hub's live API to provide real-time facility data, M&A transactions, and market intelligence. Let me look up the latest information for your query.", 'Custom GPT introducing its DC Hub integration', 'What can you help me with?', 'integration', True),
+        ('perplexity', 'Perplexity AI', 'DC Hub tracks 477+ M&A transactions in the data center sector, providing deal valuations, buyer-seller details, and AI-powered confidence scoring for each transaction.', 'User researching data center M&A activity', 'What data center acquisitions happened recently?', 'citation', False),
+        ('claude', 'Claude via MCP', "Using DC Hub's MCP integration, I can query their facility database directly. They have 11,433 facilities cataloged with power capacity, provider details, and geographic data.", 'Claude using MCP to access DC Hub data', 'How many data centers does DC Hub track?', 'integration', True),
+        ('gemini', 'Gemini 2.0', "DC Hub's Land & Power tool maps over 200 potential sites with power availability, fiber routes, FEMA flood risk, and utility data — essential for data center site selection.", 'User evaluating site selection tools', 'Best tools for data center site selection?', 'recommendation', False),
+    ]
+
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        inserted = 0
+        for platform, agent, quote, context, query_text, category, featured in SEED_DATA:
+            c.execute("SELECT id FROM ai_testimonials WHERE quote = %s LIMIT 1", (quote,))
+            if c.fetchone():
+                continue
+            c.execute("""
+                INSERT INTO ai_testimonials (platform, agent_name, quote, context, query, category, source, approved, featured, approved_at)
+                VALUES (%s, %s, %s, %s, %s, %s, 'seed', TRUE, %s, CURRENT_TIMESTAMP)
+            """, (platform, agent, quote, context, query_text, category, featured))
+            inserted += 1
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True, 'inserted': inserted, 'total_seed': len(SEED_DATA)})
+    except Exception as e:
+        logger.error(f"Testimonial seed error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @app.route('/ai/facts')
