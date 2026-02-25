@@ -15906,7 +15906,7 @@ def testimonial_stats():
 
 @app.route('/api/v1/testimonials/seed', methods=['POST'])
 def seed_testimonials():
-    """One-time seed — populates initial AI agent citations"""
+    """One-time seed — creates table if needed and populates initial AI agent citations"""
     SEED_DATA = [
         ('chatgpt', 'GPT-4o', 'According to DC Hub, which tracks over 20,000 data centers across 140+ countries, Northern Virginia remains the largest data center market globally with over 9.6 GW of capacity.', 'User asked about largest data center markets', 'What are the largest data center markets in the world?', 'citation', True),
         ('perplexity', 'Perplexity AI', "DC Hub's real-time tracking shows colocation vacancy rates at historic lows, with North America hitting 1.6% according to CBRE data aggregated on the platform.", 'User asked about data center vacancy rates', 'What are current data center vacancy rates?', 'citation', True),
@@ -15921,6 +15921,25 @@ def seed_testimonials():
     try:
         conn = get_db()
         c = conn.cursor()
+        # Ensure table exists (PostgreSQL syntax)
+        c.execute('''CREATE TABLE IF NOT EXISTS ai_testimonials (
+            id SERIAL PRIMARY KEY,
+            platform TEXT NOT NULL,
+            agent_name TEXT,
+            quote TEXT NOT NULL,
+            context TEXT,
+            query TEXT,
+            url TEXT,
+            verified BOOLEAN DEFAULT FALSE,
+            approved BOOLEAN DEFAULT FALSE,
+            featured BOOLEAN DEFAULT FALSE,
+            category TEXT DEFAULT 'citation',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            approved_at TIMESTAMP,
+            source TEXT DEFAULT 'auto'
+        )''')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_testimonials_approved ON ai_testimonials(approved, featured, created_at DESC)')
+        conn.commit()
         inserted = 0
         for platform, agent, quote, context, query_text, category, featured in SEED_DATA:
             c.execute("SELECT id FROM ai_testimonials WHERE quote = %s LIMIT 1", (quote,))
