@@ -16152,6 +16152,15 @@ def ai_facts():
 logger.info("✅ AI Query endpoints registered: /api/ai/query, /api/ai/cite, /ai/facts")
 
 # =============================================================================
+# Energy Auto-Discovery (must be outside __main__ for gunicorn)
+try:
+    from energy_auto_discovery import register_energy_discovery_routes
+    energy_discovery_scheduler = register_energy_discovery_routes(app)
+    print("⚡ Energy Auto-Discovery: ✅ Registered")
+except ImportError:
+    print("⚡ Energy Auto-Discovery: ❌ Not installed")
+except Exception as e:
+    print(f"⚡ Energy Auto-Discovery: ⚠️ Error: {e}")
 # MAIN
 # =============================================================================
 
