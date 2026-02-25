@@ -11194,8 +11194,8 @@ def serve_testimonials():
     return render_template('testimonials.html')
 
 @app.route('/api/testimonials', methods=['GET'])
-def get_testimonials():
-    """Get all testimonials"""
+def get_testimonials_legacy():
+    """Get all testimonials (legacy JSON file)"""
     try:
         with open('data/testimonials.json', 'r') as f:
             data = json.load(f)
@@ -11207,8 +11207,8 @@ def get_testimonials():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/testimonials', methods=['POST'])
-def add_testimonial():
-    """Add a new testimonial (API key required)"""
+def add_testimonial_legacy():
+    """Add a new testimonial (legacy API key method)"""
     auth_header = request.headers.get('Authorization', '')
     api_key = request.headers.get('X-API-Key', '')
     
