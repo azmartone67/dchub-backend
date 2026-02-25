@@ -1,28 +1,21 @@
 {
   "report_date": "2026-02-25",
-  "generated_at": "2026-02-25T04:37:26.645639",
+  "generated_at": "2026-02-25T08:42:46.285179",
   "summary": {
     "total_facilities": 11433,
     "total_providers": 3958,
     "countries_covered": 170,
     "total_power_mw": 51325.0,
-    "total_deals": 477,
+    "total_deals": 478,
     "total_deal_value_usd": 11133038000.0
   },
   "market_highlights": [
     "DC Hub tracks 11,433 data center facilities globally",
     "Coverage spans 170 countries with 3958 providers",
     "Combined capacity: 51,325 MW",
-    "M&A database: 477 transactions worth $11.1B+"
+    "M&A database: 478 transactions worth $11.1B+"
   ],
   "recent_deals": [
-    {
-      "buyer": "MTN",
-      "seller": "IHS Towers",
-      "value_usd": 6200000000.0,
-      "type": "acquisition",
-      "date": null
-    },
     {
       "buyer": "GeoPark to",
       "seller": "Fronterra Energy",
@@ -31,9 +24,9 @@
       "date": null
     },
     {
-      "buyer": "and NJJ",
-      "seller": "Telef\u00f3nica Chile",
-      "value_usd": 50000000.0,
+      "buyer": "firm can",
+      "seller": "its AI",
+      "value_usd": 300000000.0,
       "type": "acquisition",
       "date": null
     },
@@ -45,6 +38,13 @@
       "date": null
     },
     {
+      "buyer": "and NJJ",
+      "seller": "Telef\u00f3nica Chile",
+      "value_usd": 50000000.0,
+      "type": "acquisition",
+      "date": null
+    },
+    {
       "buyer": "SiTime to",
       "seller": "timing business",
       "value_usd": 3000000000.0,
@@ -52,9 +52,16 @@
       "date": null
     },
     {
-      "buyer": "firm can",
-      "seller": "its AI",
-      "value_usd": 300000000.0,
+      "buyer": "Growth and",
+      "seller": "Rating",
+      "value_usd": null,
+      "type": "acquisition",
+      "date": null
+    },
+    {
+      "buyer": "MTN",
+      "seller": "IHS Towers",
+      "value_usd": 6200000000.0,
       "type": "acquisition",
       "date": null
     },
@@ -78,65 +85,58 @@
       "value_usd": 0.0,
       "type": "ma",
       "date": "2026-02-12"
-    },
-    {
-      "buyer": "Constellation",
-      "seller": "Constellation Energy",
-      "value_usd": 0.0,
-      "type": "equity",
-      "date": "2026-02-12"
     }
   ],
   "recent_news": [
     {
-      "title": "HP says memory\u2019s contribution to PC costs just doubled to 35 percent",
-      "source": "The Register DC",
-      "date": "2026-02-25T04:29:47"
+      "title": "In perfect harmony: How Emerald AI is turning data centers into flexible grid assets",
+      "source": "BeBeez International",
+      "date": "2026-02-25T08:09:47"
     },
     {
-      "title": "NVIDIA Deepens AI Factory Role With Meta, India Deals And Rubin NVL8",
-      "source": "simplywall.st",
-      "date": "2026-02-25T04:03:56"
+      "title": "Aew Capital Management L P Cuts Position in Equinix, Inc. $EQIX",
+      "source": "MarketBeat",
+      "date": "2026-02-25T08:08:08"
     },
     {
-      "title": "The US Had a Big Battery Boom Last Year",
-      "source": "Slashdot",
-      "date": "2026-02-25T04:01:00"
+      "title": "Google to deploy world\u2019s largest iron-air battery for US data center",
+      "source": "PV Magazine",
+      "date": "2026-02-25T07:45:44"
     },
     {
-      "title": "Lincoln County shuts down data center moratorium",
-      "source": "Sioux Falls Simplified",
-      "date": "2026-02-25T03:44:02"
+      "title": "Italy\u2019s new energy provisions could boost gas use, undermine renewables and storage competitiveness",
+      "source": "PV Magazine",
+      "date": "2026-02-25T07:39:12"
     },
     {
-      "title": "Digital Realty Expands Innovation Lab Network to Singapore and Japan to Accelerate AI and Hybrid Cloud Implementation",
-      "source": "The Manila Times",
-      "date": "2026-02-25T02:14:36"
+      "title": "Nvidia Earnings Are Almost Here. Data Center Revenue Is Key.",
+      "source": "Barron's",
+      "date": "2026-02-25T07:08:00"
     },
     {
-      "title": "Digital Realty Expands Innovation Lab Network to Singapore and Japan to Accelerate AI and Hybrid Cloud Implementation",
-      "source": "The Manila Times",
-      "date": "2026-02-25T02:14:36"
+      "title": "Nvidia Earnings Are Almost Here. Data Center Revenue Is Key.",
+      "source": "Barron's",
+      "date": "2026-02-25T07:08:00"
     },
     {
-      "title": "AMD: Meta Partnership and Expanding AI GPU Platform Underpin Multi-Year Data Center Growth and Buy Rating",
-      "source": "TipRanks",
-      "date": "2026-02-25T01:50:58"
+      "title": "Nvidia Earnings Are Almost Here. Data Center Revenue Is Key.",
+      "source": "Barron's",
+      "date": "2026-02-25T07:08:00"
     },
     {
-      "title": "Microsoft moving forward with data center in Person County, officials say",
-      "source": "WRAL",
-      "date": "2026-02-25T01:04:33"
+      "title": "Nvidia Earnings Are Almost Here. Data Center Revenue Is Key.",
+      "source": "Barron's",
+      "date": "2026-02-25T07:08:00"
     },
     {
-      "title": "Hays County wants power over data center development, commissioners say",
-      "source": "Austin American-Statesman",
-      "date": "2026-02-25T00:15:14"
+      "title": "Nvidia Earnings Are Almost Here. Data Center Revenue Is Key.",
+      "source": "Barron's",
+      "date": "2026-02-25T07:08:00"
     },
     {
-      "title": "It's only Tuesday and AI chip startups have already soaked up $1.1B in funding",
-      "source": "The Register DC",
-      "date": "2026-02-25T00:08:56"
+      "title": "Digital Realty Expands Innovation Labs into Singapore and Japan",
+      "source": "Asia Business Outlook",
+      "date": "2026-02-25T05:12:00"
     }
   ],
   "data_sources": [
