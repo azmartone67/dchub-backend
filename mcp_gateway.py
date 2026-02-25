@@ -51,7 +51,7 @@ logger.setLevel(logging.INFO)
 # CONSTANTS
 # ============================================================================
 
-GATEWAY_VERSION = "2.0.0"
+GATEWAY_VERSION = "2.1.0"
 GATEWAY_DB = "mcp_gateway.db"
 MCP_PROTOCOL_VERSION = "2024-11-05"
 
