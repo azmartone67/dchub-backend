@@ -1370,12 +1370,7 @@ class MCPGateway:
 
         # ── Auto-Generated Discovery Files ─────────────────────────────
 
-        @self.app.route("/openapi.json", methods=["GET"])
-        def serve_openapi_json():
-            """Dynamic OpenAPI spec for ChatGPT Actions and REST consumers."""
-            self._track_discovery("/openapi.json")
-            return jsonify(self._generate_openapi_spec())
-
+       
     def _install_middleware(self):
         """Install before/after request hooks to track all agent activity."""
 
