@@ -708,8 +708,14 @@ try:
     register_agent_network(app)
 except Exception as e:
     print(f"🤖 Agent Network Effect: ⚠️ {e}")
-
-
+try:
+    from index_api import index_bp
+    app.register_blueprint(index_bp)
+    print("📊 DC Hub Index: ✅ GDCI endpoints registered")
+except ImportError:
+    print("📊 DC Hub Index: ❌ index_api.py not found")
+except Exception as e:
+    print(f"📊 DC Hub Index: ⚠️ Error: {e}")
 # =============================================================================
 # EARLY require_plan STUB - Must be available before first @app.route usage
 # The real enforcer is loaded at the bottom of this file via init_tier_gating.
