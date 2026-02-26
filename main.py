@@ -16246,7 +16246,14 @@ def well_known_security():
         "Contact: mailto:security@dchub.cloud\nPreferred-Languages: en\nCanonical: https://dchub.cloud/.well-known/security.txt\nPolicy: https://dchub.cloud/terms\nExpires: 2027-01-01T00:00:00.000Z",
         mimetype='text/plain'
     )
-
+@app.route('/api/debug/energy-version')
+def debug_energy_version():
+    try:
+        import energy_auto_discovery
+        return {"file": energy_auto_discovery.__file__, "has_spatial": hasattr(energy_auto_discovery, '_hifld_spatial_query'), "version": getattr(energy_auto_discovery, 'VERSION', 'unknown')}
+    except Exception as e:
+        return {"error": str(e)}
+```
 if __name__ == '__main__':
     print("🚀 DC Hub API v86 Starting...")
     print(f"📊 PDF Generation: {'✅ Available' if PDF_AVAILABLE else '❌ Disabled'}")
