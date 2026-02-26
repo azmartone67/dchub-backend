@@ -16177,13 +16177,20 @@ logger.info("✅ AI Query endpoints registered: /api/ai/query, /api/ai/cite, /ai
 # =============================================================================
 # Energy Auto-Discovery (must be outside __main__ for gunicorn)
 try:
-    from energy_auto_discovery import register_energy_discovery_routes
-    energy_discovery_scheduler = register_energy_discovery_routes(app)
-    print("⚡ Energy Auto-Discovery: ✅ Registered")
-except ImportError:
-    print("⚡ Energy Auto-Discovery: ❌ Not installed")
-except Exception as e:
-    print(f"⚡ Energy Auto-Discovery: ⚠️ Error: {e}")
+        from energy_auto_discovery import register_energy_discovery_routes
+        energy_discovery_scheduler = register_energy_discovery_routes(app)
+        print("⚡ Energy Auto-Discovery: ✅ Registered")
+    except ImportError:
+        print("⚡ Energy Auto-Discovery: ❌ Not installed")
+    except Exception as e:
+        print(f"⚡ Energy Auto-Discovery: ⚠️ Error: {e}")
+
+    try:
+        from energy_kmz_export import register_kmz_export_routes
+        register_kmz_export_routes(app)
+        print("📦 KMZ Export: ✅ Registered")
+    except Exception as e:
+        print(f"📦 KMZ Export: ⚠️ Error: {e}")
 # MAIN
 # =============================================================================
 
