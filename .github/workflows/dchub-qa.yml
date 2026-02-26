@@ -90,7 +90,7 @@ jobs:
           check("Railway health",         f"{RAILWAY}/api/health")
           check("Cloudflare Worker",      f"{BASE}/api/health")
           check("Neon DB stats",          f"{BASE}/api/v1/stats",
-                json_path="data.total_facilities", min_value=11000)
+                json_path="stats.facilities", min_value=11000)
 
           # ── API Endpoints ──
           print("\n🎯 API Endpoints")
@@ -156,11 +156,6 @@ jobs:
               print(f"\n🚨 {len(failures)} FAILURE(S):")
               for f in failures:
                   print(f"   • {f}")
-              # Write failures to file for notification step
-              with open("qa_failures.txt", "w") as fh:
-                  fh.write(f"DC Hub QA — {len(failures)} failure(s) at {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n\n")
-                  for f in failures:
-                      fh.write(f"• {f}\n")
               sys.exit(1)
           else:
               print("\n🎉 ALL CHECKS PASSED!")
@@ -170,8 +165,8 @@ jobs:
         if: failure()
         uses: dawidd6/action-send-mail@v3
         with:
-          server_address: smtpout.secureserver.net
-          server_port: 465
+          server_address: smtp.office365.com
+          server_port: 587
           secure: true
           username: ${{ secrets.SMTP_USERNAME }}
           password: ${{ secrets.SMTP_PASSWORD }}
