@@ -1,4 +1,4 @@
-"""
+"""# Force redeploy v2.3 - Feb 25 2026
 # v94 — Power Plant Coordinate Enrichment (Phase 2) Feb 25 2026
 # v93 — AI Testimonials + Dashboard Stats Fixes Feb 25 2026
 # v92 — Daily Automation Engine (alerts, LinkedIn, market brief) Feb 24 2026
@@ -16177,13 +16177,20 @@ logger.info("✅ AI Query endpoints registered: /api/ai/query, /api/ai/cite, /ai
 # =============================================================================
 # Energy Auto-Discovery (must be outside __main__ for gunicorn)
 try:
-    from energy_auto_discovery import register_energy_discovery_routes
-    energy_discovery_scheduler = register_energy_discovery_routes(app)
-    print("⚡ Energy Auto-Discovery: ✅ Registered")
-except ImportError:
-    print("⚡ Energy Auto-Discovery: ❌ Not installed")
-except Exception as e:
-    print(f"⚡ Energy Auto-Discovery: ⚠️ Error: {e}")
+        from energy_auto_discovery import register_energy_discovery_routes
+        energy_discovery_scheduler = register_energy_discovery_routes(app)
+        print("⚡ Energy Auto-Discovery: ✅ Registered")
+    except ImportError:
+        print("⚡ Energy Auto-Discovery: ❌ Not installed")
+    except Exception as e:
+        print(f"⚡ Energy Auto-Discovery: ⚠️ Error: {e}")
+
+    try:
+        from energy_kmz_export import register_kmz_export_routes
+        register_kmz_export_routes(app)
+        print("📦 KMZ Export: ✅ Registered")
+    except Exception as e:
+        print(f"📦 KMZ Export: ⚠️ Error: {e}")
 # MAIN
 # =============================================================================
 
@@ -16239,7 +16246,14 @@ def well_known_security():
         "Contact: mailto:security@dchub.cloud\nPreferred-Languages: en\nCanonical: https://dchub.cloud/.well-known/security.txt\nPolicy: https://dchub.cloud/terms\nExpires: 2027-01-01T00:00:00.000Z",
         mimetype='text/plain'
     )
-
+@app.route('/api/debug/energy-version')
+def debug_energy_version():
+    try:
+        import energy_auto_discovery
+        return {"file": energy_auto_discovery.__file__, "has_spatial": hasattr(energy_auto_discovery, '_hifld_spatial_query'), "version": getattr(energy_auto_discovery, 'VERSION', 'unknown')}
+    except Exception as e:
+        return {"error": str(e)}
+```
 if __name__ == '__main__':
     print("🚀 DC Hub API v86 Starting...")
     print(f"📊 PDF Generation: {'✅ Available' if PDF_AVAILABLE else '❌ Disabled'}")
