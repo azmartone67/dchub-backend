@@ -1,140 +1,81 @@
-# DC Hub Nexus - Replit Deployment Guide
+# DC Hub Backend — `dchub-backend`
 
-## 🚀 Quick Deploy to Replit
+> **⚠️ Read [DEPLOYMENT_LOCK_v3.md](DEPLOYMENT_LOCK_v3.md) before making ANY infrastructure changes.**
 
-### Step 1: Create New Replit
-1. Go to [replit.com](https://replit.com) and sign in
-2. Click **+ Create Repl**
-3. Choose **Python** template
-4. Name it: `dc-hub-nexus`
-5. Click **Create Repl**
+## Architecture
 
-### Step 2: Upload Files
-Upload ALL these files to your Replit:
-- `main.py` (entry point)
-- `discovery_nexus.py` (discovery engine)
-- `api_server.py` (REST API)
-- `requirements.txt` (dependencies)
-- `.replit` (run configuration)
-- `replit.nix` (system packages)
-
-### Step 3: Run
-Click the green **Run** button. Replit will:
-1. Install dependencies automatically
-2. Initialize the database
-3. Run initial discovery (fetches from PeeringDB)
-4. Start the API server
-
-### Step 4: Get Your API URL
-Your API will be available at:
 ```
-https://dc-hub-nexus.YOUR-USERNAME.repl.co
+dchub.cloud (Cloudflare DNS)
+    │
+    ├── mcp-proxy Worker (dchub.cloud/*) ─── Smart Router
+    │   ├── Non-API paths → dchub Frontend Worker (HTML/CSS/JS)
+    │   ├── Read-only GETs → Neon PostgreSQL (direct SQL)
+    │   ├── API writes/auth → Railway (this repo) → Neon
+    │   └── Failover → Replit → Neon
+    │
+    ├── dchub Frontend Worker ─── Static site (HTML/CSS/JS)
+    │   └── Source: cloudflare/worker-frontend-dchub.js
+    │
+    └── Neon PostgreSQL ─── Shared database (single source of truth)
 ```
 
-## 📡 API Endpoints
+## Repository Structure
 
-### Public (No Auth Required)
 ```
-GET  /                       - API info
-GET  /health                 - Health check
-GET  /api/v1/stats          - Aggregate statistics
-GET  /api/v1/facilities     - List facilities (paginated)
-GET  /api/v1/facilities/:id - Get single facility
-GET  /api/v1/search?q=      - Search facilities
-GET  /api/v1/announcements  - List announcements
-```
-
-### Discovery Control
-```
-GET  /api/v1/discovery/status - Check discovery status
-POST /api/v1/discovery/run    - Trigger discovery
-     Body: {"mode": "quick|full|news"}
-```
-
-### Authenticated (API Key Required)
-```
-POST   /api/v1/facilities   - Submit new facility
-PUT    /api/v1/facilities/:id - Update facility
-POST   /api/v1/keys         - Create API key
-GET    /api/v1/export       - Full data export
+dchub-backend/
+├── main.py                          # Flask API backend (Railway + Replit)
+├── agent_network_effect.py          # Agent registry + intelligence index routes
+├── requirements.txt                 # Python dependencies
+├── Procfile                         # Railway: gunicorn entrypoint
+├── railway.json                     # Railway build config
+├── nixpacks.toml                    # Railway nixpacks config
+│
+├── cloudflare/                      # Cloudflare Worker source code (version controlled)
+│   ├── worker-mcp-proxy-v3.8.5.js  # API proxy/router Worker (dchub.cloud/*)
+│   └── worker-frontend-dchub.js    # Frontend Worker (static HTML site)
+│
+├── DEPLOYMENT_LOCK_v3.md            # ⚠️ CRITICAL: Architecture map & deployment rules
+└── README.md                        # This file
 ```
 
-## 🔗 Connecting Your Frontend
+## Provider Roles
 
-Update your frontend's `NexusAPI.config.baseUrl`:
+| Provider | Role | URL |
+|---|---|---|
+| **Cloudflare `mcp-proxy`** | API router + failover | `dchub.cloud/*` |
+| **Cloudflare `dchub`** | Frontend (HTML/CSS/JS) | `dchub.azmartone.workers.dev` |
+| **Railway** | Primary API backend | `dchub-backend-production.up.railway.app` |
+| **Replit** | Failover API backend | `dc-hub-replit-fixedzip--azmartone1.replit.app` |
+| **Neon PostgreSQL** | Shared database | `ep-old-waterfall-aa2rwjzs-pooler.westus3.azure.neon.tech` |
 
-```javascript
-const NexusAPI = {
-    config: {
-        baseUrl: 'https://dc-hub-nexus.YOUR-USERNAME.repl.co',
-        // ...
-    },
-    // ...
-};
-```
+## Deploying
 
-## 🔧 Environment Variables
+### Railway (auto-deploys from `main` branch)
+Push to `main` → Railway rebuilds automatically. Monitor logs for errors.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DCHUB_RUN_DISCOVERY` | `1` | Run discovery on startup |
-| `DCHUB_DISCOVERY_MODE` | `quick` | Initial run mode (quick/full/none) |
-| `PORT` | `5000` | Server port (Replit sets this) |
+### Cloudflare Workers
+1. Open Cloudflare Dashboard → Workers & Pages
+2. Select the worker (`mcp-proxy` or `dchub`)
+3. Quick Edit → paste updated code from `cloudflare/` folder
+4. Save and Deploy
+5. **Always verify homepage loads HTML after any Worker change**
 
-## 📊 Data Sources
+### Replit
+Replit runs the same `main.py` but with background tasks disabled. Do NOT republish unless necessary.
 
-### Tier 1 - Free APIs (Auto-enabled)
-- **PeeringDB** - 5,000+ facilities with IX data
-- **OpenStreetMap** - 10,000+ tagged data centers
-- **Wikidata** - Structured entity data
-- **SEC EDGAR** - REIT filings
+## Key Rules
 
-### Tier 2 - Web Scraping (Enabled)
-- Cloudscene, DatacenterHawk, Provider sites
+1. **Non-API routes → `dchub` frontend Worker** (never Railway, never `fetch(request)`)
+2. **Railway root `/` returns JSON** — it is NOT the homepage
+3. **API 404s on Railway fall through to Replit** (404 fallthrough logic in Worker)
+4. **Both backends share one Neon database** — no data sync needed
+5. **Read DEPLOYMENT_LOCK_v3.md before changing anything**
 
-### Tier 3 - News (Enabled)
-- RSS feeds from DCD, DCK, DCF
+## Environment Variables (Railway + Replit)
 
-## 🔄 Automatic Discovery
-
-The server runs discovery automatically:
-- **On startup**: Quick discovery
-- **Every 6 hours**: Scheduled quick discovery
-- **Manual trigger**: POST to `/api/v1/discovery/run`
-
-## 💡 Tips
-
-1. **Keep Replit Awake**: Use UptimeRobot to ping `/health` every 5 minutes
-2. **Scale Up**: Upgrade to Replit Hacker plan for always-on
-3. **Custom Domain**: Add your domain in Replit settings
-4. **Monitor**: Check `/api/v1/stats` for data growth
-
-## 📁 File Structure
-```
-dc-hub-nexus/
-├── main.py              # Entry point (combines engine + API)
-├── discovery_nexus.py   # Data discovery from 15+ sources
-├── api_server.py        # REST API server
-├── requirements.txt     # Python dependencies
-├── .replit             # Replit run configuration
-├── replit.nix          # System dependencies
-└── dc_nexus.db         # SQLite database (auto-created)
-```
-
-## 🆘 Troubleshooting
-
-**API returns demo data?**
-- Discovery hasn't completed yet. Wait 1-2 minutes.
-
-**CORS errors?**
-- Flask-CORS is enabled. Check your frontend URL.
-
-**Rate limited?**
-- PeeringDB allows 100 requests/5 min. Discovery respects this.
-
-**Database locked?**
-- Stop any running discovery before restarting.
-
----
-
-Built for [DC Hub](https://dchub.cloud) 🏢⚡
+Both backends need identical env vars:
+- `DATABASE_URL` / `NEON_DATABASE_URL` — Neon connection string
+- `STRIPE_SECRET_KEY` — Payment processing
+- `STRIPE_WEBHOOK_SECRET` — Stripe webhook verification
+- `ADMIN_API_KEY` — Admin endpoint auth
+- `IS_RAILWAY` — Set only on Railway (controls background task execution)
