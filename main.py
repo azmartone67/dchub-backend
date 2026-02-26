@@ -1,4 +1,4 @@
-"""
+"""# Force redeploy v2.3 - Feb 25 2026
 # v94 — Power Plant Coordinate Enrichment (Phase 2) Feb 25 2026
 # v93 — AI Testimonials + Dashboard Stats Fixes Feb 25 2026
 # v92 — Daily Automation Engine (alerts, LinkedIn, market brief) Feb 24 2026
