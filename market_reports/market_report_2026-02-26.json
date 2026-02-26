@@ -1,6 +1,6 @@
 {
   "report_date": "2026-02-26",
-  "generated_at": "2026-02-26T16:14:08.663164",
+  "generated_at": "2026-02-26T17:40:45.371284",
   "summary": {
     "total_facilities": 11433,
     "total_providers": 3958,
@@ -89,54 +89,54 @@
   ],
   "recent_news": [
     {
+      "title": "Nvidia CEO says the economics of space data centers are 'poor right now,' but will improve",
+      "source": "AOL.com",
+      "date": "2026-02-26T17:20:09"
+    },
+    {
+      "title": "Google Is Proving You Don't Need On-Site Gas to Build Large Data Centers Quickly",
+      "source": "Distilled | Michael Thomas",
+      "date": "2026-02-26T17:17:39"
+    },
+    {
+      "title": "Qualcomm hires former Intel Foundry SVP Kevin O\u2019Buckley to lead global operations and supply chain",
+      "source": "Data Center Dynamics",
+      "date": "2026-02-26T17:06:38"
+    },
+    {
+      "title": "NVIDIA Reports Record Revenue as Surging AI Demand Drives Data Center Growth",
+      "source": "AI Insider",
+      "date": "2026-02-26T16:48:57"
+    },
+    {
+      "title": "700MW data center could be built at Port of Dunkirk, northern France",
+      "source": "Data Center Dynamics",
+      "date": "2026-02-26T16:30:04"
+    },
+    {
+      "title": "Ciena unleashes optical engine for AI data center era",
+      "source": "Data Center Dynamics",
+      "date": "2026-02-26T16:16:00"
+    },
+    {
+      "title": "Microsoft makes plans for data center in North Carolina",
+      "source": "Spectrum News",
+      "date": "2026-02-26T16:06:00"
+    },
+    {
+      "title": "AI Infrastructure Race Is Reshaping Economies, Says NVIDIA CEO",
+      "source": "INDIA New England News",
+      "date": "2026-02-26T16:02:47"
+    },
+    {
+      "title": "CoreSite Miami and Virginia Data Centers Welcome New Community IX Internet Exchanges",
+      "source": "Business Wire",
+      "date": "2026-02-26T16:00:00"
+    },
+    {
       "title": "Data center developer withdraws application in Florida in response to proposed regulations",
       "source": "Data Center Dynamics",
       "date": "2026-02-26T15:50:03"
-    },
-    {
-      "title": "Blackstone AI Bets Drive 20% Gain",
-      "source": "Bloomberg Tech",
-      "date": "2026-02-26T15:45:06"
-    },
-    {
-      "title": "Steel Industry Shifts to AI Data Center Steel",
-      "source": "\uc870\uc120\uc77c\ubcf4",
-      "date": "2026-02-26T15:38:46"
-    },
-    {
-      "title": "Equinix, CPPIB Near $4B Deal for atNorth \u2013 Report",
-      "source": "Data Center Knowledge",
-      "date": "2026-02-26T15:29:10"
-    },
-    {
-      "title": "Equinix winning race to acquire European data center firm atNorth - report",
-      "source": "Data Center Dynamics",
-      "date": "2026-02-26T15:20:44"
-    },
-    {
-      "title": "Equinix, CPPIB Near $4B Deal for Data Center Firm atNorth \u2013 Report",
-      "source": "Data Center Knowledge",
-      "date": "2026-02-26T15:18:14"
-    },
-    {
-      "title": "Buy 5 Construction Stocks Set to Soar on AI-Powered Data Center Boom",
-      "source": "Finviz",
-      "date": "2026-02-26T15:02:38"
-    },
-    {
-      "title": "An AI data center isn\u2019t just another factory| RealClear Pennsylvania",
-      "source": "PennLive.com",
-      "date": "2026-02-26T15:00:00"
-    },
-    {
-      "title": "Top cloud providers to outspend Ireland's GDP on AI in 2026",
-      "source": "The Register DC",
-      "date": "2026-02-26T14:55:15"
-    },
-    {
-      "title": "What is ReData? Inside Brazil\u2019s new data centre tax scheme",
-      "source": "Capacity Media",
-      "date": "2026-02-26T14:50:44"
     }
   ],
   "data_sources": [
