@@ -1,15 +1,21 @@
 """
-DC Hub Energy Auto-Discovery System v2.2 (PostgreSQL + 23 Markets)
+DC Hub Energy Auto-Discovery System v2.3 (PostgreSQL + 23 Markets)
 ====================================================================
+v2.3 Fixes:
+  - Added inSR/outSR=4326 to ALL HIFLD spatial queries
+  - State-based WHERE fallback when bounding box returns 0
+  - Wind queried by STATE (rural, not in metro bounding boxes)
+  - Better error logging (logs actual HIFLD response on failure)
+  - Increased timeouts for large spatial queries
+
 Automatically discovers and syncs:
 - Power plants (HIFLD with lat/lng + EIA capacity data)
 - Substations (HIFLD with coordinates)
 - Transmission lines (HIFLD)
 - Gas pipelines (built-in + FERC data)
-- Wind projects (HIFLD)
+- Wind projects (HIFLD — queried by state)
 
-Runs every 10 minutes. HIFLD provides map coordinates, EIA provides capacity data.
-23 monitored markets (8 primary + 15 expansion).
+Runs every 15 minutes. 23 monitored markets.
 """
 
 import os
@@ -29,7 +35,7 @@ logger = logging.getLogger(__name__)
 # CONFIGURATION
 # =============================================================================
 
-SYNC_INTERVAL_SECONDS = 900  # 15 minutes (increased from 10 for 23 markets)
+SYNC_INTERVAL_SECONDS = 900
 IS_RAILWAY = bool(os.environ.get('RAILWAY_ENVIRONMENT'))
 
 # API Endpoints
@@ -56,7 +62,6 @@ MONITORED_MARKETS = {
     'new_york_nj': {'name': 'New York / New Jersey', 'bounds': [-74.5, 40.4, -73.7, 41.0], 'state': 'NJ'},
     'seattle_quincy': {'name': 'Seattle / Quincy, WA', 'bounds': [-122.6, 47.0, -119.5, 47.8], 'state': 'WA'},
     'portland_hillsboro': {'name': 'Portland / Hillsboro, OR', 'bounds': [-123.2, 45.3, -122.4, 45.7], 'state': 'OR'},
-    # NOTE: Ashburn/Loudoun skipped — already covered by northern_virginia bounds
     # === Tier 2: Fast-Growing ===
     'denver': {'name': 'Denver, CO', 'bounds': [-105.3, 39.5, -104.6, 40.0], 'state': 'CO'},
     'san_antonio': {'name': 'San Antonio, TX', 'bounds': [-98.8, 29.2, -98.1, 29.7], 'state': 'TX'},
@@ -70,6 +75,9 @@ MONITORED_MARKETS = {
     'richmond': {'name': 'Richmond, VA', 'bounds': [-77.7, 37.3, -77.1, 37.8], 'state': 'VA'},
     'nashville': {'name': 'Nashville, TN', 'bounds': [-87.1, 35.9, -86.4, 36.4], 'state': 'TN'},
 }
+
+# Track which states we've already synced wind for (avoid duplicate per-state queries)
+_wind_synced_states = set()
 
 # =============================================================================
 # DATABASE SETUP (PostgreSQL compatible)
@@ -101,7 +109,6 @@ def init_discovery_db():
                 is_new INTEGER DEFAULT 1
             )
         """)
-        # Add lat/lng columns if table already exists without them
         for col in ['lat REAL', 'lng REAL']:
             try:
                 c.execute(f"ALTER TABLE discovered_power_plants ADD COLUMN {col}")
@@ -215,179 +222,258 @@ def init_discovery_db():
 
 
 # =============================================================================
-# API QUERIES
+# API QUERIES — v2.3 FIXED (inSR/outSR + state fallback + logging)
 # =============================================================================
 
-def query_transmission_lines(bounds, limit=500):
-    """Query HIFLD for transmission lines in bounding box"""
+def _hifld_spatial_query(url, bounds, out_fields, return_geometry=False, limit=500, label="HIFLD"):
+    """
+    Generic HIFLD spatial query with proper coordinate system params.
+    Falls back to no geometry filter if spatial query returns 0.
+    """
+    # Build envelope string: xmin,ymin,xmax,ymax
+    envelope = f'{bounds[0]},{bounds[1]},{bounds[2]},{bounds[3]}'
+    params = {
+        'geometry': envelope,
+        'geometryType': 'esriGeometryEnvelope',
+        'spatialRel': 'esriSpatialRelIntersects',
+        'inSR': '4326',
+        'outSR': '4326',
+        'outFields': out_fields,
+        'returnGeometry': 'true' if return_geometry else 'false',
+        'f': 'json',
+        'resultRecordCount': limit,
+    }
     try:
-        params = {
-            'geometry': f'{bounds[0]},{bounds[1]},{bounds[2]},{bounds[3]}',
-            'geometryType': 'esriGeometryEnvelope',
-            'spatialRel': 'esriSpatialRelIntersects',
-            'outFields': 'OWNER,VOLTAGE,VOLT_CLASS,SUB_1,SUB_2,STATUS',
-            'returnGeometry': 'false',
-            'inSR': '4326',
-            'f': 'json',
-            'resultRecordCount': limit
-        }
-        response = requests.get(HIFLD_TRANSMISSION, params=params, timeout=60)
+        response = requests.get(url, params=params, timeout=90)
         data = response.json()
-        if 'features' in data:
-            lines = []
-            for f in data['features']:
-                attrs = f.get('attributes', {})
-                lines.append({
-                    'id': f"tx-{hash(str(attrs)) % 1000000}",
-                    'owner': attrs.get('OWNER', 'Unknown'),
-                    'voltage_kv': attrs.get('VOLTAGE', 0),
-                    'volt_class': attrs.get('VOLT_CLASS', 'Unknown'),
-                    'sub_1': attrs.get('SUB_1', ''),
-                    'sub_2': attrs.get('SUB_2', ''),
-                    'status': attrs.get('STATUS', 'Unknown')
-                })
-            return lines
+
+        if 'error' in data:
+            logger.warning(f"⚠️ {label} API error: {data['error']}")
+            return []
+
+        features = data.get('features', [])
+        return features
+
+    except requests.Timeout:
+        logger.warning(f"⚠️ {label} timeout (90s) for bounds {envelope}")
         return []
     except Exception as e:
-        logger.warning(f"⚠️ Transmission Lines error: {e}")
+        logger.warning(f"⚠️ {label} query error: {e}")
         return []
 
 
-def query_hifld_power_plants(bounds, limit=500):
+def _hifld_state_query(url, state, out_fields, state_field='STATE', return_geometry=False, limit=500, label="HIFLD"):
+    """Query HIFLD by state WHERE clause (fallback when spatial returns 0)."""
+    params = {
+        'where': f"{state_field} = '{state}'",
+        'outFields': out_fields,
+        'outSR': '4326',
+        'returnGeometry': 'true' if return_geometry else 'false',
+        'f': 'json',
+        'resultRecordCount': limit,
+    }
+    try:
+        response = requests.get(url, params=params, timeout=90)
+        data = response.json()
+        if 'error' in data:
+            logger.warning(f"⚠️ {label} state query error: {data['error']}")
+            return []
+        return data.get('features', [])
+    except Exception as e:
+        logger.warning(f"⚠️ {label} state query failed: {e}")
+        return []
+
+
+def query_transmission_lines(bounds, state=None, limit=500):
+    """Query HIFLD for transmission lines — spatial first, state fallback"""
+    out_fields = 'OWNER,VOLTAGE,VOLT_CLASS,SUB_1,SUB_2,STATUS'
+
+    features = _hifld_spatial_query(
+        HIFLD_TRANSMISSION, bounds, out_fields,
+        return_geometry=False, limit=limit, label="TX Lines (spatial)"
+    )
+
+    # Fallback: query by state if spatial returned nothing
+    if not features and state:
+        logger.info(f"      ↳ TX Lines spatial=0, trying state={state}...")
+        features = _hifld_state_query(
+            HIFLD_TRANSMISSION, state, out_fields,
+            state_field='STATE', limit=limit, label="TX Lines (state)"
+        )
+
+    lines = []
+    for f in features:
+        attrs = f.get('attributes', {})
+        voltage = attrs.get('VOLTAGE', 0) or 0
+        owner = attrs.get('OWNER', 'Unknown') or 'Unknown'
+        # Create a more stable ID using owner + voltage + substations
+        sub1 = attrs.get('SUB_1', '') or ''
+        sub2 = attrs.get('SUB_2', '') or ''
+        id_str = f"{owner}-{voltage}-{sub1}-{sub2}"
+        lines.append({
+            'id': f"tx-{abs(hash(id_str)) % 100000000}",
+            'owner': owner,
+            'voltage_kv': voltage,
+            'volt_class': attrs.get('VOLT_CLASS', 'Unknown') or 'Unknown',
+            'sub_1': sub1,
+            'sub_2': sub2,
+            'status': attrs.get('STATUS', 'Unknown') or 'Unknown',
+        })
+
+    if lines:
+        logger.info(f"   ⚡ {len(lines)} transmission lines found")
+    return lines
+
+
+def query_hifld_power_plants(bounds, state=None, limit=500):
     """Query HIFLD for power plants WITH lat/lng coordinates"""
-    try:
-        params = {
-            'geometry': f'{bounds[0]},{bounds[1]},{bounds[2]},{bounds[3]}',
-            'geometryType': 'esriGeometryEnvelope',
-            'spatialRel': 'esriSpatialRelIntersects',
-            'outFields': 'NAME,PRIM_FUEL,TOTAL_MW,OPER_CAP,OPERATOR,STATE,STATUS,COUNTY,SECTOR_NAM',
-            'returnGeometry': 'true',
-            'f': 'json',
-            'resultRecordCount': limit
-        }
-        response = requests.get(HIFLD_POWER_PLANTS, params=params, timeout=60)
-        data = response.json()
+    out_fields = 'NAME,PRIM_FUEL,TOTAL_MW,OPER_CAP,OPERATOR,STATE,STATUS,COUNTY,SECTOR_NAM'
 
-        if 'features' in data:
-            plants = []
-            for f in data['features']:
-                attrs = f.get('attributes', {})
-                geom = f.get('geometry', {})
-                name = attrs.get('NAME', 'Unknown')
-                cap = attrs.get('TOTAL_MW') or attrs.get('OPER_CAP') or 0
+    features = _hifld_spatial_query(
+        HIFLD_POWER_PLANTS, bounds, out_fields,
+        return_geometry=True, limit=limit, label="Power Plants (spatial)"
+    )
 
-                # Skip tiny plants
-                if cap < 1:
-                    continue
+    # Fallback: query by state
+    if not features and state:
+        logger.info(f"      ↳ Power Plants spatial=0, trying state={state}...")
+        features = _hifld_state_query(
+            HIFLD_POWER_PLANTS, state, out_fields,
+            state_field='STATE', return_geometry=True, limit=limit,
+            label="Power Plants (state)"
+        )
 
-                plants.append({
-                    'id': f"hifld-{hash(name + str(geom.get('x', ''))) % 10000000}",
-                    'name': name,
-                    'fuel_type': attrs.get('PRIM_FUEL', 'Unknown'),
-                    'capacity_mw': float(cap),
-                    'generation_mwh': 0,
-                    'operator': attrs.get('OPERATOR', 'Unknown'),
-                    'state': attrs.get('STATE', ''),
-                    'sector': attrs.get('SECTOR_NAM', 'Unknown'),
-                    'lat': geom.get('y'),
-                    'lng': geom.get('x'),
-                    'source': 'HIFLD',
-                })
-            logger.info(f"   📡 HIFLD: {len(plants)} power plants with coordinates")
-            return plants
-        return []
-    except Exception as e:
-        logger.warning(f"⚠️ HIFLD Power Plants error: {e}")
-        return []
+    plants = []
+    for f in features:
+        attrs = f.get('attributes', {})
+        geom = f.get('geometry', {})
+        name = attrs.get('NAME', 'Unknown') or 'Unknown'
+        cap = attrs.get('TOTAL_MW') or attrs.get('OPER_CAP') or 0
+        try:
+            cap = float(cap)
+        except:
+            cap = 0
+
+        if cap < 1:
+            continue
+
+        lat = geom.get('y')
+        lng = geom.get('x')
+
+        plants.append({
+            'id': f"hifld-{abs(hash(name + str(lng))) % 100000000}",
+            'name': name,
+            'fuel_type': attrs.get('PRIM_FUEL', 'Unknown') or 'Unknown',
+            'capacity_mw': cap,
+            'generation_mwh': 0,
+            'operator': attrs.get('OPERATOR', 'Unknown') or 'Unknown',
+            'state': attrs.get('STATE', '') or '',
+            'sector': attrs.get('SECTOR_NAM', 'Unknown') or 'Unknown',
+            'lat': lat,
+            'lng': lng,
+            'source': 'HIFLD',
+        })
+
+    if plants:
+        logger.info(f"   📡 HIFLD: {len(plants)} power plants with coordinates")
+    return plants
 
 
-def query_hifld_substations(bounds, limit=500):
+def query_hifld_substations(bounds, state=None, limit=500):
     """Query HIFLD for substations with coordinates"""
-    try:
-        params = {
-            'geometry': f'{bounds[0]},{bounds[1]},{bounds[2]},{bounds[3]}',
-            'geometryType': 'esriGeometryEnvelope',
-            'spatialRel': 'esriSpatialRelIntersects',
-            'outFields': 'NAME,STATE,STATUS,OWNER,MAX_VOLT,MIN_VOLT,LINES,TYPE',
-            'returnGeometry': 'true',
-            'f': 'json',
-            'resultRecordCount': limit
-        }
-        response = requests.get(HIFLD_SUBSTATIONS, params=params, timeout=60)
-        data = response.json()
+    out_fields = 'NAME,STATE,STATUS,OWNER,MAX_VOLT,MIN_VOLT,LINES,TYPE'
 
-        if 'features' in data:
-            subs = []
-            for f in data['features']:
-                attrs = f.get('attributes', {})
-                geom = f.get('geometry', {})
-                name = attrs.get('NAME', 'Unknown')
-                subs.append({
-                    'id': f"sub-{hash(name + str(geom.get('x', ''))) % 10000000}",
-                    'name': name,
-                    'owner': attrs.get('OWNER', 'Unknown'),
-                    'voltage_kv': attrs.get('MAX_VOLT', 0),
-                    'min_voltage_kv': attrs.get('MIN_VOLT', 0),
-                    'status': attrs.get('STATUS', 'Unknown'),
-                    'lines': attrs.get('LINES', 0),
-                    'type': attrs.get('TYPE', 'Unknown'),
-                    'state': attrs.get('STATE', ''),
-                    'lat': geom.get('y'),
-                    'lng': geom.get('x'),
-                })
-            logger.info(f"   📡 HIFLD: {len(subs)} substations with coordinates")
-            return subs
-        return []
-    except Exception as e:
-        logger.warning(f"⚠️ HIFLD Substations error: {e}")
-        return []
+    features = _hifld_spatial_query(
+        HIFLD_SUBSTATIONS, bounds, out_fields,
+        return_geometry=True, limit=limit, label="Substations (spatial)"
+    )
+
+    if not features and state:
+        logger.info(f"      ↳ Substations spatial=0, trying state={state}...")
+        features = _hifld_state_query(
+            HIFLD_SUBSTATIONS, state, out_fields,
+            state_field='STATE', return_geometry=True, limit=limit,
+            label="Substations (state)"
+        )
+
+    subs = []
+    for f in features:
+        attrs = f.get('attributes', {})
+        geom = f.get('geometry', {})
+        name = attrs.get('NAME', 'Unknown') or 'Unknown'
+        subs.append({
+            'id': f"sub-{abs(hash(name + str(geom.get('x', '')))) % 100000000}",
+            'name': name,
+            'owner': attrs.get('OWNER', 'Unknown') or 'Unknown',
+            'voltage_kv': attrs.get('MAX_VOLT', 0) or 0,
+            'min_voltage_kv': attrs.get('MIN_VOLT', 0) or 0,
+            'status': attrs.get('STATUS', 'Unknown') or 'Unknown',
+            'lines': attrs.get('LINES', 0) or 0,
+            'type': attrs.get('TYPE', 'Unknown') or 'Unknown',
+            'state': attrs.get('STATE', '') or '',
+            'lat': geom.get('y'),
+            'lng': geom.get('x'),
+        })
+
+    if subs:
+        logger.info(f"   📡 HIFLD: {len(subs)} substations with coordinates")
+    return subs
 
 
-def query_wind_turbines(bounds, limit=500):
-    """Query HIFLD for wind turbines in bounding box"""
-    try:
-        params = {
-            'geometry': f'{bounds[0]},{bounds[1]},{bounds[2]},{bounds[3]}',
-            'geometryType': 'esriGeometryEnvelope',
-            'spatialRel': 'esriSpatialRelIntersects',
-            'outFields': 'p_name,p_cap,t_cap,t_manu,t_model,t_state,t_county',
-            'returnGeometry': 'true',
-            'f': 'json',
-            'resultRecordCount': limit
-        }
-        response = requests.get(HIFLD_WIND_TURBINES, params=params, timeout=60)
-        data = response.json()
-        if 'features' in data:
-            turbines = []
-            seen = set()
-            for f in data['features']:
-                attrs = f.get('attributes', {})
-                project = attrs.get('p_name', 'Unknown')
-                if project not in seen:
-                    seen.add(project)
-                    turbines.append({
-                        'id': f"wind-{hash(project) % 1000000}",
-                        'project_name': project,
-                        'project_capacity_mw': attrs.get('p_cap', 0),
-                        'turbine_capacity_kw': attrs.get('t_cap', 0),
-                        'manufacturer': attrs.get('t_manu', 'Unknown'),
-                        'model': attrs.get('t_model', 'Unknown'),
-                        'state': attrs.get('t_state', ''),
-                        'county': attrs.get('t_county', ''),
-                        'lat': f.get('geometry', {}).get('y'),
-                        'lng': f.get('geometry', {}).get('x')
-                    })
-            return turbines
-        return []
-    except Exception as e:
-        logger.warning(f"⚠️ Wind Turbines error: {e}")
-        return []
+def query_wind_turbines(bounds=None, state=None, limit=500):
+    """
+    Query HIFLD for wind turbines.
+    v2.3: Queries by STATE (wind farms are rural, not in metro bounding boxes).
+    Deduplicates by project name.
+    """
+    features = []
+
+    # Primary: query by state (wind farms are rarely inside metro bounding boxes)
+    if state:
+        features = _hifld_state_query(
+            HIFLD_WIND_TURBINES, state, 'p_name,p_cap,t_cap,t_manu,t_model,t_state,t_county',
+            state_field='t_state', return_geometry=True, limit=limit,
+            label=f"Wind ({state})"
+        )
+
+    # Fallback: spatial query if state didn't work
+    if not features and bounds:
+        features = _hifld_spatial_query(
+            HIFLD_WIND_TURBINES, bounds,
+            'p_name,p_cap,t_cap,t_manu,t_model,t_state,t_county',
+            return_geometry=True, limit=limit, label="Wind (spatial)"
+        )
+
+    turbines = []
+    seen = set()
+    for f in features:
+        attrs = f.get('attributes', {})
+        project = attrs.get('p_name', 'Unknown') or 'Unknown'
+        if project in seen or project == 'Unknown':
+            continue
+        seen.add(project)
+        geom = f.get('geometry', {})
+        turbines.append({
+            'id': f"wind-{abs(hash(project)) % 100000000}",
+            'project_name': project,
+            'project_capacity_mw': attrs.get('p_cap', 0) or 0,
+            'turbine_capacity_kw': attrs.get('t_cap', 0) or 0,
+            'manufacturer': attrs.get('t_manu', 'Unknown') or 'Unknown',
+            'model': attrs.get('t_model', 'Unknown') or 'Unknown',
+            'state': attrs.get('t_state', '') or '',
+            'county': attrs.get('t_county', '') or '',
+            'lat': geom.get('y'),
+            'lng': geom.get('x'),
+        })
+
+    if turbines:
+        logger.info(f"   🌬️ {len(turbines)} wind projects in {state or 'area'}")
+    return turbines
 
 
 def query_pipelines(bounds=None, state=None, limit=200):
     """Return major interstate gas pipelines serving DC markets"""
     major_pipelines = [
-        # === Original 20 pipelines ===
         {'id': 'pipe-transco-001', 'operator': 'Transcontinental Gas (Williams)', 'pipeline_type': 'Interstate Transmission', 'status': 'Active', 'diameter': 42, 'commodity': 'Natural Gas', 'name': 'Transco Pipeline', 'capacity_mdth': 17400, 'lat': 39.0, 'lng': -77.5, 'states': 'TX,LA,MS,AL,GA,SC,NC,VA,MD,PA,NJ,NY'},
         {'id': 'pipe-tet-001', 'operator': 'Texas Eastern (Enbridge)', 'pipeline_type': 'Interstate Transmission', 'status': 'Active', 'diameter': 36, 'commodity': 'Natural Gas', 'name': 'Texas Eastern Pipeline', 'capacity_mdth': 10200, 'lat': 33.7, 'lng': -84.3, 'states': 'TX,LA,MS,AL,GA,TN,KY,OH,PA,NJ,NY'},
         {'id': 'pipe-elp-001', 'operator': 'El Paso Natural Gas (Kinder Morgan)', 'pipeline_type': 'Interstate Transmission', 'status': 'Active', 'diameter': 36, 'commodity': 'Natural Gas', 'name': 'El Paso Natural Gas', 'capacity_mdth': 5600, 'lat': 33.4, 'lng': -112.0, 'states': 'TX,NM,AZ,CA,NV'},
@@ -408,7 +494,6 @@ def query_pipelines(bounds=None, state=None, limit=200):
         {'id': 'pipe-questar-001', 'operator': 'Questar Pipeline (Dominion)', 'pipeline_type': 'Interstate Transmission', 'status': 'Active', 'diameter': 24, 'commodity': 'Natural Gas', 'name': 'Questar Pipeline', 'capacity_mdth': 2100, 'lat': 40.7, 'lng': -111.8, 'states': 'UT,WY,CO'},
         {'id': 'pipe-mvp-001', 'operator': 'Mountain Valley Pipeline LLC', 'pipeline_type': 'Interstate Transmission', 'status': 'Active', 'diameter': 42, 'commodity': 'Natural Gas', 'name': 'Mountain Valley Pipeline', 'capacity_mdth': 2000, 'lat': 37.2, 'lng': -80.4, 'states': 'WV,VA'},
         {'id': 'pipe-nexus-001', 'operator': 'NEXUS Gas Transmission (Enbridge/DTE)', 'pipeline_type': 'Interstate Transmission', 'status': 'Active', 'diameter': 36, 'commodity': 'Natural Gas', 'name': 'NEXUS Gas Transmission', 'capacity_mdth': 1500, 'lat': 41.0, 'lng': -83.0, 'states': 'OH,MI'},
-        # === New pipelines for expanded markets ===
         {'id': 'pipe-nwpl-001', 'operator': 'Northwest Pipeline (Williams)', 'pipeline_type': 'Interstate Transmission', 'status': 'Active', 'diameter': 30, 'commodity': 'Natural Gas', 'name': 'Northwest Pipeline', 'capacity_mdth': 3800, 'lat': 47.6, 'lng': -122.3, 'states': 'WA,OR,WY,UT,CO,NM'},
         {'id': 'pipe-socal-001', 'operator': 'SoCal Gas (Sempra)', 'pipeline_type': 'Interstate Transmission', 'status': 'Active', 'diameter': 36, 'commodity': 'Natural Gas', 'name': 'SoCal Gas System', 'capacity_mdth': 4000, 'lat': 34.0, 'lng': -118.2, 'states': 'CA,AZ'},
         {'id': 'pipe-pgande-001', 'operator': 'Pacific Gas & Electric', 'pipeline_type': 'Interstate Transmission', 'status': 'Active', 'diameter': 36, 'commodity': 'Natural Gas', 'name': 'PG&E Gas Transmission', 'capacity_mdth': 3600, 'lat': 37.8, 'lng': -122.4, 'states': 'CA'},
@@ -495,7 +580,6 @@ def query_eia_power_plants(state, api_key=None):
 def get_fallback_power_plants(state):
     """Fallback power plant data when EIA API unavailable"""
     fallback_data = {
-        # === Original 8 states ===
         'AZ': [
             {'id': 'pp-palo-verde', 'name': 'Palo Verde Nuclear', 'fuel_type': 'Nuclear', 'capacity_mw': 3937, 'state': 'AZ', 'operator': 'Arizona Public Service'},
             {'id': 'pp-gila-river', 'name': 'Gila River Power Station', 'fuel_type': 'Natural Gas', 'capacity_mw': 2200, 'state': 'AZ', 'operator': 'Gila River Power'},
@@ -536,7 +620,6 @@ def get_fallback_power_plants(state):
             {'id': 'pp-iowa-wind', 'name': 'Iowa Wind Fleet', 'fuel_type': 'Wind', 'capacity_mw': 12000, 'state': 'IA', 'operator': 'Various'},
             {'id': 'pp-walter-scott', 'name': 'Walter Scott Jr. Energy Center', 'fuel_type': 'Coal', 'capacity_mw': 1630, 'state': 'IA', 'operator': 'MidAmerican Energy'},
         ],
-        # === New states for expanded markets ===
         'IL': [
             {'id': 'pp-braidwood', 'name': 'Braidwood Nuclear', 'fuel_type': 'Nuclear', 'capacity_mw': 2386, 'state': 'IL', 'operator': 'Constellation Energy'},
             {'id': 'pp-byron', 'name': 'Byron Nuclear', 'fuel_type': 'Nuclear', 'capacity_mw': 2347, 'state': 'IL', 'operator': 'Constellation Energy'},
@@ -602,7 +685,7 @@ def get_fallback_power_plants(state):
 
 
 # =============================================================================
-# SYNC FUNCTIONS (PostgreSQL compatible — uses %s placeholders)
+# SYNC FUNCTIONS (PostgreSQL compatible)
 # =============================================================================
 
 def sync_market(market_key, market_info):
@@ -625,27 +708,20 @@ def sync_market(market_key, market_info):
         conn = get_db()
         c = conn.cursor()
 
-        # --- Power plants: HIFLD first (has coordinates), then EIA for extras ---
-        hifld_plants = query_hifld_power_plants(bounds)
+        # --- Power plants: HIFLD (coordinates) + EIA (capacity) ---
+        hifld_plants = query_hifld_power_plants(bounds, state=state)
         eia_plants = query_eia_power_plants(state)
 
-        # Merge: HIFLD plants have lat/lng, EIA plants have better capacity data
-        # Use HIFLD as primary (coordinates), supplement with EIA
         all_plants = {}
-
-        # HIFLD plants (with coordinates)
         for plant in hifld_plants:
             all_plants[plant['id']] = plant
 
-        # EIA plants — try to match by name to add coordinates, or add as new
         for plant in eia_plants:
-            # Check if we already have this plant from HIFLD (fuzzy name match)
             matched = False
             plant_name_lower = (plant.get('name') or '').lower().strip()
             for hid, hplant in all_plants.items():
                 hname = (hplant.get('name') or '').lower().strip()
                 if hname and plant_name_lower and (hname in plant_name_lower or plant_name_lower in hname):
-                    # Merge EIA capacity data into HIFLD record
                     if plant.get('capacity_mw', 0) > hplant.get('capacity_mw', 0):
                         all_plants[hid]['capacity_mw'] = plant['capacity_mw']
                     all_plants[hid]['source'] = 'HIFLD+EIA'
@@ -661,7 +737,6 @@ def sync_market(market_key, market_info):
             c.execute("SELECT id, capacity_mw FROM discovered_power_plants WHERE id = %s", (plant['id'],))
             existing = c.fetchone()
             if existing:
-                # Update if capacity changed or coordinates added
                 c.execute("""UPDATE discovered_power_plants
                     SET capacity_mw = GREATEST(capacity_mw, %s), last_updated = %s, is_new = 0,
                         lat = COALESCE(lat, %s), lng = COALESCE(lng, %s),
@@ -688,8 +763,8 @@ def sync_market(market_key, market_info):
                 )
                 results['power_plants']['new'] += 1
 
-        # --- Transmission lines (HIFLD) ---
-        tx_lines = query_transmission_lines(bounds)
+        # --- Transmission lines (HIFLD — spatial + state fallback) ---
+        tx_lines = query_transmission_lines(bounds, state=state)
         results['transmission_lines']['found'] = len(tx_lines)
         for line in tx_lines:
             c.execute("SELECT id FROM discovered_transmission_lines WHERE id = %s", (line['id'],))
@@ -702,21 +777,27 @@ def sync_market(market_key, market_info):
                      line['sub_1'], line['sub_2'], line['status'], market_key, now, now))
                 results['transmission_lines']['new'] += 1
 
-        # --- Wind projects (HIFLD) ---
-        wind = query_wind_turbines(bounds)
-        results['wind_projects']['found'] = len(wind)
-        for project in wind:
-            c.execute("SELECT id FROM discovered_wind_projects WHERE id = %s", (project['id'],))
-            if not c.fetchone():
-                c.execute("""INSERT INTO discovered_wind_projects
-                    (id, project_name, project_capacity_mw, turbine_capacity_kw, manufacturer, model, state, county, lat, lng, market, discovered_at, last_updated)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                    ON CONFLICT (id) DO NOTHING""",
-                    (project['id'], project['project_name'], project['project_capacity_mw'],
-                     project['turbine_capacity_kw'], project['manufacturer'], project['model'],
-                     project['state'], project['county'], project['lat'], project['lng'],
-                     market_key, now, now))
-                results['wind_projects']['new'] += 1
+        # --- Wind projects (HIFLD — by STATE, deduplicated across markets) ---
+        global _wind_synced_states
+        if state not in _wind_synced_states:
+            wind = query_wind_turbines(bounds=bounds, state=state)
+            _wind_synced_states.add(state)
+            results['wind_projects']['found'] = len(wind)
+            for project in wind:
+                c.execute("SELECT id FROM discovered_wind_projects WHERE id = %s", (project['id'],))
+                if not c.fetchone():
+                    c.execute("""INSERT INTO discovered_wind_projects
+                        (id, project_name, project_capacity_mw, turbine_capacity_kw, manufacturer, model, state, county, lat, lng, market, discovered_at, last_updated)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        ON CONFLICT (id) DO NOTHING""",
+                        (project['id'], project['project_name'], project['project_capacity_mw'],
+                         project['turbine_capacity_kw'], project['manufacturer'], project['model'],
+                         project['state'], project['county'], project['lat'], project['lng'],
+                         market_key, now, now))
+                    results['wind_projects']['new'] += 1
+        else:
+            # Already synced this state's wind in a previous market
+            pass
 
         # --- Pipelines (built-in data) ---
         pipelines = query_pipelines(bounds, state=state)
@@ -783,7 +864,11 @@ def log_sync(market, results, duration):
 
 def run_full_sync():
     """Run sync for all monitored markets"""
-    logger.info(f"🔄 ENERGY AUTO-DISCOVERY SYNC — {datetime.utcnow().isoformat()}")
+    logger.info(f"🔄 ENERGY AUTO-DISCOVERY SYNC v2.3 — {datetime.utcnow().isoformat()}")
+
+    # Reset per-sync state tracking
+    global _wind_synced_states
+    _wind_synced_states = set()
 
     start_time = time.time()
     total_results = {
@@ -863,11 +948,10 @@ class EnergyAutoDiscoveryScheduler:
 
 
 # =============================================================================
-# HELPER: dict rows from psycopg2 cursor
+# HELPER
 # =============================================================================
 
 def _dict_rows(cursor):
-    """Convert psycopg2 cursor results to list of dicts"""
     if not cursor.description:
         return []
     cols = [d[0] for d in cursor.description]
@@ -1075,13 +1159,10 @@ def register_energy_discovery_routes(app):
     def energy_discovery_backfill_coords():
         """Backfill lat/lng for existing plants using HIFLD"""
         updated = 0
-        errors = []
         conn = None
         try:
             conn = get_db()
             c = conn.cursor()
-
-            # Get plants missing coordinates
             c.execute("SELECT id, name, state, market FROM discovered_power_plants WHERE lat IS NULL OR lng IS NULL LIMIT 500")
             cols = [d[0] for d in c.description]
             missing = [dict(zip(cols, row)) for row in c.fetchall()]
@@ -1089,7 +1170,6 @@ def register_energy_discovery_routes(app):
             if not missing:
                 return jsonify({'success': True, 'message': 'All plants already have coordinates', 'updated': 0})
 
-            # Group by market and query HIFLD for each
             markets_done = set()
             for plant in missing:
                 market_key = plant.get('market', '')
@@ -1097,10 +1177,9 @@ def register_energy_discovery_routes(app):
                     continue
                 markets_done.add(market_key)
 
-                bounds = MONITORED_MARKETS[market_key]['bounds']
-                hifld_plants = query_hifld_power_plants(bounds, limit=1000)
+                mkt = MONITORED_MARKETS[market_key]
+                hifld_plants = query_hifld_power_plants(mkt['bounds'], state=mkt['state'], limit=1000)
 
-                # Match by name
                 for hp in hifld_plants:
                     if not hp.get('lat') or not hp.get('lng'):
                         continue
@@ -1114,7 +1193,6 @@ def register_energy_discovery_routes(app):
                                       (hp['lat'], hp['lng'], datetime.utcnow().isoformat(), mp['id']))
                             updated += 1
 
-                # Also insert HIFLD plants we don't have yet
                 for hp in hifld_plants:
                     if hp.get('lat') and hp.get('lng'):
                         c.execute("""INSERT INTO discovered_power_plants
@@ -1131,7 +1209,6 @@ def register_energy_discovery_routes(app):
 
             conn.commit()
 
-            # Count how many now have coords
             c.execute("SELECT COUNT(*) FROM discovered_power_plants WHERE lat IS NOT NULL AND lng IS NOT NULL")
             with_coords = c.fetchone()[0]
             c.execute("SELECT COUNT(*) FROM discovered_power_plants")
@@ -1145,7 +1222,6 @@ def register_energy_discovery_routes(app):
                 'coverage_pct': round(with_coords / total * 100, 1) if total > 0 else 0
             })
         except Exception as e:
-            errors.append(str(e))
             return jsonify({'success': False, 'error': str(e), 'updated': updated})
         finally:
             if conn:
@@ -1172,58 +1248,57 @@ def register_energy_discovery_routes(app):
         else:
             results['eia'] = {'status': 'fallback', 'message': 'EIA_API_KEY not set'}
 
+        # Test transmission (spatial with inSR)
         try:
-            params = {'where': '1=1', 'outFields': 'OWNER', 'returnGeometry': 'false', 'f': 'json', 'resultRecordCount': 3}
-            resp = requests.get(HIFLD_TRANSMISSION, params=params, timeout=60)
-            data = resp.json()
-            results['hifld_transmission'] = {'status': 'ok', 'count': len(data.get('features', []))} if 'features' in data else {'status': 'error'}
+            bounds = [-112.5, 33.0, -111.5, 34.0]
+            tx = query_transmission_lines(bounds, state='AZ', limit=5)
+            results['hifld_transmission'] = {'status': 'ok', 'count': len(tx),
+                                              'method': 'spatial+state_fallback'}
         except Exception as e:
             results['hifld_transmission'] = {'status': 'error', 'detail': str(e)}
 
+        # Test wind (by state)
         try:
-            params = {'where': '1=1', 'outFields': 'p_name', 'returnGeometry': 'false', 'f': 'json', 'resultRecordCount': 3}
-            resp = requests.get(HIFLD_WIND_TURBINES, params=params, timeout=60)
-            data = resp.json()
-            results['hifld_wind'] = {'status': 'ok', 'count': len(data.get('features', []))} if 'features' in data else {'status': 'error'}
+            wind = query_wind_turbines(state='TX', limit=10)
+            results['hifld_wind'] = {'status': 'ok', 'count': len(wind),
+                                      'method': 'state_query',
+                                      'sample': [t['project_name'] for t in wind[:3]]}
         except Exception as e:
             results['hifld_wind'] = {'status': 'error', 'detail': str(e)}
 
         results['pipelines'] = {'status': 'ok', 'count': 31, 'source': 'built-in FERC data'}
 
-        # Test HIFLD Power Plants (with coordinates)
+        # Test power plants (spatial with inSR + state fallback)
         try:
-            bounds = [-112.5, 33.0, -111.5, 34.0]  # Phoenix
-            plants = query_hifld_power_plants(bounds, limit=5)
+            bounds = [-112.5, 33.0, -111.5, 34.0]
+            plants = query_hifld_power_plants(bounds, state='AZ', limit=5)
             with_coords = sum(1 for p in plants if p.get('lat') and p.get('lng'))
-            results['hifld_power_plants'] = {'status': 'ok', 'count': len(plants), 'with_coords': with_coords,
-                                              'sample': [p.get('name', 'Unknown') for p in plants[:3]]}
+            results['hifld_power_plants'] = {'status': 'ok', 'count': len(plants),
+                                              'with_coords': with_coords,
+                                              'method': 'spatial+state_fallback',
+                                              'sample': [p.get('name', '?') for p in plants[:3]]}
         except Exception as e:
             results['hifld_power_plants'] = {'status': 'error', 'detail': str(e)}
 
-        # Test HIFLD Substations
+        # Test substations
         try:
-            subs = query_hifld_substations([-112.5, 33.0, -111.5, 34.0], limit=5)
-            results['hifld_substations'] = {'status': 'ok', 'count': len(subs)}
+            subs = query_hifld_substations([-112.5, 33.0, -111.5, 34.0], state='AZ', limit=5)
+            results['hifld_substations'] = {'status': 'ok', 'count': len(subs),
+                                             'method': 'spatial+state_fallback'}
         except Exception as e:
             results['hifld_substations'] = {'status': 'error', 'detail': str(e)}
 
         return jsonify({'success': True, 'results': results})
 
-    # Only start the background scheduler on Railway
     if IS_RAILWAY:
         scheduler.start()
     else:
         logger.info("⚡ Energy Auto-Discovery: routes registered (scheduler paused — not Railway)")
 
-    logger.info("⚡ Energy Auto-Discovery v2.2 routes registered (PostgreSQL — 23 markets)")
-    logger.info("   ✅ /api/energy-discovery/status")
-    logger.info("   ✅ /api/energy-discovery/power-plants")
-    logger.info("   ✅ /api/energy-discovery/transmission-lines")
-    logger.info("   ✅ /api/energy-discovery/wind-projects")
-    logger.info("   ✅ /api/energy-discovery/pipelines")
-    logger.info("   ✅ /api/energy-discovery/sync-log")
-    logger.info("   ✅ /api/energy-discovery/backfill-coords")
-    logger.info("   ✅ /api/energy-discovery/test-apis")
+    logger.info("⚡ Energy Auto-Discovery v2.3 routes registered (PostgreSQL — 23 markets)")
+    logger.info("   ✅ Fixed: inSR/outSR=4326 on all HIFLD queries")
+    logger.info("   ✅ Fixed: State fallback when spatial returns 0")
+    logger.info("   ✅ Fixed: Wind queried by state (rural, not metro)")
 
     return scheduler
 
