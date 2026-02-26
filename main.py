@@ -10727,12 +10727,7 @@ def partner_inquiry():
 
 @app.route('/', methods=['GET'])
 def index():
-    return jsonify({
-        'name': 'DC Hub Nexus API',
-        'version': '86.0.0',
-        'status': 'healthy',
-        'features': ['leads', 'auth', 'markets', 'reports', 'agents', 'discovery']
-    })
+    return send_from_directory('static', 'index.html')
 
 @app.route('/app', methods=['GET'])
 @app.route('/ui', methods=['GET'])
