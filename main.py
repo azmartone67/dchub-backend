@@ -703,8 +703,12 @@ integrate_linkedin_poster(app)
 # =============================================================================
 # AGENT NETWORK EFFECT - Registry + Intelligence Index endpoints
 # =============================================================================
-from agent_network_effect import register_agent_network
-register_agent_network(app)
+try:
+    from agent_network_effect import register_agent_network
+    register_agent_network(app)
+except Exception as e:
+    print(f"🤖 Agent Network Effect: ⚠️ {e}")
+
 
 # =============================================================================
 # EARLY require_plan STUB - Must be available before first @app.route usage
