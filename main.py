@@ -807,6 +807,19 @@ def api_facilities_shortcut():
 APP_START_TIME = time.time()
 from nav_config import register_nav_config_route
 register_nav_config_route(app)
+
+# .well-known handler — Flask drops dot-prefixed paths, so intercept early
+@app.before_request
+def handle_well_known():
+    from flask import request as req
+    path = req.path
+    if path == '/.well-known/mcp.json':
+        return jsonify({"name":"DC Hub Intelligence","description":"Real-time data center market intelligence — 20,000+ facilities, 140+ countries.","url":"https://dchub.cloud/mcp","transport":"streamable-http","version":"1.0.0","tools":[{"name":"search_facilities","description":"Search data center facilities by location, provider, capacity, or certification"},{"name":"get_facility","description":"Get detailed profile for a specific data center facility"},{"name":"search_deals","description":"Search M&A transactions by buyer, seller, value, or date range"},{"name":"get_market_report","description":"Get AI-generated market intelligence report for a region or provider"},{"name":"get_site_score","description":"Get site suitability score based on power, fiber, risk, and climate"},{"name":"get_fuel_mix","description":"Get power generation fuel mix for a region"},{"name":"search_news","description":"Search latest data center industry news"}],"authentication":{"type":"api_key","header":"X-API-Key"},"contact":"api@dchub.cloud"})
+    if path == '/.well-known/agent.json':
+        return jsonify({"name":"DC Hub Intelligence","description":"Live intelligence layer for the global data center market. 20,000+ facilities across 140+ countries.","url":"https://dchub.cloud","version":"1.0.0","capabilities":{"streaming":True,"pushNotifications":False},"skills":[{"id":"facility-search","name":"Data Center Search","description":"Search and filter 20,000+ facilities worldwide"},{"id":"deal-tracker","name":"M&A Deal Tracker","description":"Track transactions in real-time"},{"id":"market-intelligence","name":"Market Intelligence","description":"AI-generated market reports"},{"id":"site-scoring","name":"Site Scoring","description":"Evaluate locations for data center suitability"}],"authentication":{"schemes":["api_key"]},"provider":{"organization":"DC Hub","url":"https://dchub.cloud"},"defaultInputModes":["text"],"defaultOutputModes":["text"]})
+    if path == '/.well-known/security.txt':
+        return Response("Contact: mailto:security@dchub.cloud\nPreferred-Languages: en\nCanonical: https://dchub.cloud/.well-known/security.txt\nPolicy: https://dchub.cloud/terms\nExpires: 2027-01-01T00:00:00.000Z", mimetype="text/plain")
+
 APP_VERSION = '2.5.2'
 STARTUP_COMPLETE = False
 
