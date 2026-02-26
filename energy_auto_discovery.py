@@ -1306,3 +1306,5 @@ def register_energy_discovery_routes(app):
 if __name__ == '__main__':
     init_discovery_db()
     run_full_sync()
+
+
