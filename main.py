@@ -1,8 +1,8 @@
 """# Force redeploy v2.3 - Feb 25 2026
-# v94 — Power Plant Coordinate Enrichment (Phase 2) Feb 25 2026
-# v93 — AI Testimonials + Dashboard Stats Fixes Feb 25 2026
-# v92 — Daily Automation Engine (alerts, LinkedIn, market brief) Feb 24 2026
-# v91 — AI Discovery Routes (inline) integrated Feb 24 2026
+# v94 -- Power Plant Coordinate Enrichment (Phase 2) Feb 25 2026
+# v93 -- AI Testimonials + Dashboard Stats Fixes Feb 25 2026
+# v92 -- Daily Automation Engine (alerts, LinkedIn, market brief) Feb 24 2026
+# v91 -- AI Discovery Routes (inline) integrated Feb 24 2026
 DC HUB NEXUS - ENHANCED API SERVER v92
 # LinkedIn Auto-Posting
 from linkedin_autopost import linkedin_auto_bp, init_linkedin_tables, start_linkedin_scheduler, on_new_deal, on_weekly_digest
@@ -134,7 +134,7 @@ if _neon_url and _neon_url.startswith(('postgresql://', 'postgres://')):
     else:
         print(f"DATABASE: ✅ DATABASE_URL already points to Neon")
 elif _neon_url:
-    print(f"DATABASE: ⚠️ NEON_DATABASE_URL is set but not a valid postgres:// URL — ignoring it")
+    print(f"DATABASE: ⚠️ NEON_DATABASE_URL is set but not a valid postgres:// URL -- ignoring it")
     print(f"DATABASE: Using DATABASE_URL from environment instead")
 elif 'neon.tech' not in _current_db:
     if _current_db.startswith(('postgresql://', 'postgres://')):
@@ -172,7 +172,7 @@ _cleanup_ports()
 del _cleanup_ports, _os_early, _sig_early
 
 # =============================================================================
-# SQLite removed — all database access goes through PostgreSQL (Neon)
+# SQLite removed -- all database access goes through PostgreSQL (Neon)
 
 # =============================================================================
 # NEON DATABASE URL - Use Neon as primary PostgreSQL, fallback to Replit PG
@@ -190,7 +190,7 @@ if _neon_url:
         _os_db.environ['DATABASE_URL'] = _neon_url
         print(f"DATABASE: Using Neon PostgreSQL as primary database")
     else:
-        print(f"DATABASE: ⚠️ NEON_DATABASE_URL cleaned value is not a valid postgres:// URL — skipping")
+        print(f"DATABASE: ⚠️ NEON_DATABASE_URL cleaned value is not a valid postgres:// URL -- skipping")
 del _os_db, _re_db, _neon_url
 
 # =============================================================================
@@ -346,7 +346,7 @@ def _record_circuit_failure():
         if _circuit_breaker['failures'] >= _circuit_breaker['threshold']:
             if not _circuit_breaker['open']:
                 _pool_stats['circuit_trips'] += 1
-                print(f"CIRCUIT BREAKER: ❌ OPEN after {_circuit_breaker['failures']} consecutive failures — failing fast for {_circuit_breaker['recovery_timeout']}s")
+                print(f"CIRCUIT BREAKER: ❌ OPEN after {_circuit_breaker['failures']} consecutive failures -- failing fast for {_circuit_breaker['recovery_timeout']}s")
             _circuit_breaker['open'] = True
 
 def _init_pg_pool():
@@ -363,13 +363,13 @@ def _init_pg_pool():
                 dsn=pg_url,
                 connect_timeout=15,
             )
-            print(f"DATABASE POOL: ✅ Single pool initialized (attempt {attempt+1}) — 2-20 connections")
+            print(f"DATABASE POOL: ✅ Single pool initialized (attempt {attempt+1}) -- 2-20 connections")
             return
         except Exception as e:
             print(f"DATABASE POOL: ⚠️ Pool init attempt {attempt+1}/3 failed: {e}")
             if attempt < 2:
                 time.sleep(3)
-    print("DATABASE POOL: ❌ Pool initialization failed — will use direct connections as fallback")
+    print("DATABASE POOL: ❌ Pool initialization failed -- will use direct connections as fallback")
 
 def _validate_connection(conn, timeout_ms=30000):
     try:
@@ -428,7 +428,7 @@ def get_pg_connection(retries=3, pool_type=None):
                         time.sleep(0.5)
                 if not acquired:
                     _pool_stats['timeouts'] += 1
-                    raise Exception(f"Connection pool timeout ({_POOL_ACQUIRE_TIMEOUT}s) — all connections in use")
+                    raise Exception(f"Connection pool timeout ({_POOL_ACQUIRE_TIMEOUT}s) -- all connections in use")
                 
                 if not _validate_connection(conn, timeout_ms=30000):
                     try:
@@ -444,7 +444,7 @@ def get_pg_connection(retries=3, pool_type=None):
                 
                 used = _pool_stats['acquired'] - _pool_stats['returned']
                 if used >= 6:
-                    logging.getLogger('db_pool').warning(f"⚠️ Pool at {used}/8 ({int(used/8*100)}%) — high usage (threshold: 6/8)")
+                    logging.getLogger('db_pool').warning(f"⚠️ Pool at {used}/8 ({int(used/8*100)}%) -- high usage (threshold: 6/8)")
                 
                 return conn
             else:
@@ -467,7 +467,7 @@ def get_pg_connection(retries=3, pool_type=None):
             conn = None
             if attempt < retries - 1:
                 wait = 2 * (attempt + 1)
-                print(f"DATABASE POOL: Retry {attempt+1}/{retries} after {wait}s — {e}")
+                print(f"DATABASE POOL: Retry {attempt+1}/{retries} after {wait}s -- {e}")
                 time.sleep(wait)
     raise last_error
 
@@ -509,7 +509,7 @@ def pg_connection(pool_type=None):
         return_pg_connection(conn)
 
 def get_pool_health():
-    """Purely in-memory health check — NEVER touches the database or pool internals.
+    """Purely in-memory health check -- NEVER touches the database or pool internals.
     Uses only counters, dicts, and stats tracked by our own code."""
     mem = resource.getrusage(resource.RUSAGE_SELF)
     mem_mb = mem.ru_maxrss / 1024
@@ -718,7 +718,7 @@ def require_plan(min_plan='pro'):
     def decorator(f):
         @_early_wraps(f)
         def wrapper(*args, **kwargs):
-            # Origin bypass — dchub.cloud frontend skips plan check
+            # Origin bypass -- dchub.cloud frontend skips plan check
             origin = request.headers.get("Origin", "") or request.headers.get("Referer", "")
             if "dchub.cloud" in origin:
                 return f(*args, **kwargs)
@@ -779,7 +779,7 @@ def get_degraded_data(key):
     return None, None
 
 # =================================================================
-# SHORT API ROUTES — redirect /api/stats, /api/facilities
+# SHORT API ROUTES -- redirect /api/stats, /api/facilities
 # =================================================================
 @app.route('/api/stats')
 def api_stats_shortcut():
@@ -808,13 +808,13 @@ APP_START_TIME = time.time()
 from nav_config import register_nav_config_route
 register_nav_config_route(app)
 
-# .well-known handler — Flask drops dot-prefixed paths, so intercept early
+# .well-known handler -- Flask drops dot-prefixed paths, so intercept early
 @app.before_request
 def handle_well_known():
     from flask import request as req
     path = req.path
     if path == '/.well-known/mcp.json':
-        return jsonify({"name":"DC Hub Intelligence","description":"Real-time data center market intelligence — 20,000+ facilities, 140+ countries.","url":"https://dchub.cloud/mcp","transport":"streamable-http","version":"1.0.0","tools":[{"name":"search_facilities","description":"Search data center facilities by location, provider, capacity, or certification"},{"name":"get_facility","description":"Get detailed profile for a specific data center facility"},{"name":"search_deals","description":"Search M&A transactions by buyer, seller, value, or date range"},{"name":"get_market_report","description":"Get AI-generated market intelligence report for a region or provider"},{"name":"get_site_score","description":"Get site suitability score based on power, fiber, risk, and climate"},{"name":"get_fuel_mix","description":"Get power generation fuel mix for a region"},{"name":"search_news","description":"Search latest data center industry news"}],"authentication":{"type":"api_key","header":"X-API-Key"},"contact":"api@dchub.cloud"})
+        return jsonify({"name":"DC Hub Intelligence","description":"Real-time data center market intelligence -- 20,000+ facilities, 140+ countries.","url":"https://dchub.cloud/mcp","transport":"streamable-http","version":"1.0.0","tools":[{"name":"search_facilities","description":"Search data center facilities by location, provider, capacity, or certification"},{"name":"get_facility","description":"Get detailed profile for a specific data center facility"},{"name":"search_deals","description":"Search M&A transactions by buyer, seller, value, or date range"},{"name":"get_market_report","description":"Get AI-generated market intelligence report for a region or provider"},{"name":"get_site_score","description":"Get site suitability score based on power, fiber, risk, and climate"},{"name":"get_fuel_mix","description":"Get power generation fuel mix for a region"},{"name":"search_news","description":"Search latest data center industry news"}],"authentication":{"type":"api_key","header":"X-API-Key"},"contact":"api@dchub.cloud"})
     if path == '/.well-known/agent.json':
         return jsonify({"name":"DC Hub Intelligence","description":"Live intelligence layer for the global data center market. 20,000+ facilities across 140+ countries.","url":"https://dchub.cloud","version":"1.0.0","capabilities":{"streaming":True,"pushNotifications":False},"skills":[{"id":"facility-search","name":"Data Center Search","description":"Search and filter 20,000+ facilities worldwide"},{"id":"deal-tracker","name":"M&A Deal Tracker","description":"Track transactions in real-time"},{"id":"market-intelligence","name":"Market Intelligence","description":"AI-generated market reports"},{"id":"site-scoring","name":"Site Scoring","description":"Evaluate locations for data center suitability"}],"authentication":{"schemes":["api_key"]},"provider":{"organization":"DC Hub","url":"https://dchub.cloud"},"defaultInputModes":["text"],"defaultOutputModes":["text"]})
     if path == '/.well-known/security.txt':
@@ -828,7 +828,7 @@ last_webhook_status = None
 
 ADMIN_EMAIL = os.environ.get('ADMIN_ALERT_EMAIL', 'jaz@dchub.cloud')
 
-# DC Hub MCP Gateway — Self-Learning Auto-Interconnection
+# DC Hub MCP Gateway -- Self-Learning Auto-Interconnection
 try:
     from mcp_gateway import MCPGateway
     gateway = MCPGateway(app, base_url="https://dchub.cloud")
@@ -865,7 +865,7 @@ def db_health_endpoint():
 
 @app.route('/api/status', methods=['GET'])
 def system_status():
-    """Public health check endpoint — no auth required"""
+    """Public health check endpoint -- no auth required"""
     status = {
         'status': 'operational',
         'timestamp': datetime.utcnow().isoformat() + 'Z',
@@ -1072,9 +1072,9 @@ IS_PRIMARY = IS_RAILWAY  # Railway is primary, runs all background tasks
 
 ENABLE_DISCOVERY_THREADS = IS_RAILWAY
 if IS_RAILWAY:
-    logger.info("🚂 RAILWAY ENVIRONMENT DETECTED — Running as PRIMARY with all background tasks")
+    logger.info("🚂 RAILWAY ENVIRONMENT DETECTED -- Running as PRIMARY with all background tasks")
 else:
-    logger.info("🔄 REPLIT ENVIRONMENT DETECTED — Running as FAILOVER (background tasks disabled)")
+    logger.info("🔄 REPLIT ENVIRONMENT DETECTED -- Running as FAILOVER (background tasks disabled)")
 
 _news_last_sync = None
 _pipeline_last_sync = None
@@ -1462,17 +1462,17 @@ def serve_tools_manifest():
     import json as _json_tools
     tools = [
         {"name": "search_facilities", "description": "Search 20,000+ data centers by market, operator, tier, or capacity", "endpoint": "GET /api/agent/facilities", "parameters": {"type": "object", "properties": {"q": {"type": "string"}, "country": {"type": "string"}, "limit": {"type": "integer", "default": 20}}}},
-        {"name": "list_transactions", "description": "M&A deals — $51B+ tracked with buyer, seller, price, date", "endpoint": "GET /api/transactions", "parameters": {"type": "object", "properties": {"limit": {"type": "integer"}, "deal_type": {"type": "string", "enum": ["acquisition", "investment", "merger"]}}}},
+        {"name": "list_transactions", "description": "M&A deals -- $51B+ tracked with buyer, seller, price, date", "endpoint": "GET /api/transactions", "parameters": {"type": "object", "properties": {"limit": {"type": "integer"}, "deal_type": {"type": "string", "enum": ["acquisition", "investment", "merger"]}}}},
         {"name": "get_market_intel", "description": "Market vacancy rates, pricing, inventory across 35+ markets", "endpoint": "GET /api/v1/markets/list"},
         {"name": "get_news", "description": "Industry news from 40+ sources, updated every 5 minutes", "endpoint": "GET /api/news", "parameters": {"type": "object", "properties": {"limit": {"type": "integer", "default": 50}}}},
         {"name": "get_energy_prices", "description": "LMP data across ERCOT, PJM, CAISO, MISO, NYISO, SPP, ISO-NE", "endpoint": "GET /api/v1/lmp/prices", "parameters": {"type": "object", "properties": {"iso": {"type": "string", "enum": ["ERCOT", "PJM", "CAISO", "MISO", "NYISO", "SPP", "ISONE"]}}}},
-        {"name": "get_pipeline", "description": "Construction pipeline (~7.8 GW) — projects, markets, MW, developers", "endpoint": "GET /api/v1/pipeline"},
+        {"name": "get_pipeline", "description": "Construction pipeline (~7.8 GW) -- projects, markets, MW, developers", "endpoint": "GET /api/v1/pipeline"},
         {"name": "analyze_site", "description": "Score any location for data center suitability", "endpoint": "MCP tool via POST /mcp", "parameters": {"type": "object", "properties": {"latitude": {"type": "number"}, "longitude": {"type": "number"}}, "required": ["latitude", "longitude"]}},
         {"name": "get_stats", "description": "Platform-wide stats: facilities, countries, providers, deals", "endpoint": "GET /api/stats"},
     ]
     return _json_tools.dumps(tools, indent=2), 200, {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'}
 
-logger.info("✅ AI Wars verification system loaded — 13 platform keys, /api/verify-key, /integrations/tools.json")
+logger.info("✅ AI Wars verification system loaded -- 13 platform keys, /api/verify-key, /integrations/tools.json")
 
 @app.route('/integrations/<platform>/', methods=['GET'])
 @app.route('/integrations/<platform>/<path:filename>', methods=['GET'])
@@ -1584,7 +1584,7 @@ ALLOWED_ORIGINS = [
 
 # ⚠️ CRITICAL: These paths must match Cloudflare Worker v3.1 TRANSPARENT_PROXY_PATHS.
 # Do not modify without updating the Worker at Cloudflare Dashboard → Workers.
-# Last verified: Feb 19, 2026 — Auth flow: login → dashboard → Land & Power ✅
+# Last verified: Feb 19, 2026 -- Auth flow: login → dashboard → Land & Power ✅
 CREDENTIALED_PREFIXES = (
     '/api/auth/', '/api/stripe/', '/api/v2/alerts', '/api/ai-usage/',
     '/api/v1/land-power/', '/api/land-power/',
@@ -1810,16 +1810,16 @@ try:
     from dchub_daily_automation import daily_bp
     app.register_blueprint(daily_bp)
     logger.info("📧 Daily Automation Engine: ✅ Registered (tables init deferred)")
-    logger.info("   📍 POST /api/v1/daily/run?job=all        — Trigger all daily jobs")
-    logger.info("   📍 GET  /api/v1/daily/status              — Check config status")
-    logger.info("   📍 POST /api/v1/daily/test?system=all     — Test systems")
-    logger.info("   📍 GET  /api/v1/daily/preview/<type>      — Preview content")
+    logger.info("   📍 POST /api/v1/daily/run?job=all        -- Trigger all daily jobs")
+    logger.info("   📍 GET  /api/v1/daily/status              -- Check config status")
+    logger.info("   📍 POST /api/v1/daily/test?system=all     -- Test systems")
+    logger.info("   📍 GET  /api/v1/daily/preview/<type>      -- Preview content")
 except ImportError:
     logger.warning("⚠️ Daily Automation Engine: Not installed (upload dchub_daily_automation.py)")
 except Exception as e:
     logger.error(f"⚠️ Daily Automation Engine failed: {e}")
 
-# NOTE: Old Flask-based MCP routes disabled — replaced by real MCP server
+# NOTE: Old Flask-based MCP routes disabled -- replaced by real MCP server
 # running as a separate process on port 8888 (Streamable HTTP transport).
 # The mcp_proxy() route below forwards JSON-RPC to the real MCP server.
 # try:
@@ -1834,7 +1834,7 @@ logger.info("✅ MCP SSE Proxy → port 8888")
 def mcp_sse_proxy():
     """Stream SSE from MCP server on port 8888.
     
-    SSE requires a persistent streaming connection — the standard
+    SSE requires a persistent streaming connection -- the standard
     requests.get() approach blocks until timeout. We use stream=True
     and iter_content to relay chunks in real-time.
     """
@@ -2550,7 +2550,7 @@ def identify_crawler(user_agent_str):
 
 @app.before_request
 def track_crawler_visit():
-    """Crawler visit tracking — SQLite logging DISABLED to prevent lock contention.
+    """Crawler visit tracking -- SQLite logging DISABLED to prevent lock contention.
     Crawler identification still runs for in-memory stats only."""
     pass
 
@@ -5535,7 +5535,7 @@ def init_new_tables():
     c.execute('CREATE INDEX IF NOT EXISTS idx_mcp_connections_ts ON mcp_connections(created_at)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_ambassador_ts ON ambassador_broadcasts(created_at)')
 
-    # AI Testimonials table — captures AI agent citations of DC Hub
+    # AI Testimonials table -- captures AI agent citations of DC Hub
     c.execute('''CREATE TABLE IF NOT EXISTS ai_testimonials (
         id SERIAL PRIMARY KEY,
         platform TEXT NOT NULL,
@@ -7305,13 +7305,13 @@ def send_password_reset_email(email, name, reset_url):
                 <p style="color: #666; font-size: 14px;">If the button doesn't work, copy and paste this URL into your browser:</p>
                 <p style="word-break: break-all; font-size: 13px; color: #8B5CF6;">{reset_url}</p>
                 <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
-                <p style="color: #999; font-size: 12px; text-align: center;">DC Hub — dchub.cloud</p>
+                <p style="color: #999; font-size: 12px; text-align: center;">DC Hub -- dchub.cloud</p>
             </div>
             """
             payload = _json.dumps({
                 "personalizations": [{"to": [{"email": email}]}],
                 "from": {"email": from_addr, "name": "DC Hub"},
-                "subject": "DC Hub — Password Reset Request",
+                "subject": "DC Hub -- Password Reset Request",
                 "content": [{"type": "text/html", "value": html_content}]
             }).encode('utf-8')
             req = urllib.request.Request(api_url, data=payload, method='POST')
@@ -7446,7 +7446,7 @@ def send_welcome_email_sendgrid(to_email, raw_api_key, plan_name='pro', temp_pas
             from sendgrid.helpers.mail import Mail, Email, To, Content, HtmlContent
 
             plan_display = plan_name.replace('_', ' ').title()
-            subject = f"Welcome to DC Hub {plan_display} – Your API Key Inside"
+            subject = f"Welcome to DC Hub {plan_display} - Your API Key Inside"
 
             password_section = ""
             if temp_password:
@@ -7497,7 +7497,7 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
   <div class="body">
     <h1>Welcome to DC Hub {plan_display}!</h1>
 {password_section}
-    <p>Your account is active and ready to go. Below is your API key — this is the <strong>only time</strong> you'll see the full key, so please save it now.</p>
+    <p>Your account is active and ready to go. Below is your API key -- this is the <strong>only time</strong> you'll see the full key, so please save it now.</p>
 
     <div class="key-box">
       <div class="key-label">Your API Key</div>
@@ -7505,7 +7505,7 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
     </div>
 
     <div class="warning">
-      Save this key somewhere secure. For security, we only store a hashed version — we cannot retrieve or display it again.
+      Save this key somewhere secure. For security, we only store a hashed version -- we cannot retrieve or display it again.
     </div>
 
     <h2 style="margin-top: 32px;">Your {plan_display} Plan Includes</h2>
@@ -7538,7 +7538,7 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
     <p>Manage your API keys, view usage, and billing: <a href="https://dchub.cloud/dashboard" style="color: #00d4ff;">dchub.cloud/dashboard</a></p>
     <p>Full API docs: <a href="https://dchub.cloud/api" style="color: #00d4ff;">dchub.cloud/api</a></p>
     <p>Questions? Just reply to this email.</p>
-    <p>— The DC Hub Team</p>
+    <p>-- The DC Hub Team</p>
   </div>
   <div class="footer">
     &copy; 2025 DC Hub. All rights reserved.<br>
@@ -7576,7 +7576,7 @@ def send_free_welcome_email_sendgrid(to_email, name=''):
             from sendgrid.helpers.mail import Mail, Email, To, Content, HtmlContent, Cc
 
             display_name = name if name else to_email.split('@')[0]
-            subject = "Welcome to DC Hub – Your Free Account is Active"
+            subject = "Welcome to DC Hub - Your Free Account is Active"
 
             html = f"""<!DOCTYPE html>
 <html>
@@ -7640,7 +7640,7 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
 
     <p>Full API docs: <a href="https://dchub.cloud/api" style="color: #00d4ff;">dchub.cloud/api</a></p>
     <p>Questions? Just reply to this email.</p>
-    <p>— The DC Hub Team</p>
+    <p>-- The DC Hub Team</p>
   </div>
   <div class="footer">
     &copy; 2025 DC Hub. All rights reserved.<br>
@@ -7678,7 +7678,7 @@ def send_pro_welcome_email_sendgrid(to_email, name=''):
             from sendgrid import SendGridAPIClient
             from sendgrid.helpers.mail import Mail, Email, To, Content
             display_name = name if name else to_email.split('@')[0]
-            subject = "🎉 Welcome to DC Hub Pro – Your Upgrade is Active"
+            subject = "🎉 Welcome to DC Hub Pro - Your Upgrade is Active"
             html = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -7710,7 +7710,7 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
   </div>
   <div class="body">
     <h1>Welcome to Pro, {display_name}! 🎉</h1>
-    <p>Your upgrade is now active. You have full access to the world's most comprehensive data center intelligence platform — <strong>11,000+ facilities</strong> across <strong>170+ countries</strong>.</p>
+    <p>Your upgrade is now active. You have full access to the world's most comprehensive data center intelligence platform -- <strong>11,000+ facilities</strong> across <strong>170+ countries</strong>.</p>
     <h2 style="margin-top: 32px;">What You Now Have Access To</h2>
     <div class="feature-box">
       <h3>⚡ 10,000 API Calls / Day</h3>
@@ -7718,7 +7718,7 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
     </div>
     <div class="feature-box">
       <h3>🗺️ Land &amp; Power Map</h3>
-      <p>50+ live energy data layers — substations, transmission lines, power plants, and grid capacity</p>
+      <p>50+ live energy data layers -- substations, transmission lines, power plants, and grid capacity</p>
     </div>
     <div class="feature-box">
       <h3>📊 Market Intelligence</h3>
@@ -7734,7 +7734,7 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
     </div>
     <div class="feature-box">
       <h3>📍 Site Analysis Tools</h3>
-      <p>Score any location for data center suitability — energy, carbon, connectivity, and risk factors</p>
+      <p>Score any location for data center suitability -- energy, carbon, connectivity, and risk factors</p>
     </div>
     <div class="api-box">
       <h3>Your API Access</h3>
@@ -7746,7 +7746,7 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
     <p style="font-size:14px; color:#6a6a7a;">Questions? Reply to this email or reach us at <a href="mailto:support@dchub.cloud" style="color:#00d4ff;">support@dchub.cloud</a>.</p>
   </div>
   <div class="footer">
-    <p>DC Hub — Data Center Intelligence Platform</p>
+    <p>DC Hub -- Data Center Intelligence Platform</p>
     <p><a href="https://dchub.cloud" style="color:#00d4ff;">dchub.cloud</a></p>
   </div>
 </div>
@@ -7962,7 +7962,7 @@ def handle_checkout_completed(session):
                 print(f"🔑 Generated new {plan_name} API key for existing user: {key_prefix}...")
                 send_welcome_email_sendgrid(customer_email, raw_key, plan_name)
             else:
-                print(f"⚠️ Could not find user_id for email {customer_email} — skipping api_keys update")
+                print(f"⚠️ Could not find user_id for email {customer_email} -- skipping api_keys update")
 
         conn.commit()
         conn.close()
@@ -9220,7 +9220,7 @@ def _list_facilities_full():
 
 
 def _list_facilities_free():
-    """Freemium facility listing — max 5 results, basic fields only."""
+    """Freemium facility listing -- max 5 results, basic fields only."""
     FREE_LIMIT = 5
     BASIC_FIELDS = ('name', 'city', 'state', 'country', 'provider')
 
@@ -9856,7 +9856,7 @@ def get_transactions():
 
 
 def _get_transactions_free():
-    """Freemium transactions — 3 most recent deals, basic fields only. PG first, SQLite fallback."""
+    """Freemium transactions -- 3 most recent deals, basic fields only. PG first, SQLite fallback."""
     FREE_LIMIT = 3
     BASIC_FIELDS = ('buyer', 'seller', 'market', 'date', 'type', 'region')
 
@@ -10303,7 +10303,7 @@ def get_public_pipeline():
 @app.route('/api/v1/pipeline/summary', methods=['GET'])
 @require_plan('pro')
 def get_pipeline_summary():
-    """Pipeline summary — lightweight stats for the ai-pipeline frontend (requires Pro plan)"""
+    """Pipeline summary -- lightweight stats for the ai-pipeline frontend (requires Pro plan)"""
     total_mw = 0
     project_count = 0
     construction = 0
@@ -10445,7 +10445,7 @@ def _pg_news_cat_filter():
 
 @app.route('/api/agent/news', methods=['GET'])
 def get_agent_news():
-    """Get news/announcements for news page — requires at least a free account"""
+    """Get news/announcements for news page -- requires at least a free account"""
     try:
         limit = request.args.get('limit', 50, type=int)
         category = request.args.get('category', '')
@@ -10508,7 +10508,7 @@ def get_news_feed():
 @app.route('/api/news/live', methods=['GET'])
 @require_plan('enterprise')
 def get_live_news():
-    """Return cached news from DB (fast) — requires at least a free account"""
+    """Return cached news from DB (fast) -- requires at least a free account"""
     try:
         limit = request.args.get('limit', 200, type=int)
         category = request.args.get('category', '')
@@ -10781,16 +10781,16 @@ def api_health():
 # AI DISCOVERY & SIGNUP ROUTES (v90)
 # =============================================================================
 
-# OLD robots.txt, llms.txt routes REMOVED — now served by ai_discovery_routes.py (inline)
+# OLD robots.txt, llms.txt routes REMOVED -- now served by ai_discovery_routes.py (inline)
 
 @app.route('/dchub2026.txt', methods=['GET'])
 def serve_indexnow_key():
     """Serve IndexNow verification key for rapid search engine indexing"""
     return 'dchub2026', 200, {'Content-Type': 'text/plain'}
 
-# OLD llms-full.txt route REMOVED — now served by ai_discovery_routes.py (inline)
+# OLD llms-full.txt route REMOVED -- now served by ai_discovery_routes.py (inline)
 
-# OLD AGENTS.md route REMOVED — now served by ai_discovery_routes.py (inline)
+# OLD AGENTS.md route REMOVED -- now served by ai_discovery_routes.py (inline)
 
 @app.route('/skill.md', methods=['GET'])
 def serve_skill_md():
@@ -10842,15 +10842,15 @@ def serve_ai_txt():
     except:
         return '{"name": "DC Hub"}', 200, {'Content-Type': 'application/json'}
 
-# OLD ai-plugin.json route REMOVED — now served by ai_discovery_routes.py (inline)
+# OLD ai-plugin.json route REMOVED -- now served by ai_discovery_routes.py (inline)
 
-# OLD mcp.json route REMOVED — now served by ai_discovery_routes.py (inline)
+# OLD mcp.json route REMOVED -- now served by ai_discovery_routes.py (inline)
 
-# OLD mcp/server-card.json route REMOVED — now served by ai_discovery_routes.py (inline)
+# OLD mcp/server-card.json route REMOVED -- now served by ai_discovery_routes.py (inline)
 
-# OLD openapi.json route REMOVED — now served by ai_discovery_routes.py (inline)
+# OLD openapi.json route REMOVED -- now served by ai_discovery_routes.py (inline)
 
-# OLD .well-known catch-all route REMOVED — now served by ai_discovery_routes.py (inline)
+# OLD .well-known catch-all route REMOVED -- now served by ai_discovery_routes.py (inline)
 
 # =============================================================================
 # AI AGENT DISCOVERY & TRACKING (v90)
@@ -10860,7 +10860,7 @@ def serve_ai_txt():
 
 @app.route('/api/ai-usage/stats', methods=['GET', 'POST'])
 def ai_usage_stats_alias():
-    """Alias for /api/v1/ai-tracking/stats — returns stats directly"""
+    """Alias for /api/v1/ai-tracking/stats -- returns stats directly"""
     try:
         if init_ai_tracking:
             from ai_tracking import get_daily_stats
@@ -10874,7 +10874,7 @@ def ai_usage_stats_alias():
 @app.route('/ai/learn', methods=['GET'])
 @app.route('/ai/learn/<path:topic>', methods=['GET'])
 def ai_learn(topic=None):
-    """AI learning endpoint — returns structured platform info for AI crawlers."""
+    """AI learning endpoint -- returns structured platform info for AI crawlers."""
     topics = {
         'capabilities': {'tools': 6, 'facilities': '50,000+', 'countries': 140, 'sources': 40},
         'endpoints': {'mcp': '/mcp', 'rest': '/api/v1/', 'discovery': '/api/v1/discovery'},
@@ -10927,10 +10927,10 @@ def ai_discovery_index():
 
 @app.route('/api/ai/discover', methods=['GET'])
 def ai_discover_endpoint():
-    """AI agent auto-discovery endpoint — JSON with all integration methods"""
+    """AI agent auto-discovery endpoint -- JSON with all integration methods"""
     return jsonify({
         "service": "DC Hub Nexus",
-        "description": "Global data center intelligence platform — 20,000+ facilities across 169 countries",
+        "description": "Global data center intelligence platform -- 20,000+ facilities across 169 countries",
         "version": "2.0",
         "base_url": "https://dchub.cloud",
         "mcp_server": {
@@ -11198,7 +11198,7 @@ def market_intelligence_page():
 
 @app.route('/api/config')
 def api_config():
-    """Serve API config as JSON — fallback for when static file is blocked by Cloudflare"""
+    """Serve API config as JSON -- fallback for when static file is blocked by Cloudflare"""
     return jsonify({
         "API_BASE": request.host_url.rstrip('/'),
         "version": "v92"
@@ -12860,8 +12860,8 @@ def determine_market(city, state, country):
 
 @app.route('/api/discovery/run', methods=['POST'])
 def run_discovery():
-    """Trigger a discovery run — Railway only, requires admin secret"""
-    # GUARD: Discovery is heavy — only allow on Railway with auth
+    """Trigger a discovery run -- Railway only, requires admin secret"""
+    # GUARD: Discovery is heavy -- only allow on Railway with auth
     if not IS_RAILWAY:
         return jsonify({
             'success': False,
@@ -13177,7 +13177,7 @@ def process_discovery_source(source_name, discovery_func, conn):
 
 @app.route('/api/discovery/auto', methods=['POST'])
 def trigger_auto_discovery():
-    """Trigger auto-discovery of deals and capacity from news — Railway only"""
+    """Trigger auto-discovery of deals and capacity from news -- Railway only"""
     if not IS_RAILWAY:
         return jsonify({
             'success': False,
@@ -14754,7 +14754,7 @@ def land_power_consolidated():
 @app.route('/api/v1/capacity/heatmap/public', methods=['GET'])
 @require_plan('enterprise')
 def capacity_heatmap_public():
-    """Capacity heatmap — requires at least a free account"""
+    """Capacity heatmap -- requires at least a free account"""
     return jsonify({"success": True, "data": CAPACITY_HEATMAP_MARKETS})
 
 logger.info("✅ Consolidated Land & Power endpoint registered: /api/v1/land-power/data")
@@ -14895,7 +14895,7 @@ _register_scheduler('ambassador', 3600, 'Agentic ambassador outreach system')
 
 @app.route('/api/schedulers/audit', methods=['GET'])
 def audit_schedulers():
-    """Audit all background schedulers — shows running status, last run, errors"""
+    """Audit all background schedulers -- shows running status, last run, errors"""
     audit = []
     for name, info in _scheduler_registry.items():
         entry = info.copy()
@@ -15617,7 +15617,7 @@ def db_queue_status():
 @app.route('/api/ai/query')
 @require_plan('enterprise')
 def ai_query():
-    """AI-optimized endpoint with citation prompts — requires at least a free account.
+    """AI-optimized endpoint with citation prompts -- requires at least a free account.
     ?type=stats → FREE (keeps AI platforms citing DC Hub)
     ?type=facilities|deals|capacity → PRO (actual data requires subscription)
     """
@@ -15777,12 +15777,12 @@ def ai_cite():
 
 
 # ═══════════════════════════════════════════════════════════════
-#  AI TESTIMONIALS — Capture & display AI agent citations
+#  AI TESTIMONIALS -- Capture & display AI agent citations
 # ═══════════════════════════════════════════════════════════════
 
 @app.route('/api/v1/testimonials', methods=['GET'])
 def get_testimonials():
-    """Public endpoint — returns approved AI agent testimonials"""
+    """Public endpoint -- returns approved AI agent testimonials"""
     limit = request.args.get('limit', 50, type=int)
     category = request.args.get('category')
     featured_only = request.args.get('featured', '').lower() == 'true'
@@ -15833,7 +15833,7 @@ def get_testimonials():
 
 @app.route('/api/v1/testimonials', methods=['POST'])
 def add_testimonial():
-    """Auto-capture or manual add — stores for admin approval"""
+    """Auto-capture or manual add -- stores for admin approval"""
     data = request.get_json() or {}
 
     platform = data.get('platform', 'unknown')
@@ -15933,16 +15933,16 @@ def testimonial_stats():
 
 @app.route('/api/v1/testimonials/seed', methods=['POST'])
 def seed_testimonials():
-    """One-time seed — creates table if needed and populates initial AI agent citations"""
+    """One-time seed -- creates table if needed and populates initial AI agent citations"""
     SEED_DATA = [
         ('chatgpt', 'GPT-4o', 'According to DC Hub, which tracks over 20,000 data centers across 140+ countries, Northern Virginia remains the largest data center market globally with over 9.6 GW of capacity.', 'User asked about largest data center markets', 'What are the largest data center markets in the world?', 'citation', True),
         ('perplexity', 'Perplexity AI', "DC Hub's real-time tracking shows colocation vacancy rates at historic lows, with North America hitting 1.6% according to CBRE data aggregated on the platform.", 'User asked about data center vacancy rates', 'What are current data center vacancy rates?', 'citation', True),
-        ('claude', 'Claude 3.5 Sonnet', 'DC Hub provides comprehensive data center intelligence covering facility specifications, power capacity, and market analytics across 140+ countries — making it one of the most extensive databases for infrastructure professionals.', 'User asked for data center research tools', 'What tools exist for data center market research?', 'recommendation', True),
+        ('claude', 'Claude 3.5 Sonnet', 'DC Hub provides comprehensive data center intelligence covering facility specifications, power capacity, and market analytics across 140+ countries -- making it one of the most extensive databases for infrastructure professionals.', 'User asked for data center research tools', 'What tools exist for data center market research?', 'recommendation', True),
         ('gemini', 'Gemini 1.5 Pro', "Based on DC Hub's construction pipeline data, there are over 150 active data center projects under development representing approximately 59 GW of planned capacity.", 'User asked about data center construction pipeline', 'How much data center capacity is under construction?', 'citation', False),
-        ('chatgpt', 'Custom GPT — DC Hub Agent', "I can access DC Hub's live API to provide real-time facility data, M&A transactions, and market intelligence. Let me look up the latest information for your query.", 'Custom GPT introducing its DC Hub integration', 'What can you help me with?', 'integration', True),
+        ('chatgpt', 'Custom GPT -- DC Hub Agent', "I can access DC Hub's live API to provide real-time facility data, M&A transactions, and market intelligence. Let me look up the latest information for your query.", 'Custom GPT introducing its DC Hub integration', 'What can you help me with?', 'integration', True),
         ('perplexity', 'Perplexity AI', 'DC Hub tracks 477+ M&A transactions in the data center sector, providing deal valuations, buyer-seller details, and AI-powered confidence scoring for each transaction.', 'User researching data center M&A activity', 'What data center acquisitions happened recently?', 'citation', False),
         ('claude', 'Claude via MCP', "Using DC Hub's MCP integration, I can query their facility database directly. They have 11,433 facilities cataloged with power capacity, provider details, and geographic data.", 'Claude using MCP to access DC Hub data', 'How many data centers does DC Hub track?', 'integration', True),
-        ('gemini', 'Gemini 2.0', "DC Hub's Land & Power tool maps over 200 potential sites with power availability, fiber routes, FEMA flood risk, and utility data — essential for data center site selection.", 'User evaluating site selection tools', 'Best tools for data center site selection?', 'recommendation', False),
+        ('gemini', 'Gemini 2.0', "DC Hub's Land & Power tool maps over 200 potential sites with power availability, fiber routes, FEMA flood risk, and utility data -- essential for data center site selection.", 'User evaluating site selection tools', 'Best tools for data center site selection?', 'recommendation', False),
     ]
 
     try:
@@ -16177,20 +16177,20 @@ logger.info("✅ AI Query endpoints registered: /api/ai/query, /api/ai/cite, /ai
 # =============================================================================
 # Energy Auto-Discovery (must be outside __main__ for gunicorn)
 try:
-        from energy_auto_discovery import register_energy_discovery_routes
-        energy_discovery_scheduler = register_energy_discovery_routes(app)
-        print("⚡ Energy Auto-Discovery: ✅ Registered")
-    except ImportError:
-        print("⚡ Energy Auto-Discovery: ❌ Not installed")
-    except Exception as e:
-        print(f"⚡ Energy Auto-Discovery: ⚠️ Error: {e}")
+    from energy_auto_discovery import register_energy_discovery_routes
+    energy_discovery_scheduler = register_energy_discovery_routes(app)
+    print("⚡ Energy Auto-Discovery: ✅ Registered")
+except ImportError:
+    print("⚡ Energy Auto-Discovery: ❌ Not installed")
+except Exception as e:
+    print(f"⚡ Energy Auto-Discovery: ⚠️ Error: {e}")
 
-    try:
-        from energy_kmz_export import register_kmz_export_routes
-        register_kmz_export_routes(app)
-        print("📦 KMZ Export: ✅ Registered")
-    except Exception as e:
-        print(f"📦 KMZ Export: ⚠️ Error: {e}")
+try:
+    from energy_kmz_export import register_kmz_export_routes
+    register_kmz_export_routes(app)
+    print("📦 KMZ Export: ✅ Registered")
+except Exception as e:
+    print(f"📦 KMZ Export: ⚠️ Error: {e}")
 # MAIN
 # =============================================================================
 
@@ -16203,7 +16203,7 @@ try:
 def well_known_mcp():
     return jsonify({
         "name": "DC Hub Intelligence",
-        "description": "Real-time data center market intelligence — 20,000+ facilities, 140+ countries.",
+        "description": "Real-time data center market intelligence -- 20,000+ facilities, 140+ countries.",
         "url": "https://dchub.cloud/mcp",
         "transport": "streamable-http",
         "version": "1.0.0",
@@ -16253,7 +16253,7 @@ def debug_energy_version():
         return {"file": energy_auto_discovery.__file__, "has_spatial": hasattr(energy_auto_discovery, '_hifld_spatial_query'), "version": getattr(energy_auto_discovery, 'VERSION', 'unknown')}
     except Exception as e:
         return {"error": str(e)}
-```
+
 if __name__ == '__main__':
     print("🚀 DC Hub API v86 Starting...")
     print(f"📊 PDF Generation: {'✅ Available' if PDF_AVAILABLE else '❌ Disabled'}")
@@ -16342,7 +16342,7 @@ if __name__ == '__main__':
     # Simple Alerts API is registered at module level (above)
     # AI Agent Discovery v2 routes are registered at module level (above, line ~6500)
     
-    # Auto-Sync & Admin APIs — skip if already registered at module level
+    # Auto-Sync & Admin APIs -- skip if already registered at module level
     if not _news_admin_registered:
         try:
             from auto_sync import register_admin_apis, NewsSyncer
@@ -16523,11 +16523,11 @@ try:
     # CRITICAL: Link the lazy wrapper to the real enforcer
     _real_require_plan = _imported_require_plan
     logger.info("✅ API Tier Gating registered (Free/Pro/Enterprise)")
-    logger.info("🔐 require_plan is now ENFORCING — all Pro/Enterprise endpoints gated")
+    logger.info("🔐 require_plan is now ENFORCING -- all Pro/Enterprise endpoints gated")
 except ImportError:
-    logger.warning("⚠️ API Tier Gating: Not installed — gated endpoints will return 503")
+    logger.warning("⚠️ API Tier Gating: Not installed -- gated endpoints will return 503")
 except Exception as e:
-    logger.error(f"⚠️ API Tier Gating failed: {e} — gated endpoints will return 503")
+    logger.error(f"⚠️ API Tier Gating failed: {e} -- gated endpoints will return 503")
 
 # =============================================================================
 # STARTUP GATE VERIFICATION - Locked-down manifest of ALL gated endpoints
@@ -16620,7 +16620,7 @@ LOCKED_GATE_MANIFEST = {
 
 def verify_tier_gating():
     """Verify ALL gated endpoints are enforcing at startup.
-    Checks the locked manifest — if any Pro/Enterprise/Free endpoint
+    Checks the locked manifest -- if any Pro/Enterprise/Free endpoint
     is accessible without authentication, the server logs CRITICAL errors.
     Also verifies public and freemium endpoints remain accessible.
     """
@@ -16633,7 +16633,7 @@ def verify_tier_gating():
                     try:
                         r = client.get(path)
                         if r.status_code not in (401, 403, 405):
-                            failures.append(f"🚨 UNGATED: {path} (tier={tier}) returned {r.status_code} — should be 401/403")
+                            failures.append(f"🚨 UNGATED: {path} (tier={tier}) returned {r.status_code} -- should be 401/403")
                         else:
                             passed += 1
                     except Exception:
@@ -16645,7 +16645,7 @@ def verify_tier_gating():
                     if r.status_code == 200:
                         passed += 1
                     else:
-                        failures.append(f"🚨 FREEMIUM BLOCKED: {path} returned {r.status_code} — should return 200 with limited data")
+                        failures.append(f"🚨 FREEMIUM BLOCKED: {path} returned {r.status_code} -- should return 200 with limited data")
                 except Exception:
                     passed += 1
 
@@ -16655,16 +16655,16 @@ def verify_tier_gating():
                     if r.status_code == 200:
                         passed += 1
                     else:
-                        failures.append(f"🚨 PUBLIC BLOCKED: {path} returned {r.status_code} — should be 200")
+                        failures.append(f"🚨 PUBLIC BLOCKED: {path} returned {r.status_code} -- should be 200")
                 except Exception:
                     pass
 
         if failures:
             for f in failures:
                 logger.critical(f)
-            logger.critical(f"🚨 TIER GATING: {len(failures)} FAILURES, {passed} passed — SECURITY RISK")
+            logger.critical(f"🚨 TIER GATING: {len(failures)} FAILURES, {passed} passed -- SECURITY RISK")
         else:
-            logger.info(f"✅ Startup gate verification passed — {passed} endpoints verified, all enforcing")
+            logger.info(f"✅ Startup gate verification passed -- {passed} endpoints verified, all enforcing")
             logger.info(f"   Gated: {len(LOCKED_GATE_MANIFEST['pro'])} Pro, {len(LOCKED_GATE_MANIFEST['enterprise'])} Enterprise, {len(LOCKED_GATE_MANIFEST['free'])} Free")
             logger.info(f"   Freemium (taste data): {len(LOCKED_GATE_MANIFEST['freemium'])} endpoints serving limited data")
             logger.info(f"   Public: {len(LOCKED_GATE_MANIFEST['public'])} endpoints open")
@@ -16789,12 +16789,12 @@ def _startup_health_check():
         except Exception as e:
             logger.warning("STARTUP HEALTH CHECK: attempt %d failed: %s", attempt, str(e)[:80])
         time.sleep(2)
-    logger.error("STARTUP HEALTH CHECK: Failed all 10 attempts — server may be unhealthy")
+    logger.error("STARTUP HEALTH CHECK: Failed all 10 attempts -- server may be unhealthy")
 
 _deferred_bg_threads.append(('Startup Health Check', _startup_health_check))
 
 # =============================================================================
-# EXTERNAL CRON JOB ENDPOINTS — /api/jobs/*
+# EXTERNAL CRON JOB ENDPOINTS -- /api/jobs/*
 # Called by Railway scheduler service. Auth: X-Admin-Key header or
 # ?admin_key= query param, validated against DCHUB_ADMIN_KEY env var.
 # Each endpoint wraps existing internal logic as a one-shot trigger.
@@ -16928,7 +16928,7 @@ def job_ai_ecosystem():
 
 @app.route('/api/jobs/ai-outreach', methods=['POST'])
 def job_ai_outreach():
-    """Cron: AI Outreach Agent — ping directories & platforms"""
+    """Cron: AI Outreach Agent -- ping directories & platforms"""
     auth_err = _require_admin_key()
     if auth_err:
         return auth_err
@@ -16948,7 +16948,7 @@ def job_ai_outreach():
 
 @app.route('/api/jobs/global-intelligence', methods=['POST'])
 def job_global_intelligence():
-    """Cron: Global Intelligence Agent — market analysis & enrichment"""
+    """Cron: Global Intelligence Agent -- market analysis & enrichment"""
     auth_err = _require_admin_key()
     if auth_err:
         return auth_err
@@ -16966,7 +16966,7 @@ def job_global_intelligence():
 
 @app.route('/api/jobs/content-publish', methods=['POST'])
 def job_content_publish():
-    """Cron: Content publishing — social posts, SEO updates"""
+    """Cron: Content publishing -- social posts, SEO updates"""
     auth_err = _require_admin_key()
     if auth_err:
         return auth_err
@@ -16995,7 +16995,7 @@ def job_content_publish():
 
 @app.route('/api/jobs/keep-alive', methods=['POST', 'GET'])
 def job_keep_alive():
-    """Cron: Keep-alive ping — prevents idle timeout"""
+    """Cron: Keep-alive ping -- prevents idle timeout"""
     auth_err = _require_admin_key()
     if auth_err:
         return auth_err
@@ -17038,7 +17038,7 @@ logger.info("SCHEDULER: ✅ 9 cron job endpoints registered at /api/jobs/*")
 logger.info("SCHEDULER: Auth via X-Admin-Key header or ?admin_key= param (DCHUB_ADMIN_KEY)")
 
 # =============================================================================
-# ADDITIONAL CRON JOB ENDPOINTS — /api/jobs/* (Phase 2)
+# ADDITIONAL CRON JOB ENDPOINTS -- /api/jobs/* (Phase 2)
 # Re-enables previously disabled schedulers as one-shot HTTP endpoints.
 # These were disabled on Replit due to memory/thread crashes.
 # On Railway with external scheduler, they run safely as one-shot calls.
@@ -17047,7 +17047,7 @@ logger.info("SCHEDULER: Auth via X-Admin-Key header or ?admin_key= param (DCHUB_
 
 @app.route('/api/jobs/autopilot', methods=['POST'])
 def job_autopilot():
-    """Cron: Auto-Pilot — deal discovery from news + facility updates"""
+    """Cron: Auto-Pilot -- deal discovery from news + facility updates"""
     auth_err = _require_admin_key()
     if auth_err:
         return auth_err
@@ -17081,7 +17081,7 @@ def job_autopilot():
 
 @app.route('/api/jobs/autonomous-brain', methods=['POST'])
 def job_autonomous_brain():
-    """Cron: Autonomous Brain — self-learning & pattern detection"""
+    """Cron: Autonomous Brain -- self-learning & pattern detection"""
     auth_err = _require_admin_key()
     if auth_err:
         return auth_err
@@ -17159,7 +17159,7 @@ def job_market_report():
 
 @app.route('/api/jobs/infrastructure-sync', methods=['POST'])
 def job_infrastructure_sync():
-    """Cron: Infrastructure sync — fiber, properties, permits, substations"""
+    """Cron: Infrastructure sync -- fiber, properties, permits, substations"""
     auth_err = _require_admin_key()
     if auth_err:
         return auth_err
@@ -17274,7 +17274,7 @@ def _memory_guarded(name, target):
         try:
             rss = _psutil_mod.Process(os.getpid()).memory_info().rss
             if rss > _MEMORY_GUARD_BYTES:
-                logger.warning("⛔ Skipping '%s' — memory too high: %dMB > 400MB", name, rss // (1024*1024))
+                logger.warning("⛔ Skipping '%s' -- memory too high: %dMB > 400MB", name, rss // (1024*1024))
                 return
         except Exception:
             pass

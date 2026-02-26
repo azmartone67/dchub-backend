@@ -1,6 +1,6 @@
 {
   "report_date": "2026-02-26",
-  "generated_at": "2026-02-26T06:17:58.956210",
+  "generated_at": "2026-02-26T15:36:46.773147",
   "summary": {
     "total_facilities": 11433,
     "total_providers": 3958,
@@ -89,54 +89,54 @@
   ],
   "recent_news": [
     {
-      "title": "AMD puts $250 million into Nutanix to get it building an AI stack for its GPUs",
+      "title": "Equinix, CPPIB Near $4B Deal for atNorth \u2013 Report",
+      "source": "Data Center Knowledge",
+      "date": "2026-02-26T15:29:10"
+    },
+    {
+      "title": "Equinix winning race to acquire European data center firm atNorth - report",
+      "source": "Data Center Dynamics",
+      "date": "2026-02-26T15:20:44"
+    },
+    {
+      "title": "Equinix, CPPIB Near $4B Deal for Data Center Firm atNorth \u2013 Report",
+      "source": "Data Center Knowledge",
+      "date": "2026-02-26T15:18:14"
+    },
+    {
+      "title": "Buy 5 Construction Stocks Set to Soar on AI-Powered Data Center Boom",
+      "source": "Finviz",
+      "date": "2026-02-26T15:02:38"
+    },
+    {
+      "title": "An AI data center isn\u2019t just another factory| RealClear Pennsylvania",
+      "source": "PennLive.com",
+      "date": "2026-02-26T15:00:00"
+    },
+    {
+      "title": "Top cloud providers to outspend Ireland's GDP on AI in 2026",
       "source": "The Register DC",
-      "date": "2026-02-26T05:55:54"
+      "date": "2026-02-26T14:55:15"
     },
     {
-      "title": "Nvidia Record Results Reinforce AI Factory Role In Global Infrastructure",
-      "source": "simplywall.st",
-      "date": "2026-02-26T05:38:53"
+      "title": "What is ReData? Inside Brazil\u2019s new data centre tax scheme",
+      "source": "Capacity Media",
+      "date": "2026-02-26T14:50:44"
     },
     {
-      "title": "Future of the Data Center Liquid Cooling Market: Emerging Opportunities, Market Dynamics, and Strategic Roadmap",
-      "source": "openPR.com",
-      "date": "2026-02-26T05:31:35"
+      "title": "Start Campus partners with EDP to support delivery of renewable energy to Sines campus",
+      "source": "Data Center Dynamics",
+      "date": "2026-02-26T14:40:03"
     },
     {
-      "title": "Arabian Gulf Investment Holdings (AGI) and DanaCloud Sign Strategic MoU to Allocate Up to USD 50 Million Toward AI-Ready Modular Data Center and Cloud Infrastructure",
-      "source": "FinancialContent",
-      "date": "2026-02-26T05:07:00"
+      "title": "Trane Technologies (TT) Powers Growth with Data Center Cooling",
+      "source": "Yahoo Finance",
+      "date": "2026-02-26T14:32:08"
     },
     {
-      "title": "Meta Signs 6GW AI Data Center Deal with AMD",
-      "source": "The Bridge Chronicle",
-      "date": "2026-02-26T04:59:18"
-    },
-    {
-      "title": "Google data center water estimates go public, residents in Roanoke and Botetourt react",
-      "source": "WSLS",
-      "date": "2026-02-26T04:52:30"
-    },
-    {
-      "title": "Nvidia's Record Revenue, Data Center Demand Serves As Backdrop For Rally In AI-Based Crypto Tokens",
-      "source": "Benzinga",
-      "date": "2026-02-26T04:13:33"
-    },
-    {
-      "title": "Trump's pledge on data centers comes as Solon Twp. continues to discuss if it will have one",
-      "source": "WZZM13.com",
-      "date": "2026-02-26T03:58:00"
-    },
-    {
-      "title": "West Michigan town drafts data center zoning rules after declaring moratorium",
-      "source": "MLive.com",
-      "date": "2026-02-26T03:07:00"
-    },
-    {
-      "title": "Sedgwick County feels another push to hit pause on data centers",
-      "source": "KAKE",
-      "date": "2026-02-26T02:18:13"
+      "title": "How Equinix's Energy Facility Will Create 200 Skilled Jobs",
+      "source": "Data Centre Magazine",
+      "date": "2026-02-26T14:12:55"
     }
   ],
   "data_sources": [
