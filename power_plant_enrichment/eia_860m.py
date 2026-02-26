@@ -1,17 +1,16 @@
 """
-EIA-860M Monthly Generator Report - Lat/Lng Extraction
-=======================================================
-Downloads the latest EIA-860M monthly CSV and extracts exact coordinates
-for all utility-scale power plants in the US.
+EIA-860M Monthly Generator Report + EIA-860 Annual - Lat/Lng Extraction
+=========================================================================
+Downloads EIA data and extracts exact coordinates for US power plants.
 
-Source: https://www.eia.gov/electricity/data/eia860m/
-File:   EIA860m monthly generator inventory (ZIP → CSV)
+Two modes:
+  1. EIA-860M monthly XLSX (direct download, not ZIP)
+     URL: https://www.eia.gov/electricity/data/eia860m/xls/{month}_generator{year}.xlsx
+  2. EIA-860 annual ZIP (contains Plant file with lat/lng)
+     URL: https://www.eia.gov/electricity/data/eia860/xls/eia860{year}.zip
 
-Key fields:
-  - Plant ID, Plant Name, Plant State
-  - Latitude, Longitude (generator-level)
-  - Nameplate Capacity (MW), Technology, Energy Source
-  - Status (OP=Operating, SB=Standby, OA=Out of service, etc.)
+The annual EIA-860 Plant file is the authoritative source for coordinates.
+The monthly 860M may or may not include lat/lng depending on the release.
 """
 
 import csv
@@ -27,16 +26,11 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-# EIA publishes the 860M at a predictable URL pattern
-# The file is typically named like: december_generator2024.xlsx or .zip
 EIA_860M_BASE_URL = "https://www.eia.gov/electricity/data/eia860m/xls"
+EIA_860_ANNUAL_BASE_URL = "https://www.eia.gov/electricity/data/eia860/xls"
 
-# Fallback: direct bulk download page
-EIA_BULK_URL = "https://api.eia.gov/bulk/EIA860M.zip"
-
-# Column mappings (EIA changes headers slightly between months)
 COLUMN_ALIASES = {
-    "plant_id": ["Plant ID", "Plant Id", "Entity ID", "Utility ID", "plant_id"],
+    "plant_id": ["Plant ID", "Plant Id", "Entity ID", "Plant Code", "plant_id"],
     "plant_name": ["Plant Name", "plant_name", "Station Name"],
     "state": ["Plant State", "State", "plant_state"],
     "latitude": ["Latitude", "latitude", "Lat"],
@@ -54,271 +48,239 @@ COLUMN_ALIASES = {
 
 
 class EIA860MIngester:
-    """Downloads and parses EIA-860M monthly data for power plant coordinates."""
-
-    def __init__(self, cache_dir: Optional[str] = None, api_key: Optional[str] = None):
-        """
-        Args:
-            cache_dir: Directory to cache downloaded files. Defaults to temp dir.
-            api_key: EIA API key (optional, enables bulk API access).
-        """
-        self.cache_dir = cache_dir or tempfile.mkdtemp(prefix="eia860m_")
+    def __init__(self, cache_dir=None, api_key=None):
+        self.cache_dir = cache_dir or tempfile.mkdtemp(prefix="eia860_")
         self.api_key = api_key or os.environ.get("EIA_API_KEY")
         self.session = requests.Session()
         self.session.headers.update({
             "User-Agent": "DCHub-DataEnrichment/1.0 (dchub.cloud)"
         })
 
-    def _resolve_column(self, headers: list[str], field_name: str) -> Optional[int]:
-        """Find column index by checking known aliases."""
+    def _resolve_column(self, headers, field_name):
         aliases = COLUMN_ALIASES.get(field_name, [field_name])
         for alias in aliases:
-            # Case-insensitive, strip whitespace
             for i, h in enumerate(headers):
-                if h.strip().lower() == alias.strip().lower():
+                if h and str(h).strip().lower() == alias.strip().lower():
                     return i
         return None
 
-    def _build_column_map(self, headers: list[str]) -> dict[str, Optional[int]]:
-        """Build a mapping of field_name -> column_index."""
+    def _build_column_map(self, headers):
         col_map = {}
         for field in COLUMN_ALIASES:
-            idx = self._resolve_column(headers, field)
-            col_map[field] = idx
-            if idx is None:
-                logger.warning(f"Column not found for '{field}' in headers")
+            col_map[field] = self._resolve_column(headers, field)
         return col_map
 
-    def download_latest_csv(self, year: Optional[int] = None,
-                            month: Optional[int] = None) -> str:
-        """
-        Download the latest EIA-860M ZIP and extract the generator CSV.
-
-        Args:
-            year: Target year (defaults to current year).
-            month: Target month (defaults to 2 months ago, typical publication lag).
-
-        Returns:
-            Path to extracted CSV file.
-        """
+    def download_monthly_860m(self, year=None, month=None):
+        """Download EIA-860M as direct XLSX (not ZIP)."""
         now = datetime.now()
         year = year or now.year
-        # EIA typically lags ~2 months
         month = month or max(1, now.month - 2)
 
         month_names = [
             "", "january", "february", "march", "april", "may", "june",
             "july", "august", "september", "october", "november", "december"
         ]
-        month_name = month_names[month]
 
-        # Try common URL patterns
-        url_patterns = [
-            f"{EIA_860M_BASE_URL}/{month_name}_generator{year}.zip",
-            f"{EIA_860M_BASE_URL}/{month_name}_generator{year}.xlsx",
-            f"{EIA_860M_BASE_URL}/eia860m_{year}_{month:02d}.zip",
-        ]
+        # Build list of URLs to try (current month, then work backwards)
+        url_patterns = []
+        for m in range(month, max(0, month - 4), -1):
+            if m < 1:
+                break
+            mn = month_names[m]
+            url_patterns.append(f"{EIA_860M_BASE_URL}/{mn}_generator{year}.xlsx")
+        # Also try prior year December
+        url_patterns.append(f"{EIA_860M_BASE_URL}/december_generator{year - 1}.xlsx")
 
-        zip_path = os.path.join(self.cache_dir, f"eia860m_{year}_{month:02d}.zip")
+        xlsx_path = os.path.join(self.cache_dir, f"eia860m_{year}_{month:02d}.xlsx")
 
         for url in url_patterns:
             try:
-                logger.info(f"Trying EIA-860M download: {url}")
+                logger.info(f"Trying: {url}")
                 resp = self.session.get(url, timeout=60)
-                if resp.status_code == 200:
+                if resp.status_code == 200 and len(resp.content) > 50000:
+                    # XLSX files start with PK (ZIP signature)
+                    if resp.content[:2] == b"PK":
+                        with open(xlsx_path, "wb") as f:
+                            f.write(resp.content)
+                        logger.info(f"Downloaded EIA-860M ({len(resp.content):,} bytes)")
+                        return xlsx_path
+                    else:
+                        logger.debug(f"Not an XLSX file from {url}")
+            except requests.RequestException as e:
+                logger.debug(f"Failed: {url} -> {e}")
+        
+        raise FileNotFoundError(
+            "Could not download EIA-860M. Check "
+            "https://www.eia.gov/electricity/data/eia860m/ for available dates."
+        )
+
+    def download_annual_860(self, year=None):
+        """Download annual EIA-860 ZIP and extract the Plant file (has lat/lng)."""
+        now = datetime.now()
+        year = year or now.year - 1
+
+        urls = [
+            f"{EIA_860_ANNUAL_BASE_URL}/eia860{year}.zip",
+            f"{EIA_860_ANNUAL_BASE_URL}/eia860{year - 1}.zip",
+        ]
+
+        zip_path = os.path.join(self.cache_dir, f"eia860_{year}.zip")
+
+        for url in urls:
+            try:
+                logger.info(f"Trying: {url}")
+                resp = self.session.get(url, timeout=120)
+                if resp.status_code == 200 and len(resp.content) > 100000:
                     with open(zip_path, "wb") as f:
                         f.write(resp.content)
-                    logger.info(f"Downloaded EIA-860M from {url}")
+                    logger.info(f"Downloaded EIA-860 annual ({len(resp.content):,} bytes)")
                     break
             except requests.RequestException as e:
-                logger.debug(f"URL failed: {url} -> {e}")
-                continue
+                logger.debug(f"Failed: {url} -> {e}")
         else:
-            # Fallback: try EIA bulk API
-            if self.api_key:
-                logger.info("Trying EIA bulk API fallback...")
-                bulk_url = f"https://api.eia.gov/v2/electricity/facility-fuel/data/?api_key={self.api_key}&frequency=monthly"
-                # Note: Bulk API returns JSON, different parsing needed
-                raise NotImplementedError(
-                    "Bulk API JSON parsing not yet implemented. "
-                    "Provide year/month that has a published ZIP."
-                )
-            raise FileNotFoundError(
-                f"Could not download EIA-860M for {month_name} {year}. "
-                f"Check https://www.eia.gov/electricity/data/eia860m/ for available dates."
-            )
+            raise FileNotFoundError(f"Could not download EIA-860 annual for {year}")
 
-        # Extract CSV from ZIP
-        csv_path = self._extract_csv_from_zip(zip_path)
-        return csv_path
-
-    def _extract_csv_from_zip(self, zip_path: str) -> str:
-        """Extract the generator CSV/XLSX from a ZIP file."""
+        # Extract the Plant file (best source for lat/lng)
         with zipfile.ZipFile(zip_path, "r") as zf:
-            # Look for generator-related files
-            candidates = [
-                n for n in zf.namelist()
-                if "generator" in n.lower() and (
-                    n.endswith(".csv") or n.endswith(".xlsx")
-                )
-            ]
-            if not candidates:
-                # Fall back to any CSV
-                candidates = [n for n in zf.namelist() if n.endswith(".csv")]
-
-            if not candidates:
-                raise FileNotFoundError(
-                    f"No CSV/XLSX found in ZIP. Contents: {zf.namelist()}"
-                )
-
-            target = candidates[0]
+            plant_files = [n for n in zf.namelist()
+                           if "plant" in n.lower() and n.endswith(".xlsx")]
+            gen_files = [n for n in zf.namelist()
+                         if "generator" in n.lower() and n.endswith(".xlsx")]
+            
+            target = (plant_files or gen_files or
+                      [n for n in zf.namelist() if n.endswith(".xlsx")])[0]
             extract_path = zf.extract(target, self.cache_dir)
             logger.info(f"Extracted: {target}")
-
-            # If XLSX, convert to CSV using openpyxl
-            if target.endswith(".xlsx"):
-                extract_path = self._xlsx_to_csv(extract_path)
-
             return extract_path
 
-    def _xlsx_to_csv(self, xlsx_path: str) -> str:
-        """Convert XLSX to CSV for uniform parsing."""
+    def parse_plants_from_xlsx(self, xlsx_path):
+        """Parse XLSX and return plant records with coordinates."""
         try:
             import openpyxl
         except ImportError:
-            raise ImportError("pip install openpyxl --break-system-packages")
+            raise ImportError("openpyxl required: add to requirements.txt")
 
+        plants = {}
         wb = openpyxl.load_workbook(xlsx_path, read_only=True, data_only=True)
-        # Find the operating generators sheet
+
+        # Find best sheet
         target_sheet = None
         for name in wb.sheetnames:
-            if "operating" in name.lower() or "generator" in name.lower():
+            nl = name.lower()
+            if "operat" in nl or "plant" in nl:
                 target_sheet = name
                 break
         target_sheet = target_sheet or wb.sheetnames[0]
 
+        logger.info(f"Parsing sheet: '{target_sheet}'")
         ws = wb[target_sheet]
-        csv_path = xlsx_path.replace(".xlsx", ".csv")
 
-        with open(csv_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            for row in ws.iter_rows(values_only=True):
-                writer.writerow(row)
+        # Find header row (scan first 10 rows)
+        headers = None
+        col_map = None
+        header_row = 0
 
-        wb.close()
-        logger.info(f"Converted XLSX → CSV: {csv_path}")
-        return csv_path
+        for row in ws.iter_rows(max_row=10, values_only=True):
+            header_row += 1
+            row_strs = [str(c).strip() if c else "" for c in row]
+            if any("plant" in cell.lower() for cell in row_strs[:15] if cell):
+                headers = row_strs
+                col_map = self._build_column_map(headers)
+                if col_map.get("plant_id") is not None:
+                    break
 
-    def parse_plants(self, csv_path: str) -> list[dict]:
-        """
-        Parse the EIA-860M CSV and return plant records with coordinates.
+        if not col_map or col_map.get("plant_id") is None:
+            wb.close()
+            raise ValueError(f"Could not find Plant ID column in {xlsx_path}. "
+                             f"Sheets: {wb.sheetnames}")
 
-        Returns:
-            List of dicts with standardized plant data including lat/lng.
-        """
-        plants = {}  # Deduplicate by plant_id (multiple generators per plant)
+        lat_idx = col_map.get("latitude")
+        lng_idx = col_map.get("longitude")
+        id_idx = col_map["plant_id"]
+        has_coords = lat_idx is not None and lng_idx is not None
 
-        with open(csv_path, "r", encoding="utf-8-sig") as f:
-            reader = csv.reader(f)
+        logger.info(f"Columns: plant_id={id_idx}, lat={lat_idx}, lng={lng_idx}")
 
-            # Find header row (might not be row 0 due to metadata rows)
-            headers = None
-            col_map = None
-            for row in reader:
-                if any("plant" in str(cell).lower() for cell in row[:5]):
-                    headers = [str(c).strip() for c in row]
-                    col_map = self._build_column_map(headers)
-                    if col_map.get("latitude") is not None:
-                        break
-
-            if not headers or not col_map:
-                raise ValueError("Could not find header row in CSV")
-
-            lat_idx = col_map["latitude"]
-            lng_idx = col_map["longitude"]
-            id_idx = col_map["plant_id"]
-
-            if lat_idx is None or lng_idx is None or id_idx is None:
-                raise ValueError(
-                    f"Missing critical columns. Found: {col_map}"
-                )
-
-            # Parse data rows
-            for row in reader:
-                if len(row) <= max(lat_idx, lng_idx, id_idx):
+        # Parse data rows
+        for row in ws.iter_rows(min_row=header_row + 1, values_only=True):
+            try:
+                if not row or len(row) <= id_idx:
                     continue
 
-                try:
-                    plant_id = str(row[id_idx]).strip()
-                    lat = row[lat_idx].strip() if lat_idx < len(row) else ""
-                    lng = row[lng_idx].strip() if lng_idx < len(row) else ""
+                plant_id = str(row[id_idx]).strip() if row[id_idx] else ""
+                if not plant_id or plant_id in ("None", ""):
+                    continue
 
-                    if not plant_id or not lat or not lng:
-                        continue
+                lat_f, lng_f = None, None
+                if has_coords:
+                    lat_f = _safe_float(row[lat_idx] if lat_idx < len(row) else None)
+                    lng_f = _safe_float(row[lng_idx] if lng_idx < len(row) else None)
+                    if lat_f is not None and not (-90 <= lat_f <= 90):
+                        lat_f, lng_f = None, None
+                    if lng_f is not None and not (-180 <= lng_f <= 180):
+                        lat_f, lng_f = None, None
 
-                    lat_f = float(lat)
-                    lng_f = float(lng)
+                def _get(field):
+                    idx = col_map.get(field)
+                    if idx is not None and idx < len(row) and row[idx] is not None:
+                        return str(row[idx]).strip()
+                    return None
 
-                    # Sanity check coordinates (continental US + territories)
-                    if not (-90 <= lat_f <= 90 and -180 <= lng_f <= 180):
-                        logger.warning(f"Invalid coords for plant {plant_id}: {lat_f}, {lng_f}")
-                        continue
+                if plant_id not in plants:
+                    plants[plant_id] = {
+                        "eia_plant_id": plant_id,
+                        "name": _get("plant_name"),
+                        "state": _get("state"),
+                        "county": _get("county"),
+                        "latitude": lat_f,
+                        "longitude": lng_f,
+                        "capacity_mw": _safe_float(_get("capacity_mw")),
+                        "technology": _get("technology"),
+                        "energy_source": _get("energy_source"),
+                        "status": _get("status"),
+                        "balancing_authority": _get("balancing_authority"),
+                        "source": "eia_860",
+                        "updated_at": datetime.utcnow().isoformat(),
+                    }
+                else:
+                    cap = _safe_float(_get("capacity_mw"))
+                    if cap and plants[plant_id].get("capacity_mw"):
+                        plants[plant_id]["capacity_mw"] += cap
+                    elif cap:
+                        plants[plant_id]["capacity_mw"] = cap
+                    if lat_f and plants[plant_id].get("latitude") is None:
+                        plants[plant_id]["latitude"] = lat_f
+                        plants[plant_id]["longitude"] = lng_f
 
-                    # Build plant record (take first generator's data per plant)
-                    if plant_id not in plants:
-                        def _get(field):
-                            idx = col_map.get(field)
-                            if idx is not None and idx < len(row):
-                                return str(row[idx]).strip()
-                            return None
+            except (ValueError, IndexError):
+                continue
 
-                        plants[plant_id] = {
-                            "eia_plant_id": plant_id,
-                            "name": _get("plant_name"),
-                            "state": _get("state"),
-                            "county": _get("county"),
-                            "latitude": lat_f,
-                            "longitude": lng_f,
-                            "capacity_mw": _safe_float(_get("capacity_mw")),
-                            "technology": _get("technology"),
-                            "energy_source": _get("energy_source"),
-                            "status": _get("status"),
-                            "balancing_authority": _get("balancing_authority"),
-                            "source": "eia_860m",
-                            "updated_at": datetime.utcnow().isoformat(),
-                        }
-                    else:
-                        # Aggregate capacity across generators at same plant
-                        cap = _safe_float(
-                            str(row[col_map["capacity_mw"]]).strip()
-                            if col_map.get("capacity_mw") is not None
-                            and col_map["capacity_mw"] < len(row)
-                            else None
-                        )
-                        if cap and plants[plant_id]["capacity_mw"]:
-                            plants[plant_id]["capacity_mw"] += cap
-
-                except (ValueError, IndexError) as e:
-                    continue  # Skip malformed rows silently
-
+        wb.close()
         result = list(plants.values())
-        logger.info(f"Parsed {len(result)} unique plants from EIA-860M")
+        with_coords = sum(1 for p in result if p.get("latitude") is not None)
+        logger.info(f"Parsed {len(result)} plants ({with_coords} with coordinates)")
         return result
 
-    def ingest(self, year: Optional[int] = None,
-               month: Optional[int] = None) -> list[dict]:
+    def ingest(self, year=None, month=None, use_annual=True):
         """
-        Full pipeline: download → parse → return plant records.
-
-        Returns:
-            List of plant dicts with lat/lng coordinates.
+        Full pipeline: download → parse → return plants.
+        Defaults to annual EIA-860 (best for coordinates).
+        Falls back to monthly 860M if annual fails.
         """
-        csv_path = self.download_latest_csv(year=year, month=month)
-        return self.parse_plants(csv_path)
+        # Try annual first (better lat/lng coverage)
+        if use_annual:
+            try:
+                xlsx_path = self.download_annual_860(year=year)
+                return self.parse_plants_from_xlsx(xlsx_path)
+            except Exception as e:
+                logger.warning(f"Annual EIA-860 failed ({e}), trying monthly 860M...")
+
+        # Fall back to monthly
+        xlsx_path = self.download_monthly_860m(year=year, month=month)
+        return self.parse_plants_from_xlsx(xlsx_path)
 
 
-def _safe_float(val) -> Optional[float]:
-    """Safely convert to float, return None on failure."""
+def _safe_float(val):
     if val is None:
         return None
     try:
