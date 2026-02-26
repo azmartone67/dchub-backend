@@ -1,23 +1,19 @@
 """
-DC Hub Energy Auto-Discovery System v2.2 (PostgreSQL + Coordinates)
+DC Hub Energy Auto-Discovery System v2.2 (PostgreSQL + 23 Markets)
 ====================================================================
 Automatically discovers and syncs:
-- Power plants (EIA capacity + market-center coords, upgradeable to exact lat/lng)
+- Power plants (HIFLD with lat/lng + EIA capacity data)
+- Substations (HIFLD with coordinates)
 - Transmission lines (HIFLD)
 - Gas pipelines (built-in + FERC data)
 - Wind projects (HIFLD)
 
-Runs every 10 minutes. EIA provides capacity data. Coordinates assigned via
-market-center jitter (Phase 1) — will be refined with HIFLD/EIA-860M exact
-coordinates once stable endpoints are confirmed (Phase 2).
-
-Note: HIFLD Power_Plants FeatureServer URL changed to hash-based names in 2024.
-Old URL (Power_Plants/FeatureServer) is dead. Using EIA-only approach for now.
+Runs every 10 minutes. HIFLD provides map coordinates, EIA provides capacity data.
+23 monitored markets (8 primary + 15 expansion).
 """
 
 import os
 import json
-import random
 import requests
 import threading
 import time
@@ -33,19 +29,19 @@ logger = logging.getLogger(__name__)
 # CONFIGURATION
 # =============================================================================
 
-SYNC_INTERVAL_SECONDS = 600  # 10 minutes
+SYNC_INTERVAL_SECONDS = 900  # 15 minutes (increased from 10 for 23 markets)
 IS_RAILWAY = bool(os.environ.get('RAILWAY_ENVIRONMENT'))
 
 # API Endpoints
 HIFLD_TRANSMISSION = "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Power_Transmission_Lines/FeatureServer/0/query"
 HIFLD_WIND_TURBINES = "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/US_Wind_Turbines/FeatureServer/0/query"
-# DEAD URLs — HIFLD moved these to hash-based service names in 2024
-# HIFLD_POWER_PLANTS = "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Power_Plants/FeatureServer/0/query"
-# HIFLD_SUBSTATIONS = "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Substations/FeatureServer/0/query"
+HIFLD_POWER_PLANTS = "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Power_Plants/FeatureServer/0/query"
+HIFLD_SUBSTATIONS = "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Substations/FeatureServer/0/query"
 EIA_POWER_PLANTS = "https://api.eia.gov/v2/electricity/operating-generator-capacity/data/"
 
-# Key markets to monitor
+# Key markets to monitor — bounds = [west_lng, south_lat, east_lng, north_lat]
 MONITORED_MARKETS = {
+    # === Original 8 Primary Markets ===
     'phoenix': {'name': 'Phoenix, AZ', 'bounds': [-112.5, 33.0, -111.5, 34.0], 'state': 'AZ'},
     'dallas': {'name': 'Dallas, TX', 'bounds': [-97.5, 32.5, -96.5, 33.5], 'state': 'TX'},
     'northern_virginia': {'name': 'Northern Virginia', 'bounds': [-77.8, 38.7, -77.0, 39.2], 'state': 'VA'},
@@ -54,6 +50,25 @@ MONITORED_MARKETS = {
     'salt_lake': {'name': 'Salt Lake City, UT', 'bounds': [-112.2, 40.5, -111.5, 41.0], 'state': 'UT'},
     'columbus': {'name': 'Columbus, OH', 'bounds': [-83.2, 39.8, -82.7, 40.2], 'state': 'OH'},
     'des_moines': {'name': 'Des Moines, IA', 'bounds': [-93.8, 41.4, -93.4, 41.8], 'state': 'IA'},
+    # === Tier 1: Major DC Hubs ===
+    'chicago': {'name': 'Chicago, IL', 'bounds': [-88.3, 41.6, -87.3, 42.2], 'state': 'IL'},
+    'silicon_valley': {'name': 'Silicon Valley, CA', 'bounds': [-122.5, 37.1, -121.5, 37.7], 'state': 'CA'},
+    'new_york_nj': {'name': 'New York / New Jersey', 'bounds': [-74.5, 40.4, -73.7, 41.0], 'state': 'NJ'},
+    'seattle_quincy': {'name': 'Seattle / Quincy, WA', 'bounds': [-122.6, 47.0, -119.5, 47.8], 'state': 'WA'},
+    'portland_hillsboro': {'name': 'Portland / Hillsboro, OR', 'bounds': [-123.2, 45.3, -122.4, 45.7], 'state': 'OR'},
+    # NOTE: Ashburn/Loudoun skipped — already covered by northern_virginia bounds
+    # === Tier 2: Fast-Growing ===
+    'denver': {'name': 'Denver, CO', 'bounds': [-105.3, 39.5, -104.6, 40.0], 'state': 'CO'},
+    'san_antonio': {'name': 'San Antonio, TX', 'bounds': [-98.8, 29.2, -98.1, 29.7], 'state': 'TX'},
+    'houston': {'name': 'Houston, TX', 'bounds': [-95.8, 29.5, -95.0, 30.0], 'state': 'TX'},
+    'miami': {'name': 'Miami, FL', 'bounds': [-80.5, 25.5, -80.0, 26.0], 'state': 'FL'},
+    'reno': {'name': 'Reno, NV', 'bounds': [-120.1, 39.3, -119.5, 39.8], 'state': 'NV'},
+    'sacramento': {'name': 'Sacramento, CA', 'bounds': [-121.8, 38.3, -121.1, 38.8], 'state': 'CA'},
+    # === Tier 3: Emerging ===
+    'minneapolis': {'name': 'Minneapolis, MN', 'bounds': [-93.5, 44.8, -93.0, 45.2], 'state': 'MN'},
+    'kansas_city': {'name': 'Kansas City, MO', 'bounds': [-94.9, 38.9, -94.3, 39.3], 'state': 'MO'},
+    'richmond': {'name': 'Richmond, VA', 'bounds': [-77.7, 37.3, -77.1, 37.8], 'state': 'VA'},
+    'nashville': {'name': 'Nashville, TN', 'bounds': [-87.1, 35.9, -86.4, 36.4], 'state': 'TN'},
 }
 
 # =============================================================================
@@ -239,17 +254,93 @@ def query_transmission_lines(bounds, limit=500):
 
 
 def query_hifld_power_plants(bounds, limit=500):
-    """HIFLD Power_Plants FeatureServer URL is dead (moved to hash-based names 2024).
-    Returns empty. Phase 2: use NASA NCCS mirror or EIA-860M for exact coords."""
-    logger.info("   ℹ️ HIFLD Power Plants URL deprecated — using EIA + market-center coords")
-    return []
+    """Query HIFLD for power plants WITH lat/lng coordinates"""
+    try:
+        params = {
+            'geometry': f'{bounds[0]},{bounds[1]},{bounds[2]},{bounds[3]}',
+            'geometryType': 'esriGeometryEnvelope',
+            'spatialRel': 'esriSpatialRelIntersects',
+            'outFields': 'NAME,PRIM_FUEL,TOTAL_MW,OPER_CAP,OPERATOR,STATE,STATUS,COUNTY,SECTOR_NAM',
+            'returnGeometry': 'true',
+            'f': 'json',
+            'resultRecordCount': limit
+        }
+        response = requests.get(HIFLD_POWER_PLANTS, params=params, timeout=60)
+        data = response.json()
+
+        if 'features' in data:
+            plants = []
+            for f in data['features']:
+                attrs = f.get('attributes', {})
+                geom = f.get('geometry', {})
+                name = attrs.get('NAME', 'Unknown')
+                cap = attrs.get('TOTAL_MW') or attrs.get('OPER_CAP') or 0
+
+                # Skip tiny plants
+                if cap < 1:
+                    continue
+
+                plants.append({
+                    'id': f"hifld-{hash(name + str(geom.get('x', ''))) % 10000000}",
+                    'name': name,
+                    'fuel_type': attrs.get('PRIM_FUEL', 'Unknown'),
+                    'capacity_mw': float(cap),
+                    'generation_mwh': 0,
+                    'operator': attrs.get('OPERATOR', 'Unknown'),
+                    'state': attrs.get('STATE', ''),
+                    'sector': attrs.get('SECTOR_NAM', 'Unknown'),
+                    'lat': geom.get('y'),
+                    'lng': geom.get('x'),
+                    'source': 'HIFLD',
+                })
+            logger.info(f"   📡 HIFLD: {len(plants)} power plants with coordinates")
+            return plants
+        return []
+    except Exception as e:
+        logger.warning(f"⚠️ HIFLD Power Plants error: {e}")
+        return []
 
 
 def query_hifld_substations(bounds, limit=500):
-    """HIFLD Substations FeatureServer URL is dead (moved to hash-based names 2024).
-    Returns empty. Phase 2: find new hash-based URL."""
-    logger.info("   ℹ️ HIFLD Substations URL deprecated — skipping")
-    return []
+    """Query HIFLD for substations with coordinates"""
+    try:
+        params = {
+            'geometry': f'{bounds[0]},{bounds[1]},{bounds[2]},{bounds[3]}',
+            'geometryType': 'esriGeometryEnvelope',
+            'spatialRel': 'esriSpatialRelIntersects',
+            'outFields': 'NAME,STATE,STATUS,OWNER,MAX_VOLT,MIN_VOLT,LINES,TYPE',
+            'returnGeometry': 'true',
+            'f': 'json',
+            'resultRecordCount': limit
+        }
+        response = requests.get(HIFLD_SUBSTATIONS, params=params, timeout=60)
+        data = response.json()
+
+        if 'features' in data:
+            subs = []
+            for f in data['features']:
+                attrs = f.get('attributes', {})
+                geom = f.get('geometry', {})
+                name = attrs.get('NAME', 'Unknown')
+                subs.append({
+                    'id': f"sub-{hash(name + str(geom.get('x', ''))) % 10000000}",
+                    'name': name,
+                    'owner': attrs.get('OWNER', 'Unknown'),
+                    'voltage_kv': attrs.get('MAX_VOLT', 0),
+                    'min_voltage_kv': attrs.get('MIN_VOLT', 0),
+                    'status': attrs.get('STATUS', 'Unknown'),
+                    'lines': attrs.get('LINES', 0),
+                    'type': attrs.get('TYPE', 'Unknown'),
+                    'state': attrs.get('STATE', ''),
+                    'lat': geom.get('y'),
+                    'lng': geom.get('x'),
+                })
+            logger.info(f"   📡 HIFLD: {len(subs)} substations with coordinates")
+            return subs
+        return []
+    except Exception as e:
+        logger.warning(f"⚠️ HIFLD Substations error: {e}")
+        return []
 
 
 def query_wind_turbines(bounds, limit=500):
@@ -296,6 +387,7 @@ def query_wind_turbines(bounds, limit=500):
 def query_pipelines(bounds=None, state=None, limit=200):
     """Return major interstate gas pipelines serving DC markets"""
     major_pipelines = [
+        # === Original 20 pipelines ===
         {'id': 'pipe-transco-001', 'operator': 'Transcontinental Gas (Williams)', 'pipeline_type': 'Interstate Transmission', 'status': 'Active', 'diameter': 42, 'commodity': 'Natural Gas', 'name': 'Transco Pipeline', 'capacity_mdth': 17400, 'lat': 39.0, 'lng': -77.5, 'states': 'TX,LA,MS,AL,GA,SC,NC,VA,MD,PA,NJ,NY'},
         {'id': 'pipe-tet-001', 'operator': 'Texas Eastern (Enbridge)', 'pipeline_type': 'Interstate Transmission', 'status': 'Active', 'diameter': 36, 'commodity': 'Natural Gas', 'name': 'Texas Eastern Pipeline', 'capacity_mdth': 10200, 'lat': 33.7, 'lng': -84.3, 'states': 'TX,LA,MS,AL,GA,TN,KY,OH,PA,NJ,NY'},
         {'id': 'pipe-elp-001', 'operator': 'El Paso Natural Gas (Kinder Morgan)', 'pipeline_type': 'Interstate Transmission', 'status': 'Active', 'diameter': 36, 'commodity': 'Natural Gas', 'name': 'El Paso Natural Gas', 'capacity_mdth': 5600, 'lat': 33.4, 'lng': -112.0, 'states': 'TX,NM,AZ,CA,NV'},
@@ -316,6 +408,18 @@ def query_pipelines(bounds=None, state=None, limit=200):
         {'id': 'pipe-questar-001', 'operator': 'Questar Pipeline (Dominion)', 'pipeline_type': 'Interstate Transmission', 'status': 'Active', 'diameter': 24, 'commodity': 'Natural Gas', 'name': 'Questar Pipeline', 'capacity_mdth': 2100, 'lat': 40.7, 'lng': -111.8, 'states': 'UT,WY,CO'},
         {'id': 'pipe-mvp-001', 'operator': 'Mountain Valley Pipeline LLC', 'pipeline_type': 'Interstate Transmission', 'status': 'Active', 'diameter': 42, 'commodity': 'Natural Gas', 'name': 'Mountain Valley Pipeline', 'capacity_mdth': 2000, 'lat': 37.2, 'lng': -80.4, 'states': 'WV,VA'},
         {'id': 'pipe-nexus-001', 'operator': 'NEXUS Gas Transmission (Enbridge/DTE)', 'pipeline_type': 'Interstate Transmission', 'status': 'Active', 'diameter': 36, 'commodity': 'Natural Gas', 'name': 'NEXUS Gas Transmission', 'capacity_mdth': 1500, 'lat': 41.0, 'lng': -83.0, 'states': 'OH,MI'},
+        # === New pipelines for expanded markets ===
+        {'id': 'pipe-nwpl-001', 'operator': 'Northwest Pipeline (Williams)', 'pipeline_type': 'Interstate Transmission', 'status': 'Active', 'diameter': 30, 'commodity': 'Natural Gas', 'name': 'Northwest Pipeline', 'capacity_mdth': 3800, 'lat': 47.6, 'lng': -122.3, 'states': 'WA,OR,WY,UT,CO,NM'},
+        {'id': 'pipe-socal-001', 'operator': 'SoCal Gas (Sempra)', 'pipeline_type': 'Interstate Transmission', 'status': 'Active', 'diameter': 36, 'commodity': 'Natural Gas', 'name': 'SoCal Gas System', 'capacity_mdth': 4000, 'lat': 34.0, 'lng': -118.2, 'states': 'CA,AZ'},
+        {'id': 'pipe-pgande-001', 'operator': 'Pacific Gas & Electric', 'pipeline_type': 'Interstate Transmission', 'status': 'Active', 'diameter': 36, 'commodity': 'Natural Gas', 'name': 'PG&E Gas Transmission', 'capacity_mdth': 3600, 'lat': 37.8, 'lng': -122.4, 'states': 'CA'},
+        {'id': 'pipe-gulfstream-001', 'operator': 'Gulfstream Natural Gas (Williams)', 'pipeline_type': 'Interstate Transmission', 'status': 'Active', 'diameter': 36, 'commodity': 'Natural Gas', 'name': 'Gulfstream Pipeline', 'capacity_mdth': 1400, 'lat': 27.9, 'lng': -82.5, 'states': 'AL,MS,FL'},
+        {'id': 'pipe-fgt-001', 'operator': 'Florida Gas Transmission (Kinder Morgan)', 'pipeline_type': 'Interstate Transmission', 'status': 'Active', 'diameter': 36, 'commodity': 'Natural Gas', 'name': 'Florida Gas Transmission', 'capacity_mdth': 2900, 'lat': 30.3, 'lng': -81.6, 'states': 'TX,LA,MS,AL,FL'},
+        {'id': 'pipe-ngpl-001', 'operator': 'Natural Gas Pipeline of America (Kinder Morgan)', 'pipeline_type': 'Interstate Transmission', 'status': 'Active', 'diameter': 36, 'commodity': 'Natural Gas', 'name': 'NGPL Pipeline', 'capacity_mdth': 6300, 'lat': 41.9, 'lng': -87.6, 'states': 'TX,LA,AR,MS,TN,KY,IL,IN,IA'},
+        {'id': 'pipe-midcontinent-001', 'operator': 'Midcontinent Express (Kinder Morgan)', 'pipeline_type': 'Interstate Transmission', 'status': 'Active', 'diameter': 42, 'commodity': 'Natural Gas', 'name': 'Midcontinent Express', 'capacity_mdth': 1800, 'lat': 32.3, 'lng': -90.2, 'states': 'TX,LA,MS,AL'},
+        {'id': 'pipe-gtl-001', 'operator': 'Gulf South Pipeline (Boardwalk)', 'pipeline_type': 'Interstate Transmission', 'status': 'Active', 'diameter': 30, 'commodity': 'Natural Gas', 'name': 'Gulf South Pipeline', 'capacity_mdth': 2700, 'lat': 30.0, 'lng': -90.0, 'states': 'TX,LA,MS,AL,FL,TN'},
+        {'id': 'pipe-viking-001', 'operator': 'Viking Gas Transmission (ONEOK)', 'pipeline_type': 'Interstate Transmission', 'status': 'Active', 'diameter': 24, 'commodity': 'Natural Gas', 'name': 'Viking Gas Transmission', 'capacity_mdth': 900, 'lat': 45.0, 'lng': -93.3, 'states': 'ND,MN,WI'},
+        {'id': 'pipe-ans-001', 'operator': 'ANR Pipeline (TC Energy)', 'pipeline_type': 'Interstate Transmission', 'status': 'Active', 'diameter': 36, 'commodity': 'Natural Gas', 'name': 'ANR Pipeline', 'capacity_mdth': 5200, 'lat': 41.0, 'lng': -87.0, 'states': 'TX,LA,MS,TN,KY,OH,MI,WI,IL'},
+        {'id': 'pipe-east-tn-001', 'operator': 'East Tennessee Natural Gas (Enbridge)', 'pipeline_type': 'Interstate Transmission', 'status': 'Active', 'diameter': 24, 'commodity': 'Natural Gas', 'name': 'East Tennessee Natural Gas', 'capacity_mdth': 1400, 'lat': 36.2, 'lng': -86.8, 'states': 'TN,VA,WV'},
     ]
 
     results = []
@@ -342,8 +446,6 @@ def query_eia_power_plants(state, api_key=None):
             'api_key': eia_key,
             'frequency': 'monthly',
             'data[0]': 'nameplate-capacity-mw',
-            'data[1]': 'latitude',
-            'data[2]': 'longitude',
             'facets[stateid][]': state,
             'facets[status][]': 'OP',
             'sort[0][column]': 'period',
@@ -369,9 +471,6 @@ def query_eia_power_plants(state, api_key=None):
                     continue
                 cap = float(r.get('nameplate-capacity-mw', 0) or 0)
                 if pid not in plants_agg:
-                    # EIA API may return latitude/longitude as data columns
-                    lat_val = r.get('latitude')
-                    lng_val = r.get('longitude')
                     plants_agg[pid] = {
                         'id': f"eia-{pid}",
                         'name': r.get('plantName', 'Unknown'),
@@ -381,8 +480,6 @@ def query_eia_power_plants(state, api_key=None):
                         'operator': r.get('entityName', 'Unknown'),
                         'state': r.get('stateid', state),
                         'sector': r.get('sectorName', 'Unknown'),
-                        'lat': float(lat_val) if lat_val else None,
-                        'lng': float(lng_val) if lng_val else None,
                         'source': 'EIA',
                     }
                 else:
@@ -398,6 +495,7 @@ def query_eia_power_plants(state, api_key=None):
 def get_fallback_power_plants(state):
     """Fallback power plant data when EIA API unavailable"""
     fallback_data = {
+        # === Original 8 states ===
         'AZ': [
             {'id': 'pp-palo-verde', 'name': 'Palo Verde Nuclear', 'fuel_type': 'Nuclear', 'capacity_mw': 3937, 'state': 'AZ', 'operator': 'Arizona Public Service'},
             {'id': 'pp-gila-river', 'name': 'Gila River Power Station', 'fuel_type': 'Natural Gas', 'capacity_mw': 2200, 'state': 'AZ', 'operator': 'Gila River Power'},
@@ -437,6 +535,62 @@ def get_fallback_power_plants(state):
         'IA': [
             {'id': 'pp-iowa-wind', 'name': 'Iowa Wind Fleet', 'fuel_type': 'Wind', 'capacity_mw': 12000, 'state': 'IA', 'operator': 'Various'},
             {'id': 'pp-walter-scott', 'name': 'Walter Scott Jr. Energy Center', 'fuel_type': 'Coal', 'capacity_mw': 1630, 'state': 'IA', 'operator': 'MidAmerican Energy'},
+        ],
+        # === New states for expanded markets ===
+        'IL': [
+            {'id': 'pp-braidwood', 'name': 'Braidwood Nuclear', 'fuel_type': 'Nuclear', 'capacity_mw': 2386, 'state': 'IL', 'operator': 'Constellation Energy'},
+            {'id': 'pp-byron', 'name': 'Byron Nuclear', 'fuel_type': 'Nuclear', 'capacity_mw': 2347, 'state': 'IL', 'operator': 'Constellation Energy'},
+            {'id': 'pp-lasalle', 'name': 'LaSalle County Nuclear', 'fuel_type': 'Nuclear', 'capacity_mw': 2320, 'state': 'IL', 'operator': 'Constellation Energy'},
+            {'id': 'pp-dresden', 'name': 'Dresden Nuclear', 'fuel_type': 'Nuclear', 'capacity_mw': 1805, 'state': 'IL', 'operator': 'Constellation Energy'},
+        ],
+        'CA': [
+            {'id': 'pp-diablo-canyon', 'name': 'Diablo Canyon Nuclear', 'fuel_type': 'Nuclear', 'capacity_mw': 2256, 'state': 'CA', 'operator': 'Pacific Gas & Electric'},
+            {'id': 'pp-helms', 'name': 'Helms Pumped Storage', 'fuel_type': 'Pumped Storage', 'capacity_mw': 1212, 'state': 'CA', 'operator': 'Pacific Gas & Electric'},
+            {'id': 'pp-ca-solar-fleet', 'name': 'California Solar Fleet', 'fuel_type': 'Solar', 'capacity_mw': 18000, 'state': 'CA', 'operator': 'Various'},
+            {'id': 'pp-moss-landing', 'name': 'Moss Landing Power Plant', 'fuel_type': 'Natural Gas', 'capacity_mw': 2560, 'state': 'CA', 'operator': 'Vistra'},
+        ],
+        'NJ': [
+            {'id': 'pp-salem', 'name': 'Salem Nuclear', 'fuel_type': 'Nuclear', 'capacity_mw': 2275, 'state': 'NJ', 'operator': 'PSEG Nuclear'},
+            {'id': 'pp-hope-creek', 'name': 'Hope Creek Nuclear', 'fuel_type': 'Nuclear', 'capacity_mw': 1170, 'state': 'NJ', 'operator': 'PSEG Nuclear'},
+            {'id': 'pp-linden', 'name': 'Linden Cogeneration', 'fuel_type': 'Natural Gas', 'capacity_mw': 1100, 'state': 'NJ', 'operator': 'NAES Corporation'},
+        ],
+        'WA': [
+            {'id': 'pp-columbia-gen', 'name': 'Columbia Generating Station', 'fuel_type': 'Nuclear', 'capacity_mw': 1174, 'state': 'WA', 'operator': 'Energy Northwest'},
+            {'id': 'pp-grand-coulee', 'name': 'Grand Coulee Dam', 'fuel_type': 'Hydro', 'capacity_mw': 6809, 'state': 'WA', 'operator': 'Bureau of Reclamation'},
+            {'id': 'pp-chief-joseph', 'name': 'Chief Joseph Dam', 'fuel_type': 'Hydro', 'capacity_mw': 2620, 'state': 'WA', 'operator': 'US Army Corps'},
+            {'id': 'pp-wa-wind-fleet', 'name': 'Washington Wind Fleet', 'fuel_type': 'Wind', 'capacity_mw': 3200, 'state': 'WA', 'operator': 'Various'},
+        ],
+        'OR': [
+            {'id': 'pp-the-dalles', 'name': 'The Dalles Dam', 'fuel_type': 'Hydro', 'capacity_mw': 1823, 'state': 'OR', 'operator': 'US Army Corps'},
+            {'id': 'pp-john-day', 'name': 'John Day Dam', 'fuel_type': 'Hydro', 'capacity_mw': 2160, 'state': 'OR', 'operator': 'US Army Corps'},
+            {'id': 'pp-or-wind-fleet', 'name': 'Oregon Wind Fleet', 'fuel_type': 'Wind', 'capacity_mw': 4000, 'state': 'OR', 'operator': 'Various'},
+        ],
+        'CO': [
+            {'id': 'pp-comanche-co', 'name': 'Comanche Generating Station', 'fuel_type': 'Coal', 'capacity_mw': 1410, 'state': 'CO', 'operator': 'Xcel Energy'},
+            {'id': 'pp-pawnee', 'name': 'Pawnee Station', 'fuel_type': 'Coal', 'capacity_mw': 505, 'state': 'CO', 'operator': 'Xcel Energy'},
+            {'id': 'pp-co-wind-fleet', 'name': 'Colorado Wind Fleet', 'fuel_type': 'Wind', 'capacity_mw': 5500, 'state': 'CO', 'operator': 'Various'},
+            {'id': 'pp-co-solar-fleet', 'name': 'Colorado Solar Fleet', 'fuel_type': 'Solar', 'capacity_mw': 2000, 'state': 'CO', 'operator': 'Various'},
+        ],
+        'FL': [
+            {'id': 'pp-st-lucie', 'name': 'St. Lucie Nuclear', 'fuel_type': 'Nuclear', 'capacity_mw': 1990, 'state': 'FL', 'operator': 'Florida Power & Light'},
+            {'id': 'pp-turkey-point', 'name': 'Turkey Point Nuclear', 'fuel_type': 'Nuclear', 'capacity_mw': 1760, 'state': 'FL', 'operator': 'Florida Power & Light'},
+            {'id': 'pp-fl-solar-fleet', 'name': 'Florida Solar Fleet', 'fuel_type': 'Solar', 'capacity_mw': 8000, 'state': 'FL', 'operator': 'Various'},
+            {'id': 'pp-manatee', 'name': 'Manatee Energy Center', 'fuel_type': 'Natural Gas', 'capacity_mw': 1800, 'state': 'FL', 'operator': 'Florida Power & Light'},
+        ],
+        'MN': [
+            {'id': 'pp-monticello', 'name': 'Monticello Nuclear', 'fuel_type': 'Nuclear', 'capacity_mw': 671, 'state': 'MN', 'operator': 'Xcel Energy'},
+            {'id': 'pp-prairie-island', 'name': 'Prairie Island Nuclear', 'fuel_type': 'Nuclear', 'capacity_mw': 1100, 'state': 'MN', 'operator': 'Xcel Energy'},
+            {'id': 'pp-mn-wind-fleet', 'name': 'Minnesota Wind Fleet', 'fuel_type': 'Wind', 'capacity_mw': 4700, 'state': 'MN', 'operator': 'Various'},
+        ],
+        'MO': [
+            {'id': 'pp-callaway', 'name': 'Callaway Nuclear', 'fuel_type': 'Nuclear', 'capacity_mw': 1190, 'state': 'MO', 'operator': 'Ameren Missouri'},
+            {'id': 'pp-labadie', 'name': 'Labadie Energy Center', 'fuel_type': 'Coal', 'capacity_mw': 2372, 'state': 'MO', 'operator': 'Ameren Missouri'},
+            {'id': 'pp-iatan', 'name': 'Iatan Generating Station', 'fuel_type': 'Coal', 'capacity_mw': 1534, 'state': 'MO', 'operator': 'Evergy'},
+        ],
+        'TN': [
+            {'id': 'pp-watts-bar', 'name': 'Watts Bar Nuclear', 'fuel_type': 'Nuclear', 'capacity_mw': 2330, 'state': 'TN', 'operator': 'Tennessee Valley Authority'},
+            {'id': 'pp-sequoyah', 'name': 'Sequoyah Nuclear', 'fuel_type': 'Nuclear', 'capacity_mw': 2290, 'state': 'TN', 'operator': 'Tennessee Valley Authority'},
+            {'id': 'pp-cumberland', 'name': 'Cumberland Fossil Plant', 'fuel_type': 'Coal', 'capacity_mw': 2470, 'state': 'TN', 'operator': 'Tennessee Valley Authority'},
         ],
     }
     plants = fallback_data.get(state, [])
@@ -502,16 +656,6 @@ def sync_market(market_key, market_info):
 
         plants_list = list(all_plants.values())
         results['power_plants']['found'] = len(plants_list)
-
-        # Assign market-center jitter coordinates to plants missing lat/lng
-        for plant in plants_list:
-            if not plant.get('lat') or not plant.get('lng'):
-                center_lat = (bounds[1] + bounds[3]) / 2
-                center_lng = (bounds[0] + bounds[2]) / 2
-                plant['lat'] = center_lat + random.uniform(-0.35, 0.35)
-                plant['lng'] = center_lng + random.uniform(-0.35, 0.35)
-                if not plant.get('source') or plant['source'] == 'EIA':
-                    plant['source'] = 'EIA+jitter'
 
         for plant in plants_list:
             c.execute("SELECT id, capacity_mw FROM discovered_power_plants WHERE id = %s", (plant['id'],))
@@ -660,6 +804,7 @@ def run_full_sync():
 
     duration = time.time() - start_time
     logger.info(f"✅ ENERGY SYNC COMPLETE in {duration:.1f}s — "
+                f"{total_results['markets']} markets, "
                 f"{total_results['power_plants']['found']} plants, "
                 f"{total_results['transmission_lines']['found']} tx lines, "
                 f"{total_results['wind_projects']['found']} wind, "
@@ -928,46 +1073,65 @@ def register_energy_discovery_routes(app):
 
     @app.route('/api/energy-discovery/backfill-coords', methods=['POST'])
     def energy_discovery_backfill_coords():
-        """Backfill lat/lng for plants using market center + jitter"""
-        import random
+        """Backfill lat/lng for existing plants using HIFLD"""
         updated = 0
+        errors = []
         conn = None
         try:
             conn = get_db()
             c = conn.cursor()
 
             # Get plants missing coordinates
-            c.execute("SELECT id, market FROM discovered_power_plants WHERE lat IS NULL OR lng IS NULL")
+            c.execute("SELECT id, name, state, market FROM discovered_power_plants WHERE lat IS NULL OR lng IS NULL LIMIT 500")
             cols = [d[0] for d in c.description]
             missing = [dict(zip(cols, row)) for row in c.fetchall()]
 
             if not missing:
-                c.execute("SELECT COUNT(*) FROM discovered_power_plants WHERE lat IS NOT NULL")
-                with_coords = c.fetchone()[0]
-                c.execute("SELECT COUNT(*) FROM discovered_power_plants")
-                total = c.fetchone()[0]
-                return jsonify({'success': True, 'message': 'All plants already have coordinates',
-                                'updated': 0, 'with_coordinates': with_coords, 'total_plants': total,
-                                'coverage_pct': round(with_coords / total * 100, 1) if total > 0 else 0})
+                return jsonify({'success': True, 'message': 'All plants already have coordinates', 'updated': 0})
 
-            # Assign market center coordinates with small random offset
-            # so plants don't stack on top of each other
+            # Group by market and query HIFLD for each
+            markets_done = set()
             for plant in missing:
                 market_key = plant.get('market', '')
-                if market_key not in MONITORED_MARKETS:
+                if market_key in markets_done or market_key not in MONITORED_MARKETS:
                     continue
+                markets_done.add(market_key)
+
                 bounds = MONITORED_MARKETS[market_key]['bounds']
-                center_lat = (bounds[1] + bounds[3]) / 2
-                center_lng = (bounds[0] + bounds[2]) / 2
-                # Add jitter within market bounds so dots spread out
-                lat = center_lat + random.uniform(-0.35, 0.35)
-                lng = center_lng + random.uniform(-0.35, 0.35)
-                c.execute("UPDATE discovered_power_plants SET lat = %s, lng = %s WHERE id = %s AND lat IS NULL",
-                          (lat, lng, plant['id']))
-                updated += 1
+                hifld_plants = query_hifld_power_plants(bounds, limit=1000)
+
+                # Match by name
+                for hp in hifld_plants:
+                    if not hp.get('lat') or not hp.get('lng'):
+                        continue
+                    hp_name = (hp.get('name') or '').lower().strip()
+                    for mp in missing:
+                        if mp.get('market') != market_key:
+                            continue
+                        mp_name = (mp.get('name') or '').lower().strip()
+                        if hp_name and mp_name and (hp_name in mp_name or mp_name in hp_name):
+                            c.execute("UPDATE discovered_power_plants SET lat = %s, lng = %s, last_updated = %s WHERE id = %s AND lat IS NULL",
+                                      (hp['lat'], hp['lng'], datetime.utcnow().isoformat(), mp['id']))
+                            updated += 1
+
+                # Also insert HIFLD plants we don't have yet
+                for hp in hifld_plants:
+                    if hp.get('lat') and hp.get('lng'):
+                        c.execute("""INSERT INTO discovered_power_plants
+                            (id, name, fuel_type, capacity_mw, generation_mwh, operator, state, sector, market, lat, lng, discovered_at, last_updated, source)
+                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                            ON CONFLICT (id) DO UPDATE SET
+                                lat = COALESCE(EXCLUDED.lat, discovered_power_plants.lat),
+                                lng = COALESCE(EXCLUDED.lng, discovered_power_plants.lng)""",
+                            (hp['id'], hp['name'], hp['fuel_type'], hp.get('capacity_mw', 0),
+                             0, hp.get('operator', ''), hp['state'], hp.get('sector', ''),
+                             market_key, hp['lat'], hp['lng'],
+                             datetime.utcnow().isoformat(), datetime.utcnow().isoformat(), 'HIFLD'))
+                        updated += 1
 
             conn.commit()
 
+            # Count how many now have coords
             c.execute("SELECT COUNT(*) FROM discovered_power_plants WHERE lat IS NOT NULL AND lng IS NOT NULL")
             with_coords = c.fetchone()[0]
             c.execute("SELECT COUNT(*) FROM discovered_power_plants")
@@ -978,10 +1142,10 @@ def register_energy_discovery_routes(app):
                 'updated': updated,
                 'with_coordinates': with_coords,
                 'total_plants': total,
-                'coverage_pct': round(with_coords / total * 100, 1) if total > 0 else 0,
-                'note': 'Coordinates are market-center approximations. Will be refined with HIFLD exact data.'
+                'coverage_pct': round(with_coords / total * 100, 1) if total > 0 else 0
             })
         except Exception as e:
+            errors.append(str(e))
             return jsonify({'success': False, 'error': str(e), 'updated': updated})
         finally:
             if conn:
@@ -1024,7 +1188,7 @@ def register_energy_discovery_routes(app):
         except Exception as e:
             results['hifld_wind'] = {'status': 'error', 'detail': str(e)}
 
-        results['pipelines'] = {'status': 'ok', 'count': 20, 'source': 'built-in FERC data'}
+        results['pipelines'] = {'status': 'ok', 'count': 31, 'source': 'built-in FERC data'}
 
         # Test HIFLD Power Plants (with coordinates)
         try:
@@ -1051,7 +1215,7 @@ def register_energy_discovery_routes(app):
     else:
         logger.info("⚡ Energy Auto-Discovery: routes registered (scheduler paused — not Railway)")
 
-    logger.info("⚡ Energy Auto-Discovery routes registered (PostgreSQL v2.1 — with coordinates)")
+    logger.info("⚡ Energy Auto-Discovery v2.2 routes registered (PostgreSQL — 23 markets)")
     logger.info("   ✅ /api/energy-discovery/status")
     logger.info("   ✅ /api/energy-discovery/power-plants")
     logger.info("   ✅ /api/energy-discovery/transmission-lines")

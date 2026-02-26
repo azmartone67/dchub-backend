@@ -1,4 +1,5 @@
 """
+# v94 — Power Plant Coordinate Enrichment (Phase 2) Feb 25 2026
 # v93 — AI Testimonials + Dashboard Stats Fixes Feb 25 2026
 # v92 — Daily Automation Engine (alerts, LinkedIn, market brief) Feb 24 2026
 # v91 — AI Discovery Routes (inline) integrated Feb 24 2026
@@ -2418,6 +2419,15 @@ try:
         logger.warning("⚠️ LinkedIn Auto-Publisher: blueprint not available")
 except Exception as e:
     logger.error(f"⚠️ LinkedIn Auto-Publisher blueprint failed: {e}")
+
+try:
+    from power_plant_enrichment.routes import enrichment_bp
+    app.register_blueprint(enrichment_bp, url_prefix="/api/enrichment")
+    logger.info("✅ Power Plant Enrichment API registered")
+except ImportError:
+    logger.warning("⚠️ Power Plant Enrichment: Module not installed")
+except Exception as e:
+    logger.error(f"⚠️ Power Plant Enrichment blueprint failed: {e}")
 
 try:
     from agent_network_effect import AgentNetworkEffect
