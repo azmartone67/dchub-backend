@@ -807,7 +807,7 @@ def api_facilities_shortcut():
 APP_START_TIME = time.time()
 from nav_config import register_nav_config_route
 register_nav_config_route(app)
-APP_VERSION = '2.5.1'
+APP_VERSION = '2.5.2'
 STARTUP_COMPLETE = False
 
 last_webhook_time = None
