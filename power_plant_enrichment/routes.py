@@ -162,12 +162,14 @@ def _run_enrichment(job_id: str, sources: list, params: dict, dry_run: bool):
         # --- Phase 1: Ingest from sources ---
 
         if "eia_860m" in sources:
-            _jobs[job_id]["progress"] = "Downloading EIA-860M data..."
+            _jobs[job_id]["progress"] = "Downloading EIA plant data..."
             ingester = EIA860MIngester()
             try:
+                use_annual = params.get("use_annual", True)
                 eia_plants = ingester.ingest(
                     year=params.get("eia_year"),
                     month=params.get("eia_month"),
+                    use_annual=use_annual,
                 )
                 _jobs[job_id]["eia_count"] = len(eia_plants)
             except Exception as e:
