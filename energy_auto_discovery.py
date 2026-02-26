@@ -212,6 +212,7 @@ def query_transmission_lines(bounds, limit=500):
             'spatialRel': 'esriSpatialRelIntersects',
             'outFields': 'OWNER,VOLTAGE,VOLT_CLASS,SUB_1,SUB_2,STATUS',
             'returnGeometry': 'false',
+            'inSR': '4326',
             'f': 'json',
             'resultRecordCount': limit
         }
