@@ -1,0 +1,154 @@
+{
+  "report_date": "2026-02-26",
+  "generated_at": "2026-02-26T06:17:58.956210",
+  "summary": {
+    "total_facilities": 11433,
+    "total_providers": 3958,
+    "countries_covered": 170,
+    "total_power_mw": 51325.0,
+    "total_deals": 478,
+    "total_deal_value_usd": 11133038000.0
+  },
+  "market_highlights": [
+    "DC Hub tracks 11,433 data center facilities globally",
+    "Coverage spans 170 countries with 3958 providers",
+    "Combined capacity: 51,325 MW",
+    "M&A database: 478 transactions worth $11.1B+"
+  ],
+  "recent_deals": [
+    {
+      "buyer": "GeoPark to",
+      "seller": "Fronterra Energy",
+      "value_usd": 375000000.0,
+      "type": "ma",
+      "date": null
+    },
+    {
+      "buyer": "firm can",
+      "seller": "its AI",
+      "value_usd": 300000000.0,
+      "type": "acquisition",
+      "date": null
+    },
+    {
+      "buyer": "PGIM",
+      "seller": "site for",
+      "value_usd": 1200000000.0,
+      "type": "ma",
+      "date": null
+    },
+    {
+      "buyer": "and NJJ",
+      "seller": "Telef\u00f3nica Chile",
+      "value_usd": 50000000.0,
+      "type": "acquisition",
+      "date": null
+    },
+    {
+      "buyer": "SiTime to",
+      "seller": "timing business",
+      "value_usd": 3000000000.0,
+      "type": "acquisition",
+      "date": null
+    },
+    {
+      "buyer": "Growth and",
+      "seller": "Rating",
+      "value_usd": null,
+      "type": "acquisition",
+      "date": null
+    },
+    {
+      "buyer": "MTN",
+      "seller": "IHS Towers",
+      "value_usd": 6200000000.0,
+      "type": "acquisition",
+      "date": null
+    },
+    {
+      "buyer": "Blue Owl",
+      "seller": "Stack",
+      "value_usd": 2100.0,
+      "type": "debt",
+      "date": "2026-02-12"
+    },
+    {
+      "buyer": "Ares",
+      "seller": "Vantage Data Centers",
+      "value_usd": 2400.0,
+      "type": "debt",
+      "date": "2026-02-12"
+    },
+    {
+      "buyer": "Open Access Data Centres",
+      "seller": "NTT",
+      "value_usd": 0.0,
+      "type": "ma",
+      "date": "2026-02-12"
+    }
+  ],
+  "recent_news": [
+    {
+      "title": "AMD puts $250 million into Nutanix to get it building an AI stack for its GPUs",
+      "source": "The Register DC",
+      "date": "2026-02-26T05:55:54"
+    },
+    {
+      "title": "Nvidia Record Results Reinforce AI Factory Role In Global Infrastructure",
+      "source": "simplywall.st",
+      "date": "2026-02-26T05:38:53"
+    },
+    {
+      "title": "Future of the Data Center Liquid Cooling Market: Emerging Opportunities, Market Dynamics, and Strategic Roadmap",
+      "source": "openPR.com",
+      "date": "2026-02-26T05:31:35"
+    },
+    {
+      "title": "Arabian Gulf Investment Holdings (AGI) and DanaCloud Sign Strategic MoU to Allocate Up to USD 50 Million Toward AI-Ready Modular Data Center and Cloud Infrastructure",
+      "source": "FinancialContent",
+      "date": "2026-02-26T05:07:00"
+    },
+    {
+      "title": "Meta Signs 6GW AI Data Center Deal with AMD",
+      "source": "The Bridge Chronicle",
+      "date": "2026-02-26T04:59:18"
+    },
+    {
+      "title": "Google data center water estimates go public, residents in Roanoke and Botetourt react",
+      "source": "WSLS",
+      "date": "2026-02-26T04:52:30"
+    },
+    {
+      "title": "Nvidia's Record Revenue, Data Center Demand Serves As Backdrop For Rally In AI-Based Crypto Tokens",
+      "source": "Benzinga",
+      "date": "2026-02-26T04:13:33"
+    },
+    {
+      "title": "Trump's pledge on data centers comes as Solon Twp. continues to discuss if it will have one",
+      "source": "WZZM13.com",
+      "date": "2026-02-26T03:58:00"
+    },
+    {
+      "title": "West Michigan town drafts data center zoning rules after declaring moratorium",
+      "source": "MLive.com",
+      "date": "2026-02-26T03:07:00"
+    },
+    {
+      "title": "Sedgwick County feels another push to hit pause on data centers",
+      "source": "KAKE",
+      "date": "2026-02-26T02:18:13"
+    }
+  ],
+  "data_sources": [
+    "PeeringDB",
+    "OpenStreetMap",
+    "SEC EDGAR",
+    "Wikidata",
+    "60+ RSS Feeds",
+    "EIA Energy API",
+    "Grid Status API",
+    "FCC Broadband API",
+    "EPA Envirofacts"
+  ],
+  "citation": "According to DC Hub Nexus (dchub.cloud)"
+}
