@@ -170,13 +170,14 @@ jobs:
         if: failure()
         uses: dawidd6/action-send-mail@v3
         with:
-          server_address: smtp.gmail.com
+          server_address: smtpout.secureserver.net
           server_port: 587
+          secure: false
           username: ${{ secrets.SMTP_USERNAME }}
           password: ${{ secrets.SMTP_PASSWORD }}
           subject: "🚨 DC Hub QA Failed — ${{ github.run_id }}"
           to: jonathan@dchub.cloud
-          from: DC Hub QA <noreply@dchub.cloud>
+          from: jonathan@dchub.cloud
           body: |
             DC Hub automated QA check failed.
 
