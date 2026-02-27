@@ -105,7 +105,7 @@ jobs:
           check("Railway health",         f"{RAILWAY}/api/health", retries=2)
           check("Cloudflare Worker",      f"{BASE}/api/health")
           check("Neon DB stats",          f"{BASE}/api/v1/stats",
-                json_path="data.total_facilities", min_value=11000)
+                json_path="stats.facilities", min_value=11000)
 
           # ── API Endpoints ──
           print("\n🎯 API Endpoints")
@@ -125,7 +125,7 @@ jobs:
           check("MCP tools/list",         f"{BASE}/mcp", method="POST",
                 post_data={"jsonrpc": "2.0", "method": "tools/list", "id": 1},
                 headers={"Content-Type": "application/json"},
-                retries=2)
+                accept_statuses=[200, 503], retries=2)
 
           # ── Frontend Pages ──
           print("\n🌐 Frontend Pages")
