@@ -32,24 +32,28 @@ index_bp = Blueprint("index", __name__, url_prefix="/api/index")
 # ─────────────────────────────────────────────
 TABLE_FACILITIES   = "facilities"
 TABLE_TRANSACTIONS = "transactions"
-TABLE_MARKET_INTEL = "market_intelligence"
-TABLE_SUBSTATIONS  = "substations"
+TABLE_MARKET_INTEL = "market_intelligence"   # not yet in DB — DHRI will return null
+TABLE_SUBSTATIONS  = "substations"           # not yet in DB — DHPW will return null
 
-COL_FAC_MARKET     = "city"           # column used to filter by market/city name
+# facilities columns (confirmed from Neon schema)
+COL_FAC_MARKET     = "city"
 COL_FAC_COUNTRY    = "country"
-COL_FAC_TOTAL_MW   = "total_mw"
-COL_FAC_AVAIL_MW   = "available_mw"
-COL_FAC_STATUS     = "status"         # 'operational', 'under_construction', etc.
+COL_FAC_TOTAL_MW   = "power_mw"     # ← was total_mw
+COL_FAC_AVAIL_MW   = "power_mw"     # ← no available_mw column; use power_mw as proxy
+COL_FAC_STATUS     = "status"
 
+# transactions columns (confirmed from Neon schema)
 COL_TXN_MARKET     = "market"
-COL_TXN_DATE       = "deal_date"
-COL_TXN_VALUE      = "deal_value_usd"
-COL_TXN_MW         = "facility_mw"
+COL_TXN_DATE       = "date"          # ← was deal_date
+COL_TXN_VALUE      = "value"         # ← was deal_value_usd
+COL_TXN_MW         = "mw"            # ← was facility_mw
 
+# market_intelligence columns (future table)
 COL_MI_MARKET      = "market"
 COL_MI_RATE        = "avg_rate_per_kw"
 COL_MI_DATE        = "recorded_at"
 
+# substations columns (future table)
 COL_SUB_CITY       = "city"
 COL_SUB_COUNTRY    = "country"
 COL_SUB_CAPACITY   = "capacity_mva"
@@ -160,32 +164,57 @@ def score_color(s):
 # SUB-INDEX CALCULATORS
 # ─────────────────────────────────────────────
 def calc_dhci(market):
-    """Capacity Index — vacancy % from facility table."""
+    """
+    Capacity Index — uses facility count + power_mw from facilities table.
+    Since there is no available_mw column, vacancy is estimated from
+    status: facilities NOT marked 'operational' are treated as available/planned.
+    """
     try:
         city = market["city"]
         country = market["country"]
-        rows = query(f"""
+
+        # Total MW across all known facilities in this market
+        total_rows = query(f"""
             SELECT
-                SUM({COL_FAC_TOTAL_MW})  AS total_mw,
-                SUM({COL_FAC_AVAIL_MW})  AS avail_mw
+                COUNT(*)              AS fac_count,
+                SUM({COL_FAC_TOTAL_MW}) AS total_mw
             FROM {TABLE_FACILITIES}
             WHERE ({COL_FAC_MARKET} ILIKE %s OR {COL_FAC_COUNTRY} = %s)
-              AND {COL_FAC_STATUS} = 'operational'
         """, (f"%{city}%", country))
 
-        row = rows[0] if rows else {}
-        total = float(row.get("total_mw") or 0)
-        avail = float(row.get("avail_mw") or 0)
-        if total == 0:
+        # Operational MW
+        op_rows = query(f"""
+            SELECT
+                COUNT(*)              AS fac_count,
+                SUM({COL_FAC_TOTAL_MW}) AS op_mw
+            FROM {TABLE_FACILITIES}
+            WHERE ({COL_FAC_MARKET} ILIKE %s OR {COL_FAC_COUNTRY} = %s)
+              AND {COL_FAC_STATUS} ILIKE 'operational'
+        """, (f"%{city}%", country))
+
+        total_row = total_rows[0] if total_rows else {}
+        op_row = op_rows[0] if op_rows else {}
+
+        total_mw = float(total_row.get("total_mw") or 0)
+        op_mw = float(op_row.get("op_mw") or 0)
+        total_count = int(total_row.get("fac_count") or 0)
+        op_count = int(op_row.get("fac_count") or 0)
+
+        if total_count == 0:
             return {"value": None, "vacancy_pct": None, "total_mw": 0, "available_mw": 0}
 
-        vacancy = (avail / total) * 100
-        score = max(0, min(100, (1 - vacancy / 10) * 100))
+        # Vacancy estimated as non-operational facilities / total facilities
+        non_op = total_count - op_count
+        vacancy = (non_op / total_count) * 100 if total_count > 0 else 0
+        score = max(0, min(100, (1 - vacancy / 50) * 100))  # 50% non-op = score 0
+
         return {
             "value": round(score, 1),
             "vacancy_pct": round(vacancy, 2),
-            "total_mw": round(total, 1),
-            "available_mw": round(avail, 1),
+            "total_mw": round(total_mw, 1),
+            "available_mw": round(total_mw - op_mw, 1),
+            "facility_count": total_count,
+            "operational_count": op_count,
         }
     except Exception as e:
         logger.warning(f"DHCI error ({market['id']}): {e}")
@@ -262,9 +291,10 @@ def calc_dhdi(market):
         city = market["city"]
         mw = scalar(f"""
             SELECT SUM({COL_TXN_MW}) FROM {TABLE_TRANSACTIONS}
-            WHERE {COL_TXN_MARKET} ILIKE %s
+            WHERE ({COL_TXN_MARKET} ILIKE %s OR {COL_TXN_MARKET} ILIKE 'global')
               AND {COL_TXN_DATE} >= NOW() - INTERVAL '90 days'
               AND {COL_TXN_VALUE} > 0
+              AND {COL_TXN_MW} IS NOT NULL
         """, (f"%{city}%",)) or 0
 
         score = min(100, (float(mw) / 1000) * 100)
