@@ -1,134 +1,119 @@
 """
 DC Hub Global Data Center Index API (index_api.py)
 Flask Blueprint — mounts at /api/index
-v3.0 — Parallel market scoring + 60 global markets
+v4.0 — Bulk query architecture: 6 queries total for all 60 markets
 """
 
 import time
 import logging
 from datetime import datetime, timezone
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from functools import lru_cache
+from collections import defaultdict
 
-from flask import Blueprint, jsonify, request, g
+from flask import Blueprint, jsonify, request
 from db_utils import get_db
 
 logger = logging.getLogger(__name__)
 
 index_bp = Blueprint('index', __name__, url_prefix='/api/index')
 
-# ─── Config cache ────────────────────────────────────────────────────────────
-_config_cache = {}
-_config_ts    = 0
-CONFIG_TTL    = 600  # 10 min
-
-# ─── Market result cache ──────────────────────────────────────────────────────
-_market_cache = {}
-_market_ts    = {}
-MARKET_TTL    = 3600  # 1 hour
+# ─── Caches ───────────────────────────────────────────────────────────────────
+_config_cache  = {}
+_config_ts     = 0
+_bulk_cache    = None
+_bulk_ts       = 0
+CONFIG_TTL     = 600
+BULK_TTL       = 3600
 
 # ─── Default config ───────────────────────────────────────────────────────────
 DEFAULT_CONFIG = {
-    # Table names
-    'fac_table':            'facilities',
-    'txn_table':            'deals',
-    'mi_table':             'market_intelligence',
-    'power_table':          'discovered_power_plants',
-    'sub_table':            'substations',
-    'tx_table':             'discovered_transmission_lines',
-    'fiber_table':          'fiber_routes',
-    # Facility status buckets
+    'fac_table':              'facilities',
+    'txn_table':              'deals',
+    'mi_table':               'market_intelligence',
+    'power_table':            'discovered_power_plants',
+    'sub_table':              'substations',
+    'tx_table':               'discovered_transmission_lines',
+    'fiber_table':            'fiber_routes',
     'fac_status_operational': 'active,Operational',
     'fac_status_pipeline':    'Under Construction,Construction,Planned,Planning,Announced,announced,planned',
-    # Source toggles
-    'mi_enabled':    'true',
-    'power_enabled': 'true',
-    'sub_enabled':   'true',
-    'tx_enabled':    'true',
-    'fiber_enabled': 'true',
-    # Power table column names
-    'power_city_col':  'market',
-    'power_state_col': 'state',
-    # Sub-index weights (must sum to 100)
-    'w_dhci': '30',
-    'w_dhri': '25',
-    'w_dhpi': '20',
-    'w_dhdi': '15',
-    'w_dhpw': '10',
-    # Admin
+    'mi_enabled':             'true',
+    'power_enabled':          'true',
+    'sub_enabled':            'true',
+    'tx_enabled':             'true',
+    'fiber_enabled':          'true',
+    'power_city_col':         'market',
+    'power_state_col':        'state',
+    'w_dhci': '30', 'w_dhri': '25', 'w_dhpi': '20', 'w_dhdi': '15', 'w_dhpw': '10',
     'admin_key': '',
-    # Thread pool size for parallel market scoring
-    'market_threads': '12',
 }
 
 # ─── 60 Global Markets ────────────────────────────────────────────────────────
 MARKETS = [
-    # North America - US
-    {'id':'nova',    'name':'Northern Virginia, US',    'region':'us',    'country':'US', 'city':'Ashburn',      'state':'VA', 'aliases':['nova','northern virginia','ashburn','loudoun']},
-    {'id':'dal',     'name':'Dallas/Fort Worth, US',    'region':'us',    'country':'US', 'city':'Dallas',       'state':'TX', 'aliases':['dal','dallas','fort worth','dfw']},
-    {'id':'phx',     'name':'Phoenix, US',              'region':'us',    'country':'US', 'city':'Phoenix',      'state':'AZ', 'aliases':['phx','phoenix','chandler','mesa']},
-    {'id':'chi',     'name':'Chicago, US',              'region':'us',    'country':'US', 'city':'Chicago',      'state':'IL', 'aliases':['chi','chicago']},
-    {'id':'nyc',     'name':'New York/New Jersey, US',  'region':'us',    'country':'US', 'city':'Secaucus',     'state':'NJ', 'aliases':['nyc','new york','new jersey','secaucus']},
-    {'id':'sea',     'name':'Seattle, US',              'region':'us',    'country':'US', 'city':'Seattle',      'state':'WA', 'aliases':['sea','seattle','quincy']},
-    {'id':'sfo',     'name':'San Francisco Bay, US',    'region':'us',    'country':'US', 'city':'San Jose',     'state':'CA', 'aliases':['sfo','san jose','silicon valley','santa clara']},
-    {'id':'lax',     'name':'Los Angeles, US',          'region':'us',    'country':'US', 'city':'Los Angeles',  'state':'CA', 'aliases':['lax','los angeles']},
-    {'id':'atl',     'name':'Atlanta, US',              'region':'us',    'country':'US', 'city':'Atlanta',      'state':'GA', 'aliases':['atl','atlanta']},
-    {'id':'bos',     'name':'Boston, US',               'region':'us',    'country':'US', 'city':'Boston',       'state':'MA', 'aliases':['bos','boston']},
-    {'id':'den',     'name':'Denver, US',               'region':'us',    'country':'US', 'city':'Denver',       'state':'CO', 'aliases':['den','denver']},
-    {'id':'mia',     'name':'Miami, US',                'region':'us',    'country':'US', 'city':'Miami',        'state':'FL', 'aliases':['mia','miami']},
-    {'id':'iah',     'name':'Houston, US',              'region':'us',    'country':'US', 'city':'Houston',      'state':'TX', 'aliases':['iah','houston']},
-    {'id':'msp',     'name':'Minneapolis, US',          'region':'us',    'country':'US', 'city':'Minneapolis',  'state':'MN', 'aliases':['msp','minneapolis']},
-    {'id':'slc',     'name':'Salt Lake City, US',       'region':'us',    'country':'US', 'city':'Salt Lake City','state':'UT', 'aliases':['slc','salt lake city']},
-    # North America - Canada
-    {'id':'yyz',     'name':'Toronto, Canada',          'region':'us',    'country':'CA', 'city':'Toronto',      'state':'ON', 'aliases':['yyz','toronto']},
-    {'id':'yvr',     'name':'Vancouver, Canada',        'region':'us',    'country':'CA', 'city':'Vancouver',    'state':'BC', 'aliases':['yvr','vancouver']},
-    # EMEA - Western Europe
-    {'id':'lhr',     'name':'London, UK',               'region':'emea',  'country':'GB', 'city':'London',       'state':None, 'aliases':['lhr','london','slough']},
-    {'id':'fra',     'name':'Frankfurt, Germany',       'region':'emea',  'country':'DE', 'city':'Frankfurt',    'state':None, 'aliases':['fra','frankfurt']},
-    {'id':'ams',     'name':'Amsterdam, Netherlands',   'region':'emea',  'country':'NL', 'city':'Amsterdam',    'state':None, 'aliases':['ams','amsterdam']},
-    {'id':'par',     'name':'Paris, France',            'region':'emea',  'country':'FR', 'city':'Paris',        'state':None, 'aliases':['par','paris']},
-    {'id':'dub',     'name':'Dublin, Ireland',          'region':'emea',  'country':'IE', 'city':'Dublin',       'state':None, 'aliases':['dub','dublin']},
-    {'id':'zrh',     'name':'Zurich, Switzerland',      'region':'emea',  'country':'CH', 'city':'Zurich',       'state':None, 'aliases':['zrh','zurich']},
-    {'id':'sto',     'name':'Stockholm, Sweden',        'region':'emea',  'country':'SE', 'city':'Stockholm',    'state':None, 'aliases':['sto','stockholm']},
-    {'id':'mad',     'name':'Madrid, Spain',            'region':'emea',  'country':'ES', 'city':'Madrid',       'state':None, 'aliases':['mad','madrid']},
-    {'id':'mil',     'name':'Milan, Italy',             'region':'emea',  'country':'IT', 'city':'Milan',        'state':None, 'aliases':['mil','milan']},
-    {'id':'war',     'name':'Warsaw, Poland',           'region':'emea',  'country':'PL', 'city':'Warsaw',       'state':None, 'aliases':['war','warsaw']},
-    {'id':'vie',     'name':'Vienna, Austria',          'region':'emea',  'country':'AT', 'city':'Vienna',       'state':None, 'aliases':['vie','vienna']},
-    {'id':'cop',     'name':'Copenhagen, Denmark',      'region':'emea',  'country':'DK', 'city':'Copenhagen',   'state':None, 'aliases':['cop','copenhagen']},
-    {'id':'hel',     'name':'Helsinki, Finland',        'region':'emea',  'country':'FI', 'city':'Helsinki',     'state':None, 'aliases':['hel','helsinki']},
-    {'id':'osl',     'name':'Oslo, Norway',             'region':'emea',  'country':'NO', 'city':'Oslo',         'state':None, 'aliases':['osl','oslo']},
-    {'id':'msc',     'name':'Moscow, Russia',           'region':'emea',  'country':'RU', 'city':'Moscow',       'state':None, 'aliases':['msc','moscow']},
-    {'id':'ist',     'name':'Istanbul, Turkey',         'region':'emea',  'country':'TR', 'city':'Istanbul',     'state':None, 'aliases':['ist','istanbul']},
-    # EMEA - Middle East & Africa
-    {'id':'dxb',     'name':'Dubai, UAE',               'region':'emea',  'country':'AE', 'city':'Dubai',        'state':None, 'aliases':['dxb','dubai']},
-    {'id':'ruh',     'name':'Riyadh, Saudi Arabia',     'region':'emea',  'country':'SA', 'city':'Riyadh',       'state':None, 'aliases':['ruh','riyadh']},
-    {'id':'jnb',     'name':'Johannesburg, South Africa','region':'emea', 'country':'ZA', 'city':'Johannesburg', 'state':None, 'aliases':['jnb','johannesburg']},
-    {'id':'nbo',     'name':'Nairobi, Kenya',           'region':'emea',  'country':'KE', 'city':'Nairobi',      'state':None, 'aliases':['nbo','nairobi']},
-    {'id':'lag',     'name':'Lagos, Nigeria',           'region':'emea',  'country':'NG', 'city':'Lagos',        'state':None, 'aliases':['lag','lagos']},
-    {'id':'cai',     'name':'Cairo, Egypt',             'region':'emea',  'country':'EG', 'city':'Cairo',        'state':None, 'aliases':['cai','cairo']},
+    # US
+    {'id':'nova','name':'Northern Virginia, US','region':'us','country':'US','state':'VA','keywords':['ashburn','loudoun','northern virginia','nova']},
+    {'id':'dal', 'name':'Dallas/Fort Worth, US','region':'us','country':'US','state':'TX','keywords':['dallas','fort worth','dfw','irving','plano']},
+    {'id':'phx', 'name':'Phoenix, US',          'region':'us','country':'US','state':'AZ','keywords':['phoenix','chandler','mesa','tempe','scottsdale']},
+    {'id':'chi', 'name':'Chicago, US',          'region':'us','country':'US','state':'IL','keywords':['chicago','elk grove','aurora']},
+    {'id':'nyc', 'name':'New York/New Jersey, US','region':'us','country':'US','state':'NJ','keywords':['new york','new jersey','secaucus','newark','manhattan','nyc']},
+    {'id':'sea', 'name':'Seattle, US',          'region':'us','country':'US','state':'WA','keywords':['seattle','quincy','wenatchee','bellevue']},
+    {'id':'sfo', 'name':'San Francisco Bay, US','region':'us','country':'US','state':'CA','keywords':['san jose','santa clara','silicon valley','fremont','oakland']},
+    {'id':'lax', 'name':'Los Angeles, US',      'region':'us','country':'US','state':'CA','keywords':['los angeles','el segundo','torrance']},
+    {'id':'atl', 'name':'Atlanta, US',          'region':'us','country':'US','state':'GA','keywords':['atlanta','norcross','lithia springs']},
+    {'id':'bos', 'name':'Boston, US',           'region':'us','country':'US','state':'MA','keywords':['boston','somerville','cambridge']},
+    {'id':'den', 'name':'Denver, US',           'region':'us','country':'US','state':'CO','keywords':['denver','englewood','littleton']},
+    {'id':'mia', 'name':'Miami, US',            'region':'us','country':'US','state':'FL','keywords':['miami','doral','boca raton','fort lauderdale']},
+    {'id':'iah', 'name':'Houston, US',          'region':'us','country':'US','state':'TX','keywords':['houston','katy','sugar land']},
+    {'id':'msp', 'name':'Minneapolis, US',      'region':'us','country':'US','state':'MN','keywords':['minneapolis','saint paul','eden prairie']},
+    {'id':'slc', 'name':'Salt Lake City, US',   'region':'us','country':'US','state':'UT','keywords':['salt lake city','west jordan','draper']},
+    # Canada
+    {'id':'yyz', 'name':'Toronto, Canada',      'region':'us','country':'CA','state':'ON','keywords':['toronto','mississauga','markham']},
+    {'id':'yvr', 'name':'Vancouver, Canada',    'region':'us','country':'CA','state':'BC','keywords':['vancouver','burnaby','richmond']},
+    # EMEA - Europe
+    {'id':'lhr', 'name':'London, UK',           'region':'emea','country':'GB','state':None,'keywords':['london','slough','reading','uxbridge']},
+    {'id':'fra', 'name':'Frankfurt, Germany',   'region':'emea','country':'DE','state':None,'keywords':['frankfurt','eschborn']},
+    {'id':'ams', 'name':'Amsterdam, Netherlands','region':'emea','country':'NL','state':None,'keywords':['amsterdam','amsterdam-southeast','ams']},
+    {'id':'par', 'name':'Paris, France',        'region':'emea','country':'FR','state':None,'keywords':['paris','saint-denis','vitry']},
+    {'id':'dub', 'name':'Dublin, Ireland',      'region':'emea','country':'IE','state':None,'keywords':['dublin']},
+    {'id':'zrh', 'name':'Zurich, Switzerland',  'region':'emea','country':'CH','state':None,'keywords':['zurich','geneva']},
+    {'id':'sto', 'name':'Stockholm, Sweden',    'region':'emea','country':'SE','state':None,'keywords':['stockholm']},
+    {'id':'mad', 'name':'Madrid, Spain',        'region':'emea','country':'ES','state':None,'keywords':['madrid']},
+    {'id':'mil', 'name':'Milan, Italy',         'region':'emea','country':'IT','state':None,'keywords':['milan','milano']},
+    {'id':'war', 'name':'Warsaw, Poland',       'region':'emea','country':'PL','state':None,'keywords':['warsaw','wroclaw']},
+    {'id':'vie', 'name':'Vienna, Austria',      'region':'emea','country':'AT','state':None,'keywords':['vienna','wien']},
+    {'id':'cop', 'name':'Copenhagen, Denmark',  'region':'emea','country':'DK','state':None,'keywords':['copenhagen']},
+    {'id':'hel', 'name':'Helsinki, Finland',    'region':'emea','country':'FI','state':None,'keywords':['helsinki']},
+    {'id':'osl', 'name':'Oslo, Norway',         'region':'emea','country':'NO','state':None,'keywords':['oslo']},
+    {'id':'msc', 'name':'Moscow, Russia',       'region':'emea','country':'RU','state':None,'keywords':['moscow']},
+    {'id':'ist', 'name':'Istanbul, Turkey',     'region':'emea','country':'TR','state':None,'keywords':['istanbul']},
+    # Middle East & Africa
+    {'id':'dxb', 'name':'Dubai, UAE',           'region':'emea','country':'AE','state':None,'keywords':['dubai']},
+    {'id':'ruh', 'name':'Riyadh, Saudi Arabia', 'region':'emea','country':'SA','state':None,'keywords':['riyadh','jeddah']},
+    {'id':'jnb', 'name':'Johannesburg, South Africa','region':'emea','country':'ZA','state':None,'keywords':['johannesburg','cape town']},
+    {'id':'nbo', 'name':'Nairobi, Kenya',       'region':'emea','country':'KE','state':None,'keywords':['nairobi']},
+    {'id':'lag', 'name':'Lagos, Nigeria',       'region':'emea','country':'NG','state':None,'keywords':['lagos']},
+    {'id':'cai', 'name':'Cairo, Egypt',         'region':'emea','country':'EG','state':None,'keywords':['cairo']},
     # APAC
-    {'id':'sin',     'name':'Singapore',                'region':'apac',  'country':'SG', 'city':'Singapore',    'state':None, 'aliases':['sin','singapore']},
-    {'id':'tyo',     'name':'Tokyo, Japan',             'region':'apac',  'country':'JP', 'city':'Tokyo',        'state':None, 'aliases':['tyo','tokyo']},
-    {'id':'syd',     'name':'Sydney, Australia',        'region':'apac',  'country':'AU', 'city':'Sydney',       'state':None, 'aliases':['syd','sydney']},
-    {'id':'hkg',     'name':'Hong Kong',                'region':'apac',  'country':'HK', 'city':'Hong Kong',    'state':None, 'aliases':['hkg','hong kong']},
-    {'id':'sha',     'name':'Shanghai, China',          'region':'apac',  'country':'CN', 'city':'Shanghai',     'state':None, 'aliases':['sha','shanghai']},
-    {'id':'pek',     'name':'Beijing, China',           'region':'apac',  'country':'CN', 'city':'Beijing',      'state':None, 'aliases':['pek','beijing']},
-    {'id':'bom',     'name':'Mumbai, India',            'region':'apac',  'country':'IN', 'city':'Mumbai',       'state':None, 'aliases':['bom','mumbai']},
-    {'id':'del',     'name':'Delhi, India',             'region':'apac',  'country':'IN', 'city':'Delhi',        'state':None, 'aliases':['del','delhi']},
-    {'id':'sel',     'name':'Seoul, South Korea',       'region':'apac',  'country':'KR', 'city':'Seoul',        'state':None, 'aliases':['sel','seoul']},
-    {'id':'kul',     'name':'Kuala Lumpur, Malaysia',   'region':'apac',  'country':'MY', 'city':'Kuala Lumpur', 'state':None, 'aliases':['kul','kuala lumpur']},
-    {'id':'mel',     'name':'Melbourne, Australia',     'region':'apac',  'country':'AU', 'city':'Melbourne',    'state':None, 'aliases':['mel','melbourne']},
-    {'id':'jak',     'name':'Jakarta, Indonesia',       'region':'apac',  'country':'ID', 'city':'Jakarta',      'state':None, 'aliases':['jak','jakarta']},
-    {'id':'bkk',     'name':'Bangkok, Thailand',        'region':'apac',  'country':'TH', 'city':'Bangkok',      'state':None, 'aliases':['bkk','bangkok']},
-    {'id':'mnl',     'name':'Manila, Philippines',      'region':'apac',  'country':'PH', 'city':'Manila',       'state':None, 'aliases':['mnl','manila']},
-    {'id':'nrt',     'name':'Osaka, Japan',             'region':'apac',  'country':'JP', 'city':'Osaka',        'state':None, 'aliases':['nrt','osaka']},
+    {'id':'sin', 'name':'Singapore',            'region':'apac','country':'SG','state':None,'keywords':['singapore']},
+    {'id':'tyo', 'name':'Tokyo, Japan',         'region':'apac','country':'JP','state':None,'keywords':['tokyo','osaka']},
+    {'id':'syd', 'name':'Sydney, Australia',    'region':'apac','country':'AU','state':None,'keywords':['sydney']},
+    {'id':'hkg', 'name':'Hong Kong',            'region':'apac','country':'HK','state':None,'keywords':['hong kong']},
+    {'id':'sha', 'name':'Shanghai, China',      'region':'apac','country':'CN','state':None,'keywords':['shanghai']},
+    {'id':'pek', 'name':'Beijing, China',       'region':'apac','country':'CN','state':None,'keywords':['beijing']},
+    {'id':'bom', 'name':'Mumbai, India',        'region':'apac','country':'IN','state':None,'keywords':['mumbai','pune']},
+    {'id':'del', 'name':'Delhi, India',         'region':'apac','country':'IN','state':None,'keywords':['delhi','noida','gurgaon']},
+    {'id':'sel', 'name':'Seoul, South Korea',   'region':'apac','country':'KR','state':None,'keywords':['seoul']},
+    {'id':'kul', 'name':'Kuala Lumpur, Malaysia','region':'apac','country':'MY','state':None,'keywords':['kuala lumpur','cyberjaya']},
+    {'id':'mel', 'name':'Melbourne, Australia', 'region':'apac','country':'AU','state':None,'keywords':['melbourne']},
+    {'id':'jak', 'name':'Jakarta, Indonesia',   'region':'apac','country':'ID','state':None,'keywords':['jakarta']},
+    {'id':'bkk', 'name':'Bangkok, Thailand',    'region':'apac','country':'TH','state':None,'keywords':['bangkok']},
+    {'id':'mnl', 'name':'Manila, Philippines',  'region':'apac','country':'PH','state':None,'keywords':['manila']},
+    {'id':'osk', 'name':'Osaka, Japan',         'region':'apac','country':'JP','state':None,'keywords':['osaka']},
     # LATAM
-    {'id':'gru',     'name':'São Paulo, Brazil',        'region':'latam', 'country':'BR', 'city':'São Paulo',    'state':None, 'aliases':['gru','sao paulo']},
-    {'id':'mex',     'name':'Mexico City, Mexico',      'region':'latam', 'country':'MX', 'city':'Mexico City',  'state':None, 'aliases':['mex','mexico city']},
-    {'id':'bog',     'name':'Bogotá, Colombia',         'region':'latam', 'country':'CO', 'city':'Bogotá',       'state':None, 'aliases':['bog','bogota']},
-    {'id':'scl',     'name':'Santiago, Chile',          'region':'latam', 'country':'CL', 'city':'Santiago',     'state':None, 'aliases':['scl','santiago']},
-    {'id':'bue',     'name':'Buenos Aires, Argentina',  'region':'latam', 'country':'AR', 'city':'Buenos Aires', 'state':None, 'aliases':['bue','buenos aires']},
-    {'id':'lim',     'name':'Lima, Peru',               'region':'latam', 'country':'PE', 'city':'Lima',         'state':None, 'aliases':['lim','lima']},
+    {'id':'gru', 'name':'São Paulo, Brazil',    'region':'latam','country':'BR','state':None,'keywords':['sao paulo','são paulo','campinas']},
+    {'id':'mex', 'name':'Mexico City, Mexico',  'region':'latam','country':'MX','state':None,'keywords':['mexico city','queretaro','monterrey']},
+    {'id':'bog', 'name':'Bogotá, Colombia',     'region':'latam','country':'CO','state':None,'keywords':['bogota','bogotá']},
+    {'id':'scl', 'name':'Santiago, Chile',      'region':'latam','country':'CL','state':None,'keywords':['santiago']},
+    {'id':'bue', 'name':'Buenos Aires, Argentina','region':'latam','country':'AR','state':None,'keywords':['buenos aires']},
+    {'id':'lim', 'name':'Lima, Peru',           'region':'latam','country':'PE','state':None,'keywords':['lima']},
 ]
 
 MARKET_BY_ID = {m['id']: m for m in MARKETS}
@@ -144,300 +129,212 @@ def _get_config():
     cfg = dict(DEFAULT_CONFIG)
     try:
         conn = get_db()
-        cur = conn.cursor()
+        cur  = conn.cursor()
         cur.execute("SELECT key, value FROM gdci_config")
         for row in cur.fetchall():
             cfg[row[0]] = row[1]
         cur.close()
     except Exception as e:
-        logger.warning("Config load failed, using defaults: %s", e)
+        logger.warning("Config load failed: %s", e)
     _config_cache = cfg
-    _config_ts = now
+    _config_ts    = now
     return cfg
-
 
 def _bool(cfg, key):
     return str(cfg.get(key, 'false')).lower() in ('true', '1', 'yes')
 
-
-def _score_color(score):
-    if score is None:
-        return 'gray'
-    if score >= 75:
-        return 'red'
-    if score >= 60:
-        return 'purple'
-    if score >= 40:
-        return 'amber'
+def _score_color(s):
+    if s is None: return 'gray'
+    if s >= 75:   return 'red'
+    if s >= 60:   return 'purple'
+    if s >= 40:   return 'amber'
     return 'green'
 
-
-def _score_label(score):
-    if score is None:
-        return 'No Data'
-    if score >= 75:
-        return 'Critical'
-    if score >= 60:
-        return 'Constrained'
-    if score >= 40:
-        return 'Balanced'
+def _score_label(s):
+    if s is None: return 'No Data'
+    if s >= 75:   return 'Critical'
+    if s >= 60:   return 'Constrained'
+    if s >= 40:   return 'Balanced'
     return "Buyer's Market"
 
-
-def _safe_query(conn, sql, params=()):
+def _safe_q(cur, sql, params=()):
     try:
-        cur = conn.cursor()
         cur.execute(sql, params)
-        row = cur.fetchone()
-        cur.close()
-        return row
+        return cur.fetchall()
     except Exception as e:
-        logger.debug("Query failed: %s — %s", sql[:80], e)
+        logger.debug("Query error: %s | %s", e, sql[:60])
         try:
-            conn.rollback()
+            cur.connection.rollback()
         except Exception:
             pass
-        return None
+        return []
 
 
-# ─── Sub-index calculators ────────────────────────────────────────────────────
+# ─── Bulk data loader — 6 queries, all markets ───────────────────────────────
 
-def _calc_dhci(conn, cfg, market):
-    """Capacity Index — based on facilities table"""
-    fac    = cfg.get('fac_table', 'facilities')
-    op_st  = cfg.get('fac_status_operational', 'active,Operational')
-    pi_st  = cfg.get('fac_status_pipeline', 'Under Construction,Construction,Planned,Planning,Announced')
-    op_list = tuple(s.strip() for s in op_st.split(','))
-    pi_list = tuple(s.strip() for s in pi_st.split(','))
+def _load_bulk_data(cfg, conn):
+    """
+    Load all data needed for all 60 markets in 6 queries.
+    Returns dict of {market_id: {dhci, dhpi, dhdi, dhpw, dhri}} raw data.
+    """
+    cur = conn.cursor()
 
-    city    = market['city']
-    country = market['country']
-    state   = market.get('state')
-    aliases = market.get('aliases', [])
+    op_statuses = [s.strip() for s in cfg.get('fac_status_operational','active,Operational').split(',')]
+    pi_statuses = [s.strip() for s in cfg.get('fac_status_pipeline','Under Construction,Construction,Planned,Planning,Announced,announced,planned').split(',')]
+    op_ph = ','.join(['%s'] * len(op_statuses))
+    pi_ph = ','.join(['%s'] * len(pi_statuses))
+    fac   = cfg.get('fac_table', 'facilities')
+    txn   = cfg.get('txn_table', 'deals')
+    mi    = cfg.get('mi_table',  'market_intelligence')
+    pw    = cfg.get('power_table','discovered_power_plants')
+    sub   = cfg.get('sub_table', 'substations')
+    pcol  = cfg.get('power_city_col', 'market')
+    scol  = cfg.get('power_state_col', 'state')
 
-    # Build city ILIKE conditions
-    city_conds = " OR ".join(["LOWER(city) LIKE %s"] * len(aliases))
-    city_params = [f'%{a.lower()}%' for a in aliases]
+    # ── Q1: Operational facilities by country+state ──
+    op_rows = _safe_q(cur, f"""
+        SELECT country, state, city, COUNT(*), COALESCE(SUM(power_mw),0)
+        FROM {fac} WHERE status IN ({op_ph})
+        GROUP BY country, state, city
+    """, op_statuses)
 
-    # Country/state filter
-    if state:
-        loc_filter = f"AND (state = %s OR country = %s)"
-        loc_params = [state, country]
-    else:
-        loc_filter = f"AND country = %s"
-        loc_params = [country]
+    # ── Q2: Pipeline facilities by country+state ──
+    pi_rows = _safe_q(cur, f"""
+        SELECT country, state, city, COUNT(*), COALESCE(SUM(power_mw),0)
+        FROM {fac} WHERE status IN ({pi_ph})
+        GROUP BY country, state, city
+    """, pi_statuses)
 
-    def count_q(statuses):
-        placeholders = ','.join(['%s'] * len(statuses))
-        sql = f"""
-            SELECT COUNT(*), COALESCE(SUM(power_mw), 0)
-            FROM {fac}
-            WHERE status IN ({placeholders})
-            AND ({city_conds})
-            {loc_filter}
-        """
-        return _safe_query(conn, sql, list(statuses) + city_params + loc_params)
+    # ── Q3: Deals last 90 days ──
+    deal_rows = _safe_q(cur, f"""
+        SELECT LOWER(market), COUNT(*), COALESCE(SUM(mw),0)
+        FROM {txn}
+        WHERE date >= NOW() - INTERVAL '90 days'
+        GROUP BY LOWER(market)
+    """)
 
-    op_row = count_q(op_list)
-    pi_row = count_q(pi_list)
-
-    op_count = int(op_row[0]) if op_row else 0
-    op_mw    = float(op_row[1]) if op_row else 0.0
-    pi_mw    = float(pi_row[1]) if pi_row else 0.0
-    tot_row  = _safe_query(conn,
-        f"SELECT COUNT(*), COALESCE(SUM(power_mw),0) FROM {fac} WHERE ({city_conds}) {loc_filter}",
-        city_params + loc_params)
-    tot_count = int(tot_row[0]) if tot_row else 0
-    tot_mw    = float(tot_row[1]) if tot_row else 0.0
-
-    if op_mw <= 0:
-        return None, {}
-
-    # Vacancy proxy: assume 2x pipeline = near-zero vacancy
-    vac_pct = max(0, min(100, 15 - (pi_mw / max(op_mw, 1)) * 5))
-    # Score: low vacancy = high score
-    score = min(100, max(0, (1 - vac_pct / 15) * 100))
-
-    return round(score, 1), {
-        'operational_count': op_count,
-        'operational_mw':    round(op_mw, 1),
-        'pipeline_mw':       round(pi_mw, 1),
-        'total_count':       tot_count,
-        'total_mw':          round(tot_mw, 1),
-        'vacancy_pct':       round(vac_pct, 2),
-    }
-
-
-def _calc_dhri(conn, cfg, market):
-    """Rate Index — market_intelligence table"""
-    if not _bool(cfg, 'mi_enabled'):
-        return None, {}
-    mi = cfg.get('mi_table', 'market_intelligence')
-    mid = market['id']
-    mname = market['name'].split(',')[0].lower()
-
-    row = _safe_query(conn,
-        f"SELECT avg_rate_per_kw, recorded_at FROM {mi} WHERE LOWER(market) LIKE %s ORDER BY recorded_at DESC LIMIT 1",
-        (f'%{mname}%',))
-    if not row or not row[0]:
-        return None, {}
-
-    current = float(row[0])
-    # Baseline Jan 2025: ~$120/kW for top markets
-    baseline = 120.0
-    ratio = current / baseline
-    score = min(100, max(0, (ratio - 0.5) * 133))
-
-    return round(score, 1), {
-        'rate_per_kw':   round(current, 2),
-        'index_value':   round(ratio, 3),
-        'baseline_rate': baseline,
-    }
-
-
-def _calc_dhpi(conn, cfg, market):
-    """Pipeline Index — ratio of pipeline to operational"""
-    fac    = cfg.get('fac_table', 'facilities')
-    op_st  = cfg.get('fac_status_operational', 'active,Operational')
-    pi_st  = cfg.get('fac_status_pipeline', 'Under Construction,Construction,Planned,Planning,Announced')
-    op_list = tuple(s.strip() for s in op_st.split(','))
-    pi_list = tuple(s.strip() for s in pi_st.split(','))
-
-    aliases = market.get('aliases', [])
-    city_conds = " OR ".join(["LOWER(city) LIKE %s"] * len(aliases))
-    city_params = [f'%{a.lower()}%' for a in aliases]
-    state   = market.get('state')
-    country = market['country']
-    if state:
-        loc_filter = "AND (state = %s OR country = %s)"
-        loc_params = [state, country]
-    else:
-        loc_filter = "AND country = %s"
-        loc_params = [country]
-
-    def mw_q(statuses):
-        placeholders = ','.join(['%s'] * len(statuses))
-        row = _safe_query(conn,
-            f"SELECT COALESCE(SUM(power_mw),0) FROM {fac} WHERE status IN ({placeholders}) AND ({city_conds}) {loc_filter}",
-            list(statuses) + city_params + loc_params)
-        return float(row[0]) if row else 0.0
-
-    op_mw = mw_q(op_list)
-    pi_mw = mw_q(pi_list)
-
-    if op_mw <= 0:
-        return None, {}
-
-    ratio = pi_mw / op_mw
-    score = min(100, ratio * 50)  # 200% pipeline = 100 score
-
-    return round(score, 1), {
-        'pipeline_mw':        round(pi_mw, 1),
-        'operational_mw':     round(op_mw, 1),
-        'pipeline_ratio_pct': round(ratio * 100, 2),
-    }
-
-
-def _calc_dhdi(conn, cfg, market):
-    """Demand Index — deal absorption in trailing 90 days"""
-    txn = cfg.get('txn_table', 'deals')
-    mid = market['id']
-    mname = market['name'].split(',')[0].lower()
-    aliases = market.get('aliases', [])
-
-    conds = " OR ".join(["LOWER(market) LIKE %s"] * len(aliases))
-    params = [f'%{a.lower()}%' for a in aliases]
-
-    row = _safe_query(conn,
-        f"SELECT COUNT(*), COALESCE(SUM(mw),0) FROM {txn} WHERE ({conds}) AND date >= NOW() - INTERVAL '90 days'",
-        params)
-    if not row:
-        return None, {}
-
-    deal_count = int(row[0])
-    abs_mw     = float(row[1])
-
-    if deal_count == 0 and abs_mw == 0:
-        return None, {}
-
-    score = min(100, (abs_mw / 2000) * 100 + deal_count * 5)
-
-    return round(score, 1), {
-        'deal_count_90d':   deal_count,
-        'absorbed_mw_90d':  round(abs_mw, 1),
-    }
-
-
-def _calc_dhpw(conn, cfg, market):
-    """Power Index — substations first, then power plants"""
-    city    = market['city']
-    country = market['country']
-    state   = market.get('state')
-    aliases = market.get('aliases', [])
-
-    city_conds = " OR ".join(["LOWER(city) LIKE %s"] * len(aliases))
-    city_params = [f'%{a.lower()}%' for a in aliases]
-
-    # Try substations first
-    if _bool(cfg, 'sub_enabled'):
-        sub = cfg.get('sub_table', 'substations')
-        row = _safe_query(conn,
-            f"SELECT COUNT(*), COALESCE(SUM(capacity_mva),0), COALESCE(SUM(available_mva),0) FROM {sub} WHERE ({city_conds})",
-            city_params)
-        if row and row[0] and int(row[0]) > 0:
-            total = float(row[1])
-            avail = float(row[2])
-            if total > 0:
-                headroom_pct = (avail / total) * 100
-                score = min(100, max(0, (1 - headroom_pct / 100) * 100))
-                return round(score, 1), {
-                    'source':      'substations',
-                    'total_mva':   round(total, 1),
-                    'avail_mva':   round(avail, 1),
-                    'headroom_pct':round(headroom_pct, 1),
-                }
-
-    # Fall back to power plants
+    # ── Q4: Power plants ──
+    pw_rows = []
     if _bool(cfg, 'power_enabled'):
-        pw  = cfg.get('power_table', 'discovered_power_plants')
-        pcol = cfg.get('power_city_col', 'market')
-        scol = cfg.get('power_state_col', 'state')
+        pw_rows = _safe_q(cur, f"""
+            SELECT LOWER({pcol}), LOWER({scol}), COUNT(*), COALESCE(SUM(capacity_mw),0)
+            FROM {pw}
+            GROUP BY LOWER({pcol}), LOWER({scol})
+        """)
 
-        conds = " OR ".join([f"LOWER({pcol}) LIKE %s"] * len(aliases))
-        params = [f'%{a.lower()}%' for a in aliases]
-        if state:
-            conds += f" OR LOWER({scol}) LIKE %s"
-            params.append(f'%{state.lower()}%')
+    # ── Q5: Substations ──
+    sub_rows = []
+    if _bool(cfg, 'sub_enabled'):
+        sub_rows = _safe_q(cur, f"""
+            SELECT LOWER(city), LOWER(country), COUNT(*),
+                   COALESCE(SUM(capacity_mva),0), COALESCE(SUM(available_mva),0)
+            FROM {sub}
+            GROUP BY LOWER(city), LOWER(country)
+        """)
 
-        row = _safe_query(conn,
-            f"SELECT COUNT(*), COALESCE(SUM(capacity_mw),0) FROM {pw} WHERE ({conds})",
-            params)
-        if row and row[0] and int(row[0]) > 0:
-            cnt = int(row[0])
-            mw  = float(row[1])
-            score = min(100, (mw / 5000) * 100 + cnt * 0.5)
-            return round(score, 1), {
-                'source':      'discovered_power_plants',
-                'plant_count': cnt,
-                'total_mw':    round(mw, 1),
-            }
+    # ── Q6: Market intelligence ──
+    mi_rows = []
+    if _bool(cfg, 'mi_enabled'):
+        mi_rows = _safe_q(cur, f"""
+            SELECT LOWER(market), avg_rate_per_kw, recorded_at
+            FROM {mi}
+            ORDER BY recorded_at DESC
+        """)
 
-    return None, {'source': 'none', 'note': 'No power data found'}
+    cur.close()
+
+    # Index into lookup structures
+    op_by_key  = defaultdict(lambda: [0, 0.0])  # (country,state,city) -> [count, mw]
+    pi_by_key  = defaultdict(lambda: [0, 0.0])
+    deal_by_kw = defaultdict(lambda: [0, 0.0])  # keyword -> [count, mw]
+    pw_by_kw   = defaultdict(lambda: [0, 0.0])
+    sub_by_kw  = defaultdict(lambda: [0, 0.0, 0.0])  # [count, total_mva, avail_mva]
+    mi_by_kw   = {}
+
+    for country, state, city, cnt, mw in op_rows:
+        op_by_key[(str(country).upper(), str(state or '').upper(), str(city or '').lower())] = [int(cnt), float(mw)]
+
+    for country, state, city, cnt, mw in pi_rows:
+        pi_by_key[(str(country).upper(), str(state or '').upper(), str(city or '').lower())] = [int(cnt), float(mw)]
+
+    for mkt, cnt, mw in deal_rows:
+        deal_by_kw[str(mkt or '')] = [int(cnt), float(mw)]
+
+    for city_kw, state_kw, cnt, mw in pw_rows:
+        for kw in [str(city_kw or ''), str(state_kw or '')]:
+            if kw:
+                pw_by_kw[kw][0] += int(cnt)
+                pw_by_kw[kw][1] += float(mw)
+
+    for city_kw, country_kw, cnt, tmva, amva in sub_rows:
+        kw = str(city_kw or '')
+        sub_by_kw[kw][0] += int(cnt)
+        sub_by_kw[kw][1] += float(tmva)
+        sub_by_kw[kw][2] += float(amva)
+
+    seen_mi = set()
+    for mkt, rate, ts in mi_rows:
+        if mkt not in seen_mi:
+            mi_by_kw[str(mkt or '')] = float(rate) if rate else None
+            seen_mi.add(mkt)
+
+    return {
+        'op':  op_by_key,
+        'pi':  pi_by_key,
+        'deal':deal_by_kw,
+        'pw':  pw_by_kw,
+        'sub': sub_by_kw,
+        'mi':  mi_by_kw,
+    }
 
 
-# ─── Core: score one market ───────────────────────────────────────────────────
+def _match(data_dict, market_keywords):
+    """Sum values from data_dict for any key containing a market keyword"""
+    matched = defaultdict(float)
+    matched_int = defaultdict(int)
+    for key, val in data_dict.items():
+        for kw in market_keywords:
+            if kw and kw in key:
+                if isinstance(val, list):
+                    for i, v in enumerate(val):
+                        if isinstance(v, int):
+                            matched_int[i] += v
+                        else:
+                            matched[i] += v
+                break
+    result = []
+    keys = sorted(set(list(matched.keys()) + list(matched_int.keys())))
+    for k in keys:
+        result.append(matched_int.get(k, 0) + matched.get(k, 0.0))
+    return result
 
-def _score_market(market_id):
-    """Score a single market — runs in thread pool"""
-    now = time.time()
-    if market_id in _market_cache and now - _market_ts.get(market_id, 0) < MARKET_TTL:
-        return _market_cache[market_id]
 
-    market = MARKET_BY_ID.get(market_id)
-    if not market:
-        return None
+def _match_fac(fac_dict, market):
+    """Match facilities using country+state+city keywords"""
+    country = market['country'].upper()
+    state   = (market.get('state') or '').upper()
+    keywords = market['keywords']
 
-    cfg = _get_config()
+    total_cnt = 0
+    total_mw  = 0.0
+    for (c, s, city), (cnt, mw) in fac_dict.items():
+        if c != country:
+            continue
+        if state and s and s != state:
+            continue
+        city_str = city.lower()
+        if any(kw in city_str for kw in keywords):
+            total_cnt += cnt
+            total_mw  += mw
+    return total_cnt, total_mw
+
+
+def _score_market_from_bulk(market, bulk):
+    """Score a single market from pre-fetched bulk data"""
+    mid      = market['id']
+    keywords = market['keywords']
+    cfg      = _get_config()
+
     weights = {
         'dhci': float(cfg.get('w_dhci', 30)) / 100,
         'dhri': float(cfg.get('w_dhri', 25)) / 100,
@@ -446,155 +343,170 @@ def _score_market(market_id):
         'dhpw': float(cfg.get('w_dhpw', 10)) / 100,
     }
 
-    try:
-        conn = get_db()
+    # DHCI
+    op_cnt, op_mw = _match_fac(bulk['op'], market)
+    pi_cnt, pi_mw = _match_fac(bulk['pi'], market)
+    tot_cnt = op_cnt + pi_cnt
+    tot_mw  = op_mw + pi_mw
 
-        dhci_val, dhci_d = _calc_dhci(conn, cfg, market)
-        dhri_val, dhri_d = _calc_dhri(conn, cfg, market)
-        dhpi_val, dhpi_d = _calc_dhpi(conn, cfg, market)
-        dhdi_val, dhdi_d = _calc_dhdi(conn, cfg, market)
-        dhpw_val, dhpw_d = _calc_dhpw(conn, cfg, market)
-
-        # Connectivity
-        fiber_count = tx_count = 0
-        if _bool(cfg, 'fiber_enabled'):
-            aliases = market.get('aliases', [])
-            conds = " OR ".join(["LOWER(city) LIKE %s"] * len(aliases))
-            params = [f'%{a.lower()}%' for a in aliases]
-            row = _safe_query(conn, f"SELECT COUNT(*) FROM {cfg.get('fiber_table','fiber_routes')} WHERE ({conds})", params)
-            fiber_count = int(row[0]) if row else 0
-        if _bool(cfg, 'tx_enabled'):
-            aliases = market.get('aliases', [])
-            conds = " OR ".join(["LOWER(city) LIKE %s"] * len(aliases))
-            params = [f'%{a.lower()}%' for a in aliases]
-            row = _safe_query(conn, f"SELECT COUNT(*) FROM {cfg.get('tx_table','discovered_transmission_lines')} WHERE ({conds})", params)
-            tx_count = int(row[0]) if row else 0
-
-        # Composite
-        active = [(v, w) for v, w in [
-            (dhci_val, weights['dhci']),
-            (dhri_val, weights['dhri']),
-            (dhpi_val, weights['dhpi']),
-            (dhdi_val, weights['dhdi']),
-            (dhpw_val, weights['dhpw']),
-        ] if v is not None]
-
-        if active:
-            total_w = sum(w for _, w in active)
-            composite = sum(v * w for v, w in active) / total_w
-            composite = round(composite, 1)
-        else:
-            composite = None
-
-        result = {
-            'market_id':       market_id,
-            'market_name':     market['name'],
-            'region':          market['region'],
-            'country':         market['country'],
-            'composite_score': composite,
-            'composite_label': _score_label(composite),
-            'composite_color': _score_color(composite),
-            'computed_at':     datetime.now(timezone.utc).isoformat(),
-            'dhci': {'value': dhci_val, **dhci_d},
-            'dhri': {'value': dhri_val, **dhri_d},
-            'dhpi': {'value': dhpi_val, **dhpi_d},
-            'dhdi': {'value': dhdi_val, **dhdi_d},
-            'dhpw': {'value': dhpw_val, **dhpw_d},
-            'connectivity': {
-                'fiber_routes':      fiber_count,
-                'transmission_lines': tx_count,
-            },
+    if op_mw > 0:
+        vac_pct = max(0, min(15, 15 - (pi_mw / max(op_mw, 1)) * 5))
+        dhci_val = round(min(100, (1 - vac_pct / 15) * 100), 1)
+        dhci_d = {
+            'operational_count': op_cnt,
+            'operational_mw':    round(op_mw, 1),
+            'pipeline_mw':       round(pi_mw, 1),
+            'total_count':       tot_cnt,
+            'total_mw':          round(tot_mw, 1),
+            'vacancy_pct':       round(vac_pct, 2),
         }
+    else:
+        dhci_val, dhci_d = None, {}
 
-        _market_cache[market_id] = result
-        _market_ts[market_id] = now
-        return result
+    # DHPI
+    if op_mw > 0 and pi_mw >= 0:
+        ratio    = pi_mw / max(op_mw, 1)
+        dhpi_val = round(min(100, ratio * 50), 1)
+        dhpi_d   = {'pipeline_mw': round(pi_mw,1), 'operational_mw': round(op_mw,1), 'pipeline_ratio_pct': round(ratio*100,2)}
+    else:
+        dhpi_val, dhpi_d = None, {}
 
-    except Exception as e:
-        logger.error("Market scoring failed for %s: %s", market_id, e)
-        return {
-            'market_id':       market_id,
-            'market_name':     market['name'],
-            'region':          market['region'],
-            'country':         market['country'],
-            'composite_score': None,
-            'composite_label': 'Error',
-            'composite_color': 'gray',
-            'error':           str(e)[:200],
-        }
+    # DHDI — match deals
+    deal_cnt = deal_mw = 0
+    for key, (cnt, mw) in bulk['deal'].items():
+        if any(kw in key for kw in keywords):
+            deal_cnt += cnt
+            deal_mw  += mw
+    if deal_cnt > 0 or deal_mw > 0:
+        dhdi_val = round(min(100, (deal_mw / 2000) * 100 + deal_cnt * 5), 1)
+        dhdi_d   = {'deal_count_90d': deal_cnt, 'absorbed_mw_90d': round(deal_mw,1)}
+    else:
+        dhdi_val, dhdi_d = None, {}
+
+    # DHPW — substations first
+    dhpw_val, dhpw_d = None, {'source':'none'}
+    if _bool(cfg, 'sub_enabled'):
+        s_cnt = s_total = s_avail = 0.0
+        for key, vals in bulk['sub'].items():
+            if any(kw in key for kw in keywords):
+                s_cnt   += vals[0]
+                s_total += vals[1]
+                s_avail += vals[2]
+        if s_total > 0:
+            headroom = (s_avail / s_total) * 100
+            dhpw_val = round(min(100, max(0, (1 - headroom/100)*100)), 1)
+            dhpw_d   = {'source':'substations','total_mva':round(s_total,1),'avail_mva':round(s_avail,1),'headroom_pct':round(headroom,1)}
+
+    if dhpw_val is None and _bool(cfg, 'power_enabled'):
+        pw_cnt = pw_mw = 0.0
+        for key, vals in bulk['pw'].items():
+            if any(kw in key for kw in keywords):
+                pw_cnt += vals[0]
+                pw_mw  += vals[1]
+        if pw_mw > 0:
+            dhpw_val = round(min(100, (pw_mw / 5000) * 100 + pw_cnt * 0.5), 1)
+            dhpw_d   = {'source':'discovered_power_plants','plant_count':int(pw_cnt),'total_mw':round(pw_mw,1)}
+
+    # DHRI — market intelligence
+    dhri_val, dhri_d = None, {}
+    if _bool(cfg, 'mi_enabled'):
+        rate = None
+        for key, r in bulk['mi'].items():
+            if any(kw in key for kw in keywords):
+                rate = r
+                break
+        if rate is not None:
+            baseline = 120.0
+            ratio    = rate / baseline
+            dhri_val = round(min(100, max(0, (ratio - 0.5) * 133)), 1)
+            dhri_d   = {'rate_per_kw': round(rate,2), 'index_value': round(ratio,3)}
+
+    # Composite
+    subs = [(dhci_val, weights['dhci']), (dhri_val, weights['dhri']),
+            (dhpi_val, weights['dhpi']), (dhdi_val, weights['dhdi']),
+            (dhpw_val, weights['dhpw'])]
+    active = [(v, w) for v, w in subs if v is not None]
+    if active:
+        total_w   = sum(w for _, w in active)
+        composite = round(sum(v*w for v,w in active) / total_w, 1)
+    else:
+        composite = None
+
+    return {
+        'market_id':       mid,
+        'market_name':     market['name'],
+        'region':          market['region'],
+        'country':         market['country'],
+        'composite_score': composite,
+        'composite_label': _score_label(composite),
+        'composite_color': _score_color(composite),
+        'computed_at':     datetime.now(timezone.utc).isoformat(),
+        'dhci': {'value': dhci_val, **dhci_d},
+        'dhri': {'value': dhri_val, **dhri_d},
+        'dhpi': {'value': dhpi_val, **dhpi_d},
+        'dhdi': {'value': dhdi_val, **dhdi_d},
+        'dhpw': {'value': dhpw_val, **dhpw_d},
+        'connectivity': {},
+    }
 
 
-def _score_all_markets(market_ids=None):
-    """Score all markets in parallel using thread pool"""
-    cfg = _get_config()
-    n_threads = int(cfg.get('market_threads', 12))
-    ids = market_ids or [m['id'] for m in MARKETS]
+def _get_all_markets_scored():
+    """Load bulk data once, score all 60 markets in memory"""
+    global _bulk_cache, _bulk_ts
+    now = time.time()
+
+    # Check cache
+    if _bulk_cache and now - _bulk_ts < BULK_TTL:
+        return _bulk_cache
+
+    cfg  = _get_config()
+    conn = get_db()
+    bulk = _load_bulk_data(cfg, conn)
 
     results = []
-    with ThreadPoolExecutor(max_workers=n_threads) as pool:
-        futures = {pool.submit(_score_market, mid): mid for mid in ids}
-        for future in as_completed(futures):
-            try:
-                r = future.result(timeout=30)
-                if r:
-                    results.append(r)
-            except Exception as e:
-                logger.error("Market future failed: %s", e)
+    for market in MARKETS:
+        try:
+            r = _score_market_from_bulk(market, bulk)
+            results.append(r)
+        except Exception as e:
+            logger.error("Scoring failed for %s: %s", market['id'], e)
 
-    # Sort by composite score descending
     results.sort(key=lambda x: x.get('composite_score') or 0, reverse=True)
+    _bulk_cache = results
+    _bulk_ts    = now
     return results
 
 
 # ─── Bootstrap ───────────────────────────────────────────────────────────────
 
 def init_config_table():
-    """Create gdci_config table and seed defaults — runs on startup"""
     try:
         conn = get_db()
-        cur = conn.cursor()
+        cur  = conn.cursor()
         cur.execute("""
             CREATE TABLE IF NOT EXISTS gdci_config (
-                key   TEXT PRIMARY KEY,
-                value TEXT NOT NULL,
+                key TEXT PRIMARY KEY, value TEXT NOT NULL,
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             )
         """)
         conn.commit()
         for k, v in DEFAULT_CONFIG.items():
             cur.execute(
-                "INSERT INTO gdci_config (key, value) VALUES (%s, %s) ON CONFLICT (key) DO NOTHING",
+                "INSERT INTO gdci_config (key,value) VALUES (%s,%s) ON CONFLICT (key) DO NOTHING",
                 (k, str(v))
             )
         conn.commit()
-        cur.close()
-
-        # Auto-detect which tables exist and enable them
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT table_name FROM information_schema.tables
-            WHERE table_schema = 'public'
-        """)
+        # Auto-enable existing tables
+        cur.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='public'")
         existing = {r[0] for r in cur.fetchall()}
-        cur.close()
-
-        toggles = {
-            'substations':                   ('sub_enabled',   'sub_table'),
-            'discovered_power_plants':        ('power_enabled', 'power_table'),
-            'market_intelligence':            ('mi_enabled',    'mi_table'),
-            'discovered_transmission_lines':  ('tx_enabled',    'tx_table'),
-            'fiber_routes':                   ('fiber_enabled', 'fiber_table'),
-        }
-        cur = conn.cursor()
-        for tbl, (flag, tbl_key) in toggles.items():
+        for tbl, flag in [('substations','sub_enabled'),('discovered_power_plants','power_enabled'),
+                          ('market_intelligence','mi_enabled'),('discovered_transmission_lines','tx_enabled'),
+                          ('fiber_routes','fiber_enabled')]:
             if tbl in existing:
-                cur.execute(
-                    "INSERT INTO gdci_config (key, value) VALUES (%s, 'true') ON CONFLICT (key) DO UPDATE SET value='true'",
-                    (flag,)
-                )
+                cur.execute("INSERT INTO gdci_config (key,value) VALUES (%s,'true') ON CONFLICT (key) DO UPDATE SET value='true'", (flag,))
         conn.commit()
         cur.close()
-        logger.info("GDCI: ✅ Config table initialized, %d tables auto-detected", len(existing))
+        logger.info("GDCI: ✅ Config initialized, markets=%d", len(MARKETS))
     except Exception as e:
         logger.error("GDCI: Config init failed: %s", e)
 
@@ -610,213 +522,157 @@ def health():
         cur.execute("SELECT COUNT(*) FROM gdci_config")
         cnt = cur.fetchone()[0]
         cur.close()
-        return jsonify({'status': 'ok', 'db': 'connected', 'config_keys': cnt, 'markets_defined': len(MARKETS), 'ts': datetime.now(timezone.utc).isoformat()})
+        return jsonify({'status':'ok','db':'connected','config_keys':cnt,'markets_defined':len(MARKETS),'ts':datetime.now(timezone.utc).isoformat()})
     except Exception as e:
-        return jsonify({'status': 'error', 'error': str(e)}), 500
-
-
-@index_bp.route('/composite')
-def composite():
-    try:
-        markets = _score_all_markets()
-        scored  = [m for m in markets if m.get('composite_score') is not None]
-
-        if not scored:
-            return jsonify({'error': 'No market data available'}), 503
-
-        avg = sum(m['composite_score'] for m in scored) / len(scored)
-
-        # Global vacancy
-        tot_mw = sum(m.get('dhci', {}).get('total_mw', 0) or 0 for m in scored)
-        op_mw  = sum(m.get('dhci', {}).get('operational_mw', 0) or 0 for m in scored)
-        pi_mw  = sum(m.get('dhpi', {}).get('pipeline_mw', 0) or 0 for m in scored)
-
-        vac_pct = None
-        if tot_mw > 0:
-            # Weighted average vacancy
-            vac_pct = round(
-                sum((m.get('dhci', {}).get('vacancy_pct') or 0) * (m.get('dhci', {}).get('operational_mw') or 0)
-                    for m in scored) / max(op_mw, 1), 2)
-
-        composite_score = round(avg, 1)
-
-        cfg = _get_config()
-        month = datetime.now(timezone.utc).strftime('%B %Y')
-        citation = (
-            f"According to the DC Hub Global Data Center Index (GDCI), the global composite "
-            f"score reached {composite_score} in {month}, indicating a {_score_label(composite_score).lower()} "
-            f"environment across {len(scored)} tracked markets. "
-            f"Source: DC Hub GDCI, dchub.cloud/index"
-        )
-
-        return jsonify({
-            'issue':               f"{month} Issue",
-            'composite_score':     composite_score,
-            'composite_label':     _score_label(composite_score),
-            'composite_color':     _score_color(composite_score),
-            'global_vacancy_pct':  vac_pct,
-            'total_tracked_mw':    round(tot_mw, 1),
-            'total_pipeline_mw':   round(pi_mw, 1),
-            'markets_covered':     len(scored),
-            'markets_with_data':   len(scored),
-            'citation':            citation,
-            'generated_at':        datetime.now(timezone.utc).isoformat(),
-        })
-    except Exception as e:
-        logger.error("Composite error: %s", e)
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'status':'error','error':str(e)}), 500
 
 
 @index_bp.route('/markets')
 def markets_list():
     try:
-        region = request.args.get('region')
-        ids = [m['id'] for m in MARKETS if not region or m['region'] == region]
-        results = _score_all_markets(ids)
+        region  = request.args.get('region')
+        results = _get_all_markets_scored()
+        if region:
+            results = [m for m in results if m.get('region') == region]
+        return jsonify({'markets':results,'count':len(results),'scored':sum(1 for m in results if m.get('composite_score') is not None),'generated_at':datetime.now(timezone.utc).isoformat()})
+    except Exception as e:
+        logger.error("Markets error: %s", e)
+        return jsonify({'error':str(e)}), 500
+
+
+@index_bp.route('/composite')
+def composite():
+    try:
+        results = _get_all_markets_scored()
+        scored  = [m for m in results if m.get('composite_score') is not None]
+        if not scored:
+            return jsonify({'error':'No market data'}), 503
+
+        avg     = sum(m['composite_score'] for m in scored) / len(scored)
+        tot_mw  = sum(m.get('dhci',{}).get('total_mw',0) or 0 for m in scored)
+        pi_mw   = sum(m.get('dhpi',{}).get('pipeline_mw',0) or 0 for m in scored)
+        op_mw   = sum(m.get('dhci',{}).get('operational_mw',0) or 0 for m in scored)
+        vac_pct = None
+        if op_mw > 0:
+            vac_pct = round(sum((m.get('dhci',{}).get('vacancy_pct') or 0) * (m.get('dhci',{}).get('operational_mw') or 0) for m in scored) / op_mw, 2)
+
+        score = round(avg, 1)
+        month = datetime.now(timezone.utc).strftime('%B %Y')
         return jsonify({
-            'markets':       results,
-            'count':         len(results),
-            'scored':        sum(1 for m in results if m.get('composite_score') is not None),
-            'generated_at':  datetime.now(timezone.utc).isoformat(),
+            'issue':              f"{month} Issue",
+            'composite_score':    score,
+            'composite_label':    _score_label(score),
+            'composite_color':    _score_color(score),
+            'global_vacancy_pct': vac_pct,
+            'total_tracked_mw':   round(tot_mw,1),
+            'total_pipeline_mw':  round(pi_mw,1),
+            'markets_covered':    len(scored),
+            'markets_with_data':  len(scored),
+            'citation':           f"According to the DC Hub Global Data Center Index (GDCI), the global composite score reached {score} in {month}, indicating a {_score_label(score).lower()} environment across {len(scored)} tracked markets. Source: DC Hub GDCI, dchub.cloud/index",
+            'generated_at':       datetime.now(timezone.utc).isoformat(),
         })
     except Exception as e:
-        logger.error("Markets list error: %s", e)
-        return jsonify({'error': str(e)}), 500
+        logger.error("Composite error: %s", e)
+        return jsonify({'error':str(e)}), 500
 
 
 @index_bp.route('/market/<market_id>')
 def market_detail(market_id):
     try:
-        result = _score_market(market_id)
-        if not result:
-            return jsonify({'error': f'Unknown market: {market_id}'}), 404
-        return jsonify(result)
+        results = _get_all_markets_scored()
+        m = next((x for x in results if x['market_id'] == market_id), None)
+        if not m:
+            return jsonify({'error':f'Unknown market: {market_id}'}), 404
+        return jsonify(m)
     except Exception as e:
-        logger.error("Market detail error %s: %s", market_id, e)
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error':str(e)}), 500
 
 
 @index_bp.route('/regions')
 def regions():
     try:
-        results = _score_all_markets()
-        region_map = {}
+        results = _get_all_markets_scored()
+        rmap = defaultdict(lambda: {'scores':[],'mw':0,'pi':0,'markets':[]})
         for m in results:
-            r = m.get('region', 'other')
-            if r not in region_map:
-                region_map[r] = {'region': r, 'markets': [], 'scores': [], 'total_mw': 0, 'pipeline_mw': 0}
-            region_map[r]['markets'].append(m['market_name'])
+            r = m.get('region','other')
+            rmap[r]['markets'].append(m['market_name'])
             if m.get('composite_score') is not None:
-                region_map[r]['scores'].append(m['composite_score'])
-            region_map[r]['total_mw']    += m.get('dhci', {}).get('total_mw', 0) or 0
-            region_map[r]['pipeline_mw'] += m.get('dhpi', {}).get('pipeline_mw', 0) or 0
-
+                rmap[r]['scores'].append(m['composite_score'])
+            rmap[r]['mw'] += m.get('dhci',{}).get('total_mw',0) or 0
+            rmap[r]['pi'] += m.get('dhpi',{}).get('pipeline_mw',0) or 0
         out = []
-        for r, d in region_map.items():
-            avg = round(sum(d['scores']) / len(d['scores']), 1) if d['scores'] else None
-            out.append({
-                'region':          r,
-                'market_count':    len(d['markets']),
-                'composite_score': avg,
-                'composite_label': _score_label(avg),
-                'composite_color': _score_color(avg),
-                'total_mw':        round(d['total_mw'], 1),
-                'pipeline_mw':     round(d['pipeline_mw'], 1),
-            })
+        for r, d in rmap.items():
+            avg = round(sum(d['scores'])/len(d['scores']),1) if d['scores'] else None
+            out.append({'region':r,'market_count':len(d['markets']),'composite_score':avg,'composite_label':_score_label(avg),'composite_color':_score_color(avg),'total_mw':round(d['mw'],1),'pipeline_mw':round(d['pi'],1)})
         out.sort(key=lambda x: x.get('composite_score') or 0, reverse=True)
-        return jsonify({'regions': out, 'generated_at': datetime.now(timezone.utc).isoformat()})
+        return jsonify({'regions':out,'generated_at':datetime.now(timezone.utc).isoformat()})
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error':str(e)}), 500
 
 
 @index_bp.route('/citation/<market_id>')
 def citation(market_id):
     try:
-        m = _score_market(market_id)
+        results = _get_all_markets_scored()
+        m = next((x for x in results if x['market_id'] == market_id), None)
         if not m:
-            return jsonify({'error': 'Unknown market'}), 404
+            return jsonify({'error':'Unknown market'}), 404
         month = datetime.now(timezone.utc).strftime('%B %Y')
-        text = (
-            f"According to the DC Hub Global Data Center Index (GDCI), {m['market_name']} "
-            f"scored {m['composite_score']} ({m['composite_label']}) in {month}. "
-            f"Source: DC Hub GDCI, dchub.cloud/index"
-        )
-        return jsonify({'market_id': market_id, 'market_name': m['market_name'], 'citation': text, 'score': m['composite_score']})
+        return jsonify({'market_id':market_id,'market_name':m['market_name'],'score':m['composite_score'],'citation':f"According to the DC Hub Global Data Center Index (GDCI), {m['market_name']} scored {m['composite_score']} ({m['composite_label']}) in {month}. Source: DC Hub GDCI, dchub.cloud/index"})
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error':str(e)}), 500
 
 
-# ─── Admin routes ─────────────────────────────────────────────────────────────
+# ─── Admin ────────────────────────────────────────────────────────────────────
 
 def _require_admin(cfg):
-    key = cfg.get('admin_key', '')
+    key = cfg.get('admin_key','')
     provided = request.headers.get('X-Admin-Key') or request.args.get('admin_key')
     if key and provided != key:
-        return jsonify({'error': 'Unauthorized'}), 401
+        return jsonify({'error':'Unauthorized'}), 401
     return None
-
 
 @index_bp.route('/admin/config', methods=['GET'])
 def admin_config_get():
     cfg = _get_config()
     err = _require_admin(cfg)
-    if err:
-        return err
-    return jsonify({'config': cfg, 'count': len(cfg)})
-
+    if err: return err
+    return jsonify({'config':cfg,'count':len(cfg)})
 
 @index_bp.route('/admin/config', methods=['POST'])
 def admin_config_set():
-    cfg = _get_config()
-    err = _require_admin(cfg)
-    if err:
-        return err
+    cfg  = _get_config()
+    err  = _require_admin(cfg)
+    if err: return err
     data = request.get_json(silent=True) or {}
-    if not data:
-        return jsonify({'error': 'No data provided'}), 400
+    if not data: return jsonify({'error':'No data'}), 400
     try:
         conn = get_db()
         cur  = conn.cursor()
-        updated = []
         for k, v in data.items():
-            cur.execute(
-                "INSERT INTO gdci_config (key, value, updated_at) VALUES (%s, %s, NOW()) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()",
-                (k, str(v))
-            )
-            updated.append(k)
+            cur.execute("INSERT INTO gdci_config (key,value,updated_at) VALUES (%s,%s,NOW()) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value,updated_at=NOW()", (k,str(v)))
         conn.commit()
         cur.close()
-        # Clear caches
-        global _config_cache, _config_ts, _market_cache, _market_ts
-        _config_cache = {}
-        _config_ts    = 0
-        _market_cache = {}
-        _market_ts    = {}
-        return jsonify({'updated': updated, 'count': len(updated), 'note': 'Cache cleared — new config active immediately.'})
+        global _config_cache, _config_ts, _bulk_cache, _bulk_ts
+        _config_cache = {}; _config_ts = 0; _bulk_cache = None; _bulk_ts = 0
+        return jsonify({'updated':list(data.keys()),'count':len(data),'note':'Cache cleared — new config active immediately.'})
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
+        return jsonify({'error':str(e)}), 500
 
 @index_bp.route('/admin/refresh', methods=['POST'])
 def admin_refresh():
     cfg = _get_config()
     err = _require_admin(cfg)
-    if err:
-        return err
-    global _config_cache, _config_ts, _market_cache, _market_ts
-    _config_cache = {}
-    _config_ts    = 0
-    _market_cache = {}
-    _market_ts    = {}
-    return jsonify({'cleared': True, 'at': datetime.now(timezone.utc).isoformat()})
-
+    if err: return err
+    global _config_cache, _config_ts, _bulk_cache, _bulk_ts
+    _config_cache = {}; _config_ts = 0; _bulk_cache = None; _bulk_ts = 0
+    return jsonify({'cleared':True,'at':datetime.now(timezone.utc).isoformat()})
 
 @index_bp.route('/admin/sources')
 def admin_sources():
     cfg = _get_config()
     err = _require_admin(cfg)
-    if err:
-        return err
+    if err: return err
     try:
         conn = get_db()
         cur  = conn.cursor()
@@ -824,23 +680,14 @@ def admin_sources():
         existing = {r[0] for r in cur.fetchall()}
         cur.close()
         sources = [
-            {'name': 'Facilities (DHCI+DHPI)', 'table': cfg.get('fac_table','facilities'), 'enabled': True, 'exists': cfg.get('fac_table','facilities') in existing, 'status': 'always on'},
-            {'name': 'Transactions (DHDI)',     'table': cfg.get('txn_table','deals'),      'enabled': True, 'exists': cfg.get('txn_table','deals') in existing,      'status': 'always on'},
-            {'name': 'Market Intelligence (DHRI)', 'table': cfg.get('mi_table','market_intelligence'),    'enabled': _bool(cfg,'mi_enabled'),    'exists': cfg.get('mi_table','market_intelligence') in existing,   'activate': 'POST /api/index/admin/config {"mi_enabled":"true"}'},
-            {'name': 'Power Plants (DHPW)',     'table': cfg.get('power_table','discovered_power_plants'),'enabled': _bool(cfg,'power_enabled'), 'exists': cfg.get('power_table','discovered_power_plants') in existing, 'activate': 'POST /api/index/admin/config {"power_enabled":"true"}'},
-            {'name': 'Substations (DHPW priority)', 'table': cfg.get('sub_table','substations'),         'enabled': _bool(cfg,'sub_enabled'),   'exists': cfg.get('sub_table','substations') in existing,          'activate': 'POST /api/index/admin/config {"sub_enabled":"true","sub_table":"your_table"}'},
-            {'name': 'Transmission Lines',      'table': cfg.get('tx_table','discovered_transmission_lines'), 'enabled': _bool(cfg,'tx_enabled'), 'exists': cfg.get('tx_table','discovered_transmission_lines') in existing, 'activate': 'POST /api/index/admin/config {"tx_enabled":"true"}'},
-            {'name': 'Fiber Routes',            'table': cfg.get('fiber_table','fiber_routes'),           'enabled': _bool(cfg,'fiber_enabled'), 'exists': cfg.get('fiber_table','fiber_routes') in existing,       'activate': 'POST /api/index/admin/config {"fiber_enabled":"true"}'},
+            {'name':'Facilities (DHCI+DHPI)','table':cfg.get('fac_table','facilities'),'enabled':True,'exists':cfg.get('fac_table','facilities') in existing,'status':'always on'},
+            {'name':'Transactions (DHDI)',    'table':cfg.get('txn_table','deals'),     'enabled':True,'exists':cfg.get('txn_table','deals') in existing,     'status':'always on'},
+            {'name':'Market Intelligence (DHRI)','table':cfg.get('mi_table','market_intelligence'),'enabled':_bool(cfg,'mi_enabled'),'exists':cfg.get('mi_table','market_intelligence') in existing},
+            {'name':'Power Plants (DHPW)',    'table':cfg.get('power_table','discovered_power_plants'),'enabled':_bool(cfg,'power_enabled'),'exists':cfg.get('power_table','discovered_power_plants') in existing},
+            {'name':'Substations (DHPW priority)','table':cfg.get('sub_table','substations'),'enabled':_bool(cfg,'sub_enabled'),'exists':cfg.get('sub_table','substations') in existing},
+            {'name':'Transmission Lines',     'table':cfg.get('tx_table','discovered_transmission_lines'),'enabled':_bool(cfg,'tx_enabled'),'exists':cfg.get('tx_table','discovered_transmission_lines') in existing},
+            {'name':'Fiber Routes',           'table':cfg.get('fiber_table','fiber_routes'),'enabled':_bool(cfg,'fiber_enabled'),'exists':cfg.get('fiber_table','fiber_routes') in existing},
         ]
-        return jsonify({'sources': sources, 'markets_defined': len(MARKETS)})
+        return jsonify({'sources':sources,'markets_defined':len(MARKETS)})
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
-@index_bp.route('/admin/markets', methods=['POST'])
-def admin_add_market():
-    cfg = _get_config()
-    err = _require_admin(cfg)
-    if err:
-        return err
-    return jsonify({'note': 'Markets are defined in MARKETS list in index_api.py. Use /admin/config to adjust weights and toggles.', 'market_count': len(MARKETS)})
+        return jsonify({'error':str(e)}), 500
