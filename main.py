@@ -17316,6 +17316,17 @@ def _start_background_tasks():
 threading.Timer(60, _start_background_tasks).start()
 logger.info("⏳ Background tasks deferred: %d tasks will start in 60s with 10s stagger", len(_deferred_bg_threads))
 
+# =============================================================================
+# GDCI INDEX DASHBOARD
+# Serves the DC Hub Global Data Center Index dashboard page
+# =============================================================================
+@app.route('/index')
+@app.route('/index.html')
+def gdci_index_page():
+    """DC Hub Global Data Center Index dashboard"""
+    return send_from_directory('static', 'gdci_index.html')
+
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
 
