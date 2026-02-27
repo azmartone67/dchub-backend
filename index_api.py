@@ -283,12 +283,31 @@ def _score_market_from_bulk(market, bulk, cfg):
     dhpi_val = dhpi_d = None
 
     if op_mw > 0:
-        pi_ratio = pi_mw / op_mw
-        # Vacancy proxy: more pipeline relative to operational = tighter market (lower vacancy)
-        # 0% pipeline → assume 12% vacancy (loose market)
-        # 200%+ pipeline → assume 2% vacancy (very tight)
-        vac_pct  = max(2, 12 - pi_ratio * 5)
-        dhci_val = round(min(100, (1 - vac_pct / 12) * 100), 1)
+        pi_ratio = pi_mw / max(op_mw, 1)
+
+        # MW density score: markets with more MW are inherently tighter
+        # Tier thresholds based on global market sizes:
+        #   >2000 MW = hyperscale hub (score 85-100)
+        #   500-2000 MW = major market (score 60-85)
+        #   100-500 MW = emerging market (score 35-60)
+        #   <100 MW = nascent (score 0-35)
+        if op_mw >= 2000:
+            density_score = 85 + min(15, (op_mw - 2000) / 1000 * 15)
+        elif op_mw >= 500:
+            density_score = 60 + (op_mw - 500) / 1500 * 25
+        elif op_mw >= 100:
+            density_score = 35 + (op_mw - 100) / 400 * 25
+        else:
+            density_score = op_mw / 100 * 35
+
+        # Pipeline pressure bonus: active pipeline raises score (up to +15 pts)
+        pipeline_bonus = min(15, pi_ratio * 30)
+
+        dhci_val = round(min(100, density_score + pipeline_bonus), 1)
+
+        # Vacancy proxy for display (not used in score calculation)
+        vac_pct  = max(2, min(15, 15 - pi_ratio * 5))
+
         dhci_d   = {
             'operational_count': op_cnt,
             'operational_mw':    round(op_mw, 1),
@@ -338,9 +357,11 @@ def _score_market_from_bulk(market, bulk, cfg):
     if dhpw_val is None and _bool(cfg, 'power_enabled'):
         pw_cnt = pw_mw = 0.0
         state_kw_pw  = market.get('state_kw', [])
-        power_kw     = market.get('power_kw', city_kw)  # dedicated power keywords or fall back to city_kw
+        power_kw     = market.get('power_kw', city_kw)
+        # Match both 'northern virginia' and 'northern_virginia' forms
+        expanded_kw = list(set([kw for k in power_kw for kw in [k, k.replace(' ','_'), k.replace('_',' ')]]))
         for (pw_city, pw_state, cnt, mw) in bulk['pw']:
-            city_hit  = any(kw in pw_city  for kw in power_kw)    if power_kw    else False
+            city_hit  = any(kw in pw_city  for kw in expanded_kw)  if expanded_kw  else False
             state_hit = any(kw in pw_state for kw in state_kw_pw) if state_kw_pw else False
             if city_hit or state_hit:
                 pw_cnt += int(cnt)
