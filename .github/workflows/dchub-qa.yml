@@ -135,7 +135,7 @@ jobs:
           check("Login",                  f"{BASE}/login.html")
           check("Land & Power",           f"{BASE}/land-power")
           check("AI Platform",            f"{BASE}/ai")
-          check("AI Wars",               f"{BASE}/aiwars")
+          check("AI Wars",               f"{BASE}/ai-wars")
           check("Pricing",               f"{BASE}/pricing")
           check("API Docs",              f"{BASE}/api-docs")
           check("Facility detail",        f"{BASE}/facilities/databank-ltd-databank-minneapolis-msp1-8c8fb870")
