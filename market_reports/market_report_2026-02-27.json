@@ -1,6 +1,6 @@
 {
-  "report_date": "2026-02-26",
-  "generated_at": "2026-02-26T21:02:29.517076",
+  "report_date": "2026-02-27",
+  "generated_at": "2026-02-27T09:03:01.457250",
   "summary": {
     "total_facilities": 11433,
     "total_providers": 3958,
@@ -89,54 +89,54 @@
   ],
   "recent_news": [
     {
-      "title": "Columbus Councilors share opinions about pros and cons of proposed data center",
-      "source": "Columbus Ledger-Enquirer",
-      "date": "2026-02-26T20:29:49"
+      "title": "Swiss data centre operator NTS Colocation pilots iron-sodium battery tech from US startup Inlyte",
+      "source": "Energy Storage News",
+      "date": "2026-02-27T08:40:46"
     },
     {
-      "title": "Data Center Networking Market 2031: Emerging Trends, Driving Factors, Industry Growth, Key Vendors and Future Growth",
-      "source": "StreetInsider",
-      "date": "2026-02-26T20:27:28"
+      "title": "CPP, Equinix to buy Nordic data center operator atNorth in $4 billion deal",
+      "source": "Reuters",
+      "date": "2026-02-27T08:32:31"
     },
     {
-      "title": "Lincoln County backs down on hyperscale data center moratorium",
-      "source": "Mitchell Republic",
-      "date": "2026-02-26T20:14:23"
+      "title": "CPP Investments, Equinix To Acquire AtNorth In $4 Bln Deal",
+      "source": "Nasdaq",
+      "date": "2026-02-27T08:31:00"
     },
     {
-      "title": "Open AWS data center discussion set for Friday",
-      "source": "Vicksburg Daily News",
-      "date": "2026-02-26T19:57:02"
+      "title": "Campaigners Join Forces To Raise Environmental Concerns Over Data Centers",
+      "source": "Forbes",
+      "date": "2026-02-27T08:27:55"
     },
     {
-      "title": "Sophia Space raises $10M seed to demo novel space computers",
-      "source": "TechCrunch AI",
-      "date": "2026-02-26T19:55:20"
+      "title": "CPP Investments, Equinix to acquire atNorth for $4 billion By Investing.com",
+      "source": "Investing.com",
+      "date": "2026-02-27T08:13:13"
     },
     {
-      "title": "\u2018Big Gretch Out\u2019? \u2014 Sure, but Whitmer remains out of touch on data center issue",
-      "source": "Michigan Advance",
-      "date": "2026-02-26T19:18:09"
+      "title": "Assessing Corning (GLW) Valuation After AI Data Center Fiber Surge And Meta\u2019s US$6b Supply Deal",
+      "source": "simplywall.st",
+      "date": "2026-02-27T08:03:57"
     },
     {
-      "title": "Small Islands, Smart Strategy: Caribbean Rewrites Data Center Model",
-      "source": "Nearshore Americas",
-      "date": "2026-02-26T19:10:38"
+      "title": "CPP Investments and Equinix to Acquire atNorth for US$4 Billion",
+      "source": "Equinix",
+      "date": "2026-02-27T08:02:31"
     },
     {
-      "title": "AI data center near Wellington gets icy reception at town hall meeting",
-      "source": "The Palm Beach Post",
-      "date": "2026-02-26T18:34:00"
+      "title": "CPPIB and Equinix Agree to Buy atNorth in $4 Billion Deal",
+      "source": "Bloomberg",
+      "date": "2026-02-27T08:01:09"
     },
     {
-      "title": "With tax break deal unraveling, Spartanburg data center pitches grid upgrades",
-      "source": "Post and Courier",
-      "date": "2026-02-26T18:12:00"
+      "title": "Targa Telematics shifts core systems to Equinix hubs",
+      "source": "IT Brief Asia",
+      "date": "2026-02-27T07:52:30"
     },
     {
-      "title": "Wall Street\u2019s Sour Response to Nvidia\u2019s Record Earnings",
-      "source": "Data Center Knowledge",
-      "date": "2026-02-26T18:06:40"
+      "title": "Engineer held hostage by client who asked for the wrong fix",
+      "source": "The Register DC",
+      "date": "2026-02-27T07:30:07"
     }
   ],
   "data_sources": [
