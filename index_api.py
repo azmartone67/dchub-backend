@@ -29,59 +29,47 @@ import time
 import logging
 from datetime import datetime, date
 from flask import Blueprint, jsonify, request
-import psycopg2
-import psycopg2.extras
-from psycopg2 import pool as pg_pool
 
 logger = logging.getLogger(__name__)
 
 index_bp = Blueprint("index", __name__, url_prefix="/api/index")
 
 # ─────────────────────────────────────────────
-# DATABASE
+# DATABASE — reuses main app's shared pool via db_utils
+# No separate pool = no pool exhaustion
 # ─────────────────────────────────────────────
-_conn_pool = None
-
-def get_pool():
-    global _conn_pool
-    if _conn_pool is None:
-        db_url = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
-        if db_url:
-            try:
-                _conn_pool = pg_pool.ThreadedConnectionPool(1, 5, dsn=db_url)
-            except Exception as e:
-                logger.error(f"Index pool init failed: {e}")
-    return _conn_pool
 
 def query(sql, params=None):
-    pool = get_pool()
-    if pool is None:
-        return []
-    conn = pool.getconn()
+    """Run a SELECT, return list of dicts."""
     try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        from db_utils import get_db
+        conn = get_db()
+        try:
+            cur = conn.cursor()
             cur.execute(sql, params or ())
+            cols = [d[0] for d in cur.description]
+            rows = [dict(zip(cols, row)) for row in cur.fetchall()]
             conn.commit()
-            return [dict(r) for r in cur.fetchall()]
+            return rows
+        finally:
+            conn.close()
     except Exception as e:
-        conn.rollback()
         logger.warning(f"Index query error: {e} | SQL: {sql[:120]}")
         return []
-    finally:
-        pool.putconn(conn)
 
 def execute(sql, params=None):
-    pool = get_pool()
-    if pool is None:
-        return False
-    conn = pool.getconn()
+    """Run INSERT/UPDATE/CREATE."""
     try:
-        with conn.cursor() as cur:
+        from db_utils import get_db
+        conn = get_db()
+        try:
+            cur = conn.cursor()
             cur.execute(sql, params or ())
-        conn.commit()
-        return True
+            conn.commit()
+            return True
+        finally:
+            conn.close()
     except Exception as e:
-        conn.rollback()
         logger.warning(f"Index execute error: {e}")
         return False
 
