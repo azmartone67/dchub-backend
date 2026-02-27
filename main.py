@@ -16242,33 +16242,45 @@ except Exception as e:
 # =============================================================================
 @app.route('/sitemap.xml')
 def serve_sitemap_xml():
-    """Dynamic sitemap for Google — includes all facilities and location pages."""
+    """Dynamic sitemap for Google — includes all facilities, locations, and market pages."""
+    import re as _re
     from datetime import datetime as _dt
     today = _dt.now().strftime('%Y-%m-%d')
     
+    def slugify(text):
+        """Convert facility name to URL slug."""
+        if not text:
+            return None
+        s = text.lower().strip()
+        s = _re.sub(r'[^a-z0-9\s-]', '', s)
+        s = _re.sub(r'[\s-]+', '-', s)
+        return s.strip('-')
+    
     conn = None
+    fac_rows = []
+    loc_rows = []
     try:
         conn = get_read_db()
         c = conn.cursor()
         
-        # Get all facility slugs
-        c.execute("SELECT slug FROM discovered_facilities WHERE slug IS NOT NULL AND slug != '' LIMIT 15000")
-        fac_slugs = [row[0] for row in c.fetchall()]
-        
-        # Get unique location combos
+        # Get facility names for individual pages
         c.execute("""
-            SELECT DISTINCT LOWER(country), 
-                   CASE WHEN state IS NOT NULL AND state != '' 
-                        THEN LOWER(country) || '-' || LOWER(state) 
-                        ELSE NULL END
-            FROM discovered_facilities
+            SELECT name, city, state, country 
+            FROM facilities 
+            WHERE name IS NOT NULL AND name != ''
+            LIMIT 15000
+        """)
+        fac_rows = c.fetchall()
+        
+        # Get unique country/state combos for location pages
+        c.execute("""
+            SELECT DISTINCT country, state
+            FROM facilities
             WHERE country IS NOT NULL AND country != ''
         """)
         loc_rows = c.fetchall()
     except Exception as e:
         logger.error(f"Sitemap generation error: {e}")
-        fac_slugs = []
-        loc_rows = []
     finally:
         if conn:
             try: conn.close()
@@ -16276,25 +16288,76 @@ def serve_sitemap_xml():
     
     urls = []
     
-    # Static pages
-    for path, pri in [('/', '1.0'), ('/pricing', '0.8'), ('/connect', '0.8'),
-                       ('/market-intelligence', '0.7'), ('/ai/facts', '0.6')]:
-        urls.append(f'  <url><loc>https://dchub.cloud{path}</loc><lastmod>{today}</lastmod><changefreq>daily</changefreq><priority>{pri}</priority></url>')
+    # ---- Static pages ----
+    static_pages = [
+        ('/', '1.0', 'daily'),
+        ('/land-power', '0.9', 'daily'),
+        ('/transactions', '0.9', 'daily'),
+        ('/news', '0.9', 'hourly'),
+        ('/pricing', '0.9', 'monthly'),
+        ('/analytics', '0.8', 'daily'),
+        ('/market-intelligence', '0.8', 'weekly'),
+        ('/ecosystem', '0.8', 'weekly'),
+        ('/transaction-comps', '0.8', 'daily'),
+        ('/ai-pipeline', '0.8', 'daily'),
+        ('/ai-deals', '0.8', 'daily'),
+        ('/ai-agents', '0.7', 'weekly'),
+        ('/ai-inventory.html', '0.7', 'daily'),
+        ('/assets.html', '0.7', 'daily'),
+        ('/for-ai.html', '0.7', 'weekly'),
+        ('/connect', '0.7', 'weekly'),
+        ('/ai/facts', '0.6', 'weekly'),
+        ('/llms.txt', '0.5', 'monthly'),
+        ('/llms-full.txt', '0.5', 'monthly'),
+    ]
+    for path, pri, freq in static_pages:
+        urls.append(f'  <url><loc>https://dchub.cloud{path}</loc><lastmod>{today}</lastmod><changefreq>{freq}</changefreq><priority>{pri}</priority></url>')
     
-    # Location pages
-    seen = set()
+    # ---- Market pages ----
+    markets = [
+        'northern-virginia', 'dallas', 'phoenix', 'atlanta', 'chicago',
+        'silicon-valley', 'new-york', 'los-angeles', 'portland', 'seattle',
+        'salt-lake-city', 'toronto', 'columbus', 'houston', 'denver',
+        'london', 'frankfurt', 'amsterdam', 'paris', 'dublin', 'stockholm',
+        'singapore', 'tokyo', 'sydney', 'hong-kong', 'mumbai', 'seoul',
+        'jakarta', 'kuala-lumpur', 'bangkok', 'sao-paulo', 'mexico-city',
+        'santiago', 'bogota',
+    ]
+    urls.append(f'  <url><loc>https://dchub.cloud/markets</loc><lastmod>{today}</lastmod><changefreq>weekly</changefreq><priority>0.8</priority></url>')
+    for m in markets:
+        urls.append(f'  <url><loc>https://dchub.cloud/markets/{m}</loc><lastmod>{today}</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>')
+    
+    # ---- Location pages (from DB) ----
+    country_map = {
+        'US': 'usa', 'GB': 'united-kingdom', 'DE': 'germany', 'JP': 'japan',
+        'IN': 'india', 'AU': 'australia', 'BR': 'brazil', 'CA': 'canada',
+        'SG': 'singapore', 'FR': 'france', 'NL': 'netherlands', 'IE': 'ireland',
+        'SE': 'sweden', 'NO': 'norway', 'DK': 'denmark', 'FI': 'finland',
+        'CH': 'switzerland', 'HK': 'hong-kong', 'KR': 'south-korea',
+        'TW': 'taiwan', 'MY': 'malaysia', 'TH': 'thailand', 'ID': 'indonesia',
+        'MX': 'mexico', 'CL': 'chile', 'CO': 'colombia', 'AR': 'argentina',
+        'ZA': 'south-africa', 'KE': 'kenya', 'NG': 'nigeria', 'AE': 'uae',
+        'SA': 'saudi-arabia', 'QA': 'qatar', 'IT': 'italy', 'ES': 'spain',
+        'PT': 'portugal', 'PL': 'poland', 'CZ': 'czech-republic',
+        'NZ': 'new-zealand', 'RO': 'romania', 'HU': 'hungary',
+    }
+    seen_locations = set()
     for row in loc_rows:
-        cc, ss = row[0], row[1]
-        if cc and cc not in seen:
-            seen.add(cc)
-            urls.append(f'  <url><loc>https://dchub.cloud/locations/{cc}</loc><lastmod>{today}</lastmod><changefreq>weekly</changefreq><priority>0.6</priority></url>')
-        if ss and ss not in seen:
-            seen.add(ss)
-            urls.append(f'  <url><loc>https://dchub.cloud/locations/{ss}</loc><lastmod>{today}</lastmod><changefreq>weekly</changefreq><priority>0.6</priority></url>')
+        cc = row[0] if row[0] else ''
+        cc_upper = cc.upper().strip()
+        loc_slug = country_map.get(cc_upper, cc.lower().strip())
+        if loc_slug and loc_slug not in seen_locations:
+            seen_locations.add(loc_slug)
+            urls.append(f'  <url><loc>https://dchub.cloud/locations/{loc_slug}.html</loc><lastmod>{today}</lastmod><changefreq>weekly</changefreq><priority>0.7</priority></url>')
     
-    # Facility pages
-    for slug in fac_slugs:
-        urls.append(f'  <url><loc>https://dchub.cloud/facilities/{slug}</loc><lastmod>{today}</lastmod><changefreq>monthly</changefreq><priority>0.5</priority></url>')
+    # ---- Facility pages (from DB) ----
+    seen_slugs = set()
+    for row in fac_rows:
+        name = row[0] if row[0] else ''
+        slug = slugify(name)
+        if slug and slug not in seen_slugs and len(slug) > 2:
+            seen_slugs.add(slug)
+            urls.append(f'  <url><loc>https://dchub.cloud/facilities/{slug}</loc><lastmod>{today}</lastmod><changefreq>monthly</changefreq><priority>0.5</priority></url>')
     
     xml = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' + '\n'.join(urls) + '\n</urlset>'
     
