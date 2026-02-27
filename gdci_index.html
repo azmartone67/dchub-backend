@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>DC Hub Global Data Center Index</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;700&display=swap');
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'IBM Plex Mono','Courier New',monospace;background:#020817;color:#e2e8f0;min-height:100vh}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+@keyframes spin{to{transform:rotate(360deg)}}
+.topbar{background:#0a1628;border-bottom:1px solid #1e293b;padding:12px 24px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px}
+.section{max-width:1200px;margin:0 auto;padding:24px 20px}
+.card{background:#0a1628;border:1px solid #1e293b;border-radius:10px;padding:20px}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:24px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.grid3sm{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:16px}
+.bar-track{background:#1e293b;border-radius:4px;height:6px;overflow:hidden;width:100%}
+.bar-fill{height:100%;border-radius:4px;transition:width 0.8s ease}
+.tabs{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+.tab{padding:8px 16px;border-radius:6px;border:none;cursor:pointer;font-size:12px;font-family:inherit;background:#1e293b;color:#94a3b8;transition:all 0.2s}
+.tab.active{background:#7c3aed;color:#fff}
+.tab:hover:not(.active){background:#1e3a5f}
+table{width:100%;border-collapse:collapse;font-size:12px}
+thead tr{border-bottom:1px solid #1e293b}
+th{padding:8px 12px;text-align:left;font-size:9px;color:#475569;letter-spacing:1px;font-weight:500}
+tbody tr{border-bottom:1px solid #0f172a;cursor:pointer;transition:background 0.15s}
+tbody tr:hover{background:#0f2040}
+td{padding:10px 12px}
+.live-dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+.btn{padding:8px 16px;border-radius:6px;border:none;cursor:pointer;font-family:inherit;font-size:12px}
+.metric-box{background:#0f172a;border-radius:6px;padding:10px}
+.tab-content{display:none}
+.tab-content.active{display:block}
+.spinner{width:32px;height:32px;border:3px solid #1e293b;border-top-color:#7c3aed;border-radius:50%;animation:spin 0.8s linear infinite;margin:60px auto}
+@media(max-width:768px){.grid3{grid-template-columns:1fr}.grid3sm{grid-template-columns:1fr 1fr}}
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div style="display:flex;align-items:center;gap:10px">
+    <div style="width:32px;height:32px;background:linear-gradient(135deg,#7c3aed,#4f46e5);border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:16px">⚡</div>
+    <div>
+      <div style="font-size:15px;font-weight:700;color:#e2e8f0;letter-spacing:1px">DC HUB</div>
+      <div style="font-size:10px;color:#64748b">GLOBAL DATA CENTER INDEX</div>
+    </div>
+  </div>
+  <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+    <div style="display:flex;align-items:center;gap:6px">
+      <span id="liveDot" class="live-dot" style="background:#f59e0b;animation:pulse 2s infinite"></span>
+      <span id="liveLabel" style="font-size:11px;color:#f59e0b">LOADING...</span>
+    </div>
+    <span id="issueLabel" style="font-size:11px;color:#475569"></span>
+    <a href="https://dchub.cloud/pricing" style="padding:8px 16px;border-radius:6px;background:#7c3aed;color:#fff;text-decoration:none;font-size:12px">Subscribe →</a>
+  </div>
+</div>
+
+<div class="section">
+  <div id="spinner" class="spinner"></div>
+  <div id="app" style="display:none"></div>
+</div>
+
+<script>
+const API='https://api.dchub.cloud'
+const C={red:{bg:'#2d0a0a',bd:'#7f1d1d',tx:'#fca5a5',bk:'#dc2626',lb:'Critical'},purple:{bg:'#1a0a2e',bd:'#5b21b6',tx:'#c4b5fd',bk:'#7c3aed',lb:'Constrained'},amber:{bg:'#1c1200',bd:'#78350f',tx:'#fcd34d',bk:'#d97706',lb:'Balanced'},green:{bg:'#0a1f0a',bd:'#14532d',tx:'#86efac',bk:'#16a34a',lb:"Buyer's Market"},gray:{bg:'#0f172a',bd:'#334155',tx:'#94a3b8',bk:'#475569',lb:'No Data'}}
+const sc=v=>v==null?'gray':v>=75?'red':v>=60?'purple':v>=40?'amber':'green'
+const fmw=v=>v?(v/1000).toFixed(1)+'K':'—'
+
+let markets=[], selId=null, region='all', tab='heatmap', comp=null
+
+const SEED_C={issue:'February 2026 Issue',composite_score:70.2,composite_label:'Constrained',composite_color:'purple',global_vacancy_pct:2.68,total_tracked_mw:378718,total_pipeline_mw:212158,markets_covered:21,citation:'According to the DC Hub Global Data Center Index (GDCI), the global composite score reached 70.2 in February 2026, indicating a constrained environment. Source: DC Hub GDCI, dchub.cloud/index'}
+const SEED_M=[
+  {market_id:'nova',market_name:'Northern Virginia, US',region:'us',composite_score:96.8,composite_label:'Critical',dhci:{vacancy_pct:4.04,total_mw:41431,total_count:2920,operational_count:2802},dhpi:{pipeline_mw:23458,pipeline_ratio_pct:200},dhdi:{absorbed_mw_90d:1200,deal_count_90d:1},dhpw:{value:100,source:'power_plants',total_mw:37337},dhri:{value:null}},
+  {market_id:'dal', market_name:'Dallas/Fort Worth, US', region:'us', composite_score:78.4,composite_label:'Constrained',dhci:{vacancy_pct:5.1,total_mw:28000},dhpi:{pipeline_mw:12000},dhdi:{absorbed_mw_90d:800,deal_count_90d:2},dhpw:{value:88},dhri:{value:null}},
+  {market_id:'phx', market_name:'Phoenix, US',           region:'us', composite_score:74.1,composite_label:'Constrained',dhci:{vacancy_pct:6.2,total_mw:18000},dhpi:{pipeline_mw:9000}, dhdi:{absorbed_mw_90d:600,deal_count_90d:1},dhpw:{value:82},dhri:{value:null}},
+  {market_id:'chi', market_name:'Chicago, US',           region:'us', composite_score:68.2,composite_label:'Constrained',dhci:{vacancy_pct:8.0,total_mw:15000},dhpi:{pipeline_mw:7000}, dhdi:{absorbed_mw_90d:400,deal_count_90d:1},dhpw:{value:75},dhri:{value:null}},
+  {market_id:'lhr', market_name:'London, UK',            region:'emea',composite_score:82.1,composite_label:'Critical',   dhci:{vacancy_pct:3.1,total_mw:22000},dhpi:{pipeline_mw:8000}, dhdi:{absorbed_mw_90d:700,deal_count_90d:2},dhpw:{value:90},dhri:{value:null}},
+  {market_id:'fra', market_name:'Frankfurt, Germany',    region:'emea',composite_score:79.3,composite_label:'Constrained',dhci:{vacancy_pct:4.5,total_mw:18000},dhpi:{pipeline_mw:6000}, dhdi:{absorbed_mw_90d:500,deal_count_90d:1},dhpw:{value:85},dhri:{value:null}},
+  {market_id:'ams', market_name:'Amsterdam, Netherlands',region:'emea',composite_score:71.2,composite_label:'Constrained',dhci:{vacancy_pct:5.5,total_mw:16000},dhpi:{pipeline_mw:5000}, dhdi:{absorbed_mw_90d:400,deal_count_90d:1},dhpw:{value:78},dhri:{value:null}},
+  {market_id:'sin', market_name:'Singapore',             region:'apac',composite_score:88.4,composite_label:'Critical',   dhci:{vacancy_pct:2.1,total_mw:12000},dhpi:{pipeline_mw:4000}, dhdi:{absorbed_mw_90d:300,deal_count_90d:1},dhpw:{value:92},dhri:{value:null}},
+  {market_id:'tyo', market_name:'Tokyo, Japan',          region:'apac',composite_score:76.2,composite_label:'Constrained',dhci:{vacancy_pct:5.8,total_mw:16000},dhpi:{pipeline_mw:5000}, dhdi:{absorbed_mw_90d:400,deal_count_90d:1},dhpw:{value:80},dhri:{value:null}},
+]
+
+function bar(v,c){const col=C[sc(v)]||C.gray;return`<div class="bar-track"><div class="bar-fill" style="width:${Math.min(100,v||0)}%;background:${col.bk}"></div></div>`}
+
+function render(){
+  const filtered=region==='all'?markets:markets.filter(m=>m.region===region)
+  const sel=selId?markets.find(m=>m.market_id===selId):markets[0]
+  const c=sc(comp?.composite_score), col=C[c]
+
+  document.getElementById('app').innerHTML=`
+  <div class="grid3">
+    <div class="card" style="background:${col.bg};border-color:${col.bd}">
+      <div style="font-size:10px;color:#64748b;margin-bottom:8px;letter-spacing:2px">DHI COMPOSITE SCORE</div>
+      <div style="font-size:56px;font-weight:700;color:${col.tx};line-height:1;margin-bottom:4px">${comp?.composite_score?.toFixed(1)??'—'}</div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+        <span style="background:${col.bk};color:#fff;font-size:11px;padding:2px 8px;border-radius:4px">${comp?.composite_label||col.lb}</span>
+        <span style="font-size:10px;color:#475569">0 = Buyer · 100 = Critical</span>
+      </div>
+      ${bar(comp?.composite_score,c)}
+      <div style="display:flex;justify-content:space-between;font-size:9px;color:#475569;margin-top:4px"><span>BUYER'S</span><span>BALANCED</span><span>CONSTRAINED</span><span>CRITICAL</span></div>
+    </div>
+    <div class="card">
+      <div style="font-size:10px;color:#64748b;margin-bottom:12px;letter-spacing:2px">GLOBAL METRICS</div>
+      <div class="grid2">
+        <div class="metric-box"><div style="font-size:9px;color:#475569;margin-bottom:4px">VACANCY</div><div style="font-size:20px;font-weight:700">${comp?.global_vacancy_pct!=null?comp.global_vacancy_pct+'%':'—'}</div></div>
+        <div class="metric-box"><div style="font-size:9px;color:#475569;margin-bottom:4px">TRACKED MW</div><div style="font-size:20px;font-weight:700">${comp?.total_tracked_mw?Math.round(comp.total_tracked_mw/1000)+'K':'—'}</div></div>
+        <div class="metric-box"><div style="font-size:9px;color:#475569;margin-bottom:4px">PIPELINE MW</div><div style="font-size:20px;font-weight:700">${comp?.total_pipeline_mw?Math.round(comp.total_pipeline_mw/1000)+'K':'—'}</div></div>
+        <div class="metric-box"><div style="font-size:9px;color:#475569;margin-bottom:4px">MARKETS</div><div style="font-size:20px;font-weight:700">${comp?.markets_covered??'—'}</div></div>
+      </div>
+    </div>
+    <div class="card">
+      <div style="font-size:10px;color:#64748b;margin-bottom:12px;letter-spacing:2px">${sel?sel.market_name.toUpperCase()+' SUB-INDICES':'SUB-INDICES'}</div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        ${[['dhci','CAPACITY','30%'],['dhri','RATE','25%'],['dhpi','PIPELINE','20%'],['dhdi','DEMAND','15%'],['dhpw','POWER','10%']].map(([k,l,w])=>{
+          const v=sel?.[k]?.value,col2=C[sc(v)]||C.gray
+          return`<div style="display:flex;align-items:center;gap:8px"><span style="font-size:9px;color:#475569;width:60px">${l}</span><div style="flex:1">${bar(v)}</div><span style="font-size:10px;color:#94a3b8;width:32px;text-align:right">${v!=null?v.toFixed(0):'—'}</span><span style="font-size:9px;color:#334155;width:28px">${w}</span></div>`
+        }).join('')}
+      </div>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <button class="tab${tab==='heatmap'?' active':''}" onclick="setTab('heatmap')">Heat Map</button>
+    <button class="tab${tab==='detail'?' active':''}" onclick="setTab('detail')">Market Detail</button>
+    <button class="tab${tab==='cite'?' active':''}" onclick="setTab('cite')">Cite &amp; Embed</button>
+    <div style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap">
+      ${['all','us','emea','apac','latam'].map(r=>`<button class="tab${region===r?' active':''}" onclick="setRegion('${r}')">${r.toUpperCase()}</button>`).join('')}
+    </div>
+  </div>
+
+  <div class="tab-content${tab==='heatmap'?' active':''} card">
+    <table><thead><tr><th>MARKET</th><th>REGION</th><th>VACANCY</th><th>TOTAL MW</th><th>PIPELINE MW</th><th>DEMAND MW</th><th>POWER</th><th>DHI SCORE</th><th>STATUS</th></tr></thead>
+    <tbody>${filtered.map(m=>{const c2=sc(m.composite_score),col2=C[c2];return`<tr onclick="setSel('${m.market_id}')"><td style="color:#e2e8f0;font-weight:600">${m.market_name}</td><td style="color:#64748b;font-size:10px">${(m.region||'').toUpperCase()}</td><td style="color:#94a3b8">${m.dhci?.vacancy_pct!=null?m.dhci.vacancy_pct+'%':'—'}</td><td style="color:#94a3b8">${fmw(m.dhci?.total_mw)}</td><td style="color:#94a3b8">${fmw(m.dhpi?.pipeline_mw)}</td><td style="color:#94a3b8">${m.dhdi?.absorbed_mw_90d!=null?m.dhdi.absorbed_mw_90d+' MW':'—'}</td><td style="color:#94a3b8">${m.dhpw?.value!=null?m.dhpw.value.toFixed(0):'—'}</td><td style="font-size:14px;font-weight:700;color:${col2.tx}">${m.composite_score?.toFixed(1)??'—'}</td><td><span style="background:${col2.bk};color:#fff;font-size:9px;padding:2px 6px;border-radius:3px">${m.composite_label||col2.lb}</span></td></tr>`}).join('')}</tbody></table>
+  </div>
+
+  <div class="tab-content${tab==='detail'?' active':''}">
+    <div class="tabs" style="margin-bottom:16px">${filtered.map(m=>`<button class="tab${m.market_id===(selId||markets[0]?.market_id)?' active':''}" onclick="setSel('${m.market_id}')">${m.market_name}</button>`).join('')}</div>
+    ${sel?`
+    <div class="grid3sm">
+      ${[['FACILITIES',sel.dhci?.total_count??'—',`${sel.dhci?.operational_count??0} operational`,'dhci'],['TOTAL MW',fmw(sel.dhci?.total_mw),`${sel.dhci?.vacancy_pct??0}% vacancy`,'dhci'],['PIPELINE MW',fmw(sel.dhpi?.pipeline_mw),`${sel.dhpi?.pipeline_ratio_pct?.toFixed(0)??0}% ratio`,'dhpi'],['DEALS 90D',sel.dhdi?.deal_count_90d??'—',`${sel.dhdi?.absorbed_mw_90d??0} MW absorbed`,'dhdi'],['POWER MW',fmw(sel.dhpw?.total_mw),sel.dhpw?.source??'no data','dhpw'],['DHI SCORE',sel.composite_score?.toFixed(1)??'—',sel.composite_label,'composite']].map(([l,v,s,k])=>{const c3=k==='composite'?sc(sel.composite_score):sc(sel[k]?.value),col3=C[c3];return`<div style="background:${col3.bg};border:1px solid ${col3.bd};border-radius:10px;padding:20px"><div style="font-size:9px;color:#475569;margin-bottom:6px;letter-spacing:2px">${l}</div><div style="font-size:28px;font-weight:700;color:${col3.tx};margin-bottom:4px">${v}</div><div style="font-size:11px;color:#64748b">${s}</div></div>`}).join('')}
+    </div>
+    <div class="card">
+      <div style="font-size:10px;color:#64748b;margin-bottom:12px;letter-spacing:2px">SUB-INDEX DETAIL</div>
+      <div style="display:flex;flex-direction:column;gap:12px">
+        ${[['dhci','CAPACITY INDEX (DHCI)','30%'],['dhri','RATE INDEX (DHRI)','25%'],['dhpi','PIPELINE INDEX (DHPI)','20%'],['dhdi','DEMAND INDEX (DHDI)','15%'],['dhpw','POWER INDEX (DHPW)','10%']].map(([k,l,w])=>{const v=sel[k]?.value,col4=C[sc(v)]||C.gray;return`<div><div style="display:flex;justify-content:space-between;margin-bottom:4px"><span style="font-size:11px;color:#94a3b8">${l}</span><div style="display:flex;gap:8px;align-items:center"><span style="font-size:10px;color:#475569">weight ${w}</span><span style="font-size:14px;font-weight:700;color:${col4.tx}">${v!=null?v.toFixed(1):'—'}</span></div></div>${bar(v)}</div>`}).join('')}
+      </div>
+    </div>`:''}
+  </div>
+
+  <div class="tab-content${tab==='cite'?' active':''}">
+    <div class="card" style="margin-bottom:16px">
+      <div style="font-size:10px;color:#64748b;margin-bottom:8px;letter-spacing:2px">GLOBAL CITATION</div>
+      <p style="font-size:13px;color:#94a3b8;line-height:1.6;margin-bottom:12px">${comp?.citation??''}</p>
+      <button class="btn" style="background:#1e293b;color:#94a3b8" onclick="navigator.clipboard?.writeText(document.querySelector('#app p').textContent);this.textContent='✓ Copied!';setTimeout(()=>this.textContent='Copy Citation',2000)">Copy Citation</button>
+    </div>
+    <div class="card">
+      <div style="font-size:10px;color:#64748b;margin-bottom:8px;letter-spacing:2px">API ENDPOINTS</div>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        ${[`GET ${API}/api/index/composite`,`GET ${API}/api/index/markets`,`GET ${API}/api/index/market/{id}`,`GET ${API}/api/index/regions`].map(e=>`<code style="font-size:11px;color:#22c55e;background:#0a1f0a;padding:6px 10px;border-radius:4px;display:block">${e}</code>`).join('')}
+      </div>
+    </div>
+  </div>
+
+  <div style="border-top:1px solid #1e293b;margin-top:32px;padding-top:16px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;font-size:10px;color:#334155">
+    <span>© 2026 DC Hub · Global Data Center Index · dchub.cloud/index</span>
+    <span>Data refreshes monthly · First Tuesday</span>
+  </div>`
+}
+
+function setTab(t){tab=t;render()}
+function setRegion(r){region=r;render()}
+function setSel(id){selId=id;tab='detail';render()}
+
+async function load(){
+  markets=SEED_M; comp=SEED_C
+  document.getElementById('spinner').style.display='none'
+  document.getElementById('app').style.display='block'
+  document.getElementById('issueLabel').textContent=SEED_C.issue
+  render()
+  try{
+    const [cr,mr]=await Promise.all([
+      fetch(API+'/api/index/composite',{signal:AbortSignal.timeout(15000)}),
+      fetch(API+'/api/index/markets',  {signal:AbortSignal.timeout(40000)}),
+    ])
+    if(!cr.ok||!mr.ok)throw new Error('API '+cr.status)
+    const [cd,md]=await Promise.all([cr.json(),mr.json()])
+    if(cd.composite_score!=null)comp=cd
+    if(md.markets?.length)markets=md.markets
+    document.getElementById('issueLabel').textContent=comp.issue||''
+    document.getElementById('liveDot').style.background='#22c55e'
+    document.getElementById('liveDot').style.animation='none'
+    document.getElementById('liveLabel').textContent='LIVE DATA'
+    document.getElementById('liveLabel').style.color='#22c55e'
+    render()
+  }catch(e){
+    console.warn('Seed mode:',e.message)
+    document.getElementById('liveDot').style.background='#f59e0b'
+    document.getElementById('liveLabel').textContent='SEED DATA'
+  }
+}
+load()
+</script>
+</body>
+</html>
