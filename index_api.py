@@ -133,11 +133,11 @@ DEFAULT_CONFIG = {
     "fac_country_col":        "country",
     "fac_mw_col":             "power_mw",
     "fac_status_col":         "status",
-    "fac_status_operational": "operational",
-    "fac_status_pipeline":    "under_construction,planned,development,construction",
+    "fac_status_operational": "active,Operational",
+    "fac_status_pipeline":    "Under Construction,Construction,Planned,Planning,Announced,announced,planned",
 
     # transactions table (confirmed schema)
-    "txn_table":      "transactions",
+    "txn_table":      "deals",
     "txn_market_col": "market",
     "txn_date_col":   "date",
     "txn_value_col":  "value",
@@ -148,19 +148,19 @@ DEFAULT_CONFIG = {
     "mi_market_col": "market",
     "mi_rate_col":   "avg_rate_per_kw",
     "mi_date_col":   "recorded_at",
-    "mi_enabled":    "false",
+    "mi_enabled":    "true",
 
     # discovered_power_plants (energy auto-discovery)
     "power_table":    "discovered_power_plants",
     "power_city_col": "city",
     "power_state_col":"state",
     "power_mw_col":   "capacity_mw",
-    "power_enabled":  "false",  # auto-enabled on boot if table exists
+    "power_enabled":  "true",           # confirmed exists
 
     # discovered_transmission_lines (energy auto-discovery)
     "tx_table":    "discovered_transmission_lines",
     "tx_city_col": "city",
-    "tx_enabled":  "false",  # auto-enabled on boot if table exists
+    "tx_enabled":  "true",              # confirmed exists
 
     # substations (Land & Power tool)
     "sub_table":      "substations",
@@ -168,12 +168,12 @@ DEFAULT_CONFIG = {
     "sub_country_col":"country",
     "sub_cap_col":    "capacity_mva",
     "sub_avail_col":  "available_mva",
-    "sub_enabled":    "false",  # enable when Land & Power substations table confirmed
+    "sub_enabled":    "true",           # confirmed exists
 
     # fiber routes
     "fiber_table":    "fiber_routes",
     "fiber_city_col": "city",
-    "fiber_enabled":  "false",  # auto-enabled on boot if table exists
+    "fiber_enabled":  "true",           # confirmed exists
 
     # KMZ / energy discovery export
     "kmz_enabled":    "false",
