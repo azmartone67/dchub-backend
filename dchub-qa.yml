@@ -1,5 +1,5 @@
 # .github/workflows/dchub-qa.yml
-# DC Hub — Automated QA Health Check
+# DC Hub — Automated QA Health Check, v2
 # Runs automated infra + frontend checks on schedule and after deploys
 # Emails you only when something fails
 
