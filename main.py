@@ -812,6 +812,11 @@ def api_facilities_shortcut():
         target += '?' + qs
     return redirect(target)
 
+@app.route('/api/v1/map', methods=['GET'])
+def api_v1_map():
+    """Map endpoint alias - frontend calls this for Leaflet map data."""
+    return list_facilities()
+
 # =================================================================
 
 APP_START_TIME = time.time()
