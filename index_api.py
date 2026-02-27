@@ -1,5 +1,5 @@
 """
-DC Hub Global Data Center Index (GDCI) — Self-Configuring Flask Blueprint
+DC Hub Global Data Center Index (GDCI) — Self-Configuring Flask Blueprint - Fix index_api defaults — all sources enabled
 ==========================================================================
 After this version is deployed, you NEVER edit this file again.
 All configuration lives in the `gdci_config` table in Neon.
