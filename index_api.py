@@ -289,11 +289,12 @@ def calc_dhci(market, cfg):
             WHERE ({c_city} ILIKE %s OR {c_cty} = %s)
         """, (f"%{city}%", country))
 
+        op_vals = [v.strip() for v in op_val.split(",")]
         operational = query(f"""
             SELECT COUNT(*) AS n, SUM({c_mw}) AS mw FROM {tbl}
             WHERE ({c_city} ILIKE %s OR {c_cty} = %s)
-              AND LOWER({c_stat}) = LOWER(%s)
-        """, (f"%{city}%", country, op_val))
+              AND {c_stat} = ANY(%s)
+        """, (f"%{city}%", country, op_vals))
 
         pipeline = query(f"""
             SELECT COUNT(*) AS n, SUM({c_mw}) AS mw FROM {tbl}
@@ -391,11 +392,12 @@ def calc_dhpi(market, cfg):
               AND LOWER({c_stat}) = ANY(%s)
         """, (f"%{city}%", country, pipe_vals)) or 0
 
+        op_vals2 = [v.strip() for v in op_val.split(",")]
         operational = scalar(f"""
             SELECT SUM({c_mw}) FROM {tbl}
             WHERE ({c_city} ILIKE %s OR {c_cty} = %s)
-              AND LOWER({c_stat}) = LOWER(%s)
-        """, (f"%{city}%", country, op_val)) or 1
+              AND {c_stat} = ANY(%s)
+        """, (f"%{city}%", country, op_vals2)) or 1
 
         p = float(pipeline)
         o = float(operational)
