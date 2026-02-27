@@ -643,6 +643,24 @@ from google_integration_routes import setup_google_routes
 from google_meta_integration import setup_google_meta_routes
 from linkedin_scheduler import integrate_with_flask as integrate_linkedin_poster
 
+# SEO: Location name resolution (state/country codes → full names)
+try:
+    from location_names import (
+        resolve_location_name, get_state_name, get_country_name,
+        format_location_for_title, format_location_for_meta,
+        format_facility_meta, patch_facility_location
+    )
+    print("📍 Location Names: ✅ Loaded")
+except ImportError:
+    resolve_location_name = None
+    get_state_name = lambda s, c='US': s
+    get_country_name = lambda c: c
+    format_location_for_title = lambda *a: ', '.join(str(x) for x in a if x)
+    format_facility_meta = None
+    format_location_for_meta = None
+    patch_facility_location = None
+    print("📍 Location Names: ⚠️ Module not found, using raw codes")
+
 import gc
 
 class BoundedCache:
@@ -9212,6 +9230,15 @@ def _list_facilities_full():
         
         c.execute(sql, params)
         facilities = [dict_from_row(row) for row in c.fetchall()]
+        
+        # Enrich with resolved location names for SEO
+        if resolve_location_name:
+            for f in facilities:
+                f['state_name'] = get_state_name(f.get('state', ''), f.get('country', 'US'))
+                f['country_name'] = get_country_name(f.get('country', ''))
+                f['location_display'] = format_location_for_title(
+                    f.get('city'), f.get('state'), f.get('country')
+                )
     except Exception as e:
         logger.error(f"Facilities full endpoint error: {e}")
         return jsonify({'error': 'Database temporarily unavailable', 'detail': str(e)}), 503
@@ -9300,7 +9327,15 @@ def _list_facilities_free():
     facilities = []
     for row in rows:
         full = dict_from_row(row)
-        facilities.append({k: full.get(k) for k in BASIC_FIELDS})
+        fac = {k: full.get(k) for k in BASIC_FIELDS}
+        # Add resolved names even in free tier (for SEO rendering)
+        if resolve_location_name:
+            fac['state_name'] = get_state_name(fac.get('state', ''), fac.get('country', 'US'))
+            fac['country_name'] = get_country_name(fac.get('country', ''))
+            fac['location_display'] = format_location_for_title(
+                fac.get('city'), fac.get('state'), fac.get('country')
+            )
+        facilities.append(fac)
 
     return jsonify({
         'success': True,
@@ -16201,6 +16236,90 @@ try:
     print("📦 KMZ Export: ✅ Registered")
 except Exception as e:
     print(f"📦 KMZ Export: ⚠️ Error: {e}")
+
+# =============================================================================
+# SEO: Dynamic Sitemap & Robots.txt (added Feb 2026)
+# =============================================================================
+@app.route('/sitemap.xml')
+def serve_sitemap_xml():
+    """Dynamic sitemap for Google — includes all facilities and location pages."""
+    from datetime import datetime as _dt
+    today = _dt.now().strftime('%Y-%m-%d')
+    
+    conn = None
+    try:
+        conn = get_read_db()
+        c = conn.cursor()
+        
+        # Get all facility slugs
+        c.execute("SELECT slug FROM discovered_facilities WHERE slug IS NOT NULL AND slug != '' LIMIT 15000")
+        fac_slugs = [row[0] for row in c.fetchall()]
+        
+        # Get unique location combos
+        c.execute("""
+            SELECT DISTINCT LOWER(country), 
+                   CASE WHEN state IS NOT NULL AND state != '' 
+                        THEN LOWER(country) || '-' || LOWER(state) 
+                        ELSE NULL END
+            FROM discovered_facilities
+            WHERE country IS NOT NULL AND country != ''
+        """)
+        loc_rows = c.fetchall()
+    except Exception as e:
+        logger.error(f"Sitemap generation error: {e}")
+        fac_slugs = []
+        loc_rows = []
+    finally:
+        if conn:
+            try: conn.close()
+            except: pass
+    
+    urls = []
+    
+    # Static pages
+    for path, pri in [('/', '1.0'), ('/pricing', '0.8'), ('/connect', '0.8'),
+                       ('/market-intelligence', '0.7'), ('/ai/facts', '0.6')]:
+        urls.append(f'  <url><loc>https://dchub.cloud{path}</loc><lastmod>{today}</lastmod><changefreq>daily</changefreq><priority>{pri}</priority></url>')
+    
+    # Location pages
+    seen = set()
+    for row in loc_rows:
+        cc, ss = row[0], row[1]
+        if cc and cc not in seen:
+            seen.add(cc)
+            urls.append(f'  <url><loc>https://dchub.cloud/locations/{cc}</loc><lastmod>{today}</lastmod><changefreq>weekly</changefreq><priority>0.6</priority></url>')
+        if ss and ss not in seen:
+            seen.add(ss)
+            urls.append(f'  <url><loc>https://dchub.cloud/locations/{ss}</loc><lastmod>{today}</lastmod><changefreq>weekly</changefreq><priority>0.6</priority></url>')
+    
+    # Facility pages
+    for slug in fac_slugs:
+        urls.append(f'  <url><loc>https://dchub.cloud/facilities/{slug}</loc><lastmod>{today}</lastmod><changefreq>monthly</changefreq><priority>0.5</priority></url>')
+    
+    xml = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' + '\n'.join(urls) + '\n</urlset>'
+    
+    resp = make_response(xml)
+    resp.headers['Content-Type'] = 'application/xml'
+    resp.headers['Cache-Control'] = 'public, max-age=3600'
+    return resp
+
+@app.route('/seo-robots.txt')
+def serve_seo_robots():
+    """SEO-optimized robots.txt with sitemap reference."""
+    content = """User-agent: *
+Allow: /
+
+Sitemap: https://dchub.cloud/sitemap.xml
+
+# DC Hub - Data Center Intelligence
+# 20,000+ facilities across 140+ countries
+# https://dchub.cloud"""
+    resp = make_response(content)
+    resp.headers['Content-Type'] = 'text/plain'
+    return resp
+
+logger.info("🗺️ SEO: /sitemap.xml route registered")
+
 # MAIN
 # =============================================================================
 
