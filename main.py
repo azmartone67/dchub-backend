@@ -17320,11 +17320,11 @@ logger.info("⏳ Background tasks deferred: %d tasks will start in 60s with 10s 
 # GDCI INDEX DASHBOARD
 # Serves the DC Hub Global Data Center Index dashboard page
 # =============================================================================
-@app.route('/api/index/ui')
-@app.route('/api/index/dashboard')
+@app.route('/api/gdci')
+@app.route('/api/gdci/dashboard')
 def gdci_index_page():
     """DC Hub Global Data Center Index dashboard"""
-    return send_from_directory('static', 'gdci_index.html')
+    return send_from_directory('.', 'gdci_index.html')
 
 
 if __name__ == '__main__':
