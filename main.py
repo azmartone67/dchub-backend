@@ -1140,7 +1140,7 @@ IS_PRIMARY = IS_RAILWAY  # Railway is primary, runs all background tasks
 ENABLE_DISCOVERY_THREADS = IS_RAILWAY
 if IS_RAILWAY:
     ENABLE_BACKGROUND_SCHEDULERS = True
-    ENABLE_DISCOVERY_SCHEDULERS = True
+    ENABLE_DISCOVERY_SCHEDULERS = False  # Disabled: managed by crawler_scheduler.py
     logger.info("🚂 RAILWAY ENVIRONMENT DETECTED -- Running as PRIMARY with all background tasks")
     logger.info("   📡 Discovery schedulers: ENABLED (KMZ + API auto-discovery)")
 else:
