@@ -10,9 +10,12 @@ USAGE:
   - Set DISABLE_ALL_CRAWLERS=true on Railway to skip everything
   - Set CRAWLER_SCHEDULE=once to run once/day instead of twice
 
-SCHEDULE (UTC, 2hr gaps so crawlers never overlap):
-  Run 1: 06:00 News → 08:00 API Discovery → 10:00 Energy/Power → 12:00 Knowledge
-  Run 2: 18:00 News → 20:00 API Discovery → 22:00 Energy/Power → 00:00 Knowledge
+SCHEDULE (UTC, 4hr gaps so crawlers never overlap):
+  Run 1: 06:00 News → 10:00 Energy/Power → 14:00 Knowledge
+  Run 2: 18:00 News → 22:00 Energy/Power → 02:00 Knowledge
+
+NOTE: api_discovery is available for manual trigger only — it's too heavy
+for scheduled runs (exhausts DB connection pool and crashes the app).
 """
 
 import os
@@ -31,12 +34,12 @@ HARD_TIMEOUT_SECONDS = 15 * 60       # 15 min max per crawler run
 OVERLAP_GUARD_SECONDS = 30           # Wait after each crawler finishes
 
 # Schedule: (hour_utc_run1, hour_utc_run2, crawler_name, runner_func_name)
-# 2-hour gaps between each crawler
+# 4-hour gaps between each crawler for safety
+# api_discovery EXCLUDED — too heavy, available via manual trigger only
 SCHEDULE = [
     (6,  18, "news",             "_run_news_crawler"),
-    (8,  20, "api_discovery",    "_run_api_discovery"),
     (10, 22, "energy_discovery", "_run_energy_discovery"),
-    (12,  0, "knowledge_sync",   "_run_knowledge_sync"),
+    (14,  2, "knowledge_sync",   "_run_knowledge_sync"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -57,6 +60,7 @@ def get_scheduler_status():
             {"name": s[2], "run1_utc": f"{s[0]:02d}:00", "run2_utc": f"{s[1]:02d}:00"}
             for s in SCHEDULE
         ],
+        "manual_only": ["api_discovery"],
         "recent_runs": _run_history[-20:],  # Last 20 runs
         "disabled": os.environ.get("DISABLE_ALL_CRAWLERS", "").lower() in ("true", "1", "yes"),
     }
@@ -99,7 +103,6 @@ def _run_with_guard(name, func):
         if t.is_alive():
             status = "timeout"
             logger.warning(f"⏰ CRAWLER TIMEOUT: {name} exceeded {HARD_TIMEOUT_SECONDS}s — abandoning")
-            # Thread is daemon, will die when main process exits or next cycle
         elif result["error"]:
             status = f"error: {result['error'][:100]}"
         else:
@@ -136,8 +139,7 @@ def _run_news_crawler():
     """Run news sync once."""
     try:
         from auto_sync import NewsSyncer
-        ns = NewsSyncer(interval_seconds=0)  # interval=0 so it doesn't loop
-        # NewsSyncer.run() does a single sync pass
+        ns = NewsSyncer(interval_seconds=0)
         ns.sync()
     except ImportError:
         try:
@@ -148,7 +150,9 @@ def _run_news_crawler():
 
 
 def _run_api_discovery():
-    """Run API auto-discovery once."""
+    """Run API auto-discovery once.
+    WARNING: This is heavy — only available via manual trigger, not scheduled.
+    """
     try:
         from api_auto_discovery import APIAutoDiscovery
         discovery = APIAutoDiscovery()
@@ -185,7 +189,6 @@ def _run_knowledge_sync():
         ee = EvolutionEngine()
         ee.run_evolution_cycle()
     except (ImportError, AttributeError):
-        # Try alternate entry point
         try:
             from evolution_engine import run_evolution
             run_evolution()
@@ -195,7 +198,7 @@ def _run_knowledge_sync():
         logger.error(f"Knowledge sync error: {e}")
 
 
-# Map names to functions
+# Map names to functions (includes manual-only crawlers)
 _RUNNERS = {
     "news":             _run_news_crawler,
     "api_discovery":    _run_api_discovery,
@@ -209,12 +212,8 @@ _RUNNERS = {
 # ---------------------------------------------------------------------------
 
 def _should_run_now(hour1, hour2, now_hour, now_minute, last_run_hours):
-    """Check if a crawler should run based on current time.
-    Returns True if we're within the first 5 minutes of a scheduled hour
-    and haven't run in this window yet.
-    """
+    """Check if a crawler should run based on current time."""
     once_a_day = os.environ.get("CRAWLER_SCHEDULE", "").lower() == "once"
-    
     target_hours = [hour1] if once_a_day else [hour1, hour2]
     
     for target in target_hours:
@@ -228,31 +227,27 @@ def _scheduler_loop():
     """Main scheduler loop — checks every 60s if any crawler should run."""
     logger.info("📅 Crawler scheduler started")
     logger.info(f"   Schedule: {', '.join(f'{s[2]} @ {s[0]:02d}:00/{s[1]:02d}:00 UTC' for s in SCHEDULE)}")
+    logger.info(f"   Manual-only: api_discovery (too heavy for scheduled runs)")
     
-    # Track which hours we've already run in (reset daily)
-    last_run_hours = {}  # {crawler_name: set of hours already run today}
+    last_run_hours = {}
     last_reset_day = None
     
     while not _stop_event.is_set():
         try:
             now = datetime.now(timezone.utc)
             
-            # Reset tracking at midnight UTC
             if last_reset_day != now.day:
                 last_run_hours = {s[2]: set() for s in SCHEDULE}
                 last_reset_day = now.day
                 logger.info(f"📅 New day — reset crawler schedule tracking")
             
-            # Check each crawler
             for hour1, hour2, name, _ in SCHEDULE:
                 if _stop_event.is_set():
                     break
-                    
                 should_run, target_hour = _should_run_now(
                     hour1, hour2, now.hour, now.minute,
                     last_run_hours.get(name, set())
                 )
-                
                 if should_run and name in _RUNNERS:
                     last_run_hours[name].add(target_hour)
                     _run_with_guard(name, _RUNNERS[name])
@@ -260,7 +255,6 @@ def _scheduler_loop():
         except Exception as e:
             logger.error(f"Scheduler loop error: {e}")
         
-        # Check every 60 seconds
         _stop_event.wait(60)
     
     logger.info("📅 Crawler scheduler stopped")
@@ -272,25 +266,19 @@ def _scheduler_loop():
 
 def start_scheduled_crawlers():
     """Start the staggered crawler scheduler.
-    
-    Call this from main.py instead of starting individual crawler threads.
-    Respects DISABLE_ALL_CRAWLERS env var.
     Runs on Railway only — Replit is API-only failover.
     """
     global _scheduler_thread
     
-    # Kill switch
     if os.environ.get("DISABLE_ALL_CRAWLERS", "").lower() in ("true", "1", "yes"):
         logger.info("📅 Crawler scheduler DISABLED (DISABLE_ALL_CRAWLERS=true)")
         return
     
-    # Replit should NOT run crawlers — Railway handles them
     is_replit = os.environ.get("REPL_ID") or os.environ.get("REPLIT_DB_URL") or os.environ.get("REPL_SLUG")
     if is_replit:
         logger.info("📅 Crawler scheduler DISABLED (Replit = API-only failover)")
         return
     
-    # Only run scheduler on ONE gunicorn worker to prevent 4x duplicate crawlers
     _lock_file = "/tmp/.crawler_scheduler.lock"
     try:
         import fcntl
@@ -298,7 +286,6 @@ def start_scheduled_crawlers():
         fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         _lock_fd.write(str(os.getpid()))
         _lock_fd.flush()
-        # Keep _lock_fd open — lock is held as long as the file descriptor is open
         logger.info(f"📅 Crawler scheduler: Acquired lock (PID {os.getpid()})")
     except (IOError, OSError):
         logger.info("📅 Crawler scheduler SKIPPED (another worker holds the lock)")
@@ -329,16 +316,13 @@ def stop_scheduled_crawlers():
 
 
 def run_crawler_now(crawler_name):
-    """Manually trigger a specific crawler (for admin endpoint).
-    Returns (success: bool, message: str)
-    """
+    """Manually trigger a specific crawler (for admin endpoint)."""
     if crawler_name not in _RUNNERS:
         return False, f"Unknown crawler: {crawler_name}. Available: {list(_RUNNERS.keys())}"
     
     if _active_crawler:
         return False, f"Cannot start {crawler_name} — {_active_crawler} is currently running"
     
-    # Run in background thread so API doesn't block
     threading.Thread(
         target=_run_with_guard,
         args=(crawler_name, _RUNNERS[crawler_name]),
@@ -354,13 +338,7 @@ def run_crawler_now(crawler_name):
 # ---------------------------------------------------------------------------
 
 def register_crawler_admin(app):
-    """Register admin endpoints for crawler management.
-    
-    Call from main.py:
-        from crawler_scheduler import register_crawler_admin, start_scheduled_crawlers
-        register_crawler_admin(app)
-        start_scheduled_crawlers()
-    """
+    """Register admin endpoints for crawler management."""
     
     @app.route('/api/admin/crawler-status', methods=['GET'])
     def crawler_status():
@@ -370,7 +348,6 @@ def register_crawler_admin(app):
     @app.route('/api/admin/crawler-run/<crawler_name>', methods=['POST'])
     def crawler_run(crawler_name):
         from flask import jsonify
-        # TODO: Add admin auth check here
         success, message = run_crawler_now(crawler_name)
         return jsonify({"success": success, "message": message}), 200 if success else 409
     
