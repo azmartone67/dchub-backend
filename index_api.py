@@ -4,6 +4,8 @@ Flask Blueprint — mounts at /api/index
 v6.0 — Direct power market map, MW-density scoring, bulk queries
 """
 
+import os
+import os
 import time
 import logging
 from datetime import datetime, timezone
@@ -205,7 +207,30 @@ def _safe_q(cur, sql, params=()):
 
 
 def _run_query(sql, params=()):
-    """Run a single query on a fresh connection."""
+    """Run a query on a guaranteed-fresh psycopg2 connection, bypassing the shared pool."""
+    import psycopg2
+    db_url = (os.environ.get('DATABASE_URL') or
+              os.environ.get('POSTGRES_URL') or
+              os.environ.get('DB_URL') or
+              os.environ.get('NEON_DATABASE_URL'))
+    if db_url:
+        fresh = None
+        try:
+            fresh = psycopg2.connect(db_url)
+            fresh.autocommit = True
+            cur = fresh.cursor()
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+            cur.close()
+            return rows
+        except Exception as e:
+            logger.error("GDCI fresh query failed: %s | %s", e, sql[:80])
+            return []
+        finally:
+            if fresh:
+                try: fresh.close()
+                except: pass
+    # fallback
     try:
         conn = get_db()
         cur  = conn.cursor()
@@ -214,11 +239,7 @@ def _run_query(sql, params=()):
         cur.close()
         return rows
     except Exception as e:
-        logger.error("GDCI query failed: %s | %s", e, sql[:80])
-        try:
-            conn.rollback()
-        except Exception:
-            pass
+        logger.error("GDCI fallback query failed: %s | %s", e, sql[:80])
         return []
 
 
@@ -622,44 +643,41 @@ def pw_debug():
 @index_bp.route('/admin/nova-trace')
 def nova_trace():
     """Step-by-step trace of DHPW scoring for nova"""
-    cfg  = _get_config()
-    err  = _require_admin(cfg)
+    cfg = _get_config()
+    err = _require_admin(cfg)
     if err: return err
-    conn = get_db()
-    bulk = _load_bulk(cfg, conn)
-    market = MARKET_BY_ID['nova']
-    mid = 'nova'
-    city_kw = market.get('city_kw', [])
-    state_kw_pw = market.get('state_kw', [])
-    direct_keys = POWER_MARKET_MAP.get(mid, [])
 
-    trace = {
-        'power_enabled':    _bool(cfg, 'power_enabled'),
-        'sub_enabled':      _bool(cfg, 'sub_enabled'),
-        'bulk_pw_count':    len(bulk['pw']),
-        'bulk_sub_count':   len(bulk['sub']),
-        'direct_keys':      direct_keys,
-        'city_kw':          city_kw,
-        'state_kw_pw':      state_kw_pw,
-        'POWER_MARKET_MAP_nova': POWER_MARKET_MAP.get('nova'),
-        'matches': [],
-        'sub_total_mva': 0,
-    }
+    # Show which env vars exist
+    import psycopg2
+    env_keys = ['DATABASE_URL','POSTGRES_URL','DB_URL','NEON_DATABASE_URL','NEON_URL','PG_URL','PGURL','POSTGRES_CONNECTION_STRING']
+    found_vars = {k: ('SET' if os.environ.get(k) else 'missing') for k in env_keys}
+    all_env = [k for k in os.environ if 'DB' in k.upper() or 'PG' in k.upper() or 'POSTGRES' in k.upper() or 'NEON' in k.upper() or 'SQL' in k.upper()]
 
-    # Sub check
-    s_total = s_avail = 0.0
-    for (city, country, tmva, amva) in bulk['sub']:
-        city_hit = any(kw in city for kw in city_kw) if city_kw else False
-        if city_hit:
-            s_total += float(tmva); s_avail += float(amva)
-    trace['sub_total_mva'] = s_total
+    # Try direct power query using get_db() directly (same as pw-debug)
+    pw = cfg.get('power_table','discovered_power_plants')
+    pcol = cfg.get('power_city_col','market')
+    scol = cfg.get('power_state_col','state')
+    direct_rows = []
+    direct_error = None
+    try:
+        conn = get_db()
+        cur  = conn.cursor()
+        cur.execute(f"SELECT LOWER(COALESCE({pcol},'')), LOWER(COALESCE({scol},'')), COUNT(*), COALESCE(SUM(capacity_mw),0) FROM {pw} GROUP BY LOWER({pcol}), LOWER({scol}) ORDER BY COUNT(*) DESC LIMIT 5")
+        direct_rows = [{'market':r[0],'state':r[1],'count':r[2],'mw':float(r[3])} for r in cur.fetchall()]
+        cur.close()
+    except Exception as e:
+        direct_error = str(e)
 
-    # Power check
-    for (pw_city, pw_state, cnt, mw) in bulk['pw']:
-        direct_hit = pw_city in direct_keys
-        city_hit   = any(kw.replace(' ','_') in pw_city or kw in pw_city for kw in city_kw) if city_kw else False
-        state_hit  = any(kw in pw_state for kw in state_kw_pw) if state_kw_pw else False
-        if direct_hit or city_hit or state_hit:
-            trace['matches'].append({'pw_city': pw_city, 'pw_state': pw_state, 'count': cnt, 'mw': float(mw), 'direct': direct_hit, 'city': city_hit, 'state': state_hit})
+    # Try via _run_query
+    rq_rows = _run_query(f"SELECT LOWER(COALESCE({pcol},'')), COUNT(*) FROM {pw} GROUP BY LOWER({pcol}) ORDER BY COUNT(*) DESC LIMIT 5")
+    rq_error = None if rq_rows else "returned empty"
 
-    return jsonify(trace)
+    return jsonify({
+        'env_vars_checked': found_vars,
+        'all_db_env_keys':  all_env,
+        'direct_getdb_rows': direct_rows,
+        'direct_getdb_error': direct_error,
+        'run_query_rows': [{'market':r[0],'count':r[1]} for r in rq_rows] if rq_rows else [],
+        'run_query_error': rq_error,
+        'power_enabled': _bool(cfg,'power_enabled'),
+    })
