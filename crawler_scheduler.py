@@ -138,7 +138,7 @@ def _run_news_crawler():
         from auto_sync import NewsSyncer
         ns = NewsSyncer(interval_seconds=0)  # interval=0 so it doesn't loop
         # NewsSyncer.run() does a single sync pass
-        ns.run()
+        ns.sync()
     except ImportError:
         try:
             from sync_news import sync_all_news
