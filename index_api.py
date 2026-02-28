@@ -260,19 +260,19 @@ def _load_bulk(cfg, _conn=None):
     # Run small/secondary tables FIRST before large facility queries corrupt the connection
     pw_rows = []
     if _bool(cfg, 'power_enabled'):
-        pw_rows = _run_query(f"SELECT LOWER(COALESCE({pcol},'')), LOWER(COALESCE({scol},'')), COUNT(*), COALESCE(SUM(capacity_mw),0) FROM {pw} GROUP BY LOWER({pcol}), LOWER({scol})")
+        pw_rows = _run_query(f"SELECT LOWER(COALESCE({pcol},'')), LOWER(COALESCE({scol},'')), COUNT(*), COALESCE(SUM(capacity_mw),0) FROM {pw} GROUP BY LOWER(COALESCE({pcol},'')), LOWER(COALESCE({scol},''))")
         logger.info("GDCI: loaded %d power plant rows", len(pw_rows))
 
     sub_rows = []
     if _bool(cfg, 'sub_enabled'):
-        sub_rows = _run_query(f"SELECT LOWER(COALESCE(city,'')), LOWER(COALESCE(country,'')), COALESCE(SUM(capacity_mva),0), COALESCE(SUM(available_mva),0) FROM {sub} GROUP BY LOWER(city), LOWER(country)")
+        sub_rows = _run_query(f"SELECT LOWER(COALESCE(city,'')), LOWER(COALESCE(country,'')), COALESCE(SUM(capacity_mva),0), COALESCE(SUM(available_mva),0) FROM {sub} GROUP BY LOWER(COALESCE(city,'')), LOWER(COALESCE(country,''))")
         logger.info("GDCI: loaded %d substation rows", len(sub_rows))
 
     mi_rows = []
     if _bool(cfg, 'mi_enabled'):
         mi_rows = _run_query(f"SELECT LOWER(COALESCE(market,'')), avg_rate_per_kw FROM {mi} ORDER BY recorded_at DESC")
 
-    deal_rows = _run_query(f"SELECT LOWER(COALESCE(market,'')), COUNT(*), COALESCE(SUM(mw),0) FROM {txn} WHERE date >= NOW() - INTERVAL '90 days' GROUP BY LOWER(market)")
+    deal_rows = _run_query(f"SELECT LOWER(COALESCE(market,'')), COUNT(*), COALESCE(SUM(mw),0) FROM {txn} WHERE date >= NOW() - INTERVAL '90 days' GROUP BY LOWER(COALESCE(market,''))")
 
     # Large facility queries last
     op_rows = _run_query(f"SELECT UPPER(COALESCE(country,'')), LOWER(COALESCE(state,'')), LOWER(COALESCE(city,'')), COALESCE(power_mw,0) FROM {fac} WHERE status IN ({op_ph})", op_st)
