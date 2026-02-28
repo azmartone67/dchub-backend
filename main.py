@@ -9032,6 +9032,31 @@ def get_stats():
         except:
             stats['total_users'] = 0
         
+        # User breakdown for dashboard visibility
+        try:
+            c.execute("SELECT plan, COUNT(*) FROM users GROUP BY plan")
+            stats['users_by_plan'] = dict(c.fetchall())
+        except:
+            stats['users_by_plan'] = {}
+        
+        try:
+            c.execute("SELECT COUNT(*) FROM users WHERE created_at::timestamp > NOW() - INTERVAL '7 days'")
+            stats['new_users_7d'] = c.fetchone()[0] or 0
+        except:
+            stats['new_users_7d'] = 0
+        
+        try:
+            c.execute("SELECT COUNT(*) FROM users WHERE created_at::timestamp > NOW() - INTERVAL '30 days'")
+            stats['new_users_30d'] = c.fetchone()[0] or 0
+        except:
+            stats['new_users_30d'] = 0
+        
+        try:
+            c.execute("SELECT COUNT(*) FROM users WHERE subscription_status = 'active'")
+            stats['active_subscribers'] = c.fetchone()[0] or 0
+        except:
+            stats['active_subscribers'] = 0
+        
         result = {
             'success': True,
             'data': stats,
@@ -9041,7 +9066,12 @@ def get_stats():
             'facilities': stats.get('total_facilities', 20000),
             'markets': len(stats.get('top_countries', {})),
             'deals': stats.get('total_announcements', 673),
-            'substations': stats.get('total_substations', 0)
+            'substations': stats.get('total_substations', 0),
+            'users': stats.get('total_users', 0),
+            'new_users_7d': stats.get('new_users_7d', 0),
+            'new_users_30d': stats.get('new_users_30d', 0),
+            'active_subscribers': stats.get('active_subscribers', 0),
+            'users_by_plan': stats.get('users_by_plan', {})
         }
         cache_for_degradation('v1_stats', result)
         return jsonify(result)
