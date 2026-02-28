@@ -225,15 +225,41 @@ def _load_bulk(cfg, conn):
 
     pw_rows = []
     if _bool(cfg, 'power_enabled'):
-        pw_rows = _safe_q(cur, f"SELECT LOWER(COALESCE({pcol},'')), LOWER(COALESCE({scol},'')), COUNT(*), COALESCE(SUM(capacity_mw),0) FROM {pw} GROUP BY LOWER({pcol}), LOWER({scol})")
+        try:
+            cur2 = conn.cursor()
+            cur2.execute(f"SELECT LOWER(COALESCE({pcol},'')), LOWER(COALESCE({scol},'')), COUNT(*), COALESCE(SUM(capacity_mw),0) FROM {pw} GROUP BY LOWER({pcol}), LOWER({scol})")
+            pw_rows = cur2.fetchall()
+            cur2.close()
+            logger.info("GDCI: loaded %d power plant rows", len(pw_rows))
+        except Exception as e:
+            logger.error("GDCI: power plant query failed: %s", e)
+            try: conn.rollback()
+            except: pass
 
     sub_rows = []
     if _bool(cfg, 'sub_enabled'):
-        sub_rows = _safe_q(cur, f"SELECT LOWER(COALESCE(city,'')), LOWER(COALESCE(country,'')), COALESCE(SUM(capacity_mva),0), COALESCE(SUM(available_mva),0) FROM {sub} GROUP BY LOWER(city), LOWER(country)")
+        try:
+            cur3 = conn.cursor()
+            cur3.execute(f"SELECT LOWER(COALESCE(city,'')), LOWER(COALESCE(country,'')), COALESCE(SUM(capacity_mva),0), COALESCE(SUM(available_mva),0) FROM {sub} GROUP BY LOWER(city), LOWER(country)")
+            sub_rows = cur3.fetchall()
+            cur3.close()
+            logger.info("GDCI: loaded %d substation rows", len(sub_rows))
+        except Exception as e:
+            logger.error("GDCI: substation query failed: %s", e)
+            try: conn.rollback()
+            except: pass
 
     mi_rows = []
     if _bool(cfg, 'mi_enabled'):
-        mi_rows = _safe_q(cur, f"SELECT LOWER(COALESCE(market,'')), avg_rate_per_kw FROM {mi} ORDER BY recorded_at DESC")
+        try:
+            cur4 = conn.cursor()
+            cur4.execute(f"SELECT LOWER(COALESCE(market,'')), avg_rate_per_kw FROM {mi} ORDER BY recorded_at DESC")
+            mi_rows = cur4.fetchall()
+            cur4.close()
+        except Exception as e:
+            logger.error("GDCI: mi query failed: %s", e)
+            try: conn.rollback()
+            except: pass
 
     cur.close()
     return {'op': op_rows, 'pi': pi_rows, 'deal': deal_rows, 'pw': pw_rows, 'sub': sub_rows, 'mi': mi_rows}
