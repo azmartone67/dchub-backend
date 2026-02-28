@@ -121,6 +121,32 @@ New Endpoints (v74):
     GET  /api/stripe/subscription   - Get user subscription status
 """
 # =================================================================
+# AUTO-PULL FROM GITHUB (Replit failover only)
+# Ensures Replit always has the latest code before serving traffic.
+# =================================================================
+import os as _git_os
+import subprocess as _git_subprocess
+if _git_os.environ.get('REPLIT_ENVIRONMENT') or _git_os.environ.get('REPL_ID'):
+    _git_env = _git_os.environ.copy()
+    _git_env['GIT_TERMINAL_PROMPT'] = '0'
+    try:
+        _git_result = _git_subprocess.run(
+            ['git', 'pull', 'origin', 'main'],
+            capture_output=True, text=True, timeout=30,
+            cwd=_git_os.path.dirname(_git_os.path.abspath(__file__)) or '.',
+            env=_git_env
+        )
+        _git_output = (_git_result.stdout.strip() + ' ' + _git_result.stderr.strip()).strip()
+        if _git_result.returncode == 0:
+            print(f"GIT PULL: {_git_output}")
+        else:
+            print(f"GIT PULL: ⚠️ Exit code {_git_result.returncode} -- {_git_output}")
+    except _git_subprocess.TimeoutExpired:
+        print("GIT PULL: ⚠️ Timed out after 30s -- continuing with current code")
+    except Exception as _git_err:
+        print(f"GIT PULL: ⚠️ Failed ({_git_err}) -- continuing with current code")
+
+# =================================================================
 # PERMANENT FIX: Force Neon as the ONLY PostgreSQL database
 # Replit's built-in PG is unreliable. Neon is the source of truth.
 # =================================================================
