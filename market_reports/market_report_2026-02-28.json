@@ -1,6 +1,6 @@
 {
-  "report_date": "2026-02-27",
-  "generated_at": "2026-02-27T20:47:53.236941",
+  "report_date": "2026-02-28",
+  "generated_at": "2026-02-28T03:22:36.226083",
   "summary": {
     "total_facilities": 11433,
     "total_providers": 3958,
@@ -89,54 +89,54 @@
   ],
   "recent_news": [
     {
-      "title": "Blackstone Plans Public Company for AI Data-Center Buying Spree",
-      "source": "Bloomberg Tech",
-      "date": "2026-02-27T20:38:24"
+      "title": "Meta\u2019s data center ownership transfer doesn\u2019t concern Louisiana power regulators",
+      "source": "New Orleans CityBusiness",
+      "date": "2026-02-28T00:02:51"
     },
     {
-      "title": "Florida may mandate public disclosure about data center construction",
-      "source": "Sarasota Herald-Tribune",
-      "date": "2026-02-27T20:21:00"
+      "title": "Acquisitions Bolster Texas Data Center Campus Project",
+      "source": "Law360",
+      "date": "2026-02-27T23:25:00"
     },
     {
-      "title": "Florida may mandate public disclosure about data center construction",
-      "source": "Tallahassee Democrat",
-      "date": "2026-02-27T20:21:00"
+      "title": "More spending on data center construction had limited impact on GDP",
+      "source": "marketplace.org",
+      "date": "2026-02-27T23:23:06"
     },
     {
-      "title": "Local View: Say 'yes' to jobs, 'no' to hyperscale data centers",
-      "source": "Duluth News Tribune",
-      "date": "2026-02-27T19:48:19"
+      "title": "Trump orders federal agencies to \"immediately\" stop using Anthropic AI tech, threatens \"criminal consequences\" against \"radical left, woke company\"",
+      "source": "Data Center Dynamics",
+      "date": "2026-02-27T22:53:04"
     },
     {
-      "title": "Turbines at the Fence Line: How Gas Power Is Fueling the AI Data Center Race",
-      "source": "The National Law Review",
-      "date": "2026-02-27T19:30:00"
-    },
-    {
-      "title": "Oak Ridge spawns institute to curb AI datacenter power surge",
+      "title": "Trump orders purge of 'woke' Anthropic from government",
       "source": "The Register DC",
-      "date": "2026-02-27T18:56:06"
+      "date": "2026-02-27T22:39:31"
     },
     {
-      "title": "Oak Ridge sets up unit to tackle AI datacenter energy demand",
-      "source": "theregister.com",
-      "date": "2026-02-27T18:56:00"
+      "title": "Workers, Speaker Scott criticize plan to axe data center tax exemption as budgets advance",
+      "source": "Prince William Times",
+      "date": "2026-02-27T22:33:00"
     },
     {
-      "title": "Forget Tech Stocks: The Construction Stock Building Tomorrow's Data Centers",
-      "source": "The Motley Fool",
-      "date": "2026-02-27T18:46:00"
+      "title": "PCs and phones to get more boring and expensive in 2026 thanks to memory drought",
+      "source": "The Register DC",
+      "date": "2026-02-27T22:03:19"
     },
     {
-      "title": "Proposed data center in Upstate withdrawn from consideration after community opposition",
-      "source": "WYFF News 4",
-      "date": "2026-02-27T18:37:00"
+      "title": "CPP Investments, Equinix in $4 Billion Deal to Buy Nordic Data-Center Operator atNorth",
+      "source": "WSJ",
+      "date": "2026-02-27T21:33:48"
     },
     {
-      "title": "Data centers in Colorado, yes, but on what terms?",
-      "source": "The Fence Post",
-      "date": "2026-02-27T18:35:17"
+      "title": "CPP Investments, Equinix in $4 Billion Deal to Buy Nordic Data-Center Operator atNorth",
+      "source": "WSJ",
+      "date": "2026-02-27T21:33:48"
+    },
+    {
+      "title": "CPP Investments, Equinix in $4 Billion Deal to Buy Nordic Data-Center Operator atNorth",
+      "source": "WSJ",
+      "date": "2026-02-27T21:33:48"
     }
   ],
   "data_sources": [
