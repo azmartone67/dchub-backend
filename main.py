@@ -7117,7 +7117,7 @@ def stripe_webhook():
                             f"<p><b>Stripe Customer:</b> {data.get('customer', 'N/A')}</p>"
                             f"<p><b>Amount:</b> ${data.get('amount_total', 0) / 100:.2f}</p>"
                             f"<p><b>Session ID:</b> {data.get('id', 'N/A')}</p>"
-                            f"<p>Check Stripe dashboard and Replit logs immediately.</p>"
+                            f"<p>Check Stripe dashboard and Railway logs immediately.</p>"
                         )
                     elif _u.get('subscription_status') != 'active':
                         send_admin_alert_email(
@@ -7260,9 +7260,9 @@ def stripe_webhook_test():
         if not checks.get('stripe_available'):
             missing.append('stripe library not installed')
         if not checks.get('stripe_secret_key_set'):
-            missing.append('STRIPE_SECRET_KEY not set in Replit Secrets')
+            missing.append('STRIPE_SECRET_KEY not set in environment variables')
         if not checks.get('stripe_webhook_secret_set'):
-            missing.append('STRIPE_WEBHOOK_SECRET not set in Replit Secrets')
+            missing.append('STRIPE_WEBHOOK_SECRET not set in environment variables')
         checks['fix_needed'] = missing
 
     return jsonify(checks)
@@ -7868,10 +7868,28 @@ def handle_checkout_completed(session):
             'founding': ('founding', 'pro'),
         }
 
+        # Payment link URL slug → plan mapping (for checkouts via buy.stripe.com links)
+        # Stripe webhook sends payment_link as a plink_xxx ID. We match known IDs here.
+        # If you see a new plink_ ID in logs, add it to this map.
+        # To find your plink IDs: check Stripe Dashboard → Payment Links, or look at Railway logs
+        # for the "payment_link='plink_xxx'" value printed on checkout.
+        payment_link_id = session.get('payment_link', '') or ''
+        payment_link_plan_map = {
+            # Add your plink_ IDs here as they appear in logs:
+            # 'plink_XXXXXXX': 'pro_monthly',
+            # 'plink_XXXXXXX': 'founding',
+        }
+
         if plan_from_metadata and plan_from_metadata in plan_tier_map:
             plan_name, api_tier = plan_tier_map[plan_from_metadata]
             print(f"📋 Plan from metadata: {plan_name}")
+        elif payment_link_id and payment_link_id in payment_link_plan_map:
+            resolved_plan_key = payment_link_plan_map[payment_link_id]
+            plan_name, api_tier = plan_tier_map[resolved_plan_key]
+            print(f"🔗 Plan from payment link ({payment_link_id}): {plan_name}")
         else:
+            if payment_link_id:
+                print(f"⚠️ Unknown payment_link ID: '{payment_link_id}' — add to payment_link_plan_map! Falling back to amount detection.")
             if amount_dollars == 99 or (95 <= amount_dollars <= 105):
                 plan_name, api_tier = 'founding', 'pro'
             elif amount_dollars == 199 or (195 <= amount_dollars <= 205):
@@ -8011,11 +8029,13 @@ def handle_subscription_created(subscription):
     status = subscription.get('status', '')
     
     if status == 'active':
-        _pg_execute("UPDATE users SET plan = 'pro', role = 'pro', subscription_status = %s WHERE stripe_customer_id = %s",
+        # Don't overwrite plan/role - handle_checkout_completed already set the correct plan.
+        # Only update subscription_status to 'active'.
+        _pg_execute("UPDATE users SET subscription_status = %s WHERE stripe_customer_id = %s",
                    (status, customer_id))
         conn = get_db()
         c = conn.cursor()
-        c.execute("UPDATE users SET plan = 'pro', role = 'pro', subscription_status = ? WHERE stripe_customer_id = ?",
+        c.execute("UPDATE users SET subscription_status = ? WHERE stripe_customer_id = ?",
                   (status, customer_id))
         conn.commit()
         conn.close()
