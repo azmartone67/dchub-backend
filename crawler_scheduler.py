@@ -328,7 +328,7 @@ def stop_scheduled_crawlers():
     logger.info("📅 Crawler scheduler stopped")
 
 
-def run_crawler_now(n):
+def run_crawler_now(crawler_name):
     """Manually trigger a specific crawler (for admin endpoint).
     Returns (success: bool, message: str)
     """
@@ -367,11 +367,11 @@ def register_crawler_admin(app):
         from flask import jsonify
         return jsonify(get_scheduler_status())
     
-    @app.route('/api/admin/crawler-run/<name>', methods=['POST'])
-    def crawler_run(n):
+    @app.route('/api/admin/crawler-run/<crawler_name>', methods=['POST'])
+    def crawler_run(crawler_name):
         from flask import jsonify
         # TODO: Add admin auth check here
-        success, message = run_crawler_now(n)
+        success, message = run_crawler_now(crawler_name)
         return jsonify({"success": success, "message": message}), 200 if success else 409
     
-    logger.info("📅 Crawler admin endpoints registered: /api/admin/crawler-status, /api/admin/crawler-run/<name>")
+    logger.info("📅 Crawler admin endpoints registered: /api/admin/crawler-status, /api/admin/crawler-run/<crawler_name>")
