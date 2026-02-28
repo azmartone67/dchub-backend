@@ -684,3 +684,25 @@ def admin_diag():
         return jsonify({'us_total': us_total, 'us_states_top20': us_states, 'va_nova_cities': va_cities, 'power_plants_va': pw_va})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+@index_bp.route('/admin/pw-debug')
+def pw_debug():
+    """Debug: show raw power plant rows matching nova keywords"""
+    cfg  = _get_config()
+    conn = get_db()
+    cur  = conn.cursor()
+    pw   = cfg.get('power_table', 'discovered_power_plants')
+    pcol = cfg.get('power_city_col', 'market')
+    scol = cfg.get('power_state_col', 'state')
+    # Get all rows
+    cur.execute(f"SELECT LOWER({pcol}), LOWER({scol}), COUNT(*), COALESCE(SUM(capacity_mw),0) FROM {pw} GROUP BY LOWER({pcol}), LOWER({scol}) ORDER BY COUNT(*) DESC LIMIT 30")
+    all_rows = [{'market': r[0], 'state': r[1], 'count': r[2], 'mw': float(r[3])} for r in cur.fetchall()]
+    # Check VA specifically
+    cur.execute(f"SELECT LOWER({pcol}), LOWER({scol}), COUNT(*), COALESCE(SUM(capacity_mw),0) FROM {pw} WHERE LOWER({scol}) = 'va' GROUP BY LOWER({pcol}), LOWER({scol})")
+    va_rows = [{'market': r[0], 'state': r[1], 'count': r[2], 'mw': float(r[3])} for r in cur.fetchall()]
+    # Config values
+    cur.execute("SELECT key, value FROM gdci_config WHERE key IN ('power_enabled','sub_enabled','power_city_col','power_state_col')")
+    cfg_vals = {r[0]: r[1] for r in cur.fetchall()}
+    cur.close()
+    return jsonify({'config': cfg_vals, 'top30_pw_rows': all_rows, 'va_rows': va_rows})
