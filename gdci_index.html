@@ -4,6 +4,7 @@ DC Hub — Global Data Center Composite Index (GDCI)
 Production endpoint: GET /api/gdci
                      GET /api/gdci/markets
                      GET /api/gdci/market/{market_slug}
+                     GET /api/gdci/compare
                      GET /api/gdci/history
                      GET /api/gdci/methodology
 
@@ -11,14 +12,46 @@ The GDCI is DC Hub's proprietary composite benchmark for the global data center 
 Think S&P 500 for data centers — a single number (0-100) that captures market health,
 investment velocity, supply/demand dynamics, and energy infrastructure readiness.
 
-INTEGRATION:
-    Option A — Blueprint (recommended):
-        from gdci import gdci_bp
-        app.register_blueprint(gdci_bp)
+═══════════════════════════════════════════════════════════════════════════════
+DEPLOYMENT STEPS (Railway backend via GitHub)
+═══════════════════════════════════════════════════════════════════════════════
 
-    Option B — Direct registration:
-        from gdci import register_gdci_routes
-        register_gdci_routes(app)
+STEP 1: Upload this file to your GitHub repo root (same level as main.py)
+         github.com/azmartone67/dchub-backend → Add file → gdci.py
+
+STEP 2: Add 2 lines to main.py (around line ~1380, after the last register_blueprint):
+
+         # ── GDCI: Global Data Center Composite Index ──
+         try:
+             from gdci import gdci_bp
+             app.register_blueprint(gdci_bp)
+             logger.info("  ✅ GDCI v2.0")
+         except Exception as e:
+             logger.warning(f"  ⚠️ GDCI: {e}")
+
+         This follows the exact same pattern as your existing blueprints:
+         - ai_ecosystem_bp (line ~1245)
+         - autonomous_bp (line ~1265)
+         - promotion_bp (line ~1376)
+
+STEP 3: Push to GitHub → Railway auto-deploys
+
+STEP 4: Test endpoints:
+         https://api.dchub.cloud/api/gdci
+         https://api.dchub.cloud/api/gdci/markets?region=APAC
+         https://api.dchub.cloud/api/gdci/market/nova
+         https://api.dchub.cloud/api/gdci/compare?markets=nova,dfw,phx
+         https://api.dchub.cloud/api/gdci/history
+         https://api.dchub.cloud/api/gdci/methodology
+
+═══════════════════════════════════════════════════════════════════════════════
+CLOUDFLARE PAGES FRONTEND
+═══════════════════════════════════════════════════════════════════════════════
+
+Add gdci.html to your Cloudflare Pages repo at /gdci.html (or /gdci/index.html)
+It auto-fetches from api.dchub.cloud/api/gdci and falls back to embedded data.
+
+═══════════════════════════════════════════════════════════════════════════════
 
 DEPENDENCIES: Flask (already in your stack)
 """
