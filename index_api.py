@@ -236,11 +236,7 @@ def _load_bulk(cfg, _conn=None):
     op_ph = ','.join(['%s']*len(op_st))
     pi_ph = ','.join(['%s']*len(pi_st))
 
-    # Each query uses a fresh connection to avoid shared state corruption
-    op_rows   = _run_query(f"SELECT UPPER(COALESCE(country,'')), LOWER(COALESCE(state,'')), LOWER(COALESCE(city,'')), COALESCE(power_mw,0) FROM {fac} WHERE status IN ({op_ph})", op_st)
-    pi_rows   = _run_query(f"SELECT UPPER(COALESCE(country,'')), LOWER(COALESCE(state,'')), LOWER(COALESCE(city,'')), COALESCE(power_mw,0) FROM {fac} WHERE status IN ({pi_ph})", pi_st)
-    deal_rows = _run_query(f"SELECT LOWER(COALESCE(market,'')), COUNT(*), COALESCE(SUM(mw),0) FROM {txn} WHERE date >= NOW() - INTERVAL '90 days' GROUP BY LOWER(market)")
-
+    # Run small/secondary tables FIRST before large facility queries corrupt the connection
     pw_rows = []
     if _bool(cfg, 'power_enabled'):
         pw_rows = _run_query(f"SELECT LOWER(COALESCE({pcol},'')), LOWER(COALESCE({scol},'')), COUNT(*), COALESCE(SUM(capacity_mw),0) FROM {pw} GROUP BY LOWER({pcol}), LOWER({scol})")
@@ -254,6 +250,12 @@ def _load_bulk(cfg, _conn=None):
     mi_rows = []
     if _bool(cfg, 'mi_enabled'):
         mi_rows = _run_query(f"SELECT LOWER(COALESCE(market,'')), avg_rate_per_kw FROM {mi} ORDER BY recorded_at DESC")
+
+    deal_rows = _run_query(f"SELECT LOWER(COALESCE(market,'')), COUNT(*), COALESCE(SUM(mw),0) FROM {txn} WHERE date >= NOW() - INTERVAL '90 days' GROUP BY LOWER(market)")
+
+    # Large facility queries last
+    op_rows = _run_query(f"SELECT UPPER(COALESCE(country,'')), LOWER(COALESCE(state,'')), LOWER(COALESCE(city,'')), COALESCE(power_mw,0) FROM {fac} WHERE status IN ({op_ph})", op_st)
+    pi_rows = _run_query(f"SELECT UPPER(COALESCE(country,'')), LOWER(COALESCE(state,'')), LOWER(COALESCE(city,'')), COALESCE(power_mw,0) FROM {fac} WHERE status IN ({pi_ph})", pi_st)
 
     logger.info("GDCI bulk: op=%d pi=%d pw=%d sub=%d", len(op_rows), len(pi_rows), len(pw_rows), len(sub_rows))
     return {'op': op_rows, 'pi': pi_rows, 'deal': deal_rows, 'pw': pw_rows, 'sub': sub_rows, 'mi': mi_rows}
