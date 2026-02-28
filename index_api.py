@@ -1,5 +1,5 @@
 """
-DC Hub Global Data Center Index API (index_api.py)
+DC Hub Global Data Center Index API (index_api.py), 2.0
 Flask Blueprint — mounts at /api/index
 v6.0 — Direct power market map, MW-density scoring, bulk queries
 """
