@@ -1099,6 +1099,14 @@ ENABLE_DISCOVERY_SCHEDULERS = False
 
 _deferred_bg_threads = []
 
+# --- Staggered Crawler Scheduler (replaces always-on crawler threads) ---
+try:
+    from crawler_scheduler import register_crawler_admin, start_scheduled_crawlers
+    CRAWLER_SCHEDULER_AVAILABLE = True
+except ImportError:
+    CRAWLER_SCHEDULER_AVAILABLE = False
+    print("📅 Crawler Scheduler: Not installed (crawler_scheduler.py missing)")
+
 # Detect Railway vs Replit environment
 IS_RAILWAY = bool(os.environ.get("RAILWAY_ENVIRONMENT"))
 IS_PRIMARY = IS_RAILWAY  # Railway is primary, runs all background tasks
@@ -15159,10 +15167,13 @@ def _evolution_scheduler_loop():
             logger.error(f"🧬 Evolution cycle error: {e}")
         _t.sleep(21600)  # 6 hours
 
+# DISABLED: Now handled by crawler_scheduler.py (twice-daily staggered)
+# if IS_RAILWAY and EVOLUTION_AVAILABLE:
+#     _evo_thread = threading.Thread(target=_evolution_scheduler_loop, daemon=True)
+#     _evo_thread.start()
+#     logger.info("🧬 Evolution Engine scheduler started (6h cycle)")
 if IS_RAILWAY and EVOLUTION_AVAILABLE:
-    _evo_thread = threading.Thread(target=_evolution_scheduler_loop, daemon=True)
-    _evo_thread.start()
-    logger.info("🧬 Evolution Engine scheduler started (6h cycle)")
+    logger.info("🧬 Evolution Engine: DISABLED as background thread (managed by crawler_scheduler.py)")
 
 @app.route('/api/schedulers/audit', methods=['GET'])
 def audit_schedulers():
@@ -15752,9 +15763,9 @@ if ENABLE_DISCOVERY_THREADS:
                     print(f"[AUTO-APPROVAL ERROR] {e}")
                 _time.sleep(300)
 
-        # DISABLED: Heavy task - run as separate cron job
-        if IS_RAILWAY: _deferred_bg_threads.append(('Auto-Approval', _auto_approval_loop))
-        print("[DISCOVERY] Auto-approval thread DISABLED (run via cron)")
+        # DISABLED: Heavy task - now managed by crawler_scheduler.py
+        # if IS_RAILWAY: _deferred_bg_threads.append(('Auto-Approval', _auto_approval_loop))
+        print("[DISCOVERY] Auto-approval thread DISABLED (managed by crawler_scheduler.py)")
 
         def _facility_discovery_loop():
             import time as _time
@@ -15782,9 +15793,9 @@ if ENABLE_DISCOVERY_THREADS:
                     print(f"[DISCOVERY ERROR] {e}")
                 _time.sleep(7200)
 
-        # DISABLED: Heavy task - run as separate cron job
-        if IS_RAILWAY: _deferred_bg_threads.append(('Facility Discovery', _facility_discovery_loop))
-        print("[DISCOVERY] Facility discovery thread DISABLED (run via cron)")
+        # DISABLED: Heavy task - now managed by crawler_scheduler.py
+        # if IS_RAILWAY: _deferred_bg_threads.append(('Facility Discovery', _facility_discovery_loop))
+        print("[DISCOVERY] Facility discovery thread DISABLED (managed by crawler_scheduler.py)")
 
     except FileExistsError:
         print("[DISCOVERY] Another worker has the lock - skipping")
@@ -15840,8 +15851,9 @@ try:
             _s.stderr.flush()
 
     # Railway runs news scheduler, Replit skips it
-    if IS_RAILWAY and not os.environ.get('NEWS_VIA_CRON'): _deferred_bg_threads.append(('News Scheduler', _news_staggered_startup))
-    print("NEWS SCHEDULER: DISABLED (run via cron)")
+    # DISABLED: Now handled by crawler_scheduler.py (twice-daily staggered)
+    # if IS_RAILWAY and not os.environ.get('NEWS_VIA_CRON'): _deferred_bg_threads.append(('News Scheduler', _news_staggered_startup))
+    print("NEWS SCHEDULER: DISABLED (managed by crawler_scheduler.py)")
 except ImportError:
     print("NEWS SCHEDULER: Not installed (auto_sync missing)")
 except Exception as e:
@@ -16450,7 +16462,10 @@ logger.info("✅ AI Query endpoints registered: /api/ai/query, /api/ai/cite, /ai
 try:
     from energy_auto_discovery import register_energy_discovery_routes
     energy_discovery_scheduler = register_energy_discovery_routes(app)
-    print("⚡ Energy Auto-Discovery: ✅ Registered")
+    print("⚡ Energy Auto-Discovery: ✅ Routes registered (scheduler managed by crawler_scheduler.py)")
+    # DISABLED: Background scheduler now handled by crawler_scheduler.py
+    if hasattr(energy_discovery_scheduler, 'stop'):
+        energy_discovery_scheduler.stop()
 except ImportError:
     print("⚡ Energy Auto-Discovery: ❌ Not installed")
 except Exception as e:
@@ -16816,8 +16831,11 @@ if __name__ == '__main__':
         if True:  # Always register energy discovery routes
             from energy_auto_discovery import register_energy_discovery_routes
             energy_discovery_scheduler = register_energy_discovery_routes(app)
-            print("⚡ Energy Auto-Discovery: ✅ Running (every 10 min)")
+            print("⚡ Energy Auto-Discovery: ✅ Routes registered (scheduler managed by crawler_scheduler.py)")
             print("   📍 Markets: Phoenix, Dallas, NoVA, Atlanta, Las Vegas, Salt Lake, Columbus, Des Moines")
+            # DISABLED: Stop background scheduler - crawler_scheduler.py handles timing
+            if hasattr(energy_discovery_scheduler, 'stop'):
+                energy_discovery_scheduler.stop()
         else:
             print("⚡ Energy Auto-Discovery: ⏸️ PAUSED (schedulers disabled)")
     except ImportError:
@@ -17810,6 +17828,17 @@ def _start_background_tasks():
 
 threading.Timer(60, _start_background_tasks).start()
 logger.info("⏳ Background tasks deferred: %d tasks will start in 60s with 10s stagger", len(_deferred_bg_threads))
+
+# --- Start Staggered Crawler Scheduler ---
+if CRAWLER_SCHEDULER_AVAILABLE:
+    try:
+        register_crawler_admin(app)
+        start_scheduled_crawlers()
+        logger.info("📅 Crawler Scheduler: ✅ Started (twice-daily staggered crawls)")
+    except Exception as e:
+        logger.error(f"📅 Crawler Scheduler: ⚠️ Failed to start: {e}")
+else:
+    logger.info("📅 Crawler Scheduler: Not available — crawlers will not run on schedule")
 
 # =============================================================================
 # GDCI INDEX DASHBOARD
