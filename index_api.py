@@ -114,6 +114,48 @@ MARKETS = [
 ]
 MARKET_BY_ID = {m['id']: m for m in MARKETS}
 
+# Direct power plant market name mappings (from discovered_power_plants.market column)
+POWER_MARKET_MAP = {
+    'nova': ['northern_virginia'],
+    'dal':  ['dallas'],
+    'phx':  ['phoenix'],
+    'chi':  ['chicago'],
+    'nyc':  ['new_york_nj'],
+    'sea':  ['seattle_quincy'],
+    'sfo':  ['silicon_valley'],
+    'lax':  ['los_angeles'],
+    'atl':  ['atlanta'],
+    'bos':  ['boston'],
+    'den':  ['denver'],
+    'mia':  ['miami'],
+    'iah':  ['houston'],
+    'msp':  ['minneapolis'],
+    'slc':  ['salt_lake'],
+    'yyz':  ['toronto'],
+    'yvr':  ['vancouver'],
+    'lhr':  ['london'],
+    'fra':  ['frankfurt'],
+    'ams':  ['amsterdam'],
+    'par':  ['paris'],
+    'dub':  ['dublin'],
+    'sin':  ['singapore'],
+    'tyo':  ['tokyo'],
+    'syd':  ['sydney'],
+    'hkg':  ['hong_kong'],
+    'sha':  ['shanghai'],
+    'pek':  ['beijing'],
+    'bom':  ['mumbai'],
+    'del':  ['delhi'],
+    'sel':  ['seoul'],
+    'kul':  ['kuala_lumpur'],
+    'mel':  ['melbourne'],
+    'dxb':  ['dubai'],
+    'gru':  ['sao_paulo'],
+    'mex':  ['mexico_city'],
+}
+
+
+
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -356,17 +398,18 @@ def _score_market_from_bulk(market, bulk, cfg):
 
     if dhpw_val is None and _bool(cfg, 'power_enabled'):
         pw_cnt = pw_mw = 0.0
-        state_kw_pw  = market.get('state_kw', [])
-        power_kw     = market.get('power_kw', city_kw)
-        # Match both 'northern virginia' and 'northern_virginia' forms
-        expanded_kw = list(set([kw for k in power_kw for kw in [k, k.replace(' ','_'), k.replace('_',' ')]]))
+        # Use direct market map first, fall back to keyword matching
+        direct_keys = POWER_MARKET_MAP.get(mid, [])
+        state_kw_pw = market.get('state_kw', [])
+        city_kw_pw  = market.get('city_kw', [])
         for (pw_city, pw_state, cnt, mw) in bulk['pw']:
-            city_hit  = any(kw in pw_city  for kw in expanded_kw)  if expanded_kw  else False
-            state_hit = any(kw in pw_state for kw in state_kw_pw) if state_kw_pw else False
-            if city_hit or state_hit:
+            direct_hit = pw_city in direct_keys
+            city_hit   = any(kw.replace(' ','_') in pw_city or kw in pw_city for kw in city_kw_pw) if city_kw_pw else False
+            state_hit  = any(kw in pw_state for kw in state_kw_pw) if state_kw_pw else False
+            if direct_hit or city_hit or state_hit:
                 pw_cnt += int(cnt)
                 pw_mw  += float(mw)
-        if pw_cnt > 0:  # use count since MW may be null
+        if pw_cnt > 0:
             dhpw_val = round(min(100, (pw_mw/5000)*100 + pw_cnt*0.5), 1) if pw_mw > 0 else round(min(100, pw_cnt * 0.4), 1)
             dhpw_d   = {'source':'discovered_power_plants','plant_count':int(pw_cnt),'total_mw':round(pw_mw,1)}
 
