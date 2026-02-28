@@ -16529,9 +16529,9 @@ def serve_sitemap_xml():
         conn = get_read_db()
         c = conn.cursor()
         
-        # Get facility names for individual pages
+        # Get facility data for individual pages (include provider + id for slug generation)
         c.execute("""
-            SELECT name, city, state, country 
+            SELECT name, provider, city, state, country, id
             FROM facilities 
             WHERE name IS NOT NULL AND name != ''
             LIMIT 15000
@@ -16594,36 +16594,56 @@ def serve_sitemap_xml():
         urls.append(f'  <url><loc>https://dchub.cloud/markets/{m}</loc><lastmod>{today}</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>')
     
     # ---- Location pages (from DB) ----
-    country_map = {
-        'US': 'usa', 'GB': 'united-kingdom', 'DE': 'germany', 'JP': 'japan',
-        'IN': 'india', 'AU': 'australia', 'BR': 'brazil', 'CA': 'canada',
-        'SG': 'singapore', 'FR': 'france', 'NL': 'netherlands', 'IE': 'ireland',
-        'SE': 'sweden', 'NO': 'norway', 'DK': 'denmark', 'FI': 'finland',
-        'CH': 'switzerland', 'HK': 'hong-kong', 'KR': 'south-korea',
-        'TW': 'taiwan', 'MY': 'malaysia', 'TH': 'thailand', 'ID': 'indonesia',
-        'MX': 'mexico', 'CL': 'chile', 'CO': 'colombia', 'AR': 'argentina',
-        'ZA': 'south-africa', 'KE': 'kenya', 'NG': 'nigeria', 'AE': 'uae',
-        'SA': 'saudi-arabia', 'QA': 'qatar', 'IT': 'italy', 'ES': 'spain',
-        'PT': 'portugal', 'PL': 'poland', 'CZ': 'czech-republic',
-        'NZ': 'new-zealand', 'RO': 'romania', 'HU': 'hungary',
-    }
+    # URL format: /locations/{country-code} or /locations/{country-code}-{state-code}
+    # Matches frontend: /locations/usa-il, /locations/us-ny, /locations/pl
     seen_locations = set()
     for row in loc_rows:
         cc = row[0] if row[0] else ''
-        cc_upper = cc.upper().strip()
-        loc_slug = country_map.get(cc_upper, cc.lower().strip())
-        if loc_slug and loc_slug not in seen_locations:
-            seen_locations.add(loc_slug)
-            urls.append(f'  <url><loc>https://dchub.cloud/locations/{loc_slug}.html</loc><lastmod>{today}</lastmod><changefreq>weekly</changefreq><priority>0.7</priority></url>')
+        st = row[1] if row[1] else ''
+        cc_lower = cc.lower().strip()
+        if not cc_lower:
+            continue
+        
+        # Country-only page
+        if cc_lower not in seen_locations:
+            seen_locations.add(cc_lower)
+            urls.append(f'  <url><loc>https://dchub.cloud/locations/{cc_lower}</loc><lastmod>{today}</lastmod><changefreq>weekly</changefreq><priority>0.7</priority></url>')
+        
+        # Country-state page (e.g., us-ny, usa-il)
+        if st:
+            st_lower = st.lower().strip()
+            combo = f"{cc_lower}-{st_lower}"
+            if combo not in seen_locations:
+                seen_locations.add(combo)
+                urls.append(f'  <url><loc>https://dchub.cloud/locations/{combo}</loc><lastmod>{today}</lastmod><changefreq>weekly</changefreq><priority>0.6</priority></url>')
     
     # ---- Facility pages (from DB) ----
+    # URL format: /facilities/{provider-slug}-{name-slug}-{hash8}
+    # Matches frontend: /facilities/databank-ltd-databank-minneapolis-msp1-8c8fb870
     seen_slugs = set()
     for row in fac_rows:
         name = row[0] if row[0] else ''
-        slug = slugify(name)
-        if slug and slug not in seen_slugs and len(slug) > 2:
-            seen_slugs.add(slug)
-            urls.append(f'  <url><loc>https://dchub.cloud/facilities/{slug}</loc><lastmod>{today}</lastmod><changefreq>monthly</changefreq><priority>0.5</priority></url>')
+        provider = row[1] if row[1] else ''
+        fac_id = row[5] if len(row) > 5 and row[5] else ''
+        
+        provider_slug = slugify(provider) or ''
+        name_slug = slugify(name) or ''
+        
+        if not name_slug or len(name_slug) < 3:
+            continue
+        
+        # Generate 8-char hash from facility id or provider+name
+        hash_source = str(fac_id) if fac_id else f"{provider}{name}"
+        short_hash = hashlib.md5(hash_source.encode()).hexdigest()[:8]
+        
+        if provider_slug:
+            full_slug = f"{provider_slug}-{name_slug}-{short_hash}"
+        else:
+            full_slug = f"{name_slug}-{short_hash}"
+        
+        if full_slug not in seen_slugs:
+            seen_slugs.add(full_slug)
+            urls.append(f'  <url><loc>https://dchub.cloud/facilities/{full_slug}</loc><lastmod>{today}</lastmod><changefreq>monthly</changefreq><priority>0.5</priority></url>')
     
     xml = '<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' + '\n'.join(urls) + '\n</urlset>'
     
