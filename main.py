@@ -1105,9 +1105,12 @@ IS_PRIMARY = IS_RAILWAY  # Railway is primary, runs all background tasks
 
 ENABLE_DISCOVERY_THREADS = IS_RAILWAY
 if IS_RAILWAY:
+    ENABLE_BACKGROUND_SCHEDULERS = True
+    ENABLE_DISCOVERY_SCHEDULERS = True
     logger.info("🚂 RAILWAY ENVIRONMENT DETECTED -- Running as PRIMARY with all background tasks")
+    logger.info("   📡 Discovery schedulers: ENABLED (KMZ + API auto-discovery)")
 else:
-    logger.info("🔄 REPLIT ENVIRONMENT DETECTED -- Running as FAILOVER (background tasks disabled)")
+    logger.info("🔄 NON-RAILWAY ENVIRONMENT -- Running as FAILOVER (background tasks disabled)")
 
 _news_last_sync = None
 _pipeline_last_sync = None
@@ -15136,6 +15139,30 @@ _register_scheduler('keep_alive', 240, 'Self-ping to prevent idle timeout')
 _register_scheduler('energy_discovery', 600, 'Energy infrastructure auto-discovery')
 _register_scheduler('capacity_headroom', 1800, 'Capacity headroom scoring refresh')
 _register_scheduler('ambassador', 3600, 'Agentic ambassador outreach system')
+_register_scheduler('evolution_engine', 21600, 'Evolution engine learning cycle (every 6h)')
+
+# --- Evolution Engine scheduled runner (Railway only) ---
+def _evolution_scheduler_loop():
+    """Run evolution cycle every 6 hours on Railway."""
+    import time as _t
+    _t.sleep(600)  # Initial delay: 10 min after startup
+    while True:
+        try:
+            if EVOLUTION_AVAILABLE:
+                result = run_evolution_cycle()
+                _scheduler_registry.get('evolution_engine', {})['last_run'] = datetime.utcnow().isoformat()
+                _scheduler_registry.get('evolution_engine', {})['last_success'] = datetime.utcnow().isoformat()
+                _scheduler_registry.get('evolution_engine', {})['total_runs'] = _scheduler_registry.get('evolution_engine', {}).get('total_runs', 0) + 1
+                logger.info(f"🧬 Evolution cycle completed: {result}")
+        except Exception as e:
+            _scheduler_registry.get('evolution_engine', {})['last_error'] = str(e)
+            logger.error(f"🧬 Evolution cycle error: {e}")
+        _t.sleep(21600)  # 6 hours
+
+if IS_RAILWAY and EVOLUTION_AVAILABLE:
+    _evo_thread = threading.Thread(target=_evolution_scheduler_loop, daemon=True)
+    _evo_thread.start()
+    logger.info("🧬 Evolution Engine scheduler started (6h cycle)")
 
 @app.route('/api/schedulers/audit', methods=['GET'])
 def audit_schedulers():
