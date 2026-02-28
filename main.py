@@ -2372,6 +2372,148 @@ except ImportError:
 except Exception as e:
     logger.error(f"⚠️ API Monetization failed: {e}")
 
+# =============================================================================
+# TIER-AWARE RATE LIMITING MIDDLEWARE
+# Enforces per-tier API call limits on /api/ endpoints.
+# Tiers: free (60/min, 500/hr), pro (300/min, 5000/hr), enterprise (1000/min, 20000/hr)
+# Bypasses: dchub.cloud origin, AI Wars keys, health/stats endpoints
+# =============================================================================
+_tier_rate_limits = {
+    'free':       {'per_minute': 60,   'per_hour': 500},
+    'pro':        {'per_minute': 300,  'per_hour': 5000},
+    'founding':   {'per_minute': 300,  'per_hour': 5000},
+    'enterprise': {'per_minute': 1000, 'per_hour': 20000},
+}
+
+_tier_requests = defaultdict(list)
+_tier_rate_lock = threading.Lock()
+
+_RATE_LIMIT_BYPASS_PATHS = {
+    '/api/v1/stats', '/api/health', '/api/stripe/webhook',
+    '/api/stripe/config', '/api/verify-key', '/api/ecosystem/health',
+}
+
+def _get_request_tier():
+    """Determine the rate limit tier for the current request.
+    Returns (client_key, tier) where client_key is used for tracking."""
+    # AI Wars keys get pro tier
+    ai_info = None
+    try:
+        ai_info = get_ai_wars_key_info()
+    except Exception:
+        pass
+    if ai_info:
+        platform = ai_info.get('platform', 'unknown')
+        return f"aiwar_{platform}", ai_info.get('tier', 'pro')
+
+    # Check for authenticated user via API key in DB
+    api_key = request.headers.get('X-API-Key') or request.args.get('api_key') or ''
+    if api_key and api_key.startswith('dchub_'):
+        key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+        try:
+            _, rows = _pg_execute(
+                "SELECT u.plan, u.id FROM api_keys ak JOIN users u ON ak.user_id = u.id WHERE ak.key_hash = %s AND ak.is_active = true",
+                (key_hash,), fetch=True)
+            if rows:
+                plan = rows[0][0] or 'free'
+                user_id = rows[0][1]
+                return f"user_{user_id}", plan
+        except Exception:
+            pass
+
+    # Check JWT auth (cookie or Authorization header)
+    try:
+        auth_header = request.headers.get('Authorization', '')
+        token = None
+        if auth_header.startswith('Bearer ') and not auth_header[7:].strip().startswith('dchub_'):
+            token = auth_header[7:].strip()
+        if not token:
+            token = request.cookies.get('auth_token') or request.cookies.get('token')
+        if token:
+            import jwt
+            payload = jwt.decode(token, JWT_SECRET, algorithms=['HS256'])
+            user_id = payload.get('user_id', '')
+            plan = payload.get('plan', 'free')
+            return f"user_{user_id}", plan
+    except Exception:
+        pass
+
+    # Fall back to IP-based free tier
+    ip = request.headers.get('CF-Connecting-IP') or \
+         request.headers.get('X-Forwarded-For', '').split(',')[0].strip() or \
+         request.remote_addr or 'unknown'
+    return f"ip_{hashlib.md5(ip.encode()).hexdigest()[:16]}", 'free'
+
+@app.before_request
+def enforce_tier_rate_limits():
+    """Global rate limiting middleware - enforces per-tier API limits."""
+    path = request.path
+
+    # Only rate-limit /api/ endpoints
+    if not path.startswith('/api/'):
+        return None
+
+    # Bypass specific endpoints
+    if path in _RATE_LIMIT_BYPASS_PATHS:
+        return None
+
+    # Bypass requests from dchub.cloud frontend
+    origin = request.headers.get('Origin', '') or request.headers.get('Referer', '')
+    if 'dchub.cloud' in origin:
+        return None
+
+    # Skip OPTIONS preflight
+    if request.method == 'OPTIONS':
+        return None
+
+    client_key, tier = _get_request_tier()
+    limits = _tier_rate_limits.get(tier, _tier_rate_limits['free'])
+    now = time.time()
+
+    with _tier_rate_lock:
+        # Cleanup old entries
+        hour_ago = now - 3600
+        _tier_requests[client_key] = [t for t in _tier_requests[client_key] if t > hour_ago]
+
+        minute_ago = now - 60
+        recent_minute = len([t for t in _tier_requests[client_key] if t > minute_ago])
+        recent_hour = len(_tier_requests[client_key])
+
+        if recent_minute >= limits['per_minute']:
+            return jsonify({
+                'success': False,
+                'error': 'rate_limited',
+                'message': f"Rate limit exceeded ({limits['per_minute']}/min for {tier} tier). Upgrade your plan for higher limits.",
+                'tier': tier,
+                'limit_per_minute': limits['per_minute'],
+                'retry_after_seconds': 60,
+                'upgrade_url': 'https://dchub.cloud/pricing'
+            }), 429
+
+        if recent_hour >= limits['per_hour']:
+            return jsonify({
+                'success': False,
+                'error': 'rate_limited',
+                'message': f"Hourly limit exceeded ({limits['per_hour']}/hr for {tier} tier). Upgrade your plan for higher limits.",
+                'tier': tier,
+                'limit_per_hour': limits['per_hour'],
+                'retry_after_seconds': 3600,
+                'upgrade_url': 'https://dchub.cloud/pricing'
+            }), 429
+
+        _tier_requests[client_key].append(now)
+
+    # Periodic cleanup of stale clients (every 5 min)
+    if int(now) % 300 == 0:
+        with _tier_rate_lock:
+            stale = [k for k, v in _tier_requests.items() if not v or v[-1] < hour_ago]
+            for k in stale:
+                del _tier_requests[k]
+
+    return None
+
+logger.info("✅ Tier-aware rate limiting middleware ACTIVE")
+
 # API Tier Gating System - Lazy enforcement
 # The early require_plan stub is defined near the top of this file (after Flask app creation).
 # The real require_plan from api_tier_gating is loaded at the end of this file.
