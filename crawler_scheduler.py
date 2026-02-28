@@ -275,6 +275,7 @@ def start_scheduled_crawlers():
     
     Call this from main.py instead of starting individual crawler threads.
     Respects DISABLE_ALL_CRAWLERS env var.
+    Runs on Railway only — Replit is API-only failover.
     """
     global _scheduler_thread
     
@@ -283,9 +284,24 @@ def start_scheduled_crawlers():
         logger.info("📅 Crawler scheduler DISABLED (DISABLE_ALL_CRAWLERS=true)")
         return
     
-    # Railway should not run crawlers
-    if os.environ.get("RAILWAY", "").lower() in ("true", "1", "yes"):
-        logger.info("📅 Crawler scheduler DISABLED (Railway = API-only mode)")
+    # Replit should NOT run crawlers — Railway handles them
+    is_replit = os.environ.get("REPL_ID") or os.environ.get("REPLIT_DB_URL") or os.environ.get("REPL_SLUG")
+    if is_replit:
+        logger.info("📅 Crawler scheduler DISABLED (Replit = API-only failover)")
+        return
+    
+    # Only run scheduler on ONE gunicorn worker to prevent 4x duplicate crawlers
+    _lock_file = "/tmp/.crawler_scheduler.lock"
+    try:
+        import fcntl
+        _lock_fd = open(_lock_file, 'w')
+        fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _lock_fd.write(str(os.getpid()))
+        _lock_fd.flush()
+        # Keep _lock_fd open — lock is held as long as the file descriptor is open
+        logger.info(f"📅 Crawler scheduler: Acquired lock (PID {os.getpid()})")
+    except (IOError, OSError):
+        logger.info("📅 Crawler scheduler SKIPPED (another worker holds the lock)")
         return
     
     if _scheduler_thread and _scheduler_thread.is_alive():
