@@ -941,7 +941,7 @@ Format as JSON: [{{"insight": "...", "category": "...", "action": "..."}}]"""
                     INSERT INTO industry_glossary (term, definition, category, confidence)
                     VALUES (?, ?, ?, ?)
                     ON CONFLICT(term) DO UPDATE SET
-                        definition = ?, confidence = MAX(confidence, 0.9)
+                        definition = ?, confidence = MAX(industry_glossary.confidence, 0.9)
                 ''', (term.lower(), definition, 'general', 0.95, definition))
                 
                 if term.lower() not in self.knowledge_base['terminology']:
@@ -1011,7 +1011,7 @@ Format as JSON: [{{"insight": "...", "category": "...", "action": "..."}}]"""
                 INSERT INTO knowledge_items (category, key, confidence, source)
                 VALUES (?, ?, ?, ?)
                 ON CONFLICT(category, key) DO UPDATE SET
-                    confidence = MAX(confidence, ?),
+                    confidence = MAX(knowledge_items.confidence, ?),
                     usage_count = usage_count + 1,
                     last_updated = CURRENT_TIMESTAMP
             ''', (entity_type, value, confidence, source, confidence))
