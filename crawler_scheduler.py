@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-DC Hub Staggered Crawler Scheduler 2
+DC Hub Staggered Crawler Scheduler
 ====================================
 Replaces always-on background threads with twice-daily scheduled runs.
 Each crawler runs one at a time, with connection limits and hard timeouts.
@@ -332,21 +332,21 @@ def run_crawler_now(crawler_name):
     """Manually trigger a specific crawler (for admin endpoint).
     Returns (success: bool, message: str)
     """
-    if name not in _RUNNERS:
-        return False, f"Unknown crawler: {name}. Available: {list(_RUNNERS.keys())}"
+    if crawler_name not in _RUNNERS:
+        return False, f"Unknown crawler: {crawler_name}. Available: {list(_RUNNERS.keys())}"
     
     if _active_crawler:
-        return False, f"Cannot start {name} — {_active_crawler} is currently running"
+        return False, f"Cannot start {crawler_name} — {_active_crawler} is currently running"
     
     # Run in background thread so API doesn't block
     threading.Thread(
         target=_run_with_guard,
-        args=(name, _RUNNERS[name]),
+        args=(crawler_name, _RUNNERS[crawler_name]),
         daemon=True,
-        name=f"manual-{name}"
+        name=f"manual-{crawler_name}"
     ).start()
     
-    return True, f"Started {name} manually"
+    return True, f"Started {crawler_name} manually"
 
 
 # ---------------------------------------------------------------------------
