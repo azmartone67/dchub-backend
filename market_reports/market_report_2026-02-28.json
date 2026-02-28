@@ -1,19 +1,19 @@
 {
   "report_date": "2026-02-28",
-  "generated_at": "2026-02-28T03:39:54.250907",
+  "generated_at": "2026-02-28T17:27:24.067306",
   "summary": {
     "total_facilities": 11433,
     "total_providers": 3958,
     "countries_covered": 170,
     "total_power_mw": 51325.0,
-    "total_deals": 478,
-    "total_deal_value_usd": 11133038000.0
+    "total_deals": 779,
+    "total_deal_value_usd": 1179131800000.0
   },
   "market_highlights": [
     "DC Hub tracks 11,433 data center facilities globally",
     "Coverage spans 170 countries with 3958 providers",
     "Combined capacity: 51,325 MW",
-    "M&A database: 478 transactions worth $11.1B+"
+    "M&A database: 779 transactions worth $1179.1B+"
   ],
   "recent_deals": [
     {
@@ -31,10 +31,10 @@
       "date": null
     },
     {
-      "buyer": "PGIM",
-      "seller": "site for",
-      "value_usd": 1200000000.0,
-      "type": "ma",
+      "buyer": "MTN",
+      "seller": "IHS Towers",
+      "value_usd": 6200000000.0,
+      "type": "acquisition",
       "date": null
     },
     {
@@ -59,84 +59,84 @@
       "date": null
     },
     {
-      "buyer": "MTN",
-      "seller": "IHS Towers",
-      "value_usd": 6200000000.0,
+      "buyer": "Billion Deal",
+      "seller": "Nordic Data",
+      "value_usd": 4000000000.0,
       "type": "acquisition",
       "date": null
     },
     {
-      "buyer": "Blue Owl",
-      "seller": "Stack",
-      "value_usd": 2100.0,
-      "type": "debt",
-      "date": "2026-02-12"
+      "buyer": "Billion Deal",
+      "seller": "Nordic Data",
+      "value_usd": 4000000000.0,
+      "type": "acquisition",
+      "date": null
     },
     {
-      "buyer": "Ares",
-      "seller": "Vantage Data Centers",
-      "value_usd": 2400.0,
-      "type": "debt",
-      "date": "2026-02-12"
+      "buyer": "Equinix to",
+      "seller": "atNorth for",
+      "value_usd": 4000000000.0,
+      "type": "acquisition",
+      "date": null
     },
     {
-      "buyer": "Open Access Data Centres",
-      "seller": "NTT",
-      "value_usd": 0.0,
-      "type": "ma",
-      "date": "2026-02-12"
+      "buyer": "Billion Deal",
+      "seller": "Nordic Data",
+      "value_usd": 4000000000.0,
+      "type": "acquisition",
+      "date": null
     }
   ],
   "recent_news": [
     {
-      "title": "Meta\u2019s data center ownership transfer doesn\u2019t concern Louisiana power regulators",
-      "source": "New Orleans CityBusiness",
-      "date": "2026-02-28T00:02:51"
+      "title": "Microsoft urges major changes to Washington data center regulations as bill nears final vote",
+      "source": "GeekWire",
+      "date": "2026-02-28T15:41:27"
     },
     {
-      "title": "Acquisitions Bolster Texas Data Center Campus Project",
-      "source": "Law360",
-      "date": "2026-02-27T23:25:00"
+      "title": "Transformer explosion near Vantage Data Centers injures construction worker",
+      "source": "WOAI",
+      "date": "2026-02-28T15:02:21"
     },
     {
-      "title": "More spending on data center construction had limited impact on GDP",
-      "source": "marketplace.org",
-      "date": "2026-02-27T23:23:06"
+      "title": "Equinix, Inc. (EQIX): A Bull Case Theory",
+      "source": "Finviz",
+      "date": "2026-02-28T14:45:07"
     },
     {
-      "title": "Trump orders federal agencies to \"immediately\" stop using Anthropic AI tech, threatens \"criminal consequences\" against \"radical left, woke company\"",
+      "title": "Why is property being bought up in western Sedgwick County? Residents fear data centers",
+      "source": "Wichita Eagle",
+      "date": "2026-02-28T12:11:00"
+    },
+    {
+      "title": "What happens next with Google's Pine Island data center?",
+      "source": "Post Bulletin",
+      "date": "2026-02-28T12:10:42"
+    },
+    {
+      "title": "Public hearing on Manor Township data center rules set for Monday",
+      "source": "LancasterOnline",
+      "date": "2026-02-28T10:00:00"
+    },
+    {
+      "title": "India\u2019s trillion-dollar data center opportunity is taking shape",
       "source": "Data Center Dynamics",
-      "date": "2026-02-27T22:53:04"
+      "date": "2026-02-28T08:12:51"
     },
     {
-      "title": "Trump orders purge of 'woke' Anthropic from government",
-      "source": "The Register DC",
-      "date": "2026-02-27T22:39:31"
+      "title": "Meta inks solar, wind power deals for data centers",
+      "source": "AOL.com",
+      "date": "2026-02-28T07:27:43"
     },
     {
-      "title": "Workers, Speaker Scott criticize plan to axe data center tax exemption as budgets advance",
-      "source": "Prince William Times",
-      "date": "2026-02-27T22:33:00"
+      "title": "Is It Too Late To Consider Equinix (EQIX) After Its Strong Share Price Momentum?",
+      "source": "simplywall.st",
+      "date": "2026-02-28T06:30:08"
     },
     {
-      "title": "PCs and phones to get more boring and expensive in 2026 thanks to memory drought",
-      "source": "The Register DC",
-      "date": "2026-02-27T22:03:19"
-    },
-    {
-      "title": "CPP Investments, Equinix in $4 Billion Deal to Buy Nordic Data-Center Operator atNorth",
-      "source": "WSJ",
-      "date": "2026-02-27T21:33:48"
-    },
-    {
-      "title": "CPP Investments, Equinix in $4 Billion Deal to Buy Nordic Data-Center Operator atNorth",
-      "source": "WSJ",
-      "date": "2026-02-27T21:33:48"
-    },
-    {
-      "title": "CPP Investments, Equinix in $4 Billion Deal to Buy Nordic Data-Center Operator atNorth",
-      "source": "WSJ",
-      "date": "2026-02-27T21:33:48"
+      "title": "How The Equinix (EQIX) Investment Story Is Shifting With Fresh Targets And 2026 Guidance",
+      "source": "Yahoo Finance",
+      "date": "2026-02-28T06:13:00"
     }
   ],
   "data_sources": [
