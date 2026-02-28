@@ -9021,6 +9021,12 @@ def get_stats():
             stats['total_leads'] = 0
         
         try:
+            c.execute("SELECT COUNT(*) FROM substations")
+            stats['total_substations'] = c.fetchone()[0] or 0
+        except:
+            stats['total_substations'] = 0
+        
+        try:
             c.execute("SELECT COUNT(*) FROM users")
             stats['total_users'] = c.fetchone()[0] or 0
         except:
@@ -9034,7 +9040,8 @@ def get_stats():
             'build': '92',
             'facilities': stats.get('total_facilities', 20000),
             'markets': len(stats.get('top_countries', {})),
-            'deals': stats.get('total_announcements', 673)
+            'deals': stats.get('total_announcements', 673),
+            'substations': stats.get('total_substations', 0)
         }
         cache_for_degradation('v1_stats', result)
         return jsonify(result)
