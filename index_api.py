@@ -204,8 +204,25 @@ def _safe_q(cur, sql, params=()):
         return []
 
 
-def _load_bulk(cfg, conn):
-    cur  = conn.cursor()
+def _run_query(sql, params=()):
+    """Run a single query on a fresh connection."""
+    try:
+        conn = get_db()
+        cur  = conn.cursor()
+        cur.execute(sql, params)
+        rows = cur.fetchall()
+        cur.close()
+        return rows
+    except Exception as e:
+        logger.error("GDCI query failed: %s | %s", e, sql[:80])
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return []
+
+
+def _load_bulk(cfg, _conn=None):
     fac  = cfg.get('fac_table', 'facilities')
     txn  = cfg.get('txn_table', 'deals')
     mi   = cfg.get('mi_table',  'market_intelligence')
@@ -219,49 +236,26 @@ def _load_bulk(cfg, conn):
     op_ph = ','.join(['%s']*len(op_st))
     pi_ph = ','.join(['%s']*len(pi_st))
 
-    op_rows   = _safe_q(cur, f"SELECT UPPER(COALESCE(country,'')), LOWER(COALESCE(state,'')), LOWER(COALESCE(city,'')), COALESCE(power_mw,0) FROM {fac} WHERE status IN ({op_ph})", op_st)
-    pi_rows   = _safe_q(cur, f"SELECT UPPER(COALESCE(country,'')), LOWER(COALESCE(state,'')), LOWER(COALESCE(city,'')), COALESCE(power_mw,0) FROM {fac} WHERE status IN ({pi_ph})", pi_st)
-    deal_rows = _safe_q(cur, f"SELECT LOWER(COALESCE(market,'')), COUNT(*), COALESCE(SUM(mw),0) FROM {txn} WHERE date >= NOW() - INTERVAL '90 days' GROUP BY LOWER(market)")
+    # Each query uses a fresh connection to avoid shared state corruption
+    op_rows   = _run_query(f"SELECT UPPER(COALESCE(country,'')), LOWER(COALESCE(state,'')), LOWER(COALESCE(city,'')), COALESCE(power_mw,0) FROM {fac} WHERE status IN ({op_ph})", op_st)
+    pi_rows   = _run_query(f"SELECT UPPER(COALESCE(country,'')), LOWER(COALESCE(state,'')), LOWER(COALESCE(city,'')), COALESCE(power_mw,0) FROM {fac} WHERE status IN ({pi_ph})", pi_st)
+    deal_rows = _run_query(f"SELECT LOWER(COALESCE(market,'')), COUNT(*), COALESCE(SUM(mw),0) FROM {txn} WHERE date >= NOW() - INTERVAL '90 days' GROUP BY LOWER(market)")
 
     pw_rows = []
     if _bool(cfg, 'power_enabled'):
-        try:
-            cur2 = conn.cursor()
-            cur2.execute(f"SELECT LOWER(COALESCE({pcol},'')), LOWER(COALESCE({scol},'')), COUNT(*), COALESCE(SUM(capacity_mw),0) FROM {pw} GROUP BY LOWER({pcol}), LOWER({scol})")
-            pw_rows = cur2.fetchall()
-            cur2.close()
-            logger.info("GDCI: loaded %d power plant rows", len(pw_rows))
-        except Exception as e:
-            logger.error("GDCI: power plant query failed: %s", e)
-            try: conn.rollback()
-            except: pass
+        pw_rows = _run_query(f"SELECT LOWER(COALESCE({pcol},'')), LOWER(COALESCE({scol},'')), COUNT(*), COALESCE(SUM(capacity_mw),0) FROM {pw} GROUP BY LOWER({pcol}), LOWER({scol})")
+        logger.info("GDCI: loaded %d power plant rows", len(pw_rows))
 
     sub_rows = []
     if _bool(cfg, 'sub_enabled'):
-        try:
-            cur3 = conn.cursor()
-            cur3.execute(f"SELECT LOWER(COALESCE(city,'')), LOWER(COALESCE(country,'')), COALESCE(SUM(capacity_mva),0), COALESCE(SUM(available_mva),0) FROM {sub} GROUP BY LOWER(city), LOWER(country)")
-            sub_rows = cur3.fetchall()
-            cur3.close()
-            logger.info("GDCI: loaded %d substation rows", len(sub_rows))
-        except Exception as e:
-            logger.error("GDCI: substation query failed: %s", e)
-            try: conn.rollback()
-            except: pass
+        sub_rows = _run_query(f"SELECT LOWER(COALESCE(city,'')), LOWER(COALESCE(country,'')), COALESCE(SUM(capacity_mva),0), COALESCE(SUM(available_mva),0) FROM {sub} GROUP BY LOWER(city), LOWER(country)")
+        logger.info("GDCI: loaded %d substation rows", len(sub_rows))
 
     mi_rows = []
     if _bool(cfg, 'mi_enabled'):
-        try:
-            cur4 = conn.cursor()
-            cur4.execute(f"SELECT LOWER(COALESCE(market,'')), avg_rate_per_kw FROM {mi} ORDER BY recorded_at DESC")
-            mi_rows = cur4.fetchall()
-            cur4.close()
-        except Exception as e:
-            logger.error("GDCI: mi query failed: %s", e)
-            try: conn.rollback()
-            except: pass
+        mi_rows = _run_query(f"SELECT LOWER(COALESCE(market,'')), avg_rate_per_kw FROM {mi} ORDER BY recorded_at DESC")
 
-    cur.close()
+    logger.info("GDCI bulk: op=%d pi=%d pw=%d sub=%d", len(op_rows), len(pi_rows), len(pw_rows), len(sub_rows))
     return {'op': op_rows, 'pi': pi_rows, 'deal': deal_rows, 'pw': pw_rows, 'sub': sub_rows, 'mi': mi_rows}
 
 
@@ -399,8 +393,7 @@ def _get_all_markets_scored():
     if _bulk_cache and now - _bulk_ts < BULK_TTL:
         return _bulk_cache
     cfg  = _get_config()
-    conn = get_db()
-    bulk = _load_bulk(cfg, conn)
+    bulk = _load_bulk(cfg)
     results = []
     for market in MARKETS:
         try:
