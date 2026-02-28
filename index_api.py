@@ -1,5 +1,5 @@
 """
-DC Hub Global Data Center Index API (index_api.py), 2.0
+DC Hub Global Data Center Index API (index_api.py)
 Flask Blueprint — mounts at /api/index
 v6.0 — Direct power market map, MW-density scoring, bulk queries
 """
@@ -596,3 +596,49 @@ def pw_debug():
     cfg_vals = {r[0]:r[1] for r in cur.fetchall()}
     cur.close()
     return jsonify({'config':cfg_vals,'top30_pw_rows':all_rows,'va_rows':va_rows})
+
+
+@index_bp.route('/admin/nova-trace')
+def nova_trace():
+    """Step-by-step trace of DHPW scoring for nova"""
+    cfg  = _get_config()
+    err  = _require_admin(cfg)
+    if err: return err
+    conn = get_db()
+    bulk = _load_bulk(cfg, conn)
+    market = MARKET_BY_ID['nova']
+    mid = 'nova'
+    city_kw = market.get('city_kw', [])
+    state_kw_pw = market.get('state_kw', [])
+    direct_keys = POWER_MARKET_MAP.get(mid, [])
+
+    trace = {
+        'power_enabled':    _bool(cfg, 'power_enabled'),
+        'sub_enabled':      _bool(cfg, 'sub_enabled'),
+        'bulk_pw_count':    len(bulk['pw']),
+        'bulk_sub_count':   len(bulk['sub']),
+        'direct_keys':      direct_keys,
+        'city_kw':          city_kw,
+        'state_kw_pw':      state_kw_pw,
+        'POWER_MARKET_MAP_nova': POWER_MARKET_MAP.get('nova'),
+        'matches': [],
+        'sub_total_mva': 0,
+    }
+
+    # Sub check
+    s_total = s_avail = 0.0
+    for (city, country, tmva, amva) in bulk['sub']:
+        city_hit = any(kw in city for kw in city_kw) if city_kw else False
+        if city_hit:
+            s_total += float(tmva); s_avail += float(amva)
+    trace['sub_total_mva'] = s_total
+
+    # Power check
+    for (pw_city, pw_state, cnt, mw) in bulk['pw']:
+        direct_hit = pw_city in direct_keys
+        city_hit   = any(kw.replace(' ','_') in pw_city or kw in pw_city for kw in city_kw) if city_kw else False
+        state_hit  = any(kw in pw_state for kw in state_kw_pw) if state_kw_pw else False
+        if direct_hit or city_hit or state_hit:
+            trace['matches'].append({'pw_city': pw_city, 'pw_state': pw_state, 'count': cnt, 'mw': float(mw), 'direct': direct_hit, 'city': city_hit, 'state': state_hit})
+
+    return jsonify(trace)
