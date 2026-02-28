@@ -16238,6 +16238,73 @@ except Exception as e:
     print(f"📦 KMZ Export: ⚠️ Error: {e}")
 
 # =============================================================================
+# SEO: Location Meta API (resolves slugs → display names for frontend)
+# =============================================================================
+@app.route('/api/v1/locations/<slug>/meta')
+def location_meta(slug):
+    """Resolve a location slug to a human-readable display name.
+    Example: /api/v1/locations/usa-il/meta → { location_display: "Illinois, United States" }
+    """
+    try:
+        # Use location_names module if available
+        display_name = None
+        if resolve_location_name:
+            parts = slug.upper().replace('-', ' ').split()
+            if len(parts) >= 2:
+                display_name = format_location_for_title(get_state_name(parts[1], parts[0]), get_country_name(parts[0]))
+            else:
+                display_name = get_country_name(parts[0])
+
+        if not display_name:
+            display_name = slug.replace('-', ' ').title()
+
+        # Get facility count
+        facility_count = 0
+        conn = None
+        try:
+            conn = get_neon_connection() if 'get_neon_connection' in dir() else get_db_connection()
+            if conn:
+                cur = conn.cursor()
+                parts = slug.upper().replace('-', ' ').split()
+                if len(parts) >= 2:
+                    cur.execute(
+                        "SELECT COUNT(*) FROM facilities WHERE UPPER(country) = %s AND UPPER(state) = %s",
+                        (parts[0], parts[1])
+                    )
+                else:
+                    cur.execute(
+                        "SELECT COUNT(*) FROM facilities WHERE UPPER(country) = %s",
+                        (parts[0],)
+                    )
+                result = cur.fetchone()
+                facility_count = result[0] if result else 0
+                cur.close()
+        except Exception:
+            pass
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+        return jsonify({
+            'slug': slug,
+            'location_display': display_name,
+            'facility_count': facility_count,
+            'source': 'railway'
+        })
+    except Exception as e:
+        fallback = slug.replace('-', ' ').title()
+        return jsonify({
+            'slug': slug,
+            'location_display': fallback,
+            'facility_count': 0,
+            'source': 'fallback'
+        })
+
+
+# =============================================================================
 # SEO: Dynamic Sitemap & Robots.txt (added Feb 2026)
 # =============================================================================
 @app.route('/sitemap.xml')
