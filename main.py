@@ -755,9 +755,9 @@ except Exception as e:
 try:
     from index_api import index_bp
     app.register_blueprint(index_bp)
-    print("📊 DC Hub Index: ✅ GDCI endpoints registered")
+    print("📊 DC Hub Index: ✅ Legacy index endpoints registered")
 except ImportError:
-    print("📊 DC Hub Index: ❌ index_api.py not found")
+    print("📊 DC Hub Index: ℹ️ index_api.py not found (replaced by gdci.py)")
 except Exception as e:
     print(f"📊 DC Hub Index: ⚠️ Error: {e}")
 # =============================================================================
@@ -2681,6 +2681,15 @@ except ImportError:
     logger.warning("⚠️ Enhanced Features: Not installed (enhanced_features.py missing)")
 except Exception as e:
     logger.error(f"⚠️ Enhanced Features failed: {e}")
+
+try:
+    from gdci import gdci_bp
+    app.register_blueprint(gdci_bp)
+    logger.info("✅ GDCI v2.0 — Global Data Center Composite Index")
+except ImportError:
+    logger.warning("⚠️ GDCI: Not installed (gdci.py missing)")
+except Exception as e:
+    logger.error(f"⚠️ GDCI blueprint failed: {e}")
 
 # =============================================================================
 # CRAWLER TRACKING SYSTEM
@@ -17867,14 +17876,9 @@ else:
     logger.info("📅 Crawler Scheduler: Not available — crawlers will not run on schedule")
 
 # =============================================================================
-# GDCI INDEX DASHBOARD
-# Serves the DC Hub Global Data Center Index dashboard page
+# GDCI INDEX DASHBOARD (moved to gdci.py blueprint — serves JSON API)
+# Frontend dashboard at dchub.cloud/gdci (Cloudflare Pages)
 # =============================================================================
-@app.route('/api/gdci')
-@app.route('/api/gdci/dashboard')
-def gdci_index_page():
-    """DC Hub Global Data Center Index dashboard"""
-    return send_from_directory('.', 'gdci_index.html')
 
 
 if __name__ == '__main__':
