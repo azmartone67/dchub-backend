@@ -5,7 +5,6 @@ v6.0 — Direct power market map, MW-density scoring, bulk queries
 """
 
 import os
-import os
 import time
 import logging
 from datetime import datetime, timezone
@@ -321,15 +320,18 @@ def _score_market_from_bulk(market, bulk, cfg):
 
     if op_mw > 0:
         pi_ratio = pi_mw / max(op_mw, 1)
-        if op_mw >= 2000:
-            density_score = 85 + min(15, (op_mw - 2000) / 1000 * 15)
+        # MW-density tiers — capped so DHCI alone maxes at ~88, pipeline adds up to +12
+        if op_mw >= 5000:
+            density_score = 80 + min(8, (op_mw - 5000) / 5000 * 8)
+        elif op_mw >= 2000:
+            density_score = 70 + (op_mw - 2000) / 3000 * 10
         elif op_mw >= 500:
-            density_score = 60 + (op_mw - 500) / 1500 * 25
+            density_score = 50 + (op_mw - 500) / 1500 * 20
         elif op_mw >= 100:
-            density_score = 35 + (op_mw - 100) / 400 * 25
+            density_score = 25 + (op_mw - 100) / 400 * 25
         else:
-            density_score = op_mw / 100 * 35
-        pipeline_bonus = min(15, pi_ratio * 30)
+            density_score = op_mw / 100 * 25
+        pipeline_bonus = min(12, pi_ratio * 40)
         dhci_val = round(min(100, density_score + pipeline_bonus), 1)
         vac_pct  = max(2, min(15, 15 - pi_ratio * 5))
         dhci_d   = {'operational_count': op_cnt, 'operational_mw': round(op_mw,1), 'pipeline_mw': round(pi_mw,1), 'total_count': op_cnt+pi_cnt, 'total_mw': round(tot_mw,1), 'vacancy_pct': round(vac_pct,2)}
@@ -619,65 +621,3 @@ def admin_sources():
         ],'markets_defined':len(MARKETS)})
     except Exception as e:
         return jsonify({'error':str(e)}), 500
-
-@index_bp.route('/admin/pw-debug')
-def pw_debug():
-    cfg  = _get_config()
-    err  = _require_admin(cfg)
-    if err: return err
-    conn = get_db()
-    cur  = conn.cursor()
-    pw   = cfg.get('power_table', 'discovered_power_plants')
-    pcol = cfg.get('power_city_col', 'market')
-    scol = cfg.get('power_state_col', 'state')
-    cur.execute(f"SELECT LOWER(COALESCE({pcol},'')), LOWER(COALESCE({scol},'')), COUNT(*), COALESCE(SUM(capacity_mw),0) FROM {pw} GROUP BY LOWER(COALESCE({pcol},'')), LOWER(COALESCE({scol},'')) ORDER BY COUNT(*) DESC LIMIT 30")
-    all_rows = [{'market':r[0],'state':r[1],'count':r[2],'mw':float(r[3])} for r in cur.fetchall()]
-    cur.execute(f"SELECT LOWER(COALESCE({pcol},'')), LOWER(COALESCE({scol},'')), COUNT(*), COALESCE(SUM(capacity_mw),0) FROM {pw} WHERE LOWER({scol})='va' GROUP BY LOWER(COALESCE({pcol},'')), LOWER(COALESCE({scol},''))")
-    va_rows = [{'market':r[0],'state':r[1],'count':r[2],'mw':float(r[3])} for r in cur.fetchall()]
-    cur.execute("SELECT key,value FROM gdci_config WHERE key IN ('power_enabled','sub_enabled','power_city_col','power_state_col')")
-    cfg_vals = {r[0]:r[1] for r in cur.fetchall()}
-    cur.close()
-    return jsonify({'config':cfg_vals,'top30_pw_rows':all_rows,'va_rows':va_rows})
-
-
-@index_bp.route('/admin/nova-trace')
-def nova_trace():
-    """Step-by-step trace of DHPW scoring for nova"""
-    cfg = _get_config()
-    err = _require_admin(cfg)
-    if err: return err
-
-    # Show which env vars exist
-    import psycopg2
-    env_keys = ['DATABASE_URL','POSTGRES_URL','DB_URL','NEON_DATABASE_URL','NEON_URL','PG_URL','PGURL','POSTGRES_CONNECTION_STRING']
-    found_vars = {k: ('SET' if os.environ.get(k) else 'missing') for k in env_keys}
-    all_env = [k for k in os.environ if 'DB' in k.upper() or 'PG' in k.upper() or 'POSTGRES' in k.upper() or 'NEON' in k.upper() or 'SQL' in k.upper()]
-
-    # Try direct power query using get_db() directly (same as pw-debug)
-    pw = cfg.get('power_table','discovered_power_plants')
-    pcol = cfg.get('power_city_col','market')
-    scol = cfg.get('power_state_col','state')
-    direct_rows = []
-    direct_error = None
-    try:
-        conn = get_db()
-        cur  = conn.cursor()
-        cur.execute(f"SELECT LOWER(COALESCE({pcol},'')), LOWER(COALESCE({scol},'')), COUNT(*), COALESCE(SUM(capacity_mw),0) FROM {pw} GROUP BY LOWER(COALESCE({pcol},'')), LOWER(COALESCE({scol},'')) ORDER BY COUNT(*) DESC LIMIT 5")
-        direct_rows = [{'market':r[0],'state':r[1],'count':r[2],'mw':float(r[3])} for r in cur.fetchall()]
-        cur.close()
-    except Exception as e:
-        direct_error = str(e)
-
-    # Try via _run_query
-    rq_rows = _run_query(f"SELECT LOWER(COALESCE({pcol},'')), COUNT(*) FROM {pw} GROUP BY LOWER(COALESCE({pcol},'')) ORDER BY COUNT(*) DESC LIMIT 5")
-    rq_error = None if rq_rows else "returned empty"
-
-    return jsonify({
-        'env_vars_checked': found_vars,
-        'all_db_env_keys':  all_env,
-        'direct_getdb_rows': direct_rows,
-        'direct_getdb_error': direct_error,
-        'run_query_rows': [{'market':r[0],'count':r[1]} for r in rq_rows] if rq_rows else [],
-        'run_query_error': rq_error,
-        'power_enabled': _bool(cfg,'power_enabled'),
-    })
