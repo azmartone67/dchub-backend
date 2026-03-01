@@ -1,5 +1,5 @@
 """
-DC Hub Global Data Center Index API (index_api.py) 2.0
+DC Hub Global Data Center Index API (index_api.py)
 Flask Blueprint — mounts at /api/index
 v6.0 — Direct power market map, MW-density scoring, bulk queries
 """
@@ -630,9 +630,9 @@ def pw_debug():
     pw   = cfg.get('power_table', 'discovered_power_plants')
     pcol = cfg.get('power_city_col', 'market')
     scol = cfg.get('power_state_col', 'state')
-    cur.execute(f"SELECT LOWER({pcol}), LOWER({scol}), COUNT(*), COALESCE(SUM(capacity_mw),0) FROM {pw} GROUP BY LOWER({pcol}), LOWER({scol}) ORDER BY COUNT(*) DESC LIMIT 30")
+    cur.execute(f"SELECT LOWER(COALESCE({pcol},'')), LOWER(COALESCE({scol},'')), COUNT(*), COALESCE(SUM(capacity_mw),0) FROM {pw} GROUP BY LOWER(COALESCE({pcol},'')), LOWER(COALESCE({scol},'')) ORDER BY COUNT(*) DESC LIMIT 30")
     all_rows = [{'market':r[0],'state':r[1],'count':r[2],'mw':float(r[3])} for r in cur.fetchall()]
-    cur.execute(f"SELECT LOWER({pcol}), LOWER({scol}), COUNT(*), COALESCE(SUM(capacity_mw),0) FROM {pw} WHERE LOWER({scol})='va' GROUP BY LOWER({pcol}), LOWER({scol})")
+    cur.execute(f"SELECT LOWER(COALESCE({pcol},'')), LOWER(COALESCE({scol},'')), COUNT(*), COALESCE(SUM(capacity_mw),0) FROM {pw} WHERE LOWER({scol})='va' GROUP BY LOWER(COALESCE({pcol},'')), LOWER(COALESCE({scol},''))")
     va_rows = [{'market':r[0],'state':r[1],'count':r[2],'mw':float(r[3])} for r in cur.fetchall()]
     cur.execute("SELECT key,value FROM gdci_config WHERE key IN ('power_enabled','sub_enabled','power_city_col','power_state_col')")
     cfg_vals = {r[0]:r[1] for r in cur.fetchall()}
@@ -662,14 +662,14 @@ def nova_trace():
     try:
         conn = get_db()
         cur  = conn.cursor()
-        cur.execute(f"SELECT LOWER(COALESCE({pcol},'')), LOWER(COALESCE({scol},'')), COUNT(*), COALESCE(SUM(capacity_mw),0) FROM {pw} GROUP BY LOWER({pcol}), LOWER({scol}) ORDER BY COUNT(*) DESC LIMIT 5")
+        cur.execute(f"SELECT LOWER(COALESCE({pcol},'')), LOWER(COALESCE({scol},'')), COUNT(*), COALESCE(SUM(capacity_mw),0) FROM {pw} GROUP BY LOWER(COALESCE({pcol},'')), LOWER(COALESCE({scol},'')) ORDER BY COUNT(*) DESC LIMIT 5")
         direct_rows = [{'market':r[0],'state':r[1],'count':r[2],'mw':float(r[3])} for r in cur.fetchall()]
         cur.close()
     except Exception as e:
         direct_error = str(e)
 
     # Try via _run_query
-    rq_rows = _run_query(f"SELECT LOWER(COALESCE({pcol},'')), COUNT(*) FROM {pw} GROUP BY LOWER({pcol}) ORDER BY COUNT(*) DESC LIMIT 5")
+    rq_rows = _run_query(f"SELECT LOWER(COALESCE({pcol},'')), COUNT(*) FROM {pw} GROUP BY LOWER(COALESCE({pcol},'')) ORDER BY COUNT(*) DESC LIMIT 5")
     rq_error = None if rq_rows else "returned empty"
 
     return jsonify({
