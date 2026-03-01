@@ -215,7 +215,7 @@ def _flush_buffer():
         for platform, count in platform_counts.items():
             cur.execute("""
                 INSERT INTO ai_daily_stats (date, platform, request_count)
-                VALUES (%s, %s, %s)
+                VALUES (%s::date, %s, %s)
                 ON CONFLICT (date, platform) DO UPDATE SET
                     request_count = ai_daily_stats.request_count + %s
             """, (today, platform, count, count))
@@ -241,7 +241,7 @@ def get_daily_stats(days=7):
         rows = _execute("""
             SELECT date::text, platform, request_count
             FROM ai_daily_stats
-            WHERE date >= CURRENT_DATE - INTERVAL '%s days'
+            WHERE date::date >= CURRENT_DATE - INTERVAL '%s days'
             ORDER BY date ASC
         """ % int(days), fetchall=True)
 
@@ -384,7 +384,7 @@ def init_ai_tracking(app):
             today_row = _execute("""
                 SELECT COALESCE(SUM(request_count), 0) as today_total
                 FROM ai_daily_stats
-                WHERE date = CURRENT_DATE
+                WHERE date::date = CURRENT_DATE
             """, fetch=True)
             today_total = today_row.get('today_total', 0) if today_row else 0
 
@@ -405,7 +405,7 @@ def init_ai_tracking(app):
             weekly = _execute("""
                 SELECT platform, SUM(request_count) as week_total
                 FROM ai_daily_stats
-                WHERE date >= CURRENT_DATE - INTERVAL '7 days'
+                WHERE date::date >= CURRENT_DATE - INTERVAL '7 days'
                 GROUP BY platform
                 ORDER BY week_total DESC
             """, fetchall=True) or []
@@ -485,14 +485,14 @@ def init_ai_tracking(app):
                 rows = _execute("""
                     SELECT date::text, platform, request_count
                     FROM ai_daily_stats
-                    WHERE date >= %s::date
+                    WHERE date::date >= %s::date
                     ORDER BY date ASC, request_count DESC
                 """, (since,), fetchall=True) or []
             else:
                 rows = _execute("""
                     SELECT date::text, platform, request_count
                     FROM ai_daily_stats
-                    WHERE date >= CURRENT_DATE - INTERVAL '%s days'
+                    WHERE date::date >= CURRENT_DATE - INTERVAL '%s days'
                     ORDER BY date ASC, request_count DESC
                 """ % days, fetchall=True) or []
 
