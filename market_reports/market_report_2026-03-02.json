@@ -1,6 +1,6 @@
 {
   "report_date": "2026-03-02",
-  "generated_at": "2026-03-02T09:29:36.215275",
+  "generated_at": "2026-03-02T09:33:02.080377",
   "summary": {
     "total_facilities": 11548,
     "total_providers": 3962,
@@ -89,6 +89,11 @@
   ],
   "recent_news": [
     {
+      "title": "AWS UAE data centre hit by flying objects amid regional attacks",
+      "source": "Capacity Media",
+      "date": "2026-03-02T09:26:37"
+    },
+    {
       "title": "Amazon Cloud Services Disrupted In UAE After 'Objects' Hit a Data Center",
       "source": "PCMag",
       "date": "2026-03-02T09:23:08"
@@ -132,11 +137,6 @@
       "title": "Server crashes traced to one very literal knee-jerk reaction",
       "source": "The Register DC",
       "date": "2026-03-02T07:30:15"
-    },
-    {
-      "title": "Amazon AWS faces outages: Bahrain, UAE data centers hit amid Iran strikes",
-      "source": "Deccan Herald",
-      "date": "2026-03-02T07:11:14"
     }
   ],
   "data_sources": [

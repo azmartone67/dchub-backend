@@ -109,7 +109,7 @@ def _ensure_tables():
         """)
         _execute("""
             CREATE TABLE IF NOT EXISTS linkedin_posts (
-                id BIGSERIAL PRIMARY KEY,
+                id SERIAL PRIMARY KEY,
                 post_urn TEXT,
                 content TEXT,
                 post_type TEXT DEFAULT 'manual',
