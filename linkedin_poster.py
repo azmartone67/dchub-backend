@@ -248,7 +248,7 @@ def post_to_linkedin(text, link_url=None, link_title=None, link_desc=None):
         'Authorization': f'Bearer {access_token}',
         'Content-Type': 'application/json',
         'X-Restli-Protocol-Version': '2.0.0',
-        'LinkedIn-Version': '202402',
+        'LinkedIn-Version': '202502',
     }
 
     try:
