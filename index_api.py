@@ -413,8 +413,22 @@ def _score_market_from_bulk(market, bulk, cfg):
             if direct_hit or city_hit:
                 pw_cnt += int(cnt); pw_mw += float(mw)
         if pw_cnt > 0:
-            # Adjusted scaling: 2000 MW nearby = score ~100 (was 5000)
-            dhpw_val = round(min(100, (pw_mw/2000)*100 + pw_cnt*0.3), 1) if pw_mw > 0 else round(min(100, pw_cnt*0.4), 1)
+            # Tiered scoring for regional grid capacity (data ranges 20-200 GW per market)
+            # Higher MW = more grid capacity = better energy readiness
+            pw_gw = pw_mw / 1000.0
+            if pw_gw >= 150:
+                dhpw_val = 90 + min(10, (pw_gw - 150) / 50 * 10)   # 150+ GW: 90-100
+            elif pw_gw >= 80:
+                dhpw_val = 70 + (pw_gw - 80) / 70 * 20              # 80-150 GW: 70-90
+            elif pw_gw >= 40:
+                dhpw_val = 50 + (pw_gw - 40) / 40 * 20              # 40-80 GW: 50-70
+            elif pw_gw >= 20:
+                dhpw_val = 30 + (pw_gw - 20) / 20 * 20              # 20-40 GW: 30-50
+            elif pw_gw >= 5:
+                dhpw_val = 10 + (pw_gw - 5) / 15 * 20               # 5-20 GW: 10-30
+            else:
+                dhpw_val = pw_gw / 5 * 10                            # 0-5 GW: 0-10
+            dhpw_val = round(min(100, max(0, dhpw_val)), 1)
             dhpw_d   = {'source':'discovered_power_plants','plant_count':int(pw_cnt),'total_mw':round(pw_mw,1)}
 
     dhri_val = None
