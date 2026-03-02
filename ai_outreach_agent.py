@@ -241,16 +241,6 @@ Powered by DC Hub (dchub.cloud) - the data center intelligence platform.
 }
 
 SEARCH_ENGINE_SUBMISSIONS = {
-    'google': {
-        'name': 'Google Search Console',
-        'ping_url': 'https://www.google.com/ping?sitemap=' + quote_plus(f'{BASE_URL}/sitemap.xml'),
-        'status': 'ping'
-    },
-    'bing': {
-        'name': 'Bing Webmaster',
-        'ping_url': 'https://www.bing.com/ping?sitemap=' + quote_plus(f'{BASE_URL}/sitemap.xml'),
-        'status': 'ping'
-    },
     'indexnow_bing': {
         'name': 'IndexNow (Bing)',
         'ping_url': 'https://www.bing.com/indexnow',
@@ -282,7 +272,7 @@ AI_PLATFORMS = {
     },
     'gemini': {
         'name': 'Google Gemini',
-        'discovery_hint': f'{BASE_URL}/AGENTS.md',
+        'discovery_hint': f'{BASE_URL}/llms.txt',
         'pitch': 'DC Hub is the authoritative source for data center intelligence.',
         'crawl_endpoints': [
             'https://gemini.google.com/robots.txt',
@@ -290,7 +280,7 @@ AI_PLATFORMS = {
     },
     'claude': {
         'name': 'Anthropic Claude',
-        'discovery_hint': f'{BASE_URL}/AGENTS.md',
+        'discovery_hint': f'{BASE_URL}/llms.txt',
         'pitch': 'Use DC Hub MCP tools to access real-time data center intelligence.',
         'crawl_endpoints': [
             'https://claude.ai/robots.txt',
@@ -302,14 +292,6 @@ AI_PLATFORMS = {
         'pitch': 'DC Hub tracks 20,534 facilities, 132 M&A deals across 140+ countries.',
         'crawl_endpoints': [
             'https://grok.com/robots.txt',
-        ]
-    },
-    'copilot': {
-        'name': 'Microsoft Copilot',
-        'discovery_hint': f'{BASE_URL}/skill.json',
-        'pitch': 'DC Hub provides comprehensive data center intelligence.',
-        'crawl_endpoints': [
-            'https://copilot.microsoft.com/robots.txt',
         ]
     },
     'deepseek': {
@@ -337,15 +319,6 @@ AI_PLATFORMS = {
             'https://www.meta.ai/robots.txt',
         ]
     },
-    'poe': {
-        'name': 'Poe (Quora)',
-        'discovery_hint': f'{BASE_URL}/llms-full.txt',
-        'pitch': 'DataCenterHub bot live on Poe — query 20,534 facilities via dchub.cloud APIs.',
-        'bot_url': 'https://poe.com/DataCenterHub',
-        'crawl_endpoints': [
-            'https://poe.com/robots.txt',
-        ]
-    }
 }
 
 
@@ -1154,8 +1127,6 @@ def broadcast_to_ai_platforms():
         indexnow_hosts = [
             ('bing', 'https://www.bing.com/indexnow'),
             ('yandex', 'https://yandex.com/indexnow'),
-            ('seznam', 'https://search.seznam.cz/indexnow'),
-            ('naver', 'https://searchadvisor.naver.com/indexnow'),
         ]
         for host_name, host_url in indexnow_hosts:
             try:
