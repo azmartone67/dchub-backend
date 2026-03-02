@@ -472,7 +472,7 @@ def query_wind_turbines(bounds=None, state=None, limit=500):
 
 
 def query_pipelines(bounds=None, state=None, limit=200):
-    """Return major interstate gas pipelines serving DC markets"""
+    """Return major interstate gas pipelines serving DC markets + any DB-discovered ones"""
     major_pipelines = [
         {'id': 'pipe-transco-001', 'operator': 'Transcontinental Gas (Williams)', 'pipeline_type': 'Interstate Transmission', 'status': 'Active', 'diameter': 42, 'commodity': 'Natural Gas', 'name': 'Transco Pipeline', 'capacity_mdth': 17400, 'lat': 39.0, 'lng': -77.5, 'states': 'TX,LA,MS,AL,GA,SC,NC,VA,MD,PA,NJ,NY'},
         {'id': 'pipe-tet-001', 'operator': 'Texas Eastern (Enbridge)', 'pipeline_type': 'Interstate Transmission', 'status': 'Active', 'diameter': 36, 'commodity': 'Natural Gas', 'name': 'Texas Eastern Pipeline', 'capacity_mdth': 10200, 'lat': 33.7, 'lng': -84.3, 'states': 'TX,LA,MS,AL,GA,TN,KY,OH,PA,NJ,NY'},
@@ -507,6 +507,7 @@ def query_pipelines(bounds=None, state=None, limit=200):
         {'id': 'pipe-east-tn-001', 'operator': 'East Tennessee Natural Gas (Enbridge)', 'pipeline_type': 'Interstate Transmission', 'status': 'Active', 'diameter': 24, 'commodity': 'Natural Gas', 'name': 'East Tennessee Natural Gas', 'capacity_mdth': 1400, 'lat': 36.2, 'lng': -86.8, 'states': 'TN,VA,WV'},
     ]
 
+    # Filter hardcoded by state if requested
     results = []
     for pipe in major_pipelines:
         if state:
@@ -515,6 +516,32 @@ def query_pipelines(bounds=None, state=None, limit=200):
                 results.append(pipe)
         else:
             results.append(pipe)
+    
+    # Merge in DB-discovered pipelines from HIFLD bulk pulls
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        query = "SELECT * FROM discovered_pipelines WHERE source != 'EIA/FERC'"
+        params = []
+        if state:
+            query += " AND (state = %s OR states_served LIKE %s)"
+            params.extend([state, f"%{state}%"])
+        query += " ORDER BY capacity_mdth DESC NULLS LAST LIMIT %s"
+        params.append(max(0, limit - len(results)))
+        c.execute(query, params)
+        db_pipes = _dict_rows(c)
+        
+        # Dedup by name similarity — don't add DB pipe if hardcoded already covers it
+        hardcoded_names = set(p['name'].lower() for p in results)
+        for db_pipe in db_pipes:
+            db_name = (db_pipe.get('name') or '').lower()
+            if not any(h in db_name or db_name in h for h in hardcoded_names if len(h) > 5):
+                results.append(db_pipe)
+        
+        conn.close()
+    except Exception as e:
+        logger.debug(f"DB pipeline merge error: {e}")
+    
     return results[:limit]
 
 
@@ -1306,5 +1333,3 @@ def register_energy_discovery_routes(app):
 if __name__ == '__main__':
     init_discovery_db()
     run_full_sync()
-
-
