@@ -59,6 +59,7 @@ try:
     print(f"  AI platforms only: {ai_only:>10,}")
 except Exception as e:
     print(f"  ❌ Error: {e}")
+    conn.rollback()
 
 
 # ── 2. ai_usage_tracking — Recent individual requests ───────
@@ -119,6 +120,7 @@ try:
 
 except Exception as e:
     print(f"  ❌ Error: {e}")
+    conn.rollback()
 
 
 # ── 3. ai_daily_stats — Daily aggregates ────────────────────
@@ -144,6 +146,7 @@ try:
         print("  ⚠️  No daily stats found")
 except Exception as e:
     print(f"  ❌ Error: {e}")
+    conn.rollback()
 
 
 # ── 4. PRE-FIX vs POST-FIX comparison ───────────────────────
@@ -154,8 +157,8 @@ try:
     cur.execute("""
         SELECT COALESCE(SUM(request_count), 0)
         FROM ai_daily_stats
-        WHERE date >= (%s::date - INTERVAL '7 days')
-          AND date < %s::date
+        WHERE date::date >= (%s::date - INTERVAL '7 days')
+          AND date::date < %s::date
     """, (FIX_DATE, FIX_DATE))
     pre_fix = cur.fetchone()[0]
 
@@ -163,7 +166,7 @@ try:
     cur.execute("""
         SELECT COALESCE(SUM(request_count), 0)
         FROM ai_daily_stats
-        WHERE date >= %s::date
+        WHERE date::date >= %s::date
     """, (FIX_DATE,))
     post_fix = cur.fetchone()[0]
 
@@ -205,6 +208,8 @@ try:
 
 except Exception as e:
     print(f"  ❌ Error: {e}")
+    conn.rollback()
+    conn.rollback()
 
 
 # ── 5. MCP-specific traffic ─────────────────────────────────
@@ -241,6 +246,7 @@ try:
             print("  No endpoint data recorded at all")
 except Exception as e:
     print(f"  ❌ Error: {e}")
+    conn.rollback()
 
 
 # ── 6. Last 24h activity feed ────────────────────────────────
@@ -270,6 +276,7 @@ try:
         print(f"  Last recorded activity: {last or 'never'}")
 except Exception as e:
     print(f"  ❌ Error: {e}")
+    conn.rollback()
 
 
 # ── 7. Table inventory ───────────────────────────────────────
