@@ -1,6 +1,6 @@
 {
   "report_date": "2026-03-02",
-  "generated_at": "2026-03-02T16:14:22.027942",
+  "generated_at": "2026-03-02T16:21:05.035218",
   "summary": {
     "total_facilities": 11548,
     "total_providers": 3962,
@@ -89,6 +89,11 @@
   ],
   "recent_news": [
     {
+      "title": "NVIDIA (NVDA) Bolsters AI Infrastructure with $4 Billion Optical Tech Investment",
+      "source": "GuruFocus",
+      "date": "2026-03-02T16:03:29"
+    },
+    {
       "title": "India's Tejas Networks secures 5G RAN contract with NEC Corporation",
       "source": "Data Center Dynamics",
       "date": "2026-03-02T16:00:04"
@@ -132,11 +137,6 @@
       "title": "PJM requests approval from FERC for new behind-the-meter generation rules for data centers",
       "source": "Data Center Dynamics",
       "date": "2026-03-02T14:18:06"
-    },
-    {
-      "title": "SAP writes $480M check to finally end IP legal spat with Teradata",
-      "source": "The Register DC",
-      "date": "2026-03-02T14:15:10"
     }
   ],
   "data_sources": [
