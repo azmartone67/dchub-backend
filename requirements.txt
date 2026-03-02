@@ -40,3 +40,5 @@ gridstatus
 # Utilities
 pytz
 psutil
+# Backup (R2/S3)
+boto3
