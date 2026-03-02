@@ -1,7 +1,7 @@
 """
 DC Hub Global Data Center Index API (index_api.py)
 Flask Blueprint — mounts at /api/index
-v6.0 — Direct power market map, MW-density scoring, bulk queries
+v6.1 — Scoring fixes: shared-state dedup, power plant locality, expanded pipeline statuses, broader deal matching
 """
 
 import os
@@ -31,7 +31,8 @@ DEFAULT_CONFIG = {
     'power_table':            'discovered_power_plants',
     'sub_table':              'substations',
     'fac_status_operational': 'active,Operational',
-    'fac_status_pipeline':    'Under Construction,Construction,Planned,Planning,Announced,announced,planned',
+    # FIX 3: Expanded pipeline status list to catch more variations
+    'fac_status_pipeline':    'Under Construction,Construction,Planned,Planning,Announced,announced,planned,under construction,Pre-Leased,pre-leased,Proposed,proposed,In Development,in development,Approved,approved,Permitted,permitted,Pipeline,pipeline',
     'mi_enabled':    'true',
     'power_enabled': 'true',
     'sub_enabled':   'true',
@@ -153,6 +154,16 @@ POWER_MARKET_MAP = {
     'dxb':  ['dubai'],
     'gru':  ['sao_paulo'],
     'mex':  ['mexico_city'],
+}
+
+# FIX 1: Markets that share a state — only city-level matching allowed
+SHARED_STATES = {
+    'tx': ['dal', 'iah'],
+    'texas': ['dal', 'iah'],
+    'ca': ['sfo', 'lax'],
+    'california': ['sfo', 'lax'],
+    'nj': ['nyc'],
+    'ny': ['nyc'],
 }
 
 
@@ -281,23 +292,44 @@ def _load_bulk(cfg, _conn=None):
     return {'op': op_rows, 'pi': pi_rows, 'deal': deal_rows, 'pw': pw_rows, 'sub': sub_rows, 'mi': mi_rows}
 
 
+# FIX 1: Prevent state-level double-counting for shared states
 def _match_facilities(rows, market):
+    """
+    Match facility rows to a market. City keywords always take priority.
+    State-level matching is ONLY used when this market is the sole occupant
+    of that state. For shared states (e.g. Texas has Dallas + Houston),
+    ONLY city keyword matches count — no state-level fallback.
+    """
     codes    = [c.upper() for c in market['country_codes']]
     city_kw  = market.get('city_kw', [])
     state_kw = market.get('state_kw', [])
     total_cnt = 0
     total_mw  = 0.0
+
+    # Check if this market shares its state with another market
+    shares_state = False
+    for sk in state_kw:
+        shared = SHARED_STATES.get(sk.lower(), [])
+        if len(shared) > 1:
+            shares_state = True
+            break
+
     for (country, state, city, mw) in rows:
         if country not in codes:
             continue
-        city_match  = any(kw in city  for kw in city_kw)  if city_kw  else False
-        state_match = any(kw in state for kw in state_kw) if state_kw else False
+        city_match = any(kw in city for kw in city_kw) if city_kw else False
+
         if not city_kw and not state_kw:
+            # Country-only markets (e.g., Singapore, Hong Kong)
             total_cnt += 1; total_mw += float(mw)
         elif city_match:
+            # City keyword match — always counts
             total_cnt += 1; total_mw += float(mw)
-        elif state_match and state:
-            total_cnt += 1; total_mw += float(mw)
+        elif not shares_state and state_kw:
+            # State match ONLY if this market doesn't share the state
+            state_match = any(kw in state for kw in state_kw) if state else False
+            if state_match:
+                total_cnt += 1; total_mw += float(mw)
     return total_cnt, total_mw
 
 
@@ -338,12 +370,18 @@ def _score_market_from_bulk(market, bulk, cfg):
         dhpi_val = round(min(100, pi_ratio * 50), 1)
         dhpi_d   = {'pipeline_mw': round(pi_mw,1), 'operational_mw': round(op_mw,1), 'pipeline_ratio_pct': round(pi_ratio*100,2)}
 
+    # FIX 4: Broader deal matching — also match on market name and market ID
     dhdi_val = dhdi_d = None
     city_kw  = market.get('city_kw', [])
     codes    = [c.lower() for c in market['country_codes']]
     deal_cnt = deal_mw = 0
+    market_name_lower = market['name'].lower()
     for (mkt, cnt, mw) in bulk['deal']:
-        if any(kw in mkt for kw in city_kw) if city_kw else any(c in mkt for c in codes):
+        city_hit = any(kw in mkt for kw in city_kw) if city_kw else False
+        code_hit = any(c in mkt for c in codes) if not city_kw else False
+        name_hit = mkt in market_name_lower or market_name_lower.split(',')[0].strip().lower().replace(' ','_') in mkt
+        id_hit   = mid in mkt or mkt in mid
+        if city_hit or code_hit or name_hit or id_hit:
             deal_cnt += int(cnt); deal_mw += float(mw)
     if deal_cnt > 0 or deal_mw > 0:
         dhdi_val = round(min(100, (deal_mw/2000)*100 + deal_cnt*5), 1)
@@ -364,18 +402,19 @@ def _score_market_from_bulk(market, bulk, cfg):
             dhpw_val = round(min(100, max(0, (1 - headroom/100)*100)), 1)
             dhpw_d   = {'source':'substations','total_mva':round(s_total,1),'avail_mva':round(s_avail,1),'headroom_pct':round(headroom,1)}
 
+    # FIX 2: Power plant matching — NO state fallback, only direct map + city keywords
     if dhpw_val is None and _bool(cfg, 'power_enabled'):
         pw_cnt = pw_mw = 0.0
         direct_keys = POWER_MARKET_MAP.get(mid, [])
-        state_kw_pw = market.get('state_kw', [])
         for (pw_city, pw_state, cnt, mw) in bulk['pw']:
             direct_hit = pw_city in direct_keys
             city_hit   = any(kw.replace(' ','_') in pw_city or kw in pw_city for kw in city_kw) if city_kw else False
-            state_hit  = any(kw in pw_state for kw in state_kw_pw) if state_kw_pw else False
-            if direct_hit or city_hit or state_hit:
+            # NO state_hit — prevents matching entire state's power grid
+            if direct_hit or city_hit:
                 pw_cnt += int(cnt); pw_mw += float(mw)
         if pw_cnt > 0:
-            dhpw_val = round(min(100, (pw_mw/5000)*100 + pw_cnt*0.5), 1) if pw_mw > 0 else round(min(100, pw_cnt*0.4), 1)
+            # Adjusted scaling: 2000 MW nearby = score ~100 (was 5000)
+            dhpw_val = round(min(100, (pw_mw/2000)*100 + pw_cnt*0.3), 1) if pw_mw > 0 else round(min(100, pw_cnt*0.4), 1)
             dhpw_d   = {'source':'discovered_power_plants','plant_count':int(pw_cnt),'total_mw':round(pw_mw,1)}
 
     dhri_val = None
