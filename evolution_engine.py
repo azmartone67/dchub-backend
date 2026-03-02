@@ -1390,7 +1390,7 @@ Format as JSON:
             cursor.execute('SELECT COUNT(*) FROM evolution_log')
             actions_count = cursor.fetchone()[0]
             
-            cursor.execute("SELECT COUNT(*) FROM quality_issues WHERE fixed = FALSE")
+            cursor.execute("SELECT COUNT(*) FROM quality_issues WHERE fixed = 0")
             open_issues = cursor.fetchone()[0]
             
             cursor.execute("SELECT COUNT(*) FROM api_registry WHERE enabled = 1")
@@ -1399,7 +1399,7 @@ Format as JSON:
             cursor.execute("""
                 SELECT action_type, COUNT(*) 
                 FROM evolution_log 
-                WHERE timestamp > NOW() - INTERVAL '24 hours'
+                WHERE timestamp > datetime('now', '-24 hours')
                 GROUP BY action_type
             """)
             recent_actions = dict(cursor.fetchall())
