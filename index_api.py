@@ -44,7 +44,7 @@ DEFAULT_CONFIG = {
 
 MARKETS = [
     # US
-    {'id':'nova','name':'Northern Virginia, US',     'region':'us',   'country_codes':['US'],'city_kw':['ashburn','loudoun','northern virginia','sterling','leesburg'],'state_kw':['va','virginia']},
+    {'id':'nova','name':'Northern Virginia, US',     'region':'us',   'country_codes':['US'],'city_kw':['ashburn','loudoun','northern virginia','sterling','leesburg','manassas','bristow','prince william','chantilly','herndon','reston','dulles','haymarket','gainesville','warrenton','south hill','stafford'],'state_kw':['va','virginia']},
     {'id':'dal', 'name':'Dallas/Fort Worth, US',     'region':'us',   'country_codes':['US'],'city_kw':['dallas','fort worth','dfw','irving','plano','arlington','addison','garland'],'state_kw':['tx','texas']},
     {'id':'phx', 'name':'Phoenix, US',               'region':'us',   'country_codes':['US'],'city_kw':['phoenix','chandler','mesa','tempe','scottsdale','gilbert'],'state_kw':['az','arizona']},
     {'id':'chi', 'name':'Chicago, US',               'region':'us',   'country_codes':['US'],'city_kw':['chicago','elk grove','aurora','naperville','lisle'],'state_kw':['il','illinois']},
@@ -56,7 +56,7 @@ MARKETS = [
     {'id':'bos', 'name':'Boston, US',                'region':'us',   'country_codes':['US'],'city_kw':['boston','somerville','cambridge','waltham','quincy'],'state_kw':['ma','massachusetts']},
     {'id':'den', 'name':'Denver, US',                'region':'us',   'country_codes':['US'],'city_kw':['denver','englewood','littleton','aurora','centennial'],'state_kw':['co','colorado']},
     {'id':'mia', 'name':'Miami, US',                 'region':'us',   'country_codes':['US'],'city_kw':['miami','doral','boca raton','fort lauderdale','miramar'],'state_kw':['fl','florida']},
-    {'id':'iah', 'name':'Houston, US',               'region':'us',   'country_codes':['US'],'city_kw':['houston','katy','sugar land','stafford','webster'],'state_kw':['tx','texas']},
+    {'id':'iah', 'name':'Houston, US',               'region':'us',   'country_codes':['US'],'city_kw':['houston','katy','sugar land','webster','baytown','pasadena','the woodlands','cypress'],'state_kw':['tx','texas']},
     {'id':'msp', 'name':'Minneapolis, US',           'region':'us',   'country_codes':['US'],'city_kw':['minneapolis','saint paul','eden prairie','bloomington','st paul'],'state_kw':['mn','minnesota']},
     {'id':'slc', 'name':'Salt Lake City, US',        'region':'us',   'country_codes':['US'],'city_kw':['salt lake city','west jordan','draper','sandy','south jordan'],'state_kw':['ut','utah']},
     # Canada
