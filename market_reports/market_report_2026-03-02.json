@@ -1,19 +1,19 @@
 {
   "report_date": "2026-03-02",
-  "generated_at": "2026-03-02T09:45:50.452796",
+  "generated_at": "2026-03-02T16:14:22.027942",
   "summary": {
     "total_facilities": 11548,
     "total_providers": 3962,
     "countries_covered": 177,
     "total_power_mw": 72941.0,
-    "total_deals": 995,
-    "total_deal_value_usd": 2043143800000.0
+    "total_deals": 1019,
+    "total_deal_value_usd": 2123144900000.0
   },
   "market_highlights": [
     "DC Hub tracks 11,548 data center facilities globally",
     "Coverage spans 177 countries with 3962 providers",
     "Combined capacity: 72,941 MW",
-    "M&A database: 995 transactions worth $2043.1B+"
+    "M&A database: 1019 transactions worth $2123.1B+"
   ],
   "recent_deals": [
     {
@@ -89,54 +89,54 @@
   ],
   "recent_news": [
     {
-      "title": "AWS UAE data centre hit by flying objects amid regional attacks",
-      "source": "Capacity Media",
-      "date": "2026-03-02T09:26:37"
+      "title": "India's Tejas Networks secures 5G RAN contract with NEC Corporation",
+      "source": "Data Center Dynamics",
+      "date": "2026-03-02T16:00:04"
     },
     {
-      "title": "Amazon Cloud Services Disrupted In UAE After 'Objects' Hit a Data Center",
-      "source": "PCMag",
-      "date": "2026-03-02T09:23:08"
+      "title": "Blackstone to launch publicly traded AI data center acquisition company - report",
+      "source": "Data Center Dynamics",
+      "date": "2026-03-02T15:39:21"
     },
     {
-      "title": "RENA secures 1.2 GW TOPCon equipment order in India",
-      "source": "PV Magazine",
-      "date": "2026-03-02T09:15:49"
+      "title": "Applicant appeals data center rejection in Delaware",
+      "source": "Data Center Dynamics",
+      "date": "2026-03-02T15:30:04"
     },
     {
-      "title": "Ericsson Demonstrates Cloud RAN Software on NVIDIA AI Infrastructure with T-Mobile",
-      "source": "TechAfrica News",
-      "date": "2026-03-02T09:06:16"
+      "title": "Global Data Center Construction Project Insights, Q4 2025 Report: $2.3 Trillion in the Pipeline - Google, Microsoft, Amazon, Continue to Invest Substantially in Hyperscale Facilities and Cloud Service",
+      "source": "Yahoo Finance UK",
+      "date": "2026-03-02T15:30:00"
     },
     {
-      "title": "MANTA set to ride wave of digital change in the Americas",
-      "source": "Capacity Media",
-      "date": "2026-03-02T09:00:00"
+      "title": "Nokia maps out AI RAN vision at MWC ahead of 6G era",
+      "source": "Data Center Dynamics",
+      "date": "2026-03-02T15:14:21"
     },
     {
-      "title": "Zong and ZTE Achieve First AI-based FDD Massive MIMO Commercial Deployment in Pakistan",
+      "title": "Is Equinix Stock Underperforming the S&P 500?",
+      "source": "Barchart.com",
+      "date": "2026-03-02T14:47:42"
+    },
+    {
+      "title": "Equinix at Citi\u2019s Miami Global Property CEO Conference: AI Drives Growth",
+      "source": "Investing.com",
+      "date": "2026-03-02T14:37:37"
+    },
+    {
+      "title": "Harrison Street sells two powered shell data center sites in Maryland",
+      "source": "Data Center Dynamics",
+      "date": "2026-03-02T14:30:04"
+    },
+    {
+      "title": "PJM requests approval from FERC for new behind-the-meter generation rules for data centers",
+      "source": "Data Center Dynamics",
+      "date": "2026-03-02T14:18:06"
+    },
+    {
+      "title": "SAP writes $480M check to finally end IP legal spat with Teradata",
       "source": "The Register DC",
-      "date": "2026-03-02T08:00:09"
-    },
-    {
-      "title": "A dire electrician shortage is a \u2018life-or-death\u2019 threat to the AI data center boom\u2014and an opportunity for Gen Z",
-      "source": "Fortune",
-      "date": "2026-03-02T08:00:00"
-    },
-    {
-      "title": "AWS Middle East Outage After Data Center Hit by Unidentified Objects",
-      "source": "Data Center Knowledge",
-      "date": "2026-03-02T07:55:09"
-    },
-    {
-      "title": "Nvidia confirms liquid cooling as standard, boosting supply chain revenue outlook",
-      "source": "digitimes",
-      "date": "2026-03-02T07:53:36"
-    },
-    {
-      "title": "Server crashes traced to one very literal knee-jerk reaction",
-      "source": "The Register DC",
-      "date": "2026-03-02T07:30:15"
+      "date": "2026-03-02T14:15:10"
     }
   ],
   "data_sources": [
