@@ -860,8 +860,43 @@ def api_facilities_shortcut():
 
 @app.route('/api/v1/map', methods=['GET'])
 def api_v1_map():
-    """Map endpoint alias - frontend calls this for Leaflet map data."""
-    return list_facilities()
+    """Public map endpoint - returns basic fields for all facilities for map display."""
+    conn = None
+    try:
+        conn = get_read_db()
+        c = conn.cursor()
+        limit = request.args.get('limit', 5000, type=int)
+        offset = request.args.get('offset', 0, type=int)
+        limit = min(limit, 10000)
+        
+        c.execute("""
+            SELECT id, name, provider, city, state, country, region,
+                   latitude, longitude, power_mw, status
+            FROM facilities
+            WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+            ORDER BY power_mw DESC NULLS LAST
+            LIMIT %s OFFSET %s
+        """, (limit, offset))
+        
+        rows = c.fetchall()
+        cols = [desc[0] for desc in c.description]
+        facilities = [dict(zip(cols, row)) for row in rows]
+        
+        c.execute("SELECT COUNT(*) FROM facilities WHERE latitude IS NOT NULL AND longitude IS NOT NULL")
+        total = c.fetchone()[0]
+        
+        return jsonify({
+            'success': True,
+            'data': facilities,
+            'total': total,
+            'limit': limit,
+            'offset': offset
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
 
 # =================================================================
 
