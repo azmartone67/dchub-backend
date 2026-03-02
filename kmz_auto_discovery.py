@@ -80,40 +80,26 @@ PUBLIC_KMZ_SOURCES = [
         'provider': 'NTIA',
         'category': 'fiber'
     },
-    # === GAS PIPELINE INFRASTRUCTURE (v2 additions) ===
+    # === GAS PIPELINE INFRASTRUCTURE (v2 — NPMS/PHMSA sources) ===
     {
-        'name': 'HIFLD Natural Gas Pipelines',
-        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Natural_Gas_Pipelines/FeatureServer/0',
+        'name': 'NPMS Gas Pipelines (PHMSA/DOT)',
+        'url': 'https://services3.arcgis.com/Rf1RTtpioLAV4006/arcgis/rest/services/NPMS_Pipelines/FeatureServer/0',
         'type': 'arcgis_kml',
-        'provider': 'HIFLD',
+        'provider': 'PHMSA',
         'category': 'gas'
     },
     {
-        'name': 'HIFLD Natural Gas Compressor Stations',
-        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Natural_Gas_Compressor_Stations/FeatureServer/0',
+        'name': 'NPMS Pipelines 2022 (PHMSA/DOT)',
+        'url': 'https://services.arcgis.com/G4S1dGvn7PIgYd6Y/arcgis/rest/services/NPMS_Pipelines_2022/FeatureServer/0',
         'type': 'arcgis_kml',
-        'provider': 'HIFLD',
+        'provider': 'PHMSA',
         'category': 'gas'
     },
     {
-        'name': 'HIFLD Natural Gas Processing Plants',
-        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Natural_Gas_Processing_Plants/FeatureServer/0',
+        'name': 'Major Gas Pipelines',
+        'url': 'https://services6.arcgis.com/VKHi8CC6pMIyYUIs/arcgis/rest/services/Major_Gas_Pipelines/FeatureServer/0',
         'type': 'arcgis_kml',
-        'provider': 'HIFLD',
-        'category': 'gas'
-    },
-    {
-        'name': 'HIFLD LNG Import/Export Terminals',
-        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/LNG_Import_Export_Terminals/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'HIFLD',
-        'category': 'gas'
-    },
-    {
-        'name': 'HIFLD Natural Gas Storage Facilities',
-        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Natural_Gas_Storage/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'HIFLD',
+        'provider': 'PHMSA',
         'category': 'gas'
     },
 ]
