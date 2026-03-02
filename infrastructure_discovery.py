@@ -961,9 +961,10 @@ class SubstationDiscovery:
 class GasPipelineDiscovery:
     """Discover gas pipelines from HIFLD, EIA, and learned APIs.
     
-    v2: Bulk nationwide pull instead of slow 3-market rotation.
-    Pulls all pipelines, compressor stations, and processing plants
-    from HIFLD in paginated batches. Runs twice daily via Railway cron.
+    v3: State-by-state HIFLD pulls (10 states per cycle).
+    Full US coverage in ~5 cycles (every 6 hours = full refresh in ~30 hours).
+    Pulls pipelines, compressor stations, and processing plants per state.
+    Much more reliable than bulk 1=1 queries which timeout on HIFLD.
     """
     
     def __init__(self):
@@ -971,15 +972,26 @@ class GasPipelineDiscovery:
         self._market_index = 0
         self._bulk_done = False  # Track if initial bulk pull completed
     
+    # All 50 US states + DC + territories for state-by-state HIFLD queries
+    US_STATES = [
+        'AL','AK','AZ','AR','CA','CO','CT','DE','DC','FL','GA','HI','ID','IL','IN',
+        'IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH',
+        'NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT',
+        'VT','VA','WA','WV','WI','WY'
+    ]
+    
+    # Rotate through states across cycles (10 states per cycle = full coverage in ~5 cycles)
+    _state_index = 0
+    
     def sync(self):
-        """Sync gas pipelines from HIFLD (bulk) and learned APIs"""
+        """Sync gas pipelines from HIFLD (state-by-state) and learned APIs"""
         logger.info("🔥 Syncing gas pipelines...")
         self.new_pipelines = 0
         
-        # Phase 1: Bulk nationwide pull (paginated, all records)
-        self._sync_hifld_bulk_pipelines()
-        self._sync_hifld_bulk_compressors()
-        self._sync_hifld_bulk_processing_plants()
+        # Phase 1: State-by-state HIFLD pulls (10 states per cycle, rotates)
+        self._sync_hifld_pipelines_by_state()
+        self._sync_hifld_compressors_by_state()
+        self._sync_hifld_processing_by_state()
         
         # Phase 2: Market-specific enrichment (rotates 5 per cycle for detail)
         self._sync_hifld_market_detail()
@@ -990,156 +1002,206 @@ class GasPipelineDiscovery:
         logger.info(f"   ✅ Gas pipelines: {self.new_pipelines} new")
         return self.new_pipelines
     
-    def _sync_hifld_bulk_pipelines(self):
-        """Bulk pull ALL natural gas pipelines from HIFLD nationwide (paginated)"""
-        logger.info("   🔥 HIFLD bulk gas pipelines: starting nationwide pull...")
-        try:
-            features = _query_hifld_paginated(
-                HIFLD_APIS['natural_gas_pipelines'],
-                where='1=1',
-                max_total=50000,
-                batch_size=2000
-            )
-            count = 0
-            for feat in features:
-                attrs = feat.get('attributes', {})
-                geom = feat.get('geometry', {})
-                
-                name = attrs.get('Pipename', attrs.get('NAME', attrs.get('OPERATOR', 'Unknown Pipeline')))
-                operator = attrs.get('Operator', attrs.get('OPERATOR', ''))
-                typepipe = attrs.get('Typepipe', attrs.get('TYPE', 'interstate'))
-                diameter = attrs.get('Diameter', attrs.get('DIAMETER', 0)) or 0
-                status = attrs.get('Status', attrs.get('STATUS', 'Operating'))
-                pipe_id = attrs.get('OBJECTID', attrs.get('ID', ''))
-                state_code = attrs.get('STATE', attrs.get('State', ''))
-                
-                # Get centroid from geometry if available
-                lat = lng = None
-                if geom:
-                    if 'paths' in geom and geom['paths']:
-                        # Line geometry — use midpoint of first path
-                        path = geom['paths'][0]
-                        mid = path[len(path) // 2] if path else None
-                        if mid and len(mid) >= 2:
-                            lng, lat = mid[0], mid[1]
-                    elif 'x' in geom and 'y' in geom:
-                        lng, lat = geom['x'], geom['y']
-                
-                if not lat or not lng:
-                    continue
-                
-                # Determine nearest market
-                city = self._nearest_market(lat, lng)
-                
-                pipeline = {
-                    "name": f"{name}"[:200] if name else 'Unknown Pipeline',
-                    "operator": str(operator)[:100] if operator else 'Unknown',
-                    "pipeline_type": str(typepipe)[:50] if typepipe else 'interstate',
-                    "diameter_inches": diameter,
-                    "status": 'active' if str(status).lower() in ('operating', 'active', 'in service') else str(status).lower()[:50],
-                    "city": city,
-                    "state": str(state_code)[:2] if state_code else '',
-                    "lat": lat,
-                    "lng": lng,
-                    "source_id": f"hifld_gas_{pipe_id}"
-                }
-                self._save_pipeline(pipeline, source='hifld')
-                count += 1
-            
-            logger.info(f"   🔥 HIFLD bulk gas pipelines: {len(features)} fetched, {self.new_pipelines} new saved")
-        except Exception as e:
-            logger.warning(f"   ⚠️ HIFLD bulk gas pipelines failed: {e}")
+    def _get_state_batch(self, batch_size=10):
+        """Get next batch of states to process, rotating through all states"""
+        states = self.US_STATES[GasPipelineDiscovery._state_index:GasPipelineDiscovery._state_index + batch_size]
+        GasPipelineDiscovery._state_index = (GasPipelineDiscovery._state_index + batch_size) % len(self.US_STATES)
+        if not states:
+            GasPipelineDiscovery._state_index = 0
+            states = self.US_STATES[:batch_size]
+        logger.info(f"   📍 Processing states: {', '.join(states)} (batch index {GasPipelineDiscovery._state_index})")
+        return states
     
-    def _sync_hifld_bulk_compressors(self):
-        """Bulk pull ALL natural gas compressor stations from HIFLD"""
-        logger.info("   🔥 HIFLD bulk compressor stations: starting...")
-        try:
-            features = _query_hifld_paginated(
-                HIFLD_APIS['natural_gas_compressor'],
-                where='1=1',
-                max_total=10000,
-                batch_size=2000
-            )
-            before = self.new_pipelines
-            for feat in features:
-                attrs = feat.get('attributes', {})
-                geom = feat.get('geometry', {})
+    def _sync_hifld_pipelines_by_state(self):
+        """Pull natural gas pipelines from HIFLD state-by-state (10 states per cycle)"""
+        states = self._get_state_batch(10)
+        logger.info(f"   🔥 HIFLD gas pipelines: pulling {len(states)} states...")
+        
+        total_fetched = 0
+        before = self.new_pipelines
+        
+        for state_code in states:
+            try:
+                # Query by state — much more reliable than 1=1 bulk
+                features = _query_hifld_paginated(
+                    HIFLD_APIS['natural_gas_pipelines'],
+                    where=f"STATE='{state_code}' OR STATE IS NULL",
+                    max_total=5000,
+                    batch_size=1000
+                )
                 
-                name = attrs.get('NAME', attrs.get('STATION', 'Unknown Compressor'))
-                operator = attrs.get('OPERATOR', attrs.get('OWNER', ''))
-                comp_id = attrs.get('OBJECTID', attrs.get('ID', ''))
-                state_code = attrs.get('STATE', attrs.get('State', ''))
-                lat = geom.get('y', 0)
-                lng = geom.get('x', 0)
+                for feat in features:
+                    attrs = feat.get('attributes', {})
+                    geom = feat.get('geometry', {})
+                    
+                    name = attrs.get('Pipename', attrs.get('NAME', attrs.get('OPERATOR', 'Unknown Pipeline')))
+                    operator = attrs.get('Operator', attrs.get('OPERATOR', ''))
+                    typepipe = attrs.get('Typepipe', attrs.get('TYPE', 'interstate'))
+                    diameter = attrs.get('Diameter', attrs.get('DIAMETER', 0)) or 0
+                    status = attrs.get('Status', attrs.get('STATUS', 'Operating'))
+                    pipe_id = attrs.get('OBJECTID', attrs.get('ID', ''))
+                    
+                    # Get centroid from geometry
+                    lat = lng = None
+                    if geom:
+                        if 'paths' in geom and geom['paths']:
+                            path = geom['paths'][0]
+                            mid = path[len(path) // 2] if path else None
+                            if mid and len(mid) >= 2:
+                                lng, lat = mid[0], mid[1]
+                        elif 'x' in geom and 'y' in geom:
+                            lng, lat = geom['x'], geom['y']
+                    
+                    if not lat or not lng:
+                        continue
+                    
+                    city = self._nearest_market(lat, lng)
+                    
+                    pipeline = {
+                        "name": f"{name}"[:200] if name else 'Unknown Pipeline',
+                        "operator": str(operator)[:100] if operator else 'Unknown',
+                        "pipeline_type": str(typepipe)[:50] if typepipe else 'interstate',
+                        "diameter_inches": diameter,
+                        "status": 'active' if str(status).lower() in ('operating', 'active', 'in service') else str(status).lower()[:50],
+                        "city": city,
+                        "state": state_code,
+                        "lat": lat,
+                        "lng": lng,
+                        "source_id": f"hifld_gas_{pipe_id}"
+                    }
+                    self._save_pipeline(pipeline, source='hifld')
                 
-                if not lat or not lng:
-                    continue
+                total_fetched += len(features)
+                logger.info(f"   🔥 HIFLD gas pipelines {state_code}: {len(features)} found")
+                time.sleep(1)  # Be polite to HIFLD
                 
-                city = self._nearest_market(lat, lng)
-                
-                pipeline = {
-                    "name": f"{name} Compressor Station"[:200],
-                    "operator": str(operator)[:100] if operator else 'Unknown',
-                    "pipeline_type": "compressor_station",
-                    "status": "active",
-                    "city": city,
-                    "state": str(state_code)[:2] if state_code else '',
-                    "lat": lat,
-                    "lng": lng,
-                    "source_id": f"hifld_comp_{comp_id}"
-                }
-                self._save_pipeline(pipeline, source='hifld')
-            
-            logger.info(f"   🔥 HIFLD compressor stations: {len(features)} fetched, {self.new_pipelines - before} new")
-        except Exception as e:
-            logger.warning(f"   ⚠️ HIFLD bulk compressors failed: {e}")
+            except Exception as e:
+                logger.warning(f"   ⚠️ HIFLD gas pipelines {state_code} failed: {e}")
+                time.sleep(2)
+        
+        logger.info(f"   🔥 HIFLD gas pipelines: {total_fetched} fetched from {len(states)} states, {self.new_pipelines - before} new")
     
-    def _sync_hifld_bulk_processing_plants(self):
-        """Bulk pull ALL natural gas processing plants from HIFLD"""
-        logger.info("   🔥 HIFLD bulk processing plants: starting...")
-        try:
-            features = _query_hifld_paginated(
-                HIFLD_APIS['natural_gas_processing'],
-                where='1=1',
-                max_total=5000,
-                batch_size=1000
-            )
-            before = self.new_pipelines
-            for feat in features:
-                attrs = feat.get('attributes', {})
-                geom = feat.get('geometry', {})
+    def _sync_hifld_compressors_by_state(self):
+        """Pull compressor stations from HIFLD state-by-state (same batch as pipelines)"""
+        # Use same state batch offset so compressors and pipelines stay in sync
+        idx = max(0, GasPipelineDiscovery._state_index - 10)
+        states = self.US_STATES[idx:idx + 10]
+        if not states:
+            states = self.US_STATES[:10]
+        
+        logger.info(f"   🔥 HIFLD compressor stations: pulling {len(states)} states...")
+        total_fetched = 0
+        before = self.new_pipelines
+        
+        for state_code in states:
+            try:
+                features = _query_hifld_paginated(
+                    HIFLD_APIS['natural_gas_compressor'],
+                    where=f"STATE='{state_code}'",
+                    max_total=2000,
+                    batch_size=1000
+                )
                 
-                name = attrs.get('NAME', attrs.get('PLANT', 'Unknown Processing Plant'))
-                operator = attrs.get('OPERATOR', attrs.get('OWNER', ''))
-                plant_id = attrs.get('OBJECTID', attrs.get('ID', ''))
-                state_code = attrs.get('STATE', attrs.get('State', ''))
-                capacity = attrs.get('CAPACITY', attrs.get('CAP_MMCF', 0)) or 0
-                lat = geom.get('y', 0)
-                lng = geom.get('x', 0)
+                for feat in features:
+                    attrs = feat.get('attributes', {})
+                    geom = feat.get('geometry', {})
+                    
+                    name = attrs.get('NAME', attrs.get('STATION', 'Unknown Compressor'))
+                    operator = attrs.get('OPERATOR', attrs.get('OWNER', ''))
+                    comp_id = attrs.get('OBJECTID', attrs.get('ID', ''))
+                    lat = geom.get('y', 0)
+                    lng = geom.get('x', 0)
+                    
+                    if not lat or not lng:
+                        continue
+                    
+                    city = self._nearest_market(lat, lng)
+                    
+                    pipeline = {
+                        "name": f"{name} Compressor Station"[:200],
+                        "operator": str(operator)[:100] if operator else 'Unknown',
+                        "pipeline_type": "compressor_station",
+                        "status": "active",
+                        "city": city,
+                        "state": state_code,
+                        "lat": lat,
+                        "lng": lng,
+                        "source_id": f"hifld_comp_{comp_id}"
+                    }
+                    self._save_pipeline(pipeline, source='hifld')
                 
-                if not lat or not lng:
-                    continue
+                total_fetched += len(features)
+                if features:
+                    logger.info(f"   🔥 HIFLD compressors {state_code}: {len(features)} found")
+                time.sleep(1)
                 
-                city = self._nearest_market(lat, lng)
+            except Exception as e:
+                logger.warning(f"   ⚠️ HIFLD compressors {state_code} failed: {e}")
+                time.sleep(2)
+        
+        logger.info(f"   🔥 HIFLD compressors: {total_fetched} fetched, {self.new_pipelines - before} new")
+    
+    def _sync_hifld_processing_by_state(self):
+        """Pull processing plants from HIFLD state-by-state (same batch)"""
+        idx = max(0, GasPipelineDiscovery._state_index - 10)
+        states = self.US_STATES[idx:idx + 10]
+        if not states:
+            states = self.US_STATES[:10]
+        
+        logger.info(f"   🔥 HIFLD processing plants: pulling {len(states)} states...")
+        total_fetched = 0
+        before = self.new_pipelines
+        
+        for state_code in states:
+            try:
+                features = _query_hifld_paginated(
+                    HIFLD_APIS['natural_gas_processing'],
+                    where=f"STATE='{state_code}'",
+                    max_total=1000,
+                    batch_size=500
+                )
                 
-                pipeline = {
-                    "name": f"{name} Processing Plant"[:200],
-                    "operator": str(operator)[:100] if operator else 'Unknown',
-                    "pipeline_type": "processing_plant",
-                    "diameter_inches": 0,
-                    "capacity_mcf": capacity,
-                    "status": "active",
-                    "city": city,
-                    "state": str(state_code)[:2] if state_code else '',
-                    "lat": lat,
-                    "lng": lng,
-                    "source_id": f"hifld_proc_{plant_id}"
-                }
-                self._save_pipeline(pipeline, source='hifld')
-            
-            logger.info(f"   🔥 HIFLD processing plants: {len(features)} fetched, {self.new_pipelines - before} new")
-        except Exception as e:
-            logger.warning(f"   ⚠️ HIFLD bulk processing plants failed: {e}")
+                for feat in features:
+                    attrs = feat.get('attributes', {})
+                    geom = feat.get('geometry', {})
+                    
+                    name = attrs.get('NAME', attrs.get('PLANT', 'Unknown Processing Plant'))
+                    operator = attrs.get('OPERATOR', attrs.get('OWNER', ''))
+                    plant_id = attrs.get('OBJECTID', attrs.get('ID', ''))
+                    capacity = attrs.get('CAPACITY', attrs.get('CAP_MMCF', 0)) or 0
+                    lat = geom.get('y', 0)
+                    lng = geom.get('x', 0)
+                    
+                    if not lat or not lng:
+                        continue
+                    
+                    city = self._nearest_market(lat, lng)
+                    
+                    pipeline = {
+                        "name": f"{name} Processing Plant"[:200],
+                        "operator": str(operator)[:100] if operator else 'Unknown',
+                        "pipeline_type": "processing_plant",
+                        "diameter_inches": 0,
+                        "capacity_mcf": capacity,
+                        "status": "active",
+                        "city": city,
+                        "state": state_code,
+                        "lat": lat,
+                        "lng": lng,
+                        "source_id": f"hifld_proc_{plant_id}"
+                    }
+                    self._save_pipeline(pipeline, source='hifld')
+                
+                total_fetched += len(features)
+                if features:
+                    logger.info(f"   🔥 HIFLD processing {state_code}: {len(features)} found")
+                time.sleep(1)
+                
+            except Exception as e:
+                logger.warning(f"   ⚠️ HIFLD processing {state_code} failed: {e}")
+                time.sleep(2)
+        
+        logger.info(f"   🔥 HIFLD processing plants: {total_fetched} fetched, {self.new_pipelines - before} new")
     
     def _sync_hifld_market_detail(self):
         """Detailed market-specific pull (rotates 5 markets per cycle for enrichment)"""
