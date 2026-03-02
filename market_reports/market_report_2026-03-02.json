@@ -1,6 +1,6 @@
 {
   "report_date": "2026-03-02",
-  "generated_at": "2026-03-02T09:23:03.456105",
+  "generated_at": "2026-03-02T09:29:36.215275",
   "summary": {
     "total_facilities": 11548,
     "total_providers": 3962,
@@ -89,6 +89,11 @@
   ],
   "recent_news": [
     {
+      "title": "Amazon Cloud Services Disrupted In UAE After 'Objects' Hit a Data Center",
+      "source": "PCMag",
+      "date": "2026-03-02T09:23:08"
+    },
+    {
       "title": "RENA secures 1.2 GW TOPCon equipment order in India",
       "source": "PV Magazine",
       "date": "2026-03-02T09:15:49"
@@ -132,11 +137,6 @@
       "title": "Amazon AWS faces outages: Bahrain, UAE data centers hit amid Iran strikes",
       "source": "Deccan Herald",
       "date": "2026-03-02T07:11:14"
-    },
-    {
-      "title": "Amazon cloud data centers in Gulf face outages amid Iran strikes in the region",
-      "source": "Ynetnews",
-      "date": "2026-03-02T07:05:10"
     }
   ],
   "data_sources": [
