@@ -216,11 +216,13 @@ HIFLD_APIS = {
     "power_plants": "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Power_Plants/FeatureServer/0",
 }
 
-# Gas pipeline sources — NPMS/PHMSA (replaces dead HIFLD gas services)
-NPMS_APIS = {
-    "pipelines": "https://services3.arcgis.com/Rf1RTtpioLAV4006/arcgis/rest/services/NPMS_Pipelines/FeatureServer/0",
-    "pipelines_2022": "https://services.arcgis.com/G4S1dGvn7PIgYd6Y/arcgis/rest/services/NPMS_Pipelines_2022/FeatureServer/0",
-    "major_gas": "https://services6.arcgis.com/VKHi8CC6pMIyYUIs/arcgis/rest/services/Major_Gas_Pipelines/FeatureServer/0",
+# Gas pipeline sources — EIA (replaces dead HIFLD gas services)
+EIA_PIPELINE_APIS = {
+    "natural_gas": "https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/Natural_Gas_Interstate_and_Intrastate_Pipelines_1/FeatureServer/0",
+    "crude_oil": "https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/Crude_Oil_Trunk_Pipelines_1/FeatureServer/0",
+    "hgl": "https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/Hydrocarbon_Gas_Liquids_Pipelines_1/FeatureServer/0",
+    "petroleum": "https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/Petroleum_Products_Pipelines_1/FeatureServer/0",
+    "gulf_pipelines": "https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/Oil_And_Natural_Gas_Pipelines_Gulf_2024Q4/FeatureServer/0",
 }
 
 
@@ -974,105 +976,69 @@ class GasPipelineDiscovery:
     def __init__(self):
         self.new_pipelines = 0
         self._market_index = 0
-        self._bulk_done = False  # Track if initial bulk pull completed
-    
-    # All 50 US states + DC + territories for state-by-state HIFLD queries
-    US_STATES = [
-        'AL','AK','AZ','AR','CA','CO','CT','DE','DC','FL','GA','HI','ID','IL','IN',
-        'IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH',
-        'NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT',
-        'VT','VA','WA','WV','WI','WY'
-    ]
-    
-    # Rotate through states across cycles (10 states per cycle = full coverage in ~5 cycles)
-    _state_index = 0
     
     def sync(self):
-        """Sync gas pipelines from NPMS/PHMSA (state-by-state) and learned APIs"""
+        """Sync gas pipelines from EIA ArcGIS (FID pagination) and learned APIs"""
         logger.info("🔥 Syncing gas pipelines...")
         self.new_pipelines = 0
         
-        # Phase 1: NPMS state-by-state pull (10 states per cycle)
-        self._sync_npms_pipelines_by_state()
+        # Phase 1: EIA Natural Gas Pipelines — paginate by FID range (2000 per batch)
+        self._sync_eia_gas_pipelines()
         
-        # Phase 2: Major Gas Pipelines curated dataset
-        self._sync_npms_major_pipelines()
+        # Phase 2: EIA Gulf pipelines for offshore coverage
+        self._sync_eia_gulf_pipelines()
         
-        # Phase 3: Market-specific enrichment (rotates 5 per cycle)
-        self._sync_hifld_market_detail()
-        
-        # Phase 4: Auto-discovered/learned APIs
+        # Phase 3: Auto-discovered/learned APIs
         self._sync_from_learned_apis()
         
         logger.info(f"   ✅ Gas pipelines: {self.new_pipelines} new")
         return self.new_pipelines
     
-    def _get_state_batch(self, batch_size=10):
-        """Get next batch of states to process, rotating through all states"""
-        states = self.US_STATES[GasPipelineDiscovery._state_index:GasPipelineDiscovery._state_index + batch_size]
-        GasPipelineDiscovery._state_index = (GasPipelineDiscovery._state_index + batch_size) % len(self.US_STATES)
-        if not states:
-            GasPipelineDiscovery._state_index = 0
-            states = self.US_STATES[:batch_size]
-        logger.info(f"   📍 Processing states: {', '.join(states)} (batch index {GasPipelineDiscovery._state_index})")
-        return states
-    
-    def _sync_npms_pipelines_by_state(self):
-        """Pull gas pipelines from NPMS/PHMSA state-by-state (10 states per cycle).
-        Uses ST_MIXED field (full state name) and CMDTY_GEN='GAS' filter."""
-        states = self._get_state_batch(10)
-        logger.info(f"   🔥 NPMS gas pipelines: pulling {len(states)} states...")
+    def _sync_eia_gas_pipelines(self):
+        """Pull EIA Natural Gas Interstate/Intrastate Pipelines using FID pagination.
+        Processes one batch per sync cycle (2000 records), tracks position across cycles.
+        Full dataset covered in multiple cycles."""
         
-        # Map state abbreviations to full names for ST_MIXED field
-        state_names = {
-            'AL':'Alabama','AK':'Alaska','AZ':'Arizona','AR':'Arkansas','CA':'California',
-            'CO':'Colorado','CT':'Connecticut','DE':'Delaware','DC':'District of Columbia',
-            'FL':'Florida','GA':'Georgia','HI':'Hawaii','ID':'Idaho','IL':'Illinois',
-            'IN':'Indiana','IA':'Iowa','KS':'Kansas','KY':'Kentucky','LA':'Louisiana',
-            'ME':'Maine','MD':'Maryland','MA':'Massachusetts','MI':'Michigan','MN':'Minnesota',
-            'MS':'Mississippi','MO':'Missouri','MT':'Montana','NE':'Nebraska','NV':'Nevada',
-            'NH':'New Hampshire','NJ':'New Jersey','NM':'New Mexico','NY':'New York',
-            'NC':'North Carolina','ND':'North Dakota','OH':'Ohio','OK':'Oklahoma',
-            'OR':'Oregon','PA':'Pennsylvania','RI':'Rhode Island','SC':'South Carolina',
-            'SD':'South Dakota','TN':'Tennessee','TX':'Texas','UT':'Utah','VT':'Vermont',
-            'VA':'Virginia','WA':'Washington','WV':'West Virginia','WI':'Wisconsin','WY':'Wyoming'
-        }
+        # Track pagination position across sync cycles via class variable
+        if not hasattr(GasPipelineDiscovery, '_eia_fid_offset'):
+            GasPipelineDiscovery._eia_fid_offset = 0
         
-        total_fetched = 0
+        batch_size = 2000
+        fid_start = GasPipelineDiscovery._eia_fid_offset
+        fid_end = fid_start + batch_size
+        
+        logger.info(f"   🔥 EIA gas pipelines: FID {fid_start}-{fid_end}...")
         before = self.new_pipelines
         
-        for state_code in states:
-            state_name = state_names.get(state_code, state_code)
-            try:
-                # Filter: gas pipelines only, in-service, for this state
-                where = f"ST_MIXED='{state_name}' AND CMDTY_GEN='GAS' AND STATUS_CD='I'"
-                features = _query_hifld_paginated(
-                    NPMS_APIS['pipelines'],
-                    where=where,
-                    max_total=5000,
-                    batch_size=1000
-                )
+        try:
+            features = _query_hifld_paginated(
+                EIA_PIPELINE_APIS['natural_gas'],
+                where=f'FID>{fid_start} AND FID<={fid_end}',
+                max_total=batch_size,
+                batch_size=1000
+            )
+            
+            if not features:
+                # Reset to beginning if no more records
+                logger.info(f"   🔥 EIA gas pipelines: reached end at FID {fid_start}, resetting to 0")
+                GasPipelineDiscovery._eia_fid_offset = 0
+            else:
+                GasPipelineDiscovery._eia_fid_offset = fid_end
                 
                 for feat in features:
                     attrs = feat.get('attributes', {})
                     geom = feat.get('geometry', {})
                     
-                    oper = attrs.get('OPER_NM', 'Unknown')
-                    sys_nm = attrs.get('SYS_NM', '')
-                    subsys = attrs.get('SUBSYS_NM', '')
-                    diameter = attrs.get('DIAMETER', 0) or 0
-                    miles = attrs.get('MILES', 0) or 0
-                    interstate = attrs.get('INTERSTATE', 'N')
-                    pipe_id = attrs.get('OBJECTID', attrs.get('FID', ''))
-                    pline_id = attrs.get('PLINE_ID', '')
-                    county = attrs.get('CNTY_MIXED', '')
+                    operator = attrs.get('Operator', 'Unknown')
+                    typepipe = attrs.get('TYPEPIPE', 'Interstate')
+                    status = attrs.get('Status', 'Operating')
+                    fid = attrs.get('FID', '')
                     
-                    # Build name from system name + operator
-                    name = sys_nm.strip() if sys_nm and sys_nm.strip() else oper
-                    if subsys and subsys.strip():
-                        name = f"{name} - {subsys.strip()}"
+                    # Skip non-operating pipelines
+                    if str(status).lower() not in ('operating', 'active', 'in service'):
+                        continue
                     
-                    # Get centroid from geometry
+                    # Get centroid from line geometry
                     lat = lng = None
                     if geom:
                         if 'paths' in geom and geom['paths']:
@@ -1087,59 +1053,46 @@ class GasPipelineDiscovery:
                         continue
                     
                     city = self._nearest_market(lat, lng)
-                    pipe_type = 'interstate' if interstate == 'Y' else 'intrastate'
+                    state = self._lat_lng_to_state(lat, lng)
+                    pipe_type = 'interstate' if 'Interstate' in str(typepipe) else 'intrastate'
                     
                     pipeline = {
-                        "name": f"{name}"[:200],
-                        "operator": str(oper)[:100] if oper else 'Unknown',
+                        "name": f"{operator} ({typepipe})"[:200],
+                        "operator": str(operator)[:100],
                         "pipeline_type": pipe_type,
-                        "diameter_inches": diameter,
                         "status": 'active',
                         "city": city,
-                        "state": state_code,
+                        "state": state,
                         "lat": lat,
                         "lng": lng,
-                        "source_id": f"npms_{pipe_id}_{pline_id}"[:100]
+                        "source_id": f"eia_gas_{fid}"
                     }
-                    self._save_pipeline(pipeline, source='npms_phmsa')
-                
-                total_fetched += len(features)
-                if features:
-                    logger.info(f"   🔥 NPMS gas pipelines {state_code}: {len(features)} found")
-                time.sleep(1)
-                
-            except Exception as e:
-                logger.warning(f"   ⚠️ NPMS gas pipelines {state_code} failed: {e}")
-                time.sleep(2)
-        
-        logger.info(f"   🔥 NPMS gas pipelines: {total_fetched} from {len(states)} states, {self.new_pipelines - before} new")
+                    self._save_pipeline(pipeline, source='eia')
+            
+            logger.info(f"   🔥 EIA gas pipelines: {len(features)} fetched (FID {fid_start}-{fid_end}), {self.new_pipelines - before} new")
+        except Exception as e:
+            logger.warning(f"   ⚠️ EIA gas pipelines failed: {e}")
     
-    def _sync_npms_major_pipelines(self):
-        """Pull from the Major Gas Pipelines service (smaller, curated dataset)."""
-        logger.info("   🔥 Major Gas Pipelines: pulling curated dataset...")
+    def _sync_eia_gulf_pipelines(self):
+        """Pull EIA Gulf of Mexico oil/gas pipelines for offshore coverage"""
+        logger.info("   🔥 EIA Gulf pipelines: pulling...")
         before = self.new_pipelines
+        
         try:
             features = _query_hifld_paginated(
-                NPMS_APIS['major_gas'],
-                where="CMDTY_GEN='GAS' AND STATUS_CD<>'B'",
-                max_total=10000,
-                batch_size=2000
+                EIA_PIPELINE_APIS['gulf_pipelines'],
+                where='1=1',
+                max_total=5000,
+                batch_size=1000
             )
             
             for feat in features:
                 attrs = feat.get('attributes', {})
                 geom = feat.get('geometry', {})
                 
-                oper = attrs.get('OPER_NM', 'Unknown')
-                sys_nm = attrs.get('SYS_NM', '')
-                diameter = attrs.get('DIAMETER', 0) or 0
-                interstate = attrs.get('INTERSTATE', 'N')
-                pipe_id = attrs.get('OBJECTID', '')
-                pline_id = attrs.get('PLINE_ID', '')
-                state_name = attrs.get('ST_MIXED', '')
-                county = attrs.get('CNTY_MIXED', '')
-                
-                name = sys_nm.strip() if sys_nm and sys_nm.strip() else oper
+                operator = attrs.get('Operator', attrs.get('OPER_NM', 'Unknown'))
+                name = attrs.get('SYS_NM', attrs.get('Name', operator))
+                fid = attrs.get('FID', attrs.get('OBJECTID', ''))
                 
                 lat = lng = None
                 if geom:
@@ -1154,95 +1107,35 @@ class GasPipelineDiscovery:
                 if not lat or not lng:
                     continue
                 
-                city = self._nearest_market(lat, lng)
-                pipe_type = 'interstate' if interstate == 'Y' else 'intrastate'
-                
-                # Reverse lookup state abbrev from name
-                st_abbrev = ''
-                for abbr, full in [('AL','Alabama'),('AK','Alaska'),('AZ','Arizona'),('AR','Arkansas'),
-                    ('CA','California'),('CO','Colorado'),('CT','Connecticut'),('DE','Delaware'),
-                    ('FL','Florida'),('GA','Georgia'),('HI','Hawaii'),('ID','Idaho'),('IL','Illinois'),
-                    ('IN','Indiana'),('IA','Iowa'),('KS','Kansas'),('KY','Kentucky'),('LA','Louisiana'),
-                    ('ME','Maine'),('MD','Maryland'),('MA','Massachusetts'),('MI','Michigan'),
-                    ('MN','Minnesota'),('MS','Mississippi'),('MO','Missouri'),('MT','Montana'),
-                    ('NE','Nebraska'),('NV','Nevada'),('NH','New Hampshire'),('NJ','New Jersey'),
-                    ('NM','New Mexico'),('NY','New York'),('NC','North Carolina'),('ND','North Dakota'),
-                    ('OH','Ohio'),('OK','Oklahoma'),('OR','Oregon'),('PA','Pennsylvania'),
-                    ('RI','Rhode Island'),('SC','South Carolina'),('SD','South Dakota'),('TN','Tennessee'),
-                    ('TX','Texas'),('UT','Utah'),('VT','Vermont'),('VA','Virginia'),('WA','Washington'),
-                    ('WV','West Virginia'),('WI','Wisconsin'),('WY','Wyoming')]:
-                    if full == state_name:
-                        st_abbrev = abbr
-                        break
-                
                 pipeline = {
-                    "name": f"{name}"[:200],
-                    "operator": str(oper)[:100],
-                    "pipeline_type": pipe_type,
-                    "diameter_inches": diameter,
-                    "status": 'active',
-                    "city": city,
-                    "state": st_abbrev,
+                    "name": f"{name} (Gulf)"[:200],
+                    "operator": str(operator)[:100],
+                    "pipeline_type": "offshore",
+                    "status": "active",
+                    "city": "Gulf of Mexico",
+                    "state": "GOM",
                     "lat": lat,
                     "lng": lng,
-                    "source_id": f"npms_major_{pipe_id}_{pline_id}"[:100]
+                    "source_id": f"eia_gulf_{fid}"
                 }
-                self._save_pipeline(pipeline, source='npms_major')
+                self._save_pipeline(pipeline, source='eia_gulf')
             
-            logger.info(f"   🔥 Major Gas Pipelines: {len(features)} fetched, {self.new_pipelines - before} new")
+            logger.info(f"   🔥 EIA Gulf pipelines: {len(features)} fetched, {self.new_pipelines - before} new")
         except Exception as e:
-            logger.warning(f"   ⚠️ Major Gas Pipelines failed: {e}")
+            logger.warning(f"   ⚠️ EIA Gulf pipelines failed: {e}")
     
-    def _sync_hifld_market_detail(self):
-        """Spatial pull of NPMS pipelines near DC markets (rotates 5 per cycle)"""
-        markets = DC_MARKETS[self._market_index:self._market_index + 5]
-        self._market_index = (self._market_index + 5) % len(DC_MARKETS)
-        
-        before = self.new_pipelines
-        for market in markets:
-            try:
-                # Use spatial query against NPMS pipelines near this market
-                features = _query_hifld_nearby(
-                    NPMS_APIS['pipelines'],
-                    market['lat'], market['lng'],
-                    radius_m=80000, max_records=200,
-                    return_geometry=False
-                )
-                for feat in features:
-                    attrs = feat.get('attributes', {})
-                    # Only gas pipelines
-                    if attrs.get('CMDTY_GEN', '') != 'GAS':
-                        continue
-                    
-                    oper = attrs.get('OPER_NM', 'Unknown')
-                    sys_nm = attrs.get('SYS_NM', '')
-                    diameter = attrs.get('DIAMETER', 0) or 0
-                    interstate = attrs.get('INTERSTATE', 'N')
-                    pipe_id = attrs.get('OBJECTID', attrs.get('FID', ''))
-                    pline_id = attrs.get('PLINE_ID', '')
-                    
-                    name = sys_nm.strip() if sys_nm and sys_nm.strip() else oper
-                    pipe_type = 'interstate' if interstate == 'Y' else 'intrastate'
-                    
-                    pipeline = {
-                        "name": f"{name} - {market['name']}"[:200],
-                        "operator": str(oper)[:100] if oper else 'Unknown',
-                        "pipeline_type": pipe_type,
-                        "diameter_inches": diameter,
-                        "status": 'active',
-                        "city": market['name'],
-                        "state": market['state'],
-                        "lat": market['lat'],
-                        "lng": market['lng'],
-                        "source_id": f"npms_mkt_{pipe_id}_{pline_id}_{market['state']}"[:100]
-                    }
-                    self._save_pipeline(pipeline, source='npms_phmsa')
-                
-                time.sleep(0.5)
-            except Exception as e:
-                logger.warning(f"   ⚠️ NPMS market detail failed for {market['name']}: {e}")
-        
-        logger.info(f"   🔥 Market detail enrichment: {self.new_pipelines - before} new from {len(markets)} markets")
+    def _lat_lng_to_state(self, lat, lng):
+        """Rough state lookup from lat/lng using bounding boxes for major pipeline states"""
+        # Simplified — just use nearest market's state
+        for m in DC_MARKETS:
+            from math import radians, sin, cos, sqrt, atan2
+            dlat = radians(m['lat'] - lat)
+            dlng = radians(m['lng'] - lng)
+            a = sin(dlat/2)**2 + cos(radians(lat)) * cos(radians(m['lat'])) * sin(dlng/2)**2
+            d = 2 * atan2(sqrt(a), sqrt(1 - a)) * 6371
+            if d < 150:  # Within 150km of a DC market
+                return m['state']
+        return ''
     
     def _nearest_market(self, lat, lng):
         """Find nearest DC market name for a given lat/lng"""
