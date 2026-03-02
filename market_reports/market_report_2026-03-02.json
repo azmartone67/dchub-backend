@@ -1,19 +1,19 @@
 {
   "report_date": "2026-03-02",
-  "generated_at": "2026-03-02T16:21:05.035218",
+  "generated_at": "2026-03-02T16:59:21.886362",
   "summary": {
     "total_facilities": 11548,
     "total_providers": 3962,
     "countries_covered": 177,
     "total_power_mw": 72941.0,
-    "total_deals": 1019,
-    "total_deal_value_usd": 2123144900000.0
+    "total_deals": 1022,
+    "total_deal_value_usd": 2135145000000.0
   },
   "market_highlights": [
     "DC Hub tracks 11,548 data center facilities globally",
     "Coverage spans 177 countries with 3962 providers",
     "Combined capacity: 72,941 MW",
-    "M&A database: 1019 transactions worth $2123.1B+"
+    "M&A database: 1022 transactions worth $2135.1B+"
   ],
   "recent_deals": [
     {
@@ -89,6 +89,26 @@
   ],
   "recent_news": [
     {
+      "title": "Virginia, Indiana lawmakers pass surplus interconnection bills",
+      "source": "Utility Dive",
+      "date": "2026-03-02T16:50:41"
+    },
+    {
+      "title": "Data centers spark debate across Chicagoland: 'It was like there was a helicopter on our roof'",
+      "source": "FOX 32 Chicago",
+      "date": "2026-03-02T16:26:00"
+    },
+    {
+      "title": "Digital Realty acquires Telepoint\u2019s Sofia data centres",
+      "source": "Capacity Media",
+      "date": "2026-03-02T16:18:48"
+    },
+    {
+      "title": "Green Mountain partners with Norwegian paper mill company for potential data center development",
+      "source": "Data Center Dynamics",
+      "date": "2026-03-02T16:18:02"
+    },
+    {
       "title": "NVIDIA (NVDA) Bolsters AI Infrastructure with $4 Billion Optical Tech Investment",
       "source": "GuruFocus",
       "date": "2026-03-02T16:03:29"
@@ -114,29 +134,9 @@
       "date": "2026-03-02T15:30:00"
     },
     {
-      "title": "Nokia maps out AI RAN vision at MWC ahead of 6G era",
-      "source": "Data Center Dynamics",
-      "date": "2026-03-02T15:14:21"
-    },
-    {
-      "title": "Is Equinix Stock Underperforming the S&P 500?",
-      "source": "Barchart.com",
-      "date": "2026-03-02T14:47:42"
-    },
-    {
-      "title": "Equinix at Citi\u2019s Miami Global Property CEO Conference: AI Drives Growth",
-      "source": "Investing.com",
-      "date": "2026-03-02T14:37:37"
-    },
-    {
-      "title": "Harrison Street sells two powered shell data center sites in Maryland",
-      "source": "Data Center Dynamics",
-      "date": "2026-03-02T14:30:04"
-    },
-    {
-      "title": "PJM requests approval from FERC for new behind-the-meter generation rules for data centers",
-      "source": "Data Center Dynamics",
-      "date": "2026-03-02T14:18:06"
+      "title": "Amazon plans $40 billion investment in Spain data centers",
+      "source": "Chain Store Age",
+      "date": "2026-03-02T15:18:24"
     }
   ],
   "data_sources": [
