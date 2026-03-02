@@ -1347,7 +1347,7 @@ def register_outreach_routes(app):
         
         return jsonify({
             'status': 'running',
-            'interval': '5 minutes',
+            'interval': f'{int(os.environ.get("OUTREACH_INTERVAL_MINUTES", 720))} minutes',
             'total_events': stats.get('total_outreach_events', 0),
             'outreach_events': stats.get('total_outreach_events', 0),
             'indexnow_pings': indexnow_pings,
