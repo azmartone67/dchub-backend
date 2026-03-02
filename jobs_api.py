@@ -677,6 +677,31 @@ def job_ambassador():
         return jsonify({'status': 'error', 'job': 'ambassador', 'error': str(e)}), 500
 
 
+
+@jobs_bp.route("/api/jobs/backup", methods=["POST"])
+@require_admin_key
+def job_backup():
+    start = time.time()
+    try:
+        try:
+            from backup_neon_to_r2 import run_backup
+            result = run_backup()
+        except ImportError:
+            result = {"status": "skipped", "reason": "backup_neon_to_r2 module not available"}
+        duration = time.time() - start
+        _record_run("backup", True, duration, result if isinstance(result, dict) else {})
+        _gc_cleanup()
+        return jsonify({
+            "status": "complete",
+            "job": "backup",
+            "result": result if isinstance(result, dict) else str(result),
+            "duration_seconds": round(duration, 2)
+        })
+    except Exception as e:
+        duration = time.time() - start
+        _record_run("backup", False, duration, {"error": str(e)})
+        logger.error(f"Job backup failed: {e}")
+        return jsonify({"status": "error", "job": "backup", "error": str(e)}), 500
 @jobs_bp.route('/api/jobs/status', methods=['GET'])
 @require_admin_key
 def job_status():
