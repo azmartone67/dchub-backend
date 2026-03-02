@@ -80,26 +80,26 @@ PUBLIC_KMZ_SOURCES = [
         'provider': 'NTIA',
         'category': 'fiber'
     },
-    # === GAS PIPELINE INFRASTRUCTURE (v2 — NPMS/PHMSA sources) ===
+    # === GAS PIPELINE INFRASTRUCTURE (v3 — EIA sources) ===
     {
-        'name': 'NPMS Gas Pipelines (PHMSA/DOT)',
-        'url': 'https://services3.arcgis.com/Rf1RTtpioLAV4006/arcgis/rest/services/NPMS_Pipelines/FeatureServer/0',
+        'name': 'EIA Natural Gas Interstate/Intrastate Pipelines',
+        'url': 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/Natural_Gas_Interstate_and_Intrastate_Pipelines_1/FeatureServer/0',
         'type': 'arcgis_kml',
-        'provider': 'PHMSA',
+        'provider': 'EIA',
         'category': 'gas'
     },
     {
-        'name': 'NPMS Pipelines 2022 (PHMSA/DOT)',
-        'url': 'https://services.arcgis.com/G4S1dGvn7PIgYd6Y/arcgis/rest/services/NPMS_Pipelines_2022/FeatureServer/0',
+        'name': 'EIA Crude Oil Trunk Pipelines',
+        'url': 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/Crude_Oil_Trunk_Pipelines_1/FeatureServer/0',
         'type': 'arcgis_kml',
-        'provider': 'PHMSA',
+        'provider': 'EIA',
         'category': 'gas'
     },
     {
-        'name': 'Major Gas Pipelines',
-        'url': 'https://services6.arcgis.com/VKHi8CC6pMIyYUIs/arcgis/rest/services/Major_Gas_Pipelines/FeatureServer/0',
+        'name': 'EIA Gulf Oil and Gas Pipelines',
+        'url': 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/Oil_And_Natural_Gas_Pipelines_Gulf_2024Q4/FeatureServer/0',
         'type': 'arcgis_kml',
-        'provider': 'PHMSA',
+        'provider': 'EIA',
         'category': 'gas'
     },
 ]
