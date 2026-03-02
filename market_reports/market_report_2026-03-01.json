@@ -1,19 +1,19 @@
 {
-  "report_date": "2026-02-28",
-  "generated_at": "2026-02-28T23:44:27.701175",
+  "report_date": "2026-03-01",
+  "generated_at": "2026-03-01T22:36:50.934960",
   "summary": {
     "total_facilities": 11433,
     "total_providers": 3958,
     "countries_covered": 170,
     "total_power_mw": 51325.0,
-    "total_deals": 828,
-    "total_deal_value_usd": 1375134500000.0
+    "total_deals": 923,
+    "total_deal_value_usd": 1755139800000.0
   },
   "market_highlights": [
     "DC Hub tracks 11,433 data center facilities globally",
     "Coverage spans 170 countries with 3958 providers",
     "Combined capacity: 51,325 MW",
-    "M&A database: 828 transactions worth $1375.1B+"
+    "M&A database: 923 transactions worth $1755.1B+"
   ],
   "recent_deals": [
     {
@@ -89,54 +89,54 @@
   ],
   "recent_news": [
     {
-      "title": "Tech Giants Pour Billions Into AI Data Centers",
-      "source": "The Tech Buzz",
-      "date": "2026-02-28T21:08:00"
+      "title": "The Energy Equation: CPP & Equinix's Acquisition of atNorth",
+      "source": "Energy Digital Magazine",
+      "date": "2026-03-01T22:35:01"
     },
     {
-      "title": "The billion-dollar infrastructure deals powering the AI boom",
-      "source": "TechCrunch AI",
-      "date": "2026-02-28T20:41:55"
+      "title": "AWS UAE suffers AZ outage after \"objects strike data center\" and cause fire, amid Iran attacks",
+      "source": "Data Center Dynamics",
+      "date": "2026-03-01T21:15:00"
     },
     {
-      "title": "Explosion near San Antonio data center injures 1, SAPD says",
-      "source": "MySA",
-      "date": "2026-02-28T20:05:47"
+      "title": "AWS's UAE data center shuts after fire amid Iran strikes",
+      "source": "The Jerusalem Post",
+      "date": "2026-03-01T20:30:50"
     },
     {
-      "title": "Huawei\u2019s SuperPoD portfolio creates new option for global computing",
-      "source": "Capacity Media",
-      "date": "2026-02-28T19:35:03"
+      "title": "Amazon's cloud unit reports fire after objects hit UAE data center",
+      "source": "Yahoo",
+      "date": "2026-03-01T20:28:52"
     },
     {
-      "title": "'World's Largest Battery' Soon At Google Data Center: 100-Hour Iron-Air Storage",
-      "source": "Slashdot",
-      "date": "2026-02-28T18:34:00"
+      "title": "States Push Data Center Pauses to Buy Time to Gauge Impacts",
+      "source": "ENR",
+      "date": "2026-03-01T19:55:00"
     },
     {
-      "title": "Microsoft urges major changes to Washington data center regulations as bill nears final vote",
-      "source": "GeekWire",
-      "date": "2026-02-28T15:41:27"
+      "title": "Data Center Demand Challenges Dominate EMPOWER 26 Presentations",
+      "source": "RTO Insider",
+      "date": "2026-03-01T18:54:23"
     },
     {
-      "title": "Transformer explosion near Vantage Data Centers injures construction worker",
-      "source": "WOAI",
-      "date": "2026-02-28T15:02:21"
+      "title": "AWS says on Sunday an availability zone in UAE was impacted by objects that struck the data center, creating sparks and fire",
+      "source": "marketscreener.com",
+      "date": "2026-03-01T18:35:23"
     },
     {
-      "title": "Equinix, Inc. (EQIX): A Bull Case Theory",
-      "source": "Finviz",
-      "date": "2026-02-28T14:45:07"
+      "title": "How Solaris\u2019 Data Center Power Shift, 2025 Results and New CFO At SEI Have Changed Its Investment Story",
+      "source": "simplywall.st",
+      "date": "2026-03-01T18:34:20"
     },
     {
-      "title": "Why is property being bought up in western Sedgwick County? Residents fear data centers",
-      "source": "Wichita Eagle",
-      "date": "2026-02-28T12:11:00"
+      "title": "AWS Says On Sunday A Availability Zones in UAE Was Impacted By Objects That Struck The Data Center, Creating Sparks And Fire",
+      "source": "TradingView",
+      "date": "2026-03-01T17:47:18"
     },
     {
-      "title": "What happens next with Google's Pine Island data center?",
-      "source": "Post Bulletin",
-      "date": "2026-02-28T12:10:42"
+      "title": "Riff Raff: Calling for a data center pause",
+      "source": "Talk Business & Politics",
+      "date": "2026-03-01T17:20:54"
     }
   ],
   "data_sources": [

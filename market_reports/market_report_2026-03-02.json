@@ -1,19 +1,19 @@
 {
-  "report_date": "2026-02-28",
-  "generated_at": "2026-02-28T23:44:27.701175",
+  "report_date": "2026-03-02",
+  "generated_at": "2026-03-02T05:49:55.944934",
   "summary": {
     "total_facilities": 11433,
     "total_providers": 3958,
     "countries_covered": 170,
     "total_power_mw": 51325.0,
-    "total_deals": 828,
-    "total_deal_value_usd": 1375134500000.0
+    "total_deals": 962,
+    "total_deal_value_usd": 1911142000000.0
   },
   "market_highlights": [
     "DC Hub tracks 11,433 data center facilities globally",
     "Coverage spans 170 countries with 3958 providers",
     "Combined capacity: 51,325 MW",
-    "M&A database: 828 transactions worth $1375.1B+"
+    "M&A database: 962 transactions worth $1911.1B+"
   ],
   "recent_deals": [
     {
@@ -89,54 +89,54 @@
   ],
   "recent_news": [
     {
-      "title": "Tech Giants Pour Billions Into AI Data Centers",
-      "source": "The Tech Buzz",
-      "date": "2026-02-28T21:08:00"
+      "title": "How AI Infrastructure Is Driving Data Center Expansion?",
+      "source": "vocal.media",
+      "date": "2026-03-02T05:31:00"
     },
     {
-      "title": "The billion-dollar infrastructure deals powering the AI boom",
-      "source": "TechCrunch AI",
-      "date": "2026-02-28T20:41:55"
+      "title": "OpenAI\u2019s Altman says Pentagon set \u2018scary precedent\u2019 binning Anthropic",
+      "source": "The Register DC",
+      "date": "2026-03-02T05:27:53"
     },
     {
-      "title": "Explosion near San Antonio data center injures 1, SAPD says",
-      "source": "MySA",
-      "date": "2026-02-28T20:05:47"
+      "title": "Amazon AWS UAE suffers power outage after 'objects' hit data centre | World News",
+      "source": "Hindustan Times",
+      "date": "2026-03-02T04:52:54"
     },
     {
-      "title": "Huawei\u2019s SuperPoD portfolio creates new option for global computing",
-      "source": "Capacity Media",
-      "date": "2026-02-28T19:35:03"
+      "title": "Amazon Data Center in UAE hit during Iranian strikes",
+      "source": "India TV News",
+      "date": "2026-03-02T04:40:26"
     },
     {
-      "title": "'World's Largest Battery' Soon At Google Data Center: 100-Hour Iron-Air Storage",
-      "source": "Slashdot",
-      "date": "2026-02-28T18:34:00"
+      "title": "Engine Power Plants Surge as Data Centers Drive Unprecedented Demand",
+      "source": "POWER Magazine",
+      "date": "2026-03-02T04:33:51"
     },
     {
-      "title": "Microsoft urges major changes to Washington data center regulations as bill nears final vote",
-      "source": "GeekWire",
-      "date": "2026-02-28T15:41:27"
+      "title": "DEVELOPING STORY | Power shut down at Amazon\u2019s UAE data center after fire due to falling \u201cobjects\u201d",
+      "source": "W.Media",
+      "date": "2026-03-02T04:17:00"
     },
     {
-      "title": "Transformer explosion near Vantage Data Centers injures construction worker",
-      "source": "WOAI",
-      "date": "2026-02-28T15:02:21"
+      "title": "Amazon Cloud Suffers Outage After \u2018Objects\u2019 Hit UAE Data Center",
+      "source": "Bloomberg Tech",
+      "date": "2026-03-02T04:10:18"
     },
     {
-      "title": "Equinix, Inc. (EQIX): A Bull Case Theory",
-      "source": "Finviz",
-      "date": "2026-02-28T14:45:07"
+      "title": "Objects hit Amazon\u2019s data center in UAE",
+      "source": "Iraqi News",
+      "date": "2026-03-02T03:39:48"
     },
     {
-      "title": "Why is property being bought up in western Sedgwick County? Residents fear data centers",
-      "source": "Wichita Eagle",
-      "date": "2026-02-28T12:11:00"
+      "title": "Amazon's (AMZN.US) cloud service provider AWS data center in the UAE was affected by the conflict, causing a fire.",
+      "source": "\u5bcc\u9014\u725b\u725b",
+      "date": "2026-03-02T03:02:53"
     },
     {
-      "title": "What happens next with Google's Pine Island data center?",
-      "source": "Post Bulletin",
-      "date": "2026-02-28T12:10:42"
+      "title": "One of Amazon's data centers in the UAE caught fire after being hit by 'objects' amid the Middle East conflict",
+      "source": "Business Insider",
+      "date": "2026-03-02T02:30:00"
     }
   ],
   "data_sources": [

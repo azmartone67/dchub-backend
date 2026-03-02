@@ -1273,7 +1273,7 @@ def run_outreach_cycle():
 _last_cycle_result = {'data': None, 'finished_at': None, 'running': False, 'started_at': None}
 
 
-def start_outreach_scheduler(interval_seconds=300):
+def start_outreach_scheduler(interval_seconds=int(os.environ.get('OUTREACH_INTERVAL_MINUTES', 720)) * 60):
     """Start the outreach scheduler with adaptive intervals based on learning"""
     def scheduler_loop():
         while True:
