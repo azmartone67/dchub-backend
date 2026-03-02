@@ -58,7 +58,7 @@ ADMIN_KEY = os.environ.get('DCHUB_ADMIN_KEY', '')
 
 def _get_conn():
     import psycopg2
-    db_url = os.environ.get('DATABASE_URL', '') or os.environ.get('NEON_DATABASE_URL', '')
+    db_url = os.environ.get('NEON_DATABASE_URL', '') or os.environ.get('DATABASE_URL', '')
     return psycopg2.connect(db_url, connect_timeout=10)
 
 
