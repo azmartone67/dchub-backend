@@ -25,6 +25,7 @@ Schedule (all times UTC):
   AI Outreach Agent    Every 8 hours     (5, 13, 21)
   Evolution Engine     Twice daily       (8, 20)
   Content Publishing   Daily             (11)
+  Neon DB Backup       Daily             (3) :00
   Keep-Alive           Every 5 minutes   (continuous)
 """
 
@@ -120,6 +121,14 @@ JOBS = {
         'minute': 0,
         'timeout': 120,
     },
+    'backup': {
+        'name': 'Neon DB Backup',
+        'endpoint': '/api/jobs/backup',
+        'method': 'POST',
+        'hours': [3],
+        'minute': 0,
+        'timeout': 600,
+    },
     'keepalive': {
         'name': 'Keep-Alive',
         'endpoint': '/api/jobs/keep-alive',
@@ -196,7 +205,7 @@ def run_job(key, job):
         log.info(f"  ✅ {job['name']} completed in {elapsed}s (HTTP {status})")
         if isinstance(data, dict):
             # Log key result fields
-            for k in ('new_articles', 'found', 'added', 'result'):
+            for k in ('new_articles', 'found', 'added', 'result', 'key', 'size_mb'):
                 if k in data:
                     log.info(f"     {k}: {data[k]}")
     elif status == 0:
