@@ -283,12 +283,11 @@ def post_to_linkedin(text, link_url=None, link_title=None, link_desc=None):
 def generate_weekly_post():
     """Generate a weekly LinkedIn post using live AI analytics data."""
     try:
-        # Pull data from our weekly digest
         from ai_weekly_digest import generate_weekly_digest
         digest = generate_weekly_digest()
     except Exception as e:
         logger.error(f"[LinkedIn] Could not generate digest: {e}")
-        return None
+        return None, None, None
 
     s = digest.get('summary', {})
     platforms = digest.get('platforms', [])
@@ -299,16 +298,10 @@ def generate_weekly_post():
     active = s.get('active_ai_platforms', 0)
     mcp = s.get('mcp_requests', 0)
 
-    # Build platform list
     top_platforms = [p['platform'] for p in platforms[:5] if p['this_week'] > 0]
     platform_str = ', '.join(top_platforms) if top_platforms else 'multiple AI platforms'
 
-    # Dynamic messaging based on data
-    wow_msg = ""
-    if wow > 0:
-        wow_msg = f"That's up {wow:.0f}% from last week. "
-    elif wow < 0:
-        wow_msg = ""  # Don't highlight negative changes
+    wow_msg = f"That's up {wow:.0f}% from last week. " if wow > 0 else ""
 
     highlights = digest.get('highlights', [])
     highlight_str = ""
@@ -327,7 +320,245 @@ See it live → dchub.cloud/ai-analytics
 
 #DataCenters #AI #MCP #DataCenterIntelligence"""
 
-    return post_text
+    return post_text, 'https://dchub.cloud/ai-analytics', 'AI Agent Analytics — DC Hub'
+
+
+def generate_deals_post():
+    """Generate a LinkedIn post about recent M&A deals."""
+    import requests as req
+    try:
+        resp = req.get('https://dchub.cloud/api/v1/deals?limit=5', timeout=15)
+        data = resp.json()
+        deals = data.get('deals', data.get('data', []))
+        if not deals:
+            return None, None, None
+    except Exception as e:
+        logger.error(f"[LinkedIn] Could not fetch deals: {e}")
+        return None, None, None
+
+    items = deals[:3]
+    deal_lines = []
+    for d in items:
+        title = d.get('title', d.get('name', 'Deal'))
+        buyer = d.get('buyer', '')
+        value = d.get('value', d.get('price', ''))
+        line = f"→ {title}"
+        if buyer:
+            line += f" — {buyer}"
+        if value:
+            line += f" ({value})"
+        deal_lines.append(line)
+
+    total_tracked = data.get('total', data.get('total_count', '975+'))
+
+    post_text = f"""Latest data center M&A activity tracked by DC Hub:
+
+{chr(10).join(deal_lines)}
+
+DC Hub now tracks {total_tracked} data center transactions worth $185B+ — the most comprehensive M&A database in the industry.
+
+Explore all deals → dchub.cloud/transactions
+
+#DataCenters #MergersAndAcquisitions #Infrastructure #RealEstate"""
+
+    return post_text, 'https://dchub.cloud/transactions', 'Data Center M&A Tracker — DC Hub'
+
+
+def generate_news_post():
+    """Generate a LinkedIn post about latest industry news."""
+    import requests as req
+    try:
+        resp = req.get('https://dchub.cloud/api/news?limit=5', timeout=15)
+        data = resp.json()
+        articles = data.get('articles', data.get('data', []))
+        if not articles:
+            return None, None, None
+    except Exception as e:
+        logger.error(f"[LinkedIn] Could not fetch news: {e}")
+        return None, None, None
+
+    items = articles[:3]
+    news_lines = []
+    for a in items:
+        title = a.get('title', a.get('headline', 'Article'))
+        source = a.get('source', '')
+        line = f"→ {title}"
+        if source:
+            line += f" ({source})"
+        news_lines.append(line)
+
+    post_text = f"""What's happening in data centers right now:
+
+{chr(10).join(news_lines)}
+
+DC Hub aggregates news from 30+ industry sources, updated every 3 minutes. Stay ahead of the market.
+
+Read more → dchub.cloud/news
+
+#DataCenters #InfrastructureNews #CloudComputing #DigitalInfrastructure"""
+
+    return post_text, 'https://dchub.cloud/news', 'Data Center News — DC Hub'
+
+
+def generate_market_post():
+    """Generate a LinkedIn post about market intelligence."""
+    import requests as req
+    markets = ['Northern Virginia', 'Dallas', 'Phoenix', 'Chicago', 'Atlanta']
+    import random
+    market = random.choice(markets)
+
+    try:
+        resp = req.get(f'https://dchub.cloud/api/market-report?market={market.replace(" ", "+")}', timeout=15)
+        data = resp.json()
+        m = data.get('market', data.get('data', data))
+    except Exception as e:
+        logger.error(f"[LinkedIn] Could not fetch market data: {e}")
+        return None, None, None
+
+    stats = []
+    if m.get('vacancy_rate') is not None:
+        stats.append(f"→ Vacancy rate: {m['vacancy_rate']}%")
+    if m.get('total_mw') or m.get('inventory'):
+        stats.append(f"→ Total inventory: {m.get('total_mw', m.get('inventory'))} MW")
+    if m.get('facilities_count'):
+        stats.append(f"→ Tracked facilities: {m['facilities_count']}")
+    if m.get('avg_price') or m.get('pricing'):
+        stats.append(f"→ Avg pricing: {m.get('avg_price', m.get('pricing'))}")
+
+    if not stats:
+        stats.append(f"→ Market tracked with real-time data")
+
+    post_text = f"""Market spotlight: {market}
+
+{chr(10).join(stats)}
+
+DC Hub tracks vacancy, pricing, inventory, and absorption across 35+ major markets worldwide. Real data for real decisions.
+
+Explore markets → dchub.cloud/market-intelligence
+
+#DataCenters #MarketIntelligence #Colocation #SiteSelection"""
+
+    return post_text, 'https://dchub.cloud/market-intelligence', f'{market} Market Intelligence — DC Hub'
+
+
+def generate_mcp_post():
+    """Generate a LinkedIn post about MCP/developer adoption."""
+    try:
+        from ai_weekly_digest import generate_weekly_digest
+        digest = generate_weekly_digest()
+    except Exception as e:
+        logger.error(f"[LinkedIn] Could not generate digest for MCP: {e}")
+        return None, None, None
+
+    s = digest.get('summary', {})
+    mcp = s.get('mcp_requests', 0)
+    total_all = s.get('total_all_time', 0)
+    active = s.get('active_ai_platforms', 0)
+
+    post_text = f"""AI agents don't Google. They query APIs.
+
+DC Hub's MCP server is now live across Cursor, VS Code, Windsurf, and Claude Desktop — giving AI coding assistants direct access to 20,000+ data center facilities.
+
+This week: {mcp:,} MCP requests from developer tools.
+Total AI agent requests: {total_all:,} across {active} platforms.
+
+One JSON config. Zero API keys for the free tier. 100 requests/day.
+
+Set it up in 30 seconds → dchub.cloud/connect
+
+#MCP #AI #DeveloperTools #DataCenters #APIFirst"""
+
+    return post_text, 'https://dchub.cloud/connect', 'Connect to DC Hub MCP Server'
+
+
+def generate_pipeline_post():
+    """Generate a LinkedIn post about new facilities / pipeline."""
+    import requests as req
+    try:
+        resp = req.get('https://dchub.cloud/api/ai/query?type=facilities&limit=3&sort=newest', timeout=15)
+        data = resp.json()
+        facilities = data.get('data', [])
+    except Exception as e:
+        logger.error(f"[LinkedIn] Could not fetch facilities: {e}")
+        facilities = []
+
+    if facilities:
+        fac_lines = []
+        for f in facilities[:3]:
+            name = f.get('name', f.get('facility_name', 'New Facility'))
+            city = f.get('city', '')
+            power = f.get('power_mw', f.get('power_capacity', ''))
+            line = f"→ {name}"
+            if city:
+                line += f" — {city}"
+            if power:
+                line += f" ({power} MW)"
+            fac_lines.append(line)
+        fac_str = chr(10).join(fac_lines)
+    else:
+        fac_str = "→ New facilities added daily across 140+ countries"
+
+    post_text = f"""DC Hub's facility database keeps growing.
+
+{fac_str}
+
+Now tracking 20,000+ data center facilities across 140+ countries — the largest independent database in the industry.
+
+Every facility includes location, power capacity, operator, connectivity, and more.
+
+Explore the database → dchub.cloud/assets
+
+#DataCenters #Infrastructure #CloudComputing #DigitalInfrastructure"""
+
+    return post_text, 'https://dchub.cloud/assets', 'Data Center Asset Explorer — DC Hub'
+
+
+# ── Post Topic Rotation ──────────────────────────────────────
+
+# Mon/Wed/Fri rotation: 6 topics across 3 slots per week = each topic every 2 weeks
+POST_SCHEDULE = {
+    0: [  # Monday — lead with analytics or deals
+        ('ai_analytics', generate_weekly_post),
+        ('deals', generate_deals_post),
+    ],
+    2: [  # Wednesday — mid-week insights
+        ('news', generate_news_post),
+        ('market_intel', generate_market_post),
+    ],
+    4: [  # Friday — developer/growth focus
+        ('mcp_adoption', generate_mcp_post),
+        ('pipeline', generate_pipeline_post),
+    ],
+}
+
+
+def _get_todays_topic():
+    """Pick today's topic, alternating within each day's options."""
+    now = datetime.now(timezone.utc)
+    weekday = now.weekday()
+
+    options = POST_SCHEDULE.get(weekday)
+    if not options:
+        return None, None
+
+    # Use ISO week number to alternate: even weeks = first option, odd weeks = second
+    week_num = now.isocalendar()[1]
+    idx = week_num % len(options)
+    return options[idx]
+
+
+def generate_scheduled_post():
+    """Generate the appropriate post for today's schedule."""
+    topic_name, generator = _get_todays_topic()
+    if not generator:
+        return None, None, None, None
+
+    result = generator()
+    if result and len(result) == 3:
+        text, link_url, link_title = result
+        return topic_name, text, link_url, link_title
+
+    return None, None, None, None
 
 
 # ── Admin Auth Check ─────────────────────────────────────────
@@ -461,35 +692,58 @@ def register_linkedin_routes(app):
         success, result = post_to_linkedin(text, link_url, link_title, link_desc)
         return _cors_json(result, 200 if success else 500)
 
-    # ── POST /api/linkedin/auto-post — Weekly auto-post ──────
+    # ── POST /api/linkedin/auto-post — Scheduled auto-post ────
     @app.route('/api/linkedin/auto-post', methods=['POST', 'OPTIONS'])
     def linkedin_auto_post():
-        """Trigger the weekly auto-generated post."""
+        """Trigger the scheduled auto-post (rotates topics Mon/Wed/Fri)."""
         if request.method == 'OPTIONS':
             return _cors_json({})
 
         if not _check_admin(request):
             return _cors_json({'error': 'Unauthorized'}, 401)
 
-        text = generate_weekly_post()
+        # Allow forcing a specific topic
+        force_topic = (request.get_json() or {}).get('topic') if request.is_json else request.args.get('topic')
+
+        if force_topic:
+            generators = {
+                'ai_analytics': generate_weekly_post,
+                'deals': generate_deals_post,
+                'news': generate_news_post,
+                'market_intel': generate_market_post,
+                'mcp_adoption': generate_mcp_post,
+                'pipeline': generate_pipeline_post,
+            }
+            gen = generators.get(force_topic)
+            if not gen:
+                return _cors_json({'error': f'Unknown topic: {force_topic}', 'available': list(generators.keys())}, 400)
+            result = gen()
+            if result and len(result) == 3:
+                topic_name, text, link_url = force_topic, result[0], result[1]
+                link_title = result[2]
+            else:
+                return _cors_json({'error': f'Could not generate {force_topic} post'}, 500)
+        else:
+            topic_name, text, link_url, link_title = generate_scheduled_post()
+
         if not text:
-            return _cors_json({'error': 'Could not generate post — digest data unavailable'}, 500)
+            return _cors_json({'error': 'Could not generate post — no data available for today\'s topic'}, 500)
 
         success, result = post_to_linkedin(
             text,
-            link_url='https://dchub.cloud/ai-analytics',
-            link_title='AI Agent Analytics — DC Hub',
-            link_desc='Live dashboard tracking AI platform usage across 20,000+ data center facilities.'
+            link_url=link_url,
+            link_title=link_title,
+            link_desc='Data Center Intelligence for the AI Era — DC Hub'
         )
 
         if success:
-            # Log as auto-post
             _execute("""
                 UPDATE linkedin_posts 
-                SET post_type = 'auto_weekly' 
+                SET post_type = %s 
                 WHERE id = (SELECT MAX(id) FROM linkedin_posts)
-            """)
+            """, (f'auto_{topic_name}',))
 
+        result['topic'] = topic_name
         return _cors_json(result, 200 if success else 500)
 
     # ── GET /api/linkedin/status — Check status ──────────────
@@ -516,6 +770,18 @@ def register_linkedin_routes(app):
         # Post count
         count = _execute("SELECT COUNT(*) as cnt FROM linkedin_posts", fetch=True)
 
+        # Next scheduled topic
+        topic_name, _ = _get_todays_topic()
+        next_days = {0: 'Monday', 2: 'Wednesday', 4: 'Friday'}
+        now = datetime.now(timezone.utc)
+        next_day = None
+        for d in sorted(next_days.keys()):
+            if d >= now.weekday():
+                next_day = next_days[d]
+                break
+        if not next_day:
+            next_day = next_days[0]  # Next Monday
+
         return _cors_json({
             'configured': bool(LINKEDIN_CLIENT_ID and LINKEDIN_CLIENT_SECRET),
             'authorized': has_token,
@@ -523,44 +789,49 @@ def register_linkedin_routes(app):
             'token_expires_in_days': remaining,
             'total_posts': count.get('cnt', 0) if count else 0,
             'last_post': last_post,
+            'schedule': 'Mon/Wed/Fri 14:00 UTC',
+            'todays_topic': topic_name,
+            'next_post_day': next_day,
+            'topics': ['ai_analytics', 'deals', 'news', 'market_intel', 'mcp_adoption', 'pipeline'],
         })
 
-    # ── Weekly auto-post scheduler ───────────────────────────
-    def _weekly_scheduler():
-        """Background thread that auto-posts every Monday at 9am UTC."""
+    # ── Mon/Wed/Fri auto-post scheduler ────────────────────────
+    def _scheduled_poster():
+        """Background thread that auto-posts Mon/Wed/Fri at 14:00 UTC (9am ET / 7am PT)."""
         while True:
             try:
                 now = datetime.now(timezone.utc)
-                # Monday = 0, post at 9:00 UTC (4am ET / 1am PT)
-                if now.weekday() == 0 and now.hour == 9 and now.minute < 5:
+                # Mon=0, Wed=2, Fri=4 — post at 14:00 UTC (peak LinkedIn engagement)
+                if now.weekday() in (0, 2, 4) and now.hour == 14 and now.minute < 5:
                     # Check if we already posted today
                     today_post = _execute("""
                         SELECT COUNT(*) as cnt FROM linkedin_posts
-                        WHERE post_type = 'auto_weekly'
+                        WHERE post_type LIKE 'auto_%%'
                           AND posted_at::date = CURRENT_DATE
+                          AND status = 'success'
                     """, fetch=True)
 
                     if today_post and today_post.get('cnt', 0) == 0:
-                        logger.info("[LinkedIn] Auto-posting weekly update...")
-                        text = generate_weekly_post()
+                        topic_name, text, link_url, link_title = generate_scheduled_post()
                         if text:
+                            logger.info(f"[LinkedIn] Auto-posting: {topic_name}")
                             success, result = post_to_linkedin(
                                 text,
-                                link_url='https://dchub.cloud/ai-analytics',
-                                link_title='AI Agent Analytics — DC Hub',
-                                link_desc='Live AI platform tracking dashboard.'
+                                link_url=link_url,
+                                link_title=link_title,
+                                link_desc='Data Center Intelligence for the AI Era — DC Hub'
                             )
                             if success:
                                 _execute("""
                                     UPDATE linkedin_posts 
-                                    SET post_type = 'auto_weekly'
+                                    SET post_type = %s
                                     WHERE id = (SELECT MAX(id) FROM linkedin_posts)
-                                """)
-                                logger.info(f"[LinkedIn] ✅ Weekly auto-post published")
+                                """, (f'auto_{topic_name}',))
+                                logger.info(f"[LinkedIn] ✅ Auto-post published: {topic_name}")
                             else:
                                 logger.error(f"[LinkedIn] Auto-post failed: {result}")
                         else:
-                            logger.warning("[LinkedIn] Auto-post skipped — no digest data")
+                            logger.warning("[LinkedIn] Auto-post skipped — no data for today's topic")
 
                 _time.sleep(300)  # Check every 5 minutes
             except Exception as e:
@@ -568,9 +839,10 @@ def register_linkedin_routes(app):
                 _time.sleep(600)
 
     # Start scheduler thread
-    t = threading.Thread(target=_weekly_scheduler, daemon=True, name='linkedin-scheduler')
+    t = threading.Thread(target=_scheduled_poster, daemon=True, name='linkedin-scheduler')
     t.start()
 
+    DAYS = {0: 'Mon', 2: 'Wed', 4: 'Fri'}
     logger.info("[LinkedIn] ✅ Routes registered:")
     logger.info("  GET  /api/linkedin/auth")
     logger.info("  GET  /api/linkedin/callback")
@@ -578,4 +850,5 @@ def register_linkedin_routes(app):
     logger.info("  POST /api/linkedin/auto-post")
     logger.info("  GET  /api/linkedin/status")
     logger.info(f"  Company: {LINKEDIN_COMPANY_ID or 'NOT SET'}")
-    logger.info(f"  Auto-post: Every Monday 9:00 UTC")
+    logger.info(f"  Schedule: Mon/Wed/Fri 14:00 UTC")
+    logger.info(f"  Topics: ai_analytics, deals, news, market_intel, mcp_adoption, pipeline")
