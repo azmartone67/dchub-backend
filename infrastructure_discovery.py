@@ -214,9 +214,13 @@ HIFLD_APIS = {
     "substations": "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Substations/FeatureServer/0",
     "transmission_lines": "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Power_Transmission_Lines/FeatureServer/0",
     "power_plants": "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Power_Plants/FeatureServer/0",
-    "natural_gas_pipelines": "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Natural_Gas_Pipelines/FeatureServer/0",
-    "natural_gas_compressor": "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Natural_Gas_Compressor_Stations/FeatureServer/0",
-    "natural_gas_processing": "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Natural_Gas_Processing_Plants/FeatureServer/0",
+}
+
+# Gas pipeline sources — NPMS/PHMSA (replaces dead HIFLD gas services)
+NPMS_APIS = {
+    "pipelines": "https://services3.arcgis.com/Rf1RTtpioLAV4006/arcgis/rest/services/NPMS_Pipelines/FeatureServer/0",
+    "pipelines_2022": "https://services.arcgis.com/G4S1dGvn7PIgYd6Y/arcgis/rest/services/NPMS_Pipelines_2022/FeatureServer/0",
+    "major_gas": "https://services6.arcgis.com/VKHi8CC6pMIyYUIs/arcgis/rest/services/Major_Gas_Pipelines/FeatureServer/0",
 }
 
 
@@ -984,19 +988,20 @@ class GasPipelineDiscovery:
     _state_index = 0
     
     def sync(self):
-        """Sync gas pipelines from HIFLD (state-by-state) and learned APIs"""
+        """Sync gas pipelines from NPMS/PHMSA (state-by-state) and learned APIs"""
         logger.info("🔥 Syncing gas pipelines...")
         self.new_pipelines = 0
         
-        # Phase 1: State-by-state HIFLD pulls (10 states per cycle, rotates)
-        self._sync_hifld_pipelines_by_state()
-        self._sync_hifld_compressors_by_state()
-        self._sync_hifld_processing_by_state()
+        # Phase 1: NPMS state-by-state pull (10 states per cycle)
+        self._sync_npms_pipelines_by_state()
         
-        # Phase 2: Market-specific enrichment (rotates 5 per cycle for detail)
+        # Phase 2: Major Gas Pipelines curated dataset
+        self._sync_npms_major_pipelines()
+        
+        # Phase 3: Market-specific enrichment (rotates 5 per cycle)
         self._sync_hifld_market_detail()
         
-        # Phase 3: Auto-discovered/learned APIs
+        # Phase 4: Auto-discovered/learned APIs
         self._sync_from_learned_apis()
         
         logger.info(f"   ✅ Gas pipelines: {self.new_pipelines} new")
@@ -1012,20 +1017,38 @@ class GasPipelineDiscovery:
         logger.info(f"   📍 Processing states: {', '.join(states)} (batch index {GasPipelineDiscovery._state_index})")
         return states
     
-    def _sync_hifld_pipelines_by_state(self):
-        """Pull natural gas pipelines from HIFLD state-by-state (10 states per cycle)"""
+    def _sync_npms_pipelines_by_state(self):
+        """Pull gas pipelines from NPMS/PHMSA state-by-state (10 states per cycle).
+        Uses ST_MIXED field (full state name) and CMDTY_GEN='GAS' filter."""
         states = self._get_state_batch(10)
-        logger.info(f"   🔥 HIFLD gas pipelines: pulling {len(states)} states...")
+        logger.info(f"   🔥 NPMS gas pipelines: pulling {len(states)} states...")
+        
+        # Map state abbreviations to full names for ST_MIXED field
+        state_names = {
+            'AL':'Alabama','AK':'Alaska','AZ':'Arizona','AR':'Arkansas','CA':'California',
+            'CO':'Colorado','CT':'Connecticut','DE':'Delaware','DC':'District of Columbia',
+            'FL':'Florida','GA':'Georgia','HI':'Hawaii','ID':'Idaho','IL':'Illinois',
+            'IN':'Indiana','IA':'Iowa','KS':'Kansas','KY':'Kentucky','LA':'Louisiana',
+            'ME':'Maine','MD':'Maryland','MA':'Massachusetts','MI':'Michigan','MN':'Minnesota',
+            'MS':'Mississippi','MO':'Missouri','MT':'Montana','NE':'Nebraska','NV':'Nevada',
+            'NH':'New Hampshire','NJ':'New Jersey','NM':'New Mexico','NY':'New York',
+            'NC':'North Carolina','ND':'North Dakota','OH':'Ohio','OK':'Oklahoma',
+            'OR':'Oregon','PA':'Pennsylvania','RI':'Rhode Island','SC':'South Carolina',
+            'SD':'South Dakota','TN':'Tennessee','TX':'Texas','UT':'Utah','VT':'Vermont',
+            'VA':'Virginia','WA':'Washington','WV':'West Virginia','WI':'Wisconsin','WY':'Wyoming'
+        }
         
         total_fetched = 0
         before = self.new_pipelines
         
         for state_code in states:
+            state_name = state_names.get(state_code, state_code)
             try:
-                # Query by state — much more reliable than 1=1 bulk
+                # Filter: gas pipelines only, in-service, for this state
+                where = f"ST_MIXED='{state_name}' AND CMDTY_GEN='GAS' AND STATUS_CD='I'"
                 features = _query_hifld_paginated(
-                    HIFLD_APIS['natural_gas_pipelines'],
-                    where=f"STATE='{state_code}' OR STATE IS NULL",
+                    NPMS_APIS['pipelines'],
+                    where=where,
                     max_total=5000,
                     batch_size=1000
                 )
@@ -1034,12 +1057,20 @@ class GasPipelineDiscovery:
                     attrs = feat.get('attributes', {})
                     geom = feat.get('geometry', {})
                     
-                    name = attrs.get('Pipename', attrs.get('NAME', attrs.get('OPERATOR', 'Unknown Pipeline')))
-                    operator = attrs.get('Operator', attrs.get('OPERATOR', ''))
-                    typepipe = attrs.get('Typepipe', attrs.get('TYPE', 'interstate'))
-                    diameter = attrs.get('Diameter', attrs.get('DIAMETER', 0)) or 0
-                    status = attrs.get('Status', attrs.get('STATUS', 'Operating'))
-                    pipe_id = attrs.get('OBJECTID', attrs.get('ID', ''))
+                    oper = attrs.get('OPER_NM', 'Unknown')
+                    sys_nm = attrs.get('SYS_NM', '')
+                    subsys = attrs.get('SUBSYS_NM', '')
+                    diameter = attrs.get('DIAMETER', 0) or 0
+                    miles = attrs.get('MILES', 0) or 0
+                    interstate = attrs.get('INTERSTATE', 'N')
+                    pipe_id = attrs.get('OBJECTID', attrs.get('FID', ''))
+                    pline_id = attrs.get('PLINE_ID', '')
+                    county = attrs.get('CNTY_MIXED', '')
+                    
+                    # Build name from system name + operator
+                    name = sys_nm.strip() if sys_nm and sys_nm.strip() else oper
+                    if subsys and subsys.strip():
+                        name = f"{name} - {subsys.strip()}"
                     
                     # Get centroid from geometry
                     lat = lng = None
@@ -1056,193 +1087,160 @@ class GasPipelineDiscovery:
                         continue
                     
                     city = self._nearest_market(lat, lng)
+                    pipe_type = 'interstate' if interstate == 'Y' else 'intrastate'
                     
                     pipeline = {
-                        "name": f"{name}"[:200] if name else 'Unknown Pipeline',
-                        "operator": str(operator)[:100] if operator else 'Unknown',
-                        "pipeline_type": str(typepipe)[:50] if typepipe else 'interstate',
+                        "name": f"{name}"[:200],
+                        "operator": str(oper)[:100] if oper else 'Unknown',
+                        "pipeline_type": pipe_type,
                         "diameter_inches": diameter,
-                        "status": 'active' if str(status).lower() in ('operating', 'active', 'in service') else str(status).lower()[:50],
+                        "status": 'active',
                         "city": city,
                         "state": state_code,
                         "lat": lat,
                         "lng": lng,
-                        "source_id": f"hifld_gas_{pipe_id}"
+                        "source_id": f"npms_{pipe_id}_{pline_id}"[:100]
                     }
-                    self._save_pipeline(pipeline, source='hifld')
-                
-                total_fetched += len(features)
-                logger.info(f"   🔥 HIFLD gas pipelines {state_code}: {len(features)} found")
-                time.sleep(1)  # Be polite to HIFLD
-                
-            except Exception as e:
-                logger.warning(f"   ⚠️ HIFLD gas pipelines {state_code} failed: {e}")
-                time.sleep(2)
-        
-        logger.info(f"   🔥 HIFLD gas pipelines: {total_fetched} fetched from {len(states)} states, {self.new_pipelines - before} new")
-    
-    def _sync_hifld_compressors_by_state(self):
-        """Pull compressor stations from HIFLD state-by-state (same batch as pipelines)"""
-        # Use same state batch offset so compressors and pipelines stay in sync
-        idx = max(0, GasPipelineDiscovery._state_index - 10)
-        states = self.US_STATES[idx:idx + 10]
-        if not states:
-            states = self.US_STATES[:10]
-        
-        logger.info(f"   🔥 HIFLD compressor stations: pulling {len(states)} states...")
-        total_fetched = 0
-        before = self.new_pipelines
-        
-        for state_code in states:
-            try:
-                features = _query_hifld_paginated(
-                    HIFLD_APIS['natural_gas_compressor'],
-                    where=f"STATE='{state_code}'",
-                    max_total=2000,
-                    batch_size=1000
-                )
-                
-                for feat in features:
-                    attrs = feat.get('attributes', {})
-                    geom = feat.get('geometry', {})
-                    
-                    name = attrs.get('NAME', attrs.get('STATION', 'Unknown Compressor'))
-                    operator = attrs.get('OPERATOR', attrs.get('OWNER', ''))
-                    comp_id = attrs.get('OBJECTID', attrs.get('ID', ''))
-                    lat = geom.get('y', 0)
-                    lng = geom.get('x', 0)
-                    
-                    if not lat or not lng:
-                        continue
-                    
-                    city = self._nearest_market(lat, lng)
-                    
-                    pipeline = {
-                        "name": f"{name} Compressor Station"[:200],
-                        "operator": str(operator)[:100] if operator else 'Unknown',
-                        "pipeline_type": "compressor_station",
-                        "status": "active",
-                        "city": city,
-                        "state": state_code,
-                        "lat": lat,
-                        "lng": lng,
-                        "source_id": f"hifld_comp_{comp_id}"
-                    }
-                    self._save_pipeline(pipeline, source='hifld')
+                    self._save_pipeline(pipeline, source='npms_phmsa')
                 
                 total_fetched += len(features)
                 if features:
-                    logger.info(f"   🔥 HIFLD compressors {state_code}: {len(features)} found")
+                    logger.info(f"   🔥 NPMS gas pipelines {state_code}: {len(features)} found")
                 time.sleep(1)
                 
             except Exception as e:
-                logger.warning(f"   ⚠️ HIFLD compressors {state_code} failed: {e}")
+                logger.warning(f"   ⚠️ NPMS gas pipelines {state_code} failed: {e}")
                 time.sleep(2)
         
-        logger.info(f"   🔥 HIFLD compressors: {total_fetched} fetched, {self.new_pipelines - before} new")
+        logger.info(f"   🔥 NPMS gas pipelines: {total_fetched} from {len(states)} states, {self.new_pipelines - before} new")
     
-    def _sync_hifld_processing_by_state(self):
-        """Pull processing plants from HIFLD state-by-state (same batch)"""
-        idx = max(0, GasPipelineDiscovery._state_index - 10)
-        states = self.US_STATES[idx:idx + 10]
-        if not states:
-            states = self.US_STATES[:10]
-        
-        logger.info(f"   🔥 HIFLD processing plants: pulling {len(states)} states...")
-        total_fetched = 0
+    def _sync_npms_major_pipelines(self):
+        """Pull from the Major Gas Pipelines service (smaller, curated dataset)."""
+        logger.info("   🔥 Major Gas Pipelines: pulling curated dataset...")
         before = self.new_pipelines
-        
-        for state_code in states:
-            try:
-                features = _query_hifld_paginated(
-                    HIFLD_APIS['natural_gas_processing'],
-                    where=f"STATE='{state_code}'",
-                    max_total=1000,
-                    batch_size=500
-                )
+        try:
+            features = _query_hifld_paginated(
+                NPMS_APIS['major_gas'],
+                where="CMDTY_GEN='GAS' AND STATUS_CD<>'B'",
+                max_total=10000,
+                batch_size=2000
+            )
+            
+            for feat in features:
+                attrs = feat.get('attributes', {})
+                geom = feat.get('geometry', {})
                 
-                for feat in features:
-                    attrs = feat.get('attributes', {})
-                    geom = feat.get('geometry', {})
-                    
-                    name = attrs.get('NAME', attrs.get('PLANT', 'Unknown Processing Plant'))
-                    operator = attrs.get('OPERATOR', attrs.get('OWNER', ''))
-                    plant_id = attrs.get('OBJECTID', attrs.get('ID', ''))
-                    capacity = attrs.get('CAPACITY', attrs.get('CAP_MMCF', 0)) or 0
-                    lat = geom.get('y', 0)
-                    lng = geom.get('x', 0)
-                    
-                    if not lat or not lng:
-                        continue
-                    
-                    city = self._nearest_market(lat, lng)
-                    
-                    pipeline = {
-                        "name": f"{name} Processing Plant"[:200],
-                        "operator": str(operator)[:100] if operator else 'Unknown',
-                        "pipeline_type": "processing_plant",
-                        "diameter_inches": 0,
-                        "capacity_mcf": capacity,
-                        "status": "active",
-                        "city": city,
-                        "state": state_code,
-                        "lat": lat,
-                        "lng": lng,
-                        "source_id": f"hifld_proc_{plant_id}"
-                    }
-                    self._save_pipeline(pipeline, source='hifld')
+                oper = attrs.get('OPER_NM', 'Unknown')
+                sys_nm = attrs.get('SYS_NM', '')
+                diameter = attrs.get('DIAMETER', 0) or 0
+                interstate = attrs.get('INTERSTATE', 'N')
+                pipe_id = attrs.get('OBJECTID', '')
+                pline_id = attrs.get('PLINE_ID', '')
+                state_name = attrs.get('ST_MIXED', '')
+                county = attrs.get('CNTY_MIXED', '')
                 
-                total_fetched += len(features)
-                if features:
-                    logger.info(f"   🔥 HIFLD processing {state_code}: {len(features)} found")
-                time.sleep(1)
+                name = sys_nm.strip() if sys_nm and sys_nm.strip() else oper
                 
-            except Exception as e:
-                logger.warning(f"   ⚠️ HIFLD processing {state_code} failed: {e}")
-                time.sleep(2)
-        
-        logger.info(f"   🔥 HIFLD processing plants: {total_fetched} fetched, {self.new_pipelines - before} new")
+                lat = lng = None
+                if geom:
+                    if 'paths' in geom and geom['paths']:
+                        path = geom['paths'][0]
+                        mid = path[len(path) // 2] if path else None
+                        if mid and len(mid) >= 2:
+                            lng, lat = mid[0], mid[1]
+                    elif 'x' in geom and 'y' in geom:
+                        lng, lat = geom['x'], geom['y']
+                
+                if not lat or not lng:
+                    continue
+                
+                city = self._nearest_market(lat, lng)
+                pipe_type = 'interstate' if interstate == 'Y' else 'intrastate'
+                
+                # Reverse lookup state abbrev from name
+                st_abbrev = ''
+                for abbr, full in [('AL','Alabama'),('AK','Alaska'),('AZ','Arizona'),('AR','Arkansas'),
+                    ('CA','California'),('CO','Colorado'),('CT','Connecticut'),('DE','Delaware'),
+                    ('FL','Florida'),('GA','Georgia'),('HI','Hawaii'),('ID','Idaho'),('IL','Illinois'),
+                    ('IN','Indiana'),('IA','Iowa'),('KS','Kansas'),('KY','Kentucky'),('LA','Louisiana'),
+                    ('ME','Maine'),('MD','Maryland'),('MA','Massachusetts'),('MI','Michigan'),
+                    ('MN','Minnesota'),('MS','Mississippi'),('MO','Missouri'),('MT','Montana'),
+                    ('NE','Nebraska'),('NV','Nevada'),('NH','New Hampshire'),('NJ','New Jersey'),
+                    ('NM','New Mexico'),('NY','New York'),('NC','North Carolina'),('ND','North Dakota'),
+                    ('OH','Ohio'),('OK','Oklahoma'),('OR','Oregon'),('PA','Pennsylvania'),
+                    ('RI','Rhode Island'),('SC','South Carolina'),('SD','South Dakota'),('TN','Tennessee'),
+                    ('TX','Texas'),('UT','Utah'),('VT','Vermont'),('VA','Virginia'),('WA','Washington'),
+                    ('WV','West Virginia'),('WI','Wisconsin'),('WY','Wyoming')]:
+                    if full == state_name:
+                        st_abbrev = abbr
+                        break
+                
+                pipeline = {
+                    "name": f"{name}"[:200],
+                    "operator": str(oper)[:100],
+                    "pipeline_type": pipe_type,
+                    "diameter_inches": diameter,
+                    "status": 'active',
+                    "city": city,
+                    "state": st_abbrev,
+                    "lat": lat,
+                    "lng": lng,
+                    "source_id": f"npms_major_{pipe_id}_{pline_id}"[:100]
+                }
+                self._save_pipeline(pipeline, source='npms_major')
+            
+            logger.info(f"   🔥 Major Gas Pipelines: {len(features)} fetched, {self.new_pipelines - before} new")
+        except Exception as e:
+            logger.warning(f"   ⚠️ Major Gas Pipelines failed: {e}")
     
     def _sync_hifld_market_detail(self):
-        """Detailed market-specific pull (rotates 5 markets per cycle for enrichment)"""
+        """Spatial pull of NPMS pipelines near DC markets (rotates 5 per cycle)"""
         markets = DC_MARKETS[self._market_index:self._market_index + 5]
         self._market_index = (self._market_index + 5) % len(DC_MARKETS)
         
         before = self.new_pipelines
         for market in markets:
             try:
+                # Use spatial query against NPMS pipelines near this market
                 features = _query_hifld_nearby(
-                    HIFLD_APIS['natural_gas_pipelines'],
+                    NPMS_APIS['pipelines'],
                     market['lat'], market['lng'],
                     radius_m=80000, max_records=200,
                     return_geometry=False
                 )
                 for feat in features:
                     attrs = feat.get('attributes', {})
-                    name = attrs.get('Pipename', attrs.get('NAME', attrs.get('OPERATOR', 'Unknown Pipeline')))
-                    operator = attrs.get('Operator', attrs.get('OPERATOR', ''))
-                    typepipe = attrs.get('Typepipe', attrs.get('TYPE', 'interstate'))
-                    diameter = attrs.get('Diameter', attrs.get('DIAMETER', 0)) or 0
-                    status = attrs.get('Status', attrs.get('STATUS', 'Operating'))
-                    pipe_id = attrs.get('OBJECTID', attrs.get('ID', ''))
+                    # Only gas pipelines
+                    if attrs.get('CMDTY_GEN', '') != 'GAS':
+                        continue
+                    
+                    oper = attrs.get('OPER_NM', 'Unknown')
+                    sys_nm = attrs.get('SYS_NM', '')
+                    diameter = attrs.get('DIAMETER', 0) or 0
+                    interstate = attrs.get('INTERSTATE', 'N')
+                    pipe_id = attrs.get('OBJECTID', attrs.get('FID', ''))
+                    pline_id = attrs.get('PLINE_ID', '')
+                    
+                    name = sys_nm.strip() if sys_nm and sys_nm.strip() else oper
+                    pipe_type = 'interstate' if interstate == 'Y' else 'intrastate'
                     
                     pipeline = {
                         "name": f"{name} - {market['name']}"[:200],
-                        "operator": str(operator)[:100] if operator else 'Unknown',
-                        "pipeline_type": str(typepipe)[:50] if typepipe else 'interstate',
+                        "operator": str(oper)[:100] if oper else 'Unknown',
+                        "pipeline_type": pipe_type,
                         "diameter_inches": diameter,
-                        "status": 'active' if str(status).lower() in ('operating', 'active', 'in service') else str(status).lower(),
+                        "status": 'active',
                         "city": market['name'],
                         "state": market['state'],
                         "lat": market['lat'],
                         "lng": market['lng'],
-                        "source_id": f"hifld_gas_mkt_{pipe_id}_{market['state']}"
+                        "source_id": f"npms_mkt_{pipe_id}_{pline_id}_{market['state']}"[:100]
                     }
-                    self._save_pipeline(pipeline, source='hifld')
+                    self._save_pipeline(pipeline, source='npms_phmsa')
                 
                 time.sleep(0.5)
             except Exception as e:
-                logger.warning(f"   ⚠️ HIFLD gas detail failed for {market['name']}: {e}")
+                logger.warning(f"   ⚠️ NPMS market detail failed for {market['name']}: {e}")
         
         logger.info(f"   🔥 Market detail enrichment: {self.new_pipelines - before} new from {len(markets)} markets")
     
