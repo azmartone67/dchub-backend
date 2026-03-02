@@ -1,4 +1,4 @@
-"""# Force redeploy v2.3 - Feb 28 2026
+"""# Force redeploy v2.3 - Feb 26 2026
 # v94 -- Power Plant Coordinate Enrichment (Phase 2) Feb 25 2026
 # v93 -- AI Testimonials + Dashboard Stats Fixes Feb 25 2026
 # v92 -- Daily Automation Engine (alerts, LinkedIn, market brief) Feb 24 2026
@@ -2643,6 +2643,26 @@ try:
         logger.warning("⚠️ LinkedIn Auto-Publisher: blueprint not available")
 except Exception as e:
     logger.error(f"⚠️ LinkedIn Auto-Publisher blueprint failed: {e}")
+
+# LinkedIn Poster (Neon-backed, replaces old linkedin_scheduler + linkedin_autopost)
+try:
+    from linkedin_poster import register_linkedin_routes
+    register_linkedin_routes(app)
+    logger.info("✅ LinkedIn Poster: registered (Neon-backed, weekly auto-post)")
+except ImportError:
+    logger.warning("⚠️ LinkedIn Poster: not installed")
+except Exception as e:
+    logger.error(f"⚠️ LinkedIn Poster: {e}")
+
+# AI Weekly Digest
+try:
+    from ai_weekly_digest import register_digest_routes
+    register_digest_routes(app)
+    logger.info("✅ AI Weekly Digest: registered (/api/ai/weekly-digest)")
+except ImportError:
+    logger.warning("⚠️ AI Weekly Digest: not installed")
+except Exception as e:
+    logger.error(f"⚠️ AI Weekly Digest: {e}")
 
 try:
     from power_plant_enrichment.routes import enrichment_bp
