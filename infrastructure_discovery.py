@@ -959,49 +959,210 @@ class SubstationDiscovery:
 
 
 class GasPipelineDiscovery:
-    """Discover gas pipelines from HIFLD, EIA, and learned APIs"""
+    """Discover gas pipelines from HIFLD, EIA, and learned APIs.
+    
+    v2: Bulk nationwide pull instead of slow 3-market rotation.
+    Pulls all pipelines, compressor stations, and processing plants
+    from HIFLD in paginated batches. Runs twice daily via Railway cron.
+    """
     
     def __init__(self):
         self.new_pipelines = 0
         self._market_index = 0
+        self._bulk_done = False  # Track if initial bulk pull completed
     
     def sync(self):
-        """Sync gas pipelines from HIFLD and learned APIs"""
+        """Sync gas pipelines from HIFLD (bulk) and learned APIs"""
         logger.info("🔥 Syncing gas pipelines...")
         self.new_pipelines = 0
         
-        self._sync_hifld_pipelines()
-        self._sync_hifld_compressors()
+        # Phase 1: Bulk nationwide pull (paginated, all records)
+        self._sync_hifld_bulk_pipelines()
+        self._sync_hifld_bulk_compressors()
+        self._sync_hifld_bulk_processing_plants()
+        
+        # Phase 2: Market-specific enrichment (rotates 5 per cycle for detail)
+        self._sync_hifld_market_detail()
+        
+        # Phase 3: Auto-discovered/learned APIs
         self._sync_from_learned_apis()
         
         logger.info(f"   ✅ Gas pipelines: {self.new_pipelines} new")
         return self.new_pipelines
     
-    def _sync_hifld_pipelines(self):
-        """Pull natural gas pipelines from HIFLD near DC markets (rotates 3 per cycle)"""
-        markets = DC_MARKETS[self._market_index:self._market_index + 3]
-        self._market_index = (self._market_index + 3) % len(DC_MARKETS)
+    def _sync_hifld_bulk_pipelines(self):
+        """Bulk pull ALL natural gas pipelines from HIFLD nationwide (paginated)"""
+        logger.info("   🔥 HIFLD bulk gas pipelines: starting nationwide pull...")
+        try:
+            features = _query_hifld_paginated(
+                HIFLD_APIS['natural_gas_pipelines'],
+                where='1=1',
+                max_total=50000,
+                batch_size=2000
+            )
+            count = 0
+            for feat in features:
+                attrs = feat.get('attributes', {})
+                geom = feat.get('geometry', {})
+                
+                name = attrs.get('Pipename', attrs.get('NAME', attrs.get('OPERATOR', 'Unknown Pipeline')))
+                operator = attrs.get('Operator', attrs.get('OPERATOR', ''))
+                typepipe = attrs.get('Typepipe', attrs.get('TYPE', 'interstate'))
+                diameter = attrs.get('Diameter', attrs.get('DIAMETER', 0)) or 0
+                status = attrs.get('Status', attrs.get('STATUS', 'Operating'))
+                pipe_id = attrs.get('OBJECTID', attrs.get('ID', ''))
+                state_code = attrs.get('STATE', attrs.get('State', ''))
+                
+                # Get centroid from geometry if available
+                lat = lng = None
+                if geom:
+                    if 'paths' in geom and geom['paths']:
+                        # Line geometry — use midpoint of first path
+                        path = geom['paths'][0]
+                        mid = path[len(path) // 2] if path else None
+                        if mid and len(mid) >= 2:
+                            lng, lat = mid[0], mid[1]
+                    elif 'x' in geom and 'y' in geom:
+                        lng, lat = geom['x'], geom['y']
+                
+                if not lat or not lng:
+                    continue
+                
+                # Determine nearest market
+                city = self._nearest_market(lat, lng)
+                
+                pipeline = {
+                    "name": f"{name}"[:200] if name else 'Unknown Pipeline',
+                    "operator": str(operator)[:100] if operator else 'Unknown',
+                    "pipeline_type": str(typepipe)[:50] if typepipe else 'interstate',
+                    "diameter_inches": diameter,
+                    "status": 'active' if str(status).lower() in ('operating', 'active', 'in service') else str(status).lower()[:50],
+                    "city": city,
+                    "state": str(state_code)[:2] if state_code else '',
+                    "lat": lat,
+                    "lng": lng,
+                    "source_id": f"hifld_gas_{pipe_id}"
+                }
+                self._save_pipeline(pipeline, source='hifld')
+                count += 1
+            
+            logger.info(f"   🔥 HIFLD bulk gas pipelines: {len(features)} fetched, {self.new_pipelines} new saved")
+        except Exception as e:
+            logger.warning(f"   ⚠️ HIFLD bulk gas pipelines failed: {e}")
+    
+    def _sync_hifld_bulk_compressors(self):
+        """Bulk pull ALL natural gas compressor stations from HIFLD"""
+        logger.info("   🔥 HIFLD bulk compressor stations: starting...")
+        try:
+            features = _query_hifld_paginated(
+                HIFLD_APIS['natural_gas_compressor'],
+                where='1=1',
+                max_total=10000,
+                batch_size=2000
+            )
+            before = self.new_pipelines
+            for feat in features:
+                attrs = feat.get('attributes', {})
+                geom = feat.get('geometry', {})
+                
+                name = attrs.get('NAME', attrs.get('STATION', 'Unknown Compressor'))
+                operator = attrs.get('OPERATOR', attrs.get('OWNER', ''))
+                comp_id = attrs.get('OBJECTID', attrs.get('ID', ''))
+                state_code = attrs.get('STATE', attrs.get('State', ''))
+                lat = geom.get('y', 0)
+                lng = geom.get('x', 0)
+                
+                if not lat or not lng:
+                    continue
+                
+                city = self._nearest_market(lat, lng)
+                
+                pipeline = {
+                    "name": f"{name} Compressor Station"[:200],
+                    "operator": str(operator)[:100] if operator else 'Unknown',
+                    "pipeline_type": "compressor_station",
+                    "status": "active",
+                    "city": city,
+                    "state": str(state_code)[:2] if state_code else '',
+                    "lat": lat,
+                    "lng": lng,
+                    "source_id": f"hifld_comp_{comp_id}"
+                }
+                self._save_pipeline(pipeline, source='hifld')
+            
+            logger.info(f"   🔥 HIFLD compressor stations: {len(features)} fetched, {self.new_pipelines - before} new")
+        except Exception as e:
+            logger.warning(f"   ⚠️ HIFLD bulk compressors failed: {e}")
+    
+    def _sync_hifld_bulk_processing_plants(self):
+        """Bulk pull ALL natural gas processing plants from HIFLD"""
+        logger.info("   🔥 HIFLD bulk processing plants: starting...")
+        try:
+            features = _query_hifld_paginated(
+                HIFLD_APIS['natural_gas_processing'],
+                where='1=1',
+                max_total=5000,
+                batch_size=1000
+            )
+            before = self.new_pipelines
+            for feat in features:
+                attrs = feat.get('attributes', {})
+                geom = feat.get('geometry', {})
+                
+                name = attrs.get('NAME', attrs.get('PLANT', 'Unknown Processing Plant'))
+                operator = attrs.get('OPERATOR', attrs.get('OWNER', ''))
+                plant_id = attrs.get('OBJECTID', attrs.get('ID', ''))
+                state_code = attrs.get('STATE', attrs.get('State', ''))
+                capacity = attrs.get('CAPACITY', attrs.get('CAP_MMCF', 0)) or 0
+                lat = geom.get('y', 0)
+                lng = geom.get('x', 0)
+                
+                if not lat or not lng:
+                    continue
+                
+                city = self._nearest_market(lat, lng)
+                
+                pipeline = {
+                    "name": f"{name} Processing Plant"[:200],
+                    "operator": str(operator)[:100] if operator else 'Unknown',
+                    "pipeline_type": "processing_plant",
+                    "diameter_inches": 0,
+                    "capacity_mcf": capacity,
+                    "status": "active",
+                    "city": city,
+                    "state": str(state_code)[:2] if state_code else '',
+                    "lat": lat,
+                    "lng": lng,
+                    "source_id": f"hifld_proc_{plant_id}"
+                }
+                self._save_pipeline(pipeline, source='hifld')
+            
+            logger.info(f"   🔥 HIFLD processing plants: {len(features)} fetched, {self.new_pipelines - before} new")
+        except Exception as e:
+            logger.warning(f"   ⚠️ HIFLD bulk processing plants failed: {e}")
+    
+    def _sync_hifld_market_detail(self):
+        """Detailed market-specific pull (rotates 5 markets per cycle for enrichment)"""
+        markets = DC_MARKETS[self._market_index:self._market_index + 5]
+        self._market_index = (self._market_index + 5) % len(DC_MARKETS)
         
+        before = self.new_pipelines
         for market in markets:
             try:
                 features = _query_hifld_nearby(
                     HIFLD_APIS['natural_gas_pipelines'],
                     market['lat'], market['lng'],
-                    radius_m=50000, max_records=100,
+                    radius_m=80000, max_records=200,
                     return_geometry=False
                 )
                 for feat in features:
                     attrs = feat.get('attributes', {})
-                    
                     name = attrs.get('Pipename', attrs.get('NAME', attrs.get('OPERATOR', 'Unknown Pipeline')))
                     operator = attrs.get('Operator', attrs.get('OPERATOR', ''))
                     typepipe = attrs.get('Typepipe', attrs.get('TYPE', 'interstate'))
                     diameter = attrs.get('Diameter', attrs.get('DIAMETER', 0)) or 0
                     status = attrs.get('Status', attrs.get('STATUS', 'Operating'))
                     pipe_id = attrs.get('OBJECTID', attrs.get('ID', ''))
-                    
-                    lat = market['lat']
-                    lng = market['lng']
                     
                     pipeline = {
                         "name": f"{name} - {market['name']}"[:200],
@@ -1011,54 +1172,32 @@ class GasPipelineDiscovery:
                         "status": 'active' if str(status).lower() in ('operating', 'active', 'in service') else str(status).lower(),
                         "city": market['name'],
                         "state": market['state'],
-                        "lat": lat,
-                        "lng": lng,
-                        "source_id": f"hifld_gas_{pipe_id}"
+                        "lat": market['lat'],
+                        "lng": market['lng'],
+                        "source_id": f"hifld_gas_mkt_{pipe_id}_{market['state']}"
                     }
                     self._save_pipeline(pipeline, source='hifld')
-                    
-                logger.info(f"   🔥 HIFLD gas pipelines {market['name']}: {len(features)} found")
-                time.sleep(1)
+                
+                time.sleep(0.5)
             except Exception as e:
-                logger.warning(f"   ⚠️ HIFLD gas pipelines failed for {market['name']}: {e}")
-    
-    def _sync_hifld_compressors(self):
-        """Pull gas compressor stations from HIFLD (rotates 3 markets per cycle)"""
-        start = (self._market_index + 2) % len(DC_MARKETS)
-        markets = DC_MARKETS[start:start + 3]
+                logger.warning(f"   ⚠️ HIFLD gas detail failed for {market['name']}: {e}")
         
-        for market in markets:
-            try:
-                features = _query_hifld_nearby(
-                    HIFLD_APIS['natural_gas_compressor'],
-                    market['lat'], market['lng'],
-                    radius_m=100000, max_records=100
-                )
-                for feat in features:
-                    attrs = feat.get('attributes', {})
-                    geom = feat.get('geometry', {})
-                    
-                    name = attrs.get('NAME', attrs.get('STATION', 'Unknown Compressor'))
-                    operator = attrs.get('OPERATOR', attrs.get('OWNER', ''))
-                    comp_id = attrs.get('OBJECTID', attrs.get('ID', ''))
-                    
-                    pipeline = {
-                        "name": f"{name} Compressor Station"[:200],
-                        "operator": str(operator)[:100] if operator else 'Unknown',
-                        "pipeline_type": "compressor_station",
-                        "status": "active",
-                        "city": market['name'],
-                        "state": market['state'],
-                        "lat": geom.get('y', 0),
-                        "lng": geom.get('x', 0),
-                        "source_id": f"hifld_comp_{comp_id}"
-                    }
-                    self._save_pipeline(pipeline, source='hifld')
-                    
-                logger.info(f"   🔥 HIFLD compressors {market['name']}: {len(features)} found")
-                time.sleep(1)
-            except Exception as e:
-                logger.warning(f"   ⚠️ HIFLD compressors failed for {market['name']}: {e}")
+        logger.info(f"   🔥 Market detail enrichment: {self.new_pipelines - before} new from {len(markets)} markets")
+    
+    def _nearest_market(self, lat, lng):
+        """Find nearest DC market name for a given lat/lng"""
+        from math import radians, sin, cos, sqrt, atan2
+        best = 'Unknown'
+        best_dist = float('inf')
+        for m in DC_MARKETS:
+            dlat = radians(m['lat'] - lat)
+            dlng = radians(m['lng'] - lng)
+            a = sin(dlat/2)**2 + cos(radians(lat)) * cos(radians(m['lat'])) * sin(dlng/2)**2
+            d = 2 * atan2(sqrt(a), sqrt(1 - a)) * 6371
+            if d < best_dist:
+                best_dist = d
+                best = m['name']
+        return best if best_dist < 500 else ''  # Only tag if within 500km
     
     def _sync_from_learned_apis(self):
         """Pull gas data from auto-discovered APIs"""
