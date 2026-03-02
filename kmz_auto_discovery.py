@@ -1,16 +1,24 @@
 """
-DC Hub Nexus - Automatic KMZ/KML Fiber Route Discovery
-========================================================
-Autonomous system that discovers, downloads, and parses KMZ/KML fiber route
-files from public government and industry sources.
+DC Hub Nexus - Automatic KMZ/KML Infrastructure Discovery v2.0
+================================================================
+Autonomous system that discovers, downloads, and parses KMZ/KML
+infrastructure files from public government and industry sources.
 
-SOURCES:
+FIBER SOURCES:
 - NTIA Broadband Infrastructure maps
 - State broadband offices (BroadbandUSA)  
 - FCC broadband deployment GIS data
 - USGS/HIFLD infrastructure GIS layers
 - Public carrier fiber route maps
 - State DOT fiber route data
+
+GAS PIPELINE SOURCES (v2):
+- HIFLD Natural Gas Pipelines (nationwide)
+- HIFLD Natural Gas Compressor Stations
+- HIFLD Natural Gas Processing Plants
+- HIFLD LNG Import/Export Terminals
+- HIFLD Natural Gas Storage Facilities
+- PHMSA/DOT pipeline safety GIS data (auto-discovered)
 
 Runs every 12 hours as a background daemon thread.
 """
@@ -72,6 +80,42 @@ PUBLIC_KMZ_SOURCES = [
         'provider': 'NTIA',
         'category': 'fiber'
     },
+    # === GAS PIPELINE INFRASTRUCTURE (v2 additions) ===
+    {
+        'name': 'HIFLD Natural Gas Pipelines',
+        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Natural_Gas_Pipelines/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'HIFLD',
+        'category': 'gas'
+    },
+    {
+        'name': 'HIFLD Natural Gas Compressor Stations',
+        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Natural_Gas_Compressor_Stations/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'HIFLD',
+        'category': 'gas'
+    },
+    {
+        'name': 'HIFLD Natural Gas Processing Plants',
+        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Natural_Gas_Processing_Plants/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'HIFLD',
+        'category': 'gas'
+    },
+    {
+        'name': 'HIFLD LNG Import/Export Terminals',
+        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/LNG_Import_Export_Terminals/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'HIFLD',
+        'category': 'gas'
+    },
+    {
+        'name': 'HIFLD Natural Gas Storage Facilities',
+        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Natural_Gas_Storage/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'HIFLD',
+        'category': 'gas'
+    },
 ]
 
 ARCGIS_FIBER_SEARCH_URLS = [
@@ -79,6 +123,15 @@ ARCGIS_FIBER_SEARCH_URLS = [
     'https://www.arcgis.com/sharing/rest/search?q=broadband%20infrastructure%20fiber&sortField=modified&sortOrder=desc&num=20&f=json',
     'https://www.arcgis.com/sharing/rest/search?q=telecommunications%20network%20routes&sortField=modified&sortOrder=desc&num=15&f=json',
     'https://www.arcgis.com/sharing/rest/search?q=dark%20fiber%20network%20map&sortField=modified&sortOrder=desc&num=10&f=json',
+]
+
+# Gas pipeline ArcGIS search — auto-discover new gas infrastructure GIS sources
+ARCGIS_GAS_SEARCH_URLS = [
+    'https://www.arcgis.com/sharing/rest/search?q=natural%20gas%20pipeline%20infrastructure&sortField=modified&sortOrder=desc&num=20&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=gas%20pipeline%20transmission%20interstate&sortField=modified&sortOrder=desc&num=20&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=natural%20gas%20compressor%20station&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=LNG%20terminal%20natural%20gas%20storage&sortField=modified&sortOrder=desc&num=10&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=PHMSA%20pipeline%20hazardous%20materials&sortField=modified&sortOrder=desc&num=10&f=json',
 ]
 
 STATE_BROADBAND_GIS = [
@@ -243,7 +296,14 @@ class KMZAutoDiscovery:
     def _discover_arcgis_sources(self) -> Dict:
         results = {'checked': 0, 'new_sources': 0, 'total_found': 0}
 
-        for search_url in ARCGIS_FIBER_SEARCH_URLS:
+        # Search both fiber AND gas infrastructure sources
+        all_search_urls = [
+            (url, 'fiber') for url in ARCGIS_FIBER_SEARCH_URLS
+        ] + [
+            (url, 'gas') for url in ARCGIS_GAS_SEARCH_URLS
+        ]
+
+        for search_url, category in all_search_urls:
             try:
                 response = self.session.get(search_url, timeout=20)
                 results['checked'] += 1
@@ -266,7 +326,7 @@ class KMZAutoDiscovery:
                                 'name': item_name,
                                 'url': item_url,
                                 'provider': item.get('owner', 'ArcGIS'),
-                                'category': 'fiber',
+                                'category': category,
                                 'source_type': 'arcgis'
                             })
                             if added:
@@ -287,7 +347,8 @@ class KMZAutoDiscovery:
                 results['checked'] += 1
 
                 if source['type'] == 'arcgis_kml':
-                    r = self._fetch_arcgis_routes(source['url'], source['provider'], source['name'])
+                    route_type = 'gas' if source.get('category') == 'gas' else 'fiber'
+                    r = self._fetch_arcgis_routes(source['url'], source['provider'], source['name'], route_type=route_type)
                     results['routes_found'] += r.get('routes_found', 0)
                     results['total_km'] += r.get('total_km', 0)
 
@@ -306,7 +367,7 @@ class KMZAutoDiscovery:
         logger.info(f"Known Sources: checked={results['checked']}, routes={results['routes_found']}, km={results['total_km']:.1f}")
         return results
 
-    def _fetch_arcgis_routes(self, url: str, provider: str, source_name: str) -> Dict:
+    def _fetch_arcgis_routes(self, url: str, provider: str, source_name: str, route_type: str = 'fiber') -> Dict:
         results = {'routes_found': 0, 'total_km': 0}
 
         try:
@@ -366,7 +427,7 @@ class KMZAutoDiscovery:
                          distance_km, coordinates, kmz_file, source_url)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (
-                        str(name)[:200], provider, 'fiber',
+                        str(name)[:200], provider, route_type,
                         start_point, end_point,
                         round(distance_km, 2),
                         json.dumps(coordinates[:100]),
