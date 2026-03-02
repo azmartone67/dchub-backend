@@ -1,19 +1,19 @@
 {
   "report_date": "2026-03-02",
-  "generated_at": "2026-03-02T05:49:55.944934",
+  "generated_at": "2026-03-02T09:23:03.456105",
   "summary": {
-    "total_facilities": 11433,
-    "total_providers": 3958,
-    "countries_covered": 170,
-    "total_power_mw": 51325.0,
-    "total_deals": 962,
-    "total_deal_value_usd": 1911142000000.0
+    "total_facilities": 11548,
+    "total_providers": 3962,
+    "countries_covered": 177,
+    "total_power_mw": 72941.0,
+    "total_deals": 995,
+    "total_deal_value_usd": 2043143800000.0
   },
   "market_highlights": [
-    "DC Hub tracks 11,433 data center facilities globally",
-    "Coverage spans 170 countries with 3958 providers",
-    "Combined capacity: 51,325 MW",
-    "M&A database: 962 transactions worth $1911.1B+"
+    "DC Hub tracks 11,548 data center facilities globally",
+    "Coverage spans 177 countries with 3962 providers",
+    "Combined capacity: 72,941 MW",
+    "M&A database: 995 transactions worth $2043.1B+"
   ],
   "recent_deals": [
     {
@@ -89,54 +89,54 @@
   ],
   "recent_news": [
     {
-      "title": "How AI Infrastructure Is Driving Data Center Expansion?",
-      "source": "vocal.media",
-      "date": "2026-03-02T05:31:00"
+      "title": "RENA secures 1.2 GW TOPCon equipment order in India",
+      "source": "PV Magazine",
+      "date": "2026-03-02T09:15:49"
     },
     {
-      "title": "OpenAI\u2019s Altman says Pentagon set \u2018scary precedent\u2019 binning Anthropic",
+      "title": "Ericsson Demonstrates Cloud RAN Software on NVIDIA AI Infrastructure with T-Mobile",
+      "source": "TechAfrica News",
+      "date": "2026-03-02T09:06:16"
+    },
+    {
+      "title": "MANTA set to ride wave of digital change in the Americas",
+      "source": "Capacity Media",
+      "date": "2026-03-02T09:00:00"
+    },
+    {
+      "title": "Zong and ZTE Achieve First AI-based FDD Massive MIMO Commercial Deployment in Pakistan",
       "source": "The Register DC",
-      "date": "2026-03-02T05:27:53"
+      "date": "2026-03-02T08:00:09"
     },
     {
-      "title": "Amazon AWS UAE suffers power outage after 'objects' hit data centre | World News",
-      "source": "Hindustan Times",
-      "date": "2026-03-02T04:52:54"
+      "title": "A dire electrician shortage is a \u2018life-or-death\u2019 threat to the AI data center boom\u2014and an opportunity for Gen Z",
+      "source": "Fortune",
+      "date": "2026-03-02T08:00:00"
     },
     {
-      "title": "Amazon Data Center in UAE hit during Iranian strikes",
-      "source": "India TV News",
-      "date": "2026-03-02T04:40:26"
+      "title": "AWS Middle East Outage After Data Center Hit by Unidentified Objects",
+      "source": "Data Center Knowledge",
+      "date": "2026-03-02T07:55:09"
     },
     {
-      "title": "Engine Power Plants Surge as Data Centers Drive Unprecedented Demand",
-      "source": "POWER Magazine",
-      "date": "2026-03-02T04:33:51"
+      "title": "Nvidia confirms liquid cooling as standard, boosting supply chain revenue outlook",
+      "source": "digitimes",
+      "date": "2026-03-02T07:53:36"
     },
     {
-      "title": "DEVELOPING STORY | Power shut down at Amazon\u2019s UAE data center after fire due to falling \u201cobjects\u201d",
-      "source": "W.Media",
-      "date": "2026-03-02T04:17:00"
+      "title": "Server crashes traced to one very literal knee-jerk reaction",
+      "source": "The Register DC",
+      "date": "2026-03-02T07:30:15"
     },
     {
-      "title": "Amazon Cloud Suffers Outage After \u2018Objects\u2019 Hit UAE Data Center",
-      "source": "Bloomberg Tech",
-      "date": "2026-03-02T04:10:18"
+      "title": "Amazon AWS faces outages: Bahrain, UAE data centers hit amid Iran strikes",
+      "source": "Deccan Herald",
+      "date": "2026-03-02T07:11:14"
     },
     {
-      "title": "Objects hit Amazon\u2019s data center in UAE",
-      "source": "Iraqi News",
-      "date": "2026-03-02T03:39:48"
-    },
-    {
-      "title": "Amazon's (AMZN.US) cloud service provider AWS data center in the UAE was affected by the conflict, causing a fire.",
-      "source": "\u5bcc\u9014\u725b\u725b",
-      "date": "2026-03-02T03:02:53"
-    },
-    {
-      "title": "One of Amazon's data centers in the UAE caught fire after being hit by 'objects' amid the Middle East conflict",
-      "source": "Business Insider",
-      "date": "2026-03-02T02:30:00"
+      "title": "Amazon cloud data centers in Gulf face outages amid Iran strikes in the region",
+      "source": "Ynetnews",
+      "date": "2026-03-02T07:05:10"
     }
   ],
   "data_sources": [
