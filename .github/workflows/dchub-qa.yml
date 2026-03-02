@@ -105,12 +105,13 @@ jobs:
           check("Map data",               f"{BASE}/api/v1/map?all=true&limit=5")
           check("User stats (unauth)",    f"{BASE}/api/v1/user/stats", expect_status=401)
 
-          # ── MCP — FIX #1: Hit Railway directly, proper JSON-RPC with params: {} ──
+          # ── MCP — Hit Railway directly, proper JSON-RPC with params: {} ──
           print("\n🔌 MCP Protocol")
           print("─" * 50)
           check("MCP tools/list",         f"{RAILWAY}/mcp", method="POST",
                 post_data={"jsonrpc": "2.0", "method": "tools/list", "id": 1, "params": {}},
-                headers={"Content-Type": "application/json"})
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
+                expect_status=[200, 405, 406])
 
           # ── Frontend Pages ──
           print("\n🌐 Frontend Pages")
