@@ -667,7 +667,8 @@ sys.stdout.flush()
 from flask import Flask, request, jsonify, Response, send_from_directory, send_file, stream_with_context, make_response, render_template, redirect
 from google_integration_routes import setup_google_routes
 from google_meta_integration import setup_google_meta_routes
-from linkedin_scheduler import integrate_with_flask as integrate_linkedin_poster
+# DISABLED: Old linkedin_scheduler replaced by linkedin_poster.py (Neon-backed)
+# from linkedin_scheduler import integrate_with_flask as integrate_linkedin_poster
 
 # SEO: Location name resolution (state/country codes → full names)
 try:
@@ -742,7 +743,8 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 
-integrate_linkedin_poster(app)
+# DISABLED: Old linkedin_scheduler replaced by linkedin_poster.py
+# integrate_linkedin_poster(app)
 
 # =============================================================================
 # AGENT NETWORK EFFECT - Registry + Intelligence Index endpoints
@@ -1292,16 +1294,13 @@ except ImportError as e:
 from api_data_protection import init_data_protection, protect_data
 from db_utils import get_db, get_read_db, safe_write
 
-try:
-    from linkedin_autopost import linkedin_auto_bp, init_linkedin_tables, start_linkedin_scheduler, on_new_deal, on_weekly_digest
-    logger.info("  ✅ linkedin_autopost imported")
-except ImportError as e:
-    linkedin_auto_bp = None
-    init_linkedin_tables = None
-    start_linkedin_scheduler = None
-    on_new_deal = None
-    on_weekly_digest = None
-    logger.warning(f"  ⚠️ linkedin_autopost: {e}")
+# DISABLED: Old linkedin_autopost replaced by linkedin_poster.py (Neon-backed)
+# from linkedin_autopost import linkedin_auto_bp, init_linkedin_tables, start_linkedin_scheduler, on_new_deal, on_weekly_digest
+linkedin_auto_bp = None
+init_linkedin_tables = None
+start_linkedin_scheduler = None
+on_new_deal = None
+on_weekly_digest = None
 
 try:
     from ai_outreach_agent import init_outreach_db, register_outreach_routes, start_outreach_scheduler, run_outreach_cycle
