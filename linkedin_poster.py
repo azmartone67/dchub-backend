@@ -42,7 +42,7 @@ LINKEDIN_CLIENT_ID = os.environ.get('LINKEDIN_CLIENT_ID', '')
 LINKEDIN_CLIENT_SECRET = os.environ.get('LINKEDIN_CLIENT_SECRET', '')
 LINKEDIN_COMPANY_ID = os.environ.get('LINKEDIN_COMPANY_ID', '')  # Numeric ID from company page URL
 LINKEDIN_REDIRECT_URI = os.environ.get('LINKEDIN_REDIRECT_URI', 'https://dchub.cloud/api/linkedin/callback')
-LINKEDIN_SCOPES = 'openid profile w_member_social'
+LINKEDIN_SCOPES = 'openid profile w_member_social w_organization_social'
 
 # LinkedIn API endpoints
 AUTH_URL = 'https://www.linkedin.com/oauth/v2/authorization'
