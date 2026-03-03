@@ -224,7 +224,11 @@ def find_nearest_substations(lat, lng, limit=5, max_distance_miles=25):
     if result is not None:
         return result
 
-    # Fallback: Haversine-based query (no PostGIS extension needed)
+    # Fallback: Haversine with bounding box pre-filter (FAST)
+    # 1 degree lat ≈ 69 miles, 1 degree lng ≈ 69 * cos(lat) miles
+    deg_lat = max_distance_miles / 69.0
+    deg_lng = max_distance_miles / (69.0 * max(0.1, abs(math.cos(math.radians(lat)))))
+    
     haversine_query = """
         SELECT 
             name,
@@ -245,10 +249,17 @@ def find_nearest_substations(lat, lng, limit=5, max_distance_miles=25):
         FROM substations
         WHERE lat IS NOT NULL 
           AND lng IS NOT NULL
+          AND lat BETWEEN %s AND %s
+          AND lng BETWEEN %s AND %s
         ORDER BY distance_miles ASC
         LIMIT %s;
     """
-    result = execute_query(haversine_query, (lat, lng, lat, limit))
+    result = execute_query(haversine_query, (
+        lat, lng, lat,
+        lat - deg_lat, lat + deg_lat,
+        lng - deg_lng, lng + deg_lng,
+        limit
+    ))
     
     if result is not None:
         return result
@@ -259,43 +270,60 @@ def find_nearest_substations(lat, lng, limit=5, max_distance_miles=25):
 
 def find_nearest_transmission(lat, lng, max_distance_miles=15):
     """
-    Find nearest transmission line by matching nearby substations
-    to transmission line endpoints (sub_1/sub_2).
+    Find nearest transmission line by finding the nearest substation
+    and looking up what transmission lines connect to it.
     Falls back to HIFLD live API.
     """
-    # Match transmission lines via nearest substation names
-    query = """
-        SELECT 
-            t.sub_1 as line_name,
-            t.voltage_kv,
-            t.owner,
-            t.status,
-            t.volt_class,
-            s.name as matched_substation,
-            (
-                3959 * acos(
-                    LEAST(1.0, GREATEST(-1.0,
-                        cos(radians(%s)) * cos(radians(s.lat)) *
-                        cos(radians(s.lng) - radians(%s)) +
-                        sin(radians(%s)) * sin(radians(s.lat))
-                    ))
-                )
-            ) as distance_miles
-        FROM discovered_transmission_lines t
-        JOIN substations s ON (
-            LOWER(s.name) LIKE '%%' || LOWER(SPLIT_PART(t.sub_1, ' ', 1)) || '%%'
-        )
-        WHERE s.lat IS NOT NULL
-          AND t.voltage_kv IS NOT NULL
-          AND t.voltage_kv > 0
+    # Step 1: Find nearest substation name
+    deg_lat = max_distance_miles / 69.0
+    deg_lng = max_distance_miles / (69.0 * max(0.1, abs(math.cos(math.radians(lat)))))
+    
+    nearest_sub_query = """
+        SELECT name,
+            (3959 * acos(
+                LEAST(1.0, GREATEST(-1.0,
+                    cos(radians(%s)) * cos(radians(lat)) *
+                    cos(radians(lng) - radians(%s)) +
+                    sin(radians(%s)) * sin(radians(lat))
+                ))
+            )) as distance_miles
+        FROM substations
+        WHERE lat IS NOT NULL
+          AND lat BETWEEN %s AND %s
+          AND lng BETWEEN %s AND %s
         ORDER BY distance_miles ASC
         LIMIT 1;
     """
-    result = execute_query(query, (lat, lng, lat))
+    sub_result = execute_query(nearest_sub_query, (
+        lat, lng, lat,
+        lat - deg_lat, lat + deg_lat,
+        lng - deg_lng, lng + deg_lng
+    ))
     
-    if result and len(result) > 0:
-        return result[0]
-
+    if sub_result and len(sub_result) > 0:
+        sub_name = sub_result[0].get('name', '')
+        sub_distance = sub_result[0].get('distance_miles', 0)
+        
+        # Step 2: Find transmission line connected to that substation
+        # Use first word of substation name for fuzzy match
+        search_term = sub_name.split(' ')[0] if sub_name else ''
+        if search_term and len(search_term) > 2:
+            tx_query = """
+                SELECT sub_1 as line_name, voltage_kv, owner, status, volt_class
+                FROM discovered_transmission_lines
+                WHERE (LOWER(sub_1) LIKE LOWER(%s) OR LOWER(sub_2) LIKE LOWER(%s))
+                  AND voltage_kv IS NOT NULL
+                ORDER BY voltage_kv DESC
+                LIMIT 1;
+            """
+            tx_result = execute_query(tx_query, (f'%{search_term}%', f'%{search_term}%'))
+            
+            if tx_result and len(tx_result) > 0:
+                tx = tx_result[0]
+                tx['distance_miles'] = round(sub_distance, 1)
+                tx['matched_substation'] = sub_name
+                return tx
+    
     # Fallback: direct HIFLD API query
     return _query_hifld_transmission_live(lat, lng)
 
@@ -425,21 +453,21 @@ def estimate_congestion(lat, lng, radius_miles=15):
     Estimate grid congestion from local infrastructure density.
     High density of substations + generation = potential congestion.
     """
+    # Bounding box pre-filter
+    deg_lat = radius_miles / 69.0
+    deg_lng = radius_miles / (69.0 * max(0.1, abs(math.cos(math.radians(lat)))))
+    
     query = """
         SELECT COUNT(*) as sub_count
         FROM substations
         WHERE lat IS NOT NULL
-          AND (
-            3959 * acos(
-                LEAST(1.0, GREATEST(-1.0,
-                    cos(radians(%s)) * cos(radians(lat)) *
-                    cos(radians(lng) - radians(%s)) +
-                    sin(radians(%s)) * sin(radians(lat))
-                ))
-            )
-          ) < %s;
+          AND lat BETWEEN %s AND %s
+          AND lng BETWEEN %s AND %s;
     """
-    result = execute_query(query, (lat, lng, lat, radius_miles), fetchone=True)
+    result = execute_query(query, (
+        lat - deg_lat, lat + deg_lat,
+        lng - deg_lng, lng + deg_lng
+    ), fetchone=True)
     sub_count = result.get('sub_count', 0) if result else 0
     
     # Also count power plants nearby
@@ -447,17 +475,13 @@ def estimate_congestion(lat, lng, radius_miles=15):
         SELECT COUNT(*) as plant_count, COALESCE(SUM(capacity_mw), 0) as total_mw
         FROM discovered_power_plants
         WHERE lat IS NOT NULL
-          AND (
-            3959 * acos(
-                LEAST(1.0, GREATEST(-1.0,
-                    cos(radians(%s)) * cos(radians(lat)) *
-                    cos(radians(lng) - radians(%s)) +
-                    sin(radians(%s)) * sin(radians(lat))
-                ))
-            )
-          ) < %s;
+          AND lat BETWEEN %s AND %s
+          AND lng BETWEEN %s AND %s;
     """
-    plant_result = execute_query(plant_query, (lat, lng, lat, radius_miles), fetchone=True)
+    plant_result = execute_query(plant_query, (
+        lat - deg_lat, lat + deg_lat,
+        lng - deg_lng, lng + deg_lng
+    ), fetchone=True)
     plant_count = plant_result.get('plant_count', 0) if plant_result else 0
     total_gen_mw = plant_result.get('total_mw', 0) if plant_result else 0
     
@@ -594,6 +618,10 @@ def screen_environmental(lat, lng):
 
 def get_generation_mix(lat, lng, radius_miles=25):
     """Get generation mix within radius from power_plants table."""
+    # Bounding box pre-filter
+    deg_lat = radius_miles / 69.0
+    deg_lng = radius_miles / (69.0 * max(0.1, abs(math.cos(math.radians(lat)))))
+    
     query = """
         SELECT 
             COALESCE(fuel_type, 'Unknown') as fuel,
@@ -601,19 +629,15 @@ def get_generation_mix(lat, lng, radius_miles=25):
             COUNT(*) as plant_count
         FROM discovered_power_plants
         WHERE lat IS NOT NULL
-          AND (
-            3959 * acos(
-                LEAST(1.0, GREATEST(-1.0,
-                    cos(radians(%s)) * cos(radians(lat)) *
-                    cos(radians(lng) - radians(%s)) +
-                    sin(radians(%s)) * sin(radians(lat))
-                ))
-            )
-          ) < %s
+          AND lat BETWEEN %s AND %s
+          AND lng BETWEEN %s AND %s
         GROUP BY fuel
         ORDER BY total_mw DESC;
     """
-    result = execute_query(query, (lat, lng, lat, radius_miles))
+    result = execute_query(query, (
+        lat - deg_lat, lat + deg_lat,
+        lng - deg_lng, lng + deg_lng
+    ))
     
     if not result:
         return {'mix': {}, 'total_mw': 0, 'plant_count': 0, 'radius_miles': radius_miles}
