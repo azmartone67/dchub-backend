@@ -29,7 +29,7 @@ def register_nav_config_route(app, db=None):
             {"id": "news", "label": "News", "href": "/news", "type": "link"},
             {"id": "ai-hub", "label": "\ud83e\udd16 AI Hub", "href": "/ai-hub", "type": "link", "style": "color:#06b6d4;font-weight:600"},
             {"id": "ai-wars", "label": "\u2694\ufe0f AI Wars", "href": "/ai-wars", "type": "link", "style": "color:#a78bfa;font-weight:600"},
-            {"id": "pricing", "label": "Pricing", "href": "/pricing", "type": "link", "style": "color:var(--accent,#6366f1)"},
+            {"id": "pricing", "label": "Pricing", "href": "/pricing", "type": "link", "style": "color:var(--accent,#6366f1)"}, {"id": "press", "label": "Press", "href": "/press", "type": "link"},
             {"id": "about", "label": "About", "type": "dropdown", "items": [
         {"icon": "⭐", "label": "AI Validation", "desc": "What AI says about us", "href": "/testimonials", "badge": "New"},
                 {"icon": "\u2139\ufe0f", "label": "About DC Hub", "desc": "Our mission", "href": "/about"},
