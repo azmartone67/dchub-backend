@@ -2080,8 +2080,9 @@ def _log_mcp_analytics(rpc_method, rpc_params, platform, client_name, duration_m
                     VALUES (%s, %s, %s, %s, %s, 'integration', 'auto', false, false)""",
                     (plat, agent, quote, f'MCP tool: {tool_name}', tool_args[:500]))
                 pgconn.commit()
-        except Exception:
-            pass
+                logger.info(f"AUTO-CAPTURE: testimonial logged for {plat}/{tool_name}")
+        except Exception as ac_err:
+            logger.error(f"AUTO-CAPTURE FAILED: {ac_err}")
 
 @app.route('/mcp', methods=['GET', 'POST', 'DELETE', 'OPTIONS'])
 @app.route('/mcp/', methods=['GET', 'POST', 'DELETE', 'OPTIONS'])
