@@ -2065,6 +2065,24 @@ def _log_mcp_analytics(rpc_method, rpc_params, platform, client_name, duration_m
     except Exception:
         pass
 
+    # Auto-capture MCP tool calls as potential testimonials
+    if rpc_method == 'tools/call' and success:
+        try:
+            tool_name = rpc_params.get('name', 'unknown') if rpc_params else 'unknown'
+            tool_args = json.dumps(rpc_params.get('arguments', {})) if rpc_params else '{}'
+            plat = platform.lower().replace(' ', '') if platform else 'mcp'
+            agent = client_name or 'AI Agent via MCP'
+            quote = f'AI agent used DC Hub {tool_name} tool with parameters: {tool_args[:200]}'
+            with pg_connection() as pgconn:
+                pgc = pgconn.cursor()
+                pgc.execute("""INSERT INTO ai_testimonials 
+                    (platform, agent_name, quote, context, query, category, source, approved, featured)
+                    VALUES (%s, %s, %s, %s, %s, 'integration', 'auto', false, false)""",
+                    (plat, agent, quote, f'MCP tool: {tool_name}', tool_args[:500]))
+                pgconn.commit()
+        except Exception:
+            pass
+
 @app.route('/mcp', methods=['GET', 'POST', 'DELETE', 'OPTIONS'])
 @app.route('/mcp/', methods=['GET', 'POST', 'DELETE', 'OPTIONS'])
 def mcp_proxy():
