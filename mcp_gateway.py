@@ -1,1575 +1,624 @@
 """
-DC Hub MCP Gateway — Self-Learning Auto-Interconnection Layer
-=============================================================
-Automatically discovers, connects to, and maintains connections with
-every major AI agent platform via MCP, REST, and custom protocols.
+DC Hub — ChatGPT MCP Compatibility Layer
+==========================================
+Adds the two tools ChatGPT Deep Research & Company Knowledge require:
+  • search(query) → {"results": [{"id": ..., "title": ..., "snippet": ...}]}
+  • fetch(id)     → {"id": ..., "title": ..., "content": ..., "metadata": {...}}
 
-Architecture:
-  ┌────────────────────────────────────────────────────────────┐
-  │                    DC Hub MCP Gateway                       │
-  │                                                            │
-  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  │
-  │  │ Platform  │  │ Protocol │  │ Health   │  │ Learning │  │
-  │  │ Registry  │  │ Adapter  │  │ Monitor  │  │ Engine   │  │
-  │  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘  │
-  │       │              │              │              │        │
-  │       └──────────────┴──────────────┴──────────────┘        │
-  │                          │                                  │
-  └──────────────────────────┼──────────────────────────────────┘
-                             │
-       ┌─────────────────────┼─────────────────────┐
-       │                     │                     │
-  ┌────▼────┐  ┌────────────▼──────────┐  ┌──────▼──────┐
-  │ Claude  │  │ ChatGPT / Perplexity  │  │  Grok / Cursor│
-  │ Desktop │  │ Actions / Plugins     │  │  Smithery etc │
-  └─────────┘  └───────────────────────┘  └──────────────┘
+Also patches CORS to allow chatgpt.com / chat.openai.com origins.
 
-Drop this file into your Replit project root alongside main.py.
-Register with: from mcp_gateway import MCPGateway; gateway = MCPGateway(app)
+INSTALLATION:
+  1. Copy this file into your Railway project root (next to main.py & mcp_gateway.py)
+  2. In main.py, add AFTER your MCP server initialization:
+       from chatgpt_mcp_compat import register_chatgpt_compat
+       register_chatgpt_compat(mcp_server)
+  3. Deploy to Railway
+  4. In ChatGPT: Settings → Connectors → Create → URL: https://dchub.cloud/mcp
+
+WHY THIS IS NEEDED:
+  ChatGPT Deep Research and Company Knowledge ONLY call tools named
+  "search" and "fetch" with specific input/output schemas. Your existing
+  tools (search_facilities, get_facility, get_news, etc.) work great for
+  Claude/Cursor/Windsurf but ChatGPT ignores them for Deep Research.
+
+  This wrapper maps search → fan-out across facilities, news, deals, pipeline
+  and fetch → retrieve the specific record by type-prefixed ID.
 """
 
-import os
-import sys
 import json
-import time
-import sqlite3
-import hashlib
 import logging
-import threading
-from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
-from functools import wraps
+from datetime import datetime, timezone
 
-# Flask is already in Replit environment
-from flask import Flask, request, jsonify, make_response
-from db_utils import get_db, try_get_db
-
-logger = logging.getLogger("mcp_gateway")
-logger.setLevel(logging.INFO)
+logger = logging.getLogger("chatgpt_compat")
 
 # ============================================================================
-# CONSTANTS
+# CORS PATCH — Allow ChatGPT origins on the /mcp endpoint
 # ============================================================================
 
-GATEWAY_VERSION = "2.1.0"
-GATEWAY_DB = "mcp_gateway.db"
-MCP_PROTOCOL_VERSION = "2024-11-05"
-
-# Platform registry — every known AI agent ecosystem and how to reach it
-# The gateway uses this as seed data, then learns new platforms over time
-PLATFORM_REGISTRY = {
-    # ── MCP-Native Platforms ──────────────────────────────────────────────
-    "claude_desktop": {
-        "name": "Claude Desktop",
-        "protocol": "mcp_streamable_http",
-        "discovery_method": "mcp_server_card",
-        "endpoints": {
-            "server_card": "/.well-known/mcp/server-card.json",
-            "mcp": "/mcp",
-        },
-        "required_headers": {
-            "Accept": "application/json, text/event-stream",
-            "Content-Type": "application/json",
-        },
-        "auth_type": "none",
-        "status": "active",
-        "priority": 1,
-    },
-    "cursor": {
-        "name": "Cursor IDE",
-        "protocol": "mcp_streamable_http",
-        "discovery_method": "mcp_server_card",
-        "endpoints": {
-            "server_card": "/.well-known/mcp/server-card.json",
-            "mcp": "/mcp",
-        },
-        "required_headers": {
-            "Accept": "application/json, text/event-stream",
-            "Content-Type": "application/json",
-        },
-        "auth_type": "none",
-        "status": "active",
-        "priority": 2,
-    },
-    "windsurf": {
-        "name": "Windsurf (Codeium)",
-        "protocol": "mcp_streamable_http",
-        "discovery_method": "mcp_server_card",
-        "endpoints": {
-            "server_card": "/.well-known/mcp/server-card.json",
-            "mcp": "/mcp",
-        },
-        "required_headers": {
-            "Accept": "application/json, text/event-stream",
-            "Content-Type": "application/json",
-        },
-        "auth_type": "none",
-        "status": "active",
-        "priority": 3,
-    },
-    "smithery": {
-        "name": "Smithery.ai",
-        "protocol": "mcp_streamable_http",
-        "discovery_method": "smithery_registry",
-        "endpoints": {
-            "registry": "https://smithery.ai/server/@dchub/nexus",
-            "mcp": "/mcp",
-        },
-        "required_headers": {
-            "Accept": "application/json, text/event-stream",
-            "Content-Type": "application/json",
-        },
-        "auth_type": "none",
-        "status": "active",
-        "priority": 2,
-    },
-    "claude_code": {
-        "name": "Claude Code (CLI)",
-        "protocol": "mcp_streamable_http",
-        "discovery_method": "mcp_server_card",
-        "endpoints": {
-            "server_card": "/.well-known/mcp/server-card.json",
-            "mcp": "/mcp",
-        },
-        "required_headers": {
-            "Accept": "application/json, text/event-stream",
-            "Content-Type": "application/json",
-        },
-        "auth_type": "none",
-        "status": "active",
-        "priority": 2,
-    },
-
-    # ── REST/Plugin Platforms ─────────────────────────────────────────────
-    "chatgpt": {
-        "name": "ChatGPT (OpenAI)",
-        "protocol": "openai_plugin",
-        "discovery_method": "ai_plugin_json",
-        "endpoints": {
-            "plugin_manifest": "/.well-known/ai-plugin.json",
-            "openapi_spec": "/openapi.json",
-            "api_base": "/api",
-        },
-        "required_headers": {
-            "Content-Type": "application/json",
-        },
-        "auth_type": "api_key_optional",
-        "status": "active",
-        "priority": 1,
-    },
-    "chatgpt_actions": {
-        "name": "ChatGPT Custom GPT Actions",
-        "protocol": "openai_actions",
-        "discovery_method": "openapi_spec",
-        "endpoints": {
-            "openapi_spec": "/openapi.json",
-            "api_base": "/api",
-        },
-        "required_headers": {
-            "Content-Type": "application/json",
-        },
-        "auth_type": "api_key_optional",
-        "status": "active",
-        "priority": 1,
-    },
-
-    # ── LLM Inference Platforms ───────────────────────────────────────────
-    "perplexity": {
-        "name": "Perplexity AI",
-        "protocol": "llms_txt",
-        "discovery_method": "llms_txt",
-        "endpoints": {
-            "llms_txt": "/llms.txt",
-            "llms_full": "/llms-full.txt",
-            "api_base": "/api",
-        },
-        "required_headers": {},
-        "auth_type": "none",
-        "status": "active",
-        "priority": 1,
-    },
-    "grok": {
-        "name": "Grok (xAI)",
-        "protocol": "rest_discovery",
-        "discovery_method": "multi_file",
-        "endpoints": {
-            "llms_txt": "/llms.txt",
-            "mcp": "/mcp",
-            "api_base": "/api",
-        },
-        "required_headers": {
-            "Accept": "application/json",
-        },
-        "auth_type": "none",
-        "status": "active",
-        "priority": 1,
-    },
-    "gemini": {
-        "name": "Gemini (Google)",
-        "protocol": "rest_discovery",
-        "discovery_method": "multi_file",
-        "endpoints": {
-            "llms_txt": "/llms.txt",
-            "api_base": "/api",
-        },
-        "required_headers": {
-            "Content-Type": "application/json",
-        },
-        "auth_type": "none",
-        "status": "active",
-        "priority": 2,
-    },
-    "copilot": {
-        "name": "GitHub Copilot",
-        "protocol": "mcp_streamable_http",
-        "discovery_method": "mcp_server_card",
-        "endpoints": {
-            "server_card": "/.well-known/mcp/server-card.json",
-            "mcp": "/mcp",
-        },
-        "required_headers": {
-            "Accept": "application/json, text/event-stream",
-            "Content-Type": "application/json",
-        },
-        "auth_type": "none",
-        "status": "active",
-        "priority": 2,
-    },
-
-    # ── Search / Citation Platforms ───────────────────────────────────────
-    "you_com": {
-        "name": "You.com",
-        "protocol": "llms_txt",
-        "discovery_method": "llms_txt",
-        "endpoints": {
-            "llms_txt": "/llms.txt",
-            "api_base": "/api",
-        },
-        "required_headers": {},
-        "auth_type": "none",
-        "status": "active",
-        "priority": 3,
-    },
-    "phind": {
-        "name": "Phind",
-        "protocol": "llms_txt",
-        "discovery_method": "llms_txt",
-        "endpoints": {
-            "llms_txt": "/llms.txt",
-            "api_base": "/api",
-        },
-        "required_headers": {},
-        "auth_type": "none",
-        "status": "active",
-        "priority": 3,
-    },
-}
-
-# Discovery file specifications — what each file does and its schema
-DISCOVERY_FILES = {
-    "llms.txt": {
-        "path": "/llms.txt",
-        "purpose": "LLM inference-time discovery (Perplexity, ChatGPT, Grok)",
-        "content_type": "text/plain",
-        "auto_generate": True,
-    },
-    "llms-full.txt": {
-        "path": "/llms-full.txt",
-        "purpose": "Comprehensive API documentation for deep LLM integration",
-        "content_type": "text/plain",
-        "auto_generate": True,
-    },
-    "ai-plugin.json": {
-        "path": "/.well-known/ai-plugin.json",
-        "purpose": "OpenAI plugin manifest for ChatGPT",
-        "content_type": "application/json",
-        "auto_generate": True,
-    },
-    "mcp.json": {
-        "path": "/.well-known/mcp.json",
-        "purpose": "MCP discovery manifest",
-        "content_type": "application/json",
-        "auto_generate": True,
-    },
-    "server-card.json": {
-        "path": "/.well-known/mcp/server-card.json",
-        "purpose": "MCP server capabilities card",
-        "content_type": "application/json",
-        "auto_generate": True,
-    },
-    "openapi.json": {
-        "path": "/openapi.json",
-        "purpose": "OpenAPI 3.1 spec for REST API consumers",
-        "content_type": "application/json",
-        "auto_generate": True,
-    },
-    "ai-agents.json": {
-        "path": "/ai-agents.json",
-        "purpose": "Agent-readable capability manifest",
-        "content_type": "application/json",
-        "auto_generate": True,
-    },
-    "robots.txt": {
-        "path": "/robots.txt",
-        "purpose": "Crawler directives including AI bot permissions",
-        "content_type": "text/plain",
-        "auto_generate": False,
-    },
-}
-
-# User-Agent patterns for AI platform identification
-AGENT_SIGNATURES = {
-    "ChatGPT": ["ChatGPT-User", "GPTBot", "OAI-SearchBot"],
-    "Perplexity": ["PerplexityBot"],
-    "Grok": ["Grok", "xAI"],
-    "Claude": ["Claude-Web", "Anthropic", "claude"],
-    "Gemini": ["Googlebot", "Google-Extended", "GoogleOther"],
-    "Copilot": ["Copilot", "GitHub"],
-    "Cursor": ["Cursor"],
-    "Windsurf": ["Windsurf", "Codeium"],
-    "Smithery": ["Smithery", "smithery"],
-    "Cohere": ["cohere-ai"],
-    "You.com": ["YouBot"],
-    "Phind": ["Phind"],
-    "Generic_MCP": ["mcp-client", "MCP"],
-    "Generic_Bot": ["bot", "crawler", "spider"],
-}
-
-
-# ============================================================================
-# DATABASE LAYER
-# ============================================================================
-
-class GatewayDB:
-    """SQLite persistence for gateway state, learning data, and metrics."""
-
-    def __init__(self, db_path: str = GATEWAY_DB):
-        self.db_path = db_path
-        self._init_schema()
-
-    def get_conn(self):
-        return get_db(self.db_path)
-
-    @property
-    def conn(self):
-        return self.get_conn()
-
-    def _release_conn(self):
-        pass
-
-    def _init_schema(self):
-        conn = None
-        try:
-            conn = get_db(self.db_path)
-            statements = [
-                """CREATE TABLE IF NOT EXISTS platform_connections (
-                    platform_id     TEXT PRIMARY KEY,
-                    platform_name   TEXT NOT NULL,
-                    protocol        TEXT NOT NULL,
-                    status          TEXT DEFAULT 'discovered',
-                    last_handshake  TEXT,
-                    last_health     TEXT,
-                    health_score    REAL DEFAULT 0.0,
-                    total_requests  INTEGER DEFAULT 0,
-                    total_errors    INTEGER DEFAULT 0,
-                    avg_latency_ms  REAL DEFAULT 0.0,
-                    config_json     TEXT DEFAULT '{}',
-                    learned_at      TEXT DEFAULT (datetime('now')),
-                    updated_at      TEXT DEFAULT (datetime('now'))
-                )""",
-                """CREATE TABLE IF NOT EXISTS agent_requests (
-                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp       TEXT DEFAULT (datetime('now')),
-                    platform_id     TEXT,
-                    user_agent      TEXT,
-                    ip_address      TEXT,
-                    method          TEXT,
-                    path            TEXT,
-                    query_params    TEXT,
-                    request_body    TEXT,
-                    response_code   INTEGER,
-                    response_time_ms REAL,
-                    tools_invoked   TEXT,
-                    session_id      TEXT
-                )""",
-                """CREATE TABLE IF NOT EXISTS discovery_hits (
-                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp       TEXT DEFAULT (datetime('now')),
-                    file_path       TEXT NOT NULL,
-                    platform_id     TEXT,
-                    user_agent      TEXT,
-                    ip_address      TEXT,
-                    response_code   INTEGER
-                )""",
-                """CREATE TABLE IF NOT EXISTS learned_patterns (
-                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                    pattern_type    TEXT NOT NULL,
-                    pattern_key     TEXT NOT NULL,
-                    pattern_value   TEXT NOT NULL,
-                    confidence      REAL DEFAULT 0.5,
-                    occurrences     INTEGER DEFAULT 1,
-                    first_seen      TEXT DEFAULT (datetime('now')),
-                    last_seen       TEXT DEFAULT (datetime('now')),
-                    UNIQUE(pattern_type, pattern_key)
-                )""",
-                """CREATE TABLE IF NOT EXISTS protocol_negotiations (
-                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp       TEXT DEFAULT (datetime('now')),
-                    platform_id     TEXT,
-                    requested_protocol TEXT,
-                    negotiated_protocol TEXT,
-                    success         INTEGER DEFAULT 0,
-                    error_message   TEXT,
-                    handshake_ms    REAL
-                )""",
-                """CREATE TABLE IF NOT EXISTS discovered_platforms (
-                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_agent      TEXT NOT NULL,
-                    first_seen      TEXT DEFAULT (datetime('now')),
-                    last_seen       TEXT DEFAULT (datetime('now')),
-                    request_count   INTEGER DEFAULT 1,
-                    identified_as   TEXT,
-                    protocol_guess  TEXT,
-                    auto_configured INTEGER DEFAULT 0
-                )""",
-                "CREATE INDEX IF NOT EXISTS idx_agent_requests_platform ON agent_requests(platform_id, timestamp)",
-                "CREATE INDEX IF NOT EXISTS idx_agent_requests_path ON agent_requests(path, timestamp)",
-                "CREATE INDEX IF NOT EXISTS idx_discovery_hits_file ON discovery_hits(file_path, timestamp)",
-                "CREATE INDEX IF NOT EXISTS idx_learned_patterns_type ON learned_patterns(pattern_type, confidence DESC)",
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_discovered_platforms_user_agent ON discovered_platforms(user_agent)",
-            ]
-            for stmt in statements:
-                try:
-                    conn.execute(stmt)
-                    conn.commit()
-                except Exception:
-                    try:
-                        conn.rollback()
-                    except Exception:
-                        pass
-        except Exception as e:
-            logger.warning(f"MCP Gateway schema init: {e}")
-        finally:
-            if conn:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-
-    def seed_platforms(self):
-        """Populate platform_connections from PLATFORM_REGISTRY."""
-        conn = None
-        try:
-            conn = get_db(self.db_path)
-            for pid, pinfo in PLATFORM_REGISTRY.items():
-                try:
-                    conn.execute("""
-                        INSERT OR IGNORE INTO platform_connections
-                        (platform_id, platform_name, protocol, status, config_json)
-                        VALUES (?, ?, ?, ?, ?)
-                    """, (
-                        pid,
-                        pinfo["name"],
-                        pinfo["protocol"],
-                        pinfo["status"],
-                        json.dumps(pinfo),
-                    ))
-                    conn.commit()
-                except Exception as e:
-                    try:
-                        conn.rollback()
-                    except Exception:
-                        pass
-                    logger.warning(f"Seed error for {pid}: {e}")
-        finally:
-            if conn:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-
-    def log_request(self, platform_id: str, user_agent: str, ip: str,
-                    method: str, path: str, query: str, body: str,
-                    response_code: int, response_time: float,
-                    tools: str = "", session_id: str = ""):
-        conn = None
-        try:
-            conn = try_get_db()
-            if conn is None:
-                return
-            valid_pid = platform_id
-            if valid_pid:
-                try:
-                    cur = conn.execute("SELECT platform_id FROM platform_connections WHERE platform_id = ?", (valid_pid,))
-                    if not cur.fetchone():
-                        conn.execute("""
-                            INSERT INTO platform_connections (platform_id, platform_name, protocol, status, total_requests, total_errors, avg_latency_ms)
-                            VALUES (?, ?, 'auto', 'active', 0, 0, 0)
-                        """, (valid_pid, valid_pid))
-                        conn.commit()
-                except Exception:
-                    try:
-                        conn.rollback()
-                    except Exception:
-                        pass
-
-            conn.execute("""
-                INSERT INTO agent_requests
-                (platform_id, user_agent, ip_address, method, path,
-                 query_params, request_body, response_code, response_time_ms,
-                 tools_invoked, session_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (valid_pid, user_agent, ip, method, path, query,
-                  body[:2000] if body else "", response_code, response_time,
-                  tools, session_id))
-
-            if valid_pid:
-                conn.execute("""
-                    UPDATE platform_connections SET
-                        total_requests = total_requests + 1,
-                        total_errors = total_errors + CASE WHEN ? >= 400 THEN 1 ELSE 0 END,
-                        avg_latency_ms = (avg_latency_ms * total_requests + ?) / (total_requests + 1),
-                        updated_at = datetime('now')
-                    WHERE platform_id = ?
-                """, (response_code, response_time, valid_pid))
-
-            conn.commit()
-        except Exception as e:
-            if conn:
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-            logger.error(f"Failed to log request: {e}")
-        finally:
-            if conn:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-
-    def log_discovery_hit(self, file_path: str, platform_id: str,
-                          user_agent: str, ip: str, code: int):
-        conn = None
-        try:
-            conn = try_get_db()
-            if conn is None:
-                return
-            conn.execute("""
-                INSERT INTO discovery_hits
-                (file_path, platform_id, user_agent, ip_address, response_code)
-                VALUES (?, ?, ?, ?, ?)
-            """, (file_path, platform_id, user_agent, ip, code))
-            conn.commit()
-        except Exception as e:
-            if conn:
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-            logger.error(f"Failed to log discovery hit: {e}")
-        finally:
-            if conn:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-
-    def learn_pattern(self, pattern_type: str, key: str, value: str,
-                      confidence: float = 0.5):
-        conn = None
-        try:
-            conn = try_get_db()
-            if conn is None:
-                return
-            conn.execute("""
-                INSERT INTO learned_patterns (pattern_type, pattern_key, pattern_value, confidence)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(pattern_type, pattern_key) DO UPDATE SET
-                    pattern_value = excluded.pattern_value,
-                    confidence = LEAST(CAST(1.0 AS double precision), learned_patterns.confidence + CAST(0.05 AS double precision)),
-                    occurrences = occurrences + 1,
-                    last_seen = datetime('now')
-            """, (pattern_type, key, value, confidence))
-            conn.commit()
-        except Exception as e:
-            if conn:
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-        finally:
-            if conn:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-
-    def log_discovered_platform(self, user_agent: str, protocol_guess: str = ""):
-        conn = None
-        try:
-            conn = try_get_db()
-            if conn is None:
-                return
-            conn.execute("""
-                INSERT INTO discovered_platforms (user_agent, protocol_guess, request_count, first_seen, last_seen)
-                VALUES (?, ?, 1, datetime('now'), datetime('now'))
-                ON CONFLICT (user_agent) DO UPDATE SET
-                    request_count = discovered_platforms.request_count + 1,
-                    last_seen = datetime('now')
-            """, (user_agent, protocol_guess))
-            conn.commit()
-        except Exception as e:
-            if conn:
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-            logger.error(f"Failed to log discovered platform: {e}")
-        finally:
-            if conn:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-
-    def get_platform_stats(self) -> list:
-        conn = None
-        try:
-            conn = get_db(self.db_path)
-            rows = conn.execute("""
-                SELECT platform_id, platform_name, protocol, status,
-                       total_requests, total_errors, avg_latency_ms,
-                       health_score, last_handshake, updated_at
-                FROM platform_connections
-                ORDER BY total_requests DESC
-            """).fetchall()
-            return [dict(r) for r in rows]
-        except Exception:
-            return []
-        finally:
-            if conn:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-
-    def get_request_analytics(self, hours: int = 24) -> dict:
-        cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
-        conn = None
-        try:
-            conn = get_db(self.db_path)
-            total = conn.execute(
-                "SELECT COUNT(*) FROM agent_requests WHERE timestamp > ?",
-                (cutoff,)
-            ).fetchone()[0]
-
-            by_platform = conn.execute("""
-                SELECT platform_id, COUNT(*) as cnt
-                FROM agent_requests WHERE timestamp > ?
-                GROUP BY platform_id ORDER BY cnt DESC
-            """, (cutoff,)).fetchall()
-
-            by_path = conn.execute("""
-                SELECT path, COUNT(*) as cnt
-                FROM agent_requests WHERE timestamp > ?
-                GROUP BY path ORDER BY cnt DESC LIMIT 20
-            """, (cutoff,)).fetchall()
-
-            by_tool = conn.execute("""
-                SELECT tools_invoked, COUNT(*) as cnt
-                FROM agent_requests
-                WHERE timestamp > ? AND tools_invoked != ''
-                GROUP BY tools_invoked ORDER BY cnt DESC LIMIT 20
-            """, (cutoff,)).fetchall()
-
-            errors = conn.execute("""
-                SELECT COUNT(*) FROM agent_requests
-                WHERE timestamp > ? AND response_code >= 400
-            """, (cutoff,)).fetchone()[0]
-
-            return {
-                "period_hours": hours,
-                "total_requests": total,
-                "error_count": errors,
-                "error_rate": round(errors / max(total, 1) * 100, 2),
-                "by_platform": [dict(r) for r in by_platform],
-                "by_path": [dict(r) for r in by_path],
-                "by_tool": [dict(r) for r in by_tool],
-            }
-        except Exception as e:
-            logger.error(f"Analytics query failed: {e}")
-            return {"error": str(e)}
-        finally:
-            if conn:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-
-    def get_discovery_analytics(self, hours: int = 24) -> dict:
-        cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
-        conn = None
-        try:
-            conn = get_db(self.db_path)
-            rows = conn.execute("""
-                SELECT file_path, platform_id, COUNT(*) as hits
-                FROM discovery_hits WHERE timestamp > ?
-                GROUP BY file_path, platform_id
-                ORDER BY hits DESC
-            """, (cutoff,)).fetchall()
-            return {
-                "period_hours": hours,
-                "hits": [dict(r) for r in rows],
-            }
-        except Exception as e:
-            return {"error": str(e)}
-        finally:
-            if conn:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-
-    def get_learned_patterns(self, pattern_type: str = None) -> list:
-        conn = None
-        try:
-            conn = get_db(self.db_path)
-            if pattern_type:
-                rows = conn.execute("""
-                    SELECT * FROM learned_patterns
-                    WHERE pattern_type = ?
-                    ORDER BY confidence DESC, occurrences DESC
-                """, (pattern_type,)).fetchall()
-            else:
-                rows = conn.execute("""
-                    SELECT * FROM learned_patterns
-                    ORDER BY confidence DESC, occurrences DESC
-                """).fetchall()
-            return [dict(r) for r in rows]
-        except Exception:
-            return []
-        finally:
-            if conn:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-
-    def get_unknown_agents(self) -> list:
-        conn = None
-        try:
-            conn = get_db(self.db_path)
-            rows = conn.execute("""
-                SELECT * FROM discovered_platforms
-                WHERE identified_as IS NULL
-                ORDER BY request_count DESC
-            """).fetchall()
-            return [dict(r) for r in rows]
-        except Exception:
-            return []
-        finally:
-            if conn:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-
-
-# ============================================================================
-# PLATFORM IDENTIFIER — Figures out who is calling us
-# ============================================================================
-
-class PlatformIdentifier:
-    """Identifies which AI platform is making a request based on multiple signals."""
-
-    def __init__(self, db: GatewayDB):
-        self.db = db
-
-    def identify(self, user_agent: str, headers: dict, path: str,
-                 method: str) -> tuple:
-        """
-        Returns (platform_id, confidence) based on:
-        1. User-Agent string matching
-        2. Request path patterns
-        3. Header signatures
-        4. Learned patterns from DB
-        """
-        ua_lower = (user_agent or "").lower()
-        platform_id = None
-        confidence = 0.0
-
-        # Pass 1: User-Agent signature matching
-        for platform, signatures in AGENT_SIGNATURES.items():
-            for sig in signatures:
-                if sig.lower() in ua_lower:
-                    platform_id = self._normalize_platform_id(platform)
-                    confidence = 0.9
-                    break
-            if platform_id:
-                break
-
-        # Pass 2: Header-based identification
-        if not platform_id:
-            session_header = headers.get("Mcp-Session-Id", "")
-            accept_header = headers.get("Accept", "")
-            if session_header or "text/event-stream" in accept_header:
-                platform_id = "generic_mcp_client"
-                confidence = 0.7
-
-        # Pass 3: Path-based heuristics
-        if not platform_id:
-            if path == "/mcp" and method == "POST":
-                platform_id = "generic_mcp_client"
-                confidence = 0.6
-            elif path in ("/.well-known/ai-plugin.json", "/openapi.json"):
-                platform_id = "chatgpt"
-                confidence = 0.5
-            elif path in ("/llms.txt", "/llms-full.txt"):
-                platform_id = "llm_inference_client"
-                confidence = 0.5
-
-        # Pass 4: Check learned patterns
-        if not platform_id and user_agent:
-            ua_hash = hashlib.md5(user_agent.encode()).hexdigest()[:16]
-            patterns = self.db.get_learned_patterns("user_agent_mapping")
-            for p in patterns:
-                if p["pattern_key"] == ua_hash and p["confidence"] > 0.6:
-                    platform_id = p["pattern_value"]
-                    confidence = p["confidence"]
-                    break
-
-        # If still unknown, log it for learning
-        if not platform_id and user_agent:
-            protocol_guess = ""
-            if path == "/mcp":
-                protocol_guess = "mcp_streamable_http"
-            elif path.endswith(".json"):
-                protocol_guess = "rest_discovery"
-            elif path.endswith(".txt"):
-                protocol_guess = "llms_txt"
-            self.db.log_discovered_platform(user_agent, protocol_guess)
-            platform_id = "unknown"
-            confidence = 0.1
-
-        return platform_id or "unknown", confidence
-
-    def _normalize_platform_id(self, raw: str) -> str:
-        mapping = {
-            "ChatGPT": "chatgpt",
-            "Perplexity": "perplexity",
-            "Grok": "grok",
-            "Claude": "claude_desktop",
-            "Gemini": "gemini",
-            "Copilot": "copilot",
-            "Cursor": "cursor",
-            "Windsurf": "windsurf",
-            "Smithery": "smithery",
-            "Cohere": "cohere",
-            "You.com": "you_com",
-            "Phind": "phind",
-            "Generic_MCP": "generic_mcp_client",
-            "Generic_Bot": "generic_bot",
-        }
-        return mapping.get(raw, raw.lower().replace(" ", "_").replace(".", "_"))
-
-
-# ============================================================================
-# PROTOCOL ADAPTER — Speaks each platform's language
-# ============================================================================
-
-class ProtocolAdapter:
-    """Adapts DC Hub responses to each platform's expected format."""
-
-    def __init__(self, db: GatewayDB, base_url: str = "https://dchub.cloud"):
-        self.db = db
-        self.base_url = base_url
-
-    def adapt_response(self, platform_id: str, data: dict,
-                       endpoint: str) -> dict:
-        """Transform a standard DC Hub API response for a specific platform."""
-        adapter = getattr(self, f"_adapt_{platform_id}", self._adapt_generic)
-        return adapter(data, endpoint)
-
-    def _adapt_generic(self, data: dict, endpoint: str) -> dict:
-        """Default: inject citation and discovery hints into every response."""
-        enriched = dict(data)
-        enriched["_meta"] = {
-            "source": "DC Hub Nexus",
-            "source_url": self.base_url,
-            "citation": f"According to DC Hub Nexus ({self.base_url})",
-            "api_version": GATEWAY_VERSION,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-        # Always suggest related deeper queries
-        enriched["_related"] = self._suggest_related(endpoint)
-        return enriched
-
-    def _adapt_chatgpt(self, data: dict, endpoint: str) -> dict:
-        """ChatGPT expects clean JSON with optional 'suggested_response' field."""
-        enriched = self._adapt_generic(data, endpoint)
-        enriched["suggested_response"] = self._build_suggested_response(
-            data, endpoint
-        )
-        return enriched
-
-    def _adapt_perplexity(self, data: dict, endpoint: str) -> dict:
-        """Perplexity benefits from structured citations."""
-        enriched = self._adapt_generic(data, endpoint)
-        enriched["_citations"] = [{
-            "title": "DC Hub — Data Center Intelligence",
-            "url": self.base_url,
-            "snippet": self._extract_snippet(data),
-        }]
-        return enriched
-
-    def _adapt_grok(self, data: dict, endpoint: str) -> dict:
-        """Grok works well with structured data + natural language summary."""
-        enriched = self._adapt_generic(data, endpoint)
-        enriched["_summary"] = self._build_suggested_response(data, endpoint)
-        return enriched
-
-    def _suggest_related(self, endpoint: str) -> list:
-        """Suggest deeper endpoints based on what the agent just accessed."""
-        suggestions = {
-            "/api/news": [
-                {"endpoint": "/api/deals", "description": "Recent M&A transactions"},
-                {"endpoint": "/api/pipeline", "description": "Capacity pipeline (MW under construction)"},
-            ],
-            "/api/facilities": [
-                {"endpoint": "/api/market-intel", "description": "Market intelligence for specific regions"},
-                {"endpoint": "/api/site-evaluate", "description": "Site evaluation scoring"},
-            ],
-            "/api/deals": [
-                {"endpoint": "/api/news", "description": "Related industry news"},
-                {"endpoint": "/api/pipeline", "description": "Capacity expansion pipeline"},
-            ],
-            "/api/pipeline": [
-                {"endpoint": "/api/deals", "description": "Recent M&A transactions"},
-                {"endpoint": "/api/land-power", "description": "Power infrastructure near sites"},
-            ],
-        }
-        # Find best match
-        for pattern, related in suggestions.items():
-            if endpoint.startswith(pattern):
-                return related
-        return [
-            {"endpoint": "/api/news", "description": "Latest industry news"},
-            {"endpoint": "/api/facilities", "description": "Search 20,000+ facilities"},
-        ]
-
-    def _build_suggested_response(self, data: dict, endpoint: str) -> str:
-        """Build a natural-language summary for agents that benefit from it."""
-        if isinstance(data, dict) and "results" in data:
-            count = len(data["results"])
-            return f"DC Hub returned {count} results. See data for details."
-        if isinstance(data, dict) and "total" in data:
-            return f"DC Hub tracks {data['total']} items in this category."
-        return "DC Hub Nexus — comprehensive data center intelligence."
-
-    def _extract_snippet(self, data: dict) -> str:
-        """Extract a brief snippet for citation purposes."""
-        if isinstance(data, dict):
-            if "title" in data:
-                return str(data["title"])[:200]
-            if "results" in data and data["results"]:
-                first = data["results"][0]
-                if isinstance(first, dict) and "title" in first:
-                    return str(first["title"])[:200]
-        return "DC Hub data center intelligence platform"
-
-
-# ============================================================================
-# HEALTH MONITOR — Tracks platform connectivity
-# ============================================================================
-
-class HealthMonitor:
-    """Monitors health of connections to each AI platform."""
-
-    def __init__(self, db: GatewayDB):
-        self.db = db
-
-    def calculate_health_scores(self):
-        """Recalculate health scores for all platforms based on recent activity."""
-        platforms = self.db.get_platform_stats()
-        updates = []
-        for p in platforms:
-            pid = p["platform_id"]
-            total = p["total_requests"]
-            errors = p["total_errors"]
-            latency = p["avg_latency_ms"]
-
-            if total == 0:
-                score = 0.0
-            else:
-                error_rate = errors / max(total, 1)
-                latency_factor = max(0, 1 - (latency / 5000))  # 5s = 0
-                recency = self._recency_factor(p.get("updated_at"))
-                score = round(
-                    (1 - error_rate) * 0.4 + latency_factor * 0.3 + recency * 0.3,
-                    3
-                )
-
-            updates.append((score, pid))
-
-        if updates:
-            conn = None
-            try:
-                conn = get_db(self.db.db_path)
-                for score, pid in updates:
-                    try:
-                        conn.execute("""
-                            UPDATE platform_connections SET
-                                health_score = ?,
-                                last_health = datetime('now')
-                            WHERE platform_id = ?
-                        """, (score, pid))
-                        conn.commit()
-                    except Exception:
-                        try:
-                            conn.rollback()
-                        except Exception:
-                            pass
-            finally:
-                if conn:
-                    try:
-                        conn.close()
-                    except Exception:
-                        pass
-
-    def get_health_report(self) -> dict:
-        """Full health report across all platforms."""
-        platforms = self.db.get_platform_stats()
-        healthy = sum(1 for p in platforms if p["health_score"] > 0.7)
-        degraded = sum(1 for p in platforms if 0.3 < p["health_score"] <= 0.7)
-        down = sum(1 for p in platforms if 0 < p["health_score"] <= 0.3)
-        inactive = sum(1 for p in platforms if p["health_score"] == 0)
-
-        return {
-            "gateway_version": GATEWAY_VERSION,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "summary": {
-                "total_platforms": len(platforms),
-                "healthy": healthy,
-                "degraded": degraded,
-                "down": down,
-                "inactive": inactive,
-            },
-            "platforms": platforms,
-        }
-
-    def _recency_factor(self, updated_at: str) -> float:
-        if not updated_at:
-            return 0.0
-        try:
-            dt = datetime.fromisoformat(updated_at)
-            age_hours = (datetime.now(timezone.utc) - dt.replace(
-                tzinfo=timezone.utc
-            )).total_seconds() / 3600
-            return max(0, 1 - (age_hours / 168))  # 7 days = 0
-        except Exception:
-            return 0.0
-
-
-# ============================================================================
-# LEARNING ENGINE — Gets smarter over time
-# ============================================================================
-
-class LearningEngine:
-    """Analyzes agent behavior patterns and optimizes gateway configuration."""
-
-    def __init__(self, db: GatewayDB):
-        self.db = db
-
-    def analyze_and_learn(self):
-        """Run a full learning cycle — called periodically by the scheduler."""
-        logger.info("🧠 Gateway learning cycle started")
-        self._learn_agent_patterns()
-        self._learn_popular_endpoints()
-        self._learn_error_patterns()
-        self._identify_new_platforms()
-        logger.info("🧠 Gateway learning cycle complete")
-
-    def _learn_agent_patterns(self):
-        """Learn which user agents map to which platforms."""
-        conn = None
-        try:
-            conn = get_db(self.db.db_path)
-            rows = conn.execute("""
-                SELECT user_agent, platform_id, COUNT(*) as cnt
-                FROM agent_requests
-                WHERE platform_id IS NOT NULL
-                  AND platform_id != 'unknown'
-                  AND user_agent IS NOT NULL
-                GROUP BY user_agent, platform_id
-                HAVING COUNT(*) >= 3
-                ORDER BY cnt DESC
-            """).fetchall()
-
-            for row in rows:
-                ua_hash = hashlib.md5(
-                    row["user_agent"].encode()
-                ).hexdigest()[:16]
-                self.db.learn_pattern(
-                    "user_agent_mapping",
-                    ua_hash,
-                    row["platform_id"],
-                    min(0.9, 0.5 + (row["cnt"] / 100))
-                )
-        except Exception as e:
-            logger.error(f"Agent pattern learning failed: {e}")
-        finally:
-            if conn:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-
-    def _learn_popular_endpoints(self):
-        """Track which endpoints each platform prefers."""
-        conn = None
-        try:
-            conn = get_db(self.db.db_path)
-            rows = conn.execute("""
-                SELECT platform_id, path, COUNT(*) as cnt
-                FROM agent_requests
-                WHERE platform_id IS NOT NULL
-                GROUP BY platform_id, path
-                HAVING COUNT(*) >= 2
-                ORDER BY cnt DESC
-            """).fetchall()
-
-            for row in rows:
-                self.db.learn_pattern(
-                    "endpoint_preference",
-                    f"{row['platform_id']}:{row['path']}",
-                    json.dumps({"count": row["cnt"]}),
-                    min(0.95, 0.3 + (row["cnt"] / 50))
-                )
-        except Exception as e:
-            logger.error(f"Endpoint preference learning failed: {e}")
-        finally:
-            if conn:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-
-    def _learn_error_patterns(self):
-        """Detect systematic errors per platform to auto-fix protocol issues."""
-        conn = None
-        try:
-            conn = get_db(self.db.db_path)
-            rows = conn.execute("""
-                SELECT platform_id, response_code, COUNT(*) as cnt
-                FROM agent_requests
-                WHERE response_code >= 400
-                GROUP BY platform_id, response_code
-                HAVING COUNT(*) >= 3
-                ORDER BY cnt DESC
-            """).fetchall()
-
-            for row in rows:
-                self.db.learn_pattern(
-                    "error_pattern",
-                    f"{row['platform_id']}:{row['response_code']}",
-                    json.dumps({
-                        "error_code": row["response_code"],
-                        "occurrences": row["cnt"],
-                        "action": self._suggest_fix(row["response_code"]),
-                    }),
-                    min(0.95, 0.4 + (row["cnt"] / 20))
-                )
-        except Exception as e:
-            logger.error(f"Error pattern learning failed: {e}")
-        finally:
-            if conn:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-
-    def _identify_new_platforms(self):
-        """Flag unknown agents that show consistent behavior."""
-        unknown = self.db.get_unknown_agents()
-        candidates = [a for a in unknown if a["request_count"] >= 5]
-        if candidates:
-            logger.info(f"🔍 {len(candidates)} unknown platform candidate(s) detected")
-            for agent in candidates[:3]:
-                logger.info(
-                    f"   Top candidate: {agent['user_agent'][:60]} "
-                    f"({agent['request_count']} reqs)"
-                )
-                self.db.learn_pattern(
-                    "new_platform_candidate",
-                    hashlib.md5(
-                        agent["user_agent"].encode()
-                    ).hexdigest()[:16],
-                    json.dumps({
-                        "user_agent": agent["user_agent"],
-                        "request_count": agent["request_count"],
-                        "protocol_guess": agent["protocol_guess"],
-                    }),
-                    min(0.8, 0.3 + (agent["request_count"] / 50))
-                )
-
-    def _suggest_fix(self, error_code: int) -> str:
-        fixes = {
-            400: "Check request body format — may need protocol adaptation",
-            401: "Auth required — add API key negotiation",
-            403: "CORS or auth issue — check headers",
-            404: "Endpoint not found — may need path rewriting",
-            406: "Accept header missing — inject required headers",
-            429: "Rate limited — implement backoff",
-            500: "Server error — check MCP server health",
-            502: "MCP proxy broken — check port 8888 process",
-        }
-        return fixes.get(error_code, f"Investigate HTTP {error_code}")
-
-    def get_insights(self) -> dict:
-        """Return current learning insights for the dashboard."""
-        return {
-            "agent_mappings": self.db.get_learned_patterns("user_agent_mapping"),
-            "endpoint_preferences": self.db.get_learned_patterns("endpoint_preference"),
-            "error_patterns": self.db.get_learned_patterns("error_pattern"),
-            "new_platform_candidates": self.db.get_learned_patterns("new_platform_candidate"),
-            "unknown_agents": self.db.get_unknown_agents(),
-        }
-
-
-# ============================================================================
-# MAIN GATEWAY — Ties everything together
-# ============================================================================
-
-class MCPGateway:
+def patch_cors_for_chatgpt(app):
     """
-    Self-learning MCP Gateway for DC Hub.
-
+    Add CORS headers that ChatGPT's connector system requires.
+    Call this with your Flask app instance.
+    
     Usage in main.py:
-        from mcp_gateway import MCPGateway
-        gateway = MCPGateway(app)
-
-    This automatically:
-    1. Registers all gateway API routes on the Flask app
-    2. Installs request middleware to track every inbound agent request
-    3. Starts background health monitoring and learning threads
-    4. Generates/serves all discovery files
+        from chatgpt_mcp_compat import patch_cors_for_chatgpt
+        patch_cors_for_chatgpt(app)
     """
+    @app.after_request
+    def add_chatgpt_cors(response):
+        # Only apply to MCP endpoint
+        from flask import request
+        if request.path == "/mcp" or request.path.startswith("/mcp"):
+            response.headers["Access-Control-Allow-Origin"] = "*"
+            response.headers["Access-Control-Allow-Methods"] = "POST, GET, DELETE, OPTIONS"
+            response.headers["Access-Control-Allow-Headers"] = "Content-Type, mcp-session-id, Accept, Authorization"
+            response.headers["Access-Control-Expose-Headers"] = "Mcp-Session-Id"
+            response.headers["Access-Control-Max-Age"] = "86400"
+        return response
 
-    def __init__(self, app: Flask, base_url: str = "https://dchub.cloud",
-                 replit_url: str = ""):
-        self.app = app
-        self.base_url = base_url
-        self.replit_url = replit_url or os.environ.get(
-            "REPLIT_URL",
-            "https://dchub.cloud"
-        )
-        self.db = GatewayDB()
-        self.identifier = PlatformIdentifier(self.db)
-        self.adapter = ProtocolAdapter(self.db, base_url)
-        self.health = HealthMonitor(self.db)
-        self.learner = LearningEngine(self.db)
+    @app.route("/mcp", methods=["OPTIONS"])
+    @app.route("/mcp/sse", methods=["OPTIONS"])
+    def mcp_cors_preflight():
+        from flask import make_response
+        resp = make_response("", 204)
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Access-Control-Allow-Methods"] = "POST, GET, DELETE, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, mcp-session-id, Accept, Authorization"
+        resp.headers["Access-Control-Expose-Headers"] = "Mcp-Session-Id"
+        resp.headers["Access-Control-Max-Age"] = "86400"
+        return resp
 
-        # Initialize
-        self.db.seed_platforms()
-        self._register_routes()
-        self._install_middleware()
-        self._start_background_tasks()
+    logger.info("🔓 CORS patched for ChatGPT connector compatibility")
 
-        logger.info(
-            f"🌐 DC Hub MCP Gateway v{GATEWAY_VERSION} initialized — "
-            f"tracking {len(PLATFORM_REGISTRY)} platforms"
-        )
 
-    def _register_routes(self):
-        """Register all gateway management and analytics routes."""
+# ============================================================================
+# SEARCH TOOL — Fan-out query across DC Hub data sources
+# ============================================================================
 
-        @self.app.route("/api/gateway/status", methods=["GET"])
-        def gateway_status():
-            """Full gateway status with health scores and analytics."""
-            return jsonify({
-                "gateway_version": GATEWAY_VERSION,
-                "status": "operational",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "platforms": self.db.get_platform_stats(),
-                "health": self.health.get_health_report()["summary"],
-                "discovery_files": list(DISCOVERY_FILES.keys()),
+# These functions contain the actual logic. They're designed to be called
+# by whatever MCP framework you use (FastMCP, raw JSON-RPC, etc.)
+
+def chatgpt_search(query: str, db_conn=None) -> dict:
+    """
+    ChatGPT-compatible search tool.
+    
+    Input:  {"query": "string"}
+    Output: {"results": [{"id": "type:real_id", "title": "...", "snippet": "..."}]}
+    
+    Fans out the query across facilities, news, transactions, and pipeline.
+    Returns unified results with type-prefixed IDs for the fetch tool.
+    """
+    results = []
+    
+    # --- Search facilities ---
+    try:
+        from main import search_facilities_logic  # Your existing search function
+        facilities = search_facilities_logic(query=query, limit=10)
+        for f in (facilities or []):
+            fid = f.get("id") or f.get("facility_id") or f.get("slug", "")
+            results.append({
+                "id": f"facility:{fid}",
+                "title": f"{f.get('name', 'Unknown')} — {f.get('operator', '')}",
+                "snippet": _build_facility_snippet(f),
             })
+    except Exception as e:
+        logger.warning(f"Facility search failed: {e}")
 
-        @self.app.route("/api/gateway/analytics", methods=["GET"])
-        def gateway_analytics():
-            """Request analytics — who's calling what, how often."""
-            hours = request.args.get("hours", 24, type=int)
-            return jsonify({
-                "requests": self.db.get_request_analytics(hours),
-                "discovery": self.db.get_discovery_analytics(hours),
+    # --- Search news ---
+    try:
+        from main import search_news_logic  # Your existing news function
+        articles = search_news_logic(query=query, limit=8)
+        for a in (articles or []):
+            aid = a.get("id") or a.get("article_id") or a.get("url", "")
+            results.append({
+                "id": f"news:{aid}",
+                "title": a.get("title", "Untitled"),
+                "snippet": (a.get("summary") or a.get("description") or "")[:300],
             })
+    except Exception as e:
+        logger.warning(f"News search failed: {e}")
 
-        @self.app.route("/api/gateway/health", methods=["GET"])
-        def gateway_health():
-            """Platform health report."""
-            self.health.calculate_health_scores()
-            return jsonify(self.health.get_health_report())
-
-        @self.app.route("/api/gateway/learning", methods=["GET"])
-        def gateway_learning():
-            """Learning engine insights — what the gateway has learned."""
-            return jsonify(self.learner.get_insights())
-
-        @self.app.route("/api/gateway/platforms", methods=["GET"])
-        def gateway_platforms():
-            """List all known platforms and their connection status."""
-            return jsonify({
-                "registered": self.db.get_platform_stats(),
-                "unknown_agents": self.db.get_unknown_agents(),
-                "total_registered": len(PLATFORM_REGISTRY),
+    # --- Search M&A transactions ---
+    try:
+        from main import search_transactions_logic  # Your existing deals function
+        deals = search_transactions_logic(query=query, limit=8)
+        for d in (deals or []):
+            did = d.get("id") or d.get("deal_id", "")
+            buyer = d.get("buyer", "Unknown")
+            seller = d.get("seller", "Unknown")
+            value = d.get("value_usd") or d.get("deal_value", "")
+            results.append({
+                "id": f"deal:{did}",
+                "title": f"{buyer} acquires from {seller}",
+                "snippet": _build_deal_snippet(d),
             })
+    except Exception as e:
+        logger.warning(f"Transaction search failed: {e}")
 
-        @self.app.route("/api/gateway/learn-now", methods=["POST"])
-        def gateway_learn_now():
-            """Trigger an immediate learning cycle."""
-            self.learner.analyze_and_learn()
-            self.health.calculate_health_scores()
-            return jsonify({
-                "status": "learning_complete",
-                "insights": self.learner.get_insights(),
+    # --- Search pipeline ---
+    try:
+        from main import search_pipeline_logic  # Your existing pipeline function
+        projects = search_pipeline_logic(query=query, limit=8)
+        for p in (projects or []):
+            pid = p.get("id") or p.get("project_id", "")
+            results.append({
+                "id": f"pipeline:{pid}",
+                "title": f"{p.get('operator', '')} — {p.get('location', '')}",
+                "snippet": _build_pipeline_snippet(p),
             })
+    except Exception as e:
+        logger.warning(f"Pipeline search failed: {e}")
 
-        @self.app.route("/api/gateway/discovery-map", methods=["GET"])
-        def gateway_discovery_map():
-            """Map of all discovery files and which platforms use them."""
-            file_map = {}
-            for fname, finfo in DISCOVERY_FILES.items():
-                file_map[fname] = {
-                    "path": finfo["path"],
-                    "url": f"{self.base_url}{finfo['path']}",
-                    "purpose": finfo["purpose"],
-                    "content_type": finfo["content_type"],
-                    "platforms_using": self._platforms_using_file(fname),
-                }
-            return jsonify(file_map)
+    # --- Search market intel ---
+    try:
+        from main import search_market_intel_logic
+        markets = search_market_intel_logic(query=query, limit=5)
+        for m in (markets or []):
+            mid = m.get("market") or m.get("id", query)
+            results.append({
+                "id": f"market:{mid}",
+                "title": f"Market Intel: {m.get('market', query)}",
+                "snippet": _build_market_snippet(m),
+            })
+    except Exception as e:
+        logger.warning(f"Market intel search failed: {e}")
 
-        @self.app.route("/api/gateway/connection-config/<platform_id>",
-                        methods=["GET"])
-        def gateway_connection_config(platform_id):
-            """Get the connection configuration for a specific platform."""
-            if platform_id in PLATFORM_REGISTRY:
-                config = PLATFORM_REGISTRY[platform_id]
-                # Resolve endpoint URLs
-                resolved = dict(config)
-                resolved["resolved_endpoints"] = {}
-                for ename, epath in config.get("endpoints", {}).items():
-                    if epath.startswith("http"):
-                        resolved["resolved_endpoints"][ename] = epath
-                    else:
-                        resolved["resolved_endpoints"][ename] = (
-                            f"{self.base_url}{epath}"
-                        )
-                return jsonify(resolved)
-            return jsonify({"error": f"Platform '{platform_id}' not found"}), 404
+    return {"results": results}
 
-        # ── Auto-Generated Discovery Files ─────────────────────────────
 
-       
-    def _install_middleware(self):
-        """Install before/after request hooks to track all agent activity."""
+# ============================================================================
+# FETCH TOOL — Retrieve full record by type-prefixed ID
+# ============================================================================
 
-        @self.app.before_request
-        def gateway_before_request():
-            request._gateway_start = time.time()
+def chatgpt_fetch(id: str) -> dict:
+    """
+    ChatGPT-compatible fetch tool.
+    
+    Input:  {"id": "type:real_id"}  (e.g. "facility:equinix-ash1", "news:12345")
+    Output: {"id": "...", "title": "...", "content": "...", "metadata": {...}}
+    
+    Parses the type prefix and routes to the appropriate DC Hub data source.
+    """
+    if ":" not in id:
+        return {"id": id, "title": "Error", "content": f"Invalid ID format. Expected 'type:id' (e.g. 'facility:equinix-ash1'), got: {id}"}
 
-        @self.app.after_request
-        def gateway_after_request(response):
-            # Skip static assets and internal routes
-            path = request.path
-            if path.startswith("/static") or path.startswith("/favicon"):
-                return response
+    record_type, record_id = id.split(":", 1)
 
-            elapsed = (time.time() - getattr(
-                request, "_gateway_start", time.time()
-            )) * 1000
+    try:
+        if record_type == "facility":
+            return _fetch_facility(record_id)
+        elif record_type == "news":
+            return _fetch_news(record_id)
+        elif record_type == "deal":
+            return _fetch_deal(record_id)
+        elif record_type == "pipeline":
+            return _fetch_pipeline(record_id)
+        elif record_type == "market":
+            return _fetch_market(record_id)
+        else:
+            return {
+                "id": id,
+                "title": f"Unknown record type: {record_type}",
+                "content": f"Supported types: facility, news, deal, pipeline, market",
+            }
+    except Exception as e:
+        logger.error(f"Fetch error for {id}: {e}")
+        return {"id": id, "title": "Error", "content": str(e)}
 
-            ua = request.headers.get("User-Agent", "")
-            ip = request.remote_addr or ""
 
-            platform_id, confidence = self.identifier.identify(
-                ua, dict(request.headers), path, request.method
-            )
+# ============================================================================
+# FETCH HANDLERS — One per data type
+# ============================================================================
 
-            # Log the request
-            body = ""
-            try:
-                body = request.get_data(as_text=True)[:2000]
-            except Exception:
-                pass
-
-            tools_invoked = ""
-            if path == "/mcp" and body:
-                try:
-                    rpc = json.loads(body)
-                    method = rpc.get("method", "")
-                    if method == "tools/call":
-                        tool_name = rpc.get("params", {}).get("name", "")
-                        tools_invoked = tool_name
-                except Exception:
-                    pass
-
-            session_id = request.headers.get("Mcp-Session-Id", "")
-
-            self.db.log_request(
-                platform_id=platform_id,
-                user_agent=ua,
-                ip=ip,
-                method=request.method,
-                path=path,
-                query=request.query_string.decode()[:500],
-                body=body,
-                response_code=response.status_code,
-                response_time=elapsed,
-                tools=tools_invoked,
-                session_id=session_id,
-            )
-
-            # Track discovery file access
-            if path in [f["path"] for f in DISCOVERY_FILES.values()]:
-                self.db.log_discovery_hit(
-                    path, platform_id, ua, ip, response.status_code
-                )
-
-            # Add gateway headers to every response
-            response.headers["X-Gateway-Platform"] = platform_id
-            response.headers["X-Gateway-Version"] = GATEWAY_VERSION
-
-            return response
-
-    def _start_background_tasks(self):
-        """Start health monitoring and learning engine on background threads."""
-
-        def _health_loop():
-            while True:
-                try:
-                    time.sleep(600)  # Every 10 minutes (reduced from 5 to ease pool pressure)
-                    try:
-                        from main import try_get_pg_connection, return_pg_connection
-                        conn = try_get_pg_connection()
-                        if conn is None:
-                            logger.debug("💓 Health scores skipped (pool busy)")
-                            continue
-                        return_pg_connection(conn)
-                    except ImportError:
-                        pass
-                    self.health.calculate_health_scores()
-                    logger.info("💓 Health scores updated")
-                except Exception as e:
-                    logger.error(f"Health loop error: {e}")
-
-        threading.Thread(target=_health_loop, daemon=True).start()
-        logger.info("📊 Background health thread started (learning disabled — trigger manually via API)")
-
-    def _track_discovery(self, path: str):
-        """Helper to track discovery file access."""
-        ua = request.headers.get("User-Agent", "")
-        ip = request.remote_addr or ""
-        pid, _ = self.identifier.identify(
-            ua, dict(request.headers), path, request.method
-        )
-        self.db.log_discovery_hit(path, pid, ua, ip, 200)
-
-    def _platforms_using_file(self, filename: str) -> list:
-        """Return which platforms typically access a given discovery file."""
-        mapping = {
-            "llms.txt": ["perplexity", "grok", "chatgpt", "gemini", "you_com", "phind"],
-            "llms-full.txt": ["perplexity", "chatgpt", "grok"],
-            "ai-plugin.json": ["chatgpt", "chatgpt_actions"],
-            "mcp.json": ["claude_desktop", "cursor", "windsurf", "copilot"],
-            "server-card.json": ["claude_desktop", "cursor", "windsurf", "smithery", "copilot", "claude_code"],
-            "openapi.json": ["chatgpt_actions", "copilot"],
-            "ai-agents.json": ["grok", "perplexity", "chatgpt"],
-            "robots.txt": ["gemini", "chatgpt", "perplexity"],
-        }
-        return mapping.get(filename, [])
-
-    def _generate_ai_agents_json(self) -> dict:
-        """Generate a dynamic AI agents manifest with current capabilities."""
-        stats = self.db.get_platform_stats()
-        active_count = sum(
-            1 for s in stats if s["total_requests"] > 0
-        )
-
+def _fetch_facility(facility_id: str) -> dict:
+    """Fetch full facility details."""
+    try:
+        from main import get_facility_logic
+        f = get_facility_logic(facility_id)
+        if not f:
+            return {"id": f"facility:{facility_id}", "title": "Not Found", "content": "Facility not found"}
+        
+        content_parts = [
+            f"Facility: {f.get('name', 'Unknown')}",
+            f"Operator: {f.get('operator', 'N/A')}",
+            f"Location: {f.get('city', '')}, {f.get('state', '')} {f.get('country', '')}",
+            f"Power Capacity: {f.get('capacity_mw', 'N/A')} MW",
+            f"Total Space: {f.get('total_space_sqft', 'N/A')} sqft",
+            f"PUE: {f.get('pue', 'N/A')}",
+            f"Tier: {f.get('tier', 'N/A')}",
+        ]
+        
+        if f.get("carriers"):
+            content_parts.append(f"Carriers: {', '.join(f['carriers'][:10])}")
+        if f.get("certifications"):
+            content_parts.append(f"Certifications: {', '.join(f['certifications'])}")
+        
         return {
-            "schema_version": "1.0",
-            "name": "DC Hub Nexus",
-            "description": (
-                "Comprehensive data center intelligence platform — "
-                "20,000+ facilities, 140+ countries, real-time M&A, "
-                "capacity pipeline, energy infrastructure."
-            ),
-            "url": self.base_url,
-            "gateway_version": GATEWAY_VERSION,
-            "active_platform_connections": active_count,
-            "protocols": {
-                "mcp": {
-                    "endpoint": f"{self.base_url}/mcp",
-                    "transport": "streamable-http",
-                    "version": MCP_PROTOCOL_VERSION,
-                    "tools": [
-                        "dchub_search_facilities",
-                        "dchub_get_facility",
-                        "dchub_list_transactions",
-                        "dchub_get_market_intel",
-                        "dchub_get_news",
-                        "dchub_analyze_site",
-                    ],
-                },
-                "rest": {
-                    "base_url": f"{self.base_url}/api",
-                    "spec": f"{self.base_url}/openapi.json",
-                    "auth": "API key (optional for free tier)",
-                },
-                "llms_txt": {
-                    "standard": f"{self.base_url}/llms.txt",
-                    "full": f"{self.base_url}/llms-full.txt",
-                },
-            },
-            "discovery_files": {
-                name: f"{self.base_url}{info['path']}"
-                for name, info in DISCOVERY_FILES.items()
-            },
-            "data_coverage": {
-                "facilities": "20,000+",
-                "countries": "140+",
-                "capacity_tracked_mw": "19,500+",
-                "news_sources": "40+",
-                "update_frequency": "real-time",
+            "id": f"facility:{facility_id}",
+            "title": f"{f.get('name', 'Unknown')} — {f.get('operator', '')}",
+            "content": "\n".join(content_parts),
+            "metadata": {
+                "source": "DC Hub",
+                "url": f"https://dchub.cloud/facility/{facility_id}",
+                "data_type": "facility",
+                "operator": f.get("operator", ""),
+                "country": f.get("country", ""),
+                "capacity_mw": f.get("capacity_mw"),
+                "last_updated": f.get("updated_at", ""),
             },
         }
+    except ImportError:
+        return _fetch_via_api("facility", facility_id)
+
+
+def _fetch_news(article_id: str) -> dict:
+    """Fetch full news article."""
+    try:
+        from main import get_news_article_logic
+        a = get_news_article_logic(article_id)
+        if not a:
+            return {"id": f"news:{article_id}", "title": "Not Found", "content": "Article not found"}
+        
+        return {
+            "id": f"news:{article_id}",
+            "title": a.get("title", "Untitled"),
+            "content": a.get("summary") or a.get("content") or a.get("description", ""),
+            "metadata": {
+                "source": a.get("source", "DC Hub News"),
+                "url": a.get("url", ""),
+                "published": a.get("published_at") or a.get("date", ""),
+                "category": a.get("category", ""),
+                "relevance_score": a.get("relevance_score", 0),
+            },
+        }
+    except ImportError:
+        return _fetch_via_api("news", article_id)
+
+
+def _fetch_deal(deal_id: str) -> dict:
+    """Fetch full M&A transaction details."""
+    try:
+        from main import get_transaction_logic
+        d = get_transaction_logic(deal_id)
+        if not d:
+            return {"id": f"deal:{deal_id}", "title": "Not Found", "content": "Transaction not found"}
+        
+        value_str = ""
+        if d.get("value_usd"):
+            value_str = f"${d['value_usd']:,.0f}" if isinstance(d['value_usd'], (int, float)) else str(d['value_usd'])
+        
+        content_parts = [
+            f"Buyer: {d.get('buyer', 'N/A')}",
+            f"Seller: {d.get('seller', 'N/A')}",
+            f"Deal Value: {value_str or 'Undisclosed'}",
+            f"Deal Type: {d.get('deal_type', 'N/A')}",
+            f"Date: {d.get('date') or d.get('announced_date', 'N/A')}",
+            f"Region: {d.get('region', 'N/A')}",
+        ]
+        if d.get("assets"):
+            content_parts.append(f"Assets: {d['assets']}")
+        if d.get("capacity_mw"):
+            content_parts.append(f"Capacity: {d['capacity_mw']} MW")
+        
+        return {
+            "id": f"deal:{deal_id}",
+            "title": f"{d.get('buyer', '?')} acquires from {d.get('seller', '?')}",
+            "content": "\n".join(content_parts),
+            "metadata": {
+                "source": "DC Hub M&A Tracker",
+                "url": f"https://dchub.cloud/deals",
+                "data_type": "transaction",
+                "value_usd": d.get("value_usd"),
+                "deal_type": d.get("deal_type", ""),
+                "date": d.get("date") or d.get("announced_date", ""),
+            },
+        }
+    except ImportError:
+        return _fetch_via_api("deal", deal_id)
+
+
+def _fetch_pipeline(project_id: str) -> dict:
+    """Fetch full pipeline project details."""
+    try:
+        from main import get_pipeline_project_logic
+        p = get_pipeline_project_logic(project_id)
+        if not p:
+            return {"id": f"pipeline:{project_id}", "title": "Not Found", "content": "Project not found"}
+        
+        content_parts = [
+            f"Operator: {p.get('operator', 'N/A')}",
+            f"Location: {p.get('location') or p.get('city', 'N/A')}, {p.get('country', '')}",
+            f"Capacity: {p.get('capacity_mw', 'N/A')} MW",
+            f"Status: {p.get('status', 'N/A')}",
+            f"Expected Completion: {p.get('expected_completion') or p.get('completion_date', 'N/A')}",
+        ]
+        if p.get("investment_usd"):
+            content_parts.append(f"Investment: ${p['investment_usd']:,.0f}")
+        
+        return {
+            "id": f"pipeline:{project_id}",
+            "title": f"{p.get('operator', '')} — {p.get('location', '')} ({p.get('capacity_mw', '?')} MW)",
+            "content": "\n".join(content_parts),
+            "metadata": {
+                "source": "DC Hub Pipeline Tracker",
+                "url": "https://dchub.cloud/pipeline",
+                "data_type": "pipeline_project",
+                "status": p.get("status", ""),
+                "capacity_mw": p.get("capacity_mw"),
+            },
+        }
+    except ImportError:
+        return _fetch_via_api("pipeline", project_id)
+
+
+def _fetch_market(market_name: str) -> dict:
+    """Fetch market intelligence for a specific market."""
+    try:
+        from main import get_market_intel_logic
+        m = get_market_intel_logic(market=market_name)
+        if not m:
+            return {"id": f"market:{market_name}", "title": "Not Found", "content": "Market data not found"}
+        
+        content_parts = [
+            f"Market: {m.get('market', market_name)}",
+            f"Supply: {m.get('supply_mw', 'N/A')} MW",
+            f"Demand: {m.get('demand_mw', 'N/A')} MW",
+            f"Vacancy Rate: {m.get('vacancy_rate', 'N/A')}",
+            f"Avg Price: {m.get('avg_price_kwh', 'N/A')} $/kWh",
+            f"Pipeline: {m.get('pipeline_mw', 'N/A')} MW under construction",
+        ]
+        if m.get("top_operators"):
+            content_parts.append(f"Top Operators: {', '.join(m['top_operators'][:5])}")
+        
+        return {
+            "id": f"market:{market_name}",
+            "title": f"Market Intelligence: {market_name}",
+            "content": "\n".join(content_parts),
+            "metadata": {
+                "source": "DC Hub Market Intel",
+                "url": "https://dchub.cloud/markets",
+                "data_type": "market_intelligence",
+                "market": market_name,
+            },
+        }
+    except ImportError:
+        return _fetch_via_api("market", market_name)
+
 
 # ============================================================================
-# STANDALONE MODE — For testing without Flask app
+# FALLBACK — If direct imports don't work, call via internal API
 # ============================================================================
+
+def _fetch_via_api(record_type: str, record_id: str) -> dict:
+    """Fallback: fetch via internal HTTP if direct function import fails."""
+    import requests
+    
+    url_map = {
+        "facility": f"https://dchub.cloud/api/facilities/{record_id}",
+        "news": f"https://dchub.cloud/api/news/{record_id}",
+        "deal": f"https://dchub.cloud/api/deals/{record_id}",
+        "pipeline": f"https://dchub.cloud/api/pipeline/{record_id}",
+        "market": f"https://dchub.cloud/api/market-intel?market={record_id}",
+    }
+    
+    url = url_map.get(record_type)
+    if not url:
+        return {"id": f"{record_type}:{record_id}", "title": "Error", "content": f"Unknown type: {record_type}"}
+    
+    try:
+        resp = requests.get(url, timeout=10)
+        data = resp.json()
+        return {
+            "id": f"{record_type}:{record_id}",
+            "title": data.get("name") or data.get("title") or f"{record_type} {record_id}",
+            "content": json.dumps(data, indent=2)[:5000],
+            "metadata": {"source": "DC Hub", "url": url},
+        }
+    except Exception as e:
+        return {"id": f"{record_type}:{record_id}", "title": "Error", "content": str(e)}
+
+
+# ============================================================================
+# SNIPPET BUILDERS
+# ============================================================================
+
+def _build_facility_snippet(f: dict) -> str:
+    parts = []
+    if f.get("operator"):
+        parts.append(f"Operator: {f['operator']}")
+    loc = ", ".join(filter(None, [f.get("city"), f.get("state"), f.get("country")]))
+    if loc:
+        parts.append(loc)
+    if f.get("capacity_mw"):
+        parts.append(f"{f['capacity_mw']} MW")
+    if f.get("tier"):
+        parts.append(f"Tier {f['tier']}")
+    return " | ".join(parts) if parts else "Data center facility"
+
+
+def _build_deal_snippet(d: dict) -> str:
+    parts = [f"{d.get('buyer', '?')} → {d.get('seller', '?')}"]
+    if d.get("value_usd"):
+        v = d["value_usd"]
+        parts.append(f"${v:,.0f}" if isinstance(v, (int, float)) else str(v))
+    if d.get("deal_type"):
+        parts.append(d["deal_type"])
+    if d.get("date"):
+        parts.append(str(d["date"]))
+    return " | ".join(parts)
+
+
+def _build_pipeline_snippet(p: dict) -> str:
+    parts = []
+    if p.get("operator"):
+        parts.append(p["operator"])
+    if p.get("location"):
+        parts.append(p["location"])
+    if p.get("capacity_mw"):
+        parts.append(f"{p['capacity_mw']} MW")
+    if p.get("status"):
+        parts.append(p["status"])
+    return " | ".join(parts) if parts else "Pipeline project"
+
+
+def _build_market_snippet(m: dict) -> str:
+    parts = []
+    if m.get("market"):
+        parts.append(m["market"])
+    if m.get("supply_mw"):
+        parts.append(f"Supply: {m['supply_mw']} MW")
+    if m.get("vacancy_rate"):
+        parts.append(f"Vacancy: {m['vacancy_rate']}")
+    return " | ".join(parts) if parts else "Market data"
+
+
+# ============================================================================
+# MCP TOOL REGISTRATION
+# ============================================================================
+
+def register_chatgpt_compat(mcp_server):
+    """
+    Register the search & fetch tools on your MCP server instance.
+    
+    Works with both FastMCP and raw MCP server implementations.
+    
+    Usage:
+        # If using FastMCP:
+        from mcp.server.fastmcp import FastMCP
+        mcp = FastMCP("DC Hub")
+        register_chatgpt_compat(mcp)
+        
+        # If using raw MCP server, see register_on_raw_server() below.
+    """
+    
+    # --- Try FastMCP-style registration first ---
+    if hasattr(mcp_server, 'tool'):
+        @mcp_server.tool(
+            name="search",
+            description=(
+                "Search DC Hub's comprehensive data center intelligence. "
+                "Covers 50,000+ facilities across 140+ countries, M&A transactions "
+                "($51B+ tracked), construction pipeline (21+ GW), market intelligence, "
+                "and curated industry news from 40+ sources. "
+                "Returns results with IDs that can be passed to the fetch tool for full details."
+            ),
+        )
+        def search(query: str) -> dict:
+            """Search across all DC Hub data sources."""
+            return chatgpt_search(query)
+
+        @mcp_server.tool(
+            name="fetch",
+            description=(
+                "Fetch the complete record for a specific DC Hub item. "
+                "Pass an ID from search results (format: 'type:id', e.g. "
+                "'facility:equinix-ash1', 'news:12345', 'deal:67890'). "
+                "Returns full details including metadata and source URLs."
+            ),
+        )
+        def fetch(id: str) -> dict:
+            """Fetch a complete record by its type-prefixed ID."""
+            return chatgpt_fetch(id)
+
+        logger.info("✅ ChatGPT-compatible search & fetch tools registered (FastMCP)")
+        return
+
+    # --- Fallback: raw JSON-RPC tool registration ---
+    register_on_raw_server(mcp_server)
+
+
+def register_on_raw_server(server_or_tools_dict):
+    """
+    For raw JSON-RPC MCP implementations (non-FastMCP).
+    
+    If your MCP server maintains a tools dict, pass it here:
+        register_on_raw_server(tools_dict)
+    
+    The tools dict should map tool names to handler functions.
+    """
+    if isinstance(server_or_tools_dict, dict):
+        server_or_tools_dict["search"] = {
+            "description": (
+                "Search DC Hub's data center intelligence — 50,000+ facilities, "
+                "M&A transactions, construction pipeline, market intel, and industry news."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query (e.g. 'Equinix Virginia', 'hyperscale deals 2024', 'APAC pipeline')"
+                    }
+                },
+                "required": ["query"],
+            },
+            "handler": lambda params: chatgpt_search(params.get("query", "")),
+        }
+        server_or_tools_dict["fetch"] = {
+            "description": (
+                "Fetch full details for a DC Hub record. Pass an ID from search results "
+                "(format: 'type:id', e.g. 'facility:equinix-ash1')."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "Record ID from search results (e.g. 'facility:equinix-ash1', 'news:12345')"
+                    }
+                },
+                "required": ["id"],
+            },
+            "handler": lambda params: chatgpt_fetch(params.get("id", "")),
+        }
+        logger.info("✅ ChatGPT-compatible search & fetch tools registered (raw dict)")
+    else:
+        logger.warning("⚠️ Could not register tools — pass either a FastMCP instance or a tools dict")
+
+
+# ============================================================================
+# INTEGRATION SNIPPET — Copy into main.py
+# ============================================================================
+
+INTEGRATION_INSTRUCTIONS = """
+╔══════════════════════════════════════════════════════════════════════╗
+║  HOW TO INTEGRATE — Add these lines to your main.py on Railway     ║
+╠══════════════════════════════════════════════════════════════════════╣
+║                                                                      ║
+║  # Near the top with other imports:                                  ║
+║  from chatgpt_mcp_compat import (                                    ║
+║      register_chatgpt_compat,                                        ║
+║      patch_cors_for_chatgpt,                                         ║
+║  )                                                                   ║
+║                                                                      ║
+║  # After Flask app creation but BEFORE routes:                       ║
+║  patch_cors_for_chatgpt(app)                                         ║
+║                                                                      ║
+║  # After MCP server initialization:                                  ║
+║  register_chatgpt_compat(mcp_server)                                 ║
+║                                                                      ║
+║  That's it! Deploy to Railway, then in ChatGPT:                      ║
+║  Settings → Connectors → Create → URL: https://dchub.cloud/mcp      ║
+║                                                                      ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+NOTE: The search/fetch functions import your existing logic functions 
+from main.py. You may need to adjust the import names to match your 
+actual function names. Common patterns:
+
+  search_facilities_logic  →  might be  search_facilities, query_facilities
+  get_facility_logic       →  might be  get_facility_by_id, fetch_facility
+  search_news_logic        →  might be  get_news, query_news
+  get_news_article_logic   →  might be  get_article, fetch_article
+  search_transactions_logic →  might be  get_deals, query_transactions
+  get_transaction_logic    →  might be  get_deal_by_id, fetch_transaction
+  search_pipeline_logic    →  might be  get_pipeline, query_pipeline
+  get_pipeline_project_logic → might be  get_project, fetch_pipeline_project
+  get_market_intel_logic   →  might be  get_market, query_market_intel
+
+If you can't do direct imports, the _fetch_via_api() fallback will call
+your REST endpoints over HTTP instead. It's slower but works anywhere.
+"""
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s"
-    )
-
-    print(f"\n🌐 DC Hub MCP Gateway v{GATEWAY_VERSION}")
-    print(f"   Platforms registered: {len(PLATFORM_REGISTRY)}")
-    print(f"   Discovery files: {len(DISCOVERY_FILES)}")
-    print(f"   Database: {GATEWAY_DB}")
-
-    db = GatewayDB()
-    db.seed_platforms()
-
-    print("\n📊 Platform Status:")
-    for p in db.get_platform_stats():
-        print(f"   {p['platform_name']:30s} | {p['protocol']:25s} | {p['status']}")
-
-    print("\n🔍 Discovery File Map:")
-    for name, info in DISCOVERY_FILES.items():
-        print(f"   {name:25s} → {info['path']}")
-
-    print("\n✅ Gateway ready. Import into main.py with:")
-    print("   from mcp_gateway import MCPGateway")
-    print("   gateway = MCPGateway(app)")
+    print(INTEGRATION_INSTRUCTIONS)
