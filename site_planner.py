@@ -990,6 +990,257 @@ def compute_suitability_score(substations, transmission, iso, env, congestion, w
     }
 
 
+# ─── Enhancement: Gas Infrastructure Proximity ──────────────────────────────
+def find_nearby_gas_pipelines(lat, lng, radius_miles=25, limit=10):
+    """
+    Find gas pipelines near the site from 10K+ gas_pipelines table.
+    Critical for: gas-fired power generation, dual-fuel capability,
+    backup generation, and midstream infrastructure access.
+    """
+    deg_lat = radius_miles / 69.0
+    deg_lng = radius_miles / (69.0 * max(0.1, abs(math.cos(math.radians(lat)))))
+    
+    query = """
+        SELECT 
+            name,
+            operator,
+            pipeline_type,
+            COALESCE(diameter_inches, 0) as diameter_inches,
+            COALESCE(capacity_mcf, 0) as capacity_mcf,
+            status,
+            state,
+            lat, lng,
+            (
+                3959 * acos(
+                    LEAST(1.0, GREATEST(-1.0,
+                        cos(radians(%s)) * cos(radians(lat)) *
+                        cos(radians(lng) - radians(%s)) +
+                        sin(radians(%s)) * sin(radians(lat))
+                    ))
+                )
+            ) as distance_miles
+        FROM gas_pipelines
+        WHERE lat IS NOT NULL AND lng IS NOT NULL
+          AND lat BETWEEN %s AND %s
+          AND lng BETWEEN %s AND %s
+        ORDER BY distance_miles ASC
+        LIMIT %s;
+    """
+    result = execute_query(query, (
+        lat, lng, lat,
+        lat - deg_lat, lat + deg_lat,
+        lng - deg_lng, lng + deg_lng,
+        limit
+    ))
+    
+    if not result:
+        return {
+            'pipelines': [],
+            'count': 0,
+            'gas_access': 'None detected',
+            'radius_miles': radius_miles,
+        }
+    
+    # Categorize by type
+    types = {}
+    for p in result:
+        pt = p.get('pipeline_type', 'Unknown')
+        if pt not in types:
+            types[pt] = 0
+        types[pt] += 1
+    
+    nearest = result[0] if result else {}
+    nearest_dist = nearest.get('distance_miles', 999)
+    
+    if nearest_dist < 3:
+        gas_access = 'Excellent'
+    elif nearest_dist < 10:
+        gas_access = 'Good'
+    elif nearest_dist < 20:
+        gas_access = 'Fair'
+    else:
+        gas_access = 'Limited'
+    
+    return {
+        'pipelines': result,
+        'count': len(result),
+        'nearest_pipeline': {
+            'name': nearest.get('name', 'Unknown'),
+            'operator': nearest.get('operator', 'Unknown'),
+            'type': nearest.get('pipeline_type', 'Unknown'),
+            'diameter': nearest.get('diameter_inches', 0),
+            'capacity_mcf': nearest.get('capacity_mcf', 0),
+            'distance_miles': round(nearest_dist, 1),
+        },
+        'pipeline_types': types,
+        'gas_access': gas_access,
+        'radius_miles': radius_miles,
+    }
+
+
+# ─── Enhancement: Major Interstate Pipeline Proximity ────────────────────────
+def find_major_pipelines(lat, lng, radius_miles=50):
+    """
+    Find major interstate gas pipelines from discovered_pipelines table.
+    These are the big 31 major trunk lines with capacity data (MDth/d).
+    """
+    deg_lat = radius_miles / 69.0
+    deg_lng = radius_miles / (69.0 * max(0.1, abs(math.cos(math.radians(lat)))))
+    
+    query = """
+        SELECT 
+            name,
+            operator,
+            pipeline_type,
+            commodity,
+            COALESCE(capacity_mdth, 0) as capacity_mdth,
+            states_served,
+            lat, lng,
+            (
+                3959 * acos(
+                    LEAST(1.0, GREATEST(-1.0,
+                        cos(radians(%s)) * cos(radians(lat)) *
+                        cos(radians(lng) - radians(%s)) +
+                        sin(radians(%s)) * sin(radians(lat))
+                    ))
+                )
+            ) as distance_miles
+        FROM discovered_pipelines
+        WHERE lat IS NOT NULL AND lng IS NOT NULL
+          AND lat BETWEEN %s AND %s
+          AND lng BETWEEN %s AND %s
+        ORDER BY distance_miles ASC
+        LIMIT 5;
+    """
+    result = execute_query(query, (
+        lat, lng, lat,
+        lat - deg_lat, lat + deg_lat,
+        lng - deg_lng, lng + deg_lng
+    ))
+    
+    if not result:
+        return {'major_pipelines': [], 'count': 0}
+    
+    return {
+        'major_pipelines': [{
+            'name': p.get('name', 'Unknown'),
+            'operator': p.get('operator', 'Unknown'),
+            'capacity_mdth_per_day': p.get('capacity_mdth', 0),
+            'states_served': p.get('states_served', ''),
+            'distance_miles': round(p.get('distance_miles', 0), 1),
+        } for p in result],
+        'count': len(result),
+    }
+
+
+# ─── Enhancement: DC Capacity Pipeline (Planned/Under Construction) ─────────
+def get_capacity_pipeline_nearby(lat, lng, state=None, market=None):
+    """
+    Get data center capacity pipeline projects near the site.
+    Shows what's being built — indicates market growth and demand signal.
+    Uses capacity_pipeline table (191 projects, 184GW+).
+    """
+    # Try market match first, then region/state
+    results = None
+    
+    if market:
+        query = """
+            SELECT operator, market, capacity_mw, phase, status,
+                   announcement_date, completion_date, notes, confidence_label
+            FROM capacity_pipeline
+            WHERE LOWER(market) LIKE LOWER(%s)
+            ORDER BY capacity_mw DESC
+            LIMIT 10;
+        """
+        results = execute_query(query, (f'%{market}%',))
+    
+    if (not results or len(results) == 0) and state:
+        query = """
+            SELECT operator, market, capacity_mw, phase, status,
+                   announcement_date, completion_date, notes, confidence_label
+            FROM capacity_pipeline
+            WHERE LOWER(market) LIKE LOWER(%s)
+               OR LOWER(region) LIKE LOWER(%s)
+            ORDER BY capacity_mw DESC
+            LIMIT 10;
+        """
+        results = execute_query(query, (f'%{state}%', f'%{state}%'))
+    
+    if not results:
+        # Fallback: get top projects regardless of location
+        query = """
+            SELECT operator, market, capacity_mw, phase, status,
+                   announcement_date, completion_date, notes, confidence_label
+            FROM capacity_pipeline
+            WHERE market != 'Unknown'
+            ORDER BY capacity_mw DESC
+            LIMIT 5;
+        """
+        results = execute_query(query)
+    
+    if not results:
+        return {'projects': [], 'total_pipeline_mw': 0, 'project_count': 0}
+    
+    total_mw = sum(p.get('capacity_mw', 0) for p in results)
+    
+    # Phase breakdown
+    phases = {}
+    for p in results:
+        ph = p.get('phase', 'Unknown')
+        if ph not in phases:
+            phases[ph] = {'count': 0, 'mw': 0}
+        phases[ph]['count'] += 1
+        phases[ph]['mw'] += p.get('capacity_mw', 0)
+    
+    return {
+        'projects': [{
+            'operator': p.get('operator', 'Unknown'),
+            'market': p.get('market', 'Unknown'),
+            'capacity_mw': int(p.get('capacity_mw', 0)),
+            'phase': p.get('phase', 'Unknown'),
+            'status': p.get('status', 'Unknown'),
+            'completion_date': p.get('completion_date', ''),
+            'confidence': p.get('confidence_label', 'low'),
+        } for p in results],
+        'total_pipeline_mw': int(total_mw),
+        'project_count': len(results),
+        'phase_breakdown': phases,
+        'demand_signal': 'Very Strong' if total_mw > 500 else 'Strong' if total_mw > 100 else 'Moderate' if total_mw > 0 else 'Low',
+    }
+
+
+# ─── Enhancement: Reverse Geocode for Map Clicks ────────────────────────────
+def reverse_geocode(lat, lng):
+    """Reverse geocode lat/lng to get address, state, county."""
+    try:
+        import requests
+        url = "https://nominatim.openstreetmap.org/reverse"
+        params = {
+            'lat': lat,
+            'lon': lng,
+            'format': 'json',
+            'addressdetails': 1,
+            'zoom': 14,
+        }
+        headers = {'User-Agent': 'DCHub-SitePlanner/1.0 (jaz@dchub.cloud)'}
+        resp = requests.get(url, params=params, headers=headers, timeout=8)
+        data = resp.json()
+        
+        if data and 'address' in data:
+            addr = data['address']
+            return {
+                'display_name': data.get('display_name', ''),
+                'state': addr.get('state', ''),
+                'state_code': addr.get('ISO3166-2-lvl4', '').replace('US-', ''),
+                'county': addr.get('county', ''),
+                'city': addr.get('city') or addr.get('town') or addr.get('village', ''),
+            }
+    except Exception as e:
+        logger.warning(f"Reverse geocode failed: {e}")
+    
+    return None
+
+
 # ─── Geocoding Helper ────────────────────────────────────────────────────────
 def geocode_address(address):
     """
@@ -1106,6 +1357,14 @@ def register_site_planner_routes(app):
         if not lat or not lng:
             return jsonify({'success': False, 'error': 'lat/lng or address required'}), 400
         
+        # Reverse geocode if we have coords but no address (map click)
+        if (not address or address == '') and lat and lng:
+            rev = reverse_geocode(lat, lng)
+            if rev:
+                address = rev.get('display_name', f'{lat:.4f}, {lng:.4f}')
+                if not state:
+                    state = rev.get('state_code', '')
+        
         try:
             # Phase 1: Proximity Analysis
             substations = find_nearest_substations(lat, lng, limit=5)
@@ -1149,6 +1408,15 @@ def register_site_planner_routes(app):
             power_pricing = get_power_pricing(iso.get('name', 'SERC'))
             water = assess_water_risk(state)
             
+            # Gas & Midstream Infrastructure
+            gas = find_nearby_gas_pipelines(lat, lng)
+            major_pipes = find_major_pipelines(lat, lng)
+            
+            # DC Capacity Pipeline (what's being built nearby)
+            # Try to extract city/market for better matching
+            city_market = address.split(',')[0] if address else ''
+            capacity = get_capacity_pipeline_nearby(lat, lng, state=state, market=city_market)
+            
             # Compute composite score
             scoring = compute_suitability_score(substations, transmission, iso, env, congestion)
             
@@ -1174,13 +1442,18 @@ def register_site_planner_routes(app):
                     'fiber_connectivity': fiber,
                     'power_pricing': power_pricing,
                     'water_risk': water,
+                    'gas_infrastructure': gas,
+                    'major_pipelines': major_pipes,
+                    'capacity_pipeline': capacity,
                     'suitability_score': scoring,
                 },
                 'meta': {
                     'elapsed_seconds': elapsed,
                     'timestamp': datetime.utcnow().isoformat(),
-                    'version': 'v1.1',
-                    'data_sources': ['HIFLD', 'FEMA', 'FWS', 'NWI', 'ISO Queue Estimates', 'DC Hub Facilities DB', 'EIA Power Pricing'],
+                    'version': 'v1.2',
+                    'data_sources': ['HIFLD', 'FEMA', 'FWS', 'NWI', 'ISO Queue Estimates',
+                                     'DC Hub Facilities DB', 'EIA Power Pricing',
+                                     'Gas Pipelines (10K+)', 'Capacity Pipeline (191 projects)'],
                 },
             })
         
