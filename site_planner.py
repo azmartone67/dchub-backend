@@ -1,5 +1,5 @@
 """
-DC Hub — Site Planner: Grid Interconnection Analysis Engine
+DC Hub — Site Planner: Grid Interconnection Analysis Engine 2.0
 ============================================================
 Pro-only feature. Provides instant site analysis for grid interconnection.
 
