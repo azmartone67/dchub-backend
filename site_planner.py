@@ -80,11 +80,29 @@ DEFAULT_SCORING_WEIGHTS = {
         }
     },
     'congestion': {
-        'weight': 0.10,
+        'weight': 0.08,
         'thresholds': {
-            'low': {'max_density': 30, 'points': 10},
-            'moderate': {'max_density': 60, 'points': 6},
+            'low': {'max_density': 30, 'points': 8},
+            'moderate': {'max_density': 60, 'points': 5},
             'high': {'max_density': 100, 'points': 2},
+        }
+    },
+    'gas_access': {
+        'weight': 0.06,
+        'thresholds': {
+            'excellent': {'max_miles': 3, 'points': 6},
+            'good': {'max_miles': 10, 'points': 4},
+            'fair': {'max_miles': 20, 'points': 2},
+            'limited': {'max_miles': 999, 'points': 0},
+        }
+    },
+    'dc_corridor': {
+        'weight': 0.06,
+        'thresholds': {
+            'strong': {'min_count': 5, 'points': 6},
+            'moderate': {'min_count': 2, 'points': 4},
+            'weak': {'min_count': 1, 'points': 2},
+            'none': {'min_count': 0, 'points': 0},
         }
     },
 }
@@ -137,6 +155,18 @@ ISO_REGIONS = {
         'states': ['GA','AL','SC','FL'],
         'avg_queue_wait_years': 3.8,
         'queue_depth_gw': 210,
+        'queue_url': None,
+    },
+    'WECC': {
+        'states': ['AZ','NV','UT','CO','OR','WA','ID','HI'],
+        'avg_queue_wait_years': 3.6,
+        'queue_depth_gw': 320,
+        'queue_url': 'https://www.wecc.org/SystemStabilityPlanning/Pages/default.aspx',
+    },
+    'Non-ISO Southeast': {
+        'states': ['AK'],
+        'avg_queue_wait_years': 2.5,
+        'queue_depth_gw': 10,
         'queue_url': None,
     },
 }
@@ -703,11 +733,21 @@ def find_nearby_facilities(lat, lng, radius_miles=25, limit=10):
         lat, lng, lat,
         lat - deg_lat, lat + deg_lat,
         lng - deg_lng, lng + deg_lng,
-        limit
+        limit * 3  # Fetch extra to compensate for dedup
     ))
     
     if not result:
         return {'facilities': [], 'count': 0, 'total_power_mw': 0, 'radius_miles': radius_miles}
+    
+    # Deduplicate by name (keep nearest/first occurrence)
+    seen = set()
+    unique = []
+    for f in result:
+        name_key = f.get('name', '').lower().strip()
+        if name_key and name_key not in seen and len(unique) < limit:
+            seen.add(name_key)
+            unique.append(f)
+    result = unique
     
     total_mw = sum(f.get('power_mw', 0) for f in result)
     
@@ -810,12 +850,23 @@ def get_power_pricing(iso_name):
 # ─── Enhancement: Water Availability Risk ───────────────────────────────────
 # State-level water stress indicators (simplified from WRI Aqueduct data)
 WATER_STRESS_BY_STATE = {
+    # High stress
     'CA': 'High', 'AZ': 'High', 'NV': 'High', 'NM': 'High', 'UT': 'High',
-    'TX': 'Moderate-High', 'CO': 'Moderate-High', 'OK': 'Moderate',
-    'GA': 'Moderate', 'FL': 'Moderate', 'SC': 'Moderate',
+    # Moderate-High
+    'TX': 'Moderate-High', 'CO': 'Moderate-High', 'OK': 'Moderate-High', 'KS': 'Moderate-High',
+    # Moderate
+    'GA': 'Moderate', 'FL': 'Moderate', 'SC': 'Moderate', 'NE': 'Moderate',
+    'MT': 'Moderate', 'ID': 'Moderate', 'WY': 'Moderate', 'HI': 'Moderate',
+    # Low-Moderate
+    'NC': 'Low-Moderate', 'TN': 'Low-Moderate', 'AL': 'Low-Moderate', 'MS': 'Low-Moderate',
+    'AR': 'Low-Moderate', 'LA': 'Low-Moderate', 'MO': 'Low-Moderate', 'ND': 'Low-Moderate',
+    'SD': 'Low-Moderate',
+    # Low
     'VA': 'Low', 'OH': 'Low', 'PA': 'Low', 'NY': 'Low', 'IL': 'Low',
-    'WI': 'Low', 'MN': 'Low', 'WA': 'Low', 'OR': 'Low',
-    'NC': 'Low-Moderate', 'TN': 'Low-Moderate', 'IN': 'Low',
+    'WI': 'Low', 'MN': 'Low', 'WA': 'Low', 'OR': 'Low', 'IN': 'Low',
+    'MI': 'Low', 'IA': 'Low', 'KY': 'Low', 'WV': 'Low', 'MD': 'Low',
+    'DE': 'Low', 'NJ': 'Low', 'CT': 'Low', 'RI': 'Low', 'MA': 'Low',
+    'NH': 'Low', 'VT': 'Low', 'ME': 'Low', 'AK': 'Low', 'DC': 'Low',
 }
 
 def assess_water_risk(state_code):
@@ -910,10 +961,11 @@ def query_hifld_substations_live(lat, lng, radius_miles=25):
     return []
 
 
-def compute_suitability_score(substations, transmission, iso, env, congestion, weights=None):
+def compute_suitability_score(substations, transmission, iso, env, congestion, gas=None, nearby_dcs=None, weights=None):
     """
     Compute 0-100 Interconnection Suitability Score.
     Uses configurable weights so we can tune without redeploying.
+    v2.0: Now includes gas access and DC corridor scoring.
     """
     w = weights or DEFAULT_SCORING_WEIGHTS
     score = 0
@@ -954,7 +1006,7 @@ def compute_suitability_score(substations, transmission, iso, env, congestion, w
     if transmission:
         tx_dist = transmission.get('distance_miles', 999)
         if isinstance(tx_dist, str):
-            tx_dist = 999  # fallback for live query responses
+            tx_dist = 999
         for tier_name, tier in w['transmission_proximity']['thresholds'].items():
             if tx_dist <= tier['max_miles']:
                 points = tier['points']
@@ -982,11 +1034,31 @@ def compute_suitability_score(substations, transmission, iso, env, congestion, w
                 breakdown['congestion'] = {'points': points, 'tier': tier_name, 'value': congestion.get('level', 'Unknown')}
                 break
     
+    # 7. Gas access
+    if gas:
+        gas_dist = (gas.get('nearest_pipeline', {}) or {}).get('distance_miles', 999)
+        for tier_name, tier in w['gas_access']['thresholds'].items():
+            if gas_dist <= tier['max_miles']:
+                points = tier['points']
+                score += points
+                breakdown['gas_access'] = {'points': points, 'tier': tier_name, 'value': f"{gas_dist:.1f} mi"}
+                break
+    
+    # 8. DC corridor strength
+    if nearby_dcs:
+        dc_count = nearby_dcs.get('count', 0)
+        for tier_name, tier in w['dc_corridor']['thresholds'].items():
+            if dc_count >= tier['min_count']:
+                points = tier['points']
+                score += points
+                breakdown['dc_corridor'] = {'points': points, 'tier': tier_name, 'value': f"{dc_count} DCs"}
+                break
+    
     return {
         'score': min(100, score),
         'max_possible': 100,
         'breakdown': breakdown,
-        'weights_version': 'v1.0',
+        'weights_version': 'v2.0',
     }
 
 
@@ -1417,8 +1489,8 @@ def register_site_planner_routes(app):
             city_market = address.split(',')[0] if address else ''
             capacity = get_capacity_pipeline_nearby(lat, lng, state=state, market=city_market)
             
-            # Compute composite score
-            scoring = compute_suitability_score(substations, transmission, iso, env, congestion)
+            # Compute composite score (v2.0 — includes gas + DC corridor)
+            scoring = compute_suitability_score(substations, transmission, iso, env, congestion, gas=gas, nearby_dcs=nearby_dcs)
             
             elapsed = round(time.time() - start_time, 2)
             
@@ -1516,9 +1588,10 @@ def register_site_planner_routes(app):
             congestion = estimate_congestion(lat, lng)
             gen_mix = get_generation_mix(lat, lng)
             nearby_dcs = find_nearby_facilities(lat, lng)
+            gas = find_nearby_gas_pipelines(lat, lng)
             power_pricing = get_power_pricing(iso.get('name', 'SERC'))
             water = assess_water_risk(state_code)
-            scoring = compute_suitability_score(subs, tx, iso, env, congestion)
+            scoring = compute_suitability_score(subs, tx, iso, env, congestion, gas=gas, nearby_dcs=nearby_dcs)
             
             results.append({
                 'address': address,
