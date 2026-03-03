@@ -196,24 +196,21 @@ def find_nearest_substations(lat, lng, limit=5, max_distance_miles=25):
         SELECT 
             name,
             state,
-            COALESCE(max_volt, min_volt, 0) as voltage_kv,
-            owner,
-            status,
-            latitude as lat,
-            longitude as lng,
-            -- Distance in miles (ST_Distance returns meters for geography)
+            COALESCE(voltage_kv, 0) as voltage_kv,
+            operator,
+            lat,
+            lng,
             ST_Distance(
-                ST_SetSRID(ST_MakePoint(longitude, latitude), 4326)::geography,
+                ST_SetSRID(ST_MakePoint(lng, lat), 4326)::geography,
                 ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography
             ) / 1609.34 as distance_miles
         FROM substations
-        WHERE latitude IS NOT NULL 
-          AND longitude IS NOT NULL
-          AND status IN ('IN SERVICE', 'In Service', 'Active', 'OP')
+        WHERE lat IS NOT NULL 
+          AND lng IS NOT NULL
           AND ST_DWithin(
-                ST_SetSRID(ST_MakePoint(longitude, latitude), 4326)::geography,
+                ST_SetSRID(ST_MakePoint(lng, lat), 4326)::geography,
                 ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography,
-                %s  -- distance in meters
+                %s
               )
         ORDER BY distance_miles ASC
         LIMIT %s;
@@ -232,22 +229,22 @@ def find_nearest_substations(lat, lng, limit=5, max_distance_miles=25):
         SELECT 
             name,
             state,
-            COALESCE(max_volt, min_volt, 0) as voltage_kv,
-            owner,
-            status,
-            latitude as lat,
-            longitude as lng,
+            COALESCE(voltage_kv, 0) as voltage_kv,
+            operator,
+            lat,
+            lng,
             (
                 3959 * acos(
-                    cos(radians(%s)) * cos(radians(latitude)) *
-                    cos(radians(longitude) - radians(%s)) +
-                    sin(radians(%s)) * sin(radians(latitude))
+                    LEAST(1.0, GREATEST(-1.0,
+                        cos(radians(%s)) * cos(radians(lat)) *
+                        cos(radians(lng) - radians(%s)) +
+                        sin(radians(%s)) * sin(radians(lat))
+                    ))
                 )
             ) as distance_miles
         FROM substations
-        WHERE latitude IS NOT NULL 
-          AND longitude IS NOT NULL
-          AND status IN ('IN SERVICE', 'In Service', 'Active', 'OP')
+        WHERE lat IS NOT NULL 
+          AND lng IS NOT NULL
         ORDER BY distance_miles ASC
         LIMIT %s;
     """
@@ -262,36 +259,35 @@ def find_nearest_substations(lat, lng, limit=5, max_distance_miles=25):
 
 def find_nearest_transmission(lat, lng, max_distance_miles=15):
     """
-    Find nearest transmission line segment.
-    Uses transmission_lines table from HIFLD.
+    Find nearest transmission line by matching nearby substations
+    to transmission line endpoints (sub_1/sub_2).
+    Falls back to HIFLD live API.
     """
-    # Point-to-line query if geometry column exists
-    # Fallback: use endpoint coordinates
+    # Match transmission lines via nearest substation names
     query = """
         SELECT 
-            sub_1 as line_name,
-            voltage as voltage_kv,
-            owner,
-            status,
-            shape_leng as length_miles,
-            -- Approximate distance using midpoint of line
+            t.sub_1 as line_name,
+            t.voltage_kv,
+            t.owner,
+            t.status,
+            t.volt_class,
+            s.name as matched_substation,
             (
                 3959 * acos(
-                    cos(radians(%s)) * cos(radians(
-                        CASE WHEN shape_leng > 0 THEN latitude ELSE 0 END
-                    )) *
-                    cos(radians(
-                        CASE WHEN shape_leng > 0 THEN longitude ELSE 0 END
-                    ) - radians(%s)) +
-                    sin(radians(%s)) * sin(radians(
-                        CASE WHEN shape_leng > 0 THEN latitude ELSE 0 END
+                    LEAST(1.0, GREATEST(-1.0,
+                        cos(radians(%s)) * cos(radians(s.lat)) *
+                        cos(radians(s.lng) - radians(%s)) +
+                        sin(radians(%s)) * sin(radians(s.lat))
                     ))
                 )
             ) as distance_miles
-        FROM transmission_lines
-        WHERE voltage IS NOT NULL
-          AND voltage > 0
-          AND status IN ('IN SERVICE', 'In Service', 'Active', 'OP')
+        FROM discovered_transmission_lines t
+        JOIN substations s ON (
+            LOWER(s.name) LIKE '%%' || LOWER(SPLIT_PART(t.sub_1, ' ', 1)) || '%%'
+        )
+        WHERE s.lat IS NOT NULL
+          AND t.voltage_kv IS NOT NULL
+          AND t.voltage_kv > 0
         ORDER BY distance_miles ASC
         LIMIT 1;
     """
@@ -300,7 +296,7 @@ def find_nearest_transmission(lat, lng, max_distance_miles=15):
     if result and len(result) > 0:
         return result[0]
 
-    # If no transmission_lines table, try HIFLD live query
+    # Fallback: direct HIFLD API query
     return _query_hifld_transmission_live(lat, lng)
 
 
@@ -432,12 +428,14 @@ def estimate_congestion(lat, lng, radius_miles=15):
     query = """
         SELECT COUNT(*) as sub_count
         FROM substations
-        WHERE latitude IS NOT NULL
+        WHERE lat IS NOT NULL
           AND (
             3959 * acos(
-                cos(radians(%s)) * cos(radians(latitude)) *
-                cos(radians(longitude) - radians(%s)) +
-                sin(radians(%s)) * sin(radians(latitude))
+                LEAST(1.0, GREATEST(-1.0,
+                    cos(radians(%s)) * cos(radians(lat)) *
+                    cos(radians(lng) - radians(%s)) +
+                    sin(radians(%s)) * sin(radians(lat))
+                ))
             )
           ) < %s;
     """
@@ -447,13 +445,15 @@ def estimate_congestion(lat, lng, radius_miles=15):
     # Also count power plants nearby
     plant_query = """
         SELECT COUNT(*) as plant_count, COALESCE(SUM(capacity_mw), 0) as total_mw
-        FROM power_plants
-        WHERE latitude IS NOT NULL
+        FROM discovered_power_plants
+        WHERE lat IS NOT NULL
           AND (
             3959 * acos(
-                cos(radians(%s)) * cos(radians(latitude)) *
-                cos(radians(longitude) - radians(%s)) +
-                sin(radians(%s)) * sin(radians(latitude))
+                LEAST(1.0, GREATEST(-1.0,
+                    cos(radians(%s)) * cos(radians(lat)) *
+                    cos(radians(lng) - radians(%s)) +
+                    sin(radians(%s)) * sin(radians(lat))
+                ))
             )
           ) < %s;
     """
@@ -596,16 +596,18 @@ def get_generation_mix(lat, lng, radius_miles=25):
     """Get generation mix within radius from power_plants table."""
     query = """
         SELECT 
-            COALESCE(fuel_type, prim_fuel, 'Unknown') as fuel,
-            SUM(COALESCE(capacity_mw, total_mw, 0)) as total_mw,
+            COALESCE(fuel_type, 'Unknown') as fuel,
+            SUM(COALESCE(capacity_mw, 0)) as total_mw,
             COUNT(*) as plant_count
-        FROM power_plants
-        WHERE latitude IS NOT NULL
+        FROM discovered_power_plants
+        WHERE lat IS NOT NULL
           AND (
             3959 * acos(
-                cos(radians(%s)) * cos(radians(latitude)) *
-                cos(radians(longitude) - radians(%s)) +
-                sin(radians(%s)) * sin(radians(latitude))
+                LEAST(1.0, GREATEST(-1.0,
+                    cos(radians(%s)) * cos(radians(lat)) *
+                    cos(radians(lng) - radians(%s)) +
+                    sin(radians(%s)) * sin(radians(lat))
+                ))
             )
           ) < %s
         GROUP BY fuel
