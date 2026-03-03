@@ -2084,6 +2084,20 @@ def _log_mcp_analytics(rpc_method, rpc_params, platform, client_name, duration_m
         except Exception as ac_err:
             logger.error(f"AUTO-CAPTURE FAILED: {ac_err}")
 
+@app.route('/api/v1/testimonials/test-capture', methods=['POST'])
+def test_auto_capture():
+    try:
+        with pg_connection() as pgconn:
+            pgc = pgconn.cursor()
+            pgc.execute("""INSERT INTO ai_testimonials 
+                (platform, agent_name, quote, context, query, category, source, approved, featured)
+                VALUES (%s, %s, %s, %s, %s, 'integration', 'auto', false, false)""",
+                ('test', 'Test Agent', 'Test auto-capture quote', 'MCP tool: test', '{}'))
+            pgconn.commit()
+        return jsonify({'success': True, 'message': 'Test capture inserted'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
 @app.route('/mcp', methods=['GET', 'POST', 'DELETE', 'OPTIONS'])
 @app.route('/mcp/', methods=['GET', 'POST', 'DELETE', 'OPTIONS'])
 def mcp_proxy():
