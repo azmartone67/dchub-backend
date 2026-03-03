@@ -16180,7 +16180,7 @@ def ai_cite():
 # ═══════════════════════════════════════════════════════════════
 
 @app.route('/api/v1/testimonials', methods=['GET'])
-def get_testimonials():
+def get_testimonials():  # v2 neon-backed
     """Public endpoint -- returns approved AI agent testimonials"""
     limit = request.args.get('limit', 50, type=int)
     category = request.args.get('category')
