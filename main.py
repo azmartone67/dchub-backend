@@ -1313,6 +1313,13 @@ except ImportError as e:
     logger.warning(f"  ⚠️ land_power_routes: {e}")
 
 try:
+    from site_planner import register_site_planner_routes
+    logger.info("  ✅ site_planner")
+except ImportError as e:
+    register_site_planner_routes = None
+    logger.warning(f"  ⚠️ site_planner: {e}")
+
+try:
     from discovery_pipeline import register_pipeline_routes, run_pipeline, init_pipeline_tables
     logger.info("  ✅ discovery_pipeline")
 except ImportError as e:
@@ -14953,7 +14960,11 @@ try:
     
     if register_permit_tracker:
         register_permit_tracker(app)
-        
+
+    if register_site_planner_routes:
+        register_site_planner_routes(app)
+        logger.info("✅ Site Planner registered (Pro-only)")
+
     logger.info("✅ Competitive Intelligence Suite registered")
 except Exception as e:
     logger.error(f"⚠️ Water routes registration failed: {e}")
