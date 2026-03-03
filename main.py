@@ -16187,7 +16187,7 @@ def get_testimonials():
     featured_only = request.args.get('featured', '').lower() == 'true'
 
     try:
-        conn = get_db()
+        conn = get_pg_connection()
         c = conn.cursor()
 
         query = "SELECT id, platform, agent_name, quote, context, query, category, featured, created_at FROM ai_testimonials WHERE approved = TRUE"
