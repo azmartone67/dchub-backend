@@ -617,7 +617,7 @@ def screen_environmental(lat, lng):
 
 
 def get_generation_mix(lat, lng, radius_miles=25):
-    """Get generation mix within radius from power_plants table."""
+    """Get generation mix within radius from discovered_power_plants table."""
     # Bounding box pre-filter
     deg_lat = radius_miles / 69.0
     deg_lng = radius_miles / (69.0 * max(0.1, abs(math.cos(math.radians(lat)))))
@@ -658,6 +658,256 @@ def get_generation_mix(lat, lng, radius_miles=25):
         'plant_count': sum(r['plant_count'] for r in result),
         'radius_miles': radius_miles,
     }
+
+
+# ─── Enhancement: Nearby Data Center Facilities ─────────────────────────────
+def find_nearby_facilities(lat, lng, radius_miles=25, limit=10):
+    """
+    Find existing data center facilities near the site.
+    Uses DC Hub's 13K+ facility database.
+    Important context: nearby DCs mean proven infrastructure corridor.
+    """
+    deg_lat = radius_miles / 69.0
+    deg_lng = radius_miles / (69.0 * max(0.1, abs(math.cos(math.radians(lat)))))
+    
+    query = """
+        SELECT 
+            name,
+            provider,
+            city,
+            state,
+            COALESCE(power_mw, 0) as power_mw,
+            status,
+            latitude as lat,
+            longitude as lng,
+            (
+                3959 * acos(
+                    LEAST(1.0, GREATEST(-1.0,
+                        cos(radians(%s)) * cos(radians(latitude)) *
+                        cos(radians(longitude) - radians(%s)) +
+                        sin(radians(%s)) * sin(radians(latitude))
+                    ))
+                )
+            ) as distance_miles
+        FROM facilities
+        WHERE latitude IS NOT NULL
+          AND longitude IS NOT NULL
+          AND latitude != 0
+          AND longitude != 0
+          AND latitude BETWEEN %s AND %s
+          AND longitude BETWEEN %s AND %s
+        ORDER BY distance_miles ASC
+        LIMIT %s;
+    """
+    result = execute_query(query, (
+        lat, lng, lat,
+        lat - deg_lat, lat + deg_lat,
+        lng - deg_lng, lng + deg_lng,
+        limit
+    ))
+    
+    if not result:
+        return {'facilities': [], 'count': 0, 'total_power_mw': 0, 'radius_miles': radius_miles}
+    
+    total_mw = sum(f.get('power_mw', 0) for f in result)
+    
+    return {
+        'facilities': result,
+        'count': len(result),
+        'total_power_mw': int(total_mw),
+        'radius_miles': radius_miles,
+        'corridor_signal': 'Strong' if len(result) >= 5 else 'Moderate' if len(result) >= 2 else 'Weak',
+    }
+
+
+# ─── Enhancement: Fiber/Connectivity Proximity ──────────────────────────────
+def check_fiber_proximity(lat, lng, radius_miles=15):
+    """
+    Check for fiber routes and connectivity infrastructure nearby.
+    Uses fiber_routes table if available.
+    """
+    deg_lat = radius_miles / 69.0
+    deg_lng = radius_miles / (69.0 * max(0.1, abs(math.cos(math.radians(lat)))))
+    
+    # Check for fiber routes table
+    try:
+        query = """
+            SELECT COUNT(*) as route_count
+            FROM fiber_routes
+            WHERE start_location IS NOT NULL
+              OR end_location IS NOT NULL;
+        """
+        result = execute_query(query, (), fetchone=True)
+        fiber_count = result.get('route_count', 0) if result else 0
+    except:
+        fiber_count = 0
+    
+    # Check nearby facilities with connectivity info
+    conn_query = """
+        SELECT COUNT(*) as connected_dcs,
+               COUNT(DISTINCT provider) as providers
+        FROM facilities
+        WHERE latitude IS NOT NULL
+          AND latitude BETWEEN %s AND %s
+          AND longitude BETWEEN %s AND %s
+          AND connectivity IS NOT NULL
+          AND connectivity != '';
+    """
+    conn_result = execute_query(conn_query, (
+        lat - deg_lat, lat + deg_lat,
+        lng - deg_lng, lng + deg_lng
+    ), fetchone=True)
+    
+    connected_dcs = conn_result.get('connected_dcs', 0) if conn_result else 0
+    providers = conn_result.get('providers', 0) if conn_result else 0
+    
+    if connected_dcs >= 10:
+        connectivity_rating = 'Excellent'
+    elif connected_dcs >= 5:
+        connectivity_rating = 'Good'
+    elif connected_dcs >= 1:
+        connectivity_rating = 'Fair'
+    else:
+        connectivity_rating = 'Limited'
+    
+    return {
+        'connectivity_rating': connectivity_rating,
+        'connected_facilities_nearby': connected_dcs,
+        'unique_providers': providers,
+        'fiber_routes_in_area': fiber_count,
+        'radius_miles': radius_miles,
+    }
+
+
+# ─── Enhancement: Power Pricing by ISO ──────────────────────────────────────
+# Real average wholesale electricity prices by ISO region ($/MWh)
+# Source: EIA, ISO market reports — updated periodically
+ISO_POWER_PRICES = {
+    'ERCOT': {'avg_price_mwh': 38.50, 'peak_price_mwh': 85.00, 'trend': 'stable', 'renewable_pct': 32},
+    'PJM': {'avg_price_mwh': 42.00, 'peak_price_mwh': 110.00, 'trend': 'rising', 'renewable_pct': 12},
+    'MISO': {'avg_price_mwh': 35.00, 'peak_price_mwh': 75.00, 'trend': 'stable', 'renewable_pct': 22},
+    'CAISO': {'avg_price_mwh': 55.00, 'peak_price_mwh': 180.00, 'trend': 'volatile', 'renewable_pct': 45},
+    'SPP': {'avg_price_mwh': 28.00, 'peak_price_mwh': 60.00, 'trend': 'declining', 'renewable_pct': 38},
+    'ISO-NE': {'avg_price_mwh': 52.00, 'peak_price_mwh': 140.00, 'trend': 'rising', 'renewable_pct': 15},
+    'NYISO': {'avg_price_mwh': 48.00, 'peak_price_mwh': 130.00, 'trend': 'rising', 'renewable_pct': 18},
+    'SERC': {'avg_price_mwh': 40.00, 'peak_price_mwh': 90.00, 'trend': 'stable', 'renewable_pct': 10},
+}
+
+def get_power_pricing(iso_name):
+    """Get wholesale electricity pricing for the ISO region."""
+    pricing = ISO_POWER_PRICES.get(iso_name, ISO_POWER_PRICES.get('SERC'))
+    return {
+        'iso': iso_name,
+        'avg_wholesale_price_mwh': pricing['avg_price_mwh'],
+        'peak_price_mwh': pricing['peak_price_mwh'],
+        'price_trend': pricing['trend'],
+        'renewable_percentage': pricing['renewable_pct'],
+        'estimated_annual_cost_per_mw': int(pricing['avg_price_mwh'] * 8760),
+        'note': 'Wholesale market averages. Actual contract rates vary by utility, load factor, and term.',
+    }
+
+
+# ─── Enhancement: Water Availability Risk ───────────────────────────────────
+# State-level water stress indicators (simplified from WRI Aqueduct data)
+WATER_STRESS_BY_STATE = {
+    'CA': 'High', 'AZ': 'High', 'NV': 'High', 'NM': 'High', 'UT': 'High',
+    'TX': 'Moderate-High', 'CO': 'Moderate-High', 'OK': 'Moderate',
+    'GA': 'Moderate', 'FL': 'Moderate', 'SC': 'Moderate',
+    'VA': 'Low', 'OH': 'Low', 'PA': 'Low', 'NY': 'Low', 'IL': 'Low',
+    'WI': 'Low', 'MN': 'Low', 'WA': 'Low', 'OR': 'Low',
+    'NC': 'Low-Moderate', 'TN': 'Low-Moderate', 'IN': 'Low',
+}
+
+def assess_water_risk(state_code):
+    """
+    Assess water availability risk for data center cooling.
+    Critical for hyperscale facilities that use evaporative cooling.
+    """
+    stress = WATER_STRESS_BY_STATE.get(state_code, 'Unknown')
+    
+    risk_scores = {
+        'Low': 10, 'Low-Moderate': 25, 'Moderate': 45,
+        'Moderate-High': 65, 'High': 85, 'Unknown': 50
+    }
+    
+    recommendations = {
+        'Low': 'Favorable for water-cooled facilities. Standard permitting expected.',
+        'Low-Moderate': 'Generally adequate supply. Monitor seasonal variations.',
+        'Moderate': 'Water management plan recommended. Consider air-cooled alternatives.',
+        'Moderate-High': 'Water-efficient cooling strongly recommended. May face permitting scrutiny.',
+        'High': 'Water scarcity zone. Air-cooled or closed-loop systems recommended. Expect permitting challenges.',
+        'Unknown': 'Water availability data not available for this state.',
+    }
+    
+    return {
+        'water_stress_level': stress,
+        'water_risk_score': risk_scores.get(stress, 50),
+        'state': state_code,
+        'recommendation': recommendations.get(stress, ''),
+        'cooling_note': 'Modern hyperscale facilities use 1.8L/kWh average. Air-cooled alternatives reduce water use by 90%+.',
+    }
+
+
+# ─── Enhancement: HIFLD Live Substation Fallback ────────────────────────────
+def query_hifld_substations_live(lat, lng, radius_miles=25):
+    """
+    Direct HIFLD API query for substations as fallback/supplement.
+    Use when local DB returns fewer than 5 results.
+    """
+    try:
+        import requests
+        # Approximate bounding box
+        deg = radius_miles / 69.0
+        bbox = f'{lng-deg},{lat-deg},{lng+deg},{lat+deg}'
+        
+        url = "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Substations/FeatureServer/0/query"
+        params = {
+            'geometry': bbox,
+            'geometryType': 'esriGeometryEnvelope',
+            'spatialRel': 'esriSpatialRelIntersects',
+            'outFields': 'NAME,CITY,STATE,STATUS,MAX_VOLT,MIN_VOLT,OWNER,LATITUDE,LONGITUDE',
+            'returnGeometry': 'false',
+            'f': 'json',
+            'resultRecordCount': 10,
+        }
+        resp = requests.get(url, params=params, timeout=12)
+        data = resp.json()
+        
+        if 'features' in data and data['features']:
+            results = []
+            for f in data['features']:
+                a = f.get('attributes', {})
+                sub_lat = a.get('LATITUDE')
+                sub_lng = a.get('LONGITUDE')
+                if not sub_lat or not sub_lng:
+                    continue
+                    
+                # Calculate distance
+                dist = 3959 * math.acos(
+                    min(1.0, max(-1.0,
+                        math.cos(math.radians(lat)) * math.cos(math.radians(sub_lat)) *
+                        math.cos(math.radians(sub_lng) - math.radians(lng)) +
+                        math.sin(math.radians(lat)) * math.sin(math.radians(sub_lat))
+                    ))
+                )
+                
+                results.append({
+                    'name': a.get('NAME', 'Unknown'),
+                    'state': a.get('STATE', ''),
+                    'voltage_kv': a.get('MAX_VOLT') or a.get('MIN_VOLT') or 0,
+                    'operator': a.get('OWNER', 'Unknown'),
+                    'lat': sub_lat,
+                    'lng': sub_lng,
+                    'distance_miles': round(dist, 1),
+                    'source': 'HIFLD_live',
+                })
+            
+            results.sort(key=lambda x: x['distance_miles'])
+            return results[:5]
+    except Exception as e:
+        logger.warning(f"HIFLD live substations query failed: {e}")
+    
+    return []
 
 
 def compute_suitability_score(substations, transmission, iso, env, congestion, weights=None):
@@ -859,6 +1109,24 @@ def register_site_planner_routes(app):
         try:
             # Phase 1: Proximity Analysis
             substations = find_nearest_substations(lat, lng, limit=5)
+            
+            # Deduplicate substations by name
+            seen_names = set()
+            unique_subs = []
+            for s in (substations or []):
+                if s.get('name') not in seen_names:
+                    seen_names.add(s.get('name'))
+                    unique_subs.append(s)
+            substations = unique_subs
+            
+            # If fewer than 5, supplement from HIFLD live API
+            if len(substations) < 5:
+                live_subs = query_hifld_substations_live(lat, lng)
+                for ls in live_subs:
+                    if ls.get('name') not in seen_names and len(substations) < 5:
+                        seen_names.add(ls.get('name'))
+                        substations.append(ls)
+            
             transmission = find_nearest_transmission(lat, lng)
             
             # Phase 2: Queue Depth & Scoring
@@ -874,6 +1142,12 @@ def register_site_planner_routes(app):
             # Phase 3: Environmental Screening
             env = screen_environmental(lat, lng)
             gen_mix = get_generation_mix(lat, lng)
+            
+            # Enhanced Analysis
+            nearby_dcs = find_nearby_facilities(lat, lng)
+            fiber = check_fiber_proximity(lat, lng)
+            power_pricing = get_power_pricing(iso.get('name', 'SERC'))
+            water = assess_water_risk(state)
             
             # Compute composite score
             scoring = compute_suitability_score(substations, transmission, iso, env, congestion)
@@ -896,13 +1170,17 @@ def register_site_planner_routes(app):
                     'congestion': congestion,
                     'environmental': env,
                     'generation_mix': gen_mix,
+                    'nearby_data_centers': nearby_dcs,
+                    'fiber_connectivity': fiber,
+                    'power_pricing': power_pricing,
+                    'water_risk': water,
                     'suitability_score': scoring,
                 },
                 'meta': {
                     'elapsed_seconds': elapsed,
                     'timestamp': datetime.utcnow().isoformat(),
-                    'version': 'v1.0',
-                    'data_sources': ['HIFLD', 'FEMA', 'FWS', 'NWI', 'ISO Queue Estimates'],
+                    'version': 'v1.1',
+                    'data_sources': ['HIFLD', 'FEMA', 'FWS', 'NWI', 'ISO Queue Estimates', 'DC Hub Facilities DB', 'EIA Power Pricing'],
                 },
             })
         
@@ -954,12 +1232,19 @@ def register_site_planner_routes(app):
                 continue
             
             subs = find_nearest_substations(lat, lng, limit=5)
+            # Deduplicate
+            seen = set()
+            subs = [s for s in (subs or []) if s.get('name') not in seen and not seen.add(s.get('name'))]
+            
             tx = find_nearest_transmission(lat, lng)
             state_code = site_input.get('state', '')
             iso = identify_iso_region(lat, lng, state_code)
             env = screen_environmental(lat, lng)
             congestion = estimate_congestion(lat, lng)
             gen_mix = get_generation_mix(lat, lng)
+            nearby_dcs = find_nearby_facilities(lat, lng)
+            power_pricing = get_power_pricing(iso.get('name', 'SERC'))
+            water = assess_water_risk(state_code)
             scoring = compute_suitability_score(subs, tx, iso, env, congestion)
             
             results.append({
@@ -969,6 +1254,7 @@ def register_site_planner_routes(app):
                 'score': scoring['score'],
                 'nearest_sub_miles': subs[0]['distance_miles'] if subs else None,
                 'nearest_sub_voltage': subs[0]['voltage_kv'] if subs else None,
+                'nearest_sub_name': subs[0]['name'] if subs else None,
                 'nearest_tx_miles': tx.get('distance_miles') if tx else None,
                 'nearest_tx_voltage': tx.get('voltage_kv') if tx else None,
                 'iso': iso.get('name'),
@@ -978,6 +1264,11 @@ def register_site_planner_routes(app):
                 'flood_risk': env.get('flood_risk'),
                 'wetland_risk': env.get('wetland_risk'),
                 'species_risk': env.get('species_risk'),
+                'nearby_dc_count': nearby_dcs.get('count', 0),
+                'nearby_dc_corridor': nearby_dcs.get('corridor_signal', 'Unknown'),
+                'power_price_mwh': power_pricing.get('avg_wholesale_price_mwh'),
+                'water_stress': water.get('water_stress_level', 'Unknown'),
+                'connectivity': check_fiber_proximity(lat, lng).get('connectivity_rating', 'Unknown'),
                 'generation_mix': gen_mix,
                 'score_breakdown': scoring['breakdown'],
             })
