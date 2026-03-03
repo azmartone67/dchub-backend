@@ -1,19 +1,19 @@
 {
-  "report_date": "2026-03-02",
-  "generated_at": "2026-03-02T21:57:10.927783",
+  "report_date": "2026-03-03",
+  "generated_at": "2026-03-03T08:09:23.744290",
   "summary": {
     "total_facilities": 11552,
     "total_providers": 3964,
     "countries_covered": 177,
     "total_power_mw": 73941.0,
-    "total_deals": 1033,
-    "total_deal_value_usd": 2167145500000.0
+    "total_deals": 1045,
+    "total_deal_value_usd": 2215146200000.0
   },
   "market_highlights": [
     "DC Hub tracks 11,552 data center facilities globally",
     "Coverage spans 177 countries with 3964 providers",
     "Combined capacity: 73,941 MW",
-    "M&A database: 1033 transactions worth $2167.1B+"
+    "M&A database: 1045 transactions worth $2215.1B+"
   ],
   "recent_deals": [
     {
@@ -89,54 +89,54 @@
   ],
   "recent_news": [
     {
-      "title": "<strong>US Mulls Capping Nvidia H200 Sales at 75,000 per Chinese Customer</strong>",
-      "source": "Bloomberg Tech",
-      "date": "2026-03-02T21:48:25"
+      "title": "US solar-plus-storage M&A heats up as AI data centers drive demand",
+      "source": "PV Magazine",
+      "date": "2026-03-03T07:45:27"
     },
     {
-      "title": "Nokia deploys Edge network solutions for Telef\u00f3nica",
-      "source": "Data Center Dynamics",
-      "date": "2026-03-02T21:26:18"
+      "title": "NVIDIA Expands AI Infrastructure with $4 Billion Optical Investment",
+      "source": "\uc870\uc120\uc77c\ubcf4",
+      "date": "2026-03-03T06:47:17"
     },
     {
-      "title": "News | Blackstone to launch publicly traded company for data center acquisitions",
-      "source": "CoStar",
-      "date": "2026-03-02T21:24:57"
-    },
-    {
-      "title": "Washington can\u2019t afford to wait on data center regulations",
-      "source": "Washington State Standard",
-      "date": "2026-03-02T21:07:19"
-    },
-    {
-      "title": "Popular prayer program becomes propaganda pusher after reported Israeli hack",
+      "title": "Gamers furious as Brit studio Cloud Imperium quietly admits to data breach",
       "source": "The Register DC",
-      "date": "2026-03-02T20:11:36"
+      "date": "2026-03-03T06:24:19"
     },
     {
-      "title": "NVIDIA: $2 Billion Investment In Coherent To Scale AI Data Center Infrastructure",
-      "source": "Pulse 2.0",
-      "date": "2026-03-02T19:47:56"
+      "title": "Nvidia Deepens AI Infrastructure With Big Optics Bets And AI RAN Push",
+      "source": "Yahoo Finance",
+      "date": "2026-03-03T06:12:00"
     },
     {
-      "title": "China Mobile EVP Li Huidi: AN L4 powering the IQ era",
-      "source": "Capacity Media",
-      "date": "2026-03-02T18:42:11"
+      "title": "Amazon confirms its UAE data centers were \u2018directly struck\u2019 by Iranian drones on Sunday",
+      "source": "The Times of Israel",
+      "date": "2026-03-03T05:26:52"
     },
     {
-      "title": "7 things to know about Illinois data centers",
-      "source": "Illinois Policy",
-      "date": "2026-03-02T18:35:24"
+      "title": "Expanding Opportunity: Penzance data center could provide a boost",
+      "source": "News and Sentinel",
+      "date": "2026-03-03T05:19:21"
     },
     {
-      "title": "Amazon Data Center Hit Amid Iran Tensions",
+      "title": "AWS data center in the United Arab Emirates affected after suspected attack",
+      "source": "igor\u00b4sLAB",
+      "date": "2026-03-03T05:00:00"
+    },
+    {
+      "title": "Drone Strikes Damage Amazon Data Centers in the UAE and Bahrain",
       "source": "Bloomberg Tech",
-      "date": "2026-03-02T18:24:26"
+      "date": "2026-03-03T04:21:40"
     },
     {
-      "title": "Nvidia to Invest $4B in Companies to Scale AI Infrastructure",
-      "source": "AI Business",
-      "date": "2026-03-02T18:22:34"
+      "title": "Fulton County commissioners approve one-year moratorium on data center construction",
+      "source": "WNDU",
+      "date": "2026-03-03T04:20:00"
+    },
+    {
+      "title": "It\u2019s lights out for WA Legislature\u2019s effort to regulate data centers",
+      "source": "Washington State Standard",
+      "date": "2026-03-03T03:17:06"
     }
   ],
   "data_sources": [
