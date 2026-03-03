@@ -1,19 +1,19 @@
 {
   "report_date": "2026-03-03",
-  "generated_at": "2026-03-03T08:09:23.744290",
+  "generated_at": "2026-03-03T18:39:54.571981",
   "summary": {
     "total_facilities": 11552,
     "total_providers": 3964,
     "countries_covered": 177,
     "total_power_mw": 73941.0,
-    "total_deals": 1045,
-    "total_deal_value_usd": 2215146200000.0
+    "total_deals": 1132,
+    "total_deal_value_usd": 2559151000000.0
   },
   "market_highlights": [
     "DC Hub tracks 11,552 data center facilities globally",
     "Coverage spans 177 countries with 3964 providers",
     "Combined capacity: 73,941 MW",
-    "M&A database: 1045 transactions worth $2215.1B+"
+    "M&A database: 1132 transactions worth $2559.2B+"
   ],
   "recent_deals": [
     {
@@ -89,54 +89,54 @@
   ],
   "recent_news": [
     {
-      "title": "US solar-plus-storage M&A heats up as AI data centers drive demand",
-      "source": "PV Magazine",
-      "date": "2026-03-03T07:45:27"
+      "title": "Stockland-EdgeConneX Australian data center partnership finalized",
+      "source": "Data Center Dynamics",
+      "date": "2026-03-03T13:00:06"
     },
     {
-      "title": "NVIDIA Expands AI Infrastructure with $4 Billion Optical Investment",
-      "source": "\uc870\uc120\uc77c\ubcf4",
-      "date": "2026-03-03T06:47:17"
+      "title": "Penzance targets 600MW data center campus in West Virginia",
+      "source": "Data Center Dynamics",
+      "date": "2026-03-03T13:00:04"
     },
     {
-      "title": "Gamers furious as Brit studio Cloud Imperium quietly admits to data breach",
-      "source": "The Register DC",
-      "date": "2026-03-03T06:24:19"
+      "title": "Amazon Cloud Unit's Data Centers In UAE, Bahrain Damaged In Drone Strikes",
+      "source": "Slashdot",
+      "date": "2026-03-03T13:00:00"
     },
     {
-      "title": "Nvidia Deepens AI Infrastructure With Big Optics Bets And AI RAN Push",
-      "source": "Yahoo Finance",
-      "date": "2026-03-03T06:12:00"
+      "title": "Today\u2019s data centers have a talent problem",
+      "source": "DevPro Journal",
+      "date": "2026-03-03T12:52:51"
     },
     {
-      "title": "Amazon confirms its UAE data centers were \u2018directly struck\u2019 by Iranian drones on Sunday",
-      "source": "The Times of Israel",
-      "date": "2026-03-03T05:26:52"
+      "title": "Optical interconnect startup Ayar Labs closes $500m funding round backed by Nvidia and AMD",
+      "source": "Data Center Dynamics",
+      "date": "2026-03-03T12:50:06"
     },
     {
-      "title": "Expanding Opportunity: Penzance data center could provide a boost",
-      "source": "News and Sentinel",
-      "date": "2026-03-03T05:19:21"
+      "title": "$5bn data center project in the works around Columbus, Georgia",
+      "source": "Data Center Dynamics",
+      "date": "2026-03-03T12:50:04"
     },
     {
-      "title": "AWS data center in the United Arab Emirates affected after suspected attack",
-      "source": "igor\u00b4sLAB",
-      "date": "2026-03-03T05:00:00"
+      "title": "OpenAI CEO updates \u2018opportunistic and sloppy\u2019 Pentagon AI deal",
+      "source": "Capacity Media",
+      "date": "2026-03-03T12:40:07"
     },
     {
-      "title": "Drone Strikes Damage Amazon Data Centers in the UAE and Bahrain",
-      "source": "Bloomberg Tech",
-      "date": "2026-03-03T04:21:40"
+      "title": "Samsung secures Open RAN deal with Rakuten Mobile in Japan",
+      "source": "Data Center Dynamics",
+      "date": "2026-03-03T12:34:37"
     },
     {
-      "title": "Fulton County commissioners approve one-year moratorium on data center construction",
-      "source": "WNDU",
-      "date": "2026-03-03T04:20:00"
+      "title": "Anthropic to sue Trump administration over security risk designation",
+      "source": "Data Center Dynamics",
+      "date": "2026-03-03T12:33:09"
     },
     {
-      "title": "It\u2019s lights out for WA Legislature\u2019s effort to regulate data centers",
-      "source": "Washington State Standard",
-      "date": "2026-03-03T03:17:06"
+      "title": "TransAlta, CPP, Brookfield ink MoU for 230MW Alberta data center project",
+      "source": "Data Center Dynamics",
+      "date": "2026-03-03T12:30:04"
     }
   ],
   "data_sources": [
