@@ -16268,7 +16268,7 @@ def add_testimonial():
         return jsonify({'success': False, 'error': 'Quote is required'}), 400
 
     try:
-        conn = get_db()
+        conn = get_pg_connection()
         c = conn.cursor()
         c.execute("""
             INSERT INTO ai_testimonials (platform, agent_name, quote, context, query, url, category, source, approved, approved_at)
@@ -16292,7 +16292,7 @@ def approve_testimonial(tid):
     featured = data.get('featured', False)
 
     try:
-        conn = get_db()
+        conn = get_pg_connection()
         c = conn.cursor()
         c.execute("""
             UPDATE ai_testimonials
@@ -16310,7 +16310,7 @@ def approve_testimonial(tid):
 def delete_testimonial(tid):
     """Admin: delete a testimonial"""
     try:
-        conn = get_db()
+        conn = get_pg_connection()
         c = conn.cursor()
         c.execute("DELETE FROM ai_testimonials WHERE id = %s", (tid,))
         conn.commit()
@@ -16324,7 +16324,7 @@ def delete_testimonial(tid):
 def testimonial_stats():
     """Stats for the testimonials page hero"""
     try:
-        conn = get_db()
+        conn = get_pg_connection()
         c = conn.cursor()
         c.execute("""
             SELECT
@@ -16364,7 +16364,7 @@ def seed_testimonials():
     ]
 
     try:
-        conn = get_db()
+        conn = get_pg_connection()
         c = conn.cursor()
         # Ensure table exists (PostgreSQL syntax)
         c.execute('''CREATE TABLE IF NOT EXISTS ai_testimonials (
