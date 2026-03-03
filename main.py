@@ -743,6 +743,14 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 
+# ChatGPT MCP Connector — CORS + Deep Research compatibility
+try:
+    from chatgpt_mcp_compat import patch_cors_for_chatgpt
+    patch_cors_for_chatgpt(app)
+    logger.info("🔓 ChatGPT CORS patch applied")
+except Exception as e:
+    print(f"ChatGPT CORS patch: ⚠️ {e}")
+
 # DISABLED: Old linkedin_scheduler replaced by linkedin_poster.py
 # integrate_linkedin_poster(app)
 
@@ -931,6 +939,14 @@ try:
     logger.info("🌐 MCP Gateway initialized")
 except Exception as e:
     logger.warning(f"Gateway not loaded: {e}")
+
+# ChatGPT Deep Research — register search & fetch tools
+try:
+    from chatgpt_mcp_compat import register_chatgpt_compat
+    register_chatgpt_compat(gateway if 'gateway' in dir() else app)
+    logger.info("🔍 ChatGPT search/fetch tools registered for Deep Research")
+except Exception as e:
+    logger.warning(f"ChatGPT compat not loaded: {e}")
 
 # =============================================================================
 # INSTANT HEALTH CHECK - Must respond within 1 second
