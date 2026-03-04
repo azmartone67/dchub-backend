@@ -1,5 +1,5 @@
 /**
- * DC Hub API Proxy Worker v3.8.6 — Discovery Facilities Fix
+ * DC Hub API Proxy Worker v3.8.7 — Server-Side Anon Session Enforcement
  * ================================================================
  *
  * v3.8.6 CHANGES (Mar 4 2026):
@@ -597,6 +597,168 @@ function trackRequest(request, pathname, ctx) {
   }).catch(() => {}));
 }
 
+// ============================================================
+// ANON SESSION — KV-backed free tier enforcement
+// ============================================================
+const ANON_TTL_SECS  = 60;          // free session duration
+const ANON_KV_TTL    = 86400;       // KV record lives 24h
+const ANON_COOKIE    = 'dchub_anon'; // cookie name
+const ANON_SECRET    = 'dchub2026'; // simple hmac secret — override via env var
+
+function anonKvKey(id) { return `anon:session:${id}`; }
+
+// Simple HMAC-less signature: sha256 not available in CF workers without SubtleCrypto
+// We use a signed token: base64(id) + '.' + base64(hmac-ish checksum)
+async function signId(id, secret) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const sig  = await crypto.subtle.sign('HMAC', key, enc.encode(id));
+  return id + '.' + btoa(String.fromCharCode(...new Uint8Array(sig))).replace(/[+/=]/g, c => ({ '+': '-', '/': '_', '=': '' }[c]));
+}
+
+async function verifyToken(token, secret) {
+  try {
+    const dot = token.lastIndexOf('.');
+    if (dot < 0) return null;
+    const id  = token.substring(0, dot);
+    const expected = await signId(id, secret);
+    return expected === token ? id : null;
+  } catch (e) { return null; }
+}
+
+function generateId() {
+  return crypto.randomUUID().replace(/-/g, '').substring(0, 24);
+}
+
+function parseCookies(header) {
+  const cookies = {};
+  (header || '').split(';').forEach(c => {
+    const [k, ...v] = c.trim().split('=');
+    if (k) cookies[k.trim()] = v.join('=');
+  });
+  return cookies;
+}
+
+// GET /api/anon-session/check — returns remaining seconds and lock state
+async function handleAnonCheck(request, env) {
+  const secret = env.ANON_SECRET || ANON_SECRET;
+  const cookies = parseCookies(request.headers.get('Cookie'));
+  const token = cookies[ANON_COOKIE];
+  const fp = new URL(request.url).searchParams.get('fp') || '';
+
+  if (!token) {
+    // No session yet — return full time remaining (init not called yet)
+    return jsonResponse({ remaining: ANON_TTL_SECS, locked: false, new_session: true });
+  }
+
+  const id = await verifyToken(token, secret);
+  if (!id) {
+    return jsonResponse({ remaining: ANON_TTL_SECS, locked: false, new_session: true });
+  }
+
+  const record = await env.DCHUB_KV.get(anonKvKey(id), 'json').catch(() => null);
+  if (!record) {
+    return jsonResponse({ remaining: ANON_TTL_SECS, locked: false, new_session: true });
+  }
+
+  if (record.locked) {
+    return jsonResponse({ remaining: 0, locked: true, reason: record.locked_reason || 'expired' });
+  }
+
+  const elapsed = Math.floor((Date.now() - record.start) / 1000);
+  const remaining = Math.max(0, ANON_TTL_SECS - elapsed);
+
+  // Auto-lock if elapsed on server side
+  if (remaining <= 0) {
+    record.locked = true;
+    record.locked_reason = 'timer';
+    await env.DCHUB_KV.put(anonKvKey(id), JSON.stringify(record), { expirationTtl: ANON_KV_TTL });
+    return jsonResponse({ remaining: 0, locked: true, reason: 'timer' });
+  }
+
+  return jsonResponse({ remaining, locked: false, layers: record.layers || 0 });
+}
+
+// POST /api/anon-session/init — creates session, sets cookie
+async function handleAnonInit(request, env) {
+  const secret = env.ANON_SECRET || ANON_SECRET;
+  const cookies = parseCookies(request.headers.get('Cookie'));
+  const existingToken = cookies[ANON_COOKIE];
+  const body = await request.json().catch(() => ({}));
+  const fp = body.fp || '';
+
+  // Check if existing valid session
+  if (existingToken) {
+    const id = await verifyToken(existingToken, secret);
+    if (id) {
+      const record = await env.DCHUB_KV.get(anonKvKey(id), 'json').catch(() => null);
+      if (record) {
+        if (record.locked) {
+          return jsonResponse({ remaining: 0, locked: true, reason: record.locked_reason || 'expired', session_id: id });
+        }
+        const elapsed = Math.floor((Date.now() - record.start) / 1000);
+        const remaining = Math.max(0, ANON_TTL_SECS - elapsed);
+        if (remaining > 0) {
+          return jsonResponse({ remaining, locked: false, session_id: id, layers: record.layers || 0 });
+        }
+        // Expired — lock it
+        record.locked = true; record.locked_reason = 'timer';
+        await env.DCHUB_KV.put(anonKvKey(id), JSON.stringify(record), { expirationTtl: ANON_KV_TTL });
+        return jsonResponse({ remaining: 0, locked: true, reason: 'timer', session_id: id });
+      }
+    }
+  }
+
+  // Check fingerprint — same device may already have an exhausted session
+  if (fp) {
+    const fpKey = `anon:fp:${fp}`;
+    const fpRecord = await env.DCHUB_KV.get(fpKey, 'json').catch(() => null);
+    if (fpRecord && fpRecord.locked) {
+      return jsonResponse({ remaining: 0, locked: true, reason: 'fingerprint_match' });
+    }
+  }
+
+  // Create new session
+  const id = generateId();
+  const token = await signId(id, secret);
+  const record = { start: Date.now(), fp, locked: false, layers: 0 };
+  await env.DCHUB_KV.put(anonKvKey(id), JSON.stringify(record), { expirationTtl: ANON_KV_TTL });
+
+  const resp = jsonResponse({ remaining: ANON_TTL_SECS, locked: false, session_id: id, layers: 0 });
+  resp.headers.set('Set-Cookie',
+    `${ANON_COOKIE}=${token}; Path=/; Max-Age=${ANON_KV_TTL}; SameSite=Lax; Secure`
+  );
+  return resp;
+}
+
+// POST /api/anon-session/lock — marks session locked
+async function handleAnonLock(request, env) {
+  const secret = env.ANON_SECRET || ANON_SECRET;
+  const cookies = parseCookies(request.headers.get('Cookie'));
+  const token = cookies[ANON_COOKIE];
+  const body = await request.json().catch(() => ({}));
+  const fp = body.fp || '';
+  const reason = body.reason || 'timer';
+
+  if (token) {
+    const id = await verifyToken(token, secret);
+    if (id) {
+      const record = await env.DCHUB_KV.get(anonKvKey(id), 'json').catch(() => ({}));
+      record.locked = true;
+      record.locked_reason = reason;
+      await env.DCHUB_KV.put(anonKvKey(id), JSON.stringify(record), { expirationTtl: ANON_KV_TTL });
+    }
+  }
+
+  // Also lock by fingerprint so incognito/other browsers on same device are blocked
+  if (fp) {
+    const fpKey = `anon:fp:${fp}`;
+    await env.DCHUB_KV.put(fpKey, JSON.stringify({ locked: true, reason, ts: Date.now() }), { expirationTtl: ANON_KV_TTL });
+  }
+
+  return jsonResponse({ success: true });
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -640,6 +802,23 @@ export default {
     }
 
     if (isTransparentProxy(pathname)) return transparentProxyWithFailover(request, pathname, url.search);
+
+    // ── Anon session endpoints ──────────────────────────────────
+    if (pathname === '/api/anon-session/init' && request.method === 'POST') {
+      const resp = await handleAnonInit(request, env);
+      addCORSHeaders(resp, request);
+      return resp;
+    }
+    if (pathname === '/api/anon-session/check' && request.method === 'GET') {
+      const resp = await handleAnonCheck(request, env);
+      addCORSHeaders(resp, request);
+      return resp;
+    }
+    if (pathname === '/api/anon-session/lock' && request.method === 'POST') {
+      const resp = await handleAnonLock(request, env);
+      addCORSHeaders(resp, request);
+      return resp;
+    }
 
     const cache = caches.default;
     const cacheKey = new Request(url.toString(), { method: 'GET' });
