@@ -11746,6 +11746,18 @@ def grok_integration():
                                mimetype='text/plain')
 
 @app.route('/dashboard')
+@app.route('/land-power')
+@app.route('/land-power.html')
+@app.route('/land-power-map')
+@app.route('/land-power-map.html')
+def land_power_page():
+    return send_from_directory('static', 'land-power.html')
+
+@app.route('/login')
+@app.route('/login.html')
+def login_page():
+    return send_from_directory('static', 'login.html')
+
 @app.route('/dashboard.html')
 def dashboard_page():
     return send_from_directory('static', 'dashboard.html')
