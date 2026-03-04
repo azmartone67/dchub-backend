@@ -793,6 +793,9 @@
         }
     </style>
 <script>
+// Page gate — require free account minimum, pro for full access
+window.DCHUB_PAGE_GATE = 'registered';
+
 // DC Hub Auth Sync — synchronously sets window.currentUser from localStorage
 (function() {
   var session = {};
