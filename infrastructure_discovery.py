@@ -19,36 +19,46 @@ DB_PATH = 'dc_nexus.db'
 
 
 def _safe_write(sql, params=None, retries=3):
-    """Write to PostgreSQL via db_utils (handles SQL translation)."""
+    """Write to PostgreSQL via db_utils. Rolls back on error to keep pool clean."""
     for attempt in range(retries):
+        conn = None
         try:
             conn = get_db()
-            try:
-                cursor = conn.cursor()
-                if params:
-                    cursor.execute(sql, params)
-                else:
-                    cursor.execute(sql)
-                conn.commit()
-                return cursor.rowcount
-            finally:
-                conn.close()
+            cursor = conn.cursor()
+            if params:
+                cursor.execute(sql, params)
+            else:
+                cursor.execute(sql)
+            conn.commit()
+            return cursor.rowcount
         except Exception as e:
+            if conn:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
             if attempt < retries - 1:
                 time.sleep(1.0 * (attempt + 1))
             else:
                 logger.warning(f"Infrastructure write failed after {retries} attempts: {e}")
                 return 0
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
     return 0
 
+
 def init_infrastructure_tables():
-    """Initialize tables for infrastructure data"""
+    """Initialize tables for infrastructure data — PostgreSQL compatible"""
     conn = get_db()
     cursor = conn.cursor()
-    
+
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS fiber_routes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             name TEXT,
             provider TEXT,
             route_type TEXT,
@@ -64,14 +74,14 @@ def init_infrastructure_tables():
             status TEXT DEFAULT 'active',
             source TEXT,
             source_id TEXT UNIQUE,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
         )
     ''')
-    
+
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS dc_properties (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             name TEXT,
             address TEXT,
             city TEXT,
@@ -93,14 +103,14 @@ def init_infrastructure_tables():
             status TEXT DEFAULT 'available',
             source TEXT,
             source_id TEXT UNIQUE,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
         )
     ''')
-    
+
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS construction_permits (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             permit_number TEXT,
             project_name TEXT,
             address TEXT,
@@ -121,14 +131,14 @@ def init_infrastructure_tables():
             status TEXT DEFAULT 'active',
             source TEXT,
             source_id TEXT UNIQUE,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
         )
     ''')
-    
+
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS substations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             name TEXT,
             operator TEXT,
             substation_type TEXT,
@@ -143,14 +153,14 @@ def init_infrastructure_tables():
             status TEXT DEFAULT 'active',
             source TEXT,
             source_id TEXT UNIQUE,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
         )
     ''')
-    
+
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS gas_pipelines (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             name TEXT,
             operator TEXT,
             pipeline_type TEXT,
@@ -164,28 +174,29 @@ def init_infrastructure_tables():
             country TEXT DEFAULT 'US',
             source TEXT,
             source_id TEXT UNIQUE,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
         )
     ''')
-    
+
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS linkedin_weekly_posts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             week_start DATE,
             week_end DATE,
             content TEXT,
             stats_snapshot TEXT,
-            posted_at TIMESTAMP,
+            posted_at TIMESTAMPTZ,
             post_id TEXT,
             engagement TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMPTZ DEFAULT NOW()
         )
     ''')
-    
+
     conn.commit()
     conn.close()
     logger.info("✅ Infrastructure tables initialized")
+
 
 DC_MARKETS = [
     {"name": "Northern Virginia", "lat": 39.0438, "lng": -77.4874, "state": "VA"},
@@ -216,7 +227,6 @@ HIFLD_APIS = {
     "power_plants": "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Power_Plants/FeatureServer/0",
 }
 
-# Gas pipeline sources — EIA (replaces dead HIFLD gas services)
 EIA_PIPELINE_APIS = {
     "natural_gas": "https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/Natural_Gas_Interstate_and_Intrastate_Pipelines_1/FeatureServer/0",
     "crude_oil": "https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/Crude_Oil_Trunk_Pipelines_1/FeatureServer/0",
@@ -286,47 +296,40 @@ def _query_hifld_paginated(api_url, where='1=1', max_total=2000, batch_size=1000
 
 class FiberRouteDiscovery:
     """Discover fiber routes from HIFLD transmission lines, PeeringDB, and OSM"""
-    
+
     PEERINGDB_API = "https://www.peeringdb.com/api"
     OVERPASS_API = "https://overpass-api.de/api/interpreter"
-    
+
     def __init__(self):
         self.new_routes = 0
         self._market_index = 0
-        
+
     def sync(self):
-        """Sync fiber routes from multiple live sources"""
         logger.info("🔌 Syncing fiber routes...")
         self.new_routes = 0
-        
         self._sync_hifld_transmission_lines()
         self._sync_peeringdb_exchanges()
         self._sync_osm_fiber_cables()
         self._sync_from_learned_apis()
-        
         logger.info(f"   ✅ Fiber routes: {self.new_routes} new")
         return self.new_routes
-    
+
     def _sync_hifld_transmission_lines(self):
-        """Pull transmission lines from HIFLD near DC markets (rotates 2 markets per cycle)"""
         markets = DC_MARKETS[self._market_index:self._market_index + 2]
         self._market_index = (self._market_index + 2) % len(DC_MARKETS)
-        
+
         for market in markets:
             try:
                 features = _query_hifld_nearby(
                     HIFLD_APIS['transmission_lines'],
                     market['lat'], market['lng'],
-                    radius_m=50000, max_records=100,
-                    return_geometry=False
+                    radius_m=50000, max_records=100, return_geometry=False
                 )
                 for feat in features:
                     attrs = feat.get('attributes', {})
-                    
                     voltage = attrs.get('VOLTAGE', 0) or 0
                     owner = attrs.get('OWNER', '') or attrs.get('OPERATOR', '') or 'Unknown'
                     line_id = attrs.get('ID', '') or attrs.get('OBJECTID', '')
-                    
                     route = {
                         "name": f"{owner} {voltage}kV Line - {market['name']}"[:200],
                         "provider": str(owner)[:100],
@@ -339,14 +342,12 @@ class FiberRouteDiscovery:
                         "source_id": f"hifld_tl_{line_id}"
                     }
                     self._save_route(route, source='hifld')
-                    
                 logger.info(f"   📡 HIFLD transmission {market['name']}: {len(features)} lines found")
                 time.sleep(1)
             except Exception as e:
                 logger.warning(f"   ⚠️ HIFLD transmission failed for {market['name']}: {e}")
 
     def _sync_peeringdb_exchanges(self):
-        """Get IX locations as fiber endpoints (limited batch)"""
         try:
             response = requests.get(f"{self.PEERINGDB_API}/ix?limit=100", timeout=15)
             if response.ok:
@@ -356,11 +357,9 @@ class FiberRouteDiscovery:
                 logger.info(f"   📡 PeeringDB IXs: {len(data[:100])} processed")
         except Exception as e:
             logger.warning(f"   ⚠️ PeeringDB IX sync failed: {e}")
-    
+
     def _sync_osm_fiber_cables(self):
-        """Get fiber/telecom cables from OSM in DC markets (rotates 3 per cycle)"""
         markets = DC_MARKETS[self._market_index:self._market_index + 3]
-        
         for market in markets:
             try:
                 query = f"""
@@ -380,11 +379,9 @@ class FiberRouteDiscovery:
                     for element in elements:
                         tags = element.get('tags', {})
                         center = element.get('center', {})
-                        name = tags.get('name', f"Telecom line near {market['name']}")
-                        operator = tags.get('operator', tags.get('owner', 'Unknown'))
                         route = {
-                            "name": name[:200],
-                            "provider": operator[:100],
+                            "name": tags.get('name', f"Telecom line near {market['name']}")[:200],
+                            "provider": tags.get('operator', tags.get('owner', 'Unknown'))[:100],
                             "type": "fiber",
                             "start": market['name'],
                             "end": market['name'],
@@ -393,14 +390,12 @@ class FiberRouteDiscovery:
                             "source_id": f"osm_fiber_{element.get('id', 0)}"
                         }
                         self._save_route(route, source='osm')
-                        
                 logger.info(f"   📡 OSM fiber {market['name']}: {len(elements)} cables found")
                 time.sleep(2)
             except Exception as e:
                 logger.warning(f"   ⚠️ OSM fiber failed for {market['name']}: {e}")
-    
+
     def _sync_from_learned_apis(self):
-        """Pull fiber data from auto-discovered APIs in learned_infrastructure"""
         try:
             conn = get_db()
             cursor = conn.cursor()
@@ -426,33 +421,34 @@ class FiberRouteDiscovery:
             conn.close()
         except Exception as e:
             logger.warning(f"   ⚠️ Learned API fiber sync failed: {e}")
-    
+
     def _save_fiber_endpoint(self, ix):
-        """Save IX as fiber endpoint"""
-        params = (
+        # FIX: INSERT OR IGNORE → ON CONFLICT DO NOTHING, ? → %s
+        rowcount = _safe_write('''
+            INSERT INTO fiber_routes
+            (name, provider, route_type, start_location, source, source_id)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT(source_id) DO NOTHING
+        ''', (
             ix.get('name', 'Unknown IX'),
-            'Internet Exchange',
-            'IX',
+            'Internet Exchange', 'IX',
             ix.get('city', 'Unknown'),
             'peeringdb',
             f"peeringdb_ix_{ix.get('id')}"
-        )
-        sql = '''INSERT OR IGNORE INTO fiber_routes 
-                (name, provider, route_type, start_location, source, source_id)
-                VALUES (?, ?, ?, ?, ?, ?)'''
-        rowcount = _safe_write(sql, params)
+        ))
         if rowcount and rowcount > 0:
             self.new_routes += 1
-    
+
     def _save_route(self, route, source='discovery'):
-        """Save a fiber route"""
         try:
             source_id = route.get('source_id', f"{route['provider']}_{route['name']}".replace(" ", "_").lower()[:100])
+            # FIX: INSERT OR IGNORE → ON CONFLICT DO NOTHING, ? → %s
             rowcount = _safe_write('''
-                INSERT OR IGNORE INTO fiber_routes 
-                (name, provider, route_type, start_location, end_location, 
+                INSERT INTO fiber_routes
+                (name, provider, route_type, start_location, end_location,
                  start_lat, start_lng, end_lat, end_lng, source, source_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT(source_id) DO NOTHING
             ''', (
                 route['name'][:200],
                 route.get('provider', 'Unknown')[:100],
@@ -474,30 +470,26 @@ class FiberRouteDiscovery:
 
 class DCPropertyDiscovery:
     """Discover data center properties from OSM, news, and learned APIs"""
-    
+
     OVERPASS_API = "https://overpass-api.de/api/interpreter"
-    
+
     def __init__(self):
         self.new_properties = 0
         self._market_index = 0
-    
+
     def sync(self):
-        """Sync DC properties from live sources"""
         logger.info("🏢 Syncing DC properties...")
         self.new_properties = 0
-        
         self._sync_osm_properties()
         self._sync_from_news()
         self._sync_from_learned_apis()
-        
         logger.info(f"   ✅ DC properties: {self.new_properties} new")
         return self.new_properties
-    
+
     def _sync_osm_properties(self):
-        """Find data center buildings from OpenStreetMap (rotates 3 markets per cycle)"""
         markets = DC_MARKETS[self._market_index:self._market_index + 3]
         self._market_index = (self._market_index + 3) % len(DC_MARKETS)
-        
+
         for market in markets:
             try:
                 query = f"""
@@ -534,23 +526,22 @@ class DCPropertyDiscovery:
                 time.sleep(2)
             except Exception as e:
                 logger.warning(f"   ⚠️ OSM property sync failed for {market['name']}: {e}")
-    
+
     def _sync_from_news(self):
-        """Extract property listings from news articles"""
         conn = get_db()
         cursor = conn.cursor()
-        
         keywords = ['for sale', 'listing', 'available', 'seeking buyer', 'on the market',
-                     'acquisition', 'campus', 'new facility', 'expansion']
+                    'acquisition', 'campus', 'new facility', 'expansion']
         for keyword in keywords:
             try:
+                # FIX: datetime('now') → NOW() - INTERVAL, ? → %s
                 cursor.execute('''
                     SELECT title, summary, companies, locations FROM announcements
-                    WHERE (title LIKE ? OR summary LIKE ?)
-                    AND discovered_at > datetime('now', '-30 days')
+                    WHERE (title ILIKE %s OR summary ILIKE %s)
+                    AND discovered_at::timestamptz > NOW() - INTERVAL '30 days'
                     LIMIT 20
                 ''', (f'%{keyword}%', f'%{keyword}%'))
-                
+
                 for row in cursor.fetchall():
                     title = (row['title'] or '').lower()
                     summary = (row['summary'] or '').lower()
@@ -565,18 +556,16 @@ class DCPropertyDiscovery:
                         self._save_property(prop, source='news')
             except Exception:
                 pass
-        
         conn.close()
-    
+
     def _sync_from_learned_apis(self):
-        """Pull property data from auto-discovered APIs"""
         try:
             conn = get_db()
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT name, location, metadata FROM learned_infrastructure
                 WHERE category IN ('other', 'environmental')
-                AND (name LIKE '%data center%' OR name LIKE '%datacenter%' OR name LIKE '%colocation%')
+                AND (name ILIKE '%data center%' OR name ILIKE '%datacenter%' OR name ILIKE '%colocation%')
                 ORDER BY id DESC LIMIT 100
             """)
             for row in cursor.fetchall():
@@ -596,15 +585,16 @@ class DCPropertyDiscovery:
             conn.close()
         except Exception as e:
             logger.warning(f"   ⚠️ Learned API property sync failed: {e}")
-    
+
     def _save_property(self, prop, source='discovery'):
-        """Save a DC property"""
         try:
             source_id = prop.get('source_id', f"{prop['name']}_{prop['city']}".replace(" ", "_").lower()[:100])
+            # FIX: INSERT OR IGNORE → ON CONFLICT DO NOTHING, ? → %s
             rowcount = _safe_write('''
-                INSERT OR IGNORE INTO dc_properties 
+                INSERT INTO dc_properties
                 (name, city, state, lat, lng, property_type, square_feet, power_capacity_mw, status, source, source_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT(source_id) DO NOTHING
             ''', (
                 prop['name'][:200],
                 prop.get('city', '')[:100],
@@ -626,30 +616,26 @@ class DCPropertyDiscovery:
 
 class ConstructionPermitDiscovery:
     """Discover construction permits from HIFLD power plants, OSM, and news"""
-    
+
     OVERPASS_API = "https://overpass-api.de/api/interpreter"
-    
+
     def __init__(self):
         self.new_permits = 0
         self._market_index = 0
-    
+
     def sync(self):
-        """Sync construction permits from live sources"""
         logger.info("🏗️ Syncing construction permits...")
         self.new_permits = 0
-        
         self._sync_hifld_power_plants()
         self._sync_osm_construction()
         self._sync_from_news()
-        
         logger.info(f"   ✅ Construction permits: {self.new_permits} new")
         return self.new_permits
-    
+
     def _sync_hifld_power_plants(self):
-        """Pull power plant data near DC markets from HIFLD (rotates 4 markets per cycle)"""
         markets = DC_MARKETS[self._market_index:self._market_index + 4]
         self._market_index = (self._market_index + 4) % len(DC_MARKETS)
-        
+
         for market in markets:
             try:
                 features = _query_hifld_nearby(
@@ -665,7 +651,7 @@ class ConstructionPermitDiscovery:
                     status = attrs.get('STATUS', attrs.get('OPERATING', 'unknown'))
                     operator = attrs.get('OPERATOR', attrs.get('UTILITY_NAME', ''))
                     plant_id = attrs.get('OBJECTID', attrs.get('ID', ''))
-                    
+
                     permit = {
                         "name": f"{name} ({capacity:.0f}MW)" if capacity else name,
                         "city": market['name'],
@@ -678,16 +664,15 @@ class ConstructionPermitDiscovery:
                         "source_id": f"hifld_pp_{plant_id}"
                     }
                     self._save_permit(permit, source='hifld')
-                    
+
                 logger.info(f"   🏗️ HIFLD power plants {market['name']}: {len(features)} found")
                 time.sleep(1)
             except Exception as e:
                 logger.warning(f"   ⚠️ HIFLD power plants failed for {market['name']}: {e}")
-    
+
     def _sync_osm_construction(self):
-        """Find data center construction sites from OSM (rotates 3 markets per cycle)"""
         markets = DC_MARKETS[self._market_index:self._market_index + 3]
-        
+
         for market in markets:
             try:
                 query = f"""
@@ -721,24 +706,23 @@ class ConstructionPermitDiscovery:
                 time.sleep(2)
             except Exception as e:
                 logger.warning(f"   ⚠️ OSM construction sync failed for {market['name']}: {e}")
-    
+
     def _sync_from_news(self):
-        """Extract construction news from articles - expanded keyword set"""
         conn = get_db()
         cursor = conn.cursor()
-        
         keywords = ['construction', 'groundbreaking', 'breaking ground', 'new campus',
-                     'expansion', 'building permit', 'megawatt', 'hyperscale',
-                     'development', 'approved', 'planning commission', 'zoning']
+                    'expansion', 'building permit', 'megawatt', 'hyperscale',
+                    'development', 'approved', 'planning commission', 'zoning']
         for keyword in keywords:
             try:
+                # FIX: datetime('now') → NOW() - INTERVAL, LIKE → ILIKE, ? → %s
                 cursor.execute('''
                     SELECT title, summary, companies, locations FROM announcements
-                    WHERE (title LIKE ? OR summary LIKE ?)
-                    AND discovered_at > datetime('now', '-30 days')
+                    WHERE (title ILIKE %s OR summary ILIKE %s)
+                    AND discovered_at::timestamptz > NOW() - INTERVAL '30 days'
                     LIMIT 20
                 ''', (f'%{keyword}%', f'%{keyword}%'))
-                
+
                 for row in cursor.fetchall():
                     title = (row['title'] or '').lower()
                     summary = (row['summary'] or '').lower()
@@ -753,17 +737,17 @@ class ConstructionPermitDiscovery:
                         self._save_permit(permit, source='news')
             except Exception:
                 pass
-        
         conn.close()
-    
+
     def _save_permit(self, permit, source='discovery'):
-        """Save a construction permit"""
         try:
             source_id = permit.get('source_id', f"{permit['name']}_{permit['city']}".replace(" ", "_").lower()[:100])
+            # FIX: INSERT OR IGNORE → ON CONFLICT DO NOTHING, ? → %s
             rowcount = _safe_write('''
-                INSERT OR IGNORE INTO construction_permits 
+                INSERT INTO construction_permits
                 (project_name, city, state, square_feet, estimated_power_mw, owner, status, lat, lng, source, source_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT(source_id) DO NOTHING
             ''', (
                 permit['name'][:200],
                 permit.get('city', '')[:100],
@@ -784,31 +768,27 @@ class ConstructionPermitDiscovery:
 
 
 class SubstationDiscovery:
-    """Discover substations from HIFLD (70k+ US substations), OSM, and learned APIs"""
-    
+    """Discover substations from HIFLD, OSM, and learned APIs"""
+
     OVERPASS_API = "https://overpass-api.de/api/interpreter"
-    
+
     def __init__(self):
         self.new_substations = 0
         self._market_index = 0
-    
+
     def sync(self):
-        """Sync substations from HIFLD and OSM"""
         logger.info("⚡ Syncing substations...")
         self.new_substations = 0
-        
         self._sync_hifld_substations()
         self._sync_osm_substations()
         self._sync_from_learned_apis()
-        
         logger.info(f"   ✅ Substations: {self.new_substations} new")
         return self.new_substations
-    
+
     def _sync_hifld_substations(self):
-        """Pull substations from HIFLD ArcGIS near DC markets (rotates 3 markets per cycle)"""
         markets = DC_MARKETS[self._market_index:self._market_index + 3]
         self._market_index = (self._market_index + 3) % len(DC_MARKETS)
-        
+
         for market in markets:
             try:
                 features = _query_hifld_nearby(
@@ -819,7 +799,6 @@ class SubstationDiscovery:
                 for feat in features:
                     attrs = feat.get('attributes', {})
                     geom = feat.get('geometry', {})
-                    
                     name = attrs.get('NAME', attrs.get('SUBSTATION', 'Unknown'))
                     operator = attrs.get('OWNER', attrs.get('OPERATOR', attrs.get('UTILITY', '')))
                     voltage = attrs.get('MAX_VOLT', attrs.get('MIN_VOLT', 0)) or 0
@@ -829,7 +808,7 @@ class SubstationDiscovery:
                     sub_id = attrs.get('OBJECTID', attrs.get('ID', ''))
                     state = attrs.get('STATE', attrs.get('STUSPS', market['state']))
                     city = attrs.get('CITY', attrs.get('COUNTY', market['name']))
-                    
+
                     sub = {
                         "name": str(name)[:200],
                         "operator": str(operator)[:100] if operator else 'Unknown',
@@ -842,17 +821,16 @@ class SubstationDiscovery:
                         "source_id": f"hifld_sub_{sub_id}"
                     }
                     self._save_substation(sub, source='hifld')
-                    
+
                 logger.info(f"   ⚡ HIFLD substations {market['name']}: {len(features)} found")
                 time.sleep(1)
             except Exception as e:
                 logger.warning(f"   ⚠️ HIFLD substations failed for {market['name']}: {e}")
-    
+
     def _sync_osm_substations(self):
-        """Get substations from OSM in DC markets (rotates 4 markets per cycle)"""
         start = self._market_index
         markets = DC_MARKETS[start:start + 4]
-        
+
         for market in markets:
             try:
                 query = f"""
@@ -871,7 +849,6 @@ class SubstationDiscovery:
                         tags = element.get('tags', {})
                         lat = element.get('lat') or element.get('center', {}).get('lat')
                         lng = element.get('lon') or element.get('center', {}).get('lon')
-                        
                         if lat and lng:
                             sub = {
                                 "name": tags.get('name', f"Substation near {market['name']}")[:200],
@@ -888,9 +865,8 @@ class SubstationDiscovery:
                 time.sleep(2)
             except Exception as e:
                 logger.warning(f"   ⚠️ OSM substation sync failed for {market['name']}: {e}")
-    
+
     def _sync_from_learned_apis(self):
-        """Pull substation/power data from auto-discovered APIs"""
         try:
             conn = get_db()
             cursor = conn.cursor()
@@ -922,9 +898,8 @@ class SubstationDiscovery:
             conn.close()
         except Exception as e:
             logger.warning(f"   ⚠️ Learned API substation sync failed: {e}")
-    
+
     def _parse_voltage(self, voltage_str):
-        """Parse voltage string to kV"""
         try:
             if not voltage_str:
                 return 0
@@ -937,15 +912,16 @@ class SubstationDiscovery:
             return voltage
         except:
             return 0
-    
+
     def _save_substation(self, sub, source='discovery'):
-        """Save a substation"""
         try:
             source_id = sub.get('source_id', f"{sub['name']}_{sub.get('lat', 0):.4f}_{sub.get('lng', 0):.4f}".replace(" ", "_").lower()[:100])
+            # FIX: INSERT OR IGNORE → ON CONFLICT DO NOTHING, ? → %s
             rowcount = _safe_write('''
-                INSERT OR IGNORE INTO substations 
+                INSERT INTO substations
                 (name, operator, voltage_kv, capacity_mva, city, state, lat, lng, source, source_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT(source_id) DO NOTHING
             ''', (
                 sub['name'][:200],
                 sub.get('operator', '')[:100],
@@ -965,51 +941,32 @@ class SubstationDiscovery:
 
 
 class GasPipelineDiscovery:
-    """Discover gas pipelines from HIFLD, EIA, and learned APIs.
-    
-    v3: State-by-state HIFLD pulls (10 states per cycle).
-    Full US coverage in ~5 cycles (every 6 hours = full refresh in ~30 hours).
-    Pulls pipelines, compressor stations, and processing plants per state.
-    Much more reliable than bulk 1=1 queries which timeout on HIFLD.
-    """
-    
+    """Discover gas pipelines from EIA ArcGIS and learned APIs"""
+
     def __init__(self):
         self.new_pipelines = 0
         self._market_index = 0
-    
+
     def sync(self):
-        """Sync gas pipelines from EIA ArcGIS (FID pagination) and learned APIs"""
         logger.info("🔥 Syncing gas pipelines...")
         self.new_pipelines = 0
-        
-        # Phase 1: EIA Natural Gas Pipelines — paginate by FID range (2000 per batch)
         self._sync_eia_gas_pipelines()
-        
-        # Phase 2: EIA Gulf pipelines for offshore coverage
         self._sync_eia_gulf_pipelines()
-        
-        # Phase 3: Auto-discovered/learned APIs
         self._sync_from_learned_apis()
-        
         logger.info(f"   ✅ Gas pipelines: {self.new_pipelines} new")
         return self.new_pipelines
-    
+
     def _sync_eia_gas_pipelines(self):
-        """Pull EIA Natural Gas Interstate/Intrastate Pipelines using FID pagination.
-        Processes one batch per sync cycle (2000 records), tracks position across cycles.
-        Full dataset covered in multiple cycles."""
-        
-        # Track pagination position across sync cycles via class variable
         if not hasattr(GasPipelineDiscovery, '_eia_fid_offset'):
             GasPipelineDiscovery._eia_fid_offset = 0
-        
+
         batch_size = 2000
         fid_start = GasPipelineDiscovery._eia_fid_offset
         fid_end = fid_start + batch_size
-        
+
         logger.info(f"   🔥 EIA gas pipelines: FID {fid_start}-{fid_end}...")
         before = self.new_pipelines
-        
+
         try:
             features = _query_hifld_paginated(
                 EIA_PIPELINE_APIS['natural_gas'],
@@ -1017,28 +974,24 @@ class GasPipelineDiscovery:
                 max_total=batch_size,
                 batch_size=1000
             )
-            
+
             if not features:
-                # Reset to beginning if no more records
                 logger.info(f"   🔥 EIA gas pipelines: reached end at FID {fid_start}, resetting to 0")
                 GasPipelineDiscovery._eia_fid_offset = 0
             else:
                 GasPipelineDiscovery._eia_fid_offset = fid_end
-                
+
                 for feat in features:
                     attrs = feat.get('attributes', {})
                     geom = feat.get('geometry', {})
-                    
                     operator = attrs.get('Operator', 'Unknown')
                     typepipe = attrs.get('TYPEPIPE', 'Interstate')
                     status = attrs.get('Status', 'Operating')
                     fid = attrs.get('FID', '')
-                    
-                    # Skip non-operating pipelines
+
                     if str(status).lower() not in ('operating', 'active', 'in service'):
                         continue
-                    
-                    # Get centroid from line geometry
+
                     lat = lng = None
                     if geom:
                         if 'paths' in geom and geom['paths']:
@@ -1048,14 +1001,14 @@ class GasPipelineDiscovery:
                                 lng, lat = mid[0], mid[1]
                         elif 'x' in geom and 'y' in geom:
                             lng, lat = geom['x'], geom['y']
-                    
+
                     if not lat or not lng:
                         continue
-                    
+
                     city = self._nearest_market(lat, lng)
                     state = self._lat_lng_to_state(lat, lng)
                     pipe_type = 'interstate' if 'Interstate' in str(typepipe) else 'intrastate'
-                    
+
                     pipeline = {
                         "name": f"{operator} ({typepipe})"[:200],
                         "operator": str(operator)[:100],
@@ -1068,16 +1021,15 @@ class GasPipelineDiscovery:
                         "source_id": f"eia_gas_{fid}"
                     }
                     self._save_pipeline(pipeline, source='eia')
-            
+
             logger.info(f"   🔥 EIA gas pipelines: {len(features)} fetched (FID {fid_start}-{fid_end}), {self.new_pipelines - before} new")
         except Exception as e:
             logger.warning(f"   ⚠️ EIA gas pipelines failed: {e}")
-    
+
     def _sync_eia_gulf_pipelines(self):
-        """Pull EIA Gulf of Mexico oil/gas pipelines for offshore coverage"""
         logger.info("   🔥 EIA Gulf pipelines: pulling...")
         before = self.new_pipelines
-        
+
         try:
             features = _query_hifld_paginated(
                 EIA_PIPELINE_APIS['gulf_pipelines'],
@@ -1085,15 +1037,14 @@ class GasPipelineDiscovery:
                 max_total=5000,
                 batch_size=1000
             )
-            
+
             for feat in features:
                 attrs = feat.get('attributes', {})
                 geom = feat.get('geometry', {})
-                
                 operator = attrs.get('Operator', attrs.get('OPER_NM', 'Unknown'))
                 name = attrs.get('SYS_NM', attrs.get('Name', operator))
                 fid = attrs.get('FID', attrs.get('OBJECTID', ''))
-                
+
                 lat = lng = None
                 if geom:
                     if 'paths' in geom and geom['paths']:
@@ -1103,10 +1054,10 @@ class GasPipelineDiscovery:
                             lng, lat = mid[0], mid[1]
                     elif 'x' in geom and 'y' in geom:
                         lng, lat = geom['x'], geom['y']
-                
+
                 if not lat or not lng:
                     continue
-                
+
                 pipeline = {
                     "name": f"{name} (Gulf)"[:200],
                     "operator": str(operator)[:100],
@@ -1119,26 +1070,23 @@ class GasPipelineDiscovery:
                     "source_id": f"eia_gulf_{fid}"
                 }
                 self._save_pipeline(pipeline, source='eia_gulf')
-            
+
             logger.info(f"   🔥 EIA Gulf pipelines: {len(features)} fetched, {self.new_pipelines - before} new")
         except Exception as e:
             logger.warning(f"   ⚠️ EIA Gulf pipelines failed: {e}")
-    
+
     def _lat_lng_to_state(self, lat, lng):
-        """Rough state lookup from lat/lng using bounding boxes for major pipeline states"""
-        # Simplified — just use nearest market's state
         for m in DC_MARKETS:
             from math import radians, sin, cos, sqrt, atan2
             dlat = radians(m['lat'] - lat)
             dlng = radians(m['lng'] - lng)
             a = sin(dlat/2)**2 + cos(radians(lat)) * cos(radians(m['lat'])) * sin(dlng/2)**2
             d = 2 * atan2(sqrt(a), sqrt(1 - a)) * 6371
-            if d < 150:  # Within 150km of a DC market
+            if d < 150:
                 return m['state']
         return ''
-    
+
     def _nearest_market(self, lat, lng):
-        """Find nearest DC market name for a given lat/lng"""
         from math import radians, sin, cos, sqrt, atan2
         best = 'Unknown'
         best_dist = float('inf')
@@ -1150,10 +1098,9 @@ class GasPipelineDiscovery:
             if d < best_dist:
                 best_dist = d
                 best = m['name']
-        return best if best_dist < 500 else ''  # Only tag if within 500km
-    
+        return best if best_dist < 500 else ''
+
     def _sync_from_learned_apis(self):
-        """Pull gas data from auto-discovered APIs"""
         try:
             conn = get_db()
             cursor = conn.cursor()
@@ -1182,16 +1129,17 @@ class GasPipelineDiscovery:
             conn.close()
         except Exception as e:
             logger.warning(f"   ⚠️ Learned API gas sync failed: {e}")
-    
+
     def _save_pipeline(self, pipeline, source='discovery'):
-        """Save a gas pipeline"""
         try:
             source_id = pipeline.get('source_id', f"{pipeline['name']}".replace(" ", "_").lower()[:100])
+            # FIX: INSERT OR IGNORE → ON CONFLICT DO NOTHING, ? → %s
             rowcount = _safe_write('''
-                INSERT OR IGNORE INTO gas_pipelines
+                INSERT INTO gas_pipelines
                 (name, operator, pipeline_type, diameter_inches, capacity_mcf, status,
                  lat, lng, city, state, source, source_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT(source_id) DO NOTHING
             ''', (
                 pipeline['name'][:200],
                 pipeline.get('operator', '')[:100],
@@ -1214,36 +1162,37 @@ class GasPipelineDiscovery:
 
 class WeeklyLinkedInSummary:
     """Generate and post weekly market digest to LinkedIn"""
-    
+
     def __init__(self):
         self.linkedin_token = os.environ.get('LINKEDIN_ACCESS_TOKEN')
-    
+
     def generate_weekly_digest(self):
-        """Generate weekly market digest"""
         conn = get_db()
         cursor = conn.cursor()
-        
+
         cursor.execute("SELECT COUNT(*) as cnt FROM facilities")
         new_facilities = cursor.fetchone()['cnt']
-        
-        cursor.execute("SELECT COUNT(*) as cnt FROM announcements WHERE discovered_at > datetime('now', '-7 days')")
+
+        # FIX: datetime('now') → NOW() - INTERVAL, ? → %s
+        cursor.execute("SELECT COUNT(*) as cnt FROM announcements WHERE discovered_at::timestamptz > NOW() - INTERVAL '7 days'")
         new_news = cursor.fetchone()['cnt']
-        
+
         cursor.execute("SELECT COUNT(*) as cnt FROM construction_permits")
         new_permits = cursor.fetchone()['cnt']
-        
+
         cursor.execute("SELECT SUM(estimated_power_mw) as total FROM construction_permits WHERE status IN ('approved', 'under_construction')")
         pipeline_mw = cursor.fetchone()['total'] or 0
-        
+
+        # FIX: datetime('now') → NOW() - INTERVAL
         cursor.execute('''
-            SELECT title, companies FROM announcements 
-            WHERE discovered_at > datetime('now', '-7 days')
+            SELECT title, companies FROM announcements
+            WHERE discovered_at::timestamptz > NOW() - INTERVAL '7 days'
             ORDER BY discovered_at DESC LIMIT 5
         ''')
         top_news = cursor.fetchall()
-        
+
         conn.close()
-        
+
         digest = f"""📊 DC Hub Weekly Market Intelligence
 
 This week in data center infrastructure:
@@ -1258,42 +1207,41 @@ This week in data center infrastructure:
 """
         for i, news in enumerate(top_news[:3], 1):
             digest += f"{i}. {news['title'][:80]}...\n"
-        
+
         digest += f"""
 🌍 Powered by DC Hub - tracking 10,000+ data centers worldwide
 
 #DataCenter #Infrastructure #CloudComputing #DigitalInfrastructure #MarketIntelligence
 
 📡 Real-time data at dchub.cloud"""
-        
+
         return digest
-    
+
     def post_to_linkedin(self, content):
-        """Post content to LinkedIn"""
         if not self.linkedin_token:
             logger.warning("⚠️ LinkedIn token not configured")
             return None
-        
+
         try:
             headers = {
                 'Authorization': f'Bearer {self.linkedin_token}',
                 'Content-Type': 'application/json',
                 'X-Restli-Protocol-Version': '2.0.0'
             }
-            
+
             response = requests.get(
                 'https://api.linkedin.com/v2/userinfo',
                 headers={'Authorization': f'Bearer {self.linkedin_token}'},
                 timeout=10
             )
-            
+
             if not response.ok:
                 logger.error(f"Failed to get LinkedIn user: {response.status_code}")
                 return None
-            
+
             user_info = response.json()
             user_id = user_info.get('sub')
-            
+
             post_data = {
                 "author": f"urn:li:person:{user_id}",
                 "lifecycleState": "PUBLISHED",
@@ -1305,44 +1253,43 @@ This week in data center infrastructure:
                 },
                 "visibility": {"com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"}
             }
-            
+
             post_response = requests.post(
                 'https://api.linkedin.com/v2/ugcPosts',
                 headers=headers,
                 json=post_data,
                 timeout=30
             )
-            
+
             if post_response.ok:
                 logger.info("✅ Weekly LinkedIn digest posted")
                 return post_response.json()
             else:
                 logger.error(f"LinkedIn post failed: {post_response.status_code} - {post_response.text}")
                 return None
-                
+
         except Exception as e:
             logger.error(f"LinkedIn post error: {e}")
             return None
-    
+
     def save_weekly_post(self, content, post_id=None):
-        """Save weekly post to database"""
         conn = get_db()
         cursor = conn.cursor()
-        
+
         today = datetime.now()
         week_start = today - timedelta(days=today.weekday())
         week_end = week_start + timedelta(days=6)
-        
+
+        # FIX: ? → %s
         cursor.execute('''
             INSERT INTO linkedin_weekly_posts (week_start, week_end, content, posted_at, post_id)
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s)
         ''', (week_start.date(), week_end.date(), content, datetime.now(), post_id))
-        
+
         conn.commit()
         conn.close()
-    
+
     def run_weekly_post(self):
-        """Generate and post weekly digest"""
         content = self.generate_weekly_digest()
         result = self.post_to_linkedin(content)
         post_id = result.get('id') if result else None
@@ -1352,7 +1299,7 @@ This week in data center infrastructure:
 
 class InfrastructureDiscoveryEngine:
     """Main engine that runs all infrastructure discovery"""
-    
+
     def __init__(self):
         init_infrastructure_tables()
         self.fiber = FiberRouteDiscovery()
@@ -1362,25 +1309,23 @@ class InfrastructureDiscoveryEngine:
         self.gas = GasPipelineDiscovery()
         self.linkedin = WeeklyLinkedInSummary()
         self._scheduler_running = False
-    
+
     def run_full_sync(self):
-        """Run full infrastructure sync"""
         logger.info("=" * 60)
         logger.info("🔄 INFRASTRUCTURE DISCOVERY SYNC")
         logger.info("=" * 60)
-        
+
         start_time = datetime.now()
-        
+
         fiber_new = self.fiber.sync()
         properties_new = self.properties.sync()
         permits_new = self.permits.sync()
         substations_new = self.substations.sync()
         gas_new = self.gas.sync()
-        
+
         elapsed = (datetime.now() - start_time).total_seconds()
-        
         total_new = fiber_new + properties_new + permits_new + substations_new + gas_new
-        
+
         logger.info("=" * 60)
         logger.info(f"✅ INFRASTRUCTURE SYNC COMPLETE in {elapsed:.1f}s — {total_new} total new records")
         logger.info(f"   🔌 Fiber routes: {fiber_new} new")
@@ -1389,7 +1334,7 @@ class InfrastructureDiscoveryEngine:
         logger.info(f"   ⚡ Substations: {substations_new} new")
         logger.info(f"   🔥 Gas pipelines: {gas_new} new")
         logger.info("=" * 60)
-        
+
         return {
             "fiber_routes": fiber_new,
             "properties": properties_new,
@@ -1399,35 +1344,34 @@ class InfrastructureDiscoveryEngine:
             "total_new": total_new,
             "elapsed_seconds": elapsed
         }
-    
+
     def get_status(self):
-        """Get infrastructure discovery status"""
         conn = get_db()
         cursor = conn.cursor()
-        
+
         cursor.execute("SELECT COUNT(*) as cnt FROM fiber_routes")
         fiber_count = cursor.fetchone()['cnt']
-        
+
         cursor.execute("SELECT COUNT(*) as cnt FROM dc_properties")
         properties_count = cursor.fetchone()['cnt']
-        
+
         cursor.execute("SELECT COUNT(*) as cnt FROM construction_permits")
         permits_count = cursor.fetchone()['cnt']
-        
+
         cursor.execute("SELECT COUNT(*) as cnt FROM substations")
         substations_count = cursor.fetchone()['cnt']
-        
+
         try:
             cursor.execute("SELECT COUNT(*) as cnt FROM gas_pipelines")
             gas_count = cursor.fetchone()['cnt']
         except:
             gas_count = 0
-        
+
         cursor.execute("SELECT COUNT(*) as cnt FROM linkedin_weekly_posts")
         weekly_posts = cursor.fetchone()['cnt']
-        
+
         conn.close()
-        
+
         return {
             "fiber_routes": fiber_count,
             "dc_properties": properties_count,
@@ -1437,14 +1381,13 @@ class InfrastructureDiscoveryEngine:
             "weekly_linkedin_posts": weekly_posts,
             "scheduler_running": self._scheduler_running
         }
-    
+
     def start_scheduler(self, interval_hours=6):
-        """Start background scheduler"""
         if self._scheduler_running:
             return
-        
+
         self._scheduler_running = True
-        
+
         def scheduler_loop():
             time.sleep(120)
             while self._scheduler_running:
@@ -1453,7 +1396,7 @@ class InfrastructureDiscoveryEngine:
                 except Exception as e:
                     logger.error(f"Infrastructure sync error: {e}")
                 time.sleep(interval_hours * 3600)
-        
+
         thread = Thread(target=scheduler_loop, daemon=True)
         thread.start()
         logger.info(f"🔄 Infrastructure Discovery Scheduler started (every {interval_hours} hours)")
@@ -1462,24 +1405,22 @@ class InfrastructureDiscoveryEngine:
 def register_infrastructure_routes(app, start_scheduler=True):
     """Register Flask routes for infrastructure API"""
     from flask import Blueprint, jsonify, request
-    import threading
-    import os
-    
+
     bp = Blueprint('infrastructure', __name__)
     engine = InfrastructureDiscoveryEngine()
-    
+
     if start_scheduler:
         engine.start_scheduler(interval_hours=6)
-    
+
     @bp.route('/api/infrastructure/status')
     def infrastructure_status():
         return jsonify({"success": True, "data": engine.get_status()})
-    
+
     @bp.route('/api/infrastructure/sync', methods=['POST'])
     def infrastructure_sync():
         result = engine.run_full_sync()
         return jsonify({"success": True, "data": result})
-    
+
     @bp.route('/api/infrastructure/fiber-routes')
     def get_fiber_routes():
         conn = get_db()
@@ -1488,17 +1429,18 @@ def register_infrastructure_routes(app, start_scheduler=True):
         routes = [dict(row) for row in cursor.fetchall()]
         conn.close()
         return jsonify({"success": True, "data": routes, "count": len(routes)})
-    
+
     @bp.route('/api/infrastructure/properties')
     def get_properties():
         conn = get_db()
         cursor = conn.cursor()
         status = request.args.get('status', 'available')
-        cursor.execute("SELECT * FROM dc_properties WHERE status = ? ORDER BY created_at DESC LIMIT 100", (status,))
+        # FIX: ? → %s
+        cursor.execute("SELECT * FROM dc_properties WHERE status = %s ORDER BY created_at DESC LIMIT 100", (status,))
         properties = [dict(row) for row in cursor.fetchall()]
         conn.close()
         return jsonify({"success": True, "data": properties, "count": len(properties)})
-    
+
     @bp.route('/api/infrastructure/permits')
     def get_permits():
         conn = get_db()
@@ -1507,7 +1449,7 @@ def register_infrastructure_routes(app, start_scheduler=True):
         permits = [dict(row) for row in cursor.fetchall()]
         conn.close()
         return jsonify({"success": True, "data": permits, "count": len(permits)})
-    
+
     @bp.route('/api/infrastructure/substations')
     def get_substations():
         conn = get_db()
@@ -1516,7 +1458,7 @@ def register_infrastructure_routes(app, start_scheduler=True):
         substations = [dict(row) for row in cursor.fetchall()]
         conn.close()
         return jsonify({"success": True, "data": substations, "count": len(substations)})
-    
+
     @bp.route('/api/infrastructure/gas-pipelines')
     def get_gas_pipelines():
         conn = get_db()
@@ -1528,21 +1470,21 @@ def register_infrastructure_routes(app, start_scheduler=True):
             pipelines = []
         conn.close()
         return jsonify({"success": True, "data": pipelines, "count": len(pipelines)})
-    
+
     @bp.route('/api/infrastructure/weekly-digest')
     def get_weekly_digest():
         content = engine.linkedin.generate_weekly_digest()
         return jsonify({"success": True, "content": content})
-    
+
     @bp.route('/api/infrastructure/weekly-digest/post', methods=['POST'])
     def post_weekly_digest():
         content = engine.linkedin.generate_weekly_digest()
         result = engine.linkedin.post_to_linkedin(content)
         engine.linkedin.save_weekly_post(content, result.get('id') if result else None)
         return jsonify({"success": result is not None, "content": content, "posted": result is not None})
-    
+
     app.register_blueprint(bp)
-    
+
     logger.info("🏗️ Infrastructure Discovery API registered:")
     logger.info("   GET  /api/infrastructure/status")
     logger.info("   POST /api/infrastructure/sync")
@@ -1553,5 +1495,5 @@ def register_infrastructure_routes(app, start_scheduler=True):
     logger.info("   GET  /api/infrastructure/gas-pipelines")
     logger.info("   GET  /api/infrastructure/weekly-digest")
     logger.info("   POST /api/infrastructure/weekly-digest/post")
-    
+
     return engine
