@@ -1,3 +1,5 @@
+from dotenv import load_dotenv
+load_dotenv()
 """# Force redeploy v2.3 - Feb 26 2026
 # v94 -- Power Plant Coordinate Enrichment (Phase 2) Feb 25 2026
 # v93 -- AI Testimonials + Dashboard Stats Fixes Feb 25 2026
