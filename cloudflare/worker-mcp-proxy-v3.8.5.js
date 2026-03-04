@@ -1,43 +1,34 @@
 /**
- * DC Hub API Proxy Worker v3.8.4 — Railway Primary, Replit Failover
+ * DC Hub API Proxy Worker v3.8.6 — Discovery Facilities Fix
  * ================================================================
  *
- * v3.8.4 CHANGES (Feb 26 2026):
+ * v3.8.6 CHANGES (Mar 4 2026):
+ *   - ADDED: /api/discovery/facilities as Neon-direct route (fixes homepage 403)
+ *   - FIXED: Homepage content no longer blocked for anonymous users
+ *
+ * v3.8.5 CHANGES (Feb 26 2026):
  *   - FIXED: Non-API routes (homepage, static pages) now proxy to Railway
  *     instead of falling through to nonexistent Cloudflare Pages origin
  *
  * v3.8.3 CHANGES (Feb 26 2026):
  *   - FIXED: /.well-known/mcp.json, /.well-known/agent.json, /.well-known/security.txt
  *     now served INLINE from Worker (no backend proxy needed)
- *   - Flask drops dot-prefixed routes; Cloudflare Pages doesn't serve .well-known dir
- *   - Serving inline eliminates all caching/proxy issues for these 3 files
  *
  * v3.8.1 CHANGES (Feb 25 2026):
  *   - FIXED: /.well-known/ paths rewritten to Railway-friendly aliases
- *     /.well-known/ai-plugin.json → /ai-plugin.json on Railway
- *     /.well-known/mcp/server-card.json → /mcp-server-card.json on Railway
- *   - ADDED: /ai-plugin.json and /mcp-server-card.json to DISCOVERY_PATHS
  *
  * v3.8 CHANGES (Feb 25 2026):
  *   - ADDED: AI Testimonials Neon-direct routes
- *     /api/v1/testimonials (GET) — returns approved testimonials
- *     /api/v1/testimonials/stats — hero stats for testimonials page
  *   - ADDED: /api/v1/facilities/by-market and /api/v1/facilities/by-provider
- *     as proxy-through routes (handled by Railway aggregate endpoints)
  *
  * v3.7 CHANGES (Feb 24 2026):
  *   - ADDED: AI discovery file routing to Railway backend
- *     /openapi.json, /.well-known/*, /AGENTS.md, /llms.txt, /llms-full.txt, /robots.txt
- *     These were returning 403/404 because Cloudflare Pages intercepted them
- *   - ADDED: DISCOVERY_PATHS constant and isDiscoveryPath() check
- *   - UPDATED: isWorkerRoute logic to include discovery paths
  *
  * v3.6 CHANGES (Feb 23 2026):
- *   - ADDED: /dashboard proxied to Railway backend (serves dynamic dashboard with live stats/news)
+ *   - ADDED: /dashboard proxied to Railway backend
  *
  * v3.5 CHANGES (Feb 22 2026):
- *   - ADDED: /api/ai/tracking as Neon-direct route (reads from ai_cumulative)
- *   - FIXED: Cumulative counts now always served from Neon, not backend SQLite
+ *   - ADDED: /api/ai/tracking as Neon-direct route
  *
  * v3.4 CHANGES (Feb 21 2026):
  *   - SWAPPED: Railway is now PRIMARY backend, Replit is FAILOVER
@@ -63,7 +54,6 @@ const ALLOWED_ORIGINS = [
   'http://localhost:3000',
 ];
 
-// v3.8.1: AI discovery files — includes Railway-friendly aliases for .well-known paths
 const DISCOVERY_PATHS = [
   '/openapi.json',
   '/AGENTS.md',
@@ -75,7 +65,6 @@ const DISCOVERY_PATHS = [
   '/.well-known/',
 ];
 
-// v3.8.3: Inline discovery files — served directly from Worker, no backend needed
 const INLINE_DISCOVERY = {
   '/.well-known/mcp.json': {
     contentType: 'application/json; charset=utf-8',
@@ -172,7 +161,7 @@ const NEON_ROUTES = {
       facility_count: parseInt(rows[0].facility_count),
       deal_count: parseInt(rows[0].deal_count),
       news_count: parseInt(rows[0].news_count),
-      source: 'neon-direct', version: '2.5.2', worker: '3.8.5',
+      source: 'neon-direct', version: '2.5.2', worker: '3.8.6',
       failover: {
         primary: 'railway', primary_healthy: failoverState.primaryHealthy,
         failover: 'replit', failover_healthy: failoverState.failoverHealthy,
@@ -248,6 +237,33 @@ const NEON_ROUTES = {
       total: rows.length, source: 'neon-direct'
     })
   },
+
+  // v3.8.6 NEW — fixes homepage 403 for anonymous users
+  '/api/discovery/facilities': {
+    query: `SELECT id, name, provider, city, state, country, region,
+            latitude, longitude, power_mw, status,
+            created_at as discovered_at
+            FROM facilities
+            WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+            ORDER BY created_at DESC NULLS LAST
+            LIMIT 20`,
+    transform: (rows) => ({
+      success: true,
+      facilities: rows.map(r => ({
+        id: r.id, name: r.name, provider: r.provider,
+        market: [r.city, r.state].filter(Boolean).join(', '),
+        city: r.city, state: r.state, country: r.country, region: r.region,
+        latitude: parseFloat(r.latitude) || 0,
+        longitude: parseFloat(r.longitude) || 0,
+        power_mw: parseFloat(r.power_mw) || 0,
+        status: r.status || 'active',
+        discovered_at: r.discovered_at,
+        is_duplicate: false
+      })),
+      total: rows.length, source: 'neon-direct'
+    })
+  },
+
   '/api/agent/facilities': {
     query: `SELECT id, name, provider, city, state, country, power_mw, tier_level, status FROM facilities ORDER BY name ASC LIMIT 100`,
     transform: (rows) => ({ facilities: rows, count: rows.length, source: 'neon-direct' })
@@ -284,7 +300,7 @@ const NEON_ROUTES = {
       (SELECT COUNT(*) FROM capacity_pipeline) as pipeline_projects, (SELECT COUNT(DISTINCT country) FROM facilities) as countries_covered`,
     transform: (rows) => ({
       success: true, report: { total_facilities: parseInt(rows[0].total_facilities), total_deals: parseInt(rows[0].total_deals),
-        total_deal_value: parseFloat(rows[0].total_deal_value || 0), pipeline_projects: parseInt(rows[0].total_pipeline),
+        total_deal_value: parseFloat(rows[0].total_deal_value || 0), pipeline_projects: parseInt(rows[0].pipeline_projects),
         countries_covered: parseInt(rows[0].countries_covered) }, source: 'neon-direct'
     })
   },
@@ -300,7 +316,7 @@ const NEON_ROUTES = {
   },
   '/api/v1/version': {
     query: `SELECT 'healthy' as status, NOW() as timestamp`,
-    transform: (rows) => ({ version: '2.5.2', worker: '3.8.5', timestamp: rows[0].timestamp, source: 'neon-direct' })
+    transform: (rows) => ({ version: '2.5.2', worker: '3.8.6', timestamp: rows[0].timestamp, source: 'neon-direct' })
   },
   '/api/agent/query-stats': {
     query: `SELECT (SELECT COUNT(*) FROM facilities) as facilities, (SELECT COUNT(*) FROM deals) as deals, (SELECT COUNT(*) FROM news_articles) as news`,
@@ -369,33 +385,26 @@ const NEON_ROUTES = {
       testimonials: rows.map(r => ({
         id: r.id, platform: r.platform, agent_name: r.agent_name,
         quote: r.quote, context: r.context, query: r.query,
-        category: r.category, featured: r.featured,
-        created_at: r.created_at
+        category: r.category, featured: r.featured, created_at: r.created_at
       })),
       count: rows.length, source: 'neon-direct'
     })
   },
   '/api/v1/testimonials/stats': {
-    query: `SELECT
-      COUNT(*) as total,
+    query: `SELECT COUNT(*) as total,
       COUNT(*) FILTER (WHERE approved = TRUE) as approved,
       COUNT(DISTINCT platform) as platforms,
       COUNT(*) FILTER (WHERE created_at > CURRENT_TIMESTAMP - INTERVAL '7 days') as this_week
       FROM ai_testimonials`,
     transform: (rows) => ({
       success: true,
-      stats: {
-        total: parseInt(rows[0].total),
-        approved: parseInt(rows[0].approved),
-        platforms: parseInt(rows[0].platforms),
-        this_week: parseInt(rows[0].this_week)
-      },
+      stats: { total: parseInt(rows[0].total), approved: parseInt(rows[0].approved), platforms: parseInt(rows[0].platforms), this_week: parseInt(rows[0].this_week) },
       source: 'neon-direct'
     })
   },
   '/health': {
     query: `SELECT 'healthy' as status, NOW() as timestamp, (SELECT COUNT(*) FROM facilities) as facility_count, (SELECT COUNT(*) FROM deals) as deal_count, (SELECT COUNT(*) FROM news_articles) as news_count, 'neon-direct' as source`,
-    transform: (rows) => ({ status: 'healthy', timestamp: rows[0].timestamp, facility_count: parseInt(rows[0].facility_count), deal_count: parseInt(rows[0].deal_count), news_count: parseInt(rows[0].news_count), source: 'neon-direct', version: '3.8.5' })
+    transform: (rows) => ({ status: 'healthy', timestamp: rows[0].timestamp, facility_count: parseInt(rows[0].facility_count), deal_count: parseInt(rows[0].deal_count), news_count: parseInt(rows[0].news_count), source: 'neon-direct', version: '3.8.6' })
   },
 };
 
@@ -468,7 +477,7 @@ async function proxyWithFailover(request, pathname, search) {
   const isGet = request.method === 'GET';
   const proxyHeaders = {
     'Accept': 'application/json', 'Content-Type': request.headers.get('Content-Type') || 'application/json',
-    'User-Agent': request.headers.get('User-Agent') || 'DCHub-Worker/3.8.5', 'X-Worker-Version': 'DCHub-Worker/3.8.5',
+    'User-Agent': request.headers.get('User-Agent') || 'DCHub-Worker/3.8.6', 'X-Worker-Version': 'DCHub-Worker/3.8.6',
     'X-Forwarded-For': request.headers.get('CF-Connecting-IP') || '', 'X-Forwarded-Proto': 'https',
   };
   const authHeader = request.headers.get('Authorization'); if (authHeader) proxyHeaders['Authorization'] = authHeader;
@@ -483,10 +492,7 @@ async function proxyWithFailover(request, pathname, search) {
       const backendUrl = backend.url + pathname + search;
       const body = backend === backends[0] ? bodyForPrimary : bodyForRetry;
       const backendResponse = await fetchWithTimeout(backendUrl, { method: request.method, headers: proxyHeaders, body: isGet ? undefined : body }, backend.timeout);
-      // v3.8.5: If Railway returns 404 on an API route, try next backend (Replit has it)
-      if (backendResponse.status === 404 && pathname.startsWith('/api/')) {
-        continue;
-      }
+      if (backendResponse.status === 404 && pathname.startsWith('/api/')) { continue; }
       if (backendResponse.status >= 502 && backendResponse.status <= 504 && backend.name === 'railway') { markPrimaryFailure(); continue; }
       const contentType = backendResponse.headers.get('Content-Type') || '';
       if (!contentType.includes('json') && backendResponse.status >= 400 && backend.name === 'railway') { markPrimaryFailure(); continue; }
@@ -510,62 +516,28 @@ async function proxyDiscoveryPath(request, pathname, search) {
         'Access-Control-Allow-Origin': '*',
         'Cache-Control': 'public, max-age=3600',
         'x-dc-hub-source': 'worker-inline',
-        'x-dc-hub-worker': '3.8.5',
+        'x-dc-hub-worker': '3.8.6',
       },
     });
   }
-
   const backends = shouldSkipPrimary()
     ? [{ name: 'replit', url: REPLIT_BACKEND, timeout: FAILOVER_TIMEOUT }]
     : [{ name: 'railway', url: RAILWAY_BACKEND, timeout: PRIMARY_TIMEOUT }, { name: 'replit', url: REPLIT_BACKEND, timeout: FAILOVER_TIMEOUT }];
-
   for (const backend of backends) {
     try {
       let backendPath = pathname;
       if (pathname === '/.well-known/ai-plugin.json') backendPath = '/ai-plugin.json';
       if (pathname === '/.well-known/mcp/server-card.json') backendPath = '/mcp-server-card.json';
       const backendUrl = backend.url + backendPath + search;
-
-      const backendResponse = await fetchWithTimeout(backendUrl, {
-        method: 'GET',
-        headers: {
-          'User-Agent': request.headers.get('User-Agent') || 'DCHub-Worker/3.8.5',
-          'Accept': '*/*',
-        },
-      }, backend.timeout);
-
-      if (backendResponse.status >= 502 && backendResponse.status <= 504 && backend.name === 'railway') {
-        markPrimaryFailure();
-        continue;
-      }
-
+      const backendResponse = await fetchWithTimeout(backendUrl, { method: 'GET', headers: { 'User-Agent': request.headers.get('User-Agent') || 'DCHub-Worker/3.8.6', 'Accept': '*/*' } }, backend.timeout);
+      if (backendResponse.status >= 502 && backendResponse.status <= 504 && backend.name === 'railway') { markPrimaryFailure(); continue; }
       if (backend.name === 'railway') markPrimarySuccess();
-
       const contentType = backendResponse.headers.get('Content-Type') || 'text/plain';
       const responseBody = await backendResponse.text();
-
-      const response = new Response(responseBody, {
-        status: backendResponse.status,
-        headers: {
-          'Content-Type': contentType,
-          'Access-Control-Allow-Origin': '*',
-          'x-dc-hub-source': backend.name,
-          'x-dc-hub-backend': backend.name,
-          'Cache-Control': 'public, max-age=3600',
-        },
-      });
-      return response;
-
-    } catch (err) {
-      console.error(`[DISCOVERY] ${backend.name} failed for ${pathname}: ${err.message}`);
-      if (backend.name === 'railway') markPrimaryFailure();
-    }
+      return new Response(responseBody, { status: backendResponse.status, headers: { 'Content-Type': contentType, 'Access-Control-Allow-Origin': '*', 'x-dc-hub-source': backend.name, 'x-dc-hub-backend': backend.name, 'Cache-Control': 'public, max-age=3600' } });
+    } catch (err) { console.error(`[DISCOVERY] ${backend.name} failed for ${pathname}: ${err.message}`); if (backend.name === 'railway') markPrimaryFailure(); }
   }
-
-  return new Response(
-    JSON.stringify({ error: 'Discovery file temporarily unavailable', path: pathname }),
-    { status: 502, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' } }
-  );
+  return new Response(JSON.stringify({ error: 'Discovery file temporarily unavailable', path: pathname }), { status: 502, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' } });
 }
 
 async function transparentProxyWithFailover(request, pathname, search) {
@@ -632,22 +604,13 @@ export default {
 
     const isWorkerRoute = pathname.startsWith('/api/') || pathname === '/health' || pathname.startsWith('/ai/') || isBackendHtml(pathname) || isDiscoveryPath(pathname);
 
-    // v3.8.5: Serve frontend from dchub Worker (static HTML/CSS/JS)
     if (!isWorkerRoute) {
       const frontendUrl = 'https://dchub.azmartone.workers.dev' + url.pathname + url.search;
       try {
-        const frontendResp = await fetch(frontendUrl, {
-          method: request.method,
-          headers: request.headers,
-          redirect: 'manual',
-        });
+        const frontendResp = await fetch(frontendUrl, { method: request.method, headers: request.headers, redirect: 'manual' });
         const respHeaders = new Headers(frontendResp.headers);
         respHeaders.set('x-dc-hub-source', 'frontend-worker');
-        return new Response(frontendResp.body, {
-          status: frontendResp.status,
-          statusText: frontendResp.statusText,
-          headers: respHeaders,
-        });
+        return new Response(frontendResp.body, { status: frontendResp.status, statusText: frontendResp.statusText, headers: respHeaders });
       } catch (err) {
         console.error('[FRONTEND] dchub worker fetch failed:', err.message);
         return new Response('Frontend temporarily unavailable', { status: 502 });
@@ -660,13 +623,8 @@ export default {
 
     trackRequest(request, pathname, ctx);
 
-    if (isDiscoveryPath(pathname)) {
-      return proxyDiscoveryPath(request, pathname, url.search);
-    }
-
-    if (isBackendHtml(pathname)) {
-      return transparentProxyWithFailover(request, pathname, url.search);
-    }
+    if (isDiscoveryPath(pathname)) return proxyDiscoveryPath(request, pathname, url.search);
+    if (isBackendHtml(pathname)) return transparentProxyWithFailover(request, pathname, url.search);
 
     if (pathname === '/api/v1/failover-status') {
       const resp = jsonResponse({
@@ -675,15 +633,13 @@ export default {
         consecutive_primary_failures: failoverState.consecutivePrimaryFailures,
         circuit_open: shouldSkipPrimary(),
         last_primary_failure: failoverState.lastPrimaryFailure ? new Date(failoverState.lastPrimaryFailure).toISOString() : null,
-        worker_version: '3.8.5'
+        worker_version: '3.8.6'
       });
       addCORSHeaders(resp, request);
       return resp;
     }
 
-    if (isTransparentProxy(pathname)) {
-      return transparentProxyWithFailover(request, pathname, url.search);
-    }
+    if (isTransparentProxy(pathname)) return transparentProxyWithFailover(request, pathname, url.search);
 
     const cache = caches.default;
     const cacheKey = new Request(url.toString(), { method: 'GET' });
@@ -753,7 +709,7 @@ export default {
       } catch (e) {}
     }
 
-    const errResponse = jsonResponse({ error: 'Service temporarily unavailable', message: 'Database, primary backend, and failover backend are all unreachable. Please retry shortly.', status: 503, source: 'dc-hub-worker', worker_version: '3.8.5' }, 503);
+    const errResponse = jsonResponse({ error: 'Service temporarily unavailable', message: 'Database, primary backend, and failover backend are all unreachable. Please retry shortly.', status: 503, source: 'dc-hub-worker', worker_version: '3.8.6' }, 503);
     addCORSHeaders(errResponse, request);
     return errResponse;
   }
