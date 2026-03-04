@@ -291,7 +291,7 @@ def scheduler_loop():
     while True:
         now = datetime.now(timezone.utc)
 
-        if keepalive_counter % 5 == 0:
+        if keepalive_counter % 15 == 0:
             run_job('keepalive', JOBS['keepalive'])
         keepalive_counter += 1
 
