@@ -1,5 +1,5 @@
 """
-deal_scraper.py — Automated Data Center M&A Deal Discovery
+deal_scraper.py — Automated Data Center M&A Deal Discovery, 2.0
 ============================================================
 Scrapes DC industry news sources for M&A transactions, parses
 deal details (buyer, seller, value, MW, market), and inserts
