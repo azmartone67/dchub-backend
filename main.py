@@ -469,8 +469,9 @@ def get_pg_connection(retries=3, pool_type=None):
                 _track_checkout(conn)
                 
                 used = _pool_stats['acquired'] - _pool_stats['returned']
-                if used >= 6:
-                    logging.getLogger('db_pool').warning(f"⚠️ Pool at {used}/8 ({int(used/8*100)}%) -- high usage (threshold: 6/8)")
+                max_conn = int(os.environ.get('DB_POOL_MAX', 20))
+                if max_conn > 0 and used >= int(max_conn * 0.75):
+                    logging.getLogger('db_pool').warning(f"⚠️ Pool at {used}/{max_conn} ({int(used/max_conn*100)}%) -- high usage")
                 
                 return conn
             else:
@@ -497,14 +498,32 @@ def get_pg_connection(retries=3, pool_type=None):
                 time.sleep(wait)
     raise last_error
 
-def return_pg_connection(conn, pool_type=None):
+def return_pg_connection(conn, pool_type=None, error=False):
     if conn is None:
         return
     _track_return(conn)
+    # ALWAYS rollback before returning to pool.
+    # This fixes "current transaction is aborted" cascade where a failed query
+    # poisons the connection and every subsequent user of that connection fails.
     try:
         conn.rollback()
     except Exception:
-        pass
+        # Connection is truly broken — close it instead of returning to pool
+        if _pg_pool_obj:
+            try:
+                _pg_pool_obj.putconn(conn, close=True)
+                _pool_stats['returned'] += 1
+            except Exception:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        else:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        return
     if _pg_pool_obj:
         try:
             _pg_pool_obj.putconn(conn)
@@ -526,13 +545,12 @@ def pg_connection(pool_type=None):
     try:
         yield conn
     except Exception:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
+        return_pg_connection(conn, error=True)
+        conn = None
         raise
     finally:
-        return_pg_connection(conn)
+        if conn is not None:
+            return_pg_connection(conn)
 
 def get_pool_health():
     """Purely in-memory health check -- NEVER touches the database or pool internals.
@@ -555,7 +573,7 @@ def get_pool_health():
                     'stack': info['stack'][:300],
                 })
 
-    max_conn = 20
+    max_conn = int(os.environ.get('DB_POOL_MAX', 20))
     estimated_available = max(0, max_conn - checked_out)
     utilization = round(checked_out / max_conn * 100, 1) if max_conn else 0
 
@@ -598,14 +616,155 @@ def get_pool_health():
             'warning': mem_mb > 512,
         },
         'neon_limits': {
-            'note': 'Neon free=100, Launch=100, Scale=500 max connections',
+            'note': 'Neon Launch plan, primary + read replica with autoscaling .25-8 CU',
             'our_max_total': max_conn,
+        },
+        'read_replica': {
+            'status': 'active' if _pg_pool_read else 'not configured',
+            'used': len(_pg_pool_read._used) if _pg_pool_read and hasattr(_pg_pool_read, '_used') else 0,
+            'max': 15 if _pg_pool_read else 0,
         },
         'leaked_connections': leaked,
         'active_checkouts': checked_out,
     }
 
 _init_pg_pool()
+
+# =============================================================================
+# BACKGROUND TASK GUARDS — Prevent duplicate cycles and concurrent storms
+# =============================================================================
+_cycle_guard = {}
+_cycle_guard_lock = threading.Lock()
+_bg_task_mutex = threading.Lock()
+_bg_task_running = None
+
+def should_run_cycle(name, min_interval_seconds=30):
+    """Prevent duplicate cycles (e.g., Brain firing twice in 12 seconds).
+    Returns True if task should proceed, False if it ran too recently."""
+    now = time.time()
+    with _cycle_guard_lock:
+        last = _cycle_guard.get(name, 0)
+        if now - last < min_interval_seconds:
+            logger.debug("⏭️ Cycle guard: '%s' ran %ds ago, skipping", name, int(now - last))
+            return False
+        _cycle_guard[name] = now
+        return True
+
+def run_with_mutex(name, func, *args, **kwargs):
+    """Run a background task with mutual exclusion — only one at a time.
+    Prevents Brain + Ambassador + RSS from all grabbing connections simultaneously."""
+    global _bg_task_running
+    acquired = _bg_task_mutex.acquire(blocking=False)
+    if not acquired:
+        logger.info("⏭️ Skipping %s — %s is still running", name, _bg_task_running or 'another task')
+        return None
+    try:
+        _bg_task_running = name
+        return func(*args, **kwargs)
+    finally:
+        _bg_task_running = None
+        _bg_task_mutex.release()
+
+# =============================================================================
+# READ REPLICA POOL — Routes SELECT queries to Neon read replica
+# Requires DATABASE_READ_URL env var. Falls back to primary if not set.
+# =============================================================================
+_pg_pool_read = None
+
+def _init_read_pool():
+    global _pg_pool_read
+    read_url = os.environ.get('DATABASE_READ_URL', '')
+    if not read_url:
+        print("DATABASE POOL: No DATABASE_READ_URL set — all reads use primary")
+        return
+    if not read_url.startswith('postgres'):
+        print("DATABASE POOL: ⚠️ DATABASE_READ_URL is not a valid postgres:// URL — ignoring")
+        return
+    for attempt in range(3):
+        try:
+            _pg_pool_read = _pg_pool.ThreadedConnectionPool(
+                minconn=1,
+                maxconn=15,
+                dsn=read_url,
+                connect_timeout=10,
+                options='-c statement_timeout=15000'
+            )
+            print("DATABASE POOL: ✅ Read replica pool initialized (1-15 connections)")
+            return
+        except Exception as e:
+            print(f"DATABASE POOL: ⚠️ Read pool attempt {attempt + 1}/3 failed: {e}")
+            if attempt < 2:
+                time.sleep(3)
+    print("DATABASE POOL: ⚠️ Read replica pool failed — reads will use primary")
+
+_init_read_pool()
+
+
+def get_read_connection(retries=2):
+    """Get a read-only connection from the replica pool.
+    Falls back to primary if replica is unavailable.
+    
+    Returns: (connection, source) where source is 'read' or 'primary'
+    
+    Use for ALL read-only Flask route handlers:
+      conn, source = get_read_connection()
+      try:
+          cur = conn.cursor()
+          cur.execute("SELECT ...")
+          ...
+      finally:
+          return_read_connection(conn, source)
+    """
+    global _pg_pool_read
+    
+    if _pg_pool_read:
+        for attempt in range(retries):
+            conn = None
+            try:
+                conn = _pg_pool_read.getconn()
+                cur = conn.cursor()
+                cur.execute("SELECT 1")
+                cur.close()
+                conn.commit()
+                _track_checkout(conn)
+                return conn, 'read'
+            except Exception as e:
+                if _pg_pool_read and conn:
+                    try:
+                        _pg_pool_read.putconn(conn, close=True)
+                    except Exception:
+                        pass
+                conn = None
+                if attempt < retries - 1:
+                    time.sleep(1)
+                logger.warning("DATABASE POOL: Read replica attempt %d failed: %s", attempt + 1, e)
+    
+    # Fallback to primary
+    conn = get_pg_connection()
+    return conn, 'primary'
+
+
+def return_read_connection(conn, pool_source='read', error=False):
+    """Return a read connection to the appropriate pool."""
+    if conn is None:
+        return
+    _track_return(conn)
+    
+    try:
+        conn.rollback()
+    except Exception:
+        pass
+    
+    if pool_source == 'read' and _pg_pool_read:
+        try:
+            _pg_pool_read.putconn(conn)
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    else:
+        return_pg_connection(conn, error=error)
 
 # =============================================================================
 # NEON DB KEEPALIVE - Runs unconditionally (module level, works under gunicorn)
@@ -1350,7 +1509,57 @@ except ImportError as e:
     logger.warning(f"  ⚠️ ai_tracking: {e}")
 
 from api_data_protection import init_data_protection, protect_data
-from db_utils import get_db, get_read_db, safe_write
+from db_utils import get_db, get_read_db as _original_get_read_db, safe_write
+
+# Override get_read_db to route reads through the Neon read replica pool
+def get_read_db(*args, **kwargs):
+    """Route read queries to the Neon read replica when available.
+    Falls back to original get_read_db (primary) if replica is down.
+    
+    If called with a path argument (e.g., for SQLite), passes through to original.
+    """
+    # If called with a specific DB path (SQLite), use original
+    if args or kwargs:
+        return _original_get_read_db(*args, **kwargs)
+    
+    # Try read replica pool first
+    if _pg_pool_read:
+        conn = None
+        try:
+            conn = _pg_pool_read.getconn()
+            cur = conn.cursor()
+            cur.execute("SELECT 1")
+            cur.close()
+            conn.commit()
+            _track_checkout(conn)
+            
+            # Wrap .close() so it returns to the READ pool instead of closing
+            _original_close = conn.close
+            def _pool_aware_close():
+                _track_return(conn)
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                try:
+                    _pg_pool_read.putconn(conn)
+                except Exception:
+                    try:
+                        _original_close()
+                    except Exception:
+                        pass
+            conn.close = _pool_aware_close
+            return conn
+        except Exception as e:
+            if _pg_pool_read and conn:
+                try:
+                    _pg_pool_read.putconn(conn, close=True)
+                except Exception:
+                    pass
+            logger.warning("Read replica unavailable, falling back to primary: %s", e)
+    
+    # Fallback to original (primary)
+    return _original_get_read_db()
 
 # DISABLED: Old linkedin_autopost replaced by linkedin_poster.py (Neon-backed)
 # from linkedin_autopost import linkedin_auto_bp, init_linkedin_tables, start_linkedin_scheduler, on_new_deal, on_weekly_digest
@@ -17378,18 +17587,34 @@ def _periodic_gc_loop():
             proc = _psutil_mod.Process(os.getpid())
             rss_mb = proc.memory_info().rss / (1024 * 1024)
             
+            # Always collect all 3 generations
+            gc.collect(0)
+            gc.collect(1)
             gc.collect(2)
             
             if rss_mb > _MEMORY_LIMIT_MB:
                 logger.warning(f"⚠️ Memory high: {rss_mb:.0f}MB > {_MEMORY_LIMIT_MB}MB limit, clearing caches")
                 for cache_obj in [GRIDSTATUS_CACHE, FCC_BROADBAND_CACHE, EPA_CACHE, 
                                   PEERINGDB_CACHE, EIA_CACHE, HIFLD_CACHE, OILGAS_CACHE, DEALS_CACHE]:
-                    cache_obj.clear()
+                    try:
+                        cache_obj.clear()
+                    except Exception:
+                        pass
+                # Force full GC after cache clear
+                gc.collect(0)
+                gc.collect(1)
                 gc.collect(2)
                 if _has_malloc_trim:
                     _libc.malloc_trim(0)
+                # Re-measure AFTER giving Python time to release
+                import time as _t
+                _t.sleep(1)
                 rss_after = proc.memory_info().rss / (1024 * 1024)
-                logger.info(f"🧹 Memory after cleanup: {rss_after:.0f}MB (freed {rss_mb - rss_after:.0f}MB)")
+                freed = rss_mb - rss_after
+                if freed > 0:
+                    logger.info(f"🧹 Memory after cleanup: {rss_after:.0f}MB (freed {freed:.0f}MB)")
+                else:
+                    logger.info(f"🧹 Memory after cleanup: {rss_after:.0f}MB (RSS unchanged — memory may be held by OS)")
         except Exception as e:
             logger.error(f"GC loop error: {e}")
 
@@ -17768,9 +17993,11 @@ def job_autonomous_brain():
     auth_err = _require_admin_key()
     if auth_err:
         return auth_err
+    if not should_run_cycle('autonomous_brain', min_interval_seconds=60):
+        return jsonify({'success': True, 'job': 'autonomous-brain', 'skipped': 'ran too recently', 'ts': datetime.utcnow().isoformat()})
     try:
         from autonomous_brain import init_autonomous_brain
-        result = init_autonomous_brain()
+        result = run_with_mutex('autonomous-brain', init_autonomous_brain)
         if 'autonomous_brain' in _scheduler_registry:
             _scheduler_registry['autonomous_brain']['last_run'] = datetime.utcnow().isoformat()
             _scheduler_registry['autonomous_brain']['total_runs'] += 1

@@ -1,19 +1,19 @@
 {
-  "report_date": "2026-03-03",
-  "generated_at": "2026-03-03T20:40:12.446967",
+  "report_date": "2026-03-04",
+  "generated_at": "2026-03-04T01:21:09.155492",
   "summary": {
     "total_facilities": 11552,
     "total_providers": 3964,
     "countries_covered": 177,
     "total_power_mw": 73941.0,
-    "total_deals": 1163,
-    "total_deal_value_usd": 2677552700000.0
+    "total_deals": 1219,
+    "total_deal_value_usd": 2901555800000.0
   },
   "market_highlights": [
     "DC Hub tracks 11,552 data center facilities globally",
     "Coverage spans 177 countries with 3964 providers",
     "Combined capacity: 73,941 MW",
-    "M&A database: 1163 transactions worth $2677.6B+"
+    "M&A database: 1219 transactions worth $2901.6B+"
   ],
   "recent_deals": [
     {
@@ -89,54 +89,54 @@
   ],
   "recent_news": [
     {
-      "title": "Another Oracle outage is messing up US TikTok",
-      "source": "The Verge",
-      "date": "2026-03-03T20:26:21"
+      "title": "SK Telecom and partners plan modular AI data centers built like building blocks",
+      "source": "Stock Titan",
+      "date": "2026-03-04T01:00:54"
     },
     {
-      "title": "Costly GPUs, thin margins: When the AI bill doesn\u2019t add up in data centers",
-      "source": "BNamericas",
-      "date": "2026-03-03T20:16:52"
+      "title": "A Holistic Approach to Data Center Development: Navigating Power Supply Challenges",
+      "source": "JD Supra",
+      "date": "2026-03-04T00:30:28"
     },
     {
-      "title": "Apple jacks up MacBook pricing with M5 Pro, Max debut",
+      "title": "Google data center divides Hermantown: one side sees opportunity, other sees threat",
+      "source": "Northern News Now",
+      "date": "2026-03-04T00:27:00"
+    },
+    {
+      "title": "Nvidia-backed photonics startup Ayar Labs fills its wallet to mass-produce CPO chiplets",
       "source": "The Register DC",
-      "date": "2026-03-03T20:06:17"
+      "date": "2026-03-03T23:20:28"
     },
     {
-      "title": "Google Data Center in Minnesota Would Be Powered by Wind, Energy Storage",
-      "source": "POWER Magazine",
-      "date": "2026-03-03T19:37:09"
+      "title": "Birmingham City Council passes 6 month moratorium on hyperscale data centers",
+      "source": "WVTM",
+      "date": "2026-03-03T23:12:00"
     },
     {
-      "title": "Nvidia\u2019s US$4b Optics Push And AI Uses Beyond Data Centers",
-      "source": "simplywall.st",
-      "date": "2026-03-03T19:36:40"
-    },
-    {
-      "title": "Lawmakers take pick to ICE's warrantless location tracking purchases",
+      "title": "Facebook is down, interrupting your poking and Meta's ads business",
       "source": "The Register DC",
-      "date": "2026-03-03T19:28:13"
+      "date": "2026-03-03T23:04:37"
     },
     {
-      "title": "Google confirms plans for proposed Hermantown data center",
-      "source": "WDIO.com",
-      "date": "2026-03-03T19:25:51"
+      "title": "Commercial data centers emerge as targets in modern warfare after drones hit 3 AWS facilities",
+      "source": "DefenseScoop",
+      "date": "2026-03-03T23:04:20"
     },
     {
-      "title": "Nvidia Invests $2B in Photonics Firm Coherent",
-      "source": "Bloomberg Tech",
-      "date": "2026-03-03T19:10:01"
+      "title": "SK Telecom and Panmnesia Sign Partnership to Innovate AI Data Center Architecture, Enhancing Cost Efficiency and Performance",
+      "source": "Business Wire",
+      "date": "2026-03-03T23:00:00"
     },
     {
-      "title": "Accenture Acquires Ookla, Downdetector As Part of $1.2 Billion Deal",
-      "source": "Slashdot",
-      "date": "2026-03-03T19:00:00"
+      "title": "Semtech Expands Data Center Portfolio With Acquisition Of Hiefo Corporation",
+      "source": "TradingView",
+      "date": "2026-03-03T22:42:09"
     },
     {
-      "title": "Intel's make-or-break 18A process node debuts for data center with 288-core Xeon",
-      "source": "Hacker News",
-      "date": "2026-03-03T18:54:06"
+      "title": "Lyon Township board passes moratorium on new hyperscale data centers",
+      "source": "Observer and Eccentric Newspapers",
+      "date": "2026-03-03T22:13:00"
     }
   ],
   "data_sources": [
