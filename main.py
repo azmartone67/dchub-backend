@@ -17405,8 +17405,8 @@ if __name__ == '__main__':
                 time.sleep(7200)
         
         discovery_thread = threading.Thread(target=facility_discovery_loop, daemon=True)
-        discovery_thread.start()
-        print("🔍 Facility Discovery: ✅ Running (every 2 hours, starts after 5min)")
+        # discovery_thread.start()  # DISABLED: handled by external scheduler
+        # print("🔍 Facility Discovery: ✅ Running (every 2 hours, starts after 5min)")
         
         try:
             from discovery_auto_approve import rebuild_cache
@@ -17436,8 +17436,8 @@ if __name__ == '__main__':
                 time.sleep(300)
         
         approval_thread = threading.Thread(target=auto_approval_loop, daemon=True)
-        approval_thread.start()
-        print("🔄 Auto-Approval Pipeline: ✅ Running (every 5 min, starts after 6min)")
+        # approval_thread.start()  # DISABLED: handled by external scheduler
+        # print("🔄 Auto-Approval Pipeline: ✅ Running (every 5 min, starts after 6min)")
         
         def simple_alerts_processor_loop():
             import time
@@ -17456,8 +17456,8 @@ if __name__ == '__main__':
                 time.sleep(900)
         
         alert_processor_thread = threading.Thread(target=simple_alerts_processor_loop, daemon=True)
-        alert_processor_thread.start()
-        print("🔔 Simple Alerts Processor: ✅ Running (every 15 min, starts after 4min)")
+        # alert_processor_thread.start()  # DISABLED: handled by external scheduler
+        # print("🔔 Simple Alerts Processor: ✅ Running (every 15 min, starts after 4min)")
     else:
         print("📧 Alert Email Checker: ⏸️ PAUSED")
         print("🔔 Simple Alerts Processor: ⏸️ PAUSED")
@@ -17487,8 +17487,8 @@ if __name__ == '__main__':
                 pass  # Silent fail - don't spam logs
     
     keep_alive_thread = threading.Thread(target=keep_alive_loop, daemon=True)
-    keep_alive_thread.start()
-    print("💓 Keep-Alive: ✅ Running (every 4 min)")
+    # keep_alive_thread.start()  # DISABLED: Railway is always-on, no keep-alive needed
+    # print("💓 Keep-Alive: ✅ Running (every 4 min)")
 
     print("📦 Write Queue: ✅ Running (/api/db/queue-status)")
     
