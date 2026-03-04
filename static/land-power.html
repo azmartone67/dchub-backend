@@ -1250,9 +1250,11 @@ function toggleLayer(item) {
     if (!layers[layerName]) { console.warn('Layer not initialized'); return; }
 
     const isActive = item.classList.contains('active');
-    const userPlan = (window.currentUser && window.currentUser.plan) ? window.currentUser.plan : 'free';
+    // Read plan directly from localStorage — works regardless of window.currentUser timing
+    var _session = {}; try { _session = JSON.parse(localStorage.getItem('dchub_session') || '{}'); } catch(e) {}
+    var _plan = _session.plan || (window.currentUser && window.currentUser.plan) || 'free';
 
-    if (!isActive && userPlan === 'free') {
+    if (!isActive && _plan === 'free') {
         const activeLayers = document.querySelectorAll('.layer-item.active').length;
         if (activeLayers >= 5) {
             showUpgradePrompt();
@@ -1465,7 +1467,10 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 function applyFreeTierMapRestriction() {
-    if (!window.currentUser || window.currentUser.plan !== 'free') return;
+    var _session = {}; try { _session = JSON.parse(localStorage.getItem('dchub_session') || '{}'); } catch(e) {}
+    var _plan = _session.plan || (window.currentUser && window.currentUser.plan) || null;
+    if (!_plan) return;
+    if (_plan === 'pro' || _plan === 'enterprise') return;
     startPreviewCountdown();
 }
 
