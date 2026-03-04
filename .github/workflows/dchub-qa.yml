@@ -1,5 +1,5 @@
 # .github/workflows/dchub-qa.yml
-# DC Hub — Automated QA Health Check v2.0
+# DC Hub — Automated QA Health Check v2.1
 
 name: DC Hub QA Health Check
 
@@ -83,7 +83,8 @@ jobs:
           check("Agent registry",         f"{BASE}/api/agents/registry")
           check("Intelligence index",     f"{BASE}/api/agents/intelligence-index")
           check("AI tracking",            f"{BASE}/api/ai/tracking")
-          check("News feed",              f"{BASE}/api/news/live?limit=5")
+          # FIX: /api/news/live requires enterprise auth → use public /api/news endpoint
+          check("News feed",              f"{BASE}/api/news?limit=5")
           check("Transactions",           f"{BASE}/api/transactions?limit=5")
           check("Map data",               f"{BASE}/api/v1/map?all=true&limit=5")
           check("User stats (unauth)",    f"{BASE}/api/v1/user/stats", expect_status=[401, 404])
@@ -148,8 +149,8 @@ jobs:
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: smtpout.secureserver.net
-          server_port: 465
-          secure: true
+          server_port: 587
+          secure: false
           username: ${{ secrets.SMTP_USERNAME }}
           password: ${{ secrets.SMTP_PASSWORD }}
           subject: "🚨 DC Hub QA Failed — ${{ github.run_id }}"
