@@ -793,47 +793,32 @@
         }
     </style>
 <script>
-// DC Hub Auth Sync — sets window.currentUser and normalizes dchub_session
+// DC Hub Auth Sync — synchronously sets window.currentUser from localStorage
 (function() {
-  // Try to get user from dchub_session first
   var session = {};
   try { session = JSON.parse(localStorage.getItem('dchub_session') || '{}'); } catch(e) {}
 
-  // Normalize session — handle both raw user object and formatted {tier,expires} object
-  var plan = session.plan || (session.tier === 'pro' ? 'pro' : session.tier === 'enterprise' ? 'enterprise' : session.tier === 'registered' ? 'free' : null);
-  var token = session.token || localStorage.getItem('dchub_token');
+  // Extract plan — handle both raw user object format and normalized format
+  var plan = session.plan || null;
+  if (!plan && session.tier) {
+    plan = session.tier === 'pro' ? 'pro' : session.tier === 'enterprise' ? 'enterprise' : 'free';
+  }
+  var token = session.token || localStorage.getItem('dchub_token') || null;
 
-  if (plan && token) {
-    // Rewrite session in correct format for access gate
-    var tier = plan === 'pro' ? 'pro' : plan === 'enterprise' ? 'enterprise' : 'registered';
+  if (plan) {
+    var gateTier = plan === 'pro' ? 'pro' : plan === 'enterprise' ? 'enterprise' : 'registered';
+    // Always rewrite in normalized format with expires
     localStorage.setItem('dchub_session', JSON.stringify({
-      tier: tier,
+      tier: gateTier,
       expires: new Date(Date.now() + 30 * 86400000).toISOString(),
-      email: session.email,
+      email: session.email || '',
       plan: plan
     }));
-    localStorage.setItem('dchub_token', token);
-    window.currentUser = { plan: plan, email: session.email, tier: tier };
-    return;
+    if (token) localStorage.setItem('dchub_token', token);
+    // Set synchronously so timer and layer limit can read it immediately
+    window.currentUser = { plan: plan, email: session.email || '', tier: gateTier };
+    console.log('[DC Hub] Auth sync: plan=' + plan + ' tier=' + gateTier);
   }
-
-  // Fallback: fetch from API
-  if (!token) return;
-  fetch('/api/auth/me', {
-    headers: { 'Authorization': 'Bearer ' + token },
-    credentials: 'include'
-  })
-  .then(function(r) { return r.ok ? r.json() : null; })
-  .then(function(data) {
-    if (!data || !data.plan) return;
-    var tier = data.plan === 'pro' ? 'pro' : data.plan === 'enterprise' ? 'enterprise' : 'registered';
-    var expires = new Date(Date.now() + 30 * 86400000).toISOString();
-    localStorage.setItem('dchub_session', JSON.stringify({ tier: tier, expires: expires, email: data.email, plan: data.plan }));
-    localStorage.setItem('dchub_token', token);
-    localStorage.setItem('dchub_user', JSON.stringify(data));
-    window.currentUser = data;
-  })
-  .catch(function() {});
 })();
 </script>
 </head>
