@@ -1,8 +1,3 @@
-"""
-Neon-backed market intelligence — replaces hardcoded MARKET_DATA
-Register in main.py: from market_intelligence_neon import market_intel_neon_bp
-                     app.register_blueprint(market_intel_neon_bp)
-"""
 from flask import Blueprint, jsonify, request
 import os, psycopg2, psycopg2.extras
 
@@ -18,8 +13,12 @@ def get_market_intelligence():
     SORT_MAP = {
         'vacancy_asc':     'vacancy_rate ASC NULLS LAST',
         'vacancy_desc':    'vacancy_rate DESC NULLS LAST',
-        'growth_desc':     'growth_rate DESC NULLS LAST',
+        'growth_desc':     'yoy_price_change DESC NULLS LAST',
+        'price_desc':      'avg_asking_rate DESC NULLS LAST',
+        'price_asc':       'avg_asking_rate ASC NULLS LAST',
+        'absorption_desc': 'absorption_mw DESC NULLS LAST',
         'facilities_desc': 'facility_count DESC NULLS LAST',
+        'pipeline_desc':   'under_construction_mw DESC NULLS LAST',
     }
     order = SORT_MAP.get(sort_by, 'vacancy_rate ASC NULLS LAST')
     try:
@@ -32,14 +31,19 @@ def get_market_intelligence():
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
         cur.execute(f"""
             SELECT id, market_name, region, facility_count, total_mw,
-                   vacancy_rate, growth_rate, power_constraints,
-                   key_operators, trends, last_updated
+                   vacancy_rate, growth_rate, avg_asking_rate, asking_rate_unit,
+                   yoy_price_change, absorption_mw, absorption_period,
+                   under_construction_mw, pre_leased_pct,
+                   power_constraints, key_operators, trends, last_updated
             FROM market_intelligence {where} ORDER BY {order}
         """, params)
         rows = cur.fetchall()
         cur.execute("""
-            SELECT COUNT(*) AS total_markets, AVG(vacancy_rate) AS avg_vacancy,
-                   SUM(total_mw) AS total_mw, MAX(growth_rate) AS max_growth
+            SELECT COUNT(*) AS total_markets,
+                   AVG(vacancy_rate) AS avg_vacancy,
+                   SUM(total_mw) AS total_mw,
+                   SUM(absorption_mw) AS total_absorption,
+                   SUM(under_construction_mw) AS total_pipeline
             FROM market_intelligence
         """)
         agg = cur.fetchone()
@@ -49,32 +53,50 @@ def get_market_intelligence():
 
         markets = []
         for r in rows:
-            v = r.get('vacancy_rate')
-            g = r.get('growth_rate')
+            v   = float(r.get('vacancy_rate') or 0)
+            yoy = float(r.get('yoy_price_change') or 0)
             markets.append({
                 **dict(r),
-                'market': r['market_name'],
-                'vacancy_display': f"{float(v)*100:.1f}%" if v is not None else 'N/A',
-                'growth_display':  f"+{float(g)*100:.1f}%" if g and g > 0 else (f"{float(g)*100:.1f}%" if g is not None else 'N/A'),
+                'market':            r['market_name'],
+                'vacancy_rate':      v,
+                'vacancy_display':   f"{v:.1f}%",
+                'avg_asking_rate':   r.get('avg_asking_rate'),
+                'asking_rate_unit':  r.get('asking_rate_unit') or '$/kW/mo',
+                'yoy_price_change':  yoy,
+                'yoy_display':       f"+{yoy:.1f}%" if yoy > 0 else f"{yoy:.1f}%",
+                'absorption_mw':     r.get('absorption_mw') or 0,
+                'absorption_period': r.get('absorption_period') or 'H1 2025',
+                'under_construction_mw': r.get('under_construction_mw') or 0,
+                'pre_leased_pct':    r.get('pre_leased_pct') or 0,
+                'num_facilities':    r.get('facility_count') or 0,
+                'inventory_mw':      r.get('total_mw') or 0,
+                'top_providers':     [p.strip() for p in (r.get('key_operators') or '').split(',')][:5],
             })
 
-        valid_v = [r for r in rows if r.get('vacancy_rate') is not None]
-        valid_g = [r for r in rows if r.get('growth_rate') is not None]
-        tightest = min(valid_v, key=lambda r: r['vacancy_rate'])['market_name'] if valid_v else 'N/A'
-        fastest  = max(valid_g, key=lambda r: r['growth_rate'])['market_name'] if valid_g else 'N/A'
-        av = agg.get('avg_vacancy') if agg else None
-        tm = float(agg.get('total_mw') or 0) if agg else 0
+        valid_v = [m for m in markets if m['vacancy_rate'] > 0]
+        valid_g = [m for m in markets if m['yoy_price_change'] > 0]
+        tightest = min(valid_v, key=lambda m: m['vacancy_rate'])['market_name'] if valid_v else 'N/A'
+        fastest  = max(valid_g, key=lambda m: m['yoy_price_change'])['market_name'] if valid_g else 'N/A'
+        av  = float(agg.get('avg_vacancy') or 0) if agg else 0
+        tm  = float(agg.get('total_mw') or 0) if agg else 0
+        tab = float(agg.get('total_absorption') or 0) if agg else 0
+        tpp = float(agg.get('total_pipeline') or 0) if agg else 0
 
         return jsonify({
-            'success': True,
-            'markets': markets,
-            'count': len(markets),
+            'success':     True,
+            'markets':     markets,
+            'count':       len(markets),
+            'last_updated': 'CBRE/JLL H1 2025',
             'summary': {
-                'total_markets':   len(markets),
-                'avg_vacancy':     f"{float(av)*100:.1f}%" if av else 'N/A',
-                'total_mw':        round(tm, 0),
-                'tightest_market': tightest,
-                'fastest_growing': fastest,
+                'total_markets':        len(markets),
+                'avg_vacancy':          f"{av:.1f}%",
+                'total_inventory_mw':   round(tm, 0),
+                'total_absorption_mw':  round(tab, 0),
+                'total_pipeline_mw':    round(tpp, 0),
+                'tightest_market':      tightest,
+                'tightest_vacancy':     f"{min(valid_v, key=lambda m: m['vacancy_rate'])['vacancy_rate']:.1f}%" if valid_v else 'N/A',
+                'fastest_growing':      fastest,
+                'fastest_yoy':          f"+{max(valid_g, key=lambda m: m['yoy_price_change'])['yoy_price_change']:.1f}%" if valid_g else 'N/A',
             },
             'regions': regions,
             'filter':  region or 'all',
@@ -83,7 +105,6 @@ def get_market_intelligence():
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e), 'markets': []}), 500
-
 
 @market_intel_neon_bp.route('/api/market-intelligence/<market_name>', methods=['GET'])
 def get_market_detail(market_name):

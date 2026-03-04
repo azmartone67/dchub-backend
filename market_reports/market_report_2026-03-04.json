@@ -1,6 +1,6 @@
 {
   "report_date": "2026-03-04",
-  "generated_at": "2026-03-04T10:34:07.433036",
+  "generated_at": "2026-03-04T10:44:11.545471",
   "summary": {
     "total_facilities": 11563,
     "total_providers": 3971,
@@ -89,6 +89,11 @@
   ],
   "recent_news": [
     {
+      "title": "Users fume over Outlook.com email 'carnage'",
+      "source": "The Register DC",
+      "date": "2026-03-04T10:31:21"
+    },
+    {
       "title": "Estonia deploys 105 MW of solar in 2025",
       "source": "PV Magazine",
       "date": "2026-03-04T10:02:33"
@@ -132,11 +137,6 @@
       "title": "Group Surya commissions 500 MW G12R module line in India",
       "source": "PV Magazine",
       "date": "2026-03-04T09:15:58"
-    },
-    {
-      "title": "Trane Technologies: Liquid Cooling Firm LiquidStack Acquired To Expand Data Center Thermal Management Solutions",
-      "source": "Pulse 2.0",
-      "date": "2026-03-04T09:13:18"
     }
   ],
   "data_sources": [
