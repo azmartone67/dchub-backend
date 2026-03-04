@@ -1,19 +1,19 @@
 {
   "report_date": "2026-03-04",
-  "generated_at": "2026-03-04T06:39:36.432177",
+  "generated_at": "2026-03-04T09:33:09.892608",
   "summary": {
-    "total_facilities": 11552,
-    "total_providers": 3964,
+    "total_facilities": 11563,
+    "total_providers": 3971,
     "countries_covered": 177,
-    "total_power_mw": 73941.0,
-    "total_deals": 1289,
-    "total_deal_value_usd": 3187559600000.0
+    "total_power_mw": 83386.0,
+    "total_deals": 1324,
+    "total_deal_value_usd": 3311561300000.0
   },
   "market_highlights": [
-    "DC Hub tracks 11,552 data center facilities globally",
-    "Coverage spans 177 countries with 3964 providers",
-    "Combined capacity: 73,941 MW",
-    "M&A database: 1289 transactions worth $3187.6B+"
+    "DC Hub tracks 11,563 data center facilities globally",
+    "Coverage spans 177 countries with 3971 providers",
+    "Combined capacity: 83,386 MW",
+    "M&A database: 1324 transactions worth $3311.6B+"
   ],
   "recent_deals": [
     {
@@ -89,54 +89,54 @@
   ],
   "recent_news": [
     {
+      "title": "Group Surya commissions 500 MW G12R module line in India",
+      "source": "PV Magazine",
+      "date": "2026-03-04T09:15:58"
+    },
+    {
+      "title": "Trane Technologies: Liquid Cooling Firm LiquidStack Acquired To Expand Data Center Thermal Management Solutions",
+      "source": "Pulse 2.0",
+      "date": "2026-03-04T09:13:18"
+    },
+    {
+      "title": "S.K. Telecom and Panmnesia Partner to Improve Efficiency in A.I. Data Centers",
+      "source": "thelec.net",
+      "date": "2026-03-04T09:12:57"
+    },
+    {
+      "title": "Huawei pushes networks toward AI-driven intelligence at MWC Barcelona 2026",
+      "source": "The Register DC",
+      "date": "2026-03-04T09:00:11"
+    },
+    {
+      "title": "ZTE and XLSMART Set New Benchmark for Large-Scale Network Rollout Across Indonesia by Deploying 20,000+ Sites in Eight Months",
+      "source": "The Register DC",
+      "date": "2026-03-04T08:57:36"
+    },
+    {
+      "title": "ZTE's Fang Hui: AI x Optical, Unveiling a New Era of Connected Intelligence",
+      "source": "The Register DC",
+      "date": "2026-03-04T08:18:37"
+    },
+    {
+      "title": "Equinix and CPP: Committed to Digital Infrastructure",
+      "source": "Technology Magazine",
+      "date": "2026-03-04T07:53:08"
+    },
+    {
+      "title": "One vendor doesn't mind high RAM prices: VMware",
+      "source": "The Register DC",
+      "date": "2026-03-04T06:45:24"
+    },
+    {
+      "title": "Nvidia: $2 Billion Investment In Lumentum To Advance AI Data Center Optics",
+      "source": "Pulse 2.0",
+      "date": "2026-03-04T06:08:18"
+    },
+    {
       "title": "Google comes forward as company behind Hermantown data center",
       "source": "WDIO.com",
       "date": "2026-03-04T05:41:03"
-    },
-    {
-      "title": "Birmingham City Council votes to pause new data center applications for six months",
-      "source": "WBRC",
-      "date": "2026-03-04T04:37:00"
-    },
-    {
-      "title": "European Space Agency and China both achieve gigabit links to geostationary satellites",
-      "source": "The Register DC",
-      "date": "2026-03-04T04:31:12"
-    },
-    {
-      "title": "Zach Colletti: Florida must embrace data centers to lead the AI economy",
-      "source": "Florida Politics",
-      "date": "2026-03-04T04:09:52"
-    },
-    {
-      "title": "Microsoft hosts discussions on Gaines Township data center while working to acquire residential properties",
-      "source": "FOX 17 West Michigan News",
-      "date": "2026-03-04T03:34:28"
-    },
-    {
-      "title": "This AI Data Center REIT Just Guided for Its First $10 Billion Revenue Year. Is It a Buy for 2026?",
-      "source": "The Globe and Mail",
-      "date": "2026-03-04T01:20:51"
-    },
-    {
-      "title": "SK Telecom and partners plan modular AI data centers built like building blocks",
-      "source": "Stock Titan",
-      "date": "2026-03-04T01:00:54"
-    },
-    {
-      "title": "Birmingham City Council approves temporary moratorium on new hyperscale data centers",
-      "source": "CBS 42",
-      "date": "2026-03-04T00:51:49"
-    },
-    {
-      "title": "A Holistic Approach to Data Center Development: Navigating Power Supply Challenges",
-      "source": "JD Supra",
-      "date": "2026-03-04T00:30:28"
-    },
-    {
-      "title": "Google data center divides Hermantown: one side sees opportunity, other sees threat",
-      "source": "Northern News Now",
-      "date": "2026-03-04T00:27:00"
     }
   ],
   "data_sources": [
