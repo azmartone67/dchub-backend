@@ -9516,6 +9516,13 @@ def get_stats():
         stats['total_power_mw'] = round(c.fetchone()[0] or 0, 1)
         stats['total_mw'] = stats['total_power_mw']  # alias for frontends
         
+        # total_substations
+        try:
+            c.execute("SELECT COUNT(*) FROM substations")
+            stats['total_substations'] = c.fetchone()[0] or 0
+        except Exception:
+            stats['total_substations'] = 0
+        
         c.execute(f"SELECT COUNT(DISTINCT provider) FROM facilities WHERE provider != '' AND provider IS NOT NULL {RAILWAY_EXCLUSION}")
         stats['total_providers'] = c.fetchone()[0] or 0
         
