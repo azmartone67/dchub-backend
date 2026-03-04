@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-DC Hub External Scheduler v3.0
+DC Hub External Scheduler v3.1
 ===============================
 Triggers discovery jobs via HTTP POST to the DC Hub API /api/jobs/* endpoints.
 Run this anywhere: local machine, Railway, GitHub Actions, or cron.
@@ -17,14 +17,15 @@ Environment:
   DCHUB_ADMIN_KEY   — Admin API key for authenticated endpoints (required)
 
 Schedule (all times UTC):
-  News/RSS Refresh     Every 4 hours     (0, 4, 8, 12, 16, 20)
-  Facility Discovery   Every 6 hours     (1, 7, 13, 19)
+  News/RSS Refresh     Every 4 hours     (0, 4, 8, 12, 16, 20) :00
+  Facility Discovery   Every 6 hours     (1, 7, 13, 19) :00
   Auto-Approve         Every 4 hours     (0, 4, 8, 12, 16, 20) :15
-  Global Intelligence  Twice daily       (6, 18)
-  AI Ecosystem Agent   Every 6 hours     (3, 9, 15, 21)
-  AI Outreach Agent    Every 8 hours     (5, 13, 21)
-  Evolution Engine     Twice daily       (8, 20)
-  Content Publishing   Daily             (11)
+  Global Intelligence  Twice daily       (6, 18) :00
+  AI Ecosystem Agent   Every 6 hours     (3, 9, 15, 21) :30
+  AI Outreach Agent    Every 8 hours     (5, 13, 21) :00
+  Evolution Engine     Twice daily       (8, 20) :00
+  Auto-Pilot (Deals)   Twice daily       (9, 21) :30  ← after news refresh
+  Content Publishing   Daily             (11) :00
   Neon DB Backup       Daily             (3) :00
   Keep-Alive           Every 5 minutes   (continuous)
 """
@@ -113,6 +114,14 @@ JOBS = {
         'minute': 0,
         'timeout': 120,
     },
+    'autopilot': {
+        'name': 'Auto-Pilot (Deals)',
+        'endpoint': '/api/jobs/autopilot',
+        'method': 'POST',
+        'hours': [9, 21],           # 2x/day, 90min after news refresh
+        'minute': 30,
+        'timeout': 300,
+    },
     'content': {
         'name': 'Content Publishing',
         'endpoint': '/api/jobs/content-publish',
@@ -120,14 +129,6 @@ JOBS = {
         'hours': [11],
         'minute': 0,
         'timeout': 120,
-    },
-    'autopilot': {
-        'name': 'Auto-Pilot',
-        'endpoint': '/api/jobs/autopilot',
-        'method': 'POST',
-        'hours': [2, 10, 16, 22],   # 4x/day, offset from news/evolution
-        'minute': 30,
-        'timeout': 300,
     },
     'backup': {
         'name': 'Neon DB Backup',
@@ -155,7 +156,7 @@ def api_call(endpoint, method='POST', timeout=60):
     url = API_BASE.rstrip('/') + endpoint
     headers = {
         'Content-Type': 'application/json',
-        'User-Agent': 'DCHub-Scheduler/3.0',
+        'User-Agent': 'DCHub-Scheduler/3.1',
     }
     if ADMIN_KEY:
         headers['X-Admin-Key'] = ADMIN_KEY
@@ -212,14 +213,13 @@ def run_job(key, job):
     if 200 <= status < 300:
         log.info(f"  ✅ {job['name']} completed in {elapsed}s (HTTP {status})")
         if isinstance(data, dict):
-            # Log key result fields
-            for k in ('new_articles', 'found', 'added', 'result', 'key', 'size_mb'):
+            for k in ('new_articles', 'found', 'added', 'result', 'key', 'size_mb', 'results'):
                 if k in data:
                     log.info(f"     {k}: {data[k]}")
     elif status == 0:
         log.error(f"  ❌ {job['name']} — connection failed: {data.get('error', 'unknown')}")
-    elif status == 401:
-        log.error(f"  🔒 {job['name']} — authentication failed (HTTP 401). Check DCHUB_ADMIN_KEY")
+    elif status in (401, 403):
+        log.error(f"  🔒 {job['name']} — authentication failed (HTTP {status}). Check DCHUB_ADMIN_KEY")
     elif status == 503:
         log.warning(f"  ⏸️ {job['name']} — service unavailable (HTTP 503)")
     else:
@@ -236,7 +236,7 @@ def run_all_due(window_minutes=5):
     ran = 0
     for key, job in JOBS.items():
         if key == 'keepalive':
-            continue  # Skip keep-alive in batch mode
+            continue
         if is_job_in_window(job, now, window_minutes):
             run_job(key, job)
             ran += 1
@@ -265,7 +265,7 @@ def show_status():
     now = datetime.now(timezone.utc)
 
     print(f"\n{'─' * 65}")
-    print(f"  DC Hub External Scheduler v3.0 Status")
+    print(f"  DC Hub External Scheduler v3.1 Status")
     print(f"  Time: {now.strftime('%Y-%m-%d %H:%M UTC')}")
     print(f"  API:  {API_BASE}")
     print(f"  Auth: {'✅ key set' if ADMIN_KEY else '❌ DCHUB_ADMIN_KEY not set'}")
@@ -296,7 +296,7 @@ def show_status():
 # ============================================================
 def scheduler_loop():
     """Main scheduler loop — checks every 60s, keep-alive every 5 min."""
-    log.info(f"DC Hub External Scheduler v3.0 starting")
+    log.info(f"DC Hub External Scheduler v3.1 starting")
     log.info(f"  API:  {API_BASE}")
     log.info(f"  Jobs: {len(JOBS)}")
     log.info(f"  Auth: {'✅ key set' if ADMIN_KEY else '❌ DCHUB_ADMIN_KEY not set'}")
@@ -307,17 +307,15 @@ def scheduler_loop():
     if not check_health():
         log.warning("DC Hub API is not healthy — scheduler will continue but jobs may fail")
 
-    # Track what we've run to avoid double-triggers
     last_ran = {}
     keepalive_counter = 0
 
     while True:
         now = datetime.now(timezone.utc)
 
-        # Keep-alive every 5 minutes (runs on every 5th loop iteration)
+        # Keep-alive every 5 minutes
         if keepalive_counter % 5 == 0:
-            job = JOBS['keepalive']
-            run_job('keepalive', job)
+            run_job('keepalive', JOBS['keepalive'])
 
         keepalive_counter += 1
 
@@ -326,7 +324,6 @@ def scheduler_loop():
             if key == 'keepalive':
                 continue
 
-            # Create unique key per job per scheduled hour
             job_key = f"{key}:{now.strftime('%Y-%m-%d')}:{now.hour}"
             if is_job_in_window(job, now, window_minutes=3) and job_key not in last_ran:
                 run_job(key, job)
@@ -335,9 +332,8 @@ def scheduler_loop():
 
         # Clean old tracking entries at midnight
         if now.hour == 0 and now.minute < 2:
-            old_keys = [k for k in last_ran if not k.endswith(f":{now.strftime('%Y-%m-%d')}:{now.hour}")]
-            for k in old_keys:
-                del last_ran[k]
+            today = now.strftime('%Y-%m-%d')
+            last_ran = {k: v for k, v in last_ran.items() if today in k}
 
         time.sleep(60)
 
@@ -346,7 +342,7 @@ def scheduler_loop():
 # CLI
 # ============================================================
 def main():
-    parser = argparse.ArgumentParser(description='DC Hub External Scheduler v3.0')
+    parser = argparse.ArgumentParser(description='DC Hub External Scheduler v3.1')
     parser.add_argument('--once', action='store_true', help='Run all due jobs once and exit')
     parser.add_argument('--job', type=str, help=f'Run a specific job: {", ".join(JOBS.keys())}')
     parser.add_argument('--all', action='store_true', help='Run ALL jobs immediately')
@@ -383,7 +379,6 @@ def main():
         run_all_due(window_minutes=10)
         return
 
-    # Default: run the loop
     scheduler_loop()
 
 
