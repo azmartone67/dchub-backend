@@ -481,6 +481,10 @@ def protect_data(f):
     """
     @wraps(f)
     def decorated(*args, **kwargs):
+        # Origin bypass — dchub.cloud frontend passes through without data protection
+        origin = request.headers.get("Origin", "") or request.headers.get("Referer", "")
+        if "dchub.cloud" in origin:
+            return f(*args, **kwargs)
         api_key = (
             request.headers.get("X-API-Key")
             or request.headers.get("Authorization", "").replace("Bearer ", "")
