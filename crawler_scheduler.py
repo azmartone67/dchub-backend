@@ -202,85 +202,104 @@ def _run_knowledge_sync():
 # Map names to functions (includes manual-only crawlers)
 
 def _run_deals_crawler():
-    """Run AI deals discovery and save to Neon PostgreSQL."""
-    import os, re, hashlib, requests, psycopg2
+    """Run AI deals discovery using auto_pilot extractors, saving to Neon PostgreSQL."""
+    import os, hashlib, psycopg2, sys
     from datetime import datetime, timezone
+    sys.path.insert(0, '/home/runner/workspace')
 
-    logger.info("💼 Deals crawler starting...")
+    logger.info("💼 Deals crawler starting (Neon-backed)...")
 
-    FEEDS = [
-        "https://www.datacenterdynamics.com/rss/",
-        "https://www.datacenterknowledge.com/rss.xml",
-        "https://www.bisnow.com/national/news/data-center/rss",
-        "https://feeds.bloomberg.com/technology/news.rss",
-        "https://www.prnewswire.com/rss/news-releases-list.rss",
-        "https://www.businesswire.com/rss/home/?rss=G7",
-    ]
+    db_url = os.environ.get('DATABASE_URL') or os.environ.get('NEON_DATABASE_URL')
+    if not db_url or 'neon' not in db_url.lower() and 'postgresql' not in db_url.lower():
+        logger.error("💼 Deals crawler: No Neon DATABASE_URL found — aborting")
+        return
 
-    DEAL_KEYWORDS = [
-        'acqui', 'merger', 'acquisition', 'invest', 'joint venture', 'jv',
-        'data center', 'datacenter', 'colocation', 'hyperscale',
-        'billion', 'million', '$', 'deal', 'transaction', 'purchase',
-        'partnership', 'fund', 'equity', 'debt', 'lease', 'capex'
-    ]
-
-    VALUE_RE = re.compile(r'\$\s*([\d,.]+)\s*(billion|million|B|M)\b', re.IGNORECASE)
-    BUYER_RE = re.compile(
-        r'([\w\s/&,]+?)\s+(?:acquires?|buys?|invests?\s+in|partners?\s+with|closes?\s+|announces?|completes?)',
-        re.IGNORECASE
-    )
-
-    def extract_value_millions(text):
-        m = VALUE_RE.search(text)
-        if not m:
-            return None
-        num = float(m.group(1).replace(',', ''))
-        unit = m.group(2).lower()
-        return num * 1000 if unit in ('billion', 'b') else num
-
-    def extract_buyer(text):
-        m = BUYER_RE.search(text)
-        if m:
-            b = m.group(1).strip().rstrip(',')
-            if len(b) > 3 and len(b) < 80:
-                return b
-        return None
-
-    def is_deal_relevant(text):
-        tl = text.lower()
-        return sum(1 for kw in DEAL_KEYWORDS if kw in tl) >= 2
+    try:
+        # Use auto_pilot deal extractor
+        from auto_pilot import deal_extractor, capacity_extractor, _is_dc_relevant, _is_valid_company_name
+        logger.info("💼 Using auto_pilot extractors")
+    except Exception as e:
+        logger.warning(f"💼 auto_pilot extractors not available: {e}")
+        deal_extractor = None
 
     try:
         import feedparser
     except ImportError:
-        logger.warning("feedparser not available — skipping deals crawler")
-        return
+        logger.warning("💼 feedparser not available")
+        feedparser = None
 
-    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    FEEDS = [
+        "https://www.datacenterdynamics.com/rss/",
+        "https://www.datacenterknowledge.com/rss.xml",
+        "https://www.prnewswire.com/rss/news-releases-list.rss",
+        "https://www.businesswire.com/rss/home/?rss=G7",
+        "https://feeds.reuters.com/reuters/businessNews",
+    ]
+
+    import re
+    VALUE_RE = re.compile(r'\$\s*([\d,.]+)\s*(billion|million|B|M)\b', re.IGNORECASE)
+
+    def extract_value_m(text):
+        m = VALUE_RE.search(text)
+        if not m: return None
+        n = float(m.group(1).replace(',',''))
+        return n*1000 if m.group(2).lower() in ('billion','b') else n
+
+    def simple_extract(title):
+        """Fallback extractor if auto_pilot not available."""
+        tl = title.lower()
+        deal_kw = ['acqui','merger','invest','joint venture','data center','colocation','hyperscale','billion','million']
+        if sum(1 for k in deal_kw if k in tl) < 2:
+            return None
+        type_map = [('acqui','acquisition'),('merger','acquisition'),('joint venture','jv'),
+                    ('debt','debt'),('equity','equity'),('lease','lease'),('capex','capex')]
+        dtype = next((t for k,t in type_map if k in tl), 'investment')
+        # Extract buyer (first capitalized entity before verb)
+        m = re.search(r'^([A-Z][\w\s/&]+?)\s+(?:acquires?|invests?|announces?|closes?|completes?)', title)
+        buyer = m.group(1).strip() if m else None
+        if not buyer or len(buyer) < 3 or len(buyer) > 80: return None
+        return {'buyer': buyer, 'type': dtype, 'value': extract_value_m(title)}
+
+    conn = psycopg2.connect(db_url)
     cur = conn.cursor()
     saved = 0
 
     for feed_url in FEEDS:
         if _stop_event.is_set():
             break
+        if not feedparser:
+            break
         try:
             feed = feedparser.parse(feed_url)
-            for entry in feed.entries[:20]:
+            logger.info(f"💼 {feed_url.split('/')[2]}: {len(feed.entries)} entries")
+            for entry in feed.entries[:30]:
                 title = entry.get('title', '')
-                summary = entry.get('summary', '') or entry.get('description', '')
+                summary = entry.get('summary', '') or ''
                 text = f"{title} {summary}"
 
-                if not is_deal_relevant(text):
-                    continue
-
-                value_m = extract_value_millions(text)
-                buyer = extract_buyer(title) or extract_buyer(summary)
-
-                if not buyer or len(buyer) < 3:
-                    continue
-
-                # Generate stable ID
-                deal_id = hashlib.md5(f"{buyer}{title}".encode()).hexdigest()[:16]
+                # Use auto_pilot extractor if available
+                if deal_extractor:
+                    try:
+                        if not _is_dc_relevant(title):
+                            continue
+                        deal = deal_extractor.extract_deal(title)
+                        buyer = deal.get('buyer')
+                        if not buyer or not _is_valid_company_name(buyer):
+                            continue
+                        value_m = deal.get('value')
+                        dtype = deal.get('type', 'investment')
+                        confidence = deal.get('confidence', 0)
+                        if confidence < 60 or dtype == 'unknown':
+                            continue
+                    except Exception:
+                        continue
+                else:
+                    result = simple_extract(title)
+                    if not result:
+                        continue
+                    buyer = result['buyer']
+                    value_m = result['value']
+                    dtype = result['type']
 
                 # Parse date
                 published = entry.get('published_parsed')
@@ -291,45 +310,28 @@ def _run_deals_crawler():
                     deal_date = datetime.now(timezone.utc).strftime('%Y-%m-%d')
                     deal_year = datetime.now(timezone.utc).year
 
-                # Determine type
-                tl = text.lower()
-                if 'acqui' in tl or 'merger' in tl:
-                    deal_type = 'acquisition'
-                elif 'joint venture' in tl or ' jv ' in tl:
-                    deal_type = 'jv'
-                elif 'debt' in tl or 'loan' in tl or 'financ' in tl:
-                    deal_type = 'debt'
-                elif 'equity' in tl or 'invest' in tl:
-                    deal_type = 'equity'
-                elif 'lease' in tl:
-                    deal_type = 'lease'
-                elif 'capex' in tl or 'capital' in tl:
-                    deal_type = 'capex'
-                else:
-                    deal_type = 'investment'
+                deal_id = hashlib.md5(f"{buyer}{title[:50]}".encode()).hexdigest()[:16]
 
                 try:
                     cur.execute("""
                         INSERT INTO deals (id, date, year, buyer, seller, value, type, region, market, source_url, created_at, verified)
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), 0)
                         ON CONFLICT (id) DO NOTHING
-                    """, (
-                        deal_id, deal_date, deal_year,
-                        buyer[:100], 'Undisclosed',
-                        value_m, deal_type,
-                        None, None,
-                        entry.get('link', feed_url)[:500],
-                    ))
+                    """, (deal_id, deal_date, deal_year,
+                          buyer[:100], 'Undisclosed',
+                          value_m, dtype, None, None,
+                          entry.get('link', feed_url)[:500]))
                     if cur.rowcount:
                         saved += 1
+                        logger.info(f"   ✅ Deal: {buyer} ({dtype}, ${value_m}M)")
                 except Exception as e:
-                    logger.warning(f"Deal insert error: {e}")
+                    logger.warning(f"   Deal insert error: {e}")
                     conn.rollback()
 
         except Exception as e:
-            logger.warning(f"Feed error {feed_url}: {e}")
-        
-        time.sleep(2)  # Rate limit between feeds
+            logger.warning(f"   Feed error {feed_url.split('/')[2]}: {e}")
+
+        time.sleep(3)
 
     conn.commit()
     cur.close()
