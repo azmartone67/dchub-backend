@@ -793,18 +793,32 @@
         }
     </style>
 <script>
-// DC Hub Auth Sync — writes dchub_session from API so access gate recognizes logged-in users
+// DC Hub Auth Sync — sets window.currentUser and normalizes dchub_session
 (function() {
-  var token = localStorage.getItem('dchub_token');
-  if (!token) return; // anonymous, nothing to sync
-
+  // Try to get user from dchub_session first
   var session = {};
   try { session = JSON.parse(localStorage.getItem('dchub_session') || '{}'); } catch(e) {}
 
-  // If session already valid and not expired, skip fetch
-  if (session.tier && session.expires && new Date(session.expires) > new Date()) return;
+  // Normalize session — handle both raw user object and formatted {tier,expires} object
+  var plan = session.plan || (session.tier === 'pro' ? 'pro' : session.tier === 'enterprise' ? 'enterprise' : session.tier === 'registered' ? 'free' : null);
+  var token = session.token || localStorage.getItem('dchub_token');
 
-  // Fetch current user and write dchub_session
+  if (plan && token) {
+    // Rewrite session in correct format for access gate
+    var tier = plan === 'pro' ? 'pro' : plan === 'enterprise' ? 'enterprise' : 'registered';
+    localStorage.setItem('dchub_session', JSON.stringify({
+      tier: tier,
+      expires: new Date(Date.now() + 30 * 86400000).toISOString(),
+      email: session.email,
+      plan: plan
+    }));
+    localStorage.setItem('dchub_token', token);
+    window.currentUser = { plan: plan, email: session.email, tier: tier };
+    return;
+  }
+
+  // Fallback: fetch from API
+  if (!token) return;
   fetch('/api/auth/me', {
     headers: { 'Authorization': 'Bearer ' + token },
     credentials: 'include'
@@ -814,10 +828,10 @@
     if (!data || !data.plan) return;
     var tier = data.plan === 'pro' ? 'pro' : data.plan === 'enterprise' ? 'enterprise' : 'registered';
     var expires = new Date(Date.now() + 30 * 86400000).toISOString();
-    localStorage.setItem('dchub_session', JSON.stringify({ tier: tier, expires: expires, email: data.email }));
+    localStorage.setItem('dchub_session', JSON.stringify({ tier: tier, expires: expires, email: data.email, plan: data.plan }));
+    localStorage.setItem('dchub_token', token);
     localStorage.setItem('dchub_user', JSON.stringify(data));
     window.currentUser = data;
-    window.currentUser.plan = data.plan;
   })
   .catch(function() {});
 })();
