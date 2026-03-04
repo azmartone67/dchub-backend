@@ -792,6 +792,36 @@
             .sidebar, .stats-bar { display: none; }
         }
     </style>
+<script>
+// DC Hub Auth Sync — writes dchub_session from API so access gate recognizes logged-in users
+(function() {
+  var token = localStorage.getItem('dchub_token');
+  if (!token) return; // anonymous, nothing to sync
+
+  var session = {};
+  try { session = JSON.parse(localStorage.getItem('dchub_session') || '{}'); } catch(e) {}
+
+  // If session already valid and not expired, skip fetch
+  if (session.tier && session.expires && new Date(session.expires) > new Date()) return;
+
+  // Fetch current user and write dchub_session
+  fetch('/api/auth/me', {
+    headers: { 'Authorization': 'Bearer ' + token },
+    credentials: 'include'
+  })
+  .then(function(r) { return r.ok ? r.json() : null; })
+  .then(function(data) {
+    if (!data || !data.plan) return;
+    var tier = data.plan === 'pro' ? 'pro' : data.plan === 'enterprise' ? 'enterprise' : 'registered';
+    var expires = new Date(Date.now() + 30 * 86400000).toISOString();
+    localStorage.setItem('dchub_session', JSON.stringify({ tier: tier, expires: expires, email: data.email }));
+    localStorage.setItem('dchub_user', JSON.stringify(data));
+    window.currentUser = data;
+    window.currentUser.plan = data.plan;
+  })
+  .catch(function() {});
+})();
+</script>
 </head>
 <body>
     <header class="header">
