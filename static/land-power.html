@@ -1205,7 +1205,10 @@ async function loadDynamicLayers() {
 
 function toggleAccordion(header) {
     const accordion = header.parentElement;
-    accordion.classList.toggle('open');
+    const isOpen = accordion.classList.contains('open');
+    // Close all accordions first
+    document.querySelectorAll('.accordion').forEach(a => a.classList.remove('open'));
+    // Open clicked one only if it was closed
 }
 
 function toggleLayer(item) {
