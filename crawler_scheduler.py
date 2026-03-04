@@ -311,14 +311,14 @@ def _run_deals_crawler():
                 try:
                     cur.execute("""
                         INSERT INTO deals (id, date, year, buyer, seller, value, type, region, market, source_url, created_at, verified)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), false)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), 0)
                         ON CONFLICT (id) DO NOTHING
                     """, (
                         deal_id, deal_date, deal_year,
                         buyer[:100], 'Undisclosed',
                         value_m, deal_type,
                         None, None,
-                        entry.get('link', feed_url)[:500]
+                        entry.get('link', feed_url)[:500],
                     ))
                     if cur.rowcount:
                         saved += 1
