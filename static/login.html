@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Sign In — DC Hub</title>
+<script src="/js/dchub-auth.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:'Inter',-apple-system,sans-serif;background:#04080e;color:#f0f4f8;min-height:100vh;display:flex;align-items:center;justify-content:center}
@@ -55,9 +56,14 @@ input:focus{border-color:#6366f1}
   <div class="footer">Don't have an account? <a href="/pricing">Sign up free →</a></div>
 </div>
 <script>
-var REDIRECT = (new URLSearchParams(window.location.search).get('redirect')) || '/land-power-map';
+var REDIRECT = new URLSearchParams(window.location.search).get('redirect') || '/land-power';
 
-function doLogin() {
+// If already logged in, redirect immediately
+if (window.dchubAuth && window.dchubAuth.isLoggedIn()) {
+  window.location.href = REDIRECT;
+}
+
+async function doLogin() {
   var email = document.getElementById('email').value.trim();
   var password = document.getElementById('password').value;
   var btn = document.getElementById('login-btn');
@@ -65,32 +71,22 @@ function doLogin() {
   err.style.display = 'none';
   if (!email || !password) { showError('Please enter your email and password.'); return; }
   btn.disabled = true; btn.textContent = 'Signing in...';
-  fetch('/api/auth/login', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email: email, password: password })
-  })
-  .then(function(r) { return r.json(); })
-  .then(function(data) {
-    if (!data.success) { showError(data.error || 'Login failed.'); btn.disabled=false; btn.textContent='Sign In'; return; }
-    // Store token and user
-    localStorage.setItem('dchub_token', data.token);
-    localStorage.setItem('dchub_user', JSON.stringify(data.user));
-    // Write dchub_session so access gate recognizes plan
-    var tier = data.user.plan === 'pro' ? 'pro' : data.user.plan === 'enterprise' ? 'enterprise' : 'registered';
-    localStorage.setItem('dchub_session', JSON.stringify({
-      tier: tier,
-      expires: new Date(Date.now() + 30*86400000).toISOString(),
-      email: data.user.email
-    }));
-    window.location.href = REDIRECT;
-  })
-  .catch(function() { showError('Connection error. Please try again.'); btn.disabled=false; btn.textContent='Sign In'; });
+
+  // Use dchubAuth.login() — writes dchub_session correctly
+  var result = await window.dchubAuth.login(email, password);
+  if (!result.success) {
+    showError(result.error || 'Login failed.');
+    btn.disabled = false; btn.textContent = 'Sign In';
+    return;
+  }
+
+  // Redirect to original destination
+  window.location.href = REDIRECT;
 }
 
 function doGoogle() {
-  localStorage.setItem('dchub_last_page', REDIRECT);
   sessionStorage.setItem('dchub_redirect', REDIRECT);
+  localStorage.setItem('dchub_last_page', REDIRECT);
   window.location.href = '/api/auth/google/redirect?redirect=' + encodeURIComponent(REDIRECT);
 }
 
@@ -99,9 +95,7 @@ function showError(msg) {
   e.textContent = msg; e.style.display = 'block';
 }
 
-document.addEventListener('keydown', function(e) {
-  if (e.key === 'Enter') doLogin();
-});
+document.addEventListener('keydown', function(e) { if (e.key === 'Enter') doLogin(); });
 </script>
 </body>
 </html>

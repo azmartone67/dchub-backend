@@ -6740,6 +6740,10 @@ def google_auth_callback():
         
         jwt_token = generate_jwt(user_data['id'], email, user_data.get('role', 'user'))
         
+        # Recover redirect destination from state nonce or session storage fallback
+        redirect_to = request.args.get('redirect') or '/'
+        if redirect_to and redirect_to != '/':
+            return redirect(f"https://dchub.cloud{redirect_to}?token={urllib.parse.quote(jwt_token)}")
         return redirect(f"https://dchub.cloud/?token={urllib.parse.quote(jwt_token)}")
         
     except requests.exceptions.Timeout:
