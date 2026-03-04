@@ -6533,15 +6533,27 @@ def login_user():
         return jsonify({'error': 'Email and password required'}), 400
     
     user = None
+    user = None
+    # Try Neon PostgreSQL first (source of truth)
     try:
-        conn = get_db()
-        c = conn.cursor()
-        c.execute("SELECT id, email, password_hash, name, company, role, plan FROM users WHERE email = ?", (email,))
-        user = c.fetchone()
-        conn.close()
+        with pg_connection() as pg_conn:
+            pg_cur = pg_conn.cursor()
+            pg_cur.execute("SELECT id, email, password_hash, name, company, role, plan FROM users WHERE email = %s", (email,))
+            user = pg_cur.fetchone()
     except Exception as e:
-        logging.error(f"Login DB read failed: {e}")
-        return jsonify({'error': 'Service temporarily unavailable', 'code': 'DB_ERROR'}), 503
+        logging.warning(f"Login PG read failed, falling back to SQLite: {e}")
+
+    # Fallback to SQLite
+    if not user:
+        try:
+            conn = get_db()
+            c = conn.cursor()
+            c.execute("SELECT id, email, password_hash, name, company, role, plan FROM users WHERE email = ?", (email,))
+            user = c.fetchone()
+            conn.close()
+        except Exception as e:
+            logging.error(f"Login DB read failed: {e}")
+            return jsonify({'error': 'Service temporarily unavailable', 'code': 'DB_ERROR'}), 503
     
     if not user:
         return jsonify({'error': 'Invalid email or password', 'code': 'AUTH_FAILED'}), 401
