@@ -1216,25 +1216,37 @@ function toggleLayer(item) {
         console.warn('toggleLayer called with invalid item');
         return;
     }
-    
-    item.classList.toggle('active');
     const layerName = item.dataset.layer;
-    
-    if (!layerName) {
-        console.warn('toggleLayer: No layer name specified');
-        return;
+    if (!layerName) { console.warn('toggleLayer: No layer name specified'); return; }
+    if (!layers[layerName]) { console.warn('Layer not initialized'); return; }
+
+    const isActive = item.classList.contains('active');
+    const userPlan = (window.currentUser && window.currentUser.plan) ? window.currentUser.plan : 'free';
+
+    if (!isActive && userPlan === 'free') {
+        const activeLayers = document.querySelectorAll('.layer-item.active').length;
+        if (activeLayers >= 5) {
+            showUpgradePrompt();
+            return;
+        }
     }
-    
-    if (!layers[layerName]) {
-        console.warn(`Layer '${layerName}' not initialized`);
-        return;
-    }
-    
+
+    item.classList.toggle('active');
     if (item.classList.contains('active')) {
         map.addLayer(layers[layerName]);
     } else {
         map.removeLayer(layers[layerName]);
     }
+}
+
+function showUpgradePrompt() {
+    const existing = document.getElementById('upgrade-prompt');
+    if (existing) existing.remove();
+    const div = document.createElement('div');
+    div.id = 'upgrade-prompt';
+    div.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#1a1f2e;border:1px solid #f59e0b;border-radius:12px;padding:28px 32px;z-index:9999;max-width:360px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,0.6)';
+    div.innerHTML = '<div style="font-size:28px;margin-bottom:12px">⚡</div><div style="font-size:16px;font-weight:700;color:#fff;margin-bottom:8px">Free Plan Limit Reached</div><div style="font-size:13px;color:#9ca3af;margin-bottom:20px">Free accounts are limited to 5 layer selections. Upgrade to Pro for unlimited access.</div><a href="/pricing" style="display:inline-block;padding:10px 24px;background:#f59e0b;color:#000;font-weight:700;border-radius:8px;text-decoration:none;margin-right:8px">Upgrade to Pro</a><button onclick="document.getElementById('upgrade-prompt').remove()" style="padding:10px 16px;background:transparent;border:1px solid #374151;color:#9ca3af;border-radius:8px;cursor:pointer">Dismiss</button>';
+    document.body.appendChild(div);
 }
 
 function applyPreset(preset) {
