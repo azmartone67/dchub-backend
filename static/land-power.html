@@ -1452,25 +1452,16 @@ document.getElementById('market-search').addEventListener('input', e => {
 
 document.addEventListener('DOMContentLoaded', function() {
     initMap();
-    // Fetch current user plan
-    fetch('/api/auth/me', { credentials: 'include' })
-        .then(r => r.ok ? r.json() : null)
-        .then(data => {
-            if (data && data.plan) {
-                window.currentUser = data;
-            } else {
-                window.currentUser = { plan: 'free' };
-            }
-            applyFreeTierMapRestriction();
-        })
-        .catch(() => { window.currentUser = { plan: 'free' }; });
+    // Check plan from dchub_session (written by dchub-auth.js)
+    var _s = {}; try { _s = JSON.parse(localStorage.getItem('dchub_session') || '{}'); } catch(e) {}
+    window.currentUser = { plan: _s.plan || 'anonymous', tier: _s.tier || 'anonymous' };
+    applyFreeTierMapRestriction();
 });
 
 function applyFreeTierMapRestriction() {
-    var _session = {}; try { _session = JSON.parse(localStorage.getItem('dchub_session') || '{}'); } catch(e) {}
-    var _plan = _session.plan || (window.currentUser && window.currentUser.plan) || null;
-    if (!_plan) return;
-    if (_plan === 'pro' || _plan === 'enterprise') return;
+    var plan = (window.currentUser && window.currentUser.plan) || 'anonymous';
+    if (plan === 'anonymous') return;
+    if (plan === 'pro' || plan === 'enterprise') return;
     startPreviewCountdown();
 }
 
