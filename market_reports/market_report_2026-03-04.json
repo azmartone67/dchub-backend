@@ -1,6 +1,6 @@
 {
   "report_date": "2026-03-04",
-  "generated_at": "2026-03-04T09:33:09.892608",
+  "generated_at": "2026-03-04T10:34:07.433036",
   "summary": {
     "total_facilities": 11563,
     "total_providers": 3971,
@@ -89,6 +89,46 @@
   ],
   "recent_news": [
     {
+      "title": "Estonia deploys 105 MW of solar in 2025",
+      "source": "PV Magazine",
+      "date": "2026-03-04T10:02:33"
+    },
+    {
+      "title": "Building an Enterprise-Aligned Edge Strategy: Five Essentials for I&amp;O Leaders",
+      "source": "Data Center Knowledge",
+      "date": "2026-03-04T09:53:25"
+    },
+    {
+      "title": "Tencent Cloud launches availability zone in Frankfurt, Germany",
+      "source": "Data Center Dynamics",
+      "date": "2026-03-04T09:51:00"
+    },
+    {
+      "title": "Pharmaceutical giant Lilly launches Nvidia DGX B300 SuperPOD for AI-powered drug discovery",
+      "source": "Data Center Dynamics",
+      "date": "2026-03-04T09:38:11"
+    },
+    {
+      "title": "UK launches \u00a340m \u2018Moonshot\u2019 AI lab to challenge the US and China",
+      "source": "Capacity Media",
+      "date": "2026-03-04T09:35:43"
+    },
+    {
+      "title": "Cloud inquiry chair quits UK competition watchdog over glacial pace of reform",
+      "source": "The Register DC",
+      "date": "2026-03-04T09:33:28"
+    },
+    {
+      "title": "Colt, Microsoft launch agentic AI pricing engine",
+      "source": "Capacity Media",
+      "date": "2026-03-04T09:33:11"
+    },
+    {
+      "title": "Augusta County supervisors approve data center study",
+      "source": "The News Leader | Staunton, VA",
+      "date": "2026-03-04T09:31:00"
+    },
+    {
       "title": "Group Surya commissions 500 MW G12R module line in India",
       "source": "PV Magazine",
       "date": "2026-03-04T09:15:58"
@@ -97,46 +137,6 @@
       "title": "Trane Technologies: Liquid Cooling Firm LiquidStack Acquired To Expand Data Center Thermal Management Solutions",
       "source": "Pulse 2.0",
       "date": "2026-03-04T09:13:18"
-    },
-    {
-      "title": "S.K. Telecom and Panmnesia Partner to Improve Efficiency in A.I. Data Centers",
-      "source": "thelec.net",
-      "date": "2026-03-04T09:12:57"
-    },
-    {
-      "title": "Huawei pushes networks toward AI-driven intelligence at MWC Barcelona 2026",
-      "source": "The Register DC",
-      "date": "2026-03-04T09:00:11"
-    },
-    {
-      "title": "ZTE and XLSMART Set New Benchmark for Large-Scale Network Rollout Across Indonesia by Deploying 20,000+ Sites in Eight Months",
-      "source": "The Register DC",
-      "date": "2026-03-04T08:57:36"
-    },
-    {
-      "title": "ZTE's Fang Hui: AI x Optical, Unveiling a New Era of Connected Intelligence",
-      "source": "The Register DC",
-      "date": "2026-03-04T08:18:37"
-    },
-    {
-      "title": "Equinix and CPP: Committed to Digital Infrastructure",
-      "source": "Technology Magazine",
-      "date": "2026-03-04T07:53:08"
-    },
-    {
-      "title": "One vendor doesn't mind high RAM prices: VMware",
-      "source": "The Register DC",
-      "date": "2026-03-04T06:45:24"
-    },
-    {
-      "title": "Nvidia: $2 Billion Investment In Lumentum To Advance AI Data Center Optics",
-      "source": "Pulse 2.0",
-      "date": "2026-03-04T06:08:18"
-    },
-    {
-      "title": "Google comes forward as company behind Hermantown data center",
-      "source": "WDIO.com",
-      "date": "2026-03-04T05:41:03"
     }
   ],
   "data_sources": [

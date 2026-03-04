@@ -2908,9 +2908,7 @@ except Exception as e:
 
 try:
     from market_intelligence_api import market_intel_bp
-#   app.register_blueprint(market_intel_bp)  # disabled - using Neon version
-    from market_intelligence_neon import market_intel_neon_bp
-    app.register_blueprint(market_intel_neon_bp)
+    app.register_blueprint(market_intel_bp)
     logger.info("✅ Market Intelligence API registered")
     print("🚀 Market Intelligence API: ✅ Available")
     print("   📍 Endpoints: /api/market-intelligence, /api/market-intelligence/<market>")
@@ -10304,6 +10302,7 @@ DEALS_CACHE = BoundedCache(max_size=50, ttl=300)
 DEALS_CACHE_DURATION = 300  # 5 minutes cache
 
 @app.route('/api/deals', methods=['GET'])
+@require_plan('pro')
 @protect_data
 def get_deals():
     """Get data center deals/transactions - comprehensive database"""
@@ -10348,14 +10347,9 @@ def get_deals():
                     seller = row[4] or ''
                     if buyer.lower() in ['tbd', 'unknown', 'n/a', ''] or seller.lower() in ['tbd', 'unknown', 'n/a', '']:
                         continue
-                    val_m = float(row[5] or 0)
-                    val_display = f"${val_m/1000:.1f}B" if val_m >= 1000 else (f"${val_m:.0f}M" if val_m > 0 else None)
                     db_deals.append({
                         'id': row[0], 'date': row[1], 'year': row[2],
-                        'buyer': buyer, 'seller': seller,
-                        'value': val_m,
-                        'value_display': val_display,
-                        'value_confirmed': val_m > 0,
+                        'buyer': buyer, 'seller': seller, 'value': row[5],
                         'mw': row[6], 'type': row[7], 'region': row[8], 'market': row[9]
                     })
             existing_ids = {d['id'] for d in db_deals}
@@ -10836,6 +10830,7 @@ def get_markets():
     })
 
 @app.route('/api/pipeline', methods=['GET'])
+@require_plan('pro')
 def get_public_pipeline():
     """Public pipeline endpoint - returns construction/planning pipeline with curated + DB data"""
     projects = []
@@ -17167,71 +17162,6 @@ def debug_energy_version():
     except Exception as e:
         return {"error": str(e)}
 
-
-@app.route('/api/market-intelligence', methods=['GET'])
-def get_market_intelligence():
-    region  = request.args.get('region')
-    sort_by = request.args.get('sort', 'vacancy_asc')
-    SORT_MAP = {
-        'vacancy_asc':     'vacancy_rate ASC NULLS LAST',
-        'vacancy_desc':    'vacancy_rate DESC NULLS LAST',
-        'growth_desc':     'growth_rate DESC NULLS LAST',
-        'facilities_desc': 'facility_count DESC NULLS LAST',
-    }
-    order = SORT_MAP.get(sort_by, 'vacancy_rate ASC NULLS LAST')
-    try:
-        import psycopg2.extras
-        with pg_connection() as conn:
-            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-            conditions, params = [], []
-            if region and region.lower() != 'all':
-                conditions.append("region = %s")
-                params.append(region)
-            where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
-            cur.execute(f"""
-                SELECT id, market_name, region, facility_count, total_mw,
-                       vacancy_rate, growth_rate, power_constraints,
-                       key_operators, trends, last_updated
-                FROM market_intelligence {where} ORDER BY {order}
-            """, params)
-            rows = cur.fetchall()
-            cur.execute("""
-                SELECT COUNT(*) AS total_markets, AVG(vacancy_rate) AS avg_vacancy,
-                       SUM(total_mw) AS total_mw, MAX(growth_rate) AS max_growth
-                FROM market_intelligence
-            """)
-            agg = cur.fetchone()
-            cur.execute("SELECT DISTINCT region FROM market_intelligence WHERE region IS NOT NULL ORDER BY region")
-            regions = [r['region'] for r in cur.fetchall()]
-        markets = []
-        for r in rows:
-            v = r.get('vacancy_rate')
-            g = r.get('growth_rate')
-            markets.append({
-                **dict(r),
-                'vacancy_display': f"{float(v)*100:.1f}%" if v is not None else 'N/A',
-                'growth_display':  f"+{float(g)*100:.1f}%" if g and g > 0 else (f"{float(g)*100:.1f}%" if g is not None else 'N/A'),
-            })
-        valid_v = [r for r in rows if r.get('vacancy_rate') is not None]
-        valid_g = [r for r in rows if r.get('growth_rate') is not None]
-        tightest = min(valid_v, key=lambda r: r['vacancy_rate'])['market_name'] if valid_v else 'N/A'
-        fastest  = max(valid_g, key=lambda r: r['growth_rate'])['market_name'] if valid_g else 'N/A'
-        av = agg.get('avg_vacancy') if agg else None
-        tm = float(agg.get('total_mw') or 0) if agg else 0
-        return jsonify({
-            'success': True, 'markets': markets,
-            'summary': {
-                'total_markets':   agg.get('total_markets', len(rows)) if agg else len(rows),
-                'avg_vacancy':     f"{float(av)*100:.1f}%" if av else 'N/A',
-                'total_mw':        round(tm, 0),
-                'tightest_market': tightest,
-                'fastest_growing': fastest,
-            },
-            'regions': regions, 'filter': region or 'all', 'sort': sort_by,
-        })
-    except Exception as e:
-        logger.error(f"market-intelligence error: {e}")
-        return jsonify({'success': False, 'error': str(e), 'markets': []}), 500
 if __name__ == '__main__':
     print("🚀 DC Hub API v86 Starting...")
     print(f"📊 PDF Generation: {'✅ Available' if PDF_AVAILABLE else '❌ Disabled'}")
