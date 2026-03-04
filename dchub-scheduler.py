@@ -121,6 +121,14 @@ JOBS = {
         'minute': 0,
         'timeout': 120,
     },
+    'autopilot': {
+        'name': 'Auto-Pilot',
+        'endpoint': '/api/jobs/autopilot',
+        'method': 'POST',
+        'hours': [2, 10, 16, 22],   # 4x/day, offset from news/evolution
+        'minute': 30,
+        'timeout': 300,
+    },
     'backup': {
         'name': 'Neon DB Backup',
         'endpoint': '/api/jobs/backup',

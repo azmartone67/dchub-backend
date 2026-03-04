@@ -18055,32 +18055,119 @@ logger.info("SCHEDULER: Auth via X-Admin-Key header or ?admin_key= param (DCHUB_
 
 @app.route('/api/jobs/autopilot', methods=['POST'])
 def job_autopilot():
-    """Cron: Auto-Pilot -- deal discovery from news + facility updates"""
+    """Cron: Auto-Pilot -- deal discovery from RSS feeds, saves to Neon"""
     auth_err = _require_admin_key()
     if auth_err:
         return auth_err
     try:
         results = {}
+        import re, hashlib, psycopg2
+        from datetime import datetime as dt, timezone
+
         try:
-            from auto_pilot import auto_discover_from_news
-            news_result = auto_discover_from_news()
-            results['news_discovery'] = news_result
+            import feedparser
         except ImportError:
-            results['news_discovery'] = {'status': 'not_available'}
-        except Exception as e:
-            results['news_discovery'] = {'error': str(e)[:200]}
-        try:
-            conn = get_db()
-            c = conn.cursor()
-            total = c.execute("SELECT COUNT(*) FROM deals").fetchone()[0] or 0
-            conn.close()
-            results['deals_count'] = total
-        except Exception as e:
-            results['deals_error'] = str(e)[:200]
+            return jsonify({'success': False, 'job': 'autopilot', 'error': 'feedparser not installed'}), 503
+
+        FEEDS = [
+            "https://www.datacenterdynamics.com/rss/",
+            "https://www.datacenterknowledge.com/rss.xml",
+            "https://www.prnewswire.com/rss/news-releases-list.rss",
+            "https://www.businesswire.com/rss/home/?rss=G7",
+            "https://feeds.reuters.com/reuters/businessNews",
+        ]
+        DEAL_KW = ['acqui','merger','data center','datacenter','colocation','hyperscale',
+                   'billion','million','invest','joint venture','equity','debt','lease']
+        VALUE_RE = re.compile(r'\$\s*([\d,.]+)\s*(billion|million|B|M)', re.IGNORECASE)
+        BUYER_RE = re.compile(r'^([A-Z][\w\s/&,]+?)\s+(?:acquires?|buys?|invests?|announces?|closes?|completes?|partners?)', re.MULTILINE)
+        JUNK = {'undisclosed','unknown','tbd','n/a','the','a ','an '}
+
+        def val_m(t):
+            m = VALUE_RE.search(t)
+            if not m: return None
+            n = float(m.group(1).replace(',',''))
+            return round(n*1000 if m.group(2).lower() in ('billion','b') else n, 1)
+
+        def buyer(t):
+            m = BUYER_RE.search(t)
+            if m:
+                b = m.group(1).strip().rstrip(',')
+                if 4 <= len(b) <= 80 and not any(j in b.lower() for j in JUNK):
+                    return b
+            return None
+
+        def is_relevant(t):
+            tl = t.lower()
+            return sum(1 for k in DEAL_KW if k in tl) >= 2
+
+        def deal_type(t):
+            tl = t.lower()
+            for k,v in [('acqui','acquisition'),('merger','acquisition'),('joint venture','jv'),
+                        (' jv ','jv'),('debt','debt'),('loan','debt'),('financ','debt'),
+                        ('equity','equity'),('invest','equity'),('lease','lease'),('capex','capex')]:
+                if k in tl: return v
+            return 'investment'
+
+        db_url = os.environ.get('DATABASE_URL','')
+        if not db_url:
+            return jsonify({'success': False, 'error': 'No DATABASE_URL'}), 503
+
+        conn = psycopg2.connect(db_url)
+        cur = conn.cursor()
+        saved = skipped = 0
+
+        for feed_url in FEEDS:
+            try:
+                feed = feedparser.parse(feed_url)
+                for entry in feed.entries[:25]:
+                    title = entry.get('title','')
+                    summary = entry.get('summary','') or ''
+                    if not is_relevant(f"{title} {summary}"):
+                        skipped += 1
+                        continue
+                    b = buyer(title)
+                    if not b:
+                        skipped += 1
+                        continue
+                    v = val_m(f"{title} {summary}")
+                    dtype = deal_type(f"{title} {summary}")
+                    pub = entry.get('published_parsed')
+                    if pub:
+                        ddate = dt(*pub[:3]).strftime('%Y-%m-%d')
+                        dyear = pub[0]
+                    else:
+                        ddate = dt.now(timezone.utc).strftime('%Y-%m-%d')
+                        dyear = dt.now(timezone.utc).year
+                    did = hashlib.md5(f"{b}{title[:50]}".encode()).hexdigest()[:16]
+                    try:
+                        cur.execute("""
+                            INSERT INTO deals (id,date,year,buyer,seller,value,type,region,market,source_url,created_at,verified)
+                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),0)
+                            ON CONFLICT (id) DO NOTHING
+                        """, (did, ddate, dyear, b[:100], 'Undisclosed', v, dtype, None, None, entry.get('link',feed_url)[:500]))
+                        if cur.rowcount: saved += 1
+                    except Exception as ie:
+                        conn.rollback()
+                        logger.warning(f"Deal insert: {ie}")
+            except Exception as fe:
+                logger.warning(f"Feed error {feed_url}: {fe}")
+
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        # Get current Neon count
+        conn2 = psycopg2.connect(db_url)
+        cur2 = conn2.cursor()
+        cur2.execute("SELECT COUNT(*) FROM deals")
+        total = cur2.fetchone()[0]
+        cur2.close(); conn2.close()
+
+        results = {'saved': saved, 'skipped': skipped, 'total_neon': total, 'status': 'ok'}
         if 'autopilot' in _scheduler_registry:
             _scheduler_registry['autopilot']['last_run'] = datetime.utcnow().isoformat()
             _scheduler_registry['autopilot']['total_runs'] += 1
-        logger.info("JOB autopilot: ✅ %s", results)
+        logger.info("JOB autopilot: ✅ saved=%d total=%d", saved, total)
         return jsonify({'success': True, 'job': 'autopilot', 'results': results, 'ts': datetime.utcnow().isoformat()})
     except Exception as e:
         logger.error("JOB autopilot: ❌ %s", e)
