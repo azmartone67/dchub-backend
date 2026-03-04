@@ -1353,7 +1353,7 @@ IS_PRIMARY = IS_RAILWAY  # Railway is primary, runs all background tasks
 
 ENABLE_DISCOVERY_THREADS = IS_RAILWAY
 if IS_RAILWAY:
-    ENABLE_BACKGROUND_SCHEDULERS = True
+    ENABLE_BACKGROUND_SCHEDULERS = False  # DISABLED: all jobs handled by external scheduler service
     ENABLE_DISCOVERY_SCHEDULERS = False  # Disabled: managed by crawler_scheduler.py
     logger.info("🚂 RAILWAY ENVIRONMENT DETECTED -- Running as PRIMARY with all background tasks")
     logger.info("   📡 Discovery schedulers: ENABLED (KMZ + API auto-discovery)")
@@ -17371,8 +17371,8 @@ if __name__ == '__main__':
                 time.sleep(3600)
         
         alert_thread = threading.Thread(target=alert_checker_loop, daemon=True)
-        alert_thread.start()
-        print("📧 Alert Email Checker: ✅ Running (hourly, starts after 3min)")
+        # alert_thread.start()  # DISABLED: handled by external scheduler
+        # print("📧 Alert Email Checker: ✅ Running (hourly, starts after 3min)")
         
         def facility_discovery_loop():
             import time
