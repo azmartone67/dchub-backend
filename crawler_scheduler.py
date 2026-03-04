@@ -40,6 +40,7 @@ SCHEDULE = [
     (6,  18, "news",             "_run_news_crawler"),
     (10, 22, "energy_discovery", "_run_energy_discovery"),
     (14,  2, "knowledge_sync",   "_run_knowledge_sync"),
+    ( 8, 20, "deals",            "_run_deals_crawler"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -204,6 +205,7 @@ _RUNNERS = {
     "api_discovery":    _run_api_discovery,
     "energy_discovery": _run_energy_discovery,
     "knowledge_sync":   _run_knowledge_sync,
+    "deals":            _run_deals_crawler,
 }
 
 
@@ -352,3 +354,139 @@ def register_crawler_admin(app):
         return jsonify({"success": success, "message": message}), 200 if success else 409
     
     logger.info("📅 Crawler admin endpoints registered: /api/admin/crawler-status, /api/admin/crawler-run/<crawler_name>")
+
+
+def _run_deals_crawler():
+    """Run AI deals discovery and save to Neon PostgreSQL."""
+    import os, re, hashlib, requests, psycopg2
+    from datetime import datetime, timezone
+
+    logger.info("💼 Deals crawler starting...")
+
+    FEEDS = [
+        "https://www.datacenterdynamics.com/rss/",
+        "https://www.datacenterknowledge.com/rss.xml",
+        "https://www.bisnow.com/national/news/data-center/rss",
+        "https://feeds.bloomberg.com/technology/news.rss",
+        "https://www.prnewswire.com/rss/news-releases-list.rss",
+        "https://www.businesswire.com/rss/home/?rss=G7",
+    ]
+
+    DEAL_KEYWORDS = [
+        'acqui', 'merger', 'acquisition', 'invest', 'joint venture', 'jv',
+        'data center', 'datacenter', 'colocation', 'hyperscale',
+        'billion', 'million', '$', 'deal', 'transaction', 'purchase',
+        'partnership', 'fund', 'equity', 'debt', 'lease', 'capex'
+    ]
+
+    VALUE_RE = re.compile(r'\$\s*([\d,.]+)\s*(billion|million|B|M)\b', re.IGNORECASE)
+    BUYER_RE = re.compile(
+        r'([\w\s/&,]+?)\s+(?:acquires?|buys?|invests?\s+in|partners?\s+with|closes?\s+|announces?|completes?)',
+        re.IGNORECASE
+    )
+
+    def extract_value_millions(text):
+        m = VALUE_RE.search(text)
+        if not m:
+            return None
+        num = float(m.group(1).replace(',', ''))
+        unit = m.group(2).lower()
+        return num * 1000 if unit in ('billion', 'b') else num
+
+    def extract_buyer(text):
+        m = BUYER_RE.search(text)
+        if m:
+            b = m.group(1).strip().rstrip(',')
+            if len(b) > 3 and len(b) < 80:
+                return b
+        return None
+
+    def is_deal_relevant(text):
+        tl = text.lower()
+        return sum(1 for kw in DEAL_KEYWORDS if kw in tl) >= 2
+
+    try:
+        import feedparser
+    except ImportError:
+        logger.warning("feedparser not available — skipping deals crawler")
+        return
+
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    cur = conn.cursor()
+    saved = 0
+
+    for feed_url in FEEDS:
+        if _stop_event.is_set():
+            break
+        try:
+            feed = feedparser.parse(feed_url)
+            for entry in feed.entries[:20]:
+                title = entry.get('title', '')
+                summary = entry.get('summary', '') or entry.get('description', '')
+                text = f"{title} {summary}"
+
+                if not is_deal_relevant(text):
+                    continue
+
+                value_m = extract_value_millions(text)
+                buyer = extract_buyer(title) or extract_buyer(summary)
+
+                if not buyer or len(buyer) < 3:
+                    continue
+
+                # Generate stable ID
+                deal_id = hashlib.md5(f"{buyer}{title}".encode()).hexdigest()[:16]
+
+                # Parse date
+                published = entry.get('published_parsed')
+                if published:
+                    deal_date = datetime(*published[:3]).strftime('%Y-%m-%d')
+                    deal_year = published[0]
+                else:
+                    deal_date = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+                    deal_year = datetime.now(timezone.utc).year
+
+                # Determine type
+                tl = text.lower()
+                if 'acqui' in tl or 'merger' in tl:
+                    deal_type = 'acquisition'
+                elif 'joint venture' in tl or ' jv ' in tl:
+                    deal_type = 'jv'
+                elif 'debt' in tl or 'loan' in tl or 'financ' in tl:
+                    deal_type = 'debt'
+                elif 'equity' in tl or 'invest' in tl:
+                    deal_type = 'equity'
+                elif 'lease' in tl:
+                    deal_type = 'lease'
+                elif 'capex' in tl or 'capital' in tl:
+                    deal_type = 'capex'
+                else:
+                    deal_type = 'investment'
+
+                try:
+                    cur.execute("""
+                        INSERT INTO deals (id, date, year, buyer, seller, value, type, region, market, source_url, created_at, verified)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), false)
+                        ON CONFLICT (id) DO NOTHING
+                    """, (
+                        deal_id, deal_date, deal_year,
+                        buyer[:100], 'Undisclosed',
+                        value_m, deal_type,
+                        None, None,
+                        entry.get('link', feed_url)[:500]
+                    ))
+                    if cur.rowcount:
+                        saved += 1
+                except Exception as e:
+                    logger.warning(f"Deal insert error: {e}")
+                    conn.rollback()
+
+        except Exception as e:
+            logger.warning(f"Feed error {feed_url}: {e}")
+        
+        time.sleep(2)  # Rate limit between feeds
+
+    conn.commit()
+    cur.close()
+    conn.close()
+    logger.info(f"💼 Deals crawler done — {saved} new deals saved to Neon")
