@@ -112,6 +112,10 @@ const INLINE_DISCOVERY = {
       "defaultOutputModes": ["text"]
     }, null, 2)
   },
+  '/.well-known/mcp-registry-auth': {
+    contentType: 'text/plain; charset=utf-8',
+    body: `v=MCPv1; k=ed25519; p=8LE9YOct4SKYuIJT8JGMK6z9lhfPMbCM5pQCp5FTRBg=`
+  },
   '/.well-known/security.txt': {
     contentType: 'text/plain; charset=utf-8',
     body: `Contact: mailto:security@dchub.cloud\nPreferred-Languages: en\nCanonical: https://dchub.cloud/.well-known/security.txt\nPolicy: https://dchub.cloud/terms\nExpires: 2027-01-01T00:00:00.000Z`
