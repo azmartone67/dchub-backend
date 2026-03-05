@@ -459,8 +459,17 @@ def article_to_deal(article: Dict) -> Optional[Dict]:
     # Skip if buyer looks like a parsed headline fragment
     if len(buyer) < 2 or buyer.lower() in ['it', 'a', 'the', 'this', 'that', 'deal', 'billion']:
         return None
+    if any(w in buyer.lower() for w in ['deal', ' bn ', 'bn deal', 'expand power', 'rootmetrics']):
+        return None
+    if len(buyer) > 60:
+        return None
     
     value = parse_value_millions(combined)
+    if value and value > 50000:
+        return None
+    # Cap value at $50B (50000M) to prevent CapEx/Stargate inflation
+    if value and value > 50000:
+        return None
     mw = parse_mw(combined)
     deal_type = parse_deal_type(combined)
     region = detect_region(combined)
