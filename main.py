@@ -1087,6 +1087,11 @@ def handle_well_known():
     if path == '/.well-known/mcp-registry-auth':
         return Response("v=MCPv1; k=ed25519; p=8LE9YOct4SKYuIJT8JGMK6z9lhfPMbCM5pQCp5FTRBg=", mimetype="text/plain")
 
+# Belt-and-suspenders: explicit route in case before_request is bypassed
+@app.route('/.well-known/mcp-registry-auth', methods=['GET'])
+def well_known_mcp_registry_auth():
+    return Response("v=MCPv1; k=ed25519; p=8LE9YOct4SKYuIJT8JGMK6z9lhfPMbCM5pQCp5FTRBg=", mimetype="text/plain")
+
 APP_VERSION = '2.5.2'
 STARTUP_COMPLETE = False
 
