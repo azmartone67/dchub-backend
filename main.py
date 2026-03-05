@@ -1084,6 +1084,8 @@ def handle_well_known():
         return jsonify({"name":"DC Hub Intelligence","description":"Live intelligence layer for the global data center market. 20,000+ facilities across 140+ countries.","url":"https://dchub.cloud","version":"1.0.0","capabilities":{"streaming":True,"pushNotifications":False},"skills":[{"id":"facility-search","name":"Data Center Search","description":"Search and filter 20,000+ facilities worldwide"},{"id":"deal-tracker","name":"M&A Deal Tracker","description":"Track transactions in real-time"},{"id":"market-intelligence","name":"Market Intelligence","description":"AI-generated market reports"},{"id":"site-scoring","name":"Site Scoring","description":"Evaluate locations for data center suitability"}],"authentication":{"schemes":["api_key"]},"provider":{"organization":"DC Hub","url":"https://dchub.cloud"},"defaultInputModes":["text"],"defaultOutputModes":["text"]})
     if path == '/.well-known/security.txt':
         return Response("Contact: mailto:security@dchub.cloud\nPreferred-Languages: en\nCanonical: https://dchub.cloud/.well-known/security.txt\nPolicy: https://dchub.cloud/terms\nExpires: 2027-01-01T00:00:00.000Z", mimetype="text/plain")
+    if path == '/.well-known/mcp-registry-auth':
+        return Response("v=MCPv1; k=ed25519; p=8LE9YOct4SKYuIJT8JGMK6z9lhfPMbCM5pQCp5FTRBg=", mimetype="text/plain")
 
 APP_VERSION = '2.5.2'
 STARTUP_COMPLETE = False
