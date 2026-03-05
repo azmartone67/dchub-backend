@@ -25,3 +25,4 @@ bash scripts/check_ai_tracking.sh
 ## Notes
 - `ai_tracking_diagnostic.py` has a `FIX_DATE` variable at the top — update it to match your last deployment date for accurate pre/post comparisons
 - Both scripts are read-only — they don't modify any data
+# trigger redeploy Thu Mar  5 09:01:54 AM UTC 2026
