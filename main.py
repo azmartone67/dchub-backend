@@ -3776,7 +3776,6 @@ def grid_demand():
 
 
 @app.route('/api/grid/fuel-mix', methods=['GET'])
-@require_plan('pro')
 def grid_fuel_mix():
     """Get current generation by fuel type"""
     iso = request.args.get('iso', '').upper()
@@ -3934,7 +3933,6 @@ def grid_supported_isos():
     })
 
 @app.route('/api/grid/summary', methods=['GET'])
-@require_plan('pro')
 def grid_summary():
     """Get summary of available grid data"""
     caiso_demand = gridstatus_cached('caiso_demand', lambda: None)
