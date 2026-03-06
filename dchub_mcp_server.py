@@ -41,7 +41,7 @@ mcp = FastMCP("DC Hub Nexus", stateless_http=True, json_response=True)
 # HELPERS
 # =============================================================================
 
-_http = httpx.Client(base_url=DCHUB_API_BASE, timeout=30.0, headers={"Referer": "https://dchub.cloud", "X-Forwarded-Host": "dchub.cloud", "User-Agent": "DCHub-MCP/1.26.0"})
+_http = httpx.Client(base_url=DCHUB_API_BASE, timeout=30.0, headers={"Referer": "https://dchub.cloud", "X-Forwarded-Host": "dchub.cloud", "User-Agent": "DCHub-MCP/1.26.0", "X-Internal-Key": "dchub-internal-sync-2026"})
 _request_log = []
 
 
