@@ -18518,6 +18518,30 @@ import os as _os
 if _os.environ.get("RAILWAY_ENVIRONMENT") or _os.environ.get("PORT"):
     _start_mcp_thread()
 
+
+@app.route('/api/v1/facilities/<facility_id>', methods=['GET'])
+def get_facility_by_id(facility_id):
+    """Get a single facility by ID — used by MCP get_facility tool."""
+    conn = None
+    try:
+        conn = get_read_db()
+        c = conn.cursor()
+        c.execute("""
+            SELECT id, name, provider, city, state, country, region,
+                   latitude, longitude, power_mw, status, tier_level,
+                   address, source, created_at
+            FROM facilities WHERE id = %s LIMIT 1
+        """, (facility_id,))
+        row = c.fetchone()
+        if not row:
+            return jsonify({"success": False, "error": "Facility not found", "id": facility_id}), 404
+        cols = [d[0] for d in c.description]
+        return jsonify({"success": True, "data": dict(zip(cols, row))})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if conn: conn.close()
+
 # =============================================================================
 # SITE SCORE ENDPOINT — MCP analyze_site tool
 # Combines nearby facilities, substations, connectivity, and state-level risk
