@@ -18494,3 +18494,26 @@ def track_worker_request():
         return jsonify({"status": "tracked", "platform": platform}), 200
     except Exception as e:
         return jsonify({"status": "error", "msg": str(e)[:100]}), 200
+
+# =============================================================================
+# MCP SERVER — UVICORN THREAD (Railway-compatible, no subprocess needed)
+# Starts dchub_mcp_server on port 8888 in a daemon thread when running on Railway
+# =============================================================================
+def _start_mcp_thread():
+    import threading, time, uvicorn
+    def _run():
+        try:
+            from dchub_mcp_server import mcp as _fastmcp
+            _asgi_app = _fastmcp.streamable_http_app()
+            logger.info("🚀 Starting MCP server on port 8888 (thread)...")
+            uvicorn.run(_asgi_app, host="127.0.0.1", port=8888, log_level="warning")
+        except Exception as e:
+            logger.error(f"❌ MCP thread failed: {e}")
+    t = threading.Thread(target=_run, daemon=True, name="mcp-uvicorn")
+    t.start()
+    logger.info("✅ MCP uvicorn thread launched")
+
+# Only start MCP thread when running under gunicorn/Railway (not during imports)
+import os as _os
+if _os.environ.get("RAILWAY_ENVIRONMENT") or _os.environ.get("PORT"):
+    _start_mcp_thread()
