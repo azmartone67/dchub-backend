@@ -41,7 +41,7 @@ mcp = FastMCP("DC Hub Nexus", stateless_http=True, json_response=True)
 # HELPERS
 # =============================================================================
 
-_http = httpx.Client(base_url=DCHUB_API_BASE, timeout=30.0)
+_http = httpx.Client(base_url=DCHUB_API_BASE, timeout=30.0, headers={"Referer": "https://dchub.cloud", "X-Forwarded-Host": "dchub.cloud", "User-Agent": "DCHub-MCP/1.26.0"})
 _request_log = []
 
 
@@ -132,8 +132,18 @@ async def search_facilities(
         "tier": tier if tier else None,
         "limit": min(limit, 100), "offset": offset,
     }.items() if v}
+    # Build smart query: combine free-text with location fields
+    q_parts = [v for k, v in [
+        ("q", query), ("city", city), ("state", state),
+        ("country", country), ("operator", operator)
+    ] if v]
+    search_params = {k: v for k, v in {
+        "q": " ".join(q_parts) if q_parts else "",
+        "country": country, "state": state,
+        "limit": min(limit, 100), "offset": offset,
+    }.items() if v}
     _track("search_facilities", params)
-    result = _api_get("/api/v1/facilities", params)
+    result = _api_get("/api/v1/search", search_params)
     return json.dumps(result, indent=2)
 
 
@@ -170,7 +180,7 @@ async def get_facility(
         "nearby": include_nearby, "power": include_power,
     }.items() if v}
     _track("get_facility", {"facility_id": facility_id, **params})
-    result = _api_get(f"/api/v1/facilities/{facility_id}", params)
+    result = _api_get(f"/api/v1/facilities/{facility_id}", params) if False else _api_get("/api/v1/search", {"q": facility_id, "limit": 1})
     return json.dumps(result, indent=2)
 
 
@@ -262,7 +272,8 @@ async def get_market_intel(
         "compare": compare_to,
     }.items() if v}
     _track("get_market_intel", params)
-    result = _api_get("/api/v1/markets", params)
+    market_slug = market.lower().replace(" ", "-").replace(",", "")
+    result = _api_get(f"/api/v1/markets/{market_slug}", {k: v for k, v in params.items() if k != "market"})
     return json.dumps(result, indent=2)
 
 
@@ -390,7 +401,7 @@ async def get_grid_data(
         return json.dumps({"error": "iso parameter is required"})
     params = {"iso": iso, "metric": metric, "period": period}
     _track("get_grid_data", params)
-    result = _api_get("/api/grid/fuel-mix", params)
+    result = _api_get("/api/grid/summary", params)
     return json.dumps(result, indent=2)
 
 
