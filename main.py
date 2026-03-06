@@ -18517,3 +18517,108 @@ def _start_mcp_thread():
 import os as _os
 if _os.environ.get("RAILWAY_ENVIRONMENT") or _os.environ.get("PORT"):
     _start_mcp_thread()
+
+# =============================================================================
+# SITE SCORE ENDPOINT — MCP analyze_site tool
+# Combines nearby facilities, substations, connectivity, and state-level risk
+# =============================================================================
+@app.route('/api/site-score', methods=['GET'])
+def api_site_score():
+    """Composite site suitability score for data center development."""
+    lat = request.args.get('lat', type=float)
+    lon = request.args.get('lon', type=float)
+    state = request.args.get('state', '').upper()
+    capacity = request.args.get('capacity', 0, type=float)
+
+    if not lat or not lon:
+        return jsonify({'success': False, 'error': 'lat and lon are required'}), 400
+
+    conn = None
+    try:
+        conn = get_read_db()
+        c = conn.cursor()
+
+        # Nearby facilities (competitive density, 100km radius)
+        c.execute("""
+            SELECT COUNT(*) as cnt, SUM(power_mw) as total_mw
+            FROM facilities
+            WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+              AND (latitude - %s)*(latitude - %s) + (longitude - %s)*(longitude - %s) < 0.81
+        """, (lat, lat, lon, lon))
+        row = c.fetchone()
+        nearby_facilities = row[0] or 0
+        nearby_mw = float(row[1] or 0)
+
+        # Nearby substations (power infrastructure, ~50km radius)
+        c.execute("""
+            SELECT COUNT(*) as cnt
+            FROM substations
+            WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+              AND (latitude - %s)*(latitude - %s) + (longitude - %s)*(longitude - %s) < 0.20
+        """, (lat, lat, lon, lon))
+        nearby_substations = c.fetchone()[0] or 0
+
+        # State-level risk index (hardcoded baseline by state)
+        STATE_RISK = {
+            'FL': 35, 'TX': 42, 'CA': 38, 'LA': 32, 'OK': 40,
+            'KS': 43, 'AL': 36, 'MS': 34, 'GA': 55, 'SC': 58,
+            'NC': 60, 'VA': 72, 'MD': 70, 'PA': 75, 'OH': 74,
+            'IN': 73, 'IL': 71, 'MO': 65, 'TN': 63, 'KY': 68,
+            'WI': 76, 'MN': 74, 'IA': 72, 'NE': 68, 'CO': 70,
+            'AZ': 78, 'NV': 80, 'UT': 75, 'ID': 72, 'OR': 68,
+            'WA': 70, 'NY': 73, 'NJ': 71, 'CT': 74, 'MA': 75,
+            'MI': 72, 'WV': 65, 'AR': 58, 'NM': 72, 'MT': 74,
+        }
+        risk_score = STATE_RISK.get(state, 65)
+
+        # Power score — more substations = better access
+        power_score = min(100, 50 + (nearby_substations * 2))
+
+        # Market score — some competition good, too much = constrained
+        if nearby_facilities < 5:
+            market_score = 60  # pioneer market
+        elif nearby_facilities < 20:
+            market_score = 85  # healthy market
+        elif nearby_facilities < 50:
+            market_score = 75  # mature market
+        else:
+            market_score = 60  # saturated
+
+        # Overall composite
+        overall = round(
+            (power_score * 0.35) +
+            (market_score * 0.25) +
+            (risk_score * 0.40)
+        , 1)
+
+        return jsonify({
+            'success': True,
+            'location': {'lat': lat, 'lon': lon, 'state': state},
+            'capacity_requested_mw': capacity,
+            'overall_score': overall,
+            'scores': {
+                'power_infrastructure': round(power_score, 1),
+                'market_conditions': round(market_score, 1),
+                'risk_resilience': round(risk_score, 1),
+            },
+            'nearby': {
+                'facilities_100km': nearby_facilities,
+                'total_capacity_mw': round(nearby_mw, 1),
+                'substations_50km': nearby_substations,
+            },
+            'interpretation': (
+                'Excellent site' if overall >= 80 else
+                'Good site' if overall >= 70 else
+                'Viable site' if overall >= 60 else
+                'Challenging site'
+            ),
+            'source': 'DC Hub Site Intelligence',
+            'upgrade_url': 'https://dchub.cloud/pricing',
+        })
+
+    except Exception as e:
+        logger.error(f"site-score error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
