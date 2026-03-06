@@ -1087,11 +1087,6 @@ def handle_well_known():
     if path == '/.well-known/mcp-registry-auth':
         return Response("v=MCPv1; k=ed25519; p=8LE9YOct4SKYuIJT8JGMK6z9lhfPMbCM5pQCp5FTRBg=", mimetype="text/plain")
 
-# Belt-and-suspenders: explicit route in case before_request is bypassed
-@app.route('/.well-known/mcp-registry-auth', methods=['GET'])
-def well_known_mcp_registry_auth():
-    return Response("v=MCPv1; k=ed25519; p=8LE9YOct4SKYuIJT8JGMK6z9lhfPMbCM5pQCp5FTRBg=", mimetype="text/plain")
-
 APP_VERSION = '2.5.2'
 STARTUP_COMPLETE = False
 
@@ -11503,6 +11498,40 @@ def serve_ai_txt():
 # NOTE: /api/v1/ai-tracking/stats is now handled by ai_tracking.py module
 #       (persistent SQLite tracking with cumulative counts)
 # =============================================================================
+
+@app.route('/api/v1/ai-tracking/cumulative', methods=['GET'])
+def ai_tracking_cumulative():
+    """Return all-time cumulative request totals per platform from Neon ai_cumulative table."""
+    conn = None
+    try:
+        conn = get_pg_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT platform_name, total_requests, requests_7d, requests_30d, last_seen
+            FROM ai_cumulative
+            ORDER BY total_requests DESC
+        """)
+        rows = cur.fetchall()
+        cur.close()
+        platforms = []
+        total = 0
+        for row in rows:
+            req_total = row[1] or 0
+            platforms.append({
+                "platform": row[0],
+                "total_requests": req_total,
+                "requests_7d": row[2] or 0,
+                "requests_30d": row[3] or 0,
+                "last_seen": str(row[4]) if row[4] else None
+            })
+            total += req_total
+        return jsonify({"success": True, "all_time_total": total, "platforms": platforms})
+    except Exception as e:
+        logger.error(f"ai_tracking_cumulative error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if conn:
+            return_pg_connection(conn)
 
 @app.route('/api/ai-usage/stats', methods=['GET', 'POST'])
 def ai_usage_stats_alias():
