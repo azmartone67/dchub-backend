@@ -125,6 +125,8 @@
             // Tier 2: Territory Overlays (v100)
             utilityTerritories: L.layerGroup(),
             // Gas Infrastructure Layers (v117)
+            activeFires: L.layerGroup(),
+            peeringdbFacilities: L.layerGroup(),
             gasStorage: L.layerGroup(),
             gasMarketHubs: L.layerGroup(),
             gasProcessing: L.layerGroup(),
@@ -5204,6 +5206,28 @@ var markets = {
                 }
                 
                 // PHASE 1: Gas Compressor Stations
+                if (layerName === 'activeFires') {
+                    if (map.hasLayer(layers.activeFires)) {
+                        map.removeLayer(layers.activeFires);
+                        this.classList.remove('active');
+                    } else {
+                        map.addLayer(layers.activeFires);
+                        this.classList.add('active');
+                        loadActiveFires();
+                    }
+                    return;
+                }
+                if (layerName === 'peeringdbFacilities') {
+                    if (map.hasLayer(layers.peeringdbFacilities)) {
+                        map.removeLayer(layers.peeringdbFacilities);
+                        this.classList.remove('active');
+                    } else {
+                        map.addLayer(layers.peeringdbFacilities);
+                        this.classList.add('active');
+                        loadPeeringDBFacilities();
+                    }
+                    return;
+                }
                 if (layerName === 'gascompressors') {
                     if (map.hasLayer(layers.gascompressors)) {
                         map.removeLayer(layers.gascompressors);
@@ -7658,6 +7682,85 @@ var markets = {
             { name: 'Wild Goose', lat: 39.35, lng: -121.95, capacity: 75.0, type: 'Depleted Field', operator: 'Niska Gas Storage' }
         ];
         
+        // ============================================
+        // SPRINT 3: NASA FIRMS Active Fires
+        // ============================================
+        async function loadActiveFires() {
+            if (layers.activeFires.getLayers().length > 0) {
+                layers.activeFires.clearLayers();
+            }
+            var bounds = map.getBounds();
+            var sw = bounds.getSouthWest();
+            var ne = bounds.getNorthEast();
+            console.log('Loading active fires from NASA FIRMS...');
+            try {
+                var resp = await fetch('/api/v2/risk/active-fires?minLat='+sw.lat+'&maxLat='+ne.lat+'&minLng='+sw.lng+'&maxLng='+ne.lng+'&days=7');
+                var data = await resp.json();
+                if (data.success && data.data && data.data.features) {
+                    data.data.features.forEach(function(f) {
+                        var p = f.properties;
+                        var coords = f.geometry.coordinates;
+                        var size = Math.max(8, Math.min(20, p.frp / 5));
+                        var color = p.confidence === 'high' || p.confidence === 'h' ? '#ef4444' : '#f97316';
+                        var marker = L.circleMarker([coords[1], coords[0]], {
+                            radius: size, fillColor: color, color: '#fff',
+                            weight: 1, opacity: 0.9, fillOpacity: 0.7
+                        }).bindPopup(
+                            '<div class="popup-title" style="color:#ef4444">Active Fire</div>' +
+                            '<div class="popup-row"><span class="popup-label">Date</span><span class="popup-value">' + p.acq_date + ' ' + p.acq_time + '</span></div>' +
+                            '<div class="popup-row"><span class="popup-label">Confidence</span><span class="popup-value">' + p.confidence + '</span></div>' +
+                            '<div class="popup-row"><span class="popup-label">Fire Power</span><span class="popup-value" style="color:#ef4444;font-weight:700">' + p.frp.toFixed(1) + ' MW</span></div>' +
+                            '<div class="popup-row"><span class="popup-label">Satellite</span><span class="popup-value">' + p.satellite + '</span></div>' +
+                            '<div class="popup-row" style="color:#ef4444;font-size:10px;margin-top:4px;">NASA FIRMS VIIRS</div>'
+                        );
+                        marker.addTo(layers.activeFires);
+                    });
+                    var el = document.getElementById('count-fires');
+                    if (el) el.textContent = data.data.features.length;
+                    console.log('Loaded ' + data.data.features.length + ' active fires');
+                }
+            } catch(e) { console.error('Fire data error:', e); }
+        }
+
+        // ============================================
+        // SPRINT 3: PeeringDB Live Facilities
+        // ============================================
+        async function loadPeeringDBFacilities() {
+            if (layers.peeringdbFacilities.getLayers().length > 0) {
+                layers.peeringdbFacilities.clearLayers();
+            }
+            var bounds = map.getBounds();
+            var sw = bounds.getSouthWest();
+            var ne = bounds.getNorthEast();
+            console.log('Loading DC facilities from PeeringDB...');
+            try {
+                var resp = await fetch('/api/v2/connectivity/facilities?minLat='+sw.lat+'&maxLat='+ne.lat+'&minLng='+sw.lng+'&maxLng='+ne.lng);
+                var data = await resp.json();
+                if (data.success && data.features) {
+                    data.features.forEach(function(f) {
+                        var p = f.properties;
+                        var coords = f.geometry.coordinates;
+                        var netCount = p.net_count || 0;
+                        var size = Math.max(10, Math.min(30, netCount / 10));
+                        var color = netCount > 100 ? '#3b82f6' : netCount > 20 ? '#6366f1' : '#8b5cf6';
+                        var marker = L.circleMarker([coords[1], coords[0]], {
+                            radius: size, fillColor: color, color: '#fff',
+                            weight: 2, opacity: 1, fillOpacity: 0.7
+                        }).bindPopup(
+                            '<div class="popup-title" style="color:#3b82f6">' + p.name + '</div>' +
+                            '<div class="popup-row"><span class="popup-label">City</span><span class="popup-value">' + p.city + ', ' + p.state + '</span></div>' +
+                            '<div class="popup-row"><span class="popup-label">Networks</span><span class="popup-value" style="color:#22c55e;font-weight:700">' + netCount + '</span></div>' +
+                            '<div class="popup-row"><span class="popup-label">IXPs</span><span class="popup-value" style="color:#06b6d4;font-weight:700">' + (p.ix_count || 0) + '</span></div>' +
+                            (p.website ? '<div class="popup-row"><a href="' + p.website + '" target="_blank" style="color:#3b82f6;font-size:11px;">Website</a></div>' : '') +
+                            '<div class="popup-row" style="color:#3b82f6;font-size:10px;margin-top:4px;">PeeringDB Live Data</div>'
+                        );
+                        marker.addTo(layers.peeringdbFacilities);
+                    });
+                    console.log('Loaded ' + data.features.length + ' PeeringDB facilities');
+                }
+            } catch(e) { console.error('PeeringDB error:', e); }
+        }
+
         function loadGasStorage() {
             if (layers.gasStorage.getLayers().length > 0) return;
             
