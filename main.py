@@ -17460,35 +17460,33 @@ if __name__ == '__main__':
         init_headroom_db()
         headroom_bp = create_headroom_blueprint()
         app.register_blueprint(headroom_bp)
+        if ENABLE_BACKGROUND_SCHEDULERS:
+            start_headroom_scheduler(delay_seconds=90)
+            print("Capacity Headroom API: Registered (auto-refresh every 30 min)")
+        else:
+            print("Capacity Headroom API: Registered (scheduler PAUSED)")
+        print("   /api/v1/capacity/headroom, /heatmap, /trends, /compare")
+    except ImportError:
+        print("Capacity Headroom API: Not installed")
+    except Exception as e:
+        print(f"Capacity Headroom API: Error: {e}")
 
-    # Sprint 2: New infrastructure layers (NASA FIRMS, PeeringDB, USGS Water)
+    # Sprint 2: New infrastructure layers
     try:
         from fire_data_layer import register_fire_routes
         register_fire_routes(app)
-    except ImportError as e:
+    except Exception as e:
         print(f"Fire data layer not loaded: {e}")
-
     try:
         from peeringdb_layer import register_peeringdb_routes
         register_peeringdb_routes(app)
-    except ImportError as e:
+    except Exception as e:
         print(f"PeeringDB layer not loaded: {e}")
-
     try:
         from water_drought_intel import register_water_routes
         register_water_routes(app)
-    except ImportError as e:
-        print(f"Water/drought intel not loaded: {e}")
-        if ENABLE_BACKGROUND_SCHEDULERS:
-            start_headroom_scheduler(delay_seconds=90)
-            print("📊 Capacity Headroom API: ✅ Registered (auto-refresh every 30 min)")
-        else:
-            print("📊 Capacity Headroom API: ✅ Registered (scheduler PAUSED)")
-        print("   📍 /api/v1/capacity/headroom, /heatmap, /trends, /compare")
-    except ImportError:
-        print("📊 Capacity Headroom API: ❌ Not installed")
     except Exception as e:
-        print(f"📊 Capacity Headroom API: ⚠️ Error: {e}")
+        print(f"Water/drought intel not loaded: {e}")
 
     # Land & Power Usage Limiter is registered at module level (above, line ~13790)
     # Infrastructure Discovery is registered earlier in blueprint section
