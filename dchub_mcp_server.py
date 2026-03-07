@@ -180,7 +180,7 @@ async def get_facility(
         "nearby": include_nearby, "power": include_power,
     }.items() if v}
     _track("get_facility", {"facility_id": facility_id, **params})
-    result = _api_get(f"/api/v1/facilities/{facility_id}", params) if False else _api_get("/api/v1/search", {"q": facility_id, "limit": 1})
+    result = _api_get(f"/api/v1/facilities/{facility_id}", params)
     return json.dumps(result, indent=2)
 
 
@@ -367,6 +367,11 @@ async def analyze_site(
     }.items() if v}
     _track("analyze_site", params)
     result = _api_get("/api/site-score", params)
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except Exception:
+            pass
     return json.dumps(result, indent=2)
 
 
