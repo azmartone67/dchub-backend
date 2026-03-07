@@ -722,19 +722,7 @@ def register_scoring_routes(app):
             
             return jsonify(result)
         except Exception as e:
-            # Return fallback score on error
-            return jsonify({
-                "error": str(e),
-                "overall_score": 65.0,
-                "energy_score": 70.0,
-                "carbon_score": 60.0,
-                "infrastructure_score": 65.0,
-                "connectivity_score": 50.0,
-                "risk_score": 70.0,
-                "cost_score": 70.0,
-                "fallback": True,
-                "message": "Using fallback scores due to API timeout or error"
-            }), 200
+            return jsonify({"success": False, "error": str(e)}), 500
     
     @app.route('/api/energy/prices/<state>', methods=['GET'])
     @require_plan('pro')
