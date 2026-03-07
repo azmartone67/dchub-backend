@@ -1,6 +1,6 @@
 {
-  "report_date": "2026-03-06",
-  "generated_at": "2026-03-06T23:42:38.962864",
+  "report_date": "2026-03-07",
+  "generated_at": "2026-03-07T08:04:03.134073",
   "summary": {
     "total_facilities": 11565,
     "total_providers": 3972,
@@ -89,54 +89,54 @@
   ],
   "recent_news": [
     {
-      "title": "Oracle and OpenAI End Plans to Expand Flagship Data Center",
-      "source": "Bloomberg Tech",
-      "date": "2026-03-06T20:11:06"
+      "title": "Oracle Plans Job Cuts Amid AI Data Center Spending",
+      "source": "varindia.com",
+      "date": "2026-03-07T07:46:10"
     },
     {
-      "title": "Why Virginia Forced Google to Spill Its Data Center Secrets",
-      "source": "Heatmap News",
-      "date": "2026-03-06T20:09:41"
+      "title": "Oracle and OpenAI's Texas Stargate datacenter expansion reportedly on the skids",
+      "source": "The Register DC",
+      "date": "2026-03-07T00:51:11"
     },
     {
-      "title": "Submer: UK Expansion and Partnered Push for Liquid Cooling",
-      "source": "Data Centre Magazine",
-      "date": "2026-03-06T19:02:25"
+      "title": "Meta eyes 2 GW Texas AI data center expansion abandoned by OpenAI, Oracle",
+      "source": "Interesting Engineering",
+      "date": "2026-03-07T00:27:00"
     },
     {
-      "title": "Temporarily banning data centers draws more interest from state, local officials",
-      "source": "Stateline",
-      "date": "2026-03-06T19:00:45"
+      "title": "Data center developer pulls back from Apex for now",
+      "source": "ABC11 Raleigh-Durham",
+      "date": "2026-03-07T00:07:46"
     },
     {
-      "title": "Mexico's Grupo Financiero Banorte partners with Hitachi Vantara of data center migration",
+      "title": "Oracle/OpenAI drop plans to expand flagship Abilene Stargate site, Meta in talks to pick up Crusoe capacity with Nvidia's help",
       "source": "Data Center Dynamics",
-      "date": "2026-03-06T19:00:03"
+      "date": "2026-03-06T23:51:50"
     },
     {
-      "title": "Broadcom CEO\u2019s $100B AI Chip Bet Shows Silicon Diversity Push",
-      "source": "Data Center Knowledge",
-      "date": "2026-03-06T18:49:52"
-    },
-    {
-      "title": "Data Centers Are \u2018Inevitable\u2019 Target in Conflict",
+      "title": "Oracle, OpenAI End Plans to Expand Flagship Data Center",
       "source": "Bloomberg Tech",
-      "date": "2026-03-06T18:39:43"
+      "date": "2026-03-06T23:16:48"
     },
     {
-      "title": "What to do if a large data center comes knocking?",
-      "source": "Isthmus",
-      "date": "2026-03-06T18:33:41"
+      "title": "Seagate Brings Mozaic 4+ HAMR Platform to Hyperscale Data Centers with 44TB Capacity",
+      "source": "HPCwire",
+      "date": "2026-03-06T23:01:48"
     },
     {
-      "title": "Karatzis\u202fGroup to build \u20ac240m data center in Boeotia, Greece",
-      "source": "Data Center Dynamics",
-      "date": "2026-03-06T18:30:04"
+      "title": "Data center developers face scrutiny from Minnesota residents",
+      "source": "The Minnesota Daily",
+      "date": "2026-03-06T22:40:32"
     },
     {
-      "title": "Broadcom CEO\u2019s $100B AI Chip Bet Highlights Push for Silicon Diversity",
-      "source": "Data Center Knowledge",
-      "date": "2026-03-06T18:18:29"
+      "title": "Top Analyst Raises Nvidia Stock (NVDA) Price Target on \u2018Leadership in AI Data Center Infrastructure\u2019",
+      "source": "TipRanks",
+      "date": "2026-03-06T22:23:02"
+    },
+    {
+      "title": "OpenAI and Oracle Curtail Data Center Expansion in Abilene, Texas",
+      "source": "Barron's",
+      "date": "2026-03-06T22:16:00"
     }
   ],
   "data_sources": [
