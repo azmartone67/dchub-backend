@@ -10027,55 +10027,92 @@ def _list_facilities_free():
 @app.route('/api/v1/search', methods=['GET'])
 @protect_data
 def search_facilities():
-    """Search facilities"""
-    query = request.args.get('q', '').strip()
-    limit = min(request.args.get('limit', 50, type=int), 100)
-    
-    if len(query) < 2:
-        return jsonify({'error': 'Query must be at least 2 characters'}), 400
-    
+    """Search facilities — supports q, operator, city, state, country, min_mw, max_mw, tier, limit, offset"""
+    query    = request.args.get('q', '').strip()
+    operator = request.args.get('operator', '').strip()
+    city     = request.args.get('city', '').strip()
+    state    = request.args.get('state', '').strip()
+    country  = request.args.get('country', '').strip()
+    min_mw   = request.args.get('min_capacity_mw', request.args.get('min_mw', 0), type=float)
+    max_mw   = request.args.get('max_capacity_mw', request.args.get('max_mw', 0), type=float)
+    tier     = request.args.get('tier', 0, type=int)
+    limit    = min(request.args.get('limit', 25, type=int), 100)
+    offset   = request.args.get('offset', 0, type=int)
+
+    # Need at least one filter
+    if not any([query, operator, city, state, country, min_mw, max_mw, tier]):
+        return jsonify({'error': 'Provide at least one filter: q, operator, city, state, country, min_capacity_mw, tier'}), 400
+
     conn = get_read_db()
     c = conn.cursor()
-    
-    query_lower = query.lower()
-    
-    if query_lower in MARKET_ALIASES:
-        cities = MARKET_ALIASES[query_lower]
-        conditions = []
-        params = []
-        for city in cities:
-            if len(city) == 2 and city.isupper():
-                conditions.append('state = ?')
-                params.append(city)
-            else:
-                conditions.append('city LIKE ?')
-                params.append(f'%{city}%')
-        
-        sql = f"""
-            SELECT * FROM facilities 
-            WHERE ({' OR '.join(conditions)})
-            {RAILWAY_EXCLUSION}
-            ORDER BY confidence DESC, power_mw DESC
-            LIMIT ?
-        """
-        params.append(limit)
-        c.execute(sql, params)
-    else:
-        q = f"%{query}%"
-        c.execute(f"""
-            SELECT * FROM facilities 
-            WHERE (city LIKE ? OR state LIKE ? OR name LIKE ? OR provider LIKE ?)
-            {RAILWAY_EXCLUSION}
-            ORDER BY confidence DESC, power_mw DESC
-            LIMIT ?
-        """, (q, q, q, q, limit))
-    
+
+    conditions = []
+    params = []
+
+    # Full-text q — check MARKET_ALIASES first
+    if query:
+        query_lower = query.lower()
+        if query_lower in MARKET_ALIASES:
+            cities = MARKET_ALIASES[query_lower]
+            market_conds = []
+            for mkt_city in cities:
+                if len(mkt_city) == 2 and mkt_city.isupper():
+                    market_conds.append('state = ?')
+                    params.append(mkt_city)
+                else:
+                    market_conds.append('city LIKE ?')
+                    params.append(f'%{mkt_city}%')
+            conditions.append(f"({' OR '.join(market_conds)})")
+        else:
+            q = f'%{query}%'
+            conditions.append('(city LIKE ? OR state LIKE ? OR name LIKE ? OR provider LIKE ?)')
+            params.extend([q, q, q, q])
+
+    if operator:
+        conditions.append('provider LIKE ?')
+        params.append(f'%{operator}%')
+
+    if city:
+        conditions.append('city LIKE ?')
+        params.append(f'%{city}%')
+
+    if state:
+        conditions.append('state = ?')
+        params.append(state.upper())
+
+    if country:
+        conditions.append('country = ?')
+        params.append(country.upper())
+
+    if min_mw:
+        conditions.append('power_mw >= ?')
+        params.append(min_mw)
+
+    if max_mw:
+        conditions.append('power_mw <= ?')
+        params.append(max_mw)
+
+    if tier:
+        conditions.append('tier = ?')
+        params.append(tier)
+
+    where = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
+    params.extend([limit, offset])
+
+    c.execute(f"""
+        SELECT * FROM facilities
+        {where}
+        {RAILWAY_EXCLUSION.replace('AND', 'AND') if where else 'WHERE ' + RAILWAY_EXCLUSION.lstrip('AND').lstrip()}
+        ORDER BY confidence DESC, power_mw DESC
+        LIMIT ? OFFSET ?
+    """, params)
+
     facilities = [dict_from_row(row) for row in c.fetchall()]
     conn.close()
-    
+
     return jsonify({
         'success': True,
-        'query': query,
+        'query': query or operator or city or state or country,
         'count': len(facilities),
         'data': facilities
     })
@@ -11176,6 +11213,20 @@ def get_agent_news():
     try:
         limit = request.args.get('limit', 50, type=int)
         category = request.args.get('category', '')
+    # Map MCP tool slugs to DB category values
+    category_map = {
+        'deals': 'M&A',
+        'construction': 'Construction',
+        'policy': 'Policy',
+        'technology': 'Technology',
+        'sustainability': 'Sustainability',
+        'earnings': 'Earnings',
+        'expansion': 'Expansion',
+        'ai': 'AI',
+        'industry': 'Industry',
+    }
+    if category and category.lower() in category_map:
+        category = category_map[category.lower()]
         source = request.args.get('source', '')
 
         try:
