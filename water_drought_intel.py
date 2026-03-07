@@ -75,10 +75,9 @@ def get_streamflow():
     params = {
         'format': 'json',
         'bBox': f'{lng - deg_lng:.4f},{lat - deg_lat:.4f},{lng + deg_lng:.4f},{lat + deg_lat:.4f}',
-        'siteType': 'ST',  # Stream sites
+        'parameterCd': '00060',
+        'siteType': 'ST',
         'siteStatus': 'active',
-        'parameterCd': '00060',  # Discharge (streamflow)
-        'hasDataTypeCd': 'iv',  # Instantaneous values
     }
 
     try:
