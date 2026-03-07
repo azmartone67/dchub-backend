@@ -17459,6 +17459,24 @@ def get_market_intelligence():
     except Exception as e:
         logger.error(f"market-intelligence error: {e}")
         return jsonify({'success': False, 'error': str(e), 'markets': []}), 500
+
+# Sprint 2: New infrastructure layers (module-level for Gunicorn)
+try:
+    from fire_data_layer import register_fire_routes
+    register_fire_routes(app)
+except Exception as e:
+    print(f"Fire data layer not loaded: {e}")
+try:
+    from peeringdb_layer import register_peeringdb_routes
+    register_peeringdb_routes(app)
+except Exception as e:
+    print(f"PeeringDB layer not loaded: {e}")
+try:
+    from water_drought_intel import register_water_routes
+    register_water_routes(app)
+except Exception as e:
+    print(f"Water/drought intel not loaded: {e}")
+
 if __name__ == '__main__':
     print("🚀 DC Hub API v86 Starting...")
     print(f"📊 PDF Generation: {'✅ Available' if PDF_AVAILABLE else '❌ Disabled'}")
