@@ -2230,6 +2230,9 @@ MCP_PLATFORM_MAP = {
     'poe': 'Poe', 'youcom': 'You.com',
 }
 
+# Session-to-platform cache: maps MCP session IDs to detected platforms
+_mcp_session_platforms = {}  # {session_id: (platform, client_name, timestamp)}
+
 def _log_mcp_analytics(rpc_method, rpc_params, platform, client_name, duration_ms, success=True):
     try:
         from db_utils import try_get_db
@@ -2402,6 +2405,7 @@ def mcp_proxy():
     rpc_params = None
     client_name = 'unknown'
     platform = 'unknown'
+    session_id = request.headers.get('Mcp-Session-Id', '')
 
     if request.method == 'POST':
         try:
@@ -2417,8 +2421,32 @@ def mcp_proxy():
                         break
                 else:
                     platform = client_name
+                # Cache platform for this session
+                if session_id:
+                    _mcp_session_platforms[session_id] = (platform, client_name, time.time())
+            else:
+                # For non-initialize calls, look up session cache first
+                if session_id and session_id in _mcp_session_platforms:
+                    platform, client_name, _ = _mcp_session_platforms[session_id]
+                else:
+                    # Fallback: detect from User-Agent / Referer
+                    ua = (request.headers.get('User-Agent', '') + ' ' +
+                          request.headers.get('X-Client-Name', '')).lower()
+                    referer = request.headers.get('Referer', '').lower()
+                    for key_str, plat in MCP_PLATFORM_MAP.items():
+                        if key_str in ua or key_str in referer:
+                            platform = plat
+                            client_name = plat
+                            break
         except Exception:
             pass
+
+    # Cleanup stale sessions (older than 1 hour) periodically
+    if len(_mcp_session_platforms) > 100:
+        cutoff = time.time() - 3600
+        stale = [k for k, v in _mcp_session_platforms.items() if v[2] < cutoff]
+        for k in stale:
+            _mcp_session_platforms.pop(k, None)
 
     try:
         # ---- GET: SSE stream or capabilities discovery ----
@@ -16796,9 +16824,22 @@ def cleanup_testimonials():
             WHERE a.id < b.id AND a.quote = b.quote AND a.platform = b.platform
         """)
         deduped = c.rowcount
+        # Remove old-format raw JSON quotes
+        c.execute("""
+            DELETE FROM ai_testimonials 
+            WHERE quote LIKE 'AI agent used DC Hub%%tool with parameters%%'
+        """)
+        old_format = c.rowcount
+        # Fix "unknown" platform entries using agent_name hints
+        c.execute("""UPDATE ai_testimonials SET platform = 'claude' 
+            WHERE platform = 'unknown' AND (agent_name ILIKE '%%claude%%' OR agent_name ILIKE '%%anthropic%%')""")
+        c.execute("""UPDATE ai_testimonials SET platform = 'chatgpt' 
+            WHERE platform = 'unknown' AND (agent_name ILIKE '%%gpt%%' OR agent_name ILIKE '%%openai%%')""")
+        c.execute("""UPDATE ai_testimonials SET platform = 'gemini' 
+            WHERE platform = 'unknown' AND (agent_name ILIKE '%%gemini%%' OR agent_name ILIKE '%%google%%')""")
         conn.commit()
         conn.close()
-        return jsonify({'success': True, 'pruned': pruned, 'deduplicated': deduped})
+        return jsonify({'success': True, 'pruned': pruned, 'deduplicated': deduped, 'old_format_removed': old_format})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
@@ -17462,31 +17503,14 @@ if __name__ == '__main__':
         app.register_blueprint(headroom_bp)
         if ENABLE_BACKGROUND_SCHEDULERS:
             start_headroom_scheduler(delay_seconds=90)
-            print("Capacity Headroom API: Registered (auto-refresh every 30 min)")
+            print("📊 Capacity Headroom API: ✅ Registered (auto-refresh every 30 min)")
         else:
-            print("Capacity Headroom API: Registered (scheduler PAUSED)")
-        print("   /api/v1/capacity/headroom, /heatmap, /trends, /compare")
+            print("📊 Capacity Headroom API: ✅ Registered (scheduler PAUSED)")
+        print("   📍 /api/v1/capacity/headroom, /heatmap, /trends, /compare")
     except ImportError:
-        print("Capacity Headroom API: Not installed")
+        print("📊 Capacity Headroom API: ❌ Not installed")
     except Exception as e:
-        print(f"Capacity Headroom API: Error: {e}")
-
-    # Sprint 2: New infrastructure layers
-    try:
-        from fire_data_layer import register_fire_routes
-        register_fire_routes(app)
-    except Exception as e:
-        print(f"Fire data layer not loaded: {e}")
-    try:
-        from peeringdb_layer import register_peeringdb_routes
-        register_peeringdb_routes(app)
-    except Exception as e:
-        print(f"PeeringDB layer not loaded: {e}")
-    try:
-        from water_drought_intel import register_water_routes
-        register_water_routes(app)
-    except Exception as e:
-        print(f"Water/drought intel not loaded: {e}")
+        print(f"📊 Capacity Headroom API: ⚠️ Error: {e}")
 
     # Land & Power Usage Limiter is registered at module level (above, line ~13790)
     # Infrastructure Discovery is registered earlier in blueprint section
@@ -18644,7 +18668,7 @@ def get_facility_by_id(facility_id):
         c = conn.cursor()
         c.execute("""
             SELECT id, name, provider, city, state, country, region,
-                   latitude, longitude, power_mw, status, tier,
+                   latitude, longitude, power_mw, status, tier_level,
                    address, source, created_at
             FROM facilities WHERE id = %s LIMIT 1
         """, (facility_id,))
