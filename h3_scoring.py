@@ -95,7 +95,7 @@ def score_hex_cell(hex_id, conn=None):
         # Power score: substations within radius
         try:
             c.execute("""
-                SELECT COUNT(*), COALESCE(MAX(max_voltage), 0)
+                SELECT COUNT(*), COALESCE(MAX(voltage_kv), 0)
                 FROM substations 
                 WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s
             """, (lat - radius, lat + radius, lng - radius, lng + radius))
@@ -105,24 +105,24 @@ def score_hex_cell(hex_id, conn=None):
             
             # More substations = better, high voltage = bonus
             scores['power'] = min(15, sub_count * 2)
-            if max_voltage >= 345000:
+            if max_voltage >= 345:
                 scores['power'] = min(30, scores['power'] + 15)
-            elif max_voltage >= 230000:
+            elif max_voltage >= 230:
                 scores['power'] = min(30, scores['power'] + 10)
-            elif max_voltage >= 115000:
+            elif max_voltage >= 115:
                 scores['power'] = min(30, scores['power'] + 5)
         except Exception as e:
             logger.debug(f"Power scoring error: {e}")
         
-        # Fiber score: routes within radius
+        # Fiber score: use fiber_kmz_routes (has coordinates) + text search
         try:
             c.execute("""
-                SELECT COUNT(*) FROM fiber_routes 
+                SELECT COUNT(*) FROM fiber_kmz_routes 
                 WHERE start_lat BETWEEN %s AND %s AND start_lng BETWEEN %s AND %s
             """, (lat - radius, lat + radius, lng - radius, lng + radius))
             row = c.fetchone()
             fiber_count = row[0] if row else 0
-            scores['fiber'] = min(25, fiber_count)
+            scores['fiber'] = min(25, fiber_count * 2)
         except Exception as e:
             logger.debug(f"Fiber scoring error: {e}")
         
