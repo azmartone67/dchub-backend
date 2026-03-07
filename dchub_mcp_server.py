@@ -132,18 +132,9 @@ async def search_facilities(
         "tier": tier if tier else None,
         "limit": min(limit, 100), "offset": offset,
     }.items() if v}
-    # Build smart query: combine free-text with location fields
-    q_parts = [v for k, v in [
-        ("q", query), ("city", city), ("state", state),
-        ("country", country), ("operator", operator)
-    ] if v]
-    search_params = {k: v for k, v in {
-        "q": " ".join(q_parts) if q_parts else "",
-        "country": country, "state": state,
-        "limit": min(limit, 100), "offset": offset,
-    }.items() if v}
+    # Pass all filters as individual query params to /api/v1/search
     _track("search_facilities", params)
-    result = _api_get("/api/v1/search", search_params)
+    result = _api_get("/api/v1/search", params)
     return json.dumps(result, indent=2)
 
 
