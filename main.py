@@ -10743,6 +10743,7 @@ def get_pipeline():
 
 
 @app.route('/api/v1/gas-pipelines', methods=['GET'])
+@require_plan('enterprise')
 @protect_data
 def get_gas_pipelines():
     """Get natural gas pipeline infrastructure data"""
