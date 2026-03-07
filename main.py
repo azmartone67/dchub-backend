@@ -17460,6 +17460,18 @@ def get_market_intelligence():
         logger.error(f"market-intelligence error: {e}")
         return jsonify({'success': False, 'error': str(e), 'markets': []}), 500
 
+# Sprint 3: H3 Scoring + HIFLD Communications
+try:
+    from h3_scoring import register_h3_routes
+    register_h3_routes(app)
+except Exception as e:
+    print(f"H3 scoring not loaded: {e}")
+try:
+    from hifld_communications import register_comms_routes
+    register_comms_routes(app)
+except Exception as e:
+    print(f"HIFLD comms not loaded: {e}")
+
 # Sprint 2: New infrastructure layers (module-level for Gunicorn)
 try:
     from fire_data_layer import register_fire_routes
