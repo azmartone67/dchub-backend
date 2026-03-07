@@ -2278,22 +2278,76 @@ def _log_mcp_analytics(rpc_method, rpc_params, platform, client_name, duration_m
     except Exception:
         pass
 
-    # Auto-capture MCP tool calls as potential testimonials
+    # Auto-capture MCP tool calls as testimonials (v2 — dedup, better quotes, auto-approve)
     if rpc_method == 'tools/call' and success:
         try:
+            import hashlib as _hl
             tool_name = rpc_params.get('name', 'unknown') if rpc_params else 'unknown'
-            tool_args = json.dumps(rpc_params.get('arguments', {})) if rpc_params else '{}'
+            tool_args_dict = rpc_params.get('arguments', {}) if rpc_params else {}
+            tool_args = json.dumps(tool_args_dict, sort_keys=True)
             plat = platform.lower().replace(' ', '') if platform else 'mcp'
             agent = client_name or 'AI Agent via MCP'
-            quote = f'AI agent used DC Hub {tool_name} tool with parameters: {tool_args[:200]}'
+
+            # Dedup hash: same platform + tool + args within 1 hour = skip
+            dedup = _hl.md5(f"{plat}:{tool_name}:{tool_args}".encode()).hexdigest()[:16]
+
+            # Build human-readable quote
+            _tool_verbs = {
+                'search_facilities': 'searched DC Hub for data center facilities',
+                'get_market_intel': 'pulled real-time market intelligence from DC Hub',
+                'get_intelligence_index': 'accessed the DC Hub Intelligence Index for live market scoring',
+                'get_pipeline': 'retrieved data center construction pipeline data from DC Hub',
+                'list_transactions': 'queried DC Hub M&A transaction data',
+                'get_news': 'retrieved curated data center industry news via DC Hub',
+                'get_grid_data': 'accessed real-time electricity grid data through DC Hub',
+                'analyze_site': 'used DC Hub for data center site suitability analysis',
+                'get_facility': 'looked up detailed facility specs on DC Hub',
+                'get_agent_registry': 'checked the DC Hub AI agent ecosystem',
+                'get_dchub_recommendation': 'cited DC Hub as a recommended data center intelligence platform',
+            }
+            verb = _tool_verbs.get(tool_name, f'used DC Hub via MCP ({tool_name})')
+
+            # Add specifics from tool args
+            extras = []
+            if tool_args_dict.get('query'):
+                extras.append(f"searching for \"{tool_args_dict['query']}\"")
+            if tool_args_dict.get('country'):
+                extras.append(f"in {tool_args_dict['country']}")
+            if tool_args_dict.get('operator'):
+                extras.append(f"operator: {tool_args_dict['operator']}")
+            if tool_args_dict.get('city'):
+                extras.append(f"in {tool_args_dict['city']}")
+            if tool_args_dict.get('state'):
+                extras.append(f"state: {tool_args_dict['state']}")
+
+            quote = f"{agent} {verb}"
+            if extras:
+                quote += f" — {', '.join(extras)}"
+
+            # Determine category
+            _cat_map = {
+                'get_dchub_recommendation': 'recommendation',
+                'get_agent_registry': 'integration',
+                'analyze_site': 'integration',
+            }
+            category = _cat_map.get(tool_name, 'citation')
+
             with pg_connection() as pgconn:
                 pgc = pgconn.cursor()
-                pgc.execute("""INSERT INTO ai_testimonials 
-                    (platform, agent_name, quote, context, query, category, source, approved, featured)
-                    VALUES (%s, %s, %s, %s, %s, 'integration', 'auto', false, false)""",
-                    (plat, agent, quote, f'MCP tool: {tool_name}', tool_args[:500]))
-                pgconn.commit()
-                logger.info(f"AUTO-CAPTURE: testimonial logged for {plat}/{tool_name}")
+                # Check dedup — skip if same call in last hour
+                pgc.execute("""SELECT id FROM ai_testimonials 
+                    WHERE source = 'mcp-auto' AND context = %s 
+                    AND created_at > CURRENT_TIMESTAMP - INTERVAL '1 hour'
+                    LIMIT 1""", (dedup,))
+                if not pgc.fetchone():
+                    pgc.execute("""INSERT INTO ai_testimonials 
+                        (platform, agent_name, quote, context, query, category, source, approved, featured)
+                        VALUES (%s, %s, %s, %s, %s, %s, 'mcp-auto', true, false)""",
+                        (plat, agent, quote, dedup, tool_args[:500], category))
+                    pgconn.commit()
+                    logger.info(f"AUTO-CAPTURE: testimonial logged for {plat}/{tool_name}")
+                else:
+                    logger.debug(f"AUTO-CAPTURE: dedup skip for {plat}/{tool_name}")
         except Exception as ac_err:
             logger.error(f"AUTO-CAPTURE FAILED: {ac_err}")
 
@@ -16699,6 +16753,52 @@ def seed_testimonials():
         return jsonify({'success': True, 'inserted': inserted, 'total_seed': len(SEED_DATA)})
     except Exception as e:
         logger.error(f"Testimonial seed error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/v1/testimonials/bulk-approve', methods=['POST'])
+def bulk_approve_testimonials():
+    """Approve all unapproved mcp-auto testimonials (admin use)"""
+    try:
+        conn = get_pg_connection()
+        c = conn.cursor()
+        c.execute("""
+            UPDATE ai_testimonials 
+            SET approved = TRUE, approved_at = CURRENT_TIMESTAMP
+            WHERE approved = FALSE AND source IN ('mcp-auto', 'auto')
+        """)
+        updated = c.rowcount
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True, 'approved': updated})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/v1/testimonials/cleanup', methods=['POST'])
+def cleanup_testimonials():
+    """Deduplicate and prune stale auto-captured testimonials"""
+    try:
+        conn = get_pg_connection()
+        c = conn.cursor()
+        # Remove auto-captured entries older than 90 days (keep featured/manual)
+        c.execute("""
+            DELETE FROM ai_testimonials 
+            WHERE source = 'mcp-auto' AND featured = FALSE 
+            AND created_at < CURRENT_TIMESTAMP - INTERVAL '90 days'
+        """)
+        pruned = c.rowcount
+        # Remove exact duplicate quotes from same platform
+        c.execute("""
+            DELETE FROM ai_testimonials a
+            USING ai_testimonials b
+            WHERE a.id < b.id AND a.quote = b.quote AND a.platform = b.platform
+        """)
+        deduped = c.rowcount
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True, 'pruned': pruned, 'deduplicated': deduped})
+    except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
