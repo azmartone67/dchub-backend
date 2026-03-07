@@ -18644,7 +18644,7 @@ def get_facility_by_id(facility_id):
         c = conn.cursor()
         c.execute("""
             SELECT id, name, provider, city, state, country, region,
-                   latitude, longitude, power_mw, status, tier_level,
+                   latitude, longitude, power_mw, status, tier,
                    address, source, created_at
             FROM facilities WHERE id = %s LIMIT 1
         """, (facility_id,))
