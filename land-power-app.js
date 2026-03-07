@@ -59,7 +59,8 @@
             'terrain': { layer: googleTerrain, name: '⛰️ Terrain', icon: '⛰️' },
             'roadmap': { layer: googleRoads, name: '🛣️ Roads', icon: '🛣️' },
             'dark': { layer: darkMap, name: '🌙 Dark', icon: '🌙' },
-            'light': { layer: lightMap, name: '☀️ Light', icon: '☀️' }
+            'light': { layer: lightMap, name: '☀️ Light', icon: '☀️' },
+            'nightlights': { layer: nightLights, name: '🌃 Night Lights', icon: '🌃' }
         };
         
         // Function to switch base maps
