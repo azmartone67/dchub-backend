@@ -48,6 +48,11 @@
             maxZoom:19
         });
         
+        var nightLights = L.tileLayer('https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_Black_Marble/default/2024-01-01/GoogleMapsCompatible_Level8/{z}/{y}/{x}.png',{
+            attribution:'NASA Black Marble VIIRS',
+            maxZoom:8,opacity:0.9
+        });
+        
         // Set default base map - Google Hybrid!
         googleHybrid.addTo(map);
         var currentBaseMap = googleHybrid;
