@@ -2235,8 +2235,8 @@ def _log_mcp_analytics(rpc_method, rpc_params, platform, client_name, duration_m
         from db_utils import try_get_db
         db = try_get_db()
         if db is None:
-            return
-        if rpc_method in ('initialize', 'tools/list', 'resources/list', 'prompts/list'):
+            db = None  # continue — don't return, auto-capture below uses PostgreSQL
+        if db and rpc_method in ('initialize', 'tools/list', 'resources/list', 'prompts/list'):
             db.execute('''INSERT INTO mcp_connections 
                 (platform, client_name, client_version, protocol_version, method, 
                  ip_address, user_agent, success)
@@ -2248,7 +2248,7 @@ def _log_mcp_analytics(rpc_method, rpc_params, platform, client_name, duration_m
                  request.remote_addr,
                  request.headers.get('User-Agent', ''),
                  True if success else False))
-        if rpc_method == 'tools/call':
+        if db and rpc_method == 'tools/call':
             tool_name = rpc_params.get('name', 'unknown') if rpc_params else 'unknown'
             db.execute('''INSERT INTO mcp_tool_calls
                 (tool_name, platform, client_name, params, success, 
@@ -2259,8 +2259,9 @@ def _log_mcp_analytics(rpc_method, rpc_params, platform, client_name, duration_m
                  True if success else False, duration_ms,
                  request.remote_addr,
                  request.headers.get('User-Agent', '')))
-        db.commit()
-        db.close()
+        if db:
+            db.commit()
+            db.close()
     except Exception as e:
         logger.error(f"MCP analytics log error: {e}")
 
@@ -10755,7 +10756,7 @@ def get_gas_pipelines():
         conn = get_db()
         c = conn.cursor()
         
-        query = "SELECT id, name, operator, pipeline_type, diameter_inches, capacity_mcf, status, lat, lng, city, state, country, source FROM gas_pipelines WHERE 1=1"
+        query = "SELECT * FROM discovered_pipelines WHERE commodity = 'Natural Gas'"
         params = []
         
         if state_filter:
@@ -10778,18 +10779,15 @@ def get_gas_pipelines():
         for r in rows:
             pipelines.append({
                 'id': r[0],
-                'name': r[1],
-                'operator': r[2],
-                'pipeline_type': r[3],
+                'operator': r[1],
+                'pipeline_type': r[2],
+                'status': r[3],
                 'diameter_inches': r[4],
-                'capacity_mcf': r[5],
-                'status': r[6],
-                'lat': r[7],
-                'lng': r[8],
-                'city': r[9],
-                'state': r[10],
-                'country': r[11],
-                'source': r[12]
+                'commodity': r[5],
+                'state': r[6],
+                'market': r[7],
+                'discovered_at': r[8],
+                'source': r[10]
             })
         
         # Enhance with geographic coordinates
@@ -10800,7 +10798,7 @@ def get_gas_pipelines():
             pass
         
         # Get summary stats
-        c.execute("SELECT COUNT(*), COUNT(DISTINCT operator), COUNT(DISTINCT state) FROM gas_pipelines")
+        c.execute("SELECT COUNT(*), COUNT(DISTINCT operator), COUNT(DISTINCT state) FROM discovered_pipelines WHERE commodity = 'Natural Gas'")
         stats = c.fetchone()
         
         conn.close()
