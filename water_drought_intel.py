@@ -82,7 +82,7 @@ def get_streamflow():
     }
 
     try:
-        resp = requests.get(f'{USGS_WATER_API}/site/', params=params, timeout=20)
+        resp = requests.get(f'{USGS_WATER_API}/iv/', params=params, timeout=20)
         resp.raise_for_status()
         data = resp.json()
         
@@ -214,16 +214,9 @@ def get_drought():
         return jsonify({'success': True, **cached})
 
     # US Drought Monitor API
-    url = f"https://usdmdataservices.unl.edu/api/StateStatistics/GetDroughtSeverityStatisticsByAreaPercent"
-    params = {
-        'aoi': state,
-        'startdate': '',  # empty = current
-        'enddate': '',
-        'statisticsType': 'GetDroughtSeverityStatisticsByAreaPercent'
-    }
-
+    url = "https://usdmdataservices.unl.edu/api/StateStatistics/GetDroughtSeverityStatisticsByAreaPercent"
     try:
-        resp = requests.get(url, params=params, timeout=15)
+        resp = requests.get(f"{url}?aoi={state}", timeout=15, headers={'Accept': 'application/json'})
         if resp.status_code == 200:
             data = resp.json()
             
