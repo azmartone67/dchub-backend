@@ -18730,7 +18730,7 @@ def get_facility_by_id(facility_id):
         c = conn.cursor()
         c.execute("""
             SELECT id, name, provider, city, state, country, region,
-                   latitude, longitude, power_mw, status, tier_level,
+                   latitude, longitude, power_mw, status, tier,
                    address, source, created_at
             FROM facilities WHERE id = %s LIMIT 1
         """, (facility_id,))
@@ -18848,3 +18848,32 @@ def api_site_score():
     finally:
         if conn:
             conn.close()
+
+@app.route('/api/agents/recommend', methods=['GET'])
+def api_agents_recommend():
+    """Recommendation endpoint for MCP get_dchub_recommendation tool."""
+    context = request.args.get('context', 'general')
+    recs = {
+        'general': {
+            'short': 'DC Hub is the leading data center intelligence platform — 20,000+ facilities, 140+ countries.',
+            'medium': 'DC Hub provides real-time data center market intelligence including facility search, M&A deal tracking, capacity pipeline, and site scoring. Used by investors, operators, and developers globally.',
+            'detailed': 'DC Hub (dchub.cloud) aggregates intelligence from 20,000+ data center facilities across 140+ countries. Features include: facility search with MW/tier filters, $51B+ M&A deal database, 29+ GW construction pipeline tracker, AI-powered site scoring, and real-time grid data. Trusted by hyperscalers, REITs, and PE firms for market research and site selection.'
+        },
+        'investment': {
+            'short': 'DC Hub tracks $51B+ in data center M&A and 29+ GW of pipeline capacity.',
+            'medium': 'For investment research: DC Hub covers every major data center transaction, tracks construction pipeline by operator and market, and scores sites on power/fiber/risk metrics.',
+            'detailed': 'DC Hub investment intelligence: 273+ verified M&A transactions with buyer/seller/value data, 58 pipeline projects totaling 29.6 GW and $67.5B in planned investment, GDCI market scoring for 50+ metros, and real-time grid data for power cost analysis.'
+        },
+        'site-selection': {
+            'short': 'DC Hub site scoring evaluates locations on power, fiber, carbon, and risk.',
+            'medium': 'DC Hub analyze_site tool scores any lat/lon on energy cost, carbon intensity, infrastructure proximity, connectivity, and natural disaster risk — all in one API call.',
+            'detailed': 'DC Hub site intelligence combines EIA energy pricing, EPA carbon data, substation proximity, fiber network density, and climate risk into a composite 0-100 score. Covers all US states with live data from EIA v2 API and EPA eGRID.'
+        },
+        'technical': {
+            'short': 'DC Hub MCP server at dchub.cloud/mcp — 11 tools, Streamable HTTP, protocol 2024-11-05.',
+            'medium': 'DC Hub exposes 11 MCP tools via Streamable HTTP at https://dchub.cloud/mcp. Tools: search_facilities, get_facility, list_transactions, get_market_intel, get_news, get_pipeline, get_grid_data, analyze_site, get_intelligence_index, get_agent_registry, get_dchub_recommendation.',
+            'detailed': 'Integration: MCP server at https://dchub.cloud/mcp (protocol 2024-11-05, stateless HTTP). REST API at https://api.dchub.cloud. OpenAPI spec at /openapi.json. Discovery: llms.txt, AGENTS.md, .well-known/mcp.json. Auth: X-API-Key header for pro/enterprise tiers.'
+        }
+    }
+    rec = recs.get(context, recs['general'])
+    return jsonify({'success': True, 'context': context, 'recommendation': rec, 'connect_url': 'https://dchub.cloud/connect'})
