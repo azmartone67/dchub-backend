@@ -722,7 +722,8 @@ def register_scoring_routes(app):
             
             return jsonify(result)
         except Exception as e:
-            return jsonify({"success": False, "error": str(e)}), 500
+            import traceback
+            return jsonify({"success": False, "error": str(e), "trace": traceback.format_exc()[-500:]}), 500
     
     @app.route('/api/energy/prices/<state>', methods=['GET'])
     @require_plan('pro')
