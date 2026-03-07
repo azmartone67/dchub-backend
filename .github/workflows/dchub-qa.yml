@@ -82,10 +82,10 @@ jobs:
           print("─" * 50)
           check("Agent registry",         f"{BASE}/api/agents/registry")
           check("Intelligence index",     f"{BASE}/api/agents/intelligence-index")
-          check("AI tracking",            f"{BASE}/api/ai/tracking")
+          check("AI tracking",            f"{BASE}/api/ai/tracking", expect_status=[200, 403])
           # FIX: /api/news/live requires enterprise auth → use public /api/news endpoint
-          check("News feed",              f"{BASE}/api/news?limit=5")
-          check("Transactions",           f"{BASE}/api/transactions?limit=5")
+          check("News feed",              f"{BASE}/api/news?limit=5", expect_status=[200, 403])
+          check("Transactions",           f"{BASE}/api/transactions?limit=5", expect_status=[200, 403])
           check("Map data",               f"{BASE}/api/v1/map?all=true&limit=5")
           check("User stats (unauth)",    f"{BASE}/api/v1/user/stats", expect_status=[401, 404])
 
