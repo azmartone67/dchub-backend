@@ -11227,7 +11227,7 @@ def get_agent_news():
         }
         if category and category.lower() in category_map:
             category = category_map[category.lower()]
-            source = request.args.get('source', '')
+        source = request.args.get('source', '')
 
         try:
             from psycopg2.extras import RealDictCursor
