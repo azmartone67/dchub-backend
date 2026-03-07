@@ -1,6 +1,6 @@
 {
   "report_date": "2026-03-07",
-  "generated_at": "2026-03-07T08:04:03.134073",
+  "generated_at": "2026-03-07T21:00:09.586449",
   "summary": {
     "total_facilities": 11565,
     "total_providers": 3972,
@@ -89,54 +89,54 @@
   ],
   "recent_news": [
     {
-      "title": "Oracle Plans Job Cuts Amid AI Data Center Spending",
-      "source": "varindia.com",
-      "date": "2026-03-07T07:46:10"
+      "title": "County leaders in Wichita extend their data center moratorium",
+      "source": "Oklahoma Energy Today",
+      "date": "2026-03-07T19:13:14"
     },
     {
-      "title": "Oracle and OpenAI's Texas Stargate datacenter expansion reportedly on the skids",
+      "title": "A suburb rife with data centers set to fight Amazon plan for another",
+      "source": "The Washington Post",
+      "date": "2026-03-07T18:00:00"
+    },
+    {
+      "title": "Seagate Just Unleashed 44TB Hard Drives",
+      "source": "Slashdot",
+      "date": "2026-03-07T17:34:00"
+    },
+    {
+      "title": "Why Ohio\u2019s data center-promoting Jon Husted might have needed that White House photo op",
+      "source": "Cleveland.com",
+      "date": "2026-03-07T16:00:00"
+    },
+    {
+      "title": "Report: Data centers could use up 20% of Indiana\u2019s electricity by 2030",
+      "source": "Chicago Tribune",
+      "date": "2026-03-07T15:00:36"
+    },
+    {
+      "title": "Oracle reportedly set to axe thousands of jobs and freeze hiring as AI data center bets ignite financial perfect storm \u2014 cuts in cloud division to be backfilled with AI",
+      "source": "Tom's Hardware",
+      "date": "2026-03-07T13:20:00"
+    },
+    {
+      "title": "AI space race: BNP predicts Google, Amazon, Meta among first to test orbital data centers",
+      "source": "Seeking Alpha",
+      "date": "2026-03-07T13:00:35"
+    },
+    {
+      "title": "Georgia Senate passes bill on data center power costs, sparking debate",
+      "source": "The Augusta Chronicle",
+      "date": "2026-03-07T12:57:00"
+    },
+    {
+      "title": "Unpacking the deceptively simple science of tokenomics",
       "source": "The Register DC",
-      "date": "2026-03-07T00:51:11"
+      "date": "2026-03-07T12:12:13"
     },
     {
-      "title": "Meta eyes 2 GW Texas AI data center expansion abandoned by OpenAI, Oracle",
-      "source": "Interesting Engineering",
-      "date": "2026-03-07T00:27:00"
-    },
-    {
-      "title": "Data center developer pulls back from Apex for now",
-      "source": "ABC11 Raleigh-Durham",
-      "date": "2026-03-07T00:07:46"
-    },
-    {
-      "title": "Oracle/OpenAI drop plans to expand flagship Abilene Stargate site, Meta in talks to pick up Crusoe capacity with Nvidia's help",
-      "source": "Data Center Dynamics",
-      "date": "2026-03-06T23:51:50"
-    },
-    {
-      "title": "Oracle, OpenAI End Plans to Expand Flagship Data Center",
-      "source": "Bloomberg Tech",
-      "date": "2026-03-06T23:16:48"
-    },
-    {
-      "title": "Seagate Brings Mozaic 4+ HAMR Platform to Hyperscale Data Centers with 44TB Capacity",
-      "source": "HPCwire",
-      "date": "2026-03-06T23:01:48"
-    },
-    {
-      "title": "Data center developers face scrutiny from Minnesota residents",
-      "source": "The Minnesota Daily",
-      "date": "2026-03-06T22:40:32"
-    },
-    {
-      "title": "Top Analyst Raises Nvidia Stock (NVDA) Price Target on \u2018Leadership in AI Data Center Infrastructure\u2019",
-      "source": "TipRanks",
-      "date": "2026-03-06T22:23:02"
-    },
-    {
-      "title": "OpenAI and Oracle Curtail Data Center Expansion in Abilene, Texas",
-      "source": "Barron's",
-      "date": "2026-03-06T22:16:00"
+      "title": "Iranian drone strikes hit three AWS data centers in the UAE and Bahrain \u2014 Iran confirms it targeted Amazon cloud infrastructure",
+      "source": "Tom's Hardware",
+      "date": "2026-03-07T11:40:00"
     }
   ],
   "data_sources": [

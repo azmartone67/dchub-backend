@@ -11213,8 +11213,8 @@ def get_agent_news():
     try:
         limit = request.args.get('limit', 50, type=int)
         category = request.args.get('category', '')
-    # Map MCP tool slugs to DB category values
-    category_map = {
+        # Map MCP tool slugs to DB category values
+        category_map = {
         'deals': 'M&A',
         'construction': 'Construction',
         'policy': 'Policy',
@@ -11224,10 +11224,10 @@ def get_agent_news():
         'expansion': 'Expansion',
         'ai': 'AI',
         'industry': 'Industry',
-    }
-    if category and category.lower() in category_map:
-        category = category_map[category.lower()]
-        source = request.args.get('source', '')
+        }
+        if category and category.lower() in category_map:
+            category = category_map[category.lower()]
+            source = request.args.get('source', '')
 
         try:
             from psycopg2.extras import RealDictCursor
