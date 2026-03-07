@@ -18731,7 +18731,7 @@ def get_facility_by_id(facility_id):
         c.execute("""
             SELECT id, name, provider, city, state, country, region,
                    latitude, longitude, power_mw, status, tier,
-                   address, source, created_at
+                   address, source
             FROM facilities WHERE id = %s LIMIT 1
         """, (facility_id,))
         row = c.fetchone()
