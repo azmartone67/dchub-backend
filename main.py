@@ -17460,6 +17460,25 @@ if __name__ == '__main__':
         init_headroom_db()
         headroom_bp = create_headroom_blueprint()
         app.register_blueprint(headroom_bp)
+
+    # Sprint 2: New infrastructure layers (NASA FIRMS, PeeringDB, USGS Water)
+    try:
+        from fire_data_layer import register_fire_routes
+        register_fire_routes(app)
+    except ImportError as e:
+        print(f"Fire data layer not loaded: {e}")
+
+    try:
+        from peeringdb_layer import register_peeringdb_routes
+        register_peeringdb_routes(app)
+    except ImportError as e:
+        print(f"PeeringDB layer not loaded: {e}")
+
+    try:
+        from water_drought_intel import register_water_routes
+        register_water_routes(app)
+    except ImportError as e:
+        print(f"Water/drought intel not loaded: {e}")
         if ENABLE_BACKGROUND_SCHEDULERS:
             start_headroom_scheduler(delay_seconds=90)
             print("📊 Capacity Headroom API: ✅ Registered (auto-refresh every 30 min)")
