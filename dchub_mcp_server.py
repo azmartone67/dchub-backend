@@ -363,7 +363,6 @@ async def analyze_site(
     params = {k: v for k, v in {
         "lat": lat, "lon": lon, "state": state,
         "capacity": capacity_mw if capacity_mw else None,
-        "grid": include_grid, "risk": include_risk, "fiber": include_fiber,
     }.items() if v}
     _track("analyze_site", params)
     result = _api_get("/api/site-score", params)
