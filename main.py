@@ -10755,7 +10755,7 @@ def get_gas_pipelines():
         conn = get_db()
         c = conn.cursor()
         
-        query = "SELECT * FROM discovered_pipelines WHERE commodity = 'Natural Gas'"
+        query = "SELECT id, name, operator, pipeline_type, diameter_inches, capacity_mcf, status, lat, lng, city, state, country, source FROM gas_pipelines WHERE 1=1"
         params = []
         
         if state_filter:
@@ -10778,15 +10778,18 @@ def get_gas_pipelines():
         for r in rows:
             pipelines.append({
                 'id': r[0],
-                'operator': r[1],
-                'pipeline_type': r[2],
-                'status': r[3],
+                'name': r[1],
+                'operator': r[2],
+                'pipeline_type': r[3],
                 'diameter_inches': r[4],
-                'commodity': r[5],
-                'state': r[6],
-                'market': r[7],
-                'discovered_at': r[8],
-                'source': r[10]
+                'capacity_mcf': r[5],
+                'status': r[6],
+                'lat': r[7],
+                'lng': r[8],
+                'city': r[9],
+                'state': r[10],
+                'country': r[11],
+                'source': r[12]
             })
         
         # Enhance with geographic coordinates
@@ -10797,7 +10800,7 @@ def get_gas_pipelines():
             pass
         
         # Get summary stats
-        c.execute("SELECT COUNT(*), COUNT(DISTINCT operator), COUNT(DISTINCT state) FROM discovered_pipelines WHERE commodity = 'Natural Gas'")
+        c.execute("SELECT COUNT(*), COUNT(DISTINCT operator), COUNT(DISTINCT state) FROM gas_pipelines")
         stats = c.fetchone()
         
         conn.close()
