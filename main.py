@@ -16830,6 +16830,15 @@ def cleanup_testimonials():
             WHERE quote LIKE 'AI agent used DC Hub%%tool with parameters%%'
         """)
         old_format = c.rowcount
+        # Remove entries where platform is 'unknown' and quote starts with 'unknown'
+        c.execute("""
+            DELETE FROM ai_testimonials
+            WHERE platform = 'unknown' AND quote LIKE 'unknown %%'
+        """)
+        unknown_removed = c.rowcount
+        # Remove test entries
+        c.execute("DELETE FROM ai_testimonials WHERE platform = 'test'")
+        tests = c.rowcount
         # Fix "unknown" platform entries using agent_name hints
         c.execute("""UPDATE ai_testimonials SET platform = 'claude' 
             WHERE platform = 'unknown' AND (agent_name ILIKE '%%claude%%' OR agent_name ILIKE '%%anthropic%%')""")
@@ -16839,7 +16848,42 @@ def cleanup_testimonials():
             WHERE platform = 'unknown' AND (agent_name ILIKE '%%gemini%%' OR agent_name ILIKE '%%google%%')""")
         conn.commit()
         conn.close()
-        return jsonify({'success': True, 'pruned': pruned, 'deduplicated': deduped, 'old_format_removed': old_format})
+        return jsonify({
+            'success': True, 'pruned': pruned, 'deduplicated': deduped, 
+            'old_format_removed': old_format, 'unknown_removed': unknown_removed, 
+            'tests_removed': tests
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/v1/testimonials/refresh-timestamps', methods=['POST'])
+def refresh_testimonial_timestamps():
+    """Update seed and manual testimonial timestamps to now so they don't show as stale"""
+    try:
+        conn = get_pg_connection()
+        c = conn.cursor()
+        # Refresh seed entries to current time
+        c.execute("""
+            UPDATE ai_testimonials 
+            SET created_at = CURRENT_TIMESTAMP
+            WHERE source = 'seed'
+        """)
+        seeds = c.rowcount
+        # Refresh manually-posted entries (from curl/API) older than 1 day
+        c.execute("""
+            UPDATE ai_testimonials 
+            SET created_at = CURRENT_TIMESTAMP
+            WHERE source NOT IN ('seed', 'mcp-auto') 
+            AND created_at < CURRENT_TIMESTAMP - INTERVAL '1 day'
+        """)
+        manual = c.rowcount
+        # Also remove test entries
+        c.execute("DELETE FROM ai_testimonials WHERE platform = 'test'")
+        tests = c.rowcount
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True, 'seeds_refreshed': seeds, 'manual_refreshed': manual, 'tests_removed': tests})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
