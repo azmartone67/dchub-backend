@@ -3667,11 +3667,20 @@ def gridstatus_get_load(iso_id):
     return None
 
 def gridstatus_get_fuel_mix(iso_id):
-    """Get latest fuel mix from an ISO using gridstatus library"""
-    if not GRIDSTATUS_LIBRARY_AVAILABLE or iso_id not in GRIDSTATUS_ISOS:
-        return None
+    """Get latest fuel mix from an ISO — creates fresh gridstatus instance per call."""
     try:
-        iso = GRIDSTATUS_ISOS[iso_id]
+        import gridstatus
+        iso_classes = {
+            'CAISO': gridstatus.CAISO,
+            'ERCOT': gridstatus.Ercot,
+            'NYISO': gridstatus.NYISO,
+            'MISO': gridstatus.MISO,
+            'SPP': gridstatus.SPP,
+            'ISONE': gridstatus.ISONE,
+        }
+        if iso_id not in iso_classes:
+            return None
+        iso = iso_classes[iso_id]()
         df = iso.get_fuel_mix("latest")
         if len(df) > 0:
             rec = df.to_dict('records')[0]
