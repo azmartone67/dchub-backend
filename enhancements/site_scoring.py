@@ -8,6 +8,7 @@ With 5-second timeout, 5-minute caching, and fallback support
 import os
 import requests
 from datetime import datetime, timedelta
+from db_utils import get_read_db
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, asdict
 from functools import lru_cache
@@ -441,6 +442,53 @@ class SiteScoringEngine:
         self.energy_service = EnergyPricingService()
         self.carbon_service = CarbonIntensityService()
     
+
+    def _get_nearby_substations(self, lat: float, lon: float, radius_km: float = 50) -> List[Dict]:
+        """Query Neon substations table for nearby substations using haversine distance."""
+        try:
+            conn = get_read_db()
+            c = conn.cursor()
+            # Use PostgreSQL haversine via trig — fast enough for 44k rows with bbox pre-filter
+            lat_delta = radius_km / 111.0
+            lon_delta = radius_km / (111.0 * abs(__import__('math').cos(__import__('math').radians(lat))) + 0.001)
+            c.execute("""
+                SELECT name, voltage_kv, capacity_mva, latitude, longitude, state, city,
+                    (6371 * acos(
+                        cos(radians(%s)) * cos(radians(latitude)) *
+                        cos(radians(longitude) - radians(%s)) +
+                        sin(radians(%s)) * sin(radians(latitude))
+                    )) AS distance_km
+                FROM substations
+                WHERE latitude BETWEEN %s AND %s
+                  AND longitude BETWEEN %s AND %s
+                  AND latitude IS NOT NULL AND longitude IS NOT NULL
+                ORDER BY distance_km
+                LIMIT 20
+            """, (lat, lon, lat,
+                  lat - lat_delta, lat + lat_delta,
+                  lon - lon_delta, lon + lon_delta))
+            rows = c.fetchall()
+            conn.close()
+            results = []
+            for row in rows:
+                dist = float(row[7]) if row[7] is not None else 999
+                if dist <= radius_km:
+                    results.append({
+                        'name': row[0],
+                        'voltage_kv': float(row[1]) if row[1] else 0,
+                        'capacity_mva': float(row[2]) if row[2] else 0,
+                        'latitude': float(row[3]),
+                        'longitude': float(row[4]),
+                        'state': row[5],
+                        'city': row[6],
+                        'distance_km': round(dist, 2)
+                    })
+            return results
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Substation query failed: {e}")
+            return []
+
     def calculate_site_score(
         self,
         lat: float,
@@ -461,9 +509,11 @@ class SiteScoringEngine:
         carbon_data = self.carbon_service.get_carbon_intensity(lat, lon)
         carbon_score, carbon_details = self._score_carbon(carbon_data)
         
-        # Score infrastructure proximity
+        # Score infrastructure proximity — auto-fetch from Neon if not provided
+        if nearby_substations is None:
+            nearby_substations = self._get_nearby_substations(lat, lon, radius_km=50)
         infra_score, infra_details = self._score_infrastructure(
-            nearby_substations or [],
+            nearby_substations,
             nearby_fiber or []
         )
         
