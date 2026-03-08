@@ -1,17 +1,17 @@
 {
   "report_date": "2026-03-08",
-  "generated_at": "2026-03-08T09:32:59.027209",
+  "generated_at": "2026-03-08T15:37:55.934617",
   "summary": {
-    "total_facilities": 7412,
-    "total_providers": 2802,
+    "total_facilities": 7414,
+    "total_providers": 2803,
     "countries_covered": 166,
     "total_power_mw": 34230.0,
     "total_deals": 414,
     "total_deal_value_usd": 1267453.0
   },
   "market_highlights": [
-    "DC Hub tracks 7,412 data center facilities globally",
-    "Coverage spans 166 countries with 2802 providers",
+    "DC Hub tracks 7,414 data center facilities globally",
+    "Coverage spans 166 countries with 2803 providers",
     "Combined capacity: 34,230 MW",
     "M&A database: 414 transactions worth $0.0B+"
   ],
@@ -89,6 +89,11 @@
   ],
   "recent_news": [
     {
+      "title": "Why tech giants could reap massive tax breaks in Louisiana as data centers break ground",
+      "source": "NOLA.com",
+      "date": "2026-03-08T09:00:00"
+    },
+    {
       "title": "Data center tax break close to getting zapped by Washington Legislature - Oregon Public Broadcasting",
       "source": "OPB",
       "date": "2026-03-07T21:32:40"
@@ -102,6 +107,11 @@
       "title": "Key facts: Analysts warn AI may challenge Meta's profitability; Meta expands data centers in Texas",
       "source": "TradingView",
       "date": "2026-03-07T20:03:19"
+    },
+    {
+      "title": "San Antonio has over 20 data centers. Officials worry about water and power usage.",
+      "source": "San Antonio Report",
+      "date": "2026-03-07T20:00:00"
     },
     {
       "title": "County leaders in Wichita extend their data center moratorium",
@@ -127,16 +137,6 @@
       "title": "Report: Data centers could use up 20% of Indiana\u2019s electricity by 2030",
       "source": "Chicago Tribune",
       "date": "2026-03-07T15:00:36"
-    },
-    {
-      "title": "TODAY: Community group to host town hall on data centers",
-      "source": "KTSM 9 News",
-      "date": "2026-03-07T14:25:32"
-    },
-    {
-      "title": "Space Data Centers: Google, Amazon, and Meta Poised for Orbital Testing",
-      "source": "Blockonomi",
-      "date": "2026-03-07T14:24:40"
     }
   ],
   "data_sources": [

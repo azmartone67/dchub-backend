@@ -18872,58 +18872,6 @@ else:
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
 
-# =============================================================================
-# WORKER-LEVEL AI TRACKING ENDPOINT
-# Receives fire-and-forget tracking from Cloudflare Worker for all requests,
-# including those served by Neon-direct or cache. Writes to SQLite via
-# the existing log_ai_request() function so /ai/tracking reads it correctly.
-# =============================================================================
-@app.route('/api/ai/track-request', methods=['POST'])
-def track_worker_request():
-    try:
-        from ai_tracking import detect_platform, log_ai_request
-        data = request.get_json(silent=True) or {}
-        path = data.get('path', '')
-        user_agent = data.get('user_agent', '')
-        ip = data.get('ip', '')
-        
-        if not path or not user_agent:
-            return jsonify({"status": "skipped"}), 200
-        
-        platform = detect_platform(user_agent)
-        if platform in ('unknown', 'generic_bot', 'direct'):
-            return jsonify({"status": "skipped", "platform": platform}), 200
-        
-        # Write to SQLite via existing tracking function
-        log_ai_request(platform=platform, endpoint=path, user_agent=user_agent, ip_address=ip)
-        
-        return jsonify({"status": "tracked", "platform": platform}), 200
-    except Exception as e:
-        return jsonify({"status": "error", "msg": str(e)[:100]}), 200
-
-# =============================================================================
-# MCP SERVER — UVICORN THREAD (Railway-compatible, no subprocess needed)
-# Starts dchub_mcp_server on port 8888 in a daemon thread when running on Railway
-# =============================================================================
-def _start_mcp_thread():
-    import threading, time, uvicorn
-    def _run():
-        try:
-            from dchub_mcp_server import mcp as _fastmcp
-            _asgi_app = _fastmcp.streamable_http_app()
-            logger.info("🚀 Starting MCP server on port 8888 (thread)...")
-            uvicorn.run(_asgi_app, host="127.0.0.1", port=8888, log_level="warning")
-        except Exception as e:
-            logger.error(f"❌ MCP thread failed: {e}")
-    t = threading.Thread(target=_run, daemon=True, name="mcp-uvicorn")
-    t.start()
-    logger.info("✅ MCP uvicorn thread launched")
-
-# Only start MCP thread when running under gunicorn/Railway (not during imports)
-import os as _os
-if _os.environ.get("RAILWAY_ENVIRONMENT") or _os.environ.get("PORT"):
-    _start_mcp_thread()
-
 
 @app.route('/api/v1/facilities/<facility_id>', methods=['GET'])
 def get_facility_by_id(facility_id):
