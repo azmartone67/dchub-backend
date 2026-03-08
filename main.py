@@ -3938,11 +3938,62 @@ def grid_demand():
     }), 400
 
 
+@app.route('/api/grid/fuel-mix-live', methods=['GET'])
+def grid_fuel_mix_live():
+    """Ungated live grid data — bypasses all auth/gating."""
+    iso = request.args.get('iso', '').upper()
+    if not iso:
+        return jsonify({"error": "iso param required"}), 400
+    try:
+        import gridstatus
+        iso_classes = {
+            'CAISO': gridstatus.CAISO,
+            'ERCOT': gridstatus.Ercot,
+            'NYISO': gridstatus.NYISO,
+            'MISO': gridstatus.MISO,
+            'SPP': gridstatus.SPP,
+            'ISONE': gridstatus.ISONE,
+        }
+        if iso not in iso_classes:
+            return jsonify({"error": f"Invalid ISO. Options: {list(iso_classes.keys())}"}), 400
+        obj = iso_classes[iso]()
+        df = obj.get_fuel_mix("latest")
+        if len(df) > 0:
+            rec = df.to_dict("records")[0]
+            fuel_mix = []
+            total = 0
+            for key, val in rec.items():
+                if key.lower() not in ("time", "interval_start", "interval_end", "interval start", "interval end"):
+                    try:
+                        mw = float(val) if val else 0
+                        if mw != 0:
+                            fuel_mix.append({"source": key, "mw": round(mw), "percentage": 0})
+                            total += abs(mw)
+                    except:
+                        pass
+            for item in fuel_mix:
+                item["percentage"] = round(abs(item["mw"]) / total * 100, 1) if total > 0 else 0
+            time_val = rec.get("Time") or rec.get("Interval Start")
+            return jsonify({"success": True, "iso": iso, "source": "gridstatus-live", "total_mw": round(total), "fuel_mix": fuel_mix, "timestamp": str(time_val)})
+        return jsonify({"error": "No data returned from gridstatus"}), 500
+    except Exception as e:
+        return jsonify({"error": str(e), "type": type(e).__name__}), 500
+
 @app.route('/api/grid/fuel-mix', methods=['GET'])
 @require_plan('free')
 def grid_fuel_mix():
     """Get current generation by fuel type"""
     iso = request.args.get('iso', '').upper()
+
+    # DEBUG: Test gridstatus directly
+    if request.args.get('debug') == '1':
+        try:
+            import gridstatus as _gs
+            _iso = _gs.CAISO()
+            _df = _iso.get_fuel_mix("latest")
+            return jsonify({"debug": True, "rows": len(_df), "cols": list(_df.columns), "data": _df.to_dict('records')[0] if len(_df) > 0 else None})
+        except Exception as _e:
+            return jsonify({"debug": True, "error": str(_e), "type": type(_e).__name__})
     
     iso_data = {
         'ERCOT': {'name': 'Electric Reliability Council of Texas', 'dataset': 'ercot_fuel_mix'},
@@ -9034,11 +9085,11 @@ def get_market_stats(market):
     
     # Recent facilities
     c.execute(f"""
-        SELECT id, name, provider, city, power_mw, status, first_seen
+        SELECT id, name, provider, city, power_mw, status, discovered_at
         FROM discovered_facilities 
         WHERE ({where_clause})
         {RAILWAY_EXCLUSION}
-        ORDER BY first_seen DESC
+        ORDER BY discovered_at DESC NULLS LAST
         LIMIT 5
     """, params)
     
