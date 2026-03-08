@@ -1,0 +1,48 @@
+# .github/workflows/data-sync.yml
+# DC Hub — Automated Data Sync Cron
+
+name: DC Hub Data Sync
+
+on:
+  schedule:
+    - cron: '0 0,6,12,18 * * *'
+  workflow_dispatch:
+
+jobs:
+  sync-infrastructure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Sync Energy Discovery (market by market)
+        run: |
+          RAILWAY="https://dchub-backend-production.up.railway.app"
+          echo "Starting DC Hub data sync at $(date -u)"
+          MARKETS="phoenix dallas northern_virginia atlanta las_vegas salt_lake_city columbus des_moines chicago silicon_valley new_york seattle portland denver san_antonio houston miami reno sacramento minneapolis kansas_city richmond nashville"
+          TOTAL=0
+          ERRORS=0
+          for MARKET in $MARKETS; do
+            RESULT=$(curl -sf --max-time 60 "$RAILWAY/api/energy-discovery/power-plants?market=$MARKET&limit=500" 2>/dev/null)
+            if [ $? -eq 0 ]; then
+              COUNT=$(echo "$RESULT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('count',0))" 2>/dev/null || echo "0")
+              echo "  $MARKET: $COUNT plants"
+              TOTAL=$((TOTAL + COUNT))
+            else
+              echo "  $MARKET: FAILED"
+              ERRORS=$((ERRORS + 1))
+            fi
+            sleep 3
+          done
+          echo "Sync done: $TOTAL plants, $ERRORS errors"
+
+      - name: Health check
+        run: |
+          curl -sf "https://dchub-backend-production.up.railway.app/api/health" | python3 -m json.tool | head -10
+
+      - name: Warm PeeringDB cache
+        run: |
+          for COORDS in "39.0,-77.4" "32.8,-96.8" "33.4,-112.0" "37.4,-122.0" "41.9,-87.6"; do
+            IFS=',' read LAT LNG <<< "$COORDS"
+            curl -sf "https://dchub-backend-production.up.railway.app/api/v2/connectivity/summary?lat=$LAT&lng=$LNG" > /dev/null
+            sleep 2
+          done
+          echo "PeeringDB cache warmed"
