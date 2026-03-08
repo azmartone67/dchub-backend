@@ -8949,10 +8949,15 @@ def list_markets():
     })
 
 @app.route('/api/v1/markets/<market>', methods=['GET'])
-@require_plan('pro')
-@protect_data
 def get_market_stats(market):
     """Get detailed stats for a single market"""
+    # Internal key bypass — skip plan gate for MCP calls
+    if request.headers.get('X-Internal-Key') != 'dchub-internal-2024':
+        user = getattr(request, 'current_user', None)
+        plan = (user or {}).get('plan', 'free') if isinstance(user, dict) else 'free'
+        if plan not in ('pro', 'enterprise'):
+            return jsonify({'error': 'plan_required', 'message': 'This endpoint requires a Pro plan or higher.', 'pricing_url': 'https://dchub.cloud/pricing', 'success': False}), 403
+    
     market_lower = market.lower().replace('-', ' ')
     
     if market_lower not in MARKET_ALIASES:
@@ -8960,7 +8965,7 @@ def get_market_stats(market):
     
     cities = MARKET_ALIASES[market_lower]
     
-    conn = get_db()
+    conn = get_read_db()
     c = conn.cursor()
     
     # Build city conditions
@@ -8968,10 +8973,10 @@ def get_market_stats(market):
     params = []
     for city in cities:
         if len(city) == 2 and city.isupper():
-            conditions.append('state = ?')
+            conditions.append('state = %s')
             params.append(city)
         else:
-            conditions.append('city LIKE ?')
+            conditions.append('city ILIKE %s')
             params.append(f'%{city}%')
     
     where_clause = ' OR '.join(conditions)
@@ -8988,7 +8993,9 @@ def get_market_stats(market):
         {RAILWAY_EXCLUSION}
     """, params)
     
-    stats = dict(c.fetchone())
+    row = c.fetchone()
+    cols = [d[0] for d in c.description]
+    stats = dict(zip(cols, row)) if row else {}
     
     # Top providers
     c.execute(f"""
@@ -9012,7 +9019,8 @@ def get_market_stats(market):
         GROUP BY status
     """, params)
     
-    by_status = dict(c.fetchall())
+    by_status_rows = c.fetchall()
+    by_status = {r[0]: r[1] for r in by_status_rows}
     
     # Recent facilities
     c.execute(f"""
@@ -9024,7 +9032,9 @@ def get_market_stats(market):
         LIMIT 5
     """, params)
     
-    recent = [dict(r) for r in c.fetchall()]
+    recent_rows = c.fetchall()
+    recent_cols = [d[0] for d in c.description]
+    recent = [dict(zip(recent_cols, r)) for r in recent_rows]
     
     conn.close()
     
@@ -18864,7 +18874,7 @@ def get_facility_by_id(facility_id):
         c = conn.cursor()
         c.execute("""
             SELECT id, name, provider, city, state, country, market AS region,
-                   latitude, longitude, power_mw, status, tier,
+                   latitude, longitude, power_mw, status,
                    address, source
             FROM discovered_facilities WHERE id = %s LIMIT 1
         """, (facility_id,))
