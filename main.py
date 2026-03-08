@@ -3939,6 +3939,7 @@ def grid_demand():
 
 
 @app.route('/api/grid/fuel-mix', methods=['GET'])
+@require_plan('free')
 def grid_fuel_mix():
     """Get current generation by fuel type"""
     iso = request.args.get('iso', '').upper()
