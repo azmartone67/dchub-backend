@@ -8952,7 +8952,7 @@ def list_markets():
 def get_market_stats(market):
     """Get detailed stats for a single market"""
     # Internal key bypass — skip plan gate for MCP calls
-    if request.headers.get('X-Internal-Key') != 'dchub-internal-2024':
+    if request.headers.get('X-Internal-Key') not in ('dchub-internal-2024', 'dchub-internal-sync-2026'):
         user = getattr(request, 'current_user', None)
         plan = (user or {}).get('plan', 'free') if isinstance(user, dict) else 'free'
         if plan not in ('pro', 'enterprise'):
@@ -18871,20 +18871,31 @@ def get_facility_by_id(facility_id):
     conn = None
     try:
         conn = get_read_db()
-        c = conn.cursor()
-        c.execute("""
-            SELECT id, name, provider, city, state, country, market AS region,
-                   latitude, longitude, power_mw, status,
-                   address, source
-            FROM discovered_facilities WHERE id = %s LIMIT 1
-        """, (facility_id,))
-        row = c.fetchone()
+        cur = conn.cursor()
+        # Try integer id first, then hex merged_facility_id
+        try:
+            int_id = int(facility_id)
+            cur.execute("""
+                SELECT id, name, provider, city, state, country, market AS region,
+                       latitude, longitude, power_mw, status, address, source
+                FROM discovered_facilities WHERE id = %s LIMIT 1
+            """, (int_id,))
+        except ValueError:
+            # hex string — look up via merged_facility_id
+            cur.execute("""
+                SELECT id, name, provider, city, state, country, market AS region,
+                       latitude, longitude, power_mw, status, address, source
+                FROM discovered_facilities WHERE merged_facility_id = %s
+                   OR source_id = %s LIMIT 1
+            """, (facility_id, facility_id))
+        row = cur.fetchone()
         if not row:
             return jsonify({"success": False, "error": "Facility not found", "id": facility_id}), 404
-        cols = [d[0] for d in c.description]
+        cols = [d[0] for d in cur.description]
         return jsonify({"success": True, "data": dict(zip(cols, row))})
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        import traceback
+        return jsonify({"success": False, "error": str(e), "trace": traceback.format_exc()[-300:]}), 500
     finally:
         if conn: conn.close()
 
