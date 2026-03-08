@@ -1454,7 +1454,7 @@ def register_infrastructure_routes(app, start_scheduler=True):
     def get_substations():
         conn = get_db()
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM substations ORDER BY voltage_kv DESC LIMIT 100")
+        cursor.execute("SELECT * FROM substations WHERE voltage_kv > 69 OR voltage_kv IS NULL OR voltage_kv = 0 ORDER BY voltage_kv DESC LIMIT 100")
         substations = [dict(row) for row in cursor.fetchall()]
         conn.close()
         return jsonify({"success": True, "data": substations, "count": len(substations)})
