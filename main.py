@@ -48,7 +48,7 @@ if _bg_neon_url and 'neon' in _bg_neon_url.lower():
                     import urllib.request, json
                     _k = _bg_os.environ.get('SENDGRID_API_KEY', '')
                     if not _k: return
-                    _p = json.dumps({"personalizations":[{"to":[{"email":_bg_os.environ.get('ADMIN_ALERT_EMAIL','jaz@dchub.cloud')}]}],"from":{"email":_bg_os.environ.get('SENDGRID_FROM_EMAIL','alerts@dchub.cloud'),"name":"DC Hub Boot Guard"},"subject":"\U0001f6a8 Neon Hostname Changed on Boot","content":[{"type":"text/html","value":f"<h2>Neon Hostname Changed</h2><p>Previous: {_bg_previous_host}</p><p>Current: {_bg_current_host}</p>"}]}).encode()
+                    _p = json.dumps({"personalizations":[{"to":[{"email":_bg_os.environ.get('ADMIN_ALERT_EMAIL','jonathan@dchub.cloud')}]}],"from":{"email":_bg_os.environ.get('SENDGRID_FROM_EMAIL','alerts@dchub.cloud'),"name":"DC Hub Boot Guard"},"subject":"\U0001f6a8 Neon Hostname Changed on Boot","content":[{"type":"text/html","value":f"<h2>Neon Hostname Changed</h2><p>Previous: {_bg_previous_host}</p><p>Current: {_bg_current_host}</p>"}]}).encode()
                     _r = urllib.request.Request("https://api.sendgrid.com/v3/mail/send",data=_p,method='POST')
                     _r.add_header('Authorization',f'Bearer {_k}')
                     _r.add_header('Content-Type','application/json')
@@ -1154,7 +1154,7 @@ STARTUP_COMPLETE = False
 last_webhook_time = None
 last_webhook_status = None
 
-ADMIN_EMAIL = os.environ.get('ADMIN_ALERT_EMAIL', 'jaz@dchub.cloud')
+ADMIN_EMAIL = os.environ.get('ADMIN_ALERT_EMAIL', 'jonathan@dchub.cloud')
 
 # DC Hub MCP Gateway -- Self-Learning Auto-Interconnection
 try:

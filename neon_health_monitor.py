@@ -21,7 +21,7 @@ LATENCY_CRITICAL_MS = 2000
 
 def _send_alert(subject, body_html):
     sg_key = os.environ.get('SENDGRID_API_KEY', '')
-    admin_email = os.environ.get('ADMIN_ALERT_EMAIL', 'jaz@dchub.cloud')
+    admin_email = os.environ.get('ADMIN_ALERT_EMAIL', 'jonathan@dchub.cloud')
     if not sg_key:
         return False
     if _state['alert_sent_at'] and (time.time() - _state['alert_sent_at']) < ALERT_COOLDOWN_SECONDS:
