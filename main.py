@@ -6322,14 +6322,14 @@ def init_new_tables():
 
 # Market aliases for comparison tool
 MARKET_ALIASES = {
-    'phoenix': ['Phoenix', 'Mesa', 'Tempe', 'Scottsdale', 'Chandler', 'Gilbert', 'Goodyear', 'AZ'],
-    'arizona': ['Phoenix', 'Mesa', 'Tempe', 'Scottsdale', 'Tucson', 'AZ'],
+    'phoenix': ['Phoenix', 'Mesa', 'Tempe', 'Scottsdale', 'Chandler', 'Gilbert', 'Goodyear'],
+    'arizona': ['Phoenix', 'Mesa', 'Tempe', 'Scottsdale', 'Tucson', 'Chandler', 'Gilbert', 'Goodyear'],
     'dallas': ['Dallas', 'Fort Worth', 'Plano', 'Irving', 'Arlington', 'Carrollton', 'Richardson'],
     'dfw': ['Dallas', 'Fort Worth', 'Plano', 'Irving', 'Arlington'],
     'austin': ['Austin', 'Round Rock', 'Cedar Park', 'Georgetown'],
     'houston': ['Houston', 'The Woodlands', 'Sugar Land', 'Katy'],
     'san antonio': ['San Antonio'],
-    'northern virginia': ['Ashburn', 'Loudoun', 'Sterling', 'Reston', 'Herndon', 'Manassas', 'VA'],
+    'northern virginia': ['Ashburn', 'Loudoun', 'Sterling', 'Reston', 'Herndon', 'Manassas', 'Prince William', 'Leesburg'],
     'nova': ['Ashburn', 'Loudoun', 'Sterling', 'Reston', 'Herndon', 'Manassas'],
     'ashburn': ['Ashburn', 'Loudoun'],
     'chicago': ['Chicago', 'Aurora', 'Elk Grove', 'Schaumburg'],
@@ -6338,7 +6338,7 @@ MARKET_ALIASES = {
     'los angeles': ['Los Angeles', 'El Segundo', 'Downtown LA', 'Irvine', 'Orange County'],
     'san francisco': ['San Francisco', 'South San Francisco'],
     'new york': ['New York', 'NYC', 'Manhattan', 'Brooklyn', 'Bronx'],
-    'new jersey': ['Secaucus', 'Newark', 'Jersey City', 'NJ'],
+    'new jersey': ['Secaucus', 'Newark', 'Jersey City', 'Piscataway', 'Weehawken'],
     'seattle': ['Seattle', 'Tukwila', 'Kent', 'Bellevue', 'Redmond'],
     'denver': ['Denver', 'Aurora', 'Centennial', 'Boulder'],
     'miami': ['Miami', 'Boca Raton', 'Fort Lauderdale'],
@@ -18990,14 +18990,34 @@ def api_site_score():
         nearby_facilities = row[0] or 0
         nearby_mw = float(row[1] or 0)
 
-        # Nearby substations (power infrastructure, ~50km radius)
+        # Nearby substations (power infrastructure, ~50km radius — utility-grade only >69kV)
         c.execute("""
             SELECT COUNT(*) as cnt
             FROM substations
             WHERE lat IS NOT NULL AND lng IS NOT NULL
+              AND (voltage_kv > 69 OR voltage_kv IS NULL OR voltage_kv = 0)
               AND (lat - %s)*(lat - %s) + (lng - %s)*(lng - %s) < 0.20
         """, (lat, lat, lon, lon))
         nearby_substations = c.fetchone()[0] or 0
+
+        # Fiber connectivity score — metro defaults by state proximity to major IX/fiber hubs
+        METRO_FIBER_SCORES = {
+            'VA': 95, 'NJ': 90, 'NY': 88, 'CA': 88, 'IL': 85,
+            'TX': 82, 'GA': 80, 'MA': 82, 'MD': 78, 'WA': 78,
+            'PA': 76, 'OR': 75, 'OH': 74, 'FL': 74, 'CO': 73,
+            'AZ': 72, 'NC': 72, 'MN': 70, 'MI': 70, 'NV': 70,
+            'UT': 69, 'IA': 68, 'TN': 68, 'MO': 67, 'IN': 66,
+            'WI': 65, 'KY': 63, 'SC': 62, 'AL': 60, 'NE': 60,
+            'KS': 58, 'OK': 56, 'AR': 55, 'LA': 55, 'MS': 52,
+            'ID': 55, 'NM': 54, 'MT': 50, 'WV': 50,
+        }
+        fiber_score = METRO_FIBER_SCORES.get(state, 55)
+
+        # Boost fiber score if near major facility clusters (proxy for fiber density)
+        if nearby_facilities >= 20:
+            fiber_score = min(100, fiber_score + 10)
+        elif nearby_facilities >= 5:
+            fiber_score = min(100, fiber_score + 5)
 
         # State-level risk index (hardcoded baseline by state)
         STATE_RISK = {
@@ -19025,11 +19045,12 @@ def api_site_score():
         else:
             market_score = 60  # saturated
 
-        # Overall composite
+        # Overall composite (power 30%, fiber 15%, market 20%, risk 35%)
         overall = round(
-            (power_score * 0.35) +
-            (market_score * 0.25) +
-            (risk_score * 0.40)
+            (power_score * 0.30) +
+            (fiber_score * 0.15) +
+            (market_score * 0.20) +
+            (risk_score * 0.35)
         , 1)
 
         return jsonify({
@@ -19039,6 +19060,7 @@ def api_site_score():
             'overall_score': overall,
             'scores': {
                 'power_infrastructure': round(power_score, 1),
+                'fiber_connectivity': round(fiber_score, 1),
                 'market_conditions': round(market_score, 1),
                 'risk_resilience': round(risk_score, 1),
             },
