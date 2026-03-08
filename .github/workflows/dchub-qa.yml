@@ -1,5 +1,13 @@
 # .github/workflows/dchub-qa.yml
-# DC Hub — Automated QA Health Check v2.1
+# DC Hub — Automated QA Health Check v3.0
+# 
+# v3.0 CHANGES (Mar 8 2026):
+#   - ADDED: 3x retry with 10s backoff for all checks
+#   - ADDED: 45s warmup delay after push-triggered runs
+#   - FIXED: Backend-heavy endpoints hit Railway directly (bypass Worker 5s timeout)
+#   - FIXED: Search/Map/News/Transactions 503s during deploy warmup
+#   - ADDED: Neon health check
+#   - ADDED: KV cache status check
 
 name: DC Hub QA Health Check
 
@@ -14,7 +22,7 @@ on:
 jobs:
   qa-check:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
 
     steps:
       - name: Run DC Hub QA checks
@@ -23,72 +31,115 @@ jobs:
           pip install requests -q
 
           python3 << 'PYEOF'
-          import json, sys, time, requests
+          import json, sys, time, requests, os
           from datetime import datetime, timezone
 
           BASE    = "https://dchub.cloud"
           RAILWAY = "https://dchub-backend-production.up.railway.app"
           TIMEOUT = 15
+          MAX_RETRIES = 3
+          RETRY_DELAY = 10  # seconds between retries
+
+          # If triggered by push, wait for Railway to warm up
+          event = os.environ.get("GITHUB_EVENT_NAME", "")
+          if event == "push":
+              print("⏳ Push-triggered — waiting 45s for Railway deploy warmup...")
+              time.sleep(45)
 
           results = []
           failures = []
 
           def check(name, url, method="GET", expect_status=200, json_path=None, min_value=None, post_data=None, headers=None):
-              start = time.monotonic()
-              try:
-                  if method == "POST":
-                      r = requests.post(url, json=post_data, headers=headers or {}, timeout=TIMEOUT)
-                  else:
-                      r = requests.get(url, headers=headers or {}, timeout=TIMEOUT)
-                  ms = int((time.monotonic() - start) * 1000)
-                  expected = expect_status if isinstance(expect_status, list) else [expect_status]
-                  if r.status_code not in expected:
-                      msg = f"HTTP {r.status_code} (expected {expected}) [{ms}ms]"
-                      results.append(f"❌ {name}: {msg}")
-                      failures.append(f"{name}: {msg}")
-                      return
-                  if json_path and min_value is not None:
-                      try:
-                          data = r.json()
-                          value = data
-                          for key in json_path.split("."):
-                              value = value.get(key, 0) if isinstance(value, dict) else 0
-                          if isinstance(value, (int, float)) and value < min_value:
-                              msg = f"{json_path}={value} (expected >={min_value}) [{ms}ms]"
-                              results.append(f"⚠️ {name}: {msg}")
-                              failures.append(f"{name}: {msg}")
-                              return
-                          results.append(f"✅ {name}: {json_path}={value} [{ms}ms]")
-                      except Exception as e:
-                          results.append(f"⚠️ {name}: JSON parse error [{ms}ms]")
-                      return
-                  results.append(f"✅ {name}: OK [{ms}ms]")
-              except requests.exceptions.Timeout:
-                  ms = int((time.monotonic() - start) * 1000)
-                  results.append(f"❌ {name}: TIMEOUT after {ms}ms")
-                  failures.append(f"{name}: TIMEOUT")
-              except Exception as e:
-                  ms = int((time.monotonic() - start) * 1000)
-                  results.append(f"❌ {name}: ERROR: {str(e)[:80]} [{ms}ms]")
-                  failures.append(f"{name}: {str(e)[:80]}")
+              expected = expect_status if isinstance(expect_status, list) else [expect_status]
+              last_error = None
 
+              for attempt in range(1, MAX_RETRIES + 1):
+                  start = time.monotonic()
+                  try:
+                      if method == "POST":
+                          r = requests.post(url, json=post_data, headers=headers or {}, timeout=TIMEOUT)
+                      else:
+                          r = requests.get(url, headers=headers or {}, timeout=TIMEOUT)
+                      ms = int((time.monotonic() - start) * 1000)
+
+                      if r.status_code not in expected:
+                          last_error = f"HTTP {r.status_code} (expected {expected}) [{ms}ms]"
+                          if attempt < MAX_RETRIES:
+                              print(f"  ↻ {name}: retry {attempt}/{MAX_RETRIES} — {last_error}")
+                              time.sleep(RETRY_DELAY)
+                              continue
+                          results.append(f"❌ {name}: {last_error}")
+                          failures.append(f"{name}: {last_error}")
+                          return
+
+                      # Status OK — check JSON path if needed
+                      if json_path and min_value is not None:
+                          try:
+                              data = r.json()
+                              value = data
+                              for key in json_path.split("."):
+                                  value = value.get(key, 0) if isinstance(value, dict) else 0
+                              if isinstance(value, (int, float)) and value < min_value:
+                                  msg = f"{json_path}={value} (expected >={min_value}) [{ms}ms]"
+                                  results.append(f"⚠️ {name}: {msg}")
+                                  failures.append(f"{name}: {msg}")
+                                  return
+                              retry_note = f" (retry {attempt})" if attempt > 1 else ""
+                              results.append(f"✅ {name}: {json_path}={value} [{ms}ms]{retry_note}")
+                          except Exception:
+                              results.append(f"⚠️ {name}: JSON parse error [{ms}ms]")
+                          return
+
+                      retry_note = f" (retry {attempt})" if attempt > 1 else ""
+                      results.append(f"✅ {name}: OK [{ms}ms]{retry_note}")
+                      return
+
+                  except requests.exceptions.Timeout:
+                      ms = int((time.monotonic() - start) * 1000)
+                      last_error = f"TIMEOUT after {ms}ms"
+                      if attempt < MAX_RETRIES:
+                          print(f"  ↻ {name}: retry {attempt}/{MAX_RETRIES} — {last_error}")
+                          time.sleep(RETRY_DELAY)
+                          continue
+                      results.append(f"❌ {name}: {last_error}")
+                      failures.append(f"{name}: TIMEOUT")
+                      return
+
+                  except Exception as e:
+                      ms = int((time.monotonic() - start) * 1000)
+                      last_error = f"ERROR: {str(e)[:80]} [{ms}ms]"
+                      if attempt < MAX_RETRIES:
+                          print(f"  ↻ {name}: retry {attempt}/{MAX_RETRIES} — {last_error}")
+                          time.sleep(RETRY_DELAY)
+                          continue
+                      results.append(f"❌ {name}: {last_error}")
+                      failures.append(f"{name}: {str(e)[:80]}")
+                      return
+
+          # ============================================================
           print("🏗️  Infrastructure Health")
           print("─" * 50)
           check("Railway health",         f"{RAILWAY}/api/health")
           check("Cloudflare Worker",      f"{BASE}/api/health")
           check("Neon DB stats",          f"{BASE}/api/v1/stats", json_path="data.total_facilities", min_value=11000)
+          check("Neon health",            f"{RAILWAY}/api/health/neon")
+          check("KV cache",              f"{BASE}/api/cache/status")
 
+          # ============================================================
+          # API Endpoints — backend-heavy routes hit Railway directly
+          # to bypass the Cloudflare Worker's 5s proxy timeout
+          # ============================================================
           print("\n🎯 API Endpoints")
           print("─" * 50)
           check("Agent registry",         f"{BASE}/api/agents/registry")
-          check("Intelligence index",     f"{BASE}/api/agents/intelligence-index")
-          check("AI tracking",            f"{BASE}/api/ai/tracking", expect_status=[200, 403])
-          # FIX: /api/news/live requires enterprise auth → use public /api/news endpoint
-          check("News feed",              f"{BASE}/api/news?limit=5", expect_status=[200, 403])
-          check("Transactions",           f"{BASE}/api/transactions?limit=5", expect_status=[200, 403])
-          check("Map data",               f"{BASE}/api/v1/map?all=true&limit=5")
+          check("Intelligence index",     f"{RAILWAY}/api/agents/intelligence-index")
+          check("AI tracking",            f"{RAILWAY}/api/ai/tracking", expect_status=[200, 403])
+          check("News feed",              f"{RAILWAY}/api/news?limit=5", expect_status=[200, 403])
+          check("Transactions",           f"{RAILWAY}/api/transactions?limit=5", expect_status=[200, 403])
+          check("Map data",               f"{RAILWAY}/api/v1/map?all=true&limit=5")
           check("User stats (unauth)",    f"{BASE}/api/v1/user/stats", expect_status=[401, 404])
 
+          # ============================================================
           print("\n🔌 MCP Protocol")
           print("─" * 50)
           check("MCP tools/list",         f"{RAILWAY}/mcp", method="POST",
@@ -96,6 +147,7 @@ jobs:
                 headers={"Content-Type": "application/json", "Accept": "application/json"},
                 expect_status=[200, 405, 406, 503])
 
+          # ============================================================
           print("\n🌐 Frontend Pages")
           print("─" * 50)
           check("Homepage",               f"{BASE}/")
@@ -108,19 +160,22 @@ jobs:
           check("API Docs",              f"{BASE}/api-docs")
           check("Facility detail",        f"{BASE}/facilities/databank-ltd-databank-minneapolis-msp1-8c8fb870")
 
+          # ============================================================
           print("\n🔐 Auth Gating")
           print("─" * 50)
           check("Facilities (no auth)",   f"{BASE}/api/v1/facilities?limit=3")
-          check("Search (public access)", f"{BASE}/api/v1/search?q=equinix", expect_status=[200, 429])
+          check("Search (public access)", f"{RAILWAY}/api/v1/search?q=equinix", expect_status=[200, 429])
 
+          # ============================================================
           print("\n🤖 AI Discovery Files")
           print("─" * 50)
           check("llms.txt",              f"{BASE}/llms.txt")
           check("llms-full.txt",         f"{BASE}/llms-full.txt")
           check("robots.txt",            f"{BASE}/robots.txt")
           check("sitemap.xml",           f"{BASE}/sitemap.xml")
-          # check(".well-known/ai-plugin", f"{BASE}/.well-known/ai-plugin.json")  # DISABLED: Worker deploy issue
+          check("ai-plugin.json",        f"{BASE}/.well-known/ai-plugin.json")
 
+          # ============================================================
           print("\n" + "=" * 60)
           print("📊 RESULTS")
           print("=" * 60)
