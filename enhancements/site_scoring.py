@@ -390,6 +390,18 @@ class CarbonIntensityService:
             subregion = "CAMX"
         elif lat > 42 and lon < -115:  # Pacific Northwest
             subregion = "NWPP"
+        elif lat > 31 and lat < 37 and lon > -115 and lon < -109:  # Arizona
+            subregion = "AZNM"
+        elif lat > 36 and lat < 42 and lon > -115 and lon < -109:  # Nevada/Utah
+            subregion = "NWPP"
+        elif lat > 31 and lat < 37 and lon > -109 and lon < -103:  # New Mexico
+            subregion = "AZNM"
+        elif lat > 35 and lat < 42 and lon > -109 and lon < -102:  # Colorado
+            subregion = "RMPA"
+        elif lat > 25 and lat < 35 and lon > -90 and lon < -79:  # Southeast
+            subregion = "SRSO"
+        elif lat > 35 and lat < 42 and lon > -90 and lon < -80:  # Appalachia
+            subregion = "SRVC"
         else:
             subregion = "RFCW"  # Default to RFC West (Midwest)
         
