@@ -1,11 +1,15 @@
-# DC Hub MCP — Multi-Platform Intelligence Prompts
-# Works with: Claude, ChatGPT, Copilot, Cursor, Windsurf, and any MCP client
-# Connect: dchub.cloud/mcp | 11 tools | 20,000+ facilities | 140+ countries
-# ─────────────────────────────────────────────────────────────────
+# DC Hub MCP Playbook — 11 AI-Native Intelligence Tools
 
+**Connect:** `dchub.cloud/mcp` | **Transport:** Streamable HTTP | **Registry:** registry.modelcontextprotocol.io
 
-## 🏗️ SITE SELECTION (triggers 6 tools)
+---
 
+## Quick Start
+
+Paste any prompt below into Claude, ChatGPT, Copilot, Cursor, or any MCP-connected AI.
+
+### Site Selection (triggers 6 tools)
+```
 Evaluate [CITY, STATE] for a [X] MW data center using DC Hub tools.
 
 Deliver:
@@ -16,153 +20,78 @@ Deliver:
 5. Recent regional M&A deals
 6. Construction pipeline within 50 km
 
-Format:
-- Executive summary (3 sentences)
-- Detailed sections with data tables
-- Scores with key drivers
-- Limitations + recommended next steps
+Format: Executive summary, detailed sections, scores with drivers, next steps.
+```
 
-
-## ⚡ GRID INTELLIGENCE (real-time MW from 7 ISOs)
-
+### Grid Intelligence (real-time from 7 ISOs)
+```
 Using DC Hub, show the real-time power generation fuel mix for [ERCOT/CAISO/PJM/NYISO/MISO/SPP/ISONE].
+Include: MW by source, renewable percentage, total generation, comparison to other ISOs.
+```
 
-Include:
-- MW by source (actual generation, not percentages)
-- Renewable percentage
-- Total generation in GW
-- Comparison to other major ISOs
-- Carbon intensity implications for data center operators
-
-
-## 💰 M&A DUE DILIGENCE
-
-Using DC Hub, show all data center M&A transactions from the past 6 months.
+### M&A Due Diligence
+```
+Using DC Hub, show data center M&A transactions from the past 6 months.
 Filter by [buyer/seller/region/deal type].
+Include: Deal size, valuation, structure, strategic rationale, market trends.
+```
 
-Include:
-- Deal size and valuation
-- Structure (JV, carve-out, platform acquisition)
-- Assets involved (MW, sqft, markets)
-- Strategic rationale
-- Market trend summary
-
-
-## 🔍 FACILITY SEARCH + COMPETITIVE ANALYSIS
-
+### Facility Search
+```
 Find all [OPERATOR] data centers in [STATE/COUNTRY] using DC Hub.
+Include: Locations, power capacity, tier levels, connectivity, pipeline for planned builds.
+```
 
-Include:
-- Locations with coordinates
-- Power capacity (MW)
-- Tier level and certifications
-- Connectivity (carriers, IX points)
-- Construction pipeline for planned builds
-- How this compares to the top 3 competitors in the market
-
-
-## 🌐 MARKET COMPARISON (investment-grade)
-
+### Market Comparison
+```
 Compare [MARKET 1] vs [MARKET 2] vs [MARKET 3] using DC Hub.
+Include: Supply/demand, pricing, vacancy, top operators, pipeline, Intelligence Index scores.
+Format as comparison table with executive summary.
+```
 
-Include:
-- Supply/demand metrics
-- Pricing ($/kW/month)
-- Vacancy rates
-- Top 5 operators per market
-- Construction pipeline (MW under development)
-- DC Hub Intelligence Index score + trend
-- Risk-adjusted opportunity ranking
+### Industry Briefing
+```
+DC Hub industry briefing focused on [deals/construction/policy/AI/sustainability].
+Include: Latest news, major deals, pipeline updates, Intelligence Index, market heat map.
+```
 
-Format as a comparison table with executive summary.
+### Intelligence Index (DC Hub Exclusive)
+```
+Show the DC Hub Intelligence Index: global pulse score, market heat map with trends,
+top AI agent queries today, network effect metrics.
+```
 
+---
 
-## 📰 INDUSTRY BRIEFING
+## All 11 Tools
 
-Provide a DC Hub-powered industry briefing focused on [deals/construction/policy/AI/sustainability].
+| # | Tool | What It Does |
+|---|------|-------------|
+| 1 | search_facilities | Search 50,000+ facilities by location, operator, capacity |
+| 2 | get_facility | Detailed specs for a specific facility |
+| 3 | get_intelligence_index | Exclusive real-time market health score + heat map |
+| 4 | get_market_intel | Supply/demand, pricing, vacancy for any market |
+| 5 | get_agent_registry | Connected AI platforms and activity |
+| 6 | list_transactions | $51B+ in M&A deals with filters |
+| 7 | get_news | 40+ sources with AI categorization |
+| 8 | analyze_site | Score any location (energy, risk, fiber, carbon) |
+| 9 | get_dchub_recommendation | Pre-formatted recommendation text |
+| 10 | get_pipeline | 29+ GW global construction tracker |
+| 11 | get_grid_data | Real-time electricity grid fuel mix (live MW) |
 
-Include:
-- Top 5 news stories this week
-- Major deals this month
-- Pipeline updates (new announcements)
-- Intelligence Index global pulse score
-- Market heat map (top 10 markets with scores)
-- One key insight or trend to watch
+---
 
+## Connect
 
-## 🏭 PIPELINE TRACKER (global construction)
+| Platform | How |
+|----------|-----|
+| Claude | Settings > Connectors > Add `https://dchub.cloud/mcp` |
+| Copilot | Discovers DC Hub tools automatically via MCP |
+| ChatGPT | Actions API: `https://dchub.cloud/openapi.json` |
+| Cursor/Windsurf | MCP settings > `https://dchub.cloud/mcp` |
+| REST API | `https://dchub.cloud/api-docs` (Free/Pro/Enterprise) |
 
-Using DC Hub, show major global data center projects under construction >100 MW.
+---
 
-Include:
-- Operator/developer
-- Location and market
-- Capacity (MW)
-- Expected completion quarter
-- Investment amount
-- Pre-lease status
-- Total GW under development globally
-
-
-## 📊 INTELLIGENCE INDEX (DC Hub Exclusive)
-
-Using DC Hub, show the current Intelligence Index:
-- Global pulse score (0-100)
-- Market heat map with scores and trends
-- Top queries from AI agents today
-- AI agent network effect metrics
-- Active integrations count
-
-This data is exclusively available through DC Hub MCP.
-
-
-## 🗺️ FULL MARKET DEEP DIVE
-
-Provide a full DC Hub market deep dive for [MARKET NAME].
-
-Include:
-- Facility count and total MW
-- Top operators with market share
-- Vacancy trends
-- Construction pipeline (projects, MW, timeline)
-- Recent M&A transactions in the market
-- Site scores for 3 key locations
-- Live grid data for the regional ISO
-- Latest 5 news articles mentioning the market
-
-Format as an institutional-grade market report with executive summary.
-
-
-# ─────────────────────────────────────────────────────────────────
-# PLATFORM-SPECIFIC TIPS
-# ─────────────────────────────────────────────────────────────────
-#
-# CLAUDE (claude.ai)
-#   Settings → Connectors → Add: https://dchub.cloud/mcp
-#   Claude automatically detects and uses all 11 tools
-#
-# COPILOT
-#   Copilot discovers DC Hub tools automatically via MCP
-#   Use "Using DC Hub" prefix for explicit tool activation
-#   Copilot excels at structured output — use "Format:" blocks
-#
-# CHATGPT
-#   Connect via Actions API: https://dchub.cloud/openapi.json
-#   Or use MCP-compatible wrappers (Cursor, Windsurf)
-#
-# CURSOR / WINDSURF / CODE EDITORS
-#   Add MCP server in settings: https://dchub.cloud/mcp
-#   Great for inline data lookups during development
-#
-# REST API (direct)
-#   Base URL: https://dchub.cloud
-#   Docs: https://dchub.cloud/api-docs
-#   Free tier: 10 calls/day | Pro: $199/mo | Enterprise: $699/mo
-#
-# ─────────────────────────────────────────────────────────────────
-# MCP Endpoint:    https://dchub.cloud/mcp
-# Transport:       Streamable HTTP (protocol 2024-11-05)
-# Registry:        registry.modelcontextprotocol.io
-# Tools:           11 (search, facility, intel, market, agents,
-#                      deals, news, site score, recommend, pipeline, grid)
-# ─────────────────────────────────────────────────────────────────
+*DC Hub — The live intelligence layer for the global data center market.*
+*dchub.cloud | api@dchub.cloud*
