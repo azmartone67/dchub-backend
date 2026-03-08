@@ -820,6 +820,21 @@ def generate_market_brief_html():
           </div>
         </div>"""
 
+    deals_section = ""
+    if deals_html:
+        deals_section = f"""
+        <div style="background: #1e293b; border-radius: 12px; padding: 20px; margin-bottom: 20px;">
+          <h2 style="color: #f1f5f9; font-size: 18px; margin: 0 0 8px;">
+            Deal Activity
+          </h2>
+          {deals_html}
+          <div style="text-align: center; margin-top: 16px;">
+            <a href="https://dchub.cloud/transactions" style="color: #10b981; font-size: 13px; text-decoration: none;">
+              View all transactions
+            </a>
+          </div>
+        </div>"""
+
     return f"""
     <!DOCTYPE html>
     <html>
@@ -828,7 +843,7 @@ def generate_market_brief_html():
       <div style="max-width: 640px; margin: 0 auto; padding: 20px;">
         <!-- Header -->
         <div style="text-align: center; padding: 30px 0 10px;">
-          <h1 style="color: #10b981; font-size: 26px; margin: 0;">⚡ DC Hub Daily Brief</h1>
+          <h1 style="color: #10b981; font-size: 26px; margin: 0;">DC Hub Daily Brief</h1>
           <p style="color: #94a3b8; font-size: 13px; margin: 8px 0 0;">
             Data Center Market Intelligence • {today}
           </p>
@@ -857,36 +872,24 @@ def generate_market_brief_html():
         <!-- Top Headlines -->
         <div style="background: #1e293b; border-radius: 12px; padding: 20px; margin-bottom: 20px;">
           <h2 style="color: #f1f5f9; font-size: 18px; margin: 0 0 8px; display: flex; align-items: center;">
-            📰 Top Headlines
+            Top Headlines
           </h2>
           {news_html if news_html else '<p style="color: #64748b;">No new articles today</p>'}
         </div>
 
         <!-- Deal Activity -->
-        {f"""
-        <div style="background: #1e293b; border-radius: 12px; padding: 20px; margin-bottom: 20px;">
-          <h2 style="color: #f1f5f9; font-size: 18px; margin: 0 0 8px;">
-            💰 Deal Activity
-          </h2>
-          {deals_html}
-          <div style="text-align: center; margin-top: 16px;">
-            <a href="https://dchub.cloud/transactions" style="color: #10b981; font-size: 13px; text-decoration: none;">
-              View all transactions →
-            </a>
-          </div>
-        </div>
-        """ if deals_html else ''}
+        {deals_section}
 
         <!-- CTA -->
         <div style="text-align: center; margin: 30px 0 20px;">
           <a href="https://dchub.cloud" style="display: inline-block; background: linear-gradient(135deg, #10b981, #059669); color: white; padding: 14px 32px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 15px;">
-            Open DC Hub Dashboard →
+            Open DC Hub Dashboard &amp;rarr;
           </a>
         </div>
 
         <!-- AI Tools -->
         <div style="background: #1e293b; border-radius: 12px; padding: 16px; margin-bottom: 20px; text-align: center;">
-          <p style="color: #94a3b8; font-size: 13px; margin: 0 0 8px;">🤖 Try DC Hub AI</p>
+          <p style="color: #94a3b8; font-size: 13px; margin: 0 0 8px;">Try DC Hub AI</p>
           <a href="https://dchub.cloud/api" style="color: #10b981; font-size: 13px; text-decoration: none; margin: 0 8px;">API</a>
           <span style="color: #334155;">•</span>
           <a href="https://dchub.cloud" style="color: #10b981; font-size: 13px; text-decoration: none; margin: 0 8px;">Chat</a>
