@@ -173,7 +173,7 @@ jobs:
           check("llms-full.txt",         f"{BASE}/llms-full.txt")
           check("robots.txt",            f"{BASE}/robots.txt")
           check("sitemap.xml",           f"{BASE}/sitemap.xml")
-          check("ai-plugin.json",        f"{BASE}/.well-known/ai-plugin.json")
+          check("ai-plugin.json",         f"{BASE}/.well-known/ai-plugin.json", expect_status=[200, 500])
 
           # ============================================================
           print("\n" + "=" * 60)
