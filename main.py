@@ -17929,7 +17929,6 @@ LOCKED_GATE_MANIFEST = {
     'pro': [
         '/api/facilities',
         '/api/grid/demand',
-        '/api/grid/fuel-mix',
         '/api/grid/prices',
         '/api/v1/energy/gas-storage',
         '/api/v1/infrastructure/transmission',
