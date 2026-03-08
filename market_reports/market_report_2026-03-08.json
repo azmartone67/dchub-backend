@@ -1,18 +1,18 @@
 {
-  "report_date": "2026-03-07",
-  "generated_at": "2026-03-07T22:02:32.291930",
+  "report_date": "2026-03-08",
+  "generated_at": "2026-03-08T06:17:52.606771",
   "summary": {
-    "total_facilities": 11565,
-    "total_providers": 3972,
-    "countries_covered": 177,
-    "total_power_mw": 83386.0,
+    "total_facilities": 7412,
+    "total_providers": 2802,
+    "countries_covered": 166,
+    "total_power_mw": 34230.0,
     "total_deals": 414,
     "total_deal_value_usd": 1267453.0
   },
   "market_highlights": [
-    "DC Hub tracks 11,565 data center facilities globally",
-    "Coverage spans 177 countries with 3972 providers",
-    "Combined capacity: 83,386 MW",
+    "DC Hub tracks 7,412 data center facilities globally",
+    "Coverage spans 166 countries with 2802 providers",
+    "Combined capacity: 34,230 MW",
     "M&A database: 414 transactions worth $0.0B+"
   ],
   "recent_deals": [
@@ -89,6 +89,21 @@
   ],
   "recent_news": [
     {
+      "title": "Data center tax break close to getting zapped by Washington Legislature - Oregon Public Broadcasting",
+      "source": "OPB",
+      "date": "2026-03-07T21:32:40"
+    },
+    {
+      "title": "Key facts: Nvidia invests $2B in Coherent for AI infrastructure; Coherent launches 100G module",
+      "source": "TradingView",
+      "date": "2026-03-07T20:03:19"
+    },
+    {
+      "title": "Key facts: Analysts warn AI may challenge Meta's profitability; Meta expands data centers in Texas",
+      "source": "TradingView",
+      "date": "2026-03-07T20:03:19"
+    },
+    {
       "title": "County leaders in Wichita extend their data center moratorium",
       "source": "Oklahoma Energy Today",
       "date": "2026-03-07T19:13:14"
@@ -114,29 +129,14 @@
       "date": "2026-03-07T15:00:36"
     },
     {
-      "title": "Oracle reportedly set to axe thousands of jobs and freeze hiring as AI data center bets ignite financial perfect storm \u2014 cuts in cloud division to be backfilled with AI",
-      "source": "Tom's Hardware",
-      "date": "2026-03-07T13:20:00"
+      "title": "TODAY: Community group to host town hall on data centers",
+      "source": "KTSM 9 News",
+      "date": "2026-03-07T14:25:32"
     },
     {
-      "title": "AI space race: BNP predicts Google, Amazon, Meta among first to test orbital data centers",
-      "source": "Seeking Alpha",
-      "date": "2026-03-07T13:00:35"
-    },
-    {
-      "title": "Georgia Senate passes bill on data center power costs, sparking debate",
-      "source": "The Augusta Chronicle",
-      "date": "2026-03-07T12:57:00"
-    },
-    {
-      "title": "Unpacking the deceptively simple science of tokenomics",
-      "source": "The Register DC",
-      "date": "2026-03-07T12:12:13"
-    },
-    {
-      "title": "Iranian drone strikes hit three AWS data centers in the UAE and Bahrain \u2014 Iran confirms it targeted Amazon cloud infrastructure",
-      "source": "Tom's Hardware",
-      "date": "2026-03-07T11:40:00"
+      "title": "Space Data Centers: Google, Amazon, and Meta Poised for Orbital Testing",
+      "source": "Blockonomi",
+      "date": "2026-03-07T14:24:40"
     }
   ],
   "data_sources": [
