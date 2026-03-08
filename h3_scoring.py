@@ -113,18 +113,24 @@ def score_hex_cell(hex_id, conn=None):
                 scores['power'] = min(30, scores['power'] + 5)
         except Exception as e:
             logger.debug(f"Power scoring error: {e}")
+            try: conn.rollback()
+            except: pass
         
-        # Fiber score: use fiber_kmz_routes (has coordinates) + text search
+        # Fiber score: use fiber density from discovered_facilities as proxy
+        # (fiber_routes and fiber_kmz_routes lack coordinate columns)
         try:
             c.execute("""
-                SELECT COUNT(*) FROM fiber_kmz_routes 
-                WHERE start_lat BETWEEN %s AND %s AND start_lng BETWEEN %s AND %s
+                SELECT COUNT(*) FROM discovered_facilities 
+                WHERE latitude BETWEEN %s AND %s AND longitude BETWEEN %s AND %s
+                AND (facility_type ILIKE '%%carrier%%' OR facility_type ILIKE '%%network%%' OR name ILIKE '%%fiber%%' OR name ILIKE '%%equinix%%' OR name ILIKE '%%coresite%%' OR name ILIKE '%%digital%%')
             """, (lat - radius, lat + radius, lng - radius, lng + radius))
             row = c.fetchone()
             fiber_count = row[0] if row else 0
-            scores['fiber'] = min(25, fiber_count * 2)
+            scores['fiber'] = min(25, fiber_count * 5)
         except Exception as e:
             logger.debug(f"Fiber scoring error: {e}")
+            try: conn.rollback()
+            except: pass
         
         # Gas score: pipelines within radius
         try:
@@ -141,6 +147,8 @@ def score_hex_cell(hex_id, conn=None):
                 scores['gas'] = min(15, scores['gas'] + 5)
         except Exception as e:
             logger.debug(f"Gas scoring error: {e}")
+            try: conn.rollback()
+            except: pass
         
         # Connectivity score: discovered facilities
         try:
@@ -152,6 +160,8 @@ def score_hex_cell(hex_id, conn=None):
             fac_count = row[0] if row else 0
             scores['connectivity'] = min(15, fac_count * 3)
         except Exception as e:
+            try: conn.rollback()
+            except: pass
             # Try alternate column names
             try:
                 c.execute("""

@@ -17034,9 +17034,9 @@ def ai_facts():
             except:
                 fiber_routes = 128
             try:
-                pg_cur.execute("SELECT COUNT(*) FROM power_plants")
+                pg_cur.execute("SELECT COUNT(*) FROM discovered_power_plants")
                 power_plants = pg_cur.fetchone()[0]
-                pg_cur.execute("SELECT COALESCE(SUM(capacity_mw), 0) FROM power_plants")
+                pg_cur.execute("SELECT COALESCE(SUM(capacity_mw), 0) FROM discovered_power_plants")
                 power_capacity = pg_cur.fetchone()[0] or 0
             except:
                 power_plants = 52
