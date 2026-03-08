@@ -1011,7 +1011,7 @@ def register_energy_discovery_routes(app):
             status['total_pipelines'] = c.fetchone()[0]
             c.execute("SELECT COALESCE(SUM(capacity_mw), 0) FROM discovered_power_plants")
             status['total_capacity_mw'] = float(c.fetchone()[0])
-            c.execute("SELECT COUNT(*) FROM discovered_power_plants WHERE is_new = TRUE")
+            c.execute("SELECT COUNT(*) FROM discovered_power_plants WHERE is_new = 1")
             status['new_power_plants'] = c.fetchone()[0]
         except Exception as e:
             status['db_error'] = str(e)
