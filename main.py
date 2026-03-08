@@ -1138,6 +1138,16 @@ def db_health_endpoint():
     return jsonify(health), status_code
 
 
+
+# Neon Health Monitor (2026-03-07 — Neon outage prevention)
+try:
+    from neon_health_monitor import register_neon_health_routes
+    register_neon_health_routes(app)
+except ImportError:
+    print("⚠️ Neon Health Monitor: not installed")
+except Exception as e:
+    print(f"⚠️ Neon Health Monitor: {e}")
+
 @app.route('/api/status', methods=['GET'])
 def system_status():
     """Public health check endpoint -- no auth required"""
