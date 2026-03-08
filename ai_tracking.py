@@ -32,7 +32,7 @@ logger = logging.getLogger("ai_tracking")
 #  CONFIG
 # ═══════════════════════════════════════════════════════════════
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "")
+DATABASE_URL = os.environ.get("NEON_DATABASE_URL", "") or os.environ.get("DATABASE_URL", "")
 SQLITE_BUFFER_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "ai_tracking_buffer.db"
 )
