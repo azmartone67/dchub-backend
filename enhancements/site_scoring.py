@@ -510,7 +510,7 @@ class SiteScoringEngine:
         carbon_score, carbon_details = self._score_carbon(carbon_data)
         
         # Score infrastructure proximity — auto-fetch from Neon if not provided
-        if nearby_substations is None:
+        if not nearby_substations:
             nearby_substations = self._get_nearby_substations(lat, lon, radius_km=50)
         infra_score, infra_details = self._score_infrastructure(
             nearby_substations,
