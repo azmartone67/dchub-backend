@@ -185,29 +185,64 @@ New Endpoints (v74):
 """
 # =================================================================
 # AUTO-PULL FROM GITHUB (Replit failover only)
-# Ensures Replit always has the latest code before serving traffic.
+# Uses --ff-only to avoid divergent branch issues.
+# Validates syntax of key files after pull; reverts if broken.
 # =================================================================
 import os as _git_os
 import subprocess as _git_subprocess
+import glob as _git_glob
+
+def _git_syntax_check(directory):
+    """Check syntax of all .py files in directory. Returns list of errors."""
+    errors = []
+    for pyfile in _git_glob.glob(_git_os.path.join(directory, '*.py')):
+        try:
+            with open(pyfile, 'r') as f:
+                compile(f.read(), pyfile, 'exec')
+        except SyntaxError as e:
+            errors.append(f"{_git_os.path.basename(pyfile)}:{e.lineno} - {e.msg}")
+    return errors
+
 if _git_os.environ.get('REPLIT_ENVIRONMENT') or _git_os.environ.get('REPL_ID'):
     _git_env = _git_os.environ.copy()
     _git_env['GIT_TERMINAL_PROMPT'] = '0'
+    _git_cwd = _git_os.path.dirname(_git_os.path.abspath(__file__)) or '.'
     try:
+        _pre_errors = _git_syntax_check(_git_cwd)
+
         _git_result = _git_subprocess.run(
-            ['git', 'pull', 'origin', 'main'],
+            ['git', 'pull', '--ff-only', 'origin', 'main'],
             capture_output=True, text=True, timeout=30,
-            cwd=_git_os.path.dirname(_git_os.path.abspath(__file__)) or '.',
-            env=_git_env
+            cwd=_git_cwd, env=_git_env
         )
         _git_output = (_git_result.stdout.strip() + ' ' + _git_result.stderr.strip()).strip()
         if _git_result.returncode == 0:
-            print(f"GIT PULL: {_git_output}")
+            if 'Already up to date' in _git_output:
+                print(f"GIT PULL: {_git_output}")
+            else:
+                _post_errors = _git_syntax_check(_git_cwd)
+                _new_errors = [e for e in _post_errors if e not in _pre_errors]
+                if _new_errors:
+                    print(f"GIT PULL: SYNTAX ERRORS in pulled code, reverting:")
+                    for _e in _new_errors:
+                        print(f"  - {_e}")
+                    _git_subprocess.run(
+                        ['git', 'merge', '--abort'],
+                        capture_output=True, timeout=10, cwd=_git_cwd, env=_git_env
+                    )
+                    _git_subprocess.run(
+                        ['git', 'reset', '--hard', 'HEAD@{1}'],
+                        capture_output=True, timeout=10, cwd=_git_cwd, env=_git_env
+                    )
+                    print("GIT PULL: Reverted to pre-pull state, continuing with known-good code")
+                else:
+                    print(f"GIT PULL: Updated + syntax OK -- {_git_output}")
         else:
-            print(f"GIT PULL: ⚠️ Exit code {_git_result.returncode} -- {_git_output}")
+            print(f"GIT PULL: Skipped (exit {_git_result.returncode}) -- continuing with current code")
     except _git_subprocess.TimeoutExpired:
-        print("GIT PULL: ⚠️ Timed out after 30s -- continuing with current code")
+        print("GIT PULL: Timed out after 30s -- continuing with current code")
     except Exception as _git_err:
-        print(f"GIT PULL: ⚠️ Failed ({_git_err}) -- continuing with current code")
+        print(f"GIT PULL: Failed ({_git_err}) -- continuing with current code")
 
 # =================================================================
 # PERMANENT FIX: Force Neon as the ONLY PostgreSQL database
