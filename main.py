@@ -1102,7 +1102,7 @@ def api_v1_map():
         c.execute("""
             SELECT id, name, provider, city, state, country, region,
                    latitude, longitude, power_mw, status
-            FROM facilities
+            FROM discovered_facilities
             WHERE latitude IS NOT NULL AND longitude IS NOT NULL
             ORDER BY power_mw DESC NULLS LAST
             LIMIT %s OFFSET %s
@@ -1112,7 +1112,7 @@ def api_v1_map():
         cols = [desc[0] for desc in c.description]
         facilities = [dict(zip(cols, row)) for row in rows]
         
-        c.execute("SELECT COUNT(*) FROM facilities WHERE latitude IS NOT NULL AND longitude IS NOT NULL")
+        c.execute("SELECT COUNT(*) FROM discovered_facilities WHERE latitude IS NOT NULL AND longitude IS NOT NULL")
         total = c.fetchone()[0]
         
         return jsonify({
@@ -3405,16 +3405,16 @@ def generate_market_report():
         cursor = conn.cursor()
         
         # Get facility stats
-        cursor.execute("SELECT COUNT(*) FROM facilities")
+        cursor.execute("SELECT COUNT(*) FROM discovered_facilities")
         total_facilities = cursor.fetchone()[0]
         
-        cursor.execute("SELECT COUNT(DISTINCT provider) FROM facilities WHERE provider IS NOT NULL AND provider != ''")
+        cursor.execute("SELECT COUNT(DISTINCT provider) FROM discovered_facilities WHERE provider IS NOT NULL AND provider != ''")
         total_providers = cursor.fetchone()[0]
         
-        cursor.execute("SELECT COUNT(DISTINCT country) FROM facilities WHERE country IS NOT NULL AND country != ''")
+        cursor.execute("SELECT COUNT(DISTINCT country) FROM discovered_facilities WHERE country IS NOT NULL AND country != ''")
         total_countries = cursor.fetchone()[0]
         
-        cursor.execute("SELECT SUM(power_mw) FROM facilities WHERE power_mw IS NOT NULL")
+        cursor.execute("SELECT SUM(power_mw) FROM discovered_facilities WHERE power_mw IS NOT NULL")
         total_power = cursor.fetchone()[0] or 0
         
         # Get recent deals
@@ -7625,7 +7625,7 @@ def check_and_send_alert_emails():
             # Check if alert condition is met (simplified - check for new facilities in market)
             try:
                 c.execute("""
-                    SELECT COUNT(*) FROM facilities
+                    SELECT COUNT(*) FROM discovered_facilities
                     WHERE market LIKE ?
                     AND created_at > datetime('now', '-1 day')
                 """, (f'%{market}%',))
@@ -8922,7 +8922,7 @@ def list_markets():
         
         c.execute(f"""
             SELECT COUNT(*) as count, COALESCE(SUM(power_mw), 0) as total_power
-            FROM facilities 
+            FROM discovered_facilities 
             WHERE ({where_clause})
             {RAILWAY_EXCLUSION}
         """, params)
@@ -8983,7 +8983,7 @@ def get_market_stats(market):
             COALESCE(SUM(power_mw), 0) as total_power,
             COALESCE(AVG(power_mw), 0) as avg_power,
             COUNT(DISTINCT provider) as provider_count
-        FROM facilities 
+        FROM discovered_facilities 
         WHERE ({where_clause})
         {RAILWAY_EXCLUSION}
     """, params)
@@ -8993,7 +8993,7 @@ def get_market_stats(market):
     # Top providers
     c.execute(f"""
         SELECT provider, COUNT(*) as count, COALESCE(SUM(power_mw), 0) as power
-        FROM facilities 
+        FROM discovered_facilities 
         WHERE ({where_clause}) AND provider != ''
         {RAILWAY_EXCLUSION}
         GROUP BY provider
@@ -9006,7 +9006,7 @@ def get_market_stats(market):
     # By status
     c.execute(f"""
         SELECT status, COUNT(*) as count
-        FROM facilities 
+        FROM discovered_facilities 
         WHERE ({where_clause})
         {RAILWAY_EXCLUSION}
         GROUP BY status
@@ -9017,7 +9017,7 @@ def get_market_stats(market):
     # Recent facilities
     c.execute(f"""
         SELECT id, name, provider, city, power_mw, status, first_seen
-        FROM facilities 
+        FROM discovered_facilities 
         WHERE ({where_clause})
         {RAILWAY_EXCLUSION}
         ORDER BY first_seen DESC
@@ -9102,7 +9102,7 @@ def compare_markets():
                     COUNT(DISTINCT provider) as provider_count,
                     SUM(CASE WHEN status = 'operational' THEN 1 ELSE 0 END) as operational,
                     SUM(CASE WHEN status = 'planned' OR status = 'under_construction' THEN 1 ELSE 0 END) as pipeline
-                FROM facilities 
+                FROM discovered_facilities 
                 WHERE ({where_clause})
                 {RAILWAY_EXCLUSION}
             """, params)
@@ -9112,7 +9112,7 @@ def compare_markets():
             # Top 5 providers
             c.execute(f"""
                 SELECT provider, COUNT(*) as count
-                FROM facilities 
+                FROM discovered_facilities 
                 WHERE ({where_clause}) AND provider != ''
                 {RAILWAY_EXCLUSION}
                 GROUP BY provider
@@ -9308,7 +9308,7 @@ def generate_market_pdf(markets, report_type):
                 COALESCE(SUM(power_mw), 0) as total_power,
                 COALESCE(AVG(power_mw), 0) as avg_power,
                 COUNT(DISTINCT provider) as provider_count
-            FROM facilities 
+            FROM discovered_facilities 
             WHERE ({where_clause})
             {RAILWAY_EXCLUSION}
         """, params)
@@ -9342,7 +9342,7 @@ def generate_market_pdf(markets, report_type):
         # Top providers
         c.execute(f"""
             SELECT provider, COUNT(*) as count, COALESCE(SUM(power_mw), 0) as power
-            FROM facilities 
+            FROM discovered_facilities 
             WHERE ({where_clause}) AND provider != ''
             {RAILWAY_EXCLUSION}
             GROUP BY provider
@@ -9399,13 +9399,13 @@ def get_marketing_stats():
         c = conn.cursor()
         
         # Live facility count
-        c.execute("SELECT COUNT(*) FROM facilities")
+        c.execute("SELECT COUNT(*) FROM discovered_facilities")
         facilities = c.fetchone()[0] or 0
         
         # Live pipeline from facilities table (all non-active statuses)
         try:
             c.execute("""
-                SELECT COALESCE(SUM(power_mw), 0), COUNT(*) FROM facilities
+                SELECT COALESCE(SUM(power_mw), 0), COUNT(*) FROM discovered_facilities
                 WHERE LOWER(status) IN ('under construction', 'construction', 'planning',
                                         'planned', 'announced', 'approved',
                                         'under_construction', 'pre-construction',
@@ -9429,7 +9429,7 @@ def get_marketing_stats():
         
         # Live top markets
         c.execute("""
-            SELECT city, COUNT(*) as cnt FROM facilities 
+            SELECT city, COUNT(*) as cnt FROM discovered_facilities 
             WHERE city IS NOT NULL AND city != '' 
             GROUP BY city ORDER BY cnt DESC LIMIT 5
         """)
@@ -9440,7 +9440,7 @@ def get_marketing_stats():
         news_today = c.fetchone()[0] or 0
         
         # Countries count
-        c.execute("SELECT COUNT(DISTINCT country) FROM facilities WHERE country IS NOT NULL")
+        c.execute("SELECT COUNT(DISTINCT country) FROM discovered_facilities WHERE country IS NOT NULL")
         countries = c.fetchone()[0] or 100
         
         conn.close()
@@ -9653,7 +9653,7 @@ def get_stats():
         
         stats = {}
         
-        c.execute("SELECT COUNT(*) FROM facilities")
+        c.execute("SELECT COUNT(*) FROM discovered_facilities")
         main_count = c.fetchone()[0] or 0
         
         try:
@@ -9666,7 +9666,7 @@ def get_stats():
         stats['main_facilities'] = main_count
         stats['discovered_facilities'] = discovered_count
         
-        c.execute("SELECT COALESCE(SUM(power_mw), 0) FROM facilities")
+        c.execute("SELECT COALESCE(SUM(power_mw), 0) FROM discovered_facilities")
         stats['total_power_mw'] = round(c.fetchone()[0] or 0, 1)
         stats['total_mw'] = stats['total_power_mw']  # alias for frontends
         
@@ -9677,10 +9677,10 @@ def get_stats():
         except Exception:
             stats['total_substations'] = 0
         
-        c.execute(f"SELECT COUNT(DISTINCT provider) FROM facilities WHERE provider != '' AND provider IS NOT NULL {RAILWAY_EXCLUSION}")
+        c.execute(f"SELECT COUNT(DISTINCT provider) FROM discovered_facilities WHERE provider != '' AND provider IS NOT NULL {RAILWAY_EXCLUSION}")
         stats['total_providers'] = c.fetchone()[0] or 0
         
-        c.execute("SELECT COUNT(DISTINCT country) FROM facilities WHERE country != '' AND country IS NOT NULL")
+        c.execute("SELECT COUNT(DISTINCT country) FROM discovered_facilities WHERE country != '' AND country IS NOT NULL")
         stats['total_countries'] = c.fetchone()[0] or 0
         stats['countries'] = stats['total_countries']  # alias for frontends
         
@@ -9690,28 +9690,28 @@ def get_stats():
         except:
             stats['total_announcements'] = 0
         
-        c.execute("SELECT source, COUNT(*) FROM facilities WHERE source IS NOT NULL AND source != '' GROUP BY source ORDER BY COUNT(*) DESC")
+        c.execute("SELECT source, COUNT(*) FROM discovered_facilities WHERE source IS NOT NULL AND source != '' GROUP BY source ORDER BY COUNT(*) DESC")
         stats['by_source'] = dict(c.fetchall())
         
-        c.execute("SELECT country, COUNT(*) FROM facilities WHERE country != '' GROUP BY country ORDER BY COUNT(*) DESC LIMIT 10")
+        c.execute("SELECT country, COUNT(*) FROM discovered_facilities WHERE country != '' GROUP BY country ORDER BY COUNT(*) DESC LIMIT 10")
         stats['top_countries'] = dict(c.fetchall())
         
         c.execute(f"""
-            SELECT provider, COUNT(*) FROM facilities 
+            SELECT provider, COUNT(*) FROM discovered_facilities 
             WHERE provider != '' 
             {RAILWAY_EXCLUSION}
             GROUP BY provider ORDER BY COUNT(*) DESC LIMIT 10
         """)
         stats['top_providers'] = dict(c.fetchall())
         
-        c.execute("SELECT status, COUNT(*) FROM facilities WHERE status IS NOT NULL GROUP BY status")
+        c.execute("SELECT status, COUNT(*) FROM discovered_facilities WHERE status IS NOT NULL GROUP BY status")
         stats['by_status'] = dict(c.fetchall())
         
-        c.execute("SELECT COUNT(*) FROM facilities WHERE first_seen::timestamp > NOW() - INTERVAL '7 days'")
+        c.execute("SELECT COUNT(*) FROM discovered_facilities WHERE first_seen::timestamp > NOW() - INTERVAL '7 days'")
         stats['new_last_7_days'] = c.fetchone()[0] or 0
         
         c.execute("""
-            SELECT COUNT(*), COALESCE(SUM(power_mw), 0) FROM facilities
+            SELECT COUNT(*), COALESCE(SUM(power_mw), 0) FROM discovered_facilities
             WHERE LOWER(status) IN ('under construction', 'construction', 'planning',
                                     'planned', 'announced', 'approved', 'proposed',
                                     'under_construction', 'pre-construction',
@@ -9818,7 +9818,7 @@ def facilities_by_market():
         c.execute(f"""
             SELECT city as market, COUNT(*) as count, 
                    COALESCE(SUM(power_mw), 0) as total_mw
-            FROM facilities 
+            FROM discovered_facilities 
             WHERE city IS NOT NULL AND city != ''
             {RAILWAY_EXCLUSION}
             GROUP BY city 
@@ -9849,7 +9849,7 @@ def facilities_by_provider():
         c.execute(f"""
             SELECT provider, COUNT(*) as count,
                    COALESCE(SUM(power_mw), 0) as total_mw
-            FROM facilities 
+            FROM discovered_facilities 
             WHERE provider IS NOT NULL AND provider != ''
             {RAILWAY_EXCLUSION}
             GROUP BY provider 
@@ -9914,8 +9914,8 @@ def _list_facilities_full():
     min_power = request.args.get('min_power', type=float)
     source = request.args.get('source')
     
-    sql = "SELECT * FROM facilities WHERE 1=1"
-    count_sql = "SELECT COUNT(*) FROM facilities WHERE 1=1"
+    sql = "SELECT * FROM discovered_facilities WHERE 1=1"
+    count_sql = "SELECT COUNT(*) FROM discovered_facilities WHERE 1=1"
     params = []
     
     if q:
@@ -10015,8 +10015,8 @@ def _list_facilities_free():
     country = request.args.get('country')
     provider = request.args.get('provider')
 
-    sql = "SELECT * FROM facilities WHERE 1=1"
-    count_sql = "SELECT COUNT(*) FROM facilities WHERE 1=1"
+    sql = "SELECT * FROM discovered_facilities WHERE 1=1"
+    count_sql = "SELECT COUNT(*) FROM discovered_facilities WHERE 1=1"
     params = []
 
     if q:
@@ -10171,7 +10171,7 @@ def search_facilities():
     params.extend([limit, offset])
 
     c.execute(f"""
-        SELECT * FROM facilities
+        SELECT * FROM discovered_facilities
         {where}
         {RAILWAY_EXCLUSION.replace('AND', 'AND') if where else 'WHERE ' + RAILWAY_EXCLUSION.lstrip('AND').lstrip()}
         ORDER BY confidence DESC, power_mw DESC
@@ -11017,7 +11017,7 @@ def get_markets():
         conn = get_db()
         c = conn.cursor()
         for m in markets:
-            c.execute("SELECT COUNT(*) FROM facilities WHERE city LIKE ? OR state LIKE ?",
+            c.execute("SELECT COUNT(*) FROM discovered_facilities WHERE city LIKE ? OR state LIKE ?",
                       (f"%{m['name'].split('-')[0].split(',')[0].strip()}%",
                        f"%{m['name'].split('-')[0].split(',')[0].strip()}%"))
             live_count = c.fetchone()[0]
@@ -11060,7 +11060,7 @@ def get_public_pipeline():
         c = conn.cursor()
         c.execute("""
             SELECT id, name, provider, city, state, country, status, power_mw
-            FROM facilities
+            FROM discovered_facilities
             WHERE LOWER(status) IN ('under construction', 'construction', 'planning',
                                     'planned', 'announced', 'approved', 'proposed',
                                     'under_construction', 'pre-construction',
@@ -11187,7 +11187,7 @@ def get_pipeline_summary():
         c2 = conn2.cursor()
         c2.execute("""
             SELECT provider, name, power_mw, status
-            FROM facilities
+            FROM discovered_facilities
             WHERE LOWER(status) IN ('under construction', 'construction', 'planning',
                                     'planned', 'announced', 'approved', 'proposed',
                                     'under_construction', 'pre-construction',
@@ -11441,7 +11441,7 @@ def get_announcements():
         query = """SELECT id, name, provider, city, state, country, region,
                           latitude, longitude, power_mw, status, tier,
                           first_seen, last_updated, raw_data
-                   FROM facilities
+                   FROM discovered_facilities
                    WHERE LOWER(status) IN ('under construction', 'construction', 'planning',
                                            'planned', 'announced', 'approved',
                                            'under_construction', 'pre-construction',
@@ -11602,7 +11602,7 @@ def api_health():
         with pg_connection() as conn:
             cur = conn.cursor()
             try:
-                cur.execute("SELECT COUNT(*) FROM facilities")
+                cur.execute("SELECT COUNT(*) FROM discovered_facilities")
                 health['facility_count'] = cur.fetchone()[0] or 0
             except Exception:
                 pass
@@ -12352,23 +12352,23 @@ def api_facilities_stats():
     c = conn.cursor()
     
     # Total facilities
-    c.execute("SELECT COUNT(*) FROM facilities")
+    c.execute("SELECT COUNT(*) FROM discovered_facilities")
     total = c.fetchone()[0]
     
     # By status
-    c.execute("SELECT status, COUNT(*) FROM facilities WHERE status IS NOT NULL GROUP BY status")
+    c.execute("SELECT status, COUNT(*) FROM discovered_facilities WHERE status IS NOT NULL GROUP BY status")
     by_status = dict(c.fetchall())
     
     # By region (top 10)
     c.execute("""
-        SELECT region, COUNT(*) as cnt FROM facilities 
+        SELECT region, COUNT(*) as cnt FROM discovered_facilities 
         WHERE region IS NOT NULL 
         GROUP BY region ORDER BY cnt DESC LIMIT 10
     """)
     by_region = dict(c.fetchall())
     
     # Total power
-    c.execute("SELECT SUM(power_mw) FROM facilities WHERE power_mw IS NOT NULL")
+    c.execute("SELECT SUM(power_mw) FROM discovered_facilities WHERE power_mw IS NOT NULL")
     total_power = c.fetchone()[0] or 0
     
     conn.close()
@@ -12557,7 +12557,7 @@ def is_duplicate_facility(conn, name, provider, lat, lon, city):
     # Exact name + provider match
     c.execute("""
         SELECT id, name, provider, latitude, longitude 
-        FROM facilities 
+        FROM discovered_facilities 
         WHERE LOWER(name) = LOWER(?) AND LOWER(provider) = LOWER(?)
     """, (name, provider))
     if c.fetchone():
@@ -12567,7 +12567,7 @@ def is_duplicate_facility(conn, name, provider, lat, lon, city):
     if lat and lon:
         c.execute("""
             SELECT id, name, provider, latitude, longitude 
-            FROM facilities 
+            FROM discovered_facilities 
             WHERE ABS(latitude - ?) < 0.01 AND ABS(longitude - ?) < 0.01
             AND LOWER(provider) = LOWER(?)
         """, (lat, lon, provider))
@@ -12578,7 +12578,7 @@ def is_duplicate_facility(conn, name, provider, lat, lon, city):
     # Fuzzy name match in same city
     if city:
         c.execute("""
-            SELECT id, name, provider FROM facilities 
+            SELECT id, name, provider FROM discovered_facilities 
             WHERE LOWER(city) = LOWER(?) AND LOWER(provider) = LOWER(?)
         """, (city, provider))
         for row in c.fetchall():
@@ -14115,7 +14115,7 @@ def discovery_status():
             recent_runs = []
         
         # Get totals
-        c.execute("SELECT COUNT(*) FROM facilities")
+        c.execute("SELECT COUNT(*) FROM discovered_facilities")
         total_facilities = c.fetchone()[0]
         
         try:
@@ -15870,10 +15870,10 @@ def data_freshness():
             'health': 'healthy' if news_newest and news_newest > (now - timedelta(days=1)).isoformat() else 'stale'
         }
 
-        facilities_count = safe_query("SELECT COUNT(*) FROM facilities", 0)
-        facilities_with_coords = safe_query("SELECT COUNT(*) FROM facilities WHERE latitude IS NOT NULL AND longitude IS NOT NULL", 0)
+        facilities_count = safe_query("SELECT COUNT(*) FROM discovered_facilities", 0)
+        facilities_with_coords = safe_query("SELECT COUNT(*) FROM discovered_facilities WHERE latitude IS NOT NULL AND longitude IS NOT NULL", 0)
         discovered_count = safe_query("SELECT COUNT(*) FROM discovered_facilities WHERE is_duplicate = 0", 0)
-        facilities_newest = safe_query("SELECT MAX(first_seen) FROM facilities")
+        facilities_newest = safe_query("SELECT MAX(first_seen) FROM discovered_facilities")
         feeds['facilities'] = {
             'record_count': facilities_count,
             'facilities_with_coordinates': facilities_with_coords,
@@ -16583,9 +16583,9 @@ def ai_query():
                 with pg_connection() as pg_conn:
                     pg_cur = pg_conn.cursor()
                     if query_type == 'facilities' and query:
-                        pg_cur.execute("SELECT COUNT(*) FROM facilities WHERE name ILIKE %s OR city ILIKE %s OR provider ILIKE %s", (f'%{query}%', f'%{query}%', f'%{query}%'))
+                        pg_cur.execute("SELECT COUNT(*) FROM discovered_facilities WHERE name ILIKE %s OR city ILIKE %s OR provider ILIKE %s", (f'%{query}%', f'%{query}%', f'%{query}%'))
                         total_count = pg_cur.fetchone()[0]
-                        pg_cur.execute("SELECT name, city, country, provider FROM facilities WHERE name ILIKE %s OR city ILIKE %s OR provider ILIKE %s LIMIT 2", (f'%{query}%', f'%{query}%', f'%{query}%'))
+                        pg_cur.execute("SELECT name, city, country, provider FROM discovered_facilities WHERE name ILIKE %s OR city ILIKE %s OR provider ILIKE %s LIMIT 2", (f'%{query}%', f'%{query}%', f'%{query}%'))
                         cols = [d[0] for d in pg_cur.description]
                         preview_data = [dict(zip(cols, row)) for row in pg_cur.fetchall()]
                     elif query_type == 'deals':
@@ -16628,7 +16628,7 @@ def ai_query():
             pg_cur = pg_conn.cursor()
 
             if query_type == 'stats' or query_type == 'general' or not query:
-                pg_cur.execute("SELECT COUNT(*) FROM facilities")
+                pg_cur.execute("SELECT COUNT(*) FROM discovered_facilities")
                 facilities = pg_cur.fetchone()[0]
                 pg_cur.execute("SELECT COUNT(*) FROM announcements")
                 news = pg_cur.fetchone()[0]
@@ -16646,7 +16646,7 @@ def ai_query():
                 response['suggested_response'] = f"According to DC Hub Nexus (dchub.cloud), there are {facilities:,} data center facilities tracked globally, with {deals:,} M&A transactions and {float(capacity)/1000:.0f} GW of capacity in the development pipeline."
 
             elif query_type == 'facilities' and query:
-                pg_cur.execute("SELECT name, city, country, provider FROM facilities WHERE name ILIKE %s OR city ILIKE %s OR provider ILIKE %s LIMIT 10", (f'%{query}%', f'%{query}%', f'%{query}%'))
+                pg_cur.execute("SELECT name, city, country, provider FROM discovered_facilities WHERE name ILIKE %s OR city ILIKE %s OR provider ILIKE %s LIMIT 10", (f'%{query}%', f'%{query}%', f'%{query}%'))
                 cols = [d[0] for d in pg_cur.description]
                 facilities = [dict(zip(cols, row)) for row in pg_cur.fetchall()]
                 response['data'] = {'facilities': facilities, 'count': len(facilities)}
@@ -17018,11 +17018,11 @@ def ai_facts():
         with pg_connection() as pg_conn:
             pg_cur = pg_conn.cursor()
 
-            pg_cur.execute("SELECT COUNT(*) FROM facilities")
+            pg_cur.execute("SELECT COUNT(*) FROM discovered_facilities")
             total_facilities = pg_cur.fetchone()[0]
-            pg_cur.execute("SELECT COUNT(DISTINCT country) FROM facilities")
+            pg_cur.execute("SELECT COUNT(DISTINCT country) FROM discovered_facilities")
             total_countries = pg_cur.fetchone()[0]
-            pg_cur.execute("SELECT COUNT(DISTINCT provider) FROM facilities")
+            pg_cur.execute("SELECT COUNT(DISTINCT provider) FROM discovered_facilities")
             total_providers = pg_cur.fetchone()[0]
             pg_cur.execute("SELECT COUNT(*) FROM deals")
             total_deals = pg_cur.fetchone()[0]
@@ -17044,7 +17044,7 @@ def ai_facts():
 
             pg_cur.execute("""
                 SELECT provider, COUNT(*) as cnt
-                FROM facilities
+                FROM discovered_facilities
                 WHERE provider IS NOT NULL AND provider != ''
                 GROUP BY provider
                 ORDER BY cnt DESC
@@ -17054,7 +17054,7 @@ def ai_facts():
 
             pg_cur.execute("""
                 SELECT country, COUNT(*) as cnt
-                FROM facilities
+                FROM discovered_facilities
                 GROUP BY country
                 ORDER BY cnt DESC
                 LIMIT 10
@@ -17251,12 +17251,12 @@ def location_meta(slug):
                 parts = slug.upper().replace('-', ' ').split()
                 if len(parts) >= 2:
                     cur.execute(
-                        "SELECT COUNT(*) FROM facilities WHERE UPPER(country) = %s AND UPPER(state) = %s",
+                        "SELECT COUNT(*) FROM discovered_facilities WHERE UPPER(country) = %s AND UPPER(state) = %s",
                         (parts[0], parts[1])
                     )
                 else:
                     cur.execute(
-                        "SELECT COUNT(*) FROM facilities WHERE UPPER(country) = %s",
+                        "SELECT COUNT(*) FROM discovered_facilities WHERE UPPER(country) = %s",
                         (parts[0],)
                     )
                 result = cur.fetchone()
@@ -17316,7 +17316,7 @@ def serve_sitemap_xml():
         # Get facility data for individual pages (include provider + id for slug generation)
         c.execute("""
             SELECT name, provider, city, state, country, id
-            FROM facilities 
+            FROM discovered_facilities 
             WHERE name IS NOT NULL AND name != ''
             LIMIT 15000
         """)
@@ -17325,7 +17325,7 @@ def serve_sitemap_xml():
         # Get unique country/state combos for location pages
         c.execute("""
             SELECT DISTINCT country, state
-            FROM facilities
+            FROM discovered_facilities
             WHERE country IS NOT NULL AND country != ''
         """)
         loc_rows = c.fetchall()
@@ -18866,7 +18866,7 @@ def get_facility_by_id(facility_id):
             SELECT id, name, provider, city, state, country, region,
                    latitude, longitude, power_mw, status, tier,
                    address, source
-            FROM facilities WHERE id = %s LIMIT 1
+            FROM discovered_facilities WHERE id = %s LIMIT 1
         """, (facility_id,))
         row = c.fetchone()
         if not row:
@@ -18901,7 +18901,7 @@ def api_site_score():
         # Nearby facilities (competitive density, 100km radius)
         c.execute("""
             SELECT COUNT(*) as cnt, SUM(power_mw) as total_mw
-            FROM facilities
+            FROM discovered_facilities
             WHERE latitude IS NOT NULL AND longitude IS NOT NULL
               AND (latitude - %s)*(latitude - %s) + (longitude - %s)*(longitude - %s) < 0.81
         """, (lat, lat, lon, lon))
@@ -18913,8 +18913,8 @@ def api_site_score():
         c.execute("""
             SELECT COUNT(*) as cnt
             FROM substations
-            WHERE latitude IS NOT NULL AND longitude IS NOT NULL
-              AND (latitude - %s)*(latitude - %s) + (longitude - %s)*(longitude - %s) < 0.20
+            WHERE lat IS NOT NULL AND lng IS NOT NULL
+              AND (lat - %s)*(lat - %s) + (lng - %s)*(lng - %s) < 0.20
         """, (lat, lat, lon, lon))
         nearby_substations = c.fetchone()[0] or 0
 
