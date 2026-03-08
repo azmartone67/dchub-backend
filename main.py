@@ -1100,7 +1100,7 @@ def api_v1_map():
         limit = min(limit, 10000)
         
         c.execute("""
-            SELECT id, name, provider, city, state, country, region,
+            SELECT id, name, provider, city, state, country, market AS region,
                    latitude, longitude, power_mw, status
             FROM discovered_facilities
             WHERE latitude IS NOT NULL AND longitude IS NOT NULL
@@ -9963,7 +9963,7 @@ def _list_facilities_full():
         count_sql += " AND source = ?"
         params.append(source)
     
-    sql += f" ORDER BY confidence DESC, power_mw DESC LIMIT {limit} OFFSET {offset}"
+    sql += f" ORDER BY confidence_score DESC, power_mw DESC LIMIT {limit} OFFSET {offset}"
     
     conn = None
     try:
@@ -10047,7 +10047,7 @@ def _list_facilities_free():
         count_sql += " AND provider LIKE ?"
         params.append(f"%{provider}%")
 
-    sql += f" ORDER BY confidence DESC, power_mw DESC LIMIT {FREE_LIMIT}"
+    sql += f" ORDER BY confidence_score DESC, power_mw DESC LIMIT {FREE_LIMIT}"
 
     conn = None
     try:
@@ -10174,7 +10174,7 @@ def search_facilities():
         SELECT * FROM discovered_facilities
         {where}
         {RAILWAY_EXCLUSION.replace('AND', 'AND') if where else 'WHERE ' + RAILWAY_EXCLUSION.lstrip('AND').lstrip()}
-        ORDER BY confidence DESC, power_mw DESC
+        ORDER BY confidence_score DESC, power_mw DESC
         LIMIT ? OFFSET ?
     """, params)
 
@@ -11438,7 +11438,7 @@ def get_announcements():
         operator_filter = request.args.get('operator', '')
         limit = min(int(request.args.get('limit', 500)), 1000)
 
-        query = """SELECT id, name, provider, city, state, country, region,
+        query = """SELECT id, name, provider, city, state, country, market AS region,
                           latitude, longitude, power_mw, status, tier,
                           first_seen, last_updated, raw_data
                    FROM discovered_facilities
@@ -18863,7 +18863,7 @@ def get_facility_by_id(facility_id):
         conn = get_read_db()
         c = conn.cursor()
         c.execute("""
-            SELECT id, name, provider, city, state, country, region,
+            SELECT id, name, provider, city, state, country, market AS region,
                    latitude, longitude, power_mw, status, tier,
                    address, source
             FROM discovered_facilities WHERE id = %s LIMIT 1
