@@ -1,5 +1,66 @@
 from dotenv import load_dotenv
 load_dotenv()
+
+# =================================================================
+# BOOT GUARD — Syntax self-check + Neon hostname monitor
+# Prevents crash-loops and detects silent DB migrations
+# Added: 2026-03-07 (Neon outage prevention)
+# =================================================================
+import sys as _bg_sys
+import os as _bg_os
+
+# --- Syntax Self-Check ---
+try:
+    import py_compile as _bg_pyc
+    _bg_pyc.compile(__file__, doraise=True)
+except _bg_pyc.PyCompileError as _bg_err:
+    print(f"\n{'='*60}")
+    print(f"FATAL: Syntax error in {__file__}")
+    print(f"{'='*60}")
+    print(f"{_bg_err}")
+    print(f"{'='*60}\n")
+    _bg_sys.exit(1)
+
+# --- Neon Hostname Monitor ---
+_bg_neon_url = _bg_os.environ.get('NEON_DATABASE_URL', '') or _bg_os.environ.get('DATABASE_URL', '')
+if _bg_neon_url and 'neon' in _bg_neon_url.lower():
+    try:
+        from urllib.parse import urlparse as _bg_urlparse
+        _bg_current_host = _bg_urlparse(_bg_neon_url).hostname or ''
+        _bg_host_file = '/tmp/dchub_neon_hostname.txt'
+        _bg_previous_host = ''
+        try:
+            with open(_bg_host_file, 'r') as _bg_f:
+                _bg_previous_host = _bg_f.read().strip()
+        except FileNotFoundError:
+            pass
+        with open(_bg_host_file, 'w') as _bg_f:
+            _bg_f.write(_bg_current_host)
+        if _bg_previous_host and _bg_current_host != _bg_previous_host:
+            print(f"\n{'='*60}")
+            print(f"WARNING: NEON HOSTNAME CHANGED!")
+            print(f"  Previous: {_bg_previous_host}")
+            print(f"  Current:  {_bg_current_host}")
+            print(f"{'='*60}\n")
+            import threading as _bg_thr
+            def _bg_alert():
+                try:
+                    import urllib.request, json
+                    _k = _bg_os.environ.get('SENDGRID_API_KEY', '')
+                    if not _k: return
+                    _p = json.dumps({"personalizations":[{"to":[{"email":_bg_os.environ.get('ADMIN_ALERT_EMAIL','jaz@dchub.cloud')}]}],"from":{"email":_bg_os.environ.get('SENDGRID_FROM_EMAIL','alerts@dchub.cloud'),"name":"DC Hub Boot Guard"},"subject":"\U0001f6a8 Neon Hostname Changed on Boot","content":[{"type":"text/html","value":f"<h2>Neon Hostname Changed</h2><p>Previous: {_bg_previous_host}</p><p>Current: {_bg_current_host}</p>"}]}).encode()
+                    _r = urllib.request.Request("https://api.sendgrid.com/v3/mail/send",data=_p,method='POST')
+                    _r.add_header('Authorization',f'Bearer {_k}')
+                    _r.add_header('Content-Type','application/json')
+                    urllib.request.urlopen(_r,timeout=5)
+                except Exception: pass
+            _bg_thr.Thread(target=_bg_alert,daemon=True).start()
+        else:
+            _bg_r = 'azure-westus3' if 'westus3' in _bg_current_host else ('aws-eu' if 'eu-central' in _bg_current_host else 'unknown')
+            print(f"BOOT GUARD: Neon hostname OK ({_bg_current_host[:30]}... region={_bg_r})")
+    except Exception as _bg_e:
+        print(f"BOOT GUARD: Hostname check failed: {_bg_e}")
+# =================================================================
 """# Force redeploy v2.3 - Feb 26 2026
 # v94 -- Power Plant Coordinate Enrichment (Phase 2) Feb 25 2026
 # v93 -- AI Testimonials + Dashboard Stats Fixes Feb 25 2026
