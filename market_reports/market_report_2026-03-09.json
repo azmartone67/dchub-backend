@@ -1,6 +1,6 @@
 {
-  "report_date": "2026-03-08",
-  "generated_at": "2026-03-08T23:47:23.896507",
+  "report_date": "2026-03-09",
+  "generated_at": "2026-03-09T00:37:17.300929",
   "summary": {
     "total_facilities": 7414,
     "total_providers": 2803,
@@ -109,9 +109,19 @@
       "date": "2026-03-08T15:49:32"
     },
     {
+      "title": "Modular Data Center Construction Can Speed Projects and Reduce Costs",
+      "source": "constructionowners.com",
+      "date": "2026-03-08T15:03:16"
+    },
+    {
       "title": "Data center construction reshapes Cedar Rapids housing market",
       "source": "thegazette.com",
       "date": "2026-03-08T14:59:33"
+    },
+    {
+      "title": "KKR eyes multibillion-dollar sale of data center cooling company: Report",
+      "source": "The Economic Times",
+      "date": "2026-03-08T14:37:22"
     },
     {
       "title": "Spotlight on Energy: AI, Data Centers and the Fight for Power",
@@ -127,16 +137,6 @@
       "title": "Data center influx prompts more & more communities near Ann Arbor to hit pause",
       "source": "MLive.com",
       "date": "2026-03-08T12:06:22"
-    },
-    {
-      "title": "KKR eyes multibillion-dollar sale of data center cooling company, FT reports",
-      "source": "Reuters",
-      "date": "2026-03-08T10:53:08"
-    },
-    {
-      "title": "\u2018It means missile defence on datacentres\u2019: drone strikes raise doubts over Gulf as AI superpower",
-      "source": "The Guardian",
-      "date": "2026-03-08T09:33:00"
     }
   ],
   "data_sources": [
