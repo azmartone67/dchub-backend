@@ -9772,7 +9772,7 @@ def get_stats():
         stats['main_facilities'] = main_count
         stats['discovered_facilities'] = discovered_count
         
-        c.execute("SELECT COALESCE(SUM(power_mw), 0) FROM discovered_facilities")
+        c.execute("SELECT COALESCE(SUM(power_mw), 0) FROM facilities")
         stats['total_power_mw'] = round(c.fetchone()[0] or 0, 1)
         stats['total_mw'] = stats['total_power_mw']  # alias for frontends
         
@@ -9783,10 +9783,10 @@ def get_stats():
         except Exception:
             stats['total_substations'] = 0
         
-        c.execute(f"SELECT COUNT(DISTINCT provider) FROM discovered_facilities WHERE provider != '' AND provider IS NOT NULL {RAILWAY_EXCLUSION}")
+        c.execute(f"SELECT COUNT(DISTINCT provider) FROM facilities WHERE provider != '' AND provider IS NOT NULL {RAILWAY_EXCLUSION}")
         stats['total_providers'] = c.fetchone()[0] or 0
         
-        c.execute("SELECT COUNT(DISTINCT country) FROM discovered_facilities WHERE country != '' AND country IS NOT NULL")
+        c.execute("SELECT COUNT(DISTINCT country) FROM facilities WHERE country != '' AND country IS NOT NULL")
         stats['total_countries'] = c.fetchone()[0] or 0
         stats['countries'] = stats['total_countries']  # alias for frontends
         
@@ -9796,28 +9796,28 @@ def get_stats():
         except:
             stats['total_announcements'] = 0
         
-        c.execute("SELECT source, COUNT(*) FROM discovered_facilities WHERE source IS NOT NULL AND source != '' GROUP BY source ORDER BY COUNT(*) DESC")
+        c.execute("SELECT source, COUNT(*) FROM facilities WHERE source IS NOT NULL AND source != '' GROUP BY source ORDER BY COUNT(*) DESC")
         stats['by_source'] = dict(c.fetchall())
         
-        c.execute("SELECT country, COUNT(*) FROM discovered_facilities WHERE country != '' GROUP BY country ORDER BY COUNT(*) DESC LIMIT 10")
+        c.execute("SELECT country, COUNT(*) FROM facilities WHERE country != '' GROUP BY country ORDER BY COUNT(*) DESC LIMIT 10")
         stats['top_countries'] = dict(c.fetchall())
         
         c.execute(f"""
-            SELECT provider, COUNT(*) FROM discovered_facilities 
+            SELECT provider, COUNT(*) FROM facilities 
             WHERE provider != '' 
             {RAILWAY_EXCLUSION}
             GROUP BY provider ORDER BY COUNT(*) DESC LIMIT 10
         """)
         stats['top_providers'] = dict(c.fetchall())
         
-        c.execute("SELECT status, COUNT(*) FROM discovered_facilities WHERE status IS NOT NULL GROUP BY status")
+        c.execute("SELECT status, COUNT(*) FROM facilities WHERE status IS NOT NULL GROUP BY status")
         stats['by_status'] = dict(c.fetchall())
         
-        c.execute("SELECT COUNT(*) FROM discovered_facilities WHERE first_seen::timestamp > NOW() - INTERVAL '7 days'")
+        c.execute("SELECT COUNT(*) FROM facilities WHERE first_seen::timestamp > NOW() - INTERVAL '7 days'")
         stats['new_last_7_days'] = c.fetchone()[0] or 0
         
         c.execute("""
-            SELECT COUNT(*), COALESCE(SUM(power_mw), 0) FROM discovered_facilities
+            SELECT COUNT(*), COALESCE(SUM(power_mw), 0) FROM facilities
             WHERE LOWER(status) IN ('under construction', 'construction', 'planning',
                                     'planned', 'announced', 'approved', 'proposed',
                                     'under_construction', 'pre-construction',
