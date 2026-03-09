@@ -390,7 +390,7 @@ def fetch_cloudscene():
     facilities = []
 
     for country_slug, country_code in countries:
-        url = f"https://cloudscene.com/data-centers/{country_slug}"
+        url = f"https://cloudscene.com/market/data-centers-in-{country_slug}/all"
 
         try:
             req = urllib.request.Request(url, headers={
