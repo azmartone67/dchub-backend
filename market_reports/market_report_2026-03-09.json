@@ -1,8 +1,8 @@
 {
   "report_date": "2026-03-09",
-  "generated_at": "2026-03-09T00:37:17.300929",
+  "generated_at": "2026-03-09T06:34:10.927523",
   "summary": {
-    "total_facilities": 7414,
+    "total_facilities": 11567,
     "total_providers": 2803,
     "countries_covered": 166,
     "total_power_mw": 34230.0,
@@ -10,7 +10,7 @@
     "total_deal_value_usd": 1267453.0
   },
   "market_highlights": [
-    "DC Hub tracks 7,414 data center facilities globally",
+    "DC Hub tracks 11,567 data center facilities globally",
     "Coverage spans 166 countries with 2803 providers",
     "Combined capacity: 34,230 MW",
     "M&A database: 414 transactions worth $0.0B+"
@@ -89,54 +89,54 @@
   ],
   "recent_news": [
     {
+      "title": "Sakura Internet launches AI infrastructure with around 1,100 Nvidia Blackwell GPUs",
+      "source": "Telecompaper",
+      "date": "2026-03-09T06:25:57"
+    },
+    {
+      "title": "Lenovo, Nintendo, sue US government, seeking tariff refunds",
+      "source": "The Register DC",
+      "date": "2026-03-09T06:12:23"
+    },
+    {
+      "title": "AI: About those Mideast AI Data Centers. RTZ #1020",
+      "source": "AI: Reset to Zero",
+      "date": "2026-03-09T05:02:37"
+    },
+    {
+      "title": "\u2018Stop the Hermantown data center\u2019 meets for first time since Google announcement",
+      "source": "Northern News Now",
+      "date": "2026-03-09T03:00:00"
+    },
+    {
+      "title": "The geopolitics of data centres: Can Thailand emerge as Southeast Asia\u2019s next digital hub?",
+      "source": "Pattaya Mail",
+      "date": "2026-03-09T02:07:25"
+    },
+    {
+      "title": "AWS, Microsoft Azure may shift workloads to India, Singapore",
+      "source": "Tech in Asia",
+      "date": "2026-03-09T02:00:00"
+    },
+    {
+      "title": "KKR eyes multibillion-dollar sale of data center firm: report",
+      "source": "Tech in Asia",
+      "date": "2026-03-09T01:38:00"
+    },
+    {
+      "title": "Beijing warns of more chip supply worries after Nexperia China claims it was cut off from SAP",
+      "source": "The Register DC",
+      "date": "2026-03-09T01:13:48"
+    },
+    {
+      "title": "AWS, Microsoft Azure may reroute West Asia data centre workload to India",
+      "source": "The Economic Times",
+      "date": "2026-03-09T00:30:00"
+    },
+    {
       "title": "Data Centers, Business Parks, And Hotels Fuel Cheyenne Building Boom",
       "source": "Cowboy State Daily",
       "date": "2026-03-08T18:31:00"
-    },
-    {
-      "title": "Jim Cramer on Oracle: \u201cThis One\u2019s a Total Pain Point Ever Since It Decided to Go All in on Building Data Centers\u201d",
-      "source": "Yahoo Finance",
-      "date": "2026-03-08T16:35:05"
-    },
-    {
-      "title": "Owner of ICE detention facility sees big opportunity in AI man camps",
-      "source": "TechCrunch AI",
-      "date": "2026-03-08T16:30:00"
-    },
-    {
-      "title": "OpenAI's massive Stargate data center canceled as firm can't reach terms with Oracle, operator struggles with reliability issues \u2014 Meta said to be interested in snatching excess capacity",
-      "source": "Tom's Hardware",
-      "date": "2026-03-08T15:49:32"
-    },
-    {
-      "title": "Modular Data Center Construction Can Speed Projects and Reduce Costs",
-      "source": "constructionowners.com",
-      "date": "2026-03-08T15:03:16"
-    },
-    {
-      "title": "Data center construction reshapes Cedar Rapids housing market",
-      "source": "thegazette.com",
-      "date": "2026-03-08T14:59:33"
-    },
-    {
-      "title": "KKR eyes multibillion-dollar sale of data center cooling company: Report",
-      "source": "The Economic Times",
-      "date": "2026-03-08T14:37:22"
-    },
-    {
-      "title": "Spotlight on Energy: AI, Data Centers and the Fight for Power",
-      "source": "State Affairs",
-      "date": "2026-03-08T14:02:10"
-    },
-    {
-      "title": "US startup plans to build data centers inside ocean-based wind turbines, servers water cooled via chilly North Sea \u2014 each leg houses a data center, firm set to launch three-legged prototype in Norway\u2019s North Sea this year",
-      "source": "Tom's Hardware",
-      "date": "2026-03-08T13:52:07"
-    },
-    {
-      "title": "Data center influx prompts more & more communities near Ann Arbor to hit pause",
-      "source": "MLive.com",
-      "date": "2026-03-08T12:06:22"
     }
   ],
   "data_sources": [

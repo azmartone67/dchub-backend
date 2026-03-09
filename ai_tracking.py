@@ -755,6 +755,34 @@ def init_ai_tracking(app: Flask):
         except Exception as e:
             return cors_jsonify({"status": "error", "msg": str(e)[:100]})
 
+    @app.route("/api/v1/ai-tracking/log", methods=["POST", "OPTIONS"])
+    def ai_tracking_log():
+        """Log AI platform interactions — used by Cloudflare Worker and external callers."""
+        if request.method == "OPTIONS":
+            return cors_jsonify({})
+        try:
+            data = request.get_json(silent=True) or {}
+            path = data.get("path", "") or data.get("endpoint", "")
+            user_agent = data.get("user_agent", "") or data.get("ua", "")
+            ip = data.get("ip", "") or data.get("ip_address", "")
+            status = data.get("status_code", 200)
+            elapsed = data.get("response_ms", 0)
+            plat = data.get("platform", "")
+
+            if not path and not plat:
+                return cors_jsonify({"status": "skipped", "reason": "no path or platform"})
+
+            platform = plat if plat else detect_platform(user_agent)
+            if platform in ("direct", "unknown", "seo_bot"):
+                return cors_jsonify({"status": "skipped", "platform": platform})
+
+            log_ai_request(platform=platform, endpoint=path, user_agent=user_agent,
+                           ip_address=ip, status_code=status, response_ms=elapsed)
+
+            return cors_jsonify({"status": "tracked", "platform": platform})
+        except Exception as e:
+            return cors_jsonify({"status": "error", "msg": str(e)[:100]})
+
     @app.route("/api/ai/track-mcp", methods=["POST", "OPTIONS"])
     def track_mcp_call():
         """Track MCP tool calls from the gateway or Worker."""

@@ -9813,8 +9813,11 @@ def get_stats():
         c.execute("SELECT status, COUNT(*) FROM facilities WHERE status IS NOT NULL GROUP BY status")
         stats['by_status'] = dict(c.fetchall())
         
-        c.execute("SELECT COUNT(*) FROM facilities WHERE first_seen::timestamp > NOW() - INTERVAL '7 days'")
-        stats['new_last_7_days'] = c.fetchone()[0] or 0
+        try:
+            c.execute("SELECT COUNT(*) FROM facilities WHERE first_seen::timestamp > NOW() - INTERVAL '7 days'")
+            stats['new_last_7_days'] = c.fetchone()[0] or 0
+        except Exception:
+            stats['new_last_7_days'] = 0
         
         c.execute("""
             SELECT COUNT(*), COALESCE(SUM(power_mw), 0) FROM facilities
