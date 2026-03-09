@@ -376,32 +376,39 @@ class CarbonIntensityService:
     
     def _get_egrid_intensity(self, lat: float, lon: float) -> Dict:
         """Get carbon intensity from eGRID based on location"""
-        # Simple region detection based on coordinates
+        # Region detection based on coordinates
+        # Order matters — more specific regions first, broader ones later
         
-        if lat > 42 and lon < -70:  # New England
-            subregion = "NEWE"
-        elif lat > 40 and lon > -80:  # NY/NJ area
-            subregion = "NYCW"
-        elif lat > 35 and lat < 42 and lon > -90:  # PJM region
-            subregion = "RFCE"
-        elif lat > 25 and lat < 37 and lon > -100 and lon < -93:  # Texas
+        if lat > 25 and lat < 37 and lon > -100 and lon < -93:  # Texas
             subregion = "ERCT"
         elif lat > 32 and lat < 42 and lon < -115:  # California
             subregion = "CAMX"
-        elif lat > 42 and lon < -115:  # Pacific Northwest
+        elif lat > 42 and lon < -115:  # Pacific Northwest (WA, OR)
+            subregion = "NWPP"
+        elif lat > 36 and lat < 42 and lon > -115 and lon < -109:  # Nevada/Utah
             subregion = "NWPP"
         elif lat > 31 and lat < 37 and lon > -115 and lon < -109:  # Arizona
             subregion = "AZNM"
-        elif lat > 36 and lat < 42 and lon > -115 and lon < -109:  # Nevada/Utah
-            subregion = "NWPP"
         elif lat > 31 and lat < 37 and lon > -109 and lon < -103:  # New Mexico
             subregion = "AZNM"
         elif lat > 35 and lat < 42 and lon > -109 and lon < -102:  # Colorado
             subregion = "RMPA"
-        elif lat > 25 and lat < 35 and lon > -90 and lon < -79:  # Southeast
+        elif lat > 42 and lon > -73 and lon < -67:  # New England (ME, NH, VT, MA, CT, RI)
+            subregion = "NEWE"
+        elif lat > 40 and lon > -76 and lon < -73:  # NY/NJ area
+            subregion = "NYCW"
+        elif lat > 38 and lat < 42 and lon > -80 and lon < -74:  # PJM Mid-Atlantic (PA, NJ, DE, MD, NoVA)
+            subregion = "RFCE"
+        elif lat > 25 and lat < 35 and lon > -90 and lon < -79:  # Deep Southeast (GA, FL, AL, MS)
             subregion = "SRSO"
-        elif lat > 35 and lat < 42 and lon > -90 and lon < -80:  # Appalachia
+        elif lat > 34 and lat < 39 and lon > -84 and lon < -75:  # VA-NC-SC corridor (south of NoVA)
             subregion = "SRVC"
+        elif lat > 37 and lat < 49 and lon > -100 and lon < -89:  # Upper Midwest / MISO (IA, MN, ND, SD, NE)
+            subregion = "MROW"
+        elif lat > 37 and lat < 49 and lon > -89 and lon < -75:  # Great Lakes / RFC West (OH, IN, IL, MI, WI, WV)
+            subregion = "RFCW"
+        elif lat > 33 and lat < 37 and lon > -100 and lon < -93:  # Oklahoma / SPP
+            subregion = "SPSO"
         else:
             subregion = "RFCW"  # Default to RFC West (Midwest)
         
