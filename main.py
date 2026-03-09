@@ -3440,7 +3440,7 @@ def generate_market_report():
         cursor = conn.cursor()
         
         # Get facility stats
-        cursor.execute("SELECT COUNT(*) FROM discovered_facilities")
+        cursor.execute("SELECT COUNT(*) FROM facilities")
         total_facilities = cursor.fetchone()[0]
         
         cursor.execute("SELECT COUNT(DISTINCT provider) FROM discovered_facilities WHERE provider IS NOT NULL AND provider != ''")
@@ -9759,7 +9759,7 @@ def get_stats():
         
         stats = {}
         
-        c.execute("SELECT COUNT(*) FROM discovered_facilities")
+        c.execute("SELECT COUNT(*) FROM facilities")
         main_count = c.fetchone()[0] or 0
         
         try:
@@ -15976,7 +15976,7 @@ def data_freshness():
             'health': 'healthy' if news_newest and news_newest > (now - timedelta(days=1)).isoformat() else 'stale'
         }
 
-        facilities_count = safe_query("SELECT COUNT(*) FROM discovered_facilities", 0)
+        facilities_count = safe_query("SELECT COUNT(*) FROM facilities", 0)
         facilities_with_coords = safe_query("SELECT COUNT(*) FROM discovered_facilities WHERE latitude IS NOT NULL AND longitude IS NOT NULL", 0)
         discovered_count = safe_query("SELECT COUNT(*) FROM discovered_facilities WHERE is_duplicate = 0", 0)
         facilities_newest = safe_query("SELECT MAX(first_seen) FROM discovered_facilities")
