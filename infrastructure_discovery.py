@@ -915,6 +915,12 @@ class SubstationDiscovery:
 
     def _save_substation(self, sub, source='discovery'):
         try:
+            # Filter out telecom/distribution substations at ingestion
+            # Only save utility-grade substations (>69kV) or unknown voltage (0/None)
+            voltage = sub.get('voltage_kv', 0) or 0
+            if 0 < voltage <= 69:
+                return  # Skip telecom/distribution-grade substations
+            
             source_id = sub.get('source_id', f"{sub['name']}_{sub.get('lat', 0):.4f}_{sub.get('lng', 0):.4f}".replace(" ", "_").lower()[:100])
             # FIX: INSERT OR IGNORE → ON CONFLICT DO NOTHING, ? → %s
             rowcount = _safe_write('''
