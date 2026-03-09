@@ -59,7 +59,17 @@ HYPERSCALER_CAPEX_THRESHOLD_M = 15000  # $15B — real DC deals by these cos are
 
 def get_deals_db():
     conn = get_db()
-    conn.row_factory = sqlite3.Row
+    # Enable dict-like row access for PostgreSQL (psycopg2 RealDictCursor)
+    # For SQLite fallback, set row_factory
+    try:
+        import psycopg2.extras
+        conn.cursor_factory = psycopg2.extras.RealDictCursor
+    except (ImportError, AttributeError):
+        try:
+            import sqlite3
+            conn.row_factory = sqlite3.Row
+        except Exception:
+            pass
     return conn
 
 
@@ -238,8 +248,18 @@ def discover_deals_schema():
                 count = cursor.fetchone()[0]
                 if count == 0:
                     continue
-                cursor.execute(f"PRAGMA table_info({table})")
-                db_columns = [row[1] for row in cursor.fetchall()]
+                # PostgreSQL: use information_schema instead of SQLite PRAGMA
+                try:
+                    cursor.execute("""
+                        SELECT column_name FROM information_schema.columns
+                        WHERE table_name = %s
+                        ORDER BY ordinal_position
+                    """, (table,))
+                    db_columns = [row[0] for row in cursor.fetchall()]
+                except Exception:
+                    # Fallback for SQLite
+                    cursor.execute(f"PRAGMA table_info({table})")
+                    db_columns = [row[1] for row in cursor.fetchall()]
                 col_map = {}
                 for canonical, candidates in COLUMN_MAP.items():
                     for c in candidates:
