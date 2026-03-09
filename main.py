@@ -9768,7 +9768,7 @@ def get_stats():
         except:
             discovered_count = 0
         
-        stats['total_facilities'] = main_count + discovered_count
+        stats['total_facilities'] = main_count
         stats['main_facilities'] = main_count
         stats['discovered_facilities'] = discovered_count
         
