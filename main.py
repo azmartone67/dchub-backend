@@ -10632,8 +10632,14 @@ def get_deals():
     region = request.args.get('region')
     deal_type = request.args.get('type')
     category = request.args.get('category')  # 'traditional', 'hyperscaler', 'ai', or 'all'
+    buyer_filter = request.args.get('buyer', '').strip()
+    seller_filter = request.args.get('seller', '').strip()
+    min_value = request.args.get('min_value', 0, type=float)
+    max_value = request.args.get('max_value', 0, type=float)
+    date_from = request.args.get('from', '').strip()
+    date_to = request.args.get('to', '').strip()
     
-    cache_key = f"deals_{year}_{region}_{deal_type}_{category}"
+    cache_key = f"deals_{year}_{region}_{deal_type}_{category}_{buyer_filter}_{seller_filter}_{min_value}_{max_value}_{date_from}_{date_to}"
     cached_data = DEALS_CACHE.get(cache_key)
     if cached_data is not None:
         limited = cached_data[:limit]
@@ -10732,6 +10738,31 @@ def get_deals():
     # Filter by type
     if deal_type and deal_type != 'All Types':
         deals = [d for d in deals if d.get('type') == deal_type]
+    
+    # Filter by buyer (case-insensitive partial match)
+    if buyer_filter:
+        buyer_lower = buyer_filter.lower()
+        deals = [d for d in deals if buyer_lower in (d.get('buyer') or '').lower()]
+    
+    # Filter by seller (case-insensitive partial match)
+    if seller_filter:
+        seller_lower = seller_filter.lower()
+        deals = [d for d in deals if seller_lower in (d.get('seller') or '').lower()]
+    
+    # Filter by value range (values stored in millions)
+    if min_value:
+        # MCP sends USD, DB stores millions — normalize: if min_value > 1M assume raw USD
+        min_m = min_value / 1_000_000 if min_value > 1_000_000 else min_value
+        deals = [d for d in deals if (d.get('value') or 0) >= min_m]
+    if max_value:
+        max_m = max_value / 1_000_000 if max_value > 1_000_000 else max_value
+        deals = [d for d in deals if (d.get('value') or 0) <= max_m]
+    
+    # Filter by date range
+    if date_from:
+        deals = [d for d in deals if (d.get('date') or '') >= date_from]
+    if date_to:
+        deals = [d for d in deals if (d.get('date') or '') <= date_to]
     
     # Sort by date descending
     deals.sort(key=lambda x: x.get('date') or '', reverse=True)
