@@ -9004,22 +9004,25 @@ def list_markets():
         if len(market_key) <= 2 or market_key in ['la', 'sf', 'nj', 'nyc', 'dfw', 'nova']:
             continue
         
-        # Build city conditions
+        # Build city conditions — all US markets, guard against ISO code collisions
         conditions = []
         params = []
         for city in cities:
             if len(city) == 2 and city.isupper():
-                conditions.append('state = ?')
+                conditions.append('state = %s')
+                params.append(city)
             else:
-                conditions.append('city LIKE ?')
-            params.append(f'%{city}%' if len(city) > 2 else city)
+                conditions.append('city ILIKE %s')
+                params.append(f'%{city}%')
         
         where_clause = ' OR '.join(conditions)
+        country_guard = "AND (country = 'US' OR country = 'USA' OR country IS NULL OR country = '')"
         
         c.execute(f"""
             SELECT COUNT(*) as count, COALESCE(SUM(power_mw), 0) as total_power
             FROM discovered_facilities 
             WHERE ({where_clause})
+            {country_guard}
             {RAILWAY_EXCLUSION}
         """, params)
         
@@ -9064,7 +9067,8 @@ def get_market_stats(market):
     conn = get_read_db()
     c = conn.cursor()
     
-    # Build city conditions
+    # Build city conditions — MARKET_ALIASES are all US markets,
+    # so add country='US' guard to prevent ISO code collisions (e.g. AZ=Azerbaijan)
     conditions = []
     params = []
     for city in cities:
@@ -9076,6 +9080,7 @@ def get_market_stats(market):
             params.append(f'%{city}%')
     
     where_clause = ' OR '.join(conditions)
+    country_guard = "AND (country = 'US' OR country = 'USA' OR country IS NULL OR country = '')"
     
     # Get overall stats
     c.execute(f"""
@@ -9086,6 +9091,7 @@ def get_market_stats(market):
             COUNT(DISTINCT provider) as provider_count
         FROM discovered_facilities 
         WHERE ({where_clause})
+        {country_guard}
         {RAILWAY_EXCLUSION}
     """, params)
     
@@ -9098,6 +9104,7 @@ def get_market_stats(market):
         SELECT provider, COUNT(*) as count, COALESCE(SUM(power_mw), 0) as power
         FROM discovered_facilities 
         WHERE ({where_clause}) AND provider != ''
+        {country_guard}
         {RAILWAY_EXCLUSION}
         GROUP BY provider
         ORDER BY count DESC
@@ -9111,6 +9118,7 @@ def get_market_stats(market):
         SELECT status, COUNT(*) as count
         FROM discovered_facilities 
         WHERE ({where_clause})
+        {country_guard}
         {RAILWAY_EXCLUSION}
         GROUP BY status
     """, params)
@@ -9123,6 +9131,7 @@ def get_market_stats(market):
         SELECT id, name, provider, city, power_mw, status, discovered_at
         FROM discovered_facilities 
         WHERE ({where_clause})
+        {country_guard}
         {RAILWAY_EXCLUSION}
         ORDER BY discovered_at DESC NULLS LAST
         LIMIT 5
@@ -10237,43 +10246,45 @@ def search_facilities():
             market_conds = []
             for mkt_city in cities:
                 if len(mkt_city) == 2 and mkt_city.isupper():
-                    market_conds.append('state = ?')
+                    market_conds.append('state = %s')
                     params.append(mkt_city)
                 else:
-                    market_conds.append('city LIKE ?')
+                    market_conds.append('city ILIKE %s')
                     params.append(f'%{mkt_city}%')
             conditions.append(f"({' OR '.join(market_conds)})")
+            # MARKET_ALIASES are all US markets — guard against ISO code collisions (AZ=Azerbaijan)
+            conditions.append("(country = 'US' OR country = 'USA' OR country IS NULL OR country = '')")
         else:
             q = f'%{query}%'
-            conditions.append('(city LIKE ? OR state LIKE ? OR name LIKE ? OR provider LIKE ?)')
+            conditions.append('(city ILIKE %s OR state ILIKE %s OR name ILIKE %s OR provider ILIKE %s)')
             params.extend([q, q, q, q])
 
     if operator:
-        conditions.append('provider LIKE ?')
+        conditions.append('provider ILIKE %s')
         params.append(f'%{operator}%')
 
     if city:
-        conditions.append('city LIKE ?')
+        conditions.append('city ILIKE %s')
         params.append(f'%{city}%')
 
     if state:
-        conditions.append('state = ?')
+        conditions.append('state = %s')
         params.append(state.upper())
 
     if country:
-        conditions.append('country = ?')
+        conditions.append('country = %s')
         params.append(country.upper())
 
     if min_mw:
-        conditions.append('power_mw >= ?')
+        conditions.append('power_mw >= %s')
         params.append(min_mw)
 
     if max_mw:
-        conditions.append('power_mw <= ?')
+        conditions.append('power_mw <= %s')
         params.append(max_mw)
 
     if tier:
-        conditions.append('tier = ?')
+        conditions.append('tier = %s')
         params.append(tier)
 
     where = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
@@ -10284,7 +10295,7 @@ def search_facilities():
         {where}
         {RAILWAY_EXCLUSION.replace('AND', 'AND') if where else 'WHERE ' + RAILWAY_EXCLUSION.lstrip('AND').lstrip()}
         ORDER BY confidence_score DESC, power_mw DESC
-        LIMIT ? OFFSET ?
+        LIMIT %s OFFSET %s
     """, params)
 
     facilities = [dict_from_row(row) for row in c.fetchall()]
