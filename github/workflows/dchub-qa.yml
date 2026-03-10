@@ -1,4 +1,4 @@
-# .github/workflows/dchub-qa.yml, 2.0
+# .github/workflows/dchub-qa.yml, 2.1
 # DC Hub — Automated QA Health Check
 # Runs automated infra + frontend checks on schedule and after deploys
 # Emails you only when something fails
@@ -33,6 +33,7 @@ jobs:
 
           BASE    = "https://dchub.cloud"
           RAILWAY = "https://dchub-backend-production.up.railway.app"
+          API_SUB = "https://api.dchub.cloud"
           TIMEOUT = 15
 
           results = []
@@ -48,7 +49,6 @@ jobs:
                       r = requests.get(url, headers=headers or {}, timeout=TIMEOUT)
                   ms = int((time.monotonic() - start) * 1000)
 
-                  # FIX #2: Support single int or list of acceptable status codes
                   expected = expect_status if isinstance(expect_status, list) else [expect_status]
                   if r.status_code not in expected:
                       msg = f"HTTP {r.status_code} (expected {expected}) [{ms}ms]"
@@ -92,7 +92,15 @@ jobs:
           check("Railway health",         f"{RAILWAY}/api/health")
           check("Cloudflare Worker",      f"{BASE}/api/health")
           check("Neon DB stats",          f"{BASE}/api/v1/stats",
-                json_path="data.total_facilities", min_value=11000)
+                json_path="stats.facilities", min_value=11000)
+          check("Worker version",         f"{BASE}/api/version")
+
+          # ── api.dchub.cloud subdomain (v2.1: verify routing) ──
+          print("\n🌐 api.dchub.cloud Subdomain")
+          print("─" * 50)
+          check("api.dchub health",       f"{API_SUB}/api/health")
+          check("api.dchub version",      f"{API_SUB}/api/version")
+          check("api.dchub stats",        f"{API_SUB}/api/v1/stats")
 
           # ── API Endpoints ──
           print("\n🎯 API Endpoints")
@@ -104,8 +112,10 @@ jobs:
           check("Transactions",           f"{BASE}/api/transactions?limit=5")
           check("Map data",               f"{BASE}/api/v1/map?all=true&limit=5")
           check("User stats (unauth)",    f"{BASE}/api/v1/user/stats", expect_status=401)
+          check("Circuit status",         f"{BASE}/api/v1/circuit-status")
+          check("Failover status",        f"{BASE}/api/v1/failover-status")
 
-          # ── MCP — FIX #1: Hit Railway directly, proper JSON-RPC with params: {} ──
+          # ── MCP — Hit Railway directly, proper JSON-RPC with params: {} ──
           print("\n🔌 MCP Protocol")
           print("─" * 50)
           check("MCP tools/list",         f"{RAILWAY}/mcp", method="POST",
@@ -130,7 +140,6 @@ jobs:
           print("\n🔐 Auth Gating")
           print("─" * 50)
           check("Facilities (no auth → limited)", f"{BASE}/api/v1/facilities?limit=3")
-          # FIX #3: Search returns results for unauthenticated use
           check("Search (public access)",         f"{BASE}/api/v1/search?q=equinix")
 
           # ── Discovery files ──
@@ -141,6 +150,8 @@ jobs:
           check("robots.txt",            f"{BASE}/robots.txt")
           check("sitemap.xml",           f"{BASE}/sitemap.xml")
           check(".well-known/ai-plugin", f"{BASE}/.well-known/ai-plugin.json")
+          check(".well-known/mcp.json",  f"{BASE}/.well-known/mcp.json")
+          check(".well-known/agent.json", f"{BASE}/.well-known/agent.json")
 
           # ── Print results ──
           print("\n" + "=" * 60)
