@@ -108,6 +108,8 @@ jobs:
           check("Agent registry",         f"{BASE}/api/agents/registry")
           check("Intelligence index",     f"{BASE}/api/agents/intelligence-index")
           check("AI tracking",            f"{BASE}/api/ai/tracking")
+          check("AI tracking cumulative", f"{BASE}/api/v1/ai-tracking/cumulative")
+          check("AI tracking stats",      f"{BASE}/api/v1/ai-tracking/stats")
           check("News feed",              f"{BASE}/api/news/live?limit=5")
           check("Transactions",           f"{BASE}/api/transactions?limit=5")
           check("Map data",               f"{BASE}/api/v1/map?all=true&limit=5")
