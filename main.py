@@ -18062,6 +18062,20 @@ except Exception as e:
     logger.error(f"⚠️ API Tier Gating failed: {e} -- gated endpoints will return 503")
 
 # =============================================================================
+# FREE TIER MAP GATE — Server-side IP tracking (replaces localStorage enforcement)
+# Closes incognito/cookie-clear bypass on Land & Power map
+# Requires: free_tier_gate.py in repo + FREE_MAP_LOADS env var on Railway
+# =============================================================================
+try:
+    from free_tier_gate import init_free_tier_gate
+    init_free_tier_gate(app, get_pg_connection)
+    logger.info("✅ Free Tier Map Gate initialized (server-side IP tracking)")
+except ImportError:
+    logger.warning("⚠️ free_tier_gate.py not found -- map free-tier enforcement disabled")
+except Exception as e:
+    logger.error(f"⚠️ Free Tier Map Gate failed: {e} -- map free-tier enforcement disabled")
+
+# =============================================================================
 # STARTUP GATE VERIFICATION - Locked-down manifest of ALL gated endpoints
 # If ANY endpoint in this list is accessible without auth, server REFUSES to start.
 # This prevents accidental ungating during redeployments.
