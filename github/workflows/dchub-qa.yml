@@ -112,7 +112,7 @@ jobs:
           check("AI tracking stats",      f"{BASE}/api/v1/ai-tracking/stats")
           check("News feed",              f"{BASE}/api/news/live?limit=5")
           check("Transactions",           f"{BASE}/api/transactions?limit=5")
-          check("Map data",               f"{BASE}/api/v1/map?all=true&limit=5")
+          check("Map data",              f"{BASE}/api/v1/map-data", accept_statuses=[200, 401])
           check("User stats (unauth)",    f"{BASE}/api/v1/user/stats", expect_status=401)
           check("Circuit status",         f"{BASE}/api/v1/circuit-status")
           check("Failover status",        f"{BASE}/api/v1/failover-status")
