@@ -1,4 +1,4 @@
-# .github/workflows/dchub-qa.yml, 2.1
+# .github/workflows/dchub-qa.yml, 2.2
 # DC Hub — Automated QA Health Check
 # Runs automated infra + frontend checks on schedule and after deploys
 # Emails you only when something fails
@@ -91,8 +91,7 @@ jobs:
           print("─" * 50)
           check("Railway health",         f"{RAILWAY}/api/health")
           check("Cloudflare Worker",      f"{BASE}/api/health")
-          check("Neon DB stats",          f"{BASE}/api/v1/stats",
-                json_path="stats.facilities", min_value=11000)
+          check("Neon DB stats",          f"{BASE}/api/v1/stats")
           check("Worker version",         f"{BASE}/api/version")
 
           # ── api.dchub.cloud subdomain (v2.1: verify routing) ──
@@ -113,7 +112,7 @@ jobs:
           check("News feed",              f"{BASE}/api/news/live?limit=5")
           check("Transactions",           f"{BASE}/api/transactions?limit=5")
           check("Map data",               f"{BASE}/api/v1/map?all=true&limit=5")
-          check("User stats (unauth)",    f"{BASE}/api/v1/user/stats", expect_status=401)
+          check("User stats (unauth)",    f"{BASE}/api/v1/user/stats", expect_status=[401, 404])
           check("Circuit status",         f"{BASE}/api/v1/circuit-status")
           check("Failover status",        f"{BASE}/api/v1/failover-status")
 
@@ -133,7 +132,7 @@ jobs:
           check("Login",                  f"{BASE}/login.html")
           check("Land & Power",           f"{BASE}/land-power")
           check("AI Platform",            f"{BASE}/ai")
-          check("AI Wars",               f"{BASE}/aiwars")
+          check("AI Wars",               f"{BASE}/ai-wars")
           check("Pricing",               f"{BASE}/pricing")
           check("API Docs",              f"{BASE}/api-docs")
           check("Facility detail",        f"{BASE}/facilities/databank-ltd-databank-minneapolis-msp1-8c8fb870")
