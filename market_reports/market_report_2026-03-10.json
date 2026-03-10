@@ -1,6 +1,6 @@
 {
-  "report_date": "2026-03-09",
-  "generated_at": "2026-03-09T19:28:06.061249",
+  "report_date": "2026-03-10",
+  "generated_at": "2026-03-10T04:55:50.653030",
   "summary": {
     "total_facilities": 11701,
     "total_providers": 2804,
@@ -89,54 +89,54 @@
   ],
   "recent_news": [
     {
-      "title": "CelcomDigi, Maxis snap up Malaysian government's stake in Digital Nasional Berhad",
-      "source": "Data Center Dynamics",
-      "date": "2026-03-09T18:50:03"
+      "title": "HPE tweaks T&amp;Cs so the price it quotes may not be the price you pay",
+      "source": "The Register DC",
+      "date": "2026-03-10T02:57:12"
     },
     {
-      "title": "CyrusOne tops out latest Texas data center",
-      "source": "Data Center Dynamics",
-      "date": "2026-03-09T18:20:05"
+      "title": "Gibraltar presses pause on data centers amid proposal on former McLouth steel site",
+      "source": "The Detroit News",
+      "date": "2026-03-10T02:48:49"
     },
     {
-      "title": "Akash Systems launches AMD-powered diamond cooled AI servers",
-      "source": "Data Center Dynamics",
-      "date": "2026-03-09T18:20:03"
+      "title": "Who pays for Tucson\u2019s data center boom?",
+      "source": "AZPM News",
+      "date": "2026-03-10T01:37:48"
     },
     {
-      "title": "Inside San Antonio\u2019s AI-driven data center boom and what it means for CPS Energy",
-      "source": "San Antonio Express-News",
-      "date": "2026-03-09T18:13:49"
+      "title": "Palantir\u2019s lethal AI weaponry deployed to find chairs for US government staff",
+      "source": "The Register DC",
+      "date": "2026-03-10T01:25:12"
     },
     {
-      "title": "Planning Commission recommends approval for 1.6m sq ft planned data center in Louisville, Kentucky",
-      "source": "Data Center Dynamics",
-      "date": "2026-03-09T18:00:04"
+      "title": "Bernstein Launches Coverage of Equinix (EQIX), Calls it a Data Center \"Juggernaut\"",
+      "source": "Finviz",
+      "date": "2026-03-10T01:19:44"
     },
     {
-      "title": "Beyond capex: Closing the power efficiency gap in AI data centers",
-      "source": "Data Center Dynamics",
-      "date": "2026-03-09T17:55:28"
+      "title": "Stellaria Targets Long-Term Clean Energy Supply for Data Centers With Equinix Capacity Deal",
+      "source": "TipRanks",
+      "date": "2026-03-10T00:34:01"
     },
     {
-      "title": "Equinix signs wind PPA with Auren Energia in Brazil",
-      "source": "Data Center Dynamics",
-      "date": "2026-03-09T17:50:03"
+      "title": "What is a data center and what is the price of AI? In Depth with Dan",
+      "source": "WRAL",
+      "date": "2026-03-09T23:49:11"
     },
     {
-      "title": "New Commerce Department AI export rules could be seismic change for CSPs and data center operators \u2014 buying American GPUs at scale means committing to building American infrastructure",
-      "source": "Tom's Hardware",
-      "date": "2026-03-09T17:43:44"
+      "title": "Pekin\u2019s mayor announces data center project will not move forward",
+      "source": "WEEK | 25 News Now",
+      "date": "2026-03-09T23:46:00"
     },
     {
-      "title": "Iranian drone attacks on Amazon\u2019s Gulf data centers a harbinger of new tactics in future conflicts, experts say",
-      "source": "Fortune",
-      "date": "2026-03-09T17:34:10"
+      "title": "Fire department turns down $250,000 Google donation amid data center fight",
+      "source": "fox10tv.com",
+      "date": "2026-03-09T22:49:00"
     },
     {
-      "title": "Oracle hits back at Stargate data center cancellation reports \u2014 claims 4.5GW Oracle-OpenAI agreement still on track",
-      "source": "Tom's Hardware",
-      "date": "2026-03-09T17:28:02"
+      "title": "Data center water spikes could cost billions",
+      "source": "University of California, Riverside",
+      "date": "2026-03-09T22:23:03"
     }
   ],
   "data_sources": [
