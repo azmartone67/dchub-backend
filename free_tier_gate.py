@@ -1,8 +1,9 @@
 """
-DC Hub — Free Tier Map Gate v3 (Account-Based)
-================================================
-Tracks usage by authenticated user_id — not IP, not localStorage.
-VPN/incognito bypass impossible. Requires login.
+DC Hub — Free Tier Map Gate v4 (JWT + Account-Based)
+=====================================================
+Uses JWT decode to identify users (matching main.py's auth system).
+Previous versions queried session_token column which DOES NOT EXIST
+in the users table — that's why every user was treated as unauthenticated.
 
 Free accounts: 1 map session + 5 layer toggles, then upgrade wall.
 Pro/Enterprise: unlimited.
@@ -12,9 +13,9 @@ Usage in main.py:
     init_free_tier_gate(app, get_pg_connection)
 
 Env vars:
-    FREE_MAP_SESSIONS=1           # sessions per 30 days for free users
-    FREE_LAYER_TOGGLES=5          # layer toggles per session
-    FREE_TIER_GATE_ENABLED=true   # kill switch
+    FREE_MAP_SESSIONS=1
+    FREE_LAYER_TOGGLES=5
+    FREE_TIER_GATE_ENABLED=true
 """
 
 import os
@@ -25,8 +26,8 @@ from flask import request, jsonify, g
 logger = logging.getLogger('free_tier_gate')
 
 # ── Configuration ──────────────────────────────────────────────────────────
-FREE_MAP_SESSIONS    = int(os.environ.get('FREE_MAP_SESSIONS', '1'))
-FREE_LAYER_TOGGLES   = int(os.environ.get('FREE_LAYER_TOGGLES', '5'))
+FREE_MAP_SESSIONS  = int(os.environ.get('FREE_MAP_SESSIONS', '1'))
+FREE_LAYER_TOGGLES = int(os.environ.get('FREE_LAYER_TOGGLES', '5'))
 GATE_ENABLED = os.environ.get('FREE_TIER_GATE_ENABLED', 'true').lower() == 'true'
 
 # Endpoints gated for free users (Pro/Enterprise only)
@@ -42,10 +43,10 @@ GATED_PREFIXES = [
     '/api/v1/capacity-headroom',
     '/api/v1/energy-discovery',
     '/api/v1/competitive-intel',
-    '/api/site-score',          # Site Planner / Evaluate
-    '/api/risk',                # Risk Assessment
-    '/api/v1/site-planner',     # Site Planner panel
-    '/api/v1/competitor',       # Competitive Intelligence
+    '/api/site-score',
+    '/api/risk',
+    '/api/v1/site-planner',
+    '/api/v1/competitor',
 ]
 
 # Never gated
@@ -64,7 +65,6 @@ ALWAYS_OPEN_PREFIXES = [
     '/mcp',
     '/health',
 ]
-
 
 # ── SQL ────────────────────────────────────────────────────────────────────
 CREATE_TABLE_SQL = """
@@ -112,35 +112,47 @@ def is_gated(path):
 def is_always_open(path):
     return any(path.startswith(p) for p in ALWAYS_OPEN_PREFIXES)
 
-def get_user_from_token(token, get_db_conn):
+def get_user_from_jwt(token, get_db_conn):
     """
-    Validate auth token and return user dict with 'plan' field.
-    ─────────────────────────────────────────────────────────
-    ** ADJUST THIS to match your actual auth table/columns **
-    ─────────────────────────────────────────────────────────
+    Decode JWT and look up user plan from database.
+    Uses the same JWT_SECRET and decode_jwt as main.py.
     """
     if not token:
         return None
     if token.startswith('Bearer '):
         token = token[7:]
+
+    # Decode JWT using main.py's decode_jwt function
+    try:
+        from main import decode_jwt
+        payload = decode_jwt(token)
+        if not payload:
+            return None
+    except Exception as e:
+        logger.error(f"JWT decode error: {e}")
+        return None
+
+    user_id = payload.get('user_id')
+    email = payload.get('email')
+    if not user_id:
+        return None
+
+    # Look up current plan from database
     conn = None
     try:
         conn = get_db_conn()
         cur = conn.cursor()
-        cur.execute("""
-            SELECT id, email, plan
-            FROM users
-            WHERE session_token = %s
-              AND session_expires > NOW()
-        """, (token,))
+        cur.execute("SELECT id, email, plan FROM users WHERE id = %s", (user_id,))
         row = cur.fetchone()
         cur.close()
         if row:
-            return {'id': str(row[0]), 'email': row[1], 'plan': row[2]}
-        return None
+            return {'id': str(row[0]), 'email': row[1], 'plan': row[2] or 'free'}
+        # User in JWT but not in DB — use JWT data
+        return {'id': str(user_id), 'email': email or '', 'plan': 'free'}
     except Exception as e:
-        logger.error(f"Token validation error: {e}")
-        return None
+        logger.error(f"User lookup error: {e}")
+        # Fall back to JWT data if DB fails
+        return {'id': str(user_id), 'email': email or '', 'plan': payload.get('role', 'free')}
     finally:
         if conn:
             try:
@@ -153,7 +165,6 @@ def get_user_from_token(token, get_db_conn):
                     pass
 
 def get_usage(user_id, get_db_conn):
-    """Get current usage for a user (sessions + toggles in last 30 days)."""
     conn = None
     try:
         conn = get_db_conn()
@@ -161,9 +172,7 @@ def get_usage(user_id, get_db_conn):
         cur.execute(GET_USAGE_SQL, (user_id,))
         row = cur.fetchone()
         cur.close()
-        if row:
-            return {'sessions': row[0], 'toggles': row[1]}
-        return {'sessions': 0, 'toggles': 0}
+        return {'sessions': row[0], 'toggles': row[1]} if row else {'sessions': 0, 'toggles': 0}
     except Exception as e:
         logger.error(f"Usage check error: {e}")
         return {'sessions': 0, 'toggles': 0}
@@ -179,7 +188,6 @@ def get_usage(user_id, get_db_conn):
                     pass
 
 def increment_usage(user_id, usage_type, get_db_conn):
-    """Increment session or toggle count for a user."""
     conn = None
     try:
         conn = get_db_conn()
@@ -205,15 +213,7 @@ def increment_usage(user_id, usage_type, get_db_conn):
 # ── Flask Integration ──────────────────────────────────────────────────────
 
 def init_free_tier_gate(app, get_db_conn):
-    """
-    Initialize the account-based free tier gate.
-
-    Args:
-        app:          Flask application instance
-        get_db_conn:  Callable returning a psycopg2 connection
-    """
-
-    # Auto-create table on startup
+    # Auto-create table
     conn = None
     try:
         conn = get_db_conn()
@@ -235,7 +235,8 @@ def init_free_tier_gate(app, get_db_conn):
                 except Exception:
                     pass
 
-    # ── Before-request middleware ──
+    PAID_PLANS = ('pro', 'enterprise', 'founding')
+
     @app.before_request
     def enforce_free_tier():
         if not GATE_ENABLED:
@@ -247,18 +248,16 @@ def init_free_tier_gate(app, get_db_conn):
             return None
 
         token = request.headers.get('Authorization')
-        user = get_user_from_token(token, get_db_conn)
+        user = get_user_from_jwt(token, get_db_conn)
 
         if not user:
-            # Not authenticated — shouldn't reach here (auth redirect handles it)
-            # but just in case, return 401
             return jsonify({
                 'error': 'authentication_required',
                 'message': 'Sign in to access the Land & Power map.',
-                'login_url': 'https://dchub.cloud/login.html?redirect=/land-power-map'
+                'login_url': 'https://dchub.cloud/login?redirect=/land-power-map'
             }), 401
 
-        if user.get('plan') in ('pro', 'enterprise', 'founding'):
+        if user.get('plan') in PAID_PLANS:
             g.current_user = user
             return None
 
@@ -267,7 +266,7 @@ def init_free_tier_gate(app, get_db_conn):
         if usage['sessions'] > FREE_MAP_SESSIONS:
             return jsonify({
                 'error': 'upgrade_required',
-                'message': f"Your free map session has been used. Upgrade to Pro for unlimited access.",
+                'message': 'Your free map session has been used. Upgrade to Pro for unlimited access.',
                 'upgrade_url': 'https://dchub.cloud/pricing'
             }), 403
 
@@ -277,18 +276,18 @@ def init_free_tier_gate(app, get_db_conn):
     @app.route('/api/v1/usage-status')
     def usage_status():
         token = request.headers.get('Authorization')
-        user = get_user_from_token(token, get_db_conn)
+        user = get_user_from_jwt(token, get_db_conn)
 
         if not user:
             resp = jsonify({
                 'authenticated': False,
                 'message': 'Sign in to access the map',
-                'login_url': 'https://dchub.cloud/login.html?redirect=/land-power-map'
+                'login_url': 'https://dchub.cloud/login?redirect=/land-power-map'
             })
             resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
             return resp
 
-        if user.get('plan') in ('pro', 'enterprise', 'founding'):
+        if user.get('plan') in PAID_PLANS:
             resp = jsonify({
                 'authenticated': True,
                 'plan': user['plan'],
@@ -317,15 +316,14 @@ def init_free_tier_gate(app, get_db_conn):
             return '', 204
 
         token = request.headers.get('Authorization')
-        user = get_user_from_token(token, get_db_conn)
+        user = get_user_from_jwt(token, get_db_conn)
 
         if not user:
             return jsonify({'error': 'authentication_required'}), 401
 
-        if user.get('plan') in ('pro', 'enterprise', 'founding'):
+        if user.get('plan') in PAID_PLANS:
             return jsonify({'status': 'ok', 'plan': user['plan'], 'unlimited': True})
 
-        # Check if already used their sessions
         usage = get_usage(user['id'], get_db_conn)
         if usage['sessions'] >= FREE_MAP_SESSIONS:
             return jsonify({
@@ -334,9 +332,7 @@ def init_free_tier_gate(app, get_db_conn):
                 'upgrade_url': 'https://dchub.cloud/pricing'
             }), 403
 
-        # Increment session count
         increment_usage(user['id'], 'session', get_db_conn)
-
         return jsonify({
             'status': 'ok',
             'plan': 'free',
@@ -351,19 +347,19 @@ def init_free_tier_gate(app, get_db_conn):
             return '', 204
 
         token = request.headers.get('Authorization')
-        user = get_user_from_token(token, get_db_conn)
+        user = get_user_from_jwt(token, get_db_conn)
 
         if not user:
             return jsonify({'error': 'authentication_required'}), 401
 
-        if user.get('plan') in ('pro', 'enterprise', 'founding'):
+        if user.get('plan') in PAID_PLANS:
             return jsonify({'status': 'ok', 'unlimited': True})
 
         increment_usage(user['id'], 'toggle', get_db_conn)
         return jsonify({'status': 'ok'})
 
     logger.info(
-        f"Free tier gate v3 initialized (account-based): "
+        f"Free tier gate v4 initialized (JWT + account-based): "
         f"{FREE_MAP_SESSIONS} sessions/mo, {FREE_LAYER_TOGGLES} layers/session, "
         f"gating {len(GATED_PREFIXES)} endpoint prefixes"
     )
