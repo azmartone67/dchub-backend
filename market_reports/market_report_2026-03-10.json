@@ -1,6 +1,6 @@
 {
   "report_date": "2026-03-10",
-  "generated_at": "2026-03-10T04:55:50.653030",
+  "generated_at": "2026-03-10T08:10:18.963882",
   "summary": {
     "total_facilities": 11701,
     "total_providers": 2804,
@@ -89,54 +89,54 @@
   ],
   "recent_news": [
     {
-      "title": "HPE tweaks T&amp;Cs so the price it quotes may not be the price you pay",
-      "source": "The Register DC",
-      "date": "2026-03-10T02:57:12"
+      "title": "AI godfather, Yann LeCun who thinks LLMs are a dead end just raised $1bn\u2026 with NVIDIA and Bezos backing him",
+      "source": "Capacity Media",
+      "date": "2026-03-10T07:50:19"
     },
     {
-      "title": "Gibraltar presses pause on data centers amid proposal on former McLouth steel site",
-      "source": "The Detroit News",
-      "date": "2026-03-10T02:48:49"
+      "title": "AirTrunk secures $1.24B green loan for hyperscale data center campus in Tokyo",
+      "source": "TNGlobal",
+      "date": "2026-03-10T07:49:38"
     },
     {
-      "title": "Who pays for Tucson\u2019s data center boom?",
-      "source": "AZPM News",
-      "date": "2026-03-10T01:37:48"
+      "title": "Water-spray cooling can improve PV module efficiency by 28% in arid environments",
+      "source": "PV Magazine",
+      "date": "2026-03-10T07:00:24"
     },
     {
-      "title": "Palantir\u2019s lethal AI weaponry deployed to find chairs for US government staff",
-      "source": "The Register DC",
-      "date": "2026-03-10T01:25:12"
+      "title": "Oaktree\u2019s Data Center Firm Wants to Triple Capacity With AI Boom",
+      "source": "Bloomberg Tech",
+      "date": "2026-03-10T07:00:00"
     },
     {
-      "title": "Bernstein Launches Coverage of Equinix (EQIX), Calls it a Data Center \"Juggernaut\"",
-      "source": "Finviz",
-      "date": "2026-03-10T01:19:44"
+      "title": "The Gulf gamble: Could the war in the Middle East drive a data centre exodus to India?",
+      "source": "Capacity Media",
+      "date": "2026-03-10T06:59:55"
     },
     {
-      "title": "Stellaria Targets Long-Term Clean Energy Supply for Data Centers With Equinix Capacity Deal",
+      "title": "Europe Data Center Water Consumption Market Forecast to 2031 Driven by AI Data Center Expansion and Liquid Cooling Adoption",
+      "source": "Macau Business",
+      "date": "2026-03-10T06:41:37"
+    },
+    {
+      "title": "Stellaria Targets 2035 Low-Carbon Energy Solution for Equinix Data Centers",
       "source": "TipRanks",
-      "date": "2026-03-10T00:34:01"
+      "date": "2026-03-10T06:32:27"
     },
     {
-      "title": "What is a data center and what is the price of AI? In Depth with Dan",
-      "source": "WRAL",
-      "date": "2026-03-09T23:49:11"
+      "title": "AirTrunk: $1.24 Billion Green Loan Secured For Tokyo Hyperscale Data Center Expansion",
+      "source": "Pulse 2.0",
+      "date": "2026-03-10T05:48:10"
     },
     {
-      "title": "Pekin\u2019s mayor announces data center project will not move forward",
-      "source": "WEEK | 25 News Now",
-      "date": "2026-03-09T23:46:00"
+      "title": "TSMC Sales Grow 30% on Sustained Global Demand for AI Hardware",
+      "source": "Bloomberg Tech",
+      "date": "2026-03-10T05:43:08"
     },
     {
-      "title": "Fire department turns down $250,000 Google donation amid data center fight",
-      "source": "fox10tv.com",
-      "date": "2026-03-09T22:49:00"
-    },
-    {
-      "title": "Data center water spikes could cost billions",
-      "source": "University of California, Riverside",
-      "date": "2026-03-09T22:23:03"
+      "title": "Would You Still Hold Equinix Stock If It Fell 30%?",
+      "source": "Trefis",
+      "date": "2026-03-10T05:05:05"
     }
   ],
   "data_sources": [
