@@ -1387,6 +1387,19 @@ def register_site_planner_routes(app):
         decorated.__name__ = f.__name__
         return decorated
 
+    # ── OPTIONS preflight for all site-planner routes ──
+    @app.route('/api/v1/site-planner/analyze', methods=['OPTIONS'])
+    @app.route('/api/v1/site-planner/compare', methods=['OPTIONS'])
+    @app.route('/api/v1/site-planner/export', methods=['OPTIONS'])
+    def site_planner_preflight():
+        """Handle CORS preflight — must return 200 with no auth check."""
+        resp = jsonify({'ok': True})
+        resp.headers['Access-Control-Allow-Origin'] = flask_request.headers.get('Origin', '*')
+        resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+        resp.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-API-Key, Accept'
+        resp.headers['Access-Control-Max-Age'] = '86400'
+        return resp, 200
+
     # ── POST /api/v1/site-planner/analyze ──
     @app.route('/api/v1/site-planner/analyze', methods=['POST'])
     @require_pro
