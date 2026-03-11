@@ -1628,6 +1628,15 @@ except ImportError as e:
 from api_data_protection import init_data_protection, protect_data
 from db_utils import get_db, get_read_db as _original_get_read_db, safe_write
 
+# Welcome email drip sequence for new signups
+try:
+    from welcome_emails import send_welcome_email, setup_drip_routes
+    WELCOME_DRIP_AVAILABLE = True
+    logger.info("✅ Welcome email drip sequence loaded")
+except ImportError:
+    WELCOME_DRIP_AVAILABLE = False
+    logger.warning("⚠️ welcome_emails.py not found — drip emails disabled")
+
 # Override get_read_db to route reads through the Neon read replica pool
 def get_read_db(*args, **kwargs):
     """Route read queries to the Neon read replica when available.
@@ -3212,6 +3221,14 @@ except ImportError:
     logger.warning("⚠️ GDCI: Not installed (gdci.py missing)")
 except Exception as e:
     logger.error(f"⚠️ GDCI blueprint failed: {e}")
+
+# Welcome email drip admin routes
+if WELCOME_DRIP_AVAILABLE:
+    try:
+        setup_drip_routes(app, get_pg_connection)
+        logger.info("✅ Welcome email drip routes registered")
+    except Exception as e:
+        logger.warning(f"⚠️ Drip routes failed: {e}")
 
 # =============================================================================
 # CRAWLER TRACKING SYSTEM
@@ -7001,6 +7018,16 @@ def google_auth_callback():
                 except Exception as e:
                     logging.warning(f"Welcome series failed: {e}")
             
+            # Send welcome drip email (Day 0)
+            if WELCOME_DRIP_AVAILABLE:
+                try:
+                    drip_conn = get_pg_connection()
+                    send_welcome_email(drip_conn, user_email=email, user_name=name)
+                    drip_conn.close()
+                    print(f"📧 Welcome drip email sent to {email}")
+                except Exception as e:
+                    logging.warning(f"Welcome drip email failed: {e}")
+            
             user_data = {
                 'id': user_id,
                 'email': email,
@@ -7112,6 +7139,16 @@ def google_auth():
                 print(f"📧 Welcome series started for Google user {email}")
             except Exception as e:
                 print(f"⚠️ Failed to start welcome series: {e}")
+        
+        # Send welcome drip email (Day 0)
+        if WELCOME_DRIP_AVAILABLE:
+            try:
+                drip_conn = get_pg_connection()
+                send_welcome_email(drip_conn, user_email=email, user_name=name)
+                drip_conn.close()
+                print(f"📧 Welcome drip email sent to {email}")
+            except Exception as e:
+                print(f"⚠️ Welcome drip email failed: {e}")
         
         user_data = {
             'id': user_id,
