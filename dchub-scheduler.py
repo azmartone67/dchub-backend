@@ -185,6 +185,13 @@ JOBS = {
         'hours': [1, 5, 9, 13, 17, 21], # every 4h
         'minute': 15,
         'timeout': 120,
+    },'drip_emails': {
+        'name': 'Welcome Email Drip',
+        'endpoint': '/api/admin/drip-check?admin_key=f4f961b15334c7b3a570681354638ed5',
+        'method': 'POST',
+        'hours': [16],       # 9 AM MST = 4 PM UTC, once daily
+        'minute': 30,
+        'timeout': 60,
     },
     'simple_alerts': {
         'name': 'Simple Alerts',
