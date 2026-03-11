@@ -18267,7 +18267,7 @@ def verify_tier_gating():
 import psutil as _psutil_mod
 _SERVER_RESTART_TS = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
 
-_MEMORY_LIMIT_MB = 200
+_MEMORY_LIMIT_MB = 256
 _GC_INTERVAL = 60
 
 try:
