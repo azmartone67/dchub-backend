@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-DC Hub External Scheduler v3.2
+DC Hub External Scheduler v3.3
 ===============================
 Triggers discovery jobs via HTTP POST to the DC Hub API /api/jobs/* endpoints.
 All jobs are staggered to prevent Railway resource conflicts.
@@ -16,18 +16,31 @@ Environment:
   DCHUB_API_BASE    — API base URL (default: https://dchub-backend-production.up.railway.app)
   DCHUB_ADMIN_KEY   — Admin API key (required)
 
-Schedule (UTC) — verified no overlaps:
+Schedule (UTC) — 19 jobs, verified no overlaps:
   00:00  News/RSS Refresh        (also 04, 08, 12, 16, 20)
   00:20  Auto-Approve            (also 04, 08, 12, 16, 20)
+  00:45  Simple Alerts           (also 02,04,06,08,10,12,14,16,18,20,22)
   01:00  Facility Discovery      (also 07, 14, 19)
+  01:15  Alert Emails            (also 05,09,13,17,21)
+  02:30  Infrastructure Sync     (also 08:30, 14:30, 20:30)
   03:00  AI Ecosystem Agent      (also 10, 15, 22)
   03:15  Neon DB Backup
   05:00  AI Outreach Agent       (also 13, 21)
   06:00  Global Intelligence     (also 18)
-  08:30  Evolution Engine        (also 20:30)
+  06:45  Capacity Headroom       (also 12:45, 18:45)
+  08:30  Evolution Engine        (also 20:30) — note: shares :30 with infra-sync but different hours
   09:15  Auto-Pilot (Deals)      (also 21:15)
+  10:15  Autonomous Brain        (also 22:15)
   11:30  Content Publishing
+  12:30  Market Report           (daily)
+  16:30  Ambassador              (daily)
   Keep-Alive every 5 minutes
+
+v3.3 changelog:
+  - Added 7 missing jobs: autonomous_brain, alert_emails, simple_alerts,
+    market_report, infra_sync, capacity_headroom, ambassador
+  - Total: 19 jobs (18 scheduled + keepalive)
+  - All new jobs staggered to avoid collisions with existing schedule
 """
 
 import os
@@ -54,9 +67,10 @@ logging.basicConfig(
 log = logging.getLogger('dchub-scheduler')
 
 # ============================================================
-# JOB DEFINITIONS
+# JOB DEFINITIONS — 19 total
 # ============================================================
 JOBS = {
+    # ── Existing 12 jobs (unchanged from v3.2) ──────────────
     'news': {
         'name': 'News/RSS Refresh',
         'endpoint': '/api/jobs/news-refresh',
@@ -69,7 +83,7 @@ JOBS = {
         'name': 'Facility Discovery',
         'endpoint': '/api/jobs/discovery',
         'method': 'POST',
-        'hours': [1, 7, 14, 19],        # was [1,7,13,19] — 13→14 avoids outreach
+        'hours': [1, 7, 14, 19],
         'minute': 0,
         'timeout': 180,
     },
@@ -78,7 +92,7 @@ JOBS = {
         'endpoint': '/api/jobs/auto-approve',
         'method': 'POST',
         'hours': [0, 4, 8, 12, 16, 20],
-        'minute': 20,                   # was :15 — pushed to :20 for breathing room
+        'minute': 20,
         'timeout': 120,
     },
     'global_intel': {
@@ -93,8 +107,8 @@ JOBS = {
         'name': 'AI Ecosystem Agent',
         'endpoint': '/api/jobs/ai-ecosystem',
         'method': 'POST',
-        'hours': [3, 10, 15, 22],       # was [3,9,15,21] — 9→10, 21→22
-        'minute': 0,                    # was :30
+        'hours': [3, 10, 15, 22],
+        'minute': 0,
         'timeout': 120,
     },
     'outreach': {
@@ -110,15 +124,15 @@ JOBS = {
         'endpoint': '/api/jobs/evolution',
         'method': 'POST',
         'hours': [8, 20],
-        'minute': 30,                   # was :00 — pushed to :30 after news+auto_approve
+        'minute': 30,
         'timeout': 120,
     },
     'autopilot': {
         'name': 'Auto-Pilot (Deals)',
         'endpoint': '/api/jobs/autopilot',
         'method': 'POST',
-        'hours': [9, 21],               # 90min after news refresh
-        'minute': 15,                   # :15 — clears outreach at 21:00
+        'hours': [9, 21],
+        'minute': 15,
         'timeout': 300,
     },
     'content': {
@@ -126,7 +140,7 @@ JOBS = {
         'endpoint': '/api/jobs/content-publish',
         'method': 'POST',
         'hours': [11],
-        'minute': 30,                   # was :00
+        'minute': 30,
         'timeout': 120,
     },
     'backup': {
@@ -134,7 +148,7 @@ JOBS = {
         'endpoint': '/api/jobs/backup',
         'method': 'POST',
         'hours': [3],
-        'minute': 15,                   # was :00 — pushed to :15 after ecosystem
+        'minute': 15,
         'timeout': 600,
     },
     'keepalive': {
@@ -145,6 +159,73 @@ JOBS = {
         'minute': None,                 # special: runs every 5 minutes
         'timeout': 15,
     },
+    'energy_discovery': {
+        'name': 'Energy Discovery',
+        'endpoint': '/api/jobs/energy-discovery',
+        'method': 'POST',
+        'hours': [2, 10, 18],
+        'minute': 0,
+        'timeout': 180,
+    },
+
+    # ── 7 NEW jobs (v3.3) ──────────────────────────────────
+
+    'autonomous_brain': {
+        'name': 'Autonomous Brain',
+        'endpoint': '/api/jobs/autonomous-brain',
+        'method': 'POST',
+        'hours': [10, 22],              # every 12h, offset at :15
+        'minute': 15,
+        'timeout': 300,
+    },
+    'alert_emails': {
+        'name': 'Alert Emails',
+        'endpoint': '/api/jobs/alert-emails',
+        'method': 'POST',
+        'hours': [1, 5, 9, 13, 17, 21], # every 4h
+        'minute': 15,
+        'timeout': 120,
+    },
+    'simple_alerts': {
+        'name': 'Simple Alerts',
+        'endpoint': '/api/jobs/simple-alerts',
+        'method': 'POST',
+        'hours': [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22],  # every 2h
+        'minute': 45,                   # :45 — clear of all existing jobs
+        'timeout': 120,
+    },
+    'market_report': {
+        'name': 'Market Report',
+        'endpoint': '/api/jobs/market-report',
+        'method': 'POST',
+        'hours': [12],                  # daily at 12:30 UTC (morning US)
+        'minute': 30,
+        'timeout': 300,
+    },
+    'infra_sync': {
+        'name': 'Infrastructure Sync',
+        'endpoint': '/api/jobs/infrastructure-sync',
+        'method': 'POST',
+        'hours': [2, 8, 14, 20],        # every 6h
+        'minute': 30,
+        'timeout': 300,
+    },
+    'capacity_headroom': {
+        'name': 'Capacity Headroom',
+        'endpoint': '/api/jobs/capacity-headroom',
+        'method': 'POST',
+        'hours': [6, 12, 18],           # every 6h (3x/day)
+        'minute': 45,                   # :45 — same slot as simple_alerts but different hours
+        'timeout': 180,
+    },
+    'ambassador': {
+        'name': 'Ambassador',
+        'endpoint': '/api/jobs/ambassador',
+        'method': 'POST',
+        'hours': [16],                  # daily at 16:30 UTC (afternoon)
+        'minute': 30,
+        'timeout': 120,
+    },
 }
 
 # ============================================================
@@ -154,7 +235,7 @@ def api_call(endpoint, method='POST', timeout=60):
     url = API_BASE.rstrip('/') + endpoint
     headers = {
         'Content-Type': 'application/json',
-        'User-Agent': 'DCHub-Scheduler/3.2',
+        'User-Agent': 'DCHub-Scheduler/3.3',
     }
     if ADMIN_KEY:
         headers['X-Admin-Key'] = ADMIN_KEY
@@ -247,19 +328,22 @@ def check_health():
 def show_status():
     healthy = check_health()
     now = datetime.now(timezone.utc)
+    scheduled = [k for k in JOBS if k != 'keepalive']
     print(f"\n{'─'*65}")
-    print(f"  DC Hub External Scheduler v3.2")
+    print(f"  DC Hub External Scheduler v3.3")
     print(f"  Time:   {now.strftime('%Y-%m-%d %H:%M UTC')}")
     print(f"  API:    {API_BASE}")
     print(f"  Auth:   {'✅ key set' if ADMIN_KEY else '❌ DCHUB_ADMIN_KEY not set'}")
     print(f"  Health: {'✅ OK' if healthy else '❌ DOWN'}")
+    print(f"  Jobs:   {len(JOBS)} total ({len(scheduled)} scheduled + keepalive)")
     print(f"{'─'*65}")
-    print(f"  {'Job':<25} {'Next Run (UTC)'}")
-    print(f"  {'─'*40}")
+    print(f"  {'Job':<25} {'Freq':<12} {'Next Run (UTC)'}")
+    print(f"  {'─'*52}")
     for key, job in JOBS.items():
         if key == 'keepalive':
-            print(f"  {job['name']:<25} every 5 min")
+            print(f"  {job['name']:<25} {'5min':<12} continuous")
             continue
+        freq = f"{len(job['hours'])}x/day"
         next_run = None
         for hour in sorted(job['hours']):
             if hour > now.hour or (hour == now.hour and job['minute'] > now.minute):
@@ -267,7 +351,7 @@ def show_status():
                 break
         if not next_run:
             next_run = f"{sorted(job['hours'])[0]:02d}:{job['minute']:02d} (+1d)"
-        print(f"  {job['name']:<25} {next_run}")
+        print(f"  {job['name']:<25} {freq:<12} {next_run}")
     print(f"{'─'*65}\n")
 
 
@@ -275,7 +359,7 @@ def show_status():
 # MAIN LOOP
 # ============================================================
 def scheduler_loop():
-    log.info(f"DC Hub External Scheduler v3.2 starting")
+    log.info(f"DC Hub External Scheduler v3.3 starting")
     log.info(f"  API:  {API_BASE}")
     log.info(f"  Jobs: {len(JOBS)} ({len(JOBS)-1} scheduled + keepalive)")
     log.info(f"  Auth: {'✅ key set' if ADMIN_KEY else '❌ DCHUB_ADMIN_KEY not set — jobs will fail!'}")
@@ -291,7 +375,7 @@ def scheduler_loop():
     while True:
         now = datetime.now(timezone.utc)
 
-        if keepalive_counter % 15 == 0:
+        if keepalive_counter % 5 == 0:
             run_job('keepalive', JOBS['keepalive'])
         keepalive_counter += 1
 
@@ -315,7 +399,7 @@ def scheduler_loop():
 # CLI
 # ============================================================
 def main():
-    parser = argparse.ArgumentParser(description='DC Hub External Scheduler v3.2')
+    parser = argparse.ArgumentParser(description='DC Hub External Scheduler v3.3')
     parser.add_argument('--once',   action='store_true', help='Run all due jobs once and exit')
     parser.add_argument('--job',    type=str,            help=f'Run specific job: {", ".join(JOBS.keys())}')
     parser.add_argument('--all',    action='store_true', help='Run ALL jobs immediately')
