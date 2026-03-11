@@ -2927,6 +2927,7 @@ _tier_rate_lock = threading.Lock()
 _RATE_LIMIT_BYPASS_PATHS = {
     '/api/v1/stats', '/api/health', '/api/stripe/webhook',
     '/api/stripe/config', '/api/verify-key', '/api/ecosystem/health',
+    '/api/v1/map',
 }
 
 def _get_request_tier():
