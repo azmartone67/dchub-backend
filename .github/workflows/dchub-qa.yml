@@ -1,4 +1,4 @@
-# .github/workflows/dchub-qa.yml, 2.2
+# .github/workflows/dchub-qa.yml, v2.3
 # DC Hub — Automated QA Health Check
 # Runs automated infra + frontend checks on schedule and after deploys
 # Emails you only when something fails
@@ -91,10 +91,11 @@ jobs:
           print("─" * 50)
           check("Railway health",         f"{RAILWAY}/api/health")
           check("Cloudflare Worker",      f"{BASE}/api/health")
-          check("Neon DB stats",          f"{BASE}/api/v1/stats")
+          check("Neon DB stats",          f"{BASE}/api/v1/stats",
+                json_path="facilities", min_value=11000)
           check("Worker version",         f"{BASE}/api/version")
 
-          # ── api.dchub.cloud subdomain (v2.1: verify routing) ──
+          # ── api.dchub.cloud subdomain ──
           print("\n🌐 api.dchub.cloud Subdomain")
           print("─" * 50)
           check("api.dchub health",       f"{API_SUB}/api/health")
@@ -111,7 +112,7 @@ jobs:
           check("AI tracking stats",      f"{BASE}/api/v1/ai-tracking/stats")
           check("News feed",              f"{BASE}/api/news/live?limit=5")
           check("Transactions",           f"{BASE}/api/transactions?limit=5")
-          check("Map data",               f"{BASE}/api/v1/map?all=true&limit=5")
+          check("Map data",               f"{BASE}/api/v1/map-data", expect_status=[200, 401])
           check("User stats (unauth)",    f"{BASE}/api/v1/user/stats", expect_status=[401, 404])
           check("Circuit status",         f"{BASE}/api/v1/circuit-status")
           check("Failover status",        f"{BASE}/api/v1/failover-status")
@@ -132,9 +133,9 @@ jobs:
           check("Login",                  f"{BASE}/login.html")
           check("Land & Power",           f"{BASE}/land-power")
           check("AI Platform",            f"{BASE}/ai")
-          check("AI Wars",               f"{BASE}/ai-wars")
-          check("Pricing",               f"{BASE}/pricing")
-          check("API Docs",              f"{BASE}/api-docs")
+          check("AI Wars",                f"{BASE}/ai-wars")
+          check("Pricing",                f"{BASE}/pricing")
+          check("API Docs",               f"{BASE}/api-docs")
           check("Facility detail",        f"{BASE}/facilities/databank-ltd-databank-minneapolis-msp1-8c8fb870")
 
           # ── Auth gating ──
@@ -185,8 +186,8 @@ jobs:
         if: failure()
         uses: dawidd6/action-send-mail@v3
         with:
-          server_address: smtpout.secureserver.net
-          server_port: 465
+          server_address: smtp.office365.com
+          server_port: 587
           secure: true
           username: ${{ secrets.SMTP_USERNAME }}
           password: ${{ secrets.SMTP_PASSWORD }}
