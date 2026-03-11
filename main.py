@@ -1428,6 +1428,13 @@ except Exception as e:
     logger.warning(f"⚠️ Write queue not available: {e}")
     safe_db_write = None
 
+# Patch missing function names so jobs_api.py imports resolve correctly
+try:
+    import job_bridges
+    logger.info("✅ Job bridges loaded — scheduler job functions patched")
+except Exception as e:
+    logger.warning(f"⚠️ Job bridges not loaded: {e}")
+
 # Staggered scheduler delays to prevent thundering herd
 # All background tasks wait 60s before ANY start, then stagger 10s apart
 _BG_BASE_DELAY = 60
