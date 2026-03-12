@@ -10279,6 +10279,17 @@ _register_scheduler('capacity_headroom', 1800, 'Capacity headroom scoring refres
 _register_scheduler('ambassador', 3600, 'Agentic ambassador outreach system')
 _register_scheduler('evolution_engine', 21600, 'Evolution engine learning cycle (every 6h)')
 
+
+# Evolution Engine availability (must be before _evolution_scheduler_loop)
+try:
+    from evolution_engine import get_evolution_engine, run_evolution_cycle, get_learning_status, teach_topic
+    EVOLUTION_AVAILABLE = True
+except ImportError:
+    EVOLUTION_AVAILABLE = False
+    run_evolution_cycle = None
+    get_learning_status = None
+    teach_topic = None
+    get_evolution_engine = None
 # --- Evolution Engine scheduled runner (Railway only) ---
 def _evolution_scheduler_loop():
     """Run evolution cycle every 6 hours on Railway."""
