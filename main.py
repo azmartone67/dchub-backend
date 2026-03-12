@@ -1901,6 +1901,114 @@ def get_ai_wars_key_info(req=None):
             return AI_WARS_KEYS[key_val]
     return None
 
+# =============================================================================
+# MCP TIER GATING — Freemium interceptor for MCP tools/call responses
+# Free users get a taste (3 results, basic fields), Pro gets full data.
+# Applied in mcp_proxy() before returning responses to clients.
+# =============================================================================
+GATED_MCP_TOOLS = {
+    'search_facilities': {'free_limit': 3, 'basic_fields': ['name', 'city', 'state', 'country', 'provider', 'status']},
+    'get_market_intel':  {'free_limit': 3},
+    'get_news':          {'free_limit': 5, 'basic_fields': ['title', 'source', 'published_at', 'category']},
+    'get_intelligence_index': {'free_limit': 0},
+}
+
+def _get_mcp_tier(req=None):
+    """Determine tier from MCP request. Returns 'pro' or 'free'."""
+    if req is None:
+        req = request
+    # AI Wars keys → Pro
+    key_info = get_ai_wars_key_info(req)
+    if key_info:
+        return 'pro'
+    # Extract API key
+    api_key = ''
+    auth_h = req.headers.get('Authorization', '')
+    if auth_h.startswith('Bearer '):
+        api_key = auth_h[7:].strip()
+    if not api_key:
+        api_key = req.headers.get('X-API-Key', '') or req.args.get('api_key', '')
+    if not api_key:
+        return 'free'
+    # Env keys
+    valid_keys = [k.strip() for k in os.environ.get('DCHUB_API_KEYS', '').split(',') if k.strip()]
+    if api_key in valid_keys:
+        return 'pro'
+    # DB check
+    try:
+        with pg_connection() as pgconn:
+            pgc = pgconn.cursor()
+            pgc.execute("SELECT u.plan FROM users u JOIN api_keys ak ON u.id = ak.user_id WHERE ak.key = %s AND ak.active = true LIMIT 1", (api_key,))
+            row = pgc.fetchone()
+            if row and row[0] in ('pro', 'enterprise'):
+                return 'pro'
+    except Exception:
+        pass
+    return 'free'
+
+def _apply_mcp_tier_gating(tool_name, response_body, tier):
+    """Apply freemium gating to MCP tools/call response. Returns modified bytes or None."""
+    if tier == 'pro' or tool_name not in GATED_MCP_TOOLS:
+        return None
+    config = GATED_MCP_TOOLS[tool_name]
+    try:
+        data = json.loads(response_body)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    # MCP JSON-RPC: {"jsonrpc":"2.0","id":N,"result":{"content":[{"type":"text","text":"{...}"}]}}
+    result = data.get('result', {})
+    content_list = result.get('content', [])
+    if not content_list:
+        return None
+    text_block = next((b for b in content_list if b.get('type') == 'text'), None)
+    if not text_block:
+        return None
+    try:
+        tool_data = json.loads(text_block['text'])
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+    if tool_name == 'search_facilities':
+        orig = tool_data.get('count', 0)
+        facs = tool_data.get('data', [])
+        fl = config['free_limit']
+        bf = config['basic_fields']
+        gated = [{k: f.get(k) for k in bf if k in f} for f in facs[:fl]]
+        tool_data = {'success': True, 'query': tool_data.get('query', ''), 'count': len(gated),
+                     'total_matching': orig, 'data': gated, 'tier': 'free',
+                     'full_results_available': orig > fl, 'upgrade_url': 'https://dchub.cloud/pricing',
+                     'note': f'Free tier: {len(gated)} of {orig} facilities, basic fields. Upgrade to Pro for full data.'}
+
+    elif tool_name == 'get_market_intel':
+        tp = tool_data.get('top_providers', [])[:config['free_limit']]
+        st = tool_data.get('stats', {})
+        tool_data = {'success': True, 'market': tool_data.get('market', {}),
+                     'stats': {'facility_count': st.get('facility_count'), 'provider_count': st.get('provider_count')},
+                     'top_providers': tp, 'tier': 'free', 'upgrade_url': 'https://dchub.cloud/pricing',
+                     'note': f'Free tier: top {len(tp)} providers + summary. Upgrade to Pro for full analytics.'}
+
+    elif tool_name == 'get_news':
+        arts = tool_data.get('articles', [])
+        total = tool_data.get('total', tool_data.get('count', len(arts)))
+        fl = config['free_limit']
+        bf = config['basic_fields']
+        gated = [{k: a.get(k) for k in bf if k in a} for a in arts[:fl]]
+        tool_data = {'success': True, 'articles': gated, 'count': len(gated), 'total': total,
+                     'tier': 'free', 'upgrade_url': 'https://dchub.cloud/pricing',
+                     'note': f'Free tier: {len(gated)} of {total} articles, basic fields. Upgrade to Pro for full access.'}
+
+    elif tool_name == 'get_intelligence_index':
+        idx = tool_data.get('dc_hub_intelligence_index', tool_data)
+        tool_data = {'dc_hub_intelligence_index': {'global_pulse_score': idx.get('global_pulse_score'),
+                     'total_agent_queries_24h': idx.get('total_agent_queries_24h'), 'version': idx.get('version', '2.0')},
+                     'tier': 'free', 'upgrade_url': 'https://dchub.cloud/pricing',
+                     'note': 'Free tier: global score only. Upgrade to Pro for heat map, movers, and full index.',
+                     'meta': tool_data.get('meta', {})}
+
+    text_block['text'] = json.dumps(tool_data)
+    data['result']['content'] = content_list
+    return json.dumps(data).encode('utf-8')
+
 @app.route('/api/verify-key', methods=['GET'])
 def verify_api_key_endpoint():
     """Quick endpoint for AI platforms to test their API key is valid."""
@@ -2674,7 +2782,7 @@ def mcp_proxy():
                 'Content-Type': 'application/json'
             }
 
-        # ---- POST: JSON-RPC tool calls ----
+        # ---- POST: JSON-RPC tool calls (with tier gating v1) ----
         if request.method == 'POST':
             if 'Accept' not in fwd_headers:
                 fwd_headers['Accept'] = 'application/json, text/event-stream'
@@ -2696,12 +2804,39 @@ def mcp_proxy():
 
             content_type = resp.headers.get('Content-Type', '')
 
+            # Determine if this call needs tier gating
+            _gate_tool = ''
+            _gate_tier = 'pro'
+            if rpc_method == 'tools/call' and rpc_params:
+                _gate_tool = rpc_params.get('name', '')
+                if _gate_tool in GATED_MCP_TOOLS:
+                    _gate_tier = _get_mcp_tier()
+
             if 'text/event-stream' in content_type:
                 def generate():
                     try:
                         for chunk in resp.iter_content(chunk_size=None):
                             if chunk:
-                                yield chunk
+                                if _gate_tier == 'free' and _gate_tool in GATED_MCP_TOOLS:
+                                    try:
+                                        decoded = chunk.decode('utf-8', errors='replace')
+                                        lines = decoded.strip().split('\n')
+                                        new_lines = []
+                                        for line in lines:
+                                            if line.startswith('data: '):
+                                                json_str = line[6:]
+                                                gated = _apply_mcp_tier_gating(_gate_tool, json_str.encode(), _gate_tier)
+                                                if gated:
+                                                    new_lines.append('data: ' + gated.decode('utf-8'))
+                                                else:
+                                                    new_lines.append(line)
+                                            else:
+                                                new_lines.append(line)
+                                        yield ('\n'.join(new_lines) + '\n\n').encode('utf-8')
+                                    except Exception:
+                                        yield chunk
+                                else:
+                                    yield chunk
                     except Exception:
                         pass
 
@@ -2718,12 +2853,22 @@ def mcp_proxy():
                     proxy_resp.headers['Mcp-Session-Id'] = resp.headers['Mcp-Session-Id']
                 return proxy_resp
 
+            # JSON response path
             excluded = {'transfer-encoding', 'content-encoding', 'connection'}
             headers = {k: v for k, v in resp.headers.items() if k.lower() not in excluded}
             headers['Access-Control-Allow-Origin'] = '*'
             if 'Mcp-Session-Id' in resp.headers:
                 headers['Mcp-Session-Id'] = resp.headers['Mcp-Session-Id']
-            return Response(resp.content, status=resp.status_code, headers=headers)
+
+            # Apply tier gating for gated tools
+            response_body = resp.content
+            if _gate_tool in GATED_MCP_TOOLS and _gate_tier == 'free':
+                gated_body = _apply_mcp_tier_gating(_gate_tool, response_body, _gate_tier)
+                if gated_body:
+                    response_body = gated_body
+                    logger.info(f"[MCP-GATE] {_gate_tool} gated to free tier for {platform}")
+
+            return Response(response_body, status=resp.status_code, headers=headers)
 
         # ---- DELETE: Session cleanup ----
         if request.method == 'DELETE':
