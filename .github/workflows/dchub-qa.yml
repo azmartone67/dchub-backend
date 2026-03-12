@@ -1,7 +1,13 @@
-# .github/workflows/dchub-qa.yml, v2.3
+# .github/workflows/dchub-qa.yml, v2.4
 # DC Hub — Automated QA Health Check
 # Runs automated infra + frontend checks on schedule and after deploys
 # Emails you only when something fails
+#
+# v2.4 CHANGES (Mar 11 2026):
+#   - REMOVED: circuit-status check (circuit breaker removed in Worker v4.0)
+#   - REMOVED: failover-status check (Replit failover removed in Worker v4.0)
+#   - ADDED: self-healing status endpoint check
+#   - CHANGED: User stats check to expect 200 (public endpoint now)
 
 name: DC Hub QA Health Check
 
@@ -94,6 +100,7 @@ jobs:
           check("Neon DB stats",          f"{BASE}/api/v1/stats",
                 json_path="facilities", min_value=11000)
           check("Worker version",         f"{BASE}/api/version")
+          check("Self-healing status",    f"{RAILWAY}/api/v1/health/self-healing")
 
           # ── api.dchub.cloud subdomain ──
           print("\n🌐 api.dchub.cloud Subdomain")
@@ -113,9 +120,7 @@ jobs:
           check("News feed",              f"{BASE}/api/news/live?limit=5")
           check("Transactions",           f"{BASE}/api/transactions?limit=5")
           check("Map data",               f"{BASE}/api/v1/map-data", expect_status=[200, 401])
-          check("User stats (unauth)",    f"{BASE}/api/v1/user/stats", expect_status=[401, 404])
-          check("Circuit status",         f"{BASE}/api/v1/circuit-status")
-          check("Failover status",        f"{BASE}/api/v1/failover-status")
+          check("User stats (unauth)",    f"{BASE}/api/v1/user/stats", expect_status=[200, 401, 404])
 
           # ── MCP — Hit Railway directly, proper JSON-RPC with params: {} ──
           print("\n🔌 MCP Protocol")
