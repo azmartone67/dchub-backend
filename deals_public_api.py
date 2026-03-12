@@ -144,9 +144,9 @@ def deduplicate_deals(deals):
     for d in deals:
         # Key: buyer + value rounded to nearest $100M + type
         key = (
-            d['buyer'].lower(),
+            (d.get('buyer') or '').lower(),
             round(d['value_m'] / 100) * 100,  # bucket to nearest $100M
-            d['type'].lower(),
+            (d.get('type') or 'Other').lower(),
         )
         if key not in seen:
             seen[key] = d
@@ -372,9 +372,9 @@ def get_public_deals():
         if year_filter:
             filtered = [d for d in filtered if str(d.get('year', '')) == year_filter]
         if type_filter:
-            filtered = [d for d in filtered if d['type'].lower() == type_filter.lower()]
+            filtered = [d for d in filtered if (d.get('type') or '').lower() == type_filter.lower()]
         if region_filter:
-            filtered = [d for d in filtered if region_filter in d['region'].lower()]
+            filtered = [d for d in filtered if region_filter in (d.get('region') or '').lower()]
 
         total = len(filtered)
         page = filtered[offset:offset + limit]
@@ -570,7 +570,7 @@ def search_public_deals():
             if q in (d.get('buyer') or '').lower()
             or q in (d.get('type') or '').lower()
             or q in (d.get('region') or '').lower()
-            or q in (d.get('location') or '').lower()
+            or q in (d.get('location') or d.get('market') or '').lower()
         ]
         page = matches[:limit]
         return jsonify({
