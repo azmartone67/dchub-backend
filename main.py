@@ -3671,18 +3671,32 @@ def handle_error(e):
 # 31 routes: GridStatus, FCC, EPA, PeeringDB, EIA, HIFLD, Oil & Gas
 # Extracted to routes/energy_routes.py — zero DB dependencies
 # =============================================================================
-from routes.energy_routes import energy_bp, init_energy_routes
-init_energy_routes(require_plan, protect_data)
-app.register_blueprint(energy_bp)
-print("⚡ Energy Routes Blueprint: ✅ Registered (31 routes)")
-
-# Import energy route caches and helpers for admin/stats/land-power endpoints
-from routes.energy_routes import (
-    GRIDSTATUS_CACHE, GRIDSTATUS_CACHE_DURATION, GRIDSTATUS_API_KEY,
-    FCC_BROADBAND_CACHE, EPA_CACHE, PEERINGDB_CACHE,
-    EIA_CACHE, HIFLD_CACHE, OILGAS_CACHE,
-    gridstatus_get_load  # used by /api/v1/land-power/data
-)
+try:
+    from routes.energy_routes import energy_bp, init_energy_routes
+    init_energy_routes(require_plan, protect_data)
+    app.register_blueprint(energy_bp)
+    print("⚡ Energy Routes Blueprint: ✅ Registered (31 routes)")
+    # Import energy route caches and helpers for admin/stats/land-power endpoints
+    from routes.energy_routes import (
+        GRIDSTATUS_CACHE, GRIDSTATUS_CACHE_DURATION, GRIDSTATUS_API_KEY,
+        FCC_BROADBAND_CACHE, EPA_CACHE, PEERINGDB_CACHE,
+        EIA_CACHE, HIFLD_CACHE, OILGAS_CACHE,
+        gridstatus_get_load  # used by /api/v1/land-power/data
+    )
+except Exception as e:
+    print(f"⚡ Energy Routes Blueprint: ⚠️ Failed to load: {e}")
+    # Provide empty caches so admin endpoints don't crash
+    from utils.cache import BoundedCache
+    GRIDSTATUS_CACHE = BoundedCache(max_size=1, ttl=1)
+    GRIDSTATUS_CACHE_DURATION = 300
+    GRIDSTATUS_API_KEY = None
+    FCC_BROADBAND_CACHE = BoundedCache(max_size=1, ttl=1)
+    EPA_CACHE = BoundedCache(max_size=1, ttl=1)
+    PEERINGDB_CACHE = BoundedCache(max_size=1, ttl=1)
+    EIA_CACHE = BoundedCache(max_size=1, ttl=1)
+    HIFLD_CACHE = BoundedCache(max_size=1, ttl=1)
+    OILGAS_CACHE = BoundedCache(max_size=1, ttl=1)
+    gridstatus_get_load = lambda iso: None
 
 # =============================================================================
 # SECURITY HEADERS & API TRACKING (Applied to all responses)
