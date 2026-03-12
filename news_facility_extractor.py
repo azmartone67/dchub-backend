@@ -5,17 +5,20 @@ Scans news articles for data center construction/expansion announcements
 and automatically extracts facility data into discovered_facilities table.
 
 Runs periodically after each news sync cycle.
+
+v2.0 — Migrated from SQLite to Neon PostgreSQL via db_utils.
 """
 
-import sqlite3
 import re
 import json
 import hashlib
 import os
 import time
+import logging
 from datetime import datetime
+from db_utils import get_db
 
-DB_PATH = os.path.join(os.path.dirname(__file__), 'dc_nexus.db')
+logger = logging.getLogger(__name__)
 
 CONSTRUCTION_KEYWORDS = [
     'data center', 'datacenter', 'data centre',
@@ -224,16 +227,43 @@ def score_article(title, summary=''):
 
 
 def process_news_for_facilities():
-    """Scan recent news articles and extract potential new facility announcements"""
+    """Scan recent news articles and extract potential new facility announcements.
+    Uses Neon PostgreSQL via db_utils.get_db().
+    """
+    conn = None
     try:
-        conn = sqlite3.connect(DB_PATH, timeout=30)
-        conn.row_factory = sqlite3.Row
+        conn = get_db()
         c = conn.cursor()
+
+        # Ensure discovered_facilities table exists
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS discovered_facilities (
+                id SERIAL PRIMARY KEY,
+                source TEXT,
+                source_id TEXT,
+                name TEXT,
+                provider TEXT,
+                city TEXT,
+                state TEXT,
+                country TEXT DEFAULT 'US',
+                power_mw REAL DEFAULT 0,
+                status TEXT DEFAULT 'announced',
+                source_url TEXT,
+                raw_data TEXT,
+                discovered_at TEXT,
+                confidence_score REAL DEFAULT 0.5,
+                is_duplicate INTEGER DEFAULT 0,
+                merged_at TEXT,
+                merged_facility_id TEXT,
+                UNIQUE(source, source_id)
+            )
+        """)
+        conn.commit()
 
         c.execute("""
             SELECT id, title, summary, url, published_at, source
-            FROM news
-            WHERE id NOT IN (
+            FROM news_articles
+            WHERE CAST(id AS TEXT) NOT IN (
                 SELECT COALESCE(source_id, '') FROM discovered_facilities WHERE source = 'news_extractor'
             )
             ORDER BY published_at DESC
@@ -241,10 +271,16 @@ def process_news_for_facilities():
         """)
         articles = c.fetchall()
 
+        # Handle both dict-style and tuple-style rows
+        def row_get(row, key, idx):
+            if isinstance(row, dict):
+                return row.get(key, '')
+            return row[idx] if idx < len(row) else ''
+
         extracted = 0
         for article in articles:
-            title = article['title'] or ''
-            summary = article['summary'] or ''
+            title = row_get(article, 'title', 1) or ''
+            summary = row_get(article, 'summary', 2) or ''
             combined = title + ' ' + summary
 
             relevance = score_article(title, summary)
@@ -264,13 +300,16 @@ def process_news_for_facilities():
                 continue
 
             facility_name = f"{operator or 'Unknown'} {city or ''} {state or ''} Data Center".strip()
-            source_id = str(article['id'])
+            source_id = str(row_get(article, 'id', 0))
+            article_url = row_get(article, 'url', 3) or ''
+            article_source = row_get(article, 'source', 5) or ''
+            article_published = row_get(article, 'published_at', 4) or ''
 
             raw_data = json.dumps({
                 'article_title': title,
-                'article_url': article['url'],
-                'article_source': article['source'],
-                'published_date': article['published_at'],
+                'article_url': article_url,
+                'article_source': article_source,
+                'published_date': article_published,
                 'investment': investment,
                 'relevance_score': relevance,
                 'extraction_method': 'news_facility_extractor'
@@ -278,44 +317,58 @@ def process_news_for_facilities():
 
             try:
                 c.execute("""
-                    INSERT OR IGNORE INTO discovered_facilities
+                    INSERT INTO discovered_facilities
                     (source, source_id, name, provider, city, state, country,
                      power_mw, status, source_url, raw_data, discovered_at, confidence_score)
-                    VALUES ('news_extractor', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES ('news_extractor', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (source, source_id) DO NOTHING
                 """, (
                     source_id, facility_name, operator or 'Unknown',
                     city or '', state or '', country or 'US',
                     power_mw or 0, status,
-                    article['url'] or '', raw_data,
+                    article_url, raw_data,
                     datetime.now().isoformat(),
                     min(relevance / 100, 0.95)
                 ))
                 if c.rowcount > 0:
                     extracted += 1
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Insert failed for {source_id}: {e}")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
 
         conn.commit()
-        conn.close()
 
         if extracted > 0:
-            print(f"✅ News Extractor: Found {extracted} potential new DC projects from {len(articles)} articles")
+            logger.info(f"✅ News Extractor: Found {extracted} potential new DC projects from {len(articles)} articles")
         return extracted
 
     except Exception as e:
-        print(f"⚠️ News Extractor error: {e}")
+        logger.error(f"⚠️ News Extractor error: {e}")
         return 0
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def promote_high_confidence_discoveries():
-    """Move high-confidence discovered facilities into the main facilities table"""
+    """Move high-confidence discovered facilities into the main facilities table.
+    Uses Neon PostgreSQL via db_utils.get_db().
+    """
+    conn = None
     try:
-        conn = sqlite3.connect(DB_PATH, timeout=30)
-        conn.row_factory = sqlite3.Row
+        conn = get_db()
         c = conn.cursor()
 
         c.execute("""
-            SELECT * FROM discovered_facilities
+            SELECT id, name, provider, city, state, country, power_mw, status,
+                   source_url, raw_data, confidence_score
+            FROM discovered_facilities
             WHERE confidence_score >= 0.6
             AND merged_at IS NULL
             AND is_duplicate = 0
@@ -327,47 +380,74 @@ def promote_high_confidence_discoveries():
 
         promoted = 0
         for df in candidates:
-            existing = c.execute("""
-                SELECT id FROM facilities 
-                WHERE (LOWER(name) = LOWER(?) OR 
-                       (LOWER(provider) = LOWER(?) AND LOWER(city) = LOWER(?) AND LOWER(state) = LOWER(?)))
-            """, (df['name'], df['provider'] or '', df['city'] or '', df['state'] or '')).fetchone()
+            # Handle both dict-style and tuple-style rows
+            if isinstance(df, dict):
+                df_id = df['id']
+                df_name = df.get('name', '')
+                df_provider = df.get('provider', '')
+                df_city = df.get('city', '')
+                df_state = df.get('state', '')
+                df_country = df.get('country', 'US')
+                df_power_mw = df.get('power_mw', 0)
+                df_status = df.get('status', 'announced')
+                df_source_url = df.get('source_url', '')
+                df_raw_data = df.get('raw_data', '{}')
+                df_confidence = df.get('confidence_score', 0.6)
+            else:
+                df_id, df_name, df_provider, df_city, df_state, df_country, \
+                    df_power_mw, df_status, df_source_url, df_raw_data, df_confidence = df
 
-            if existing:
-                c.execute("UPDATE discovered_facilities SET is_duplicate = 1 WHERE id = ?", (df['id'],))
+            existing = c.execute("""
+                SELECT id FROM facilities
+                WHERE (LOWER(name) = LOWER(%s) OR
+                       (LOWER(provider) = LOWER(%s) AND LOWER(city) = LOWER(%s) AND LOWER(state) = LOWER(%s)))
+                LIMIT 1
+            """, (df_name, df_provider or '', df_city or '', df_state or ''))
+            if c.fetchone():
+                c.execute("UPDATE discovered_facilities SET is_duplicate = 1 WHERE id = %s", (df_id,))
                 continue
 
-            fac_id = 'news_' + hashlib.sha256(df['name'].encode()).hexdigest()[:12]
+            fac_id = 'news_' + hashlib.sha256((df_name or '').encode()).hexdigest()[:12]
             try:
                 c.execute("""
-                    INSERT OR IGNORE INTO facilities
+                    INSERT INTO facilities
                     (id, name, provider, city, state, country, power_mw, status,
                      source, source_id, source_url, raw_data, first_seen, last_updated, confidence)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'news_pipeline', ?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'news_pipeline', %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (id) DO NOTHING
                 """, (
-                    fac_id, df['name'], df['provider'], df['city'], df['state'],
-                    df['country'] or 'US', df['power_mw'] or 0, df['status'] or 'announced',
-                    str(df['id']), df['source_url'] or '', df['raw_data'] or '{}',
+                    fac_id, df_name, df_provider, df_city, df_state,
+                    df_country or 'US', df_power_mw or 0, df_status or 'announced',
+                    str(df_id), df_source_url or '', df_raw_data or '{}',
                     datetime.now().isoformat(), datetime.now().isoformat(),
-                    df['confidence_score'] or 0.6
+                    df_confidence or 0.6
                 ))
                 if c.rowcount > 0:
-                    c.execute("UPDATE discovered_facilities SET merged_at = ?, merged_facility_id = ? WHERE id = ?",
-                              (datetime.now().isoformat(), fac_id, df['id']))
+                    c.execute("UPDATE discovered_facilities SET merged_at = %s, merged_facility_id = %s WHERE id = %s",
+                              (datetime.now().isoformat(), fac_id, df_id))
                     promoted += 1
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Promote failed for {fac_id}: {e}")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
 
         conn.commit()
-        conn.close()
 
         if promoted > 0:
-            print(f"✅ News Extractor: Promoted {promoted} discoveries to main facilities table")
+            logger.info(f"✅ News Extractor: Promoted {promoted} discoveries to main facilities table")
         return promoted
 
     except Exception as e:
-        print(f"⚠️ News Extractor promotion error: {e}")
+        logger.error(f"⚠️ News Extractor promotion error: {e}")
         return 0
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def run_extraction():
