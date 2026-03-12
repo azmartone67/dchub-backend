@@ -537,7 +537,7 @@ def get_deals():
         if dtype not in stats_by_type:
             stats_by_type[dtype] = {'count': 0, 'value': 0}
         stats_by_type[dtype]['count'] += 1
-        stats_by_type[dtype]['value'] += d.get('value', 0)
+        stats_by_type[dtype]['value'] += (d.get('value') or 0)
     
     # Calculate stats by year
     stats_by_year = {}
@@ -546,7 +546,7 @@ def get_deals():
         if yr not in stats_by_year:
             stats_by_year[yr] = {'count': 0, 'value': 0}
         stats_by_year[yr]['count'] += 1
-        stats_by_year[yr]['value'] += d.get('value', 0)
+        stats_by_year[yr]['value'] += (d.get('value') or 0)
     
     DEALS_CACHE.set(cache_key, deals)
     
