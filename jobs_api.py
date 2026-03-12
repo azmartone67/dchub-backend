@@ -28,9 +28,22 @@ _last_runs = {}
 def require_admin_key(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        key = request.headers.get('Authorization', '').replace('Bearer ', '') or \
-              request.headers.get('X-API-Key', '')
-        if not ADMIN_API_KEY or key != ADMIN_API_KEY:
+        # Read env var at request time (not import time) so Railway restarts pick up changes
+        expected = os.environ.get('DCHUB_ADMIN_KEY', '') or ADMIN_API_KEY
+        admin_secret = os.environ.get('ADMIN_SECRET', '')
+
+        # Accept key from multiple sources (consistent with main.py)
+        key = (
+            request.headers.get('X-Admin-Key', '')
+            or request.headers.get('X-API-Key', '')
+            or request.headers.get('Authorization', '').replace('Bearer ', '')
+            or request.args.get('admin_key', '')
+            or request.args.get('key', '')
+        )
+
+        valid_keys = [k for k in [expected, admin_secret] if k]
+        if not key or not any(key.strip() == k.strip() for k in valid_keys):
+            logger.warning("JOBS AUTH: ❌ failed (provided=%d chars)", len(key.strip()))
             return jsonify({'error': 'Unauthorized'}), 401
         return f(*args, **kwargs)
     return decorated
