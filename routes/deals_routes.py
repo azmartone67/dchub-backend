@@ -412,7 +412,7 @@ def get_deals():
             'data': limited,
             'count': len(limited),
             'total_count': len(cached_data),
-            'total_value': sum(d.get('value', 0) for d in cached_data),
+            'total_value': sum((d.get('value') or 0) for d in cached_data),
             'cached': True
         })
     
@@ -559,7 +559,7 @@ def get_deals():
         'data': limited_deals,  # Keep for backwards compatibility
         'count': len(limited_deals),
         'total_count': len(deals),
-        'total_value': sum(d.get('value', 0) for d in deals),
+        'total_value': sum((d.get('value') or 0) for d in deals),
         'stats_by_type': stats_by_type,
         'stats_by_year': stats_by_year,
         'deal_types': {
@@ -750,8 +750,8 @@ def get_pipeline():
     pipeline.sort(key=lambda x: x.get('delivery', 'Z'))
     
     # Calculate stats
-    total_mw = sum(p.get('capacity', 0) for p in pipeline)
-    total_investment = sum(p.get('investment', 0) for p in pipeline)
+    total_mw = sum((p.get('capacity') or 0) for p in pipeline)
+    total_investment = sum((p.get('investment') or 0) for p in pipeline)
     preleased_count = len([p for p in pipeline if p.get('preleased')])
     preleased_pct = round((preleased_count / len(pipeline) * 100)) if pipeline else 0
     construction_count = len([p for p in pipeline if p.get('status') == 'construction'])
@@ -763,7 +763,7 @@ def get_pipeline():
         q = p.get('delivery', 'TBD')
         if q not in quarters:
             quarters[q] = {'capacity': 0, 'projects': 0, 'preleased': 0}
-        quarters[q]['capacity'] += p.get('capacity', 0)
+        quarters[q]['capacity'] += (p.get('capacity') or 0)
         quarters[q]['projects'] += 1
         if p.get('preleased'):
             quarters[q]['preleased'] += 1
@@ -1014,7 +1014,7 @@ def get_public_pipeline():
 
     projects.sort(key=lambda x: x.get('capacity_mw', 0), reverse=True)
 
-    total_mw = sum(p.get('capacity_mw', 0) for p in projects)
+    total_mw = sum((p.get('capacity_mw') or 0) for p in projects)
     construction = len([p for p in projects if p.get('status') == 'construction'])
     announced = len([p for p in projects if p.get('status') == 'announced'])
     operational = len([p for p in projects if p.get('status') == 'operational'])
@@ -1026,7 +1026,7 @@ def get_public_pipeline():
         if s not in status_groups:
             status_groups[s] = {'count': 0, 'total_mw': 0}
         status_groups[s]['count'] += 1
-        status_groups[s]['total_mw'] += p.get('capacity_mw', 0)
+        status_groups[s]['total_mw'] += (p.get('capacity_mw') or 0)
     for s, data in status_groups.items():
         by_status.append({'status': s, 'count': data['count'], 'total_mw': round(data['total_mw'], 1)})
 
@@ -1063,7 +1063,7 @@ def get_pipeline_summary():
         key = (p['company'].lower(), p['project'].lower())
         if key not in seen_keys:
             seen_keys.add(key)
-            total_mw += p.get('capacity', 0)
+            total_mw += (p.get('capacity') or 0)
             project_count += 1
             st = p.get('status', 'announced')
             if st == 'construction':
@@ -1148,7 +1148,7 @@ def get_analytics():
         'markets': SAMPLE_MARKETS,
         'summary': {
             'total_markets': len(SAMPLE_MARKETS),
-            'total_mw': sum(m['total_mw'] for m in SAMPLE_MARKETS)
+            'total_mw': sum((m.get('total_mw') or 0) for m in SAMPLE_MARKETS)
         }
     })
 
