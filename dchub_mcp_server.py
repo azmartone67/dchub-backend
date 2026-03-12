@@ -125,14 +125,24 @@ async def search_facilities(
     Returns:
         JSON array of facilities with id, name, operator, location, specs, and URL.
     """
+    # Merge operator into free-text query so the backend text-search picks it up
+    # even if the endpoint doesn't support a separate "operator" / "provider" param.
+    effective_query = query
+    if operator and not query:
+        effective_query = operator
+    elif operator and query and operator.lower() not in query.lower():
+        effective_query = f"{query} {operator}"
+
     params = {k: v for k, v in {
-        "q": query, "country": country, "state": state, "city": city,
-        "operator": operator, "min_mw": min_capacity_mw if min_capacity_mw else None,
+        "q": effective_query,
+        "country": country, "state": state, "city": city,
+        "operator": operator,          # explicit filter (if backend supports it)
+        "provider": operator,           # alias used by some endpoints
+        "min_mw": min_capacity_mw if min_capacity_mw else None,
         "max_mw": max_capacity_mw if max_capacity_mw else None,
         "tier": tier if tier else None,
         "limit": min(limit, 100), "offset": offset,
     }.items() if v}
-    # Pass all filters as individual query params to /api/v1/search
     _track("search_facilities", params)
     result = _api_get("/api/v1/search", params)
     return json.dumps(result, indent=2)
