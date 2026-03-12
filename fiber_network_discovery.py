@@ -45,39 +45,19 @@ def _get_pg_connection():
 
 
 def _ensure_fiber_routes_table():
-    """Ensure fiber_routes table exists in Neon with correct schema."""
+    """Verify fiber_routes table exists in Neon."""
     conn = _get_pg_connection()
     if not conn:
         return False
     try:
         cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS fiber_routes (
-                id SERIAL PRIMARY KEY,
-                name TEXT,
-                provider TEXT,
-                route_type TEXT DEFAULT 'long_haul',
-                start_location TEXT,
-                end_location TEXT,
-                route_miles REAL,
-                fiber_count INTEGER,
-                dark_fiber INTEGER DEFAULT 0,
-                start_lat REAL,
-                start_lng REAL,
-                end_lat REAL,
-                end_lng REAL,
-                source TEXT DEFAULT 'seed',
-                source_id TEXT,
-                created_at TIMESTAMPTZ DEFAULT NOW(),
-                UNIQUE(source, source_id)
-            )
-        """)
-        conn.commit()
+        cur.execute("SELECT COUNT(*) FROM fiber_routes")
+        cur.fetchone()
         cur.close()
         conn.close()
         return True
     except Exception as e:
-        logger.error(f"Fiber routes table creation failed: {e}")
+        logger.error(f"Fiber routes table check failed: {e}")
         try:
             conn.close()
         except Exception:
@@ -92,23 +72,28 @@ def _upsert_fiber_route(conn, route):
         cur.execute("""
             INSERT INTO fiber_routes
                 (name, provider, route_type, start_location, end_location,
-                 route_miles, fiber_count, dark_fiber, start_lat, start_lng,
-                 end_lat, end_lng, source, source_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 start_point, end_point, distance_miles, fiber_count,
+                 capacity, status, start_lat, start_lng, end_lat, end_lng,
+                 source, source_id, discovered_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
             ON CONFLICT (source, source_id) DO UPDATE SET
                 name = EXCLUDED.name,
                 provider = EXCLUDED.provider,
-                route_miles = EXCLUDED.route_miles,
-                fiber_count = EXCLUDED.fiber_count
+                distance_miles = EXCLUDED.distance_miles,
+                fiber_count = EXCLUDED.fiber_count,
+                updated_at = NOW()
         """, (
             route.get('name', ''),
             route.get('provider', ''),
             route.get('route_type', 'long_haul'),
             route.get('start_location', ''),
             route.get('end_location', ''),
-            route.get('route_miles'),
+            route.get('start_location', ''),  # start_point = start_location
+            route.get('end_location', ''),     # end_point = end_location
+            route.get('route_miles'),           # → distance_miles
             route.get('fiber_count'),
-            route.get('dark_fiber', 0),
+            f"{route.get('fiber_count', 0)} fibers" if route.get('fiber_count') else None,  # capacity
+            'active',                           # status
             route.get('start_lat'),
             route.get('start_lng'),
             route.get('end_lat'),
