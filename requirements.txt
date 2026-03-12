@@ -36,7 +36,6 @@ sendgrid
 # Database
 psycopg2-binary
 # Energy/Grid Data
-gridstatus
 # Utilities
 pytz
 psutil
