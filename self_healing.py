@@ -1,8 +1,12 @@
 """
-DC Hub Self-Healing Module v1.0
+DC Hub Self-Healing Module v1.1
 ═══════════════════════════════════════════════════════════
 
 Phase 5 of the DC Hub architecture improvement plan.
+
+v1.1 changelog:
+  - FIXED: Health monitor _check() connection leak. Connection now always
+    closed in a finally block, preventing pool exhaustion from 30s health pings.
 
 Components:
   1. HealthMonitor  — background thread checking DB every 30s, auto-resets pool
@@ -359,9 +363,17 @@ class HealthMonitor:
                 time.sleep(0.5)
 
     def _check(self):
-        """Run a single health check."""
+        """
+        Run a single health check.
+
+        v1.1 FIX: Connection is now always closed in a finally block,
+        preventing pool exhaustion from leaked health-check connections.
+        Previously, conn was opened but never closed/returned — leaking
+        one connection every 30s (~120/hour).
+        """
         self._total_checks += 1
         now = datetime.now(timezone.utc).isoformat()
+        conn = None  # Initialize before try so finally can always reference it
 
         try:
             conn = self.get_pool()
@@ -433,6 +445,16 @@ class HealthMonitor:
                     self._total_resets += 1
                 except Exception as reset_err:
                     logger.error(f"❌ Pool reset failed again: {reset_err}")
+
+        finally:
+            # CRITICAL: Always close the health-check connection to prevent
+            # pool exhaustion. Wrapped in try/except because a broken
+            # connection may itself throw on .close().
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
 
 # ============================================================
