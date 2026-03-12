@@ -9489,27 +9489,122 @@ def ai_tracking_cumulative():
         conn = get_pg_connection()
         cur = conn.cursor()
         cur.execute("""
-            SELECT platform_name, total_requests, requests_7d, requests_30d, last_seen
+            SELECT platform, name, company, total_requests, requests_7d, first_seen, last_seen, color
             FROM ai_cumulative
-            ORDER BY total_requests DESC
+            ORDER BY total_requests DESC NULLS LAST
         """)
         rows = cur.fetchall()
         cur.close()
         platforms = []
         total = 0
         for row in rows:
-            req_total = row[1] or 0
+            req_total = int(row[3] or 0)
             platforms.append({
                 "platform": row[0],
+                "name": row[1],
+                "company": row[2],
                 "total_requests": req_total,
-                "requests_7d": row[2] or 0,
-                "requests_30d": row[3] or 0,
-                "last_seen": str(row[4]) if row[4] else None
+                "requests_7d": int(row[4] or 0),
+                "first_seen": str(row[5]) if row[5] else None,
+                "last_seen": str(row[6]) if row[6] else None,
+                "color": row[7]
             })
             total += req_total
-        return jsonify({"success": True, "all_time_total": total, "platforms": platforms})
+        return jsonify({"success": True, "platforms": platforms, "total": len(platforms), "source": "railway"})
     except Exception as e:
         logger.error(f"ai_tracking_cumulative error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if conn:
+            return_pg_connection(conn)
+
+
+@app.route('/api/v1/ai-tracking/stats', methods=['GET'])
+def ai_tracking_stats():
+    """Return aggregate AI tracking stats from Neon ai_cumulative table."""
+    conn = None
+    try:
+        conn = get_pg_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT
+                COUNT(*) AS total_platforms,
+                COALESCE(SUM(total_requests), 0) AS total_requests,
+                COALESCE(SUM(requests_7d), 0) AS requests_7d,
+                MAX(last_seen) AS last_activity
+            FROM ai_cumulative
+        """)
+        row = cur.fetchone()
+        cur.close()
+        return jsonify({
+            "success": True,
+            "stats": {
+                "total_platforms": row[0],
+                "total_requests": int(row[1]),
+                "requests_7d": int(row[2]),
+                "last_activity": str(row[3]) if row[3] else None
+            },
+            "source": "railway"
+        })
+    except Exception as e:
+        logger.error(f"ai_tracking_stats error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if conn:
+            return_pg_connection(conn)
+
+
+@app.route('/api/ai/tracking', methods=['GET'])
+def ai_tracking_full():
+    """Full AI tracking dashboard data — matches old Neon-direct Worker format."""
+    conn = None
+    try:
+        conn = get_pg_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT platform, name, company, total_requests, requests_7d, first_seen, last_seen, color
+            FROM ai_cumulative
+            ORDER BY total_requests DESC NULLS LAST
+        """)
+        rows = cur.fetchall()
+        cur.close()
+
+        platforms = {}
+        all_time = 0
+        total_7d = 0
+        noise = {'direct', 'unknown_ai', 'seo_bot', 'media_crawler', 'unknown', 'test', 'mcp-remote-fallback-test'}
+        active_count = 0
+
+        for r in rows:
+            key = (r[0] or '').lower()
+            req_total = int(r[3] or 0)
+            req_7d = int(r[4] or 0)
+            platforms[key] = {
+                "total_requests": req_total,
+                "requests_7d": req_7d,
+                "first_seen": str(r[5]) if r[5] else None,
+                "last_seen": str(r[6]) if r[6] else None,
+                "name": r[1],
+                "company": r[2],
+                "color": r[7],
+            }
+            all_time += req_total
+            total_7d += req_7d
+            if key not in noise and req_total > 0:
+                active_count += 1
+
+        return jsonify({
+            "success": True,
+            "tracking": "persistent",
+            "total_requests_all_time": all_time,
+            "total_requests_today": round(total_7d / 7) if total_7d else 0,
+            "platforms_active": active_count,
+            "platforms": platforms,
+            "chart_data": platforms,
+            "source": "railway",
+        })
+    except Exception as e:
+        logger.error(f"ai_tracking_full error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
     finally:
         if conn:
