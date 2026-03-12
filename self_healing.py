@@ -1,5 +1,5 @@
 """
-DC Hub Self-Healing Module v1.1
+DC Hub Self-Healing Module v1.1.0
 ═══════════════════════════════════════════════════════════
 
 Phase 5 of the DC Hub architecture improvement plan.
