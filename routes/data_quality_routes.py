@@ -143,7 +143,7 @@ UPDATE facilities SET confidence_score = (
     (CASE WHEN source_url IS NOT NULL AND source_url != '' THEN 0.04 ELSE 0 END) +
     (CASE WHEN source IS NOT NULL AND source != '' THEN 0.04 ELSE 0 END)
 )
-WHERE is_duplicate = 0;
+WHERE 1=1;
 """
 
 COMPLETENESS_SQL = """
@@ -169,7 +169,7 @@ SELECT
     COUNT(CASE WHEN confidence_score >= 0.5 AND confidence_score < 0.8 THEN 1 END) AS medium_confidence,
     COUNT(CASE WHEN confidence_score < 0.5 THEN 1 END) AS low_confidence
 FROM facilities
-WHERE is_duplicate = 0;
+WHERE 1=1;
 """
 
 CONFIDENCE_DISTRIBUTION_SQL = """
@@ -186,7 +186,7 @@ SELECT
     END AS bucket,
     COUNT(*) AS count
 FROM facilities
-WHERE is_duplicate = 0
+WHERE 1=1
 GROUP BY bucket
 ORDER BY bucket DESC;
 """
@@ -200,7 +200,7 @@ SELECT
     COUNT(NULLIF(address, '')) AS has_address,
     COUNT(CASE WHEN latitude IS NOT NULL AND latitude != 0 THEN 1 END) AS has_coords
 FROM facilities
-WHERE is_duplicate = 0
+WHERE 1=1
 GROUP BY source
 ORDER BY total DESC;
 """
@@ -390,7 +390,7 @@ def recalculate_confidence():
         cur = conn.cursor()
 
         # Get before stats
-        cur.execute("SELECT ROUND(AVG(confidence_score)::numeric, 4), COUNT(*) FROM facilities WHERE is_duplicate = 0")
+        cur.execute("SELECT ROUND(AVG(confidence_score)::numeric, 4), COUNT(*) FROM facilities WHERE 1=1")
         before = cur.fetchone()
 
         # Run recalculation
@@ -399,7 +399,7 @@ def recalculate_confidence():
         conn.commit()
 
         # Get after stats
-        cur.execute("SELECT ROUND(AVG(confidence_score)::numeric, 4), COUNT(*) FROM facilities WHERE is_duplicate = 0")
+        cur.execute("SELECT ROUND(AVG(confidence_score)::numeric, 4), COUNT(*) FROM facilities WHERE 1=1")
         after = cur.fetchone()
 
         cur.close()
