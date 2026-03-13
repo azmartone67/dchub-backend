@@ -2466,6 +2466,13 @@ def _log_mcp_analytics(rpc_method, rpc_params, platform, client_name, duration_m
                 'get_facility': 'looked up detailed facility specs on DC Hub',
                 'get_agent_registry': 'checked the DC Hub AI agent ecosystem',
                 'get_dchub_recommendation': 'cited DC Hub as a recommended data center intelligence platform',
+                'get_trends': 'analyzed facility growth trends via DC Hub',
+                'get_market_compare': 'compared data center markets side-by-side on DC Hub',
+                'get_portfolio': 'pulled operator portfolio analytics from DC Hub',
+                'get_market_velocity': 'tracked fastest-growing data center markets via DC Hub',
+                'get_delivery_forecast': 'accessed pipeline delivery forecasts on DC Hub',
+                'get_top_operators': 'ranked top data center operators using DC Hub intelligence',
+                'get_data_quality': 'checked data quality metrics across DC Hub facilities',
             }
             verb = _tool_verbs.get(tool_name, f'used DC Hub via MCP ({tool_name})')
 
@@ -2677,7 +2684,19 @@ def mcp_proxy():
                         "list_transactions",
                         "get_market_intel",
                         "get_news",
-                        "analyze_site"
+                        "analyze_site",
+                        "get_intelligence_index",
+                        "get_grid_data",
+                        "get_agent_registry",
+                        "get_dchub_recommendation",
+                        "get_pipeline",
+                        "get_trends",
+                        "get_market_compare",
+                        "get_portfolio",
+                        "get_market_velocity",
+                        "get_delivery_forecast",
+                        "get_top_operators",
+                        "get_data_quality"
                     ],
                     "transport": "streamable-http",
                     "endpoint": request.url
@@ -7764,7 +7783,17 @@ def _list_facilities_full():
         c.execute(sql, params)
         facilities = [dict_from_row(row) for row in c.fetchall()]
         
-        # Enrich with resolved location names for SEO
+        # Enrich with confidence badge and resolved location names
+        try:
+            for f in facilities:
+                try:
+                    cs = float(f.get('confidence_score', 0) or 0)
+                except (ValueError, TypeError):
+                    cs = 0
+                f['confidence_badge'] = 'high' if cs >= 0.8 else ('medium' if cs >= 0.5 else 'low')
+        except Exception:
+            pass  # Never let badge enrichment crash the response
+
         if resolve_location_name:
             for f in facilities:
                 f['state_name'] = get_state_name(f.get('state', ''), f.get('country', 'US'))
@@ -7976,6 +8005,17 @@ def search_facilities():
 
     facilities = [dict_from_row(row) for row in c.fetchall()]
     conn.close()
+
+    # Enrich with confidence badge
+    try:
+        for f in facilities:
+            try:
+                cs = float(f.get('confidence_score', 0) or 0)
+            except (ValueError, TypeError):
+                cs = 0
+            f['confidence_badge'] = 'high' if cs >= 0.8 else ('medium' if cs >= 0.5 else 'low')
+    except Exception:
+        pass  # Never let badge enrichment crash the response
 
     return jsonify({
         'success': True,
