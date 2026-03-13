@@ -16,7 +16,7 @@ Environment:
   DCHUB_API_BASE    — API base URL (default: https://dchub-backend-production.up.railway.app)
   DCHUB_ADMIN_KEY   — Admin API key (required)
 
-Schedule (UTC) — 20 jobs, verified no overlaps:
+Schedule (UTC) — 21 jobs, verified no overlaps:
   00:00  News/RSS Refresh        (also 04, 08, 12, 16, 20)
   00:20  Auto-Approve            (also 04, 08, 12, 16, 20)
   00:45  Simple Alerts           (also 02,04,06,08,10,12,14,16,18,20,22)
@@ -26,6 +26,7 @@ Schedule (UTC) — 20 jobs, verified no overlaps:
   03:00  AI Ecosystem Agent      (also 10, 15, 22)
   03:15  Neon DB Backup
   03:45  Confidence Recalc       (daily)
+  04:00  KMZ Discovery           (also 16:00) — 12hr cycle
   05:00  AI Outreach Agent       (also 13, 21)
   06:00  Global Intelligence     (also 18)
   06:45  Capacity Headroom       (also 12:45, 18:45)
@@ -40,7 +41,7 @@ Schedule (UTC) — 20 jobs, verified no overlaps:
 v3.3 changelog:
   - Added 7 missing jobs: autonomous_brain, alert_emails, simple_alerts,
     market_report, infra_sync, capacity_headroom, ambassador
-  - Total: 20 jobs (19 scheduled + keepalive)
+  - Total: 21 jobs (20 scheduled + keepalive)
   - All new jobs staggered to avoid collisions with existing schedule
 """
 
@@ -241,6 +242,14 @@ JOBS = {
         'hours': [3],                   # daily at 03:45 UTC (after backup at 03:15)
         'minute': 45,
         'timeout': 60,
+    },
+    'kmz_discovery': {
+        'name': 'KMZ Infrastructure Discovery',
+        'endpoint': '/api/kmz-discovery/run',
+        'method': 'POST',
+        'hours': [4, 16],               # every 12h at :00
+        'minute': 0,
+        'timeout': 600,                  # 10 min — cycle processes many sources
     },
 }
 
