@@ -423,7 +423,7 @@ def get_deals():
     if pg_url:
         try:
             import psycopg2
-            with __pg_connection() as pg_conn:
+            with _pg_connection() as pg_conn:
                 pg_cur = pg_conn.cursor()
                 pg_cur.execute("""
                     SELECT id, date, year, buyer, seller, value, mw, type, region, market
@@ -617,7 +617,7 @@ def _get_transactions_free():
     if pg_url:
         try:
             import psycopg2
-            with __pg_connection() as pg_conn:
+            with _pg_connection() as pg_conn:
                 pg_cur = pg_conn.cursor()
                 pg_cur.execute("SELECT id, date, year, buyer, seller, value, mw, type, region, market FROM deals ORDER BY COALESCE(date, '1970-01-01') DESC LIMIT 200")
                 db_deals = []
@@ -1164,7 +1164,7 @@ def _get_pg_news_cat_col():
     if _pg_news_cat_col:
         return _pg_news_cat_col
     try:
-        with __pg_connection() as conn:
+        with _pg_connection() as conn:
             cur = conn.cursor()
             cur.execute("""
                 SELECT column_name FROM information_schema.columns
@@ -1216,7 +1216,7 @@ def get_agent_news():
 
         try:
             from psycopg2.extras import RealDictCursor
-            with __pg_connection() as pg_conn:
+            with _pg_connection() as pg_conn:
                 pg_cur = pg_conn.cursor(cursor_factory=RealDictCursor)
 
                 query = _pg_news_select() + " WHERE published_at IS NOT NULL AND published_at != ''"
@@ -1279,7 +1279,7 @@ def get_live_news():
 
         try:
             from psycopg2.extras import RealDictCursor
-            with __pg_connection() as pg_conn:
+            with _pg_connection() as pg_conn:
                 pg_cur = pg_conn.cursor(cursor_factory=RealDictCursor)
                 query = """SELECT id, title, url, source, category, summary,
                            published_at, image_url, is_breaking, relevance_score
