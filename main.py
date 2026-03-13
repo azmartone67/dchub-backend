@@ -1107,6 +1107,19 @@ def _check_request_timeout(response):
     return response
 
 # =============================================================================
+# RATE LIMITING MIDDLEWARE - Token bucket, plan-aware, CF-IP based
+# =============================================================================
+try:
+    from rate_limiter import rate_limit_before, rate_limit_after
+    app.before_request(rate_limit_before)
+    app.after_request(rate_limit_after)
+    print("RATE LIMITER: ✅ Middleware active (anon=20rpm, auth=120rpm, internal=300rpm)")
+except ImportError:
+    print("RATE LIMITER: ⚠️ rate_limiter.py not found — rate limiting disabled")
+except Exception as e:
+    print(f"RATE LIMITER: ⚠️ Failed to load: {e}")
+
+# =============================================================================
 # GRACEFUL DEGRADATION CACHE - Serve cached data when DB is down
 # =============================================================================
 _degradation_cache = {}
