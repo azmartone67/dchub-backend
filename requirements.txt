@@ -45,3 +45,5 @@ h3>=4.0
 # Energy/Grid Data
 gridstatus
 tzdata
+fastkml
+shapely
