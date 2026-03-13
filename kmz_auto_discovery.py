@@ -298,6 +298,151 @@ PUBLIC_KMZ_SOURCES = [
         'provider': 'Openreach-UK',
         'category': 'fiber'
     },
+    # ── NASA/HIFLD COMMUNICATIONS INFRASTRUCTURE ─────────────────
+    # These are massive national datasets hosted by NASA NCCS
+    {
+        'name': 'HIFLD Cellular Towers (NASA)',
+        'url': 'https://maps.nccs.nasa.gov/mapping/rest/services/hifld_open/communications/FeatureServer/5',
+        'type': 'arcgis_kml',
+        'provider': 'HIFLD-NASA',
+        'category': 'fiber'
+    },
+    {
+        'name': 'HIFLD Antenna Structure Registration (NASA)',
+        'url': 'https://maps.nccs.nasa.gov/mapping/rest/services/hifld_open/communications/FeatureServer/1',
+        'type': 'arcgis_kml',
+        'provider': 'HIFLD-NASA',
+        'category': 'fiber'
+    },
+    {
+        'name': 'HIFLD Microwave Service Towers (NASA)',
+        'url': 'https://maps.nccs.nasa.gov/mapping/rest/services/hifld_open/communications/FeatureServer/10',
+        'type': 'arcgis_kml',
+        'provider': 'HIFLD-NASA',
+        'category': 'fiber'
+    },
+    # ── NASA/HIFLD ENERGY INFRASTRUCTURE (30+ layers) ────────────
+    {
+        'name': 'HIFLD Electric Transmission Lines (NASA)',
+        'url': 'https://maps.nccs.nasa.gov/mapping/rest/services/hifld_open/energy/FeatureServer/4',
+        'type': 'arcgis_kml',
+        'provider': 'HIFLD-NASA',
+        'category': 'power'
+    },
+    {
+        'name': 'HIFLD Generating Units (NASA)',
+        'url': 'https://maps.nccs.nasa.gov/mapping/rest/services/hifld_open/energy/FeatureServer/10',
+        'type': 'arcgis_kml',
+        'provider': 'HIFLD-NASA',
+        'category': 'power'
+    },
+    {
+        'name': 'HIFLD Natural Gas Liquid Pipelines (NASA)',
+        'url': 'https://maps.nccs.nasa.gov/mapping/rest/services/hifld_open/energy/FeatureServer/16',
+        'type': 'arcgis_kml',
+        'provider': 'HIFLD-NASA',
+        'category': 'gas'
+    },
+    {
+        'name': 'HIFLD Natural Gas Market Hubs (NASA)',
+        'url': 'https://maps.nccs.nasa.gov/mapping/rest/services/hifld_open/energy/FeatureServer/17',
+        'type': 'arcgis_kml',
+        'provider': 'HIFLD-NASA',
+        'category': 'gas'
+    },
+    {
+        'name': 'HIFLD Oil and Natural Gas Fields (NASA)',
+        'url': 'https://maps.nccs.nasa.gov/mapping/rest/services/hifld_open/energy/FeatureServer/32',
+        'type': 'arcgis_kml',
+        'provider': 'HIFLD-NASA',
+        'category': 'gas'
+    },
+    {
+        'name': 'HIFLD Petroleum Refineries (NASA)',
+        'url': 'https://maps.nccs.nasa.gov/mapping/rest/services/hifld_open/energy/FeatureServer/33',
+        'type': 'arcgis_kml',
+        'provider': 'HIFLD-NASA',
+        'category': 'gas'
+    },
+    {
+        'name': 'HIFLD Solar Plants (NASA)',
+        'url': 'https://maps.nccs.nasa.gov/mapping/rest/services/hifld_open/energy/FeatureServer/36',
+        'type': 'arcgis_kml',
+        'provider': 'HIFLD-NASA',
+        'category': 'power'
+    },
+    {
+        'name': 'HIFLD Wind Turbines (NASA)',
+        'url': 'https://maps.nccs.nasa.gov/mapping/rest/services/hifld_open/energy/FeatureServer/38',
+        'type': 'arcgis_kml',
+        'provider': 'HIFLD-NASA',
+        'category': 'power'
+    },
+    {
+        'name': 'HIFLD Electric Retail Service Territories (NASA)',
+        'url': 'https://maps.nccs.nasa.gov/mapping/rest/services/hifld_open/energy/FeatureServer/5',
+        'type': 'arcgis_kml',
+        'provider': 'HIFLD-NASA',
+        'category': 'power'
+    },
+    {
+        'name': 'HIFLD Independent System Operators (NASA)',
+        'url': 'https://maps.nccs.nasa.gov/mapping/rest/services/hifld_open/energy/FeatureServer/11',
+        'type': 'arcgis_kml',
+        'provider': 'HIFLD-NASA',
+        'category': 'power'
+    },
+    # ── COUNTY/MUNICIPAL FIBER GIS (known public endpoints) ──────
+    {
+        'name': 'Harnett County NC Fiber Network',
+        'url': 'https://gis.harnett.org/arcgis/rest/services/Public_Utilities/Fiber/FeatureServer/1',
+        'type': 'arcgis_kml',
+        'provider': 'Harnett-County-NC',
+        'category': 'fiber'
+    },
+    {
+        'name': 'City of Colorado Springs Fiber',
+        'url': 'https://hub.arcgis.com/api/v3/datasets/aef932d6b3fd4f0994ef672368b09217_0',
+        'type': 'arcgis_kml',
+        'provider': 'Colorado-Springs',
+        'category': 'fiber'
+    },
+    # ── ADDITIONAL HIFLD ARCGIS.COM LAYERS ───────────────────────
+    {
+        'name': 'HIFLD Petroleum Pipelines',
+        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Petroleum_Pipelines/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'HIFLD',
+        'category': 'gas'
+    },
+    {
+        'name': 'HIFLD Natural Gas Pipelines',
+        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Natural_Gas_Pipelines/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'HIFLD',
+        'category': 'gas'
+    },
+    {
+        'name': 'HIFLD Electric Planning Areas',
+        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Planning_Areas/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'HIFLD',
+        'category': 'power'
+    },
+    {
+        'name': 'HIFLD Control Areas',
+        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Control_Areas/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'HIFLD',
+        'category': 'power'
+    },
+    {
+        'name': 'HIFLD NERC Regions',
+        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/NERC_Regions/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'HIFLD',
+        'category': 'power'
+    },
 ]
 
 ARCGIS_FIBER_SEARCH_URLS = [
