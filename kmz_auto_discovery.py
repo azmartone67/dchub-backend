@@ -1,48 +1,74 @@
 """
-DC Hub Nexus - Automatic KMZ/KML Infrastructure Discovery v2.0
+DC Hub Nexus - Automatic KMZ/KML Infrastructure Discovery v3.0
 ================================================================
 Autonomous system that discovers, downloads, and parses KMZ/KML
 infrastructure files from public government and industry sources.
 
+v3.0 CHANGES (Mar 2026):
+  - Migrated from SQLite to Neon PostgreSQL (data persists across Railway deploys)
+  - Uses late-binding DB connection pattern (injected from main.py)
+  - PostgreSQL parameterized queries (%s instead of ?)
+  - ON CONFLICT instead of INSERT OR IGNORE
+  - datetime('now', '-7 days') → NOW() - INTERVAL '7 days'
+
 FIBER SOURCES:
 - NTIA Broadband Infrastructure maps
-- State broadband offices (BroadbandUSA)  
+- State broadband offices (BroadbandUSA)
 - FCC broadband deployment GIS data
 - USGS/HIFLD infrastructure GIS layers
 - Public carrier fiber route maps
 - State DOT fiber route data
 
-GAS PIPELINE SOURCES (v2):
+GAS PIPELINE SOURCES:
 - HIFLD Natural Gas Pipelines (nationwide)
-- HIFLD Natural Gas Compressor Stations
-- HIFLD Natural Gas Processing Plants
-- HIFLD LNG Import/Export Terminals
-- HIFLD Natural Gas Storage Facilities
-- PHMSA/DOT pipeline safety GIS data (auto-discovered)
+- EIA Natural Gas Interstate/Intrastate Pipelines
+- EIA Crude Oil Trunk Pipelines
+- EIA Gulf Oil and Gas Pipelines
 
 Runs every 12 hours as a background daemon thread.
 """
 
 import os
-import io
 import json
-import sqlite3
-import requests
 import hashlib
 import time
 import logging
 import threading
-import zipfile
-import xml.etree.ElementTree as ET
+import requests
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from math import radians, sin, cos, sqrt, atan2
-from db_utils import get_db, get_read_db
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = 'dc_nexus.db'
 KMZ_DOWNLOAD_DIR = os.path.join(os.getcwd(), 'uploads', 'kmz')
+
+# ---------------------------------------------------------------------------
+# Late-binding DB connection (injected from main.py)
+# ---------------------------------------------------------------------------
+_get_pg = None
+_return_pg = None
+
+
+def _conn():
+    if _get_pg is None:
+        raise RuntimeError("kmz_auto_discovery not initialized — call init first")
+    return _get_pg()
+
+
+def _release(conn):
+    if _return_pg and conn:
+        try:
+            _return_pg(conn)
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+# ---------------------------------------------------------------------------
+# PUBLIC SOURCES
+# ---------------------------------------------------------------------------
 
 PUBLIC_KMZ_SOURCES = [
     {
@@ -80,7 +106,6 @@ PUBLIC_KMZ_SOURCES = [
         'provider': 'NTIA',
         'category': 'fiber'
     },
-    # === GAS PIPELINE INFRASTRUCTURE (v3 — EIA sources) ===
     {
         'name': 'EIA Natural Gas Interstate/Intrastate Pipelines',
         'url': 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/Natural_Gas_Interstate_and_Intrastate_Pipelines_1/FeatureServer/0',
@@ -111,7 +136,6 @@ ARCGIS_FIBER_SEARCH_URLS = [
     'https://www.arcgis.com/sharing/rest/search?q=dark%20fiber%20network%20map&sortField=modified&sortOrder=desc&num=10&f=json',
 ]
 
-# Gas pipeline ArcGIS search — auto-discover new gas infrastructure GIS sources
 ARCGIS_GAS_SEARCH_URLS = [
     'https://www.arcgis.com/sharing/rest/search?q=natural%20gas%20pipeline%20infrastructure&sortField=modified&sortOrder=desc&num=20&f=json',
     'https://www.arcgis.com/sharing/rest/search?q=gas%20pipeline%20transmission%20interstate&sortField=modified&sortOrder=desc&num=20&f=json',
@@ -132,17 +156,18 @@ STATE_BROADBAND_GIS = [
 ]
 
 
+# =============================================================================
+# KMZ AUTO-DISCOVERY ENGINE (Neon PostgreSQL)
+# =============================================================================
+
 class KMZAutoDiscovery:
-    def __init__(self, db_path: str = DB_PATH):
-        self.db_path = db_path
+    def __init__(self):
         self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'DC-Hub-Nexus/2.0 (Infrastructure Intelligence Platform)'
-        })
+        self.session.headers.update({'User-Agent': 'DCHub-Infrastructure/3.0'})
         self._scheduler_running = False
+        self._cycle_in_progress = False
         self._cache = {
             'last_cycle': None,
-            'last_results': None,
             'total_routes_discovered': 0,
             'total_kmz_processed': 0,
             'sources_checked': 0
@@ -150,60 +175,74 @@ class KMZAutoDiscovery:
         self.init_tables()
 
     def init_tables(self):
-        conn = get_db(self.db_path)
-        cursor = conn.cursor()
+        conn = None
+        try:
+            conn = _conn()
+            cur = conn.cursor()
 
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS fiber_kmz_routes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT,
-                provider TEXT,
-                route_type TEXT DEFAULT 'fiber',
-                start_point TEXT,
-                end_point TEXT,
-                distance_km REAL DEFAULT 0,
-                coordinates TEXT,
-                kmz_file TEXT,
-                source_url TEXT,
-                discovered_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS fiber_kmz_routes (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT,
+                    provider TEXT,
+                    route_type TEXT DEFAULT 'fiber',
+                    start_point TEXT,
+                    end_point TEXT,
+                    distance_km REAL DEFAULT 0,
+                    coordinates TEXT,
+                    kmz_file TEXT,
+                    source_url TEXT,
+                    discovered_at TIMESTAMPTZ DEFAULT NOW()
+                )
+            ''')
 
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS kmz_discovery_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                source_name TEXT,
-                source_url TEXT,
-                source_type TEXT,
-                routes_found INTEGER DEFAULT 0,
-                total_km REAL DEFAULT 0,
-                status TEXT DEFAULT 'success',
-                error_message TEXT,
-                discovered_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS kmz_discovery_log (
+                    id SERIAL PRIMARY KEY,
+                    source_name TEXT,
+                    source_url TEXT,
+                    source_type TEXT,
+                    routes_found INTEGER DEFAULT 0,
+                    total_km REAL DEFAULT 0,
+                    status TEXT DEFAULT 'success',
+                    error_message TEXT,
+                    discovered_at TIMESTAMPTZ DEFAULT NOW()
+                )
+            ''')
 
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS kmz_discovered_sources (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT,
-                url TEXT UNIQUE,
-                provider TEXT,
-                category TEXT,
-                source_type TEXT,
-                status TEXT DEFAULT 'discovered',
-                routes_count INTEGER DEFAULT 0,
-                last_checked TEXT,
-                discovered_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS kmz_discovered_sources (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT,
+                    url TEXT UNIQUE,
+                    provider TEXT,
+                    category TEXT,
+                    source_type TEXT,
+                    status TEXT DEFAULT 'discovered',
+                    routes_count INTEGER DEFAULT 0,
+                    last_checked TIMESTAMPTZ,
+                    discovered_at TIMESTAMPTZ DEFAULT NOW()
+                )
+            ''')
 
-        conn.commit()
-        conn.close()
-        logger.info("KMZ Auto-Discovery tables initialized")
+            # Index for dedup on routes
+            cur.execute('''
+                CREATE INDEX IF NOT EXISTS idx_kmz_routes_dedup
+                ON fiber_kmz_routes(provider, name, start_point)
+            ''')
+
+            conn.commit()
+            cur.close()
+            logger.info("KMZ Auto-Discovery tables initialized (Neon PostgreSQL)")
+        except Exception as e:
+            logger.error(f"KMZ table init error: {e}")
+        finally:
+            _release(conn)
+
+    # ── Discovery Cycle ────────────────────────────────────────
 
     def run_discovery_cycle(self) -> Dict:
-        if getattr(self, '_cycle_in_progress', False):
+        if self._cycle_in_progress:
             logger.info("KMZ Discovery cycle skipped (previous cycle still running)")
             return {'skipped': True, 'reason': 'cycle_in_progress'}
         self._cycle_in_progress = True
@@ -279,10 +318,11 @@ class KMZAutoDiscovery:
 
         return results
 
+    # ── ArcGIS Source Discovery ────────────────────────────────
+
     def _discover_arcgis_sources(self) -> Dict:
         results = {'checked': 0, 'new_sources': 0, 'total_found': 0}
 
-        # Search both fiber AND gas infrastructure sources
         all_search_urls = [
             (url, 'fiber') for url in ARCGIS_FIBER_SEARCH_URLS
         ] + [
@@ -325,6 +365,8 @@ class KMZAutoDiscovery:
         logger.info(f"ArcGIS Search: checked={results['checked']}, found={results['total_found']}, new={results['new_sources']}")
         return results
 
+    # ── Process Known Sources ──────────────────────────────────
+
     def _process_known_sources(self) -> Dict:
         results = {'checked': 0, 'routes_found': 0, 'total_km': 0}
 
@@ -353,6 +395,8 @@ class KMZAutoDiscovery:
         logger.info(f"Known Sources: checked={results['checked']}, routes={results['routes_found']}, km={results['total_km']:.1f}")
         return results
 
+    # ── Fetch ArcGIS Routes ────────────────────────────────────
+
     def _fetch_arcgis_routes(self, url: str, provider: str, source_name: str, route_type: str = 'fiber') -> Dict:
         results = {'routes_found': 0, 'total_km': 0}
 
@@ -369,72 +413,76 @@ class KMZAutoDiscovery:
             if not features:
                 return results
 
-            conn = get_db(self.db_path)
-            cursor = conn.cursor()
+            conn = _conn()
+            try:
+                cur = conn.cursor()
 
-            for feature in features:
-                attrs = feature.get('attributes', {})
-                geom = feature.get('geometry', {})
+                for feature in features:
+                    attrs = feature.get('attributes', {})
+                    geom = feature.get('geometry', {})
 
-                name = (attrs.get('NAME') or attrs.get('name') or
-                        attrs.get('OWNER') or attrs.get('OPERATOR') or
-                        attrs.get('ID', f'{provider}_route'))
+                    name = (attrs.get('NAME') or attrs.get('name') or
+                            attrs.get('OWNER') or attrs.get('OPERATOR') or
+                            attrs.get('ID', f'{provider}_route'))
 
-                if isinstance(name, (int, float)):
-                    name = f"{provider}_route_{name}"
+                    if isinstance(name, (int, float)):
+                        name = f"{provider}_route_{name}"
 
-                coordinates = []
-                if 'paths' in geom:
-                    for path in geom['paths']:
-                        for point in path[:50]:
-                            if len(point) >= 2:
-                                coordinates.append([point[1], point[0]])
-                elif 'rings' in geom:
-                    for ring in geom['rings']:
-                        for point in ring[:50]:
-                            if len(point) >= 2:
-                                coordinates.append([point[1], point[0]])
-                elif 'x' in geom and 'y' in geom:
-                    coordinates.append([geom['y'], geom['x']])
+                    coordinates = []
+                    if 'paths' in geom:
+                        for path in geom['paths']:
+                            for point in path[:50]:
+                                if len(point) >= 2:
+                                    coordinates.append([point[1], point[0]])
+                    elif 'rings' in geom:
+                        for ring in geom['rings']:
+                            for point in ring[:50]:
+                                if len(point) >= 2:
+                                    coordinates.append([point[1], point[0]])
+                    elif 'x' in geom and 'y' in geom:
+                        coordinates.append([geom['y'], geom['x']])
 
-                if not coordinates:
-                    continue
+                    if not coordinates:
+                        continue
 
-                distance_km = self._calculate_route_distance(coordinates) if len(coordinates) > 1 else 0
-                start_point = f"{coordinates[0][0]:.4f},{coordinates[0][1]:.4f}"
-                end_point = f"{coordinates[-1][0]:.4f},{coordinates[-1][1]:.4f}"
+                    distance_km = self._calculate_route_distance(coordinates) if len(coordinates) > 1 else 0
+                    start_point = f"{coordinates[0][0]:.4f},{coordinates[0][1]:.4f}"
+                    end_point = f"{coordinates[-1][0]:.4f},{coordinates[-1][1]:.4f}"
 
-                url_hash = hashlib.sha256(f"{provider}_{name}_{start_point}".encode()).hexdigest()[:16]
+                    url_hash = hashlib.sha256(f"{provider}_{name}_{start_point}".encode()).hexdigest()[:16]
 
-                try:
-                    cursor.execute('''
-                        INSERT OR IGNORE INTO fiber_kmz_routes
-                        (name, provider, route_type, start_point, end_point,
-                         distance_km, coordinates, kmz_file, source_url)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (
-                        str(name)[:200], provider, route_type,
-                        start_point, end_point,
-                        round(distance_km, 2),
-                        json.dumps(coordinates[:100]),
-                        f"arcgis_export_{url_hash}",
-                        url
-                    ))
-                    if cursor.rowcount > 0:
-                        results['routes_found'] += 1
-                        results['total_km'] += distance_km
-                except sqlite3.IntegrityError:
-                    pass
-                except Exception as e:
-                    logger.debug(f"Route insert error: {e}")
+                    try:
+                        cur.execute('''
+                            INSERT INTO fiber_kmz_routes
+                            (name, provider, route_type, start_point, end_point,
+                             distance_km, coordinates, kmz_file, source_url)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT DO NOTHING
+                        ''', (
+                            str(name)[:200], provider, route_type,
+                            start_point, end_point,
+                            round(distance_km, 2),
+                            json.dumps(coordinates[:100]),
+                            f"arcgis_export_{url_hash}",
+                            url
+                        ))
+                        if cur.rowcount > 0:
+                            results['routes_found'] += 1
+                            results['total_km'] += distance_km
+                    except Exception as e:
+                        logger.debug(f"Route insert error: {e}")
 
-            conn.commit()
-            conn.close()
+                conn.commit()
+                cur.close()
+            finally:
+                _release(conn)
 
         except Exception as e:
             logger.debug(f"ArcGIS route fetch error for {source_name}: {e}")
 
         return results
+
+    # ── State Broadband Discovery ──────────────────────────────
 
     def _discover_state_broadband(self) -> Dict:
         results = {'checked': 0, 'services_found': 0, 'new_sources': 0}
@@ -475,32 +523,32 @@ class KMZAutoDiscovery:
         logger.info(f"State Broadband: checked={results['checked']}, services={results['services_found']}, new={results['new_sources']}")
         return results
 
+    # ── Export ArcGIS as KML ───────────────────────────────────
+
     def _export_arcgis_as_kml(self) -> Dict:
         results = {'exported': 0, 'routes_parsed': 0, 'total_km': 0, 'errors': 0}
 
         conn = None
+        sources = []
         try:
-            conn = get_db(self.db_path)
-            cursor = conn.cursor()
-            cursor.execute('''
+            conn = _conn()
+            cur = conn.cursor()
+            cur.execute('''
                 SELECT id, name, url, provider FROM kmz_discovered_sources
                 WHERE source_type IN ('arcgis', 'state_gis')
-                AND (last_checked IS NULL OR last_checked < datetime('now', '-7 days'))
+                AND (last_checked IS NULL OR last_checked < NOW() - INTERVAL '7 days')
                 AND status != 'failed'
                 LIMIT 10
             ''')
-            sources = cursor.fetchall()
+            sources = cur.fetchall()
+            cur.close()
         except Exception as e:
-            logger.error(f"ArcGIS KML export error: {e}")
-            sources = []
+            logger.error(f"ArcGIS KML export query error: {e}")
         finally:
-            if conn:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
+            _release(conn)
 
-        for src_id, name, url, provider in sources:
+        for row in sources:
+            src_id, name, url, provider = row[0], row[1], row[2], row[3]
             try:
                 r = self._fetch_arcgis_routes(url, provider or 'Unknown', name or 'Unknown')
                 results['routes_parsed'] += r.get('routes_found', 0)
@@ -521,15 +569,18 @@ class KMZAutoDiscovery:
         logger.info(f"ArcGIS Export: exported={results['exported']}, routes={results['routes_parsed']}, km={results['total_km']:.1f}")
         return results
 
-    def _add_discovered_source(self, source: Dict) -> bool:
-        conn = get_db(self.db_path)
-        cursor = conn.cursor()
+    # ── Helpers ─────────────────────────────────────────────────
 
+    def _add_discovered_source(self, source: Dict) -> bool:
+        conn = None
         try:
-            cursor.execute('''
-                INSERT OR IGNORE INTO kmz_discovered_sources
+            conn = _conn()
+            cur = conn.cursor()
+            cur.execute('''
+                INSERT INTO kmz_discovered_sources
                 (name, url, provider, category, source_type)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (url) DO NOTHING
             ''', (
                 source['name'][:200],
                 source['url'],
@@ -537,61 +588,55 @@ class KMZAutoDiscovery:
                 source.get('category', 'fiber'),
                 source.get('source_type', 'unknown')
             ))
-            added = cursor.rowcount > 0
+            added = cur.rowcount > 0
             conn.commit()
+            cur.close()
             return added
         except Exception:
             return False
         finally:
-            conn.close()
+            _release(conn)
 
     def _update_source_status(self, source_id: int, status: str, routes_count: int):
         conn = None
         try:
-            conn = get_db(self.db_path)
-            cursor = conn.cursor()
-            cursor.execute('''
+            conn = _conn()
+            cur = conn.cursor()
+            cur.execute('''
                 UPDATE kmz_discovered_sources
-                SET status = ?, routes_count = ?, last_checked = ?
-                WHERE id = ?
-            ''', (status, routes_count, datetime.now().isoformat(), source_id))
+                SET status = %s, routes_count = %s, last_checked = NOW()
+                WHERE id = %s
+            ''', (status, routes_count, source_id))
             conn.commit()
+            cur.close()
         except Exception:
             pass
         finally:
-            if conn:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
+            _release(conn)
 
     def _calculate_route_distance(self, coordinates: List[List[float]]) -> float:
         total_distance = 0
-
         for i in range(len(coordinates) - 1):
             lat1, lng1 = coordinates[i]
             lat2, lng2 = coordinates[i + 1]
-
             R = 6371
             lat1, lng1, lat2, lng2 = map(radians, [lat1, lng1, lat2, lng2])
             dlat = lat2 - lat1
             dlng = lng2 - lng1
-
             a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlng/2)**2
             c = 2 * atan2(sqrt(a), sqrt(1-a))
-
             total_distance += R * c
-
         return round(total_distance, 2)
 
     def _log_cycle(self, results: Dict):
+        conn = None
         try:
-            conn = get_db(self.db_path)
-            cursor = conn.cursor()
-            cursor.execute('''
+            conn = _conn()
+            cur = conn.cursor()
+            cur.execute('''
                 INSERT INTO kmz_discovery_log
                 (source_name, source_url, source_type, routes_found, total_km, status)
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s)
             ''', (
                 'auto_discovery_cycle',
                 'scheduler',
@@ -601,9 +646,11 @@ class KMZAutoDiscovery:
                 'success'
             ))
             conn.commit()
-            conn.close()
+            cur.close()
         except Exception as e:
-            logger.debug(f"KMZ log write error: {e}")
+            logger.debug(f"KMZ log error: {e}")
+        finally:
+            _release(conn)
 
     def get_status(self) -> Dict:
         status = {
@@ -613,42 +660,47 @@ class KMZAutoDiscovery:
             'total_kmz_processed': self._cache.get('total_kmz_processed', 0),
         }
 
+        conn = None
         try:
-            conn = get_db(self.db_path)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
+            conn = _conn()
+            cur = conn.cursor()
 
-            cursor.execute("SELECT COUNT(*) as cnt FROM fiber_kmz_routes")
-            status['total_routes_in_db'] = cursor.fetchone()['cnt']
+            cur.execute("SELECT COUNT(*) FROM fiber_kmz_routes")
+            status['total_routes_in_db'] = cur.fetchone()[0]
 
-            cursor.execute("SELECT COUNT(*) as cnt FROM kmz_discovered_sources")
-            status['total_sources'] = cursor.fetchone()['cnt']
+            cur.execute("SELECT COUNT(*) FROM kmz_discovered_sources")
+            status['total_sources'] = cur.fetchone()[0]
 
-            cursor.execute("SELECT COUNT(*) as cnt FROM kmz_discovered_sources WHERE status = 'active'")
-            status['active_sources'] = cursor.fetchone()['cnt']
+            cur.execute("SELECT COUNT(*) FROM kmz_discovered_sources WHERE status = 'active'")
+            status['active_sources'] = cur.fetchone()[0]
 
-            cursor.execute("SELECT SUM(distance_km) as total FROM fiber_kmz_routes")
-            row = cursor.fetchone()
-            status['total_km'] = round(row['total'] or 0, 1)
+            cur.execute("SELECT COALESCE(SUM(distance_km), 0) FROM fiber_kmz_routes")
+            status['total_km'] = round(float(cur.fetchone()[0]), 1)
 
-            cursor.execute('''
-                SELECT provider, COUNT(*) as cnt, SUM(distance_km) as km
+            cur.execute('''
+                SELECT provider, COUNT(*) AS cnt, COALESCE(SUM(distance_km), 0) AS km
                 FROM fiber_kmz_routes
                 GROUP BY provider
                 ORDER BY cnt DESC
                 LIMIT 10
             ''')
             status['routes_by_provider'] = [
-                {'provider': r['provider'], 'routes': r['cnt'], 'km': round(r['km'] or 0, 1)}
-                for r in cursor.fetchall()
+                {'provider': r[0], 'routes': r[1], 'km': round(float(r[2]), 1)}
+                for r in cur.fetchall()
             ]
 
-            conn.close()
+            cur.close()
         except Exception as e:
             logger.debug(f"KMZ status query error: {e}")
+        finally:
+            _release(conn)
 
         return status
 
+
+# =============================================================================
+# SCHEDULER THREAD
+# =============================================================================
 
 _kmz_instance = None
 _kmz_scheduler_thread = None
@@ -660,7 +712,7 @@ def _run_kmz_scheduler(interval: int = 43200):
         _kmz_instance._scheduler_running = True
     logger.info(f"KMZ Discovery scheduler started (interval={interval}s / {interval//3600}h)")
 
-    time.sleep(360)
+    time.sleep(360)  # Wait 6 min after boot
 
     cycle_count = 0
     while _kmz_instance and _kmz_instance._scheduler_running:
@@ -699,10 +751,26 @@ def start_kmz_scheduler(interval: int = 43200):
     _kmz_scheduler_thread.start()
 
 
-def register_kmz_discovery_routes(app, start_scheduler=True):
-    from flask import Blueprint, jsonify, request
+# =============================================================================
+# FLASK REGISTRATION
+# =============================================================================
 
-    global _kmz_instance
+def register_kmz_discovery_routes(app, get_pg_fn, return_pg_fn, start_scheduler=True):
+    """
+    Register KMZ discovery routes and initialize Neon connection.
+
+    Usage in main.py:
+        from kmz_auto_discovery import register_kmz_discovery_routes
+        register_kmz_discovery_routes(app, get_pg_connection, return_pg_connection)
+    """
+    from flask import Blueprint, jsonify, request as flask_request
+
+    global _kmz_instance, _get_pg, _return_pg
+
+    # Inject DB connections
+    _get_pg = get_pg_fn
+    _return_pg = return_pg_fn
+
     if _kmz_instance is not None:
         if start_scheduler:
             _kmz_instance._scheduler_running = True
@@ -717,7 +785,7 @@ def register_kmz_discovery_routes(app, start_scheduler=True):
     def kmz_discovery_status():
         return jsonify({
             'success': True,
-            'engine': 'KMZ Auto-Discovery v1.0',
+            'engine': 'KMZ Auto-Discovery v3.0 (Neon)',
             **_kmz_instance.get_status()
         })
 
@@ -728,64 +796,91 @@ def register_kmz_discovery_routes(app, start_scheduler=True):
 
     @kmz_bp.route('/api/kmz-discovery/routes')
     def get_kmz_routes():
-        page = request.args.get('page', 1, type=int)
-        per_page = request.args.get('per_page', 50, type=int)
-        provider = request.args.get('provider')
+        page = flask_request.args.get('page', 1, type=int)
+        per_page = min(flask_request.args.get('per_page', 50, type=int), 200)
+        provider = flask_request.args.get('provider')
 
-        conn = get_read_db()
-        cursor = conn.cursor()
+        conn = None
+        try:
+            conn = _conn()
+            cur = conn.cursor()
 
-        where_clause = ""
-        params = []
-        if provider:
-            where_clause = "WHERE provider = ?"
-            params.append(provider)
+            where_clause = ""
+            params = []
+            if provider:
+                where_clause = "WHERE provider = %s"
+                params.append(provider)
 
-        cursor.execute(f"SELECT COUNT(*) as cnt FROM fiber_kmz_routes {where_clause}", params)
-        total = cursor.fetchone()['cnt']
+            cur.execute(f"SELECT COUNT(*) FROM fiber_kmz_routes {where_clause}", params)
+            total = cur.fetchone()[0]
 
-        offset = (page - 1) * per_page
-        cursor.execute(f'''
-            SELECT id, name, provider, route_type, start_point, end_point,
-                   distance_km, source_url, discovered_at
-            FROM fiber_kmz_routes
-            {where_clause}
-            ORDER BY discovered_at DESC
-            LIMIT ? OFFSET ?
-        ''', params + [per_page, offset])
+            offset = (page - 1) * per_page
+            cur.execute(f'''
+                SELECT id, name, provider, route_type, start_point, end_point,
+                       distance_km, source_url, discovered_at
+                FROM fiber_kmz_routes
+                {where_clause}
+                ORDER BY discovered_at DESC
+                LIMIT %s OFFSET %s
+            ''', params + [per_page, offset])
 
-        routes = [dict(r) for r in cursor.fetchall()]
-        conn.close()
+            cols = [d[0] for d in cur.description]
+            routes = [dict(zip(cols, r)) for r in cur.fetchall()]
 
-        return jsonify({
-            'success': True,
-            'routes': routes,
-            'total': total,
-            'page': page,
-            'per_page': per_page
-        })
+            # Convert timestamps to string
+            for route in routes:
+                if route.get('discovered_at'):
+                    route['discovered_at'] = str(route['discovered_at'])
+
+            cur.close()
+
+            return jsonify({
+                'success': True,
+                'routes': routes,
+                'total': total,
+                'page': page,
+                'per_page': per_page
+            })
+        except Exception as e:
+            return jsonify({'success': False, 'error': str(e)}), 500
+        finally:
+            _release(conn)
 
     @kmz_bp.route('/api/kmz-discovery/sources')
     def get_kmz_sources():
-        conn = get_read_db()
-        cursor = conn.cursor()
+        conn = None
+        try:
+            conn = _conn()
+            cur = conn.cursor()
 
-        cursor.execute('''
-            SELECT id, name, url, provider, category, source_type, status,
-                   routes_count, last_checked, discovered_at
-            FROM kmz_discovered_sources
-            ORDER BY discovered_at DESC
-            LIMIT 100
-        ''')
+            cur.execute('''
+                SELECT id, name, url, provider, category, source_type, status,
+                       routes_count, last_checked, discovered_at
+                FROM kmz_discovered_sources
+                ORDER BY discovered_at DESC
+                LIMIT 100
+            ''')
 
-        sources = [dict(r) for r in cursor.fetchall()]
-        conn.close()
+            cols = [d[0] for d in cur.description]
+            sources = []
+            for r in cur.fetchall():
+                src = dict(zip(cols, r))
+                for ts_field in ('last_checked', 'discovered_at'):
+                    if src.get(ts_field):
+                        src[ts_field] = str(src[ts_field])
+                sources.append(src)
 
-        return jsonify({
-            'success': True,
-            'sources': sources,
-            'total': len(sources)
-        })
+            cur.close()
+
+            return jsonify({
+                'success': True,
+                'sources': sources,
+                'total': len(sources)
+            })
+        except Exception as e:
+            return jsonify({'success': False, 'error': str(e)}), 500
+        finally:
+            _release(conn)
 
     app.register_blueprint(kmz_bp)
 
@@ -793,9 +888,9 @@ def register_kmz_discovery_routes(app, start_scheduler=True):
 
     if start_scheduler:
         start_kmz_scheduler()
-        logger.info("🗺️  KMZ Auto-Discovery v1.0: ✅ Registered (12-hour auto-cycle)")
+        logger.info("🗺️  KMZ Auto-Discovery v3.0: ✅ Registered (Neon, 12-hour auto-cycle)")
     else:
-        logger.info("🗺️  KMZ Auto-Discovery v1.0: ✅ Registered (scheduler PAUSED - manual POST only)")
+        logger.info("🗺️  KMZ Auto-Discovery v3.0: ✅ Registered (Neon, scheduler PAUSED)")
     logger.info("   GET  /api/kmz-discovery/status  - Discovery status")
     logger.info("   POST /api/kmz-discovery/run     - Trigger discovery cycle")
     logger.info("   GET  /api/kmz-discovery/routes  - Browse discovered routes")
