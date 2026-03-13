@@ -71,19 +71,13 @@ def _release(conn):
 # ---------------------------------------------------------------------------
 
 PUBLIC_KMZ_SOURCES = [
+    # ── FEDERAL FIBER / BROADBAND ────────────────────────────────
     {
         'name': 'NTIA National Broadband Map - Fiber Routes',
         'url': 'https://broadbandmap.fcc.gov/api/public/map/listHandshake',
         'type': 'api_discover',
         'provider': 'FCC/NTIA',
         'category': 'federal'
-    },
-    {
-        'name': 'HIFLD Electric Power Transmission Lines',
-        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Power_Transmission_Lines/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'HIFLD',
-        'category': 'power'
     },
     {
         'name': 'HIFLD Fiber Optic Cable Landing Points',
@@ -106,6 +100,118 @@ PUBLIC_KMZ_SOURCES = [
         'provider': 'NTIA',
         'category': 'fiber'
     },
+    # ── NTIA BEAD PROGRAM — Funded Fiber Builds by State ─────────
+    {
+        'name': 'NTIA BEAD Eligible Locations',
+        'url': 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/BEAD_Eligible_Locations/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'NTIA-BEAD',
+        'category': 'fiber'
+    },
+    {
+        'name': 'NTIA BEAD Challenge Process Results',
+        'url': 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/BEAD_Challenge_Results/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'NTIA-BEAD',
+        'category': 'fiber'
+    },
+    {
+        'name': 'NTIA BIP Round 2 Middle Mile',
+        'url': 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/NTIA_BIP_Round_2_Middle_Mile/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'NTIA',
+        'category': 'fiber'
+    },
+    {
+        'name': 'NTIA Tribal Broadband Connectivity',
+        'url': 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/Tribal_Broadband_Connectivity/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'NTIA',
+        'category': 'fiber'
+    },
+    # ── FCC BROADBAND DATA COLLECTION ────────────────────────────
+    {
+        'name': 'FCC Fixed Broadband Deployment',
+        'url': 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/Fixed_Broadband_Deployment/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'FCC',
+        'category': 'fiber'
+    },
+    {
+        'name': 'FCC Broadband Funding Map',
+        'url': 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/Broadband_Funding/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'FCC',
+        'category': 'fiber'
+    },
+    # ── USDA RECONNECT — Rural Fiber Builds ──────────────────────
+    {
+        'name': 'USDA ReConnect Funded Areas',
+        'url': 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/USDA_ReConnect_Funded_Areas/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'USDA',
+        'category': 'fiber'
+    },
+    # ── SUBMARINE CABLES ─────────────────────────────────────────
+    {
+        'name': 'HIFLD Submarine Cables',
+        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Submarine_Cables/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'HIFLD',
+        'category': 'fiber'
+    },
+    # ── CARRIER / DARK FIBER NETWORKS (Public GIS) ───────────────
+    {
+        'name': 'Zayo Fiber Network',
+        'url': 'https://services.arcgis.com/njFNhDsUCentVYJW/arcgis/rest/services/Zayo_Network/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'Zayo',
+        'category': 'fiber'
+    },
+    {
+        'name': 'Crown Castle Fiber',
+        'url': 'https://services.arcgis.com/njFNhDsUCentVYJW/arcgis/rest/services/Crown_Castle_Fiber/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'Crown Castle',
+        'category': 'fiber'
+    },
+    {
+        'name': 'Lumen Long Haul Fiber',
+        'url': 'https://services.arcgis.com/njFNhDsUCentVYJW/arcgis/rest/services/Lumen_Fiber/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'Lumen',
+        'category': 'fiber'
+    },
+    {
+        'name': 'Windstream Fiber Network',
+        'url': 'https://services.arcgis.com/njFNhDsUCentVYJW/arcgis/rest/services/Windstream_Fiber/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'Windstream',
+        'category': 'fiber'
+    },
+    # ── POWER INFRASTRUCTURE ─────────────────────────────────────
+    {
+        'name': 'HIFLD Electric Power Transmission Lines',
+        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Power_Transmission_Lines/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'HIFLD',
+        'category': 'power'
+    },
+    {
+        'name': 'HIFLD Electric Substations',
+        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Substations/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'HIFLD',
+        'category': 'power'
+    },
+    {
+        'name': 'HIFLD Power Plants',
+        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Power_Plants/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'HIFLD',
+        'category': 'power'
+    },
+    # ── GAS PIPELINE INFRASTRUCTURE ──────────────────────────────
     {
         'name': 'EIA Natural Gas Interstate/Intrastate Pipelines',
         'url': 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/Natural_Gas_Interstate_and_Intrastate_Pipelines_1/FeatureServer/0',
@@ -127,13 +233,106 @@ PUBLIC_KMZ_SOURCES = [
         'provider': 'EIA',
         'category': 'gas'
     },
+    {
+        'name': 'HIFLD Natural Gas Compressor Stations',
+        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Natural_Gas_Compressor_Stations/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'HIFLD',
+        'category': 'gas'
+    },
+    {
+        'name': 'HIFLD Natural Gas Processing Plants',
+        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Natural_Gas_Processing_Plants/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'HIFLD',
+        'category': 'gas'
+    },
+    {
+        'name': 'HIFLD LNG Import/Export Terminals',
+        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Liquefied_Natural_Gas_Import_Export_Terminals/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'HIFLD',
+        'category': 'gas'
+    },
+    {
+        'name': 'HIFLD Natural Gas Storage',
+        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Natural_Gas_Storage/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'HIFLD',
+        'category': 'gas'
+    },
+    {
+        'name': 'EIA Natural Gas Underground Storage',
+        'url': 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/Natural_Gas_Underground_Storage_1/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'EIA',
+        'category': 'gas'
+    },
+    # ── WATER INFRASTRUCTURE (data center cooling) ───────────────
+    {
+        'name': 'HIFLD Water Treatment Plants',
+        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Water_Treatment_Plants/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'HIFLD',
+        'category': 'water'
+    },
+    # ── INTERNATIONAL FIBER / INFRASTRUCTURE ─────────────────────
+    {
+        'name': 'Australia NBN Fiber Network',
+        'url': 'https://services.arcgis.com/bMDHnT5gHwXJ62Xo/arcgis/rest/services/NBN_Fixed_Line_Footprint/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'NBN-Australia',
+        'category': 'fiber'
+    },
+    {
+        'name': 'Canada CRTC Broadband',
+        'url': 'https://services.arcgis.com/G1JXlRDy3Sp3D6SO/arcgis/rest/services/Canada_Broadband_Internet/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'CRTC-Canada',
+        'category': 'fiber'
+    },
+    {
+        'name': 'UK Openreach Fiber',
+        'url': 'https://services.arcgis.com/dLMuXcEHPBYXdzOo/arcgis/rest/services/Openreach_Fibre/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'Openreach-UK',
+        'category': 'fiber'
+    },
 ]
 
 ARCGIS_FIBER_SEARCH_URLS = [
+    # ── Original fiber searches ──────────────────────────────────
     'https://www.arcgis.com/sharing/rest/search?q=fiber%20optic%20routes&sortField=modified&sortOrder=desc&num=20&f=json',
     'https://www.arcgis.com/sharing/rest/search?q=broadband%20infrastructure%20fiber&sortField=modified&sortOrder=desc&num=20&f=json',
     'https://www.arcgis.com/sharing/rest/search?q=telecommunications%20network%20routes&sortField=modified&sortOrder=desc&num=15&f=json',
     'https://www.arcgis.com/sharing/rest/search?q=dark%20fiber%20network%20map&sortField=modified&sortOrder=desc&num=10&f=json',
+    # ── Expanded fiber searches ──────────────────────────────────
+    'https://www.arcgis.com/sharing/rest/search?q=fiber%20backbone%20network&sortField=modified&sortOrder=desc&num=20&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=BEAD%20broadband%20fiber%20funded&sortField=modified&sortOrder=desc&num=20&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=middle%20mile%20fiber%20broadband&sortField=modified&sortOrder=desc&num=20&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=submarine%20cable%20fiber%20landing&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=conduit%20fiber%20route%20utility&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=lit%20fiber%20network%20carrier&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=NTIA%20broadband%20infrastructure%20program&sortField=modified&sortOrder=desc&num=20&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=broadband%20availability%20fiber%20coverage&sortField=modified&sortOrder=desc&num=20&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=rural%20broadband%20fiber%20deployment&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=state%20broadband%20office%20fiber%20map&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=internet%20service%20provider%20fiber%20footprint&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=FCC%20broadband%20data%20collection%20fiber&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=USDA%20ReConnect%20broadband%20fiber&sortField=modified&sortOrder=desc&num=10&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=fiber%20optic%20cable%20route%20GIS&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=metro%20fiber%20network%20urban&sortField=modified&sortOrder=desc&num=10&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=long%20haul%20fiber%20backbone%20intercity&sortField=modified&sortOrder=desc&num=10&f=json',
+    # ── International fiber searches ─────────────────────────────
+    'https://www.arcgis.com/sharing/rest/search?q=fibre%20optic%20network%20UK%20broadband&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=NBN%20fibre%20network%20Australia&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=fibre%20broadband%20Canada%20network&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=fibre%20optique%20reseau%20France&sortField=modified&sortOrder=desc&num=10&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=Glasfaser%20Netz%20Deutschland%20fiber&sortField=modified&sortOrder=desc&num=10&f=json',
+    # ── Data center specific searches ────────────────────────────
+    'https://www.arcgis.com/sharing/rest/search?q=data%20center%20fiber%20connectivity&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=colocation%20network%20fiber%20infrastructure&sortField=modified&sortOrder=desc&num=10&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=internet%20exchange%20point%20fiber%20route&sortField=modified&sortOrder=desc&num=10&f=json',
 ]
 
 ARCGIS_GAS_SEARCH_URLS = [
@@ -142,9 +341,12 @@ ARCGIS_GAS_SEARCH_URLS = [
     'https://www.arcgis.com/sharing/rest/search?q=natural%20gas%20compressor%20station&sortField=modified&sortOrder=desc&num=15&f=json',
     'https://www.arcgis.com/sharing/rest/search?q=LNG%20terminal%20natural%20gas%20storage&sortField=modified&sortOrder=desc&num=10&f=json',
     'https://www.arcgis.com/sharing/rest/search?q=PHMSA%20pipeline%20hazardous%20materials&sortField=modified&sortOrder=desc&num=10&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=natural%20gas%20distribution%20utility&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=hydrogen%20pipeline%20infrastructure&sortField=modified&sortOrder=desc&num=10&f=json',
 ]
 
 STATE_BROADBAND_GIS = [
+    # ── Original 8 states ────────────────────────────────────────
     {'name': 'Virginia Broadband', 'state': 'VA', 'url': 'https://gismaps.vdem.virginia.gov/arcgis/rest/services/Broadband', 'provider': 'Virginia'},
     {'name': 'Texas Broadband', 'state': 'TX', 'url': 'https://services.arcgis.com/KTcxiTD9dsQw4r7Z/arcgis/rest/services', 'provider': 'Texas'},
     {'name': 'Ohio Broadband', 'state': 'OH', 'url': 'https://gis.broadband.ohio.gov/arcgis/rest/services', 'provider': 'Ohio'},
@@ -153,6 +355,42 @@ STATE_BROADBAND_GIS = [
     {'name': 'Nevada Broadband', 'state': 'NV', 'url': 'https://services.arcgis.com/njFNhDsUCentVYJW/arcgis/rest/services', 'provider': 'Nevada'},
     {'name': 'Utah Broadband', 'state': 'UT', 'url': 'https://services1.arcgis.com/99lidPhWCzftIe9K/arcgis/rest/services', 'provider': 'Utah'},
     {'name': 'Arizona Broadband', 'state': 'AZ', 'url': 'https://services.arcgis.com/pdeMzRDpb5JCadVO/arcgis/rest/services', 'provider': 'Arizona'},
+    # ── Expanded: 30+ additional states ──────────────────────────
+    {'name': 'California Broadband', 'state': 'CA', 'url': 'https://services.arcgis.com/jIL9msH9OI208GCb/arcgis/rest/services', 'provider': 'California'},
+    {'name': 'Colorado Broadband', 'state': 'CO', 'url': 'https://services3.arcgis.com/66aUo8zsujfVXRIT/arcgis/rest/services', 'provider': 'Colorado'},
+    {'name': 'Connecticut Broadband', 'state': 'CT', 'url': 'https://services1.arcgis.com/FjPcSmEFuDYlIdKC/arcgis/rest/services', 'provider': 'Connecticut'},
+    {'name': 'Florida Broadband', 'state': 'FL', 'url': 'https://services1.arcgis.com/O1JpcwDW8sjYuddV/arcgis/rest/services', 'provider': 'Florida'},
+    {'name': 'Illinois Broadband', 'state': 'IL', 'url': 'https://services2.arcgis.com/aYGHaFSxvGBRbfu5/arcgis/rest/services', 'provider': 'Illinois'},
+    {'name': 'Indiana Broadband', 'state': 'IN', 'url': 'https://services.arcgis.com/rD2VKgKk0mKRRbGS/arcgis/rest/services', 'provider': 'Indiana'},
+    {'name': 'Kansas Broadband', 'state': 'KS', 'url': 'https://services.arcgis.com/Uf23bkSRaMGm9Xt7/arcgis/rest/services', 'provider': 'Kansas'},
+    {'name': 'Kentucky Broadband', 'state': 'KY', 'url': 'https://services1.arcgis.com/vQ8kO5yoE296eaEa/arcgis/rest/services', 'provider': 'Kentucky'},
+    {'name': 'Louisiana Broadband', 'state': 'LA', 'url': 'https://services.arcgis.com/vQ8kO5yoE296eaEa/arcgis/rest/services', 'provider': 'Louisiana'},
+    {'name': 'Maryland Broadband', 'state': 'MD', 'url': 'https://services.arcgis.com/njFNhDsUCentVYJW/arcgis/rest/services', 'provider': 'Maryland'},
+    {'name': 'Massachusetts Broadband', 'state': 'MA', 'url': 'https://services1.arcgis.com/hGdE1joQqX7O6Eh9/arcgis/rest/services', 'provider': 'Massachusetts'},
+    {'name': 'Michigan Broadband', 'state': 'MI', 'url': 'https://services1.arcgis.com/EWA21EXSY7NGATAQ/arcgis/rest/services', 'provider': 'Michigan'},
+    {'name': 'Minnesota Broadband', 'state': 'MN', 'url': 'https://services.arcgis.com/rK0AbevNKXJHF29c/arcgis/rest/services', 'provider': 'Minnesota'},
+    {'name': 'Missouri Broadband', 'state': 'MO', 'url': 'https://services2.arcgis.com/bMDHnT5gHwXJ62Xo/arcgis/rest/services', 'provider': 'Missouri'},
+    {'name': 'New Jersey Broadband', 'state': 'NJ', 'url': 'https://services2.arcgis.com/XVOqAjTOJ5P2QRIS/arcgis/rest/services', 'provider': 'New Jersey'},
+    {'name': 'New York Broadband', 'state': 'NY', 'url': 'https://services6.arcgis.com/ELlBgaFkeHEGj4Xr/arcgis/rest/services', 'provider': 'New York'},
+    {'name': 'North Carolina Broadband', 'state': 'NC', 'url': 'https://services.arcgis.com/iFBq2AW9XO0jYYF7/arcgis/rest/services', 'provider': 'North Carolina'},
+    {'name': 'Oregon Broadband', 'state': 'OR', 'url': 'https://services.arcgis.com/uUvqNMGPm7axC2dD/arcgis/rest/services', 'provider': 'Oregon'},
+    {'name': 'Pennsylvania Broadband', 'state': 'PA', 'url': 'https://services1.arcgis.com/vQ8kO5yoE296eaEa/arcgis/rest/services', 'provider': 'Pennsylvania'},
+    {'name': 'South Carolina Broadband', 'state': 'SC', 'url': 'https://services.arcgis.com/acgZYxoN5Oj8pDLa/arcgis/rest/services', 'provider': 'South Carolina'},
+    {'name': 'Tennessee Broadband', 'state': 'TN', 'url': 'https://services.arcgis.com/v400IkDOw1ad7Yad/arcgis/rest/services', 'provider': 'Tennessee'},
+    {'name': 'Washington Broadband', 'state': 'WA', 'url': 'https://services.arcgis.com/jsIt88o09Q0r1j8h/arcgis/rest/services', 'provider': 'Washington'},
+    {'name': 'Wisconsin Broadband', 'state': 'WI', 'url': 'https://services.arcgis.com/MBAg7bFsWBnQuLEi/arcgis/rest/services', 'provider': 'Wisconsin'},
+    {'name': 'Alabama Broadband', 'state': 'AL', 'url': 'https://services.arcgis.com/LERtTqlDdLMqqiM3/arcgis/rest/services', 'provider': 'Alabama'},
+    {'name': 'Mississippi Broadband', 'state': 'MS', 'url': 'https://services.arcgis.com/pDAi2YK0L0QxVJHG/arcgis/rest/services', 'provider': 'Mississippi'},
+    {'name': 'Oklahoma Broadband', 'state': 'OK', 'url': 'https://services.arcgis.com/RjyFCS5PqT0GwXag/arcgis/rest/services', 'provider': 'Oklahoma'},
+    {'name': 'Nebraska Broadband', 'state': 'NE', 'url': 'https://services.arcgis.com/PX1yVoqIVMefKX8j/arcgis/rest/services', 'provider': 'Nebraska'},
+    {'name': 'New Mexico Broadband', 'state': 'NM', 'url': 'https://services.arcgis.com/qnPLQFHr3GCeMJth/arcgis/rest/services', 'provider': 'New Mexico'},
+    {'name': 'West Virginia Broadband', 'state': 'WV', 'url': 'https://services.arcgis.com/qYTRmNE6XH0jihat/arcgis/rest/services', 'provider': 'West Virginia'},
+    {'name': 'Idaho Broadband', 'state': 'ID', 'url': 'https://services.arcgis.com/FjPcSmEFuDYlIdKC/arcgis/rest/services', 'provider': 'Idaho'},
+    {'name': 'Montana Broadband', 'state': 'MT', 'url': 'https://services.arcgis.com/qnjIJp7UJr6nLJwU/arcgis/rest/services', 'provider': 'Montana'},
+    {'name': 'Wyoming Broadband', 'state': 'WY', 'url': 'https://services.arcgis.com/6bMRakJlLJLYR9rZ/arcgis/rest/services', 'provider': 'Wyoming'},
+    {'name': 'Maine Broadband', 'state': 'ME', 'url': 'https://services1.arcgis.com/RbMX0mRVOFNTdLzd/arcgis/rest/services', 'provider': 'Maine'},
+    {'name': 'Vermont Broadband', 'state': 'VT', 'url': 'https://services1.arcgis.com/BkFxaEFNwHqX3tAw/arcgis/rest/services', 'provider': 'Vermont'},
+    {'name': 'New Hampshire Broadband', 'state': 'NH', 'url': 'https://services1.arcgis.com/lKUTqejQmSRZ1fIz/arcgis/rest/services', 'provider': 'New Hampshire'},
 ]
 
 
