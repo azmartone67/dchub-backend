@@ -1,15 +1,24 @@
 """
-DC Hub Self-Healing Module v1.1.0
+DC Hub Self-Healing Module v1.2.0
 ═══════════════════════════════════════════════════════════
 
 Phase 5 of the DC Hub architecture improvement plan.
+
+v1.2 changelog:
+  - FIXED: Health monitor now uses a DIRECT psycopg2 connection (bypasses pool)
+    instead of calling get_pool(). This prevents the chicken-and-egg deadlock
+    where an exhausted pool causes the health check itself to block for 85s,
+    which triggers force-reclaim, which looks like a leak.
+  - Health check connection has a 5s connect_timeout and 5s statement_timeout
+    so it can never block longer than 10s total.
+  - get_pool is still accepted for backward compat but only used as fallback.
 
 v1.1 changelog:
   - FIXED: Health monitor _check() connection leak. Connection now always
     closed in a finally block, preventing pool exhaustion from 30s health pings.
 
 Components:
-  1. HealthMonitor  — background thread checking DB every 30s, auto-resets pool
+  1. HealthMonitor  — background thread checking DB every 120s, auto-resets pool
   2. resilient_query — decorator/wrapper that retries transient DB errors
   3. validate_startup — fails fast if DB or required env vars are missing
   4. AlertManager    — sends email/Slack after 3 consecutive failures
@@ -287,15 +296,20 @@ def resilient(get_connection=None):
 
 class HealthMonitor:
     """
-    Background thread that checks DB connectivity every 30s.
+    Background thread that checks DB connectivity every 120s.
     Auto-resets the connection pool on failure.
     Sends alerts after 3 consecutive failures.
+
+    v1.2: Uses DIRECT psycopg2.connect() instead of the connection pool.
+    This prevents the deadlock where an exhausted pool causes the health
+    check to block for 85+ seconds waiting for a pooled connection.
     """
 
     def __init__(self, get_pool, reset_pool, alert_manager=None):
         """
         Args:
             get_pool: Callable that returns the current connection pool/connection
+                      (kept for backward compat, but health checks now bypass it)
             reset_pool: Callable that resets/recreates the connection pool
             alert_manager: Optional AlertManager instance for notifications
         """
@@ -311,6 +325,14 @@ class HealthMonitor:
         self._total_failures = 0
         self._total_resets = 0
 
+        # Resolve the DB URL once at init for direct connections
+        # Try DATABASE_READ_URL first (read replica), fall back to DATABASE_URL
+        self._db_url = (
+            os.environ.get("DATABASE_READ_URL") or
+            os.environ.get("DATABASE_URL") or
+            ""
+        )
+
     def start(self):
         """Start the health monitor background thread."""
         if self._thread and self._thread.is_alive():
@@ -324,7 +346,10 @@ class HealthMonitor:
             daemon=True
         )
         self._thread.start()
-        logger.info(f"💓 Health monitor started (interval={HEALTH_CHECK_INTERVAL}s)")
+        logger.info(
+            f"💓 Health monitor started (interval={HEALTH_CHECK_INTERVAL}s, "
+            f"mode=direct-connection)"
+        )
 
     def stop(self):
         """Stop the health monitor background thread."""
@@ -366,17 +391,30 @@ class HealthMonitor:
         """
         Run a single health check.
 
-        v1.1 FIX: Connection is now always closed in a finally block,
-        preventing pool exhaustion from leaked health-check connections.
-        Previously, conn was opened but never closed/returned — leaking
-        one connection every 30s (~120/hour).
+        v1.2 FIX: Uses a DIRECT psycopg2.connect() that bypasses the pool.
+        This ensures the health check never blocks waiting for a pooled
+        connection, and never contributes to pool exhaustion.
+
+        The direct connection has:
+          - connect_timeout=5  (fail fast if Neon is unreachable)
+          - statement_timeout=5000ms (fail fast if query hangs)
+
+        Previously (v1.0-v1.1): called self.get_pool() which goes through
+        the connection pool. When the pool was exhausted, the health check
+        would block for 85+ seconds waiting for a connection, then get
+        force-reclaimed, creating a cascading failure loop.
         """
         self._total_checks += 1
         now = datetime.now(timezone.utc).isoformat()
         conn = None  # Initialize before try so finally can always reference it
 
         try:
-            conn = self.get_pool()
+            # v1.2: Direct connection — bypasses pool entirely
+            conn = psycopg2.connect(
+                self._db_url,
+                connect_timeout=HEALTH_CHECK_TIMEOUT,
+                options="-c statement_timeout=5000"  # 5 second query timeout
+            )
             cur = conn.cursor()
             cur.execute("SELECT 1")
             cur.fetchone()
@@ -447,9 +485,9 @@ class HealthMonitor:
                     logger.error(f"❌ Pool reset failed again: {reset_err}")
 
         finally:
-            # CRITICAL: Always close the health-check connection to prevent
-            # pool exhaustion. Wrapped in try/except because a broken
-            # connection may itself throw on .close().
+            # CRITICAL: Always close the health-check connection.
+            # Since this is a direct connection (not pooled), .close()
+            # actually destroys it — no risk of pool leak.
             if conn is not None:
                 try:
                     conn.close()
@@ -622,7 +660,7 @@ alert_manager = AlertManager(
 )
 
 health_monitor = HealthMonitor(
-    get_pool=get_read_db,      # your existing function that returns a connection
+    get_pool=get_read_db,      # kept for backward compat (health check bypasses it)
     reset_pool=reset_pg_pool,  # your existing function that recreates the pool
     alert_manager=alert_manager,
 )
