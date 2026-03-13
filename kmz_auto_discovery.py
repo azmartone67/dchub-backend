@@ -443,6 +443,70 @@ PUBLIC_KMZ_SOURCES = [
         'provider': 'HIFLD',
         'category': 'power'
     },
+    # ── ADDITIONAL INFRASTRUCTURE LAYERS ──────────────────────────
+    {
+        'name': 'HIFLD Railroads',
+        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Railroads/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'HIFLD',
+        'category': 'transport'
+    },
+    {
+        'name': 'HIFLD Major Dams',
+        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Major_Dams/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'HIFLD',
+        'category': 'water'
+    },
+    {
+        'name': 'HIFLD Wastewater Treatment Plants',
+        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Wastewater_Treatment_Plants/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'HIFLD',
+        'category': 'water'
+    },
+    {
+        'name': 'EIA Electric Retail Service Territories',
+        'url': 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/Electric_Retail_Service_Territories_2/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'EIA',
+        'category': 'power'
+    },
+    {
+        'name': 'EIA Electric Planning Areas',
+        'url': 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/Electric_Planning_Areas_1/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'EIA',
+        'category': 'power'
+    },
+    {
+        'name': 'EIA Coal Mines',
+        'url': 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/Coal_Mines_1/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'EIA',
+        'category': 'power'
+    },
+    {
+        'name': 'FEMA National Flood Hazard Layer',
+        'url': 'https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/USA_Flood_Hazard_Reduced_Set/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'FEMA',
+        'category': 'risk'
+    },
+    {
+        'name': 'EPA Superfund Sites (NPL)',
+        'url': 'https://services.arcgis.com/cJ9YHowT8TU7DUyn/arcgis/rest/services/Superfund_National_Priorities_List/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'EPA',
+        'category': 'risk'
+    },
+    {
+        'name': 'US Opportunity Zones',
+        'url': 'https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/Opportunity_Zone_Tract/FeatureServer/0',
+        'type': 'arcgis_kml',
+        'provider': 'CDFI',
+        'category': 'incentive'
+    },
 ]
 
 ARCGIS_FIBER_SEARCH_URLS = [
@@ -502,6 +566,47 @@ ARCGIS_FIBER_SEARCH_URLS = [
     'https://www.arcgis.com/sharing/rest/search?q=conduit%20duct%20fiber%20telecommunications%20city&sortField=modified&sortOrder=desc&num=15&f=json',
     'https://www.arcgis.com/sharing/rest/search?q=fiber%20to%20the%20premises%20FTTP%20network%20GIS&sortField=modified&sortOrder=desc&num=15&f=json',
     'https://www.arcgis.com/sharing/rest/search?q=broadband%20grant%20ARPA%20fiber%20construction&sortField=modified&sortOrder=desc&num=15&f=json',
+    # ── Utility interconnection & capacity ───────────────────────
+    'https://www.arcgis.com/sharing/rest/search?q=utility%20interconnection%20queue%20generator&sortField=modified&sortOrder=desc&num=20&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=transmission%20capacity%20available%20headroom&sortField=modified&sortOrder=desc&num=20&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=load%20pocket%20constrained%20area%20transmission&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=substation%20capacity%20available%20MW%20electric&sortField=modified&sortOrder=desc&num=20&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=electric%20service%20territory%20utility%20boundary&sortField=modified&sortOrder=desc&num=20&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=transmission%20constraint%20congestion%20curtailment&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=generation%20interconnection%20study%20queue&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=system%20impact%20study%20transmission%20upgrade&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=FERC%20interconnection%20large%20generator&sortField=modified&sortOrder=desc&num=10&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=hosting%20capacity%20map%20distribution%20DER&sortField=modified&sortOrder=desc&num=20&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=available%20transfer%20capability%20ATC%20transmission&sortField=modified&sortOrder=desc&num=15&f=json',
+    # ── Substations & power infrastructure detail ────────────────
+    'https://www.arcgis.com/sharing/rest/search?q=substation%20voltage%20transformer%20electric%20GIS&sortField=modified&sortOrder=desc&num=20&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=high%20voltage%20transmission%20line%20345kV%20500kV%20765kV&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=electric%20distribution%20feeder%20circuit%20map&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=planned%20transmission%20line%20upgrade%20expansion&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=renewable%20energy%20zone%20solar%20wind%20farm%20GIS&sortField=modified&sortOrder=desc&num=20&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=battery%20storage%20energy%20BESS%20location&sortField=modified&sortOrder=desc&num=10&f=json',
+    # ── Gas midstream & capacity ─────────────────────────────────
+    'https://www.arcgis.com/sharing/rest/search?q=midstream%20gas%20pipeline%20gathering%20processing&sortField=modified&sortOrder=desc&num=20&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=gas%20pipeline%20capacity%20throughput%20diameter&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=natural%20gas%20lateral%20distribution%20main&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=gas%20metering%20station%20city%20gate%20delivery&sortField=modified&sortOrder=desc&num=10&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=pipeline%20right%20of%20way%20easement%20corridor&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=CNG%20RNG%20biogas%20renewable%20natural%20gas%20facility&sortField=modified&sortOrder=desc&num=10&f=json',
+    # ── Water & cooling infrastructure ───────────────────────────
+    'https://www.arcgis.com/sharing/rest/search?q=water%20supply%20treatment%20plant%20capacity%20municipal&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=water%20main%20transmission%20pipeline%20diameter&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=wastewater%20treatment%20reclaimed%20water%20reuse&sortField=modified&sortOrder=desc&num=10&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=drought%20monitor%20water%20stress%20groundwater%20level&sortField=modified&sortOrder=desc&num=10&f=json',
+    # ── Transportation & site access ─────────────────────────────
+    'https://www.arcgis.com/sharing/rest/search?q=freight%20rail%20line%20railroad%20infrastructure&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=interstate%20highway%20interchange%20access%20road&sortField=modified&sortOrder=desc&num=10&f=json',
+    # ── Environmental & permitting ───────────────────────────────
+    'https://www.arcgis.com/sharing/rest/search?q=zoning%20industrial%20commercial%20land%20use%20parcel&sortField=modified&sortOrder=desc&num=20&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=environmental%20impact%20assessment%20NEPA%20site&sortField=modified&sortOrder=desc&num=10&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=flood%20zone%20FEMA%20hazard%20map%20floodplain&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=seismic%20hazard%20earthquake%20fault%20zone&sortField=modified&sortOrder=desc&num=10&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=brownfield%20superfund%20EPA%20contaminated%20site&sortField=modified&sortOrder=desc&num=10&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=opportunity%20zone%20enterprise%20tax%20incentive&sortField=modified&sortOrder=desc&num=15&f=json',
 ]
 
 ARCGIS_GAS_SEARCH_URLS = [
