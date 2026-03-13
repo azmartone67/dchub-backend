@@ -21,10 +21,13 @@ Dependencies imported from main.py (app-level):
 
 import os
 import math
+import logging
 import requests
 from flask import Blueprint, request, jsonify, Response
 
 from utils.cache import BoundedCache
+
+logger = logging.getLogger('energy_routes')
 
 # Create Blueprint - registered in main.py as app.register_blueprint(energy_bp)
 energy_bp = Blueprint('energy', __name__)
@@ -160,6 +163,8 @@ def gridstatus_get_load(iso_id):
         print(f"GridStatus load error for {iso_id}: {e}")
     return None
 
+_GRIDSTATUS_LAST_ERRORS = {}  # Track last error per ISO for diagnostics
+
 def gridstatus_get_fuel_mix(iso_id):
     """Get latest fuel mix from an ISO — creates fresh gridstatus instance per call."""
     try:
@@ -193,9 +198,17 @@ def gridstatus_get_fuel_mix(iso_id):
                 for fuel in fuel_mix:
                     fuel_mix[fuel]['percentage'] = round(fuel_mix[fuel]['mw'] / total * 100, 1) if total > 0 else 0
                 time_val = rec.get('Time') or rec.get('interval_start') or rec.get('Interval Start')
+                _GRIDSTATUS_LAST_ERRORS.pop(iso_id, None)
                 return {'fuel_mix': fuel_mix, 'total_mw': round(total), 'timestamp': str(time_val)}
+        else:
+            _GRIDSTATUS_LAST_ERRORS[iso_id] = 'Empty dataframe returned'
+            logger.warning(f"GridStatus returned empty dataframe for {iso_id}")
+    except ImportError as e:
+        _GRIDSTATUS_LAST_ERRORS[iso_id] = f'ImportError: {e}'
+        logger.error(f"GridStatus import error: {e}")
     except Exception as e:
-        print(f"GridStatus fuel mix error for {iso_id}: {e}")
+        _GRIDSTATUS_LAST_ERRORS[iso_id] = f'{type(e).__name__}: {e}'
+        logger.error(f"GridStatus fuel mix error for {iso_id}: {type(e).__name__}: {e}")
     return None
 
 def gridstatus_cached(key, fetch_func):
@@ -472,6 +485,39 @@ def grid_fuel_mix_live():
         return jsonify({"error": "No data returned from gridstatus"}), 500
     except Exception as e:
         return jsonify({"error": str(e), "type": type(e).__name__}), 500
+
+@energy_bp.route('/api/grid/fuel-mix-diag', methods=['GET'])
+def grid_fuel_mix_diag():
+    """Diagnostic endpoint — shows gridstatus status, last errors, library version."""
+    import importlib
+    diag = {
+        'gridstatus_library_available': GRIDSTATUS_LIBRARY_AVAILABLE,
+        'gridstatus_isos_loaded': list(GRIDSTATUS_ISOS.keys()),
+        'last_errors': dict(_GRIDSTATUS_LAST_ERRORS),
+        'cache_keys': list(GRIDSTATUS_CACHE._cache.keys()) if hasattr(GRIDSTATUS_CACHE, '_cache') else [],
+    }
+    try:
+        import gridstatus as _gs
+        diag['gridstatus_version'] = getattr(_gs, '__version__', 'unknown')
+    except ImportError as e:
+        diag['gridstatus_import_error'] = str(e)
+
+    # Try a quick CAISO fetch as smoke test
+    iso_arg = request.args.get('iso', '').upper()
+    if iso_arg:
+        try:
+            result = gridstatus_get_fuel_mix(iso_arg)
+            diag['live_test'] = {'iso': iso_arg, 'success': result is not None}
+            if result:
+                diag['live_test']['total_mw'] = result.get('total_mw')
+                diag['live_test']['fuels'] = len(result.get('fuel_mix', {}))
+                diag['live_test']['timestamp'] = result.get('timestamp')
+            else:
+                diag['live_test']['error'] = _GRIDSTATUS_LAST_ERRORS.get(iso_arg, 'returned None')
+        except Exception as e:
+            diag['live_test'] = {'iso': iso_arg, 'error': f'{type(e).__name__}: {e}'}
+
+    return jsonify(diag)
 
 @energy_bp.route('/api/grid/fuel-mix', methods=['GET'])
 @require_plan('free')
@@ -2534,4 +2580,3 @@ def search_operator():
     })
 
 print("🛢️ Oil & Gas Operator Integration: ✅ Routes registered")
-
