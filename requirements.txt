@@ -42,3 +42,6 @@ psutil
 # Backup (R2/S3)
 boto3
 h3>=4.0
+# Energy/Grid Data
+gridstatus
+tzdata
