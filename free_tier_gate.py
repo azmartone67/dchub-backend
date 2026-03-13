@@ -242,6 +242,12 @@ def init_free_tier_gate(app, get_db_conn):
         if not GATE_ENABLED:
             return None
         path = request.path
+        # Bypass internal MCP server calls
+        if request.headers.get("X-Internal-Key") in ("dchub-internal-2024", "dchub-internal-sync-2026"):
+            return None
+        # Bypass internal MCP server calls
+        if request.headers.get("X-Internal-Key") in ("dchub-internal-2024", "dchub-internal-sync-2026"):
+            return None
         if is_always_open(path):
             return None
         if not is_gated(path):

@@ -1128,7 +1128,7 @@ def get_degraded_data(key):
 @app.route('/api/stats')
 def api_stats_shortcut():
     """Redirect /api/stats → /api/v1/stats"""
-    from flask import redirect, request
+    from flask import make_response, request
     qs = request.query_string.decode()
     target = '/api/v1/stats'
     if qs:
@@ -1139,7 +1139,7 @@ def api_stats_shortcut():
 @require_plan('pro')
 def api_facilities_shortcut():
     """Redirect /api/facilities → /api/v1/facilities"""
-    from flask import redirect, request
+    from flask import make_response, request
     qs = request.query_string.decode()
     target = '/api/v1/facilities'
     if qs:
@@ -3700,10 +3700,11 @@ except Exception as e:
 
 @app.route('/api/grid/fuel-mix-live', methods=['GET'])
 def grid_fuel_mix_live_alias():
-    from flask import redirect
-    args = request.query_string.decode()
-    target = f'/api/grid/fuel-mix?{args}' if args else '/api/grid/fuel-mix'
-    return redirect(target, code=307)
+    from flask import make_response
+    # Forward directly instead of redirect (preserves X-Internal-Key header)
+    from werkzeug.test import EnvironBuilder
+    with app.test_request_context(f'/api/grid/fuel-mix?{request.query_string.decode()}', headers=dict(request.headers)):
+        return app.full_dispatch_request()
 
 # =============================================================================
 # SECURITY HEADERS & API TRACKING (Applied to all responses)
