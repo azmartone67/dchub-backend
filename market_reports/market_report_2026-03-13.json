@@ -1,6 +1,6 @@
 {
   "report_date": "2026-03-13",
-  "generated_at": "2026-03-13T10:20:18.896512",
+  "generated_at": "2026-03-13T19:13:58.328130",
   "summary": {
     "total_facilities": 11779,
     "total_providers": 2806,
@@ -89,54 +89,54 @@
   ],
   "recent_news": [
     {
-      "title": "2026 Outlook: Capacity growth remains robust as tenants prioritize speed to market",
+      "title": "Solid-state transformer developer Hyperscale Power raises \u20ac5m in seed round",
       "source": "Data Center Dynamics",
-      "date": "2026-03-13T08:27:10"
+      "date": "2026-03-13T18:30:03"
     },
     {
-      "title": "Xanadu negotiating with Canadian government for CA$390m to fund chip and photonics manufacturing project",
+      "title": "Am\u00e9rica M\u00f3vil explores possible Colombian acquisition - report",
       "source": "Data Center Dynamics",
-      "date": "2026-03-13T08:18:07"
+      "date": "2026-03-13T18:20:04"
     },
     {
-      "title": "Nostrum Data Centers consolidates its maturity with key milestones in Badajoz, Guadalajara, and Galicia",
-      "source": "BeBeez International",
-      "date": "2026-03-13T08:10:10"
+      "title": "Preparing Enterprise Data Centers for AI Adoption",
+      "source": "Data Center Knowledge",
+      "date": "2026-03-13T18:14:10"
     },
     {
-      "title": "Pennsylvania\u2019s data center boom, by the numbers",
-      "source": "Spotlight PA",
-      "date": "2026-03-13T08:00:00"
-    },
-    {
-      "title": "Blustering Blackbeard's PC was all at sea, sysadmin got him shipshape in seconds",
+      "title": "AFRINIC accuses litigant of trying to \u2018paralyse\u2019 it",
       "source": "The Register DC",
-      "date": "2026-03-13T07:30:06"
+      "date": "2026-03-13T18:13:39"
     },
     {
-      "title": "Palantir And Nvidia Want To Be The Default AI Infrastructure For Governments Worldwide: What AIOS-RA Is All Bout",
-      "source": "Stocktwits",
-      "date": "2026-03-13T07:22:00"
+      "title": "The More Americans Learn About Data Centers, the Less They Like Them",
+      "source": "Business Insider",
+      "date": "2026-03-13T18:10:24"
     },
     {
-      "title": "Aurionpro wins \u20b9350 crore hyperscale data centre deal to build 30 MW AI-ready facility in South India",
-      "source": "CRN Asia",
-      "date": "2026-03-13T07:18:43"
+      "title": "Orange conducts 5G Standalone trial for emergency services in Spain",
+      "source": "Data Center Dynamics",
+      "date": "2026-03-13T18:00:03"
     },
     {
-      "title": "ByteDance Acquires Nvidia Blackwell GPUs in Malaysia to Expand AI Infrastructure",
-      "source": "techi.com",
-      "date": "2026-03-13T07:16:18"
+      "title": "Rio Tinto, Prysmian partner on low-carbon aluminum solutions for data centers",
+      "source": "Recycling Today",
+      "date": "2026-03-13T17:50:52"
     },
     {
-      "title": "NVIDIA And Palantir Target Sovereign AI With Full Stack Data Centers",
-      "source": "Yahoo Finance Singapore",
-      "date": "2026-03-13T07:07:01"
+      "title": "US real estate firm Comstock launches data center unit",
+      "source": "Data Center Dynamics",
+      "date": "2026-03-13T17:50:03"
     },
     {
-      "title": "Europe Data Center Power Market to Reach $28.76 Billion by 2032",
-      "source": "openPR.com",
-      "date": "2026-03-13T06:46:22"
+      "title": "Florida may remove public's right to know on data centers",
+      "source": "Tallahassee Democrat",
+      "date": "2026-03-13T17:36:01"
+    },
+    {
+      "title": "KKR (KKR) explores $3 billion sale of data center cooling firm CoolIT Systems",
+      "source": "MSN",
+      "date": "2026-03-13T17:31:36"
     }
   ],
   "data_sources": [
