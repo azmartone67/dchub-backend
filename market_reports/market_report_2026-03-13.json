@@ -1,6 +1,6 @@
 {
   "report_date": "2026-03-13",
-  "generated_at": "2026-03-13T01:55:49.233843",
+  "generated_at": "2026-03-13T08:33:09.458326",
   "summary": {
     "total_facilities": 11779,
     "total_providers": 2806,
@@ -89,54 +89,54 @@
   ],
   "recent_news": [
     {
-      "title": "Central Ohio's data center boom could expand to Northeast Ohio as soon as this year",
-      "source": "The Business Journals",
-      "date": "2026-03-12T19:46:00"
-    },
-    {
-      "title": "Big Tech Data Center Lease Commitments Top $700 Billion as AI Spending Rises",
-      "source": "TradingView",
-      "date": "2026-03-12T19:12:48"
-    },
-    {
-      "title": "Nebius: $2 Billion Strategic Investment From NVIDIA To Build Hyperscale AI Cloud Infrastructure",
-      "source": "Pulse 2.0",
-      "date": "2026-03-12T18:44:58"
-    },
-    {
-      "title": "HCM City plans $2.1b AI data center investment",
-      "source": "Tech in Asia",
-      "date": "2026-03-12T18:21:00"
-    },
-    {
-      "title": "Gibraltar data center could support DTE grid with diesel generators: Developer",
-      "source": "Planet Detroit",
-      "date": "2026-03-12T18:09:28"
-    },
-    {
-      "title": "Columbus City Council meeting debates the local impact of data centers",
-      "source": "Matter News",
-      "date": "2026-03-12T18:08:50"
-    },
-    {
-      "title": "Funds Load Up On Data Center Play; Stock Rockets Near Buy Point",
-      "source": "Yahoo Finance",
-      "date": "2026-03-12T17:16:08"
-    },
-    {
-      "title": "Phononic: Advancing Cooling Technology for AI Data Centres",
-      "source": "Data Centre Magazine",
-      "date": "2026-03-12T17:03:09"
-    },
-    {
-      "title": "How are Data Centres Supporting Local Construction Workers?",
-      "source": "Construction Digital",
-      "date": "2026-03-12T16:58:45"
-    },
-    {
-      "title": "Humain secures 211 plots of land in Saudi Arabia for data centers",
+      "title": "2026 Outlook: Capacity growth remains robust as tenants prioritize speed to market",
       "source": "Data Center Dynamics",
-      "date": "2026-03-12T16:50:03"
+      "date": "2026-03-13T08:27:10"
+    },
+    {
+      "title": "Xanadu negotiating with Canadian government for CA$390m to fund chip and photonics manufacturing project",
+      "source": "Data Center Dynamics",
+      "date": "2026-03-13T08:18:07"
+    },
+    {
+      "title": "Nostrum Data Centers consolidates its maturity with key milestones in Badajoz, Guadalajara, and Galicia",
+      "source": "BeBeez International",
+      "date": "2026-03-13T08:10:10"
+    },
+    {
+      "title": "Pennsylvania\u2019s data center boom, by the numbers",
+      "source": "Spotlight PA",
+      "date": "2026-03-13T08:00:00"
+    },
+    {
+      "title": "Blustering Blackbeard's PC was all at sea, sysadmin got him shipshape in seconds",
+      "source": "The Register DC",
+      "date": "2026-03-13T07:30:06"
+    },
+    {
+      "title": "Palantir And Nvidia Want To Be The Default AI Infrastructure For Governments Worldwide: What AIOS-RA Is All Bout",
+      "source": "Stocktwits",
+      "date": "2026-03-13T07:22:00"
+    },
+    {
+      "title": "Aurionpro wins \u20b9350 crore hyperscale data centre deal to build 30 MW AI-ready facility in South India",
+      "source": "CRN Asia",
+      "date": "2026-03-13T07:18:43"
+    },
+    {
+      "title": "ByteDance Acquires Nvidia Blackwell GPUs in Malaysia to Expand AI Infrastructure",
+      "source": "techi.com",
+      "date": "2026-03-13T07:16:18"
+    },
+    {
+      "title": "NVIDIA And Palantir Target Sovereign AI With Full Stack Data Centers",
+      "source": "Yahoo Finance Singapore",
+      "date": "2026-03-13T07:07:01"
+    },
+    {
+      "title": "Europe Data Center Power Market to Reach $28.76 Billion by 2032",
+      "source": "openPR.com",
+      "date": "2026-03-13T06:46:22"
     }
   ],
   "data_sources": [
