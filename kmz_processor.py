@@ -213,7 +213,7 @@ class InfrastructureLayerDB:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
             cur.execute("""
-                SELECT id, url, category, name, status FROM kmz_sources
+                SELECT id, url, category, name, status FROM kmz_discovered_sources
                 WHERE status = 'empty'
                 ORDER BY CASE WHEN category IN ('fiber','power','transmission','substation') THEN 0 ELSE 1 END, id
                 LIMIT ?
@@ -228,7 +228,7 @@ class InfrastructureLayerDB:
     def update_source_status(self, source_id, status, features_count=0):
         try:
             conn = sqlite3.connect(SQLITE_DB)
-            conn.execute("UPDATE kmz_sources SET status=? WHERE id=?", (status, source_id))
+            conn.execute("UPDATE kmz_discovered_sources SET status=? WHERE id=?", (status, source_id))
             conn.commit()
             conn.close()
         except Exception as e:
@@ -336,9 +336,9 @@ class KMZProcessor:
         try:
             c = sqlite3.connect(SQLITE_DB)
             cur = c.cursor()
-            cur.execute("SELECT status, COUNT(*) FROM kmz_sources GROUP BY status")
+            cur.execute("SELECT status, COUNT(*) FROM kmz_discovered_sources GROUP BY status")
             stats['sqlite'] = {r[0]: r[1] for r in cur.fetchall()}
-            cur.execute("SELECT COUNT(*) FROM kmz_sources")
+            cur.execute("SELECT COUNT(*) FROM kmz_discovered_sources")
             stats['sqlite']['total'] = cur.fetchone()[0]
             c.close()
         except Exception as e:
