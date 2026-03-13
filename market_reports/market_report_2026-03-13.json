@@ -1,0 +1,154 @@
+{
+  "report_date": "2026-03-13",
+  "generated_at": "2026-03-13T00:27:15.290537",
+  "summary": {
+    "total_facilities": 11779,
+    "total_providers": 2806,
+    "countries_covered": 167,
+    "total_power_mw": 34230.0,
+    "total_deals": 628,
+    "total_deal_value_usd": 747099700000.0
+  },
+  "market_highlights": [
+    "DC Hub tracks 11,779 data center facilities globally",
+    "Coverage spans 167 countries with 2806 providers",
+    "Combined capacity: 34,230 MW",
+    "M&A database: 628 transactions worth $747.1B+"
+  ],
+  "recent_deals": [
+    {
+      "buyer": "Billion Deal",
+      "seller": "Nordic Data",
+      "value_usd": 4000000000.0,
+      "type": "acquisition",
+      "date": null
+    },
+    {
+      "buyer": "Billion Deal",
+      "seller": "Nordic Data",
+      "value_usd": 4000000000.0,
+      "type": "acquisition",
+      "date": null
+    },
+    {
+      "buyer": "Accenture down",
+      "seller": "Downdetector as",
+      "value_usd": 1200000000.0,
+      "type": "acquisition",
+      "date": null
+    },
+    {
+      "buyer": "Billion Deal",
+      "seller": "Nordic Data",
+      "value_usd": 4000000000.0,
+      "type": "acquisition",
+      "date": null
+    },
+    {
+      "buyer": "7bn deal",
+      "seller": "US power",
+      "value_usd": 10700000000.0,
+      "type": "acquisition",
+      "date": null
+    },
+    {
+      "buyer": "Billion Deal",
+      "seller": "Nordic Data",
+      "value_usd": 4000000000.0,
+      "type": "acquisition",
+      "date": null
+    },
+    {
+      "buyer": "Accenture",
+      "seller": "Ookla",
+      "value_usd": 1200000000.0,
+      "type": "acquisition",
+      "date": null
+    },
+    {
+      "buyer": "It a",
+      "seller": "for 2026",
+      "value_usd": 10000000000.0,
+      "type": "acquisition",
+      "date": null
+    },
+    {
+      "buyer": "Billion Deal",
+      "seller": "Nordic Data",
+      "value_usd": 4000000000.0,
+      "type": "acquisition",
+      "date": null
+    },
+    {
+      "buyer": "Billion Deal",
+      "seller": "Nordic Data",
+      "value_usd": 4000000000.0,
+      "type": "acquisition",
+      "date": null
+    }
+  ],
+  "recent_news": [
+    {
+      "title": "Central Ohio's data center boom could expand to Northeast Ohio as soon as this year",
+      "source": "The Business Journals",
+      "date": "2026-03-12T19:46:00"
+    },
+    {
+      "title": "Big Tech Data Center Lease Commitments Top $700 Billion as AI Spending Rises",
+      "source": "TradingView",
+      "date": "2026-03-12T19:12:48"
+    },
+    {
+      "title": "Nebius: $2 Billion Strategic Investment From NVIDIA To Build Hyperscale AI Cloud Infrastructure",
+      "source": "Pulse 2.0",
+      "date": "2026-03-12T18:44:58"
+    },
+    {
+      "title": "HCM City plans $2.1b AI data center investment",
+      "source": "Tech in Asia",
+      "date": "2026-03-12T18:21:00"
+    },
+    {
+      "title": "Gibraltar data center could support DTE grid with diesel generators: Developer",
+      "source": "Planet Detroit",
+      "date": "2026-03-12T18:09:28"
+    },
+    {
+      "title": "Columbus City Council meeting debates the local impact of data centers",
+      "source": "Matter News",
+      "date": "2026-03-12T18:08:50"
+    },
+    {
+      "title": "Funds Load Up On Data Center Play; Stock Rockets Near Buy Point",
+      "source": "Yahoo Finance",
+      "date": "2026-03-12T17:16:08"
+    },
+    {
+      "title": "Phononic: Advancing Cooling Technology for AI Data Centres",
+      "source": "Data Centre Magazine",
+      "date": "2026-03-12T17:03:09"
+    },
+    {
+      "title": "How are Data Centres Supporting Local Construction Workers?",
+      "source": "Construction Digital",
+      "date": "2026-03-12T16:58:45"
+    },
+    {
+      "title": "Humain secures 211 plots of land in Saudi Arabia for data centers",
+      "source": "Data Center Dynamics",
+      "date": "2026-03-12T16:50:03"
+    }
+  ],
+  "data_sources": [
+    "PeeringDB",
+    "OpenStreetMap",
+    "SEC EDGAR",
+    "Wikidata",
+    "60+ RSS Feeds",
+    "EIA Energy API",
+    "Grid Status API",
+    "FCC Broadband API",
+    "EPA Envirofacts"
+  ],
+  "citation": "According to DC Hub Nexus (dchub.cloud)"
+}
