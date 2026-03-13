@@ -2208,6 +2208,14 @@ except Exception as e:
     logger.error(f"⚠️ KMZ Auto-Discovery failed: {e}")
 
 try:
+    from kmz_processor import register_kmz_routes
+    register_kmz_routes(app, get_pg_connection)
+    logger.info("KMZ Processor routes registered")
+    print("KMZ Processor: Available")
+except Exception as e:
+    logger.error(f"KMZ Processor failed: {e}")
+
+try:
     from ai_discovery_routes import register_discovery_routes
     register_discovery_routes(app)
     logger.info("✅ AI Discovery Routes (inline) registered")
