@@ -81,17 +81,17 @@ def facility_trends():
     months = min(request.args.get('months', 24, type=int), 120)
 
     if granularity == 'quarter':
-        trunc = "date_trunc('quarter', discovered_at)"
-        fmt = "to_char(date_trunc('quarter', discovered_at), 'YYYY-\"Q\"Q')"
+        trunc = "date_trunc('quarter', discovered_at::timestamp)"
+        fmt = "to_char(date_trunc('quarter', discovered_at::timestamp), 'YYYY-\"Q\"Q')"
     elif granularity == 'year':
-        trunc = "date_trunc('year', discovered_at)"
-        fmt = "to_char(date_trunc('year', discovered_at), 'YYYY')"
+        trunc = "date_trunc('year', discovered_at::timestamp)"
+        fmt = "to_char(date_trunc('year', discovered_at::timestamp), 'YYYY')"
     else:
-        trunc = "date_trunc('month', discovered_at)"
-        fmt = "to_char(date_trunc('month', discovered_at), 'YYYY-MM')"
+        trunc = "date_trunc('month', discovered_at::timestamp)"
+        fmt = "to_char(date_trunc('month', discovered_at::timestamp), 'YYYY-MM')"
 
     conditions = ["discovered_at IS NOT NULL",
-                   f"discovered_at >= NOW() - INTERVAL '{months} months'"]
+                   f"discovered_at::timestamp >= NOW() - INTERVAL '{months} months'"]
     params = []
 
     if country:
@@ -308,8 +308,8 @@ def operator_portfolio(provider_name):
                 COALESCE(MAX(power_mw), 0) AS max_facility_mw,
                 ROUND(AVG(confidence_score)::numeric, 3) AS avg_confidence,
                 COUNT(CASE WHEN power_mw IS NOT NULL AND power_mw > 0 THEN 1 END) AS facilities_with_power,
-                COUNT(CASE WHEN sqft IS NOT NULL AND sqft > 0 THEN 1 END) AS facilities_with_sqft,
-                COALESCE(SUM(sqft), 0) AS total_sqft
+                COUNT(CASE WHEN sqft IS NOT NULL AND sqft != '' AND sqft::numeric > 0 THEN 1 END) AS facilities_with_sqft,
+                COALESCE(SUM(CASE WHEN sqft ~ E'^\\d+\\.?\\d*$' THEN sqft::numeric ELSE 0 END), 0) AS total_sqft
             FROM discovered_facilities
             WHERE provider ILIKE %s
         """, (f"%{provider_name}%",))
@@ -439,7 +439,10 @@ def market_velocity():
         conn = _conn()
         cur = conn.cursor()
 
-        params_full = params + [months, min_fac, limit]
+        # Build interval string safely (months is already validated as int)
+        interval_str = f"{months} months"
+        # params for: recent WHERE (country filter), totals WHERE (country filter), HAVING, LIMIT
+        params_full = params + params + [min_fac, limit]
 
         cur.execute(f"""
             WITH recent AS (
@@ -447,7 +450,8 @@ def market_velocity():
                        COUNT(*) AS recent_additions
                 FROM discovered_facilities
                 WHERE {where}
-                  AND discovered_at >= NOW() - INTERVAL '%s months'
+                  AND discovered_at IS NOT NULL
+                  AND discovered_at::timestamp >= NOW() - INTERVAL '{interval_str}'
                 GROUP BY market
             ),
             totals AS (
