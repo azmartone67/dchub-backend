@@ -13117,3 +13117,15 @@ try:
     print("🔌 Connectivity Routes Blueprint: ✅ Registered (5 routes)")
 except Exception as e:
     print(f"🔌 Connectivity Routes Blueprint: ⚠️ Failed to load: {e}")
+
+# =============================================================================
+# STRIPE WEBHOOK ALERT (Post-checkout plan activation monitor)
+# Called by dashboard.html when polling detects plan didn't activate after payment
+# Logs alert, attempts auto-activation via Stripe API, emails admin
+# =============================================================================
+try:
+    from webhook_alert_endpoint import webhook_alert_bp
+    app.register_blueprint(webhook_alert_bp)
+    print("💳 Webhook Alert Endpoint: ✅ Registered (/api/stripe/webhook-alert)")
+except Exception as e:
+    print(f"💳 Webhook Alert Endpoint: ⚠️ Failed to load: {e}")
