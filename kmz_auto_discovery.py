@@ -633,87 +633,134 @@ class KMZAutoDiscovery:
         logger.info(f"Known Sources: checked={results['checked']}, routes={results['routes_found']}, km={results['total_km']:.1f}")
         return results
 
-    # ── Fetch ArcGIS Routes ────────────────────────────────────
+    # ── Fetch ArcGIS Routes (Paginated) ──────────────────────────
 
     def _fetch_arcgis_routes(self, url: str, provider: str, source_name: str, route_type: str = 'fiber') -> Dict:
+        """Fetch routes from ArcGIS FeatureServer with pagination. Pulls up to MAX_FEATURES per source."""
         results = {'routes_found': 0, 'total_km': 0}
+        MAX_FEATURES = 5000     # Max total features per source per cycle
+        BATCH_SIZE = 1000       # ArcGIS max per request
+        MAX_COORDS = 200        # Coordinates per route to store
+        MAX_PATH_POINTS = 150   # Points per path/ring to capture
+
+        offset = 0
+        total_fetched = 0
 
         try:
-            query_url = f"{url}/query?where=1=1&outFields=*&resultRecordCount=200&returnGeometry=true&f=json"
-            response = self.session.get(query_url, timeout=30)
-
-            if response.status_code != 200:
-                return results
-
-            data = response.json()
-            features = data.get('features', [])
-
-            if not features:
-                return results
-
             conn = _conn()
-            try:
-                cur = conn.cursor()
+            cur = conn.cursor()
 
-                for feature in features:
-                    attrs = feature.get('attributes', {})
-                    geom = feature.get('geometry', {})
+            while total_fetched < MAX_FEATURES:
+                query_url = (
+                    f"{url}/query?where=1%3D1&outFields=*"
+                    f"&resultRecordCount={BATCH_SIZE}&resultOffset={offset}"
+                    f"&returnGeometry=true&f=json"
+                )
 
-                    name = (attrs.get('NAME') or attrs.get('name') or
-                            attrs.get('OWNER') or attrs.get('OPERATOR') or
-                            attrs.get('ID', f'{provider}_route'))
+                try:
+                    response = self.session.get(query_url, timeout=45)
+                    if response.status_code != 200:
+                        break
 
-                    if isinstance(name, (int, float)):
-                        name = f"{provider}_route_{name}"
+                    data = response.json()
+                    features = data.get('features', [])
 
-                    coordinates = []
-                    if 'paths' in geom:
-                        for path in geom['paths']:
-                            for point in path[:50]:
-                                if len(point) >= 2:
-                                    coordinates.append([point[1], point[0]])
-                    elif 'rings' in geom:
-                        for ring in geom['rings']:
-                            for point in ring[:50]:
-                                if len(point) >= 2:
-                                    coordinates.append([point[1], point[0]])
-                    elif 'x' in geom and 'y' in geom:
-                        coordinates.append([geom['y'], geom['x']])
+                    if not features:
+                        break  # No more data
 
-                    if not coordinates:
-                        continue
+                    for feature in features:
+                        attrs = feature.get('attributes', {})
+                        geom = feature.get('geometry', {})
 
-                    distance_km = self._calculate_route_distance(coordinates) if len(coordinates) > 1 else 0
-                    start_point = f"{coordinates[0][0]:.4f},{coordinates[0][1]:.4f}"
-                    end_point = f"{coordinates[-1][0]:.4f},{coordinates[-1][1]:.4f}"
+                        # Extract name from various field names
+                        name = (attrs.get('NAME') or attrs.get('name') or
+                                attrs.get('OWNER') or attrs.get('OPERATOR') or
+                                attrs.get('TYPEPIPE') or attrs.get('PIPELINE') or
+                                attrs.get('VOLTAGE') or attrs.get('TYPE') or
+                                attrs.get('ID', f'{provider}_route'))
 
-                    url_hash = hashlib.sha256(f"{provider}_{name}_{start_point}".encode()).hexdigest()[:16]
+                        if isinstance(name, (int, float)):
+                            name = f"{provider}_route_{name}"
 
-                    try:
-                        cur.execute('''
-                            INSERT INTO fiber_kmz_routes
-                            (name, provider, route_type, start_point, end_point,
-                             distance_km, coordinates, kmz_file, source_url)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                            ON CONFLICT DO NOTHING
-                        ''', (
-                            str(name)[:200], provider, route_type,
-                            start_point, end_point,
-                            round(distance_km, 2),
-                            json.dumps(coordinates[:100]),
-                            f"arcgis_export_{url_hash}",
-                            url
-                        ))
-                        if cur.rowcount > 0:
-                            results['routes_found'] += 1
-                            results['total_km'] += distance_km
-                    except Exception as e:
-                        logger.debug(f"Route insert error: {e}")
+                        # Extract additional metadata for gas/power
+                        capacity = (attrs.get('CAPACITY') or attrs.get('capacity') or
+                                    attrs.get('DIAMETER') or attrs.get('diameter') or
+                                    attrs.get('VOLTAGE_KV') or attrs.get('voltage_kv') or
+                                    attrs.get('MW') or None)
+                        operator = (attrs.get('OPERATOR') or attrs.get('operator') or
+                                    attrs.get('OWNER') or attrs.get('owner') or provider)
 
-                conn.commit()
-                cur.close()
-            finally:
-                _release(conn)
+                        coordinates = []
+                        if 'paths' in geom:
+                            for path in geom['paths']:
+                                for point in path[:MAX_PATH_POINTS]:
+                                    if len(point) >= 2:
+                                        coordinates.append([point[1], point[0]])
+                        elif 'rings' in geom:
+                            for ring in geom['rings']:
+                                for point in ring[:MAX_PATH_POINTS]:
+                                    if len(point) >= 2:
+                                        coordinates.append([point[1], point[0]])
+                        elif 'x' in geom and 'y' in geom:
+                            coordinates.append([geom['y'], geom['x']])
+
+                        if not coordinates:
+                            continue
+
+                        distance_km = self._calculate_route_distance(coordinates) if len(coordinates) > 1 else 0
+                        start_point = f"{coordinates[0][0]:.4f},{coordinates[0][1]:.4f}"
+                        end_point = f"{coordinates[-1][0]:.4f},{coordinates[-1][1]:.4f}"
+
+                        # Include capacity in name if available
+                        display_name = str(name)[:200]
+                        if capacity and str(capacity) not in display_name:
+                            display_name = f"{display_name} ({capacity})"[:200]
+
+                        url_hash = hashlib.sha256(
+                            f"{provider}_{name}_{start_point}_{end_point}".encode()
+                        ).hexdigest()[:16]
+
+                        try:
+                            cur.execute('''
+                                INSERT INTO fiber_kmz_routes
+                                (name, provider, route_type, start_point, end_point,
+                                 distance_km, coordinates, kmz_file, source_url)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                ON CONFLICT DO NOTHING
+                            ''', (
+                                display_name, str(operator)[:100], route_type,
+                                start_point, end_point,
+                                round(distance_km, 2),
+                                json.dumps(coordinates[:MAX_COORDS]),
+                                f"arcgis_export_{url_hash}",
+                                url
+                            ))
+                            if cur.rowcount > 0:
+                                results['routes_found'] += 1
+                                results['total_km'] += distance_km
+                        except Exception as e:
+                            logger.debug(f"Route insert error: {e}")
+
+                    total_fetched += len(features)
+                    offset += len(features)
+
+                    # If we got fewer than batch size, we've hit the end
+                    if len(features) < BATCH_SIZE:
+                        break
+
+                    # Brief pause between pages to be respectful
+                    time.sleep(0.5)
+
+                except Exception as e:
+                    logger.debug(f"ArcGIS page fetch error at offset {offset}: {e}")
+                    break
+
+            conn.commit()
+            cur.close()
+            _release(conn)
+
+            if results['routes_found'] > 0:
+                logger.info(f"  {source_name}: {results['routes_found']} routes, {results['total_km']:.1f} km (fetched {total_fetched} features)")
 
         except Exception as e:
             logger.debug(f"ArcGIS route fetch error for {source_name}: {e}")
@@ -774,9 +821,9 @@ class KMZAutoDiscovery:
             cur.execute('''
                 SELECT id, name, url, provider FROM kmz_discovered_sources
                 WHERE source_type IN ('arcgis', 'state_gis')
-                AND (last_checked IS NULL OR last_checked < NOW() - INTERVAL '7 days')
+                AND (last_checked IS NULL OR last_checked < NOW() - INTERVAL '3 days')
                 AND status != 'failed'
-                LIMIT 10
+                LIMIT 30
             ''')
             sources = cur.fetchall()
             cur.close()
