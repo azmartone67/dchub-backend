@@ -478,6 +478,30 @@ ARCGIS_FIBER_SEARCH_URLS = [
     'https://www.arcgis.com/sharing/rest/search?q=data%20center%20fiber%20connectivity&sortField=modified&sortOrder=desc&num=15&f=json',
     'https://www.arcgis.com/sharing/rest/search?q=colocation%20network%20fiber%20infrastructure&sortField=modified&sortOrder=desc&num=10&f=json',
     'https://www.arcgis.com/sharing/rest/search?q=internet%20exchange%20point%20fiber%20route&sortField=modified&sortOrder=desc&num=10&f=json',
+    # ── Metro dark fiber carrier searches ────────────────────────
+    'https://www.arcgis.com/sharing/rest/search?q=dark%20fiber%20metro%20network%20data%20center&sortField=modified&sortOrder=desc&num=20&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=Zayo%20fiber%20network%20route&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=Crown%20Castle%20fiber%20small%20cell&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=Lumen%20CenturyLink%20fiber%20network&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=Windstream%20fiber%20network%20route&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=Uniti%20fiber%20network%20wholesale&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=FiberLight%20fiber%20network%20metro&sortField=modified&sortOrder=desc&num=10&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=FirstLight%20fiber%20network%20northeast&sortField=modified&sortOrder=desc&num=10&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=Bandwidth%20Infrastructure%20dark%20fiber&sortField=modified&sortOrder=desc&num=10&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=SummitIG%20dark%20fiber%20Virginia&sortField=modified&sortOrder=desc&num=10&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=Arcadian%20Infracom%20fiber&sortField=modified&sortOrder=desc&num=10&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=Vivacity%20Networks%20fiber&sortField=modified&sortOrder=desc&num=10&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=Cogent%20fiber%20network%20route&sortField=modified&sortOrder=desc&num=10&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=EXA%20Infrastructure%20fiber%20network&sortField=modified&sortOrder=desc&num=10&f=json',
+    # ── Municipal / utility fiber GIS ────────────────────────────
+    'https://www.arcgis.com/sharing/rest/search?q=municipal%20fiber%20optic%20network%20city&sortField=modified&sortOrder=desc&num=20&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=electric%20cooperative%20fiber%20broadband&sortField=modified&sortOrder=desc&num=20&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=county%20fiber%20optic%20infrastructure%20GIS&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=utility%20fiber%20network%20electric%20utility&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=SRP%20telecom%20dark%20fiber%20Phoenix&sortField=modified&sortOrder=desc&num=10&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=conduit%20duct%20fiber%20telecommunications%20city&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=fiber%20to%20the%20premises%20FTTP%20network%20GIS&sortField=modified&sortOrder=desc&num=15&f=json',
+    'https://www.arcgis.com/sharing/rest/search?q=broadband%20grant%20ARPA%20fiber%20construction&sortField=modified&sortOrder=desc&num=15&f=json',
 ]
 
 ARCGIS_GAS_SEARCH_URLS = [
