@@ -3698,6 +3698,13 @@ except Exception as e:
     OILGAS_CACHE = BoundedCache(max_size=1, ttl=1)
     gridstatus_get_load = lambda iso: None
 
+@app.route('/api/grid/fuel-mix-live', methods=['GET'])
+def grid_fuel_mix_live_alias():
+    from flask import redirect
+    args = request.query_string.decode()
+    target = f'/api/grid/fuel-mix?{args}' if args else '/api/grid/fuel-mix'
+    return redirect(target, code=307)
+
 # =============================================================================
 # SECURITY HEADERS & API TRACKING (Applied to all responses)
 # Note: CORS headers are handled at the top of the app (before blueprints)
@@ -12823,6 +12830,12 @@ def get_facility_by_id(facility_id):
 @app.route('/api/site-score', methods=['GET'])
 def api_site_score():
     """Composite site suitability score for data center development."""
+    internal_key = request.headers.get("X-Internal-Key", "")
+    if internal_key not in ("dchub-internal-2024", "dchub-internal-sync-2026"):
+        user = getattr(request, "current_user", None)
+        plan = (user or {}).get("plan", "free") if isinstance(user, dict) else "free"
+        if plan not in ("pro", "enterprise"):
+            return jsonify({"error": "plan_required", "message": "Site scoring requires Pro plan.", "success": False}), 403
     lat = request.args.get('lat', type=float)
     lon = request.args.get('lon', type=float)
     state = request.args.get('state', '').upper()

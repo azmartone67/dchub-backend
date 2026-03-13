@@ -687,6 +687,8 @@ def _get_transactions_free():
 def get_pipeline():
     """Get construction pipeline data"""
     status_filter = request.args.get('status')  # 'construction', 'announced', 'all'
+    _status_map = {'under_construction': 'construction', 'in_progress': 'construction', 'completed': 'operational', 'planned': 'announced'}
+    if status_filter: status_filter = _status_map.get(status_filter, status_filter)
     market_filter = request.args.get('market')
     company_filter = request.args.get('company')
     quarter_filter = request.args.get('quarter')  # e.g. '2026-Q1'
