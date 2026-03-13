@@ -212,16 +212,20 @@ def gridstatus_get_fuel_mix(iso_id):
     return None
 
 def gridstatus_cached(key, fetch_func):
-    """Simple time-based cache for grid data"""
+    """Simple time-based cache for grid data. NEVER caches None — retries next request."""
     cached = GRIDSTATUS_CACHE.get(key)
     if cached is not None:
         return cached
     try:
         data = fetch_func()
-        GRIDSTATUS_CACHE.set(key, data)
+        if data is not None:
+            GRIDSTATUS_CACHE.set(key, data)
+            logger.info(f"gridstatus_cached: cached LIVE data for {key}")
+        else:
+            logger.warning(f"gridstatus_cached: fetch returned None for {key}, NOT caching")
         return data
     except Exception as e:
-        print(f"GridStatus fetch error for {key}: {e}")
+        logger.error(f"GridStatus fetch error for {key}: {type(e).__name__}: {e}")
         return None
 
 @energy_bp.route('/api/v1/grid/caiso/fuelmix')
