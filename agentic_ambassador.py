@@ -900,3 +900,6 @@ def register_ambassador_routes(app):
     print("   GET  /api/ambassador/story - Get DC Hub story")
     print("   GET  /api/ambassador/citations - Track citations")
     print("🎯 Ambassador: ✅ Running (every 1 hour)")
+
+# Alias for job endpoint compatibility
+run_ambassador_cycle = run_cycle
