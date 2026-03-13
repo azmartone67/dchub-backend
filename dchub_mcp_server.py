@@ -406,7 +406,7 @@ async def get_grid_data(
         return json.dumps({"error": "iso parameter is required"})
     params = {"iso": iso, "metric": metric, "period": period}
     _track("get_grid_data", params)
-    result = _api_get("/api/grid/fuel-mix-live", params)
+    result = _api_get("/api/grid/fuel-mix", params)
     return json.dumps(result, indent=2)
 
 
