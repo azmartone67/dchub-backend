@@ -449,6 +449,10 @@ def job_alert_emails():
     if auth_err:
         return auth_err
     try:
+        try:
+            from alert_emails import check_and_send_alert_emails
+        except ImportError:
+            from main import check_and_send_alert_emails
         result = check_and_send_alert_emails()
         if 'alert_email_checker' in _scheduler_registry:
             _scheduler_registry['alert_email_checker']['last_run'] = datetime.utcnow().isoformat()
@@ -534,7 +538,7 @@ def job_energy_discovery():
     if auth_err:
         return auth_err
     try:
-        from energy_auto_discovery import run_energy_discovery
+        from energy_auto_discovery import run_full_sync as run_energy_discovery
         result = run_energy_discovery()
         if 'energy_discovery' in _scheduler_registry:
             _scheduler_registry['energy_discovery']['last_run'] = datetime.utcnow().isoformat()

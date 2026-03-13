@@ -402,6 +402,96 @@ def list_alert_types():
     })
 
 # =============================================================================
+# Background Processing (called by /api/jobs/simple-alerts)
+# =============================================================================
+
+def process_alerts():
+    """Check active alerts against recent news/deals and queue notifications."""
+    db = get_alerts_db()
+    try:
+        alerts = db.execute(
+            'SELECT id, email, alert_type, name, config, frequency FROM simple_alerts WHERE is_active = 1'
+        ).fetchall()
+
+        if not alerts:
+            return {'status': 'ok', 'processed': 0, 'matched': 0, 'message': 'No active alerts'}
+
+        recent_news = db.execute(
+            "SELECT id, title, source, published_date FROM news_articles WHERE published_date >= datetime('now', '-1 day') ORDER BY published_date DESC LIMIT 200"
+        ).fetchall()
+
+        recent_deals = db.execute(
+            "SELECT id, title, operator, market, mw_it FROM deals WHERE created_at >= datetime('now', '-1 day') ORDER BY created_at DESC LIMIT 100"
+        ).fetchall()
+
+        matched = 0
+        for alert in alerts:
+            alert_dict = dict(alert)
+            try:
+                config = json.loads(alert_dict['config']) if isinstance(alert_dict['config'], str) else alert_dict['config']
+            except (json.JSONDecodeError, TypeError):
+                config = {}
+
+            alert_type = alert_dict['alert_type']
+            hits = []
+
+            if alert_type == 'keyword_watch':
+                keywords = [k.lower() for k in config.get('keywords', [])]
+                for article in recent_news:
+                    title = (dict(article).get('title') or '').lower()
+                    if any(kw in title for kw in keywords):
+                        hits.append({'type': 'news', 'title': dict(article).get('title'), 'id': dict(article).get('id')})
+
+            elif alert_type == 'operator_watch':
+                operators = [o.lower() for o in config.get('operators', [])]
+                for deal in recent_deals:
+                    d = dict(deal)
+                    op = (d.get('operator') or '').lower()
+                    title = (d.get('title') or '').lower()
+                    if any(o in op or o in title for o in operators):
+                        hits.append({'type': 'deal', 'title': d.get('title'), 'id': d.get('id')})
+                for article in recent_news:
+                    title = (dict(article).get('title') or '').lower()
+                    if any(o in title for o in operators):
+                        hits.append({'type': 'news', 'title': dict(article).get('title'), 'id': dict(article).get('id')})
+
+            elif alert_type == 'market_watch':
+                markets = [m.lower() for m in config.get('markets', [])]
+                for deal in recent_deals:
+                    d = dict(deal)
+                    mkt = (d.get('market') or '').lower()
+                    title = (d.get('title') or '').lower()
+                    if any(m in mkt or m in title for m in markets):
+                        hits.append({'type': 'deal', 'title': d.get('title'), 'id': d.get('id')})
+
+            elif alert_type == 'capacity_threshold':
+                min_mw = config.get('min_mw', 0)
+                max_mw = config.get('max_mw', 999999)
+                for deal in recent_deals:
+                    d = dict(deal)
+                    mw = d.get('mw_it') or 0
+                    try:
+                        mw = float(mw)
+                    except (ValueError, TypeError):
+                        mw = 0
+                    if min_mw <= mw <= max_mw:
+                        hits.append({'type': 'deal', 'title': d.get('title'), 'id': d.get('id'), 'mw': mw})
+
+            if hits:
+                matched += 1
+                db.execute(
+                    'UPDATE simple_alerts SET last_triggered = CURRENT_TIMESTAMP, trigger_count = trigger_count + 1 WHERE id = ?',
+                    (alert_dict['id'],)
+                )
+
+        db.commit()
+        return {'status': 'ok', 'processed': len(alerts), 'matched': matched}
+    except Exception as e:
+        return {'status': 'error', 'error': str(e)}
+    finally:
+        db.close()
+
+# =============================================================================
 # Register Blueprint
 # =============================================================================
 
