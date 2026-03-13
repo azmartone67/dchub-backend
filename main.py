@@ -13087,7 +13087,6 @@ try:
     print("📊 Data Quality Routes Blueprint: ✅ Registered (3 routes)")
 except Exception as e:
     print(f"📊 Data Quality Routes Blueprint: ⚠️ Failed to load: {e}")
-
 # =============================================================================
 # INTELLIGENCE ROUTES BLUEPRINT (Phase 5)
 # 6 routes: trends, market-compare, portfolio, market-velocity,
@@ -13101,3 +13100,17 @@ try:
     print("🧠 Intelligence Routes Blueprint: ✅ Registered (6 routes)")
 except Exception as e:
     print(f"🧠 Intelligence Routes Blueprint: ⚠️ Failed to load: {e}")
+
+# =============================================================================
+# CONNECTIVITY INTELLIGENCE BLUEPRINT (Phase 5b)
+# 5 routes: providers, provider detail, market connectivity,
+#           facility connectivity, seed
+# Extracted to routes/connectivity_routes.py
+# =============================================================================
+try:
+    from routes.connectivity_routes import connectivity_bp, init_connectivity_routes
+    init_connectivity_routes(get_pg_connection, return_pg_connection)
+    app.register_blueprint(connectivity_bp)
+    print("🔌 Connectivity Routes Blueprint: ✅ Registered (5 routes)")
+except Exception as e:
+    print(f"🔌 Connectivity Routes Blueprint: ⚠️ Failed to load: {e}")
