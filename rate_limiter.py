@@ -5,13 +5,12 @@
 # No external dependencies - pure Python stdlib
 # ============================================================================
 
-import os
 import time
 import logging
 from functools import wraps
 from flask import request, jsonify, g
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('rate_limiter')
 
 # ---------------------------------------------------------------------------
 # Token bucket - in-memory, resets on deploy (fine for single Railway instance)
@@ -54,94 +53,115 @@ def _check(key, limit, window=60):
         b['tokens'] -= 1
         return True, b['tokens'], 0
 
-    return False, 0, max(1, int(window - (now - b['ts'])))
+    return False, 0, max(1, int(window - elapsed))
 
 
 # ---------------------------------------------------------------------------
-# Plan-based limits (matches users.plan column: free/pro/enterprise)
+# Limits by client type
+# Uses request.user from JWT (set by require_auth / optional_auth decorators)
+# JWT payload has: user_id, email, role — but NOT plan
+# So we tier by: internal > authenticated > anonymous
 # ---------------------------------------------------------------------------
 
 LIMITS = {
-    'free':       {'rpm': 30,  'rph': 500},
-    'pro':        {'rpm': 120, 'rph': 5000},
-    'enterprise': {'rpm': 600, 'rph': 50000},
-    'internal':   {'rpm': 300, 'rph': 20000},  # MCP / X-Internal-Key
+    'internal':      {'rpm': 300, 'rph': 20000},   # MCP / X-Internal-Key
+    'authenticated': {'rpm': 120, 'rph': 5000},     # Any logged-in user
+    'anonymous':     {'rpm': 20,  'rph': 200},      # No auth
 }
 
-ANON_LIMITS = {'rpm': 20, 'rph': 200}
+# DC Hub internal key values (same as used in main.py route guards)
+INTERNAL_KEYS = frozenset(['dchub-internal-2024', 'dchub-internal-sync-2026'])
 
 
-def _get_key():
-    """Client identifier: user_id > IP"""
-    uid = getattr(g, 'user_id', None)
-    if uid:
-        return f"u:{uid}"
-    ip = (request.headers.get('CF-Connecting-IP') or
-          request.headers.get('X-Forwarded-For', '').split(',')[0].strip() or
-          request.remote_addr)
-    return f"ip:{ip}"
+def _get_client_ip():
+    """Get real client IP via Cloudflare headers."""
+    return (request.headers.get('CF-Connecting-IP') or
+            request.headers.get('X-Forwarded-For', '').split(',')[0].strip() or
+            request.remote_addr or 'unknown')
 
 
-def _get_plan():
-    """Detect plan tier."""
-    # MCP internal bypass
-    ik = request.headers.get('X-Internal-Key')
-    expected = os.environ.get('MCP_INTERNAL_KEY') or os.environ.get('INTERNAL_API_KEY')
-    if ik and expected and ik == expected:
-        return 'internal'
+def _get_key_and_tier():
+    """
+    Identify client and their rate limit tier.
+    Checks: X-Internal-Key → request.user (JWT) → IP
+    """
+    # 1. MCP / internal traffic
+    ik = request.headers.get('X-Internal-Key', '')
+    if ik in INTERNAL_KEYS:
+        return 'internal:mcp', 'internal'
 
-    plan = getattr(g, 'user_plan', None)
-    if plan in LIMITS:
-        return plan
-    return None
+    # 2. Authenticated user (JWT decoded by require_auth / optional_auth)
+    user = getattr(request, 'user', None)
+    if user and isinstance(user, dict):
+        uid = user.get('user_id') or user.get('email') or 'unknown'
+        return f'user:{uid}', 'authenticated'
+
+    # 3. Anonymous - rate limit by IP
+    return f'ip:{_get_client_ip()}', 'anonymous'
+
+
+# ---------------------------------------------------------------------------
+# Paths to skip (health checks, static assets)
+# ---------------------------------------------------------------------------
+
+SKIP_PATHS = frozenset([
+    '/health', '/api/health', '/api/v1/circuit-status', '/favicon.ico',
+    '/robots.txt', '/sitemap.xml', '/.well-known/mcp-registry-auth',
+])
+
+SKIP_PREFIXES = ('/static/', '/assets/', '/js/', '/css/', '/images/')
 
 
 # ---------------------------------------------------------------------------
 # Flask middleware
 # ---------------------------------------------------------------------------
 
-SKIP_PATHS = frozenset([
-    '/health', '/api/health', '/api/v1/circuit-status', '/favicon.ico'
-])
-
-
 def rate_limit_before():
-    """Register as app.before_request(rate_limit_before)"""
+    """
+    Register as: app.before_request(rate_limit_before)
+    Place AFTER the request timer, BEFORE route handlers.
+    """
     path = request.path
 
-    # Skip health checks and static
-    if path in SKIP_PATHS or path.startswith(('/static/', '/assets/')):
+    # Skip health checks and static files
+    if path in SKIP_PATHS:
+        return None
+    if path.startswith(SKIP_PREFIXES):
         return None
 
-    key = _get_key()
-    plan = _get_plan()
-    limits = LIMITS.get(plan, ANON_LIMITS)
+    key, tier = _get_key_and_tier()
+    limits = LIMITS[tier]
 
     # Per-minute check
     ok, remaining, retry = _check(f"{key}:min", limits['rpm'], 60)
     if not ok:
-        logger.warning(f"Rate limit: {key} plan={plan} path={path}")
-        return _resp(remaining, retry)
+        logger.warning(f"Rate limit hit: {key} tier={tier} path={path} ip={_get_client_ip()}")
+        return _resp(retry)
 
     # Per-hour check
     ok_h, rem_h, retry_h = _check(f"{key}:hr", limits['rph'], 3600)
     if not ok_h:
-        logger.warning(f"Hourly limit: {key} plan={plan} path={path}")
-        return _resp(rem_h, retry_h)
+        logger.warning(f"Hourly limit hit: {key} tier={tier} path={path} ip={_get_client_ip()}")
+        return _resp(retry_h)
 
+    # Stash for after_request headers
     g._rl_remaining = remaining
     return None
 
 
 def rate_limit_after(response):
-    """Register as app.after_request(rate_limit_after)"""
+    """
+    Register as: app.after_request(rate_limit_after)
+    Adds X-RateLimit-Remaining header to all responses.
+    """
     rem = getattr(g, '_rl_remaining', None)
     if rem is not None:
         response.headers['X-RateLimit-Remaining'] = str(rem)
     return response
 
 
-def _resp(remaining, retry_after):
+def _resp(retry_after):
+    """429 Too Many Requests response."""
     r = jsonify({
         'error': 'rate_limit_exceeded',
         'message': f'Too many requests. Retry after {retry_after}s.',
@@ -158,33 +178,32 @@ def _resp(remaining, retry_after):
 
 def rate_limit(rpm=10):
     """
+    Per-route rate limiter on top of global limits.
+
     Usage:
-        @app.route('/api/site-score', methods=['POST'])
+        @app.route('/api/site-score', methods=['GET'])
         @rate_limit(rpm=5)
-        def site_score():
+        def api_site_score():
             ...
     """
     def decorator(f):
         @wraps(f)
         def wrapped(*args, **kwargs):
-            key = _get_key()
+            key, _ = _get_key_and_tier()
             ok, _, retry = _check(f"{key}:route:{f.__name__}", rpm, 60)
             if not ok:
-                return _resp(0, retry)
+                return _resp(retry)
             return f(*args, **kwargs)
         return wrapped
     return decorator
 
 
 # ---------------------------------------------------------------------------
-# main.py integration (3 lines):
+# main.py integration — add these 3 lines after the request timeout middleware
+# (around line 1108, after _check_request_timeout):
 #
 #   from rate_limiter import rate_limit_before, rate_limit_after
 #   app.before_request(rate_limit_before)
 #   app.after_request(rate_limit_after)
-#
-# Optional per-route:
-#   from rate_limiter import rate_limit
-#   @rate_limit(rpm=5)
 #
 # ---------------------------------------------------------------------------
