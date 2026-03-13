@@ -195,12 +195,12 @@ def _activate_user_plan(email, plan, stripe_customer_id=''):
         db = get_db()
 
         # Update user plan — uses column "plan" (not "tier")
+        # Note: users table has NO updated_at or api_key columns
         db.execute('''
             UPDATE users SET
                 plan = ?,
                 subscription_status = 'active',
-                stripe_customer_id = COALESCE(NULLIF(?, ''), stripe_customer_id),
-                updated_at = datetime('now')
+                stripe_customer_id = COALESCE(NULLIF(?, ''), stripe_customer_id)
             WHERE LOWER(email) = LOWER(?)
         ''', (plan, stripe_customer_id, email))
         db.commit()
