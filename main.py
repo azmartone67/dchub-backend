@@ -3113,6 +3113,19 @@ except Exception as e:
     logger.error(f"⚠️ Simple Alerts API failed: {e}")
 
 try:
+    from kmz_processor import register_kmz_routes
+    kmz_processor_instance = register_kmz_routes(app, get_pg_connection)
+    logger.info("\u2705 KMZ Processor registered")
+    print("\U0001F5FA KMZ Processor: \u2705 Available")
+    print("   \U0001F4CD /api/admin/kmz/process  \u2014 Trigger batch processing")
+    print("   \U0001F4CD /api/admin/kmz/stats    \u2014 Processing statistics")
+    print("   \U0001F4CD /api/v1/infrastructure-layers \u2014 Public layer data API")
+except ImportError:
+    logger.warning("\u26A0\uFE0F KMZ Processor: Not installed (kmz_processor.py missing)")
+except Exception as e:
+    logger.error(f"\u26A0\uFE0F KMZ Processor failed: {e}")
+
+try:
     from alert_processor import register_alert_processor
     register_alert_processor(app)
     logger.info("✅ Alert Processor registered")
