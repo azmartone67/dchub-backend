@@ -1272,13 +1272,15 @@ def db_health_endpoint():
 
 
 # Neon Health Monitor (2026-03-07 — Neon outage prevention)
-try:
-    from neon_health_monitor import register_neon_health_routes
-    register_neon_health_routes(app)
-except ImportError:
-    print("⚠️ Neon Health Monitor: not installed")
-except Exception as e:
-    print(f"⚠️ Neon Health Monitor: {e}")
+# DISABLED: Redundant with self_healing HealthMonitor — was causing pool exhaustion
+# try:
+#     from neon_health_monitor import register_neon_health_routes
+#     register_neon_health_routes(app)
+# except ImportError:
+#     print("⚠️ Neon Health Monitor: not installed")
+# except Exception as e:
+#     print(f"⚠️ Neon Health Monitor: {e}")
+print("Neon Health Monitor: SKIPPED (using self_healing HealthMonitor only)")
 
 @app.route('/api/status', methods=['GET'])
 def system_status():
