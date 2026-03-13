@@ -16,7 +16,7 @@ Environment:
   DCHUB_API_BASE    — API base URL (default: https://dchub-backend-production.up.railway.app)
   DCHUB_ADMIN_KEY   — Admin API key (required)
 
-Schedule (UTC) — 19 jobs, verified no overlaps:
+Schedule (UTC) — 20 jobs, verified no overlaps:
   00:00  News/RSS Refresh        (also 04, 08, 12, 16, 20)
   00:20  Auto-Approve            (also 04, 08, 12, 16, 20)
   00:45  Simple Alerts           (also 02,04,06,08,10,12,14,16,18,20,22)
@@ -25,6 +25,7 @@ Schedule (UTC) — 19 jobs, verified no overlaps:
   02:30  Infrastructure Sync     (also 08:30, 14:30, 20:30)
   03:00  AI Ecosystem Agent      (also 10, 15, 22)
   03:15  Neon DB Backup
+  03:45  Confidence Recalc       (daily)
   05:00  AI Outreach Agent       (also 13, 21)
   06:00  Global Intelligence     (also 18)
   06:45  Capacity Headroom       (also 12:45, 18:45)
@@ -39,7 +40,7 @@ Schedule (UTC) — 19 jobs, verified no overlaps:
 v3.3 changelog:
   - Added 7 missing jobs: autonomous_brain, alert_emails, simple_alerts,
     market_report, infra_sync, capacity_headroom, ambassador
-  - Total: 19 jobs (18 scheduled + keepalive)
+  - Total: 20 jobs (19 scheduled + keepalive)
   - All new jobs staggered to avoid collisions with existing schedule
 """
 
@@ -233,6 +234,14 @@ JOBS = {
         'minute': 30,
         'timeout': 120,
     },
+    'confidence_recalc': {
+        'name': 'Confidence Recalc',
+        'endpoint': '/api/v1/data-quality/recalculate',
+        'method': 'POST',
+        'hours': [3],                   # daily at 03:45 UTC (after backup at 03:15)
+        'minute': 45,
+        'timeout': 60,
+    },
 }
 
 # ============================================================
@@ -247,6 +256,7 @@ def api_call(endpoint, method='POST', timeout=60):
     if ADMIN_KEY:
         headers['X-Admin-Key'] = ADMIN_KEY
         headers['Authorization'] = f'Bearer {ADMIN_KEY}'
+        headers['X-Internal-Key'] = 'dchub-internal-2024'
 
     try:
         req = Request(url, method=method, headers=headers)
