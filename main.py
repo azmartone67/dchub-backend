@@ -7743,6 +7743,13 @@ def _list_facilities_full():
         sql += " AND source = ?"
         count_sql += " AND source = ?"
         params.append(source)
+
+    # Phase 4: min_confidence filter
+    min_confidence = request.args.get('min_confidence', type=float)
+    if min_confidence is not None and 0 <= min_confidence <= 1:
+        sql += " AND confidence_score >= ?"
+        count_sql += " AND confidence_score >= ?"
+        params.append(min_confidence)
     
     sql += f" ORDER BY confidence_score DESC, power_mw DESC LIMIT {limit} OFFSET {offset}"
     
@@ -7949,6 +7956,12 @@ def search_facilities():
     if tier:
         conditions.append('tier = %s')
         params.append(tier)
+
+    # Phase 4: min_confidence filter
+    min_confidence = request.args.get('min_confidence', type=float)
+    if min_confidence is not None and 0 <= min_confidence <= 1:
+        conditions.append('confidence_score >= %s')
+        params.append(min_confidence)
 
     where = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
     params.extend([limit, offset])
@@ -13012,3 +13025,17 @@ try:
     print("⏰ Jobs Routes Blueprint: ✅ Registered (20 routes)")
 except Exception as e:
     print(f"⏰ Jobs Routes Blueprint: ⚠️ Failed to load: {e}")
+
+# =============================================================================
+# DATA QUALITY ROUTES BLUEPRINT (Phase 4)
+# 3 routes: /api/v1/data-quality, /api/v1/data-quality/facility/<id>,
+#           /api/v1/data-quality/recalculate
+# Extracted to routes/data_quality_routes.py
+# =============================================================================
+try:
+    from routes.data_quality_routes import data_quality_bp, init_data_quality_routes
+    init_data_quality_routes(get_pg_connection, return_pg_connection)
+    app.register_blueprint(data_quality_bp)
+    print("📊 Data Quality Routes Blueprint: ✅ Registered (3 routes)")
+except Exception as e:
+    print(f"📊 Data Quality Routes Blueprint: ⚠️ Failed to load: {e}")
