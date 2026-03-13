@@ -6384,56 +6384,17 @@ def handle_checkout_completed(session):
             temp_password = sec.token_urlsafe(16)
             hashed_pw = hash_password(temp_password)
 
-            # ── INSERT into Neon PostgreSQL with LOUD error handling ──
-            pg_insert_ok = False
-            try:
-                pg_result = _pg_execute_many([
-                    ("INSERT INTO users (id, email, password_hash, name, plan, role, api_calls_today, api_calls_total, created_at, stripe_customer_id, subscription_status) VALUES (%s, %s, %s, %s, %s, %s, 0, 0, %s, %s, 'active')",
-                     (new_user_id, customer_email, hashed_pw, display_name, plan_name, api_tier, now, stripe_cust)),
-                ])
-                if pg_result:
-                    pg_insert_ok = True
-                    print(f"✅ PG INSERT succeeded for {customer_email}")
-                else:
-                    print(f"🚨 PG INSERT returned False for {customer_email} — trying direct insert")
-            except Exception as pg_err:
-                print(f"🚨 PG INSERT exception for {customer_email}: {pg_err}")
-
-            # Fallback: direct PG connection if _pg_execute_many failed
-            if not pg_insert_ok:
-                try:
-                    with pg_connection() as fallback_conn:
-                        fallback_cur = fallback_conn.cursor()
-                        fallback_cur.execute(
-                            "INSERT INTO users (id, email, password_hash, name, plan, role, api_calls_today, api_calls_total, created_at, stripe_customer_id, subscription_status) VALUES (%s, %s, %s, %s, %s, %s, 0, 0, %s, %s, 'active')",
-                            (new_user_id, customer_email, hashed_pw, display_name, plan_name, api_tier, now, stripe_cust))
-                        fallback_conn.commit()
-                        pg_insert_ok = True
-                        print(f"✅ PG FALLBACK INSERT succeeded for {customer_email}")
-                except Exception as fallback_err:
-                    print(f"🚨🚨 PG FALLBACK INSERT ALSO FAILED for {customer_email}: {fallback_err}")
-                    # Send admin alert — this customer paid but has no account
-                    try:
-                        send_admin_alert_email(
-                            f'🚨 PAID CUSTOMER NOT CREATED: {customer_email}',
-                            f'<h2>Payment received but account creation FAILED</h2>'
-                            f'<p><b>Email:</b> {customer_email}</p>'
-                            f'<p><b>Name:</b> {display_name}</p>'
-                            f'<p><b>Plan:</b> {plan_name}</p>'
-                            f'<p><b>Stripe Customer:</b> {stripe_cust}</p>'
-                            f'<p><b>Amount:</b> ${amount_dollars}</p>'
-                            f'<p><b>PG Error:</b> {fallback_err}</p>'
-                            f'<p>MANUAL ACTION REQUIRED — create this user in Neon immediately.</p>'
-                        )
-                    except Exception:
-                        pass
+            _pg_execute_many([
+                ("INSERT INTO users (id, email, password_hash, name, plan, role, api_calls_today, api_calls_total, created_at, stripe_customer_id, subscription_status) VALUES (%s, %s, %s, %s, %s, %s, 0, 0, %s, %s, 'active')",
+                 (new_user_id, customer_email, hashed_pw, display_name, plan_name, api_tier, now, stripe_cust)),
+            ])
 
             c.execute("""INSERT INTO users (id, email, password_hash, name, plan, role, api_calls_today, api_calls_total,
                          created_at, stripe_customer_id, subscription_status)
                          VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, 'active')""",
                       (new_user_id, customer_email, hashed_pw, display_name,
                        plan_name, api_tier, now, stripe_cust))
-            print(f"🔐 Account created for {customer_email} (PG={'✅' if pg_insert_ok else '❌'} + SQLite)")
+            print(f"🔐 Account created for {customer_email} (PG + SQLite)")
 
             raw_key = 'dchub_' + sec.token_urlsafe(32)
             key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
@@ -6501,18 +6462,6 @@ def handle_checkout_completed(session):
     except Exception as e:
         print(f"❌ WEBHOOK ERROR in handle_checkout_completed: {e}")
         traceback.print_exc()
-        # Alert admin — a paying customer's account may not have been created
-        try:
-            send_admin_alert_email(
-                f'🚨 WEBHOOK CRASH: handle_checkout_completed failed',
-                f'<h2>Stripe checkout webhook handler crashed</h2>'
-                f'<p><b>Error:</b> {e}</p>'
-                f'<p><b>Email:</b> {customer_email if "customer_email" in dir() else "unknown"}</p>'
-                f'<p><b>Session ID:</b> {session.get("id", "unknown")}</p>'
-                f'<p>Check Railway logs immediately. Customer may have paid without account creation.</p>'
-            )
-        except Exception:
-            pass
 
 def handle_subscription_created(subscription):
     """Handle new subscription - writes to PostgreSQL first"""
@@ -13090,3 +13039,17 @@ try:
     print("📊 Data Quality Routes Blueprint: ✅ Registered (3 routes)")
 except Exception as e:
     print(f"📊 Data Quality Routes Blueprint: ⚠️ Failed to load: {e}")
+
+# =============================================================================
+# INTELLIGENCE ROUTES BLUEPRINT (Phase 5)
+# 6 routes: trends, market-compare, portfolio, market-velocity,
+#           delivery-forecast, top-operators
+# Extracted to routes/intelligence_routes.py
+# =============================================================================
+try:
+    from routes.intelligence_routes import intelligence_bp, init_intelligence_routes
+    init_intelligence_routes(get_pg_connection, return_pg_connection)
+    app.register_blueprint(intelligence_bp)
+    print("🧠 Intelligence Routes Blueprint: ✅ Registered (6 routes)")
+except Exception as e:
+    print(f"🧠 Intelligence Routes Blueprint: ⚠️ Failed to load: {e}")
