@@ -2202,8 +2202,8 @@ except Exception as e:
 
 try:
     from kmz_auto_discovery import register_kmz_discovery_routes
-    register_kmz_discovery_routes(app, start_scheduler=ENABLE_DISCOVERY_SCHEDULERS)
-    logger.info("✅ KMZ Auto-Discovery registered" + (" (scheduler active)" if ENABLE_DISCOVERY_SCHEDULERS else " (manual POST only)"))
+    register_kmz_discovery_routes(app, get_pg_connection, return_pg_connection, start_scheduler=ENABLE_DISCOVERY_SCHEDULERS)
+    logger.info("✅ KMZ Auto-Discovery v3.0 registered (Neon)" + (" (scheduler active)" if ENABLE_DISCOVERY_SCHEDULERS else " (manual POST only)"))
 except Exception as e:
     logger.error(f"⚠️ KMZ Auto-Discovery failed: {e}")
 
@@ -3111,19 +3111,6 @@ except ImportError:
     logger.warning("⚠️ Simple Alerts API: Not installed (simple_alerts.py missing)")
 except Exception as e:
     logger.error(f"⚠️ Simple Alerts API failed: {e}")
-
-try:
-    from kmz_processor import register_kmz_routes
-    kmz_processor_instance = register_kmz_routes(app, get_pg_connection)
-    logger.info("\u2705 KMZ Processor registered")
-    print("\U0001F5FA KMZ Processor: \u2705 Available")
-    print("   \U0001F4CD /api/admin/kmz/process  \u2014 Trigger batch processing")
-    print("   \U0001F4CD /api/admin/kmz/stats    \u2014 Processing statistics")
-    print("   \U0001F4CD /api/v1/infrastructure-layers \u2014 Public layer data API")
-except ImportError:
-    logger.warning("\u26A0\uFE0F KMZ Processor: Not installed (kmz_processor.py missing)")
-except Exception as e:
-    logger.error(f"\u26A0\uFE0F KMZ Processor failed: {e}")
 
 try:
     from alert_processor import register_alert_processor
