@@ -938,7 +938,8 @@ def _neon_keepalive_loop():
             sys.stdout.flush()
 
 _neon_keepalive_thread = threading.Thread(target=_neon_keepalive_loop, daemon=True, name="neon-keepalive")
-_neon_keepalive_thread.start()
+# _neon_keepalive_thread.start()  # DISABLED: redundant with HealthMonitor
+print("Neon keepalive: SKIPPED")
 _keepalive_logger.info("💓 Neon Keepalive: ✅ Thread started (module-level, immediate first ping + every 4 min)")
 sys.stdout.flush()
 
