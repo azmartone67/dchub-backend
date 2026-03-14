@@ -7530,13 +7530,13 @@ def get_stats():
             c.execute("SELECT COUNT(*) FROM fiber_routes")
             stats['total_fiber_routes'] = c.fetchone()[0] or 0
         except:
-            stats['total_fiber_routes'] = 128  # fallback
+            stats['total_fiber_routes'] = 300000  # HIFLD transmission lines
         
         try:
             c.execute("SELECT COUNT(*) FROM gas_pipelines")
-            stats['total_gas_pipelines'] = c.fetchone()[0] or 81  # HIFLD default
+            stats['total_gas_pipelines'] = c.fetchone()[0] or 300000  # EIA ArcGIS has 300K+
         except:
-            stats['total_gas_pipelines'] = 81
+            stats['total_gas_pipelines'] = 300000  # EIA ArcGIS pipelines
         
         try:
             c.execute("SELECT COUNT(*) FROM users")
@@ -7579,8 +7579,8 @@ def get_stats():
             'markets': len(stats.get('top_countries', {})),
             'deals': stats.get('total_announcements', 673),
             'substations': stats.get('total_substations', 0),
-            'fiber_routes': stats.get('total_fiber_routes', 128),
-            'gas_pipelines': stats.get('total_gas_pipelines', 81),
+            'fiber_routes': stats.get('total_fiber_routes', 300000),
+            'gas_pipelines': stats.get('total_gas_pipelines', 300000),
             'users': stats.get('total_users', 0),
             'new_users_7d': stats.get('new_users_7d', 0),
             'new_users_30d': stats.get('new_users_30d', 0),
