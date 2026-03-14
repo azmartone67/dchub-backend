@@ -35,12 +35,13 @@ class KMZParser:
     def parse_file(self, content, source_url, source_id):
         # Try GeoJSON first (from ArcGIS queries)
         try:
-            import json as _json
-            data = _json.loads(content)
+            data = json.loads(content)
             if 'features' in data and isinstance(data['features'], list):
                 return self._parse_geojson(data, source_url, source_id)
-        except (ValueError, UnicodeDecodeError):
+        except (json.JSONDecodeError, UnicodeDecodeError):
             pass
+        
+        # Fall back to KML/KMZ
         kml_content = self._extract_kml(content)
         if kml_content is None:
             return []
@@ -49,7 +50,7 @@ class KMZParser:
         return self._parse_with_xml(kml_content, source_url, source_id)
 
     def _parse_geojson(self, data, source_url, source_id):
-        import json as _json
+        """Parse GeoJSON FeatureCollection from ArcGIS."""
         features = []
         for feat in data.get('features', [])[:MAX_FEATURES_PER_SOURCE]:
             try:
@@ -69,6 +70,7 @@ class KMZParser:
                 })
             except Exception:
                 continue
+        logger.info(f"GeoJSON parsed: {len(features)} features from {source_url}")
         return features
 
     def _extract_kml(self, content):
@@ -305,8 +307,11 @@ class KMZDownloader:
         try:
             if 'github.com' in url and '/blob/' in url:
                 url = url.replace('github.com', 'raw.githubusercontent.com').replace('/blob/', '/')
+            
+            # ArcGIS FeatureServer — query as GeoJSON instead of KMZ
             if 'arcgis.com' in url and 'FeatureServer' in url:
                 return self._download_arcgis(url)
+            
             resp = self.session.get(url, timeout=DOWNLOAD_TIMEOUT, allow_redirects=True)
             resp.raise_for_status()
             if len(resp.content) < 100:
@@ -318,20 +323,29 @@ class KMZDownloader:
             return None
 
     def _download_arcgis(self, base_url):
+        """Query ArcGIS FeatureServer and return GeoJSON as bytes."""
         try:
+            # Ensure we hit the layer endpoint (append /0 if no layer specified)
             query_url = base_url.rstrip('/')
             if query_url.endswith('FeatureServer'):
                 query_url += '/0'
             query_url += '/query'
-            params = {'where': '1=1', 'outFields': '*', 'f': 'geojson', 'resultRecordCount': 5000}
+            
+            params = {
+                'where': '1=1',
+                'outFields': '*',
+                'f': 'geojson',
+                'resultRecordCount': 5000,
+            }
             resp = self.session.get(query_url, params=params, timeout=DOWNLOAD_TIMEOUT)
             resp.raise_for_status()
             data = resp.json()
             if 'features' in data and len(data['features']) > 0:
                 logger.info(f"ArcGIS: {len(data['features'])} features from {base_url}")
-                return resp.content
-            logger.warning(f"ArcGIS: no features from {base_url}")
-            return None
+                return resp.content  # Return raw GeoJSON bytes
+            else:
+                logger.warning(f"ArcGIS: no features from {base_url}")
+                return None
         except Exception as e:
             logger.warning(f"ArcGIS query error {base_url}: {e}")
             return None

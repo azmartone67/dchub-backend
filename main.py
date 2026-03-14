@@ -2866,11 +2866,9 @@ try:
 except Exception as e:
     logger.error(f"⚠️ AI Wars API failed: {e}")
 
-try:
-    from jobs_api import register_jobs_api
-    register_jobs_api(app)
-except Exception as e:
-    logger.error(f"⚠️ Jobs API failed: {e}")
+# REMOVED: jobs_api.register_jobs_api was replaced by routes/jobs_routes.py Blueprint (Phase 2 Extract 4)
+# The Jobs Routes Blueprint registers 20 routes at /api/jobs/* and /api/scheduler/*
+# See line ~13094 for the Blueprint registration
 
 try:
     from discovery_monitoring import discovery_monitor_bp, init_facility_count_history
