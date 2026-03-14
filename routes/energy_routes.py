@@ -21,6 +21,7 @@ Dependencies imported from main.py (app-level):
 
 import os
 import math
+import time
 import logging
 import requests
 from flask import Blueprint, request, jsonify, Response
@@ -1345,11 +1346,14 @@ print("🏭 EPA Envirofacts/FLIGHT API: ✅ Routes registered")
 print("   📍 /api/epa/emissions, /api/epa/facilities, /api/epa/ghg, /api/epa/summary")
 
 # =============================================================================
-# PEERINGDB INTEGRATION (Connectivity Scoring)
+# PEERINGDB INTEGRATION (Connectivity Scoring) — FIXED: uses ixfac→fac for IX coords
 # =============================================================================
 
 PEERINGDB_CACHE = BoundedCache(max_size=50, ttl=3600)
 PEERINGDB_CACHE_DURATION = 3600  # 1 hour
+
+# Facility coordinate cache (populated by _ensure_peeringdb_fac_coords)
+_PEERINGDB_FAC_COORDS = {}  # {fac_id: {'lat': ..., 'lng': ..., 'name': ..., ...}}
 
 def peeringdb_cached(key, fetch_func):
     """Cache for PeeringDB data"""
@@ -1373,62 +1377,170 @@ def haversine_km(lat1, lng1, lat2, lng2):
     a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlng/2)**2
     return 2 * 6371 * asin(sqrt(a))
 
+
+def _ensure_peeringdb_fac_coords():
+    """Load all PeeringDB facility coordinates (cached 1 hour).
+    Called by connectivity endpoints and fiber-sync job."""
+    global _PEERINGDB_FAC_COORDS
+    cache_key = '_pdb_fac_coords'
+    now = time.time()
+
+    cached_ts = PEERINGDB_CACHE.get(f'{cache_key}_ts')
+    if cached_ts and (now - cached_ts) < 3600 and _PEERINGDB_FAC_COORDS:
+        return _PEERINGDB_FAC_COORDS
+
+    try:
+        resp = requests.get(
+            'https://www.peeringdb.com/api/fac',
+            params={'limit': 0, 'fields': 'id,name,latitude,longitude,city,country,state'},
+            timeout=30,
+            headers={'User-Agent': 'DCHub/2.0 (https://dchub.cloud)'}
+        )
+        resp.raise_for_status()
+        data = resp.json().get('data', [])
+        _PEERINGDB_FAC_COORDS = {}
+        for fac in data:
+            lat = fac.get('latitude')
+            lng = fac.get('longitude')
+            if lat and lng and lat != 0 and lng != 0:
+                _PEERINGDB_FAC_COORDS[fac['id']] = {
+                    'lat': float(lat),
+                    'lng': float(lng),
+                    'name': fac.get('name', ''),
+                    'city': fac.get('city', ''),
+                    'country': fac.get('country', ''),
+                    'state': fac.get('state', ''),
+                }
+        PEERINGDB_CACHE.set(cache_key, True)
+        PEERINGDB_CACHE.set(f'{cache_key}_ts', now)
+        logger.info(f"PeeringDB: cached {len(_PEERINGDB_FAC_COORDS)} facility coords")
+    except Exception as e:
+        logger.warning(f"PeeringDB fac coords fetch failed: {e}")
+
+    return _PEERINGDB_FAC_COORDS
+
+
+def _get_ix_locations(ix_ids):
+    """Get physical locations for IXes via ixfac → fac lat/lng lookup.
+    The /api/ix endpoint does NOT have lat/lng — only /api/fac does."""
+    fac_coords = _ensure_peeringdb_fac_coords()
+    if not fac_coords:
+        return {}
+
+    ix_locations = {}
+    try:
+        # Batch in chunks of 50 IDs
+        for i in range(0, len(ix_ids), 50):
+            chunk = ix_ids[i:i+50]
+            id_str = ','.join(str(x) for x in chunk)
+            resp = requests.get(
+                'https://www.peeringdb.com/api/ixfac',
+                params={'ix_id__in': id_str, 'limit': 0},
+                timeout=20,
+                headers={'User-Agent': 'DCHub/2.0 (https://dchub.cloud)'}
+            )
+            if resp.ok:
+                for ixfac in resp.json().get('data', []):
+                    ix_id = ixfac.get('ix_id')
+                    fac_id = ixfac.get('fac_id')
+                    if ix_id and fac_id and fac_id in fac_coords:
+                        if ix_id not in ix_locations:
+                            ix_locations[ix_id] = []
+                        ix_locations[ix_id].append(fac_coords[fac_id])
+            time.sleep(0.3)  # Rate limit courtesy
+    except Exception as e:
+        logger.warning(f"PeeringDB ixfac fetch failed: {e}")
+
+    return ix_locations
+
+
 @energy_bp.route('/api/v1/connectivity/ixps')
 @require_plan('pro')
 @protect_data
 def get_ixps():
-    """Get Internet Exchange Points near a location"""
+    """Get Internet Exchange Points near a location.
+    Uses ixfac→fac lookup to get real lat/lng (IX objects don't have coordinates)."""
     lat = request.args.get('lat', type=float)
     lng = request.args.get('lng', type=float)
-    radius_km = request.args.get('radius', default=100, type=int)
-    
+    radius_km = request.args.get('radius', 100, type=int)
+    country = request.args.get('country', 'US')
+
     if not lat or not lng:
         return jsonify({'success': False, 'error': 'lat and lng required'}), 400
-    
-    cache_key = 'ixps_US'
-    
-    def fetch():
-        url = 'https://www.peeringdb.com/api/ix?country=US'
-        resp = requests.get(url, timeout=15, headers={'User-Agent': 'DCHub/1.0'})
+
+    # Step 1: Fetch all IXes for this country
+    cache_key = f'ixps_{country}'
+
+    def _fetch_ixes():
+        resp = requests.get(
+            'https://www.peeringdb.com/api/ix',
+            params={'country': country, 'limit': 0},
+            timeout=20,
+            headers={'User-Agent': 'DCHub/2.0 (https://dchub.cloud)'}
+        )
         resp.raise_for_status()
         return resp.json()
-    
-    data = peeringdb_cached(cache_key, fetch)
-    
-    if not data or 'data' not in data:
-        return jsonify({'success': False, 'error': 'Failed to fetch IXP data'}), 500
-    
-    nearby_ixps = []
-    for ix in data.get('data', []):
-        ix_lat = ix.get('latitude') or ix.get('lat')
-        ix_lng = ix.get('longitude') or ix.get('lng')
-        
-        if ix_lat and ix_lng:
-            try:
-                dist = haversine_km(lat, lng, float(ix_lat), float(ix_lng))
-                if dist <= radius_km:
-                    nearby_ixps.append({
-                        'id': ix.get('id'),
-                        'name': ix.get('name'),
-                        'name_long': ix.get('name_long'),
-                        'city': ix.get('city'),
-                        'website': ix.get('website'),
-                        'net_count': ix.get('net_count', 0),
-                        'fac_count': ix.get('fac_count', 0),
-                        'distance_km': round(dist, 1)
-                    })
-            except:
-                pass
-    
-    nearby_ixps.sort(key=lambda x: x['distance_km'])
-    
+
+    ix_data = peeringdb_cached(cache_key, _fetch_ixes)
+
+    if not ix_data or 'data' not in ix_data:
+        return jsonify({'success': False, 'error': 'Failed to fetch IXP data'}), 502
+
+    all_ixes = ix_data.get('data', [])
+    if not all_ixes:
+        return jsonify({'success': True, 'data': [], 'count': 0, 'total_found': 0})
+
+    # Step 2: Get physical locations via ixfac → fac
+    ix_ids = [ix['id'] for ix in all_ixes if ix.get('id')]
+    ix_locations = _get_ix_locations(ix_ids)
+
+    # Step 3: Filter by haversine distance
+    nearby = []
+    for ix in all_ixes:
+        ix_id = ix.get('id')
+        locations = ix_locations.get(ix_id, [])
+
+        if not locations:
+            continue  # IX has no facility mapping — can't determine location
+
+        # Use closest facility location for this IX
+        best_dist = float('inf')
+        best_loc = None
+        for loc in locations:
+            dist = haversine_km(lat, lng, loc['lat'], loc['lng'])
+            if dist < best_dist:
+                best_dist = dist
+                best_loc = loc
+
+        if best_dist <= radius_km:
+            nearby.append({
+                'id': ix_id,
+                'name': ix.get('name', ''),
+                'name_long': ix.get('name_long', ''),
+                'city': ix.get('city', '') or (best_loc.get('city', '') if best_loc else ''),
+                'country': ix.get('country', ''),
+                'net_count': ix.get('net_count', 0),
+                'fac_count': ix.get('fac_count', 0),
+                'website': ix.get('website', ''),
+                'latitude': best_loc['lat'] if best_loc else None,
+                'longitude': best_loc['lng'] if best_loc else None,
+                'distance_km': round(best_dist, 1),
+                'facility_name': best_loc.get('name', '') if best_loc else '',
+                'source': 'PeeringDB'
+            })
+
+    nearby.sort(key=lambda x: x['distance_km'])
+
     return jsonify({
         'success': True,
         'location': {'lat': lat, 'lng': lng},
         'radius_km': radius_km,
-        'count': len(nearby_ixps),
-        'ixps': nearby_ixps[:20]
+        'count': len(nearby),
+        'total_found': len(all_ixes),
+        'ixps': nearby[:20],
+        'source': 'PeeringDB (via ixfac→fac lat/lng)'
     })
+
 
 @energy_bp.route('/api/v1/connectivity/facilities')
 @require_plan('pro')
@@ -1438,49 +1550,31 @@ def get_peeringdb_facilities():
     lat = request.args.get('lat', type=float)
     lng = request.args.get('lng', type=float)
     radius_km = request.args.get('radius', default=50, type=int)
-    
+
     if not lat or not lng:
         return jsonify({'success': False, 'error': 'lat and lng required'}), 400
-    
-    cache_key = 'fac_US'
-    
-    def fetch():
-        url = 'https://www.peeringdb.com/api/fac?country=US'
-        resp = requests.get(url, timeout=15, headers={'User-Agent': 'DCHub/1.0'})
-        resp.raise_for_status()
-        return resp.json()
-    
-    data = peeringdb_cached(cache_key, fetch)
-    
-    if not data or 'data' not in data:
-        return jsonify({'success': False, 'error': 'Failed to fetch facility data'}), 500
-    
+
+    # Use the fac coord cache (much faster than re-fetching)
+    fac_coords = _ensure_peeringdb_fac_coords()
+
     nearby_facs = []
-    for fac in data.get('data', []):
-        fac_lat = fac.get('latitude')
-        fac_lng = fac.get('longitude')
-        
-        if fac_lat and fac_lng:
-            try:
-                dist = haversine_km(lat, lng, float(fac_lat), float(fac_lng))
-                if dist <= radius_km:
-                    nearby_facs.append({
-                        'id': fac.get('id'),
-                        'name': fac.get('name'),
-                        'address1': fac.get('address1'),
-                        'city': fac.get('city'),
-                        'state': fac.get('state'),
-                        'website': fac.get('website'),
-                        'net_count': fac.get('net_count', 0),
-                        'ix_count': fac.get('ix_count', 0),
-                        'org_name': fac.get('org_name'),
-                        'distance_km': round(dist, 1)
-                    })
-            except:
-                pass
-    
+    for fac_id, fac in fac_coords.items():
+        try:
+            dist = haversine_km(lat, lng, fac['lat'], fac['lng'])
+            if dist <= radius_km:
+                nearby_facs.append({
+                    'id': fac_id,
+                    'name': fac.get('name', ''),
+                    'city': fac.get('city', ''),
+                    'state': fac.get('state', ''),
+                    'country': fac.get('country', ''),
+                    'distance_km': round(dist, 1)
+                })
+        except:
+            pass
+
     nearby_facs.sort(key=lambda x: x['distance_km'])
-    
+
     return jsonify({
         'success': True,
         'location': {'lat': lat, 'lng': lng},
@@ -1489,86 +1583,86 @@ def get_peeringdb_facilities():
         'facilities': nearby_facs[:30]
     })
 
+
 @energy_bp.route('/api/v1/connectivity/score')
 @require_plan('pro')
 @protect_data
 def connectivity_score():
-    """Calculate connectivity score for a location"""
+    """Calculate connectivity score for a location using IXPs + facilities."""
     lat = request.args.get('lat', type=float)
     lng = request.args.get('lng', type=float)
-    
+
     if not lat or not lng:
         return jsonify({'success': False, 'error': 'lat and lng required'}), 400
-    
-    # Get US IXPs
-    ixp_data = peeringdb_cached('ixps_US', lambda: requests.get(
-        'https://www.peeringdb.com/api/ix?country=US',
-        timeout=15, headers={'User-Agent': 'DCHub/1.0'}
-    ).json())
-    
-    # Get US facilities
-    fac_data = peeringdb_cached('fac_US', lambda: requests.get(
-        'https://www.peeringdb.com/api/fac?country=US',
-        timeout=15, headers={'User-Agent': 'DCHub/1.0'}
-    ).json())
-    
-    nearby_ixps = []
-    if ixp_data and 'data' in ixp_data:
-        for ix in ixp_data['data']:
-            ix_lat = ix.get('latitude') or ix.get('lat')
-            ix_lng = ix.get('longitude') or ix.get('lng')
-            if ix_lat and ix_lng:
-                try:
-                    dist = haversine_km(lat, lng, float(ix_lat), float(ix_lng))
-                    if dist <= 100:
-                        nearby_ixps.append({
-                            'name': ix.get('name'),
-                            'net_count': ix.get('net_count', 0),
-                            'distance_km': round(dist, 1)
-                        })
-                except:
-                    pass
-    
+
+    radius_km = request.args.get('radius', 100, type=int)
+    country = request.args.get('country', 'US')
+
+    # Get nearby facilities from cache
+    fac_coords = _ensure_peeringdb_fac_coords()
     nearby_facs = []
     total_networks = 0
-    if fac_data and 'data' in fac_data:
-        for fac in fac_data['data']:
-            fac_lat = fac.get('latitude')
-            fac_lng = fac.get('longitude')
-            if fac_lat and fac_lng:
-                try:
-                    dist = haversine_km(lat, lng, float(fac_lat), float(fac_lng))
-                    if dist <= 50:
-                        net_count = fac.get('net_count', 0)
-                        total_networks += net_count
-                        nearby_facs.append({
-                            'name': fac.get('name'),
-                            'net_count': net_count,
-                            'distance_km': round(dist, 1)
-                        })
-                except:
-                    pass
-    
-    # Calculate score (0-100)
+    for fac_id, fac in fac_coords.items():
+        try:
+            dist = haversine_km(lat, lng, fac['lat'], fac['lng'])
+            if dist <= 50:
+                nearby_facs.append({
+                    'name': fac.get('name', ''),
+                    'distance_km': round(dist, 1),
+                    'city': fac.get('city', ''),
+                })
+        except:
+            pass
+
+    # Get IXP count via fixed ixfac→fac method
+    cache_key = f'ixps_{country}'
+
+    def _fetch_ixes():
+        resp = requests.get(
+            'https://www.peeringdb.com/api/ix',
+            params={'country': country, 'limit': 0},
+            timeout=20,
+            headers={'User-Agent': 'DCHub/2.0 (https://dchub.cloud)'}
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    ix_data = peeringdb_cached(cache_key, _fetch_ixes)
+    all_ixes = ix_data.get('data', []) if ix_data and isinstance(ix_data, dict) else []
+
+    ix_ids = [ix['id'] for ix in all_ixes if ix.get('id')]
+    ix_locations = _get_ix_locations(ix_ids) if ix_ids else {}
+
+    nearby_ixps = []
+    for ix in all_ixes:
+        locations = ix_locations.get(ix.get('id'), [])
+        for loc in locations:
+            dist = haversine_km(lat, lng, loc['lat'], loc['lng'])
+            if dist <= radius_km:
+                net_count = ix.get('net_count', 0)
+                total_networks += net_count
+                nearby_ixps.append({
+                    'name': ix.get('name', ''),
+                    'net_count': net_count,
+                    'distance_km': round(dist, 1),
+                })
+                break  # Count each IX once
+
+    # Score (0-100)
     ixp_score = min(len(nearby_ixps) * 15, 30)
     fac_score = min(len(nearby_facs) * 5, 30)
     net_score = min(total_networks * 0.5, 40)
     total_score = round(ixp_score + fac_score + net_score)
-    
-    if total_score >= 80:
-        rating, color = 'Excellent', '#22c55e'
-    elif total_score >= 60:
-        rating, color = 'Good', '#84cc16'
-    elif total_score >= 40:
-        rating, color = 'Moderate', '#f59e0b'
-    elif total_score >= 20:
-        rating, color = 'Limited', '#f97316'
-    else:
-        rating, color = 'Poor', '#ef4444'
-    
+
+    if total_score >= 80:    rating, color = 'Excellent', '#22c55e'
+    elif total_score >= 60:  rating, color = 'Good', '#84cc16'
+    elif total_score >= 40:  rating, color = 'Moderate', '#f59e0b'
+    elif total_score >= 20:  rating, color = 'Limited', '#f97316'
+    else:                    rating, color = 'Poor', '#ef4444'
+
     nearby_ixps.sort(key=lambda x: x['distance_km'])
     nearby_facs.sort(key=lambda x: x['distance_km'])
-    
+
     return jsonify({
         'success': True,
         'location': {'lat': lat, 'lng': lng},
@@ -1591,7 +1685,7 @@ def connectivity_score():
         'facilities': nearby_facs[:10]
     })
 
-print("🌐 PeeringDB Integration: ✅ Routes registered")
+print("🌐 PeeringDB Integration: ✅ Routes registered (ixfac→fac lat/lng fix)")
 
 # =============================================================================
 # EXPANDED EIA INTEGRATION (RTO Data, Natural Gas, Retail Pricing)
