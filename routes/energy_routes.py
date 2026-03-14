@@ -177,6 +177,7 @@ def gridstatus_get_fuel_mix(iso_id):
             'MISO': gridstatus.MISO,
             'SPP': gridstatus.SPP,
             'ISONE': gridstatus.ISONE,
+            'PJM': gridstatus.PJM,
         }
         if iso_id not in iso_classes:
             return None
@@ -465,6 +466,7 @@ def grid_fuel_mix_live():
             'MISO': gridstatus.MISO,
             'SPP': gridstatus.SPP,
             'ISONE': gridstatus.ISONE,
+            'PJM': gridstatus.PJM,
         }
         if iso not in iso_classes:
             return jsonify({"error": f"Invalid ISO. Options: {list(iso_classes.keys())}"}), 400
