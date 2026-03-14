@@ -11803,3 +11803,11 @@ try:
     print("💳 Webhook Alert Endpoint: ✅ Registered (/api/stripe/webhook-alert)")
 except Exception as e:
     print(f"💳 Webhook Alert Endpoint: ⚠️ Failed to load: {e}")
+
+try:
+    from routes.rankings_routes import rankings_bp, _register_rankings_routes
+    _register_rankings_routes(rankings_bp, db_pool=db_pool, get_db_connection=get_db_connection, require_plan=require_plan)
+    app.register_blueprint(rankings_bp)
+    print("📊 Rankings Series Blueprint: ✅ Registered (5 routes)")
+except Exception as e:
+    print(f"❌ Rankings blueprint failed: {e}")
