@@ -1,28 +1,20 @@
 """
-DC Hub Rankings Series API — v2 (Production)
+DC Hub Rankings Series API — v3 (Production)
 ==============================================
 Dynamic infrastructure rankings by US state.
-Tier-gated: Free = top 3 basic, Pro = full data + operators + insights.
+
+Rankings data is FREE — this is viral marketing content for LinkedIn/social.
+The analysis tool overlay on the page is pro-gated client-side.
 
 Categories:
-  - construction: Pipeline projects under construction (from capacity_pipeline + PIPELINE_DATA fallback)
-  - power: Operational power capacity (from facilities table)
-  - gas: Gas pipeline infrastructure (from gas_pipelines table, hardcoded columns)
-  - fiber: Fiber route density (from fiber_routes table, lat/lng → state mapping)
-
-Endpoints:
-  GET /api/rankings              → Category index
-  GET /api/rankings/construction → Construction by state
-  GET /api/rankings/power        → Power MW by state
-  GET /api/rankings/gas          → Gas pipelines by state
-  GET /api/rankings/fiber        → Fiber routes by state
-
-Blueprint: rankings_bp
+  - construction: Pipeline projects under construction (capacity_pipeline + PIPELINE_DATA fallback)
+  - power: Operational power capacity (facilities table)
+  - gas: Gas pipeline infrastructure (gas_pipelines table, direct query)
+  - fiber: Fiber route density (fiber_routes table, lat/lng → state mapping)
 """
 
 from flask import Blueprint, jsonify, request
 from datetime import datetime
-import os
 
 rankings_bp = Blueprint('rankings', __name__)
 
@@ -45,7 +37,6 @@ STATE_NAMES = {
     'WI': 'Wisconsin', 'WY': 'Wyoming', 'DC': 'Washington DC'
 }
 
-# Valid US state codes for filtering out GOM, offshore, etc.
 VALID_STATE_CODES = set(STATE_NAMES.keys())
 
 MARKET_TO_STATE = {
@@ -71,20 +62,15 @@ MARKET_TO_STATE = {
     'santa clara': 'California', 'los angeles': 'California', 'silicon valley': 'California',
     'california': 'California',
     'indianapolis': 'Indiana', 'indiana': 'Indiana',
-    'iowa': 'Iowa',
-    'south carolina': 'South Carolina',
+    'iowa': 'Iowa', 'south carolina': 'South Carolina',
     'north carolina': 'North Carolina', 'charlotte': 'North Carolina',
-    'maryland': 'Maryland',
-    'new york': 'New York',
-    'salt lake': 'Utah', 'utah': 'Utah',
-    'pennsylvania': 'Pennsylvania',
-    'miami': 'Florida', 'florida': 'Florida',
-    'alabama': 'Alabama',
-    'west memphis': 'Arkansas', 'arkansas': 'Arkansas',
-    'washington': 'Washington',
+    'maryland': 'Maryland', 'new york': 'New York',
+    'salt lake': 'Utah', 'utah': 'Utah', 'pennsylvania': 'Pennsylvania',
+    'miami': 'Florida', 'florida': 'Florida', 'alabama': 'Alabama',
+    'west memphis': 'Arkansas', 'arkansas': 'Arkansas', 'washington': 'Washington',
 }
 
-# Lat/lng bounding boxes for US states (approximate, for fiber route mapping)
+# Lat/lng bounding boxes for US states (approximate)
 STATE_BOUNDS = {
     'AL': (30.2, -88.5, 35.0, -84.9), 'AZ': (31.3, -114.8, 37.0, -109.0),
     'AR': (33.0, -94.6, 36.5, -89.6), 'CA': (32.5, -124.4, 42.0, -114.1),
@@ -114,7 +100,6 @@ STATE_BOUNDS = {
 
 
 def _resolve_state(market_str):
-    """Resolve a market string to a US state name."""
     if not market_str:
         return None
     market_lower = market_str.lower().strip()
@@ -127,7 +112,6 @@ def _resolve_state(market_str):
 
 
 def _lat_lng_to_state(lat, lng):
-    """Map lat/lng to US state code using bounding boxes."""
     if lat is None or lng is None:
         return None
     try:
@@ -140,54 +124,6 @@ def _lat_lng_to_state(lat, lng):
     return None
 
 
-def _get_user_plan():
-    """Check user plan from API key, JWT, or internal key."""
-    # Internal key bypass (MCP, internal calls)
-    internal_key = request.headers.get('X-Internal-Key', '')
-    if internal_key and internal_key == os.environ.get('INTERNAL_API_KEY', ''):
-        return 'enterprise'
-
-    # API key check
-    api_key = request.headers.get('X-API-Key', '') or request.args.get('api_key', '')
-    if api_key.startswith('dchub_en_'):
-        return 'enterprise'
-    elif api_key.startswith('dchub_pr_'):
-        return 'pro'
-
-    # JWT check
-    auth_header = request.headers.get('Authorization', '')
-    if auth_header.startswith('Bearer '):
-        try:
-            import jwt
-            token = auth_header.replace('Bearer ', '')
-            decoded = jwt.decode(token, os.environ.get('JWT_SECRET', ''), algorithms=['HS256'])
-            return decoded.get('plan', 'free')
-        except Exception:
-            pass
-
-    return 'free'
-
-
-def _gate_results(results, primary_metric='total_mw'):
-    """Apply tier gating. Free: top 3 basic. Pro: full."""
-    plan = _get_user_plan()
-    if plan in ('pro', 'enterprise'):
-        return results, plan, False
-
-    # Free tier: top 3, stripped to basic fields
-    free_results = []
-    for r in results[:3]:
-        free_results.append({
-            'rank': r.get('rank'),
-            'state_name': r.get('state_name') or r.get('state'),
-            primary_metric: r.get(primary_metric, 0)
-        })
-    return free_results, plan, True
-
-
-# ---------------------------------------------------------------
-# Route registration
-# ---------------------------------------------------------------
 def _register_rankings_routes(rankings_bp, db_pool=None, get_db_connection=None, require_plan=None):
 
     def get_conn():
@@ -206,7 +142,7 @@ def _register_rankings_routes(rankings_bp, db_pool=None, get_db_connection=None,
             except Exception: pass
 
     # ---------------------------------------------------------------
-    # Category index (always free)
+    # Category index
     # ---------------------------------------------------------------
     @rankings_bp.route('/api/rankings', methods=['GET'])
     def rankings_index():
@@ -310,28 +246,19 @@ def _register_rankings_routes(rankings_bp, db_pool=None, get_db_connection=None,
         total_projects = sum(r['project_count'] for r in results)
         total_mw = sum(r['total_mw'] for r in results)
 
-        # Apply tier gating
-        gated_results, tier, is_gated = _gate_results(results, 'total_mw')
-
-        resp = {
+        return jsonify({
             "success": True, "category": "construction",
             "title": "Data Centers Under Construction",
             "subtitle": f"in the United States (As of {datetime.utcnow().strftime('%b %d, %Y')})",
             "metric_label": "Pipeline MW Under Construction",
             "primary_metric": "total_mw", "secondary_metric": "project_count",
-            "rankings": gated_results,
+            "rankings": results,
             "summary": {"total_states": len(results), "total_projects": total_projects, "total_mw": float(total_mw)},
-            "tier": tier, "data_source": data_source,
+            "data_source": data_source,
             "source": "DC Hub | dchub.cloud",
             "generated_at": datetime.utcnow().isoformat(),
-        }
-        if is_gated:
-            resp["gated"] = True
-            resp["showing"] = len(gated_results)
-            resp["total_available"] = len(results)
-            resp["upgrade_message"] = f"Showing top 3 of {len(results)} states. Upgrade to Pro for full rankings, operators, and analysis."
-            resp["upgrade_url"] = "https://dchub.cloud/pricing"
-        return jsonify(resp)
+            "methodology": "Aggregated from DC Hub pipeline tracking. Projects with status 'under construction' grouped by US state, ranked by total MW."
+        })
 
     # ---------------------------------------------------------------
     # Power Capacity Rankings
@@ -373,32 +300,22 @@ def _register_rankings_routes(rankings_bp, db_pool=None, get_db_connection=None,
                 results.append(entry)
             cur.close()
 
-            # Tier gate
-            gated_results, tier, is_gated = _gate_results(results, 'total_mw')
-
-            resp = {
+            return jsonify({
                 "success": True, "category": "power",
                 "title": "Data Center Power Capacity",
                 "subtitle": f"in the United States (As of {datetime.utcnow().strftime('%b %d, %Y')})",
                 "metric_label": "Total Operational MW",
                 "primary_metric": "total_mw", "secondary_metric": "facility_count",
-                "rankings": gated_results,
+                "rankings": results,
                 "summary": {
                     "total_states": len(results),
                     "total_facilities": sum(r['facility_count'] for r in results),
                     "total_mw": float(sum(r['total_mw'] for r in results)),
                 },
-                "tier": tier,
                 "source": "DC Hub | dchub.cloud",
                 "generated_at": datetime.utcnow().isoformat(),
-            }
-            if is_gated:
-                resp["gated"] = True
-                resp["showing"] = len(gated_results)
-                resp["total_available"] = len(results)
-                resp["upgrade_message"] = f"Showing top 3 of {len(results)} states. Upgrade to Pro for full rankings."
-                resp["upgrade_url"] = "https://dchub.cloud/pricing"
-            return jsonify(resp)
+                "methodology": "Aggregated from DC Hub facility database. Operational facilities grouped by US state."
+            })
 
         except Exception as e:
             return jsonify({"success": False, "error": str(e)}), 500
@@ -406,7 +323,7 @@ def _register_rankings_routes(rankings_bp, db_pool=None, get_db_connection=None,
             if conn: release_conn(conn)
 
     # ---------------------------------------------------------------
-    # Gas Pipeline Rankings (hardcoded: gas_pipelines table)
+    # Gas Pipeline Rankings — direct query, no schema discovery
     # ---------------------------------------------------------------
     @rankings_bp.route('/api/rankings/gas', methods=['GET'])
     def rankings_gas():
@@ -417,7 +334,6 @@ def _register_rankings_routes(rankings_bp, db_pool=None, get_db_connection=None,
             conn = get_conn()
             cur = conn.cursor()
 
-            # Direct query — no information_schema discovery
             cur.execute("""
                 SELECT 
                     state,
@@ -442,32 +358,21 @@ def _register_rankings_routes(rankings_bp, db_pool=None, get_db_connection=None,
                 results.append(entry)
             cur.close()
 
-            # Tier gate
-            gated_results, tier, is_gated = _gate_results(results, 'pipeline_count')
-
-            resp = {
+            return jsonify({
                 "success": True, "category": "gas",
                 "title": "Gas Pipeline Infrastructure",
                 "subtitle": f"in the United States (As of {datetime.utcnow().strftime('%b %d, %Y')})",
                 "metric_label": "Pipeline Segments",
                 "primary_metric": "pipeline_count", "secondary_metric": "operator_count",
-                "rankings": gated_results,
+                "rankings": results,
                 "summary": {
                     "total_states": len(results),
                     "total_pipelines": sum(r['pipeline_count'] for r in results),
                 },
-                "tier": tier,
                 "source": "DC Hub | dchub.cloud",
                 "generated_at": datetime.utcnow().isoformat(),
                 "methodology": "Aggregated from EIA natural gas pipeline data. Transmission pipeline segments grouped by US state."
-            }
-            if is_gated:
-                resp["gated"] = True
-                resp["showing"] = len(gated_results)
-                resp["total_available"] = len(results)
-                resp["upgrade_message"] = f"Showing top 3 of {len(results)} states. Upgrade to Pro for full gas infrastructure rankings."
-                resp["upgrade_url"] = "https://dchub.cloud/pricing"
-            return jsonify(resp)
+            })
 
         except Exception as e:
             return jsonify({"success": False, "error": str(e)}), 500
@@ -475,7 +380,7 @@ def _register_rankings_routes(rankings_bp, db_pool=None, get_db_connection=None,
             if conn: release_conn(conn)
 
     # ---------------------------------------------------------------
-    # Fiber Rankings (uses start_lat/start_lng → state mapping)
+    # Fiber Rankings — lat/lng → state mapping, no schema discovery
     # ---------------------------------------------------------------
     @rankings_bp.route('/api/rankings/fiber', methods=['GET'])
     def rankings_fiber():
@@ -486,7 +391,6 @@ def _register_rankings_routes(rankings_bp, db_pool=None, get_db_connection=None,
             conn = get_conn()
             cur = conn.cursor()
 
-            # Fetch fiber routes with lat/lng
             cur.execute("""
                 SELECT start_lat, start_lng, provider
                 FROM fiber_routes
@@ -519,32 +423,21 @@ def _register_rankings_routes(rankings_bp, db_pool=None, get_db_connection=None,
                     'provider_count': len(data['providers']),
                 })
 
-            # Tier gate
-            gated_results, tier, is_gated = _gate_results(results, 'route_count')
-
-            resp = {
+            return jsonify({
                 "success": True, "category": "fiber",
                 "title": "Fiber Network Density",
                 "subtitle": f"in the United States (As of {datetime.utcnow().strftime('%b %d, %Y')})",
                 "metric_label": "Fiber Routes",
                 "primary_metric": "route_count", "secondary_metric": "provider_count",
-                "rankings": gated_results,
+                "rankings": results,
                 "summary": {
                     "total_states": len(results),
                     "total_routes": sum(r['route_count'] for r in results),
                 },
-                "tier": tier,
                 "source": "DC Hub | dchub.cloud",
                 "generated_at": datetime.utcnow().isoformat(),
                 "methodology": "Aggregated from DC Hub fiber route discovery data. Routes mapped to states via coordinates."
-            }
-            if is_gated:
-                resp["gated"] = True
-                resp["showing"] = len(gated_results)
-                resp["total_available"] = len(results)
-                resp["upgrade_message"] = f"Showing top 3 of {len(results)} states. Upgrade to Pro for full fiber density rankings."
-                resp["upgrade_url"] = "https://dchub.cloud/pricing"
-            return jsonify(resp)
+            })
 
         except Exception as e:
             return jsonify({"success": False, "error": str(e)}), 500
