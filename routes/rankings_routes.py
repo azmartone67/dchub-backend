@@ -14,7 +14,6 @@ Endpoints:
     Query params:
       - country: ISO code (default 'US')
       - limit: Number of states to return (default 25)
-      - format: 'json' (default) or 'html' (returns shareable embed)
     
   GET /api/rankings
     Returns list of available ranking categories with metadata
@@ -26,6 +25,77 @@ from flask import Blueprint, jsonify, request
 from datetime import datetime
 
 rankings_bp = Blueprint('rankings', __name__)
+
+# ---------------------------------------------------------------
+# State mapping helper
+# ---------------------------------------------------------------
+STATE_NAMES = {
+    'AL': 'Alabama', 'AK': 'Alaska', 'AZ': 'Arizona', 'AR': 'Arkansas',
+    'CA': 'California', 'CO': 'Colorado', 'CT': 'Connecticut', 'DE': 'Delaware',
+    'FL': 'Florida', 'GA': 'Georgia', 'HI': 'Hawaii', 'ID': 'Idaho',
+    'IL': 'Illinois', 'IN': 'Indiana', 'IA': 'Iowa', 'KS': 'Kansas',
+    'KY': 'Kentucky', 'LA': 'Louisiana', 'ME': 'Maine', 'MD': 'Maryland',
+    'MA': 'Massachusetts', 'MI': 'Michigan', 'MN': 'Minnesota', 'MS': 'Mississippi',
+    'MO': 'Missouri', 'MT': 'Montana', 'NE': 'Nebraska', 'NV': 'Nevada',
+    'NH': 'New Hampshire', 'NJ': 'New Jersey', 'NM': 'New Mexico', 'NY': 'New York',
+    'NC': 'North Carolina', 'ND': 'North Dakota', 'OH': 'Ohio', 'OK': 'Oklahoma',
+    'OR': 'Oregon', 'PA': 'Pennsylvania', 'RI': 'Rhode Island', 'SC': 'South Carolina',
+    'SD': 'South Dakota', 'TN': 'Tennessee', 'TX': 'Texas', 'UT': 'Utah',
+    'VT': 'Vermont', 'VA': 'Virginia', 'WA': 'Washington', 'WV': 'West Virginia',
+    'WI': 'Wisconsin', 'WY': 'Wyoming', 'DC': 'Washington DC'
+}
+
+# Market string -> State name mapping for pipeline data
+MARKET_TO_STATE = {
+    'abilene': 'Texas', 'dallas': 'Texas', 'houston': 'Texas', 'austin': 'Texas',
+    'san antonio': 'Texas', 'el paso': 'Texas', 'texas': 'Texas',
+    'shackelford county': 'Texas',
+    'ashburn': 'Virginia', 'richmond': 'Virginia', 'n. virginia': 'Virginia',
+    'northern virginia': 'Virginia', 'virginia': 'Virginia',
+    'ohio': 'Ohio', 'columbus': 'Ohio',
+    'phoenix': 'Arizona', 'mesa': 'Arizona', 'arizona': 'Arizona',
+    'atlanta': 'Georgia', 'georgia': 'Georgia',
+    'hillsboro': 'Oregon', 'portland': 'Oregon', 'oregon': 'Oregon',
+    'new jersey': 'New Jersey',
+    'memphis': 'Tennessee', 'nashville': 'Tennessee', 'tennessee': 'Tennessee',
+    'denver': 'Colorado', 'colorado': 'Colorado',
+    'chicago': 'Illinois', 'illinois': 'Illinois',
+    'lauderdale county': 'Mississippi', 'meridian': 'Mississippi', 'mississippi': 'Mississippi',
+    'new mexico': 'New Mexico',
+    'port washington': 'Wisconsin', 'mount pleasant': 'Wisconsin', 'wisconsin': 'Wisconsin',
+    'richland parish': 'Louisiana', 'louisiana': 'Louisiana',
+    'kansas city': 'Kansas', 'kansas': 'Kansas',
+    'las vegas': 'Nevada', 'reno': 'Nevada', 'nevada': 'Nevada',
+    'santa clara': 'California', 'los angeles': 'California', 'silicon valley': 'California',
+    'california': 'California',
+    'indianapolis': 'Indiana', 'indiana': 'Indiana',
+    'iowa': 'Iowa',
+    'south carolina': 'South Carolina',
+    'north carolina': 'North Carolina', 'charlotte': 'North Carolina',
+    'maryland': 'Maryland',
+    'new york': 'New York',
+    'salt lake': 'Utah', 'utah': 'Utah',
+    'pennsylvania': 'Pennsylvania',
+    'miami': 'Florida', 'florida': 'Florida',
+    'alabama': 'Alabama',
+    'west memphis': 'Arkansas', 'arkansas': 'Arkansas',
+    'washington': 'Washington',
+}
+
+
+def _resolve_state(market_str):
+    """Resolve a market string to a US state name."""
+    if not market_str:
+        return None
+    market_lower = market_str.lower().strip()
+    # Try exact match first
+    if market_lower in MARKET_TO_STATE:
+        return MARKET_TO_STATE[market_lower]
+    # Try substring match
+    for key, state in MARKET_TO_STATE.items():
+        if key in market_lower:
+            return state
+    return None
 
 
 def _register_rankings_routes(rankings_bp, db_pool=None, get_db_connection=None, require_plan=None):
@@ -47,6 +117,11 @@ def _register_rankings_routes(rankings_bp, db_pool=None, get_db_connection=None,
         if db_pool:
             try:
                 db_pool.putconn(conn)
+            except Exception:
+                pass
+        elif get_db_connection:
+            try:
+                conn.close()
             except Exception:
                 pass
 
@@ -109,125 +184,126 @@ def _register_rankings_routes(rankings_bp, db_pool=None, get_db_connection=None,
     def rankings_construction():
         """
         Rank US states by data center construction activity.
-        Uses pipeline table for under-construction projects.
+        Strategy: Try capacity_pipeline table first, fall back to PIPELINE_DATA from deals_routes.
         """
-        country = request.args.get('country', 'US').upper()
         limit = min(int(request.args.get('limit', 25)), 50)
-
+        
         conn = None
+        results = []
+        data_source = None
+        
+        # --- Attempt 1: Query capacity_pipeline table ---
         try:
             conn = get_conn()
             cur = conn.cursor()
-
-            # Query pipeline table for construction projects, aggregate by state
-            # Market field contains state info - we need to extract state
+            
             cur.execute("""
-                WITH pipeline_states AS (
-                    SELECT 
-                        CASE
-                            WHEN market ILIKE '%%texas%%' OR market ILIKE '%%TX%%' OR market ILIKE '%%dallas%%' 
-                                OR market ILIKE '%%houston%%' OR market ILIKE '%%austin%%' OR market ILIKE '%%san antonio%%'
-                                OR market ILIKE '%%abilene%%' OR market ILIKE '%%el paso%%' THEN 'Texas'
-                            WHEN market ILIKE '%%virginia%%' OR market ILIKE '%%VA%%' OR market ILIKE '%%ashburn%%' 
-                                OR market ILIKE '%%richmond%%' OR market ILIKE '%%n. virginia%%' THEN 'Virginia'
-                            WHEN market ILIKE '%%ohio%%' OR market ILIKE '%%OH%%' OR market ILIKE '%%columbus%%' THEN 'Ohio'
-                            WHEN market ILIKE '%%arizona%%' OR market ILIKE '%%AZ%%' OR market ILIKE '%%phoenix%%' 
-                                OR market ILIKE '%%mesa%%' THEN 'Arizona'
-                            WHEN market ILIKE '%%georgia%%' OR market ILIKE '%%GA%%' OR market ILIKE '%%atlanta%%' THEN 'Georgia'
-                            WHEN market ILIKE '%%oregon%%' OR market ILIKE '%%OR%%' OR market ILIKE '%%hillsboro%%' 
-                                OR market ILIKE '%%portland%%' THEN 'Oregon'
-                            WHEN market ILIKE '%%new jersey%%' OR market ILIKE '%%NJ%%' THEN 'New Jersey'
-                            WHEN market ILIKE '%%tennessee%%' OR market ILIKE '%%TN%%' OR market ILIKE '%%memphis%%' 
-                                OR market ILIKE '%%nashville%%' THEN 'Tennessee'
-                            WHEN market ILIKE '%%colorado%%' OR market ILIKE '%%CO%%' OR market ILIKE '%%denver%%' THEN 'Colorado'
-                            WHEN market ILIKE '%%illinois%%' OR market ILIKE '%%IL%%' OR market ILIKE '%%chicago%%' THEN 'Illinois'
-                            WHEN market ILIKE '%%mississippi%%' OR market ILIKE '%%MS%%' OR market ILIKE '%%lauderdale%%' 
-                                OR market ILIKE '%%meridian%%' THEN 'Mississippi'
-                            WHEN market ILIKE '%%new mexico%%' OR market ILIKE '%%NM%%' THEN 'New Mexico'
-                            WHEN market ILIKE '%%wisconsin%%' OR market ILIKE '%%WI%%' OR market ILIKE '%%port washington%%' THEN 'Wisconsin'
-                            WHEN market ILIKE '%%louisiana%%' OR market ILIKE '%%LA%%' OR market ILIKE '%%richland%%' THEN 'Louisiana'
-                            WHEN market ILIKE '%%kansas%%' OR market ILIKE '%%KS%%' OR market ILIKE '%%kansas city%%' THEN 'Kansas'
-                            WHEN market ILIKE '%%nevada%%' OR market ILIKE '%%NV%%' OR market ILIKE '%%las vegas%%' 
-                                OR market ILIKE '%%reno%%' THEN 'Nevada'
-                            WHEN market ILIKE '%%california%%' OR market ILIKE '%%CA%%' OR market ILIKE '%%santa clara%%' 
-                                OR market ILIKE '%%los angeles%%' OR market ILIKE '%%silicon valley%%' THEN 'California'
-                            WHEN market ILIKE '%%washington%%' AND NOT market ILIKE '%%port washington%%' 
-                                AND NOT market ILIKE '%%DC%%' THEN 'Washington'
-                            WHEN market ILIKE '%%indiana%%' OR market ILIKE '%%IN%%' OR market ILIKE '%%indianapolis%%' THEN 'Indiana'
-                            WHEN market ILIKE '%%iowa%%' OR market ILIKE '%%IA%%' THEN 'Iowa'
-                            WHEN market ILIKE '%%south carolina%%' OR market ILIKE '%%SC%%' THEN 'South Carolina'
-                            WHEN market ILIKE '%%north carolina%%' OR market ILIKE '%%NC%%' OR market ILIKE '%%charlotte%%' THEN 'North Carolina'
-                            WHEN market ILIKE '%%maryland%%' OR market ILIKE '%%MD%%' THEN 'Maryland'
-                            WHEN market ILIKE '%%new york%%' OR market ILIKE '%%NY%%' THEN 'New York'
-                            WHEN market ILIKE '%%utah%%' OR market ILIKE '%%UT%%' OR market ILIKE '%%salt lake%%' THEN 'Utah'
-                            WHEN market ILIKE '%%pennsylvania%%' OR market ILIKE '%%PA%%' THEN 'Pennsylvania'
-                            WHEN market ILIKE '%%florida%%' OR market ILIKE '%%FL%%' OR market ILIKE '%%miami%%' THEN 'Florida'
-                            WHEN market ILIKE '%%alabama%%' OR market ILIKE '%%AL%%' THEN 'Alabama'
-                            ELSE NULL
-                        END AS state_name,
-                        capacity_mw,
-                        investment_millions,
-                        project_name,
-                        operator
-                    FROM pipeline
-                    WHERE LOWER(status) IN ('construction', 'under_construction')
-                      AND (country = %s OR country IS NULL)
-                )
-                SELECT 
-                    state_name,
-                    COUNT(*) as project_count,
-                    ROUND(COALESCE(SUM(capacity_mw), 0)::numeric, 0) as total_mw,
-                    ROUND(COALESCE(SUM(investment_millions), 0)::numeric, 0) as total_investment_millions,
-                    ARRAY_AGG(DISTINCT operator) as operators,
-                    ARRAY_AGG(project_name) as projects
-                FROM pipeline_states
-                WHERE state_name IS NOT NULL
-                GROUP BY state_name
-                ORDER BY total_mw DESC, project_count DESC
-                LIMIT %s
-            """, (country, limit))
-
+                SELECT operator, market, capacity_mw, status
+                FROM capacity_pipeline
+                WHERE LOWER(status) IN ('construction', 'under_construction', 'under construction')
+                ORDER BY capacity_mw DESC
+            """)
             rows = cur.fetchall()
-            cols = [desc[0] for desc in cur.description]
-            results = []
-            for rank, row in enumerate(rows, 1):
-                entry = dict(zip(cols, row))
-                entry['rank'] = rank
-                # Convert arrays to lists for JSON serialization
-                if entry.get('operators'):
-                    entry['operators'] = list(entry['operators'])
-                if entry.get('projects'):
-                    entry['projects'] = list(entry['projects'])
-                results.append(entry)
-
             cur.close()
-            total_projects = sum(r['project_count'] for r in results)
-            total_mw = sum(r['total_mw'] for r in results)
-
-            return jsonify({
-                "success": True,
-                "category": "construction",
-                "title": "Data Centers Under Construction",
-                "subtitle": f"in the United States (As of {datetime.utcnow().strftime('%b %d, %Y')})",
-                "metric_label": "Pipeline MW Under Construction",
-                "primary_metric": "total_mw",
-                "secondary_metric": "project_count",
-                "rankings": results,
-                "summary": {
-                    "total_states": len(results),
-                    "total_projects": total_projects,
-                    "total_mw": float(total_mw),
-                },
-                "source": "DC Hub | dchub.cloud",
-                "generated_at": datetime.utcnow().isoformat(),
-                "methodology": "Aggregated from DC Hub pipeline tracking database. Projects with status 'under construction' grouped by US state."
-            })
-
+            
+            if rows and len(rows) >= 5:
+                # Aggregate by state
+                state_data = {}
+                for operator, market, capacity_mw, status in rows:
+                    state = _resolve_state(market)
+                    if not state:
+                        continue
+                    if state not in state_data:
+                        state_data[state] = {'project_count': 0, 'total_mw': 0, 'operators': set(), 'projects': []}
+                    state_data[state]['project_count'] += 1
+                    state_data[state]['total_mw'] += float(capacity_mw or 0)
+                    if operator:
+                        state_data[state]['operators'].add(operator)
+                
+                sorted_states = sorted(state_data.items(), key=lambda x: x[1]['total_mw'], reverse=True)[:limit]
+                
+                for rank, (state_name, data) in enumerate(sorted_states, 1):
+                    results.append({
+                        'rank': rank,
+                        'state_name': state_name,
+                        'project_count': data['project_count'],
+                        'total_mw': round(data['total_mw']),
+                        'operators': list(data['operators'])
+                    })
+                data_source = 'capacity_pipeline_table'
+                
         except Exception as e:
-            return jsonify({"success": False, "error": str(e)}), 500
+            print(f"⚠️ Rankings: capacity_pipeline query failed: {e}")
         finally:
             if conn:
                 release_conn(conn)
+        
+        # --- Attempt 2: Fall back to PIPELINE_DATA from deals_routes ---
+        if not results:
+            try:
+                from routes.deals_routes import PIPELINE_DATA
+                
+                state_data = {}
+                for project in PIPELINE_DATA:
+                    if project.get('status') != 'construction':
+                        continue
+                    market = project.get('market', '')
+                    state = _resolve_state(market)
+                    if not state:
+                        continue
+                    if state not in state_data:
+                        state_data[state] = {
+                            'project_count': 0, 'total_mw': 0,
+                            'total_investment_millions': 0,
+                            'operators': set(), 'projects': []
+                        }
+                    state_data[state]['project_count'] += 1
+                    state_data[state]['total_mw'] += float(project.get('capacity', 0))
+                    state_data[state]['total_investment_millions'] += float(project.get('investment', 0))
+                    if project.get('company'):
+                        state_data[state]['operators'].add(project['company'])
+                    state_data[state]['projects'].append(project.get('project', ''))
+                
+                sorted_states = sorted(state_data.items(), key=lambda x: x[1]['total_mw'], reverse=True)[:limit]
+                
+                for rank, (state_name, data) in enumerate(sorted_states, 1):
+                    results.append({
+                        'rank': rank,
+                        'state_name': state_name,
+                        'project_count': data['project_count'],
+                        'total_mw': round(data['total_mw']),
+                        'total_investment_millions': round(data['total_investment_millions']),
+                        'operators': list(data['operators']),
+                        'projects': data['projects']
+                    })
+                data_source = 'pipeline_data_hardcoded'
+                
+            except Exception as e2:
+                print(f"⚠️ Rankings: PIPELINE_DATA fallback also failed: {e2}")
+                return jsonify({"success": False, "error": "No pipeline data source available"}), 500
+
+        total_projects = sum(r['project_count'] for r in results)
+        total_mw = sum(r['total_mw'] for r in results)
+
+        return jsonify({
+            "success": True,
+            "category": "construction",
+            "title": "Data Centers Under Construction",
+            "subtitle": f"in the United States (As of {datetime.utcnow().strftime('%b %d, %Y')})",
+            "metric_label": "Pipeline MW Under Construction",
+            "primary_metric": "total_mw",
+            "secondary_metric": "project_count",
+            "rankings": results,
+            "summary": {
+                "total_states": len(results),
+                "total_projects": total_projects,
+                "total_mw": float(total_mw),
+            },
+            "data_source": data_source,
+            "source": "DC Hub | dchub.cloud",
+            "generated_at": datetime.utcnow().isoformat(),
+            "methodology": "Aggregated from DC Hub pipeline tracking. Projects with status 'under construction' grouped by US state, ranked by total MW."
+        })
 
     # ---------------------------------------------------------------
     # Power Capacity Rankings
@@ -268,28 +344,11 @@ def _register_rankings_routes(rankings_bp, db_pool=None, get_db_connection=None,
             rows = cur.fetchall()
             cols = [desc[0] for desc in cur.description]
 
-            # State abbreviation to full name mapping
-            state_names = {
-                'AL': 'Alabama', 'AK': 'Alaska', 'AZ': 'Arizona', 'AR': 'Arkansas',
-                'CA': 'California', 'CO': 'Colorado', 'CT': 'Connecticut', 'DE': 'Delaware',
-                'FL': 'Florida', 'GA': 'Georgia', 'HI': 'Hawaii', 'ID': 'Idaho',
-                'IL': 'Illinois', 'IN': 'Indiana', 'IA': 'Iowa', 'KS': 'Kansas',
-                'KY': 'Kentucky', 'LA': 'Louisiana', 'ME': 'Maine', 'MD': 'Maryland',
-                'MA': 'Massachusetts', 'MI': 'Michigan', 'MN': 'Minnesota', 'MS': 'Mississippi',
-                'MO': 'Missouri', 'MT': 'Montana', 'NE': 'Nebraska', 'NV': 'Nevada',
-                'NH': 'New Hampshire', 'NJ': 'New Jersey', 'NM': 'New Mexico', 'NY': 'New York',
-                'NC': 'North Carolina', 'ND': 'North Dakota', 'OH': 'Ohio', 'OK': 'Oklahoma',
-                'OR': 'Oregon', 'PA': 'Pennsylvania', 'RI': 'Rhode Island', 'SC': 'South Carolina',
-                'SD': 'South Dakota', 'TN': 'Tennessee', 'TX': 'Texas', 'UT': 'Utah',
-                'VT': 'Vermont', 'VA': 'Virginia', 'WA': 'Washington', 'WV': 'West Virginia',
-                'WI': 'Wisconsin', 'WY': 'Wyoming', 'DC': 'Washington DC'
-            }
-
             results = []
             for rank, row in enumerate(rows, 1):
                 entry = dict(zip(cols, row))
                 entry['rank'] = rank
-                entry['state_name'] = state_names.get(entry['state'], entry['state'])
+                entry['state_name'] = STATE_NAMES.get(entry['state'], entry['state'])
                 results.append(entry)
 
             cur.close()
@@ -326,9 +385,8 @@ def _register_rankings_routes(rankings_bp, db_pool=None, get_db_connection=None,
     def rankings_gas():
         """
         Rank US states by gas pipeline infrastructure.
-        Uses gas_pipelines table.
+        Tries gas_pipelines table, then eia_gas_pipelines.
         """
-        country = request.args.get('country', 'US').upper()
         limit = min(int(request.args.get('limit', 25)), 50)
 
         conn = None
@@ -336,39 +394,58 @@ def _register_rankings_routes(rankings_bp, db_pool=None, get_db_connection=None,
             conn = get_conn()
             cur = conn.cursor()
 
-            # Check if gas_pipelines table exists and get column info
-            cur.execute("""
-                SELECT column_name FROM information_schema.columns 
-                WHERE table_name = 'gas_pipelines' 
-                ORDER BY ordinal_position
-            """)
-            columns = [r[0] for r in cur.fetchall()]
+            # Try to find the right gas table
+            table_name = None
+            columns = []
+            for tbl in ['gas_pipelines', 'eia_gas_pipelines', 'gas_pipeline_data']:
+                try:
+                    cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name = %s ORDER BY ordinal_position", (tbl,))
+                    cols = [r[0] for r in cur.fetchall()]
+                    if cols:
+                        table_name = tbl
+                        columns = cols
+                        break
+                except Exception:
+                    continue
 
-            if not columns:
+            if not table_name:
+                cur.close()
                 return jsonify({
                     "success": True,
                     "category": "gas",
                     "title": "Gas Pipeline Infrastructure",
                     "subtitle": f"in the United States (As of {datetime.utcnow().strftime('%b %d, %Y')})",
                     "rankings": [],
-                    "note": "Gas pipeline data table not yet populated.",
+                    "note": "Gas pipeline ranking data is being compiled. Check back soon.",
                     "source": "DC Hub | dchub.cloud",
                     "generated_at": datetime.utcnow().isoformat()
                 })
 
-            # Determine the right column names based on what exists
-            state_col = 'state' if 'state' in columns else 'state_name'
-            miles_col = 'miles' if 'miles' in columns else ('length_miles' if 'length_miles' in columns else 'shape_length')
-            name_col = 'name' if 'name' in columns else ('pipeline_name' if 'pipeline_name' in columns else 'operator')
-            operator_col = 'operator' if 'operator' in columns else name_col
+            state_col = next((c for c in ['state', 'state_name', 'state_code'] if c in columns), None)
+            miles_col = next((c for c in ['miles', 'length_miles', 'shape_length', 'total_miles'] if c in columns), None)
+            operator_col = next((c for c in ['operator', 'name', 'pipeline_name', 'company'] if c in columns), None)
+
+            if not state_col:
+                cur.close()
+                return jsonify({
+                    "success": True, "category": "gas",
+                    "title": "Gas Pipeline Infrastructure",
+                    "rankings": [],
+                    "note": f"Table '{table_name}' found but missing state column. Columns: {columns}",
+                    "source": "DC Hub | dchub.cloud",
+                    "generated_at": datetime.utcnow().isoformat()
+                })
+
+            miles_expr = f"COALESCE(SUM({miles_col}), 0)" if miles_col else "COUNT(*)"
+            operator_expr = f"COUNT(DISTINCT {operator_col})" if operator_col else "0"
 
             cur.execute(f"""
                 SELECT 
                     {state_col} as state,
                     COUNT(*) as pipeline_count,
-                    ROUND(COALESCE(SUM(CASE WHEN {miles_col} IS NOT NULL THEN {miles_col} ELSE 0 END), 0)::numeric, 0) as total_miles,
-                    COUNT(DISTINCT {operator_col}) as operator_count
-                FROM gas_pipelines
+                    ROUND(({miles_expr})::numeric, 0) as total_miles,
+                    {operator_expr} as operator_count
+                FROM {table_name}
                 WHERE {state_col} IS NOT NULL AND {state_col} != ''
                 GROUP BY {state_col}
                 ORDER BY total_miles DESC
@@ -382,6 +459,7 @@ def _register_rankings_routes(rankings_bp, db_pool=None, get_db_connection=None,
             for rank, row in enumerate(rows, 1):
                 entry = dict(zip(cols_out, row))
                 entry['rank'] = rank
+                entry['state_name'] = STATE_NAMES.get(entry.get('state', ''), entry.get('state', ''))
                 results.append(entry)
 
             cur.close()
@@ -400,6 +478,7 @@ def _register_rankings_routes(rankings_bp, db_pool=None, get_db_connection=None,
                     "total_pipelines": sum(r['pipeline_count'] for r in results),
                     "total_miles": float(sum(r['total_miles'] for r in results)),
                 },
+                "data_table": table_name,
                 "source": "DC Hub | dchub.cloud",
                 "generated_at": datetime.utcnow().isoformat(),
                 "methodology": "Aggregated from EIA natural gas pipeline data. Transmission pipelines grouped by US state."
@@ -418,9 +497,8 @@ def _register_rankings_routes(rankings_bp, db_pool=None, get_db_connection=None,
     def rankings_fiber():
         """
         Rank US states by fiber network density.
-        Uses fiber_routes table.
+        Tries fiber_routes, then fiber_data.
         """
-        country = request.args.get('country', 'US').upper()
         limit = min(int(request.args.get('limit', 25)), 50)
 
         conn = None
@@ -428,35 +506,54 @@ def _register_rankings_routes(rankings_bp, db_pool=None, get_db_connection=None,
             conn = get_conn()
             cur = conn.cursor()
 
-            # Check fiber_routes table structure
-            cur.execute("""
-                SELECT column_name FROM information_schema.columns 
-                WHERE table_name = 'fiber_routes' 
-                ORDER BY ordinal_position
-            """)
-            columns = [r[0] for r in cur.fetchall()]
+            table_name = None
+            columns = []
+            for tbl in ['fiber_routes', 'fiber_data', 'fiber_infrastructure']:
+                try:
+                    cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name = %s ORDER BY ordinal_position", (tbl,))
+                    cols = [r[0] for r in cur.fetchall()]
+                    if cols:
+                        table_name = tbl
+                        columns = cols
+                        break
+                except Exception:
+                    continue
 
-            if not columns:
+            if not table_name:
+                cur.close()
                 return jsonify({
                     "success": True,
                     "category": "fiber",
                     "title": "Fiber Network Density",
                     "subtitle": f"in the United States (As of {datetime.utcnow().strftime('%b %d, %Y')})",
                     "rankings": [],
-                    "note": "Fiber route data table not yet populated.",
+                    "note": "Fiber route ranking data is being compiled. Check back soon.",
                     "source": "DC Hub | dchub.cloud",
                     "generated_at": datetime.utcnow().isoformat()
                 })
 
-            state_col = 'state' if 'state' in columns else 'state_name'
-            provider_col = 'provider' if 'provider' in columns else ('carrier' if 'carrier' in columns else 'operator')
+            state_col = next((c for c in ['state', 'state_name', 'state_code'] if c in columns), None)
+            provider_col = next((c for c in ['provider', 'carrier', 'operator', 'company', 'name'] if c in columns), None)
+
+            if not state_col:
+                cur.close()
+                return jsonify({
+                    "success": True, "category": "fiber",
+                    "title": "Fiber Network Density",
+                    "rankings": [],
+                    "note": f"Table '{table_name}' found but missing state column. Columns: {columns}",
+                    "source": "DC Hub | dchub.cloud",
+                    "generated_at": datetime.utcnow().isoformat()
+                })
+
+            provider_expr = f"COUNT(DISTINCT {provider_col})" if provider_col else "0"
 
             cur.execute(f"""
                 SELECT 
                     {state_col} as state,
                     COUNT(*) as route_count,
-                    COUNT(DISTINCT {provider_col}) as provider_count
-                FROM fiber_routes
+                    {provider_expr} as provider_count
+                FROM {table_name}
                 WHERE {state_col} IS NOT NULL AND {state_col} != ''
                 GROUP BY {state_col}
                 ORDER BY route_count DESC
@@ -470,6 +567,7 @@ def _register_rankings_routes(rankings_bp, db_pool=None, get_db_connection=None,
             for rank, row in enumerate(rows, 1):
                 entry = dict(zip(cols_out, row))
                 entry['rank'] = rank
+                entry['state_name'] = STATE_NAMES.get(entry.get('state', ''), entry.get('state', ''))
                 results.append(entry)
 
             cur.close()
@@ -486,8 +584,8 @@ def _register_rankings_routes(rankings_bp, db_pool=None, get_db_connection=None,
                 "summary": {
                     "total_states": len(results),
                     "total_routes": sum(r['route_count'] for r in results),
-                    "total_providers": max((r['provider_count'] for r in results), default=0),
                 },
+                "data_table": table_name,
                 "source": "DC Hub | dchub.cloud",
                 "generated_at": datetime.utcnow().isoformat(),
                 "methodology": "Aggregated from DC Hub fiber route discovery data. Unique fiber routes grouped by US state."
