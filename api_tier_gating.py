@@ -250,6 +250,29 @@ def validate_api_key(raw_key):
 
     info = dict(row)
 
+    # ── Auto-correct plan/prefix mismatches ──
+    stored_plan = info.get('plan', 'free')
+    prefix = info.get('key_prefix', '')
+    corrected = False
+    if '_pro_' in raw_key and stored_plan not in ('pro', 'enterprise', 'admin'):
+        info['plan'] = 'pro'
+        info['rate_limit_tier'] = 'pro'
+        corrected = True
+    elif '_ent_' in raw_key and stored_plan not in ('enterprise', 'admin'):
+        info['plan'] = 'enterprise'
+        info['rate_limit_tier'] = 'enterprise'
+        corrected = True
+    if corrected:
+        try:
+            c.execute("UPDATE api_keys SET plan = %s, rate_limit_tier = %s WHERE key_hash = %s",
+                      (info['plan'], info['rate_limit_tier'], key_hash))
+            import logging
+            logging.getLogger('tier_gating').warning(
+                f"Auto-corrected key {prefix}: plan {stored_plan} → {info['plan']}")
+        except Exception as e:
+            import logging
+            logging.getLogger('tier_gating').error(f"Auto-correct failed for {prefix}: {e}")
+
     # Reset daily counter if new day
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     if info.get('last_reset_date') != today:
