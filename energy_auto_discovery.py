@@ -1,6 +1,13 @@
 """
-DC Hub Energy Auto-Discovery System v2.3 (PostgreSQL + 23 Markets)
+DC Hub Energy Auto-Discovery System v3.0 (PostgreSQL + 23 Markets)
 ====================================================================
+v3.0 Changes:
+  - Added substations sync to sync_market() (HIFLD → main substations table)
+  - Added HIFLD gas pipeline bulk query (300K+ nationally via ArcGIS)
+  - Wrapped wind sync in try/except to prevent silent failures
+  - Fixed _wind_synced_states stale global when called outside run_full_sync
+  - Added substations table column migrations for owner/source/market
+
 v2.3 Fixes:
   - Added inSR/outSR=4326 to ALL HIFLD spatial queries
   - State-based WHERE fallback when bounding box returns 0
@@ -10,9 +17,9 @@ v2.3 Fixes:
 
 Automatically discovers and syncs:
 - Power plants (HIFLD with lat/lng + EIA capacity data)
-- Substations (HIFLD with coordinates)
+- Substations (HIFLD with coordinates → main substations table)
 - Transmission lines (HIFLD)
-- Gas pipelines (built-in + FERC data)
+- Gas pipelines (built-in FERC + HIFLD ArcGIS bulk)
 - Wind projects (HIFLD — queried by state)
 
 Runs every 15 minutes. 23 monitored markets.
@@ -44,6 +51,7 @@ HIFLD_WIND_TURBINES = "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest
 HIFLD_POWER_PLANTS = "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Power_Plants/FeatureServer/0/query"
 HIFLD_SUBSTATIONS = "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Substations/FeatureServer/0/query"
 EIA_POWER_PLANTS = "https://api.eia.gov/v2/electricity/operating-generator-capacity/data/"
+HIFLD_GAS_PIPELINES = "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Natural_Gas_Pipelines/FeatureServer/0/query"
 
 # Key markets to monitor — bounds = [west_lng, south_lat, east_lng, north_lat]
 MONITORED_MARKETS = {
@@ -205,6 +213,35 @@ def init_discovery_db():
         """)
 
         conn.commit()
+
+        # Ensure substations table has columns needed for HIFLD bulk sync
+        for col_sql in [
+            "ALTER TABLE substations ADD COLUMN IF NOT EXISTS owner TEXT",
+            "ALTER TABLE substations ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'Active'",
+            "ALTER TABLE substations ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'manual'",
+            "ALTER TABLE substations ADD COLUMN IF NOT EXISTS market TEXT",
+            "ALTER TABLE substations ADD COLUMN IF NOT EXISTS discovered_at TEXT",
+            "ALTER TABLE substations ADD COLUMN IF NOT EXISTS last_updated TEXT",
+        ]:
+            try:
+                c.execute(col_sql)
+            except Exception:
+                pass
+        conn.commit()
+
+        # Create unique constraint on substations for upsert (if not exists)
+        try:
+            c.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS substations_lat_lng_name_key
+                ON substations (lat, lng, name)
+            """)
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except:
+                pass
+
         logger.info("✅ Energy Auto-Discovery tables initialized (PostgreSQL)")
     except Exception as e:
         logger.error(f"⚠️ Energy discovery DB init error: {e}")
@@ -471,6 +508,66 @@ def query_wind_turbines(bounds=None, state=None, limit=500):
     return turbines
 
 
+def query_hifld_gas_pipelines(bounds, state=None, limit=500):
+    """Query HIFLD ArcGIS for gas/midstream pipelines — spatial + state fallback"""
+    out_fields = 'Operator,Pipename,Typepipe,Shape_Length'
+
+    features = _hifld_spatial_query(
+        HIFLD_GAS_PIPELINES, bounds, out_fields,
+        return_geometry=True, limit=limit, label="Gas Pipelines (spatial)"
+    )
+
+    if not features and state:
+        logger.info(f"      ↳ Gas Pipelines spatial=0, trying state={state}...")
+        features = _hifld_state_query(
+            HIFLD_GAS_PIPELINES, state, out_fields,
+            state_field='STATE', return_geometry=True, limit=limit,
+            label="Gas Pipelines (state)"
+        )
+
+    pipes = []
+    seen = set()
+    for f in features:
+        attrs = f.get('attributes', {})
+        geom = f.get('geometry', {})
+        operator = attrs.get('Operator', 'Unknown') or 'Unknown'
+        name = attrs.get('Pipename', '') or ''
+        pipe_type = attrs.get('Typepipe', 'Transmission') or 'Transmission'
+        # Get a representative coordinate from geometry
+        lat, lng = None, None
+        if 'paths' in geom and geom['paths']:
+            mid = len(geom['paths'][0]) // 2
+            if mid < len(geom['paths'][0]):
+                lng, lat = geom['paths'][0][mid][0], geom['paths'][0][mid][1]
+        elif 'y' in geom:
+            lat, lng = geom.get('y'), geom.get('x')
+
+        id_str = f"{operator}-{name}-{pipe_type}"
+        pipe_id = f"hifld-gas-{abs(hash(id_str)) % 100000000}"
+        if pipe_id in seen:
+            continue
+        seen.add(pipe_id)
+
+        pipes.append({
+            'id': pipe_id,
+            'operator': operator,
+            'name': name or f"{operator} {pipe_type}",
+            'pipeline_type': pipe_type,
+            'status': 'Active',
+            'diameter': 0,
+            'commodity': 'Natural Gas',
+            'capacity_mdth': 0,
+            'lat': lat,
+            'lng': lng,
+            'states': state or '',
+            'source': 'HIFLD',
+        })
+
+    if pipes:
+        logger.info(f"   🛢️ HIFLD: {len(pipes)} gas pipelines found")
+    return pipes
+
+
 def query_pipelines(bounds=None, state=None, limit=200):
     """Return major interstate gas pipelines serving DC markets + any DB-discovered ones"""
     major_pipelines = [
@@ -725,8 +822,10 @@ def sync_market(market_key, market_info):
     results = {
         'power_plants': {'found': 0, 'new': 0, 'updated': 0},
         'transmission_lines': {'found': 0, 'new': 0, 'updated': 0},
+        'substations': {'found': 0, 'new': 0, 'updated': 0},
         'wind_projects': {'found': 0, 'new': 0, 'updated': 0},
         'pipelines': {'found': 0, 'new': 0, 'updated': 0},
+        'gas_pipelines_hifld': {'found': 0, 'new': 0, 'updated': 0},
         'errors': []
     }
 
@@ -804,29 +903,76 @@ def sync_market(market_key, market_info):
                      line['sub_1'], line['sub_2'], line['status'], market_key, now, now))
                 results['transmission_lines']['new'] += 1
 
+        # --- Substations (HIFLD — with coordinates, into main 'substations' table) ---
+        try:
+            subs = query_hifld_substations(bounds, state=state, limit=1000)
+            results['substations']['found'] = len(subs)
+            for sub in subs:
+                if not sub.get('lat') or not sub.get('lng'):
+                    continue
+                # Upsert into the main substations table used by site-score
+                c.execute("""INSERT INTO substations
+                    (name, state, city, voltage_kv, capacity_mva, lat, lng, owner, status, source, market, discovered_at)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT ON CONSTRAINT substations_lat_lng_name_key DO UPDATE SET
+                        voltage_kv = GREATEST(substations.voltage_kv, EXCLUDED.voltage_kv),
+                        last_updated = EXCLUDED.discovered_at""",
+                    (sub['name'], sub['state'], '', sub['voltage_kv'], 0,
+                     sub['lat'], sub['lng'], sub['owner'], sub['status'],
+                     'HIFLD', market_key, now))
+                results['substations']['new'] += 1
+        except Exception as e:
+            # If the substations table schema doesn't have the expected unique constraint,
+            # fall back to a simpler upsert approach
+            logger.warning(f"⚠️ Substations upsert failed ({e}), trying simple insert...")
+            try:
+                for sub in subs:
+                    if not sub.get('lat') or not sub.get('lng'):
+                        continue
+                    c.execute("""INSERT INTO substations (name, state, city, voltage_kv, capacity_mva, lat, lng, owner, status, source, market, discovered_at)
+                        SELECT %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM substations WHERE lat = %s AND lng = %s AND name = %s
+                        )""",
+                        (sub['name'], sub['state'], '', sub['voltage_kv'], 0,
+                         sub['lat'], sub['lng'], sub['owner'], sub['status'],
+                         'HIFLD', market_key, now,
+                         sub['lat'], sub['lng'], sub['name']))
+                    if c.rowcount > 0:
+                        results['substations']['new'] += 1
+            except Exception as e2:
+                results['errors'].append(f"substations: {e2}")
+                logger.error(f"⚠️ Substations insert also failed: {e2}")
+
         # --- Wind projects (HIFLD — by STATE, deduplicated across markets) ---
+        # Always reset _wind_synced_states at sync_market level to prevent stale global state
+        # when called individually (e.g. by crawler_scheduler) instead of via run_full_sync
         global _wind_synced_states
         if state not in _wind_synced_states:
-            wind = query_wind_turbines(bounds=bounds, state=state)
-            _wind_synced_states.add(state)
-            results['wind_projects']['found'] = len(wind)
-            for project in wind:
-                c.execute("SELECT id FROM discovered_wind_projects WHERE id = %s", (project['id'],))
-                if not c.fetchone():
-                    c.execute("""INSERT INTO discovered_wind_projects
-                        (id, project_name, project_capacity_mw, turbine_capacity_kw, manufacturer, model, state, county, lat, lng, market, discovered_at, last_updated)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                        ON CONFLICT (id) DO NOTHING""",
-                        (project['id'], project['project_name'], project['project_capacity_mw'],
-                         project['turbine_capacity_kw'], project['manufacturer'], project['model'],
-                         project['state'], project['county'], project['lat'], project['lng'],
-                         market_key, now, now))
-                    results['wind_projects']['new'] += 1
+            try:
+                wind = query_wind_turbines(bounds=bounds, state=state)
+                _wind_synced_states.add(state)
+                results['wind_projects']['found'] = len(wind)
+                for project in wind:
+                    c.execute("SELECT id FROM discovered_wind_projects WHERE id = %s", (project['id'],))
+                    if not c.fetchone():
+                        c.execute("""INSERT INTO discovered_wind_projects
+                            (id, project_name, project_capacity_mw, turbine_capacity_kw, manufacturer, model, state, county, lat, lng, market, discovered_at, last_updated)
+                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                            ON CONFLICT (id) DO NOTHING""",
+                            (project['id'], project['project_name'], project['project_capacity_mw'],
+                             project['turbine_capacity_kw'], project['manufacturer'], project['model'],
+                             project['state'], project['county'], project['lat'], project['lng'],
+                             market_key, now, now))
+                        results['wind_projects']['new'] += 1
+            except Exception as e:
+                results['errors'].append(f"wind: {e}")
+                logger.error(f"⚠️ Wind sync error for {market_key}: {e}")
         else:
             # Already synced this state's wind in a previous market
             pass
 
-        # --- Pipelines (built-in data) ---
+        # --- Pipelines (built-in FERC data) ---
         pipelines = query_pipelines(bounds, state=state)
         results['pipelines']['found'] = len(pipelines)
         for pipe in pipelines:
@@ -841,6 +987,27 @@ def sync_market(market_key, market_info):
                      pipe.get('name', ''), pipe.get('capacity_mdth', 0), pipe.get('lat', 0), pipe.get('lng', 0),
                      pipe.get('states', ''), state, market_key, now, now, 'EIA/FERC'))
                 results['pipelines']['new'] += 1
+
+        # --- Gas/Midstream Pipelines (HIFLD ArcGIS bulk — 300K+ nationally) ---
+        try:
+            hifld_pipes = query_hifld_gas_pipelines(bounds, state=state, limit=500)
+            results['gas_pipelines_hifld']['found'] = len(hifld_pipes)
+            for pipe in hifld_pipes:
+                c.execute("SELECT id FROM discovered_pipelines WHERE id = %s", (pipe['id'],))
+                if not c.fetchone():
+                    c.execute("""INSERT INTO discovered_pipelines
+                        (id, operator, pipeline_type, status, diameter_inches, commodity, name, capacity_mdth, lat, lng, states_served, state, market, discovered_at, last_updated, source)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        ON CONFLICT (id) DO NOTHING""",
+                        (pipe['id'], pipe['operator'], pipe.get('pipeline_type', 'Transmission'),
+                         pipe.get('status', 'Active'), pipe.get('diameter', 0), pipe.get('commodity', 'Natural Gas'),
+                         pipe.get('name', ''), pipe.get('capacity_mdth', 0),
+                         pipe.get('lat') or 0, pipe.get('lng') or 0,
+                         pipe.get('states', ''), state, market_key, now, now, 'HIFLD'))
+                    results['gas_pipelines_hifld']['new'] += 1
+        except Exception as e:
+            results['errors'].append(f"hifld_gas: {e}")
+            logger.error(f"⚠️ HIFLD gas pipeline sync error for {market_key}: {e}")
 
         conn.commit()
 
@@ -866,13 +1033,14 @@ def sync_market(market_key, market_info):
 
 def log_sync(market, results, duration):
     """Log sync results to database"""
+    _all_cats = ['power_plants', 'transmission_lines', 'substations', 'wind_projects', 'pipelines', 'gas_pipelines_hifld']
     conn = None
     try:
         conn = get_db()
         c = conn.cursor()
-        total_found = sum(results[k]['found'] for k in ['power_plants', 'transmission_lines', 'wind_projects', 'pipelines'])
-        total_new = sum(results[k]['new'] for k in ['power_plants', 'transmission_lines', 'wind_projects', 'pipelines'])
-        total_updated = sum(results[k].get('updated', 0) for k in ['power_plants', 'transmission_lines', 'wind_projects', 'pipelines'])
+        total_found = sum(results.get(k, {}).get('found', 0) for k in _all_cats)
+        total_new = sum(results.get(k, {}).get('new', 0) for k in _all_cats)
+        total_updated = sum(results.get(k, {}).get('updated', 0) for k in _all_cats)
 
         c.execute("""INSERT INTO energy_sync_log (sync_type, market, items_found, new_items, updated_items, errors, duration_seconds, synced_at)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
@@ -891,7 +1059,7 @@ def log_sync(market, results, duration):
 
 def run_full_sync():
     """Run sync for all monitored markets"""
-    logger.info(f"🔄 ENERGY AUTO-DISCOVERY SYNC v2.3 — {datetime.utcnow().isoformat()}")
+    logger.info(f"🔄 ENERGY AUTO-DISCOVERY SYNC v3.0 — {datetime.utcnow().isoformat()}")
 
     # Reset per-sync state tracking
     global _wind_synced_states
@@ -902,25 +1070,29 @@ def run_full_sync():
         'markets': 0,
         'power_plants': {'found': 0, 'new': 0},
         'transmission_lines': {'found': 0, 'new': 0},
+        'substations': {'found': 0, 'new': 0},
         'wind_projects': {'found': 0, 'new': 0},
-        'pipelines': {'found': 0, 'new': 0}
+        'pipelines': {'found': 0, 'new': 0},
+        'gas_pipelines_hifld': {'found': 0, 'new': 0},
     }
 
     for market_key, market_info in MONITORED_MARKETS.items():
         logger.info(f"   📍 Syncing {market_info['name']}...")
         results = sync_market(market_key, market_info)
         total_results['markets'] += 1
-        for cat in ['power_plants', 'transmission_lines', 'wind_projects', 'pipelines']:
-            total_results[cat]['found'] += results[cat]['found']
-            total_results[cat]['new'] += results[cat]['new']
+        for cat in ['power_plants', 'transmission_lines', 'substations', 'wind_projects', 'pipelines', 'gas_pipelines_hifld']:
+            total_results[cat]['found'] += results.get(cat, {}).get('found', 0)
+            total_results[cat]['new'] += results.get(cat, {}).get('new', 0)
 
     duration = time.time() - start_time
-    logger.info(f"✅ ENERGY SYNC COMPLETE in {duration:.1f}s — "
+    logger.info(f"✅ ENERGY SYNC v3.0 COMPLETE in {duration:.1f}s — "
                 f"{total_results['markets']} markets, "
                 f"{total_results['power_plants']['found']} plants, "
                 f"{total_results['transmission_lines']['found']} tx lines, "
+                f"{total_results['substations']['found']} substations, "
                 f"{total_results['wind_projects']['found']} wind, "
-                f"{total_results['pipelines']['found']} pipelines")
+                f"{total_results['pipelines']['found']} FERC pipes, "
+                f"{total_results['gas_pipelines_hifld']['found']} HIFLD gas pipes")
 
     return total_results
 
