@@ -1,325 +1,295 @@
 """
-DC Hub - Stripe Webhook Alert Endpoint
+DC Hub — Stripe Webhook Alert Endpoint
 =======================================
-POST /api/stripe/webhook-alert
+Called by dashboard.html when polling detects a user's plan didn't activate
+after successful Stripe payment. Logs the alert, attempts auto-activation
+via Stripe API, and emails the admin.
 
-Called by dashboard.html when post-checkout polling detects that a user's
-plan hasn't activated within 30 seconds of returning from Stripe checkout.
-This means the Stripe webhook likely failed to fire or process.
-
-Payload from dashboard.html:
-    {
-        "email": "user@example.com",
-        "issue": "plan_not_activated_after_checkout",
-        "attempts": 10
-    }
-
-Actions:
-    1. Logs the alert to the webhook_alerts table
-    2. Sends an email notification to admin (jonathan@dchub.cloud)
-    3. Optionally attempts to auto-activate the plan via Stripe API lookup
-
-Integration:
-    Add to main.py near your other Stripe routes:
-
-        from webhook_alert_endpoint import webhook_alert_bp
-        app.register_blueprint(webhook_alert_bp)
-
-    OR paste the route directly into main.py (standalone version below).
+Blueprint: webhook_alert_bp
+Route:     POST /api/stripe/webhook-alert
 """
 
-# =============================================================================
-# OPTION A: Blueprint version (separate file)
-# =============================================================================
-
-from flask import Blueprint, request, jsonify
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
+from flask import Blueprint, request, jsonify
 
 logger = logging.getLogger(__name__)
 
 webhook_alert_bp = Blueprint('webhook_alert', __name__)
 
 
+def _get_stripe():
+    """Lazy import stripe to avoid ImportError if not installed."""
+    try:
+        import stripe
+        stripe.api_key = os.environ.get('STRIPE_SECRET_KEY', '')
+        if not stripe.api_key:
+            return None
+        return stripe
+    except ImportError:
+        return None
+
+
+def _get_db():
+    """Get database connection via db_utils."""
+    try:
+        from db_utils import get_db
+        return get_db()
+    except Exception as e:
+        logger.error("webhook_alert: DB connection failed: %s" % e)
+        return None
+
+
+def _send_admin_email(subject, body):
+    """Send alert email to admin. Uses email_service if available."""
+    try:
+        from email_service import send_email
+        admin_email = os.environ.get('ADMIN_EMAIL', 'api@dchub.cloud')
+        send_email(admin_email, subject, body)
+        logger.info("webhook_alert: Admin email sent to %s" % admin_email)
+        return True
+    except Exception as e:
+        logger.warning("webhook_alert: Email send failed: %s" % e)
+        return False
+
+
 @webhook_alert_bp.route('/api/stripe/webhook-alert', methods=['POST'])
 def stripe_webhook_alert():
     """
-    Handle post-checkout plan activation failure alerts from dashboard.html.
-    Called when polling /auth/me doesn't show plan activation within 30s.
+    POST /api/stripe/webhook-alert
+
+    Called by dashboard.html when a user completes Stripe checkout but their
+    plan doesn't activate within the polling window (typically 30-60 seconds).
+
+    Body JSON:
+        email (str): User's email
+        plan (str): Expected plan (pro_monthly, pro_annual, enterprise_monthly, etc.)
+        session_id (str, optional): Stripe checkout session ID
+        customer_id (str, optional): Stripe customer ID
+        error (str, optional): Client-side error description
+
+    Response:
+        200: Alert logged, auto-activation attempted
+        500: Server error
     """
-    try:
-        data = request.get_json(silent=True) or {}
-        email = data.get('email', 'unknown')
-        issue = data.get('issue', 'unknown')
-        attempts = data.get('attempts', 0)
-        timestamp = datetime.utcnow().isoformat()
+    data = request.get_json() or {}
+    email = (data.get('email') or '').strip().lower()
+    expected_plan = data.get('plan', 'pro')
+    session_id = data.get('session_id', '')
+    customer_id = data.get('customer_id', '')
+    client_error = data.get('error', 'Plan not activated after payment')
+    now = datetime.now(timezone.utc).isoformat()
 
-        logger.warning(
-            f"🚨 WEBHOOK ALERT: {issue} | email={email} | "
-            f"attempts={attempts} | time={timestamp}"
-        )
-
-        # --- 1. Log to database ---
-        try:
-            from db_utils import get_db
-            db = get_db()
-            db.execute('''
-                CREATE TABLE IF NOT EXISTS webhook_alerts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    email TEXT NOT NULL,
-                    issue TEXT NOT NULL,
-                    attempts INTEGER DEFAULT 0,
-                    resolved INTEGER DEFAULT 0,
-                    resolution TEXT,
-                    created_at TEXT DEFAULT (datetime('now')),
-                    resolved_at TEXT
-                )
-            ''')
-            db.execute(
-                'INSERT INTO webhook_alerts (email, issue, attempts) VALUES (?, ?, ?)',
-                (email, issue, attempts)
-            )
-            db.commit()
-            logger.info(f"📝 Webhook alert logged to DB for {email}")
-        except Exception as db_err:
-            logger.error(f"❌ Failed to log webhook alert to DB: {db_err}")
-
-        # --- 2. Try auto-activation via Stripe lookup ---
-        auto_activated = False
-        try:
-            import stripe
-            stripe.api_key = os.environ.get('STRIPE_SECRET_KEY', '')
-            if stripe.api_key and email != 'unknown':
-                # Look up customer by email in Stripe
-                customers = stripe.Customer.list(email=email, limit=1)
-                if customers.data:
-                    customer = customers.data[0]
-                    # Check for active subscriptions
-                    subs = stripe.Subscription.list(
-                        customer=customer.id, status='active', limit=1
-                    )
-                    if subs.data:
-                        sub = subs.data[0]
-                        plan_name = _determine_plan_from_subscription(sub)
-                        if plan_name and plan_name != 'free':
-                            # Activate the plan in the database
-                            _activate_user_plan(email, plan_name, customer.id)
-                            auto_activated = True
-                            logger.info(
-                                f"✅ AUTO-ACTIVATED {email} to {plan_name} "
-                                f"(Stripe customer {customer.id})"
-                            )
-                    else:
-                        # Check for completed checkout sessions (Payment Links)
-                        sessions = stripe.checkout.Session.list(
-                            customer_details={'email': email},
-                            limit=5
-                        )
-                        for session in sessions.auto_paging_iter():
-                            if session.payment_status == 'paid':
-                                plan_name = _determine_plan_from_session(session)
-                                if plan_name and plan_name != 'free':
-                                    cust_id = session.customer or ''
-                                    _activate_user_plan(email, plan_name, cust_id)
-                                    auto_activated = True
-                                    logger.info(
-                                        f"✅ AUTO-ACTIVATED {email} to {plan_name} "
-                                        f"(from checkout session {session.id})"
-                                    )
-                                    break
-        except Exception as stripe_err:
-            logger.error(f"⚠️ Stripe auto-activation failed for {email}: {stripe_err}")
-
-        # --- 3. Send admin notification email ---
-        try:
-            _send_admin_alert_email(email, issue, attempts, auto_activated, timestamp)
-        except Exception as email_err:
-            logger.error(f"⚠️ Failed to send admin alert email: {email_err}")
-
-        return jsonify({
-            'success': True,
-            'message': 'Alert received',
-            'auto_activated': auto_activated,
-            'email': email
-        }), 200
-
-    except Exception as e:
-        logger.error(f"❌ Webhook alert handler error: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-
-# =============================================================================
-# Helper Functions
-# =============================================================================
-
-def _determine_plan_from_subscription(subscription):
-    """Determine plan name from a Stripe subscription object."""
-    price_pro = os.environ.get('STRIPE_PRICE_PRO_ANNUAL', '')
-    price_ent = os.environ.get('STRIPE_PRICE_ENTERPRISE_MONTHLY', '')
-    price_ent2 = os.environ.get('STRIPE_PRICE_ENTERPRISE', '')
-
-    for item in subscription.get('items', {}).get('data', []):
-        price_id = item.get('price', {}).get('id', '')
-        if price_id == price_pro:
-            return 'pro'
-        if price_id in (price_ent, price_ent2):
-            return 'enterprise'
-
-    # Fallback: check amount
-    amount = subscription.get('items', {}).get('data', [{}])[0].get('price', {}).get('unit_amount', 0)
-    if amount:
-        if amount <= 15000:   # $150 or less = pro
-            return 'pro'
-        else:
-            return 'enterprise'
-
-    return 'pro'  # Safe default for paid customers
-
-
-def _determine_plan_from_session(session):
-    """Determine plan from a Stripe checkout session."""
-    amount = session.get('amount_total', 0)
-    if amount and amount > 0:
-        if amount <= 15000:
-            return 'pro'
-        else:
-            return 'enterprise'
-    return 'pro'
-
-
-def _activate_user_plan(email, plan, stripe_customer_id=''):
-    """Activate a user's plan in the database."""
-    try:
-        from db_utils import get_db
-        db = get_db()
-
-        # Update user plan — uses column "plan" (not "tier")
-        # Note: users table has NO updated_at or api_key columns
-        db.execute('''
-            UPDATE users SET
-                plan = ?,
-                subscription_status = 'active',
-                stripe_customer_id = COALESCE(NULLIF(?, ''), stripe_customer_id)
-            WHERE LOWER(email) = LOWER(?)
-        ''', (plan, stripe_customer_id, email))
-        db.commit()
-
-        # Also update webhook_alerts to mark as resolved
-        db.execute('''
-            UPDATE webhook_alerts SET
-                resolved = 1,
-                resolution = ?,
-                resolved_at = datetime('now')
-            WHERE email = ? AND resolved = 0
-        ''', (f'auto_activated_to_{plan}', email))
-        db.commit()
-
-        logger.info(f"✅ Database updated: {email} → plan={plan}")
-    except Exception as e:
-        logger.error(f"❌ Failed to activate plan for {email}: {e}")
-
-
-def _send_admin_alert_email(email, issue, attempts, auto_activated, timestamp):
-    """Send notification email to admin about the webhook failure."""
-    admin_email = os.environ.get('ADMIN_EMAIL', 'jonathan@dchub.cloud')
-
-    status_emoji = '✅' if auto_activated else '🚨'
-    status_text = 'AUTO-RESOLVED' if auto_activated else 'NEEDS ATTENTION'
-
-    subject = f"{status_emoji} DC Hub Webhook Alert: {email} — {status_text}"
-
-    html_content = f"""
-    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-        <div style="background: {'#0a2e1a' if auto_activated else '#2e0a0a'}; border: 1px solid {'#00ff88' if auto_activated else '#ff4444'}; border-radius: 8px; padding: 20px; color: white;">
-            <h2 style="margin-top: 0; color: {'#00ff88' if auto_activated else '#ff4444'};">{status_emoji} Webhook Alert — {status_text}</h2>
-            <table style="width: 100%; color: #ccc; font-size: 14px;">
-                <tr><td style="padding: 4px 8px; color: #888;">Customer Email</td><td style="padding: 4px 8px;"><strong>{email}</strong></td></tr>
-                <tr><td style="padding: 4px 8px; color: #888;">Issue</td><td style="padding: 4px 8px;">{issue}</td></tr>
-                <tr><td style="padding: 4px 8px; color: #888;">Poll Attempts</td><td style="padding: 4px 8px;">{attempts}</td></tr>
-                <tr><td style="padding: 4px 8px; color: #888;">Timestamp</td><td style="padding: 4px 8px;">{timestamp}</td></tr>
-                <tr><td style="padding: 4px 8px; color: #888;">Auto-Activated</td><td style="padding: 4px 8px;">{'Yes ✅' if auto_activated else 'No ❌ — manual activation needed'}</td></tr>
-            </table>
-        </div>
-        {'<p style="color: #888; font-size: 13px; margin-top: 16px;">✅ The system auto-activated this customer via Stripe API lookup. No action needed.</p>' if auto_activated else '<div style="background: #1a1a2e; border: 1px solid #444; border-radius: 8px; padding: 16px; margin-top: 16px;"><p style="color: #ff8888; margin-top: 0;"><strong>Action Required:</strong></p><ol style="color: #ccc; font-size: 14px;"><li>Check <a href="https://dashboard.stripe.com/search?query=' + email + '" style="color: #00d4ff;">Stripe Dashboard</a> for this customer</li><li>Verify payment was received</li><li>Manually activate: <code>UPDATE users SET plan = \'pro\' WHERE email = \'' + email + '\';</code></li><li>Email the customer to confirm activation</li></ol></div>'}
-    </div>
-    """
-
-    text_content = (
-        f"Webhook Alert — {status_text}\n\n"
-        f"Customer: {email}\n"
-        f"Issue: {issue}\n"
-        f"Attempts: {attempts}\n"
-        f"Time: {timestamp}\n"
-        f"Auto-Activated: {'Yes' if auto_activated else 'No — manual activation needed'}\n"
+    logger.warning(
+        "STRIPE ALERT: Plan not activated — email=%s plan=%s session=%s error=%s"
+        % (email, expected_plan, session_id, client_error)
     )
 
-    # Try to use the existing send_email function from main.py / email_service.py
-    try:
-        from email_service import send_email as send_email_svc
-        success, msg = send_email_svc(admin_email, subject, html_content, text_content)
-        if success:
-            logger.info(f"📧 Admin alert email sent via email_service: {msg}")
-            return
-    except ImportError:
-        pass
+    # --- Step 1: Log the alert to DB ---
+    conn = _get_db()
+    alert_logged = False
+    if conn:
+        try:
+            c = conn.cursor()
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS webhook_alerts (
+                    id SERIAL PRIMARY KEY,
+                    email TEXT,
+                    expected_plan TEXT,
+                    session_id TEXT,
+                    customer_id TEXT,
+                    error TEXT,
+                    auto_fix_attempted BOOLEAN DEFAULT FALSE,
+                    auto_fix_result TEXT,
+                    created_at TEXT
+                )
+            """)
+            c.execute("""
+                INSERT INTO webhook_alerts (email, expected_plan, session_id, customer_id, error, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """, (email, expected_plan, session_id, customer_id, client_error, now))
+            conn.commit()
+            alert_logged = True
+        except Exception as e:
+            logger.error("webhook_alert: DB log failed: %s" % e)
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
-    # Fallback: try the main.py send_email
+    # --- Step 2: Attempt auto-activation via Stripe API ---
+    auto_fix_result = None
+    stripe = _get_stripe()
+
+    if stripe and (session_id or customer_id or email):
+        try:
+            # Try to find the subscription via session ID first
+            resolved_customer_id = customer_id
+            resolved_plan = None
+
+            if session_id:
+                try:
+                    session = stripe.checkout.Session.retrieve(session_id)
+                    resolved_customer_id = session.get('customer', customer_id)
+                    metadata = session.get('metadata', {})
+                    resolved_plan = metadata.get('plan', expected_plan)
+                    logger.info("webhook_alert: Session %s -> customer %s, plan %s"
+                                % (session_id, resolved_customer_id, resolved_plan))
+                except Exception as e:
+                    logger.warning("webhook_alert: Session lookup failed: %s" % e)
+
+            # Look up customer by email if we still don't have a customer ID
+            if not resolved_customer_id and email:
+                try:
+                    customers = stripe.Customer.list(email=email, limit=1)
+                    if customers.data:
+                        resolved_customer_id = customers.data[0].id
+                        logger.info("webhook_alert: Found customer %s by email %s"
+                                    % (resolved_customer_id, email))
+                except Exception as e:
+                    logger.warning("webhook_alert: Customer lookup failed: %s" % e)
+
+            # Check if customer has an active subscription
+            if resolved_customer_id:
+                try:
+                    subs = stripe.Subscription.list(customer=resolved_customer_id, status='active', limit=1)
+                    if subs.data:
+                        sub = subs.data[0]
+                        # Map the Stripe price to a plan tier
+                        plan_tier = _resolve_plan_tier(sub, resolved_plan or expected_plan)
+
+                        # Update the user's plan in the database
+                        fix_conn = _get_db()
+                        if fix_conn and email:
+                            try:
+                                fc = fix_conn.cursor()
+                                fc.execute("""
+                                    UPDATE users SET plan = %s, stripe_customer_id = %s,
+                                        subscription_status = 'active'
+                                    WHERE LOWER(email) = %s
+                                """, (plan_tier, resolved_customer_id, email))
+                                rows_updated = fc.rowcount
+                                fix_conn.commit()
+
+                                if rows_updated > 0:
+                                    auto_fix_result = "SUCCESS: Activated %s plan for %s" % (plan_tier, email)
+                                    logger.info("webhook_alert: AUTO-FIX %s" % auto_fix_result)
+                                else:
+                                    auto_fix_result = "NO_MATCH: No user found with email %s" % email
+                                    logger.warning("webhook_alert: %s" % auto_fix_result)
+                            except Exception as e:
+                                auto_fix_result = "DB_ERROR: %s" % str(e)
+                                logger.error("webhook_alert: Auto-fix DB error: %s" % e)
+                                try:
+                                    fix_conn.rollback()
+                                except Exception:
+                                    pass
+                            finally:
+                                try:
+                                    fix_conn.close()
+                                except Exception:
+                                    pass
+                    else:
+                        auto_fix_result = "NO_SUB: Customer %s has no active subscription" % resolved_customer_id
+                        logger.warning("webhook_alert: %s" % auto_fix_result)
+                except Exception as e:
+                    auto_fix_result = "STRIPE_ERROR: %s" % str(e)
+                    logger.error("webhook_alert: Subscription lookup failed: %s" % e)
+            else:
+                auto_fix_result = "NO_CUSTOMER: Could not resolve Stripe customer"
+                logger.warning("webhook_alert: %s" % auto_fix_result)
+
+        except Exception as e:
+            auto_fix_result = "ERROR: %s" % str(e)
+            logger.error("webhook_alert: Auto-activation failed: %s" % e)
+    else:
+        auto_fix_result = "SKIP: Stripe not configured or no identifiers provided"
+
+    # --- Step 3: Update alert record with fix result ---
+    if alert_logged and auto_fix_result:
+        upd_conn = _get_db()
+        if upd_conn:
+            try:
+                uc = upd_conn.cursor()
+                uc.execute("""
+                    UPDATE webhook_alerts SET auto_fix_attempted = TRUE, auto_fix_result = %s
+                    WHERE email = %s AND created_at = %s
+                """, (auto_fix_result, email, now))
+                upd_conn.commit()
+            except Exception:
+                pass
+            finally:
+                try:
+                    upd_conn.close()
+                except Exception:
+                    pass
+
+    # --- Step 4: Email admin ---
+    email_body = (
+        "Stripe Webhook Alert\n"
+        "====================\n"
+        "Time: %s\n"
+        "Email: %s\n"
+        "Expected Plan: %s\n"
+        "Session ID: %s\n"
+        "Customer ID: %s\n"
+        "Client Error: %s\n"
+        "\nAuto-Fix Result: %s\n"
+    ) % (now, email, expected_plan, session_id, customer_id, client_error, auto_fix_result or 'Not attempted')
+
+    _send_admin_email(
+        "DC Hub: Stripe payment activation alert — %s" % email,
+        email_body
+    )
+
+    return jsonify({
+        'success': True,
+        'alert_logged': alert_logged,
+        'auto_fix_attempted': auto_fix_result is not None,
+        'auto_fix_result': auto_fix_result,
+        'message': 'Alert received and processed',
+    })
+
+
+def _resolve_plan_tier(subscription, fallback_plan):
+    """Map a Stripe subscription to a DC Hub plan tier."""
+    # Check subscription metadata first
+    metadata = subscription.get('metadata', {})
+    if metadata.get('plan'):
+        plan_key = metadata['plan']
+        mapping = {
+            'pro_monthly': 'pro', 'pro_annual': 'pro',
+            'enterprise_monthly': 'enterprise', 'enterprise_annual': 'enterprise',
+            'founding': 'founding',
+        }
+        return mapping.get(plan_key, 'pro')
+
+    # Fall back to price-based detection
     try:
-        # This import works if the function is defined in main.py's global scope
-        import sys
-        main_mod = sys.modules.get('__main__') or sys.modules.get('main')
-        if main_mod and hasattr(main_mod, 'send_email'):
-            success, msg = main_mod.send_email(admin_email, subject, html_content, text_content)
-            if success:
-                logger.info(f"📧 Admin alert email sent via main.send_email: {msg}")
-                return
+        items = subscription.get('items', {}).get('data', [])
+        if items:
+            price_id = items[0].get('price', {}).get('id', '')
+            enterprise_prices = [
+                os.environ.get('STRIPE_PRICE_ENTERPRISE_MONTHLY', ''),
+                os.environ.get('STRIPE_PRICE_ENTERPRISE_ANNUAL', ''),
+            ]
+            if price_id in enterprise_prices:
+                return 'enterprise'
+            founding_price = os.environ.get('STRIPE_PRICE_FOUNDING', '')
+            if price_id == founding_price:
+                return 'founding'
     except Exception:
         pass
 
-    # Last resort: direct SMTP
-    try:
-        import smtplib
-        from email.mime.text import MIMEText
-        from email.mime.multipart import MIMEMultipart
-
-        smtp_host = os.environ.get('SMTP_HOST', 'smtp.office365.com')
-        smtp_port = int(os.environ.get('SMTP_PORT', '587'))
-        smtp_user = os.environ.get('SMTP_USER', '')
-        smtp_pass = os.environ.get('SMTP_PASSWORD', '')
-        from_email = os.environ.get('SMTP_FROM_EMAIL', smtp_user)
-
-        if smtp_user and smtp_pass:
-            msg = MIMEMultipart('alternative')
-            msg['Subject'] = subject
-            msg['From'] = f"DC Hub <{from_email}>"
-            msg['To'] = admin_email
-            msg.attach(MIMEText(text_content, 'plain'))
-            msg.attach(MIMEText(html_content, 'html'))
-
-            with smtplib.SMTP(smtp_host, smtp_port) as server:
-                server.starttls()
-                server.login(smtp_user, smtp_pass)
-                server.sendmail(from_email, admin_email, msg.as_string())
-
-            logger.info(f"📧 Admin alert email sent via direct SMTP")
-            return
-    except Exception as smtp_err:
-        logger.error(f"⚠️ Direct SMTP failed: {smtp_err}")
-
-    # If all email methods fail, at least it's logged to DB and console
-    logger.warning(f"⚠️ Could not send admin alert email for {email} — logged to DB only")
-
-
-# =============================================================================
-# OPTION B: Standalone route (paste directly into main.py)
-# =============================================================================
-# If you prefer not to use a separate file, copy everything above into main.py
-# and replace the blueprint route decorator with:
-#
-#     @app.route('/api/stripe/webhook-alert', methods=['POST'])
-#     def stripe_webhook_alert():
-#         ...
-#
-# And remove the Blueprint import/creation lines.
-# =============================================================================
+    # Last resort: use the fallback
+    if 'enterprise' in fallback_plan:
+        return 'enterprise'
+    if 'founding' in fallback_plan:
+        return 'founding'
+    return 'pro'
