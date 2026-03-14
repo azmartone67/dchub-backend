@@ -3393,6 +3393,65 @@ def auto_register_ai_visitor():
     except Exception:
         pass
 
+@app.route('/api/admin/key-audit', methods=['GET'])
+def admin_key_audit():
+    """Audit API keys for plan mismatches"""
+    admin_key = request.headers.get('X-Admin-Key', '')
+    expected = os.environ.get('DCHUB_ADMIN_KEY', '')
+    if not admin_key or admin_key != expected:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    conn = get_db_connection()
+    c = conn.cursor()
+
+    c.execute("""
+        SELECT id, key_prefix, plan, rate_limit_tier, user_id
+        FROM api_keys
+        WHERE (key_prefix LIKE 'dchub_pro_%' AND (plan != 'pro' OR plan IS NULL))
+           OR (key_prefix LIKE 'dchub_ent_%' AND (plan != 'enterprise' OR plan IS NULL))
+    """)
+    prefix_mismatches = c.fetchall()
+
+    c.execute("""
+        SELECT id, key_prefix, user_id, plan, rate_limit_tier
+        FROM api_keys
+        WHERE plan IS NULL OR plan = ''
+    """)
+    no_plan = c.fetchall()
+
+    c.execute("SELECT COUNT(*) FROM api_keys WHERE is_active = 1")
+    total_active = c.fetchone()[0]
+
+    conn.close()
+
+    issues = []
+    for row in prefix_mismatches:
+        issues.append({
+            'type': 'prefix_mismatch',
+            'key_id': row[0],
+            'prefix': row[1],
+            'key_plan': row[2],
+            'tier': row[3],
+            'user_id': row[4]
+        })
+    for row in no_plan:
+        issues.append({
+            'type': 'no_plan_set',
+            'key_id': row[0],
+            'prefix': row[1],
+            'user_id': row[2],
+            'key_plan': row[3],
+            'tier': row[4]
+        })
+
+    return jsonify({
+        'success': True,
+        'total_active_keys': total_active,
+        'total_issues': len(issues),
+        'issues': issues,
+        'checked_at': datetime.utcnow().isoformat()
+    })
+
 @app.route('/api/admin/discovered-platforms', methods=['GET'])
 def admin_discovered_platforms():
     admin_key = request.headers.get('X-Admin-Key') or request.args.get('admin_key') or request.args.get('key')
