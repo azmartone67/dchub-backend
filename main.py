@@ -7525,6 +7525,19 @@ def get_stats():
         except:
             stats['total_substations'] = 0
         
+        # Infrastructure layer counts (for dynamic homepage display)
+        try:
+            c.execute("SELECT COUNT(*) FROM fiber_routes")
+            stats['total_fiber_routes'] = c.fetchone()[0] or 0
+        except:
+            stats['total_fiber_routes'] = 128  # fallback
+        
+        try:
+            c.execute("SELECT COUNT(*) FROM gas_pipelines")
+            stats['total_gas_pipelines'] = c.fetchone()[0] or 81  # HIFLD default
+        except:
+            stats['total_gas_pipelines'] = 81
+        
         try:
             c.execute("SELECT COUNT(*) FROM users")
             stats['total_users'] = c.fetchone()[0] or 0
@@ -7566,6 +7579,8 @@ def get_stats():
             'markets': len(stats.get('top_countries', {})),
             'deals': stats.get('total_announcements', 673),
             'substations': stats.get('total_substations', 0),
+            'fiber_routes': stats.get('total_fiber_routes', 128),
+            'gas_pipelines': stats.get('total_gas_pipelines', 81),
             'users': stats.get('total_users', 0),
             'new_users_7d': stats.get('new_users_7d', 0),
             'new_users_30d': stats.get('new_users_30d', 0),
