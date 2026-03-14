@@ -252,6 +252,12 @@ def register_user():
                 VALUES (%s, %s, %s, %s, %s, 'free', 'user', %s)
             """, (user_id, email, password_hash, name, company, datetime.utcnow().isoformat()))
             pg_conn.commit()
+            # Send free welcome email
+            try:
+                from main import send_free_welcome_email_sendgrid
+                send_free_welcome_email_sendgrid(email, name)
+            except Exception as email_err:
+                logger.warning(f"Free welcome email failed for {email}: {email_err}")
 
             token = generate_jwt(user_id, email, 'user')
 
@@ -431,6 +437,12 @@ def google_auth_callback():
                       datetime.utcnow().isoformat(), datetime.utcnow().isoformat()))
 
             pg_conn.commit()
+            # Send free welcome email
+            try:
+                from main import send_free_welcome_email_sendgrid
+                send_free_welcome_email_sendgrid(email, name)
+            except Exception as email_err:
+                logger.warning(f"Free welcome email failed for {email}: {email_err}")
 
         jwt_token = generate_jwt(user_id, email, user_role)
 
@@ -534,6 +546,12 @@ def google_auth():
                       datetime.utcnow().isoformat(), datetime.utcnow().isoformat()))
 
             pg_conn.commit()
+            # Send free welcome email
+            try:
+                from main import send_free_welcome_email_sendgrid
+                send_free_welcome_email_sendgrid(email, name)
+            except Exception as email_err:
+                logger.warning(f"Free welcome email failed for {email}: {email_err}")
 
         jwt_token = generate_jwt(user_id, email, user_role)
 
@@ -756,6 +774,12 @@ def forgot_password():
                     (email, token, expires_at)
                 )
                 pg_conn.commit()
+            # Send free welcome email
+            try:
+                from main import send_free_welcome_email_sendgrid
+                send_free_welcome_email_sendgrid(email, name)
+            except Exception as email_err:
+                logger.warning(f"Free welcome email failed for {email}: {email_err}")
 
                 reset_url = f"https://dchub.cloud/reset-password?token={token}"
                 send_password_reset_email(email, user_name, reset_url)
@@ -806,6 +830,12 @@ def reset_password():
             pg_cur.execute("UPDATE users SET password_hash = %s WHERE email = %s", (password_hash, email))
             pg_cur.execute("UPDATE password_reset_tokens SET used = TRUE WHERE token = %s", (token,))
             pg_conn.commit()
+            # Send free welcome email
+            try:
+                from main import send_free_welcome_email_sendgrid
+                send_free_welcome_email_sendgrid(email, name)
+            except Exception as email_err:
+                logger.warning(f"Free welcome email failed for {email}: {email_err}")
 
             print(f"✅ Password reset successful for {email}")
             return jsonify({'success': True, 'message': 'Password has been reset. You can now log in.'})
