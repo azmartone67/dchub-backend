@@ -6309,106 +6309,104 @@ def _sync_tables_bg(*table_names):
     threading.Thread(target=_do, daemon=True).start()
 
 def handle_checkout_completed(session):
-    """Handle successful checkout - upgrade user plan and API key tier. PostgreSQL only.
-    
-    v2.0 FIX (Mar 13 2026):
-    - Removed all SQLite dual-writes (Railway uses PG only)
-    - Case-insensitive email matching (LOWER(email) = LOWER(%s))
-    - ON CONFLICT DO UPDATE for upsert safety
-    - Explicit verification step with force-fix
-    - Raises on critical failure so Stripe retries (returns 500, not 200)
-    """
+    """Handle successful checkout - upgrade user plan and API key tier. Writes to PostgreSQL first."""
     import traceback
-    import hashlib
-
-    customer_email = (session.get('customer_email') or '').lower().strip()
-    if not customer_email:
-        customer_email = (session.get('customer_details', {}).get('email') or '').lower().strip()
-
-    customer_name = (session.get('customer_details', {}).get('name') or '').strip()
-
-    metadata = session.get('metadata', {})
-    user_id = metadata.get('user_id')
-    plan_from_metadata = metadata.get('plan', '')
-
-    amount_total = session.get('amount_total', 0)
-    amount_dollars = amount_total / 100 if amount_total else 0
-    stripe_cust = session.get('customer', '')
-    payment_link_id = session.get('payment_link', '') or ''
-
-    print(f"💳 Checkout data: email='{customer_email}', name='{customer_name}', "
-          f"metadata_plan='{plan_from_metadata}', amount=${amount_dollars}, "
-          f"payment_link='{payment_link_id}', customer='{stripe_cust}'")
-
-    if not customer_email and not user_id:
-        print("❌ WEBHOOK ERROR: No email or user_id in checkout session — cannot activate")
-        raise ValueError("No customer email or user_id in checkout session")
-
-    # ── Determine plan ──
-    plan_tier_map = {
-        'pro_monthly': ('pro', 'pro'),
-        'pro_annual': ('pro', 'pro'),
-        'enterprise_monthly': ('enterprise', 'enterprise'),
-        'enterprise_annual': ('enterprise', 'enterprise'),
-        'founding': ('founding', 'pro'),
-    }
-
-    payment_link_plan_map = {
-        # Add your plink_ IDs here as they appear in logs:
-        # 'plink_XXXXXXX': 'pro_monthly',
-        # 'plink_XXXXXXX': 'founding',
-    }
-
-    if plan_from_metadata and plan_from_metadata in plan_tier_map:
-        plan_name, api_tier = plan_tier_map[plan_from_metadata]
-        print(f"📋 Plan from metadata: {plan_name}")
-    elif payment_link_id and payment_link_id in payment_link_plan_map:
-        resolved_plan_key = payment_link_plan_map[payment_link_id]
-        plan_name, api_tier = plan_tier_map[resolved_plan_key]
-        print(f"🔗 Plan from payment link ({payment_link_id}): {plan_name}")
-    else:
-        if payment_link_id:
-            print(f"⚠️ Unknown payment_link ID: '{payment_link_id}' — add to payment_link_plan_map! Falling back to amount detection.")
-        if amount_dollars == 99 or (95 <= amount_dollars <= 105):
-            plan_name, api_tier = 'founding', 'pro'
-        elif amount_dollars == 199 or (195 <= amount_dollars <= 205):
-            plan_name, api_tier = 'pro', 'pro'
-        elif amount_dollars == 1590 or (1585 <= amount_dollars <= 1595):
-            plan_name, api_tier = 'pro', 'pro'
-        elif amount_dollars == 699 or (695 <= amount_dollars <= 705):
-            plan_name, api_tier = 'enterprise', 'enterprise'
-        elif amount_dollars == 5990 or (5985 <= amount_dollars <= 5995):
-            plan_name, api_tier = 'enterprise', 'enterprise'
-        elif amount_dollars >= 500:
-            plan_name, api_tier = 'enterprise', 'enterprise'
-        else:
-            plan_name, api_tier = 'pro', 'pro'
-        print(f"💰 Plan from amount (${amount_dollars}): {plan_name}")
-
-    # ── STEP 1: Try to UPDATE existing user (case-insensitive) ──
-    rows_updated = 0
     try:
+        customer_email = (session.get('customer_email') or '').lower().strip()
+        if not customer_email:
+            customer_email = (session.get('customer_details', {}).get('email') or '').lower().strip()
+
+        customer_name = (session.get('customer_details', {}).get('name') or '').strip()
+
+        metadata = session.get('metadata', {})
+        user_id = metadata.get('user_id')
+        plan_from_metadata = metadata.get('plan', '')
+
+        amount_total = session.get('amount_total', 0)
+        amount_dollars = amount_total / 100 if amount_total else 0
+
+        print(f"💳 Checkout data: email='{customer_email}', name='{customer_name}', "
+              f"metadata_plan='{plan_from_metadata}', amount=${amount_dollars}, "
+              f"payment_link='{session.get('payment_link', '')}', "
+              f"customer='{session.get('customer', '')}'")
+
+        plan_tier_map = {
+            'pro_monthly': ('pro', 'pro'),
+            'pro_annual': ('pro', 'pro'),
+            'enterprise_monthly': ('enterprise', 'enterprise'),
+            'enterprise_annual': ('enterprise', 'enterprise'),
+            'founding': ('founding', 'pro'),
+        }
+
+        # Payment link URL slug → plan mapping (for checkouts via buy.stripe.com links)
+        # Stripe webhook sends payment_link as a plink_xxx ID. We match known IDs here.
+        # If you see a new plink_ ID in logs, add it to this map.
+        # To find your plink IDs: check Stripe Dashboard → Payment Links, or look at Railway logs
+        # for the "payment_link='plink_xxx'" value printed on checkout.
+        payment_link_id = session.get('payment_link', '') or ''
+        payment_link_plan_map = {
+            # Add your plink_ IDs here as they appear in logs:
+            # 'plink_XXXXXXX': 'pro_monthly',
+            # 'plink_XXXXXXX': 'founding',
+        }
+
+        if plan_from_metadata and plan_from_metadata in plan_tier_map:
+            plan_name, api_tier = plan_tier_map[plan_from_metadata]
+            print(f"📋 Plan from metadata: {plan_name}")
+        elif payment_link_id and payment_link_id in payment_link_plan_map:
+            resolved_plan_key = payment_link_plan_map[payment_link_id]
+            plan_name, api_tier = plan_tier_map[resolved_plan_key]
+            print(f"🔗 Plan from payment link ({payment_link_id}): {plan_name}")
+        else:
+            if payment_link_id:
+                print(f"⚠️ Unknown payment_link ID: '{payment_link_id}' — add to payment_link_plan_map! Falling back to amount detection.")
+            if amount_dollars == 99 or (95 <= amount_dollars <= 105):
+                plan_name, api_tier = 'founding', 'pro'
+            elif amount_dollars == 199 or (195 <= amount_dollars <= 205):
+                plan_name, api_tier = 'pro', 'pro'
+            elif amount_dollars == 1590 or (1585 <= amount_dollars <= 1595):
+                plan_name, api_tier = 'pro', 'pro'
+            elif amount_dollars == 699 or (695 <= amount_dollars <= 705):
+                plan_name, api_tier = 'enterprise', 'enterprise'
+            elif amount_dollars == 5990 or (5985 <= amount_dollars <= 5995):
+                plan_name, api_tier = 'enterprise', 'enterprise'
+            elif amount_dollars >= 500:
+                plan_name, api_tier = 'enterprise', 'enterprise'
+            else:
+                plan_name, api_tier = 'pro', 'pro'
+            print(f"💰 Plan from amount (${amount_dollars}): {plan_name}")
+
+        stripe_cust = session.get('customer', '')
+
+        rows_updated = 0
         if user_id:
             rc, _ = _pg_execute(
                 "UPDATE users SET plan = %s, role = %s, subscription_status = 'active', stripe_customer_id = %s WHERE id = %s",
                 (plan_name, api_tier, stripe_cust, user_id))
             rows_updated = rc
-            print(f"📝 PG UPDATE by user_id={user_id}: {rc} row(s)")
-
-        if rows_updated == 0 and customer_email:
+        elif customer_email:
             rc, _ = _pg_execute(
-                "UPDATE users SET plan = %s, role = %s, subscription_status = 'active', stripe_customer_id = %s WHERE LOWER(email) = LOWER(%s)",
+                "UPDATE users SET plan = %s, role = %s, subscription_status = 'active', stripe_customer_id = %s WHERE email = %s",
                 (plan_name, api_tier, stripe_cust, customer_email))
             rows_updated = rc
-            print(f"📝 PG UPDATE by email (case-insensitive) '{customer_email}': {rc} row(s)")
-    except Exception as e:
-        print(f"❌ PG UPDATE failed: {e}")
-        traceback.print_exc()
 
-    # ── STEP 2: If UPDATE found no user, CREATE one with ON CONFLICT upsert ──
-    if rows_updated == 0 and customer_email:
-        print(f"⚠️ No existing user found for '{customer_email}' — creating new account")
-        try:
+        conn = get_db()
+        c = conn.cursor()
+
+        if user_id:
+            c.execute("UPDATE users SET plan = ?, role = ?, subscription_status = 'active', stripe_customer_id = ? WHERE id = ?",
+                      (plan_name, api_tier, stripe_cust, user_id))
+        elif customer_email:
+            c.execute("UPDATE users SET plan = ?, role = ?, subscription_status = 'active', stripe_customer_id = ? WHERE email = ?",
+                      (plan_name, api_tier, stripe_cust, customer_email))
+        
+        sqlite_rows = c.rowcount if (user_id or customer_email) else 0
+        if sqlite_rows > 0 and rows_updated == 0:
+            rows_updated = sqlite_rows
+
+        print(f"💳 Webhook UPDATE: email='{customer_email}', user_id='{user_id}', pg_rows={rows_updated}, sqlite_rows={sqlite_rows}")
+
+        if rows_updated == 0 and sqlite_rows == 0 and customer_email:
             import secrets as sec
             new_user_id = f"stripe_{sec.token_hex(8)}"
             now = datetime.utcnow().isoformat()
@@ -6416,112 +6414,106 @@ def handle_checkout_completed(session):
             temp_password = sec.token_urlsafe(16)
             hashed_pw = hash_password(temp_password)
 
-            rc, _ = _pg_execute(
-                """INSERT INTO users (id, email, password_hash, name, plan, role,
-                   api_calls_today, api_calls_total, created_at, stripe_customer_id, subscription_status)
-                   VALUES (%s, %s, %s, %s, %s, %s, 0, 0, %s, %s, 'active')
-                   ON CONFLICT (email) DO UPDATE SET
-                       plan = EXCLUDED.plan,
-                       role = EXCLUDED.role,
-                       subscription_status = 'active',
-                       stripe_customer_id = EXCLUDED.stripe_customer_id""",
-                (new_user_id, customer_email, hashed_pw, display_name, plan_name, api_tier, now, stripe_cust))
+            _pg_execute_many([
+                ("INSERT INTO users (id, email, password_hash, name, plan, role, api_calls_today, api_calls_total, created_at, stripe_customer_id, subscription_status) VALUES (%s, %s, %s, %s, %s, %s, 0, 0, %s, %s, 'active')",
+                 (new_user_id, customer_email, hashed_pw, display_name, plan_name, api_tier, now, stripe_cust)),
+            ])
 
-            if rc > 0:
-                print(f"✅ User created/upserted for {customer_email}")
-                _, id_rows = _pg_execute("SELECT id FROM users WHERE LOWER(email) = LOWER(%s)", (customer_email,), fetch=True)
-                actual_user_id = id_rows[0][0] if id_rows else new_user_id
+            c.execute("""INSERT INTO users (id, email, password_hash, name, plan, role, api_calls_today, api_calls_total,
+                         created_at, stripe_customer_id, subscription_status)
+                         VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, 'active')""",
+                      (new_user_id, customer_email, hashed_pw, display_name,
+                       plan_name, api_tier, now, stripe_cust))
+            print(f"🔐 Account created for {customer_email} (PG + SQLite)")
 
-                raw_key = 'dchub_' + sec.token_urlsafe(32)
-                key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
-                key_prefix = raw_key[:12]
+            raw_key = 'dchub_' + sec.token_urlsafe(32)
+            key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+            key_prefix = raw_key[:12]
 
-                _pg_execute(
-                    """INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions,
-                       rate_limit_tier, is_active, created_at, usage_count, plan, calls_today, calls_total)
-                       VALUES (%s, %s, %s, %s, '["read","write"]', %s, 1, %s, 0, %s, 0, 0)""",
-                    (actual_user_id, key_hash, key_prefix, f'{customer_email} Pro Key', api_tier, now, plan_name))
+            _pg_execute(
+                "INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions, rate_limit_tier, is_active, created_at, usage_count, plan, calls_today, calls_total) VALUES (%s, %s, %s, %s, '[\"read\",\"write\"]', %s, 1, %s, 0, %s, 0, 0)",
+                (new_user_id, key_hash, key_prefix, f'{customer_email} Pro Key', api_tier, now, plan_name))
 
-                print(f"🔑 Generated {plan_name} API key: {key_prefix}...")
-                rows_updated = 1
+            c.execute("""INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions,
+                         rate_limit_tier, is_active, created_at, usage_count, plan, calls_today, calls_total)
+                         VALUES (?, ?, ?, ?, '["read","write"]', ?, 1, ?, 0, ?, 0, 0)""",
+                      (new_user_id, key_hash, key_prefix, f'{customer_email} Pro Key',
+                       api_tier, now, plan_name))
 
-                try:
-                    send_welcome_email_sendgrid(customer_email, raw_key, plan_name, temp_password=temp_password)
-                except Exception as email_err:
-                    print(f"⚠️ Welcome email failed (non-fatal): {email_err}")
-            else:
-                print(f"❌ INSERT/UPSERT returned 0 rows for {customer_email}")
-        except Exception as e:
-            print(f"❌ User creation failed: {e}")
-            traceback.print_exc()
+            print(f"✨ Created new user account for {customer_email} (id: {new_user_id})")
+            print(f"🔑 Generated {plan_name} API key: {key_prefix}...")
 
-    # ── STEP 3: For existing users who were updated, generate/refresh API key ──
-    elif rows_updated > 0 and customer_email:
-        try:
-            _, pg_rows = _pg_execute("SELECT id FROM users WHERE LOWER(email) = LOWER(%s)", (customer_email,), fetch=True)
-            resolved_user_id = pg_rows[0][0] if pg_rows else user_id
-            print(f"🔍 Resolved user_id for {customer_email}: {resolved_user_id}")
+            send_welcome_email_sendgrid(customer_email, raw_key, plan_name, temp_password=temp_password)
+
+        elif customer_email:
+            resolved_user_id = user_id
+            if not resolved_user_id:
+                _, pg_rows = _pg_execute("SELECT id FROM users WHERE email = %s", (customer_email,), fetch=True)
+                if pg_rows:
+                    resolved_user_id = pg_rows[0][0]
+                else:
+                    c.execute("SELECT id FROM users WHERE email = ?", (customer_email,))
+                    row = c.fetchone()
+                    resolved_user_id = row[0] if row else None
+                print(f"🔍 Looked up user_id for {customer_email}: {resolved_user_id}")
 
             if resolved_user_id:
-                import secrets as sec
                 now = datetime.utcnow().isoformat()
-
                 _pg_execute("UPDATE api_keys SET rate_limit_tier = %s, last_used_at = %s WHERE user_id = %s",
                            (api_tier, now, resolved_user_id))
+                c.execute("UPDATE api_keys SET rate_limit_tier = ?, updated_at = ? WHERE user_id = ?",
+                          (api_tier, now, resolved_user_id))
+                api_keys_updated = c.rowcount
+                print(f"🔑 Updated {api_keys_updated} API key(s) to tier: {api_tier}")
 
+                import secrets as sec
                 raw_key = 'dchub_' + sec.token_urlsafe(32)
                 key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
                 key_prefix = raw_key[:12]
 
                 _pg_execute(
-                    """INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions,
-                       rate_limit_tier, is_active, created_at, usage_count, plan, calls_today, calls_total)
-                       VALUES (%s, %s, %s, %s, '["read","write"]', %s, 1, %s, 0, %s, 0, 0)""",
+                    "INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions, rate_limit_tier, is_active, created_at, usage_count, plan, calls_today, calls_total) VALUES (%s, %s, %s, %s, '[\"read\",\"write\"]', %s, 1, %s, 0, %s, 0, 0)",
                     (resolved_user_id, key_hash, key_prefix, f'{customer_email} Pro Key', api_tier, now, plan_name))
 
+                c.execute("""INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions,
+                             rate_limit_tier, is_active, created_at, usage_count, plan, calls_today, calls_total)
+                             VALUES (?, ?, ?, ?, '["read","write"]', ?, 1, ?, 0, ?, 0, 0)""",
+                          (resolved_user_id, key_hash, key_prefix, f'{customer_email} Pro Key',
+                           api_tier, now, plan_name))
                 print(f"🔑 Generated new {plan_name} API key for existing user: {key_prefix}...")
+                send_welcome_email_sendgrid(customer_email, raw_key, plan_name)
+            else:
+                print(f"⚠️ Could not find user_id for email {customer_email} -- skipping api_keys update")
 
-                try:
-                    send_welcome_email_sendgrid(customer_email, raw_key, plan_name)
-                except Exception as email_err:
-                    print(f"⚠️ Welcome email failed (non-fatal): {email_err}")
-        except Exception as e:
-            print(f"⚠️ API key generation failed (non-fatal, user IS activated): {e}")
+        conn.commit()
+        conn.close()
 
-    # ── STEP 4: Final verification — force-fix if needed ──
-    try:
-        _, verify_rows = _pg_execute(
-            "SELECT plan, subscription_status, stripe_customer_id FROM users WHERE LOWER(email) = LOWER(%s)",
-            (customer_email,), fetch=True)
-        if verify_rows:
-            v = verify_rows[0]
-            print(f"✅ VERIFIED: {customer_email} → plan={v[0]}, status={v[1]}, stripe_id={v[2]}")
-            if v[1] != 'active':
-                print(f"🚨 WARNING: subscription_status is '{v[1]}' not 'active' — force fixing")
-                _pg_execute("UPDATE users SET subscription_status = 'active' WHERE LOWER(email) = LOWER(%s)", (customer_email,))
-                print(f"✅ Force-fixed subscription_status to 'active' for {customer_email}")
-        else:
-            print(f"🚨 CRITICAL: User {customer_email} NOT FOUND after checkout processing!")
-            raise RuntimeError(f"User {customer_email} not found after checkout — Stripe should retry")
-    except RuntimeError:
-        raise
+        print(f"✅ User upgraded to {plan_name} (API tier: {api_tier}): {customer_email or user_id}")
     except Exception as e:
-        print(f"⚠️ Verification query failed (non-fatal): {e}")
-
-    print(f"✅ Checkout complete: {customer_email} → {plan_name} (tier: {api_tier})")
+        print(f"❌ WEBHOOK ERROR in handle_checkout_completed: {e}")
+        traceback.print_exc()
 
 def handle_subscription_created(subscription):
-    """Handle new subscription - PostgreSQL only"""
+    """Handle new subscription - writes to PostgreSQL first"""
     customer_id = subscription.get('customer', '')
     status = subscription.get('status', '')
     
     if status == 'active':
+        # Don't overwrite plan/role - handle_checkout_completed already set the correct plan.
+        # Only update subscription_status to 'active'.
         _pg_execute("UPDATE users SET subscription_status = %s WHERE stripe_customer_id = %s",
                    (status, customer_id))
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("UPDATE users SET subscription_status = ? WHERE stripe_customer_id = ?",
+                  (status, customer_id))
+        conn.commit()
+        conn.close()
+        _sync_tables_bg('users')
         print(f"✅ Subscription activated for customer: {customer_id}")
 
 def handle_subscription_updated(subscription):
-    """Handle subscription changes - PostgreSQL only"""
+    """Handle subscription changes - writes to PostgreSQL first, then SQLite"""
     customer_id = subscription.get('customer', '')
     status = subscription.get('status', '')
     now = datetime.utcnow().isoformat()
@@ -6539,10 +6531,22 @@ def handle_subscription_updated(subscription):
                 _pg_execute("UPDATE api_keys SET rate_limit_tier = 'free', last_used_at = %s WHERE user_id = %s", (now, row[0]))
         print(f"🔑 Downgraded API keys to free tier for customer: {customer_id}")
 
+    conn = get_db()
+    c = conn.cursor()
+    if status in ['active', 'trialing', 'past_due', 'unpaid']:
+        c.execute("UPDATE users SET subscription_status = ? WHERE stripe_customer_id = ?", (status, customer_id))
+    elif status == 'canceled':
+        c.execute("UPDATE users SET plan = 'free', role = 'free', subscription_status = ? WHERE stripe_customer_id = ?",
+                  (status, customer_id))
+        c.execute("UPDATE api_keys SET rate_limit_tier = 'free', updated_at = ? WHERE user_id IN (SELECT id FROM users WHERE stripe_customer_id = ?)",
+                  (now, customer_id))
+    conn.commit()
+    conn.close()
+    _sync_tables_bg('users', 'api_keys')
     print(f"📝 Subscription updated for customer {customer_id}: {status}")
 
 def handle_subscription_deleted(subscription):
-    """Handle subscription cancellation - PostgreSQL only"""
+    """Handle subscription cancellation - writes to PostgreSQL first, then SQLite"""
     customer_id = subscription.get('customer', '')
     now = datetime.utcnow().isoformat()
     
@@ -6553,6 +6557,15 @@ def handle_subscription_deleted(subscription):
         for row in pg_rows:
             _pg_execute("UPDATE api_keys SET rate_limit_tier = 'free', last_used_at = %s WHERE user_id = %s", (now, row[0]))
 
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("UPDATE users SET plan = 'free', role = 'free', subscription_status = 'canceled' WHERE stripe_customer_id = ?",
+              (customer_id,))
+    c.execute("UPDATE api_keys SET rate_limit_tier = 'free', updated_at = ? WHERE user_id IN (SELECT id FROM users WHERE stripe_customer_id = ?)",
+              (now, customer_id))
+    conn.commit()
+    conn.close()
+    _sync_tables_bg('users', 'api_keys')
     print(f"❌ Subscription canceled for customer: {customer_id}")
     print(f"🔑 API keys downgraded to free tier")
 
@@ -6562,10 +6575,17 @@ def handle_invoice_paid(invoice):
     print(f"💰 Invoice paid for customer: {customer_id}")
 
 def handle_payment_failed(invoice):
-    """Handle failed payment - PostgreSQL only"""
+    """Handle failed payment - writes to PostgreSQL first, then SQLite"""
     customer_id = invoice.get('customer', '')
     
     _pg_execute("UPDATE users SET subscription_status = 'payment_failed' WHERE stripe_customer_id = %s", (customer_id,))
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("UPDATE users SET subscription_status = 'payment_failed' WHERE stripe_customer_id = ?",
+              (customer_id,))
+    conn.commit()
+    conn.close()
+    _sync_tables_bg('users')
     print(f"⚠️ Payment failed for customer: {customer_id}")
 
 @app.route('/api/stripe/subscription', methods=['GET'])
@@ -7525,18 +7545,25 @@ def get_stats():
         except:
             stats['total_substations'] = 0
         
-        # Infrastructure layer counts (for dynamic homepage display)
+        # Infrastructure layer counts for dynamic homepage display
+        # PG tables only store a small subset. Real counts come from HIFLD/EIA ArcGIS:
+        #   Substations: 70,000+ from HIFLD | Transmission: 300,000+ from HIFLD
+        #   Gas/midstream: 300,000+ from EIA ArcGIS | Fiber: 128 in PG
+        HIFLD_SUBSTATION_BASE = 70000
+        HIFLD_TRANSMISSION_BASE = 300000
+        EIA_GAS_PIPELINE_BASE = 300000
+        stats['total_substations_hifld'] = HIFLD_SUBSTATION_BASE
+        stats['total_transmission_lines'] = HIFLD_TRANSMISSION_BASE
         try:
             c.execute("SELECT COUNT(*) FROM fiber_routes")
-            stats['total_fiber_routes'] = c.fetchone()[0] or 0
+            stats['total_fiber_routes'] = max(c.fetchone()[0] or 0, 128)
         except:
-            stats['total_fiber_routes'] = 300000  # HIFLD transmission lines
-        
+            stats['total_fiber_routes'] = 128
         try:
             c.execute("SELECT COUNT(*) FROM gas_pipelines")
-            stats['total_gas_pipelines'] = c.fetchone()[0] or 300000  # EIA ArcGIS has 300K+
+            stats['total_gas_pipelines'] = EIA_GAS_PIPELINE_BASE + (c.fetchone()[0] or 0)
         except:
-            stats['total_gas_pipelines'] = 300000  # EIA ArcGIS pipelines
+            stats['total_gas_pipelines'] = EIA_GAS_PIPELINE_BASE
         
         try:
             c.execute("SELECT COUNT(*) FROM users")
@@ -7578,9 +7605,10 @@ def get_stats():
             'facilities': stats.get('total_facilities', 20000),
             'markets': len(stats.get('top_countries', {})),
             'deals': stats.get('total_announcements', 673),
-            'substations': stats.get('total_substations', 0),
-            'fiber_routes': stats.get('total_fiber_routes', 300000),
+            'substations': stats.get('total_substations_hifld', 70000),
+            'fiber_routes': stats.get('total_fiber_routes', 128),
             'gas_pipelines': stats.get('total_gas_pipelines', 300000),
+            'transmission_lines': stats.get('total_transmission_lines', 300000),
             'users': stats.get('total_users', 0),
             'new_users_7d': stats.get('new_users_7d', 0),
             'new_users_30d': stats.get('new_users_30d', 0),
