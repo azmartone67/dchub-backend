@@ -1067,6 +1067,10 @@ def require_plan(min_plan='pro'):
             origin = request.headers.get("Origin", "") or request.headers.get("Referer", "")
             if "dchub.cloud" in origin:
                 return f(*args, **kwargs)
+            # Internal MCP bypass -- trust calls from our own MCP server
+            internal_key = request.headers.get("X-Internal-Key", "")
+            if internal_key in ("dchub-internal-2024", "dchub-internal-sync-2026"):
+                return f(*args, **kwargs)
             try:
                 ai_info = get_ai_wars_key_info()
                 if ai_info:
