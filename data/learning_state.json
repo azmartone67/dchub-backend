@@ -1,11 +1,11 @@
 {
   "stats": {
-    "total_runs": 425,
-    "items_learned": 38452,
+    "total_runs": 426,
+    "items_learned": 38596,
     "improvements_made": 0,
     "apis_discovered": 0,
     "quality_fixes": 0,
-    "last_run": "2026-02-10T07:49:40.003436"
+    "last_run": "2026-03-14T22:02:46.923528"
   },
   "knowledge": {
     "operators": {
@@ -608,6 +608,135 @@
       },
       "Fujitsu Australia Limited": {
         "facilities": 5
+      },
+      "AWS": {
+        "facilities": 167
+      },
+      "Cologix": {
+        "facilities": 64
+      },
+      "Oracle": {
+        "facilities": 40
+      },
+      "Meta Platforms": {
+        "facilities": 38
+      },
+      "QTS Realty": {
+        "facilities": 37
+      },
+      "Stack": {
+        "facilities": 34
+      },
+      "STT GDC": {
+        "facilities": 33
+      },
+      "PDG": {
+        "facilities": 22
+      },
+      "Scala": {
+        "facilities": 22
+      },
+      "CoreWeave": {
+        "facilities": 22
+      },
+      "Compass": {
+        "facilities": 21
+      },
+      "Colt DCS": {
+        "facilities": 20
+      },
+      "Ascenty": {
+        "facilities": 20
+      },
+      "GDS": {
+        "facilities": 18
+      },
+      "Huawei Cloud": {
+        "facilities": 15
+      },
+      "Tencent Cloud": {
+        "facilities": 15
+      },
+      "OVHcloud": {
+        "facilities": 14
+      },
+      "Alibaba Cloud": {
+        "facilities": 13
+      },
+      "STACK Infrastructure": {
+        "facilities": 12
+      },
+      "Involta": {
+        "facilities": 11
+      },
+      "Stream": {
+        "facilities": 10
+      },
+      "Chindata": {
+        "facilities": 10
+      },
+      "Compass Datacenters": {
+        "facilities": 9
+      },
+      "Evoque": {
+        "facilities": 9
+      },
+      "Yondr Group": {
+        "facilities": 9
+      },
+      "Raxio": {
+        "facilities": 9
+      },
+      "Arcadian Infracom": {
+        "facilities": 9
+      },
+      "Prime": {
+        "facilities": 8
+      },
+      "dc2scale SAS": {
+        "facilities": 8
+      },
+      "US Signal": {
+        "facilities": 8
+      },
+      "Turkcell": {
+        "facilities": 8
+      },
+      "Leaseweb": {
+        "facilities": 7
+      },
+      "LG CNS": {
+        "facilities": 7
+      },
+      "Element Critical": {
+        "facilities": 7
+      },
+      "ServerFarm": {
+        "facilities": 7
+      },
+      "EdgeCore": {
+        "facilities": 7
+      },
+      "Borealis Data Center": {
+        "facilities": 7
+      },
+      "Glesys AB": {
+        "facilities": 7
+      },
+      "Crusoe Energy": {
+        "facilities": 7
+      },
+      "AdaniConneX": {
+        "facilities": 7
+      },
+      "GasLINE": {
+        "facilities": 7
+      },
+      "Lumen": {
+        "facilities": 6
+      },
+      "FPT Telecom": {
+        "facilities": 6
       }
     },
     "markets": {},
@@ -647,7 +776,7 @@
     },
     "relationships": {},
     "decisions": {
-      "last_check": "2026-02-10T07:20:32.224607",
+      "last_check": "2026-03-14T21:59:32.714623",
       "pending_analysis": [],
       "patterns": {
         "category_stats": {
@@ -684,29 +813,29 @@
             "avg_accuracy_ratio": 0.0
           }
         },
-        "last_updated": "2026-02-10T07:27:07.805885"
+        "last_updated": "2026-03-14T22:00:16.889858"
       },
       "ai_insights": {
         "insights": [
           {
-            "insight": "Backend and feature development show 100% success rate with high impact (8.0), indicating strong execution capabilities in core product development",
-            "category": "success_patterns",
-            "action": "Continue prioritizing backend feature development as your strength area, and consider taking on more complex backend projects to leverage this proven competency"
+            "insight": "Your backend and feature development decisions show perfect success rates with high impact (8.0), but sample size is extremely limited (only 1 decision). This creates a false sense of confidence and prevents meaningful pattern analysis.",
+            "category": "data_quality",
+            "action": "Increase decision tracking volume by documenting all development decisions for at least 10-15 iterations before drawing conclusions. Set up systematic logging for every backend change, feature addition, and technology choice to build a statistically meaningful dataset."
           },
           {
-            "insight": "Your technology stack (Python, Flask, AI) shows perfect success rates but limited diversity with only 1 decision per technology",
-            "category": "technology_focus",
-            "action": "Expand your technology portfolio by experimenting with complementary technologies (e.g., databases, frontend frameworks, deployment tools) while maintaining your strong Python/Flask/AI foundation"
-          },
-          {
-            "insight": "Effort estimation accuracy is critically low at 0.0 ratio for medium complexity tasks, indicating systematic underestimation or overestimation",
+            "insight": "Python, Flask, and AI technologies show 100% success rates, indicating strong team competency in these areas, but the effort estimation accuracy is at 0.0 for medium-complexity tasks, suggesting significant planning gaps.",
             "category": "estimation_improvement",
-            "action": "Implement time tracking for your next 5-10 medium complexity tasks, compare actual vs estimated effort, and create a personal calibration factor to improve future estimates"
+            "action": "Implement a structured estimation process for medium-complexity tasks using techniques like story point poker or three-point estimation. Create historical baselines for Python/Flask/AI projects to improve future effort predictions and track estimation vs. actual time spent."
+          },
+          {
+            "insight": "Current decision categories are too narrow (only backend/feature types tracked), missing critical decision areas like architecture, deployment, testing, and technical debt management that could reveal important patterns.",
+            "category": "decision_tracking",
+            "action": "Expand decision categorization to include architecture, infrastructure, testing, security, and refactoring decisions. Create a decision log template that captures decision context, alternatives considered, rationale, and measurable outcomes across all development areas."
           }
         ],
-        "generated_at": "2026-02-10T07:27:27.554086"
+        "generated_at": "2026-03-14T22:00:39.331655"
       }
     }
   },
-  "last_saved": "2026-02-10T07:49:40.003495"
+  "last_saved": "2026-03-14T22:02:46.923590"
 }
