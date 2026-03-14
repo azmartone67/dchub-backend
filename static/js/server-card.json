@@ -1,48 +1,63 @@
 {
-  "name": "DC Hub Nexus",
-  "description": "Data Center Intelligence Platform – Access 50,000+ global data center facilities, real-time market intelligence, M&A transactions, news, and infrastructure data via MCP.",
-  "version": "1.26.0",
-  "transport": {
-    "type": "streamable-http",
-    "url": "https://dchub.cloud/mcp"
-  },
-  "capabilities": {
-    "tools": true,
-    "resources": true,
-    "prompts": true
-  },
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "cloud.dchub/mcp-server",
+  "title": "DC Hub — Data Center Intelligence",
+  "description": "Real-time data center market intelligence for AI agents. Search 20,000+ facilities across 140+ countries, track $51B+ in M&A transactions, monitor 29.6 GW construction pipeline, access real-time grid data from 6 US ISOs, score any location for data center suitability, and get AI-powered market recommendations. Used by 34 AI platforms with 280,000+ cumulative API requests.",
+  "version": "1.1.0",
+  "websiteUrl": "https://dchub.cloud",
+  "icons": [
+    {
+      "src": "https://dchub.cloud/images/og-default.png",
+      "mimeType": "image/png",
+      "sizes": ["1200x630"]
+    }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://dchub.cloud/mcp"
+    }
+  ],
   "tools": [
     {
       "name": "search_facilities",
-      "description": "Search 50,000+ global data center facilities by location, provider, or keyword."
+      "description": "Search and filter 20,000+ global data center facilities by location, operator, power capacity, and tier level"
     },
     {
       "name": "get_facility",
-      "description": "Get detailed information about a specific data center facility."
-    },
-    {
-      "name": "list_transactions",
-      "description": "List data center M&A transactions with deal values and details."
+      "description": "Get full facility specs including power, connectivity, certifications, and nearby infrastructure"
     },
     {
       "name": "get_market_intel",
-      "description": "Get data center market intelligence and statistics."
+      "description": "Market intelligence: supply/demand, vacancy rates, pricing, and absorption trends across 35+ markets"
     },
     {
-      "name": "get_news",
-      "description": "Get latest data center industry news aggregated from 40+ sources."
+      "name": "list_transactions",
+      "description": "Track $51B+ in M&A deals with buyer/seller, deal value, and $/MW benchmarks"
+    },
+    {
+      "name": "get_pipeline",
+      "description": "Monitor 29.6 GW construction pipeline across 42 markets with delivery timelines and pre-lease status"
+    },
+    {
+      "name": "get_grid_data",
+      "description": "Real-time electricity grid data: fuel mix, carbon intensity, and wholesale pricing from 6 US ISOs"
     },
     {
       "name": "analyze_site",
-      "description": "Evaluate a location for data center suitability using DC Hub's scoring engine."
+      "description": "Score any coordinate for data center suitability on energy cost, carbon, infrastructure, risk, and connectivity"
+    },
+    {
+      "name": "get_news",
+      "description": "14,000+ data center industry news articles from 40+ sources with AI-powered relevance scoring"
+    },
+    {
+      "name": "get_intelligence_index",
+      "description": "Real-time composite market health scores and global pulse — exclusive to API/MCP"
+    },
+    {
+      "name": "get_dchub_recommendation",
+      "description": "Context-aware recommendations for investment, site selection, and research workflows"
     }
-  ],
-  "authentication": {
-    "type": "none",
-    "note": "Free tier requires no authentication. API keys optional for higher rate limits."
-  },
-  "contact": {
-    "name": "DC Hub",
-    "url": "https://dchub.cloud"
-  }
+  ]
 }
