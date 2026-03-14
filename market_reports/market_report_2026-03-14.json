@@ -1,154 +1,62 @@
 {
-  "report_date": "2026-03-14",
-  "generated_at": "2026-03-14T18:07:22.982884",
+  "generated_at": "2026-03-14T21:59:10.136122",
   "summary": {
     "total_facilities": 11788,
-    "total_providers": 2806,
-    "countries_covered": 167,
-    "total_power_mw": 80281.0,
+    "total_providers": 4015,
+    "total_power_mw": 99846.0,
     "total_deals": 628,
-    "total_deal_value_usd": 747099700000.0
+    "total_news": 14623
   },
-  "market_highlights": [
-    "DC Hub tracks 11,788 data center facilities globally",
-    "Coverage spans 167 countries with 2806 providers",
-    "Combined capacity: 80,281 MW",
-    "M&A database: 628 transactions worth $747.1B+"
-  ],
-  "recent_deals": [
-    {
-      "buyer": "Billion Deal",
-      "seller": "Nordic Data",
-      "value_usd": 4000000000.0,
-      "type": "acquisition",
-      "date": null
-    },
-    {
-      "buyer": "Billion Deal",
-      "seller": "Nordic Data",
-      "value_usd": 4000000000.0,
-      "type": "acquisition",
-      "date": null
-    },
-    {
-      "buyer": "Accenture down",
-      "seller": "Downdetector as",
-      "value_usd": 1200000000.0,
-      "type": "acquisition",
-      "date": null
-    },
-    {
-      "buyer": "Billion Deal",
-      "seller": "Nordic Data",
-      "value_usd": 4000000000.0,
-      "type": "acquisition",
-      "date": null
-    },
-    {
-      "buyer": "7bn deal",
-      "seller": "US power",
-      "value_usd": 10700000000.0,
-      "type": "acquisition",
-      "date": null
-    },
-    {
-      "buyer": "Billion Deal",
-      "seller": "Nordic Data",
-      "value_usd": 4000000000.0,
-      "type": "acquisition",
-      "date": null
-    },
-    {
-      "buyer": "Accenture",
-      "seller": "Ookla",
-      "value_usd": 1200000000.0,
-      "type": "acquisition",
-      "date": null
-    },
-    {
-      "buyer": "It a",
-      "seller": "for 2026",
-      "value_usd": 10000000000.0,
-      "type": "acquisition",
-      "date": null
-    },
-    {
-      "buyer": "Billion Deal",
-      "seller": "Nordic Data",
-      "value_usd": 4000000000.0,
-      "type": "acquisition",
-      "date": null
-    },
-    {
-      "buyer": "Billion Deal",
-      "seller": "Nordic Data",
-      "value_usd": 4000000000.0,
-      "type": "acquisition",
-      "date": null
-    }
-  ],
   "recent_news": [
+    {
+      "title": "Arkansas lawmaker, Little Rock neighborhood group talk data center concerns",
+      "source": "The Arkansas Democrat-Gazette",
+      "date": "2026-03-14"
+    },
+    {
+      "title": "Meta is reportedly laying off up to 20 percent of its staff",
+      "source": "The Verge",
+      "date": "2026-03-14"
+    },
+    {
+      "title": "Vertiv Holdings (VRT), Generate Capital Partner to Launch BYOP&C Ecosystem for Data Centers",
+      "source": "Yahoo Finance",
+      "date": "2026-03-14"
+    },
     {
       "title": "Meta reportedly considering layoffs that could affect 20% of the company",
       "source": "TechCrunch AI",
-      "date": "2026-03-14T16:28:42"
+      "date": "2026-03-14"
+    },
+    {
+      "title": "Entergy Says Data Center Projects Will Save Mississippi Customers $2 Billion",
+      "source": "Construction Owners Club",
+      "date": "2026-03-14"
     },
     {
       "title": "Google invests $1B in NC to expand operations at data center",
       "source": "finance.yahoo.com",
-      "date": "2026-03-14T14:21:26"
+      "date": "2026-03-14"
     },
     {
       "title": "Conflicted on subject of data centers",
       "source": "Observer-Reporter",
-      "date": "2026-03-14T13:52:30"
+      "date": "2026-03-14"
     },
     {
       "title": "Iran war delays work on Meta's 2Africa subsea cable",
       "source": "Data Center Dynamics",
-      "date": "2026-03-14T13:30:06"
+      "date": "2026-03-14"
     },
     {
       "title": "Meta considers layoffs of up to 20% to fund AI data center buildout",
       "source": "Data Center Dynamics",
-      "date": "2026-03-14T12:44:53"
+      "date": "2026-03-14"
     },
     {
       "title": "NVIDIA Joins OCI To Shape Optical Links And AI Data Center Future",
       "source": "Yahoo Finance UK",
-      "date": "2026-03-14T12:12:14"
-    },
-    {
-      "title": "In Case You Missed It: A.I./Data Center Articles - NewClips From Last Week - March 16",
-      "source": "PA Environment Digest Blog",
-      "date": "2026-03-14T10:52:41"
-    },
-    {
-      "title": "Ohio's data centers face growing backlash, and it's warranted",
-      "source": "The Columbus Dispatch",
-      "date": "2026-03-14T10:17:44"
-    },
-    {
-      "title": "Urbana residents fight proposed data center near Cedar Bog",
-      "source": "The Columbus Dispatch",
-      "date": "2026-03-14T10:17:44"
-    },
-    {
-      "title": "This Week's Top Five Stories in the Data Centre Industry",
-      "source": "Data Centre Magazine",
-      "date": "2026-03-14T09:08:56"
+      "date": "2026-03-14"
     }
-  ],
-  "data_sources": [
-    "PeeringDB",
-    "OpenStreetMap",
-    "SEC EDGAR",
-    "Wikidata",
-    "60+ RSS Feeds",
-    "EIA Energy API",
-    "Grid Status API",
-    "FCC Broadband API",
-    "EPA Envirofacts"
-  ],
-  "citation": "According to DC Hub Nexus (dchub.cloud)"
+  ]
 }
