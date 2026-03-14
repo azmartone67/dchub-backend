@@ -1,5 +1,5 @@
 """
-Fiber Network Discovery Module v2.0
+Fiber Network Discovery Module v2.1
 ====================================
 - Seeds Neon fiber_routes table with major carrier routes
 - Discovers fiber networks from PeeringDB IX data
@@ -7,11 +7,11 @@ Fiber Network Discovery Module v2.0
 - Carrier Hotels & Lit Buildings
 - Fiber Provider Coverage APIs
 
-v2.0 CHANGES:
-  - Added run_fiber_discovery() for infrastructure-sync job
-  - Writes to Neon fiber_routes table (not SQLite)
-  - PeeringDB IX peering data as fiber route proxy
-  - All 20 major carrier routes seeded on first run
+v2.1 CHANGES:
+  - Fixed _upsert_fiber_route column mapping (start_location, end_location only)
+  - Added conn.rollback() on upsert failure to prevent cascading aborts
+  - ON CONFLICT uses source_id unique index
+  - run_fiber_discovery uses db_utils.get_db() pool instead of raw psycopg2.connect
 """
 
 import requests
@@ -32,7 +32,13 @@ fiber_bp = Blueprint('fiber_discovery', __name__)
 # ============================================================
 
 def _get_pg_connection():
-    """Get a Neon PostgreSQL connection."""
+    """Get a Neon PostgreSQL connection from the pool."""
+    try:
+        from db_utils import get_db
+        return get_db()
+    except Exception:
+        pass
+    # Fallback to direct connection
     try:
         import psycopg2
         db_url = os.environ.get("DATABASE_URL", "")
@@ -40,7 +46,7 @@ def _get_pg_connection():
             return None
         return psycopg2.connect(db_url, connect_timeout=10)
     except Exception as e:
-        logger.error(f"Fiber discovery DB connection failed: {e}")
+        logger.error("Fiber discovery DB connection failed: %s" % e)
         return None
 
 
@@ -57,7 +63,7 @@ def _ensure_fiber_routes_table():
         conn.close()
         return True
     except Exception as e:
-        logger.error(f"Fiber routes table check failed: {e}")
+        logger.error("Fiber routes table check failed: %s" % e)
         try:
             conn.close()
         except Exception:
@@ -66,34 +72,48 @@ def _ensure_fiber_routes_table():
 
 
 def _upsert_fiber_route(conn, route):
-    """Upsert a single fiber route into Neon."""
+    """Upsert a single fiber route into Neon.
+    
+    fiber_routes columns: id, name, provider, route_type, start_point, end_point,
+    distance_miles, capacity, status, source, source_url, geometry, discovered_at,
+    created_at, start_location, end_location, source_id, start_lat, start_lng,
+    end_lat, end_lng, fiber_count, lit_capacity_gbps, updated_at
+    """
     try:
         cur = conn.cursor()
+        cap_str = "%s fibers" % route.get('fiber_count', 0) if route.get('fiber_count') else None
+        dark = route.get('dark_fiber', 0)
+        rtype = route.get('route_type', 'long_haul')
+        if dark:
+            rtype = 'dark_fiber' if rtype == 'long_haul' else rtype
+
         cur.execute("""
             INSERT INTO fiber_routes
-                (name, provider, route_type, start_location, end_location,
-                 start_point, end_point, distance_miles, fiber_count,
+                (name, provider, route_type, start_point, end_point,
+                 start_location, end_location, distance_miles, fiber_count,
                  capacity, status, start_lat, start_lng, end_lat, end_lng,
                  source, source_id, discovered_at)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-            ON CONFLICT (source, source_id) DO UPDATE SET
+            ON CONFLICT (source_id) WHERE source_id IS NOT NULL DO UPDATE SET
                 name = EXCLUDED.name,
                 provider = EXCLUDED.provider,
                 distance_miles = EXCLUDED.distance_miles,
                 fiber_count = EXCLUDED.fiber_count,
+                capacity = EXCLUDED.capacity,
+                route_type = EXCLUDED.route_type,
                 updated_at = NOW()
         """, (
             route.get('name', ''),
             route.get('provider', ''),
-            route.get('route_type', 'long_haul'),
-            route.get('start_location', ''),
-            route.get('end_location', ''),
-            route.get('start_location', ''),  # start_point = start_location
-            route.get('end_location', ''),     # end_point = end_location
-            route.get('route_miles'),           # → distance_miles
+            rtype,
+            route.get('start_location', ''),   # start_point
+            route.get('end_location', ''),      # end_point
+            route.get('start_location', ''),    # start_location
+            route.get('end_location', ''),      # end_location
+            route.get('route_miles'),
             route.get('fiber_count'),
-            f"{route.get('fiber_count', 0)} fibers" if route.get('fiber_count') else None,  # capacity
-            'active',                           # status
+            cap_str,
+            'active',
             route.get('start_lat'),
             route.get('start_lng'),
             route.get('end_lat'),
@@ -103,7 +123,11 @@ def _upsert_fiber_route(conn, route):
         ))
         return True
     except Exception as e:
-        logger.warning(f"Fiber route upsert failed: {e}")
+        logger.warning("Fiber route upsert failed: %s" % e)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         return False
 
 
@@ -154,11 +178,11 @@ def _discover_peeringdb_fiber():
             timeout=15
         )
         if resp.status_code != 200:
-            logger.warning(f"PeeringDB returned {resp.status_code}")
+            logger.warning("PeeringDB returned %s" % resp.status_code)
             return discovered
 
         data = resp.json().get("data", [])
-        logger.info(f"PeeringDB: found {len(data)} US Internet Exchanges")
+        logger.info("PeeringDB: found %d US Internet Exchanges" % len(data))
 
         # Filter IXes with coordinates
         ixes = []
@@ -190,11 +214,11 @@ def _discover_peeringdb_fiber():
 
                 # Only create routes between 50-500 miles (metro fiber paths)
                 if 50 < dist_miles < 500:
-                    route_id = f"PDB-{ix1['id']}-{ix2['id']}"
+                    route_id = "PDB-%s-%s" % (ix1['id'], ix2['id'])
                     discovered.append({
                         'source_id': route_id,
                         'provider': 'PeeringDB/IX',
-                        'name': f"{ix1['name']} - {ix2['name']}",
+                        'name': "%s - %s" % (ix1['name'], ix2['name']),
                         'route_type': 'ix_interconnect',
                         'start_location': ix1.get('city', ix1['name']),
                         'end_location': ix2.get('city', ix2['name']),
@@ -208,12 +232,12 @@ def _discover_peeringdb_fiber():
                         'source': 'peeringdb',
                     })
 
-        logger.info(f"PeeringDB: generated {len(discovered)} fiber route proxies from IX data")
+        logger.info("PeeringDB: generated %d fiber route proxies from IX data" % len(discovered))
 
     except requests.exceptions.Timeout:
         logger.warning("PeeringDB: timeout")
     except Exception as e:
-        logger.error(f"PeeringDB discovery failed: {e}")
+        logger.error("PeeringDB discovery failed: %s" % e)
 
     return discovered
 
@@ -254,11 +278,11 @@ def run_fiber_discovery():
             route['route_type'] = 'long_haul'
             if _upsert_fiber_route(conn, route):
                 results['seeded'] += 1
+                conn.commit()
             else:
                 results['errors'] += 1
 
-        conn.commit()
-        logger.info(f"Fiber seed: {results['seeded']} carrier routes written")
+        logger.info("Fiber seed: %d carrier routes written" % results['seeded'])
 
         # Step 2: Discover from PeeringDB
         try:
@@ -266,12 +290,12 @@ def run_fiber_discovery():
             for route in pdb_routes:
                 if _upsert_fiber_route(conn, route):
                     results['discovered'] += 1
+                    conn.commit()
                 else:
                     results['errors'] += 1
-            conn.commit()
-            logger.info(f"PeeringDB fiber: {results['discovered']} routes discovered")
+            logger.info("PeeringDB fiber: %d routes discovered" % results['discovered'])
         except Exception as e:
-            logger.warning(f"PeeringDB discovery failed (non-fatal): {e}")
+            logger.warning("PeeringDB discovery failed (non-fatal): %s" % e)
 
         # Get total count
         cur = conn.cursor()
@@ -280,7 +304,7 @@ def run_fiber_discovery():
         cur.close()
 
     except Exception as e:
-        logger.error(f"Fiber discovery error: {e}")
+        logger.error("Fiber discovery error: %s" % e)
         results['error'] = str(e)
     finally:
         try:
@@ -290,7 +314,7 @@ def run_fiber_discovery():
 
     results['duration_seconds'] = round(time.time() - start, 2)
     results['status'] = 'success' if results['errors'] == 0 else 'partial'
-    logger.info(f"Fiber discovery complete: {results}")
+    logger.info("Fiber discovery complete: %s" % results)
     return results
 
 
@@ -323,7 +347,7 @@ class FiberProviderAPI:
         if provider:
             routes = [r for r in MAJOR_ROUTES if r['provider'].lower() == provider_id.lower()]
             return {'id': provider_id, **provider, 'routes': routes, 'route_count': len(routes)}
-        return {'error': f'Provider not found: {provider_id}'}
+        return {'error': 'Provider not found: %s' % provider_id}
 
     @classmethod
     def get_providers_by_market(cls, market):
@@ -365,7 +389,7 @@ class FiberCoverageAPI:
         coverage = cls.COVERAGE.get(market)
         if coverage:
             return {'market': market, **coverage}
-        return {'error': f'Market not found: {market}', 'available': list(cls.COVERAGE.keys())}
+        return {'error': 'Market not found: %s' % market, 'available': list(cls.COVERAGE.keys())}
 
     @classmethod
     def compare_markets(cls, markets=None):
@@ -420,15 +444,17 @@ class NTIAGrantAPI:
         filtered = {s: v for s, v in cls.BEAD_ALLOCATIONS.items() if not dc_market_states or s in dc_market_states}
         allocations = []
         for st, info in filtered.items():
+            amt = info['amount']
+            fmt = "$%.2fB" % (amt / 1e9) if amt >= 1e9 else "$%.1fM" % (amt / 1e6)
             allocations.append({
-                'state': st, 'recipient': info['recipient'], 'amount': info['amount'],
-                'amount_formatted': f"${info['amount']/1e9:.2f}B" if info['amount'] >= 1e9 else f"${info['amount']/1e6:.1f}M",
+                'state': st, 'recipient': info['recipient'], 'amount': amt,
+                'amount_formatted': fmt,
                 'status': info['status'], 'priority_tech': info['priority'], 'unserved_locations': info['unserved_locations'],
                 'lat': cls.STATE_COORDS.get(st, (0, 0))[0], 'lng': cls.STATE_COORDS.get(st, (0, 0))[1],
             })
         allocations.sort(key=lambda x: x['amount'], reverse=True)
         total = sum(a['amount'] for a in allocations)
-        return {'allocations': allocations, 'count': len(allocations), 'total_funding': total, 'total_funding_formatted': f"${total/1e9:.2f}B", 'total_unserved': sum(a['unserved_locations'] for a in allocations)}
+        return {'allocations': allocations, 'count': len(allocations), 'total_funding': total, 'total_funding_formatted': "$%.2fB" % (total / 1e9), 'total_unserved': sum(a['unserved_locations'] for a in allocations)}
 
     @classmethod
     def get_grant_stats(cls):
@@ -515,11 +541,11 @@ def get_fiber_summary():
 def register_fiber_discovery(app):
     """Register fiber discovery routes."""
     app.register_blueprint(fiber_bp)
-    logger.info("✅ Fiber Network Discovery v2.0 registered")
+    logger.info("✅ Fiber Network Discovery v2.1 registered")
     routes = FiberProviderAPI.get_routes()
     bead = NTIAGrantAPI.get_bead_allocations()
-    print("🔌 Fiber Network Discovery v2.0: ✅ Registered")
-    print(f"   📡 Providers: /api/fiber/providers (8 carriers, {FiberProviderAPI.get_all_providers()['total_route_miles']:,} route miles)")
-    print(f"   🛤️ Routes: /api/fiber/routes ({routes['count']} seed routes, {routes['total_miles']:,} miles)")
-    print(f"   💰 BEAD: /api/fiber/bead-allocations ({bead['count']} states, {bead['total_funding_formatted']})")
+    print("🔌 Fiber Network Discovery v2.1: ✅ Registered")
+    print("   📡 Providers: /api/fiber/providers (8 carriers, %s route miles)" % "{:,}".format(FiberProviderAPI.get_all_providers()['total_route_miles']))
+    print("   🛤️ Routes: /api/fiber/routes (%d seed routes, %s miles)" % (routes['count'], "{:,}".format(routes['total_miles'])))
+    print("   💰 BEAD: /api/fiber/bead-allocations (%d states, %s)" % (bead['count'], bead['total_funding_formatted']))
     print("   🔍 Discovery: run_fiber_discovery() → seeds Neon + crawls PeeringDB")
