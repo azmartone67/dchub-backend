@@ -335,7 +335,6 @@ def _register_rankings_routes(rankings_bp, db_pool=None, get_db_connection=None,
                   AND state IS NOT NULL
                   AND state != ''
                   AND LOWER(COALESCE(status, 'operational')) NOT IN ('decommissioned', 'closed')
-                  AND is_duplicate = 0
                 GROUP BY state
                 ORDER BY total_mw DESC
                 LIMIT %s
