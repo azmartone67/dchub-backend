@@ -32,18 +32,13 @@ fiber_bp = Blueprint('fiber_discovery', __name__)
 # ============================================================
 
 def _get_pg_connection():
-    """Get a Neon PostgreSQL connection from the pool."""
+    """Get a Neon PostgreSQL connection — always uses db_utils pool (Neon)."""
     try:
         from db_utils import get_db
         return get_db()
-    except Exception:
-        pass
-    # Fallback to direct connection
-    try:
-        import psycopg2
-        db_url = os.environ.get("DATABASE_URL", "")
-        if not db_url:
-            return None
+    except Exception as e:
+        logger.error('Fiber discovery DB connection failed: %s' % e)
+        return None
         return psycopg2.connect(db_url, connect_timeout=10)
     except Exception as e:
         logger.error("Fiber discovery DB connection failed: %s" % e)
