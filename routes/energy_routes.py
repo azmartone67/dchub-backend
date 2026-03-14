@@ -133,15 +133,9 @@ try:
     except Exception as e:
         print(f"  ⚠️ ISONE unavailable: {e}")
     
-    # PJM requires separate API key
-    if os.environ.get('PJM_API_KEY'):
         try:
-            GRIDSTATUS_ISOS['PJM'] = gridstatus.PJM()
-            print("  ✅ PJM loaded (with API key)")
         except Exception as e:
-            print(f"  ⚠️ PJM unavailable: {e}")
     else:
-        print("  ℹ️ PJM requires PJM_API_KEY (not set)")
     
     print(f"⚡ GridStatus library loaded: {list(GRIDSTATUS_ISOS.keys())}")
 except ImportError as e:
@@ -333,7 +327,6 @@ def grid_status():
     elif -106.6 < lng < -93.5 and 25.8 < lat < 36.5:
         iso = 'ERCOT'
     elif -90 < lng < -74 and 35 < lat < 42.5:
-        iso = 'PJM'
     elif -79.8 < lng < -71.8 and 40.5 < lat < 45:
         iso = 'NYISO'
     elif -73.7 < lng < -66.9 and 40.9 < lat < 47.5:
@@ -390,7 +383,6 @@ def grid_demand():
     
     iso_data = {
         'ERCOT': {'name': 'Electric Reliability Council of Texas', 'region': 'Texas'},
-        'PJM': {'name': 'PJM Interconnection', 'region': 'Mid-Atlantic'},
         'CAISO': {'name': 'California ISO', 'region': 'California'},
         'NYISO': {'name': 'New York ISO', 'region': 'New York'},
         'MISO': {'name': 'Midcontinent ISO', 'region': 'Midwest'},
@@ -544,7 +536,6 @@ def grid_fuel_mix():
     
     iso_data = {
         'ERCOT': {'name': 'Electric Reliability Council of Texas', 'dataset': 'ercot_fuel_mix'},
-        'PJM': {'name': 'PJM Interconnection', 'dataset': 'pjm_gen_by_fuel'},
         'CAISO': {'name': 'California ISO', 'dataset': 'caiso_fuel_mix'},
         'NYISO': {'name': 'New York ISO', 'dataset': 'nyiso_fuel_mix'},
         'MISO': {'name': 'Midcontinent ISO', 'dataset': 'miso_fuel_mix'},
@@ -555,7 +546,6 @@ def grid_fuel_mix():
     if not iso:
         return jsonify({
             'success': False,
-            'error': 'ISO parameter required. Options: CAISO, ERCOT, PJM, NYISO, MISO, SPP, ISONE'
         }), 400
     
     if iso not in iso_data:
@@ -579,7 +569,6 @@ def grid_fuel_mix():
     
     EIA_FUEL_MIX_FALLBACK = {
         'ERCOT': {'gas': 42.3, 'wind': 25.1, 'coal': 14.2, 'nuclear': 10.8, 'solar': 5.9, 'other': 1.7},
-        'PJM': {'gas': 38.5, 'nuclear': 32.1, 'coal': 15.8, 'wind': 5.2, 'solar': 2.1, 'hydro': 1.8, 'other': 4.5},
         'CAISO': {'gas': 37.8, 'solar': 22.4, 'wind': 10.2, 'hydro': 11.5, 'nuclear': 8.9, 'imports': 6.1, 'other': 3.1},
         'NYISO': {'gas': 36.2, 'nuclear': 25.8, 'hydro': 22.1, 'wind': 5.3, 'solar': 2.4, 'other': 8.2},
         'MISO': {'gas': 32.1, 'coal': 25.3, 'wind': 18.9, 'nuclear': 14.2, 'solar': 3.8, 'hydro': 2.1, 'other': 3.6},
@@ -626,7 +615,6 @@ def grid_prices():
     if not iso:
         return jsonify({
             'success': False,
-            'error': 'ISO parameter required. Options: CAISO, ERCOT, PJM, NYISO, MISO, SPP, ISONE'
         }), 400
     
     def fetch_caiso_prices():
@@ -682,7 +670,6 @@ def grid_supported_isos():
     isos = [
         {'id': 'CAISO', 'name': 'California ISO', 'region': 'California', 'live': True},
         {'id': 'ERCOT', 'name': 'Electric Reliability Council of Texas', 'region': 'Texas', 'live': True},
-        {'id': 'PJM', 'name': 'PJM Interconnection', 'region': 'Mid-Atlantic/Midwest', 'live': True},
         {'id': 'NYISO', 'name': 'New York ISO', 'region': 'New York', 'live': True},
         {'id': 'MISO', 'name': 'Midcontinent ISO', 'region': 'Central US', 'live': True},
         {'id': 'SPP', 'name': 'Southwest Power Pool', 'region': 'Central US', 'live': True},
@@ -703,7 +690,6 @@ def grid_summary():
     return jsonify({
         'success': True,
         'source': 'GridStatus Proxy',
-        'supported_isos': ['CAISO', 'ERCOT', 'PJM', 'NYISO', 'MISO', 'SPP', 'ISONE'],
         'live_data': {
             'CAISO': {
                 'demand_available': bool(caiso_demand and caiso_demand.get('currentDemandMW')),
@@ -1720,7 +1706,6 @@ def eia_rto_demand():
     # EIA respondent codes
     rto_codes = {
         'CAISO': 'CISO', 'CISO': 'CISO',
-        'PJM': 'PJM',
         'ERCOT': 'ERCO', 'ERCO': 'ERCO',
         'MISO': 'MISO',
         'NYISO': 'NYIS', 'NYIS': 'NYIS',
@@ -1772,7 +1757,6 @@ def eia_rto_fuelmix():
     rto = request.args.get('rto', 'ERCO').upper()
     
     rto_codes = {
-        'CAISO': 'CISO', 'PJM': 'PJM', 'ERCOT': 'ERCO', 'ERCO': 'ERCO',
         'MISO': 'MISO', 'NYISO': 'NYIS', 'ISONE': 'ISNE', 'SPP': 'SWPP'
     }
     
@@ -2292,11 +2276,9 @@ def nearby_power_plants():
 @require_plan('pro')
 def grid_overview():
     try:
-        isos = ['ERCOT', 'PJM', 'CAISO', 'NYISO', 'MISO', 'SPP', 'ISONE']
 
         EIA_DEMAND_FALLBACK = {
             'ERCOT': {'demand_gw': 45.5, 'peak_gw': 85.5},
-            'PJM': {'demand_gw': 95.2, 'peak_gw': 165.5},
             'CAISO': {'demand_gw': 28.3, 'peak_gw': 52.1},
             'NYISO': {'demand_gw': 18.5, 'peak_gw': 33.9},
             'MISO': {'demand_gw': 62.1, 'peak_gw': 127.1},
@@ -2306,7 +2288,6 @@ def grid_overview():
 
         EIA_FUEL_MIX_OVERVIEW = {
             'ERCOT': {'top_fuel': 'Natural Gas', 'pct': 42.3, 'renewable_pct': 31.0},
-            'PJM': {'top_fuel': 'Natural Gas', 'pct': 38.5, 'renewable_pct': 7.3},
             'CAISO': {'top_fuel': 'Natural Gas', 'pct': 37.8, 'renewable_pct': 32.6},
             'NYISO': {'top_fuel': 'Natural Gas', 'pct': 36.2, 'renewable_pct': 29.8},
             'MISO': {'top_fuel': 'Natural Gas', 'pct': 32.1, 'renewable_pct': 22.7},
@@ -2316,7 +2297,6 @@ def grid_overview():
 
         ISO_NAMES = {
             'ERCOT': 'Electric Reliability Council of Texas',
-            'PJM': 'PJM Interconnection (13 states + DC)',
             'CAISO': 'California Independent System Operator',
             'NYISO': 'New York Independent System Operator',
             'MISO': 'Midcontinent Independent System Operator',
@@ -2326,7 +2306,6 @@ def grid_overview():
 
         ISO_STATES = {
             'ERCOT': ['TX'],
-            'PJM': ['PA', 'NJ', 'MD', 'VA', 'WV', 'OH', 'DE', 'DC', 'IL', 'MI', 'IN', 'KY', 'NC'],
             'CAISO': ['CA'],
             'NYISO': ['NY'],
             'MISO': ['ND', 'SD', 'NE', 'MN', 'IA', 'WI', 'IL', 'IN', 'MI', 'MO', 'AR', 'MS', 'LA', 'TX'],
