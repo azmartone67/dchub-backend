@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-DC Hub External Scheduler v3.3
+DC Hub External Scheduler v3.4
 ===============================
 Triggers discovery jobs via HTTP POST to the DC Hub API /api/jobs/* endpoints.
 All jobs are staggered to prevent Railway resource conflicts.
@@ -16,7 +16,7 @@ Environment:
   DCHUB_API_BASE    — API base URL (default: https://dchub-backend-production.up.railway.app)
   DCHUB_ADMIN_KEY   — Admin API key (required)
 
-Schedule (UTC) — 21 jobs, verified no overlaps:
+Schedule (UTC) — 22 jobs, verified no overlaps:
   00:00  News/RSS Refresh        (also 04, 08, 12, 16, 20)
   00:20  Auto-Approve            (also 04, 08, 12, 16, 20)
   00:45  Simple Alerts           (also 02,04,06,08,10,12,14,16,18,20,22)
@@ -25,6 +25,7 @@ Schedule (UTC) — 21 jobs, verified no overlaps:
   02:30  Infrastructure Sync     (also 08:30, 14:30, 20:30)
   03:00  AI Ecosystem Agent      (also 10, 15, 22)
   03:15  Neon DB Backup
+  03:30  Fiber Route Sync        (also 09:30, 15:30, 21:30)
   03:45  Confidence Recalc       (daily)
   04:00  KMZ Discovery           (also 16:00) — 12hr cycle
   05:00  AI Outreach Agent       (also 13, 21)
@@ -35,14 +36,12 @@ Schedule (UTC) — 21 jobs, verified no overlaps:
   10:15  Autonomous Brain        (also 22:15)
   11:30  Content Publishing
   12:30  Market Report           (daily)
-  16:30  Ambassador              (daily)
+  16:30  Ambassador + Drip       (daily)
   Keep-Alive every 5 minutes
 
-v3.3 changelog:
-  - Added 7 missing jobs: autonomous_brain, alert_emails, simple_alerts,
-    market_report, infra_sync, capacity_headroom, ambassador
-  - Total: 21 jobs (20 scheduled + keepalive)
-  - All new jobs staggered to avoid collisions with existing schedule
+v3.4 changelog:
+  - Added fiber_sync job (4x/day at :30, calls /api/jobs/fiber-sync)
+  - Total: 22 jobs (21 scheduled + keepalive)
 """
 
 import os
@@ -69,7 +68,7 @@ logging.basicConfig(
 log = logging.getLogger('dchub-scheduler')
 
 # ============================================================
-# JOB DEFINITIONS — 19 total
+# JOB DEFINITIONS — 22 total
 # ============================================================
 JOBS = {
     # ── Existing 12 jobs (unchanged from v3.2) ──────────────
@@ -251,6 +250,14 @@ JOBS = {
         'minute': 0,
         'timeout': 600,                  # 10 min — cycle processes many sources
     },
+    'fiber_sync': {
+        'name': 'Fiber Route Sync',
+        'endpoint': '/api/jobs/fiber-sync',
+        'method': 'POST',
+        'hours': [3, 9, 15, 21],        # every 6h at :30
+        'minute': 30,
+        'timeout': 300,
+    },
 }
 
 # ============================================================
@@ -260,7 +267,7 @@ def api_call(endpoint, method='POST', timeout=60):
     url = API_BASE.rstrip('/') + endpoint
     headers = {
         'Content-Type': 'application/json',
-        'User-Agent': 'DCHub-Scheduler/3.3',
+        'User-Agent': 'DCHub-Scheduler/3.4',
     }
     if ADMIN_KEY:
         headers['X-Admin-Key'] = ADMIN_KEY
@@ -356,7 +363,7 @@ def show_status():
     now = datetime.now(timezone.utc)
     scheduled = [k for k in JOBS if k != 'keepalive']
     print(f"\n{'─'*65}")
-    print(f"  DC Hub External Scheduler v3.3")
+    print(f"  DC Hub External Scheduler v3.4")
     print(f"  Time:   {now.strftime('%Y-%m-%d %H:%M UTC')}")
     print(f"  API:    {API_BASE}")
     print(f"  Auth:   {'✅ key set' if ADMIN_KEY else '❌ DCHUB_ADMIN_KEY not set'}")
@@ -385,7 +392,7 @@ def show_status():
 # MAIN LOOP
 # ============================================================
 def scheduler_loop():
-    log.info(f"DC Hub External Scheduler v3.3 starting")
+    log.info(f"DC Hub External Scheduler v3.4 starting")
     log.info(f"  API:  {API_BASE}")
     log.info(f"  Jobs: {len(JOBS)} ({len(JOBS)-1} scheduled + keepalive)")
     log.info(f"  Auth: {'✅ key set' if ADMIN_KEY else '❌ DCHUB_ADMIN_KEY not set — jobs will fail!'}")
@@ -425,7 +432,7 @@ def scheduler_loop():
 # CLI
 # ============================================================
 def main():
-    parser = argparse.ArgumentParser(description='DC Hub External Scheduler v3.3')
+    parser = argparse.ArgumentParser(description='DC Hub External Scheduler v3.4')
     parser.add_argument('--once',   action='store_true', help='Run all due jobs once and exit')
     parser.add_argument('--job',    type=str,            help=f'Run specific job: {", ".join(JOBS.keys())}')
     parser.add_argument('--all',    action='store_true', help='Run ALL jobs immediately')
