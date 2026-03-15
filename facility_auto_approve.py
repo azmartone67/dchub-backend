@@ -244,6 +244,21 @@ def run_auto_approve(conn, batch_size=100, dry_run=False):
             results['error'] = 'discovered_facilities table does not exist'
             return results
 
+        # Auto-add columns if missing (safe migration)
+        for col, col_type in [('status', 'TEXT'), ('notes', 'TEXT')]:
+            try:
+                cur.execute("""
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'discovered_facilities' AND column_name = %s
+                """, (col,))
+                if not cur.fetchone():
+                    cur.execute(f"ALTER TABLE discovered_facilities ADD COLUMN {col} {col_type}")
+                    conn.commit()
+                    logger.info(f"Added missing column '{col}' to discovered_facilities")
+            except Exception as e:
+                logger.warning(f"Column check/add for '{col}': {e}")
+                conn.rollback()
+
         # Get pending discoveries
         cur.execute("""
             SELECT * FROM discovered_facilities
@@ -465,15 +480,28 @@ def register_auto_approve_routes(app):
             total_facilities = cur.fetchone()[0]
 
             # Recent approvals
-            cur.execute("""
-                SELECT name, city, state, notes
-                FROM discovered_facilities
-                WHERE status = 'approved'
-                ORDER BY discovered_at DESC NULLS LAST
-                LIMIT 10
-            """)
-            cols = [d[0] for d in cur.description]
-            recent_approvals = [dict(zip(cols, r)) for r in cur.fetchall()]
+            try:
+                cur.execute("""
+                    SELECT name, city, state, notes
+                    FROM discovered_facilities
+                    WHERE status = 'approved'
+                    ORDER BY discovered_at DESC NULLS LAST
+                    LIMIT 10
+                """)
+                cols = [d[0] for d in cur.description]
+                recent_approvals = [dict(zip(cols, r)) for r in cur.fetchall()]
+            except Exception:
+                conn.rollback()
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT name, city, state
+                    FROM discovered_facilities
+                    WHERE status = 'approved'
+                    ORDER BY discovered_at DESC NULLS LAST
+                    LIMIT 10
+                """)
+                cols = [d[0] for d in cur.description]
+                recent_approvals = [dict(zip(cols, r)) for r in cur.fetchall()]
 
             cur.close()
             conn.close()
