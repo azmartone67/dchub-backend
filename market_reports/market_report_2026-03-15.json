@@ -1,6 +1,6 @@
 {
-  "report_date": "2026-03-14",
-  "generated_at": "2026-03-14T23:39:42.585999",
+  "report_date": "2026-03-15",
+  "generated_at": "2026-03-15T00:16:12.643229",
   "summary": {
     "total_facilities": 11788,
     "total_providers": 2806,
@@ -89,6 +89,11 @@
   ],
   "recent_news": [
     {
+      "title": "Protesters rally Saturday against Joliet data center",
+      "source": "Shaw Local",
+      "date": "2026-03-14T23:24:24"
+    },
+    {
       "title": "Arkansas lawmaker, Little Rock neighborhood group talk data center concerns",
       "source": "The Arkansas Democrat-Gazette",
       "date": "2026-03-14T21:10:00"
@@ -132,11 +137,6 @@
       "title": "Meta considers layoffs of up to 20% to fund AI data center buildout",
       "source": "Data Center Dynamics",
       "date": "2026-03-14T12:44:53"
-    },
-    {
-      "title": "NVIDIA Joins OCI To Shape Optical Links And AI Data Center Future",
-      "source": "Yahoo Finance UK",
-      "date": "2026-03-14T12:12:14"
     }
   ],
   "data_sources": [
