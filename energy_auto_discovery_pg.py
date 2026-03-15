@@ -232,7 +232,7 @@ def init_energy_tables(conn):
             longitude NUMERIC,
             properties JSONB,
             status TEXT DEFAULT 'active',
-            created_at TIMESTAMPTZ DEFAULT NOW(),
+            created_at TIMESTAMPTZ DEFAULT NOW()
             
         )
     """)
