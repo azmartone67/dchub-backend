@@ -2243,6 +2243,13 @@ try:
     from kmz_processor import register_kmz_routes
     register_kmz_routes(app, get_pg_connection)
     logger.info("KMZ Processor routes registered")
+
+    # CRM admin routes
+    try:
+        from routes.crm_routes import register_crm_routes
+        register_crm_routes(app, get_db_connection, require_admin)
+    except Exception as e:
+        print(f"[CRM] Failed to load CRM routes: {e}")
     print("KMZ Processor: Available")
 except Exception as e:
     logger.error(f"KMZ Processor failed: {e}")
