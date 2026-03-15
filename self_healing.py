@@ -413,7 +413,7 @@ class HealthMonitor:
             conn = psycopg2.connect(
                 self._db_url,
                 connect_timeout=HEALTH_CHECK_TIMEOUT,
-                options="-c statement_timeout=5000"  # 5 second query timeout
+
             )
             cur = conn.cursor()
             cur.execute("SELECT 1")
