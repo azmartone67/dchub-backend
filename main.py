@@ -7344,6 +7344,11 @@ def _list_facilities_full():
         sql += " AND source = ?"
         count_sql += " AND source = ?"
         params.append(source)
+    state = request.args.get('state')
+    if state:
+        sql += " AND state = ?"
+        count_sql += " AND state = ?"
+        params.append(state.upper())
 
     # Phase 4: min_confidence filter
     min_confidence = request.args.get('min_confidence', type=float)
@@ -7445,6 +7450,11 @@ def _list_facilities_free():
         sql += " AND provider LIKE ?"
         count_sql += " AND provider LIKE ?"
         params.append(f"%{provider}%")
+    state = request.args.get('state')
+    if state:
+        sql += " AND state = ?"
+        count_sql += " AND state = ?"
+        params.append(state.upper())
 
     sql += f" ORDER BY confidence_score DESC, power_mw DESC LIMIT {FREE_LIMIT}"
 
