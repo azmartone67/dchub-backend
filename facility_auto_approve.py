@@ -259,6 +259,34 @@ def run_auto_approve(conn, batch_size=100, dry_run=False):
                 logger.warning(f"Column check/add for '{col}': {e}")
                 conn.rollback()
 
+        # Auto-add columns if missing (safe migration)
+        for col, col_type in [('status', 'TEXT'), ('notes', 'TEXT')]:
+            try:
+                cur.execute("""
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'discovered_facilities' AND column_name = %s
+                """, (col,))
+                if not cur.fetchone():
+                    cur.execute(f"ALTER TABLE discovered_facilities ADD COLUMN {col} {col_type}")
+                    conn.commit()
+            except Exception:
+                conn.rollback()
+
+        # Auto-add columns if missing (safe migration)
+        for col, col_type in [('status', 'TEXT'), ('notes', 'TEXT')]:
+            try:
+                cur.execute("""
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'discovered_facilities' AND column_name = %s
+                """, (col,))
+                if not cur.fetchone():
+                    cur.execute(f"ALTER TABLE discovered_facilities ADD COLUMN {col} {col_type}")
+                    conn.commit()
+                    logger.info(f"Added missing column '{col}' to discovered_facilities")
+            except Exception as e:
+                logger.warning(f"Column check/add for '{col}': {e}")
+                conn.rollback()
+
         # Get pending discoveries
         cur.execute("""
             SELECT * FROM discovered_facilities
