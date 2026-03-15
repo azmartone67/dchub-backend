@@ -756,7 +756,7 @@ def register_scoring_routes(app):
     energy_service = EnergyPricingService()
     carbon_service = CarbonIntensityService()
     
-    @app.route('/api/site-score', methods=['GET', 'POST'])
+    @app.route('/api/site-score-legacy', methods=['GET', 'POST'])
     @require_plan('pro')
     def calculate_site_score():
         """Calculate site score for a location (with 5-min caching and 5s timeout)"""
@@ -818,7 +818,7 @@ def register_scoring_routes(app):
         
         return jsonify(result)
     
-    @app.route('/api/site-score/batch', methods=['POST'])
+    @app.route('/api/site-score-legacy/batch', methods=['POST'])
     @require_plan('enterprise')
     def batch_site_scores():
         """Calculate scores for multiple locations"""
