@@ -307,6 +307,10 @@ def login_user():
 
             user_id, user_email, pw_hash, name, company, plan, role = user
 
+            # RFO Fix: Validate hash format before verify attempt
+            if pw_hash and ':' not in pw_hash:
+                logger.warning(f"HASH_FORMAT_MISMATCH: user {user_email} (id={user_id}) has non-standard password hash (len={len(pw_hash)}, prefix={pw_hash[:10]}). Expected salt:hash PBKDF2 format.")
+                return jsonify({'error': 'Invalid credentials. Please reset your password at /forgot-password or contact support.'}), 401
             if not pw_hash or not verify_password(password, pw_hash):
                 return jsonify({'error': 'Invalid credentials'}), 401
 

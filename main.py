@@ -4799,8 +4799,17 @@ except Exception as e:
         return f"{s}:{h.hex()}"
     def verify_password(p, hs):
         try:
+            if ':' not in hs:
+                logger.warning(f"HASH_FORMAT_MISMATCH in fallback verify: non-standard hash (len={len(hs)})")
+                return False
             s, hx = hs.split(':')
-            return _hlib.pbkdf2_hmac('sha256', p.encode(), s.encode(), 10000).hex() == hx
+            # Try 10k iterations first (current standard)
+            if _hlib.pbkdf2_hmac('sha256', p.encode(), s.encode(), 10000).hex() == hx:
+                return True
+            # Legacy compat: try 100k iterations (api_server.py used this)
+            if _hlib.pbkdf2_hmac('sha256', p.encode(), s.encode(), 100000).hex() == hx:
+                return True
+            return False
         except: return False
     def generate_jwt(uid, email, role='user', plan='free'):
         return jwt.encode({'user_id': uid, 'email': email, 'role': role, 'plan': plan,
