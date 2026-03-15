@@ -233,7 +233,7 @@ def init_energy_tables(conn):
             properties JSONB,
             status TEXT DEFAULT 'active',
             created_at TIMESTAMPTZ DEFAULT NOW(),
-            UNIQUE(name, category, provider, COALESCE(state, ''))
+            
         )
     """)
 
@@ -336,8 +336,7 @@ def sync_substations(conn, market_name=None, geometry_filter=None):
                     (name, category, provider, source, state, latitude, longitude,
                      properties, status)
                 VALUES (%s, 'substation', %s, 'HIFLD', %s, %s, %s, %s, %s)
-                ON CONFLICT (name, category, provider, COALESCE(state, ''))
-                DO NOTHING
+                ON CONFLICT DO NOTHING
             """, (
                 name,
                 f.get('OWNER', ''),
@@ -400,8 +399,7 @@ def sync_gas_infrastructure(conn, market_name=None, geometry_filter=None):
                         (name, category, provider, source, state, latitude, longitude,
                          properties, status)
                     VALUES (%s, %s, %s, 'HIFLD', %s, %s, %s, %s, %s)
-                    ON CONFLICT (name, category, provider, COALESCE(state, ''))
-                    DO NOTHING
+                    ON CONFLICT DO NOTHING
                 """, (
                     name,
                     source['category'],
