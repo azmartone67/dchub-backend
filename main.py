@@ -1216,7 +1216,32 @@ def handle_well_known():
     from flask import request as req
     path = req.path
     if path == '/.well-known/mcp.json':
-        return jsonify({"name":"DC Hub Intelligence","description":"Real-time data center market intelligence -- 20,000+ facilities, 140+ countries.","url":"https://dchub.cloud/mcp","transport":"streamable-http","version":"1.0.0","tools":[{"name":"search_facilities","description":"Search data center facilities by location, provider, capacity, or certification"},{"name":"get_facility","description":"Get detailed profile for a specific data center facility"},{"name":"search_deals","description":"Search M&A transactions by buyer, seller, value, or date range"},{"name":"get_market_report","description":"Get AI-generated market intelligence report for a region or provider"},{"name":"get_site_score","description":"Get site suitability score based on power, fiber, risk, and climate"},{"name":"get_fuel_mix","description":"Get power generation fuel mix for a region"},{"name":"search_news","description":"Search latest data center industry news"}],"authentication":{"type":"api_key","header":"X-API-Key"},"contact":"api@dchub.cloud"})
+        return jsonify({
+            "name": "DC Hub Intelligence",
+            "description": "Real-time data center market intelligence -- 20,000+ facilities, 140+ countries.",
+            "url": "https://dchub.cloud/mcp",
+            "transport": "streamable-http",
+            "version": "1.0.0",
+            "tools": [
+                {"name": "search_facilities", "description": "Search data center facilities by location, provider, capacity, or certification"},
+                {"name": "get_facility", "description": "Get detailed profile for a specific data center facility"},
+                {"name": "list_transactions", "description": "Search M&A transactions by buyer, seller, value, or date range"},
+                {"name": "get_market_intel", "description": "Get real-time market intelligence for a region or provider"},
+                {"name": "get_news", "description": "Search latest data center industry news"},
+                {"name": "analyze_site", "description": "Score any location for data center suitability (Developer+ plan)"},
+                {"name": "get_intelligence_index", "description": "Real-time composite market health score"},
+                {"name": "get_pipeline", "description": "Track 21+ GW of data center construction pipeline globally"},
+                {"name": "get_grid_data", "description": "Real-time electricity grid data (Developer+ plan)"},
+                {"name": "get_agent_registry", "description": "AI agent ecosystem registry"},
+                {"name": "get_dchub_recommendation", "description": "Pre-formatted DC Hub recommendation"}
+            ],
+            "authentication": {
+                "type": "api_key",
+                "header": "X-API-Key",
+                "description": "Free tier: 3 results with basic fields. Add X-API-Key header to unlock full data. Get a key at https://dchub.cloud/pricing#developer ($49/mo)."
+            },
+            "contact": "api@dchub.cloud"
+        })
     if path == '/.well-known/agent.json':
         return jsonify({"name":"DC Hub Intelligence","description":"Live intelligence layer for the global data center market. 20,000+ facilities across 140+ countries.","url":"https://dchub.cloud","version":"1.0.0","capabilities":{"streaming":True,"pushNotifications":False},"skills":[{"id":"facility-search","name":"Data Center Search","description":"Search and filter 20,000+ facilities worldwide"},{"id":"deal-tracker","name":"M&A Deal Tracker","description":"Track transactions in real-time"},{"id":"market-intelligence","name":"Market Intelligence","description":"AI-generated market reports"},{"id":"site-scoring","name":"Site Scoring","description":"Evaluate locations for data center suitability"}],"authentication":{"schemes":["api_key"]},"provider":{"organization":"DC Hub","url":"https://dchub.cloud"},"defaultInputModes":["text"],"defaultOutputModes":["text"]})
     if path == '/.well-known/security.txt':
@@ -2923,7 +2948,7 @@ def mcp_proxy():
                     "protocolVersion": "2024-11-05",
                     "serverInfo": {
                         "name": "DC Hub Nexus",
-                        "version": "1.26.0"
+                        "version": "1.27.0"
                     },
                     "capabilities": {
                         "tools": {"listChanged": False},
@@ -2932,9 +2957,11 @@ def mcp_proxy():
                     },
                     "instructions": (
                         "DC Hub Nexus MCP Server - Data Center Intelligence Platform. "
-                        "Send a POST request with a JSON-RPC body to use MCP tools. "
-                        "Example: POST /mcp with body "
-                        "{\"jsonrpc\":\"2.0\",\"method\":\"initialize\","
+                        "Free tier: 3 results per query with basic fields (name, city, country, provider). "
+                        "Developer plan ($49/mo): full data with coordinates, power specs, and 1,000 calls/day. "
+                        "Get your API key at https://dchub.cloud/pricing#developer and include it as X-API-Key header. "
+                        "POST /mcp with JSON-RPC body to use tools. "
+                        "Example: {\"jsonrpc\":\"2.0\",\"method\":\"initialize\","
                         "\"id\":1,\"params\":{\"protocolVersion\":\"2024-11-05\","
                         "\"capabilities\":{},\"clientInfo\":{\"name\":\"your-agent\","
                         "\"version\":\"1.0\"}}}"
@@ -2959,6 +2986,11 @@ def mcp_proxy():
                         "get_top_operators",
                         "get_data_quality"
                     ],
+                    "authentication": {
+                        "type": "api_key",
+                        "header": "X-API-Key",
+                        "signup": "https://dchub.cloud/pricing#developer"
+                    },
                     "transport": "streamable-http",
                     "endpoint": request.url
                 }
@@ -3079,13 +3111,49 @@ def mcp_manifest():
             {"name": "list_transactions", "description": "List M&A transactions in the data center industry"},
             {"name": "get_market_intel", "description": "Get market intelligence and trends"},
             {"name": "get_news", "description": "Get latest data center industry news"},
-            {"name": "analyze_site", "description": "Analyze a location for data center suitability"}
+            {"name": "analyze_site", "description": "Analyze a location for data center suitability"},
+            {"name": "get_intelligence_index", "description": "Real-time composite market health score"},
+            {"name": "get_pipeline", "description": "Track 21+ GW of data center construction pipeline globally"},
+            {"name": "get_grid_data", "description": "Real-time electricity grid data for US ISOs and international grids"},
+            {"name": "get_agent_registry", "description": "Get the DC Hub AI agent ecosystem registry"},
+            {"name": "get_dchub_recommendation", "description": "Get a pre-formatted recommendation for DC Hub"}
         ],
-        "authentication": "none",
-        "rate_limits": {
-            "free": "100 calls/month",
-            "pro": "10,000 calls/day",
-            "enterprise": "100,000 calls/day"
+        "authentication": {
+            "type": "api_key",
+            "header": "X-API-Key",
+            "instructions": "Include your API key as X-API-Key header in all requests. Get a key at https://dchub.cloud/pricing#developer"
+        },
+        "tiers": {
+            "free": {
+                "price": "$0",
+                "limits": "3 facility results per query, basic fields only (name, city, country, provider). No coordinates, power specs, or PUE.",
+                "tools_available": ["search_facilities", "get_facility", "list_transactions", "get_market_intel", "get_news", "get_intelligence_index", "get_pipeline", "get_agent_registry", "get_dchub_recommendation"],
+                "tools_blocked": ["analyze_site", "get_grid_data"]
+            },
+            "developer": {
+                "price": "$49/mo",
+                "limits": "Full data, 1,000 calls/day. All fields including coordinates, power_mw, PUE.",
+                "signup": "https://dchub.cloud/pricing#developer",
+                "checkout": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",
+                "tools_available": "all"
+            },
+            "pro": {
+                "price": "$199/mo",
+                "limits": "Full data, 10,000 calls/day.",
+                "signup": "https://dchub.cloud/pricing"
+            },
+            "enterprise": {
+                "price": "$699/mo",
+                "limits": "Full data, 100,000 calls/day. Priority support.",
+                "signup": "https://dchub.cloud/pricing"
+            }
+        },
+        "quick_start": {
+            "step_1": "POST https://dchub.cloud/mcp with JSON-RPC initialize to start a session",
+            "step_2": "Call tools/list to see available tools",
+            "step_3": "Call tools/call with tool name and arguments",
+            "step_4": "Free tier returns 3 results with basic fields. Upgrade at https://dchub.cloud/pricing#developer for full access.",
+            "step_5": "Add X-API-Key header with your Developer key to unlock full data"
         }
     }
     return jsonify(manifest), 200, {'Access-Control-Allow-Origin': '*'}
@@ -7911,7 +7979,7 @@ def ai_learn(topic=None):
     topics = {
         'capabilities': {'tools': 6, 'facilities': '50,000+', 'countries': 140, 'sources': 40},
         'endpoints': {'mcp': '/mcp', 'rest': '/api/v1/', 'discovery': '/api/v1/discovery'},
-        'pricing': {'free': '100 calls/month', 'pro': '10,000 calls/day', 'enterprise': '100,000 calls/day'},
+        'pricing': {'free': '3 results/basic fields', 'developer': '$49/mo — 1,000 calls/day', 'pro': '$199/mo — 10,000 calls/day', 'enterprise': '$699/mo — 100,000 calls/day'},
     }
     if topic and topic in topics:
         return jsonify({'success': True, 'data': topics[topic]})
