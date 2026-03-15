@@ -10,9 +10,9 @@ USAGE:
   - Set DISABLE_ALL_CRAWLERS=true on Railway to skip everything
   - Set CRAWLER_SCHEDULE=once to run once/day instead of twice
 
-SCHEDULE (UTC, 4hr gaps so crawlers never overlap):
-  Run 1: 06:00 News → 10:00 Energy/Power → 14:00 Knowledge
-  Run 2: 18:00 News → 22:00 Energy/Power → 02:00 Knowledge
+SCHEDULE (UTC, staggered so crawlers never overlap):
+  Run 1: 06:00 News → 07:00 Facilities → 08:00 Deals → 10:00 Energy → 12:00 Infra → 14:00 Knowledge
+  Run 2: 18:00 News → 19:00 Facilities → 20:00 Deals → 22:00 Energy → 00:00 Infra → 02:00 Knowledge
 
 NOTE: api_discovery is available for manual trigger only — it's too heavy
 for scheduled runs (exhausts DB connection pool and crashes the app).
@@ -37,10 +37,12 @@ OVERLAP_GUARD_SECONDS = 30           # Wait after each crawler finishes
 # 4-hour gaps between each crawler for safety
 # api_discovery EXCLUDED — too heavy, available via manual trigger only
 SCHEDULE = [
-    (6,  18, "news",             "_run_news_crawler"),
-    (10, 22, "energy_discovery", "_run_energy_discovery"),
-    (14,  2, "knowledge_sync",   "_run_knowledge_sync"),
-    ( 8, 20, "deals",            "_run_deals_crawler"),
+    (6,  18, "news",                "_run_news_crawler"),
+    (10, 22, "energy_discovery",    "_run_energy_discovery"),
+    (14,  2, "knowledge_sync",      "_run_knowledge_sync"),
+    ( 8, 20, "deals",               "_run_deals_crawler"),
+    ( 7, 19, "facility_discovery",  "_run_facility_discovery"),
+    (12,  0, "infrastructure_sync", "_run_infrastructure_sync"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -339,12 +341,101 @@ def _run_deals_crawler():
     logger.info(f"💼 Deals crawler done — {saved} new deals saved to Neon")
 
 
+def _run_facility_discovery():
+    """Run facility discovery from PeeringDB, OpenStreetMap, and datacentermap.
+    Discovers new data center facilities and stages them for auto-approval.
+    """
+    try:
+        from discovery_engine import (
+            init_discovery_tables, run_peeringdb_discovery,
+            run_osm_discovery, run_datacentermap_discovery
+        )
+        try:
+            init_discovery_tables()
+        except Exception:
+            pass
+
+        total_found = 0
+        total_added = 0
+        for source_name, run_func in [
+            ('peeringdb', run_peeringdb_discovery),
+            ('openstreetmap', run_osm_discovery),
+            ('datacentermap', run_datacentermap_discovery),
+        ]:
+            if _stop_event.is_set():
+                break
+            try:
+                result = run_func()
+                found = result.get('found', 0)
+                added = result.get('added', 0)
+                total_found += found
+                total_added += added
+                if added > 0:
+                    logger.info(f"   {source_name}: +{added} new facilities (from {found} found)")
+            except Exception as e:
+                logger.warning(f"   {source_name} error: {e}")
+
+        logger.info(f"   Facility discovery totals: {total_added} new from {total_found} found")
+    except ImportError:
+        logger.warning("Facility discovery not available (no discovery_engine module)")
+    except Exception as e:
+        logger.error(f"Facility discovery error: {e}")
+
+
+def _run_infrastructure_sync():
+    """Sync infrastructure data: fiber routes, HIFLD transmission lines, substations.
+    Calls the same logic as /api/jobs/fiber-sync endpoint.
+    """
+    total_new = 0
+
+    # 1. PeeringDB facility coordinate cache
+    try:
+        from routes.energy_routes import _ensure_peeringdb_fac_coords
+        fac_coords = _ensure_peeringdb_fac_coords()
+        logger.info(f"   PeeringDB facility cache: {len(fac_coords)} facilities")
+    except Exception as e:
+        logger.warning(f"   PeeringDB cache error: {e}")
+
+    # 2. Fiber network discovery
+    try:
+        from fiber_network_discovery import sync_fiber_routes
+        fiber_result = sync_fiber_routes()
+        new_routes = fiber_result.get('new_routes', 0) if isinstance(fiber_result, dict) else 0
+        total_new += new_routes
+        logger.info(f"   Fiber routes: +{new_routes} new")
+    except ImportError:
+        try:
+            from infrastructure_discovery import FiberRouteDiscovery
+            frd = FiberRouteDiscovery()
+            new_routes = frd.sync()
+            total_new += new_routes
+            logger.info(f"   Fiber routes (infra module): +{new_routes} new")
+        except Exception as e2:
+            logger.warning(f"   Fiber discovery not available: {e2}")
+    except Exception as e:
+        logger.warning(f"   Fiber sync error: {e}")
+
+    # 3. HIFLD transmission lines
+    try:
+        from infrastructure_discovery import TransmissionLineDiscovery
+        tld = TransmissionLineDiscovery()
+        new_lines = tld.sync()
+        total_new += new_lines
+        logger.info(f"   Transmission lines: +{new_lines} new")
+    except Exception as e:
+        logger.warning(f"   Transmission sync not available: {e}")
+
+    logger.info(f"   Infrastructure sync totals: {total_new} new records")
+
+
 _RUNNERS = {
-    "news":             _run_news_crawler,
-    "api_discovery":    _run_api_discovery,
-    "energy_discovery": _run_energy_discovery,
-    "knowledge_sync":   _run_knowledge_sync,
-    "deals":            _run_deals_crawler,
+    "news":                _run_news_crawler,
+    "api_discovery":       _run_api_discovery,
+    "energy_discovery":    _run_energy_discovery,
+    "knowledge_sync":      _run_knowledge_sync,
+    "deals":               _run_deals_crawler,
+    "facility_discovery":  _run_facility_discovery,
+    "infrastructure_sync": _run_infrastructure_sync,
 }
 
 
@@ -493,4 +584,3 @@ def register_crawler_admin(app):
         return jsonify({"success": success, "message": message}), 200 if success else 409
     
     logger.info("📅 Crawler admin endpoints registered: /api/admin/crawler-status, /api/admin/crawler-run/<crawler_name>")
-
