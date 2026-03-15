@@ -2,7 +2,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # =================================================================
-# BOOT GUARD — Syntax self-check + Neon hostname monitor 
+# BOOT GUARD — Syntax self-check + Neon hostname monitor
 # Prevents crash-loops and detects silent DB migrations
 # Added: 2026-03-07 (Neon outage prevention) 
 # =================================================================
@@ -797,8 +797,7 @@ def _init_read_pool():
                 minconn=1,
                 maxconn=15,
                 dsn=read_url,
-                connect_timeout=10,
-                options='-c statement_timeout=15000'
+                connect_timeout=10
             )
             print("DATABASE POOL: ✅ Read replica pool initialized (1-15 connections)")
             return
@@ -4407,30 +4406,28 @@ def handle_error(e):
 # Extracted to routes/energy_routes.py — zero DB dependencies
 # =============================================================================
 try:
-    from routes.energy_routes import energy_bp, init_energy_routes
-    init_energy_routes(require_plan, protect_data)
-    app.register_blueprint(energy_bp)
-    print("⚡ Energy Routes Blueprint: ✅ Registered (31 routes)")
-    # Import energy route caches and helpers for admin/stats/land-power endpoints
-    from routes.energy_routes import (
-        GRIDSTATUS_CACHE, GRIDSTATUS_CACHE_DURATION, GRIDSTATUS_API_KEY,
-        FCC_BROADBAND_CACHE, EPA_CACHE, PEERINGDB_CACHE,
-        EIA_CACHE, HIFLD_CACHE, OILGAS_CACHE,
-        gridstatus_get_load  # used by /api/v1/land-power/data
-    )
+    from routes.energy_routes import rankings_bp, _register_rankings_routes
+    _register_rankings_routes(rankings_bp, db_pool=_pg_pool_obj, require_plan=require_plan)
+    app.register_blueprint(rankings_bp)
+    print("⚡ Energy Routes Blueprint: ✅ Registered")
 except Exception as e:
     print(f"⚡ Energy Routes Blueprint: ⚠️ Failed to load: {e}")
-    # Provide empty caches so admin endpoints don't crash
+
+# Energy caches/helpers remain in main.py (not yet extracted)
+try:
     from utils.cache import BoundedCache
-    GRIDSTATUS_CACHE = BoundedCache(max_size=1, ttl=1)
+except ImportError:
+    pass
+if 'GRIDSTATUS_CACHE' not in dir():
+    GRIDSTATUS_CACHE = BoundedCache(max_size=1, ttl=1) if 'BoundedCache' in dir() else {}
     GRIDSTATUS_CACHE_DURATION = 300
     GRIDSTATUS_API_KEY = None
-    FCC_BROADBAND_CACHE = BoundedCache(max_size=1, ttl=1)
-    EPA_CACHE = BoundedCache(max_size=1, ttl=1)
-    PEERINGDB_CACHE = BoundedCache(max_size=1, ttl=1)
-    EIA_CACHE = BoundedCache(max_size=1, ttl=1)
-    HIFLD_CACHE = BoundedCache(max_size=1, ttl=1)
-    OILGAS_CACHE = BoundedCache(max_size=1, ttl=1)
+    FCC_BROADBAND_CACHE = BoundedCache(max_size=1, ttl=1) if 'BoundedCache' in dir() else {}
+    EPA_CACHE = BoundedCache(max_size=1, ttl=1) if 'BoundedCache' in dir() else {}
+    PEERINGDB_CACHE = BoundedCache(max_size=1, ttl=1) if 'BoundedCache' in dir() else {}
+    EIA_CACHE = BoundedCache(max_size=1, ttl=1) if 'BoundedCache' in dir() else {}
+    HIFLD_CACHE = BoundedCache(max_size=1, ttl=1) if 'BoundedCache' in dir() else {}
+    OILGAS_CACHE = BoundedCache(max_size=1, ttl=1) if 'BoundedCache' in dir() else {}
     gridstatus_get_load = lambda iso: None
 
 @app.route('/api/grid/fuel-mix-live', methods=['GET'])
