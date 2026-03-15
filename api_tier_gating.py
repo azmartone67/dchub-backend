@@ -565,6 +565,7 @@ def require_plan(min_plan='pro'):
 
                 # ── STEP 6: Authorized — add headers and proceed ───────
                 plan_limit = TIER_RATE_LIMITS.get(user_plan, 100)
+                g.user_tier = user_plan
                 g.tier_headers = {
                     'X-RateLimit-Limit': str(plan_limit),
                     'X-RateLimit-Tier': user_plan,

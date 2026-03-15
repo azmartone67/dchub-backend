@@ -76,7 +76,7 @@ PROTECTION_CONFIG = {
     # Max results per single API response (hard cap regardless of ?limit=)
     "max_results_per_response": {
         "free": 5,
-        "pro": 50,
+        "pro": 100,
         "enterprise": 100,
     },
     # Anomaly detection thresholds
