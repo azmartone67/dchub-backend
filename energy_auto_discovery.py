@@ -232,9 +232,13 @@ def init_energy_tables(conn):
             longitude NUMERIC,
             properties JSONB,
             status TEXT DEFAULT 'active',
-            created_at TIMESTAMPTZ DEFAULT NOW(),
-            UNIQUE(name, category, provider, COALESCE(state, ''))
+            created_at TIMESTAMPTZ DEFAULT NOW()
         )
+    """)
+    # Unique index with COALESCE (can't be inline UNIQUE constraint)
+    cur.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_infra_layers_dedup
+        ON infrastructure_layers (name, category, provider, COALESCE(state, ''))
     """)
 
     conn.commit()
@@ -335,9 +339,12 @@ def sync_substations(conn, market_name=None, geometry_filter=None):
                 INSERT INTO infrastructure_layers
                     (name, category, provider, source, state, latitude, longitude,
                      properties, status)
-                VALUES (%s, 'substation', %s, 'HIFLD', %s, %s, %s, %s, %s)
-                ON CONFLICT (name, category, provider, COALESCE(state, ''))
-                DO NOTHING
+                SELECT %s, 'substation', %s, 'HIFLD', %s, %s, %s, %s, %s
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM infrastructure_layers
+                    WHERE name = %s AND category = 'substation'
+                      AND provider = %s AND COALESCE(state, '') = COALESCE(%s, '')
+                )
             """, (
                 name,
                 f.get('OWNER', ''),
@@ -350,6 +357,10 @@ def sync_substations(conn, market_name=None, geometry_filter=None):
                     'object_id': f.get('OBJECTID'),
                 }),
                 f.get('STATUS', 'active'),
+                # WHERE NOT EXISTS params:
+                name,
+                f.get('OWNER', ''),
+                f.get('STATE', ''),
             ))
             if cur.rowcount > 0:
                 new_count += 1
@@ -399,9 +410,12 @@ def sync_gas_infrastructure(conn, market_name=None, geometry_filter=None):
                     INSERT INTO infrastructure_layers
                         (name, category, provider, source, state, latitude, longitude,
                          properties, status)
-                    VALUES (%s, %s, %s, 'HIFLD', %s, %s, %s, %s, %s)
-                    ON CONFLICT (name, category, provider, COALESCE(state, ''))
-                    DO NOTHING
+                    SELECT %s, %s, %s, 'HIFLD', %s, %s, %s, %s, %s
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM infrastructure_layers
+                        WHERE name = %s AND category = %s
+                          AND provider = %s AND COALESCE(state, '') = COALESCE(%s, '')
+                    )
                 """, (
                     name,
                     source['category'],
@@ -414,6 +428,11 @@ def sync_gas_infrastructure(conn, market_name=None, geometry_filter=None):
                         'status': f.get('STATUS'),
                     }),
                     f.get('STATUS', 'active'),
+                    # WHERE NOT EXISTS params:
+                    name,
+                    source['category'],
+                    f.get('OPERATOR', ''),
+                    f.get('STATE', ''),
                 ))
                 if cur.rowcount > 0:
                     new_count += 1
