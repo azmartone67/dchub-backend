@@ -523,7 +523,7 @@
         document.getElementById('topBarEmail').textContent = currentUser.email;
         document.getElementById('logoutBtn').style.display = 'inline-block';
 
-        renderPlan(currentUser.plan || 'free');
+        renderPlan(currentUser.plan || 'unknown');
         renderMemberSince(currentUser.member_since);
 
         await Promise.all([
@@ -542,10 +542,11 @@
             'free': { label: 'FREE', css: 'free', name: 'Free', limit: '100' },
             'pro': { label: 'PRO', css: 'pro', name: 'Pro', limit: '10,000' },
             'enterprise': { label: 'ENTERPRISE', css: 'enterprise', name: 'Enterprise', limit: '100,000' },
-            'founding': { label: 'FOUNDING', css: 'founding', name: 'Founding Member', limit: '10,000' }
+            'founding': { label: 'FOUNDING MEMBER', css: 'founding', name: 'Founding Member', limit: '10,000' },
+            'unknown': { label: 'UNABLE TO VERIFY', css: 'free', name: 'Unable to verify plan', limit: '--' }
         };
 
-        const p = planDisplay[plan] || planDisplay['free'];
+        const p = planDisplay[plan] || planDisplay['unknown'];
 
         badge.textContent = p.label;
         badge.className = 'plan-badge ' + p.css;
@@ -629,14 +630,14 @@
             });
 
             if (!res.ok) {
-                renderSubscription({ plan: currentUser.plan || 'free', status: 'none', features: {} });
+                renderSubscription({ plan: currentUser.plan || 'unknown', status: 'none', features: {} });
                 return;
             }
 
             const data = await res.json();
             renderSubscription(data);
         } catch (e) {
-            renderSubscription({ plan: currentUser.plan || 'free', status: 'none', features: {} });
+            renderSubscription({ plan: currentUser.plan || 'unknown', status: 'error', features: {} });
         }
     }
 
@@ -648,8 +649,8 @@
         statusEl.textContent = status.charAt(0).toUpperCase() + status.slice(1);
         statusEl.className = 'sub-value ' + (status === 'active' ? 'active' : status === 'canceled' ? 'canceled' : 'none');
 
-        const plan = data.plan || 'free';
-        planEl.textContent = plan.charAt(0).toUpperCase() + plan.slice(1);
+        const plan = data.plan || 'unknown';
+        planEl.textContent = plan === 'founding' ? 'Founding Member' : plan === 'unknown' ? 'Unable to verify' : plan.charAt(0).toUpperCase() + plan.slice(1);
 
         renderPlan(plan);
 

@@ -655,7 +655,7 @@
             <div class="user-avatar" id="user-avatar">👤</div>
             <div class="user-info">
                 <div class="user-name" id="user-name">Loading...</div>
-                <div class="user-plan">⭐ <span id="user-plan">FREE</span></div>
+                <div class="user-plan">⭐ <span id="user-plan">Loading...</span></div>
             </div>
         </div>
         <div class="user-menu" id="user-menu" style="display:none;position:absolute;top:70px;right:32px;background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:16px;min-width:200px;z-index:1000;box-shadow:0 8px 32px rgba(0,0,0,0.4)">
@@ -1251,16 +1251,22 @@
                 return;
             }
             
-            // Helper to show dashboard with user info
-            function showDashboard(userInfo) {
+            function formatPlanDisplay(plan) {
+                if (!plan) return 'UNKNOWN';
+                if (plan === 'founding') return 'FOUNDING MEMBER';
+                return plan.toUpperCase();
+            }
+
+            function showDashboard(userInfo, isLive) {
                 const displayName = userInfo.name || userInfo.email.split('@')[0];
                 document.getElementById('user-name').textContent = displayName;
                 document.getElementById('menu-user-name').textContent = displayName;
                 document.getElementById('user-email').textContent = userInfo.email;
-                document.getElementById('user-plan').textContent = (userInfo.plan || 'free').toUpperCase();
+                var planText = isLive ? formatPlanDisplay(userInfo.plan) : 'Verifying...';
+                document.getElementById('user-plan').textContent = planText;
                 document.getElementById('user-avatar').textContent = displayName.charAt(0).toUpperCase();
                 document.body.classList.add('authenticated');
-                console.log('✅ Dashboard authenticated for:', userInfo.email);
+                console.log('✅ Dashboard authenticated for:', userInfo.email, '| plan:', userInfo.plan, '| live:', isLive);
             }
             
             // Try to verify token with backend
@@ -1269,18 +1275,17 @@
             })
             .then(response => {
                 if (!response.ok) {
-                    // Backend failed - but if we have stored user data, use it
                     if (storedUser) {
                         try {
                             const userInfo = JSON.parse(storedUser);
-                            console.log('⚠️ Backend auth failed, using stored user data');
-                            showDashboard(userInfo);
-                            return null; // Skip further processing
+                            console.log('⚠️ Backend auth failed, using stored user data (plan will show as Verifying)');
+                            showDashboard(userInfo, false);
+                            document.getElementById('user-plan').textContent = 'Unable to verify plan';
+                            return null;
                         } catch (e) {
                             console.error('Failed to parse stored user');
                         }
                     }
-                    // No stored user, must redirect
                     localStorage.removeItem('dchub_token');
                     localStorage.removeItem('dchub_user');
                     window.location.href = '/login.html?redirect=/dashboard.html&reason=session_expired';
@@ -1290,23 +1295,21 @@
             })
             .then(data => {
                 if (data && data.success) {
-                    showDashboard(data.user);
-                    // Update stored user with fresh data
+                    showDashboard(data.user, true);
                     localStorage.setItem('dchub_user', JSON.stringify(data.user));
                 }
             })
             .catch(err => {
                 console.log('Auth check error:', err);
-                // Try stored user data on network error
                 if (storedUser) {
                     try {
                         const userInfo = JSON.parse(storedUser);
-                        console.log('⚠️ Network error, using stored user data');
-                        showDashboard(userInfo);
+                        console.log('⚠️ Network error, showing dashboard with unverified plan');
+                        showDashboard(userInfo, false);
+                        document.getElementById('user-plan').textContent = 'Unable to verify plan';
                         return;
                     } catch (e) {}
                 }
-                // Last resort - show dashboard anyway
                 document.body.classList.add('authenticated');
             });
         })();
@@ -1359,33 +1362,32 @@
             .then(r => r.json())
             .then(data => {
                 console.log('📊 Subscription status:', data);
-                updatePlanUI(data.plan || 'free', data.status);
+                updatePlanUI(data.plan || 'unknown', data.status);
             })
             .catch(err => {
                 console.log('Subscription check error:', err);
-                // Default to showing upgrade CTA
-                updatePlanUI('free', 'none');
+                updatePlanUI('unknown', 'error');
             });
         }
         
-        // Update UI based on plan
         function updatePlanUI(plan, status) {
             const upgradeCta = document.getElementById('upgrade-cta');
             const subscriptionStatus = document.getElementById('subscription-status');
             const planDisplay = document.getElementById('user-plan');
             
-            if (plan === 'free' || !plan) {
-                // Show upgrade CTA for free users
+            if (plan === 'unknown') {
+                if (planDisplay) planDisplay.textContent = 'Unable to verify plan';
+                if (upgradeCta) upgradeCta.style.display = 'none';
+                if (subscriptionStatus) subscriptionStatus.style.display = 'none';
+            } else if (plan === 'free' || !plan) {
                 if (upgradeCta) upgradeCta.style.display = 'block';
                 if (subscriptionStatus) subscriptionStatus.style.display = 'none';
                 if (planDisplay) planDisplay.textContent = 'FREE';
             } else {
-                // Show subscription status for paid users
                 if (upgradeCta) upgradeCta.style.display = 'none';
                 if (subscriptionStatus) subscriptionStatus.style.display = 'block';
-                if (planDisplay) planDisplay.textContent = plan.toUpperCase();
+                if (planDisplay) planDisplay.textContent = plan === 'founding' ? 'FOUNDING MEMBER' : plan.toUpperCase();
                 
-                // Update plan details
                 const planName = document.getElementById('plan-name');
                 const planStatus = document.getElementById('plan-status');
                 if (planName) planName.textContent = plan === 'founding' ? '⭐ Founding Member' : '🚀 Pro Plan';

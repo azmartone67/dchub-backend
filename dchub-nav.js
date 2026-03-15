@@ -370,9 +370,151 @@
       '@media(min-width:769px){.dchub-mobile-nav,.dchub-drawer,.dchub-drawer-backdrop{display:none !important}}',
 
       /* Hide old page navs — JS adds .dchub-old-nav to detected conflicts */
-      '.dchub-old-nav{display:none !important}'
+      '.dchub-old-nav{display:none !important}',
+
+      /* Profile modal */
+      '.dchub-profile-backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:2000;animation:dchub-fade-in .2s ease}',
+      '.dchub-profile-backdrop.active{display:flex;align-items:center;justify-content:center}',
+      '@keyframes dchub-fade-in{from{opacity:0}to{opacity:1}}',
+      '.dchub-profile-modal{background:#12121a;border:1px solid rgba(255,255,255,.08);border-radius:16px;width:90%;max-width:420px;box-shadow:0 24px 64px rgba(0,0,0,.5);overflow:hidden;animation:dchub-slide-up .25s ease}',
+      '@keyframes dchub-slide-up{from{transform:translateY(20px);opacity:0}to{transform:translateY(0);opacity:1}}',
+      '.dchub-profile-header{display:flex;align-items:center;justify-content:space-between;padding:20px 24px 0;margin-bottom:4px}',
+      '.dchub-profile-header h3{margin:0;font-size:16px;font-weight:700;color:#f0f4f8}',
+      '.dchub-profile-close{background:none;border:none;color:#6b7280;font-size:22px;cursor:pointer;padding:4px 8px;line-height:1;border-radius:6px;transition:.15s}',
+      '.dchub-profile-close:hover{color:#f0f4f8;background:rgba(255,255,255,.06)}',
+      '.dchub-profile-body{padding:16px 24px 24px}',
+      '.dchub-profile-avatar{width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,#6366f1,#8b5cf6);display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:700;color:#fff;margin:0 auto 16px}',
+      '.dchub-profile-name{text-align:center;font-size:18px;font-weight:700;color:#f0f4f8;margin-bottom:4px}',
+      '.dchub-profile-email{text-align:center;font-size:13px;color:#6b7280;margin-bottom:20px}',
+      '.dchub-profile-rows{display:flex;flex-direction:column;gap:0}',
+      '.dchub-profile-row{display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-top:1px solid rgba(255,255,255,.06)}',
+      '.dchub-profile-label{font-size:13px;color:#6b7280;font-weight:500}',
+      '.dchub-profile-value{font-size:13px;color:#f0f4f8;font-weight:600}',
+      '.dchub-profile-plan-badge{display:inline-block;padding:3px 10px;border-radius:6px;font-size:11px;font-weight:700;letter-spacing:.5px}',
+      '.dchub-plan-free{background:rgba(107,114,128,.15);color:#9ca3af}',
+      '.dchub-plan-pro{background:rgba(99,102,241,.15);color:#818cf8}',
+      '.dchub-plan-founding{background:linear-gradient(135deg,rgba(99,102,241,.2),rgba(168,85,247,.2));color:#a78bfa}',
+      '.dchub-plan-enterprise{background:rgba(16,185,129,.15);color:#34d399}',
+      '.dchub-plan-loading{background:rgba(107,114,128,.1);color:#6b7280}',
+      '.dchub-plan-error{background:rgba(239,68,68,.1);color:#f87171}',
+      '.dchub-profile-spinner{display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,.1);border-top-color:#818cf8;border-radius:50%;animation:dchub-spin .6s linear infinite;vertical-align:middle;margin-right:6px}',
+      '@keyframes dchub-spin{to{transform:rotate(360deg)}}'
     ].join('\n');
     document.head.appendChild(s);
+  }
+
+  // ── Profile modal ────────────────────────────────────────
+  function formatPlanLabel(plan) {
+    if (!plan) return 'Unknown';
+    if (plan === 'founding') return 'Founding Member';
+    return plan.charAt(0).toUpperCase() + plan.slice(1);
+  }
+
+  function getPlanBadgeClass(plan) {
+    if (!plan) return 'dchub-plan-loading';
+    var map = { free: 'dchub-plan-free', pro: 'dchub-plan-pro', founding: 'dchub-plan-founding', enterprise: 'dchub-plan-enterprise' };
+    return map[plan] || 'dchub-plan-free';
+  }
+
+  function escapeHtml(str) {
+    var div = document.createElement('div');
+    div.appendChild(document.createTextNode(str || ''));
+    return div.innerHTML;
+  }
+
+  function openProfileModal() {
+    var existing = document.getElementById('dchub-profile-backdrop');
+    if (existing) existing.remove();
+
+    var user = getUser();
+    var initials = user && user.name ? user.name.charAt(0).toUpperCase() : '\uD83D\uDC64';
+    var name = (user && user.name) || 'Loading...';
+    var email = (user && user.email) || '';
+
+    var backdrop = document.createElement('div');
+    backdrop.id = 'dchub-profile-backdrop';
+    backdrop.className = 'dchub-profile-backdrop active';
+    backdrop.innerHTML =
+      '<div class="dchub-profile-modal">' +
+        '<div class="dchub-profile-header"><h3>Your Profile</h3><button class="dchub-profile-close" id="dchub-profile-close-btn">&times;</button></div>' +
+        '<div class="dchub-profile-body">' +
+          '<div class="dchub-profile-avatar" id="dchub-profile-avatar"></div>' +
+          '<div class="dchub-profile-name" id="dchub-profile-name"></div>' +
+          '<div class="dchub-profile-email" id="dchub-profile-email"></div>' +
+          '<div class="dchub-profile-rows">' +
+            '<div class="dchub-profile-row"><span class="dchub-profile-label">Plan</span><span class="dchub-profile-value" id="dchub-profile-plan"><span class="dchub-profile-spinner"></span> Verifying...</span></div>' +
+            '<div class="dchub-profile-row"><span class="dchub-profile-label">Role</span><span class="dchub-profile-value" id="dchub-profile-role">--</span></div>' +
+            '<div class="dchub-profile-row"><span class="dchub-profile-label">Member Since</span><span class="dchub-profile-value" id="dchub-profile-since">--</span></div>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+
+    document.body.appendChild(backdrop);
+    document.getElementById('dchub-profile-avatar').textContent = initials;
+    document.getElementById('dchub-profile-name').textContent = name;
+    document.getElementById('dchub-profile-email').textContent = email;
+
+    document.getElementById('dchub-profile-close-btn').addEventListener('click', function () {
+      backdrop.classList.remove('active');
+      setTimeout(function () { backdrop.remove(); }, 200);
+    });
+    backdrop.addEventListener('click', function (e) {
+      if (e.target === backdrop) {
+        backdrop.classList.remove('active');
+        setTimeout(function () { backdrop.remove(); }, 200);
+      }
+    });
+
+    var token = localStorage.getItem('dchub_token');
+    if (!token) {
+      document.getElementById('dchub-profile-plan').innerHTML = '<span class="dchub-profile-plan-badge dchub-plan-error">Not signed in</span>';
+      return;
+    }
+
+    var controller = new AbortController();
+    var timeoutId = setTimeout(function () { controller.abort(); }, 8000);
+
+    fetch(API_BASE + '/api/auth/me', {
+      headers: { 'Authorization': 'Bearer ' + token },
+      signal: controller.signal
+    })
+    .then(function (r) { clearTimeout(timeoutId); return r.json(); })
+    .then(function (data) {
+      if (!data || !data.success || !data.user) {
+        document.getElementById('dchub-profile-plan').innerHTML = '<span class="dchub-profile-plan-badge dchub-plan-error">Unable to verify plan</span>';
+        return;
+      }
+      var u = data.user;
+      var planLabel = formatPlanLabel(u.plan);
+      var planClass = getPlanBadgeClass(u.plan);
+      document.getElementById('dchub-profile-plan').innerHTML = '<span class="dchub-profile-plan-badge ' + planClass + '">' + escapeHtml(planLabel) + '</span>';
+      document.getElementById('dchub-profile-role').textContent = (u.role || 'user').charAt(0).toUpperCase() + (u.role || 'user').slice(1);
+      document.getElementById('dchub-profile-name').textContent = u.name || u.email.split('@')[0];
+      document.getElementById('dchub-profile-email').textContent = u.email || '';
+      document.getElementById('dchub-profile-avatar').textContent = (u.name || u.email || 'U').charAt(0).toUpperCase();
+
+      if (u.member_since || u.created_at) {
+        var d = new Date(u.member_since || u.created_at);
+        document.getElementById('dchub-profile-since').textContent = d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+      }
+
+      var storedUser = getUser() || {};
+      if (storedUser.plan !== u.plan || storedUser.role !== u.role || storedUser.name !== u.name) {
+        var merged = Object.assign({}, storedUser, u);
+        localStorage.setItem('dchub_user', JSON.stringify(merged));
+        console.log('[DC Hub] Profile: localStorage updated with fresh plan:', u.plan);
+
+        var planEl = document.getElementById('user-plan');
+        if (planEl) {
+          planEl.textContent = u.plan === 'founding' ? 'FOUNDING MEMBER' : (u.plan || 'UNKNOWN').toUpperCase();
+        }
+      }
+    })
+    .catch(function (err) {
+      clearTimeout(timeoutId);
+      console.log('[DC Hub] Profile fetch failed:', err);
+      document.getElementById('dchub-profile-plan').innerHTML = '<span class="dchub-profile-plan-badge dchub-plan-error">Unable to verify plan</span>';
+    });
   }
 
   // ── Wire up events ────────────────────────────────────────
@@ -420,9 +562,7 @@
           if (typeof google !== 'undefined' && google.accounts) google.accounts.id.disableAutoSelect();
           location.reload();
         } else if (action === 'profile') {
-          var modal = document.getElementById('profile-modal') || document.getElementById('modal-profile');
-          if (modal) modal.classList.add('active');
-          else window.location.href = '/dashboard.html';
+          openProfileModal();
         } else if (action === 'settings') {
           var sModal = document.getElementById('settings-modal') || document.getElementById('modal-settings');
           if (sModal) sModal.classList.add('active');
