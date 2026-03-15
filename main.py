@@ -2243,6 +2243,13 @@ try:
     from kmz_processor import register_kmz_routes
     register_kmz_routes(app, get_pg_connection)
     logger.info("KMZ Processor routes registered")
+
+    # CRM admin routes
+    try:
+        from routes.crm_routes import register_crm_routes
+        register_crm_routes(app, get_db_connection, require_admin)
+    except Exception as e:
+        print(f"[CRM] Failed to load CRM routes: {e}")
     print("KMZ Processor: Available")
 except Exception as e:
     logger.error(f"KMZ Processor failed: {e}")
@@ -2575,17 +2582,67 @@ def test_auto_capture():
         return jsonify({'success': False, 'error': str(e)})
 
 # ═══════════════════════════════════════════════════════════════
-#  MCP TIER GATING — gates proxy responses for free callers
+#  MCP TIER GATING v2 — Conversion-optimized free tier
+# ═══════════════════════════════════════════════════════════════
+#  DROP-IN REPLACEMENT for main.py lines ~2584 through ~2828
+#  (from "MCP TIER GATING" comment through end of _gate_mcp_sse_stream)
+#
+#  Changes from v1:
+#    1. analyze_site + get_grid_data → teaser results (not hard-blocked)
+#    2. Free facility limit 3 → 5 with 1 full sample result
+#    3. Daily rate limit: 10 tool calls/day per IP for free tier
+#    4. Smarter upgrade CTAs with calls_remaining + context-aware messaging
+#    5. _gate_mcp_response_bytes + _gate_mcp_sse_stream updated for new tool sets
+#
+#  Files that DO NOT need changes:
+#    - free_tier_gate.py  → /mcp is in ALWAYS_OPEN_PREFIXES, not involved
+#    - api_tier_gating.py → validate_api_key() works as-is, no changes
+#    - mcp_server.py      → legacy blueprint, disabled in main.py
+#    - mcp_gateway.py     → discovery layer, not involved in gating
+#    - mcp_proxy_snippet.py → reference only, not imported
 # ═══════════════════════════════════════════════════════════════
 
 # Fields free users can see per facility
 MCP_FREE_FIELDS = {'name', 'city', 'state', 'country', 'provider', 'operator', 'status'}
-MCP_FREE_FACILITY_LIMIT = 3
+MCP_FREE_FACILITY_LIMIT = 5          # was 3 — enough to evaluate, not enough to build
+MCP_FREE_DAILY_LIMIT = 10            # NEW — tool calls per day per IP for free tier
 
 # Tools whose results contain facility arrays to gate
 MCP_FACILITY_TOOLS = {'search_facilities', 'get_pipeline', 'get_market_intel', 'get_top_operators'}
-# Tools whose results should be fully blocked for free tier
-MCP_BLOCKED_TOOLS = {'analyze_site', 'get_grid_data'}
+
+# Tools that return teaser results for free tier (was MCP_BLOCKED_TOOLS — hard block)
+MCP_TEASER_TOOLS = {'analyze_site', 'get_grid_data'}
+
+# In-memory daily rate limit tracker: {ip_address: {'date': 'YYYY-MM-DD', 'count': N}}
+_mcp_free_rate_limits = {}
+
+
+def _check_mcp_daily_limit(ip_address):
+    """
+    Check if a free-tier IP has exceeded daily MCP tool call limit.
+    Returns (allowed: bool, calls_remaining: int, calls_used: int).
+    In-memory only — no DB needed. Resets at midnight UTC.
+    """
+    from datetime import date
+    today = date.today().isoformat()
+
+    entry = _mcp_free_rate_limits.get(ip_address)
+    if not entry or entry['date'] != today:
+        _mcp_free_rate_limits[ip_address] = {'date': today, 'count': 0}
+        entry = _mcp_free_rate_limits[ip_address]
+
+    # Cleanup old entries periodically (keep memory bounded)
+    if len(_mcp_free_rate_limits) > 5000:
+        stale = [k for k, v in _mcp_free_rate_limits.items() if v['date'] != today]
+        for k in stale:
+            _mcp_free_rate_limits.pop(k, None)
+
+    if entry['count'] >= MCP_FREE_DAILY_LIMIT:
+        return False, 0, entry['count']
+
+    entry['count'] += 1
+    return True, MCP_FREE_DAILY_LIMIT - entry['count'], entry['count']
+
 
 def _get_mcp_caller_tier():
     """Determine caller's tier from API key. Returns (tier, key_info)."""
@@ -2624,21 +2681,36 @@ def _gate_mcp_result(result_content, tool_name, tier):
     if tier not in ('free', 'rate_limited'):
         return result_content  # paid tiers pass through
 
-    # Blocked tools: return upgrade message
-    if tool_name in MCP_BLOCKED_TOOLS:
-        return [{
-            "type": "text",
-            "text": json.dumps({
-                "error": "upgrade_required",
-                "message": f"{tool_name} requires a Developer plan ($49/mo) or higher.",
-                "upgrade": {
-                    "url": "https://dchub.cloud/pricing#developer",
-                    "checkout": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c"
-                }
-            })
-        }]
+    # ── Daily rate limit check (free tier only) ──
+    if tier == 'free':
+        ip = request.remote_addr or 'unknown'
+        allowed, remaining, used = _check_mcp_daily_limit(ip)
+        if not allowed:
+            return [{
+                "type": "text",
+                "text": json.dumps({
+                    "error": "daily_limit_reached",
+                    "message": (
+                        f"You've used all {MCP_FREE_DAILY_LIMIT} free MCP calls for today. "
+                        f"Developer plan ($49/mo) gives you 1,000 calls/day with full data."
+                    ),
+                    "calls_used": used,
+                    "daily_limit": MCP_FREE_DAILY_LIMIT,
+                    "resets": "midnight UTC",
+                    "upgrade": {
+                        "url": "https://dchub.cloud/pricing#developer",
+                        "checkout": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",
+                        "price": "$49/mo",
+                        "includes": "1,000 calls/day, full facility data, coordinates, power specs, site scoring, grid data"
+                    }
+                })
+            }]
 
-    # For facility tools: parse the text content, gate results
+    # ── Teaser tools: return degraded results with upgrade CTA ──
+    if tool_name in MCP_TEASER_TOOLS:
+        return _gate_teaser_result(result_content, tool_name)
+
+    # ── Facility tools: parse the text content, gate results ──
     if tool_name in MCP_FACILITY_TOOLS:
         gated = []
         for block in result_content:
@@ -2660,47 +2732,185 @@ def _gate_mcp_result(result_content, tool_name, tier):
     return result_content
 
 
+def _gate_teaser_result(result_content, tool_name):
+    """
+    Return teaser/degraded results for premium tools instead of hard-blocking.
+    Free users see enough to know the data is valuable, but not enough to build with.
+    """
+    for block in result_content:
+        if block.get('type') != 'text':
+            continue
+        try:
+            data = json.loads(block['text'])
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+        if not isinstance(data, dict):
+            continue
+
+        if tool_name == 'analyze_site':
+            # Keep: overall_score, location, interpretation
+            # Strip: detailed sub-scores, nearby facilities, power data
+            teaser = {
+                'success': data.get('success', True),
+                'location': data.get('location', {}),
+                'overall_score': data.get('overall_score'),
+                'interpretation': data.get('interpretation', ''),
+                'capacity_requested_mw': data.get('capacity_requested_mw'),
+                # Show score categories exist but redact values
+                'scores': {
+                    'power_infrastructure': '██ upgrade to see',
+                    'fiber_connectivity': '██ upgrade to see',
+                    'market_conditions': '██ upgrade to see',
+                    'risk_resilience': '██ upgrade to see',
+                },
+                'nearby': {
+                    'facilities_100km': '██',
+                    'total_capacity_mw': '██',
+                    'substations_50km': '██',
+                },
+                '_upgrade': {
+                    'tier': 'free_teaser',
+                    'message': (
+                        f"Site score: {data.get('overall_score', 'N/A')} — "
+                        f"Developer plan ($49/mo) unlocks detailed power, fiber, market, "
+                        f"and risk sub-scores plus nearby infrastructure data."
+                    ),
+                    'url': 'https://dchub.cloud/pricing#developer',
+                    'checkout': 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c',
+                    'price': '$49/mo',
+                }
+            }
+            return [{"type": "text", "text": json.dumps(teaser)}]
+
+        elif tool_name == 'get_grid_data':
+            # Keep: region/ISO name, timestamp, top-level summary
+            # Strip: detailed fuel mix, price data, historical
+            teaser = {
+                'success': data.get('success', True),
+                'region': data.get('region') or data.get('iso') or data.get('grid', ''),
+                'timestamp': data.get('timestamp', ''),
+                'summary': data.get('summary', 'Real-time grid data available'),
+                'fuel_mix': '██ upgrade to see detailed fuel mix breakdown',
+                'demand_mw': '██',
+                'price_per_mwh': '██',
+                '_upgrade': {
+                    'tier': 'free_teaser',
+                    'message': (
+                        "Grid data preview — Developer plan ($49/mo) unlocks "
+                        "real-time fuel mix, demand curves, LMP pricing, and carbon intensity."
+                    ),
+                    'url': 'https://dchub.cloud/pricing#developer',
+                    'checkout': 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c',
+                    'price': '$49/mo',
+                }
+            }
+            return [{"type": "text", "text": json.dumps(teaser)}]
+
+    # Fallback: if we couldn't parse, return generic teaser
+    return [{
+        "type": "text",
+        "text": json.dumps({
+            "preview": f"{tool_name} data available — showing limited preview.",
+            "_upgrade": {
+                "tier": "free_teaser",
+                "message": f"Full {tool_name} results require Developer plan ($49/mo).",
+                "url": "https://dchub.cloud/pricing#developer",
+                "checkout": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",
+                "price": "$49/mo",
+            }
+        })
+    }]
+
+
 def _gate_facility_data(data, tool_name):
-    """Strip facility data down to free-tier fields, limit count, add CTA."""
-    # data could be a dict with a results/facilities/pipeline key, or a list
+    """Strip facility data down to free-tier fields, limit count, add CTA.
+    v2: includes 1 full sample result so devs see what they're missing."""
     total_count = 0
+    sample_full = None  # one ungated result as sample
 
     if isinstance(data, dict):
         # Find the array of results
         for key in ('facilities', 'results', 'pipeline', 'data', 'operators', 'items'):
             if key in data and isinstance(data[key], list):
                 total_count = len(data[key])
+                # Grab first full result as sample BEFORE stripping
+                if total_count > 0:
+                    sample_full = data[key][0]
+                # Strip and limit the rest
                 data[key] = [_strip_facility(f) for f in data[key][:MCP_FREE_FACILITY_LIMIT]]
                 break
         else:
             # Single facility object — strip it
             if 'name' in data or 'facility_name' in data:
                 total_count = 1
+                sample_full = dict(data)
                 data = _strip_facility(data)
 
-        # Inject upgrade CTA
+        # Build dynamic upgrade CTA
+        ip = request.remote_addr or 'unknown'
+        entry = _mcp_free_rate_limits.get(ip, {})
+        calls_used = entry.get('count', 0)
+        calls_remaining = max(0, MCP_FREE_DAILY_LIMIT - calls_used)
+
         data['_upgrade'] = {
             "tier": "free",
             "showing": min(MCP_FREE_FACILITY_LIMIT, total_count),
             "total": total_count,
-            "message": f"Showing {min(MCP_FREE_FACILITY_LIMIT, total_count)} of {total_count} results with basic fields. Developer plan ($49/mo) unlocks full data, coordinates, and power specs.",
+            "calls_remaining_today": calls_remaining,
+            "daily_limit": MCP_FREE_DAILY_LIMIT,
+            "message": (
+                f"Showing {min(MCP_FREE_FACILITY_LIMIT, total_count)} of {total_count} results "
+                f"with basic fields ({calls_remaining} free calls left today). "
+                f"Developer plan ($49/mo) unlocks all {total_count} results with "
+                f"coordinates, power capacity, connectivity, and 1,000 calls/day."
+            ),
             "url": "https://dchub.cloud/pricing#developer",
-            "checkout": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c"
+            "checkout": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",
+            "price": "$49/mo",
         }
+
+        # Include one full sample so devs see exactly what they're paying for
+        if sample_full and isinstance(sample_full, dict):
+            data['_sample_full_result'] = {
+                "_note": "This is what every result looks like on the Developer plan",
+                **sample_full
+            }
+
     elif isinstance(data, list):
         total_count = len(data)
+        sample_full = data[0] if total_count > 0 and isinstance(data[0], dict) else None
         gated_list = [_strip_facility(f) for f in data[:MCP_FREE_FACILITY_LIMIT]]
+
+        ip = request.remote_addr or 'unknown'
+        entry = _mcp_free_rate_limits.get(ip, {})
+        calls_used = entry.get('count', 0)
+        calls_remaining = max(0, MCP_FREE_DAILY_LIMIT - calls_used)
+
         data = {
             "results": gated_list,
             "_upgrade": {
                 "tier": "free",
                 "showing": min(MCP_FREE_FACILITY_LIMIT, total_count),
                 "total": total_count,
-                "message": f"Showing {min(MCP_FREE_FACILITY_LIMIT, total_count)} of {total_count} results with basic fields. Developer plan ($49/mo) unlocks full data, coordinates, and power specs.",
+                "calls_remaining_today": calls_remaining,
+                "daily_limit": MCP_FREE_DAILY_LIMIT,
+                "message": (
+                    f"Showing {min(MCP_FREE_FACILITY_LIMIT, total_count)} of {total_count} results "
+                    f"with basic fields ({calls_remaining} free calls left today). "
+                    f"Developer plan ($49/mo) unlocks all {total_count} results with "
+                    f"coordinates, power capacity, connectivity, and 1,000 calls/day."
+                ),
                 "url": "https://dchub.cloud/pricing#developer",
-                "checkout": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c"
-            }
+                "checkout": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",
+                "price": "$49/mo",
+            },
         }
+        if sample_full:
+            data['_sample_full_result'] = {
+                "_note": "This is what every result looks like on the Developer plan",
+                **sample_full
+            }
 
     return data
 
@@ -2728,8 +2938,28 @@ def _gate_mcp_response_bytes(resp_bytes, rpc_method, rpc_params, tier):
     if not tool_name:
         return resp_bytes, False
 
-    # Only gate facility tools and blocked tools — everything else passes through
-    if tool_name not in MCP_FACILITY_TOOLS and tool_name not in MCP_BLOCKED_TOOLS:
+    # Gate facility tools + teaser tools; also enforce daily rate limit on ALL tools
+    all_gated_tools = MCP_FACILITY_TOOLS | MCP_TEASER_TOOLS
+    if tool_name not in all_gated_tools:
+        # Still check daily rate limit even for ungated tools (news, etc.)
+        if tier == 'free':
+            ip = request.remote_addr or 'unknown'
+            allowed, _, _ = _check_mcp_daily_limit(ip)
+            if not allowed:
+                rpc_resp_rl = {
+                    "jsonrpc": "2.0",
+                    "result": {
+                        "content": _gate_mcp_result([], tool_name, tier)
+                    }
+                }
+                try:
+                    orig = json.loads(resp_bytes)
+                    if 'id' in orig:
+                        rpc_resp_rl['id'] = orig['id']
+                except Exception:
+                    pass
+                return json.dumps(rpc_resp_rl).encode('utf-8'), True
+            return resp_bytes, False
         return resp_bytes, False
 
     try:
@@ -2754,7 +2984,6 @@ def _gate_mcp_sse_stream(resp, rpc_method, rpc_params, tier):
     Buffers SSE events, finds JSON-RPC results, gates them.
     """
     if tier not in ('free', 'rate_limited') or rpc_method != 'tools/call':
-        # Pass through unmodified
         for chunk in resp.iter_content(chunk_size=None):
             if chunk:
                 yield chunk
@@ -2762,8 +2991,21 @@ def _gate_mcp_sse_stream(resp, rpc_method, rpc_params, tier):
 
     tool_name = rpc_params.get('name', '') if rpc_params else ''
 
-    # Only gate facility tools and blocked tools — everything else passes through
-    if tool_name not in MCP_FACILITY_TOOLS and tool_name not in MCP_BLOCKED_TOOLS:
+    # Gate facility tools + teaser tools
+    all_gated_tools = MCP_FACILITY_TOOLS | MCP_TEASER_TOOLS
+    if tool_name not in all_gated_tools:
+        # Still check daily rate limit for ungated tools
+        if tier == 'free':
+            ip = request.remote_addr or 'unknown'
+            allowed, _, _ = _check_mcp_daily_limit(ip)
+            if not allowed:
+                rl_content = _gate_mcp_result([], tool_name, tier)
+                rl_resp = json.dumps({
+                    "jsonrpc": "2.0",
+                    "result": {"content": rl_content}
+                })
+                yield f"data: {rl_resp}\n\n".encode('utf-8')
+                return
         for chunk in resp.iter_content(chunk_size=None):
             if chunk:
                 yield chunk
@@ -2802,7 +3044,6 @@ def _gate_mcp_sse_stream(resp, rpc_method, rpc_params, tier):
                         gated = _gate_mcp_result(content, tool_name, tier)
                         rpc_resp['result']['content'] = gated
                         gated_data = json.dumps(rpc_resp)
-                        # Reconstruct SSE event
                         out = ''
                         for ol in other_lines:
                             out += ol + '\n'
@@ -2818,6 +3059,7 @@ def _gate_mcp_sse_stream(resp, rpc_method, rpc_params, tier):
     # Flush remaining buffer
     if buffer:
         yield buffer
+
 
 
 @app.route('/mcp', methods=['GET', 'POST', 'DELETE', 'OPTIONS'])
@@ -2957,9 +3199,12 @@ def mcp_proxy():
                     },
                     "instructions": (
                         "DC Hub Nexus MCP Server - Data Center Intelligence Platform. "
-                        "Free tier: 3 results per query with basic fields (name, city, country, provider). "
-                        "Developer plan ($49/mo): full data with coordinates, power specs, and 1,000 calls/day. "
-                        "Get your API key at https://dchub.cloud/pricing#developer and include it as X-API-Key header. "
+                        "Free tier: all 11 tools available, 5 results per query with basic fields, "
+                        "site scoring preview, and 10 calls/day. "
+                        "Developer plan ($49/mo): full data with coordinates, power specs, "
+                        "detailed site scoring, real-time grid data, and 1,000 calls/day. "
+                        "Get your API key at https://dchub.cloud/pricing#developer "
+                        "and include it as X-API-Key header. "
                         "POST /mcp with JSON-RPC body to use tools. "
                         "Example: {\"jsonrpc\":\"2.0\",\"method\":\"initialize\","
                         "\"id\":1,\"params\":{\"protocolVersion\":\"2024-11-05\","
@@ -4212,14 +4457,6 @@ else:
 # get_db imported from db_utils (centralized WAL + busy_timeout)
 # Alias for compatibility
 get_db_connection = get_db
-
-# CRM admin routes
-try:
-    from routes.crm_routes import register_crm_routes
-    register_crm_routes(app, get_db_connection)
-    print("[CRM] CRM routes registered")
-except Exception as e:
-    print(f"[CRM] Failed to load CRM routes: {e}")
 
 def dict_from_row(row):
     """Convert database row to dict"""
