@@ -1040,7 +1040,7 @@ class SubstationDiscovery:
             logger.warning(f"Error saving substation: {e}")
 
 
-class GasPipelineDiscovery:class GasPipelineDiscovery:
+class GasPipelineDiscovery:
     """Discover gas pipelines from EIA ArcGIS and learned APIs"""
 
     def __init__(self):
