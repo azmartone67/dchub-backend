@@ -12470,3 +12470,9 @@ try:
     print("📊 Rankings Series Blueprint: ✅ Registered (5 routes)")
 except Exception as e:
     print(f"❌ Rankings blueprint failed: {e}")
+
+@app.route('/api/v1/plan-sync.js')
+def serve_plan_sync():
+    """Serve plan-sync script via API route (bypasses Cloudflare Pages static)"""
+    js = open('static/js/dchub-plan-sync.js', 'r').read()
+    return Response(js, mimetype='application/javascript', headers={'Cache-Control': 'public, max-age=3600'})
