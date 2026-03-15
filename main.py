@@ -2607,10 +2607,10 @@ MCP_FREE_FACILITY_LIMIT = 5          # was 3 — enough to evaluate, not enough 
 MCP_FREE_DAILY_LIMIT = 10            # NEW — tool calls per day per IP for free tier
 
 # Tools whose results contain facility arrays to gate
-MCP_FACILITY_TOOLS = {'search_facilities', 'get_pipeline', 'get_market_intel', 'get_top_operators'}
+MCP_FACILITY_TOOLS = {'search_facilities', 'get_pipeline', 'get_top_operators'}
 
 # Tools that return teaser results for free tier (was MCP_BLOCKED_TOOLS — hard block)
-MCP_TEASER_TOOLS = {'analyze_site', 'get_grid_data', 'get_infrastructure', 'get_fiber_intel', 'get_energy_prices', 'get_renewable_energy'}
+MCP_TEASER_TOOLS = {'analyze_site', 'get_grid_data', 'get_infrastructure', 'get_fiber_intel', 'get_energy_prices', 'get_renewable_energy', 'get_news', 'get_intelligence_index', 'get_market_intel'}
 
 # In-memory daily rate limit tracker: {ip_address: {'date': 'YYYY-MM-DD', 'count': N}}
 _mcp_free_rate_limits = {}
@@ -2868,6 +2868,89 @@ def _gate_teaser_result(result_content, tool_name):
                 '_upgrade': {
                     'tier': 'free_teaser',
                     'message': "Renewable energy preview — Developer plan ($49/mo) unlocks solar/wind farm locations, capacity data, and proximity analysis.",
+                    'url': 'https://dchub.cloud/pricing#developer',
+                    'checkout': 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c',
+                    'price': '$49/mo',
+                }
+            }
+            return [{"type": "text", "text": json.dumps(teaser)}]
+
+        elif tool_name == 'get_news':
+            articles = data.get('articles', [])
+            total = len(articles)
+            basic_fields = ['title', 'source', 'published_at', 'category']
+            gated_articles = [
+                {k: a.get(k) for k in basic_fields if k in a}
+                for a in articles[:3]
+            ]
+            teaser = {
+                'success': data.get('success', True),
+                'articles': gated_articles,
+                'count': len(gated_articles),
+                'source': data.get('source', ''),
+                '_upgrade': {
+                    'tier': 'free_teaser',
+                    'showing': len(gated_articles),
+                    'total': total,
+                    'message': f'Showing {len(gated_articles)} of {total} articles with basic fields. Developer plan ($49/mo) unlocks full articles with summaries, URLs, relevance scores, and 50 articles per query.',
+                    'url': 'https://dchub.cloud/pricing#developer',
+                    'checkout': 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c',
+                    'price': '$49/mo',
+                }
+            }
+            return [{"type": "text", "text": json.dumps(teaser)}]
+
+        elif tool_name == 'get_intelligence_index':
+            idx = data.get('dc_hub_intelligence_index', data)
+            teaser = {
+                'dc_hub_intelligence_index': {
+                    'global_pulse_score': idx.get('global_pulse_score'),
+                    'generated_at': idx.get('generated_at'),
+                    'version': idx.get('version'),
+                    'total_agent_queries_24h': idx.get('total_agent_queries_24h'),
+                    'active_integrations': idx.get('active_integrations'),
+                    'market_heat_map': 'upgrade to see full heat map across 10+ markets',
+                    'top_queries_today': 'upgrade to see trending queries',
+                    'network_effect': {
+                        'unique_facilities_queried_24h': idx.get('network_effect', {}).get('unique_facilities_queried_24h') if isinstance(idx.get('network_effect'), dict) else None,
+                        'cross_platform_insights': 'upgrade to see',
+                        'market_coverage_pct': 'upgrade to see',
+                    },
+                },
+                'meta': data.get('meta', {}),
+                '_upgrade': {
+                    'tier': 'free_teaser',
+                    'message': f"Global pulse: {idx.get('global_pulse_score', 'N/A')} -- Developer plan ($49/mo) unlocks full market heat map, trending queries, network effect analytics, and weekly movers.",
+                    'url': 'https://dchub.cloud/pricing#developer',
+                    'checkout': 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c',
+                    'price': '$49/mo',
+                }
+            }
+            return [{"type": "text", "text": json.dumps(teaser)}]
+
+        elif tool_name == 'get_market_intel':
+            total_providers = len(data.get('top_providers', []))
+            gated_providers = [
+                {'name': p.get('name'), 'facilities': p.get('facilities')}
+                for p in data.get('top_providers', [])[:3]
+            ]
+            teaser = {
+                'success': data.get('success', True),
+                'market': data.get('market', {}),
+                'by_status': data.get('by_status', {}),
+                'top_providers': gated_providers,
+                'stats': {
+                    'facility_count': data.get('stats', {}).get('facility_count'),
+                    'total_power_mw': 'upgrade to see',
+                    'avg_power_mw': 'upgrade to see',
+                    'provider_count': 'upgrade to see',
+                },
+                'recent_facilities': f"blocked -- {len(data.get('recent_facilities', []))} recent facilities -- upgrade to see",
+                '_upgrade': {
+                    'tier': 'free_teaser',
+                    'showing_providers': min(3, total_providers),
+                    'total_providers': total_providers,
+                    'message': f'Showing top 3 of {total_providers} providers with basic stats. Developer plan ($49/mo) unlocks all providers, recent facilities, full power/capacity stats, and market comparisons.',
                     'url': 'https://dchub.cloud/pricing#developer',
                     'checkout': 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c',
                     'price': '$49/mo',
