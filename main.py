@@ -5891,9 +5891,13 @@ def handle_checkout_completed(session):
         # for the "payment_link='plink_xxx'" value printed on checkout.
         payment_link_id = session.get('payment_link', '') or ''
         payment_link_plan_map = {
-            # Add your plink_ IDs here as they appear in logs:
-            # 'plink_XXXXXXX': 'pro_monthly',
-            # 'plink_XXXXXXX': 'founding',
+            'plink_1TB2YUJ9ey2ATcQlvmNQIBSD': 'developer_monthly',
+            'plink_1T2YfLJ9ey2ATcQlYzr8hUxy': 'enterprise_annual',
+            'plink_1T2YekJ9ey2ATcQlHO7NRJDo': 'enterprise_monthly',
+            'plink_1SwOT2J9ey2ATcQlUPzXut7K': 'enterprise_annual',
+            'plink_1SwK4sJ9ey2ATcQlL17UnoOf': 'enterprise_monthly',
+            'plink_1SkfzGJ9ey2ATcQlYfUeHHkn': 'pro_annual',
+            'plink_1SkfqMJ9ey2ATcQl1V0nbsmM': 'pro_monthly',
         }
 
         if plan_from_metadata and plan_from_metadata in plan_tier_map:
@@ -5912,7 +5916,11 @@ def handle_checkout_completed(session):
                 plan_name, api_tier = 'founding', 'pro'
             elif amount_dollars == 199 or (195 <= amount_dollars <= 205):
                 plan_name, api_tier = 'pro', 'pro'
+            elif amount_dollars == 299 or (295 <= amount_dollars <= 305):
+                plan_name, api_tier = 'pro', 'pro'
             elif amount_dollars == 1590 or (1585 <= amount_dollars <= 1595):
+                plan_name, api_tier = 'pro', 'pro'
+            elif amount_dollars == 2990 or (2985 <= amount_dollars <= 2995):
                 plan_name, api_tier = 'pro', 'pro'
             elif amount_dollars == 699 or (695 <= amount_dollars <= 705):
                 plan_name, api_tier = 'enterprise', 'enterprise'

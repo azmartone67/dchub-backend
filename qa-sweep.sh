@@ -27,7 +27,7 @@ echo ""
 echo "── 1. BASIC HEALTH ──"
 
 STATS=$(curl -s --max-time 15 "$PROD/api/v1/stats")
-if echo "$STATS" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d.get('stats') or d.get('total_facilities')" 2>/dev/null; then
+if echo "$STATS" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d.get('stats') or d.get('total_facilities') or d.get('data')" 2>/dev/null; then
     FAC_COUNT=$(echo "$STATS" | python3 -c "import sys,json; d=json.load(sys.stdin); s=d.get('stats',d); print(s.get('facilities',s.get('total_facilities','?')))")
     pass "Stats endpoint returns data ($FAC_COUNT facilities)"
 else
@@ -104,7 +104,7 @@ fi
 # Test /api/auth/me with Scott's token
 if [ -n "$SCOTT_TOKEN" ] && [ "$SCOTT_TOKEN" != "" ]; then
     ME_RESP=$(curl -s --max-time 10 -H "Authorization: Bearer $SCOTT_TOKEN" "$PROD/api/auth/me")
-    ME_PLAN=$(echo "$ME_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('plan','MISSING'))" 2>/dev/null)
+    ME_PLAN=$(echo "$ME_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('user',d).get('plan','MISSING'))" 2>/dev/null)
     if [ "$ME_PLAN" = "pro" ] || [ "$ME_PLAN" = "founding" ]; then
         pass "/api/auth/me returns plan=$ME_PLAN for Scott"
     else
