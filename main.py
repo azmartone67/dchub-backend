@@ -2787,7 +2787,7 @@ def _gate_teaser_result(result_content, tool_name):
             }
             return [{"type": "text", "text": json.dumps(teaser)}]
 
-        elif tool_name == 'get_grid_data':        elif tool_name == 'get_grid_data':
+        elif tool_name == 'get_grid_data':
             # Keep: region/ISO name, timestamp, top-level summary
             # Strip: detailed fuel mix, price data, historical
             teaser = {
