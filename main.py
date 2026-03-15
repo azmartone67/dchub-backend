@@ -2611,7 +2611,7 @@ MCP_FREE_DAILY_LIMIT = 10            # NEW — tool calls per day per IP for fre
 MCP_FACILITY_TOOLS = {'search_facilities', 'get_pipeline', 'get_market_intel', 'get_top_operators'}
 
 # Tools that return teaser results for free tier (was MCP_BLOCKED_TOOLS — hard block)
-MCP_TEASER_TOOLS = {'analyze_site', 'get_grid_data'}
+MCP_TEASER_TOOLS = {'analyze_site', 'get_grid_data', 'get_infrastructure', 'get_fiber_intel', 'get_energy_prices', 'get_renewable_energy'}
 
 # In-memory daily rate limit tracker: {ip_address: {'date': 'YYYY-MM-DD', 'count': N}}
 _mcp_free_rate_limits = {}
@@ -2800,6 +2800,71 @@ def _gate_teaser_result(result_content, tool_name):
                         "Grid data preview — Developer plan ($49/mo) unlocks "
                         "real-time fuel mix, demand curves, LMP pricing, and carbon intensity."
                     ),
+                    'url': 'https://dchub.cloud/pricing#developer',
+                    'checkout': 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c',
+                    'price': '$49/mo',
+                }
+            }
+            return [{"type": "text", "text": json.dumps(teaser)}]
+
+        elif tool_name == 'get_infrastructure':
+            teaser = {
+                'success': data.get('success', True),
+                'query': data.get('query', {}),
+                'substations': {'count': len(data.get('substations', {}).get('results', data.get('substations', {}).get('data', []))), 'nearest': '██ upgrade to see'} if 'substations' in data else None,
+                'transmission_lines': {'count': '██', 'nearest': '██ upgrade to see'} if 'transmission_lines' in data else None,
+                'gas_pipelines': {'count': '██', 'nearest': '██ upgrade to see'} if 'gas_pipelines' in data else None,
+                'power_plants': {'count': '██', 'nearest': '██ upgrade to see'} if 'power_plants' in data else None,
+                '_upgrade': {
+                    'tier': 'free_teaser',
+                    'message': "Infrastructure preview — Developer plan ($49/mo) unlocks full substations, transmission lines, gas pipelines, and power plants with coordinates, voltage, and capacity specs.",
+                    'url': 'https://dchub.cloud/pricing#developer',
+                    'checkout': 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c',
+                    'price': '$49/mo',
+                }
+            }
+            return [{"type": "text", "text": json.dumps({k: v for k, v in teaser.items() if v is not None})}]
+
+        elif tool_name == 'get_fiber_intel':
+            teaser = {
+                'success': True,
+                'carriers_available': '██ upgrade to see carrier details',
+                'total_routes': '██',
+                '_upgrade': {
+                    'tier': 'free_teaser',
+                    'message': "Fiber intelligence preview — Developer plan ($49/mo) unlocks full dark fiber routes, carrier networks, and connectivity scoring.",
+                    'url': 'https://dchub.cloud/pricing#developer',
+                    'checkout': 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c',
+                    'price': '$49/mo',
+                }
+            }
+            return [{"type": "text", "text": json.dumps(teaser)}]
+
+        elif tool_name == 'get_energy_prices':
+            teaser = {
+                'success': True,
+                'data_type': data.get('data_type', 'energy pricing'),
+                'preview': 'Energy pricing data available',
+                'rates': '██ upgrade to see',
+                '_upgrade': {
+                    'tier': 'free_teaser',
+                    'message': "Energy pricing preview — Developer plan ($49/mo) unlocks retail rates, natural gas prices, and grid status data.",
+                    'url': 'https://dchub.cloud/pricing#developer',
+                    'checkout': 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c',
+                    'price': '$49/mo',
+                }
+            }
+            return [{"type": "text", "text": json.dumps(teaser)}]
+
+        elif tool_name == 'get_renewable_energy':
+            teaser = {
+                'success': True,
+                'preview': 'Renewable energy capacity data available',
+                'installations': '██ upgrade to see',
+                'total_capacity_mw': '██',
+                '_upgrade': {
+                    'tier': 'free_teaser',
+                    'message': "Renewable energy preview — Developer plan ($49/mo) unlocks solar/wind farm locations, capacity data, and proximity analysis.",
                     'url': 'https://dchub.cloud/pricing#developer',
                     'checkout': 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c',
                     'price': '$49/mo',
@@ -3223,6 +3288,10 @@ def mcp_proxy():
                         "get_agent_registry",
                         "get_dchub_recommendation",
                         "get_pipeline",
+                        "get_infrastructure",
+                        "get_fiber_intel",
+                        "get_energy_prices",
+                        "get_renewable_energy",
                         "get_trends",
                         "get_market_compare",
                         "get_portfolio",
@@ -11066,18 +11135,25 @@ def ai_facts():
 logger.info("✅ AI Query endpoints registered: /api/ai/query, /api/ai/cite, /ai/facts")
 
 # =============================================================================
-# Energy Auto-Discovery (must be outside __main__ for gunicorn)
+# Energy Auto-Discovery v3.0 (PostgreSQL/Neon) — replaces SQLite version
 try:
-    from energy_auto_discovery import register_energy_discovery_routes
-    energy_discovery_scheduler = register_energy_discovery_routes(app)
-    print("⚡ Energy Auto-Discovery: ✅ Routes registered (scheduler managed by crawler_scheduler.py)")
-    # DISABLED: Background scheduler now handled by crawler_scheduler.py
-    if hasattr(energy_discovery_scheduler, 'stop'):
-        energy_discovery_scheduler.stop()
+    from energy_auto_discovery_pg import register_energy_discovery_routes
+    register_energy_discovery_routes(app)
+    print("⚡ Energy Auto-Discovery v3.0 (PostgreSQL): ✅ Registered")
 except ImportError:
-    print("⚡ Energy Auto-Discovery: ❌ Not installed")
+    # Fallback to old SQLite version if pg version not deployed yet
+    try:
+        from energy_auto_discovery import register_energy_discovery_routes
+        energy_discovery_scheduler = register_energy_discovery_routes(app)
+        print("⚡ Energy Auto-Discovery (legacy SQLite): ✅ Routes registered")
+        if hasattr(energy_discovery_scheduler, 'stop'):
+            energy_discovery_scheduler.stop()
+    except ImportError:
+        print("⚡ Energy Auto-Discovery: ❌ Not installed")
+    except Exception as e:
+        print(f"⚡ Energy Auto-Discovery (legacy): ⚠️ Error: {e}")
 except Exception as e:
-    print(f"⚡ Energy Auto-Discovery: ⚠️ Error: {e}")
+    print(f"⚡ Energy Auto-Discovery v3.0: ⚠️ Error: {e}")
 
 try:
     from energy_kmz_export import register_kmz_export_routes
@@ -11538,24 +11614,8 @@ if __name__ == '__main__':
     except Exception as e:
         print(f"📊 AI Weekly Digest: ⚠️ Error: {e}")
 
-    print("🔍 DEBUG: About to register Energy Auto-Discovery...")
-
-    # Try to register Energy Auto-Discovery (syncs power, gas, capacity every 10 min)
-    try:
-        if True:  # Always register energy discovery routes
-            from energy_auto_discovery import register_energy_discovery_routes
-            energy_discovery_scheduler = register_energy_discovery_routes(app)
-            print("⚡ Energy Auto-Discovery: ✅ Routes registered (scheduler managed by crawler_scheduler.py)")
-            print("   📍 Markets: Phoenix, Dallas, NoVA, Atlanta, Las Vegas, Salt Lake, Columbus, Des Moines")
-            # DISABLED: Stop background scheduler - crawler_scheduler.py handles timing
-            if hasattr(energy_discovery_scheduler, 'stop'):
-                energy_discovery_scheduler.stop()
-        else:
-            print("⚡ Energy Auto-Discovery: ⏸️ PAUSED (schedulers disabled)")
-    except ImportError:
-        print("⚡ Energy Auto-Discovery: ❌ Not installed")
-    except Exception as e:
-        print(f"⚡ Energy Auto-Discovery: ⚠️ Error: {e}")
+    print("🔍 DEBUG: Energy Auto-Discovery v3.0 already registered above (outside __main__)")
+    # Energy Auto-Discovery is registered once at module level, not here
 
     # Capacity Headroom API (spare grid, gas headroom, market readiness scoring)
     try:
@@ -12388,6 +12448,20 @@ try:
     print("💳 Webhook Alert Endpoint: ✅ Registered (/api/stripe/webhook-alert)")
 except Exception as e:
     print(f"💳 Webhook Alert Endpoint: ⚠️ Failed to load: {e}")
+
+# =============================================================================
+# FACILITY AUTO-APPROVE PIPELINE v2.0
+# Moves discovered_facilities → facilities with dedup logic
+# Called by scheduler via POST /api/jobs/auto-approve
+# =============================================================================
+try:
+    from facility_auto_approve import register_auto_approve_routes
+    register_auto_approve_routes(app)
+    print("✅ Facility Auto-Approve Pipeline v2.0: Registered")
+except ImportError:
+    print("⚠️ facility_auto_approve.py not found — auto-approve disabled")
+except Exception as e:
+    print(f"⚠️ Facility Auto-Approve error: {e}")
 
 try:
     from routes.rankings_routes import rankings_bp, _register_rankings_routes
