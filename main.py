@@ -4842,6 +4842,7 @@ STRIPE_PRICES = {
     'pro_monthly': os.environ.get('STRIPE_PRICE_PRO_MONTHLY', 'price_XXXXX'),
     'pro_annual': os.environ.get('STRIPE_PRICE_PRO_ANNUAL', 'price_XXXXX'),
     'founding': os.environ.get('STRIPE_PRICE_FOUNDING', 'price_XXXXX'),
+    'developer_monthly': os.environ.get('STRIPE_PRICE_DEV_MONTHLY', 'price_XXXXX'),
 }
 
 @app.route('/api/stripe/config', methods=['GET'])
@@ -4876,7 +4877,8 @@ def create_checkout_session():
             'pro_annual': 'https://buy.stripe.com/4gM3cwcVk3JjbSR9maaZi01',
             'founding': 'https://buy.stripe.com/9B6fZi1cCdjT3ml8i6aZi00',
             'enterprise_monthly': 'https://buy.stripe.com/fZueVe5sS6Vv7CB41QaZi0a',
-            'enterprise_annual': 'https://buy.stripe.com/dRmdRa4oO1Bb9KJ2XMaZi0b'
+            'enterprise_annual': 'https://buy.stripe.com/dRmdRa4oO1Bb9KJ2XMaZi0b',
+            'developer_monthly': 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c'
         }
         return jsonify({
             'redirect': True,
@@ -5566,6 +5568,7 @@ def handle_checkout_completed(session):
             'enterprise_monthly': ('enterprise', 'enterprise'),
             'enterprise_annual': ('enterprise', 'enterprise'),
             'founding': ('founding', 'pro'),
+            'developer_monthly': ('developer', 'developer'),
         }
 
         # Payment link URL slug → plan mapping (for checkouts via buy.stripe.com links)
@@ -5590,7 +5593,9 @@ def handle_checkout_completed(session):
         else:
             if payment_link_id:
                 print(f"⚠️ Unknown payment_link ID: '{payment_link_id}' — add to payment_link_plan_map! Falling back to amount detection.")
-            if amount_dollars == 99 or (95 <= amount_dollars <= 105):
+            if amount_dollars == 49 or (45 <= amount_dollars <= 55):
+                plan_name, api_tier = 'developer', 'developer'
+            elif amount_dollars == 99 or (95 <= amount_dollars <= 105):
                 plan_name, api_tier = 'founding', 'pro'
             elif amount_dollars == 199 or (195 <= amount_dollars <= 205):
                 plan_name, api_tier = 'pro', 'pro'
@@ -11178,7 +11183,7 @@ try:
     init_data_protection(app)
     # CRITICAL: Link the lazy wrapper to the real enforcer
     _real_require_plan = _imported_require_plan
-    logger.info("✅ API Tier Gating registered (Free/Pro/Enterprise)")
+    logger.info("✅ API Tier Gating registered (Free/Developer/Pro/Enterprise)")
     logger.info("🔐 require_plan is now ENFORCING -- all Pro/Enterprise endpoints gated")
 except ImportError:
     logger.warning("⚠️ API Tier Gating: Not installed -- gated endpoints will return 503")

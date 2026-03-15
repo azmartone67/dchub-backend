@@ -116,7 +116,7 @@ tier_patches = [
     ),
 ]
 
-patch_file('/root/workspace/api_tier_gating.py', tier_patches)
+patch_file('/home/runner/workspace/api_tier_gating.py', tier_patches)
 
 # =============================================================================
 # PATCH main.py
@@ -181,14 +181,14 @@ main_patches = [
 # Filter out the skip placeholder
 main_patches = [p for p in main_patches if p[1] != "SKIP_THIS"]
 
-patch_file('/root/workspace/main.py', main_patches)
+patch_file('/home/runner/workspace/main.py', main_patches)
 
 # =============================================================================
 # VERIFY
 # =============================================================================
 print("\n🔍 Verifying...")
 
-with open('/root/workspace/api_tier_gating.py') as f:
+with open('/home/runner/workspace/api_tier_gating.py') as f:
     content = f.read()
 
 checks = [
@@ -198,7 +198,7 @@ checks = [
     ("PLAN_INFO has developer", "'name': 'Developer'" in content),
 ]
 
-with open('/root/workspace/main.py') as f:
+with open('/home/runner/workspace/main.py') as f:
     mcontent = f.read()
 
 checks += [

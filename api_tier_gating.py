@@ -52,6 +52,7 @@ STRIPE_PRICES_V2 = {
     'enterprise_monthly':   os.environ.get('STRIPE_PRICE_ENTERPRISE_MONTHLY', 'price_XXXXX'),
     'enterprise_annual':    os.environ.get('STRIPE_PRICE_ENTERPRISE_ANNUAL', 'price_XXXXX'),
     'founding':             os.environ.get('STRIPE_PRICE_FOUNDING', 'price_XXXXX'),
+    'developer_monthly':    os.environ.get('STRIPE_PRICE_DEV_MONTHLY', 'price_XXXXX'),
 }
 
 # Stripe Payment Links — fallback if price IDs not configured
@@ -61,14 +62,16 @@ PAYMENT_LINKS = {
     'enterprise_monthly': '',  # TODO: Create in Stripe Dashboard
     'enterprise_annual':  '',  # TODO: Create in Stripe Dashboard
     'founding':           'https://buy.stripe.com/9B6fZi1cCdjT3ml8i6aZi00',
+    'developer_monthly':  'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c',
 }
 
 # Plan hierarchy (higher = more access)
 PLAN_LEVELS = {
     'free': 0,
     'founding': 1,  # Founding members get Pro access
-    'pro': 2,
-    'enterprise': 3,
+    'developer': 2,  # Developer tier - $49/mo, 1000 calls/day
+    'pro': 3,
+    'enterprise': 4,
     'admin': 99,
 }
 
@@ -76,6 +79,7 @@ PLAN_LEVELS = {
 TIER_RATE_LIMITS = {
     'free':       10,
     'founding':   10000,
+    'developer':  1000,
     'pro':        10000,
     'enterprise': 100000,
     'admin':      999999,
@@ -105,6 +109,31 @@ PLAN_INFO = {
             'grid_monitoring': False,
             'land_power': False,
             'api_key': False,
+            'priority_support': False,
+        }
+    },
+    'developer': {
+        'name': 'Developer',
+        'price_monthly': 49,
+        'price_annual': 390,
+        'rate_limit': 1000,
+        'features': {
+            'headline_stats': True,
+            'news_feed': True,
+            'ai_discovery': True,
+            'market_list': True,
+            'facility_search': True,
+            'deal_database': True,
+            'pipeline_tracker': True,
+            'energy_data': True,
+            'connectivity_score': True,
+            'site_analysis': False,
+            'market_compare': False,
+            'pdf_reports': False,
+            'ai_brain': False,
+            'grid_monitoring': False,
+            'land_power': False,
+            'api_key': True,
             'priority_support': False,
         }
     },
