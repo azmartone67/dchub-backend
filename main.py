@@ -2750,16 +2750,16 @@ def _gate_teaser_result(result_content, tool_name):
 
         if tool_name == 'analyze_site':
             # Keep: overall_score, location, interpretation
-            # Strip: detailed sub-scores, nearby facilities, power data
+            # Strip: detailed sub-scores, nearby facilities, power/gas/fiber data
             teaser = {
                 'success': data.get('success', True),
                 'location': data.get('location', {}),
                 'overall_score': data.get('overall_score'),
                 'interpretation': data.get('interpretation', ''),
                 'capacity_requested_mw': data.get('capacity_requested_mw'),
-                # Show score categories exist but redact values
                 'scores': {
                     'power_infrastructure': '██ upgrade to see',
+                    'gas_pipeline_access': '██ upgrade to see',
                     'fiber_connectivity': '██ upgrade to see',
                     'market_conditions': '██ upgrade to see',
                     'risk_resilience': '██ upgrade to see',
@@ -2768,13 +2768,17 @@ def _gate_teaser_result(result_content, tool_name):
                     'facilities_100km': '██',
                     'total_capacity_mw': '██',
                     'substations_50km': '██',
+                    'gas_pipelines_50km': '██',
+                    'power_plants_80km': '██',
+                    'generation_capacity_mw': '██',
+                    'fiber_carriers_in_state': '██',
                 },
                 '_upgrade': {
                     'tier': 'free_teaser',
                     'message': (
                         f"Site score: {data.get('overall_score', 'N/A')} — "
-                        f"Developer plan ($49/mo) unlocks detailed power, fiber, market, "
-                        f"and risk sub-scores plus nearby infrastructure data."
+                        f"Developer plan ($49/mo) unlocks detailed power, gas pipeline, fiber, "
+                        f"market, and risk sub-scores plus nearby infrastructure counts."
                     ),
                     'url': 'https://dchub.cloud/pricing#developer',
                     'checkout': 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c',
@@ -2783,7 +2787,7 @@ def _gate_teaser_result(result_content, tool_name):
             }
             return [{"type": "text", "text": json.dumps(teaser)}]
 
-        elif tool_name == 'get_grid_data':
+        elif tool_name == 'get_grid_data':        elif tool_name == 'get_grid_data':
             # Keep: region/ISO name, timestamp, top-level summary
             # Strip: detailed fuel mix, price data, historical
             teaser = {
@@ -12221,8 +12225,8 @@ def get_facility_by_id(facility_id):
         if conn: conn.close()
 
 # =============================================================================
-# SITE SCORE ENDPOINT — MCP analyze_site tool
-# Combines nearby facilities, substations, connectivity, and state-level risk
+# SITE SCORE ENDPOINT — MCP analyze_site tool (v2 — multi-table proximity)
+# Combines substations, gas pipelines, power plants, fiber, facilities, risk
 # =============================================================================
 @app.route('/api/site-score', methods=['GET'])
 def api_site_score():
@@ -12246,9 +12250,9 @@ def api_site_score():
         conn = get_read_db()
         c = conn.cursor()
 
-        # Nearby facilities (competitive density, 100km radius)
+        # 1. Nearby facilities (competitive density, ~100km radius)
         c.execute("""
-            SELECT COUNT(*) as cnt, SUM(power_mw) as total_mw
+            SELECT COUNT(*) as cnt, COALESCE(SUM(power_mw), 0) as total_mw
             FROM discovered_facilities
             WHERE latitude IS NOT NULL AND longitude IS NOT NULL
               AND (latitude - %s)*(latitude - %s) + (longitude - %s)*(longitude - %s) < 0.81
@@ -12257,17 +12261,83 @@ def api_site_score():
         nearby_facilities = row[0] or 0
         nearby_mw = float(row[1] or 0)
 
-        # Nearby substations (power infrastructure, ~50km radius — utility-grade only >69kV)
-        c.execute("""
-            SELECT COUNT(*) as cnt
-            FROM substations
-            WHERE lat IS NOT NULL AND lng IS NOT NULL
-              AND (voltage_kv > 69 OR voltage_kv IS NULL OR voltage_kv = 0)
-              AND (lat - %s)*(lat - %s) + (lng - %s)*(lng - %s) < 0.20
-        """, (lat, lat, lon, lon))
-        nearby_substations = c.fetchone()[0] or 0
+        # 2. Nearby substations — MULTI-TABLE (~50km radius)
+        nearby_substations = 0
+        try:
+            c.execute("""
+                SELECT COUNT(*) FROM substations
+                WHERE lat IS NOT NULL AND lng IS NOT NULL
+                  AND (voltage_kv > 69 OR voltage_kv IS NULL OR voltage_kv = 0)
+                  AND (lat - %s)*(lat - %s) + (lng - %s)*(lng - %s) < 0.20
+            """, (lat, lat, lon, lon))
+            nearby_substations = c.fetchone()[0] or 0
+        except Exception:
+            pass
 
-        # Fiber connectivity score — metro defaults by state proximity to major IX/fiber hubs
+        # Source B: infrastructure_layers table (4,939+ KMZ features)
+        infra_substations = 0
+        try:
+            c.execute("""
+                SELECT COUNT(*) FROM infrastructure_layers
+                WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+                  AND LOWER(layer_type) IN ('substation', 'electric_substation', 'substations', 'power')
+                  AND (latitude - %s)*(latitude - %s) + (longitude - %s)*(longitude - %s) < 0.20
+            """, (lat, lat, lon, lon))
+            infra_substations = c.fetchone()[0] or 0
+        except Exception:
+            pass
+
+        total_substations = nearby_substations + infra_substations
+
+        # 3. Nearby gas pipelines (~50km radius)
+        nearby_gas_pipelines = 0
+        try:
+            c.execute("""
+                SELECT COUNT(*) FROM gas_pipelines
+                WHERE lat IS NOT NULL AND lng IS NOT NULL
+                  AND status = 'active'
+                  AND (lat - %s)*(lat - %s) + (lng - %s)*(lng - %s) < 0.20
+            """, (lat, lat, lon, lon))
+            nearby_gas_pipelines = c.fetchone()[0] or 0
+        except Exception:
+            pass
+
+        # 4. Nearby power plants (~80km radius)
+        nearby_power_plants = 0
+        nearby_generation_mw = 0
+        try:
+            c.execute("""
+                SELECT COUNT(*), COALESCE(SUM(
+                    CASE WHEN metadata IS NOT NULL 
+                         THEN CAST(NULLIF(metadata->>'capacity_mw', '') AS NUMERIC) 
+                         ELSE 0 END
+                ), 0)
+                FROM infrastructure_layers
+                WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+                  AND LOWER(layer_type) IN ('power_plant', 'power_plants', 'generation')
+                  AND (latitude - %s)*(latitude - %s) + (longitude - %s)*(longitude - %s) < 0.52
+            """, (lat, lat, lon, lon))
+            pp_row = c.fetchone()
+            nearby_power_plants = pp_row[0] or 0
+            nearby_generation_mw = float(pp_row[1] or 0)
+        except Exception:
+            pass
+
+        # Fallback: discovered_power_plants table
+        try:
+            c.execute("""
+                SELECT COUNT(*), COALESCE(SUM(capacity_mw), 0)
+                FROM discovered_power_plants
+                WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+                  AND (latitude - %s)*(latitude - %s) + (longitude - %s)*(longitude - %s) < 0.52
+            """, (lat, lat, lon, lon))
+            dpp_row = c.fetchone()
+            nearby_power_plants += (dpp_row[0] or 0)
+            nearby_generation_mw += float(dpp_row[1] or 0)
+        except Exception:
+            pass
+
+        # 5. Fiber connectivity
         METRO_FIBER_SCORES = {
             'VA': 95, 'NJ': 90, 'NY': 88, 'CA': 88, 'IL': 85,
             'TX': 82, 'GA': 80, 'MA': 82, 'MD': 78, 'WA': 78,
@@ -12280,13 +12350,26 @@ def api_site_score():
         }
         fiber_score = METRO_FIBER_SCORES.get(state, 55)
 
-        # Boost fiber score if near major facility clusters (proxy for fiber density)
-        if nearby_facilities >= 20:
-            fiber_score = min(100, fiber_score + 10)
-        elif nearby_facilities >= 5:
-            fiber_score = min(100, fiber_score + 5)
+        fiber_carriers = 0
+        try:
+            c.execute("""
+                SELECT COUNT(DISTINCT provider) FROM fiber_carrier_routes
+                WHERE UPPER(states_served) LIKE %s OR UPPER(states_served) LIKE %s
+            """, (f'%{state}%', f'%, {state}%'))
+            fiber_carriers = c.fetchone()[0] or 0
+            if fiber_carriers >= 5:
+                fiber_score = min(100, fiber_score + 10)
+            elif fiber_carriers >= 2:
+                fiber_score = min(100, fiber_score + 5)
+        except Exception:
+            pass
 
-        # State-level risk index (hardcoded baseline by state)
+        if nearby_facilities >= 20:
+            fiber_score = min(100, fiber_score + 5)
+        elif nearby_facilities >= 5:
+            fiber_score = min(100, fiber_score + 3)
+
+        # 6. State-level risk index
         STATE_RISK = {
             'FL': 35, 'TX': 42, 'CA': 38, 'LA': 32, 'OK': 40,
             'KS': 43, 'AL': 36, 'MS': 34, 'GA': 55, 'SC': 58,
@@ -12299,24 +12382,35 @@ def api_site_score():
         }
         risk_score = STATE_RISK.get(state, 65)
 
-        # Power score — more substations = better access
-        power_score = min(100, 50 + (nearby_substations * 2))
+        # 7. Sub-scores
+        power_score = min(100, 40 + (total_substations * 2) + (nearby_power_plants * 1.5))
 
-        # Market score — some competition good, too much = constrained
-        if nearby_facilities < 5:
-            market_score = 60  # pioneer market
-        elif nearby_facilities < 20:
-            market_score = 85  # healthy market
-        elif nearby_facilities < 50:
-            market_score = 75  # mature market
+        if nearby_gas_pipelines >= 20:
+            gas_score = 95
+        elif nearby_gas_pipelines >= 10:
+            gas_score = 85
+        elif nearby_gas_pipelines >= 3:
+            gas_score = 70
+        elif nearby_gas_pipelines >= 1:
+            gas_score = 55
         else:
-            market_score = 60  # saturated
+            gas_score = 30
 
-        # Overall composite (power 30%, fiber 15%, market 20%, risk 35%)
+        if nearby_facilities < 5:
+            market_score = 60
+        elif nearby_facilities < 20:
+            market_score = 85
+        elif nearby_facilities < 50:
+            market_score = 75
+        else:
+            market_score = 60
+
+        # 8. Overall composite: power 25%, gas 10%, fiber 15%, market 15%, risk 35%
         overall = round(
-            (power_score * 0.30) +
+            (power_score * 0.25) +
+            (gas_score * 0.10) +
             (fiber_score * 0.15) +
-            (market_score * 0.20) +
+            (market_score * 0.15) +
             (risk_score * 0.35)
         , 1)
 
@@ -12327,6 +12421,7 @@ def api_site_score():
             'overall_score': overall,
             'scores': {
                 'power_infrastructure': round(power_score, 1),
+                'gas_pipeline_access': round(gas_score, 1),
                 'fiber_connectivity': round(fiber_score, 1),
                 'market_conditions': round(market_score, 1),
                 'risk_resilience': round(risk_score, 1),
@@ -12334,7 +12429,11 @@ def api_site_score():
             'nearby': {
                 'facilities_100km': nearby_facilities,
                 'total_capacity_mw': round(nearby_mw, 1),
-                'substations_50km': nearby_substations,
+                'substations_50km': total_substations,
+                'gas_pipelines_50km': nearby_gas_pipelines,
+                'power_plants_80km': nearby_power_plants,
+                'generation_capacity_mw': round(nearby_generation_mw, 1),
+                'fiber_carriers_in_state': fiber_carriers,
             },
             'interpretation': (
                 'Excellent site' if overall >= 80 else

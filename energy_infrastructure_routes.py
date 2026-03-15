@@ -26,17 +26,31 @@ from db_utils import get_db
 
 # Lazy tier gating - checks at runtime, not import time
 def require_plan(min_plan='pro'):
-    """Lazy require_plan that validates plan at request time"""
+    """Lazy require_plan — validates plan at request time.
+    Bypasses for X-Internal-Key (MCP proxy, scheduler, internal sync).
+    """
     logger = logging.getLogger(__name__)
     
     def decorator(f):
         @wraps(f)
         def wrapper(*args, **kwargs):
             try:
+                # X-Internal-Key bypass (MCP proxy + scheduler calls)
+                internal_key = request.headers.get('X-Internal-Key', '')
+                if internal_key in ('dchub-internal-2024', 'dchub-internal-sync-2026'):
+                    return f(*args, **kwargs)
+
                 from api_tier_gating import validate_api_key, user_has_access
                 
                 # Check API key
                 api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
+                if not api_key:
+                    auth_header = request.headers.get('Authorization', '')
+                    if auth_header.startswith('Bearer '):
+                        token = auth_header[7:]
+                        if token.startswith('dchub_'):
+                            api_key = token
+                
                 if not api_key:
                     return jsonify({
                         'success': False,
@@ -64,7 +78,6 @@ def require_plan(min_plan='pro'):
                 
                 return f(*args, **kwargs)
             except ImportError:
-                # Tier gating not available, allow through
                 return f(*args, **kwargs)
             except Exception as e:
                 logger.error(f"Tier gating error: {e}")
@@ -73,6 +86,8 @@ def require_plan(min_plan='pro'):
     return decorator
 
 # =============================================================================
+# CONFIGURATION
+# =============================================================================# =============================================================================
 # CONFIGURATION
 # =============================================================================
 

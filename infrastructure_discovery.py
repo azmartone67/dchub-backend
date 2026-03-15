@@ -768,34 +768,50 @@ class ConstructionPermitDiscovery:
 
 
 class SubstationDiscovery:
-    """Discover substations from HIFLD, OSM, and learned APIs"""
+    """Discover substations from HIFLD (bulk), OSM, learned APIs, and infrastructure_layers"""
 
     OVERPASS_API = "https://overpass-api.de/api/interpreter"
 
     def __init__(self):
         self.new_substations = 0
         self._market_index = 0
+        if not hasattr(SubstationDiscovery, '_hifld_fid_offset'):
+            SubstationDiscovery._hifld_fid_offset = 0
 
     def sync(self):
         logger.info("⚡ Syncing substations...")
         self.new_substations = 0
-        self._sync_hifld_substations()
+        self._sync_hifld_substations_bulk()
         self._sync_osm_substations()
         self._sync_from_learned_apis()
+        self._sync_infrastructure_layers_substations()
         logger.info(f"   ✅ Substations: {self.new_substations} new")
         return self.new_substations
 
-    def _sync_hifld_substations(self):
-        markets = DC_MARKETS[self._market_index:self._market_index + 3]
-        self._market_index = (self._market_index + 3) % len(DC_MARKETS)
+    def _sync_hifld_substations_bulk(self):
+        """Bulk nationwide HIFLD substation pull with FID pagination.
+        Pulls 5,000 per cycle. Full ~70K coverage in ~14 cycles."""
+        batch_size = 5000
+        fid_start = SubstationDiscovery._hifld_fid_offset
+        fid_end = fid_start + batch_size
 
-        for market in markets:
-            try:
-                features = _query_hifld_nearby(
-                    HIFLD_APIS['substations'],
-                    market['lat'], market['lng'],
-                    radius_m=50000, max_records=200
-                )
+        logger.info(f"   ⚡ HIFLD substations BULK: FID {fid_start}-{fid_end}...")
+        before = self.new_substations
+
+        try:
+            features = _query_hifld_paginated(
+                HIFLD_APIS['substations'],
+                where=f'OBJECTID>{fid_start} AND OBJECTID<={fid_end}',
+                max_total=batch_size,
+                batch_size=1000
+            )
+
+            if not features:
+                logger.info(f"   ⚡ HIFLD substations: reached end at FID {fid_start}, resetting to 0")
+                SubstationDiscovery._hifld_fid_offset = 0
+            else:
+                SubstationDiscovery._hifld_fid_offset = fid_end
+
                 for feat in features:
                     attrs = feat.get('attributes', {})
                     geom = feat.get('geometry', {})
@@ -805,31 +821,43 @@ class SubstationDiscovery:
                     if voltage and voltage > 1000:
                         voltage = voltage / 1000
                     capacity = attrs.get('MAX_LOAD', attrs.get('CAPACITY', 0)) or 0
-                    sub_id = attrs.get('OBJECTID', attrs.get('ID', ''))
-                    state = attrs.get('STATE', attrs.get('STUSPS', market['state']))
-                    city = attrs.get('CITY', attrs.get('COUNTY', market['name']))
+                    obj_id = attrs.get('OBJECTID', attrs.get('ID', ''))
+                    state_val = attrs.get('STATE', attrs.get('STUSPS', ''))
+                    city_val = attrs.get('CITY', attrs.get('COUNTY', ''))
+
+                    lat_val = geom.get('y', geom.get('lat', 0))
+                    lng_val = geom.get('x', geom.get('lon', 0))
+                    if not lat_val or not lng_val:
+                        continue
 
                     sub = {
                         "name": str(name)[:200],
                         "operator": str(operator)[:100] if operator else 'Unknown',
                         "voltage_kv": voltage,
                         "capacity_mva": capacity,
-                        "city": str(city)[:100] if city else market['name'],
-                        "state": str(state)[:10] if state else market['state'],
-                        "lat": geom.get('y', geom.get('lat', 0)),
-                        "lng": geom.get('x', geom.get('lon', 0)),
-                        "source_id": f"hifld_sub_{sub_id}"
+                        "city": str(city_val)[:100] if city_val else '',
+                        "state": str(state_val)[:10] if state_val else '',
+                        "lat": lat_val,
+                        "lng": lng_val,
+                        "source_id": f"hifld_sub_{obj_id}"
                     }
                     self._save_substation(sub, source='hifld')
 
-                logger.info(f"   ⚡ HIFLD substations {market['name']}: {len(features)} found")
-                time.sleep(1)
-            except Exception as e:
-                logger.warning(f"   ⚠️ HIFLD substations failed for {market['name']}: {e}")
+            logger.info(
+                f"   ⚡ HIFLD substations BULK: {len(features)} fetched "
+                f"(FID {fid_start}-{fid_end}), {self.new_substations - before} new"
+            )
+        except Exception as e:
+            logger.warning(f"   ⚠️ HIFLD bulk substations failed: {e}")
 
     def _sync_osm_substations(self):
-        start = self._market_index
-        markets = DC_MARKETS[start:start + 4]
+        """OSM substation discovery — 6 markets per cycle"""
+        start = self._market_index % len(DC_MARKETS)
+        markets = []
+        for i in range(6):
+            idx = (start + i) % len(DC_MARKETS)
+            markets.append(DC_MARKETS[idx])
+        self._market_index = (start + 6) % len(DC_MARKETS)
 
         for market in markets:
             try:
@@ -875,22 +903,27 @@ class SubstationDiscovery:
                 WHERE category = 'power'
                 ORDER BY id DESC LIMIT 200
             """)
-            for row in cursor.fetchall():
+            rows = cursor.fetchall()
+            for row in rows:
                 try:
-                    meta = json.loads(row['metadata']) if row['metadata'] else {}
+                    if isinstance(row, dict):
+                        name_val, location_val, meta_raw = row.get('name'), row.get('location'), row.get('metadata')
+                    else:
+                        name_val, location_val, meta_raw = row[0], row[1], row[2]
+                    meta = json.loads(meta_raw) if meta_raw else {}
                     voltage = meta.get('MAX_VOLT', meta.get('VOLTAGE', meta.get('KV', 0))) or 0
                     if voltage and voltage > 1000:
                         voltage = voltage / 1000
                     sub = {
-                        "name": str(row['name'])[:200] if row['name'] else 'Unknown',
+                        "name": str(name_val)[:200] if name_val else 'Unknown',
                         "operator": str(meta.get('OWNER', meta.get('OPERATOR', 'Discovered')))[:100],
                         "voltage_kv": voltage,
                         "capacity_mva": meta.get('CAPACITY', 0) or 0,
-                        "city": row['location'].split(',')[0].strip() if row['location'] else '',
-                        "state": row['location'].split(',')[-1].strip() if row['location'] and ',' in row['location'] else '',
+                        "city": location_val.split(',')[0].strip() if location_val else '',
+                        "state": location_val.split(',')[-1].strip() if location_val and ',' in location_val else '',
                         "lat": meta.get('LATITUDE', meta.get('LAT', meta.get('Y'))),
                         "lng": meta.get('LONGITUDE', meta.get('LON', meta.get('X'))),
-                        "source_id": f"learned_sub_{hash(str(row['name'])) % 10**8}"
+                        "source_id": f"learned_sub_{hash(str(name_val)) % 10**8}"
                     }
                     self._save_substation(sub, source='auto_discovery')
                 except Exception:
@@ -898,6 +931,71 @@ class SubstationDiscovery:
             conn.close()
         except Exception as e:
             logger.warning(f"   ⚠️ Learned API substation sync failed: {e}")
+
+    def _sync_infrastructure_layers_substations(self):
+        """Cross-populate substations table from infrastructure_layers KMZ records."""
+        try:
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT il.name, il.latitude, il.longitude, il.source, il.metadata,
+                       COALESCE(il.state, '') as state, COALESCE(il.city, '') as city
+                FROM infrastructure_layers il
+                WHERE LOWER(il.layer_type) IN ('substation', 'electric_substation', 'substations', 'power')
+                  AND il.latitude IS NOT NULL AND il.longitude IS NOT NULL
+                  AND NOT EXISTS (
+                    SELECT 1 FROM substations s 
+                    WHERE s.source_id = 'infra_layer_' || CAST(il.id AS TEXT)
+                  )
+                LIMIT 2000
+            """)
+            rows = cursor.fetchall()
+            conn.close()
+
+            for row in rows:
+                if isinstance(row, dict):
+                    name_val = row.get('name', 'Substation')
+                    lat_val = row.get('latitude')
+                    lng_val = row.get('longitude')
+                    source_val = row.get('source', 'kmz')
+                    meta_raw = row.get('metadata')
+                    state_val = row.get('state', '')
+                    city_val = row.get('city', '')
+                else:
+                    name_val, lat_val, lng_val, source_val, meta_raw, state_val, city_val = row[0], row[1], row[2], row[3], row[4], row[5], row[6]
+
+                if not lat_val or not lng_val:
+                    continue
+
+                meta = {}
+                if meta_raw:
+                    try:
+                        meta = json.loads(meta_raw) if isinstance(meta_raw, str) else meta_raw
+                    except Exception:
+                        pass
+
+                voltage = meta.get('MAX_VOLT', meta.get('VOLTAGE', meta.get('voltage_kv', 0))) or 0
+                if voltage and voltage > 1000:
+                    voltage = voltage / 1000
+
+                sub = {
+                    "name": str(name_val)[:200] if name_val else 'Substation',
+                    "operator": str(meta.get('OWNER', meta.get('operator', 'Unknown')))[:100],
+                    "voltage_kv": voltage,
+                    "capacity_mva": meta.get('CAPACITY', meta.get('capacity_mva', 0)) or 0,
+                    "city": str(city_val)[:100],
+                    "state": str(state_val)[:10],
+                    "lat": lat_val,
+                    "lng": lng_val,
+                    "source_id": f"infra_layer_{hash(f'{name_val}_{lat_val}_{lng_val}') % 10**10}"
+                }
+                self._save_substation(sub, source='infrastructure_layers')
+
+            if rows:
+                logger.info(f"   ⚡ Cross-populated {len(rows)} substations from infrastructure_layers")
+
+        except Exception as e:
+            logger.warning(f"   ⚠️ Infrastructure layers substation sync failed: {e}")
 
     def _parse_voltage(self, voltage_str):
         try:
@@ -915,14 +1013,10 @@ class SubstationDiscovery:
 
     def _save_substation(self, sub, source='discovery'):
         try:
-            # Filter out telecom/distribution substations at ingestion
-            # Only save utility-grade substations (>69kV) or unknown voltage (0/None)
             voltage = sub.get('voltage_kv', 0) or 0
             if 0 < voltage <= 69:
-                return  # Skip telecom/distribution-grade substations
-            
+                return
             source_id = sub.get('source_id', f"{sub['name']}_{sub.get('lat', 0):.4f}_{sub.get('lng', 0):.4f}".replace(" ", "_").lower()[:100])
-            # FIX: INSERT OR IGNORE → ON CONFLICT DO NOTHING, ? → %s
             rowcount = _safe_write('''
                 INSERT INTO substations
                 (name, operator, voltage_kv, capacity_mva, city, state, lat, lng, source, source_id)
@@ -946,7 +1040,7 @@ class SubstationDiscovery:
             logger.warning(f"Error saving substation: {e}")
 
 
-class GasPipelineDiscovery:
+class GasPipelineDiscovery:class GasPipelineDiscovery:
     """Discover gas pipelines from EIA ArcGIS and learned APIs"""
 
     def __init__(self):
