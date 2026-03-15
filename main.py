@@ -2549,6 +2549,252 @@ def test_auto_capture():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
+# ═══════════════════════════════════════════════════════════════
+#  MCP TIER GATING — gates proxy responses for free callers
+# ═══════════════════════════════════════════════════════════════
+
+# Fields free users can see per facility
+MCP_FREE_FIELDS = {'name', 'city', 'state', 'country', 'provider', 'operator', 'status'}
+MCP_FREE_FACILITY_LIMIT = 3
+
+# Tools whose results contain facility arrays to gate
+MCP_FACILITY_TOOLS = {'search_facilities', 'get_pipeline', 'get_market_intel', 'get_top_operators'}
+# Tools whose results should be fully blocked for free tier
+MCP_BLOCKED_TOOLS = {'analyze_site', 'get_grid_data'}
+
+def _get_mcp_caller_tier():
+    """Determine caller's tier from API key. Returns (tier, key_info)."""
+    api_key = (
+        request.headers.get('X-API-Key', '') or
+        request.args.get('api_key', '')
+    )
+    # Also check Authorization: Bearer
+    if not api_key:
+        auth = request.headers.get('Authorization', '')
+        if auth.startswith('Bearer ') and auth[7:].startswith('dchub_'):
+            api_key = auth[7:]
+
+    if not api_key:
+        return 'free', None
+
+    try:
+        from api_tier_gating import validate_api_key
+        valid, info = validate_api_key(api_key)
+        if valid and info:
+            return info.get('plan', 'free'), info
+        if info and info.get('error') == 'daily_limit_exceeded':
+            return 'rate_limited', info
+    except Exception as e:
+        logger.error(f"MCP tier check error: {e}")
+
+    return 'free', None
+
+
+def _gate_mcp_result(result_content, tool_name, tier):
+    """
+    Gate a tools/call result for free tier users.
+    result_content: list of MCP content blocks [{"type":"text","text":"..."}]
+    Returns: modified content list with gating applied.
+    """
+    if tier not in ('free', 'rate_limited'):
+        return result_content  # paid tiers pass through
+
+    # Blocked tools: return upgrade message
+    if tool_name in MCP_BLOCKED_TOOLS:
+        return [{
+            "type": "text",
+            "text": json.dumps({
+                "error": "upgrade_required",
+                "message": f"{tool_name} requires a Developer plan ($49/mo) or higher.",
+                "upgrade": {
+                    "url": "https://dchub.cloud/pricing#developer",
+                    "checkout": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c"
+                }
+            })
+        }]
+
+    # For facility tools: parse the text content, gate results
+    if tool_name in MCP_FACILITY_TOOLS:
+        gated = []
+        for block in result_content:
+            if block.get('type') != 'text':
+                gated.append(block)
+                continue
+            try:
+                data = json.loads(block['text'])
+            except (json.JSONDecodeError, TypeError):
+                gated.append(block)
+                continue
+
+            # Gate facility arrays — look for common keys
+            gated_data = _gate_facility_data(data, tool_name)
+            gated.append({"type": "text", "text": json.dumps(gated_data)})
+        return gated
+
+    # All other tools: pass through for free tier (news, recommendations, etc.)
+    return result_content
+
+
+def _gate_facility_data(data, tool_name):
+    """Strip facility data down to free-tier fields, limit count, add CTA."""
+    # data could be a dict with a results/facilities/pipeline key, or a list
+    total_count = 0
+
+    if isinstance(data, dict):
+        # Find the array of results
+        for key in ('facilities', 'results', 'pipeline', 'data', 'operators', 'items'):
+            if key in data and isinstance(data[key], list):
+                total_count = len(data[key])
+                data[key] = [_strip_facility(f) for f in data[key][:MCP_FREE_FACILITY_LIMIT]]
+                break
+        else:
+            # Single facility object — strip it
+            if 'name' in data or 'facility_name' in data:
+                total_count = 1
+                data = _strip_facility(data)
+
+        # Inject upgrade CTA
+        data['_upgrade'] = {
+            "tier": "free",
+            "showing": min(MCP_FREE_FACILITY_LIMIT, total_count),
+            "total": total_count,
+            "message": f"Showing {min(MCP_FREE_FACILITY_LIMIT, total_count)} of {total_count} results with basic fields. Developer plan ($49/mo) unlocks full data, coordinates, and power specs.",
+            "url": "https://dchub.cloud/pricing#developer",
+            "checkout": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c"
+        }
+    elif isinstance(data, list):
+        total_count = len(data)
+        gated_list = [_strip_facility(f) for f in data[:MCP_FREE_FACILITY_LIMIT]]
+        data = {
+            "results": gated_list,
+            "_upgrade": {
+                "tier": "free",
+                "showing": min(MCP_FREE_FACILITY_LIMIT, total_count),
+                "total": total_count,
+                "message": f"Showing {min(MCP_FREE_FACILITY_LIMIT, total_count)} of {total_count} results with basic fields. Developer plan ($49/mo) unlocks full data, coordinates, and power specs.",
+                "url": "https://dchub.cloud/pricing#developer",
+                "checkout": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c"
+            }
+        }
+
+    return data
+
+
+def _strip_facility(facility):
+    """Strip a facility dict to free-tier fields only."""
+    if not isinstance(facility, dict):
+        return facility
+    return {k: v for k, v in facility.items() if k in MCP_FREE_FIELDS}
+
+
+def _gate_mcp_response_bytes(resp_bytes, rpc_method, rpc_params, tier):
+    """
+    Gate a full JSON-RPC response (bytes) for free tier.
+    Only gates tools/call results. Pass through everything else.
+    Returns: (gated_bytes, was_modified)
+    """
+    if tier not in ('free', 'rate_limited'):
+        return resp_bytes, False
+
+    if rpc_method != 'tools/call':
+        return resp_bytes, False
+
+    tool_name = rpc_params.get('name', '') if rpc_params else ''
+    if not tool_name:
+        return resp_bytes, False
+
+    # Only gate facility tools and blocked tools — everything else passes through
+    if tool_name not in MCP_FACILITY_TOOLS and tool_name not in MCP_BLOCKED_TOOLS:
+        return resp_bytes, False
+
+    try:
+        rpc_resp = json.loads(resp_bytes)
+    except (json.JSONDecodeError, TypeError):
+        return resp_bytes, False
+
+    # JSON-RPC result → result.content[]
+    result = rpc_resp.get('result', {})
+    content = result.get('content', [])
+    if not content:
+        return resp_bytes, False
+
+    gated_content = _gate_mcp_result(content, tool_name, tier)
+    rpc_resp['result']['content'] = gated_content
+    return json.dumps(rpc_resp).encode('utf-8'), True
+
+
+def _gate_mcp_sse_stream(resp, rpc_method, rpc_params, tier):
+    """
+    Gate an SSE stream for free tier.
+    Buffers SSE events, finds JSON-RPC results, gates them.
+    """
+    if tier not in ('free', 'rate_limited') or rpc_method != 'tools/call':
+        # Pass through unmodified
+        for chunk in resp.iter_content(chunk_size=None):
+            if chunk:
+                yield chunk
+        return
+
+    tool_name = rpc_params.get('name', '') if rpc_params else ''
+
+    # Only gate facility tools and blocked tools — everything else passes through
+    if tool_name not in MCP_FACILITY_TOOLS and tool_name not in MCP_BLOCKED_TOOLS:
+        for chunk in resp.iter_content(chunk_size=None):
+            if chunk:
+                yield chunk
+        return
+
+    buffer = b''
+
+    for chunk in resp.iter_content(chunk_size=None):
+        if not chunk:
+            continue
+        buffer += chunk
+
+        # Try to find complete SSE events (end with \n\n)
+        while b'\n\n' in buffer:
+            event_end = buffer.index(b'\n\n') + 2
+            event_bytes = buffer[:event_end]
+            buffer = buffer[event_end:]
+
+            # Parse SSE event
+            event_str = event_bytes.decode('utf-8', errors='replace')
+            data_lines = []
+            other_lines = []
+            for line in event_str.split('\n'):
+                if line.startswith('data: '):
+                    data_lines.append(line[6:])
+                elif line.strip():
+                    other_lines.append(line)
+
+            if data_lines and tool_name:
+                raw_data = '\n'.join(data_lines)
+                try:
+                    rpc_resp = json.loads(raw_data)
+                    result = rpc_resp.get('result', {})
+                    content = result.get('content', [])
+                    if content:
+                        gated = _gate_mcp_result(content, tool_name, tier)
+                        rpc_resp['result']['content'] = gated
+                        gated_data = json.dumps(rpc_resp)
+                        # Reconstruct SSE event
+                        out = ''
+                        for ol in other_lines:
+                            out += ol + '\n'
+                        out += 'data: ' + gated_data + '\n\n'
+                        yield out.encode('utf-8')
+                        continue
+                except (json.JSONDecodeError, TypeError, KeyError):
+                    pass
+
+            # Pass through unmodified
+            yield event_bytes
+
+    # Flush remaining buffer
+    if buffer:
+        yield buffer
+
+
 @app.route('/mcp', methods=['GET', 'POST', 'DELETE', 'OPTIONS'])
 @app.route('/mcp/', methods=['GET', 'POST', 'DELETE', 'OPTIONS'])
 def mcp_proxy():
@@ -2728,6 +2974,9 @@ def mcp_proxy():
             elif 'text/event-stream' not in fwd_headers.get('Accept', ''):
                 fwd_headers['Accept'] = fwd_headers['Accept'] + ', text/event-stream'
 
+            # ── Determine caller tier BEFORE forwarding ──
+            caller_tier, _tier_info = _get_mcp_caller_tier()
+
             resp = http_req.post(
                 MCP_INTERNAL_URL,
                 headers=fwd_headers,
@@ -2744,16 +2993,8 @@ def mcp_proxy():
             content_type = resp.headers.get('Content-Type', '')
 
             if 'text/event-stream' in content_type:
-                def generate():
-                    try:
-                        for chunk in resp.iter_content(chunk_size=None):
-                            if chunk:
-                                yield chunk
-                    except Exception:
-                        pass
-
                 proxy_resp = Response(
-                    stream_with_context(generate()),
+                    stream_with_context(_gate_mcp_sse_stream(resp, rpc_method, rpc_params, caller_tier)),
                     status=resp.status_code,
                     content_type='text/event-stream',
                 )
@@ -2765,12 +3006,16 @@ def mcp_proxy():
                     proxy_resp.headers['Mcp-Session-Id'] = resp.headers['Mcp-Session-Id']
                 return proxy_resp
 
+            # ── JSON response: gate before returning ──
+            resp_bytes = resp.content
+            gated_bytes, _was_gated = _gate_mcp_response_bytes(resp_bytes, rpc_method, rpc_params, caller_tier)
+
             excluded = {'transfer-encoding', 'content-encoding', 'connection'}
             headers = {k: v for k, v in resp.headers.items() if k.lower() not in excluded}
             headers['Access-Control-Allow-Origin'] = '*'
             if 'Mcp-Session-Id' in resp.headers:
                 headers['Mcp-Session-Id'] = resp.headers['Mcp-Session-Id']
-            return Response(resp.content, status=resp.status_code, headers=headers)
+            return Response(gated_bytes, status=resp.status_code, headers=headers)
 
         # ---- DELETE: Session cleanup ----
         if request.method == 'DELETE':
