@@ -1,6 +1,6 @@
 {
   "report_date": "2026-03-15",
-  "generated_at": "2026-03-15T00:16:12.643229",
+  "generated_at": "2026-03-15T04:49:51.499655",
   "summary": {
     "total_facilities": 11788,
     "total_providers": 2806,
@@ -89,6 +89,21 @@
   ],
   "recent_news": [
     {
+      "title": "GTC preview: Inside the AI factory \u2014 The $1T infrastructure war under the hood of the AI economy",
+      "source": "SiliconANGLE",
+      "date": "2026-03-15T03:01:34"
+    },
+    {
+      "title": "America's First Large-Scale Offshore Wind Project Finally Finishes Construction",
+      "source": "Slashdot",
+      "date": "2026-03-15T01:34:00"
+    },
+    {
+      "title": "US mayors push back against data center boom as AI backlash grows",
+      "source": "France 24",
+      "date": "2026-03-15T01:33:14"
+    },
+    {
       "title": "Protesters rally Saturday against Joliet data center",
       "source": "Shaw Local",
       "date": "2026-03-14T23:24:24"
@@ -97,6 +112,11 @@
       "title": "Arkansas lawmaker, Little Rock neighborhood group talk data center concerns",
       "source": "The Arkansas Democrat-Gazette",
       "date": "2026-03-14T21:10:00"
+    },
+    {
+      "title": "Powering the future: Data centers are planned throughout Northeast Pennsylvania",
+      "source": "Times Leader",
+      "date": "2026-03-14T20:30:00"
     },
     {
       "title": "Meta is reportedly laying off up to 20 percent of its staff",
@@ -117,26 +137,6 @@
       "title": "Entergy Says Data Center Projects Will Save Mississippi Customers $2 Billion",
       "source": "Construction Owners Club",
       "date": "2026-03-14T14:39:50"
-    },
-    {
-      "title": "Google invests $1B in NC to expand operations at data center",
-      "source": "finance.yahoo.com",
-      "date": "2026-03-14T14:21:26"
-    },
-    {
-      "title": "Conflicted on subject of data centers",
-      "source": "Observer-Reporter",
-      "date": "2026-03-14T13:52:30"
-    },
-    {
-      "title": "Iran war delays work on Meta's 2Africa subsea cable",
-      "source": "Data Center Dynamics",
-      "date": "2026-03-14T13:30:06"
-    },
-    {
-      "title": "Meta considers layoffs of up to 20% to fund AI data center buildout",
-      "source": "Data Center Dynamics",
-      "date": "2026-03-14T12:44:53"
     }
   ],
   "data_sources": [
