@@ -81,12 +81,13 @@ def verify_password(password, hash_string):
     except:
         return False
 
-def generate_jwt(user_id, email, role='user'):
+def generate_jwt(user_id, email, role='user', plan='free'):
     """Generate JWT token"""
     payload = {
         'user_id': user_id,
         'email': email,
         'role': role,
+        'plan': plan,
         'exp': datetime.utcnow() + timedelta(hours=_JWT_EXPIRY_HOURS),
         'iat': datetime.utcnow()
     }
@@ -259,7 +260,7 @@ def register_user():
             except Exception as email_err:
                 logger.warning(f"Free welcome email failed for {email}: {email_err}")
 
-            token = generate_jwt(user_id, email, 'user')
+            token = generate_jwt(user_id, email, 'user', 'free')
 
             return jsonify({
                 'success': True,
@@ -309,7 +310,7 @@ def login_user():
             if not pw_hash or not verify_password(password, pw_hash):
                 return jsonify({'error': 'Invalid credentials'}), 401
 
-            token = generate_jwt(user_id, user_email, role or 'user')
+            token = generate_jwt(user_id, user_email, role or 'user', plan or 'free')
 
             # Update last login in background
             def _update_last_login_bg(uid):
@@ -444,7 +445,7 @@ def google_auth_callback():
             except Exception as email_err:
                 logger.warning(f"Free welcome email failed for {email}: {email_err}")
 
-        jwt_token = generate_jwt(user_id, email, user_role)
+        jwt_token = generate_jwt(user_id, email, user_role, user_plan)
 
         return f"""<!DOCTYPE html><html><body><script>
         window.opener.postMessage({{
@@ -553,7 +554,7 @@ def google_auth():
             except Exception as email_err:
                 logger.warning(f"Free welcome email failed for {email}: {email_err}")
 
-        jwt_token = generate_jwt(user_id, email, user_role)
+        jwt_token = generate_jwt(user_id, email, user_role, user_plan)
 
         return jsonify({
             'success': True,
@@ -581,7 +582,7 @@ def get_current_user():
         with _pg_connection() as pg_conn:
             pg_cur = pg_conn.cursor()
             pg_cur.execute("""
-                SELECT id, email, name, company, plan, role, created_at, last_login
+                SELECT id, email, name, company, plan, role, created_at, last_login, plan_updated_at
                 FROM users WHERE id = %s
             """, (request.user['user_id'],))
             user = pg_cur.fetchone()
@@ -599,7 +600,8 @@ def get_current_user():
                     'plan': user[4] or 'free',
                     'role': user[5] or 'user',
                     'created_at': user[6],
-                    'last_login': user[7]
+                    'last_login': user[7],
+                    'plan_updated_at': user[8]
                 }
             })
     except Exception as e:

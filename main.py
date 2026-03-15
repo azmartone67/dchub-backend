@@ -4801,8 +4801,8 @@ except Exception as e:
             s, hx = hs.split(':')
             return _hlib.pbkdf2_hmac('sha256', p.encode(), s.encode(), 10000).hex() == hx
         except: return False
-    def generate_jwt(uid, email, role='user'):
-        return jwt.encode({'user_id': uid, 'email': email, 'role': role,
+    def generate_jwt(uid, email, role='user', plan='free'):
+        return jwt.encode({'user_id': uid, 'email': email, 'role': role, 'plan': plan,
             'exp': datetime.utcnow() + timedelta(hours=JWT_EXPIRY_HOURS)}, JWT_SECRET, algorithm='HS256')
     def decode_jwt(token):
         try: return jwt.decode(token, JWT_SECRET, algorithms=['HS256'])
@@ -6251,12 +6251,12 @@ def handle_checkout_completed(session):
         rows_updated = 0
         if user_id:
             rc, _ = _pg_execute(
-                "UPDATE users SET plan = %s, role = %s, subscription_status = 'active', stripe_customer_id = %s WHERE id = %s",
+                "UPDATE users SET plan = %s, role = %s, subscription_status = 'active', stripe_customer_id = %s, plan_updated_at = NOW() WHERE id = %s",
                 (plan_name, api_tier, stripe_cust, user_id))
             rows_updated = rc
         elif customer_email:
             rc, _ = _pg_execute(
-                "UPDATE users SET plan = %s, role = %s, subscription_status = 'active', stripe_customer_id = %s WHERE email = %s",
+                "UPDATE users SET plan = %s, role = %s, subscription_status = 'active', stripe_customer_id = %s, plan_updated_at = NOW() WHERE email = %s",
                 (plan_name, api_tier, stripe_cust, customer_email))
             rows_updated = rc
 
