@@ -62,6 +62,10 @@ ALWAYS_OPEN_PREFIXES = [
     '/api/v1/circuit-status',
     '/api/nav-config',
     '/api/agents',
+    '/api/jobs',
+    '/api/admin',
+    '/api/energy-discovery',
+    '/api/scheduler',
     '/mcp',
     '/health',
 ]
