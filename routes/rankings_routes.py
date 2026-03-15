@@ -118,7 +118,8 @@ def _lat_lng_to_state(lat, lng):
         lat, lng = float(lat), float(lng)
     except (TypeError, ValueError):
         return None
-    for code, (min_lat, min_lng, max_lat, max_lng) in STATE_BOUNDS.items():
+    for code in ["DC", "VA", "MD"] + [k for k in STATE_BOUNDS if k not in ("DC", "VA", "MD")]:
+        min_lat, min_lng, max_lat, max_lng = STATE_BOUNDS[code]
         if min_lat <= lat <= max_lat and min_lng <= lng <= max_lng:
             return code
     return None
