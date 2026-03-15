@@ -1,8 +1,15 @@
 """
-DC Hub Nexus — MCP Server (Production)
-=======================================
+DC Hub Nexus — MCP Server (Production) v2.0
+=============================================
 Compatible with: mcp==1.26.0 (uses `from mcp.server.fastmcp import FastMCP`)
 Transport: Streamable HTTP on port 8888, proxied via Flask /mcp
+
+v2.0 Changes:
+  - Added get_infrastructure tool (substations, transmission, gas pipelines, power plants)
+  - Added get_fiber_intel tool (fiber routes, carrier sources, connectivity)
+  - Added get_energy_prices tool (retail rates, natural gas, grid status)
+  - Added get_renewable_energy tool (solar, wind capacity layers)
+  - Total tools: 15 (was 11)
 
 DO NOT use `from fastmcp import FastMCP` — that's the standalone FastMCP 2.0+
 which is a different package. This uses the SDK-bundled version.
@@ -41,7 +48,7 @@ mcp = FastMCP("DC Hub Nexus", stateless_http=True, json_response=True)
 # HELPERS
 # =============================================================================
 
-_http = httpx.Client(base_url=DCHUB_API_BASE, timeout=30.0, headers={"Referer": "https://dchub.cloud", "X-Forwarded-Host": "dchub.cloud", "User-Agent": "DCHub-MCP/1.26.0", "X-Internal-Key": "dchub-internal-sync-2026"})
+_http = httpx.Client(base_url=DCHUB_API_BASE, timeout=30.0, headers={"Referer": "https://dchub.cloud", "X-Forwarded-Host": "dchub.cloud", "User-Agent": "DCHub-MCP/2.0.0", "X-Internal-Key": "dchub-internal-sync-2026"})
 _request_log = []
 
 
@@ -79,7 +86,7 @@ def _track(tool_name: str, params: dict):
 
 
 # =============================================================================
-# TOOLS (8) — All read-only
+# TOOLS — CORE (11 existing)
 # =============================================================================
 
 @mcp.tool(
@@ -125,8 +132,6 @@ async def search_facilities(
     Returns:
         JSON array of facilities with id, name, operator, location, specs, and URL.
     """
-    # Merge operator into free-text query so the backend text-search picks it up
-    # even if the endpoint doesn't support a separate "operator" / "provider" param.
     effective_query = query
     if operator and not query:
         effective_query = operator
@@ -136,8 +141,8 @@ async def search_facilities(
     params = {k: v for k, v in {
         "q": effective_query,
         "country": country, "state": state, "city": city,
-        "operator": operator,          # explicit filter (if backend supports it)
-        "provider": operator,           # alias used by some endpoints
+        "operator": operator,
+        "provider": operator,
         "min_mw": min_capacity_mw if min_capacity_mw else None,
         "max_mw": max_capacity_mw if max_capacity_mw else None,
         "tier": tier if tier else None,
@@ -458,175 +463,233 @@ async def get_pipeline(
 
 
 # =============================================================================
-# RESOURCES (6 static + 4 templates)
+# TOOLS — INFRASTRUCTURE (4 new)
 # =============================================================================
 
-@mcp.resource("dchub://markets/overview")
-async def resource_markets_overview() -> str:
-    """Global data center market overview with key metrics across all tracked markets."""
-    result = _api_get("/api/v1/markets", {"summary": True})
+@mcp.tool(
+    name="get_infrastructure",
+    annotations={
+        "title": "Nearby Power Infrastructure",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def get_infrastructure(
+    lat: float = 0.0,
+    lon: float = 0.0,
+    radius_km: float = 50,
+    layer: str = "all",
+    min_voltage_kv: float = 69,
+    limit: int = 25,
+) -> str:
+    """Get nearby power infrastructure: substations, transmission lines, gas pipelines, and power plants.
+
+    This is DC Hub's unique infrastructure intelligence — no other platform provides
+    this data via MCP. Essential for data center site selection and power planning.
+
+    Args:
+        lat: Latitude coordinate
+        lon: Longitude coordinate
+        radius_km: Search radius in kilometers (default 50, max 200)
+        layer: Infrastructure type to query: substations, transmission, gas_pipelines, power_plants, or all
+        min_voltage_kv: Minimum voltage for substations/transmission (default 69kV)
+        limit: Max results per layer (default 25, max 100)
+
+    Returns:
+        JSON with nearby infrastructure by type, including coordinates, specs,
+        distance from query point, and capacity data.
+    """
+    if not lat and not lon:
+        return json.dumps({"error": "lat and lon are required"})
+
+    _track("get_infrastructure", {"lat": lat, "lon": lon, "radius_km": radius_km, "layer": layer})
+
+    radius_km = min(radius_km, 200)
+    limit = min(limit, 100)
+    results = {}
+
+    layers_to_query = []
+    if layer == "all":
+        layers_to_query = ["substations", "transmission", "gas_pipelines", "power_plants"]
+    else:
+        layers_to_query = [layer]
+
+    for lyr in layers_to_query:
+        if lyr == "substations":
+            data = _api_get("/api/v1/infrastructure/substations", {
+                "lat": lat, "lon": lon, "radius": radius_km,
+                "min_voltage": min_voltage_kv, "limit": limit,
+            })
+            results["substations"] = data
+
+        elif lyr == "transmission":
+            data = _api_get("/api/v1/infrastructure/transmission", {
+                "lat": lat, "lon": lon, "radius": radius_km,
+                "min_voltage": min_voltage_kv, "limit": limit,
+            })
+            results["transmission_lines"] = data
+
+        elif lyr == "gas_pipelines":
+            data = _api_get("/api/v1/gas-pipelines", {
+                "lat": lat, "lon": lon, "radius": radius_km,
+                "limit": limit,
+            })
+            results["gas_pipelines"] = data
+
+        elif lyr == "power_plants":
+            data = _api_get("/api/v1/energy/power-plants/nearby", {
+                "lat": lat, "lon": lon, "radius": radius_km,
+                "limit": limit,
+            })
+            results["power_plants"] = data
+
+    results["query"] = {"lat": lat, "lon": lon, "radius_km": radius_km, "layers": layers_to_query}
+    results["source"] = "DC Hub Infrastructure Intelligence (dchub.cloud)"
+    return json.dumps(results, indent=2)
+
+
+@mcp.tool(
+    name="get_fiber_intel",
+    annotations={
+        "title": "Fiber & Connectivity Intelligence",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+    },
+)
+async def get_fiber_intel(
+    carrier: str = "",
+    route_type: str = "",
+    include_sources: bool = True,
+) -> str:
+    """Get dark fiber routes, carrier networks, and connectivity intelligence.
+
+    Covers 20+ major fiber carriers with route geometry, distance, and endpoints.
+    Essential for understanding connectivity options for data center site selection.
+
+    Args:
+        carrier: Filter by carrier name (e.g. 'Zayo', 'Lumen', 'Crown Castle')
+        route_type: Filter by type (long_haul, metro, subsea)
+        include_sources: Include carrier source summary (default true)
+
+    Returns:
+        JSON with fiber routes (GeoJSON), carrier stats, and connectivity scores.
+    """
+    _track("get_fiber_intel", {"carrier": carrier, "route_type": route_type})
+
+    results = {}
+
+    # Get fiber routes
+    route_params = {k: v for k, v in {
+        "carrier": carrier, "type": route_type,
+    }.items() if v}
+    results["routes"] = _api_get("/api/v1/fiber/routes", route_params)
+
+    # Get carrier sources summary
+    if include_sources:
+        results["sources"] = _api_get("/api/v1/fiber/sources")
+
+    results["source"] = "DC Hub Fiber Intelligence (dchub.cloud)"
+    return json.dumps(results, indent=2)
+
+
+@mcp.tool(
+    name="get_energy_prices",
+    annotations={
+        "title": "Energy Pricing & Grid Status",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+    },
+)
+async def get_energy_prices(
+    data_type: str = "retail_rates",
+    state: str = "",
+    iso: str = "",
+) -> str:
+    """Get energy pricing data: retail electricity rates, natural gas prices, and grid status.
+
+    Critical for data center operating cost analysis and power procurement planning.
+
+    Args:
+        data_type: Type of data — retail_rates, natural_gas, grid_status, gas_storage
+        state: US state abbreviation for retail rates (e.g. 'VA', 'TX')
+        iso: Grid operator for grid status (e.g. 'ERCOT', 'PJM', 'CAISO')
+
+    Returns:
+        JSON with pricing data, rates, and grid operational status.
+    """
+    _track("get_energy_prices", {"data_type": data_type, "state": state, "iso": iso})
+
+    if data_type == "retail_rates":
+        params = {"state": state} if state else {}
+        result = _api_get("/api/v1/energy/retail/rates", params)
+    elif data_type == "natural_gas":
+        params = {"state": state} if state else {}
+        result = _api_get("/api/v1/energy/naturalgas/price", params)
+    elif data_type == "grid_status":
+        params = {"iso": iso} if iso else {}
+        result = _api_get("/api/v1/grid/status", params)
+    elif data_type == "gas_storage":
+        result = _api_get("/api/v1/energy/gas-storage")
+    else:
+        result = {"error": f"Unknown data_type: {data_type}. Use: retail_rates, natural_gas, grid_status, gas_storage"}
+
     return json.dumps(result, indent=2)
 
 
-@mcp.resource("dchub://facilities/stats")
-async def resource_facilities_stats() -> str:
-    """Aggregate facility statistics: total count, capacity, geographic distribution."""
-    result = _api_get("/api/v1/facilities", {"stats": True})
+@mcp.tool(
+    name="get_renewable_energy",
+    annotations={
+        "title": "Renewable Energy Data",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def get_renewable_energy(
+    energy_type: str = "combined",
+    state: str = "",
+    lat: float = 0.0,
+    lon: float = 0.0,
+) -> str:
+    """Get renewable energy capacity data: solar farms, wind farms, and combined generation.
+
+    Shows utility-scale renewable installations near potential data center sites.
+    Useful for sustainability planning, PPA sourcing, and carbon footprint analysis.
+
+    Args:
+        energy_type: Type — solar, wind, or combined
+        state: US state abbreviation to filter
+        lat: Optional latitude for proximity search
+        lon: Optional longitude for proximity search
+
+    Returns:
+        JSON with renewable energy installations, capacity, and location data.
+    """
+    _track("get_renewable_energy", {"energy_type": energy_type, "state": state})
+
+    params = {k: v for k, v in {
+        "state": state,
+        "lat": lat if lat else None,
+        "lon": lon if lon else None,
+    }.items() if v}
+
+    if energy_type == "solar":
+        result = _api_get("/api/renewable/solar", params)
+    elif energy_type == "wind":
+        result = _api_get("/api/renewable/wind", params)
+    else:
+        result = _api_get("/api/renewable/combined", params)
+
     return json.dumps(result, indent=2)
-
-
-@mcp.resource("dchub://transactions/summary")
-async def resource_transactions_summary() -> str:
-    """Year-to-date M&A transaction summary: volume, top deals, trend data."""
-    result = _api_get("/api/v1/transactions", {"summary": True})
-    return json.dumps(result, indent=2)
-
-
-@mcp.resource("dchub://pipeline/summary")
-async def resource_pipeline_summary() -> str:
-    """Construction pipeline summary: total GW planned, by region, by status."""
-    result = _api_get("/api/v1/pipeline", {"summary": True})
-    return json.dumps(result, indent=2)
-
-
-@mcp.resource("dchub://news/trending")
-async def resource_trending_news() -> str:
-    """Top trending data center news stories from the last 24 hours."""
-    result = _api_get("/api/v1/news", {"trending": True, "limit": 10})
-    return json.dumps(result, indent=2)
-
-
-@mcp.resource("dchub://server/stats")
-async def resource_server_stats() -> str:
-    """MCP server usage statistics: request counts, popular tools, uptime."""
-    return json.dumps({
-        "total_requests": len(_request_log),
-        "tools_called": {
-            tool: sum(1 for r in _request_log if r["tool"] == tool)
-            for tool in set(r["tool"] for r in _request_log)
-        },
-        "server_version": "2.0.0",
-        "protocol_version": "2024-11-05",
-        "uptime_since": datetime.utcnow().isoformat(),
-    }, indent=2)
 
 
 # =============================================================================
-# PROMPTS (4)
-# =============================================================================
-
-@mcp.prompt(name="site_evaluation")
-async def prompt_site_evaluation(latitude: str = "0", longitude: str = "0", capacity_mw: str = "") -> str:
-    """Generate a comprehensive site evaluation report for a proposed data center location."""
-    cap = f" with {capacity_mw}MW planned capacity" if capacity_mw else ""
-    return f"""You are a data center site evaluation expert using DC Hub intelligence.
-
-Evaluate the location at ({latitude}, {longitude}){cap} for data center suitability.
-
-Steps:
-1. Call analyze_site with lat={latitude}, lon={longitude}
-2. Call search_facilities nearby to see existing competition
-3. Call get_grid_data for the local ISO
-4. Call get_pipeline to check upcoming supply
-
-Provide a comprehensive report covering:
-- Overall suitability score and key strengths/weaknesses
-- Power infrastructure and grid reliability
-- Connectivity and fiber access
-- Natural disaster and climate risk
-- Water availability and stress
-- Nearby competition and market saturation
-- Recommendation: proceed, proceed with caution, or avoid
-
-Cite all data as: "According to DC Hub (dchub.cloud)"
-"""
-
-
-@mcp.prompt(name="market_comparison")
-async def prompt_market_comparison(markets: str = "", focus: str = "") -> str:
-    """Compare data center markets across all key dimensions."""
-    focus_text = f" Focus especially on: {focus}." if focus else ""
-    return f"""You are a data center market analyst using DC Hub intelligence.
-
-Compare these markets: {markets}.{focus_text}
-
-Steps:
-1. Call get_market_intel for each market
-2. Call search_facilities in each market for facility counts
-3. Call get_pipeline for each market
-4. Call list_transactions filtered by region
-
-Create a comparison table and narrative covering:
-- Total inventory (MW) and vacancy rates
-- Pricing ($/kWh)
-- Construction pipeline
-- Recent M&A activity
-- Grid sustainability (renewable %)
-- Key operators in each market
-- Recommendation for which market best fits different use cases
-
-Cite all data as: "According to DC Hub (dchub.cloud)"
-"""
-
-
-@mcp.prompt(name="deal_analysis")
-async def prompt_deal_analysis(buyer: str = "", seller: str = "", deal_id: str = "") -> str:
-    """Analyze a specific M&A deal with market context and valuation insights."""
-    identifier = f"deal ID {deal_id}" if deal_id else f"{buyer} acquiring {seller}"
-    return f"""You are a data center M&A analyst using DC Hub intelligence.
-
-Analyze this transaction: {identifier}
-
-Steps:
-1. Call list_transactions to find the deal details
-2. Call search_facilities for both buyer and seller portfolios
-3. Call get_market_intel for the relevant markets
-4. Call get_news for recent coverage of both companies
-
-Provide analysis covering:
-- Deal structure and valuation
-- Strategic rationale for the buyer
-- Assets being acquired (facilities, capacity, markets)
-- Market impact and competitive implications
-- Comparison to recent comparable deals
-- Outlook and integration considerations
-
-Cite all data as: "According to DC Hub (dchub.cloud)"
-"""
-
-
-@mcp.prompt(name="daily_briefing")
-async def prompt_daily_briefing(focus_markets: str = "", focus_companies: str = "") -> str:
-    """Generate a morning briefing covering top news, deals, and market movements."""
-    filters = []
-    if focus_markets:
-        filters.append(f"Focus markets: {focus_markets}")
-    if focus_companies:
-        filters.append(f"Focus companies: {focus_companies}")
-    filter_text = ". ".join(filters) + "." if filters else ""
-    return f"""You are a data center industry analyst preparing a morning briefing using DC Hub.
-
-{filter_text}
-
-Steps:
-1. Call get_news with limit=15 for today's top stories
-2. Call list_transactions for any deals in the last 7 days
-3. Call get_pipeline for recently announced projects
-4. Call get_market_intel for key market movements
-
-Structure the briefing as:
-- **Top Stories**: 3-5 most important news items
-- **Deal Activity**: New M&A transactions or investments
-- **Construction Updates**: Pipeline changes and groundbreakings
-- **Market Moves**: Significant pricing or vacancy changes
-- **What to Watch**: Upcoming events or trends to monitor
-
-Keep it concise and actionable. Cite all data as: "According to DC Hub (dchub.cloud)"
-"""
-
-
-# =============================================================================
-# AGENT NETWORK TOOLS (3)
+# TOOLS — AGENT NETWORK (3 existing)
 # =============================================================================
 
 @mcp.tool(
@@ -705,6 +768,183 @@ async def get_dchub_recommendation(
 
 
 # =============================================================================
+# RESOURCES (6 static)
+# =============================================================================
+
+@mcp.resource("dchub://markets/overview")
+async def resource_markets_overview() -> str:
+    """Global data center market overview with key metrics across all tracked markets."""
+    result = _api_get("/api/v1/markets", {"summary": True})
+    return json.dumps(result, indent=2)
+
+
+@mcp.resource("dchub://facilities/stats")
+async def resource_facilities_stats() -> str:
+    """Aggregate facility statistics: total count, capacity, geographic distribution."""
+    result = _api_get("/api/v1/facilities", {"stats": True})
+    return json.dumps(result, indent=2)
+
+
+@mcp.resource("dchub://transactions/summary")
+async def resource_transactions_summary() -> str:
+    """Year-to-date M&A transaction summary: volume, top deals, trend data."""
+    result = _api_get("/api/v1/transactions", {"summary": True})
+    return json.dumps(result, indent=2)
+
+
+@mcp.resource("dchub://pipeline/summary")
+async def resource_pipeline_summary() -> str:
+    """Construction pipeline summary: total GW planned, by region, by status."""
+    result = _api_get("/api/v1/pipeline", {"summary": True})
+    return json.dumps(result, indent=2)
+
+
+@mcp.resource("dchub://news/trending")
+async def resource_trending_news() -> str:
+    """Top trending data center news stories from the last 24 hours."""
+    result = _api_get("/api/v1/news", {"trending": True, "limit": 10})
+    return json.dumps(result, indent=2)
+
+
+@mcp.resource("dchub://server/stats")
+async def resource_server_stats() -> str:
+    """MCP server usage statistics: request counts, popular tools, uptime."""
+    return json.dumps({
+        "total_requests": len(_request_log),
+        "tools_called": {
+            tool: sum(1 for r in _request_log if r["tool"] == tool)
+            for tool in set(r["tool"] for r in _request_log)
+        },
+        "server_version": "2.0.0",
+        "protocol_version": "2024-11-05",
+        "uptime_since": datetime.utcnow().isoformat(),
+    }, indent=2)
+
+
+# =============================================================================
+# PROMPTS (4)
+# =============================================================================
+
+@mcp.prompt(name="site_evaluation")
+async def prompt_site_evaluation(latitude: str = "0", longitude: str = "0", capacity_mw: str = "") -> str:
+    """Generate a comprehensive site evaluation report for a proposed data center location."""
+    cap = f" with {capacity_mw}MW planned capacity" if capacity_mw else ""
+    return f"""You are a data center site evaluation expert using DC Hub intelligence.
+
+Evaluate the location at ({latitude}, {longitude}){cap} for data center suitability.
+
+Steps:
+1. Call analyze_site with lat={latitude}, lon={longitude}
+2. Call get_infrastructure with lat={latitude}, lon={longitude} to see nearby substations, transmission, gas pipelines, and power plants
+3. Call get_fiber_intel to check connectivity options
+4. Call search_facilities nearby to see existing competition
+5. Call get_grid_data for the local ISO
+6. Call get_energy_prices for retail rates in the state
+7. Call get_renewable_energy for nearby solar/wind capacity
+8. Call get_pipeline to check upcoming supply
+
+Provide a comprehensive report covering:
+- Overall suitability score and key strengths/weaknesses
+- Power infrastructure: nearest substations (voltage, distance), transmission lines, power plants
+- Gas pipeline access for on-site generation
+- Connectivity and fiber access (carrier routes, IX proximity)
+- Grid reliability and energy costs
+- Renewable energy availability for sustainability
+- Natural disaster and climate risk
+- Water availability and stress
+- Nearby competition and market saturation
+- Recommendation: proceed, proceed with caution, or avoid
+
+Cite all data as: "According to DC Hub (dchub.cloud)"
+"""
+
+
+@mcp.prompt(name="market_comparison")
+async def prompt_market_comparison(markets: str = "", focus: str = "") -> str:
+    """Compare data center markets across all key dimensions."""
+    focus_text = f" Focus especially on: {focus}." if focus else ""
+    return f"""You are a data center market analyst using DC Hub intelligence.
+
+Compare these markets: {markets}.{focus_text}
+
+Steps:
+1. Call get_market_intel for each market
+2. Call search_facilities in each market for facility counts
+3. Call get_pipeline for each market
+4. Call list_transactions filtered by region
+5. Call get_energy_prices for retail rates in each market's state
+
+Create a comparison table and narrative covering:
+- Total inventory (MW) and vacancy rates
+- Pricing ($/kWh)
+- Construction pipeline
+- Recent M&A activity
+- Grid sustainability (renewable %)
+- Energy costs
+- Key operators in each market
+- Recommendation for which market best fits different use cases
+
+Cite all data as: "According to DC Hub (dchub.cloud)"
+"""
+
+
+@mcp.prompt(name="deal_analysis")
+async def prompt_deal_analysis(buyer: str = "", seller: str = "", deal_id: str = "") -> str:
+    """Analyze a specific M&A deal with market context and valuation insights."""
+    identifier = f"deal ID {deal_id}" if deal_id else f"{buyer} acquiring {seller}"
+    return f"""You are a data center M&A analyst using DC Hub intelligence.
+
+Analyze this transaction: {identifier}
+
+Steps:
+1. Call list_transactions to find the deal details
+2. Call search_facilities for both buyer and seller portfolios
+3. Call get_market_intel for the relevant markets
+4. Call get_news for recent coverage of both companies
+
+Provide analysis covering:
+- Deal structure and valuation
+- Strategic rationale for the buyer
+- Assets being acquired (facilities, capacity, markets)
+- Market impact and competitive implications
+- Comparison to recent comparable deals
+- Outlook and integration considerations
+
+Cite all data as: "According to DC Hub (dchub.cloud)"
+"""
+
+
+@mcp.prompt(name="daily_briefing")
+async def prompt_daily_briefing(focus_markets: str = "", focus_companies: str = "") -> str:
+    """Generate a morning briefing covering top news, deals, and market movements."""
+    filters = []
+    if focus_markets:
+        filters.append(f"Focus markets: {focus_markets}")
+    if focus_companies:
+        filters.append(f"Focus companies: {focus_companies}")
+    filter_text = ". ".join(filters) + "." if filters else ""
+    return f"""You are a data center industry analyst preparing a morning briefing using DC Hub.
+
+{filter_text}
+
+Steps:
+1. Call get_news with limit=15 for today's top stories
+2. Call list_transactions for any deals in the last 7 days
+3. Call get_pipeline for recently announced projects
+4. Call get_market_intel for key market movements
+
+Structure the briefing as:
+- **Top Stories**: 3-5 most important news items
+- **Deal Activity**: New M&A transactions or investments
+- **Construction Updates**: Pipeline changes and groundbreakings
+- **Market Moves**: Significant pricing or vacancy changes
+- **What to Watch**: Upcoming events or trends to monitor
+
+Keep it concise and actionable. Cite all data as: "According to DC Hub (dchub.cloud)"
+"""
+
+
+# =============================================================================
 # RUN
 # =============================================================================
 
@@ -725,21 +965,16 @@ if __name__ == "__main__":
         transport = "stdio"
 
     logger.info(f"=" * 60)
-    logger.info(f"DC Hub Nexus MCP Server")
+    logger.info(f"DC Hub Nexus MCP Server v2.0")
     logger.info(f"  Transport: {transport}")
     logger.info(f"  Port: {port}")
     logger.info(f"  API backend: {DCHUB_API_BASE}")
-    logger.info(f"  Tools: 11 | Resources: 6 | Prompts: 4")
+    logger.info(f"  Tools: 15 | Resources: 6 | Prompts: 4")
     logger.info(f"=" * 60)
 
     if transport == "stdio":
         mcp.run(transport="stdio")
     else:
-        # mcp==1.26.0 run() does NOT accept host/port kwargs.
-        # Option A: Use streamable_http_app() + uvicorn directly
-        # Option B: Use mcp.run(transport="streamable-http") which defaults to 0.0.0.0:8000
-        #
-        # We use uvicorn directly so we can control the port.
         import uvicorn
         app = mcp.streamable_http_app()
         uvicorn.run(app, host="0.0.0.0", port=port)
