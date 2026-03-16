@@ -1353,8 +1353,8 @@ def get_announcements():
         limit = min(int(request.args.get('limit', 500)), 1000)
 
         query = """SELECT id, name, provider, city, state, country, market AS region,
-                          latitude, longitude, power_mw, status, tier,
-                          first_seen, last_updated, raw_data
+                          latitude, longitude, power_mw, status, facility_type,
+                          discovered_at, source, raw_data
                    FROM discovered_facilities
                    WHERE LOWER(status) IN ('under construction', 'construction', 'planning',
                                            'planned', 'announced', 'approved',
