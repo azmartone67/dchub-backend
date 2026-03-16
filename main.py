@@ -1751,10 +1751,6 @@ def get_read_db(*args, **kwargs):
                         except Exception:
                             pass
                 def cursor(self, *a, **kw):
-                    # Default to RealDictCursor so dict(row) works — matches db_utils primary behavior
-                    if not a and 'cursor_factory' not in kw:
-                        import psycopg2.extras
-                        kw['cursor_factory'] = psycopg2.extras.RealDictCursor
                     return object.__getattribute__(self, '_conn').cursor(*a, **kw)
                 def commit(self):
                     return object.__getattribute__(self, '_conn').commit()
@@ -4825,16 +4821,6 @@ def init_new_tables():
     )''')
     c.execute('CREATE INDEX IF NOT EXISTS idx_testimonials_approved ON ai_testimonials(approved, featured, created_at DESC)')
 
-    c.execute('''CREATE TABLE IF NOT EXISTS developer_checkout_keys (
-        id SERIAL PRIMARY KEY,
-        session_id TEXT UNIQUE NOT NULL,
-        customer_email TEXT NOT NULL,
-        raw_key TEXT NOT NULL,
-        key_shown INTEGER DEFAULT 0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )''')
-    c.execute('CREATE INDEX IF NOT EXISTS idx_dev_checkout_session ON developer_checkout_keys(session_id)')
-
     conn.commit()
     conn.close()
     print("✅ New v74 tables initialized (including MCP analytics + AI testimonials)")
@@ -5886,62 +5872,6 @@ def stripe_webhook_test():
     return jsonify(checks)
 
 # =============================================================================
-# DEVELOPER KEY RETRIEVAL - One-time key display after Stripe checkout
-# =============================================================================
-@app.route('/api/developer/key', methods=['GET'])
-def get_developer_key():
-    """Retrieve developer API key after Stripe checkout. One-time display.
-    Uses atomic UPDATE ... RETURNING to prevent race conditions."""
-    session_id = request.args.get('session_id', '').strip()
-    if not session_id:
-        return jsonify({'error': 'session_id parameter required'}), 400
-
-    try:
-        with pg_connection() as conn:
-            cur = conn.cursor()
-
-            cur.execute(
-                "UPDATE developer_checkout_keys SET key_shown = 1 WHERE session_id = %s AND key_shown = 0 RETURNING raw_key",
-                (session_id,))
-            row = cur.fetchone()
-
-            if row:
-                conn.commit()
-                return jsonify({
-                    'success': True,
-                    'key': row[0],
-                    'masked': False,
-                    'message': 'Save this key now. It will not be shown in full again.',
-                    'plan': 'developer',
-                    'rate_limit': 1000
-                })
-
-            cur.execute(
-                "SELECT key_shown FROM developer_checkout_keys WHERE session_id = %s",
-                (session_id,))
-            exists = cur.fetchone()
-
-            if not exists:
-                return jsonify({'error': 'No developer key found for this session'}), 404
-
-            cur.execute(
-                "SELECT key_prefix FROM api_keys WHERE key_prefix LIKE 'dchub_dv_%%' ORDER BY created_at DESC LIMIT 1")
-            prefix_row = cur.fetchone()
-            masked_hint = (prefix_row[0] + '...') if prefix_row else 'dchub_dv_****...'
-
-            return jsonify({
-                'success': True,
-                'key': masked_hint,
-                'masked': True,
-                'message': 'Key was already shown. For security, the full key is only displayed once. Check your email for a copy.',
-                'plan': 'developer',
-                'rate_limit': 1000
-            })
-    except Exception as e:
-        print(f"❌ Developer key retrieval error: {e}")
-        return jsonify({'error': 'Failed to retrieve key'}), 500
-
-# =============================================================================
 # FOUNDING MEMBER ENDPOINT - Used by dchub-banner.js
 # =============================================================================
 @app.route('/api/founding-members', methods=['GET'])
@@ -6437,24 +6367,7 @@ def handle_checkout_completed(session):
                 plan_name, api_tier = 'pro', 'pro'
             print(f"💰 Plan from amount (${amount_dollars}): {plan_name}")
 
-        session_id = session.get('id', '')
         stripe_cust = session.get('customer', '')
-
-        is_developer_checkout = False
-        if plan_name == 'developer':
-            is_developer_checkout = True
-        if not is_developer_checkout:
-            try:
-                line_items = session.get('line_items', {}).get('data', [])
-                for li in line_items:
-                    price_obj = li.get('price', {})
-                    if price_obj.get('product') == 'prod_U9LDbZYgFIJps7':
-                        is_developer_checkout = True
-                        plan_name, api_tier = 'developer', 'developer'
-                        print(f"🔧 Developer product detected (prod_U9LDbZYgFIJps7)")
-                        break
-            except Exception:
-                pass
 
         rows_updated = 0
         if user_id:
@@ -6504,33 +6417,22 @@ def handle_checkout_completed(session):
                        plan_name, api_tier, now, stripe_cust))
             print(f"🔐 Account created for {customer_email} (PG + SQLite)")
 
-            if is_developer_checkout:
-                raw_key = 'dchub_dv_' + sec.token_hex(20)
-                key_label = f'{customer_email} Developer Key'
-            else:
-                raw_key = 'dchub_' + sec.token_urlsafe(32)
-                key_label = f'{customer_email} Pro Key'
+            raw_key = 'dchub_' + sec.token_urlsafe(32)
             key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
-            key_prefix = raw_key[:16]
+            key_prefix = raw_key[:12]
 
             _pg_execute(
                 "INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions, rate_limit_tier, is_active, created_at, usage_count, plan, calls_today, calls_total) VALUES (%s, %s, %s, %s, '[\"read\",\"write\"]', %s, 1, %s, 0, %s, 0, 0)",
-                (new_user_id, key_hash, key_prefix, key_label, api_tier, now, plan_name))
+                (new_user_id, key_hash, key_prefix, f'{customer_email} Pro Key', api_tier, now, plan_name))
 
             c.execute("""INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions,
                          rate_limit_tier, is_active, created_at, usage_count, plan, calls_today, calls_total)
                          VALUES (?, ?, ?, ?, '["read","write"]', ?, 1, ?, 0, ?, 0, 0)""",
-                      (new_user_id, key_hash, key_prefix, key_label,
+                      (new_user_id, key_hash, key_prefix, f'{customer_email} Pro Key',
                        api_tier, now, plan_name))
 
             print(f"✨ Created new user account for {customer_email} (id: {new_user_id})")
             print(f"🔑 Generated {plan_name} API key: {key_prefix}...")
-
-            if is_developer_checkout and session_id:
-                _pg_execute(
-                    "INSERT INTO developer_checkout_keys (session_id, customer_email, raw_key, key_shown, created_at) VALUES (%s, %s, %s, 0, NOW()) ON CONFLICT (session_id) DO NOTHING",
-                    (session_id, customer_email, raw_key))
-                print(f"🔧 Developer key stored for session {session_id[:20]}...")
 
             send_welcome_email_sendgrid(customer_email, raw_key, plan_name, temp_password=temp_password)
 
@@ -6556,32 +6458,20 @@ def handle_checkout_completed(session):
                 print(f"🔑 Updated {api_keys_updated} API key(s) to tier: {api_tier}")
 
                 import secrets as sec
-                if is_developer_checkout:
-                    raw_key = 'dchub_dv_' + sec.token_hex(20)
-                    key_label = f'{customer_email} Developer Key'
-                else:
-                    raw_key = 'dchub_' + sec.token_urlsafe(32)
-                    key_label = f'{customer_email} Pro Key'
+                raw_key = 'dchub_' + sec.token_urlsafe(32)
                 key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
-                key_prefix = raw_key[:16]
+                key_prefix = raw_key[:12]
 
                 _pg_execute(
                     "INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions, rate_limit_tier, is_active, created_at, usage_count, plan, calls_today, calls_total) VALUES (%s, %s, %s, %s, '[\"read\",\"write\"]', %s, 1, %s, 0, %s, 0, 0)",
-                    (resolved_user_id, key_hash, key_prefix, key_label, api_tier, now, plan_name))
+                    (resolved_user_id, key_hash, key_prefix, f'{customer_email} Pro Key', api_tier, now, plan_name))
 
                 c.execute("""INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions,
                              rate_limit_tier, is_active, created_at, usage_count, plan, calls_today, calls_total)
                              VALUES (?, ?, ?, ?, '["read","write"]', ?, 1, ?, 0, ?, 0, 0)""",
-                          (resolved_user_id, key_hash, key_prefix, key_label,
+                          (resolved_user_id, key_hash, key_prefix, f'{customer_email} Pro Key',
                            api_tier, now, plan_name))
                 print(f"🔑 Generated new {plan_name} API key for existing user: {key_prefix}...")
-
-                if is_developer_checkout and session_id:
-                    _pg_execute(
-                        "INSERT INTO developer_checkout_keys (session_id, customer_email, raw_key, key_shown, created_at) VALUES (%s, %s, %s, 0, NOW()) ON CONFLICT (session_id) DO NOTHING",
-                        (session_id, customer_email, raw_key))
-                    print(f"🔧 Developer key stored for session {session_id[:20]}...")
-
                 send_welcome_email_sendgrid(customer_email, raw_key, plan_name)
             else:
                 print(f"⚠️ Could not find user_id for email {customer_email} -- skipping api_keys update")
@@ -8085,7 +7975,8 @@ def search_facilities():
 
     conn = get_read_db()
     try:
-        c = conn.cursor()
+        import psycopg2.extras
+        c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     
         conditions = []
         params = []
