@@ -1,6 +1,6 @@
 {
   "report_date": "2026-03-16",
-  "generated_at": "2026-03-16T07:52:26.968425",
+  "generated_at": "2026-03-16T08:15:01.133813",
   "summary": {
     "total_facilities": 11788,
     "total_providers": 2806,
@@ -89,6 +89,21 @@
   ],
   "recent_news": [
     {
+      "title": "Lessons from the solar frontier",
+      "source": "PV Magazine",
+      "date": "2026-03-16T07:45:03"
+    },
+    {
+      "title": "Brilliant backups that kept data alive for ages landed web developer in big trouble",
+      "source": "The Register DC",
+      "date": "2026-03-16T07:30:06"
+    },
+    {
+      "title": "Australia Data Center Power Market 2026: Cloud Expansion, AI Workloads & Energy-Efficient Infrastructure",
+      "source": "vocal.media",
+      "date": "2026-03-16T06:51:20"
+    },
+    {
       "title": "AWS S3 turns 20 and reaches \u2018hundreds of exabytes\u2019",
       "source": "The Register DC",
       "date": "2026-03-16T06:24:04"
@@ -101,6 +116,11 @@
     {
       "title": "FinancialContent - HIVE's BUZZ HPC Expands Data Center Footprint into British Columbia with 4 Times Growth in Liquid-Cooled AI Data Center Capacity",
       "source": "FinancialContent",
+      "date": "2026-03-16T06:20:00"
+    },
+    {
+      "title": "HIVE's BUZZ HPC Expands Data Center Footprint into British Columbia with 4 Times Growth in Liquid-Cooled AI Data Center Capacity",
+      "source": "TMX Newsfile",
       "date": "2026-03-16T06:20:00"
     },
     {
@@ -117,26 +137,6 @@
       "title": "Arista Networks Targets AI Data Centers With XPO Liquid Cooled Optics",
       "source": "simplywall.st",
       "date": "2026-03-16T05:25:18"
-    },
-    {
-      "title": "NovaChargeX Unveils Patented Regenerative Energy System to Power AI Data Centers with Continuous, Grid-Independent Electricity",
-      "source": "SolarQuarter",
-      "date": "2026-03-16T03:32:06"
-    },
-    {
-      "title": "Commentary: Nvidia CEO outlines new AI infrastructure vision ahead of GTC 2026",
-      "source": "digitimes",
-      "date": "2026-03-16T02:45:21"
-    },
-    {
-      "title": "Google\u2019s Data Center Plan Runs Into Small Town Resistance",
-      "source": "Propmodo",
-      "date": "2026-03-16T01:06:57"
-    },
-    {
-      "title": "Cooling the AI Boom: Innovative Strategies for Water-Efficient and Sustainable Data Centers",
-      "source": "Intelligent Living",
-      "date": "2026-03-16T00:56:37"
     }
   ],
   "data_sources": [
