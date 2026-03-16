@@ -452,18 +452,25 @@ def google_auth_callback():
         jwt_token = generate_jwt(user_id, email, user_role, user_plan)
 
         return f"""<!DOCTYPE html><html><body><script>
-        window.opener.postMessage({{
-            type: 'google-auth-success',
-            token: '{jwt_token}',
-            user: {{id:'{user_id}',email:'{email}',name:'{name}',plan:'{user_plan}',role:'{user_role}'}}
-        }}, '*');
-        window.close();
+        if (window.opener) {{
+            window.opener.postMessage({{
+                type: 'google-auth-success',
+                token: '{jwt_token}',
+                user: {{id:'{user_id}',email:'{email}',name:'{name}',plan:'{user_plan}',role:'{user_role}'}}
+            }}, '*');
+            window.close();
+        }} else {{
+            localStorage.setItem('dchub_token', '{jwt_token}');
+            localStorage.setItem('dchub_session', JSON.stringify({{email:'{email}',name:'{name}',plan:'{user_plan}',role:'{user_role}'}}));
+            localStorage.setItem('dchub_user', JSON.stringify({{id:'{user_id}',email:'{email}',name:'{name}',plan:'{user_plan}',role:'{user_role}'}}));
+            window.location.href = '/dashboard.html';
+        }}
         </script></body></html>"""
 
     except Exception as e:
         logger.error(f"Google callback error: {e}")
         error_msg = str(e).replace("'", "\\'")
-        return f"""<script>window.opener.postMessage({{type:'google-auth-error',error:'{error_msg}'}},'*');window.close();</script>"""
+        return f"""<script>if(window.opener){{window.opener.postMessage({{type:'google-auth-error',error:'{error_msg}'}},'*');window.close();}}else{{window.location.href='/login.html?error='+encodeURIComponent('{error_msg}');}}</script>"""
 
 
 @auth_bp.route('/api/auth/google', methods=['POST'])
