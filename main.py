@@ -4543,6 +4543,7 @@ if 'GRIDSTATUS_CACHE' not in dir():
     EIA_CACHE = BoundedCache(max_size=1, ttl=1) if 'BoundedCache' in dir() else {}
     HIFLD_CACHE = BoundedCache(max_size=1, ttl=1) if 'BoundedCache' in dir() else {}
     OILGAS_CACHE = BoundedCache(max_size=1, ttl=1) if 'BoundedCache' in dir() else {}
+    DEALS_CACHE = BoundedCache(max_size=1, ttl=1) if 'BoundedCache' in dir() else {}
     gridstatus_get_load = lambda iso: None
 
 @app.route('/api/grid/fuel-mix-live', methods=['GET'])
@@ -6875,9 +6876,10 @@ def compare_markets():
     
     conn = None
     try:
-        conn = get_db()
+        conn = get_read_db()
         c = conn.cursor()
         
+        country_guard = "AND (country = 'US' OR country = 'USA' OR country IS NULL OR country = '')"
         comparison = []
         
         for market in market_list:
@@ -6887,10 +6889,10 @@ def compare_markets():
             params = []
             for city in cities:
                 if len(city) == 2 and city.isupper():
-                    conditions.append('state = ?')
+                    conditions.append('state = %s')
                     params.append(city)
                 else:
-                    conditions.append('city LIKE ?')
+                    conditions.append('city ILIKE %s')
                     params.append(f'%{city}%')
             
             where_clause = ' OR '.join(conditions)
@@ -6907,16 +6909,20 @@ def compare_markets():
                     SUM(CASE WHEN status = 'planned' OR status = 'under_construction' THEN 1 ELSE 0 END) as pipeline
                 FROM discovered_facilities 
                 WHERE ({where_clause})
+                {country_guard}
                 {RAILWAY_EXCLUSION}
             """, params)
             
-            stats = dict(c.fetchone())
+            row = c.fetchone()
+            cols = [d[0] for d in c.description]
+            stats = dict(zip(cols, row)) if row else {}
             
             # Top 5 providers
             c.execute(f"""
                 SELECT provider, COUNT(*) as count
                 FROM discovered_facilities 
                 WHERE ({where_clause}) AND provider != ''
+                {country_guard}
                 {RAILWAY_EXCLUSION}
                 GROUP BY provider
                 ORDER BY count DESC
