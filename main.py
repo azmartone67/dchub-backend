@@ -11991,7 +11991,6 @@ LOCKED_GATE_MANIFEST = {
         '/api/v1/infrastructure/transmission',
         '/api/v1/infrastructure/substations',
         '/api/v1/grid/overview',
-        '/api/pipeline',
         '/api/v1/pipeline/summary',
         '/api/discovery/facilities',
         '/api/autopilot/transactions',
