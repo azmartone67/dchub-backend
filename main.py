@@ -7817,7 +7817,7 @@ def _list_facilities_full():
         c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         
         c.execute(count_sql, params)
-        total = c.fetchone()[0]
+        row = c.fetchone(); total = row['count'] if isinstance(row, dict) else row[0]
         
         c.execute(sql, params)
         facilities = [dict_from_row(row) for row in c.fetchall()]
@@ -7916,7 +7916,7 @@ def _list_facilities_free():
         c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
         c.execute(count_sql, params)
-        total_matching = c.fetchone()[0]
+        row = c.fetchone(); total_matching = row['count'] if isinstance(row, dict) else row[0]
 
         c.execute(sql, params)
         rows = c.fetchall()
