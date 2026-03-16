@@ -733,7 +733,7 @@ def get_pool_health():
         'read_replica': {
             'status': 'active' if _pg_pool_read else 'not configured',
             'used': len(_pg_pool_read._used) if _pg_pool_read and hasattr(_pg_pool_read, '_used') else 0,
-            'max': 15 if _pg_pool_read else 0,
+            'max': 30 if _pg_pool_read else 0,
         },
         'leaked_connections': leaked,
         'active_checkouts': checked_out,
@@ -794,12 +794,12 @@ def _init_read_pool():
     for attempt in range(3):
         try:
             _pg_pool_read = _pg_pool.ThreadedConnectionPool(
-                minconn=1,
-                maxconn=15,
+                minconn=2,
+                maxconn=30,
                 dsn=read_url,
                 connect_timeout=10
             )
-            print("DATABASE POOL: ✅ Read replica pool initialized (1-15 connections)")
+            print("DATABASE POOL: ✅ Read replica pool initialized (2-30 connections)")
             return
         except Exception as e:
             print(f"DATABASE POOL: ⚠️ Read pool attempt {attempt + 1}/3 failed: {e}")
