@@ -270,24 +270,24 @@ elif 'neon.tech' not in _current_db:
 
 
 # =============================================================================
-# PORT CLEANUP - Kill stale gunicorn/python on port 5000 BEFORE anything else
-# Only targets port 5000 (gunicorn). Port 8888 (MCP) is managed by start_mcp.sh.
+# PORT CLEANUP - Kill stale gunicorn/python on app port BEFORE anything else
+# Only targets app port (gunicorn). Port 8888 (MCP) is managed by start_mcp.sh.
 # =============================================================================
 import os as _os_early
 import signal as _sig_early
+_APP_PORT = int(_os_early.environ.get('PORT', '8080'))
 def _cleanup_ports():
     my_pid = _os_early.getpid()
     my_ppid = _os_early.getppid()
     try:
         import psutil
         for conn in psutil.net_connections(kind='tcp'):
-            if conn.laddr and conn.laddr.port == 5000 and conn.pid:
+            if conn.laddr and conn.laddr.port == _APP_PORT and conn.pid:
                 if conn.pid != my_pid and conn.pid != my_ppid and conn.pid > 2:
                     try:
                         proc = psutil.Process(conn.pid)
-                        age = _os_early.times().elapsed if hasattr(_os_early.times(), 'elapsed') else 0
                         _os_early.kill(conn.pid, _sig_early.SIGKILL)
-                        print(f"STARTUP: Killed stale gunicorn PID {conn.pid} on port 5000 (cmd: {' '.join(proc.cmdline()[:3])})")
+                        print(f"STARTUP: Killed stale gunicorn PID {conn.pid} on port {_APP_PORT} (cmd: {' '.join(proc.cmdline()[:3])})")
                     except (ProcessLookupError, PermissionError, psutil.NoSuchProcess):
                         pass
     except Exception as e:
@@ -11916,7 +11916,7 @@ if __name__ == '__main__':
             try:
                 time.sleep(240)  # Ping every 4 minutes
                 # HTTP self-ping
-                domain = os.environ.get('REPLIT_DEV_DOMAIN', 'localhost:5000')
+                domain = os.environ.get('REPLIT_DEV_DOMAIN', f"localhost:{os.environ.get('PORT', '8080')}")
                 if 'localhost' not in domain:
                     requests.get(f"https://{domain}/health", timeout=10)
                 # Neon DB keepalive - prevents auto-suspend
@@ -11941,7 +11941,7 @@ if __name__ == '__main__':
     print("")
     print("=" * 50)
     print("🚀 DC Hub v91 Ready!")
-    print("   📡 API: http://0.0.0.0:5000")
+    print(f"   📡 API: http://0.0.0.0:{os.environ.get('PORT', '8080')}")
     print("   🤖 Auto-Pilot: /api/autopilot/status")
     print("   ⚡ Energy Discovery: /api/energy-discovery/status")
     print("   🔒 Usage Limiter: /api/land-power/usage (1/month free, 5 filters)")
@@ -12266,7 +12266,7 @@ def _startup_health_check():
     for attempt in range(1, 11):
         try:
             import requests as _req
-            r = _req.get('http://localhost:5000/health', timeout=5)
+            r = _req.get(f"http://localhost:{os.environ.get('PORT', '8080')}/health", timeout=5)
             if r.status_code == 200:
                 logger.info("STARTUP HEALTH CHECK: OK on attempt %d (%0.2fs)", attempt, r.elapsed.total_seconds())
                 return
@@ -12343,7 +12343,7 @@ else:
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', '8080')), debug=False, use_reloader=False)
 
 
 @app.route('/api/v1/facilities/<facility_id>', methods=['GET'])
