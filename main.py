@@ -7759,54 +7759,54 @@ def _list_facilities_full():
             conditions = []
             for city in search_cities:
                 if len(city) == 2 and city.isupper():
-                    conditions.append('state = ?')
+                    conditions.append('state = %s')
                     params.append(city)
                 else:
-                    conditions.append('city LIKE ?')
+                    conditions.append('city LIKE %s')
                     params.append(f'%{city}%')
             search_clause = f" AND ({' OR '.join(conditions)})"
         else:
-            search_clause = " AND (city LIKE ? OR state LIKE ? OR name LIKE ? OR provider LIKE ?)"
+            search_clause = " AND (city LIKE %s OR state LIKE %s OR name LIKE %s OR provider LIKE %s)"
             params.extend([f'%{q}%', f'%{q}%', f'%{q}%', f'%{q}%'])
         
         sql += search_clause
         count_sql += search_clause
     
     if country:
-        sql += " AND country = ?"
-        count_sql += " AND country = ?"
+        sql += " AND country = %s"
+        count_sql += " AND country = %s"
         params.append(country)
     if provider:
-        sql += " AND provider LIKE ?"
-        count_sql += " AND provider LIKE ?"
+        sql += " AND provider LIKE %s"
+        count_sql += " AND provider LIKE %s"
         params.append(f"%{provider}%")
     if status:
-        sql += " AND status = ?"
-        count_sql += " AND status = ?"
+        sql += " AND status = %s"
+        count_sql += " AND status = %s"
         params.append(status)
     if region:
-        sql += " AND region = ?"
-        count_sql += " AND region = ?"
+        sql += " AND region = %s"
+        count_sql += " AND region = %s"
         params.append(region)
     if min_power:
-        sql += " AND power_mw >= ?"
-        count_sql += " AND power_mw >= ?"
+        sql += " AND power_mw >= %s"
+        count_sql += " AND power_mw >= %s"
         params.append(min_power)
     if source:
-        sql += " AND source = ?"
-        count_sql += " AND source = ?"
+        sql += " AND source = %s"
+        count_sql += " AND source = %s"
         params.append(source)
     state = request.args.get('state')
     if state:
-        sql += " AND state = ?"
-        count_sql += " AND state = ?"
+        sql += " AND state = %s"
+        count_sql += " AND state = %s"
         params.append(state.upper())
 
     # Phase 4: min_confidence filter
     min_confidence = request.args.get('min_confidence', type=float)
     if min_confidence is not None and 0 <= min_confidence <= 1:
-        sql += " AND confidence_score >= ?"
-        count_sql += " AND confidence_score >= ?"
+        sql += " AND confidence_score >= %s"
+        count_sql += " AND confidence_score >= %s"
         params.append(min_confidence)
     
     sql += f" ORDER BY confidence_score DESC, power_mw DESC LIMIT {limit} OFFSET {offset}"
@@ -7882,30 +7882,30 @@ def _list_facilities_free():
             conditions = []
             for city in search_cities:
                 if len(city) == 2 and city.isupper():
-                    conditions.append('state = ?')
+                    conditions.append('state = %s')
                     params.append(city)
                 else:
-                    conditions.append('city LIKE ?')
+                    conditions.append('city LIKE %s')
                     params.append(f'%{city}%')
             search_clause = f" AND ({' OR '.join(conditions)})"
         else:
-            search_clause = " AND (city LIKE ? OR state LIKE ? OR name LIKE ? OR provider LIKE ?)"
+            search_clause = " AND (city LIKE %s OR state LIKE %s OR name LIKE %s OR provider LIKE %s)"
             params.extend([f'%{q}%', f'%{q}%', f'%{q}%', f'%{q}%'])
         sql += search_clause
         count_sql += search_clause
 
     if country:
-        sql += " AND country = ?"
-        count_sql += " AND country = ?"
+        sql += " AND country = %s"
+        count_sql += " AND country = %s"
         params.append(country)
     if provider:
-        sql += " AND provider LIKE ?"
-        count_sql += " AND provider LIKE ?"
+        sql += " AND provider LIKE %s"
+        count_sql += " AND provider LIKE %s"
         params.append(f"%{provider}%")
     state = request.args.get('state')
     if state:
-        sql += " AND state = ?"
-        count_sql += " AND state = ?"
+        sql += " AND state = %s"
+        count_sql += " AND state = %s"
         params.append(state.upper())
 
     sql += f" ORDER BY confidence_score DESC, power_mw DESC LIMIT {FREE_LIMIT}"
@@ -7913,7 +7913,7 @@ def _list_facilities_free():
     conn = None
     try:
         conn = get_read_db()
-        c = conn.cursor()
+        c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
         c.execute(count_sql, params)
         total_matching = c.fetchone()[0]
