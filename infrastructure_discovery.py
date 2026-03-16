@@ -428,7 +428,7 @@ class FiberRouteDiscovery:
             INSERT INTO fiber_routes
             (name, provider, route_type, start_location, source, source_id)
             VALUES (%s, %s, %s, %s, %s, %s)
-            ON CONFLICT(source_id) DO NOTHING
+            ON CONFLICT(source, source_id) DO NOTHING
         ''', (
             ix.get('name', 'Unknown IX'),
             'Internet Exchange', 'IX',
@@ -448,7 +448,7 @@ class FiberRouteDiscovery:
                 (name, provider, route_type, start_location, end_location,
                  start_lat, start_lng, end_lat, end_lng, source, source_id)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT(source_id) DO NOTHING
+                ON CONFLICT(source, source_id) DO NOTHING
             ''', (
                 route['name'][:200],
                 route.get('provider', 'Unknown')[:100],
@@ -594,7 +594,7 @@ class DCPropertyDiscovery:
                 INSERT INTO dc_properties
                 (name, city, state, lat, lng, property_type, square_feet, power_capacity_mw, status, source, source_id)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT(source_id) DO NOTHING
+                ON CONFLICT(source, source_id) DO NOTHING
             ''', (
                 prop['name'][:200],
                 prop.get('city', '')[:100],
@@ -747,7 +747,7 @@ class ConstructionPermitDiscovery:
                 INSERT INTO construction_permits
                 (project_name, city, state, square_feet, estimated_power_mw, owner, status, lat, lng, source, source_id)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT(source_id) DO NOTHING
+                ON CONFLICT(source, source_id) DO NOTHING
             ''', (
                 permit['name'][:200],
                 permit.get('city', '')[:100],
@@ -1021,7 +1021,7 @@ class SubstationDiscovery:
                 INSERT INTO substations
                 (name, operator, voltage_kv, capacity_mva, city, state, lat, lng, source, source_id)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT(source_id) DO NOTHING
+                ON CONFLICT(source, source_id) DO NOTHING
             ''', (
                 sub['name'][:200],
                 sub.get('operator', '')[:100],
@@ -1239,7 +1239,7 @@ class GasPipelineDiscovery:
                 (name, operator, pipeline_type, diameter_inches, capacity_mcf, status,
                  lat, lng, city, state, source, source_id)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT(source_id) DO NOTHING
+                ON CONFLICT(source, source_id) DO NOTHING
             ''', (
                 pipeline['name'][:200],
                 pipeline.get('operator', '')[:100],
