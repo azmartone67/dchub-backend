@@ -2628,10 +2628,27 @@ MCP_FREE_FACILITY_LIMIT = 5          # was 3 — enough to evaluate, not enough 
 MCP_FREE_DAILY_LIMIT = 10            # NEW — tool calls per day per IP for free tier
 
 # Tools whose results contain facility arrays to gate
-MCP_FACILITY_TOOLS = {'search_facilities', 'get_pipeline', 'get_top_operators'}
+MCP_FACILITY_TOOLS = {'search_facilities', 'get_facility', 'get_pipeline', 'get_top_operators'}
 
 # Tools that return teaser results for free tier (was MCP_BLOCKED_TOOLS — hard block)
-MCP_TEASER_TOOLS = {'analyze_site', 'get_grid_data', 'get_infrastructure', 'get_fiber_intel', 'get_energy_prices', 'get_renewable_energy', 'get_news', 'get_intelligence_index', 'get_market_intel'}
+MCP_TEASER_TOOLS = {'analyze_site', 'get_grid_data', 'get_infrastructure', 'get_fiber_intel', 'get_energy_prices', 'get_renewable_energy', 'get_news', 'get_intelligence_index', 'get_market_intel', 'list_transactions'}
+
+# User-facing notes per tool category — AI agents surface these to end users
+MCP_USER_NOTES = {
+    'search_facilities': "\U0001f4a1 This is a free preview from DC Hub \u2014 showing basic fields only. Full data with coordinates, power capacity, and connectivity specs is available at dchub.cloud/developers",
+    'get_facility': "\U0001f4a1 This is a free preview from DC Hub \u2014 showing basic fields only. Full data with coordinates, power capacity, and connectivity specs is available at dchub.cloud/developers",
+    'get_market_intel': "\U0001f4a1 DC Hub free preview \u2014 limited results shown. Full market intelligence, deal data, and pipeline tracking at dchub.cloud/developers",
+    'list_transactions': "\U0001f4a1 DC Hub free preview \u2014 limited results shown. Full market intelligence, deal data, and pipeline tracking at dchub.cloud/developers",
+    'get_pipeline': "\U0001f4a1 DC Hub free preview \u2014 limited results shown. Full market intelligence, deal data, and pipeline tracking at dchub.cloud/developers",
+    'get_news': "\U0001f4a1 DC Hub free preview \u2014 article summaries and source URLs require a Developer key. Details at dchub.cloud/developers",
+    'get_grid_data': "\U0001f4a1 DC Hub free preview \u2014 detailed energy and infrastructure data requires a Developer key ($49/mo). Unlock at dchub.cloud/developers",
+    'get_energy_prices': "\U0001f4a1 DC Hub free preview \u2014 detailed energy and infrastructure data requires a Developer key ($49/mo). Unlock at dchub.cloud/developers",
+    'get_infrastructure': "\U0001f4a1 DC Hub free preview \u2014 detailed energy and infrastructure data requires a Developer key ($49/mo). Unlock at dchub.cloud/developers",
+    'get_renewable_energy': "\U0001f4a1 DC Hub free preview \u2014 detailed energy and infrastructure data requires a Developer key ($49/mo). Unlock at dchub.cloud/developers",
+    'get_fiber_intel': "\U0001f4a1 DC Hub free preview \u2014 full dark fiber routes, carrier details, and connectivity scoring at dchub.cloud/developers",
+    'get_intelligence_index': "\U0001f4a1 DC Hub free preview \u2014 limited results shown. Full market intelligence, deal data, and pipeline tracking at dchub.cloud/developers",
+}
+MCP_RATE_LIMIT_NOTE = "\u26a0\ufe0f DC Hub free tier limit reached (10 calls/day). The user can unlock 1,000 calls/day with a Developer key at dchub.cloud/developers"
 
 # In-memory daily rate limit tracker: {ip_address: {'date': 'YYYY-MM-DD', 'count': N}}
 _mcp_free_rate_limits = {}
@@ -2709,6 +2726,7 @@ def _gate_mcp_result(result_content, tool_name, tier):
             return [{
                 "type": "text",
                 "text": json.dumps({
+                    "_user_facing_note": MCP_RATE_LIMIT_NOTE,
                     "error": "daily_limit_reached",
                     "message": (
                         f"You've used all {MCP_FREE_DAILY_LIMIT} free MCP calls for today. "
@@ -2769,12 +2787,12 @@ def _gate_teaser_result(result_content, tool_name):
             continue
 
         if tool_name == 'analyze_site':
-            # Keep: overall_score, location, interpretation
-            # Strip: detailed sub-scores, nearby facilities, power/gas/fiber data
+            score = data.get('overall_score', 'N/A')
             teaser = {
+                '_user_facing_note': f"\U0001f4a1 DC Hub scored this site {score}/100. Detailed sub-scores for power, fiber, gas, and risk require a Developer key. Unlock at dchub.cloud/developers",
                 'success': data.get('success', True),
                 'location': data.get('location', {}),
-                'overall_score': data.get('overall_score'),
+                'overall_score': score,
                 'interpretation': data.get('interpretation', ''),
                 'capacity_requested_mw': data.get('capacity_requested_mw'),
                 'scores': {
@@ -2796,7 +2814,7 @@ def _gate_teaser_result(result_content, tool_name):
                 '_upgrade': {
                     'tier': 'free_teaser',
                     'message': (
-                        f"Site score: {data.get('overall_score', 'N/A')} — "
+                        f"Site score: {score} — "
                         f"Developer plan ($49/mo) unlocks detailed power, gas pipeline, fiber, "
                         f"market, and risk sub-scores plus nearby infrastructure counts."
                     ),
@@ -2808,9 +2826,8 @@ def _gate_teaser_result(result_content, tool_name):
             return [{"type": "text", "text": json.dumps(teaser)}]
 
         elif tool_name == 'get_grid_data':
-            # Keep: region/ISO name, timestamp, top-level summary
-            # Strip: detailed fuel mix, price data, historical
             teaser = {
+                '_user_facing_note': MCP_USER_NOTES['get_grid_data'],
                 'success': data.get('success', True),
                 'region': data.get('region') or data.get('iso') or data.get('grid', ''),
                 'timestamp': data.get('timestamp', ''),
@@ -2833,6 +2850,7 @@ def _gate_teaser_result(result_content, tool_name):
 
         elif tool_name == 'get_infrastructure':
             teaser = {
+                '_user_facing_note': MCP_USER_NOTES['get_infrastructure'],
                 'success': data.get('success', True),
                 'query': data.get('query', {}),
                 'substations': {'count': len(data.get('substations', {}).get('results', data.get('substations', {}).get('data', []))), 'nearest': '██ upgrade to see'} if 'substations' in data else None,
@@ -2851,6 +2869,7 @@ def _gate_teaser_result(result_content, tool_name):
 
         elif tool_name == 'get_fiber_intel':
             teaser = {
+                '_user_facing_note': MCP_USER_NOTES['get_fiber_intel'],
                 'success': True,
                 'carriers_available': '██ upgrade to see carrier details',
                 'total_routes': '██',
@@ -2866,6 +2885,7 @@ def _gate_teaser_result(result_content, tool_name):
 
         elif tool_name == 'get_energy_prices':
             teaser = {
+                '_user_facing_note': MCP_USER_NOTES['get_energy_prices'],
                 'success': True,
                 'data_type': data.get('data_type', 'energy pricing'),
                 'preview': 'Energy pricing data available',
@@ -2882,6 +2902,7 @@ def _gate_teaser_result(result_content, tool_name):
 
         elif tool_name == 'get_renewable_energy':
             teaser = {
+                '_user_facing_note': MCP_USER_NOTES['get_renewable_energy'],
                 'success': True,
                 'preview': 'Renewable energy capacity data available',
                 'installations': '██ upgrade to see',
@@ -2905,6 +2926,7 @@ def _gate_teaser_result(result_content, tool_name):
                 for a in articles[:3]
             ]
             teaser = {
+                '_user_facing_note': MCP_USER_NOTES['get_news'],
                 'success': data.get('success', True),
                 'articles': gated_articles,
                 'count': len(gated_articles),
@@ -2924,6 +2946,7 @@ def _gate_teaser_result(result_content, tool_name):
         elif tool_name == 'get_intelligence_index':
             idx = data.get('dc_hub_intelligence_index', data)
             teaser = {
+                '_user_facing_note': MCP_USER_NOTES['get_intelligence_index'],
                 'dc_hub_intelligence_index': {
                     'global_pulse_score': idx.get('global_pulse_score'),
                     'generated_at': idx.get('generated_at'),
@@ -2956,6 +2979,7 @@ def _gate_teaser_result(result_content, tool_name):
                 for p in data.get('top_providers', [])[:3]
             ]
             teaser = {
+                '_user_facing_note': MCP_USER_NOTES['get_market_intel'],
                 'success': data.get('success', True),
                 'market': data.get('market', {}),
                 'by_status': data.get('by_status', {}),
@@ -2979,11 +3003,39 @@ def _gate_teaser_result(result_content, tool_name):
             }
             return [{"type": "text", "text": json.dumps(teaser)}]
 
+        elif tool_name == 'list_transactions':
+            transactions = data.get('transactions', data.get('deals', data.get('results', [])))
+            total = len(transactions) if isinstance(transactions, list) else 0
+            free_fields = ['title', 'buyer', 'seller', 'deal_type', 'date', 'announced_date']
+            gated_deals = [
+                {k: t.get(k) for k in free_fields if k in t}
+                for t in (transactions[:3] if isinstance(transactions, list) else [])
+            ]
+            teaser = {
+                '_user_facing_note': MCP_USER_NOTES['list_transactions'],
+                'success': data.get('success', True),
+                'transactions': gated_deals,
+                'count': len(gated_deals),
+                'total_available': total,
+                '_upgrade': {
+                    'tier': 'free_teaser',
+                    'showing': len(gated_deals),
+                    'total': total,
+                    'message': f'Showing {len(gated_deals)} of {total} transactions with basic fields. Developer plan ($49/mo) unlocks full deal values, detailed terms, and complete M&A history.',
+                    'url': 'https://dchub.cloud/pricing#developer',
+                    'checkout': 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c',
+                    'price': '$49/mo',
+                }
+            }
+            return [{"type": "text", "text": json.dumps(teaser)}]
+
     # Fallback: if we couldn't parse, return generic teaser
+    fallback_note = MCP_USER_NOTES.get(tool_name, f"\U0001f4a1 DC Hub free preview \u2014 full {tool_name} data requires a Developer key. Details at dchub.cloud/developers")
     return [{
         "type": "text",
         "text": json.dumps({
-            "preview": f"{tool_name} data available — showing limited preview.",
+            "_user_facing_note": fallback_note,
+            "preview": f"{tool_name} data available \u2014 showing limited preview.",
             "_upgrade": {
                 "tier": "free_teaser",
                 "message": f"Full {tool_name} results require Developer plan ($49/mo).",
@@ -3025,6 +3077,8 @@ def _gate_facility_data(data, tool_name):
         calls_used = entry.get('count', 0)
         calls_remaining = max(0, MCP_FREE_DAILY_LIMIT - calls_used)
 
+        facility_note = MCP_USER_NOTES.get(tool_name, MCP_USER_NOTES['search_facilities'])
+        data['_user_facing_note'] = facility_note
         data['_upgrade'] = {
             "tier": "free",
             "showing": min(MCP_FREE_FACILITY_LIMIT, total_count),
@@ -3042,7 +3096,6 @@ def _gate_facility_data(data, tool_name):
             "price": "$49/mo",
         }
 
-        # Include one full sample so devs see exactly what they're paying for
         if sample_full and isinstance(sample_full, dict):
             data['_sample_full_result'] = {
                 "_note": "This is what every result looks like on the Developer plan",
@@ -3059,7 +3112,9 @@ def _gate_facility_data(data, tool_name):
         calls_used = entry.get('count', 0)
         calls_remaining = max(0, MCP_FREE_DAILY_LIMIT - calls_used)
 
+        facility_note = MCP_USER_NOTES.get(tool_name, MCP_USER_NOTES['search_facilities'])
         data = {
+            "_user_facing_note": facility_note,
             "results": gated_list,
             "_upgrade": {
                 "tier": "free",
