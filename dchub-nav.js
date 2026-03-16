@@ -66,6 +66,7 @@
     },
     { id: 'news', label: 'News', href: '/news', type: 'link' },
     { id: 'ai-wars', label: '\u2694\uFE0F AI Wars', href: '/ai-wars', type: 'link', style: 'color:#a78bfa;font-weight:600' },
+    { id: 'developers', label: 'Developers', href: '/developers', type: 'link' },
     { id: 'pricing', label: 'Pricing', href: '/pricing', type: 'link', style: 'color:var(--accent,#6366f1)' },
     {
       id: 'about', label: 'About', type: 'dropdown',
@@ -97,6 +98,7 @@
     { icon: '<rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/>', label: 'Transactions', href: '/transactions' },
     { icon: '<path d="M18 20V10M12 20V4M6 20v-6"/>', label: 'Analytics', href: '/analytics' },
     { icon: '<path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16"/>', label: 'News', href: '/news' },
+    { icon: '<path d="M16 18l6-6-6-6"/><path d="M8 6l-6 6 6 6"/>', label: 'Developers', href: '/developers' },
     { icon: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>', label: 'API Docs', href: '/api-docs' }
   ];
 
