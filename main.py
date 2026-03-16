@@ -1751,6 +1751,10 @@ def get_read_db(*args, **kwargs):
                         except Exception:
                             pass
                 def cursor(self, *a, **kw):
+                    # Default to RealDictCursor so dict(row) works — matches db_utils primary behavior
+                    if not a and 'cursor_factory' not in kw:
+                        import psycopg2.extras
+                        kw['cursor_factory'] = psycopg2.extras.RealDictCursor
                     return object.__getattribute__(self, '_conn').cursor(*a, **kw)
                 def commit(self):
                     return object.__getattribute__(self, '_conn').commit()
