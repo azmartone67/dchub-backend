@@ -1,18 +1,18 @@
 {
   "report_date": "2026-03-16",
-  "generated_at": "2026-03-16T19:13:06.587219",
+  "generated_at": "2026-03-16T23:09:35.858104",
   "summary": {
-    "total_facilities": 11788,
-    "total_providers": 2806,
+    "total_facilities": 11798,
+    "total_providers": 2808,
     "countries_covered": 167,
-    "total_power_mw": 80281.0,
+    "total_power_mw": 82455.0,
     "total_deals": 628,
     "total_deal_value_usd": 747099700000.0
   },
   "market_highlights": [
-    "DC Hub tracks 11,788 data center facilities globally",
-    "Coverage spans 167 countries with 2806 providers",
-    "Combined capacity: 80,281 MW",
+    "DC Hub tracks 11,798 data center facilities globally",
+    "Coverage spans 167 countries with 2808 providers",
+    "Combined capacity: 82,455 MW",
     "M&A database: 628 transactions worth $747.1B+"
   ],
   "recent_deals": [
@@ -89,54 +89,54 @@
   ],
   "recent_news": [
     {
-      "title": "Lessons from the solar frontier",
-      "source": "PV Magazine",
-      "date": "2026-03-16T07:45:03"
+      "title": "Switch integrates Nvidia Omniverse DSX Blueprint into EVO AI data center design",
+      "source": "Data Center Dynamics",
+      "date": "2026-03-16T19:59:18"
     },
     {
-      "title": "Brilliant backups that kept data alive for ages landed web developer in big trouble",
+      "title": "Pharmaceutical company Roche deploys 3,500 Nvidia Blackwell GPUs across hybrid cloud and on\u2010premises",
+      "source": "Data Center Dynamics",
+      "date": "2026-03-16T19:57:44"
+    },
+    {
+      "title": "Nvidia unveils Vera Rubin DSX AI Factory Reference Design and Omniverse DSX digital twin",
+      "source": "Data Center Dynamics",
+      "date": "2026-03-16T19:57:23"
+    },
+    {
+      "title": "Workshop tackles AI data center power, security challenges",
+      "source": "EurekAlert!",
+      "date": "2026-03-16T19:54:22"
+    },
+    {
+      "title": "Apex weighs pause on data centers as resistance spreads across NC",
+      "source": "NC Newsline",
+      "date": "2026-03-16T19:40:24"
+    },
+    {
+      "title": "Nvidia powers further into the CPU market with new rack systems packing 256 Vera processors",
       "source": "The Register DC",
-      "date": "2026-03-16T07:30:06"
+      "date": "2026-03-16T19:35:32"
     },
     {
-      "title": "Australia Data Center Power Market 2026: Cloud Expansion, AI Workloads & Energy-Efficient Infrastructure",
-      "source": "vocal.media",
-      "date": "2026-03-16T06:51:20"
+      "title": "Nvidia Vera CPU enters full production, pitched at agentic AI workloads",
+      "source": "Data Center Dynamics",
+      "date": "2026-03-16T19:32:01"
     },
     {
-      "title": "AWS S3 turns 20 and reaches \u2018hundreds of exabytes\u2019",
+      "title": "Nvidia slaps $20B Groq tech into massive new LPX racks to speed AI response time",
       "source": "The Register DC",
-      "date": "2026-03-16T06:24:04"
+      "date": "2026-03-16T19:30:56"
     },
     {
-      "title": "HIVE's BUZZ HPC Expands Data Center Footprint into British Columbia with 4 Times Growth in Liquid-Cooled AI Data Center Capacity",
-      "source": "TMX Newsfile",
-      "date": "2026-03-16T06:20:00"
+      "title": "Nvidia announces Groq 3 LPU AI inference chip, plans 256-LPU rack",
+      "source": "Data Center Dynamics",
+      "date": "2026-03-16T19:26:46"
     },
     {
-      "title": "FinancialContent - HIVE's BUZZ HPC Expands Data Center Footprint into British Columbia with 4 Times Growth in Liquid-Cooled AI Data Center Capacity",
-      "source": "FinancialContent",
-      "date": "2026-03-16T06:20:00"
-    },
-    {
-      "title": "HIVE's BUZZ HPC Expands Data Center Footprint into British Columbia with 4 Times Growth in Liquid-Cooled AI Data Center Capacity",
-      "source": "TMX Newsfile",
-      "date": "2026-03-16T06:20:00"
-    },
-    {
-      "title": "Liquid-Cooled AI Infrastructure: Powering Scalable Enterprise Intelligence",
-      "source": "ASUS Pressroom",
-      "date": "2026-03-16T05:57:28"
-    },
-    {
-      "title": "Husker engineer aims to make data centers more energy efficient",
-      "source": "Nebraska Today",
-      "date": "2026-03-16T05:31:26"
-    },
-    {
-      "title": "Arista Networks Targets AI Data Centers With XPO Liquid Cooled Optics",
-      "source": "simplywall.st",
-      "date": "2026-03-16T05:25:18"
+      "title": "Nvidia CEO Jensen Huang says company has one trillion dollars in orders through 2027",
+      "source": "Data Center Dynamics",
+      "date": "2026-03-16T19:18:55"
     }
   ],
   "data_sources": [
