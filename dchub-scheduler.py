@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-DC Hub External Scheduler v3.4
+DC Hub External Scheduler v3.5
 ===============================
 Triggers discovery jobs via HTTP POST to the DC Hub API /api/jobs/* endpoints.
 All jobs are staggered to prevent Railway resource conflicts.
@@ -16,7 +16,7 @@ Environment:
   DCHUB_API_BASE    — API base URL (default: https://dchub-backend-production.up.railway.app)
   DCHUB_ADMIN_KEY   — Admin API key (required)
 
-Schedule (UTC) — 22 jobs, verified no overlaps:
+Schedule (UTC) — 23 jobs, verified no overlaps:
   00:00  News/RSS Refresh        (also 04, 08, 12, 16, 20)
   00:20  Auto-Approve            (also 04, 08, 12, 16, 20)
   00:45  Simple Alerts           (also 02,04,06,08,10,12,14,16,18,20,22)
@@ -24,6 +24,7 @@ Schedule (UTC) — 22 jobs, verified no overlaps:
   01:15  Alert Emails            (also 05,09,13,17,21)
   02:30  Infrastructure Sync     (also 08:30, 14:30, 20:30)
   03:00  AI Ecosystem Agent      (also 10, 15, 22)
+  03:10  MCP Rate Limit Cleanup  (daily)
   03:15  Neon DB Backup
   03:30  Fiber Route Sync        (also 09:30, 15:30, 21:30)
   03:45  Confidence Recalc       (daily)
@@ -39,9 +40,9 @@ Schedule (UTC) — 22 jobs, verified no overlaps:
   16:30  Ambassador + Drip       (daily)
   Keep-Alive every 5 minutes
 
-v3.4 changelog:
-  - Added fiber_sync job (4x/day at :30, calls /api/jobs/fiber-sync)
-  - Total: 22 jobs (21 scheduled + keepalive)
+v3.5 changelog:
+  - Added mcp_rate_cleanup job (daily at 03:10, calls /api/jobs/mcp-rate-cleanup)
+  - Total: 23 jobs (22 scheduled + keepalive)
 """
 
 import os
@@ -68,7 +69,7 @@ logging.basicConfig(
 log = logging.getLogger('dchub-scheduler')
 
 # ============================================================
-# JOB DEFINITIONS — 22 total
+# JOB DEFINITIONS — 23 total
 # ============================================================
 JOBS = {
     # ── Existing 12 jobs (unchanged from v3.2) ──────────────
@@ -257,6 +258,14 @@ JOBS = {
         'hours': [3, 9, 15, 21],        # every 6h at :30
         'minute': 30,
         'timeout': 300,
+    },
+    'mcp_rate_cleanup': {
+        'name': 'MCP Rate Limit Cleanup',
+        'endpoint': '/api/jobs/mcp-rate-cleanup',
+        'method': 'POST',
+        'hours': [3],                    # daily at 03:10 UTC
+        'minute': 10,
+        'timeout': 30,
     },
 }
 
