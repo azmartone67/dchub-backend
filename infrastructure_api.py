@@ -39,6 +39,63 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+
+# ============================================
+# NEON DATABASE HELPERS FOR FIBER ROUTES
+# ============================================
+
+def _get_fiber_routes_from_neon(carrier=None, route_type=None, limit=500):
+    """Query fiber_routes table directly from Neon."""
+    try:
+        from db_utils import get_db
+        conn = get_db()
+        cur = conn.cursor()
+
+        query = "SELECT id, name, provider, route_type, start_location, end_location, start_lat, start_lng, end_lat, end_lng, distance_miles, fiber_count, status, source_id FROM fiber_routes WHERE 1=1"
+        params = []
+
+        if carrier:
+            query += " AND LOWER(provider) LIKE %s"
+            params.append('%' + carrier.lower() + '%')
+        if route_type:
+            query += " AND route_type = %s"
+            params.append(route_type)
+
+        query += " ORDER BY provider, route_type LIMIT %s"
+        params.append(limit)
+
+        cur.execute(query, params)
+        columns = [desc[0] for desc in cur.description]
+        rows = cur.fetchall()
+
+        routes = []
+        for row in rows:
+            r = dict(zip(columns, row))
+            # Map to legacy field names for backward compat with map UI
+            r['carrier'] = r.get('provider', '')
+            r['type'] = r.get('route_type', '')
+            r['lat'] = r.get('start_lat', 0)
+            r['lng'] = r.get('start_lng', 0)
+            r['miles'] = r.get('distance_miles', 0)
+            routes.append(r)
+
+        return routes
+    except Exception as e:
+        logger.warning("Neon fiber query failed, falling back to in-memory: %s" % e)
+        return None
+
+
+def _get_fiber_count_from_neon():
+    """Get total fiber route count from Neon."""
+    try:
+        from db_utils import get_db
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM fiber_routes")
+        return cur.fetchone()[0]
+    except Exception:
+        return None
+
 infra_bp = Blueprint('infrastructure_api', __name__, url_prefix='/api/v1/infrastructure')
 
 # ============================================
@@ -154,20 +211,23 @@ def filter_by_radius(items, lat, lng, radius_miles):
 @infra_bp.route('/summary', methods=['GET'])
 def get_infrastructure_summary():
     """Get summary counts of all infrastructure"""
+    neon_fiber = _get_fiber_count_from_neon()
+    fiber_count = neon_fiber if neon_fiber is not None else len(INFRASTRUCTURE_DATA['fiber_routes'])
     return jsonify({
         'success': True,
         'data': {
-            'fiber_routes': len(INFRASTRUCTURE_DATA['fiber_routes']),
+            'fiber_routes': fiber_count,
             'substations': len(INFRASTRUCTURE_DATA['substations']),
             'permits': len(INFRASTRUCTURE_DATA['permits']),
             'properties': len(INFRASTRUCTURE_DATA['properties']),
             'total': (
-                len(INFRASTRUCTURE_DATA['fiber_routes']) +
+                fiber_count +
                 len(INFRASTRUCTURE_DATA['substations']) +
                 len(INFRASTRUCTURE_DATA['permits']) +
                 len(INFRASTRUCTURE_DATA['properties'])
             ),
-            'last_sync': INFRASTRUCTURE_DATA['last_sync']
+            'last_sync': INFRASTRUCTURE_DATA['last_sync'],
+            'fiber_source': 'neon' if neon_fiber is not None else 'in_memory'
         }
     })
 
@@ -175,24 +235,28 @@ def get_infrastructure_summary():
 @infra_bp.route('/fiber', methods=['GET'])
 def get_fiber_routes():
     """
-    Get fiber routes
+    Get fiber routes — queries Neon fiber_routes table (1,000+ routes).
     Query params:
-      - carrier: Filter by carrier name
-      - type: Filter by type (longhaul, metro, dark)
+      - carrier: Filter by carrier/provider name
+      - type: Filter by type (long_haul, metro, dc_interconnect, enterprise_lateral, etc.)
       - min_lat, max_lat, min_lng, max_lng: Bounding box
     """
-    routes = INFRASTRUCTURE_DATA['fiber_routes']
-    
-    # Filter by carrier
     carrier = request.args.get('carrier')
-    if carrier:
-        routes = [r for r in routes if carrier.lower() in r.get('carrier', '').lower()]
-    
-    # Filter by type
     route_type = request.args.get('type')
-    if route_type:
-        routes = [r for r in routes if r.get('type') == route_type]
-    
+
+    # Try Neon first
+    neon_routes = _get_fiber_routes_from_neon(carrier=carrier, route_type=route_type)
+
+    if neon_routes is not None:
+        routes = neon_routes
+    else:
+        # Fallback to in-memory
+        routes = INFRASTRUCTURE_DATA['fiber_routes']
+        if carrier:
+            routes = [r for r in routes if carrier.lower() in r.get('carrier', '').lower()]
+        if route_type:
+            routes = [r for r in routes if r.get('type') == route_type]
+
     # Filter by bounds
     if any(request.args.get(k) for k in ['min_lat', 'max_lat', 'min_lng', 'max_lng']):
         bounds = {
@@ -333,11 +397,18 @@ def get_nearby_infrastructure():
         }), 400
     
     nearby = {
-        'fiber_routes': filter_by_radius(INFRASTRUCTURE_DATA['fiber_routes'], lat, lng, radius),
+        'fiber_routes': [],
         'substations': filter_by_radius(INFRASTRUCTURE_DATA['substations'], lat, lng, radius),
         'permits': filter_by_radius(INFRASTRUCTURE_DATA['permits'], lat, lng, radius),
         'properties': filter_by_radius(INFRASTRUCTURE_DATA['properties'], lat, lng, radius)
     }
+
+    # Fiber from Neon with bounding box pre-filter
+    neon_routes = _get_fiber_routes_from_neon()
+    if neon_routes is not None:
+        nearby['fiber_routes'] = filter_by_radius(neon_routes, lat, lng, radius)
+    else:
+        nearby['fiber_routes'] = filter_by_radius(INFRASTRUCTURE_DATA['fiber_routes'], lat, lng, radius)
     
     total = sum(len(v) for v in nearby.values())
     
