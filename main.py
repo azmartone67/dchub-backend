@@ -1726,23 +1726,48 @@ def get_read_db(*args, **kwargs):
             conn.commit()
             _track_checkout(conn)
             
-            # Wrap .close() so it returns to the READ pool instead of closing
-            _original_close = conn.close
-            def _pool_aware_close():
-                _track_return(conn)
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-                try:
-                    _pg_pool_read.putconn(conn)
-                except Exception:
+            # Wrap connection in a proxy that returns to READ pool on .close()
+            # psycopg2's .close is a read-only C attribute — can't monkey-patch it.
+            # Instead, wrap the connection so callers use wrapper.close() which
+            # calls putconn() instead of actually closing.
+            class _ReadPoolConn:
+                """Thin proxy: delegates everything to the real connection,
+                except .close() which returns it to the read pool."""
+                __slots__ = ('_conn', '_returned')
+                def __init__(self, real_conn):
+                    object.__setattr__(self, '_conn', real_conn)
+                    object.__setattr__(self, '_returned', False)
+                def close(self):
+                    if object.__getattribute__(self, '_returned'):
+                        return
+                    object.__setattr__(self, '_returned', True)
+                    c = object.__getattribute__(self, '_conn')
+                    _track_return(c)
                     try:
-                        _original_close()
+                        c.rollback()
                     except Exception:
                         pass
-            conn.close = _pool_aware_close
-            return conn
+                    try:
+                        _pg_pool_read.putconn(c)
+                    except Exception:
+                        try:
+                            c.close()
+                        except Exception:
+                            pass
+                def cursor(self, *a, **kw):
+                    return object.__getattribute__(self, '_conn').cursor(*a, **kw)
+                def commit(self):
+                    return object.__getattribute__(self, '_conn').commit()
+                def rollback(self):
+                    return object.__getattribute__(self, '_conn').rollback()
+                def __getattr__(self, name):
+                    return getattr(object.__getattribute__(self, '_conn'), name)
+                def __enter__(self):
+                    return self
+                def __exit__(self, *exc):
+                    self.close()
+                    return False
+            return _ReadPoolConn(conn)
         except Exception as e:
             if _pg_pool_read and conn:
                 try:
