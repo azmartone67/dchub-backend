@@ -1,68 +1,158 @@
 """
-DC Hub - News-to-Facility Extraction Engine
-=============================================
-Scans news articles for data center construction/expansion announcements
-and automatically extracts facility data into discovered_facilities table.
+news_facility_extractor.py — DC Hub News-Based Facility Discovery
 
-Runs periodically after each news sync cycle.
+Scans data center industry news sources for new facility announcements
+and extracts structured metadata for insertion into discovered_facilities.
 
-v2.0 — Migrated from SQLite to Neon PostgreSQL via db_utils.
+Usage:
+    from news_facility_extractor import scan_news_sources, extract_facility_from_article
+
+Scheduler integration (add to dchub-scheduler.py):
+    @scheduler.task('cron', id='news_facility_extraction', hour=6, minute=0)
+    def run_news_facility_extraction():
+        from news_facility_extractor import scan_news_sources
+        scan_news_sources()
 """
 
 import re
 import json
-import hashlib
-import os
-import time
 import logging
+import traceback
 from datetime import datetime
-from db_utils import get_db
 
 logger = logging.getLogger(__name__)
 
-CONSTRUCTION_KEYWORDS = [
-    'data center', 'datacenter', 'data centre',
-    'hyperscale', 'colocation', 'colo facility',
-    'cloud campus', 'ai campus', 'hpc facility',
-    'server farm', 'compute campus'
+# ─────────────────────────────────────────────────────────
+# NEWS SOURCES — high-signal DC industry publications
+# ─────────────────────────────────────────────────────────
+
+NEWS_SOURCES = [
+    # Tier 1: Industry-specific (highest signal for construction/expansion)
+    {'name': 'DCD', 'rss': 'https://www.datacenterdynamics.com/en/rss/news/', 'category': 'construction'},
+    {'name': 'DCF', 'url': 'https://www.datacenterfrontier.com/', 'category': 'construction'},
+    {'name': 'DCP', 'url': 'https://datacenterpost.com/', 'category': 'construction'},
+    {'name': 'DIN', 'url': 'https://digitalinfranetwork.com/news/', 'category': 'construction'},
+    {'name': 'DCM', 'url': 'https://datacentremagazine.com/', 'category': 'construction'},
+
+    # Tier 2: Press release wires (catch announcements early)
+    {'name': 'PRNewswire', 'url': 'https://www.prnewswire.com/news-releases/technology-latest-news/', 'category': 'press'},
+    {'name': 'BusinessWire', 'url': 'https://www.businesswire.com/portal/site/home/', 'category': 'press'},
+
+    # Tier 3: Commercial real estate (catches land acquisitions)
+    {'name': 'CPE', 'url': 'https://www.commercialsearch.com/news/', 'category': 'real_estate'},
+    {'name': 'REBO', 'url': 'https://rebusinessonline.com/', 'category': 'real_estate'},
 ]
 
-ACTION_KEYWORDS = [
-    'under construction', 'breaks ground', 'broke ground', 'groundbreaking',
-    'construction begins', 'construction started', 'begins construction',
-    'new facility', 'new campus', 'new data center', 'new datacenter',
-    'plans to build', 'will build', 'announces plans', 'approved',
-    'expansion', 'expands', 'expanding', 'new site',
-    'megawatt', ' mw ', ' gw ', 'gigawatt',
-    'under development', 'in development', 'proposed',
-    'secures land', 'acquires land', 'purchases land', 'buys land',
-    'signs lease', 'power agreement', 'grid connection',
-    'construction permit', 'building permit', 'zoning approval',
-    'phase 1', 'phase 2', 'phase one', 'phase two',
-    'energization', 'energized', 'comes online', 'go live',
-    'billion investment', 'million investment', '$1b', '$2b', '$5b', '$10b',
-    'announces', 'unveiled', 'reveals plans', 'launches'
+# ─────────────────────────────────────────────────────────
+# FACILITY DETECTION PATTERNS
+# ─────────────────────────────────────────────────────────
+
+FACILITY_ANNOUNCEMENT_PATTERNS = [
+    # Construction triggers
+    r'(?:breaks? ground|broke ground|groundbreaking)\s+(?:on|at|for)',
+    r'(?:begin|start|commence)s?\s+construction',
+    r'under construction',
+
+    # Announcement triggers
+    r'(?:announce|unveil|reveal|plan)s?\s+(?:new|a|plans for)\s+.*?data cent(?:er|re)',
+    r'(?:new|major)\s+data cent(?:er|re)\s+(?:campus|hub|facility|project)',
+
+    # Acquisition/land triggers
+    r'(?:acquire|purchase|secure)s?\s+(?:land|site|acres|property)\s+(?:for|to)',
+    r'(?:\d+)[- ]acre',
+
+    # Power triggers (strong signal for hyperscale)
+    r'(\d+)\s*(?:MW|megawatt)',
+    r'(?:secure|contract|agree)s?\s+(?:\d+)\s*MW',
+
+    # Investment triggers
+    r'\$[\d.]+\s*(?:billion|million|B|M)\s+(?:data cent|investment|campus)',
 ]
 
-KNOWN_OPERATORS = [
-    'equinix', 'digital realty', 'cyrusone', 'qts', 'coresite',
-    'vantage', 'stack infrastructure', 'compass', 'flexential',
-    'edgeconnex', 'aligned', 't5', 'prime', 'switch', 'sabey',
-    'serverfarm', 'cologix', 'databank', 'tierpoint', 'zayo',
-    'ntt', 'chindata', 'gds', 'airtrunk', 'stc', 'gulf data hub',
-    'amazon', 'aws', 'google', 'microsoft', 'meta', 'facebook',
-    'oracle', 'apple', 'ibm', 'alibaba', 'tencent', 'bytedance',
-    'iren', 'terawulf', 'applied digital', 'cipher mining',
-    'core scientific', 'hut 8', 'bitdeer', 'crusoe', 'lambda',
-    'fluidstack', 'coreweave', 'vultr', 'novva',
-    'anthropic', 'openai', 'stargate', 'xai',
-    'princeton digital', 'yondr', 'datum', 'virtus',
-    'cloudflare', 'akamai', 'fastly', 'lumen',
-    'vnet', 'bridge data centres', 'st telemedia',
-    'supernap', 'las vegas global', 'landmark',
-    'stream data centers', 'skybox', 'nautilus',
-    'echelon', 'scala data centers', 'ascenty'
-]
+# ─────────────────────────────────────────────────────────
+# STATUS CLASSIFICATION
+# ─────────────────────────────────────────────────────────
+
+STATUS_KEYWORDS = {
+    'Operational': ['operational', 'online', 'live', 'launched', 'open for business', 'completed'],
+    'Under Construction': ['construction', 'broke ground', 'breaks ground', 'groundbreaking',
+                           'building', 'under development', 'site work underway'],
+    'Announced': ['announced', 'unveiled', 'revealed', 'signed agreement', 'plans to develop',
+                  'will develop', 'will build', 'has selected'],
+    'Planned': ['planned', 'proposed', 'seeking approval', 'zoning', 'entitled', 'exploring'],
+}
+
+
+def classify_status(text):
+    """Classify facility status from article text. Returns most advanced status found."""
+    text_lower = text.lower()
+    # Check in priority order (most advanced first)
+    for status in ['Operational', 'Under Construction', 'Announced', 'Planned']:
+        for kw in STATUS_KEYWORDS[status]:
+            if kw in text_lower:
+                return status
+    return 'Announced'
+
+
+# ─────────────────────────────────────────────────────────
+# METADATA EXTRACTORS
+# ─────────────────────────────────────────────────────────
+
+def extract_power_mw(text):
+    """Extract MW capacity from article text."""
+    patterns = [
+        r'(\d+(?:\.\d+)?)\s*(?:MW|megawatt)',
+        r'(\d+(?:\.\d+)?)\s*(?:mw|Mw)',
+    ]
+    values = []
+    for pattern in patterns:
+        for match in re.finditer(pattern, text):
+            values.append(float(match.group(1)))
+    # Return the largest value found (usually the total campus capacity)
+    return max(values) if values else None
+
+
+def extract_investment_usd(text):
+    """Extract investment amount in USD from article text."""
+    patterns = [
+        (r'\$(\d+(?:\.\d+)?)\s*billion', 1_000_000_000),
+        (r'\$(\d+(?:\.\d+)?)\s*B\b', 1_000_000_000),
+        (r'\$(\d+(?:\.\d+)?)\s*million', 1_000_000),
+        (r'\$(\d+(?:\.\d+)?)\s*M\b', 1_000_000),
+        (r'€(\d+(?:\.\d+)?)\s*(?:billion|B)', 1_100_000_000),  # rough EUR→USD
+        (r'€(\d+(?:\.\d+)?)\s*(?:million|M)', 1_100_000),
+    ]
+    for pattern, multiplier in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return int(float(match.group(1)) * multiplier)
+    return None
+
+
+def extract_acreage(text):
+    """Extract acreage from article text."""
+    match = re.search(r'(\d+(?:,\d+)?)[- ]acre', text)
+    if match:
+        return int(match.group(1).replace(',', ''))
+    return None
+
+
+def extract_sqft(text):
+    """Extract square footage from article text."""
+    patterns = [
+        r'([\d,]+)\s*(?:square feet|sq\.?\s*ft|SF)',
+        r'([\d,]+)\s*(?:sqft|square-foot)',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return int(match.group(1).replace(',', ''))
+    return None
+
+
+# ─────────────────────────────────────────────────────────
+# US STATE DETECTION
+# ─────────────────────────────────────────────────────────
 
 US_STATES = {
     'alabama': 'AL', 'alaska': 'AK', 'arizona': 'AZ', 'arkansas': 'AR',
@@ -77,386 +167,265 @@ US_STATES = {
     'oregon': 'OR', 'pennsylvania': 'PA', 'rhode island': 'RI', 'south carolina': 'SC',
     'south dakota': 'SD', 'tennessee': 'TN', 'texas': 'TX', 'utah': 'UT',
     'vermont': 'VT', 'virginia': 'VA', 'washington': 'WA', 'west virginia': 'WV',
-    'wisconsin': 'WI', 'wyoming': 'WY'
+    'wisconsin': 'WI', 'wyoming': 'WY',
 }
 
-STATE_ABBREVS = {v: v for v in US_STATES.values()}
+# Reverse map: abbreviation → full name
+US_STATE_ABBREVS = {v: k.title() for k, v in US_STATES.items()}
 
 
-def extract_power_mw(text):
-    text_lower = text.lower()
-    gw_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:gw|gigawatt)', text_lower)
-    if gw_match:
-        return float(gw_match.group(1)) * 1000
-
-    mw_match = re.search(r'(\d+(?:,\d+)?(?:\.\d+)?)\s*(?:mw|megawatt)', text_lower)
-    if mw_match:
-        val = mw_match.group(1).replace(',', '')
-        return float(val)
-    return None
-
-
-def extract_investment(text):
-    patterns = [
-        r'\$(\d+(?:\.\d+)?)\s*billion',
-        r'\$(\d+(?:\.\d+)?)\s*B\b',
-        r'\$(\d+(?:\.\d+)?)\s*million',
-        r'\$(\d+(?:\.\d+)?)\s*M\b',
-    ]
-    for p in patterns:
-        m = re.search(p, text, re.IGNORECASE)
-        if m:
-            val = float(m.group(1))
-            if 'million' in p.lower() or p.endswith("M\\b"):
-                return f"${val}M"
-            return f"${val}B"
-    return None
-
-
-def extract_operator(text):
-    text_lower = text.lower()
-    for op in KNOWN_OPERATORS:
-        if op.lower() in text_lower:
-            return op.title()
-    return None
-
-
-def extract_location(text):
-    text_lower = text.lower()
+def extract_state(text):
+    """Extract US state from article text. Returns 2-letter abbreviation or None."""
+    # Check for state abbreviations with context (e.g., "Ashburn, VA" or "in Virginia")
     for state_name, abbrev in US_STATES.items():
-        if state_name in text_lower:
-            city = extract_city_near_state(text, state_name)
-            return city, abbrev, 'US'
+        if state_name in text.lower():
+            return abbrev
+    # Check 2-letter abbreviations preceded by comma+space or "in "
+    match = re.search(r'(?:,\s*|\bin\s+)([A-Z]{2})\b', text)
+    if match and match.group(1) in US_STATE_ABBREVS:
+        return match.group(1)
+    return None
 
-    for abbrev in STATE_ABBREVS:
-        pattern = r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?),?\s+' + abbrev + r'\b'
-        m = re.search(pattern, text)
-        if m:
-            return m.group(1), abbrev, 'US'
 
-    international = {
-        'london': ('London', '', 'GB'), 'frankfurt': ('Frankfurt', '', 'DE'),
-        'amsterdam': ('Amsterdam', '', 'NL'), 'paris': ('Paris', '', 'FR'),
-        'singapore': ('Singapore', '', 'SG'), 'tokyo': ('Tokyo', '', 'JP'),
-        'sydney': ('Sydney', 'NSW', 'AU'), 'mumbai': ('Mumbai', '', 'IN'),
-        'dubai': ('Dubai', '', 'AE'), 'hong kong': ('Hong Kong', '', 'HK'),
-        'toronto': ('Toronto', 'ON', 'CA'), 'jakarta': ('Jakarta', '', 'ID'),
-        'seoul': ('Seoul', '', 'KR'), 'johor': ('Johor Bahru', '', 'MY'),
-        'sao paulo': ('Sao Paulo', '', 'BR'), 'santiago': ('Santiago', '', 'CL'),
+def extract_country(text):
+    """Extract country from article text. Returns ISO 2-letter code."""
+    country_patterns = {
+        'US': [r'\bU\.?S\.?A?\b', r'\bUnited States\b', r'\bAmerica\b'],
+        'IE': [r'\bIreland\b'],
+        'ES': [r'\bSpain\b', r'\bMadrid\b'],
+        'GB': [r'\bUnited Kingdom\b', r'\bU\.?K\.?\b', r'\bEngland\b', r'\bLondon\b'],
+        'DE': [r'\bGermany\b', r'\bFrankfurt\b'],
+        'NL': [r'\bNetherlands\b', r'\bAmsterdam\b'],
+        'SG': [r'\bSingapore\b'],
+        'JP': [r'\bJapan\b', r'\bTokyo\b'],
+        'AU': [r'\bAustralia\b', r'\bSydney\b', r'\bMelbourne\b'],
+        'CA': [r'\bCanada\b', r'\bToronto\b', r'\bMontreal\b'],
+        'FR': [r'\bFrance\b', r'\bParis\b', r'\bMarseille\b'],
+        'IN': [r'\bIndia\b', r'\bMumbai\b', r'\bChennai\b'],
     }
-    for city_key, loc in international.items():
-        if city_key in text_lower:
-            return loc
-
-    return None, None, None
-
-
-STOP_WORDS = {
-    'the', 'and', 'for', 'with', 'from', 'this', 'that', 'its', 'has', 'have',
-    'will', 'new', 'one', 'two', 'three', 'four', 'five', 'six', 'data', 'center',
-    'campus', 'project', 'facility', 'site', 'build', 'plans', 'announces',
-    'construction', 'expansion', 'development', 'investment', 'billion', 'million',
-    'power', 'energy', 'electric', 'grid', 'win', 'near', 'report', 'says',
-    'could', 'would', 'should', 'may', 'can', 'first', 'second', 'third',
-    'biggest', 'largest', 'major', 'massive', 'huge', 'giant', 'mega',
-}
-
-def extract_city_near_state(text, state_name):
-    idx = text.lower().find(state_name)
-    if idx < 0:
-        return ''
-    before = text[max(0, idx-60):idx]
-    words = before.split()
-    city_parts = []
-    for w in reversed(words):
-        clean = w.strip('.,;:()').strip()
-        if clean and clean[0].isupper() and len(clean) > 2 and clean.lower() not in STOP_WORDS:
-            city_parts.insert(0, clean)
-            if len(city_parts) >= 2:
-                break
-        elif city_parts:
-            break
-    return ' '.join(city_parts) if city_parts else ''
+    for country_code, patterns in country_patterns.items():
+        for pattern in patterns:
+            if re.search(pattern, text, re.IGNORECASE):
+                return country_code
+    return 'US'  # default assumption for DC news
 
 
-def extract_status(text):
-    text_lower = text.lower()
-    status_map = [
-        (['under construction', 'construction begins', 'broke ground', 'breaks ground',
-          'groundbreaking', 'begins construction', 'construction started'], 'Under Construction'),
-        (['comes online', 'go live', 'energized', 'operational', 'opened', 'opens'], 'active'),
-        (['plans to build', 'proposed', 'announces plans', 'planning', 'in development',
-          'will build', 'announces', 'unveiled', 'reveals plans'], 'Planning'),
-        (['approved', 'permitted', 'zoning approval', 'building permit'], 'approved'),
-        (['announced'], 'announced'),
-    ]
-    for keywords, status in status_map:
-        for kw in keywords:
-            if kw in text_lower:
-                return status
-    return 'announced'
+# ─────────────────────────────────────────────────────────
+# CORE EXTRACTION
+# ─────────────────────────────────────────────────────────
+
+def is_facility_announcement(title, body):
+    """Check if an article is about a new data center facility."""
+    combined = f"{title} {body}"
+    for pattern in FACILITY_ANNOUNCEMENT_PATTERNS:
+        if re.search(pattern, combined, re.IGNORECASE):
+            return True
+    return False
 
 
-def score_article(title, summary=''):
-    combined = (title + ' ' + (summary or '')).lower()
-    score = 0
-
-    dc_match = any(kw in combined for kw in CONSTRUCTION_KEYWORDS)
-    if not dc_match:
-        return 0
-
-    score += 10
-
-    action_count = sum(1 for kw in ACTION_KEYWORDS if kw in combined)
-    score += action_count * 5
-
-    if extract_operator(combined):
-        score += 15
-
-    if extract_power_mw(combined):
-        score += 20
-
-    if extract_investment(combined):
-        score += 15
-
-    _, state, country = extract_location(title + ' ' + (summary or ''))
-    if state or country:
-        score += 10
-
-    return score
-
-
-def process_news_for_facilities():
-    """Scan recent news articles and extract potential new facility announcements.
-    Uses Neon PostgreSQL via db_utils.get_db().
+def extract_facility_from_article(title, body, source_url, source_name):
     """
-    conn = None
+    Extract facility metadata from a news article.
+    Returns a dict ready for discovered_facilities INSERT, or None if not a facility announcement.
+    """
+    if not is_facility_announcement(title, body):
+        return None
+
+    combined = f"{title} {body}"
+    country = extract_country(combined)
+    state = extract_state(combined) if country == 'US' else None
+
+    facility = {
+        'name': title[:200],  # Use article title as facility name (to be refined)
+        'provider': None,     # Requires NLP or LLM to extract reliably
+        'city': None,         # Requires NLP or LLM to extract reliably
+        'state': state,
+        'country': country,
+        'latitude': None,
+        'longitude': None,
+        'power_mw': extract_power_mw(combined),
+        'sqft': extract_sqft(combined),
+        'status': classify_status(combined),
+        'source': 'news_extraction',
+        'source_url': source_url,
+        'confidence_score': 0.65,  # Lower confidence — needs manual review
+        'discovered_at': datetime.utcnow().strftime('%Y-%m-%d'),
+        'notes': f'Auto-extracted from {source_name}',
+        'investment_usd': extract_investment_usd(combined),
+        'acreage': extract_acreage(combined),
+    }
+
+    # Boost confidence if we extracted multiple strong signals
+    signals = sum([
+        facility['power_mw'] is not None,
+        facility['investment_usd'] is not None,
+        facility['acreage'] is not None,
+        facility['state'] is not None,
+    ])
+    if signals >= 3:
+        facility['confidence_score'] = 0.80
+    elif signals >= 2:
+        facility['confidence_score'] = 0.75
+
+    return facility
+
+
+# ─────────────────────────────────────────────────────────
+# DATABASE INSERT HELPER
+# ─────────────────────────────────────────────────────────
+
+def insert_discovered_facility(conn, facility):
+    """
+    Insert an extracted facility into discovered_facilities.
+    Returns the new row ID, or None if duplicate/error.
+    """
     try:
-        conn = get_db()
-        c = conn.cursor()
+        cur = conn.cursor()
 
-        # Ensure discovered_facilities table exists
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS discovered_facilities (
-                id SERIAL PRIMARY KEY,
-                source TEXT,
-                source_id TEXT,
-                name TEXT,
-                provider TEXT,
-                city TEXT,
-                state TEXT,
-                country TEXT DEFAULT 'US',
-                power_mw REAL DEFAULT 0,
-                status TEXT DEFAULT 'announced',
-                source_url TEXT,
-                raw_data TEXT,
-                discovered_at TEXT,
-                confidence_score REAL DEFAULT 0.5,
-                is_duplicate INTEGER DEFAULT 0,
-                merged_at TEXT,
-                merged_facility_id TEXT,
-                UNIQUE(source, source_id)
-            )
-        """)
+        # Dedup check: same source_url already exists?
+        cur.execute(
+            "SELECT id FROM discovered_facilities WHERE source_url = %s LIMIT 1",
+            (facility['source_url'],)
+        )
+        if cur.fetchone():
+            logger.debug(f"Skipping duplicate source_url: {facility['source_url']}")
+            return None
+
+        cur.execute("""
+            INSERT INTO discovered_facilities
+                (name, provider, city, state, country, latitude, longitude,
+                 power_mw, sqft, status, source, source_url,
+                 confidence_score, discovered_at, notes,
+                 investment_usd, acreage)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+        """, (
+            facility['name'], facility['provider'], facility['city'],
+            facility['state'], facility['country'],
+            facility['latitude'], facility['longitude'],
+            facility['power_mw'], facility['sqft'],
+            facility['status'], facility['source'], facility['source_url'],
+            facility['confidence_score'], facility['discovered_at'],
+            facility['notes'],
+            facility.get('investment_usd'), facility.get('acreage'),
+        ))
+        new_id = cur.fetchone()[0]
         conn.commit()
+        logger.info(f"Inserted discovered facility {new_id}: {facility['name']}")
+        return new_id
 
-        c.execute("""
-            SELECT id, title, summary, url, published_at, source
-            FROM news_articles
-            WHERE CAST(id AS TEXT) NOT IN (
-                SELECT COALESCE(source_id, '') FROM discovered_facilities WHERE source = 'news_extractor'
-            )
-            ORDER BY published_at DESC
-            LIMIT 500
-        """)
-        articles = c.fetchall()
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Error inserting facility: {e}\n{traceback.format_exc()}")
+        return None
 
-        # Handle both dict-style and tuple-style rows
-        def row_get(row, key, idx):
-            if isinstance(row, dict):
-                return row.get(key, '')
-            return row[idx] if idx < len(row) else ''
 
-        extracted = 0
-        for article in articles:
-            title = row_get(article, 'title', 1) or ''
-            summary = row_get(article, 'summary', 2) or ''
-            combined = title + ' ' + summary
+# ─────────────────────────────────────────────────────────
+# MAIN SCAN FUNCTION
+# ─────────────────────────────────────────────────────────
 
-            relevance = score_article(title, summary)
-            if relevance < 30:
+def scan_news_sources(conn=None):
+    """
+    Scan all configured news sources for new facility announcements.
+    Extracts metadata and inserts into discovered_facilities.
+
+    Args:
+        conn: PostgreSQL connection (if None, will attempt to get one from app context)
+
+    Returns:
+        dict with scan results: articles_scanned, facilities_found, facilities_inserted
+    """
+    import requests
+
+    results = {
+        'articles_scanned': 0,
+        'facilities_found': 0,
+        'facilities_inserted': 0,
+        'errors': [],
+    }
+
+    # Get DB connection if not provided
+    if conn is None:
+        try:
+            from main import get_read_db
+            conn = get_read_db()
+        except Exception as e:
+            logger.error(f"Could not get DB connection: {e}")
+            results['errors'].append(str(e))
+            return results
+
+    for source in NEWS_SOURCES:
+        try:
+            url = source.get('rss') or source.get('url')
+            if not url:
                 continue
 
-            operator = extract_operator(combined)
-            power_mw = extract_power_mw(combined)
-            investment = extract_investment(combined)
-            city, state, country = extract_location(combined)
-            status = extract_status(combined)
+            logger.info(f"Scanning {source['name']}: {url}")
 
-            if not operator and not power_mw:
-                continue
-
-            if not city and not state and not country:
-                continue
-
-            facility_name = f"{operator or 'Unknown'} {city or ''} {state or ''} Data Center".strip()
-            source_id = str(row_get(article, 'id', 0))
-            article_url = row_get(article, 'url', 3) or ''
-            article_source = row_get(article, 'source', 5) or ''
-            article_published = row_get(article, 'published_at', 4) or ''
-
-            raw_data = json.dumps({
-                'article_title': title,
-                'article_url': article_url,
-                'article_source': article_source,
-                'published_date': article_published,
-                'investment': investment,
-                'relevance_score': relevance,
-                'extraction_method': 'news_facility_extractor'
+            # Fetch the page/RSS
+            resp = requests.get(url, timeout=30, headers={
+                'User-Agent': 'DCHub-NewsExtractor/1.0 (dchub.cloud)'
             })
-
-            try:
-                c.execute("""
-                    INSERT INTO discovered_facilities
-                    (source, source_id, name, provider, city, state, country,
-                     power_mw, status, source_url, raw_data, discovered_at, confidence_score)
-                    VALUES ('news_extractor', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (source, source_id) DO NOTHING
-                """, (
-                    source_id, facility_name, operator or 'Unknown',
-                    city or '', state or '', country or 'US',
-                    power_mw or 0, status,
-                    article_url, raw_data,
-                    datetime.now().isoformat(),
-                    min(relevance / 100, 0.95)
-                ))
-                if c.rowcount > 0:
-                    extracted += 1
-            except Exception as e:
-                logger.warning(f"Insert failed for {source_id}: {e}")
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-
-        conn.commit()
-
-        if extracted > 0:
-            logger.info(f"✅ News Extractor: Found {extracted} potential new DC projects from {len(articles)} articles")
-        return extracted
-
-    except Exception as e:
-        logger.error(f"⚠️ News Extractor error: {e}")
-        return 0
-    finally:
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-
-def promote_high_confidence_discoveries():
-    """Move high-confidence discovered facilities into the main facilities table.
-    Uses Neon PostgreSQL via db_utils.get_db().
-    """
-    conn = None
-    try:
-        conn = get_db()
-        c = conn.cursor()
-
-        c.execute("""
-            SELECT id, name, provider, city, state, country, power_mw, status,
-                   source_url, raw_data, confidence_score
-            FROM discovered_facilities
-            WHERE confidence_score >= 0.6
-            AND merged_at IS NULL
-            AND is_duplicate = 0
-            AND source = 'news_extractor'
-            AND provider != 'Unknown'
-            AND (city != '' OR state != '')
-        """)
-        candidates = c.fetchall()
-
-        promoted = 0
-        for df in candidates:
-            # Handle both dict-style and tuple-style rows
-            if isinstance(df, dict):
-                df_id = df['id']
-                df_name = df.get('name', '')
-                df_provider = df.get('provider', '')
-                df_city = df.get('city', '')
-                df_state = df.get('state', '')
-                df_country = df.get('country', 'US')
-                df_power_mw = df.get('power_mw', 0)
-                df_status = df.get('status', 'announced')
-                df_source_url = df.get('source_url', '')
-                df_raw_data = df.get('raw_data', '{}')
-                df_confidence = df.get('confidence_score', 0.6)
-            else:
-                df_id, df_name, df_provider, df_city, df_state, df_country, \
-                    df_power_mw, df_status, df_source_url, df_raw_data, df_confidence = df
-
-            existing = c.execute("""
-                SELECT id FROM facilities
-                WHERE (LOWER(name) = LOWER(%s) OR
-                       (LOWER(provider) = LOWER(%s) AND LOWER(city) = LOWER(%s) AND LOWER(state) = LOWER(%s)))
-                LIMIT 1
-            """, (df_name, df_provider or '', df_city or '', df_state or ''))
-            if c.fetchone():
-                c.execute("UPDATE discovered_facilities SET is_duplicate = 1 WHERE id = %s", (df_id,))
+            if resp.status_code != 200:
+                logger.warning(f"{source['name']} returned {resp.status_code}")
                 continue
 
-            fac_id = 'news_' + hashlib.sha256((df_name or '').encode()).hexdigest()[:12]
-            try:
-                c.execute("""
-                    INSERT INTO facilities
-                    (id, name, provider, city, state, country, power_mw, status,
-                     source, source_id, source_url, raw_data, first_seen, last_updated, confidence)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'news_pipeline', %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (id) DO NOTHING
-                """, (
-                    fac_id, df_name, df_provider, df_city, df_state,
-                    df_country or 'US', df_power_mw or 0, df_status or 'announced',
-                    str(df_id), df_source_url or '', df_raw_data or '{}',
-                    datetime.now().isoformat(), datetime.now().isoformat(),
-                    df_confidence or 0.6
-                ))
-                if c.rowcount > 0:
-                    c.execute("UPDATE discovered_facilities SET merged_at = %s, merged_facility_id = %s WHERE id = %s",
-                              (datetime.now().isoformat(), fac_id, df_id))
-                    promoted += 1
-            except Exception as e:
-                logger.warning(f"Promote failed for {fac_id}: {e}")
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
+            content = resp.text
 
-        conn.commit()
+            # Simple extraction: find article-like blocks
+            # For RSS feeds, parse XML; for HTML, use regex on <article> or <h2>/<h3> tags
+            # This is a basic implementation — enhance with proper RSS/HTML parsing
 
-        if promoted > 0:
-            logger.info(f"✅ News Extractor: Promoted {promoted} discoveries to main facilities table")
-        return promoted
+            # Extract title-like strings (h2/h3 tags or RSS <title> tags)
+            titles = re.findall(r'<(?:h[23]|title)[^>]*>([^<]+)</(?:h[23]|title)>', content)
 
-    except Exception as e:
-        logger.error(f"⚠️ News Extractor promotion error: {e}")
-        return 0
-    finally:
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
+            for title in titles:
+                title = title.strip()
+                if not title or len(title) < 20:
+                    continue
+
+                results['articles_scanned'] += 1
+
+                # Use title as both title and body for now
+                # TODO: Fetch individual article pages for full body text
+                facility = extract_facility_from_article(title, content, url, source['name'])
+                if facility:
+                    results['facilities_found'] += 1
+                    new_id = insert_discovered_facility(conn, facility)
+                    if new_id:
+                        results['facilities_inserted'] += 1
+
+        except Exception as e:
+            error_msg = f"Error scanning {source['name']}: {e}"
+            logger.error(error_msg)
+            results['errors'].append(error_msg)
+
+    logger.info(f"News scan complete: {results}")
+    return results
 
 
-def run_extraction():
-    """Full extraction cycle: scan news → extract → promote"""
-    extracted = process_news_for_facilities()
-    promoted = promote_high_confidence_discoveries()
-    return extracted, promoted
-
+# ─────────────────────────────────────────────────────────
+# CLI ENTRY POINT (for manual runs)
+# ─────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
-    extracted, promoted = run_extraction()
-    print(f"\nResults: {extracted} extracted, {promoted} promoted to facilities")
+    logging.basicConfig(level=logging.INFO)
+    print("DC Hub News Facility Extractor")
+    print("=" * 40)
+
+    # Test extraction on a sample headline
+    test_title = "AVAIO Digital Announces New Large-Scale AI-Ready Data Center and Power Campus in Little Rock, Arkansas"
+    test_body = """AVAIO Digital Partners announced today a major new data center hub near Little Rock 
+    in Pulaski County, Arkansas. The campus will be built out in multiple phases with an initial 
+    $6 billion combined investment. AVAIO is currently contracted with Entergy Arkansas for 150 MW 
+    of power. Construction of the first phase is expected to start in Q1 2026. The 760-acre campus 
+    was chosen for its robust connectivity and rapid power delivery."""
+
+    result = extract_facility_from_article(test_title, test_body, 'https://example.com/test', 'Test')
+    if result:
+        print("\nExtracted facility:")
+        for k, v in result.items():
+            if v is not None:
+                print(f"  {k}: {v}")
+    else:
+        print("No facility detected (check patterns)")
