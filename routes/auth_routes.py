@@ -626,24 +626,24 @@ def update_user():
     params = []
 
     if 'name' in data:
-        updates.append('name = ?')
+        updates.append('name = %s')
         params.append(data['name'])
     if 'company' in data:
-        updates.append('company = ?')
+        updates.append('company = %s')
         params.append(data['company'])
     if 'preferences' in data:
-        updates.append('preferences = ?')
+        updates.append('preferences = %s')
         params.append(json.dumps(data['preferences']))
     if 'saved_searches' in data:
-        updates.append('saved_searches = ?')
+        updates.append('saved_searches = %s')
         params.append(json.dumps(data['saved_searches']))
     if 'saved_markets' in data:
-        updates.append('saved_markets = ?')
+        updates.append('saved_markets = %s')
         params.append(json.dumps(data['saved_markets']))
 
     if updates:
         params.append(request.user['user_id'])
-        c.execute(f"UPDATE users SET {', '.join(updates)} WHERE id = ?", params)
+        c.execute(f"UPDATE users SET {', '.join(updates)} WHERE id = %s", params)
         conn.commit()
 
     conn.close()
@@ -669,7 +669,7 @@ def get_user_dashboard():
     c.execute("""
         SELECT id, market, alert_type, enabled, created_at, last_triggered, trigger_count
         FROM user_alerts
-        WHERE user_id = ?
+        WHERE user_id = %s
         ORDER BY created_at DESC
         LIMIT 20
     """, (user_id,))
@@ -723,7 +723,7 @@ def get_user_api_keys():
         SELECT id, key_prefix, name, plan, rate_limit_tier, is_active,
                created_at, usage_count, calls_today, calls_total
         FROM api_keys
-        WHERE user_id = ?
+        WHERE user_id = %s
         ORDER BY created_at DESC
     """, (request.user['user_id'],))
 

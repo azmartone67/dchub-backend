@@ -812,16 +812,16 @@ def get_gas_pipelines():
         params = []
         
         if state_filter:
-            query += " AND state = ?"
+            query += " AND state = %s"
             params.append(state_filter)
         if operator_filter:
-            query += " AND operator LIKE ?"
+            query += " AND operator LIKE %s"
             params.append(f"%{operator_filter}%")
         if pipeline_type:
-            query += " AND pipeline_type = ?"
+            query += " AND pipeline_type = %s"
             params.append(pipeline_type)
         
-        query += " ORDER BY diameter_inches DESC LIMIT ?"
+        query += " ORDER BY diameter_inches DESC LIMIT %s"
         params.append(limit)
         
         c.execute(query, params)
@@ -933,7 +933,7 @@ def get_markets():
         conn = _get_db()
         c = conn.cursor()
         for m in markets:
-            c.execute("SELECT COUNT(*) FROM discovered_facilities WHERE city LIKE ? OR state LIKE ?",
+            c.execute("SELECT COUNT(*) FROM discovered_facilities WHERE city LIKE %s OR state LIKE %s",
                       (f"%{m['name'].split('-')[0].split(',')[0].strip()}%",
                        f"%{m['name'].split('-')[0].split(',')[0].strip()}%"))
             live_count = c.fetchone()[0]
@@ -1074,7 +1074,7 @@ def get_pipeline_summary():
                 announced += 1
 
     try:
-        conn = get_read_db()
+        conn = _get_db()
         c = conn.cursor()
         c.execute("""
             SELECT operator, market, capacity_mw, phase, status, notes
@@ -1099,7 +1099,7 @@ def get_pipeline_summary():
         logger.debug(f"Pipeline summary DB query: {e}")
 
     try:
-        conn2 = get_read_db()
+        conn2 = _get_db()
         c2 = conn2.cursor()
         c2.execute("""
             SELECT provider, name, power_mw, status
@@ -1347,7 +1347,7 @@ def get_v1_news():
 def get_announcements():
     """Get pipeline facilities - under construction, planning, announced, or approved"""
     try:
-        conn = get_read_db()
+        conn = _get_db()
         c = conn.cursor()
         status_filter = request.args.get('status', '')
         market_filter = request.args.get('market', '')
@@ -1365,14 +1365,14 @@ def get_announcements():
         params = []
 
         if status_filter:
-            query += " AND status = ?"
+            query += " AND status = %s"
             params.append(status_filter)
 
         if operator_filter:
-            query += " AND provider LIKE ?"
+            query += " AND provider LIKE %s"
             params.append(f"%{operator_filter}%")
 
-        query += " ORDER BY power_mw DESC LIMIT ?"
+        query += " ORDER BY power_mw DESC LIMIT %s"
         params.append(limit)
 
         c.execute(query, params)

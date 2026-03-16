@@ -4214,12 +4214,12 @@ def admin_toggle_discovered_platform(platform_key):
         conn = get_db()
         cursor = conn.cursor()
         try:
-            cursor.execute('SELECT auto_configured FROM discovered_platforms WHERE id = ?', (platform_key,))
+            cursor.execute('SELECT auto_configured FROM discovered_platforms WHERE id = %s', (platform_key,))
             row = cursor.fetchone()
             if not row:
                 return jsonify({'error': 'Not found'}), 404
             new_val = 0 if row[0] else 1
-            cursor.execute('UPDATE discovered_platforms SET auto_configured = ? WHERE id = ?', (new_val, platform_key))
+            cursor.execute('UPDATE discovered_platforms SET auto_configured = %s WHERE id = %s', (new_val, platform_key))
             conn.commit()
         finally:
             conn.close()
@@ -4303,7 +4303,7 @@ def crawler_recent():
         limit = min(int(request.args.get('limit', 100)), 500)
         conn = get_read_db(CRAWLER_DB_PATH)
         cursor = conn.cursor()
-        cursor.execute('SELECT * FROM crawler_visits ORDER BY timestamp DESC LIMIT ?', (limit,))
+        cursor.execute('SELECT * FROM crawler_visits ORDER BY timestamp DESC LIMIT %s', (limit,))
         visits = [dict(row) for row in cursor.fetchall()]
         conn.close()
         return jsonify({'success': True, 'visits': visits, 'count': len(visits)})
@@ -4973,7 +4973,7 @@ def subscribe_lead():
     c = conn.cursor()
     
     # Check if already exists
-    c.execute("SELECT id, subscribed FROM leads WHERE email = ?", (email,))
+    c.execute("SELECT id, subscribed FROM leads WHERE email = %s", (email,))
     existing = c.fetchone()
     
     if existing:
@@ -4982,7 +4982,7 @@ def subscribe_lead():
             return jsonify({'success': True, 'message': 'Already subscribed', 'new': False})
         else:
             # Re-subscribe
-            c.execute("UPDATE leads SET subscribed = 1, last_activity = ? WHERE email = ?",
+            c.execute("UPDATE leads SET subscribed = 1, last_activity = %s WHERE email = %s",
                      (datetime.utcnow().isoformat(), email))
             conn.commit()
             conn.close()
@@ -5038,7 +5038,7 @@ def capture_lead():
     c = conn.cursor()
     
     # Check if exists
-    c.execute("SELECT id, lead_score FROM leads WHERE email = ?", (email,))
+    c.execute("SELECT id, lead_score FROM leads WHERE email = %s", (email,))
     existing = c.fetchone()
     
     # Calculate lead score based on source
@@ -5058,10 +5058,10 @@ def capture_lead():
         
         c.execute("""
             UPDATE leads SET 
-                lead_score = ?,
-                last_activity = ?,
+                lead_score = %s,
+                last_activity = %s,
                 source_detail = COALESCE(source_detail, '') || ',' || ?
-            WHERE email = ?
+            WHERE email = %s
         """, (new_score, datetime.utcnow().isoformat(), source, email))
     else:
         lead_id = secrets.token_hex(8)
@@ -5105,7 +5105,7 @@ def verify_lead(token):
     conn = get_db()
     c = conn.cursor()
     
-    c.execute("SELECT id, email FROM leads WHERE verify_token = ?", (token,))
+    c.execute("SELECT id, email FROM leads WHERE verify_token = %s", (token,))
     lead = c.fetchone()
     
     if not lead:
@@ -5113,7 +5113,7 @@ def verify_lead(token):
         return jsonify({'error': 'Invalid verification token', 'code': 'NOT_FOUND'}), 404
     
     c.execute("""
-        UPDATE leads SET verified = 1, verified_at = ?, verify_token = NULL WHERE id = ?
+        UPDATE leads SET verified = 1, verified_at = %s, verify_token = NULL WHERE id = %s
     """, (datetime.utcnow().isoformat(), lead[0]))
     
     conn.commit()
@@ -5132,7 +5132,7 @@ def unsubscribe_lead():
     
     conn = get_db()
     c = conn.cursor()
-    c.execute("UPDATE leads SET subscribed = 0 WHERE email = ?", (email,))
+    c.execute("UPDATE leads SET subscribed = 0 WHERE email = %s", (email,))
     conn.commit()
     conn.close()
     
@@ -5208,7 +5208,7 @@ def submit_partner_inquiry():
         ))
         
         # Also add to leads if not exists
-        c.execute("SELECT id FROM leads WHERE email = ?", (email,))
+        c.execute("SELECT id FROM leads WHERE email = %s", (email,))
         if not c.fetchone():
             lead_id = secrets.token_hex(8)
             verify_token = secrets.token_urlsafe(32)
@@ -5222,9 +5222,9 @@ def submit_partner_inquiry():
         else:
             # Update existing lead score
             c.execute("""
-                UPDATE leads SET lead_score = lead_score + 30, last_activity = ?, 
+                UPDATE leads SET lead_score = lead_score + 30, last_activity = %s, 
                 source_detail = COALESCE(source_detail, '') || ',partner_inquiry'
-                WHERE email = ?
+                WHERE email = %s
             """, (datetime.utcnow().isoformat(), email))
         
         conn.commit()
@@ -5372,7 +5372,7 @@ def get_user_alerts():
         SELECT id, market, alert_type, enabled, email_notify, push_notify, 
                created_at, last_triggered, trigger_count
         FROM user_alerts
-        WHERE user_id = ?
+        WHERE user_id = %s
         ORDER BY created_at DESC
     """, (user_id,))
     
@@ -5422,7 +5422,7 @@ def create_alert():
     # Check for duplicate
     c.execute("""
         SELECT id FROM user_alerts 
-        WHERE user_id = ? AND market = ? AND alert_type = ?
+        WHERE user_id = %s AND market = %s AND alert_type = %s
     """, (user_id, market, alert_type))
     
     if c.fetchone():
@@ -5430,11 +5430,11 @@ def create_alert():
         return jsonify({'error': 'You already have this alert configured'}), 409
     
     # Check alert limit (max 10 for free users)
-    c.execute("SELECT COUNT(*) FROM user_alerts WHERE user_id = ?", (user_id,))
+    c.execute("SELECT COUNT(*) FROM user_alerts WHERE user_id = %s", (user_id,))
     count = c.fetchone()[0]
     
     # Get user plan
-    c.execute("SELECT plan FROM users WHERE id = ?", (user_id,))
+    c.execute("SELECT plan FROM users WHERE id = %s", (user_id,))
     user_row = c.fetchone()
     plan = user_row[0] if user_row else 'free'
     
@@ -5482,12 +5482,12 @@ def delete_alert(alert_id):
     c = conn.cursor()
     
     # Verify ownership
-    c.execute("SELECT id FROM user_alerts WHERE id = ? AND user_id = ?", (alert_id, user_id))
+    c.execute("SELECT id FROM user_alerts WHERE id = %s AND user_id = %s", (alert_id, user_id))
     if not c.fetchone():
         conn.close()
         return jsonify({'error': 'Alert not found'}), 404
     
-    c.execute("DELETE FROM user_alerts WHERE id = ? AND user_id = ?", (alert_id, user_id))
+    c.execute("DELETE FROM user_alerts WHERE id = %s AND user_id = %s", (alert_id, user_id))
     conn.commit()
     conn.close()
     
@@ -5504,7 +5504,7 @@ def toggle_alert(alert_id):
     c = conn.cursor()
     
     # Verify ownership and get current state
-    c.execute("SELECT enabled FROM user_alerts WHERE id = ? AND user_id = ?", (alert_id, user_id))
+    c.execute("SELECT enabled FROM user_alerts WHERE id = %s AND user_id = %s", (alert_id, user_id))
     row = c.fetchone()
     
     if not row:
@@ -5512,7 +5512,7 @@ def toggle_alert(alert_id):
         return jsonify({'error': 'Alert not found'}), 404
     
     new_state = 0 if row[0] else 1
-    c.execute("UPDATE user_alerts SET enabled = ? WHERE id = ?", (new_state, alert_id))
+    c.execute("UPDATE user_alerts SET enabled = %s WHERE id = %s", (new_state, alert_id))
     conn.commit()
     conn.close()
     
@@ -5547,7 +5547,7 @@ def check_and_send_alert_emails():
             try:
                 c.execute("""
                     SELECT COUNT(*) FROM discovered_facilities
-                    WHERE market LIKE ?
+                    WHERE market LIKE %s
                     AND created_at > datetime('now', '-1 day')
                 """, (f'%{market}%',))
                 new_count = c.fetchone()[0]
@@ -5558,7 +5558,7 @@ def check_and_send_alert_emails():
                         UPDATE user_alerts
                         SET last_triggered = datetime('now'),
                             trigger_count = trigger_count + 1
-                        WHERE id = ?
+                        WHERE id = %s
                     """, (alert_id,))
                     sent_count += 1
             except Exception as e:
@@ -6385,10 +6385,10 @@ def handle_checkout_completed(session):
         c = conn.cursor()
 
         if user_id:
-            c.execute("UPDATE users SET plan = ?, role = ?, subscription_status = 'active', stripe_customer_id = ? WHERE id = ?",
+            c.execute("UPDATE users SET plan = %s, role = %s, subscription_status = 'active', stripe_customer_id = %s WHERE id = %s",
                       (plan_name, api_tier, stripe_cust, user_id))
         elif customer_email:
-            c.execute("UPDATE users SET plan = ?, role = ?, subscription_status = 'active', stripe_customer_id = ? WHERE email = ?",
+            c.execute("UPDATE users SET plan = %s, role = %s, subscription_status = 'active', stripe_customer_id = %s WHERE email = %s",
                       (plan_name, api_tier, stripe_cust, customer_email))
         
         sqlite_rows = c.rowcount if (user_id or customer_email) else 0
@@ -6443,7 +6443,7 @@ def handle_checkout_completed(session):
                 if pg_rows:
                     resolved_user_id = pg_rows[0][0]
                 else:
-                    c.execute("SELECT id FROM users WHERE email = ?", (customer_email,))
+                    c.execute("SELECT id FROM users WHERE email = %s", (customer_email,))
                     row = c.fetchone()
                     resolved_user_id = row[0] if row else None
                 print(f"🔍 Looked up user_id for {customer_email}: {resolved_user_id}")
@@ -6452,7 +6452,7 @@ def handle_checkout_completed(session):
                 now = datetime.utcnow().isoformat()
                 _pg_execute("UPDATE api_keys SET rate_limit_tier = %s, last_used_at = %s WHERE user_id = %s",
                            (api_tier, now, resolved_user_id))
-                c.execute("UPDATE api_keys SET rate_limit_tier = ?, updated_at = ? WHERE user_id = ?",
+                c.execute("UPDATE api_keys SET rate_limit_tier = %s, updated_at = %s WHERE user_id = %s",
                           (api_tier, now, resolved_user_id))
                 api_keys_updated = c.rowcount
                 print(f"🔑 Updated {api_keys_updated} API key(s) to tier: {api_tier}")
@@ -6496,7 +6496,7 @@ def handle_subscription_created(subscription):
                    (status, customer_id))
         conn = get_db()
         c = conn.cursor()
-        c.execute("UPDATE users SET subscription_status = ? WHERE stripe_customer_id = ?",
+        c.execute("UPDATE users SET subscription_status = %s WHERE stripe_customer_id = %s",
                   (status, customer_id))
         conn.commit()
         conn.close()
@@ -6525,11 +6525,11 @@ def handle_subscription_updated(subscription):
     conn = get_db()
     c = conn.cursor()
     if status in ['active', 'trialing', 'past_due', 'unpaid']:
-        c.execute("UPDATE users SET subscription_status = ? WHERE stripe_customer_id = ?", (status, customer_id))
+        c.execute("UPDATE users SET subscription_status = %s WHERE stripe_customer_id = %s", (status, customer_id))
     elif status == 'canceled':
-        c.execute("UPDATE users SET plan = 'free', role = 'free', subscription_status = ? WHERE stripe_customer_id = ?",
+        c.execute("UPDATE users SET plan = 'free', role = 'free', subscription_status = %s WHERE stripe_customer_id = %s",
                   (status, customer_id))
-        c.execute("UPDATE api_keys SET rate_limit_tier = 'free', updated_at = ? WHERE user_id IN (SELECT id FROM users WHERE stripe_customer_id = ?)",
+        c.execute("UPDATE api_keys SET rate_limit_tier = 'free', updated_at = %s WHERE user_id IN (SELECT id FROM users WHERE stripe_customer_id = %s)",
                   (now, customer_id))
     conn.commit()
     conn.close()
@@ -6550,9 +6550,9 @@ def handle_subscription_deleted(subscription):
 
     conn = get_db()
     c = conn.cursor()
-    c.execute("UPDATE users SET plan = 'free', role = 'free', subscription_status = 'canceled' WHERE stripe_customer_id = ?",
+    c.execute("UPDATE users SET plan = 'free', role = 'free', subscription_status = 'canceled' WHERE stripe_customer_id = %s",
               (customer_id,))
-    c.execute("UPDATE api_keys SET rate_limit_tier = 'free', updated_at = ? WHERE user_id IN (SELECT id FROM users WHERE stripe_customer_id = ?)",
+    c.execute("UPDATE api_keys SET rate_limit_tier = 'free', updated_at = %s WHERE user_id IN (SELECT id FROM users WHERE stripe_customer_id = %s)",
               (now, customer_id))
     conn.commit()
     conn.close()
@@ -6572,7 +6572,7 @@ def handle_payment_failed(invoice):
     _pg_execute("UPDATE users SET subscription_status = 'payment_failed' WHERE stripe_customer_id = %s", (customer_id,))
     conn = get_db()
     c = conn.cursor()
-    c.execute("UPDATE users SET subscription_status = 'payment_failed' WHERE stripe_customer_id = ?",
+    c.execute("UPDATE users SET subscription_status = 'payment_failed' WHERE stripe_customer_id = %s",
               (customer_id,))
     conn.commit()
     conn.close()
@@ -6588,7 +6588,7 @@ def get_subscription_status():
     
     c.execute("""
         SELECT plan, stripe_customer_id, subscription_status 
-        FROM users WHERE id = ?
+        FROM users WHERE id = %s
     """, (request.user['user_id'],))
     
     user = c.fetchone()
@@ -6653,7 +6653,7 @@ def create_portal_session():
     
     conn = get_db()
     c = conn.cursor()
-    c.execute("SELECT stripe_customer_id FROM users WHERE id = ?", (request.user['user_id'],))
+    c.execute("SELECT stripe_customer_id FROM users WHERE id = %s", (request.user['user_id'],))
     user = c.fetchone()
     conn.close()
     
@@ -6892,10 +6892,10 @@ def compare_markets():
             params = []
             for city in cities:
                 if len(city) == 2 and city.isupper():
-                    conditions.append('state = ?')
+                    conditions.append('state = %s')
                     params.append(city)
                 else:
-                    conditions.append('city LIKE ?')
+                    conditions.append('city LIKE %s')
                     params.append(f'%{city}%')
             
             where_clause = ' OR '.join(conditions)
@@ -6992,7 +6992,7 @@ def generate_report():
         try:
             conn = get_db()
             c = conn.cursor()
-            c.execute("SELECT id FROM leads WHERE email = ?", (email,))
+            c.execute("SELECT id FROM leads WHERE email = %s", (email,))
             if not c.fetchone():
                 lead_id = secrets.token_hex(8)
                 c.execute("""
@@ -7000,7 +7000,7 @@ def generate_report():
                     VALUES (?, ?, 'pdf_report', ?, 25, ?, ?)
                 """, (lead_id, email, json.dumps(markets), datetime.utcnow().isoformat(), datetime.utcnow().isoformat()))
             else:
-                c.execute("UPDATE leads SET lead_score = lead_score + 25, last_activity = ? WHERE email = ?",
+                c.execute("UPDATE leads SET lead_score = lead_score + 25, last_activity = %s WHERE email = %s",
                          (datetime.utcnow().isoformat(), email))
             conn.commit()
             conn.close()
@@ -7101,10 +7101,10 @@ def generate_market_pdf(markets, report_type):
         params = []
         for city in cities:
             if len(city) == 2 and city.isupper():
-                conditions.append('state = ?')
+                conditions.append('state = %s')
                 params.append(city)
             else:
-                conditions.append('city LIKE ?')
+                conditions.append('city LIKE %s')
                 params.append(f'%{city}%')
         
         where_clause = ' OR '.join(conditions)
@@ -8841,7 +8841,7 @@ def add_testimonial_legacy():
     key_hash = hashlib.sha256(key.encode()).hexdigest()
     conn = get_db()
     c = conn.cursor()
-    c.execute("SELECT id FROM api_keys WHERE key_hash = ? AND is_active = 1", (key_hash,))
+    c.execute("SELECT id FROM api_keys WHERE key_hash = %s AND is_active = 1", (key_hash,))
     if not c.fetchone():
         conn.close()
         return jsonify({'success': False, 'error': 'Invalid API key'}), 401
@@ -8901,7 +8901,7 @@ def api_signup():
         conn = get_db()
         c = conn.cursor()
         
-        c.execute("SELECT id FROM api_keys WHERE user_id = ?", (email,))
+        c.execute("SELECT id FROM api_keys WHERE user_id = %s", (email,))
         existing = c.fetchone()
         if existing:
             conn.close()
@@ -9164,7 +9164,7 @@ def email_unsubscribe():
     c = conn.cursor()
     c.execute("""
         UPDATE leads SET subscribed = 0 WHERE email IN (
-            SELECT DISTINCT email FROM email_queue WHERE body_html LIKE ?
+            SELECT DISTINCT email FROM email_queue WHERE body_html LIKE %s
         )
     """, (f'%{token}%',))
     conn.commit()
@@ -9691,10 +9691,10 @@ def fiber_routes_api():
         query = 'SELECT * FROM fiber_carrier_routes WHERE 1=1'
         params = []
         if carrier:
-            query += ' AND provider = ?'
+            query += ' AND provider = %s'
             params.append(carrier)
         if route_type:
-            query += ' AND route_type = ?'
+            query += ' AND route_type = %s'
             params.append(route_type)
         query += ' LIMIT 500'
 
