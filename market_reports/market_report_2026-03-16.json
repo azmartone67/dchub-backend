@@ -1,6 +1,6 @@
 {
   "report_date": "2026-03-16",
-  "generated_at": "2026-03-16T00:19:26.560521",
+  "generated_at": "2026-03-16T06:35:04.950334",
   "summary": {
     "total_facilities": 11788,
     "total_providers": 2806,
@@ -89,54 +89,54 @@
   ],
   "recent_news": [
     {
-      "title": "Nvidia Powers Nebius AI Factory Plans With Massive $2 Billion Investment",
-      "source": "Bitcoin.com News",
-      "date": "2026-03-15T20:06:47"
-    },
-    {
-      "title": "Sprawling data center at 'heart' of Meta's AI ambitions",
-      "source": "cnhinews.com",
-      "date": "2026-03-15T18:10:44"
-    },
-    {
-      "title": "New York Residents Are Fighting a Data Center Backed by a Billionaire Trump Ally",
-      "source": "Truthout",
-      "date": "2026-03-15T13:35:15"
-    },
-    {
-      "title": "Tech giants plan over $650 billion in AI infrastructure investment",
-      "source": "\u0633\u0627\u0646\u0627",
-      "date": "2026-03-15T13:32:38"
-    },
-    {
-      "title": "Intel NVIDIA Partnership AI x86 CPU NVLink Data Center Personal Computing Systems Strategic Agreement and 5 Billion Investment",
-      "source": "Technetbook",
-      "date": "2026-03-15T13:28:00"
-    },
-    {
-      "title": "Jury out on whether Americans approve or disapprove of datacenters",
+      "title": "AWS S3 turns 20 and reaches \u2018hundreds of exabytes\u2019",
       "source": "The Register DC",
-      "date": "2026-03-15T12:34:14"
+      "date": "2026-03-16T06:24:04"
     },
     {
-      "title": "A practical guide to the 6 categories of AI cloud infrastructure in 2026",
-      "source": "The New Stack",
-      "date": "2026-03-15T12:00:07"
+      "title": "HIVE's BUZZ HPC Expands Data Center Footprint into British Columbia with 4 Times Growth in Liquid-Cooled AI Data Center Capacity",
+      "source": "TMX Newsfile",
+      "date": "2026-03-16T06:20:00"
     },
     {
-      "title": "Assessing Core Scientific (CORZ) Valuation As Data Center And AI Pivot Gains Traction",
+      "title": "Liquid-Cooled AI Infrastructure: Powering Scalable Enterprise Intelligence",
+      "source": "ASUS Pressroom",
+      "date": "2026-03-16T05:57:28"
+    },
+    {
+      "title": "Husker engineer aims to make data centers more energy efficient",
+      "source": "Nebraska Today",
+      "date": "2026-03-16T05:31:26"
+    },
+    {
+      "title": "Arista Networks Targets AI Data Centers With XPO Liquid Cooled Optics",
       "source": "simplywall.st",
-      "date": "2026-03-15T10:22:44"
+      "date": "2026-03-16T05:25:18"
     },
     {
-      "title": "Are Republicans rethinking Ohio\u2019s data center boom?",
-      "source": "Cleveland.com",
-      "date": "2026-03-15T09:30:00"
+      "title": "NovaChargeX Unveils Patented Regenerative Energy System to Power AI Data Centers with Continuous, Grid-Independent Electricity",
+      "source": "SolarQuarter",
+      "date": "2026-03-16T03:32:06"
     },
     {
-      "title": "Equinix (EQIX) Names Olivier Leonetti as Chief Financial Officer",
-      "source": "Insider Monkey",
-      "date": "2026-03-15T09:01:40"
+      "title": "Commentary: Nvidia CEO outlines new AI infrastructure vision ahead of GTC 2026",
+      "source": "digitimes",
+      "date": "2026-03-16T02:45:21"
+    },
+    {
+      "title": "Google\u2019s Data Center Plan Runs Into Small Town Resistance",
+      "source": "Propmodo",
+      "date": "2026-03-16T01:06:57"
+    },
+    {
+      "title": "Cooling the AI Boom: Innovative Strategies for Water-Efficient and Sustainable Data Centers",
+      "source": "Intelligent Living",
+      "date": "2026-03-16T00:56:37"
+    },
+    {
+      "title": "Should New Credit Facility and Meta AI Data Center Deal Require Action From Alliant Energy (LNT) Investors?",
+      "source": "simplywall.st",
+      "date": "2026-03-16T00:38:28"
     }
   ],
   "data_sources": [
