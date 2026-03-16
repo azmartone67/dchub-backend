@@ -8146,7 +8146,12 @@ def serve_frontend():
 
 @app.route('/api/health', methods=['GET'])
 def api_health():
-    """Health check with data counts for monitoring and failover validation."""
+    """Health check with data counts for monitoring and failover validation.
+    
+    v2.6: Uses get_read_db() (read replica) instead of pg_connection() (primary).
+    The primary pool is often saturated by background tasks; health checks
+    should never compete for write-pool connections or they timeout under load.
+    """
     health = {
         'status': 'healthy',
         'timestamp': datetime.utcnow().isoformat() + 'Z',
@@ -8158,26 +8163,33 @@ def api_health():
         'deal_count': 0,
         'news_count': 0,
     }
+    conn = None
     try:
-        with pg_connection() as conn:
-            cur = conn.cursor()
-            try:
-                cur.execute("SELECT COUNT(*) FROM discovered_facilities")
-                health['facility_count'] = cur.fetchone()[0] or 0
-            except Exception:
-                pass
-            try:
-                cur.execute("SELECT COUNT(*) FROM deals")
-                health['deal_count'] = cur.fetchone()[0] or 0
-            except Exception:
-                pass
-            try:
-                cur.execute("SELECT COUNT(*) FROM announcements")
-                health['news_count'] = cur.fetchone()[0] or 0
-            except Exception:
-                pass
+        conn = get_read_db()
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT COUNT(*) FROM discovered_facilities")
+            health['facility_count'] = cur.fetchone()[0] or 0
+        except Exception:
+            pass
+        try:
+            cur.execute("SELECT COUNT(*) FROM deals")
+            health['deal_count'] = cur.fetchone()[0] or 0
+        except Exception:
+            pass
+        try:
+            cur.execute("SELECT COUNT(*) FROM announcements")
+            health['news_count'] = cur.fetchone()[0] or 0
+        except Exception:
+            pass
     except Exception:
         health['source'] = 'neon-unreachable'
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
     return jsonify(health)
 
 
