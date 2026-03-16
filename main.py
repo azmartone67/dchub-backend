@@ -7814,7 +7814,7 @@ def _list_facilities_full():
     conn = None
     try:
         conn = get_read_db()
-        c = conn.cursor()
+        c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         
         c.execute(count_sql, params)
         total = c.fetchone()[0]
