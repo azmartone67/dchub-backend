@@ -1,0 +1,154 @@
+{
+  "report_date": "2026-03-16",
+  "generated_at": "2026-03-16T00:19:26.560521",
+  "summary": {
+    "total_facilities": 11788,
+    "total_providers": 2806,
+    "countries_covered": 167,
+    "total_power_mw": 80281.0,
+    "total_deals": 628,
+    "total_deal_value_usd": 747099700000.0
+  },
+  "market_highlights": [
+    "DC Hub tracks 11,788 data center facilities globally",
+    "Coverage spans 167 countries with 2806 providers",
+    "Combined capacity: 80,281 MW",
+    "M&A database: 628 transactions worth $747.1B+"
+  ],
+  "recent_deals": [
+    {
+      "buyer": "Billion Deal",
+      "seller": "Nordic Data",
+      "value_usd": 4000000000.0,
+      "type": "acquisition",
+      "date": null
+    },
+    {
+      "buyer": "Billion Deal",
+      "seller": "Nordic Data",
+      "value_usd": 4000000000.0,
+      "type": "acquisition",
+      "date": null
+    },
+    {
+      "buyer": "Accenture down",
+      "seller": "Downdetector as",
+      "value_usd": 1200000000.0,
+      "type": "acquisition",
+      "date": null
+    },
+    {
+      "buyer": "Billion Deal",
+      "seller": "Nordic Data",
+      "value_usd": 4000000000.0,
+      "type": "acquisition",
+      "date": null
+    },
+    {
+      "buyer": "7bn deal",
+      "seller": "US power",
+      "value_usd": 10700000000.0,
+      "type": "acquisition",
+      "date": null
+    },
+    {
+      "buyer": "Billion Deal",
+      "seller": "Nordic Data",
+      "value_usd": 4000000000.0,
+      "type": "acquisition",
+      "date": null
+    },
+    {
+      "buyer": "Accenture",
+      "seller": "Ookla",
+      "value_usd": 1200000000.0,
+      "type": "acquisition",
+      "date": null
+    },
+    {
+      "buyer": "It a",
+      "seller": "for 2026",
+      "value_usd": 10000000000.0,
+      "type": "acquisition",
+      "date": null
+    },
+    {
+      "buyer": "Billion Deal",
+      "seller": "Nordic Data",
+      "value_usd": 4000000000.0,
+      "type": "acquisition",
+      "date": null
+    },
+    {
+      "buyer": "Billion Deal",
+      "seller": "Nordic Data",
+      "value_usd": 4000000000.0,
+      "type": "acquisition",
+      "date": null
+    }
+  ],
+  "recent_news": [
+    {
+      "title": "Nvidia Powers Nebius AI Factory Plans With Massive $2 Billion Investment",
+      "source": "Bitcoin.com News",
+      "date": "2026-03-15T20:06:47"
+    },
+    {
+      "title": "Sprawling data center at 'heart' of Meta's AI ambitions",
+      "source": "cnhinews.com",
+      "date": "2026-03-15T18:10:44"
+    },
+    {
+      "title": "New York Residents Are Fighting a Data Center Backed by a Billionaire Trump Ally",
+      "source": "Truthout",
+      "date": "2026-03-15T13:35:15"
+    },
+    {
+      "title": "Tech giants plan over $650 billion in AI infrastructure investment",
+      "source": "\u0633\u0627\u0646\u0627",
+      "date": "2026-03-15T13:32:38"
+    },
+    {
+      "title": "Intel NVIDIA Partnership AI x86 CPU NVLink Data Center Personal Computing Systems Strategic Agreement and 5 Billion Investment",
+      "source": "Technetbook",
+      "date": "2026-03-15T13:28:00"
+    },
+    {
+      "title": "Jury out on whether Americans approve or disapprove of datacenters",
+      "source": "The Register DC",
+      "date": "2026-03-15T12:34:14"
+    },
+    {
+      "title": "A practical guide to the 6 categories of AI cloud infrastructure in 2026",
+      "source": "The New Stack",
+      "date": "2026-03-15T12:00:07"
+    },
+    {
+      "title": "Assessing Core Scientific (CORZ) Valuation As Data Center And AI Pivot Gains Traction",
+      "source": "simplywall.st",
+      "date": "2026-03-15T10:22:44"
+    },
+    {
+      "title": "Are Republicans rethinking Ohio\u2019s data center boom?",
+      "source": "Cleveland.com",
+      "date": "2026-03-15T09:30:00"
+    },
+    {
+      "title": "Equinix (EQIX) Names Olivier Leonetti as Chief Financial Officer",
+      "source": "Insider Monkey",
+      "date": "2026-03-15T09:01:40"
+    }
+  ],
+  "data_sources": [
+    "PeeringDB",
+    "OpenStreetMap",
+    "SEC EDGAR",
+    "Wikidata",
+    "60+ RSS Feeds",
+    "EIA Energy API",
+    "Grid Status API",
+    "FCC Broadband API",
+    "EPA Envirofacts"
+  ],
+  "citation": "According to DC Hub Nexus (dchub.cloud)"
+}
