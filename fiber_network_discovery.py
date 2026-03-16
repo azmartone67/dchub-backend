@@ -1,5 +1,5 @@
 """
-Fiber Network Discovery Module v2.1
+Fiber Network Discovery Module v2.2
 ====================================
 - Seeds Neon fiber_routes table with major carrier routes
 - Discovers fiber networks from PeeringDB IX data
@@ -7,17 +7,18 @@ Fiber Network Discovery Module v2.1
 - Carrier Hotels & Lit Buildings
 - Fiber Provider Coverage APIs
 
-v2.1 CHANGES:
-  - Fixed _upsert_fiber_route column mapping (start_location, end_location only)
-  - Added conn.rollback() on upsert failure to prevent cascading aborts
-  - ON CONFLICT uses source_id unique index
-  - run_fiber_discovery uses db_utils.get_db() pool instead of raw psycopg2.connect
+v2.2 CHANGES:
+  - Added US_CITY_COORDS geocoding fallback for PeeringDB (API no longer returns lat/lng)
+  - Fixed ON CONFLICT to use (name, provider) unique constraint
+  - Cleaned up dead code in _get_pg_connection
+  - PeeringDB discovery now resolves IX city names to coordinates
 """
 
 import requests
 import logging
 import os
 import time
+import math
 from datetime import datetime, timezone
 from flask import Blueprint, jsonify, request
 import json
@@ -25,6 +26,125 @@ import json
 logger = logging.getLogger(__name__)
 
 fiber_bp = Blueprint('fiber_discovery', __name__)
+
+
+# ============================================================
+# US CITY COORDINATES — fallback geocoder for PeeringDB IXes
+# ============================================================
+# PeeringDB stopped returning lat/lng in their API as of early 2026.
+# This table maps common US IX cities to coordinates so route discovery
+# still works. Covers all major DC/IX markets.
+
+US_CITY_COORDS = {
+    # Major DC markets
+    'ashburn': (38.95, -77.45), 'reston': (38.96, -77.34),
+    'new york': (40.71, -74.01), 'manhattan': (40.71, -74.01),
+    'newark': (40.74, -74.17), 'secaucus': (40.79, -74.06),
+    'chicago': (41.88, -87.63), 'elk grove village': (42.00, -87.97),
+    'dallas': (32.78, -96.80), 'richardson': (32.95, -96.73),
+    'houston': (29.76, -95.37), 'san antonio': (29.42, -98.49),
+    'austin': (30.27, -97.74),
+    'phoenix': (33.45, -112.07), 'mesa': (33.42, -111.83),
+    'los angeles': (34.05, -118.24), 'el segundo': (33.92, -118.41),
+    'san francisco': (37.77, -122.42), 'san jose': (37.34, -121.89),
+    'santa clara': (37.35, -121.95), 'palo alto': (37.44, -122.14),
+    'fremont': (37.55, -121.99), 'sacramento': (38.58, -121.49),
+    'seattle': (47.61, -122.33), 'portland': (45.52, -122.68),
+    'denver': (39.74, -104.99), 'boulder': (40.01, -105.27),
+    'atlanta': (33.75, -84.39), 'suwanee': (34.05, -84.07),
+    'miami': (25.76, -80.19), 'fort lauderdale': (26.12, -80.14),
+    'jacksonville': (30.33, -81.66), 'tampa': (27.95, -82.46),
+    'orlando': (28.54, -81.38),
+    'boston': (42.36, -71.06), 'cambridge': (42.37, -71.11),
+    'philadelphia': (39.95, -75.17),
+    'baltimore': (39.29, -76.61),
+    'washington': (38.91, -77.04),
+    'charlotte': (35.23, -80.84),
+    'raleigh': (35.78, -78.64), 'durham': (35.99, -78.90),
+    'richmond': (37.54, -77.44),
+    'nashville': (36.16, -86.78),
+    'memphis': (35.15, -90.05),
+    'louisville': (38.25, -85.76),
+    'indianapolis': (39.77, -86.16),
+    'columbus': (39.96, -82.99),
+    'cleveland': (41.50, -81.69),
+    'detroit': (42.33, -83.05), 'ann arbor': (42.28, -83.74),
+    'pittsburgh': (40.44, -80.00),
+    'minneapolis': (44.98, -93.27), 'st. paul': (44.95, -93.09),
+    'kansas city': (39.10, -94.58),
+    'st. louis': (38.63, -90.20),
+    'des moines': (41.59, -93.62),
+    'omaha': (41.26, -95.94),
+    'salt lake city': (40.76, -111.89),
+    'las vegas': (36.17, -115.14),
+    'reno': (39.53, -119.81),
+    'boise': (43.62, -116.21),
+    'albuquerque': (35.08, -106.65),
+    'tucson': (32.22, -110.93),
+    'el paso': (31.76, -106.44),
+    'birmingham': (33.52, -86.80),
+    'new orleans': (29.95, -90.07),
+    'little rock': (34.75, -92.29),
+    'oklahoma city': (35.47, -97.52),
+    'tulsa': (36.15, -95.99),
+    'milwaukee': (43.04, -87.91),
+    'madison': (43.07, -89.40),
+    'hartford': (41.76, -72.68),
+    'providence': (41.82, -71.41),
+    'buffalo': (42.89, -78.88),
+    'albany': (42.65, -73.76),
+    'syracuse': (43.05, -76.15),
+    'rochester': (43.16, -77.61),
+    'manchester': (43.00, -71.45),
+    'portland me': (43.66, -70.26),
+    'charleston': (32.78, -79.93),
+    'columbia': (34.00, -81.03),
+    'greenville': (34.85, -82.40),
+    'knoxville': (35.96, -83.92),
+    'chattanooga': (35.05, -85.31),
+    'norfolk': (36.85, -76.29), 'virginia beach': (36.85, -75.98),
+    'spokane': (47.66, -117.43),
+    'tacoma': (47.25, -122.44),
+    'vancouver': (45.63, -122.67),
+    'san diego': (32.72, -117.16),
+    'honolulu': (21.31, -157.86),
+    'anchorage': (61.22, -149.90),
+    'fargo': (46.88, -96.79),
+    'sioux falls': (43.55, -96.73),
+    'wichita': (37.69, -97.34),
+    'springfield': (37.22, -93.29),
+    'lexington': (38.04, -84.50),
+    'grand rapids': (42.96, -85.66),
+    'jacksonville fl': (30.33, -81.66),
+    'dayton': (39.76, -84.19),
+    'cincinnati': (39.10, -84.51),
+    'akron': (41.08, -81.52),
+    'toledo': (41.65, -83.54),
+    'harrisburg': (40.27, -76.88),
+    'scranton': (41.41, -75.66),
+    'trenton': (40.22, -74.76),
+    'wilmington': (39.74, -75.55),
+    'stamford': (41.05, -73.54),
+    'bridgeport': (41.18, -73.20),
+    'new haven': (41.31, -72.92),
+    'worcester': (42.26, -71.80),
+    'springfield ma': (42.10, -72.59),
+}
+
+
+def _geocode_city(city_name):
+    """Look up coordinates for a US city name. Returns (lat, lng) or None."""
+    if not city_name:
+        return None
+    city_lower = city_name.strip().lower()
+    # Direct lookup
+    if city_lower in US_CITY_COORDS:
+        return US_CITY_COORDS[city_lower]
+    # Try partial match (e.g. "Ashburn, VA" → "ashburn")
+    for key, coords in US_CITY_COORDS.items():
+        if key in city_lower or city_lower.startswith(key):
+            return coords
+    return None
 
 
 # ============================================================
@@ -38,10 +158,6 @@ def _get_pg_connection():
         return get_db()
     except Exception as e:
         logger.error('Fiber discovery DB connection failed: %s' % e)
-        return None
-        return psycopg2.connect(db_url, connect_timeout=10)
-    except Exception as e:
-        logger.error("Fiber discovery DB connection failed: %s" % e)
         return None
 
 
@@ -69,9 +185,7 @@ def _ensure_fiber_routes_table():
 def _upsert_fiber_route(conn, route):
     """Upsert a single fiber route into Neon.
     
-    fiber_routes actual columns: id, name, provider, route_type, start_location,
-    end_location, start_lat, start_lng, end_lat, end_lng, distance_miles,
-    fiber_count, lit_capacity_gbps, status, source, source_id, created_at, updated_at
+    Uses ON CONFLICT (name, provider) to match the fiber_routes_unique_key constraint.
     """
     try:
         cur = conn.cursor()
@@ -86,12 +200,16 @@ def _upsert_fiber_route(conn, route):
                  distance_miles, fiber_count, status, start_lat, start_lng,
                  end_lat, end_lng, source, source_id)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (source_id) WHERE source_id IS NOT NULL DO UPDATE SET
-                name = EXCLUDED.name,
-                provider = EXCLUDED.provider,
+            ON CONFLICT (name, provider) DO UPDATE SET
                 distance_miles = EXCLUDED.distance_miles,
                 fiber_count = EXCLUDED.fiber_count,
                 route_type = EXCLUDED.route_type,
+                start_lat = EXCLUDED.start_lat,
+                start_lng = EXCLUDED.start_lng,
+                end_lat = EXCLUDED.end_lat,
+                end_lng = EXCLUDED.end_lng,
+                source = EXCLUDED.source,
+                source_id = EXCLUDED.source_id,
                 updated_at = NOW()
         """, (
             route.get('name', ''),
@@ -148,7 +266,7 @@ MAJOR_ROUTES = [
 
 
 # ============================================================
-# PeeringDB FIBER DISCOVERY
+# PeeringDB FIBER DISCOVERY (with city geocoding fallback)
 # ============================================================
 
 def _discover_peeringdb_fiber():
@@ -156,6 +274,9 @@ def _discover_peeringdb_fiber():
     Discover fiber routes from PeeringDB Internet Exchange data.
     Each IX represents a fiber interconnection point — we create
     routes between IXes in the same region as proxy fiber paths.
+    
+    v2.2: PeeringDB no longer returns lat/lng coordinates.
+    Now uses city name geocoding fallback via US_CITY_COORDS.
     """
     discovered = []
     try:
@@ -172,26 +293,45 @@ def _discover_peeringdb_fiber():
         data = resp.json().get("data", [])
         logger.info("PeeringDB: found %d US Internet Exchanges" % len(data))
 
-        # Filter IXes with coordinates
+        # Build IX list with coordinates (API lat/lng or city geocode fallback)
         ixes = []
+        geocoded_count = 0
         for ix in data:
             lat = ix.get("latitude")
             lng = ix.get("longitude")
-            if lat and lng and abs(lat) > 0.1:
-                ixes.append({
-                    "id": ix.get("id"),
-                    "name": ix.get("name", ""),
-                    "city": ix.get("city", ""),
-                    "state": ix.get("region_continent", ""),
-                    "lat": float(lat),
-                    "lng": float(lng),
-                    "net_count": ix.get("net_count", 0),
-                })
+            city = ix.get("city", "")
+            
+            # Try API coordinates first
+            if lat and lng and abs(float(lat)) > 0.1:
+                lat, lng = float(lat), float(lng)
+            else:
+                # Fallback: geocode from city name
+                coords = _geocode_city(city)
+                if coords:
+                    lat, lng = coords
+                    geocoded_count += 1
+                else:
+                    continue  # Skip IXes we can't locate
+            
+            ixes.append({
+                "id": ix.get("id"),
+                "name": ix.get("name", ""),
+                "city": city,
+                "state": ix.get("region_continent", ""),
+                "lat": lat,
+                "lng": lng,
+                "net_count": ix.get("net_count", 0),
+            })
 
-        # Create routes between IXes in nearby cities (< 500 miles apart)
-        import math
+        logger.info("PeeringDB: %d IXes with coordinates (%d geocoded from city name)" % (len(ixes), geocoded_count))
+
+        # Create routes between IXes in nearby cities (50-500 miles apart)
         for i, ix1 in enumerate(ixes):
             for ix2 in ixes[i+1:]:
+                # Skip IXes in the same city (same coordinates)
+                if abs(ix1['lat'] - ix2['lat']) < 0.01 and abs(ix1['lng'] - ix2['lng']) < 0.01:
+                    continue
+                    
                 # Haversine distance
                 lat1, lon1 = math.radians(ix1["lat"]), math.radians(ix1["lng"])
                 lat2, lon2 = math.radians(ix2["lat"]), math.radians(ix2["lng"])
@@ -200,7 +340,7 @@ def _discover_peeringdb_fiber():
                 a = math.sin(dlat/2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon/2)**2
                 dist_miles = 3959 * 2 * math.asin(math.sqrt(a))
 
-                # Only create routes between 50-500 miles (metro fiber paths)
+                # Only create routes between 50-500 miles (metro/regional fiber paths)
                 if 50 < dist_miles < 500:
                     route_id = "PDB-%s-%s" % (ix1['id'], ix2['id'])
                     discovered.append({
@@ -231,12 +371,12 @@ def _discover_peeringdb_fiber():
 
 
 # ============================================================
-# RUN FIBER DISCOVERY (called by infrastructure-sync job)
+# RUN FIBER DISCOVERY (called by fiber-sync job)
 # ============================================================
 
 def run_fiber_discovery():
     """
-    Main fiber discovery function — called by /api/jobs/infrastructure-sync.
+    Main fiber discovery function — called by /api/jobs/fiber-sync.
     
     1. Ensures fiber_routes table exists
     2. Seeds 20 major carrier routes
@@ -529,11 +669,11 @@ def get_fiber_summary():
 def register_fiber_discovery(app):
     """Register fiber discovery routes."""
     app.register_blueprint(fiber_bp)
-    logger.info("✅ Fiber Network Discovery v2.1 registered")
+    logger.info("✅ Fiber Network Discovery v2.2 registered")
     routes = FiberProviderAPI.get_routes()
     bead = NTIAGrantAPI.get_bead_allocations()
-    print("🔌 Fiber Network Discovery v2.1: ✅ Registered")
+    print("🔌 Fiber Network Discovery v2.2: ✅ Registered")
     print("   📡 Providers: /api/fiber/providers (8 carriers, %s route miles)" % "{:,}".format(FiberProviderAPI.get_all_providers()['total_route_miles']))
     print("   🛤️ Routes: /api/fiber/routes (%d seed routes, %s miles)" % (routes['count'], "{:,}".format(routes['total_miles'])))
     print("   💰 BEAD: /api/fiber/bead-allocations (%d states, %s)" % (bead['count'], bead['total_funding_formatted']))
-    print("   🔍 Discovery: run_fiber_discovery() → seeds Neon + crawls PeeringDB")
+    print("   🔍 Discovery: run_fiber_discovery() → seeds Neon + crawls PeeringDB (with city geocoding)")
