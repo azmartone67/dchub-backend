@@ -12781,6 +12781,14 @@ try:
 except Exception as e:
     print(f"❌ Rankings blueprint failed: {e}")
 
+    # Energy Discovery Routes (Land & Power map integration)
+    try:
+        from routes.energy_discovery_routes import energy_discovery_bp
+        app.register_blueprint(energy_discovery_bp)
+        print("⚡ Energy Discovery Blueprint: ✅ Registered (6 routes)")
+    except Exception as e:
+        print(f"❌ Energy Discovery blueprint failed: {e}")
+
 @app.route('/api/v1/plan-sync.js')
 def serve_plan_sync():
     """Serve plan-sync script via API route (bypasses Cloudflare Pages static)"""
