@@ -4867,14 +4867,14 @@ MARKET_ALIASES = {
 }
 
 RAILWAY_EXCLUSION = """
-    AND provider NOT LIKE '%Railway%'
-    AND provider NOT LIKE '%Railroad%'
-    AND provider NOT LIKE '%Rail %'
-    AND provider NOT LIKE '%SNCF%'
-    AND provider NOT LIKE '%Metro%'
-    AND provider NOT LIKE '%Transit%'
-    AND provider NOT LIKE '%Amtrak%'
-    AND provider NOT LIKE '%Bahn%'
+    AND provider NOT LIKE '%%Railway%%'
+    AND provider NOT LIKE '%%Railroad%%'
+    AND provider NOT LIKE '%%Rail %%'
+    AND provider NOT LIKE '%%SNCF%%'
+    AND provider NOT LIKE '%%Metro%%'
+    AND provider NOT LIKE '%%Transit%%'
+    AND provider NOT LIKE '%%Amtrak%%'
+    AND provider NOT LIKE '%%Bahn%%'
 """
 
 # =============================================================================
