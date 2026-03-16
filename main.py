@@ -1728,11 +1728,7 @@ def get_read_db(*args, **kwargs):
             
             # Wrap connection in a proxy that returns to READ pool on .close()
             # psycopg2's .close is a read-only C attribute — can't monkey-patch it.
-            # Instead, wrap the connection so callers use wrapper.close() which
-            # calls putconn() instead of actually closing.
             class _ReadPoolConn:
-                """Thin proxy: delegates everything to the real connection,
-                except .close() which returns it to the read pool."""
                 __slots__ = ('_conn', '_returned')
                 def __init__(self, real_conn):
                     object.__setattr__(self, '_conn', real_conn)
@@ -4543,7 +4539,6 @@ if 'GRIDSTATUS_CACHE' not in dir():
     EIA_CACHE = BoundedCache(max_size=1, ttl=1) if 'BoundedCache' in dir() else {}
     HIFLD_CACHE = BoundedCache(max_size=1, ttl=1) if 'BoundedCache' in dir() else {}
     OILGAS_CACHE = BoundedCache(max_size=1, ttl=1) if 'BoundedCache' in dir() else {}
-    DEALS_CACHE = BoundedCache(max_size=1, ttl=1) if 'BoundedCache' in dir() else {}
     gridstatus_get_load = lambda iso: None
 
 @app.route('/api/grid/fuel-mix-live', methods=['GET'])
@@ -6754,101 +6749,108 @@ def get_market_stats(market):
     cities = MARKET_ALIASES[market_lower]
     
     conn = get_read_db()
-    c = conn.cursor()
-    
-    # Build city conditions — MARKET_ALIASES are all US markets,
-    # so add country='US' guard to prevent ISO code collisions (e.g. AZ=Azerbaijan)
-    conditions = []
-    params = []
-    for city in cities:
-        if len(city) == 2 and city.isupper():
-            conditions.append('state = %s')
-            params.append(city)
-        else:
-            conditions.append('city ILIKE %s')
-            params.append(f'%{city}%')
-    
-    where_clause = ' OR '.join(conditions)
-    country_guard = "AND (country = 'US' OR country = 'USA' OR country IS NULL OR country = '')"
-    
-    # Get overall stats
-    c.execute(f"""
-        SELECT 
-            COUNT(*) as facility_count,
-            COALESCE(SUM(power_mw), 0) as total_power,
-            COALESCE(AVG(power_mw), 0) as avg_power,
-            COUNT(DISTINCT provider) as provider_count
-        FROM discovered_facilities 
-        WHERE ({where_clause})
-        {country_guard}
-        {RAILWAY_EXCLUSION}
-    """, params)
-    
-    row = c.fetchone()
-    cols = [d[0] for d in c.description]
-    stats = dict(zip(cols, row)) if row else {}
-    
-    # Top providers
-    c.execute(f"""
-        SELECT provider, COUNT(*) as count, COALESCE(SUM(power_mw), 0) as power
-        FROM discovered_facilities 
-        WHERE ({where_clause}) AND provider != ''
-        {country_guard}
-        {RAILWAY_EXCLUSION}
-        GROUP BY provider
-        ORDER BY count DESC
-        LIMIT 10
-    """, params)
-    
-    top_providers = [{'name': r[0], 'facilities': r[1], 'power_mw': round(r[2], 1)} for r in c.fetchall()]
-    
-    # By status
-    c.execute(f"""
-        SELECT status, COUNT(*) as count
-        FROM discovered_facilities 
-        WHERE ({where_clause})
-        {country_guard}
-        {RAILWAY_EXCLUSION}
-        GROUP BY status
-    """, params)
-    
-    by_status_rows = c.fetchall()
-    by_status = {r[0]: r[1] for r in by_status_rows}
-    
-    # Recent facilities
-    c.execute(f"""
-        SELECT id, name, provider, city, power_mw, status, discovered_at
-        FROM discovered_facilities 
-        WHERE ({where_clause})
-        {country_guard}
-        {RAILWAY_EXCLUSION}
-        ORDER BY discovered_at DESC NULLS LAST
-        LIMIT 5
-    """, params)
-    
-    recent_rows = c.fetchall()
-    recent_cols = [d[0] for d in c.description]
-    recent = [dict(zip(recent_cols, r)) for r in recent_rows]
-    
-    conn.close()
-    
-    return jsonify({
-        'success': True,
-        'market': {
-            'id': market_lower,
-            'name': market_lower.replace('_', ' ').title(),
-            'cities': cities
-        },
-        'stats': {
-            'facility_count': stats['facility_count'],
-            'total_power_mw': round(stats['total_power'], 1),
-            'avg_power_mw': round(stats['avg_power'], 1),
-            'provider_count': stats['provider_count']
-        },
-        'top_providers': top_providers,
-        'by_status': by_status,
-        'recent_facilities': recent
-    })
+    try:
+        c = conn.cursor()
+        
+        # Build city conditions — MARKET_ALIASES are all US markets,
+        # so add country='US' guard to prevent ISO code collisions (e.g. AZ=Azerbaijan)
+        conditions = []
+        params = []
+        for city in cities:
+            if len(city) == 2 and city.isupper():
+                conditions.append('state = %s')
+                params.append(city)
+            else:
+                conditions.append('city ILIKE %s')
+                params.append(f'%{city}%')
+        
+        where_clause = ' OR '.join(conditions)
+        country_guard = "AND (country = 'US' OR country = 'USA' OR country IS NULL OR country = '')"
+        
+        # Get overall stats
+        c.execute(f"""
+            SELECT 
+                COUNT(*) as facility_count,
+                COALESCE(SUM(power_mw), 0) as total_power,
+                COALESCE(AVG(power_mw), 0) as avg_power,
+                COUNT(DISTINCT provider) as provider_count
+            FROM discovered_facilities 
+            WHERE ({where_clause})
+            {country_guard}
+            {RAILWAY_EXCLUSION}
+        """, params)
+        
+        row = c.fetchone()
+        cols = [d[0] for d in c.description]
+        stats = dict(zip(cols, row)) if row else {}
+        
+        # Top providers
+        c.execute(f"""
+            SELECT provider, COUNT(*) as count, COALESCE(SUM(power_mw), 0) as power
+            FROM discovered_facilities 
+            WHERE ({where_clause}) AND provider != ''
+            {country_guard}
+            {RAILWAY_EXCLUSION}
+            GROUP BY provider
+            ORDER BY count DESC
+            LIMIT 10
+        """, params)
+        
+        top_providers = [{'name': r[0], 'facilities': r[1], 'power_mw': round(r[2], 1)} for r in c.fetchall()]
+        
+        # By status
+        c.execute(f"""
+            SELECT status, COUNT(*) as count
+            FROM discovered_facilities 
+            WHERE ({where_clause})
+            {country_guard}
+            {RAILWAY_EXCLUSION}
+            GROUP BY status
+        """, params)
+        
+        by_status_rows = c.fetchall()
+        by_status = {r[0]: r[1] for r in by_status_rows}
+        
+        # Recent facilities
+        c.execute(f"""
+            SELECT id, name, provider, city, power_mw, status, discovered_at
+            FROM discovered_facilities 
+            WHERE ({where_clause})
+            {country_guard}
+            {RAILWAY_EXCLUSION}
+            ORDER BY discovered_at DESC NULLS LAST
+            LIMIT 5
+        """, params)
+        
+        recent_rows = c.fetchall()
+        recent_cols = [d[0] for d in c.description]
+        recent = [dict(zip(recent_cols, r)) for r in recent_rows]
+        
+        return jsonify({
+            'success': True,
+            'market': {
+                'id': market_lower,
+                'name': market_lower.replace('_', ' ').title(),
+                'cities': cities
+            },
+            'stats': {
+                'facility_count': stats['facility_count'],
+                'total_power_mw': round(stats['total_power'], 1),
+                'avg_power_mw': round(stats['avg_power'], 1),
+                'provider_count': stats['provider_count']
+            },
+            'top_providers': top_providers,
+            'by_status': by_status,
+            'recent_facilities': recent
+        })
+    except Exception as e:
+        return jsonify({'error': str(e), 'success': False}), 500
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
 
 @app.route('/api/v1/markets/compare', methods=['GET'])
 @require_plan('pro')
@@ -6876,10 +6878,9 @@ def compare_markets():
     
     conn = None
     try:
-        conn = get_read_db()
+        conn = get_db()
         c = conn.cursor()
         
-        country_guard = "AND (country = 'US' OR country = 'USA' OR country IS NULL OR country = '')"
         comparison = []
         
         for market in market_list:
@@ -6889,10 +6890,10 @@ def compare_markets():
             params = []
             for city in cities:
                 if len(city) == 2 and city.isupper():
-                    conditions.append('state = %s')
+                    conditions.append('state = ?')
                     params.append(city)
                 else:
-                    conditions.append('city ILIKE %s')
+                    conditions.append('city LIKE ?')
                     params.append(f'%{city}%')
             
             where_clause = ' OR '.join(conditions)
@@ -6909,20 +6910,16 @@ def compare_markets():
                     SUM(CASE WHEN status = 'planned' OR status = 'under_construction' THEN 1 ELSE 0 END) as pipeline
                 FROM discovered_facilities 
                 WHERE ({where_clause})
-                {country_guard}
                 {RAILWAY_EXCLUSION}
             """, params)
             
-            row = c.fetchone()
-            cols = [d[0] for d in c.description]
-            stats = dict(zip(cols, row)) if row else {}
+            stats = dict(c.fetchone())
             
             # Top 5 providers
             c.execute(f"""
                 SELECT provider, COUNT(*) as count
                 FROM discovered_facilities 
                 WHERE ({where_clause}) AND provider != ''
-                {country_guard}
                 {RAILWAY_EXCLUSION}
                 GROUP BY provider
                 ORDER BY count DESC
@@ -7977,97 +7974,105 @@ def search_facilities():
         return jsonify({'error': 'Provide at least one filter: q, operator, city, state, country, min_capacity_mw, tier'}), 400
 
     conn = get_read_db()
-    c = conn.cursor()
-
-    conditions = []
-    params = []
-
-    # Full-text q — check MARKET_ALIASES first
-    if query:
-        query_lower = query.lower()
-        if query_lower in MARKET_ALIASES:
-            cities = MARKET_ALIASES[query_lower]
-            market_conds = []
-            for mkt_city in cities:
-                if len(mkt_city) == 2 and mkt_city.isupper():
-                    market_conds.append('state = %s')
-                    params.append(mkt_city)
-                else:
-                    market_conds.append('city ILIKE %s')
-                    params.append(f'%{mkt_city}%')
-            conditions.append(f"({' OR '.join(market_conds)})")
-            # MARKET_ALIASES are all US markets — guard against ISO code collisions (AZ=Azerbaijan)
-            conditions.append("(country = 'US' OR country = 'USA' OR country IS NULL OR country = '')")
-        else:
-            q = f'%{query}%'
-            conditions.append('(city ILIKE %s OR state ILIKE %s OR name ILIKE %s OR provider ILIKE %s)')
-            params.extend([q, q, q, q])
-
-    if operator:
-        conditions.append('provider ILIKE %s')
-        params.append(f'%{operator}%')
-
-    if city:
-        conditions.append('city ILIKE %s')
-        params.append(f'%{city}%')
-
-    if state:
-        conditions.append('state = %s')
-        params.append(state.upper())
-
-    if country:
-        conditions.append('country = %s')
-        params.append(country.upper())
-
-    if min_mw:
-        conditions.append('power_mw >= %s')
-        params.append(min_mw)
-
-    if max_mw:
-        conditions.append('power_mw <= %s')
-        params.append(max_mw)
-
-    if tier:
-        conditions.append('tier = %s')
-        params.append(tier)
-
-    # Phase 4: min_confidence filter
-    min_confidence = request.args.get('min_confidence', type=float)
-    if min_confidence is not None and 0 <= min_confidence <= 1:
-        conditions.append('confidence_score >= %s')
-        params.append(min_confidence)
-
-    where = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
-    params.extend([limit, offset])
-
-    c.execute(f"""
-        SELECT * FROM discovered_facilities
-        {where}
-        {RAILWAY_EXCLUSION.replace('AND', 'AND') if where else 'WHERE ' + RAILWAY_EXCLUSION.lstrip('AND').lstrip()}
-        ORDER BY confidence_score DESC, power_mw DESC
-        LIMIT %s OFFSET %s
-    """, params)
-
-    facilities = [dict_from_row(row) for row in c.fetchall()]
-    conn.close()
-
-    # Enrich with confidence badge
     try:
-        for f in facilities:
-            try:
-                cs = float(f.get('confidence_score', 0) or 0)
-            except (ValueError, TypeError):
-                cs = 0
-            f['confidence_badge'] = 'high' if cs >= 0.8 else ('medium' if cs >= 0.5 else 'low')
-    except Exception:
-        pass  # Never let badge enrichment crash the response
+        c = conn.cursor()
+    
+        conditions = []
+        params = []
+    
+        # Full-text q — check MARKET_ALIASES first
+        if query:
+            query_lower = query.lower()
+            if query_lower in MARKET_ALIASES:
+                cities = MARKET_ALIASES[query_lower]
+                market_conds = []
+                for mkt_city in cities:
+                    if len(mkt_city) == 2 and mkt_city.isupper():
+                        market_conds.append('state = %s')
+                        params.append(mkt_city)
+                    else:
+                        market_conds.append('city ILIKE %s')
+                        params.append(f'%{mkt_city}%')
+                conditions.append(f"({' OR '.join(market_conds)})")
+                # MARKET_ALIASES are all US markets — guard against ISO code collisions (AZ=Azerbaijan)
+                conditions.append("(country = 'US' OR country = 'USA' OR country IS NULL OR country = '')")
+            else:
+                q = f'%{query}%'
+                conditions.append('(city ILIKE %s OR state ILIKE %s OR name ILIKE %s OR provider ILIKE %s)')
+                params.extend([q, q, q, q])
+    
+        if operator:
+            conditions.append('provider ILIKE %s')
+            params.append(f'%{operator}%')
+    
+        if city:
+            conditions.append('city ILIKE %s')
+            params.append(f'%{city}%')
+    
+        if state:
+            conditions.append('state = %s')
+            params.append(state.upper())
+    
+        if country:
+            conditions.append('country = %s')
+            params.append(country.upper())
+    
+        if min_mw:
+            conditions.append('power_mw >= %s')
+            params.append(min_mw)
+    
+        if max_mw:
+            conditions.append('power_mw <= %s')
+            params.append(max_mw)
+    
+        if tier:
+            conditions.append('tier = %s')
+            params.append(tier)
+    
+        # Phase 4: min_confidence filter
+        min_confidence = request.args.get('min_confidence', type=float)
+        if min_confidence is not None and 0 <= min_confidence <= 1:
+            conditions.append('confidence_score >= %s')
+            params.append(min_confidence)
+    
+        where = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
+        params.extend([limit, offset])
+    
+        c.execute(f"""
+            SELECT * FROM discovered_facilities
+            {where}
+            {RAILWAY_EXCLUSION.replace('AND', 'AND') if where else 'WHERE ' + RAILWAY_EXCLUSION.lstrip('AND').lstrip()}
+            ORDER BY confidence_score DESC, power_mw DESC
+            LIMIT %s OFFSET %s
+        """, params)
+    
+        facilities = [dict_from_row(row) for row in c.fetchall()]
 
-    return jsonify({
-        'success': True,
-        'query': query or operator or city or state or country,
-        'count': len(facilities),
-        'data': facilities
-    })
+        # Enrich with confidence badge
+        try:
+            for f in facilities:
+                try:
+                    cs = float(f.get('confidence_score', 0) or 0)
+                except (ValueError, TypeError):
+                    cs = 0
+                f['confidence_badge'] = 'high' if cs >= 0.8 else ('medium' if cs >= 0.5 else 'low')
+        except Exception:
+            pass  # Never let badge enrichment crash the response
+
+        return jsonify({
+            'success': True,
+            'query': query or operator or city or state or country,
+            'count': len(facilities),
+            'data': facilities
+        })
+    except Exception as e:
+        return jsonify({'error': str(e), 'success': False}), 500
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
 
 
 # =============================================================================
@@ -8177,12 +8182,7 @@ def serve_frontend():
 
 @app.route('/api/health', methods=['GET'])
 def api_health():
-    """Health check with data counts for monitoring and failover validation.
-    
-    v2.6: Uses get_read_db() (read replica) instead of pg_connection() (primary).
-    The primary pool is often saturated by background tasks; health checks
-    should never compete for write-pool connections or they timeout under load.
-    """
+    """Health check with data counts for monitoring and failover validation."""
     health = {
         'status': 'healthy',
         'timestamp': datetime.utcnow().isoformat() + 'Z',
@@ -12075,20 +12075,10 @@ def verify_tier_gating():
     Checks the locked manifest -- if any Pro/Enterprise/Free endpoint
     is accessible without authentication, the server logs CRITICAL errors.
     Also verifies public and freemium endpoints remain accessible.
-    
-    v2.6: Sends X-Internal-Key header to bypass rate_limiter.py middleware.
-    The rate limiter was 429-ing all 70+ test requests (from 127.0.0.1 via
-    test_client) before the tier gate could respond, causing 63 false failures.
-    Also treats 429 as a pass for gated endpoints (rate limiting IS access control).
     """
     failures = []
     passed = 0
     skipped_429 = 0
-    # Headers to bypass external rate_limiter.py but NOT bypass tier gating.
-    # X-Internal-Key bypasses rate_limiter, but for gated endpoints we need to
-    # test WITHOUT the key to verify the gate works. So:
-    #   - Public/freemium checks: use internal key (should return 200)
-    #   - Gated checks: NO internal key (should return 401/403)
     INTERNAL_HEADERS = {'X-Internal-Key': 'dchub-internal-sync-2026'}
     try:
         with app.test_client() as client:
@@ -12097,7 +12087,6 @@ def verify_tier_gating():
                     try:
                         r = client.get(path)
                         if r.status_code == 429:
-                            # Rate limiter blocked it — that's access control too, count as pass
                             passed += 1
                             skipped_429 += 1
                         elif r.status_code not in (401, 403, 405):
