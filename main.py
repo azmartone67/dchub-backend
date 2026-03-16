@@ -3760,7 +3760,7 @@ def _get_request_tier():
         key_hash = hashlib.sha256(api_key.encode()).hexdigest()
         try:
             _, rows = _pg_execute(
-                "SELECT u.plan, u.id FROM api_keys ak JOIN users u ON ak.user_id = u.id WHERE ak.key_hash = %s AND ak.is_active = true",
+                "SELECT u.plan, u.id FROM api_keys ak JOIN users u ON ak.user_id = u.id WHERE ak.key_hash = %s AND ak.is_active = 1",
                 (key_hash,), fetch=True)
             if rows:
                 plan = rows[0][0] or 'free'

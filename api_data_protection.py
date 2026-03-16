@@ -345,7 +345,7 @@ def _persist_anomalies(key_hash, anomalies):
         conn = get_db()
         for anomaly_type, severity, details in anomalies:
             conn.execute(
-                "INSERT INTO api_anomaly_log (api_key_hash, anomaly_type, details, severity) VALUES (?, ?, ?, ?)",
+                "INSERT INTO api_anomaly_log (api_key_hash, anomaly_type, details, severity) VALUES (%s, %s, %s, %s)",
                 (key_hash, anomaly_type, details, severity)
             )
         conn.commit()
@@ -388,11 +388,11 @@ def _update_daily_usage(key_hash, date, records):
         conn = get_db()
         conn.execute("""
             INSERT INTO api_daily_usage (api_key_hash, date, records_fetched, requests_made)
-            VALUES (?, ?, ?, 1)
+            VALUES (%s, %s, %s, 1)
             ON CONFLICT(api_key_hash, date)
             DO UPDATE SET
-                records_fetched = records_fetched + ?,
-                requests_made = requests_made + 1
+                records_fetched = api_daily_usage.records_fetched + %s,
+                requests_made = api_daily_usage.requests_made + 1
         """, (key_hash, date, records, records))
         conn.commit()
         conn.close()
@@ -612,7 +612,7 @@ def _register_admin_routes(app):
             rows = conn.execute("""
                 SELECT api_key_hash, anomaly_type, details, severity, created_at
                 FROM api_anomaly_log
-                WHERE created_at > datetime('now', ?)
+                WHERE created_at > NOW() - INTERVAL '1 day' * %s
                 ORDER BY created_at DESC
                 LIMIT 200
             """, (f"-{days} days",)).fetchall()
@@ -639,7 +639,7 @@ def _register_admin_routes(app):
             rows = conn.execute("""
                 SELECT api_key_hash, date, records_fetched, requests_made, flagged
                 FROM api_daily_usage
-                WHERE date > date('now', ?)
+                WHERE date > CURRENT_DATE - INTERVAL '1 day' * %s
                 ORDER BY records_fetched DESC
                 LIMIT 200
             """, (f"-{days} days",)).fetchall()
