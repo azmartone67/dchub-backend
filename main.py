@@ -1504,7 +1504,7 @@ except Exception as e:
 
 # Staggered scheduler delays to prevent thundering herd
 # All background tasks wait 60s before ANY start, then stagger 10s apart
-_BG_BASE_DELAY = 60
+_BG_BASE_DELAY = 180
 SCHEDULER_DELAYS = {
     'news_sync': _BG_BASE_DELAY,
     'autopilot': _BG_BASE_DELAY + 10,
@@ -4457,11 +4457,18 @@ def start_daily_report_scheduler():
     thread.start()
     print("📊 Daily Market Report: ✅ Scheduled (every 24 hours)")
 
-# Generate initial report and start scheduler
+# Generate initial report DEFERRED to background (was sync at import — caused pool exhaustion)
 try:
-    generate_market_report()
     if ENABLE_BACKGROUND_SCHEDULERS:
-        start_daily_report_scheduler()
+        def _deferred_market_report():
+            try:
+                generate_market_report()
+                start_daily_report_scheduler()
+            except Exception as e:
+                print(f"⚠️ Deferred market report: {e}")
+        _deferred_bg_threads.append(('Market Report', _deferred_market_report))
+    else:
+        generate_market_report()
 except Exception as e:
     print(f"⚠️ Market report init: {e}")
 
@@ -12237,7 +12244,7 @@ def _start_background_tasks():
     logger.info("🚀 STAGGERED STARTUP: Beginning background task launch (%d tasks queued)", len(_deferred_bg_threads))
     for i, (name, target) in enumerate(_deferred_bg_threads):
         if i > 0:
-            time.sleep(10)
+            time.sleep(15)
         try:
             guarded = _memory_guarded(name, target)
             t = threading.Thread(target=guarded, daemon=True, name=f"bg-{name.lower().replace(' ', '-')}")
@@ -12255,8 +12262,8 @@ def _start_background_tasks():
     except Exception:
         pass
 
-threading.Timer(60, _start_background_tasks).start()
-logger.info("⏳ Background tasks deferred: %d tasks will start in 60s with 10s stagger", len(_deferred_bg_threads))
+threading.Timer(180, _start_background_tasks).start()
+logger.info("⏳ Background tasks deferred: %d tasks will start in 180s with 15s stagger", len(_deferred_bg_threads))
 
 # --- Start Staggered Crawler Scheduler ---
 if CRAWLER_SCHEDULER_AVAILABLE:
