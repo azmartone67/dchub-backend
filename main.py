@@ -2635,7 +2635,7 @@ MCP_FREE_DAILY_LIMIT = 10            # NEW — tool calls per day per IP for fre
 MCP_FACILITY_TOOLS = {'search_facilities', 'get_pipeline', 'get_top_operators'}
 
 # Tools that return teaser results for free tier (was MCP_BLOCKED_TOOLS — hard block)
-MCP_TEASER_TOOLS = {'analyze_site', 'get_grid_data', 'get_infrastructure', 'get_fiber_intel', 'get_energy_prices', 'get_renewable_energy', 'get_news', 'get_intelligence_index', 'get_market_intel', 'get_facility', 'list_transactions'}
+MCP_TEASER_TOOLS = {'analyze_site', 'get_grid_data', 'get_infrastructure', 'get_fiber_intel', 'get_energy_prices', 'get_renewable_energy', 'get_news', 'get_intelligence_index', 'get_market_intel'}
 
 # In-memory daily rate limit tracker: {ip_address: {'date': 'YYYY-MM-DD', 'count': N}}
 _mcp_free_rate_limits = {}
@@ -2976,62 +2976,6 @@ def _gate_teaser_result(result_content, tool_name):
                     'showing_providers': min(3, total_providers),
                     'total_providers': total_providers,
                     'message': f'Showing top 3 of {total_providers} providers with basic stats. Developer plan ($49/mo) unlocks all providers, recent facilities, full power/capacity stats, and market comparisons.',
-                    'url': 'https://dchub.cloud/pricing#developer',
-                    'checkout': 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c',
-                    'price': '$49/mo',
-                }
-            }
-            return [{"type": "text", "text": json.dumps(teaser)}]
-
-        elif tool_name == 'get_facility':
-            # Keep: name, city, state, country, provider, operator, status
-            # Strip: power specs, PUE, connectivity, pricing, coordinates
-            basic_fields = {'name', 'facility_name', 'city', 'state', 'country', 'provider', 'operator', 'status', 'id', 'slug'}
-            teaser_data = {k: v for k, v in data.items() if k in basic_fields}
-            teaser_data['_upgrade'] = {
-                'tier': 'free_teaser',
-                'message': (
-                    f"Showing basic info for {data.get('name', data.get('facility_name', 'facility'))}. "
-                    f"Developer plan ($49/mo) unlocks full specs: power capacity, PUE, "
-                    f"floor space, connectivity (carriers, IX points, cloud on-ramps), "
-                    f"certifications, coordinates, and contact info."
-                ),
-                'fields_hidden': [
-                    'power_capacity_mw', 'pue', 'floor_space_sqft', 'carriers',
-                    'ix_points', 'cloud_onramps', 'certifications', 'latitude',
-                    'longitude', 'pricing_notes', 'contact_info'
-                ],
-                'url': 'https://dchub.cloud/pricing#developer',
-                'checkout': 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c',
-                'price': '$49/mo',
-            }
-            return [{"type": "text", "text": json.dumps(teaser_data)}]
-
-        elif tool_name == 'list_transactions':
-            # Keep: buyer, seller, date, deal_type, region (3 deals max)
-            # Strip: value_usd, assets, mw_capacity, description, source_url
-            deals = data.get('transactions', data.get('deals', data.get('results', [])))
-            if isinstance(data, list):
-                deals = data
-            total = len(deals) if isinstance(deals, list) else 0
-            deal_free_fields = {'buyer', 'seller', 'date', 'deal_type', 'region', 'announced_date'}
-            gated_deals = [
-                {k: d.get(k) for k in deal_free_fields if k in d}
-                for d in (deals[:3] if isinstance(deals, list) else [])
-            ]
-            teaser = {
-                'success': data.get('success', True) if isinstance(data, dict) else True,
-                'transactions': gated_deals,
-                'count': len(gated_deals),
-                '_upgrade': {
-                    'tier': 'free_teaser',
-                    'showing': len(gated_deals),
-                    'total': total,
-                    'message': (
-                        f"Showing {len(gated_deals)} of {total} deals with basic fields "
-                        f"(buyer, seller, date, type). Developer plan ($49/mo) unlocks "
-                        f"deal values, asset details, MW capacity, and full descriptions."
-                    ),
                     'url': 'https://dchub.cloud/pricing#developer',
                     'checkout': 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c',
                     'price': '$49/mo',
@@ -3431,7 +3375,7 @@ def mcp_proxy():
                     },
                     "instructions": (
                         "DC Hub Nexus MCP Server - Data Center Intelligence Platform. "
-                        "Free tier: all 15 tools available, 5 results per query with basic fields, "
+                        "Free tier: all 11 tools available, 5 results per query with basic fields, "
                         "site scoring preview, and 10 calls/day. "
                         "Developer plan ($49/mo): full data with coordinates, power specs, "
                         "detailed site scoring, real-time grid data, and 1,000 calls/day. "
