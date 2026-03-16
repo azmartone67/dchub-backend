@@ -6844,6 +6844,8 @@ def get_market_stats(market):
             'recent_facilities': recent
         })
     except Exception as e:
+        import traceback
+        logger.error(f"get_market_stats('{market}') error: {traceback.format_exc()}")
         return jsonify({'error': str(e), 'success': False}), 500
     finally:
         try:
@@ -8067,6 +8069,8 @@ def search_facilities():
             'data': facilities
         })
     except Exception as e:
+        import traceback
+        logger.error(f"search_facilities error: {traceback.format_exc()}")
         return jsonify({'error': str(e), 'success': False}), 500
     finally:
         try:
