@@ -80,7 +80,7 @@ class HealthWatchdog:
     def _check_self_response(self):
         try:
             import requests
-            resp = requests.get("http://127.0.0.1:{}/health".format(os.environ.get("PORT", "5000")), timeout=10)
+            resp = requests.get("http://127.0.0.1:{}/health".format(os.environ.get("PORT", "8080")), timeout=10)
             if resp.status_code == 200:
                 return True, f"ok ({resp.elapsed.total_seconds():.2f}s)"
             return False, f"HTTP {resp.status_code}"
@@ -239,11 +239,12 @@ class HealthWatchdog:
 
         return all_ok
 
-    def _kill_port_5000_processes(self):
+    def _kill_app_port_processes(self):
+        _app_port = os.environ.get("PORT", "8080")
         try:
             import subprocess
             result = subprocess.run(
-                ['fuser', '5000/tcp'], capture_output=True, text=True, timeout=5
+                ['fuser', f'{_app_port}/tcp'], capture_output=True, text=True, timeout=5
             )
             pids = result.stdout.strip().split()
             my_pid = os.getpid()
@@ -253,11 +254,11 @@ class HealthWatchdog:
                     pid = int(pid_str.strip())
                     if pid != my_pid and pid != my_ppid:
                         os.kill(pid, signal.SIGKILL)
-                        logger.warning("WATCHDOG: Killed stuck process PID %d on port 5000", pid)
+                        logger.warning("WATCHDOG: Killed stuck process PID %d on port %s", pid, _app_port)
                 except (ValueError, ProcessLookupError, PermissionError):
                     pass
         except Exception as e:
-            logger.warning("WATCHDOG: Port 5000 cleanup failed: %s", str(e)[:100])
+            logger.warning("WATCHDOG: Port %s cleanup failed: %s", _app_port, str(e)[:100])
 
     def _trigger_restart(self):
         self.total_restarts += 1
@@ -277,7 +278,7 @@ class HealthWatchdog:
                         self.consecutive_failures, ', '.join(failed_checks))
         print(f"WATCHDOG: Server unresponsive {self.consecutive_failures} times, forcing full restart")
 
-        self._kill_port_5000_processes()
+        self._kill_app_port_processes()
 
         import sys
         sys.stdout.flush()
