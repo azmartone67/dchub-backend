@@ -213,9 +213,15 @@ class KMZParser:
 class InfrastructureLayerDB:
     def __init__(self, neon_conn_func=None):
         self._get_conn = neon_conn_func
-        self._ensure_table()
+        self._table_ensured = False
 
     def _ensure_table(self):
+        """Ensure table exists — called lazily on first write, not at init.
+        v2.6: Moved out of __init__ to prevent holding a pool connection
+        for the lifetime of the KMZProcessor object (was leaking for 69s+).
+        """
+        if self._table_ensured:
+            return
         sql = """
         CREATE TABLE IF NOT EXISTS infrastructure_layers (
             id SERIAL PRIMARY KEY, source_id VARCHAR(200), source_url TEXT,
@@ -228,6 +234,7 @@ class InfrastructureLayerDB:
         CREATE INDEX IF NOT EXISTS idx_infra_cat ON infrastructure_layers(category);
         CREATE INDEX IF NOT EXISTS idx_infra_src ON infrastructure_layers(source_id);
         """
+        conn = None
         try:
             conn = self._get_conn()
             if conn:
@@ -235,10 +242,16 @@ class InfrastructureLayerDB:
                 cur.execute(sql)
                 conn.commit()
                 cur.close()
-                conn.close()
+                self._table_ensured = True
                 logger.info("infrastructure_layers table ensured")
         except Exception as e:
             logger.error(f"Table create error: {e}")
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     def get_pending_sources(self, limit=10):
         try:
@@ -270,7 +283,9 @@ class InfrastructureLayerDB:
     def insert_features(self, features):
         if not features:
             return 0
+        self._ensure_table()  # Lazy init — only on first actual write
         inserted = 0
+        conn = None
         try:
             conn = self._get_conn()
             if not conn:
@@ -292,9 +307,14 @@ class InfrastructureLayerDB:
                     continue
             conn.commit()
             cur.close()
-            conn.close()
         except Exception as e:
             logger.error(f"Insert error: {e}")
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
         return inserted
 
 
