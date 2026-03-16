@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-DC Hub External Scheduler v3.5
+DC Hub External Scheduler v3.6
 ===============================
 Triggers discovery jobs via HTTP POST to the DC Hub API /api/jobs/* endpoints.
 All jobs are staggered to prevent Railway resource conflicts.
@@ -16,7 +16,12 @@ Environment:
   DCHUB_API_BASE    — API base URL (default: https://dchub-backend-production.up.railway.app)
   DCHUB_ADMIN_KEY   — Admin API key (required)
 
-Schedule (UTC) — 23 jobs, verified no overlaps:
+v3.6 changelog:
+  - REMOVED keep-alive (Railway is always-on, doesn't need it)
+  - Keep-alive was firing 288 times/day, ~50% timing out, exhausting connection pool
+  - Total: 22 jobs (all scheduled, no keepalive)
+
+Schedule (UTC) — 22 jobs, verified no overlaps:
   00:00  News/RSS Refresh        (also 04, 08, 12, 16, 20)
   00:20  Auto-Approve            (also 04, 08, 12, 16, 20)
   00:45  Simple Alerts           (also 02,04,06,08,10,12,14,16,18,20,22)
@@ -401,9 +406,9 @@ def show_status():
 # MAIN LOOP
 # ============================================================
 def scheduler_loop():
-    log.info(f"DC Hub External Scheduler v3.4 starting")
+    log.info(f"DC Hub External Scheduler v3.6 starting")
     log.info(f"  API:  {API_BASE}")
-    log.info(f"  Jobs: {len(JOBS)} ({len(JOBS)-1} scheduled + keepalive)")
+    log.info(f"  Jobs: {len(JOBS) - 1} scheduled (keepalive disabled)")
     log.info(f"  Auth: {'✅ key set' if ADMIN_KEY else '❌ DCHUB_ADMIN_KEY not set — jobs will fail!'}")
 
     if not ADMIN_KEY:
@@ -412,14 +417,12 @@ def scheduler_loop():
     check_health()
 
     last_ran = {}
-    keepalive_counter = 0
+    # Keep-alive DISABLED — Railway is always-on, no idle suspend.
+    # The keep-alive was consuming ~30% of connection pool capacity
+    # with 288 pings/day, many of which timed out and held connections.
 
     while True:
         now = datetime.now(timezone.utc)
-
-        if keepalive_counter % 5 == 0:
-            run_job('keepalive', JOBS['keepalive'])
-        keepalive_counter += 1
 
         for key, job in JOBS.items():
             if key == 'keepalive':
