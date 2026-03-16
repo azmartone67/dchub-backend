@@ -17,11 +17,14 @@ Environment:
   DCHUB_ADMIN_KEY   — Admin API key (required)
 
 v3.6 changelog:
-  - REMOVED keep-alive (Railway is always-on, doesn't need it)
-  - Keep-alive was firing 288 times/day, ~50% timing out, exhausting connection pool
-  - Total: 22 jobs (all scheduled, no keepalive)
+  - REMOVED keep-alive (Railway doesn't sleep — it was wasting pool connections)
+  - DISABLED autopilot, autonomous_brain, ambassador (modules not installed,
+    every call just returns 'skipped' or times out — add back when modules exist)
+  - Reduced energy_discovery from 3x to 2x/day (was causing HTTP 500s)
+  - Fixed version strings throughout
+  - 19 active jobs (was 23)
 
-Schedule (UTC) — 22 jobs, verified no overlaps:
+Schedule (UTC) — 19 active jobs, verified no overlaps:
   00:00  News/RSS Refresh        (also 04, 08, 12, 16, 20)
   00:20  Auto-Approve            (also 04, 08, 12, 16, 20)
   00:45  Simple Alerts           (also 02,04,06,08,10,12,14,16,18,20,22)
@@ -30,24 +33,18 @@ Schedule (UTC) — 22 jobs, verified no overlaps:
   02:30  Infrastructure Sync     (also 08:30, 14:30, 20:30)
   03:00  AI Ecosystem Agent      (also 10, 15, 22)
   03:10  MCP Rate Limit Cleanup  (daily)
-  03:15  Neon DB Backup
+  03:15  Neon DB Backup          (daily)
   03:30  Fiber Route Sync        (also 09:30, 15:30, 21:30)
   03:45  Confidence Recalc       (daily)
   04:00  KMZ Discovery           (also 16:00) — 12hr cycle
   05:00  AI Outreach Agent       (also 13, 21)
   06:00  Global Intelligence     (also 18)
   06:45  Capacity Headroom       (also 12:45, 18:45)
-  08:30  Evolution Engine        (also 20:30) — note: shares :30 with infra-sync but different hours
-  09:15  Auto-Pilot (Deals)      (also 21:15)
-  10:15  Autonomous Brain        (also 22:15)
-  11:30  Content Publishing
+  08:30  Evolution Engine        (also 20:30)
+  10:00  Energy Discovery        (also 18:00) — reduced from 3x to 2x
+  11:30  Content Publishing      (daily)
   12:30  Market Report           (daily)
   16:30  Ambassador + Drip       (daily)
-  Keep-Alive every 5 minutes
-
-v3.5 changelog:
-  - Added mcp_rate_cleanup job (daily at 03:10, calls /api/jobs/mcp-rate-cleanup)
-  - Total: 23 jobs (22 scheduled + keepalive)
 """
 
 import os
@@ -74,10 +71,9 @@ logging.basicConfig(
 log = logging.getLogger('dchub-scheduler')
 
 # ============================================================
-# JOB DEFINITIONS — 23 total
+# JOB DEFINITIONS — 19 active
 # ============================================================
 JOBS = {
-    # ── Existing 12 jobs (unchanged from v3.2) ──────────────
     'news': {
         'name': 'News/RSS Refresh',
         'endpoint': '/api/jobs/news-refresh',
@@ -134,14 +130,6 @@ JOBS = {
         'minute': 30,
         'timeout': 120,
     },
-    'autopilot': {
-        'name': 'Auto-Pilot (Deals)',
-        'endpoint': '/api/jobs/autopilot',
-        'method': 'POST',
-        'hours': [9, 21],
-        'minute': 15,
-        'timeout': 300,
-    },
     'content': {
         'name': 'Content Publishing',
         'endpoint': '/api/jobs/content-publish',
@@ -158,45 +146,27 @@ JOBS = {
         'minute': 15,
         'timeout': 600,
     },
-    'keepalive': {
-        'name': 'Keep-Alive',
-        'endpoint': '/api/jobs/keep-alive',
-        'method': 'POST',
-        'hours': list(range(24)),
-        'minute': None,                 # special: runs every 5 minutes
-        'timeout': 15,
-    },
     'energy_discovery': {
         'name': 'Energy Discovery',
         'endpoint': '/api/jobs/energy-discovery',
         'method': 'POST',
-        'hours': [2, 10, 18],
+        'hours': [10, 18],           # reduced from [2,10,18] — was causing 500s
         'minute': 0,
         'timeout': 180,
-    },
-
-    # ── 7 NEW jobs (v3.3) ──────────────────────────────────
-
-    'autonomous_brain': {
-        'name': 'Autonomous Brain',
-        'endpoint': '/api/jobs/autonomous-brain',
-        'method': 'POST',
-        'hours': [10, 22],              # every 12h, offset at :15
-        'minute': 15,
-        'timeout': 300,
     },
     'alert_emails': {
         'name': 'Alert Emails',
         'endpoint': '/api/jobs/alert-emails',
         'method': 'POST',
-        'hours': [1, 5, 9, 13, 17, 21], # every 4h
+        'hours': [1, 5, 9, 13, 17, 21],
         'minute': 15,
         'timeout': 120,
-    },'drip_emails': {
+    },
+    'drip_emails': {
         'name': 'Welcome Email Drip',
         'endpoint': '/api/admin/drip-check?admin_key=f4f961b15334c7b3a570681354638ed5',
         'method': 'POST',
-        'hours': [16],       # 9 AM MST = 4 PM UTC, once daily
+        'hours': [16],               # 9 AM MST = 4 PM UTC
         'minute': 30,
         'timeout': 60,
     },
@@ -204,15 +174,15 @@ JOBS = {
         'name': 'Simple Alerts',
         'endpoint': '/api/jobs/simple-alerts',
         'method': 'POST',
-        'hours': [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22],  # every 2h
-        'minute': 45,                   # :45 — clear of all existing jobs
+        'hours': [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22],
+        'minute': 45,
         'timeout': 120,
     },
     'market_report': {
         'name': 'Market Report',
         'endpoint': '/api/jobs/market-report',
         'method': 'POST',
-        'hours': [12],                  # daily at 12:30 UTC (morning US)
+        'hours': [12],
         'minute': 30,
         'timeout': 300,
     },
@@ -220,7 +190,7 @@ JOBS = {
         'name': 'Infrastructure Sync',
         'endpoint': '/api/jobs/infrastructure-sync',
         'method': 'POST',
-        'hours': [2, 8, 14, 20],        # every 6h
+        'hours': [2, 8, 14, 20],
         'minute': 30,
         'timeout': 300,
     },
@@ -228,39 +198,23 @@ JOBS = {
         'name': 'Capacity Headroom',
         'endpoint': '/api/jobs/capacity-headroom',
         'method': 'POST',
-        'hours': [6, 12, 18],           # every 6h (3x/day)
-        'minute': 45,                   # :45 — same slot as simple_alerts but different hours
-        'timeout': 180,
-    },
-    'ambassador': {
-        'name': 'Ambassador',
-        'endpoint': '/api/jobs/ambassador',
-        'method': 'POST',
-        'hours': [16],                  # daily at 16:30 UTC (afternoon)
-        'minute': 30,
-        'timeout': 120,
-    },
-    'confidence_recalc': {
-        'name': 'Confidence Recalc',
-        'endpoint': '/api/v1/data-quality/recalculate',
-        'method': 'POST',
-        'hours': [3],                   # daily at 03:45 UTC (after backup at 03:15)
+        'hours': [6, 12, 18],
         'minute': 45,
-        'timeout': 60,
+        'timeout': 180,
     },
     'kmz_discovery': {
         'name': 'KMZ Infrastructure Discovery',
         'endpoint': '/api/kmz-discovery/run',
         'method': 'POST',
-        'hours': [4, 16],               # every 12h at :00
+        'hours': [4, 16],
         'minute': 0,
-        'timeout': 600,                  # 10 min — cycle processes many sources
+        'timeout': 600,
     },
     'fiber_sync': {
         'name': 'Fiber Route Sync',
         'endpoint': '/api/jobs/fiber-sync',
         'method': 'POST',
-        'hours': [3, 9, 15, 21],        # every 6h at :30
+        'hours': [3, 9, 15, 21],
         'minute': 30,
         'timeout': 300,
     },
@@ -268,9 +222,44 @@ JOBS = {
         'name': 'MCP Rate Limit Cleanup',
         'endpoint': '/api/jobs/mcp-rate-cleanup',
         'method': 'POST',
-        'hours': [3],                    # daily at 03:10 UTC
+        'hours': [3],
         'minute': 10,
         'timeout': 30,
+    },
+}
+
+# ── Disabled jobs (modules not installed on Railway) ──────────
+# Re-enable by moving back into JOBS dict when modules are deployed:
+#   'autopilot'        → autonomous_brain module required
+#   'autonomous_brain' → autonomous_brain module required
+#   'ambassador'       → ai_outreach_agent ambassador module required
+DISABLED_JOBS = {
+    'autopilot': {
+        'name': 'Auto-Pilot (Deals)',
+        'endpoint': '/api/jobs/autopilot',
+        'method': 'POST',
+        'hours': [9, 21],
+        'minute': 15,
+        'timeout': 300,
+        'disabled_reason': 'autonomous_brain module not installed',
+    },
+    'autonomous_brain': {
+        'name': 'Autonomous Brain',
+        'endpoint': '/api/jobs/autonomous-brain',
+        'method': 'POST',
+        'hours': [10, 22],
+        'minute': 15,
+        'timeout': 300,
+        'disabled_reason': 'autonomous_brain module not installed',
+    },
+    'ambassador': {
+        'name': 'Ambassador',
+        'endpoint': '/api/jobs/ambassador',
+        'method': 'POST',
+        'hours': [16],
+        'minute': 30,
+        'timeout': 120,
+        'disabled_reason': 'ai_outreach_agent ambassador module not installed',
     },
 }
 
@@ -281,7 +270,7 @@ def api_call(endpoint, method='POST', timeout=60):
     url = API_BASE.rstrip('/') + endpoint
     headers = {
         'Content-Type': 'application/json',
-        'User-Agent': 'DCHub-Scheduler/3.4',
+        'User-Agent': 'DCHub-Scheduler/3.6',
     }
     if ADMIN_KEY:
         headers['X-Admin-Key'] = ADMIN_KEY
@@ -331,9 +320,16 @@ def run_job(key, job):
     if 200 <= status < 300:
         log.info(f"  ✅ {job['name']} completed in {elapsed}s (HTTP {status})")
         if isinstance(data, dict):
-            for k in ('new_articles', 'found', 'added', 'results', 'result', 'size_mb'):
+            # Log key result fields (truncated for readability)
+            result_str = None
+            for k in ('new_articles', 'found', 'added', 'results', 'result', 'size_mb', 'status', 'processed'):
                 if k in data:
-                    log.info(f"     {k}: {data[k]}")
+                    val = data[k]
+                    if isinstance(val, (dict, list)):
+                        val_str = json.dumps(val)[:200]
+                    else:
+                        val_str = str(val)
+                    log.info(f"     {k}: {val_str}")
     elif status == 0:
         log.error(f"  ❌ {job['name']} — connection failed: {data.get('error','unknown')}")
     elif status in (401, 403):
@@ -351,8 +347,6 @@ def run_all_due(window_minutes=5):
     log.info(f"Checking schedule at {now.strftime('%H:%M UTC')}...")
     ran = 0
     for key, job in JOBS.items():
-        if key == 'keepalive':
-            continue
         if is_job_in_window(job, now, window_minutes):
             run_job(key, job)
             ran += 1
@@ -366,7 +360,8 @@ def check_health():
     log.info("Checking DC Hub health...")
     status, data = api_call('/api/health', method='GET', timeout=10)
     if status == 200:
-        log.info(f"  ✅ Healthy — {data.get('facility_count','?')} facilities")
+        fac = data.get('facility_count', data.get('facilities', '?'))
+        log.info(f"  ✅ Healthy — {fac} facilities")
     else:
         log.error(f"  ❌ Health check failed (HTTP {status}): {data}")
     return status == 200
@@ -375,21 +370,17 @@ def check_health():
 def show_status():
     healthy = check_health()
     now = datetime.now(timezone.utc)
-    scheduled = [k for k in JOBS if k != 'keepalive']
     print(f"\n{'─'*65}")
-    print(f"  DC Hub External Scheduler v3.4")
+    print(f"  DC Hub External Scheduler v3.6")
     print(f"  Time:   {now.strftime('%Y-%m-%d %H:%M UTC')}")
     print(f"  API:    {API_BASE}")
     print(f"  Auth:   {'✅ key set' if ADMIN_KEY else '❌ DCHUB_ADMIN_KEY not set'}")
     print(f"  Health: {'✅ OK' if healthy else '❌ DOWN'}")
-    print(f"  Jobs:   {len(JOBS)} total ({len(scheduled)} scheduled + keepalive)")
+    print(f"  Jobs:   {len(JOBS)} active, {len(DISABLED_JOBS)} disabled")
     print(f"{'─'*65}")
-    print(f"  {'Job':<25} {'Freq':<12} {'Next Run (UTC)'}")
-    print(f"  {'─'*52}")
+    print(f"  {'Job':<30} {'Freq':<12} {'Next Run (UTC)'}")
+    print(f"  {'─'*55}")
     for key, job in JOBS.items():
-        if key == 'keepalive':
-            print(f"  {job['name']:<25} {'5min':<12} continuous")
-            continue
         freq = f"{len(job['hours'])}x/day"
         next_run = None
         for hour in sorted(job['hours']):
@@ -398,17 +389,22 @@ def show_status():
                 break
         if not next_run:
             next_run = f"{sorted(job['hours'])[0]:02d}:{job['minute']:02d} (+1d)"
-        print(f"  {job['name']:<25} {freq:<12} {next_run}")
+        print(f"  {job['name']:<30} {freq:<12} {next_run}")
+    if DISABLED_JOBS:
+        print(f"\n  {'─'*55}")
+        print(f"  DISABLED (modules not installed):")
+        for key, job in DISABLED_JOBS.items():
+            print(f"  ⏸️  {job['name']:<28} {job.get('disabled_reason','')}")
     print(f"{'─'*65}\n")
 
 
 # ============================================================
-# MAIN LOOP
+# MAIN LOOP — no keep-alive, just scheduled jobs
 # ============================================================
 def scheduler_loop():
     log.info(f"DC Hub External Scheduler v3.6 starting")
     log.info(f"  API:  {API_BASE}")
-    log.info(f"  Jobs: {len(JOBS) - 1} scheduled (keepalive disabled)")
+    log.info(f"  Jobs: {len(JOBS)} active, {len(DISABLED_JOBS)} disabled")
     log.info(f"  Auth: {'✅ key set' if ADMIN_KEY else '❌ DCHUB_ADMIN_KEY not set — jobs will fail!'}")
 
     if not ADMIN_KEY:
@@ -417,22 +413,18 @@ def scheduler_loop():
     check_health()
 
     last_ran = {}
-    # Keep-alive DISABLED — Railway is always-on, no idle suspend.
-    # The keep-alive was consuming ~30% of connection pool capacity
-    # with 288 pings/day, many of which timed out and held connections.
 
     while True:
         now = datetime.now(timezone.utc)
 
         for key, job in JOBS.items():
-            if key == 'keepalive':
-                continue
             job_key = f"{key}:{now.strftime('%Y-%m-%d')}:{now.hour}:{job.get('minute',0)}"
             if is_job_in_window(job, now, window_minutes=3) and job_key not in last_ran:
                 run_job(key, job)
                 last_ran[job_key] = True
                 time.sleep(5)
 
+        # Midnight cleanup — purge yesterday's tracking keys
         if now.hour == 0 and now.minute < 2:
             today = now.strftime('%Y-%m-%d')
             last_ran = {k: v for k, v in last_ran.items() if today in k}
@@ -444,7 +436,7 @@ def scheduler_loop():
 # CLI
 # ============================================================
 def main():
-    parser = argparse.ArgumentParser(description='DC Hub External Scheduler v3.4')
+    parser = argparse.ArgumentParser(description='DC Hub External Scheduler v3.6')
     parser.add_argument('--once',   action='store_true', help='Run all due jobs once and exit')
     parser.add_argument('--job',    type=str,            help=f'Run specific job: {", ".join(JOBS.keys())}')
     parser.add_argument('--all',    action='store_true', help='Run ALL jobs immediately')
@@ -457,13 +449,17 @@ def main():
     if args.health:
         sys.exit(0 if check_health() else 1)
     if args.job:
-        if args.job not in JOBS:
-            print(f"Unknown job: {args.job}. Available: {', '.join(JOBS.keys())}")
+        # Allow running disabled jobs manually for testing
+        all_jobs = {**JOBS, **DISABLED_JOBS}
+        if args.job not in all_jobs:
+            print(f"Unknown job: {args.job}. Available: {', '.join(all_jobs.keys())}")
             sys.exit(1)
-        status, data, _ = run_job(args.job, JOBS[args.job])
+        if args.job in DISABLED_JOBS:
+            log.warning(f"Running disabled job '{args.job}' — {DISABLED_JOBS[args.job].get('disabled_reason','')}")
+        status, data, _ = run_job(args.job, all_jobs[args.job])
         sys.exit(0 if 200 <= status < 300 else 1)
     if args.all:
-        log.info("Running ALL jobs immediately...")
+        log.info("Running ALL active jobs immediately...")
         check_health()
         for key, job in JOBS.items():
             run_job(key, job)
