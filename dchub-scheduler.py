@@ -473,3 +473,8 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+@scheduler.task('cron', id='news_facility_extraction', hour=6, minute=0)
+def run_news_facility_extraction():
+    from news_facility_extractor import scan_news_sources
+    scan_news_sources()
