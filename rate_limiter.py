@@ -129,6 +129,14 @@ def rate_limit_before():
     if path.startswith(SKIP_PREFIXES):
         return None
 
+    # Bypass localhost — test_client (tier gate self-test), health checks,
+    # and internal calls from 127.0.0.1 should never be rate limited.
+    # v2.6: Without this, verify_tier_gating() fires 70+ requests from
+    # test_client (127.0.0.1) at startup and all get 429'd.
+    raw_ip = request.remote_addr or ''
+    if raw_ip in ('127.0.0.1', '::1', 'localhost'):
+        return None
+
     key, tier = _get_key_and_tier()
     limits = LIMITS[tier]
 
