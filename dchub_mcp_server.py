@@ -581,13 +581,13 @@ async def get_fiber_intel(
 
     results = {}
 
-    # Get fiber routes
+    # Get fiber routes from infrastructure API (queries Neon fiber_routes table)
     route_params = {k: v for k, v in {
         "carrier": carrier, "type": route_type,
     }.items() if v}
-    results["routes"] = _api_get("/api/v1/fiber/routes", route_params)
+    results["routes"] = _api_get("/api/v1/infrastructure/fiber", route_params)
 
-    # Get carrier sources summary
+    # Get carrier sources summary from connectivity_providers
     if include_sources:
         results["sources"] = _api_get("/api/v1/fiber/sources")
 
