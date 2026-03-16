@@ -1,6 +1,6 @@
 {
   "report_date": "2026-03-16",
-  "generated_at": "2026-03-16T06:35:04.950334",
+  "generated_at": "2026-03-16T07:52:26.968425",
   "summary": {
     "total_facilities": 11788,
     "total_providers": 2806,
@@ -99,6 +99,11 @@
       "date": "2026-03-16T06:20:00"
     },
     {
+      "title": "FinancialContent - HIVE's BUZZ HPC Expands Data Center Footprint into British Columbia with 4 Times Growth in Liquid-Cooled AI Data Center Capacity",
+      "source": "FinancialContent",
+      "date": "2026-03-16T06:20:00"
+    },
+    {
       "title": "Liquid-Cooled AI Infrastructure: Powering Scalable Enterprise Intelligence",
       "source": "ASUS Pressroom",
       "date": "2026-03-16T05:57:28"
@@ -132,11 +137,6 @@
       "title": "Cooling the AI Boom: Innovative Strategies for Water-Efficient and Sustainable Data Centers",
       "source": "Intelligent Living",
       "date": "2026-03-16T00:56:37"
-    },
-    {
-      "title": "Should New Credit Facility and Meta AI Data Center Deal Require Action From Alliant Energy (LNT) Investors?",
-      "source": "simplywall.st",
-      "date": "2026-03-16T00:38:28"
     }
   ],
   "data_sources": [
