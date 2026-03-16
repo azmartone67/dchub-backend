@@ -69,14 +69,12 @@ def _ensure_fiber_routes_table():
 def _upsert_fiber_route(conn, route):
     """Upsert a single fiber route into Neon.
     
-    fiber_routes columns: id, name, provider, route_type, start_point, end_point,
-    distance_miles, capacity, status, source, source_url, geometry, discovered_at,
-    created_at, start_location, end_location, source_id, start_lat, start_lng,
-    end_lat, end_lng, fiber_count, lit_capacity_gbps, updated_at
+    fiber_routes actual columns: id, name, provider, route_type, start_location,
+    end_location, start_lat, start_lng, end_lat, end_lng, distance_miles,
+    fiber_count, lit_capacity_gbps, status, source, source_id, created_at, updated_at
     """
     try:
         cur = conn.cursor()
-        cap_str = "%s fibers" % route.get('fiber_count', 0) if route.get('fiber_count') else None
         dark = route.get('dark_fiber', 0)
         rtype = route.get('route_type', 'long_haul')
         if dark:
@@ -84,30 +82,25 @@ def _upsert_fiber_route(conn, route):
 
         cur.execute("""
             INSERT INTO fiber_routes
-                (name, provider, route_type, start_point, end_point,
-                 start_location, end_location, distance_miles, fiber_count,
-                 capacity, status, start_lat, start_lng, end_lat, end_lng,
-                 source, source_id, discovered_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                (name, provider, route_type, start_location, end_location,
+                 distance_miles, fiber_count, status, start_lat, start_lng,
+                 end_lat, end_lng, source, source_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (source_id) WHERE source_id IS NOT NULL DO UPDATE SET
                 name = EXCLUDED.name,
                 provider = EXCLUDED.provider,
                 distance_miles = EXCLUDED.distance_miles,
                 fiber_count = EXCLUDED.fiber_count,
-                capacity = EXCLUDED.capacity,
                 route_type = EXCLUDED.route_type,
                 updated_at = NOW()
         """, (
             route.get('name', ''),
             route.get('provider', ''),
             rtype,
-            route.get('start_location', ''),   # start_point
-            route.get('end_location', ''),      # end_point
-            route.get('start_location', ''),    # start_location
-            route.get('end_location', ''),      # end_location
+            route.get('start_location', ''),
+            route.get('end_location', ''),
             route.get('route_miles'),
             route.get('fiber_count'),
-            cap_str,
             'active',
             route.get('start_lat'),
             route.get('start_lng'),
