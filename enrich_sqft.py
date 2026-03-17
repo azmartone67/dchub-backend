@@ -46,7 +46,7 @@ import psycopg2.extras
 # Configuration
 # ---------------------------------------------------------------------------
 
-MODEL = "claude-sonnet-4-20250514"
+MODEL = "claude-haiku-4-5-20241022"
 MAX_TOKENS = 1024
 BATCH_SIZE = 10          # Commit every N updates
 RATE_LIMIT_DELAY = 1.5   # Seconds between API calls (avoid rate limits)

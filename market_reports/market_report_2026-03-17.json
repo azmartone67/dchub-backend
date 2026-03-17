@@ -1,142 +1,142 @@
 {
   "report_date": "2026-03-17",
-  "generated_at": "2026-03-17T04:53:50.225568",
+  "generated_at": "2026-03-17T14:33:43.254452",
   "summary": {
     "total_facilities": 11799,
-    "total_providers": 2808,
-    "countries_covered": 167,
-    "total_power_mw": 86148.0,
-    "total_deals": 628,
-    "total_deal_value_usd": 747099700000.0
+    "total_providers": 3970,
+    "countries_covered": 177,
+    "total_power_mw": 170516.5,
+    "total_deals": 490,
+    "total_deal_value_usd": 1583128300.0
   },
   "market_highlights": [
     "DC Hub tracks 11,799 data center facilities globally",
-    "Coverage spans 167 countries with 2808 providers",
-    "Combined capacity: 86,148 MW",
-    "M&A database: 628 transactions worth $747.1B+"
+    "Coverage spans 177 countries with 3970 providers",
+    "Combined capacity: 170,516 MW",
+    "M&A database: 490 transactions worth $1.6B+"
   ],
   "recent_deals": [
     {
-      "buyer": "Billion Deal",
-      "seller": "Nordic Data",
-      "value_usd": 4000000000.0,
-      "type": "acquisition",
+      "buyer": "GeoPark to",
+      "seller": "Fronterra Energy",
+      "value_usd": 375000000.0,
+      "type": "ma",
       "date": null
     },
     {
-      "buyer": "Billion Deal",
-      "seller": "Nordic Data",
-      "value_usd": 4000000000.0,
-      "type": "acquisition",
-      "date": null
-    },
-    {
-      "buyer": "Accenture down",
-      "seller": "Downdetector as",
+      "buyer": "PGIM",
+      "seller": "site for",
       "value_usd": 1200000000.0,
-      "type": "acquisition",
+      "type": "ma",
       "date": null
     },
     {
-      "buyer": "Billion Deal",
-      "seller": "Nordic Data",
-      "value_usd": 4000000000.0,
-      "type": "acquisition",
-      "date": null
+      "buyer": "Amazon Data Services",
+      "seller": "George Washington University",
+      "value_usd": 427.0,
+      "type": "Land Acquisition",
+      "date": "2026-03-02"
     },
     {
-      "buyer": "7bn deal",
-      "seller": "US power",
-      "value_usd": 10700000000.0,
-      "type": "acquisition",
-      "date": null
+      "buyer": "Meta",
+      "seller": null,
+      "value_usd": 10000.0,
+      "type": "New Build",
+      "date": "2026-03-01"
     },
     {
-      "buyer": "Billion Deal",
-      "seller": "Nordic Data",
-      "value_usd": 4000000000.0,
-      "type": "acquisition",
-      "date": null
+      "buyer": "Mistral AI / EcoDataCenter",
+      "seller": null,
+      "value_usd": 1400.0,
+      "type": "New Build",
+      "date": "2026-02-28"
     },
     {
-      "buyer": "Accenture",
-      "seller": "Ookla",
-      "value_usd": 1200000000.0,
-      "type": "acquisition",
-      "date": null
+      "buyer": "Equinix / CPP Investments",
+      "seller": "Partners Group (atNorth)",
+      "value_usd": 4000.0,
+      "type": "Acquisition",
+      "date": "2026-02-27"
     },
     {
-      "buyer": "It a",
-      "seller": "for 2026",
-      "value_usd": 10000000000.0,
-      "type": "acquisition",
-      "date": null
+      "buyer": "Penzance Management",
+      "seller": null,
+      "value_usd": 4000.0,
+      "type": "Development",
+      "date": "2026-02-26"
     },
     {
-      "buyer": "Billion Deal",
-      "seller": "Nordic Data",
-      "value_usd": 4000000000.0,
-      "type": "acquisition",
-      "date": null
+      "buyer": "Hyundai Motor Group",
+      "seller": null,
+      "value_usd": 6300.0,
+      "type": "New Build",
+      "date": "2026-02-25"
     },
     {
-      "buyer": "Billion Deal",
-      "seller": "Nordic Data",
-      "value_usd": 4000000000.0,
-      "type": "acquisition",
-      "date": null
+      "buyer": "Israel Infrastructure Fund / Serverfarm",
+      "seller": "Dalia Energy",
+      "value_usd": 1500.0,
+      "type": "New Build",
+      "date": "2026-02-20"
+    },
+    {
+      "buyer": "Microsoft",
+      "seller": "Duke Energy",
+      "value_usd": null,
+      "type": "Power Agreement",
+      "date": "2026-02-18"
     }
   ],
   "recent_news": [
     {
-      "title": "Nvidia's DLSS 5 promises to bring you out the other side of the uncanny valley",
-      "source": "The Register DC",
-      "date": "2026-03-16T21:35:05"
-    },
-    {
-      "title": "Google to invest $500M into Allen Co. for data center",
-      "source": "WTVG",
-      "date": "2026-03-16T21:31:00"
-    },
-    {
-      "title": "795-acre proposed data center to take center stage at Joliet City Council meeting",
-      "source": "WGN-TV",
-      "date": "2026-03-16T21:29:18"
-    },
-    {
-      "title": "Nvidia CEO predicts $1tn compute demand as AI reaches \u2018platform shift\u2019",
+      "title": "nexfibre CEO: Netomnia acquisition boosts UK fibre consolidation and challenge to Openreach",
       "source": "Capacity Media",
-      "date": "2026-03-16T21:28:36"
+      "date": "2026-03-17T11:47:01"
     },
     {
-      "title": "800 VDC Architecture for AI Data Centers",
-      "source": "NVIDIA",
-      "date": "2026-03-16T21:27:46"
+      "title": "Anthropic scrambles to avoid \u2018catastrophic AI misuse\u2019 with weapons expert hire",
+      "source": "Capacity Media",
+      "date": "2026-03-17T11:41:34"
     },
     {
-      "title": "Meta to spend up to $27 billion on AI infrastructure deal with Nebius",
-      "source": "The American Bazaar",
-      "date": "2026-03-16T21:18:04"
+      "title": "Why Sandisk (SNDK) Is Up 19.5% After Multi\u2011Year AI Data Center NAND Supply Deals",
+      "source": "simplywall.st",
+      "date": "2026-03-17T11:31:54"
     },
     {
-      "title": "Nvidia Moves To Control AI Data Centers End To End",
-      "source": "findarticles.com",
-      "date": "2026-03-16T21:13:37"
+      "title": "Liquid Cooling Pump Market Size | Industry Report, 2033",
+      "source": "Grand View Research",
+      "date": "2026-03-17T11:25:42"
     },
     {
-      "title": "TI unveils complete 800 VDC power architecture for future generation AI data centers with NVIDIA",
-      "source": "Morningstar",
-      "date": "2026-03-16T21:02:11"
+      "title": "Nvidia, Broadcom form group to standardize optical interconnects for next-gen AI clusters",
+      "source": "Data Center Dynamics",
+      "date": "2026-03-17T11:25:11"
     },
     {
-      "title": "Flex Accelerates AI Factory Deployment with NVIDIA Omniverse DSX Reference Designs - Flex",
-      "source": "Investor Relations",
-      "date": "2026-03-16T20:53:12"
+      "title": "Nebius Plans to Raise $3.75 Billion in Debt After Meta Deal",
+      "source": "Bloomberg Tech",
+      "date": "2026-03-17T11:23:00"
     },
     {
-      "title": "Buy Eaton Stock, Analyst Says. It\u2019s an AI Data Center Play.",
-      "source": "Barron's",
-      "date": "2026-03-16T20:50:00"
+      "title": "Joliet City Council moves vote on data center to Thursday",
+      "source": "Shaw Local",
+      "date": "2026-03-17T11:01:00"
+    },
+    {
+      "title": "Schneider Electric, Nvidia extend data centre partnership to scale AI Factories",
+      "source": "Capacity Media",
+      "date": "2026-03-17T10:59:30"
+    },
+    {
+      "title": "Nscale acquires 8GW Monarch Compute Campus, Microsoft signs on for 1.35GW of compute",
+      "source": "Data Center Dynamics",
+      "date": "2026-03-17T10:53:57"
+    },
+    {
+      "title": "Data Center Developer T5 Seeks $2 Billion Equity for New Sites",
+      "source": "Bloomberg Tech",
+      "date": "2026-03-17T10:46:15"
     }
   ],
   "data_sources": [

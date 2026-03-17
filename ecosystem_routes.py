@@ -154,7 +154,7 @@ Provide a JSON response with:
 Return ONLY valid JSON, no markdown."""
 
         response = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-haiku-4-5-20241022",
             max_tokens=500,
             messages=[{"role": "user", "content": prompt}]
         )

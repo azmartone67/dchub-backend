@@ -190,7 +190,7 @@ Provide a JSON response with:
 Return ONLY valid JSON."""
 
             response = client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model="claude-haiku-4-5-20241022",
                 max_tokens=600,
                 messages=[{"role": "user", "content": prompt}]
             )
@@ -369,7 +369,7 @@ Return ONLY valid JSON."""
 Make it suitable for sharing with AI platforms as a data source description. Keep under 100 words. Return just the text, no quotes."""
 
             response = client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model="claude-haiku-4-5-20241022",
                 max_tokens=200,
                 messages=[{"role": "user", "content": prompt}]
             )

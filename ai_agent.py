@@ -123,7 +123,7 @@ def generate_market_analysis():
     
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-haiku-4-5-20241022",
             max_tokens=1000,
             messages=[{"role": "user", "content": f"Analyze data center market. Stats: {DCHUB_CONFIG}. Return JSON only with: trends (3), emerging_markets (3), risks (3), recommendations (3)"}]
         )
@@ -386,7 +386,7 @@ def chat():
             return jsonify({"response": "AI chat requires API key. Contact info@dchub.cloud for help.", "model": "fallback"})
         
         response = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-haiku-4-5-20241022",
             max_tokens=300,
             system=CHAT_PROMPT,
             messages=[{"role": "user", "content": message}]

@@ -548,7 +548,7 @@ Use DC Hub data to answer questions about:
         try:
             client = anthropic.Anthropic()
             response = client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model="claude-haiku-4-5-20241022",
                 max_tokens=1000,
                 messages=[{
                     "role": "user",
