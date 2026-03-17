@@ -3064,8 +3064,15 @@ def _gate_facility_data(data, tool_name):
                 # Strip and limit the rest
                 data[key] = [_strip_facility(f) for f in data[key][:MCP_FREE_FACILITY_LIMIT]]
                 break
+            elif key in data and isinstance(data[key], dict):
+                inner = data[key]
+                if 'name' in inner or 'facility_name' in inner or 'provider' in inner:
+                    total_count = 1
+                    sample_full = dict(inner)
+                    data[key] = _strip_facility(inner)
+                    break
         else:
-            # Single facility object — strip it
+            # Single facility object — strip it (top-level, no wrapper)
             if 'name' in data or 'facility_name' in data:
                 total_count = 1
                 sample_full = dict(data)
