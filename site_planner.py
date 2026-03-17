@@ -1011,7 +1011,7 @@ def compute_suitability_score(substations, transmission, iso, env, congestion, g
     
     # 2. Substation voltage (use HIGHEST voltage within range, not just nearest)
     if substations:
-        voltage = max(s.get('voltage_kv', 0) for s in substations)
+        voltage = max((s.get('voltage_kv') or 0) for s in substations)
         for tier_name, tier in w['substation_voltage']['thresholds'].items():
             if voltage >= tier['min_kv']:
                 points = tier['points']
@@ -1021,7 +1021,7 @@ def compute_suitability_score(substations, transmission, iso, env, congestion, g
     
     # 3. Queue depth (use best voltage for queue estimate)
     if substations and iso:
-        best_voltage = max(s.get('voltage_kv', 0) for s in substations)
+        best_voltage = max((s.get('voltage_kv') or 0) for s in substations)
         queue = estimate_queue_depth(iso.get('name', 'SERC'), best_voltage)
         queue_mw = queue.get('queue_mw', 2000)
         for tier_name, tier in w['queue_depth']['thresholds'].items():
