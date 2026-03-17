@@ -1001,7 +1001,7 @@ def compute_suitability_score(substations, transmission, iso, env, congestion, g
     
     # 1. Substation proximity
     if substations:
-        nearest_dist = substations[0].get('distance_miles', 999)
+        nearest_dist = float(substations[0].get('distance_miles') or 999)
         for tier_name, tier in w['substation_proximity']['thresholds'].items():
             if nearest_dist <= tier['max_miles']:
                 points = tier['points']
@@ -1033,7 +1033,7 @@ def compute_suitability_score(substations, transmission, iso, env, congestion, g
     
     # 4. Transmission proximity
     if transmission:
-        tx_dist = transmission.get('distance_miles', 999)
+        tx_dist = float(transmission.get('distance_miles') or 999)
         if isinstance(tx_dist, str):
             tx_dist = 999
         for tier_name, tier in w['transmission_proximity']['thresholds'].items():
@@ -1045,7 +1045,7 @@ def compute_suitability_score(substations, transmission, iso, env, congestion, g
     
     # 5. Environmental
     if env:
-        env_risk = 100 - env.get('env_score', 50)
+        env_risk = 100 - float(env.get('env_score') or 50)
         for tier_name, tier in w['environmental']['thresholds'].items():
             if env_risk <= tier['max_risk_score']:
                 points = tier['points']
@@ -1055,7 +1055,7 @@ def compute_suitability_score(substations, transmission, iso, env, congestion, g
     
     # 6. Congestion
     if congestion:
-        density = congestion.get('density_score', 50)
+        density = int(congestion.get('density_score') or 50)
         for tier_name, tier in w['congestion']['thresholds'].items():
             if density <= tier['max_density']:
                 points = tier['points']
@@ -1065,7 +1065,7 @@ def compute_suitability_score(substations, transmission, iso, env, congestion, g
     
     # 7. Gas access
     if gas:
-        gas_dist = (gas.get('nearest_pipeline', {}) or {}).get('distance_miles', 999)
+        gas_dist = float((gas.get('nearest_pipeline', {}) or {}).get('distance_miles') or 999)
         for tier_name, tier in w['gas_access']['thresholds'].items():
             if gas_dist <= tier['max_miles']:
                 points = tier['points']
@@ -1075,7 +1075,7 @@ def compute_suitability_score(substations, transmission, iso, env, congestion, g
     
     # 8. DC corridor strength
     if nearby_dcs:
-        dc_count = nearby_dcs.get('count', 0)
+        dc_count = int(nearby_dcs.get('count') or 0)
         for tier_name, tier in w['dc_corridor']['thresholds'].items():
             if dc_count >= tier['min_count']:
                 points = tier['points']
