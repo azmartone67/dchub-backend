@@ -161,7 +161,7 @@ def init_pipeline_tables():
         CREATE TABLE IF NOT EXISTS pending_facilities (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             operator TEXT,
-            operator_known BOOLEAN DEFAULT 0,
+            operator_known BOOLEAN DEFAULT false,
             location_text TEXT,
             city TEXT,
             state TEXT,
@@ -607,10 +607,10 @@ def find_matching_facility(extracted):
                 return {'action': 'review', 'possible_match': matches[0]['id'], 'match_type': 'operator_state', 'matched': dict(matches[0])}
 
         c.execute("""
-            SELECT id, name, provider, city, state, source_article_title
+            SELECT id, operator, operator AS provider, city, state, source_article_title
             FROM pending_facilities
             WHERE operator = ? AND city = ?
-            AND reviewed = 0
+            AND reviewed = false
             LIMIT 1
         """, (extracted.get('operator'), extracted.get('city')))
         pending_match = c.fetchone()
@@ -640,7 +640,7 @@ def add_to_pending(extracted, match_result):
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             extracted.get('operator'),
-            1 if extracted.get('operator_known') else 0,
+            True if extracted.get('operator_known') else False,
             extracted.get('location_text'),
             extracted.get('city'),
             extracted.get('state'),
@@ -879,16 +879,16 @@ def get_pending_stats():
     c = conn.cursor()
 
     stats = {}
-    c.execute("SELECT COUNT(*) FROM pending_facilities WHERE reviewed = 0")
+    c.execute("SELECT COUNT(*) FROM pending_facilities WHERE reviewed = false")
     stats['total_pending'] = c.fetchone()[0]
 
-    c.execute("SELECT confidence_tier, COUNT(*) FROM pending_facilities WHERE reviewed = 0 GROUP BY confidence_tier")
+    c.execute("SELECT confidence_tier, COUNT(*) FROM pending_facilities WHERE reviewed = false GROUP BY confidence_tier")
     tier_counts = {row[0]: row[1] for row in c.fetchall()}
     stats['high'] = tier_counts.get('high', 0)
     stats['medium'] = tier_counts.get('medium', 0)
     stats['low'] = tier_counts.get('low', 0)
 
-    c.execute("SELECT COUNT(*) FROM pending_facilities WHERE reviewed = 1 AND review_action = 'approved' AND DATE(reviewed_at) = DATE('now')")
+    c.execute("SELECT COUNT(*) FROM pending_facilities WHERE reviewed = true AND review_action = 'approved' AND DATE(reviewed_at) = DATE('now')")
     stats['approved_today'] = c.fetchone()[0]
 
     try:
@@ -903,12 +903,12 @@ def get_pending_stats():
     except:
         stats['total_auto_verified'] = 0
 
-    c.execute("SELECT COUNT(*) FROM pending_facilities WHERE reviewed = 1")
+    c.execute("SELECT COUNT(*) FROM pending_facilities WHERE reviewed = true")
     stats['total_reviewed'] = c.fetchone()[0]
 
     c.execute("""
         SELECT source_name, COUNT(*) as cnt
-        FROM pending_facilities WHERE reviewed = 0
+        FROM pending_facilities WHERE reviewed = false
         GROUP BY source_name ORDER BY cnt DESC LIMIT 10
     """)
     stats['top_sources'] = [{'name': row[0], 'count': row[1]} for row in c.fetchall()]
@@ -965,7 +965,7 @@ def approve_pending(pending_id):
 
         c.execute("""
             UPDATE pending_facilities
-            SET reviewed = 1, review_action = 'approved', reviewed_at = ?,
+            SET reviewed = true, review_action = 'approved', reviewed_at = ?,
                 matched_facility_id = ?
             WHERE id = ?
         """, (datetime.utcnow().isoformat(), fac_id, pending_id))
@@ -988,7 +988,7 @@ def reject_pending(pending_id, notes=None):
     c = conn.cursor()
     c.execute("""
         UPDATE pending_facilities
-        SET reviewed = 1, review_action = 'rejected', reviewed_at = ?, notes = ?
+        SET reviewed = true, review_action = 'rejected', reviewed_at = ?, notes = ?
         WHERE id = ?
     """, (datetime.utcnow().isoformat(), notes, pending_id))
     conn.commit()
@@ -1038,7 +1038,7 @@ def merge_pending(pending_id, facility_id):
 
     c.execute("""
         UPDATE pending_facilities
-        SET reviewed = 1, review_action = 'merged', reviewed_at = ?,
+        SET reviewed = true, review_action = 'merged', reviewed_at = ?,
             matched_facility_id = ?
         WHERE id = ?
     """, (datetime.utcnow().isoformat(), facility_id, pending_id))
