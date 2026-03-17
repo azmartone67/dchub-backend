@@ -232,7 +232,7 @@ def init_pipeline_tables():
         c.execute("SELECT facility_processed FROM announcements LIMIT 1")
     except:
         try:
-            c.execute("ALTER TABLE announcements ADD COLUMN facility_processed BOOLEAN DEFAULT 0")
+            c.execute("ALTER TABLE announcements ADD COLUMN facility_processed BOOLEAN DEFAULT false")
         except:
             pass
 
@@ -755,7 +755,7 @@ def run_pipeline(limit=50):
     c.execute("""
         SELECT id, title, summary, source, source_url, published_date, url
         FROM announcements
-        WHERE (facility_processed IS NULL OR facility_processed = 0)
+        WHERE (facility_processed IS NULL OR facility_processed = false)
         AND title IS NOT NULL
         ORDER BY discovered_at DESC
         LIMIT ?
@@ -838,9 +838,9 @@ def mark_processed(article_id, facility_id=None):
         conn = get_db()
         c = conn.cursor()
         if facility_id:
-            c.execute("UPDATE announcements SET facility_processed = 1, facility_extracted_id = ? WHERE id = ?", (facility_id, article_id))
+            c.execute("UPDATE announcements SET facility_processed = true, facility_extracted_id = ? WHERE id = ?", (facility_id, article_id))
         else:
-            c.execute("UPDATE announcements SET facility_processed = 1 WHERE id = ?", (article_id,))
+            c.execute("UPDATE announcements SET facility_processed = true WHERE id = ?", (article_id,))
         conn.commit()
         conn.close()
     except:
@@ -915,7 +915,7 @@ def get_pending_stats():
 
     c.execute("""
         SELECT COUNT(*) FROM announcements
-        WHERE facility_processed = 1
+        WHERE facility_processed = true
         AND discovered_at >= datetime('now', '-24 hours')
     """)
     stats['processed_24h'] = c.fetchone()[0]
