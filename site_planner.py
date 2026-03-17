@@ -294,7 +294,64 @@ def find_nearest_substations(lat, lng, limit=5, max_distance_miles=25):
     if result is not None:
         return result
 
-    logger.warning("Both PostGIS and Haversine queries failed for substations")
+    logger.warning("Local substations query returned empty — trying HIFLD API fallback")
+    
+    # HIFLD API fallback: query ArcGIS for nearby substations
+    try:
+        import urllib.request, urllib.parse, json as _json, math as _math
+        deg = max_distance_miles / 69.0
+        deg_lng_adj = max_distance_miles / (69.0 * max(0.1, abs(_math.cos(_math.radians(lat)))))
+        bbox = f"{lng - deg_lng_adj},{lat - deg},{lng + deg_lng_adj},{lat + deg}"
+        params = urllib.parse.urlencode({
+            'where': '1=1',
+            'geometry': bbox,
+            'geometryType': 'esriGeometryEnvelope',
+            'spatialRel': 'esriSpatialRelIntersects',
+            'outFields': 'NAME,STATE,MAX_VOLT,MIN_VOLT,LATITUDE,LONGITUDE,OWNER',
+            'returnGeometry': 'true',
+            'f': 'json',
+            'outSR': '4326',
+            'inSR': '4326',
+            'resultRecordCount': str(limit * 3)
+        })
+        url = f"https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Substations/FeatureServer/0/query?{params}"
+        req = urllib.request.Request(url, headers={'User-Agent': 'DCHub/1.0'})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = _json.loads(resp.read().decode())
+        
+        features = data.get('features', [])
+        if features:
+            results = []
+            for f in features:
+                attr = f.get('attributes', {})
+                geom = f.get('geometry', {})
+                s_lat = attr.get('LATITUDE') or geom.get('y')
+                s_lng = attr.get('LONGITUDE') or geom.get('x')
+                if not s_lat or not s_lng:
+                    continue
+                # Calculate distance
+                dist = 3959 * _math.acos(min(1.0, max(-1.0,
+                    _math.cos(_math.radians(lat)) * _math.cos(_math.radians(s_lat)) *
+                    _math.cos(_math.radians(s_lng) - _math.radians(lng)) +
+                    _math.sin(_math.radians(lat)) * _math.sin(_math.radians(s_lat))
+                )))
+                results.append({
+                    'name': attr.get('NAME', 'Unknown'),
+                    'state': attr.get('STATE', ''),
+                    'voltage_kv': attr.get('MAX_VOLT') or attr.get('MIN_VOLT') or 0,
+                    'operator': attr.get('OWNER', 'Unknown'),
+                    'lat': s_lat,
+                    'lng': s_lng,
+                    'distance_miles': round(dist, 2)
+                })
+            results.sort(key=lambda x: x['distance_miles'])
+            logger.info(f"HIFLD API fallback: found {len(results)} substations near {lat},{lng}")
+            return results[:limit]
+        else:
+            logger.info(f"HIFLD API fallback: no substations found near {lat},{lng}")
+    except Exception as hifld_err:
+        logger.warning(f"HIFLD API fallback failed: {hifld_err}")
+    
     return []
 
 
