@@ -7803,8 +7803,8 @@ def _list_facilities_full():
     min_power = request.args.get('min_power', type=float)
     source = request.args.get('source')
     
-    sql = "SELECT * FROM discovered_facilities WHERE 1=1"
-    count_sql = "SELECT COUNT(*) FROM discovered_facilities WHERE 1=1"
+    sql = "SELECT * FROM facilities WHERE 1=1"
+    count_sql = "SELECT COUNT(*) FROM facilities WHERE 1=1"
     params = []
     
     if q:
@@ -7860,11 +7860,11 @@ def _list_facilities_full():
     # Phase 4: min_confidence filter
     min_confidence = request.args.get('min_confidence', type=float)
     if min_confidence is not None and 0 <= min_confidence <= 1:
-        sql += " AND confidence_score >= %s"
-        count_sql += " AND confidence_score >= %s"
+        sql += " AND confidence >= %s"
+        count_sql += " AND confidence >= %s"
         params.append(min_confidence)
     
-    sql += f" ORDER BY confidence_score DESC, power_mw DESC LIMIT {limit} OFFSET {offset}"
+    sql += f" ORDER BY confidence DESC, power_mw DESC LIMIT {limit} OFFSET {offset}"
     
     conn = None
     try:
@@ -7881,7 +7881,7 @@ def _list_facilities_full():
         try:
             for f in facilities:
                 try:
-                    cs = float(f.get('confidence_score', 0) or 0)
+                    cs = float(f.get('confidence', 0) or 0)
                 except (ValueError, TypeError):
                     cs = 0
                 f['confidence_badge'] = 'high' if cs >= 0.8 else ('medium' if cs >= 0.5 else 'low')
