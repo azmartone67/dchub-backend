@@ -184,7 +184,7 @@ def get_neon_connection():
         if not db_url:
             logger.error("No NEON_DATABASE_URL configured")
             return None
-        conn = psycopg2.connect(db_url, connect_timeout=10)
+        conn = psycopg2.connect(db_url, connect_timeout=4)
         return conn
     except Exception as e:
         logger.error(f"Neon connection failed: {e}")
@@ -318,7 +318,7 @@ def find_nearest_substations(lat, lng, limit=5, max_distance_miles=25):
                     'Content-Type': 'application/x-www-form-urlencoded',
                     'User-Agent': 'DCHub/1.0'
                 })
-                with urllib.request.urlopen(req, timeout=10) as resp:
+                with urllib.request.urlopen(req, timeout=4) as resp:
                     osm_data = _json.loads(resp.read().decode())
                 if osm_data and osm_data.get('elements'):
                     break
@@ -597,7 +597,7 @@ def estimate_congestion(lat, lng, radius_miles=15):
                     req = urllib.request.Request(ep, data=post_data, headers={
                         'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'DCHub/1.0'
                     })
-                    with urllib.request.urlopen(req, timeout=8) as resp:
+                    with urllib.request.urlopen(req, timeout=4) as resp:
                         osm = _json.loads(resp.read().decode())
                     sub_count = osm.get('elements', [{}])[0].get('tags', {}).get('total', 0)
                     if isinstance(sub_count, str): sub_count = int(sub_count)
@@ -622,7 +622,7 @@ def estimate_congestion(lat, lng, radius_miles=15):
                     req = urllib.request.Request(ep, data=post_data, headers={
                         'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'DCHub/1.0'
                     })
-                    with urllib.request.urlopen(req, timeout=8) as resp:
+                    with urllib.request.urlopen(req, timeout=4) as resp:
                         osm = _json.loads(resp.read().decode())
                     plant_count = osm.get('elements', [{}])[0].get('tags', {}).get('total', 0)
                     if isinstance(plant_count, str): plant_count = int(plant_count)
@@ -681,7 +681,7 @@ def screen_environmental(lat, lng):
             'returnGeometry': 'false',
             'f': 'json',
         }
-        resp = requests.get(fema_url, params=params, timeout=10)
+        resp = requests.get(fema_url, params=params, timeout=4)
         data = resp.json()
         if 'features' in data and data['features']:
             zone = data['features'][0]['attributes'].get('FLD_ZONE', '')
@@ -712,7 +712,7 @@ def screen_environmental(lat, lng):
             'returnGeometry': 'false',
             'f': 'json',
         }
-        resp = requests.get(fws_url, params=params, timeout=10)
+        resp = requests.get(fws_url, params=params, timeout=4)
         data = resp.json()
         if 'features' in data and data['features']:
             env['species_risk'] = 'High'
@@ -738,7 +738,7 @@ def screen_environmental(lat, lng):
             'f': 'json',
             'resultRecordCount': 5,
         }
-        resp = requests.get(nwi_url, params=params, timeout=10)
+        resp = requests.get(nwi_url, params=params, timeout=4)
         data = resp.json()
         if 'features' in data and data['features']:
             env['wetland_risk'] = 'Moderate'
@@ -1414,7 +1414,7 @@ def reverse_geocode(lat, lng):
             'zoom': 14,
         }
         headers = {'User-Agent': 'DCHub-SitePlanner/1.0 (jaz@dchub.cloud)'}
-        resp = requests.get(url, params=params, headers=headers, timeout=8)
+        resp = requests.get(url, params=params, headers=headers, timeout=4)
         data = resp.json()
         
         if data and 'address' in data:
@@ -1450,7 +1450,7 @@ def geocode_address(address):
             'addressdetails': 1,
         }
         headers = {'User-Agent': 'DCHub-SitePlanner/1.0 (jaz@dchub.cloud)'}
-        resp = requests.get(url, params=params, headers=headers, timeout=10)
+        resp = requests.get(url, params=params, headers=headers, timeout=4)
         results = resp.json()
         
         if results:
