@@ -652,7 +652,7 @@ def return_pg_connection(conn, pool_type=None, error=False):
 
 @contextmanager
 def pg_connection(pool_type=None):
-    conn = get_pg_connection()
+    conn = get_db()
     try:
         yield conn
     except Exception:
@@ -858,7 +858,7 @@ def get_read_connection(retries=2):
                 logger.warning("DATABASE POOL: Read replica attempt %d failed: %s", attempt + 1, e)
     
     # Fallback to primary
-    conn = get_pg_connection()
+    conn = get_db()
     return conn, 'primary'
 
 
@@ -2871,7 +2871,7 @@ def _gate_teaser_result(result_content, tool_name):
             # Free tier: show metro fiber market rankings as teaser
             metro_preview = []
             try:
-                pg = get_pg_connection()
+                pg = get_db()
                 mc = pg.cursor()
                 mc.execute("SELECT market, total_carriers, fiber_density_score, tier FROM metro_fiber_summary ORDER BY fiber_density_score DESC LIMIT 5")
                 for r in mc.fetchall():
@@ -8391,7 +8391,7 @@ def ai_tracking_cumulative():
     """Return all-time cumulative request totals per platform from Neon ai_cumulative table."""
     conn = None
     try:
-        conn = get_pg_connection()
+        conn = get_db()
         cur = conn.cursor()
         cur.execute("""
             SELECT platform, name, company, total_requests, requests_7d, first_seen, last_seen, color
@@ -8429,7 +8429,7 @@ def ai_tracking_stats():
     """Return aggregate AI tracking stats from Neon ai_cumulative table."""
     conn = None
     try:
-        conn = get_pg_connection()
+        conn = get_db()
         cur = conn.cursor()
         cur.execute("""
             SELECT
@@ -8464,7 +8464,7 @@ def ai_tracking_full():
     """Full AI tracking dashboard data — matches old Neon-direct Worker format."""
     conn = None
     try:
-        conn = get_pg_connection()
+        conn = get_db()
         cur = conn.cursor()
         cur.execute("""
             SELECT platform, name, company, total_requests, requests_7d, first_seen, last_seen, color
@@ -9916,7 +9916,7 @@ if IS_RAILWAY and EVOLUTION_AVAILABLE:
 def fiber_metro_api(market_name=None):
     """Metro dark fiber intelligence by market — carriers, route miles, density scores."""
     try:
-        conn = get_pg_connection()
+        conn = get_db()
         cur = conn.cursor()
         
         if market_name:
@@ -10958,7 +10958,7 @@ def get_testimonials():  # v2 neon-backed
     featured_only = request.args.get('featured', '').lower() == 'true'
 
     try:
-        conn = get_pg_connection()
+        conn = get_db()
         c = conn.cursor()
 
         query = "SELECT id, platform, agent_name, quote, context, query, category, featured, created_at FROM ai_testimonials WHERE approved = TRUE"
@@ -11020,7 +11020,7 @@ def add_testimonial():
         return jsonify({'success': False, 'error': 'Quote is required'}), 400
 
     try:
-        conn = get_pg_connection()
+        conn = get_db()
         c = conn.cursor()
         c.execute("""
             INSERT INTO ai_testimonials (platform, agent_name, quote, context, query, url, category, source, approved, approved_at)
@@ -11044,7 +11044,7 @@ def approve_testimonial(tid):
     featured = data.get('featured', False)
 
     try:
-        conn = get_pg_connection()
+        conn = get_db()
         c = conn.cursor()
         c.execute("""
             UPDATE ai_testimonials
@@ -11062,7 +11062,7 @@ def approve_testimonial(tid):
 def delete_testimonial(tid):
     """Admin: delete a testimonial"""
     try:
-        conn = get_pg_connection()
+        conn = get_db()
         c = conn.cursor()
         c.execute("DELETE FROM ai_testimonials WHERE id = %s", (tid,))
         conn.commit()
@@ -11076,7 +11076,7 @@ def delete_testimonial(tid):
 def testimonial_stats():
     """Stats for the testimonials page hero"""
     try:
-        conn = get_pg_connection()
+        conn = get_db()
         c = conn.cursor()
         c.execute("""
             SELECT
@@ -11116,7 +11116,7 @@ def seed_testimonials():
     ]
 
     try:
-        conn = get_pg_connection()
+        conn = get_db()
         c = conn.cursor()
         # Ensure table exists (PostgreSQL syntax)
         c.execute('''CREATE TABLE IF NOT EXISTS ai_testimonials (
@@ -11159,7 +11159,7 @@ def seed_testimonials():
 def bulk_approve_testimonials():
     """Approve all unapproved mcp-auto testimonials (admin use)"""
     try:
-        conn = get_pg_connection()
+        conn = get_db()
         c = conn.cursor()
         c.execute("""
             UPDATE ai_testimonials 
@@ -11178,7 +11178,7 @@ def bulk_approve_testimonials():
 def cleanup_testimonials():
     """Deduplicate and prune stale auto-captured testimonials"""
     try:
-        conn = get_pg_connection()
+        conn = get_db()
         c = conn.cursor()
         # Remove auto-captured entries older than 90 days (keep featured/manual)
         c.execute("""
@@ -11231,7 +11231,7 @@ def cleanup_testimonials():
 def refresh_testimonial_timestamps():
     """Update seed and manual testimonial timestamps to now so they don't show as stale"""
     try:
-        conn = get_pg_connection()
+        conn = get_db()
         c = conn.cursor()
         # Refresh seed entries to current time
         c.execute("""
