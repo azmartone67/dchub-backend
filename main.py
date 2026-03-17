@@ -1705,6 +1705,10 @@ except ImportError:
     logger.warning("⚠️ welcome_emails.py not found — drip emails disabled")
 
 # Override get_read_db to route reads through the Neon read replica pool
+def get_db(*args, **kwargs):
+    """Alias for get_pg_connection — legacy SQLite name, now points to Neon pool."""
+    return get_pg_connection(*args, **kwargs)
+
 def get_read_db(*args, **kwargs):
     """Route read queries to the Neon read replica when available.
     Falls back to original get_read_db (primary) if replica is down.
