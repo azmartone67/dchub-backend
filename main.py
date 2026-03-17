@@ -7803,7 +7803,7 @@ def _list_facilities_full():
     min_power = request.args.get('min_power', type=float)
     source = request.args.get('source')
     
-    sql = "SELECT * FROM facilities WHERE 1=1"
+    sql = "SELECT id, name, provider, address, city, state, country, region, latitude, longitude, power_mw, sqft, status, tier, certifications, connectivity, source, source_url, source_id, confidence, first_seen, last_updated, raw_data, facility_type, operational_year FROM facilities WHERE 1=1"
     count_sql = "SELECT COUNT(*) FROM facilities WHERE 1=1"
     params = []
     
