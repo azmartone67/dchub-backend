@@ -41,6 +41,7 @@ SCHEDULE = [
     (10, 22, "energy_discovery",    "_run_energy_discovery"),
     (14,  2, "knowledge_sync",      "_run_knowledge_sync"),
     ( 8, 20, "deals",               "_run_deals_crawler"),
+    ( 9, 21, "market_refresh",      "_run_market_refresh"),
     ( 7, 19, "facility_discovery",  "_run_facility_discovery"),
     (12,  0, "infrastructure_sync", "_run_infrastructure_sync"),
 ]
@@ -251,6 +252,121 @@ def _run_knowledge_sync():
         logger.warning(f"   [4/4] MCP Auto-Register error: {e}")
 
     logger.info("   === KNOWLEDGE + GROWTH ENGINES COMPLETE ===")
+
+
+def _run_market_refresh():
+    """Refresh market intelligence: deals sync, GDCI recompute, market report, AI Wars.
+    This keeps all analytics sections current.
+    Scheduled: piggybacks on deals slot (08:00/20:00 UTC) or manual trigger.
+    """
+    logger.info("   === MARKET REFRESH START ===")
+
+    # STEP 1: Refresh deals from news sources
+    try:
+        from deal_scraper import DealScraper
+        ds = DealScraper()
+        result = ds.scrape_all()
+        new_deals = result.get('new_deals', 0) if isinstance(result, dict) else 0
+        logger.info(f"   [1/5] Deals scraper: +{new_deals} new deals")
+    except ImportError:
+        # Fallback: trigger via HTTP
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                'https://dchub-backend-production.up.railway.app/api/deals/refresh',
+                method='POST',
+                headers={'X-Admin-Key': __import__('os').environ.get('DCHUB_ADMIN_KEY', '')}
+            )
+            urllib.request.urlopen(req, timeout=30)
+            logger.info("   [1/5] Deals refresh: triggered via API")
+        except Exception as e2:
+            logger.warning(f"   [1/5] Deals refresh error: {e2}")
+    except Exception as e:
+        logger.warning(f"   [1/5] Deals scraper error: {e}")
+
+    if _stop_event.is_set():
+        return
+
+    # STEP 2: Regenerate market report
+    try:
+        import urllib.request, json
+        req = urllib.request.Request(
+            'https://dchub-backend-production.up.railway.app/api/market-report/generate',
+            method='POST',
+            headers={'X-Admin-Key': __import__('os').environ.get('DCHUB_ADMIN_KEY', '')}
+        )
+        resp = urllib.request.urlopen(req, timeout=30)
+        logger.info("   [2/5] Market report: regenerated")
+    except Exception as e:
+        logger.warning(f"   [2/5] Market report error: {e}")
+
+    if _stop_event.is_set():
+        return
+
+    # STEP 3: AI Wars auto-challenge (benchmark AI platforms against DC Hub)
+    try:
+        from ai_wars_automation import run_scheduled_battle
+        result = run_scheduled_battle()
+        logger.info(f"   [3/5] AI Wars: battle completed — {result if result else 'done'}")
+    except (ImportError, AttributeError):
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                'https://dchub-backend-production.up.railway.app/api/ai-wars/auto-battle',
+                method='POST',
+                headers={'X-Admin-Key': __import__('os').environ.get('DCHUB_ADMIN_KEY', '')}
+            )
+            urllib.request.urlopen(req, timeout=60)
+            logger.info("   [3/5] AI Wars: battle triggered via API")
+        except Exception as e2:
+            logger.warning(f"   [3/5] AI Wars error: {e2}")
+    except Exception as e:
+        logger.warning(f"   [3/5] AI Wars error: {e}")
+
+    if _stop_event.is_set():
+        return
+
+    # STEP 4: Ecosystem discovery (scan for new DC companies)
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            'https://dchub-backend-production.up.railway.app/api/ai-ecosystem/run',
+            method='POST',
+            headers={'X-Admin-Key': __import__('os').environ.get('DCHUB_ADMIN_KEY', '')}
+        )
+        urllib.request.urlopen(req, timeout=30)
+        logger.info("   [4/5] Ecosystem discovery: triggered")
+    except Exception as e:
+        logger.warning(f"   [4/5] Ecosystem discovery error: {e}")
+
+    if _stop_event.is_set():
+        return
+
+    # STEP 5: Sync new facilities → capacity_pipeline (catch any missed)
+    try:
+        from db_utils import get_db
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("""
+            INSERT INTO capacity_pipeline (operator, market, region, capacity_mw, status, announcement_date, source, source_url, created_at, confidence_score)
+            SELECT df.provider, COALESCE(df.city, df.state), df.country, df.power_mw, df.status,
+                   df.discovered_at, df.source, df.source_url, NOW()::text, COALESCE(df.confidence_score, 0.8)::integer
+            FROM discovered_facilities df
+            WHERE df.status IN ('Under Construction', 'Planned', 'Announced')
+              AND df.power_mw IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM capacity_pipeline cp
+                  WHERE LOWER(COALESCE(cp.operator,'')) = LOWER(COALESCE(df.provider,''))
+                    AND LOWER(COALESCE(cp.market,'')) = LOWER(COALESCE(df.city, df.state, ''))
+              )
+        """)
+        new_pipeline = c.rowcount
+        conn.commit()
+        logger.info(f"   [5/5] Pipeline sync: +{new_pipeline} new projects")
+    except Exception as e:
+        logger.warning(f"   [5/5] Pipeline sync error: {e}")
+
+    logger.info("   === MARKET REFRESH COMPLETE ===")
 
 
 # Map names to functions (includes manual-only crawlers)
@@ -550,6 +666,7 @@ def _run_infrastructure_sync():
 
 
 _RUNNERS = {
+    "market_refresh":      _run_market_refresh,
     "news":                _run_news_crawler,
     "api_discovery":       _run_api_discovery,
     "energy_discovery":    _run_energy_discovery,
