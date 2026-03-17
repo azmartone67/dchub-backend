@@ -130,7 +130,8 @@ def query_arcgis(url, fields='*', where='1=1', result_count=5000,
         params['spatialRel'] = 'esriSpatialRelIntersects'
         params['inSR'] = '4326'
 
-    query_string = '&'.join(f"{k}={v}" for k, v in params.items())
+    from urllib.parse import urlencode
+    query_string = urlencode({k: v for k, v in params.items()})
     full_url = f"{url}/query?{query_string}"
 
     try:
