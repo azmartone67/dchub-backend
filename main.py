@@ -12577,7 +12577,7 @@ def get_facility_by_id(facility_id):
                     "checkout": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",
                     "price": "$49/mo",
                 },
-                "_sample_full_result": full_data,
+
             })
     except Exception as e:
         import traceback
