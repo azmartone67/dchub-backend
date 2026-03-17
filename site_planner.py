@@ -314,8 +314,8 @@ def find_nearest_substations(lat, lng, limit=5, max_distance_miles=25):
             'inSR': '4326',
             'resultRecordCount': str(limit * 3)
         })
-        url = f"https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Substations/FeatureServer/0/query?{params}"
-        req = urllib.request.Request(url, headers={'User-Agent': 'DCHub/1.0'})
+        url = "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Substations/FeatureServer/0/query"
+        req = urllib.request.Request(url, data=params.encode(), headers={'User-Agent': 'DCHub/1.0', 'Content-Type': 'application/x-www-form-urlencoded'})
         with urllib.request.urlopen(req, timeout=8) as resp:
             data = _json.loads(resp.read().decode())
         
