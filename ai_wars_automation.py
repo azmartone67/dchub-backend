@@ -907,7 +907,7 @@ def register_wars_automation(app):
 
         c.execute("""
             INSERT INTO wars_challenges (id, question, email, status, ip)
-            VALUES (?, ?, ?, 'pending', ?)
+            VALUES (%s, %s, %s, 'pending', %s)
         """, (challenge_id, question, email, ip))
 
         conn.commit()
