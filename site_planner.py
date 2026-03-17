@@ -304,7 +304,7 @@ def find_nearest_substations(lat, lng, limit=5, max_distance_miles=25):
         deg_lng_adj = max_distance_miles / (69.0 * max(0.1, abs(_math.cos(_math.radians(lat)))))
         south, north = lat - deg, lat + deg
         west, east = lng - deg_lng_adj, lng + deg_lng_adj
-        query = f'[out:json][timeout:10];(node["power"="substation"]({south},{west},{north},{east});way["power"="substation"]({south},{west},{north},{east}););out center {limit * 3};'
+        query = f'[out:json][timeout:3];(node["power"="substation"]({south},{west},{north},{east});way["power"="substation"]({south},{west},{north},{east}););out center 10;'
         post_data = ('data=' + urllib.parse.quote(query)).encode()
         osm_data = None
         try:
@@ -582,7 +582,7 @@ def estimate_congestion(lat, lng, radius_miles=15):
             import urllib.request, urllib.parse, json as _json
             south, north = lat - deg_lat, lat + deg_lat
             west, east = lng - deg_lng, lng + deg_lng
-            query_osm = f'[out:json][timeout:8];(node["power"="substation"]({south},{west},{north},{east});way["power"="substation"]({south},{west},{north},{east}););out count;'
+            query_osm = f'[out:json][timeout:3];(node["power"="substation"]({south},{west},{north},{east});way["power"="substation"]({south},{west},{north},{east}););out count;'
             post_data = ('data=' + urllib.parse.quote(query_osm)).encode()
             try:
                 req = urllib.request.Request('https://overpass.kumi.systems/api/interpreter', data=post_data, headers={
@@ -605,7 +605,7 @@ def estimate_congestion(lat, lng, radius_miles=15):
             import urllib.request, urllib.parse, json as _json
             south, north = lat - deg_lat, lat + deg_lat
             west, east = lng - deg_lng, lng + deg_lng
-            query_osm = f'[out:json][timeout:8];(node["power"="plant"]({south},{west},{north},{east});way["power"="plant"]({south},{west},{north},{east}););out count;'
+            query_osm = f'[out:json][timeout:3];(node["power"="plant"]({south},{west},{north},{east});way["power"="plant"]({south},{west},{north},{east}););out count;'
             post_data = ('data=' + urllib.parse.quote(query_osm)).encode()
             try:
                 req = urllib.request.Request('https://overpass.kumi.systems/api/interpreter', data=post_data, headers={
