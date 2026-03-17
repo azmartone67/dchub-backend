@@ -412,7 +412,7 @@ def get_deals():
             'data': limited,
             'count': len(limited),
             'total_count': len(cached_data),
-            'total_value': sum(d.get('value', 0) for d in cached_data),
+            'total_value': sum((d.get('value') or 0) for d in cached_data),
             'cached': True
         })
     
@@ -452,31 +452,8 @@ def get_deals():
             deals = db_deals
         except Exception as e:
             logger.warning(f"Deals PG query failed, trying SQLite: {e}")
+    # SQLite fallback removed — Neon PG is source of truth
 
-    if not pg_url or len(deals) <= len(SAMPLE_DEALS):
-        try:
-            conn = _get_db()
-            c = conn.cursor()
-            c.execute("SELECT id, date, year, buyer, seller, value, mw, type, region, market FROM deals ORDER BY COALESCE(date, '1970-01-01') DESC LIMIT 200")
-            db_deals = []
-            for row in c.fetchall():
-                buyer = row[3] or ''
-                seller = row[4] or ''
-                if buyer.lower() in ['tbd', 'unknown', 'n/a', ''] or seller.lower() in ['tbd', 'unknown', 'n/a', '']:
-                    continue
-                db_deals.append({
-                    'id': row[0], 'date': row[1], 'year': row[2],
-                    'buyer': buyer, 'seller': seller, 'value': row[5],
-                    'mw': row[6], 'type': row[7], 'region': row[8], 'market': row[9]
-                })
-            conn.close()
-            existing_ids = {d['id'] for d in db_deals}
-            for d in deals:
-                if d['id'] not in existing_ids:
-                    db_deals.append(d)
-            deals = db_deals
-        except Exception as e:
-            logger.warning(f"Deals SQLite query also failed: {e}, using sample data")
     
     # Filter by category (group deal types)
     if category:
@@ -559,7 +536,7 @@ def get_deals():
         'data': limited_deals,  # Keep for backwards compatibility
         'count': len(limited_deals),
         'total_count': len(deals),
-        'total_value': sum(d.get('value', 0) for d in deals),
+        'total_value': sum((d.get('value') or 0) for d in deals),
         'stats_by_type': stats_by_type,
         'stats_by_year': stats_by_year,
         'deal_types': {
@@ -636,26 +613,8 @@ def _get_transactions_free():
         except Exception as e:
             logger.warning(f"Free transactions PG query failed: {e}")
 
-    if not loaded_from_db:
-        try:
-            conn = _get_db()
-            c = conn.cursor()
-            c.execute("SELECT id, date, year, buyer, seller, value, mw, type, region, market FROM deals ORDER BY COALESCE(date, '1970-01-01') DESC LIMIT 200")
-            db_deals = []
-            for row in c.fetchall():
-                buyer = row[3] or ''
-                seller = row[4] or ''
-                if buyer.lower() in ['tbd', 'unknown', 'n/a', ''] or seller.lower() in ['tbd', 'unknown', 'n/a', '']:
-                    continue
-                db_deals.append({'id': row[0], 'date': row[1], 'year': row[2], 'buyer': buyer, 'seller': seller, 'value': row[5], 'mw': row[6], 'type': row[7], 'region': row[8], 'market': row[9]})
-            conn.close()
-            existing_ids = {d['id'] for d in db_deals}
-            for d in deals:
-                if d['id'] not in existing_ids:
-                    db_deals.append(d)
-            deals = db_deals
-        except Exception as e:
-            logger.warning(f"Free transactions DB query failed: {e}, using sample data")
+    # SQLite fallback removed — Neon PG is source of truth
+
 
     deals.sort(key=lambda x: x.get('date') or '', reverse=True)
     total_matching = len(deals)
@@ -687,6 +646,8 @@ def _get_transactions_free():
 def get_pipeline():
     """Get construction pipeline data"""
     status_filter = request.args.get('status')  # 'construction', 'announced', 'all'
+    _status_map = {'under_construction': 'construction', 'in_progress': 'construction', 'completed': 'operational', 'planned': 'announced'}
+    if status_filter: status_filter = _status_map.get(status_filter, status_filter)
     market_filter = request.args.get('market')
     company_filter = request.args.get('company')
     quarter_filter = request.args.get('quarter')  # e.g. '2026-Q1'
@@ -750,8 +711,8 @@ def get_pipeline():
     pipeline.sort(key=lambda x: x.get('delivery', 'Z'))
     
     # Calculate stats
-    total_mw = sum(p.get('capacity', 0) for p in pipeline)
-    total_investment = sum(p.get('investment', 0) for p in pipeline)
+    total_mw = sum((p.get('capacity') or 0) for p in pipeline)
+    total_investment = sum((p.get('investment') or 0) for p in pipeline)
     preleased_count = len([p for p in pipeline if p.get('preleased')])
     preleased_pct = round((preleased_count / len(pipeline) * 100)) if pipeline else 0
     construction_count = len([p for p in pipeline if p.get('status') == 'construction'])
@@ -763,7 +724,7 @@ def get_pipeline():
         q = p.get('delivery', 'TBD')
         if q not in quarters:
             quarters[q] = {'capacity': 0, 'projects': 0, 'preleased': 0}
-        quarters[q]['capacity'] += p.get('capacity', 0)
+        quarters[q]['capacity'] += (p.get('capacity') or 0)
         quarters[q]['projects'] += 1
         if p.get('preleased'):
             quarters[q]['preleased'] += 1
@@ -1014,7 +975,7 @@ def get_public_pipeline():
 
     projects.sort(key=lambda x: x.get('capacity_mw', 0), reverse=True)
 
-    total_mw = sum(p.get('capacity_mw', 0) for p in projects)
+    total_mw = sum((p.get('capacity_mw') or 0) for p in projects)
     construction = len([p for p in projects if p.get('status') == 'construction'])
     announced = len([p for p in projects if p.get('status') == 'announced'])
     operational = len([p for p in projects if p.get('status') == 'operational'])
@@ -1026,7 +987,7 @@ def get_public_pipeline():
         if s not in status_groups:
             status_groups[s] = {'count': 0, 'total_mw': 0}
         status_groups[s]['count'] += 1
-        status_groups[s]['total_mw'] += p.get('capacity_mw', 0)
+        status_groups[s]['total_mw'] += (p.get('capacity_mw') or 0)
     for s, data in status_groups.items():
         by_status.append({'status': s, 'count': data['count'], 'total_mw': round(data['total_mw'], 1)})
 
@@ -1063,7 +1024,7 @@ def get_pipeline_summary():
         key = (p['company'].lower(), p['project'].lower())
         if key not in seen_keys:
             seen_keys.add(key)
-            total_mw += p.get('capacity', 0)
+            total_mw += (p.get('capacity') or 0)
             project_count += 1
             st = p.get('status', 'announced')
             if st == 'construction':
@@ -1148,7 +1109,7 @@ def get_analytics():
         'markets': SAMPLE_MARKETS,
         'summary': {
             'total_markets': len(SAMPLE_MARKETS),
-            'total_mw': sum(m['total_mw'] for m in SAMPLE_MARKETS)
+            'total_mw': sum((m.get('total_mw') or 0) for m in SAMPLE_MARKETS)
         }
     })
 
