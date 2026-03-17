@@ -306,24 +306,16 @@ def find_nearest_substations(lat, lng, limit=5, max_distance_miles=25):
         west, east = lng - deg_lng_adj, lng + deg_lng_adj
         query = f'[out:json][timeout:10];(node["power"="substation"]({south},{west},{north},{east});way["power"="substation"]({south},{west},{north},{east}););out center {limit * 3};'
         post_data = ('data=' + urllib.parse.quote(query)).encode()
-        endpoints = [
-            'https://overpass.kumi.systems/api/interpreter',
-            'https://overpass-api.de/api/interpreter',
-            'https://overpass.private.coffee/api/interpreter'
-        ]
         osm_data = None
-        for ep in endpoints:
-            try:
-                req = urllib.request.Request(ep, data=post_data, headers={
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'User-Agent': 'DCHub/1.0'
-                })
-                with urllib.request.urlopen(req, timeout=4) as resp:
-                    osm_data = _json.loads(resp.read().decode())
-                if osm_data and osm_data.get('elements'):
-                    break
-            except Exception:
-                continue
+        try:
+            req = urllib.request.Request('https://overpass.kumi.systems/api/interpreter', data=post_data, headers={
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'User-Agent': 'DCHub/1.0'
+            })
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                osm_data = _json.loads(resp.read().decode())
+        except Exception:
+            pass
         
         if osm_data:
             elements = osm_data.get('elements', [])
@@ -592,20 +584,18 @@ def estimate_congestion(lat, lng, radius_miles=15):
             west, east = lng - deg_lng, lng + deg_lng
             query_osm = f'[out:json][timeout:8];(node["power"="substation"]({south},{west},{north},{east});way["power"="substation"]({south},{west},{north},{east}););out count;'
             post_data = ('data=' + urllib.parse.quote(query_osm)).encode()
-            for ep in ['https://overpass.kumi.systems/api/interpreter', 'https://overpass-api.de/api/interpreter']:
-                try:
-                    req = urllib.request.Request(ep, data=post_data, headers={
-                        'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'DCHub/1.0'
-                    })
-                    with urllib.request.urlopen(req, timeout=4) as resp:
-                        osm = _json.loads(resp.read().decode())
-                    sub_count = osm.get('elements', [{}])[0].get('tags', {}).get('total', 0)
-                    if isinstance(sub_count, str): sub_count = int(sub_count)
-                    if sub_count > 0:
-                        logger.info(f"Congestion Overpass fallback: {sub_count} substations near {lat},{lng}")
-                        break
-                except Exception:
-                    continue
+            try:
+                req = urllib.request.Request('https://overpass.kumi.systems/api/interpreter', data=post_data, headers={
+                    'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'DCHub/1.0'
+                })
+                with urllib.request.urlopen(req, timeout=3) as resp:
+                    osm = _json.loads(resp.read().decode())
+                sub_count = osm.get('elements', [{}])[0].get('tags', {}).get('total', 0)
+                if isinstance(sub_count, str): sub_count = int(sub_count)
+                if sub_count > 0:
+                    logger.info(f"Congestion Overpass fallback: {sub_count} substations near {lat},{lng}")
+            except Exception:
+                pass
         except Exception as e:
             logger.warning(f"Congestion Overpass fallback failed: {e}")
 
@@ -617,20 +607,18 @@ def estimate_congestion(lat, lng, radius_miles=15):
             west, east = lng - deg_lng, lng + deg_lng
             query_osm = f'[out:json][timeout:8];(node["power"="plant"]({south},{west},{north},{east});way["power"="plant"]({south},{west},{north},{east}););out count;'
             post_data = ('data=' + urllib.parse.quote(query_osm)).encode()
-            for ep in ['https://overpass.kumi.systems/api/interpreter', 'https://overpass-api.de/api/interpreter']:
-                try:
-                    req = urllib.request.Request(ep, data=post_data, headers={
-                        'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'DCHub/1.0'
-                    })
-                    with urllib.request.urlopen(req, timeout=4) as resp:
-                        osm = _json.loads(resp.read().decode())
-                    plant_count = osm.get('elements', [{}])[0].get('tags', {}).get('total', 0)
-                    if isinstance(plant_count, str): plant_count = int(plant_count)
-                    if plant_count > 0:
-                        logger.info(f"Congestion Overpass fallback: {plant_count} power plants near {lat},{lng}")
-                        break
-                except Exception:
-                    continue
+            try:
+                req = urllib.request.Request('https://overpass.kumi.systems/api/interpreter', data=post_data, headers={
+                    'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'DCHub/1.0'
+                })
+                with urllib.request.urlopen(req, timeout=3) as resp:
+                    osm = _json.loads(resp.read().decode())
+                plant_count = osm.get('elements', [{}])[0].get('tags', {}).get('total', 0)
+                if isinstance(plant_count, str): plant_count = int(plant_count)
+                if plant_count > 0:
+                    logger.info(f"Congestion Overpass fallback: {plant_count} power plants near {lat},{lng}")
+            except Exception:
+                pass
         except Exception as e:
             logger.warning(f"Congestion power plants Overpass fallback failed: {e}")
 
