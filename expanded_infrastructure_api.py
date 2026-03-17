@@ -495,49 +495,120 @@ def get_hifld_substations():
 
 @expanded_infra_bp.route('/api/v2/infrastructure/hifld/transmission', methods=['GET'])
 def get_hifld_transmission():
-    lat = request.args.get('lat')
-    lng = request.args.get('lng')
+    """Query transmission lines from Neon PostgreSQL via nearby substations."""
+    lat = request.args.get('lat', type=float)
+    lng = request.args.get('lng', type=float)
     radius = request.args.get('radius', 30, type=float)
     min_voltage = request.args.get('min_voltage', 69, type=int)
-    
-    params = {
-        'where': f'VOLTAGE>={min_voltage}',
-        'outFields': 'VOLTAGE,OWNER,STATUS,TYPE',
-        'resultRecordCount': '500',
-        'f': 'json',
-        'inSR': '4326',
-        'outSR': '4326'
-    }
-    
-    if lat and lng:
-        bbox = bbox_from_params(lat, lng, radius)
-        params['geometry'] = bbox
-        params['geometryType'] = 'esriGeometryEnvelope'
-        params['spatialRel'] = 'esriSpatialRelIntersects'
-    
-    url = f"{HIFLD_BASE}/Electric_Power_Transmission_Lines/FeatureServer/0"
-    result = query_arcgis(url, params)
-    
-    lines = []
-    for f in result.get('features', []):
-        attr = f.get('attributes', {})
-        geom = f.get('geometry', {})
-        lines.append({
-            'voltage_kv': attr.get('VOLTAGE'),
-            'owner': attr.get('OWNER'),
-            'status': attr.get('STATUS'),
-            'type': attr.get('TYPE'),
-            'paths': geom.get('paths', []),
-            'source': 'HIFLD'
+    min_kv = request.args.get('min_kv', min_voltage, type=int)
+    state = request.args.get('state')
+    market = request.args.get('market')
+    limit = min(request.args.get('limit', 200, type=int), 1000)
+
+    try:
+        from db_utils import get_db
+        conn = get_db()
+        c = conn.cursor()
+
+        conditions = []
+        params = []
+
+        if min_kv:
+            conditions.append('t.voltage_kv >= %s')
+            params.append(min_kv)
+        if state:
+            conditions.append('(s1.state = %s OR s2.state = %s)')
+            params.extend([state.upper(), state.upper()])
+        if market:
+            conditions.append('t.market ILIKE %s')
+            params.append(f'%{market}%')
+
+        if lat and lng:
+            # Find transmission lines connected to substations near the point
+            lat_range = radius / 69.0
+            import math
+            lng_range = radius / (69.0 * max(0.1, abs(math.cos(math.radians(lat)))))
+
+            query = f"""
+                SELECT DISTINCT ON (t.id)
+                    t.id, t.owner, t.voltage_kv, t.volt_class, t.sub_1, t.sub_2, t.status, t.market,
+                    s1.lat as sub1_lat, s1.lng as sub1_lng, s1.name as sub1_name,
+                    s2.lat as sub2_lat, s2.lng as sub2_lng, s2.name as sub2_name,
+                    LEAST(
+                        ROUND((3959 * acos(LEAST(1.0, cos(radians(%s)) * cos(radians(s1.lat)) * cos(radians(s1.lng) - radians(%s)) + sin(radians(%s)) * sin(radians(s1.lat)))))::numeric, 2),
+                        ROUND((3959 * acos(LEAST(1.0, cos(radians(%s)) * cos(radians(s2.lat)) * cos(radians(s2.lng) - radians(%s)) + sin(radians(%s)) * sin(radians(s2.lat)))))::numeric, 2)
+                    ) as distance_miles
+                FROM discovered_transmission_lines t
+                LEFT JOIN substations s1 ON LOWER(s1.name) LIKE LOWER(t.sub_1 || '%%')
+                LEFT JOIN substations s2 ON LOWER(s2.name) LIKE LOWER(t.sub_2 || '%%')
+                WHERE (s1.lat BETWEEN %s AND %s OR s2.lat BETWEEN %s AND %s)
+                  AND (s1.lng BETWEEN %s AND %s OR s2.lng BETWEEN %s AND %s)
+                  {'AND ' + ' AND '.join(conditions) if conditions else ''}
+                ORDER BY t.id, distance_miles
+                LIMIT %s
+            """
+            params_full = [lat, lng, lat, lat, lng, lat,
+                          lat - lat_range, lat + lat_range, lat - lat_range, lat + lat_range,
+                          lng - lng_range, lng + lng_range, lng - lng_range, lng + lng_range
+                          ] + params + [limit]
+        else:
+            # No location - filter by market or state
+            where = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
+            query = f"""
+                SELECT t.id, t.owner, t.voltage_kv, t.volt_class, t.sub_1, t.sub_2, t.status, t.market,
+                       NULL as sub1_lat, NULL as sub1_lng, t.sub_1 as sub1_name,
+                       NULL as sub2_lat, NULL as sub2_lng, t.sub_2 as sub2_name,
+                       NULL as distance_miles
+                FROM discovered_transmission_lines t
+                {where}
+                ORDER BY t.voltage_kv DESC NULLS LAST
+                LIMIT %s
+            """
+            params_full = params + [limit]
+
+        c.execute(query, params_full)
+        cols = [desc[0] for desc in c.description]
+        rows = c.fetchall()
+
+        lines = []
+        for row in rows:
+            r = dict(zip(cols, row))
+            line = {
+                'id': r.get('id'),
+                'voltage_kv': r.get('voltage_kv'),
+                'volt_class': r.get('volt_class'),
+                'owner': r.get('owner'),
+                'status': r.get('status'),
+                'market': r.get('market'),
+                'sub_1': r.get('sub1_name') or r.get('sub_1'),
+                'sub_2': r.get('sub2_name') or r.get('sub_2'),
+                'distance_miles': float(r['distance_miles']) if r.get('distance_miles') is not None else None,
+                'source': 'HIFLD/Neon'
+            }
+            # Include substation coordinates for rendering
+            if r.get('sub1_lat') and r.get('sub2_lat'):
+                line['paths'] = [[[r['sub1_lng'], r['sub1_lat']], [r['sub2_lng'], r['sub2_lat']]]]
+            elif r.get('sub1_lat'):
+                line['lat'] = r['sub1_lat']
+                line['lng'] = r['sub1_lng']
+            lines.append(line)
+
+        return jsonify({
+            'success': True,
+            'count': len(lines),
+            'total_available': '2,821,162 in Neon',
+            'source': 'HIFLD/DHS (Neon PostgreSQL)',
+            'transmission_lines': lines
         })
-    
-    return jsonify({
-        'success': True,
-        'count': len(lines),
-        'total_available': '300,000+ miles',
-        'source': 'HIFLD/DHS',
-        'transmission_lines': lines
-    })
+    except Exception as e:
+        import traceback
+        print(f"HIFLD transmission Neon error: {traceback.format_exc()}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'count': 0,
+            'transmission_lines': []
+        }), 500
 
 
 @expanded_infra_bp.route('/api/v2/infrastructure/hifld/gas-pipelines', methods=['GET'])
