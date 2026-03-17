@@ -1536,7 +1536,14 @@ def register_site_planner_routes(app):
             
             elapsed = round(time.time() - start_time, 2)
             
-            return jsonify({
+            def _clean(obj):
+                if isinstance(obj, dict):
+                    return {(str(k) if k is None else k): _clean(v) for k, v in obj.items()}
+                if isinstance(obj, list):
+                    return [_clean(i) for i in obj]
+                return obj
+            
+            return jsonify(_clean({
                 'success': True,
                 'analysis': {
                     'location': {
