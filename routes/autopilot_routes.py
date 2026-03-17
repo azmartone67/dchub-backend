@@ -28,6 +28,21 @@ _get_db = None
 _discovery_engine = None
 _autopilot_scheduler = None
 _AUTOPILOT_AVAILABLE = False
+
+def _check_tier(required_tier):
+    """Guard helper."""
+    api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
+    if not api_key:
+        return jsonify({'error':'unauthorized','message':'API key required','upgrade':'https://dchub.cloud/pricing'}), 401
+    if _require_plan is not None:
+        try:
+            result = _require_plan(required_tier)(lambda: 'ok')()
+            if result != 'ok': return result, None
+        except Exception as e:
+            if any(x in str(e).lower() for x in ('401','403','unauthorized','forbidden','plan')):
+                return jsonify({'error':'forbidden','message':f'{required_tier.title()} plan required','upgrade':'https://dchub.cloud/pricing'}), 403
+    return None, None
+
 _PIPELINE_DATA = []
 
 
@@ -296,12 +311,8 @@ def autopilot_status():
 @autopilot_bp.route('/api/autopilot/stats')
 def autopilot_stats():
     """Get auto-discovery statistics"""
-    try:
-        if _require_plan:
-            check = _require_plan('enterprise')(lambda: None)
-            # Will raise/return 403 if not enterprise
-    except:
-        pass
+    denied, status = _check_tier('enterprise')
+    if denied is not None: return denied, status
     if not _discovery_engine:
         return jsonify({'error': 'Auto-pilot not initialized'}), 503
     return jsonify(_discovery_engine.get_stats())
@@ -310,6 +321,8 @@ def autopilot_stats():
 @autopilot_bp.route('/api/autopilot/pending')
 def autopilot_pending():
     """Get pending auto-discovered items"""
+    denied, status = _check_tier('enterprise')
+    if denied is not None: return denied, status
     if not _discovery_engine:
         return jsonify({'error': 'Auto-pilot not initialized'}), 503
     return jsonify({
@@ -330,6 +343,8 @@ def autopilot_approve(item_type, item_id):
 @autopilot_bp.route('/api/autopilot/config', methods=['GET', 'POST'])
 def autopilot_config():
     """Get or update auto-pilot configuration"""
+    denied, status = _check_tier('enterprise')
+    if denied is not None: return denied, status
     if request.method == 'POST':
         data = request.get_json()
         return jsonify({'status': 'updated', 'config': data})
@@ -393,6 +408,8 @@ def deep_learning_run():
 @autopilot_bp.route('/api/autopilot/transactions')
 def autopilot_detected_transactions():
     """Return AI-detected transactions with field aliases for frontend compatibility"""
+    denied, status = _check_tier('pro')
+    if denied is not None: return denied, status
     conn = None
     try:
         conn = _get_db()

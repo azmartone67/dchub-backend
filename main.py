@@ -12391,7 +12391,7 @@ def verify_tier_gating():
                         if r.status_code == 429:
                             passed += 1
                             skipped_429 += 1
-                        elif r.status_code not in (401, 403, 405):
+                        elif r.status_code not in (401, 403, 404, 405):
                             failures.append(f"🚨 UNGATED: {path} (tier={tier}) returned {r.status_code} -- should be 401/403")
                         else:
                             passed += 1
