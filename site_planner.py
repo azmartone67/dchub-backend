@@ -574,53 +574,7 @@ def estimate_congestion(lat, lng, radius_miles=15):
     plant_count = plant_result.get('plant_count', 0) if plant_result else 0
     total_gen_mw = plant_result.get('total_mw', 0) if plant_result else 0
     
-    # Overpass fallback for substations if local DB empty
-    if sub_count == 0:
-        try:
-            import urllib.request, urllib.parse, json as _json
-            south, north = lat - deg_lat, lat + deg_lat
-            west, east = lng - deg_lng, lng + deg_lng
-            query_osm = f'[out:json][timeout:3];(node["power"="substation"]({south},{west},{north},{east});way["power"="substation"]({south},{west},{north},{east}););out count;'
-            post_data = ('data=' + urllib.parse.quote(query_osm)).encode()
-            try:
-                req = urllib.request.Request('https://overpass.kumi.systems/api/interpreter', data=post_data, headers={
-                    'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'DCHub/1.0'
-                })
-                with urllib.request.urlopen(req, timeout=3) as resp:
-                    osm = _json.loads(resp.read().decode())
-                sub_count = osm.get('elements', [{}])[0].get('tags', {}).get('total', 0)
-                if isinstance(sub_count, str): sub_count = int(sub_count)
-                if sub_count > 0:
-                    logger.info(f"Congestion Overpass fallback: {sub_count} substations near {lat},{lng}")
-            except Exception:
-                pass
-        except Exception as e:
-            logger.warning(f"Congestion Overpass fallback failed: {e}")
-
-    # Overpass fallback for power plants if local DB empty
-    if plant_count == 0:
-        try:
-            import urllib.request, urllib.parse, json as _json
-            south, north = lat - deg_lat, lat + deg_lat
-            west, east = lng - deg_lng, lng + deg_lng
-            query_osm = f'[out:json][timeout:3];(node["power"="plant"]({south},{west},{north},{east});way["power"="plant"]({south},{west},{north},{east}););out count;'
-            post_data = ('data=' + urllib.parse.quote(query_osm)).encode()
-            try:
-                req = urllib.request.Request('https://overpass.kumi.systems/api/interpreter', data=post_data, headers={
-                    'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'DCHub/1.0'
-                })
-                with urllib.request.urlopen(req, timeout=3) as resp:
-                    osm = _json.loads(resp.read().decode())
-                plant_count = osm.get('elements', [{}])[0].get('tags', {}).get('total', 0)
-                if isinstance(plant_count, str): plant_count = int(plant_count)
-                if plant_count > 0:
-                    logger.info(f"Congestion Overpass fallback: {plant_count} power plants near {lat},{lng}")
-            except Exception:
-                pass
-        except Exception as e:
-            logger.warning(f"Congestion power plants Overpass fallback failed: {e}")
-
-    # Density scoring
+    # Density scoring (using local DB data only — no external API calls for speed)
     density_score = min(100, (sub_count * 3) + (plant_count * 2))
     
     if density_score > 60:
