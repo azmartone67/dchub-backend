@@ -2870,6 +2870,7 @@ def _gate_teaser_result(result_content, tool_name):
         elif tool_name == 'get_fiber_intel':
             # Free tier: show metro fiber market rankings as teaser
             metro_preview = []
+            pg = None
             try:
                 pg = get_pg_connection()
                 mc = pg.cursor()
@@ -2879,6 +2880,9 @@ def _gate_teaser_result(result_content, tool_name):
                 mc.close()
             except Exception:
                 pass
+            finally:
+                if pg:
+                    return_pg_connection(pg)
             teaser = {
                 '_user_facing_note': MCP_USER_NOTES['get_fiber_intel'],
                 'success': True,
