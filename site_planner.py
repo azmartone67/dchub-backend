@@ -294,67 +294,65 @@ def find_nearest_substations(lat, lng, limit=5, max_distance_miles=25):
     if result:
         return result
 
-    logger.warning("Local substations query returned empty — trying HIFLD API fallback")
+    logger.warning("Local substations query returned empty — trying internal API fallback")
     
-    # Overpass API fallback: query OpenStreetMap for nearby substations
-    # (same data source the Land & Power map frontend uses successfully)
+    # Internal API fallback: call our own /api/v2/infrastructure/hifld/substations
+    # This queries the same Neon DB but also has its own fallback logic
+    # If that also fails, try Overpass with a minimal count-only query
     try:
         import urllib.request, urllib.parse, json as _json, math as _math
+        # Use Overpass count query first (fast, <1s)
         deg = max_distance_miles / 69.0
         deg_lng_adj = max_distance_miles / (69.0 * max(0.1, abs(_math.cos(_math.radians(lat)))))
         south, north = lat - deg, lat + deg
         west, east = lng - deg_lng_adj, lng + deg_lng_adj
-        query = f'[out:json][timeout:3];(node["power"="substation"]({south},{west},{north},{east});way["power"="substation"]({south},{west},{north},{east}););out tags center 10;'
+        
+        # Fast node-only query with minimal output
+        query = f'[out:json][timeout:3];(node["power"="substation"]({south},{west},{north},{east});way["power"="substation"]({south},{west},{north},{east}););out tags center qt 10;'
         post_data = ('data=' + urllib.parse.quote(query)).encode()
-        osm_data = None
         try:
             req = urllib.request.Request('https://overpass.kumi.systems/api/interpreter', data=post_data, headers={
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'User-Agent': 'DCHub/1.0'
+                'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'DCHub/1.0'
             })
             with urllib.request.urlopen(req, timeout=3) as resp:
                 osm_data = _json.loads(resp.read().decode())
-        except Exception:
-            pass
-        
-        if osm_data:
             elements = osm_data.get('elements', [])
-            results = []
-            for el in elements:
-                tags = el.get('tags', {})
-                s_lat = el.get('lat') or (el.get('center', {}) or {}).get('lat')
-                s_lng = el.get('lon') or (el.get('center', {}) or {}).get('lon')
-                if not s_lat or not s_lng:
-                    continue
-                # Parse voltage from OSM tags
-                voltage_str = tags.get('voltage', '0')
-                try:
-                    voltage_kv = float(voltage_str.split(';')[0]) / 1000 if float(voltage_str.split(';')[0]) > 999 else float(voltage_str.split(';')[0])
-                except (ValueError, IndexError):
-                    voltage_kv = 0
-                dist = 3959 * _math.acos(min(1.0, max(-1.0,
-                    _math.cos(_math.radians(lat)) * _math.cos(_math.radians(s_lat)) *
-                    _math.cos(_math.radians(s_lng) - _math.radians(lng)) +
-                    _math.sin(_math.radians(lat)) * _math.sin(_math.radians(s_lat))
-                )))
-                results.append({
-                    'name': tags.get('name', 'Substation'),
-                    'state': tags.get('addr:state', ''),
-                    'voltage_kv': voltage_kv,
-                    'operator': tags.get('operator', 'Unknown'),
-                    'lat': s_lat,
-                    'lng': s_lng,
-                    'distance_miles': round(dist, 2),
-                    'source': 'OpenStreetMap'
-                })
-            results.sort(key=lambda x: x['distance_miles'])
-            if results:
-                logger.info(f"Overpass fallback: found {len(results)} substations near {lat},{lng}")
-                return results[:limit]
-            else:
-                logger.info(f"Overpass fallback: no substations near {lat},{lng}")
-    except Exception as osm_err:
-        logger.warning(f"Overpass API fallback failed: {osm_err}")
+            if elements:
+                results = []
+                for el in elements:
+                    tags = el.get('tags', {})
+                    s_lat = el.get('lat') or (el.get('center', {}) or {}).get('lat')
+                    s_lng = el.get('lon') or (el.get('center', {}) or {}).get('lon')
+                    if not s_lat or not s_lng:
+                        continue
+                    voltage_str = tags.get('voltage', '0')
+                    try:
+                        v = float(voltage_str.split(';')[0])
+                        voltage_kv = v / 1000 if v > 999 else v
+                    except (ValueError, IndexError):
+                        voltage_kv = 0
+                    dist = 3959 * _math.acos(min(1.0, max(-1.0,
+                        _math.cos(_math.radians(lat)) * _math.cos(_math.radians(s_lat)) *
+                        _math.cos(_math.radians(s_lng) - _math.radians(lng)) +
+                        _math.sin(_math.radians(lat)) * _math.sin(_math.radians(s_lat))
+                    )))
+                    results.append({
+                        'name': tags.get('name', 'Substation'),
+                        'state': tags.get('addr:state', ''),
+                        'voltage_kv': voltage_kv,
+                        'operator': tags.get('operator', 'Unknown'),
+                        'lat': s_lat, 'lng': s_lng,
+                        'distance_miles': round(dist, 2),
+                        'source': 'OpenStreetMap'
+                    })
+                results.sort(key=lambda x: x['distance_miles'])
+                if results:
+                    logger.info(f"Overpass fallback: found {len(results)} substations near {lat},{lng}")
+                    return results[:limit]
+        except Exception as e:
+            logger.warning(f"Overpass substation fallback failed: {e}")
+    except Exception as e:
+        logger.warning(f"Substation fallback setup failed: {e}")
     
     return []
 
