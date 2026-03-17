@@ -186,19 +186,71 @@ def _run_energy_discovery():
 
 
 def _run_knowledge_sync():
-    """Run knowledge/evolution engine sync once."""
+    """Run knowledge/evolution engine sync + AI growth engines.
+    This is the 'tell AI about us' job — runs outreach, promotion, and MCP registration.
+    """
+    # STEP 1: Evolution engine (trend analysis, insights)
     try:
         from evolution_engine import EvolutionEngine
         ee = EvolutionEngine()
         ee.run_evolution_cycle()
+        logger.info("   [1/4] Evolution engine: completed")
     except (ImportError, AttributeError):
         try:
             from evolution_engine import run_evolution
             run_evolution()
+            logger.info("   [1/4] Evolution engine: completed (fallback)")
         except (ImportError, AttributeError):
-            logger.warning("Knowledge/evolution engine not available or no run method found")
+            logger.warning("   [1/4] Evolution engine: not available")
     except Exception as e:
-        logger.error(f"Knowledge sync error: {e}")
+        logger.error(f"   [1/4] Evolution engine error: {e}")
+
+    if _stop_event.is_set():
+        return
+
+    # STEP 2: AI Outreach — tell ChatGPT, Gemini, Perplexity, Claude about DC Hub
+    try:
+        from ai_outreach_agent import run_outreach_cycle
+        result = run_outreach_cycle()
+        logger.info(f"   [2/4] AI Outreach: completed — {result if result else 'cycle done'}")
+    except ImportError:
+        logger.warning("   [2/4] AI Outreach: not available (no ai_outreach_agent)")
+    except Exception as e:
+        logger.warning(f"   [2/4] AI Outreach error: {e}")
+
+    if _stop_event.is_set():
+        return
+
+    # STEP 3: Promotion engine — submit to AI directories (GPTStore, Futurepedia, Toolify, etc)
+    try:
+        from enhanced_promotion_engine import run_cycle as run_promotion
+        result = run_promotion()
+        logger.info(f"   [3/4] Promotion engine: completed — {result if result else 'cycle done'}")
+    except ImportError:
+        logger.warning("   [3/4] Promotion engine: not available")
+    except Exception as e:
+        logger.warning(f"   [3/4] Promotion error: {e}")
+
+    if _stop_event.is_set():
+        return
+
+    # STEP 4: MCP Auto-Register — keep DC Hub listed on Smithery, Glama, PulseMCP, etc
+    try:
+        from mcp_auto_register import MCPAutoRegister
+        mar = MCPAutoRegister()
+        mar.run_cycle()
+        logger.info("   [4/4] MCP Auto-Register: completed")
+    except ImportError:
+        try:
+            from mcp_auto_register import run_cycle as run_mcp_reg
+            run_mcp_reg()
+            logger.info("   [4/4] MCP Auto-Register: completed (fallback)")
+        except (ImportError, AttributeError):
+            logger.warning("   [4/4] MCP Auto-Register: not available")
+    except Exception as e:
+        logger.warning(f"   [4/4] MCP Auto-Register error: {e}")
+
+    logger.info("   === KNOWLEDGE + GROWTH ENGINES COMPLETE ===")
 
 
 # Map names to functions (includes manual-only crawlers)
