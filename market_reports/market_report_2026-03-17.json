@@ -1,6 +1,6 @@
 {
   "report_date": "2026-03-17",
-  "generated_at": "2026-03-17T15:04:25.371748",
+  "generated_at": "2026-03-17T17:26:00.538156",
   "summary": {
     "total_facilities": 11799,
     "total_providers": 3970,
@@ -89,54 +89,54 @@
   ],
   "recent_news": [
     {
-      "title": "nexfibre CEO: Netomnia acquisition boosts UK fibre consolidation and challenge to Openreach",
-      "source": "Capacity Media",
-      "date": "2026-03-17T11:47:01"
-    },
-    {
-      "title": "Anthropic scrambles to avoid \u2018catastrophic AI misuse\u2019 with weapons expert hire",
-      "source": "Capacity Media",
-      "date": "2026-03-17T11:41:34"
-    },
-    {
-      "title": "Why Sandisk (SNDK) Is Up 19.5% After Multi\u2011Year AI Data Center NAND Supply Deals",
-      "source": "simplywall.st",
-      "date": "2026-03-17T11:31:54"
-    },
-    {
-      "title": "Liquid Cooling Pump Market Size | Industry Report, 2033",
-      "source": "Grand View Research",
-      "date": "2026-03-17T11:25:42"
-    },
-    {
-      "title": "Nvidia, Broadcom form group to standardize optical interconnects for next-gen AI clusters",
+      "title": "UK gov\u2019t to invest \u00a34.5m in Sunrise supercomputer to accelerate advancements in fusion energy",
       "source": "Data Center Dynamics",
-      "date": "2026-03-17T11:25:11"
+      "date": "2026-03-17T15:47:36"
     },
     {
-      "title": "Nebius Plans to Raise $3.75 Billion in Debt After Meta Deal",
-      "source": "Bloomberg Tech",
-      "date": "2026-03-17T11:23:00"
-    },
-    {
-      "title": "Joliet City Council moves vote on data center to Thursday",
-      "source": "Shaw Local",
-      "date": "2026-03-17T11:01:00"
-    },
-    {
-      "title": "Schneider Electric, Nvidia extend data centre partnership to scale AI Factories",
-      "source": "Capacity Media",
-      "date": "2026-03-17T10:59:30"
-    },
-    {
-      "title": "Nscale acquires 8GW Monarch Compute Campus, Microsoft signs on for 1.35GW of compute",
+      "title": "Virgin Media O2 deploys pre-assembled mobile mast in Kent, UK",
       "source": "Data Center Dynamics",
-      "date": "2026-03-17T10:53:57"
+      "date": "2026-03-17T15:37:02"
     },
     {
-      "title": "Data Center Developer T5 Seeks $2 Billion Equity for New Sites",
-      "source": "Bloomberg Tech",
-      "date": "2026-03-17T10:46:15"
+      "title": "Google confirmed as company behind Van Buren Township data center plan",
+      "source": "CBS News",
+      "date": "2026-03-17T15:17:48"
+    },
+    {
+      "title": "Loudoun County will fight to keep Amazon data center off just-sold GW campus in Ashburn",
+      "source": "WTOP",
+      "date": "2026-03-17T15:09:22"
+    },
+    {
+      "title": "NVIDIA introduces Vera CPU for AI infrastructure",
+      "source": "Engineering.com",
+      "date": "2026-03-17T15:08:32"
+    },
+    {
+      "title": "Microsoft claims to be first hyperscaler to \"power on\" Nvidia Vera Rubin NVL72 system",
+      "source": "Data Center Dynamics",
+      "date": "2026-03-17T15:06:54"
+    },
+    {
+      "title": "Spectrum Deploys AI Infrastructure at the Network Edge Using NVIDIA AI Grid",
+      "source": "Charter Communications",
+      "date": "2026-03-17T15:04:01"
+    },
+    {
+      "title": "164 acre data center could come to Sioux Falls, South Dakota",
+      "source": "Data Center Dynamics",
+      "date": "2026-03-17T15:00:29"
+    },
+    {
+      "title": "As data centers go off-grid, utilities face new cost and planning risks",
+      "source": "Utility Dive",
+      "date": "2026-03-17T15:00:00"
+    },
+    {
+      "title": "Ohioans want to stop data centers with a constitutional amendment",
+      "source": "Cincinnati Enquirer",
+      "date": "2026-03-17T14:59:31"
     }
   ],
   "data_sources": [
