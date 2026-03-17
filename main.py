@@ -9386,6 +9386,16 @@ def trigger_sync():
 # =============================================================================
 # DEFERRED SERVERFARM FACILITY SEEDING
 # =============================================================================
+
+@app.route("/api/admin/load-substations", methods=["POST"])
+def admin_load_substations():
+    """Bulk load HIFLD substations into Neon — one-time admin trigger"""
+    try:
+        from load_substations import load
+        count = load()
+        return jsonify({"success": True, "loaded": count})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 def seed_serverfarm_facilities():
     """Seed missing ServerFarm facilities with retry logic for database locks."""
     import time
