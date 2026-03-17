@@ -3140,7 +3140,7 @@ def _gate_facility_data(data, tool_name):
                 "price": "$49/mo",
             },
         }
-        if sample_full:
+        if sample_full and total_count > MCP_FREE_FACILITY_LIMIT:
             data['_sample_full_result'] = {
                 "_note": "This is what every result looks like on the Developer plan",
                 **sample_full
