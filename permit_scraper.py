@@ -1,43 +1,478 @@
-import urllib.request, json, base64, os
+"""
+permit_scraper.py  –  DC Hub Phase 1 Permit Data Enrichment
+============================================================
+Sources:
+  - BuildingPermit.io  (primary: structured API, ~75% US county coverage)
+  - Municode / OpenGov portal fallback (secondary: HTML scrape by jurisdiction)
 
-token = os.environ["GITHUB_TOKEN"]
-repo = "azmartone67/dchub-backend"
-path = "permit_scraper.py"
-content_b64 = """IiIiCnBlcm1pdF9zY3JhcGVyLnB5ICDigJMgIERDIEh1YiBQaGFzZSAxIFBlcm1pdCBEYXRhIEVucmljaG1lbnQKPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09ClNvdXJjZXM6CiAgLSBCdWlsZGluZ1Blcm1pdC5pbyAgKHByaW1hcnk6IHN0cnVjdHVyZWQgQVBJLCB+NzUlIFVTIGNvdW50eSBjb3ZlcmFnZSkKICAtIE11bmljb2RlIC8gT3BlbkdvdiBwb3J0YWwgZmFsbGJhY2sgKHNlY29uZGFyeTogSFRNTCBzY3JhcGUgYnkganVyaXNkaWN0aW9uKQoKTWF0Y2hpbmcgbG9naWM6CiAgLSBNYXRjaCBieSBhZGRyZXNzIOKGkiBmYWNpbGl0eV9pZCAgKGV4YWN0ICsgZnV6enkgZmFsbGJhY2spCiAgLSBDb25maWRlbmNlIHNjb3Jpbmc6IDAuMOKAkzEuMAogIC0gTmV2ZXIgb3ZlcndyaXRlcyBhIGhpZ2hlci1jb25maWRlbmNlIGV4aXN0aW5nIHJlY29yZAoKU2NoZWR1bGVyOiAgcnVucyB3ZWVrbHkgKFN1bmRheSAwMjowMCBVVEMpCkRlcGxveTogICAgIH4vd29ya3NwYWNlL3NjcmlwdHMvcGVybWl0X3NjcmFwZXIucHkgIG9uIFJhaWx3YXkKIiIiCgppbXBvcnQgb3MKaW1wb3J0IHJlCmltcG9ydCB0aW1lCmltcG9ydCBqc29uCmltcG9ydCBsb2dnaW5nCmltcG9ydCBhc3luY2lvCmZyb20gZGF0ZXRpbWUgaW1wb3J0IGRhdGUsIGRhdGV0aW1lLCB0aW1lZGVsdGEKZnJvbSB0eXBpbmcgaW1wb3J0IE9wdGlvbmFsCgppbXBvcnQgaHR0cHgKaW1wb3J0IHBzeWNvcGcyCmltcG9ydCBwc3ljb3BnMi5leHRyYXMKZnJvbSByYXBpZGZ1enogaW1wb3J0IGZ1enoKCmxvZ2dpbmcuYmFzaWNDb25maWcoCiAgICBsZXZlbD1sb2dnaW5nLklORk8sCiAgICBmb3JtYXQ9IiUoYXNjdGltZSlzIFtwZXJtaXRfc2NyYXBlcl0gJShsZXZlbG5hbWUpcyAlKG1lc3NhZ2UpcyIsCikKbG9nID0gbG9nZ2luZy5nZXRMb2dnZXIoInBlcm1pdF9zY3JhcGVyIikKCiMg4pSA4pSAIENvbmZpZyDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilIAKREFUQUJBU0VfVVJMICAgICAgID0gb3MuZW52aXJvblsiREFUQUJBU0VfVVJMIl0KQlVJTERJTkdfUEVSTUlUX0tFWSA9IG9zLmVudmlyb24uZ2V0KCJCVUlMRElOR19QRVJNSVRfQVBJX0tFWSIsICIiKSAgICMgQnVpbGRpbmdQZXJtaXQuaW8KQkFUQ0hfU0laRSAgICAgICAgID0gaW50KG9zLmVudmlyb24uZ2V0KCJQRVJNSVRfQkFUQ0hfU0laRSIsICIxMDAiKSkKUkVRVUVTVF9ERUxBWSAgICAgID0gZmxvYXQob3MuZW52aXJvbi5nZXQoIlBFUk1JVF9SRVFVRVNUX0RFTEFZIiwgIjEuMiIpKSAgIyBzZWNvbmRzIGJldHdlZW4gQVBJIGNhbGxzCk1BWF9GQUNJTElUSUVTICAgICA9IGludChvcy5lbnZpcm9uLmdldCgiUEVSTUlUX01BWF9GQUNJTElUSUVTIiwgIjUwMCIpKSAgICMgcGVyIHJ1biBjYXAKCiMgQ29uZmlkZW5jZSB3ZWlnaHRzIHBlciBzb3VyY2UKQ09ORklERU5DRSA9IHsKICAgICJidWlsZGluZ3Blcm1pdF9leGFjdCI6ICAgMC44NSwKICAgICJidWlsZGluZ3Blcm1pdF9mdXp6eSI6ICAgMC42NSwKICAgICJjb3VudHlfcG9ydGFsX2V4YWN0IjogICAgMC44MCwKICAgICJjb3VudHlfcG9ydGFsX2Z1enp5IjogICAgMC42MCwKfQoKIyBQZXJtaXQgdHlwZXMgd2UgY2FyZSBhYm91dCAoZGF0YSBjZW50ZXJzIGFyZSBpbmR1c3RyaWFsL2NvbW1lcmNpYWwpClJFTEVWQU5UX1BFUk1JVF9UWVBFUyA9IHsKICAgICJidWlsZGluZyIsICJjb21tZXJjaWFsIiwgImluZHVzdHJpYWwiLCAiZWxlY3RyaWNhbCIsCiAgICAibWVjaGFuaWNhbCIsICJjbyIsICJjZXJ0aWZpY2F0ZV9vZl9vY2N1cGFuY3kiLCAiem9uaW5nIiwKICAgICJjb25zdHJ1Y3Rpb24iLCAibmV3X2NvbnN0cnVjdGlvbiIsCn0KCiMgS2V5d29yZHMgdGhhdCBjb25maXJtIGEgZGF0YSBjZW50ZXIgcGVybWl0CkRDX0tFWVdPUkRTID0gWwogICAgImRhdGEgY2VudGVyIiwgImRhdGFjZW50ZXIiLCAiY29sb2NhdGlvbiIsICJjb2xvIiwKICAgICJzZXJ2ZXIiLCAiY29tcHV0aW5nIGZhY2lsaXR5IiwgIm5ldHdvcmsgb3BlcmF0aW9ucyIsCiAgICAiY3JpdGljYWwgZmFjaWxpdHkiLCAicmFpc2VkIGZsb29yIiwKXQoKCiMg4pSA4pSAIERhdGFiYXNlIGhlbHBlcnMg4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSACgpkZWYgZ2V0X2Nvbm4oKToKICAgIHJldHVybiBwc3ljb3BnMi5jb25uZWN0KERBVEFCQVNFX1VSTCkKCgpkZWYgZ2V0X2ZhY2lsaXRpZXNfbmVlZGluZ19wZXJtaXRzKGNvbm4sIGxpbWl0OiBpbnQpIC0+IGxpc3RbZGljdF06CiAgICAiIiIKICAgIFJldHVybiBmYWNpbGl0aWVzIG1pc3NpbmcgcGVybWl0X2RhdGUsIHByaW9yaXRpc2luZzoKICAgICAgMS4gVVMgZmFjaWxpdGllcyAoY291bnRyeSA9ICdVbml0ZWQgU3RhdGVzJykKICAgICAgMi4gVGhvc2Ugd2l0aCBhIGtub3duIGFkZHJlc3MvY2l0eS9zdGF0ZQogICAgICAzLiBPcGVyYXRpb25hbCBmYWNpbGl0aWVzIGZpcnN0CiAgICAiIiIKICAgIHdpdGggY29ubi5jdXJzb3IoY3Vyc29yX2ZhY3Rvcnk9cHN5Y29wZzIuZXh0cmFzLlJlYWxEaWN0Q3Vyc29yKSBhcyBjdXI6CiAgICAgICAgY3VyLmV4ZWN1dGUoIiIiCiAgICAgICAgICAgIFNFTEVDVAogICAgICAgICAgICAgICAgaWQsIG5hbWUsIGFkZHJlc3MsIGNpdHksIHN0YXRlX3Byb3ZpbmNlLCBwb3N0YWxfY29kZSwKICAgICAgICAgICAgICAgIGNvdW50cnksIG9wZXJhdGlvbmFsX3llYXIsIHBlcm1pdF9jb25maWRlbmNlCiAgICAgICAgICAgIEZST00gZmFjaWxpdGllcwogICAgICAgICAgICBXSEVSRQogICAgICAgICAgICAgICAgKGNvdW50cnkgPSAnVW5pdGVkIFN0YXRlcycgT1IgY291bnRyeSBJUyBOVUxMKQogICAgICAgICAgICAgICAgQU5EIHBlcm1pdF9kYXRlIElTIE5VTEwKICAgICAgICAgICAgICAgIEFORCBhZGRyZXNzIElTIE5PVCBOVUxMCiAgICAgICAgICAgICAgICBBTkQgY2l0eSBJUyBOT1QgTlVMTAogICAgICAgICAgICAgICAgQU5EIHN0YXRlX3Byb3ZpbmNlIElTIE5PVCBOVUxMCiAgICAgICAgICAgIE9SREVSIEJZCiAgICAgICAgICAgICAgICBDQVNFIFdIRU4gc3RhdHVzID0gJ29wZXJhdGlvbmFsJyBUSEVOIDAgRUxTRSAxIEVORCwKICAgICAgICAgICAgICAgIHBlcm1pdF9jb25maWRlbmNlIEFTQyBOVUxMUyBGSVJTVCwKICAgICAgICAgICAgICAgIGlkIEFTQwogICAgICAgICAgICBMSU1JVCAlcwogICAgICAgICIiIiwgKGxpbWl0LCkpCiAgICAgICAgcmV0dXJuIFtkaWN0KHIpIGZvciByIGluIGN1ci5mZXRjaGFsbCgpXQoKCmRlZiB1cHNlcnRfcGVybWl0KGNvbm4sIGZhY2lsaXR5X2lkOiBzdHIsIHBlcm1pdDogZGljdCkgLT4gYm9vbDoKICAgICIiIgogICAgSW5zZXJ0IG9yIHVwZGF0ZSBhIHBlcm1pdCByZWNvcmQuCiAgICBSZXR1cm5zIFRydWUgaWYgdGhlIGZhY2lsaXR5J3MgY2Fub25pY2FsIHBlcm1pdF9kYXRlIHdhcyB1cGRhdGVkLgogICAgIiIiCiAgICB3aXRoIGNvbm4uY3Vyc29yKCkgYXMgY3VyOgogICAgICAgIGN1ci5leGVjdXRlKCIiIgogICAgICAgICAgICBJTlNFUlQgSU5UTyBmYWNpbGl0eV9wZXJtaXRzICgKICAgICAgICAgICAgICAgIGZhY2lsaXR5X2lkLCBwZXJtaXRfbnVtYmVyLCBwZXJtaXRfdHlwZSwgcGVybWl0X3N0YXR1cywKICAgICAgICAgICAgICAgIGFwcGxpZWRfZGF0ZSwgYXBwcm92ZWRfZGF0ZSwgaXNzdWVkX2RhdGUsIGZpbmFsX2RhdGUsCiAgICAgICAgICAgICAgICBqdXJpc2RpY3Rpb24sIGp1cmlzZGljdGlvbl9zdGF0ZSwKICAgICAgICAgICAgICAgIHNvdXJjZSwgc291cmNlX3VybCwgY29uZmlkZW5jZSwgcmF3X2RhdGEKICAgICAgICAgICAgKSBWQUxVRVMgKAogICAgICAgICAgICAgICAgJShmYWNpbGl0eV9pZClzLCAlKHBlcm1pdF9udW1iZXIpcywgJShwZXJtaXRfdHlwZSlzLCAlKHBlcm1pdF9zdGF0dXMpcywKICAgICAgICAgICAgICAgICUoYXBwbGllZF9kYXRlKXMsICUoYXBwcm92ZWRfZGF0ZSlzLCAlKGlzc3VlZF9kYXRlKXMsICUoZmluYWxfZGF0ZSlzLAogICAgICAgICAgICAgICAgJShqdXJpc2RpY3Rpb24pcywgJShqdXJpc2RpY3Rpb25fc3RhdGUpcywKICAgICAgICAgICAgICAgICUoc291cmNlKXMsICUoc291cmNlX3VybClzLCAlKGNvbmZpZGVuY2UpcywgJShyYXdfZGF0YSlzCiAgICAgICAgICAgICkKICAgICAgICAgICAgT04gQ09ORkxJQ1QgKGZhY2lsaXR5X2lkLCBwZXJtaXRfbnVtYmVyLCBzb3VyY2UpIERPIFVQREFURSBTRVQKICAgICAgICAgICAgICAgIHBlcm1pdF9zdGF0dXMgID0gRVhDTFVERUQucGVybWl0X3N0YXR1cywKICAgICAgICAgICAgICAgIGZpbmFsX2RhdGUgICAgID0gRVhDTFVERUQuZmluYWxfZGF0ZSwKICAgICAgICAgICAgICAgIGFwcHJvdmVkX2RhdGUgID0gRVhDTFVERUQuYXBwcm92ZWRfZGF0ZSwKICAgICAgICAgICAgICAgIGNvbmZpZGVuY2UgICAgID0gRVhDTFVERUQuY29uZmlkZW5jZSwKICAgICAgICAgICAgICAgIHJhd19kYXRhICAgICAgID0gRVhDTFVERUQucmF3X2RhdGEsCiAgICAgICAgICAgICAgICB1cGRhdGVkX2F0ICAgICA9IE5PVygpCiAgICAgICAgIiIiLCB7CiAgICAgICAgICAgICoqcGVybWl0LAogICAgICAgICAgICAiZmFjaWxpdHlfaWQiOiBmYWNpbGl0eV9pZCwKICAgICAgICAgICAgInJhd19kYXRhIjoganNvbi5kdW1wcyhwZXJtaXQuZ2V0KCJyYXdfZGF0YSIsIHt9KSksCiAgICAgICAgfSkKCiAgICAjIFByb21vdGUgdG8gY2Fub25pY2FsIGZhY2lsaXR5IGNvbHVtbnMgaWYgY29uZmlkZW5jZSBpcyBoaWdoZXIKICAgIGJlc3RfZGF0ZSA9IHBlcm1pdC5nZXQoImZpbmFsX2RhdGUiKSBvciBwZXJtaXQuZ2V0KCJhcHByb3ZlZF9kYXRlIikgb3IgcGVybWl0LmdldCgiaXNzdWVkX2RhdGUiKQogICAgaWYgbm90IGJlc3RfZGF0ZToKICAgICAgICByZXR1cm4gRmFsc2UKCiAgICB3aXRoIGNvbm4uY3Vyc29yKCkgYXMgY3VyOgogICAgICAgIGN1ci5leGVjdXRlKCIiIgogICAgICAgICAgICBVUERBVEUgZmFjaWxpdGllcyBTRVQKICAgICAgICAgICAgICAgIHBlcm1pdF9kYXRlICAgICAgICAgPSAlcywKICAgICAgICAgICAgICAgIGFwcHJvdmFsX2RhdGUgICAgICAgPSAlcywKICAgICAgICAgICAgICAgIGNvX2RhdGUgICAgICAgICAgICAgPSBDQVNFIFdIRU4gJXMgPSAnY28nIFRIRU4gJXMgRUxTRSBjb19kYXRlIEVORCwKICAgICAgICAgICAgICAgIHBlcm1pdF9zb3VyY2UgICAgICAgPSAlcywKICAgICAgICAgICAgICAgIHBlcm1pdF9jb25maWRlbmNlICAgPSAlcywKICAgICAgICAgICAgICAgIHBlcm1pdF9lbnJpY2hlZF9hdCAgPSBOT1coKSwKICAgICAgICAgICAgICAgIHJhd19wZXJtaXRfaWQgICAgICAgPSAlcwogICAgICAgICAgICBXSEVSRSBpZCA9ICVzCiAgICAgICAgICAgICAgQU5EIChwZXJtaXRfY29uZmlkZW5jZSBJUyBOVUxMIE9SIHBlcm1pdF9jb25maWRlbmNlIDwgJXMpCiAgICAgICAgIiIiLCAoCiAgICAgICAgICAgIGJlc3RfZGF0ZSwKICAgICAgICAgICAgcGVybWl0LmdldCgiYXBwcm92ZWRfZGF0ZSIpLAogICAgICAgICAgICBwZXJtaXQuZ2V0KCJwZXJtaXRfdHlwZSIsICIiKSwKICAgICAgICAgICAgcGVybWl0LmdldCgiZmluYWxfZGF0ZSIpLAogICAgICAgICAgICBwZXJtaXRbInNvdXJjZSJdLAogICAgICAgICAgICBwZXJtaXRbImNvbmZpZGVuY2UiXSwKICAgICAgICAgICAgcGVybWl0LmdldCgicGVybWl0X251bWJlciIpLAogICAgICAgICAgICBmYWNpbGl0eV9pZCwKICAgICAgICAgICAgcGVybWl0WyJjb25maWRlbmNlIl0sCiAgICAgICAgKSkKICAgICAgICByZXR1cm4gY3VyLnJvd2NvdW50ID4gMAoKCmRlZiBsb2dfcnVuKGNvbm4sIHN0YXRzOiBkaWN0KToKICAgIHdpdGggY29ubi5jdXJzb3IoKSBhcyBjdXI6CiAgICAgICAgY3VyLmV4ZWN1dGUoIiIiCiAgICAgICAgICAgIElOU0VSVCBJTlRPIHBlcm1pdF9zY3JhcGVfbG9nCiAgICAgICAgICAgICAgICAoc291cmNlLCBmYWNpbGl0aWVzX2F0dGVtcHRlZCwgcGVybWl0c19mb3VuZCwKICAgICAgICAgICAgICAgICBmYWNpbGl0aWVzX2VucmljaGVkLCBlcnJvcnMsIGR1cmF0aW9uX3NlY29uZHMsIG5vdGVzKQogICAgICAgICAgICBWQUxVRVMgKCUoc291cmNlKXMsICUoZmFjaWxpdGllc19hdHRlbXB0ZWQpcywgJShwZXJtaXRzX2ZvdW5kKXMsCiAgICAgICAgICAgICAgICAgICAgJShmYWNpbGl0aWVzX2VucmljaGVkKXMsICUoZXJyb3JzKXMsICUoZHVyYXRpb25fc2Vjb25kcylzLCAlKG5vdGVzKXMpCiAgICAgICAgIiIiLCBzdGF0cykKICAgIGNvbm4uY29tbWl0KCkKCgojIOKUgOKUgCBBZGRyZXNzIG5vcm1hbGlzYXRpb24g4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSACgpkZWYgbm9ybWFsaXNlX2FkZHJlc3MoYWRkcjogc3RyKSAtPiBzdHI6CiAgICBhZGRyID0gYWRkci51cHBlcigpLnN0cmlwKCkKICAgIHJlcGxhY2VtZW50cyA9IHsKICAgICAgICByIlxiU1RSRUVUXGIiOiAiU1QiLCByIlxiQVZFTlVFXGIiOiAiQVZFIiwgciJcYkJPVUxFVkFSRFxiIjogIkJMVkQiLAogICAgICAgIHIiXGJEUklWRVxiIjogIkRSIiwgIHIiXGJST0FEXGIiOiAiUkQiLCAgIHIiXGJMQU5FXGIiOiAiTE4iLAogICAgICAgIHIiXGJDT1VSVFxiIjogIkNUIiwgIHIiXGJDSVJDTEVcYiI6ICJDSVIiLCByIlxiUExBQ0VcYiI6ICJQTCIsCiAgICAgICAgciJcYk5PUlRIXGIiOiAiTiIsICAgciJcYlNPVVRIXGIiOiAiUyIsICAgIHIiXGJFQVNUXGIiOiAiRSIsCiAgICAgICAgciJcYldFU1RcYiI6ICJXIiwKICAgIH0KICAgIGZvciBwYXR0ZXJuLCByZXBsIGluIHJlcGxhY2VtZW50cy5pdGVtcygpOgogICAgICAgIGFkZHIgPSByZS5zdWIocGF0dGVybiwgcmVwbCwgYWRkcikKICAgIHJldHVybiBhZGRyCgoKZGVmIGFkZHJlc3NfbWF0Y2hfc2NvcmUoZmFjaWxpdHk6IGRpY3QsIHBlcm1pdF9hZGRyZXNzOiBzdHIpIC0+IGZsb2F0OgogICAgZmFjX2FkZHIgPSBub3JtYWxpc2VfYWRkcmVzcygKICAgICAgICBmIntmYWNpbGl0eS5nZXQoJ2FkZHJlc3MnLCcnKX0ge2ZhY2lsaXR5LmdldCgnY2l0eScsJycpfSB7ZmFjaWxpdHkuZ2V0KCdzdGF0ZV9wcm92aW5jZScsJycpfSIKICAgICkKICAgIHBlcm1pdF9hZGRyID0gbm9ybWFsaXNlX2FkZHJlc3MocGVybWl0X2FkZHJlc3MpCiAgICByZXR1cm4gZnV6ei50b2tlbl9zb3J0X3JhdGlvKGZhY19hZGRyLCBwZXJtaXRfYWRkcikgLyAxMDAuMAoKCmRlZiBpc19kY19wZXJtaXQoZGVzY3JpcHRpb246IHN0cikgLT4gYm9vbDoKICAgIGRlc2MgPSAoZGVzY3JpcHRpb24gb3IgIiIpLmxvd2VyKCkKICAgIHJldHVybiBhbnkoa3cgaW4gZGVzYyBmb3Iga3cgaW4gRENfS0VZV09SRFMpCgoKIyDilIDilIAgQnVpbGRpbmdQZXJtaXQuaW8g4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSACgphc3luYyBkZWYgcXVlcnlfYnVpbGRpbmdwZXJtaXRfaW8oCiAgICBjbGllbnQ6IGh0dHB4LkFzeW5jQ2xpZW50LAogICAgZmFjaWxpdHk6IGRpY3QsCikgLT4gbGlzdFtkaWN0XToKICAgICIiIgogICAgUXVlcnkgQnVpbGRpbmdQZXJtaXQuaW8gYWRkcmVzcy1sZXZlbCBlbmRwb2ludC4KICAgIERvY3M6IGh0dHBzOi8vYnVpbGRpbmdwZXJtaXQuaW8vYXBpLWRvY3MKICAgIEZhbGxzIGJhY2sgdG8gbGF0L2xuZyBib3VuZGluZyBib3ggaWYgYWRkcmVzcyBsb29rdXAgcmV0dXJucyBub3RoaW5nLgogICAgIiIiCiAgICBpZiBub3QgQlVJTERJTkdfUEVSTUlUX0tFWToKICAgICAgICByZXR1cm4gW10KCiAgICBoZWFkZXJzID0geyJBdXRob3JpemF0aW9uIjogZiJCZWFyZXIge0JVSUxESU5HX1BFUk1JVF9LRVl9In0KICAgIGFkZHJlc3Nfc3RyID0gKAogICAgICAgIGYie2ZhY2lsaXR5WydhZGRyZXNzJ119LCB7ZmFjaWxpdHlbJ2NpdHknXX0sICIKICAgICAgICBmIntmYWNpbGl0eVsnc3RhdGVfcHJvdmluY2UnXX0ge2ZhY2lsaXR5LmdldCgncG9zdGFsX2NvZGUnLCcnKX0iCiAgICApLnN0cmlwKCkucnN0cmlwKCIsIikKCiAgICB0cnk6CiAgICAgICAgcmVzcCA9IGF3YWl0IGNsaWVudC5nZXQoCiAgICAgICAgICAgICJodHRwczovL2FwaS5idWlsZGluZ3Blcm1pdC5pby92MS9wZXJtaXRzIiwKICAgICAgICAgICAgcGFyYW1zPXsKICAgICAgICAgICAgICAgICJhZGRyZXNzIjogYWRkcmVzc19zdHIsCiAgICAgICAgICAgICAgICAicGVybWl0X3R5cGUiOiAiYnVpbGRpbmcsY29tbWVyY2lhbCxpbmR1c3RyaWFsLGVsZWN0cmljYWwsY28iLAogICAgICAgICAgICAgICAgImxpbWl0IjogMjAsCiAgICAgICAgICAgIH0sCiAgICAgICAgICAgIGhlYWRlcnM9aGVhZGVycywKICAgICAgICAgICAgdGltZW91dD0xNS4wLAogICAgICAgICkKICAgICAgICByZXNwLnJhaXNlX2Zvcl9zdGF0dXMoKQogICAgICAgIGRhdGEgPSByZXNwLmpzb24oKQogICAgICAgIHBlcm1pdHMgPSBkYXRhLmdldCgicGVybWl0cyIpIG9yIGRhdGEuZ2V0KCJyZXN1bHRzIikgb3IgW10KICAgICAgICByZXR1cm4gcGVybWl0cwogICAgZXhjZXB0IGh0dHB4LkhUVFBTdGF0dXNFcnJvciBhcyBlOgogICAgICAgIGlmIGUucmVzcG9uc2Uuc3RhdHVzX2NvZGUgPT0gNDA0OgogICAgICAgICAgICByZXR1cm4gW10KICAgICAgICBsb2cud2FybmluZygiQnVpbGRpbmdQZXJtaXQuaW8gSFRUUCAlcyBmb3IgZmFjaWxpdHkgJXMiLCBlLnJlc3BvbnNlLnN0YXR1c19jb2RlLCBmYWNpbGl0eVsiaWQiXSkKICAgICAgICByZXR1cm4gW10KICAgIGV4Y2VwdCBFeGNlcHRpb24gYXMgZToKICAgICAgICBsb2cud2FybmluZygiQnVpbGRpbmdQZXJtaXQuaW8gZXJyb3IgZm9yIGZhY2lsaXR5ICVzOiAlcyIsIGZhY2lsaXR5WyJpZCJdLCBlKQogICAgICAgIHJldHVybiBbXQoKCmRlZiBwYXJzZV9idWlsZGluZ3Blcm1pdF9yZWNvcmQocmF3OiBkaWN0LCBmYWNpbGl0eTogZGljdCkgLT4gT3B0aW9uYWxbZGljdF06CiAgICAiIiJDb252ZXJ0IGEgcmF3IEJ1aWxkaW5nUGVybWl0LmlvIHJlY29yZCB0byBvdXIgc2NoZW1hLiIiIgoKICAgIGRlZiBwYXJzZV9kYXRlKHZhbCkgLT4gT3B0aW9uYWxbZGF0ZV06CiAgICAgICAgaWYgbm90IHZhbDoKICAgICAgICAgICAgcmV0dXJuIE5vbmUKICAgICAgICBmb3IgZm10IGluICgiJVktJW0tJWQiLCAiJW0vJWQvJVkiLCAiJVktJW0tJWRUJUg6JU06JVMiLCAiJVktJW0tJWRUJUg6JU06JVNaIik6CiAgICAgICAgICAgIHRyeToKICAgICAgICAgICAgICAgIHJldHVybiBkYXRldGltZS5zdHJwdGltZShzdHIodmFsKVs6MTBdLCBmbXRbOjEwXSkuZGF0ZSgpCiAgICAgICAgICAgIGV4Y2VwdCBWYWx1ZUVycm9yOgogICAgICAgICAgICAgICAgY29udGludWUKICAgICAgICByZXR1cm4gTm9uZQoKICAgIHBlcm1pdF9hZGRyID0gcmF3LmdldCgiYWRkcmVzcyIpIG9yIHJhdy5nZXQoInN0cmVldF9hZGRyZXNzIikgb3IgIiIKICAgIHNjb3JlID0gYWRkcmVzc19tYXRjaF9zY29yZShmYWNpbGl0eSwgcGVybWl0X2FkZHIpCiAgICBpZiBzY29yZSA8IDAuNTA6CiAgICAgICAgcmV0dXJuIE5vbmUgICMgdG9vIHdlYWsgYSBtYXRjaAoKICAgIHB0eXBlID0gKHJhdy5nZXQoInBlcm1pdF90eXBlIikgb3IgcmF3LmdldCgidHlwZSIpIG9yICIiKS5sb3dlcigpLnJlcGxhY2UoIiAiLCAiXyIpCiAgICBpZiBwdHlwZSBub3QgaW4gUkVMRVZBTlRfUEVSTUlUX1RZUEVTIGFuZCBub3QgaXNfZGNfcGVybWl0KHJhdy5nZXQoImRlc2NyaXB0aW9uIiwgIiIpKToKICAgICAgICByZXR1cm4gTm9uZQoKICAgIGNvbmZpZGVuY2Vfa2V5ID0gImJ1aWxkaW5ncGVybWl0X2V4YWN0IiBpZiBzY29yZSA+PSAwLjkwIGVsc2UgImJ1aWxkaW5ncGVybWl0X2Z1enp5IgoKICAgIHJldHVybiB7CiAgICAgICAgInBlcm1pdF9udW1iZXIiOiAgICAgIHJhdy5nZXQoInBlcm1pdF9udW1iZXIiKSBvciByYXcuZ2V0KCJpZCIpIG9yIGYiYnBfe2ZhY2lsaXR5WydpZCddfV97cHR5cGV9IiwKICAgICAgICAicGVybWl0X3R5cGUiOiAgICAgICAgcHR5cGUsCiAgICAgICAgInBlcm1pdF9zdGF0dXMiOiAgICAgIChyYXcuZ2V0KCJzdGF0dXMiKSBvciAidW5rbm93biIpLmxvd2VyKCksCiAgICAgICAgImFwcGxpZWRfZGF0ZSI6ICAgICAgIHBhcnNlX2RhdGUocmF3LmdldCgiYXBwbGllZF9kYXRlIikgb3IgcmF3LmdldCgiYXBwbGljYXRpb25fZGF0ZSIpKSwKICAgICAgICAiYXBwcm92ZWRfZGF0ZSI6ICAgICAgcGFyc2VfZGF0ZShyYXcuZ2V0KCJhcHByb3ZlZF9kYXRlIikgb3IgcmF3LmdldCgiYXBwcm92YWxfZGF0ZSIpKSwKICAgICAgICAiaXNzdWVkX2RhdGUiOiAgICAgICAgcGFyc2VfZGF0ZShyYXcuZ2V0KCJpc3N1ZWRfZGF0ZSIpIG9yIHJhdy5nZXQoImlzc3VlX2RhdGUiKSksCiAgICAgICAgImZpbmFsX2RhdGUiOiAgICAgICAgIHBhcnNlX2RhdGUocmF3LmdldCgiZmluYWxfZGF0ZSIpIG9yIHJhdy5nZXQoImNvX2RhdGUiKSBvciByYXcuZ2V0KCJjb21wbGV0aW9uX2RhdGUiKSksCiAgICAgICAgImp1cmlzZGljdGlvbiI6ICAgICAgIHJhdy5nZXQoImp1cmlzZGljdGlvbiIpIG9yIGZhY2lsaXR5LmdldCgiY2l0eSIpLAogICAgICAgICJqdXJpc2RpY3Rpb25fc3RhdGUiOiBmYWNpbGl0eS5nZXQoInN0YXRlX3Byb3ZpbmNlIiksCiAgICAgICAgInNvdXJjZSI6ICAgICAgICAgICAgICJidWlsZGluZ3Blcm1pdF9pbyIsCiAgICAgICAgInNvdXJjZV91cmwiOiAgICAgICAgIHJhdy5nZXQoInVybCIpIG9yIHJhdy5nZXQoInNvdXJjZV91cmwiKSwKICAgICAgICAiY29uZmlkZW5jZSI6ICAgICAgICAgQ09ORklERU5DRVtjb25maWRlbmNlX2tleV0gKiBzY29yZSwKICAgICAgICAicmF3X2RhdGEiOiAgICAgICAgICAgcmF3LAogICAgfQoKCiMg4pSA4pSAIENvdW50eSBwb3J0YWwgZmFsbGJhY2sgKE9wZW5Hb3YgLyBBY2NlbGEgcGF0dGVybikg4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSACgpDT1VOVFlfUE9SVEFMUyA9IHsKICAgICMgc3RhdGUg4oaSIHBvcnRhbCBwYXR0ZXJuIChhZGQgbW9yZSBhcyBkaXNjb3ZlcmVkKQogICAgIlZBIjogImh0dHBzOi8vZW5lcmdvdi5mYWlyZmF4Y291bnR5Lmdvdi9FbmVyR29WL0NpdGl6ZW4vYXBpL1Blcm1pdHMiLAogICAgIlRYIjogImh0dHBzOi8vcGVybWl0c2VhcmNoLmF1c3RpbnRleGFzLmdvdi9hcGkvcGVybWl0cyIsCiAgICAiR0EiOiAiaHR0cHM6Ly9lcGVybWl0Y2VudHJhbC5jb20vYXBpL3NlYXJjaCIsCn0KCgphc3luYyBkZWYgcXVlcnlfY291bnR5X3BvcnRhbCgKICAgIGNsaWVudDogaHR0cHguQXN5bmNDbGllbnQsCiAgICBmYWNpbGl0eTogZGljdCwKKSAtPiBsaXN0W2RpY3RdOgogICAgIiIiCiAgICBBdHRlbXB0IGNvdW50eSBwb3J0YWwgbG9va3VwIGZvciBzdGF0ZXMgd2hlcmUgd2UgaGF2ZSBrbm93biBlbmRwb2ludHMuCiAgICBSZXR1cm5zIHJhdyByZWNvcmRzIChwb3J0YWwtc3BlY2lmaWMgc2hhcGVzIOKAlCBwYXJzZWQgZG93bnN0cmVhbSkuCiAgICAiIiIKICAgIHN0YXRlID0gZmFjaWxpdHkuZ2V0KCJzdGF0ZV9wcm92aW5jZSIsICIiKS51cHBlcigpCiAgICBwb3J0YWxfdXJsID0gQ09VTlRZX1BPUlRBTFMuZ2V0KHN0YXRlKQogICAgaWYgbm90IHBvcnRhbF91cmw6CiAgICAgICAgcmV0dXJuIFtdCgogICAgdHJ5OgogICAgICAgIHJlc3AgPSBhd2FpdCBjbGllbnQuZ2V0KAogICAgICAgICAgICBwb3J0YWxfdXJsLAogICAgICAgICAgICBwYXJhbXM9ewogICAgICAgICAgICAgICAgImFkZHJlc3MiOiBmYWNpbGl0eS5nZXQoImFkZHJlc3MiLCAiIiksCiAgICAgICAgICAgICAgICAiY2l0eSI6IGZhY2lsaXR5LmdldCgiY2l0eSIsICIiKSwKICAgICAgICAgICAgICAgICJ0eXBlIjogImNvbW1lcmNpYWwsaW5kdXN0cmlhbCIsCiAgICAgICAgICAgICAgICAibGltaXQiOiAxMCwKICAgICAgICAgICAgfSwKICAgICAgICAgICAgdGltZW91dD0xMi4wLAogICAgICAgICkKICAgICAgICByZXNwLnJhaXNlX2Zvcl9zdGF0dXMoKQogICAgICAgIGRhdGEgPSByZXNwLmpzb24oKQogICAgICAgIHJldHVybiBkYXRhLmdldCgicmVzdWx0cyIpIG9yIGRhdGEuZ2V0KCJwZXJtaXRzIikgb3IgZGF0YS5nZXQoIml0ZW1zIikgb3IgW10KICAgIGV4Y2VwdCBFeGNlcHRpb24gYXMgZToKICAgICAgICBsb2cuZGVidWcoIkNvdW50eSBwb3J0YWwgZXJyb3IgKCVzKSBmb3IgZmFjaWxpdHkgJXM6ICVzIiwgc3RhdGUsIGZhY2lsaXR5WyJpZCJdLCBlKQogICAgICAgIHJldHVybiBbXQoKCmRlZiBwYXJzZV9jb3VudHlfcG9ydGFsX3JlY29yZChyYXc6IGRpY3QsIGZhY2lsaXR5OiBkaWN0KSAtPiBPcHRpb25hbFtkaWN0XToKICAgICIiIkdlbmVyaWMgcGFyc2VyIGZvciBjb3VudHkgcG9ydGFsIHJlY29yZHMg4oCUIGFkYXB0cyBjb21tb24gZmllbGQgc2hhcGVzLiIiIgoKICAgIGRlZiBwYXJzZV9kYXRlKHZhbCkgLT4gT3B0aW9uYWxbZGF0ZV06CiAgICAgICAgaWYgbm90IHZhbDoKICAgICAgICAgICAgcmV0dXJuIE5vbmUKICAgICAgICBmb3IgZm10IGluICgiJVktJW0tJWQiLCAiJW0vJWQvJVkiLCAiJW0tJWQtJVkiKToKICAgICAgICAgICAgdHJ5OgogICAgICAgICAgICAgICAgcmV0dXJuIGRhdGV0aW1lLnN0cnB0aW1lKHN0cih2YWwpWzoxMF0sIGZtdCkuZGF0ZSgpCiAgICAgICAgICAgIGV4Y2VwdCBWYWx1ZUVycm9yOgogICAgICAgICAgICAgICAgY29udGludWUKICAgICAgICByZXR1cm4gTm9uZQoKICAgIGFkZHJfZmllbGRzID0gWyJhZGRyZXNzIiwgInN0cmVldCIsICJzaXRlQWRkcmVzcyIsICJzaXRlX2FkZHJlc3MiLCAicHJvcGVydHlBZGRyZXNzIl0KICAgIHBlcm1pdF9hZGRyID0gbmV4dCgocmF3W2ZdIGZvciBmIGluIGFkZHJfZmllbGRzIGlmIGYgaW4gcmF3IGFuZCByYXdbZl0pLCAiIikKICAgIHNjb3JlID0gYWRkcmVzc19tYXRjaF9zY29yZShmYWNpbGl0eSwgcGVybWl0X2FkZHIpCiAgICBpZiBzY29yZSA8IDAuNTU6CiAgICAgICAgcmV0dXJuIE5vbmUKCiAgICBjb25maWRlbmNlX2tleSA9ICJjb3VudHlfcG9ydGFsX2V4YWN0IiBpZiBzY29yZSA+PSAwLjg4IGVsc2UgImNvdW50eV9wb3J0YWxfZnV6enkiCiAgICBwdHlwZSA9IChyYXcuZ2V0KCJwZXJtaXRUeXBlIikgb3IgcmF3LmdldCgicGVybWl0X3R5cGUiKSBvciByYXcuZ2V0KCJ0eXBlIikgb3IgImJ1aWxkaW5nIikubG93ZXIoKQoKICAgIHJldHVybiB7CiAgICAgICAgInBlcm1pdF9udW1iZXIiOiAgICAgIHJhdy5nZXQoInBlcm1pdE51bWJlciIpIG9yIHJhdy5nZXQoInBlcm1pdF9udW1iZXIiKSBvciByYXcuZ2V0KCJpZCIpIG9yICJ1bmtub3duIiwKICAgICAgICAicGVybWl0X3R5cGUiOiAgICAgICAgcHR5cGUucmVwbGFjZSgiICIsICJfIiksCiAgICAgICAgInBlcm1pdF9zdGF0dXMiOiAgICAgIChyYXcuZ2V0KCJzdGF0dXMiKSBvciByYXcuZ2V0KCJwZXJtaXRTdGF0dXMiKSBvciAidW5rbm93biIpLmxvd2VyKCksCiAgICAgICAgImFwcGxpZWRfZGF0ZSI6ICAgICAgIHBhcnNlX2RhdGUocmF3LmdldCgiYXBwbGljYXRpb25EYXRlIikgb3IgcmF3LmdldCgiYXBwbGllZF9kYXRlIikpLAogICAgICAgICJhcHByb3ZlZF9kYXRlIjogICAgICBwYXJzZV9kYXRlKHJhdy5nZXQoImFwcHJvdmFsRGF0ZSIpIG9yIHJhdy5nZXQoImFwcHJvdmVkX2RhdGUiKSksCiAgICAgICAgImlzc3VlZF9kYXRlIjogICAgICAgIHBhcnNlX2RhdGUocmF3LmdldCgiaXNzdWVkRGF0ZSIpIG9yIHJhdy5nZXQoImlzc3VlX2RhdGUiKSksCiAgICAgICAgImZpbmFsX2RhdGUiOiAgICAgICAgIHBhcnNlX2RhdGUocmF3LmdldCgiZmluYWxEYXRlIikgb3IgcmF3LmdldCgiY29fZGF0ZSIpIG9yIHJhdy5nZXQoImNvbXBsZXRpb25EYXRlIikpLAogICAgICAgICJqdXJpc2RpY3Rpb24iOiAgICAgICByYXcuZ2V0KCJqdXJpc2RpY3Rpb24iKSBvciBmYWNpbGl0eS5nZXQoImNpdHkiKSwKICAgICAgICAianVyaXNkaWN0aW9uX3N0YXRlIjogZmFjaWxpdHkuZ2V0KCJzdGF0ZV9wcm92aW5jZSIpLAogICAgICAgICJzb3VyY2UiOiAgICAgICAgICAgICBmImNvdW50eV9wb3J0YWxfe2ZhY2lsaXR5LmdldCgnc3RhdGVfcHJvdmluY2UnLCcnKS5sb3dlcigpfSIsCiAgICAgICAgInNvdXJjZV91cmwiOiAgICAgICAgIHJhdy5nZXQoInVybCIpLAogICAgICAgICJjb25maWRlbmNlIjogICAgICAgICBDT05GSURFTkNFW2NvbmZpZGVuY2Vfa2V5XSAqIHNjb3JlLAogICAgICAgICJyYXdfZGF0YSI6ICAgICAgICAgICByYXcsCiAgICB9CgoKIyDilIDilIAgTWFpbiBlbnJpY2htZW50IGxvb3Ag4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSA4pSACgphc3luYyBkZWYgZW5yaWNoX2JhdGNoKGZhY2lsaXRpZXM6IGxpc3RbZGljdF0sIGNvbm4pIC0+IGRpY3Q6CiAgICBzdGF0cyA9IHsKICAgICAgICAic291cmNlIjogInBoYXNlMV9zY3JhcGVyIiwKICAgICAgICAiZmFjaWxpdGllc19hdHRlbXB0ZWQiOiBsZW4oZmFjaWxpdGllcyksCiAgICAgICAgInBlcm1pdHNfZm91bmQiOiAwLAogICAgICAgICJmYWNpbGl0aWVzX2VucmljaGVkIjogMCwKICAgICAgICAiZXJyb3JzIjogMCwKICAgICAgICAiZHVyYXRpb25fc2Vjb25kcyI6IDAuMCwKICAgICAgICAibm90ZXMiOiAiIiwKICAgIH0KICAgIHQwID0gdGltZS50aW1lKCkKCiAgICBhc3luYyB3aXRoIGh0dHB4LkFzeW5jQ2xpZW50KAogICAgICAgIGhlYWRlcnM9eyJVc2VyLUFnZW50IjogIkRDSHViLVBlcm1pdFNjcmFwZXIvMS4wIChkY2h1Yi5jbG91ZCkifSwKICAgICAgICBmb2xsb3dfcmVkaXJlY3RzPVRydWUsCiAgICApIGFzIGNsaWVudDoKICAgICAgICBmb3IgZmFjIGluIGZhY2lsaXRpZXM6CiAgICAgICAgICAgIGZhY19lbnJpY2hlZCA9IEZhbHNlCiAgICAgICAgICAgIHRyeToKICAgICAgICAgICAgICAgICMg4pSA4pSAIEJ1aWxkaW5nUGVybWl0LmlvIOKUgOKUgAogICAgICAgICAgICAgICAgYnBfcmVjb3JkcyA9IGF3YWl0IHF1ZXJ5X2J1aWxkaW5ncGVybWl0X2lvKGNsaWVudCwgZmFjKQogICAgICAgICAgICAgICAgYXdhaXQgYXN5bmNpby5zbGVlcChSRVFVRVNUX0RFTEFZKQoKICAgICAgICAgICAgICAgIGZvciByYXcgaW4gYnBfcmVjb3JkczoKICAgICAgICAgICAgICAgICAgICBwYXJzZWQgPSBwYXJzZV9idWlsZGluZ3Blcm1pdF9yZWNvcmQocmF3LCBmYWMpCiAgICAgICAgICAgICAgICAgICAgaWYgcGFyc2VkOgogICAgICAgICAgICAgICAgICAgICAgICBzdGF0c1sicGVybWl0c19mb3VuZCJdICs9IDEKICAgICAgICAgICAgICAgICAgICAgICAgcHJvbW90ZWQgPSB1cHNlcnRfcGVybWl0KGNvbm4sIGZhY1siaWQiXSwgcGFyc2VkKQogICAgICAgICAgICAgICAgICAgICAgICBpZiBwcm9tb3RlZDoKICAgICAgICAgICAgICAgICAgICAgICAgICAgIGZhY19lbnJpY2hlZCA9IFRydWUKCiAgICAgICAgICAgICAgICAjIOKUgOKUgCBDb3VudHkgcG9ydGFsIGZhbGxiYWNrIOKUgOKUgAogICAgICAgICAgICAgICAgY291bnR5X3JlY29yZHMgPSBhd2FpdCBxdWVyeV9jb3VudHlfcG9ydGFsKGNsaWVudCwgZmFjKQogICAgICAgICAgICAgICAgYXdhaXQgYXN5bmNpby5zbGVlcChSRVFVRVNUX0RFTEFZICogMC41KQoKICAgICAgICAgICAgICAgIGZvciByYXcgaW4gY291bnR5X3JlY29yZHM6CiAgICAgICAgICAgICAgICAgICAgcGFyc2VkID0gcGFyc2VfY291bnR5X3BvcnRhbF9yZWNvcmQocmF3LCBmYWMpCiAgICAgICAgICAgICAgICAgICAgaWYgcGFyc2VkOgogICAgICAgICAgICAgICAgICAgICAgICBzdGF0c1sicGVybWl0c19mb3VuZCJdICs9IDEKICAgICAgICAgICAgICAgICAgICAgICAgcHJvbW90ZWQgPSB1cHNlcnRfcGVybWl0KGNvbm4sIGZhY1siaWQiXSwgcGFyc2VkKQogICAgICAgICAgICAgICAgICAgICAgICBpZiBwcm9tb3RlZDoKICAgICAgICAgICAgICAgICAgICAgICAgICAgIGZhY19lbnJpY2hlZCA9IFRydWUKCiAgICAgICAgICAgICAgICBjb25uLmNvbW1pdCgpCiAgICAgICAgICAgICAgICBpZiBmYWNfZW5yaWNoZWQ6CiAgICAgICAgICAgICAgICAgICAgc3RhdHNbImZhY2lsaXRpZXNfZW5yaWNoZWQiXSArPSAxCiAgICAgICAgICAgICAgICAgICAgbG9nLmluZm8oIuKckyBFbnJpY2hlZCBmYWNpbGl0eSAlcyAoJXMsICVzKSIsIGZhY1siaWQiXSwgZmFjLmdldCgibmFtZSIsIiIpLCBmYWMuZ2V0KCJjaXR5IiwiIikpCgogICAgICAgICAgICBleGNlcHQgRXhjZXB0aW9uIGFzIGU6CiAgICAgICAgICAgICAgICBzdGF0c1siZXJyb3JzIl0gKz0gMQogICAgICAgICAgICAgICAgY29ubi5yb2xsYmFjaygpCiAgICAgICAgICAgICAgICBsb2cuZXJyb3IoIkVycm9yIHByb2Nlc3NpbmcgZmFjaWxpdHkgJXM6ICVzIiwgZmFjWyJpZCJdLCBlKQoKICAgIHN0YXRzWyJkdXJhdGlvbl9zZWNvbmRzIl0gPSByb3VuZCh0aW1lLnRpbWUoKSAtIHQwLCAyKQogICAgcmV0dXJuIHN0YXRzCgoKYXN5bmMgZGVmIHJ1bigpOgogICAgbG9nLmluZm8oIuKUgOKUgCBEQyBIdWIgUGVybWl0IFNjcmFwZXIgKFBoYXNlIDEpIHN0YXJ0aW5nIOKUgOKUgCIpCiAgICBjb25uID0gZ2V0X2Nvbm4oKQogICAgdHJ5OgogICAgICAgIGZhY2lsaXRpZXMgPSBnZXRfZmFjaWxpdGllc19uZWVkaW5nX3Blcm1pdHMoY29ubiwgTUFYX0ZBQ0lMSVRJRVMpCiAgICAgICAgbG9nLmluZm8oIkZvdW5kICVkIGZhY2lsaXRpZXMgbmVlZGluZyBwZXJtaXQgZW5yaWNobWVudCIsIGxlbihmYWNpbGl0aWVzKSkKCiAgICAgICAgaWYgbm90IGZhY2lsaXRpZXM6CiAgICAgICAgICAgIGxvZy5pbmZvKCJOb3RoaW5nIHRvIGRvIOKAlCBhbGwgZmFjaWxpdGllcyBhbHJlYWR5IGVucmljaGVkIG9yIG5vIFVTIGFkZHJlc3NlcyBmb3VuZCIpCiAgICAgICAgICAgIHJldHVybgoKICAgICAgICAjIFByb2Nlc3MgaW4gYmF0Y2hlcyB0byBrZWVwIG1lbW9yeSBib3VuZGVkCiAgICAgICAgdG90YWxfc3RhdHMgPSB7CiAgICAgICAgICAgICJzb3VyY2UiOiAicGhhc2UxX3NjcmFwZXIiLAogICAgICAgICAgICAiZmFjaWxpdGllc19hdHRlbXB0ZWQiOiAwLAogICAgICAgICAgICAicGVybWl0c19mb3VuZCI6IDAsCiAgICAgICAgICAgICJmYWNpbGl0aWVzX2VucmljaGVkIjogMCwKICAgICAgICAgICAgImVycm9ycyI6IDAsCiAgICAgICAgICAgICJkdXJhdGlvbl9zZWNvbmRzIjogMC4wLAogICAgICAgICAgICAibm90ZXMiOiBmIkJhdGNoIHNpemU6IHtCQVRDSF9TSVpFfSwgdG90YWwgZmFjaWxpdGllczoge2xlbihmYWNpbGl0aWVzKX0iLAogICAgICAgIH0KCiAgICAgICAgZm9yIGkgaW4gcmFuZ2UoMCwgbGVuKGZhY2lsaXRpZXMpLCBCQVRDSF9TSVpFKToKICAgICAgICAgICAgYmF0Y2ggPSBmYWNpbGl0aWVzW2k6aSArIEJBVENIX1NJWkVdCiAgICAgICAgICAgIGxvZy5pbmZvKCJQcm9jZXNzaW5nIGJhdGNoICVkLyVkICglZCBmYWNpbGl0aWVzKSIsCiAgICAgICAgICAgICAgICAgICAgIGkgLy8gQkFUQ0hfU0laRSArIDEsIC0oLWxlbihmYWNpbGl0aWVzKSAvLyBCQVRDSF9TSVpFKSwgbGVuKGJhdGNoKSkKICAgICAgICAgICAgYmF0Y2hfc3RhdHMgPSBhd2FpdCBlbnJpY2hfYmF0Y2goYmF0Y2gsIGNvbm4pCgogICAgICAgICAgICBmb3Iga2V5IGluICgiZmFjaWxpdGllc19hdHRlbXB0ZWQiLCAicGVybWl0c19mb3VuZCIsICJmYWNpbGl0aWVzX2VucmljaGVkIiwgImVycm9ycyIpOgogICAgICAgICAgICAgICAgdG90YWxfc3RhdHNba2V5XSArPSBiYXRjaF9zdGF0c1trZXldCiAgICAgICAgICAgIHRvdGFsX3N0YXRzWyJkdXJhdGlvbl9zZWNvbmRzIl0gKz0gYmF0Y2hfc3RhdHNbImR1cmF0aW9uX3NlY29uZHMiXQoKICAgICAgICBsb2cucnVuX3N0YXRzID0gdG90YWxfc3RhdHMKICAgICAgICBsb2dfcnVuKGNvbm4sIHRvdGFsX3N0YXRzKQogICAgICAgIGxvZy5pbmZvKAogICAgICAgICAgICAi4pSA4pSAIFJ1biBjb21wbGV0ZTogJWQvJWQgZmFjaWxpdGllcyBlbnJpY2hlZCwgJWQgcGVybWl0cyBmb3VuZCwgJWQgZXJyb3JzIGluICUuMWZzIOKUgOKUgCIsCiAgICAgICAgICAgIHRvdGFsX3N0YXRzWyJmYWNpbGl0aWVzX2VucmljaGVkIl0sCiAgICAgICAgICAgIHRvdGFsX3N0YXRzWyJmYWNpbGl0aWVzX2F0dGVtcHRlZCJdLAogICAgICAgICAgICB0b3RhbF9zdGF0c1sicGVybWl0c19mb3VuZCJdLAogICAgICAgICAgICB0b3RhbF9zdGF0c1siZXJyb3JzIl0sCiAgICAgICAgICAgIHRvdGFsX3N0YXRzWyJkdXJhdGlvbl9zZWNvbmRzIl0sCiAgICAgICAgKQoKICAgIGZpbmFsbHk6CiAgICAgICAgY29ubi5jbG9zZSgpCgoKaWYgX19uYW1lX18gPT0gIl9fbWFpbl9fIjoKICAgIGFzeW5jaW8ucnVuKHJ1bigpKQo="""
+Matching logic:
+  - Match by address → facility_id  (exact + fuzzy fallback)
+  - Confidence scoring: 0.0–1.0
+  - Never overwrites a higher-confidence existing record
 
-# Check if file exists (need SHA for update)
-req = urllib.request.Request(
-    f"https://api.github.com/repos/{repo}/contents/{path}",
-    headers={"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
+Scheduler:  runs weekly (Sunday 02:00 UTC)
+Deploy:     ~/workspace/scripts/permit_scraper.py  on Railway
+"""
+
+import os
+import re
+import time
+import json
+import logging
+import asyncio
+from datetime import date, datetime, timedelta
+from typing import Optional
+
+import httpx
+import psycopg2
+import psycopg2.extras
+from rapidfuzz import fuzz
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [permit_scraper] %(levelname)s %(message)s",
 )
-sha = None
-try:
-    r = urllib.request.urlopen(req, timeout=10)
-    data = json.loads(r.read())
-    sha = data.get("sha")
-    print(f"File exists, SHA: {sha}")
-except urllib.error.HTTPError as e:
-    if e.code == 404:
-        print("File does not exist, will create")
-    else:
-        raise
+log = logging.getLogger("permit_scraper")
 
-# Push the file
-body = {"message": "Add permit_scraper.py Phase 1", "content": content_b64}
-if sha:
-    body["sha"] = sha
+# ── Config ────────────────────────────────────────────────────────────────────
+DATABASE_URL       = os.environ["DATABASE_URL"]
+BUILDING_PERMIT_KEY = os.environ.get("BUILDING_PERMIT_API_KEY", "")   # BuildingPermit.io
+BATCH_SIZE         = int(os.environ.get("PERMIT_BATCH_SIZE", "100"))
+REQUEST_DELAY      = float(os.environ.get("PERMIT_REQUEST_DELAY", "1.2"))  # seconds between API calls
+MAX_FACILITIES     = int(os.environ.get("PERMIT_MAX_FACILITIES", "500"))   # per run cap
 
-data = json.dumps(body).encode()
-req2 = urllib.request.Request(
-    f"https://api.github.com/repos/{repo}/contents/{path}",
-    data=data,
-    method="PUT",
-    headers={
-        "Authorization": f"token {token}",
-        "Accept": "application/vnd.github.v3+json",
-        "Content-Type": "application/json"
+# Confidence weights per source
+CONFIDENCE = {
+    "buildingpermit_exact":   0.85,
+    "buildingpermit_fuzzy":   0.65,
+    "county_portal_exact":    0.80,
+    "county_portal_fuzzy":    0.60,
+}
+
+# Permit types we care about (data centers are industrial/commercial)
+RELEVANT_PERMIT_TYPES = {
+    "building", "commercial", "industrial", "electrical",
+    "mechanical", "co", "certificate_of_occupancy", "zoning",
+    "construction", "new_construction",
+}
+
+# Keywords that confirm a data center permit
+DC_KEYWORDS = [
+    "data center", "datacenter", "colocation", "colo",
+    "server", "computing facility", "network operations",
+    "critical facility", "raised floor",
+]
+
+
+# ── Database helpers ──────────────────────────────────────────────────────────
+
+def get_conn():
+    return psycopg2.connect(DATABASE_URL)
+
+
+def get_facilities_needing_permits(conn, limit: int) -> list[dict]:
+    """
+    Return facilities missing permit_date, prioritising:
+      1. US facilities (country = 'United States')
+      2. Those with a known address/city/state
+      3. Operational facilities first
+    """
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""
+            SELECT
+                id, name, address, city, state_province, postal_code,
+                country, operational_year, permit_confidence
+            FROM facilities
+            WHERE
+                (country = 'United States' OR country IS NULL)
+                AND permit_date IS NULL
+                AND address IS NOT NULL
+                AND city IS NOT NULL
+                AND state_province IS NOT NULL
+            ORDER BY
+                CASE WHEN status = 'operational' THEN 0 ELSE 1 END,
+                permit_confidence ASC NULLS FIRST,
+                id ASC
+            LIMIT %s
+        """, (limit,))
+        return [dict(r) for r in cur.fetchall()]
+
+
+def upsert_permit(conn, facility_id: str, permit: dict) -> bool:
+    """
+    Insert or update a permit record.
+    Returns True if the facility's canonical permit_date was updated.
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            INSERT INTO facility_permits (
+                facility_id, permit_number, permit_type, permit_status,
+                applied_date, approved_date, issued_date, final_date,
+                jurisdiction, jurisdiction_state,
+                source, source_url, confidence, raw_data
+            ) VALUES (
+                %(facility_id)s, %(permit_number)s, %(permit_type)s, %(permit_status)s,
+                %(applied_date)s, %(approved_date)s, %(issued_date)s, %(final_date)s,
+                %(jurisdiction)s, %(jurisdiction_state)s,
+                %(source)s, %(source_url)s, %(confidence)s, %(raw_data)s
+            )
+            ON CONFLICT (facility_id, permit_number, source) DO UPDATE SET
+                permit_status  = EXCLUDED.permit_status,
+                final_date     = EXCLUDED.final_date,
+                approved_date  = EXCLUDED.approved_date,
+                confidence     = EXCLUDED.confidence,
+                raw_data       = EXCLUDED.raw_data,
+                updated_at     = NOW()
+        """, {
+            **permit,
+            "facility_id": facility_id,
+            "raw_data": json.dumps(permit.get("raw_data", {})),
+        })
+
+    # Promote to canonical facility columns if confidence is higher
+    best_date = permit.get("final_date") or permit.get("approved_date") or permit.get("issued_date")
+    if not best_date:
+        return False
+
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE facilities SET
+                permit_date         = %s,
+                approval_date       = %s,
+                co_date             = CASE WHEN %s = 'co' THEN %s ELSE co_date END,
+                permit_source       = %s,
+                permit_confidence   = %s,
+                permit_enriched_at  = NOW(),
+                raw_permit_id       = %s
+            WHERE id = %s
+              AND (permit_confidence IS NULL OR permit_confidence < %s)
+        """, (
+            best_date,
+            permit.get("approved_date"),
+            permit.get("permit_type", ""),
+            permit.get("final_date"),
+            permit["source"],
+            permit["confidence"],
+            permit.get("permit_number"),
+            facility_id,
+            permit["confidence"],
+        ))
+        return cur.rowcount > 0
+
+
+def log_run(conn, stats: dict):
+    with conn.cursor() as cur:
+        cur.execute("""
+            INSERT INTO permit_scrape_log
+                (source, facilities_attempted, permits_found,
+                 facilities_enriched, errors, duration_seconds, notes)
+            VALUES (%(source)s, %(facilities_attempted)s, %(permits_found)s,
+                    %(facilities_enriched)s, %(errors)s, %(duration_seconds)s, %(notes)s)
+        """, stats)
+    conn.commit()
+
+
+# ── Address normalisation ─────────────────────────────────────────────────────
+
+def normalise_address(addr: str) -> str:
+    addr = addr.upper().strip()
+    replacements = {
+        r"\bSTREET\b": "ST", r"\bAVENUE\b": "AVE", r"\bBOULEVARD\b": "BLVD",
+        r"\bDRIVE\b": "DR",  r"\bROAD\b": "RD",   r"\bLANE\b": "LN",
+        r"\bCOURT\b": "CT",  r"\bCIRCLE\b": "CIR", r"\bPLACE\b": "PL",
+        r"\bNORTH\b": "N",   r"\bSOUTH\b": "S",    r"\bEAST\b": "E",
+        r"\bWEST\b": "W",
     }
-)
-r2 = urllib.request.urlopen(req2, timeout=30)
-result = json.loads(r2.read())
-print(f"Success: {result['content']['name']} at {result['content']['sha'][:8]}")
+    for pattern, repl in replacements.items():
+        addr = re.sub(pattern, repl, addr)
+    return addr
+
+
+def address_match_score(facility: dict, permit_address: str) -> float:
+    fac_addr = normalise_address(
+        f"{facility.get('address','')} {facility.get('city','')} {facility.get('state_province','')}"
+    )
+    permit_addr = normalise_address(permit_address)
+    return fuzz.token_sort_ratio(fac_addr, permit_addr) / 100.0
+
+
+def is_dc_permit(description: str) -> bool:
+    desc = (description or "").lower()
+    return any(kw in desc for kw in DC_KEYWORDS)
+
+
+# ── BuildingPermit.io ─────────────────────────────────────────────────────────
+
+async def query_buildingpermit_io(
+    client: httpx.AsyncClient,
+    facility: dict,
+) -> list[dict]:
+    """
+    Query BuildingPermit.io address-level endpoint.
+    Docs: https://buildingpermit.io/api-docs
+    Falls back to lat/lng bounding box if address lookup returns nothing.
+    """
+    if not BUILDING_PERMIT_KEY:
+        return []
+
+    headers = {"Authorization": f"Bearer {BUILDING_PERMIT_KEY}"}
+    address_str = (
+        f"{facility['address']}, {facility['city']}, "
+        f"{facility['state_province']} {facility.get('postal_code','')}"
+    ).strip().rstrip(",")
+
+    try:
+        resp = await client.get(
+            "https://api.buildingpermit.io/v1/permits",
+            params={
+                "address": address_str,
+                "permit_type": "building,commercial,industrial,electrical,co",
+                "limit": 20,
+            },
+            headers=headers,
+            timeout=15.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        permits = data.get("permits") or data.get("results") or []
+        return permits
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return []
+        log.warning("BuildingPermit.io HTTP %s for facility %s", e.response.status_code, facility["id"])
+        return []
+    except Exception as e:
+        log.warning("BuildingPermit.io error for facility %s: %s", facility["id"], e)
+        return []
+
+
+def parse_buildingpermit_record(raw: dict, facility: dict) -> Optional[dict]:
+    """Convert a raw BuildingPermit.io record to our schema."""
+
+    def parse_date(val) -> Optional[date]:
+        if not val:
+            return None
+        for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%SZ"):
+            try:
+                return datetime.strptime(str(val)[:10], fmt[:10]).date()
+            except ValueError:
+                continue
+        return None
+
+    permit_addr = raw.get("address") or raw.get("street_address") or ""
+    score = address_match_score(facility, permit_addr)
+    if score < 0.50:
+        return None  # too weak a match
+
+    ptype = (raw.get("permit_type") or raw.get("type") or "").lower().replace(" ", "_")
+    if ptype not in RELEVANT_PERMIT_TYPES and not is_dc_permit(raw.get("description", "")):
+        return None
+
+    confidence_key = "buildingpermit_exact" if score >= 0.90 else "buildingpermit_fuzzy"
+
+    return {
+        "permit_number":      raw.get("permit_number") or raw.get("id") or f"bp_{facility['id']}_{ptype}",
+        "permit_type":        ptype,
+        "permit_status":      (raw.get("status") or "unknown").lower(),
+        "applied_date":       parse_date(raw.get("applied_date") or raw.get("application_date")),
+        "approved_date":      parse_date(raw.get("approved_date") or raw.get("approval_date")),
+        "issued_date":        parse_date(raw.get("issued_date") or raw.get("issue_date")),
+        "final_date":         parse_date(raw.get("final_date") or raw.get("co_date") or raw.get("completion_date")),
+        "jurisdiction":       raw.get("jurisdiction") or facility.get("city"),
+        "jurisdiction_state": facility.get("state_province"),
+        "source":             "buildingpermit_io",
+        "source_url":         raw.get("url") or raw.get("source_url"),
+        "confidence":         CONFIDENCE[confidence_key] * score,
+        "raw_data":           raw,
+    }
+
+
+# ── County portal fallback (OpenGov / Accela pattern) ────────────────────────
+
+COUNTY_PORTALS = {
+    # state → portal pattern (add more as discovered)
+    "VA": "https://energov.fairfaxcounty.gov/EnerGoV/Citizen/api/Permits",
+    "TX": "https://permitsearch.austintexas.gov/api/permits",
+    "GA": "https://epermitcentral.com/api/search",
+}
+
+
+async def query_county_portal(
+    client: httpx.AsyncClient,
+    facility: dict,
+) -> list[dict]:
+    """
+    Attempt county portal lookup for states where we have known endpoints.
+    Returns raw records (portal-specific shapes — parsed downstream).
+    """
+    state = facility.get("state_province", "").upper()
+    portal_url = COUNTY_PORTALS.get(state)
+    if not portal_url:
+        return []
+
+    try:
+        resp = await client.get(
+            portal_url,
+            params={
+                "address": facility.get("address", ""),
+                "city": facility.get("city", ""),
+                "type": "commercial,industrial",
+                "limit": 10,
+            },
+            timeout=12.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("results") or data.get("permits") or data.get("items") or []
+    except Exception as e:
+        log.debug("County portal error (%s) for facility %s: %s", state, facility["id"], e)
+        return []
+
+
+def parse_county_portal_record(raw: dict, facility: dict) -> Optional[dict]:
+    """Generic parser for county portal records — adapts common field shapes."""
+
+    def parse_date(val) -> Optional[date]:
+        if not val:
+            return None
+        for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y"):
+            try:
+                return datetime.strptime(str(val)[:10], fmt).date()
+            except ValueError:
+                continue
+        return None
+
+    addr_fields = ["address", "street", "siteAddress", "site_address", "propertyAddress"]
+    permit_addr = next((raw[f] for f in addr_fields if f in raw and raw[f]), "")
+    score = address_match_score(facility, permit_addr)
+    if score < 0.55:
+        return None
+
+    confidence_key = "county_portal_exact" if score >= 0.88 else "county_portal_fuzzy"
+    ptype = (raw.get("permitType") or raw.get("permit_type") or raw.get("type") or "building").lower()
+
+    return {
+        "permit_number":      raw.get("permitNumber") or raw.get("permit_number") or raw.get("id") or "unknown",
+        "permit_type":        ptype.replace(" ", "_"),
+        "permit_status":      (raw.get("status") or raw.get("permitStatus") or "unknown").lower(),
+        "applied_date":       parse_date(raw.get("applicationDate") or raw.get("applied_date")),
+        "approved_date":      parse_date(raw.get("approvalDate") or raw.get("approved_date")),
+        "issued_date":        parse_date(raw.get("issuedDate") or raw.get("issue_date")),
+        "final_date":         parse_date(raw.get("finalDate") or raw.get("co_date") or raw.get("completionDate")),
+        "jurisdiction":       raw.get("jurisdiction") or facility.get("city"),
+        "jurisdiction_state": facility.get("state_province"),
+        "source":             f"county_portal_{facility.get('state_province','').lower()}",
+        "source_url":         raw.get("url"),
+        "confidence":         CONFIDENCE[confidence_key] * score,
+        "raw_data":           raw,
+    }
+
+
+# ── Main enrichment loop ──────────────────────────────────────────────────────
+
+async def enrich_batch(facilities: list[dict], conn) -> dict:
+    stats = {
+        "source": "phase1_scraper",
+        "facilities_attempted": len(facilities),
+        "permits_found": 0,
+        "facilities_enriched": 0,
+        "errors": 0,
+        "duration_seconds": 0.0,
+        "notes": "",
+    }
+    t0 = time.time()
+
+    async with httpx.AsyncClient(
+        headers={"User-Agent": "DCHub-PermitScraper/1.0 (dchub.cloud)"},
+        follow_redirects=True,
+    ) as client:
+        for fac in facilities:
+            fac_enriched = False
+            try:
+                # ── BuildingPermit.io ──
+                bp_records = await query_buildingpermit_io(client, fac)
+                await asyncio.sleep(REQUEST_DELAY)
+
+                for raw in bp_records:
+                    parsed = parse_buildingpermit_record(raw, fac)
+                    if parsed:
+                        stats["permits_found"] += 1
+                        promoted = upsert_permit(conn, fac["id"], parsed)
+                        if promoted:
+                            fac_enriched = True
+
+                # ── County portal fallback ──
+                county_records = await query_county_portal(client, fac)
+                await asyncio.sleep(REQUEST_DELAY * 0.5)
+
+                for raw in county_records:
+                    parsed = parse_county_portal_record(raw, fac)
+                    if parsed:
+                        stats["permits_found"] += 1
+                        promoted = upsert_permit(conn, fac["id"], parsed)
+                        if promoted:
+                            fac_enriched = True
+
+                conn.commit()
+                if fac_enriched:
+                    stats["facilities_enriched"] += 1
+                    log.info("✓ Enriched facility %s (%s, %s)", fac["id"], fac.get("name",""), fac.get("city",""))
+
+            except Exception as e:
+                stats["errors"] += 1
+                conn.rollback()
+                log.error("Error processing facility %s: %s", fac["id"], e)
+
+    stats["duration_seconds"] = round(time.time() - t0, 2)
+    return stats
+
+
+async def run():
+    log.info("── DC Hub Permit Scraper (Phase 1) starting ──")
+    conn = get_conn()
+    try:
+        facilities = get_facilities_needing_permits(conn, MAX_FACILITIES)
+        log.info("Found %d facilities needing permit enrichment", len(facilities))
+
+        if not facilities:
+            log.info("Nothing to do — all facilities already enriched or no US addresses found")
+            return
+
+        # Process in batches to keep memory bounded
+        total_stats = {
+            "source": "phase1_scraper",
+            "facilities_attempted": 0,
+            "permits_found": 0,
+            "facilities_enriched": 0,
+            "errors": 0,
+            "duration_seconds": 0.0,
+            "notes": f"Batch size: {BATCH_SIZE}, total facilities: {len(facilities)}",
+        }
+
+        for i in range(0, len(facilities), BATCH_SIZE):
+            batch = facilities[i:i + BATCH_SIZE]
+            log.info("Processing batch %d/%d (%d facilities)",
+                     i // BATCH_SIZE + 1, -(-len(facilities) // BATCH_SIZE), len(batch))
+            batch_stats = await enrich_batch(batch, conn)
+
+            for key in ("facilities_attempted", "permits_found", "facilities_enriched", "errors"):
+                total_stats[key] += batch_stats[key]
+            total_stats["duration_seconds"] += batch_stats["duration_seconds"]
+
+        log.run_stats = total_stats
+        log_run(conn, total_stats)
+        log.info(
+            "── Run complete: %d/%d facilities enriched, %d permits found, %d errors in %.1fs ──",
+            total_stats["facilities_enriched"],
+            total_stats["facilities_attempted"],
+            total_stats["permits_found"],
+            total_stats["errors"],
+            total_stats["duration_seconds"],
+        )
+
+    finally:
+        conn.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(run())
