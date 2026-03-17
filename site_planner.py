@@ -296,61 +296,73 @@ def find_nearest_substations(lat, lng, limit=5, max_distance_miles=25):
 
     logger.warning("Local substations query returned empty — trying HIFLD API fallback")
     
-    # HIFLD API fallback: query ArcGIS for nearby substations
+    # Overpass API fallback: query OpenStreetMap for nearby substations
+    # (same data source the Land & Power map frontend uses successfully)
     try:
         import urllib.request, urllib.parse, json as _json, math as _math
         deg = max_distance_miles / 69.0
         deg_lng_adj = max_distance_miles / (69.0 * max(0.1, abs(_math.cos(_math.radians(lat)))))
-        bbox = f"{lng - deg_lng_adj},{lat - deg},{lng + deg_lng_adj},{lat + deg}"
-        params = urllib.parse.urlencode({
-            'where': '1=1',
-            'geometry': bbox,
-            'geometryType': 'esriGeometryEnvelope',
-            'spatialRel': 'esriSpatialRelIntersects',
-            'outFields': 'NAME,STATE,MAX_VOLT,MIN_VOLT,LATITUDE,LONGITUDE,OWNER',
-            'returnGeometry': 'true',
-            'f': 'json',
-            'outSR': '4326',
-            'inSR': '4326',
-            'resultRecordCount': str(limit * 3)
-        })
-        url = "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Substations/FeatureServer/0/query"
-        req = urllib.request.Request(url, data=params.encode(), headers={'User-Agent': 'DCHub/1.0', 'Content-Type': 'application/x-www-form-urlencoded'})
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            data = _json.loads(resp.read().decode())
+        south, north = lat - deg, lat + deg
+        west, east = lng - deg_lng_adj, lng + deg_lng_adj
+        query = f'[out:json][timeout:10];(node["power"="substation"]({south},{west},{north},{east});way["power"="substation"]({south},{west},{north},{east}););out center {limit * 3};'
+        post_data = ('data=' + urllib.parse.quote(query)).encode()
+        endpoints = [
+            'https://overpass.kumi.systems/api/interpreter',
+            'https://overpass-api.de/api/interpreter',
+            'https://overpass.private.coffee/api/interpreter'
+        ]
+        osm_data = None
+        for ep in endpoints:
+            try:
+                req = urllib.request.Request(ep, data=post_data, headers={
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'User-Agent': 'DCHub/1.0'
+                })
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    osm_data = _json.loads(resp.read().decode())
+                if osm_data and osm_data.get('elements'):
+                    break
+            except Exception:
+                continue
         
-        features = data.get('features', [])
-        if features:
+        if osm_data:
+            elements = osm_data.get('elements', [])
             results = []
-            for f in features:
-                attr = f.get('attributes', {})
-                geom = f.get('geometry', {})
-                s_lat = attr.get('LATITUDE') or geom.get('y')
-                s_lng = attr.get('LONGITUDE') or geom.get('x')
+            for el in elements:
+                tags = el.get('tags', {})
+                s_lat = el.get('lat') or (el.get('center', {}) or {}).get('lat')
+                s_lng = el.get('lon') or (el.get('center', {}) or {}).get('lon')
                 if not s_lat or not s_lng:
                     continue
-                # Calculate distance
+                # Parse voltage from OSM tags
+                voltage_str = tags.get('voltage', '0')
+                try:
+                    voltage_kv = float(voltage_str.split(';')[0]) / 1000 if float(voltage_str.split(';')[0]) > 999 else float(voltage_str.split(';')[0])
+                except (ValueError, IndexError):
+                    voltage_kv = 0
                 dist = 3959 * _math.acos(min(1.0, max(-1.0,
                     _math.cos(_math.radians(lat)) * _math.cos(_math.radians(s_lat)) *
                     _math.cos(_math.radians(s_lng) - _math.radians(lng)) +
                     _math.sin(_math.radians(lat)) * _math.sin(_math.radians(s_lat))
                 )))
                 results.append({
-                    'name': attr.get('NAME', 'Unknown'),
-                    'state': attr.get('STATE', ''),
-                    'voltage_kv': attr.get('MAX_VOLT') or attr.get('MIN_VOLT') or 0,
-                    'operator': attr.get('OWNER', 'Unknown'),
+                    'name': tags.get('name', 'Substation'),
+                    'state': tags.get('addr:state', ''),
+                    'voltage_kv': voltage_kv,
+                    'operator': tags.get('operator', 'Unknown'),
                     'lat': s_lat,
                     'lng': s_lng,
-                    'distance_miles': round(dist, 2)
+                    'distance_miles': round(dist, 2),
+                    'source': 'OpenStreetMap'
                 })
             results.sort(key=lambda x: x['distance_miles'])
-            logger.info(f"HIFLD API fallback: found {len(results)} substations near {lat},{lng}")
-            return results[:limit]
-        else:
-            logger.info(f"HIFLD API fallback: no substations found near {lat},{lng}")
-    except Exception as hifld_err:
-        logger.warning(f"HIFLD API fallback failed: {hifld_err}")
+            if results:
+                logger.info(f"Overpass fallback: found {len(results)} substations near {lat},{lng}")
+                return results[:limit]
+            else:
+                logger.info(f"Overpass fallback: no substations near {lat},{lng}")
+    except Exception as osm_err:
+        logger.warning(f"Overpass API fallback failed: {osm_err}")
     
     return []
 
