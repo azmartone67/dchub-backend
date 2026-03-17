@@ -12789,6 +12789,14 @@ except Exception as e:
     except Exception as e:
         print(f"❌ Energy Discovery blueprint failed: {e}")
 
+    # Visit Tracking Routes
+    try:
+        from routes.track_routes import track_bp
+        app.register_blueprint(track_bp)
+        print("📊 Visit Tracking Blueprint: ✅ Registered (1 route)")
+    except Exception as e:
+        print(f"❌ Track blueprint failed: {e}")
+
 @app.route('/api/v1/plan-sync.js')
 def serve_plan_sync():
     """Serve plan-sync script via API route (bypasses Cloudflare Pages static)"""
