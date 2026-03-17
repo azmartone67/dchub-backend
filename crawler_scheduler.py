@@ -342,9 +342,28 @@ def _run_deals_crawler():
 
 
 def _run_facility_discovery():
-    """Run facility discovery from PeeringDB, OpenStreetMap, and datacentermap.
-    Discovers new data center facilities and stages them for auto-approval.
+    """FULL facility pipeline: news extraction → discovery → auto-approve → pipeline sync.
+    This is the main automation chain that keeps DC Hub dynamic.
     """
+    logger.info("   === FACILITY PIPELINE START ===")
+
+    # STEP 1: Extract facilities from recent news articles
+    try:
+        from news_facility_extractor import scan_news_sources
+        result = scan_news_sources()
+        if isinstance(result, dict):
+            logger.info(f"   [1/4] News extraction: {result.get('facilities_extracted', 0)} extracted, {result.get('pending_review', 0)} pending")
+        else:
+            logger.info(f"   [1/4] News extraction: completed")
+    except ImportError:
+        logger.warning("   [1/4] News extraction: not available (no news_facility_extractor)")
+    except Exception as e:
+        logger.warning(f"   [1/4] News extraction error: {e}")
+
+    if _stop_event.is_set():
+        return
+
+    # STEP 2: Discover facilities from PeeringDB, OSM, datacentermap
     try:
         from discovery_engine import (
             init_discovery_tables, run_peeringdb_discovery,
@@ -371,15 +390,65 @@ def _run_facility_discovery():
                 total_found += found
                 total_added += added
                 if added > 0:
-                    logger.info(f"   {source_name}: +{added} new facilities (from {found} found)")
+                    logger.info(f"   [2/4] {source_name}: +{added} new (from {found})")
             except Exception as e:
-                logger.warning(f"   {source_name} error: {e}")
-
-        logger.info(f"   Facility discovery totals: {total_added} new from {total_found} found")
+                logger.warning(f"   [2/4] {source_name} error: {e}")
+        logger.info(f"   [2/4] Discovery totals: {total_added} new from {total_found} found")
     except ImportError:
-        logger.warning("Facility discovery not available (no discovery_engine module)")
+        logger.warning("   [2/4] Discovery engine not available")
     except Exception as e:
-        logger.error(f"Facility discovery error: {e}")
+        logger.error(f"   [2/4] Discovery error: {e}")
+
+    if _stop_event.is_set():
+        return
+
+    # STEP 3: Auto-approve high-confidence pending facilities
+    try:
+        from facility_auto_approve import run_auto_approve
+        from db_utils import get_db
+        conn = get_db()
+        result = run_auto_approve(conn, batch_size=50, dry_run=False)
+        if isinstance(result, dict):
+            logger.info(f"   [3/4] Auto-approve: {result.get('approved', 0)} approved, {result.get('rejected', 0)} rejected")
+        else:
+            logger.info(f"   [3/4] Auto-approve: completed")
+    except ImportError:
+        logger.warning("   [3/4] Auto-approve not available")
+    except Exception as e:
+        logger.warning(f"   [3/4] Auto-approve error: {e}")
+
+    if _stop_event.is_set():
+        return
+
+    # STEP 4: Sync new facilities to capacity_pipeline
+    try:
+        from db_utils import get_db
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("""
+            INSERT INTO capacity_pipeline (operator, market, region, capacity_mw, status, announcement_date, source, source_url, created_at, confidence_score)
+            SELECT df.provider, COALESCE(df.city, df.state), df.country, df.power_mw, df.status,
+                   df.discovered_at, df.source, df.source_url, NOW()::text, COALESCE(df.confidence_score, 0.8)::integer
+            FROM discovered_facilities df
+            WHERE df.status IN ('Under Construction', 'Planned', 'Announced')
+              AND df.power_mw IS NOT NULL
+              AND df.discovered_at >= (NOW() - INTERVAL '7 days')::text
+              AND NOT EXISTS (
+                  SELECT 1 FROM capacity_pipeline cp
+                  WHERE LOWER(COALESCE(cp.operator,'')) = LOWER(COALESCE(df.provider,''))
+                    AND LOWER(COALESCE(cp.market,'')) = LOWER(COALESCE(df.city, df.state, ''))
+              )
+        """)
+        new_pipeline = c.rowcount
+        conn.commit()
+        if new_pipeline > 0:
+            logger.info(f"   [4/4] Pipeline sync: +{new_pipeline} new construction projects")
+        else:
+            logger.info(f"   [4/4] Pipeline sync: no new projects")
+    except Exception as e:
+        logger.warning(f"   [4/4] Pipeline sync error: {e}")
+
+    logger.info("   === FACILITY PIPELINE COMPLETE ===")
 
 
 def _run_infrastructure_sync():
