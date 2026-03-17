@@ -5670,7 +5670,7 @@ STRIPE_PRICES = {
     'pro_monthly': os.environ.get('STRIPE_PRICE_PRO_MONTHLY', 'price_XXXXX'),
     'pro_annual': os.environ.get('STRIPE_PRICE_PRO_ANNUAL', 'price_XXXXX'),
     'founding': os.environ.get('STRIPE_PRICE_FOUNDING', 'price_XXXXX'),
-    'developer_monthly': os.environ.get('STRIPE_PRICE_DEV_MONTHLY', 'price_XXXXX'),
+    'developer_monthly': os.environ.get('STRIPE_PRICE_DEV_MONTHLY', 'price_1TB2WrJ9ey2ATcQlth13YBUT'),
 }
 
 @app.route('/api/stripe/config', methods=['GET'])
@@ -6426,7 +6426,7 @@ def handle_checkout_completed(session):
             if payment_link_id:
                 print(f"⚠️ Unknown payment_link ID: '{payment_link_id}' — add to payment_link_plan_map! Falling back to amount detection.")
             if amount_dollars == 49 or (45 <= amount_dollars <= 55):
-                plan_name, api_tier = 'developer', 'developer'
+                plan_name, api_tier = 'developer', 'pro'
             elif amount_dollars == 99 or (95 <= amount_dollars <= 105):
                 plan_name, api_tier = 'founding', 'pro'
             elif amount_dollars == 199 or (195 <= amount_dollars <= 205):
@@ -6461,19 +6461,8 @@ def handle_checkout_completed(session):
                 (plan_name, api_tier, stripe_cust, customer_email))
             rows_updated = rc
 
-        conn = get_db()
-        c = conn.cursor()
-
-        if user_id:
-            c.execute("UPDATE users SET plan = %s, role = %s, subscription_status = 'active', stripe_customer_id = %s WHERE id = %s",
-                      (plan_name, api_tier, stripe_cust, user_id))
-        elif customer_email:
-            c.execute("UPDATE users SET plan = %s, role = %s, subscription_status = 'active', stripe_customer_id = %s WHERE email = %s",
-                      (plan_name, api_tier, stripe_cust, customer_email))
-        
-        sqlite_rows = c.rowcount if (user_id or customer_email) else 0
-        if sqlite_rows > 0 and rows_updated == 0:
-            rows_updated = sqlite_rows
+        # Legacy SQLite get_db() removed — _pg_execute above handles Neon
+        sqlite_rows = 0
 
         print(f"💳 Webhook UPDATE: email='{customer_email}', user_id='{user_id}', pg_rows={rows_updated}, sqlite_rows={sqlite_rows}")
 
@@ -10318,7 +10307,7 @@ def refresh_news():
 def refresh_transactions():
     """Force immediate transactions/deals data check"""
     try:
-        conn = get_db()
+        conn = get_pg_connection()
         c = conn.cursor()
         c.execute("SELECT COUNT(*) FROM deals")
         total = c.fetchone()[0] or 0
