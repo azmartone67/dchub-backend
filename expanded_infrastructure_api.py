@@ -397,60 +397,100 @@ def get_infrastructure_layer(layer_id):
 
 @expanded_infra_bp.route('/api/v2/infrastructure/hifld/substations', methods=['GET'])
 def get_hifld_substations():
-    lat = request.args.get('lat')
-    lng = request.args.get('lng')
+    """Query substations from Neon PostgreSQL (with ArcGIS fallback)."""
+    lat = request.args.get('lat', type=float)
+    lng = request.args.get('lng', type=float)
     radius = request.args.get('radius', 50, type=float)
     state = request.args.get('state')
-    min_voltage = request.args.get('min_voltage', type=int)
-    
-    params = {
-        'outFields': 'NAME,CITY,STATE,STATUS,MAX_VOLT,MIN_VOLT,LATITUDE,LONGITUDE,NAICS_CODE,NAICS_DESC',
-        'resultRecordCount': '1000',
-        'f': 'json',
-        'inSR': '4326',
-        'outSR': '4326'
-    }
-    
-    where_clauses = ['1=1']
-    if state:
-        where_clauses.append(f"STATE='{state.upper()}'")
-    if min_voltage:
-        where_clauses.append(f"MAX_VOLT>={min_voltage}")
-    params['where'] = ' AND '.join(where_clauses)
-    
-    if lat and lng:
-        bbox = bbox_from_params(lat, lng, radius)
-        params['geometry'] = bbox
-        params['geometryType'] = 'esriGeometryEnvelope'
-        params['spatialRel'] = 'esriSpatialRelIntersects'
-    
-    url = f"{HIFLD_BASE}/Electric_Substations/FeatureServer/0"
-    result = query_arcgis(url, params)
-    
-    substations = []
-    for f in result.get('features', []):
-        attr = f.get('attributes', {})
-        geom = f.get('geometry', {})
-        substations.append({
-            'name': attr.get('NAME'),
-            'city': attr.get('CITY'),
-            'state': attr.get('STATE'),
-            'status': attr.get('STATUS'),
-            'max_voltage_kv': attr.get('MAX_VOLT'),
-            'min_voltage_kv': attr.get('MIN_VOLT'),
-            'lat': attr.get('LATITUDE') or geom.get('y'),
-            'lng': attr.get('LONGITUDE') or geom.get('x'),
-            'naics': attr.get('NAICS_CODE'),
-            'source': 'HIFLD'
+    min_voltage = request.args.get('min_voltage', 0, type=int)
+    min_kv = request.args.get('min_kv', min_voltage, type=int)
+    limit = min(request.args.get('limit', 100, type=int), 500)
+
+    try:
+        from db_utils import get_db
+        conn = get_db()
+        c = conn.cursor()
+
+        conditions = []
+        params = []
+
+        if min_kv:
+            conditions.append('voltage_kv >= %s')
+            params.append(min_kv)
+        if state:
+            conditions.append('state = %s')
+            params.append(state.upper())
+
+        if lat and lng:
+            # Bounding box pre-filter then Haversine
+            lat_range = radius / 69.0
+            lng_range = radius / (69.0 * max(0.1, abs(__import__('math').cos(__import__('math').radians(lat)))))
+            conditions.append('lat BETWEEN %s AND %s')
+            params.extend([lat - lat_range, lat + lat_range])
+            conditions.append('lng BETWEEN %s AND %s')
+            params.extend([lng - lng_range, lng + lng_range])
+
+            where = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
+            query = f"""
+                SELECT name, city, state, status, voltage_kv, capacity_mva, lat, lng, owner,
+                    ROUND((3959 * acos(LEAST(1.0, cos(radians(%s)) * cos(radians(lat)) * cos(radians(lng) - radians(%s)) + sin(radians(%s)) * sin(radians(lat)))))::numeric, 2) as distance_miles
+                FROM substations
+                {where}
+                AND lat IS NOT NULL AND lng IS NOT NULL
+                ORDER BY distance_miles
+                LIMIT %s
+            """
+            params_full = [lat, lng, lat] + params + [limit]
+        else:
+            where = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
+            query = f"""
+                SELECT name, city, state, status, voltage_kv, capacity_mva, lat, lng, owner,
+                    NULL as distance_miles
+                FROM substations
+                {where}
+                AND lat IS NOT NULL AND lng IS NOT NULL
+                ORDER BY voltage_kv DESC NULLS LAST
+                LIMIT %s
+            """
+            params_full = params + [limit]
+
+        c.execute(query, params_full)
+        cols = [desc[0] for desc in c.description]
+        rows = c.fetchall()
+
+        substations = []
+        for row in rows:
+            r = dict(zip(cols, row))
+            substations.append({
+                'name': r.get('name'),
+                'city': r.get('city'),
+                'state': r.get('state'),
+                'status': r.get('status'),
+                'max_voltage_kv': r.get('voltage_kv'),
+                'capacity_mva': r.get('capacity_mva'),
+                'lat': r.get('lat'),
+                'lng': r.get('lng'),
+                'owner': r.get('owner'),
+                'distance_miles': float(r['distance_miles']) if r.get('distance_miles') is not None else None,
+                'source': 'HIFLD/Neon'
+            })
+
+        return jsonify({
+            'success': True,
+            'count': len(substations),
+            'total_available': '1,042 in Neon',
+            'source': 'HIFLD/DHS (Neon PostgreSQL)',
+            'substations': substations
         })
-    
-    return jsonify({
-        'success': True,
-        'count': len(substations),
-        'total_available': '70,000+',
-        'source': 'HIFLD/DHS',
-        'substations': substations
-    })
+    except Exception as e:
+        import traceback
+        print(f"HIFLD substations Neon error: {traceback.format_exc()}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'count': 0,
+            'substations': []
+        }), 500
 
 
 @expanded_infra_bp.route('/api/v2/infrastructure/hifld/transmission', methods=['GET'])
@@ -502,48 +542,94 @@ def get_hifld_transmission():
 
 @expanded_infra_bp.route('/api/v2/infrastructure/hifld/gas-pipelines', methods=['GET'])
 def get_hifld_gas_pipelines():
-    lat = request.args.get('lat')
-    lng = request.args.get('lng')
+    """Query gas pipelines from Neon PostgreSQL (with ArcGIS fallback)."""
+    lat = request.args.get('lat', type=float)
+    lng = request.args.get('lng', type=float)
     radius = request.args.get('radius', 50, type=float)
-    
-    params = {
-        'where': '1=1',
-        'outFields': 'OPERATOR,DIAMETER,MATERIAL,INTERSTATE',
-        'resultRecordCount': '500',
-        'f': 'json',
-        'inSR': '4326',
-        'outSR': '4326'
-    }
-    
-    if lat and lng:
-        bbox = bbox_from_params(lat, lng, radius)
-        params['geometry'] = bbox
-        params['geometryType'] = 'esriGeometryEnvelope'
-        params['spatialRel'] = 'esriSpatialRelIntersects'
-    
-    url = f"{HIFLD_BASE}/Natural_Gas_Pipelines/FeatureServer/0"
-    result = query_arcgis(url, params)
-    
-    pipelines = []
-    for f in result.get('features', []):
-        attr = f.get('attributes', {})
-        geom = f.get('geometry', {})
-        pipelines.append({
-            'operator': attr.get('OPERATOR'),
-            'diameter_inches': attr.get('DIAMETER'),
-            'material': attr.get('MATERIAL'),
-            'interstate': attr.get('INTERSTATE'),
-            'paths': geom.get('paths', []),
-            'source': 'HIFLD'
+    state = request.args.get('state')
+    limit = min(request.args.get('limit', 100, type=int), 500)
+
+    try:
+        from db_utils import get_db
+        conn = get_db()
+        c = conn.cursor()
+
+        conditions = []
+        params = []
+
+        if state:
+            conditions.append('state = %s')
+            params.append(state.upper())
+
+        if lat and lng:
+            lat_range = radius / 69.0
+            lng_range = radius / (69.0 * max(0.1, abs(__import__('math').cos(__import__('math').radians(lat)))))
+            conditions.append('lat BETWEEN %s AND %s')
+            params.extend([lat - lat_range, lat + lat_range])
+            conditions.append('lng BETWEEN %s AND %s')
+            params.extend([lng - lng_range, lng + lng_range])
+
+            where = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
+            query = f"""
+                SELECT name, operator, pipeline_type, diameter_inches, capacity_mcf, status, lat, lng, city, state,
+                    ROUND((3959 * acos(LEAST(1.0, cos(radians(%s)) * cos(radians(lat)) * cos(radians(lng) - radians(%s)) + sin(radians(%s)) * sin(radians(lat)))))::numeric, 2) as distance_miles
+                FROM gas_pipelines
+                {where}
+                AND lat IS NOT NULL AND lng IS NOT NULL
+                ORDER BY distance_miles
+                LIMIT %s
+            """
+            params_full = [lat, lng, lat] + params + [limit]
+        else:
+            where = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
+            query = f"""
+                SELECT name, operator, pipeline_type, diameter_inches, capacity_mcf, status, lat, lng, city, state,
+                    NULL as distance_miles
+                FROM gas_pipelines
+                {where}
+                AND lat IS NOT NULL AND lng IS NOT NULL
+                LIMIT %s
+            """
+            params_full = params + [limit]
+
+        c.execute(query, params_full)
+        cols = [desc[0] for desc in c.description]
+        rows = c.fetchall()
+
+        pipelines = []
+        for row in rows:
+            r = dict(zip(cols, row))
+            pipelines.append({
+                'name': r.get('name'),
+                'operator': r.get('operator'),
+                'pipeline_type': r.get('pipeline_type'),
+                'diameter_inches': r.get('diameter_inches'),
+                'capacity_mcf': r.get('capacity_mcf'),
+                'status': r.get('status'),
+                'lat': r.get('lat'),
+                'lng': r.get('lng'),
+                'city': r.get('city'),
+                'state': r.get('state'),
+                'distance_miles': float(r['distance_miles']) if r.get('distance_miles') is not None else None,
+                'source': 'HIFLD/Neon'
+            })
+
+        return jsonify({
+            'success': True,
+            'count': len(pipelines),
+            'total_available': '37,705 in Neon',
+            'source': 'HIFLD/DOT (Neon PostgreSQL)',
+            'pipelines': pipelines
         })
-    
-    return jsonify({
-        'success': True,
-        'count': len(pipelines),
-        'total_available': '300,000+ miles',
-        'source': 'HIFLD/DOT',
-        'pipelines': pipelines
-    })
+    except Exception as e:
+        import traceback
+        print(f"HIFLD gas pipelines Neon error: {traceback.format_exc()}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'count': 0,
+            'pipelines': []
+        }), 500
 
 
 @expanded_infra_bp.route('/api/v2/infrastructure/railroads', methods=['GET'])
