@@ -1,6 +1,10 @@
 {
   "report_date": "2026-03-15",
+<<<<<<< Updated upstream
   "generated_at": "2026-03-15T20:23:04.186388",
+=======
+  "generated_at": "2026-03-15T22:24:03.935068",
+>>>>>>> Stashed changes
   "summary": {
     "total_facilities": 11788,
     "total_providers": 2806,

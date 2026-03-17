@@ -9950,6 +9950,7 @@ def fiber_metro_api(market_name=None):
                     'key_ix_points': row[7], 'key_carrier_hotels': row[8], 'notes': row[9]
                 }
             cur.close()
+            return_pg_connection(conn)
             return jsonify({'success': True, 'market': market_name, 'summary': summary, 'carriers': carriers})
         
         else:
@@ -9973,11 +9974,13 @@ def fiber_metro_api(market_name=None):
                 cols2 = ['market','route_miles_approx','on_net_buildings','services']
                 carrier_markets = [dict(zip(cols2, r)) for r in cur.fetchall()]
                 cur.close()
+                return_pg_connection(conn)
                 return jsonify({'success': True, 'carrier': carrier_filter, 'markets': carrier_markets, 'total_markets': len(carrier_markets)})
             
             cur.execute("SELECT COUNT(*), SUM(route_miles_approx) FROM metro_dark_fiber")
             row = cur.fetchone()
             cur.close()
+            return_pg_connection(conn)
             return jsonify({
                 'success': True,
                 'markets': markets,
