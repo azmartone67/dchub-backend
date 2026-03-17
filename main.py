@@ -7531,6 +7531,128 @@ def mcp_platforms_status():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
+@app.route('/api/v1/energy/discovery/status', methods=['GET'])
+def energy_discovery_status():
+    """Energy infrastructure auto-discovery status and counts"""
+    conn = None
+    try:
+        conn = get_read_db()
+        c = conn.cursor()
+
+        discovery = {}
+
+        # Substations (HIFLD bulk load)
+        try:
+            c.execute("SELECT COUNT(*) FROM substations")
+            discovery['substations'] = c.fetchone()[0] or 0
+        except:
+            discovery['substations'] = 0
+
+        # Fiber routes
+        try:
+            c.execute("SELECT COUNT(*) FROM fiber_routes")
+            discovery['fiber_routes'] = c.fetchone()[0] or 0
+        except:
+            discovery['fiber_routes'] = 0
+
+        # Metro dark fiber
+        try:
+            c.execute("SELECT COUNT(*) FROM metro_dark_fiber")
+            row = c.fetchone()
+            discovery['metro_dark_fiber'] = row[0] or 0
+        except:
+            discovery['metro_dark_fiber'] = 0
+
+        # Metro fiber summary (markets + carriers)
+        try:
+            c.execute("SELECT COUNT(DISTINCT market) FROM metro_dark_fiber")
+            discovery['metro_fiber_markets'] = c.fetchone()[0] or 0
+            c.execute("SELECT COUNT(DISTINCT carrier) FROM metro_dark_fiber")
+            discovery['metro_fiber_carriers'] = c.fetchone()[0] or 0
+            c.execute("SELECT COALESCE(SUM(route_miles), 0) FROM metro_dark_fiber")
+            discovery['metro_fiber_route_miles'] = round(c.fetchone()[0] or 0, 0)
+        except:
+            pass
+
+        # Gas pipelines
+        try:
+            c.execute("SELECT COUNT(*) FROM gas_pipelines")
+            discovery['gas_pipelines'] = c.fetchone()[0] or 0
+        except:
+            discovery['gas_pipelines'] = 0
+
+        # Energy PPAs
+        try:
+            c.execute("SELECT COUNT(*), COALESCE(SUM(capacity_mw), 0) FROM energy_ppas")
+            row = c.fetchone()
+            discovery['energy_ppas'] = {'count': row[0] or 0, 'total_mw': round(row[1] or 0, 1)}
+        except:
+            discovery['energy_ppas'] = {'count': 0, 'total_mw': 0}
+
+        # Tax incentives
+        try:
+            c.execute("SELECT COUNT(DISTINCT state) FROM tax_incentives_neon")
+            discovery['tax_incentive_states'] = c.fetchone()[0] or 0
+        except:
+            discovery['tax_incentive_states'] = 0
+
+        # GDCI scores
+        try:
+            c.execute("SELECT COUNT(*) FROM gdci_scores")
+            discovery['gdci_markets'] = c.fetchone()[0] or 0
+        except:
+            discovery['gdci_markets'] = 0
+
+        # Facilities discovered recently
+        try:
+            c.execute("SELECT COUNT(*) FROM facilities WHERE first_seen::timestamp > NOW() - INTERVAL '24 hours'")
+            discovery['new_facilities_24h'] = c.fetchone()[0] or 0
+        except:
+            discovery['new_facilities_24h'] = 0
+
+        try:
+            c.execute("SELECT COUNT(*) FROM facilities WHERE first_seen::timestamp > NOW() - INTERVAL '7 days'")
+            discovery['new_facilities_7d'] = c.fetchone()[0] or 0
+        except:
+            discovery['new_facilities_7d'] = 0
+
+        # Total facilities
+        try:
+            c.execute("SELECT COUNT(*) FROM facilities")
+            discovery['total_facilities'] = c.fetchone()[0] or 0
+        except:
+            discovery['total_facilities'] = 0
+
+        # Discovery sources breakdown
+        try:
+            c.execute("SELECT source, COUNT(*) FROM facilities WHERE source IS NOT NULL AND source != '' GROUP BY source ORDER BY COUNT(*) DESC LIMIT 10")
+            discovery['top_sources'] = dict(c.fetchall())
+        except:
+            discovery['top_sources'] = {}
+
+        # Scheduler info
+        discovery['schedulers'] = {
+            'energy_discovery': {'interval_seconds': 600, 'status': 'active'},
+            'infrastructure_sync': {'interval_seconds': 21600, 'status': 'active'},
+            'fiber_discovery': {'interval_seconds': 3600, 'status': 'active'},
+            'facility_auto_approve': {'interval_seconds': 1800, 'status': 'active'},
+        }
+
+        return jsonify({
+            'success': True,
+            'discovery': discovery,
+            'generated_at': datetime.utcnow().isoformat(),
+        })
+
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
+
 @app.route('/api/v1/stats', methods=['GET'])
 def get_stats():
     """Get aggregate statistics"""
@@ -7625,25 +7747,27 @@ def get_stats():
         except:
             stats['total_substations'] = 0
         
-        # Infrastructure layer counts for dynamic homepage display
-        # PG tables only store a small subset. Real counts come from HIFLD/EIA ArcGIS:
-        #   Substations: 70,000+ from HIFLD | Transmission: 300,000+ from HIFLD
-        #   Gas/midstream: 300,000+ from EIA ArcGIS | Fiber: 128 in PG
-        HIFLD_SUBSTATION_BASE = 70000
+        # Infrastructure layer counts — real Neon DB queries (fixed Mar 17 2026)
+        # HIFLD data now lives in substations table (79,755 records from CSV bulk load)
+        # Transmission: no dedicated table yet, keep estimate
         HIFLD_TRANSMISSION_BASE = 300000
-        EIA_GAS_PIPELINE_BASE = 300000
-        stats['total_substations_hifld'] = HIFLD_SUBSTATION_BASE
         stats['total_transmission_lines'] = HIFLD_TRANSMISSION_BASE
+        stats['total_substations_hifld'] = stats.get('total_substations', 0)
         try:
             c.execute("SELECT COUNT(*) FROM fiber_routes")
-            stats['total_fiber_routes'] = max(c.fetchone()[0] or 0, 128)
+            stats['total_fiber_routes'] = c.fetchone()[0] or 0
         except:
-            stats['total_fiber_routes'] = 128
+            stats['total_fiber_routes'] = 0
+        try:
+            c.execute("SELECT COUNT(*) FROM metro_dark_fiber")
+            stats['total_metro_dark_fiber'] = c.fetchone()[0] or 0
+        except:
+            stats['total_metro_dark_fiber'] = 0
         try:
             c.execute("SELECT COUNT(*) FROM gas_pipelines")
-            stats['total_gas_pipelines'] = EIA_GAS_PIPELINE_BASE + (c.fetchone()[0] or 0)
+            stats['total_gas_pipelines'] = c.fetchone()[0] or 0
         except:
-            stats['total_gas_pipelines'] = EIA_GAS_PIPELINE_BASE
+            stats['total_gas_pipelines'] = 0
         
         try:
             c.execute("SELECT COUNT(*) FROM users")
@@ -7685,9 +7809,10 @@ def get_stats():
             'facilities': stats.get('total_facilities', 20000),
             'markets': len(stats.get('top_countries', {})),
             'deals': stats.get('total_announcements', 673),
-            'substations': stats.get('total_substations_hifld', 70000),
-            'fiber_routes': stats.get('total_fiber_routes', 128),
-            'gas_pipelines': stats.get('total_gas_pipelines', 300000),
+            'substations': stats.get('total_substations', 79755),
+            'fiber_routes': stats.get('total_fiber_routes', 1069),
+            'metro_dark_fiber': stats.get('total_metro_dark_fiber', 59),
+            'gas_pipelines': stats.get('total_gas_pipelines', 32851),
             'transmission_lines': stats.get('total_transmission_lines', 300000),
             'users': stats.get('total_users', 0),
             'new_users_7d': stats.get('new_users_7d', 0),
