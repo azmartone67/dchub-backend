@@ -24,6 +24,9 @@ import time
 expanded_infra_bp = Blueprint('expanded_infrastructure', __name__)
 
 HIFLD_BASE = 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services'
+# NOTE: HIFLD Open decommissioned Aug 26 2025. Transmission lines still live on Hp6G80Pky0om7QvQ.
+# Gas pipelines/substations moved to original source agencies or HIFLD Secure (restricted).
+DOT_GAS_PIPELINES = 'https://geo.dot.gov/server/rest/services/Hosted/Natural_Gas_Pipelines_US_EIA/FeatureServer/0'
 NASA_HIFLD = 'https://maps.nccs.nasa.gov/mapping/rest/services/hifld_open/energy/FeatureServer'
 FEMA_NFHL = 'https://hazards.fema.gov/gis/nfhl/rest/services/public/NFHL/MapServer'
 FRA_BASE = 'https://services.arcgis.com/xOi1kZaI0eWDREZv/arcgis/rest/services'
@@ -67,10 +70,10 @@ def bbox_from_params(lat, lng, radius_miles=50):
 
 LAYER_REGISTRY = {
     'hifld_substations': {
-        'name': 'HIFLD Substations',
-        'url': f'{HIFLD_BASE}/Electric_Substations/FeatureServer/0',
-        'count': '70k+',
-        'source': 'HIFLD/DHS',
+        'name': 'Electric Substations',
+        'url': None,  # HIFLD decommissioned Aug 2025 — data served from Neon (79,755 records)
+        'count': '79k+',
+        'source': 'HIFLD/Neon',
         'category': 'power'
     },
     'hifld_transmission': {
@@ -88,10 +91,10 @@ LAYER_REGISTRY = {
         'category': 'power'
     },
     'hifld_gas_pipelines': {
-        'name': 'HIFLD Natural Gas Pipelines',
-        'url': f'{HIFLD_BASE}/Natural_Gas_Pipelines/FeatureServer/0',
+        'name': 'Natural Gas Pipelines',
+        'url': DOT_GAS_PIPELINES,  # DOT GeoServer (EIA data) — replaces decommissioned HIFLD
         'count': '300k+',
-        'source': 'HIFLD/DOT',
+        'source': 'DOT/EIA',
         'category': 'gas'
     },
     'hifld_gas_compressors': {

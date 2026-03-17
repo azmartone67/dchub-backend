@@ -44,7 +44,8 @@ cors_proxy_bp = Blueprint('cors_proxy', __name__, url_prefix='/api/proxy')
 # Allowed API domains to proxy (whitelist for security)
 ALLOWED_DOMAINS = [
     'maps.nccs.nasa.gov',
-    'hifld-geoplatform.opendata.arcgis.com',
+    # 'hifld-geoplatform.opendata.arcgis.com',  # HIFLD Open decommissioned Aug 2025
+    'geo.dot.gov',  # DOT GeoServer — EIA pipeline data
     'services.arcgis.com',
     'services1.arcgis.com',
     'services2.arcgis.com',

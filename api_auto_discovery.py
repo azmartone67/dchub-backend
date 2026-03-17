@@ -46,7 +46,7 @@ KNOWN_API_SOURCES = [
         'name': 'HIFLD Electric Substations',
         'category': 'power',
         'type': 'arcgis',
-        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Substations_1/FeatureServer/0',
+        'url': None,  # HIFLD decommissioned Aug 2025 — data in Neon,
         'record_count': '70000+',
         'fields': ['NAME', 'CITY', 'STATE', 'STATUS', 'OWNER', 'VOLTAGE']
     },
@@ -70,7 +70,7 @@ KNOWN_API_SOURCES = [
         'name': 'HIFLD Natural Gas Pipelines',
         'category': 'gas',
         'type': 'arcgis',
-        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Natural_Gas_Pipelines_1/FeatureServer/0',
+        'url': 'https://geo.dot.gov/server/rest/services/Hosted/Natural_Gas_Pipelines_US_EIA/FeatureServer/0'  # replaces HIFLD,
         'record_count': '300000+',
         'fields': ['OPERATOR', 'TYPEPIPE', 'DIAMETER']
     },
@@ -151,7 +151,7 @@ KNOWN_API_SOURCES = [
 DISCOVERY_TARGETS = [
     {
         'name': 'HIFLD Open Data',
-        'url': 'https://hifld-geoplatform.opendata.arcgis.com/api/v2/datasets',
+        'url': None,  # HIFLD Open portal decommissioned Aug 2025,
         'type': 'catalog'
     },
     {
