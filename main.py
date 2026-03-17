@@ -10077,8 +10077,10 @@ def refresh_transactions():
     try:
         conn = get_db()
         c = conn.cursor()
-        total = c.execute("SELECT COUNT(*) FROM deals").fetchone()[0] or 0
-        newest = c.execute("SELECT MAX(date) FROM deals").fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM deals")
+        total = c.fetchone()[0] or 0
+        c.execute("SELECT MAX(date) FROM deals")
+        newest = c.fetchone()[0]
         conn.close()
         if 'autopilot' in _scheduler_registry:
             _scheduler_registry['autopilot']['last_run'] = datetime.utcnow().isoformat()
