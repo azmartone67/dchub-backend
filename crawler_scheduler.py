@@ -366,6 +366,25 @@ def _run_market_refresh():
     except Exception as e:
         logger.warning(f"   [5/5] Pipeline sync error: {e}")
 
+    # STEP 6: Refresh GDCI scores from facility data
+    try:
+        from db_utils import get_db
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("""
+            INSERT INTO gdci_scores (market, country, facility_count, total_mw, gdci_score, tier, computed_at)
+            SELECT COALESCE(city, state), COALESCE(country,'US'), COUNT(*), ROUND(SUM(COALESCE(power_mw,0))::numeric),
+                ROUND((LEAST(COUNT(*)/5.0, 25)*0.25 + LEAST(SUM(COALESCE(power_mw,0))/100.0, 25)*0.25 + 15*0.20 + 18*0.15 + 16*0.15)::numeric, 1),
+                CASE WHEN COUNT(*) >= 50 THEN 'Tier 1' WHEN COUNT(*) >= 20 THEN 'Tier 2' WHEN COUNT(*) >= 10 THEN 'Tier 3' ELSE 'Tier 4' END,
+                NOW()
+            FROM discovered_facilities WHERE city IS NOT NULL GROUP BY COALESCE(city,state), country HAVING COUNT(*) >= 5
+            ON CONFLICT (market, country) DO UPDATE SET facility_count=EXCLUDED.facility_count, total_mw=EXCLUDED.total_mw, gdci_score=EXCLUDED.gdci_score, tier=EXCLUDED.tier, computed_at=NOW()
+        """)
+        conn.commit()
+        logger.info(f"   [6/6] GDCI refresh: {c.rowcount} markets scored")
+    except Exception as e:
+        logger.warning(f"   [6/6] GDCI refresh error: {e}")
+
     logger.info("   === MARKET REFRESH COMPLETE ===")
 
 
