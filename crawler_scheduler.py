@@ -255,11 +255,12 @@ def _run_knowledge_sync():
 
 
 def _run_market_refresh():
-    """Refresh market intelligence: deals sync, GDCI recompute, market report, AI Wars.
-    This keeps all analytics sections current.
-    Scheduled: piggybacks on deals slot (08:00/20:00 UTC) or manual trigger.
+    """Refresh market intelligence: deals sync, GDCI recompute, market report, AI Wars, market_intelligence.
+    This is the most comprehensive scheduled job — keeps ALL analytics sections current.
+    7-step chain: deals → report → AI Wars → ecosystem → pipeline → GDCI → market_intelligence.
+    Scheduled: 09:00/21:00 UTC.
     """
-    logger.info("   === MARKET REFRESH START ===")
+    logger.info("   === MARKET REFRESH START (7 steps) ===")
 
     # STEP 1: Refresh deals from news sources
     try:
@@ -267,7 +268,7 @@ def _run_market_refresh():
         ds = DealScraper()
         result = ds.scrape_all()
         new_deals = result.get('new_deals', 0) if isinstance(result, dict) else 0
-        logger.info(f"   [1/5] Deals scraper: +{new_deals} new deals")
+        logger.info(f"   [1/7] Deals scraper: +{new_deals} new deals")
     except ImportError:
         # Fallback: trigger via HTTP
         try:
@@ -275,14 +276,14 @@ def _run_market_refresh():
             req = urllib.request.Request(
                 'https://dchub-backend-production.up.railway.app/api/deals/refresh',
                 method='POST',
-                headers={'X-Admin-Key': __import__('os').environ.get('DCHUB_ADMIN_KEY', '')}
+                headers={'X-Admin-Key': os.environ.get('DCHUB_ADMIN_KEY', '')}
             )
             urllib.request.urlopen(req, timeout=30)
-            logger.info("   [1/5] Deals refresh: triggered via API")
+            logger.info("   [1/7] Deals refresh: triggered via API")
         except Exception as e2:
-            logger.warning(f"   [1/5] Deals refresh error: {e2}")
+            logger.warning(f"   [1/7] Deals refresh error: {e2}")
     except Exception as e:
-        logger.warning(f"   [1/5] Deals scraper error: {e}")
+        logger.warning(f"   [1/7] Deals scraper error: {e}")
 
     if _stop_event.is_set():
         return
@@ -293,35 +294,37 @@ def _run_market_refresh():
         req = urllib.request.Request(
             'https://dchub-backend-production.up.railway.app/api/market-report/generate',
             method='POST',
-            headers={'X-Admin-Key': __import__('os').environ.get('DCHUB_ADMIN_KEY', '')}
+            headers={'X-Admin-Key': os.environ.get('DCHUB_ADMIN_KEY', '')}
         )
         resp = urllib.request.urlopen(req, timeout=30)
-        logger.info("   [2/5] Market report: regenerated")
+        logger.info("   [2/7] Market report: regenerated")
     except Exception as e:
-        logger.warning(f"   [2/5] Market report error: {e}")
+        logger.warning(f"   [2/7] Market report error: {e}")
 
     if _stop_event.is_set():
         return
 
     # STEP 3: AI Wars auto-challenge (benchmark AI platforms against DC Hub)
     try:
-        from ai_wars_automation import run_scheduled_battle
-        result = run_scheduled_battle()
-        logger.info(f"   [3/5] AI Wars: battle completed — {result if result else 'done'}")
-    except (ImportError, AttributeError):
-        try:
-            import urllib.request
-            req = urllib.request.Request(
-                'https://dchub-backend-production.up.railway.app/api/ai-wars/auto-battle',
-                method='POST',
-                headers={'X-Admin-Key': __import__('os').environ.get('DCHUB_ADMIN_KEY', '')}
-            )
-            urllib.request.urlopen(req, timeout=60)
-            logger.info("   [3/5] AI Wars: battle triggered via API")
-        except Exception as e2:
-            logger.warning(f"   [3/5] AI Wars error: {e2}")
+        import urllib.request, json as _json
+        categories = ['mcp-tool-test', 'site-selection', 'construction-pipeline', 'energy-ppa', 'ma-forensics', 'operator-showdown']
+        import random
+        cat = random.choice(categories)
+        req = urllib.request.Request(
+            'https://dchub-backend-production.up.railway.app/api/v1/ai-wars/auto-battle',
+            method='POST',
+            data=_json.dumps({'category': cat}).encode('utf-8'),
+            headers={
+                'X-Admin-Key': os.environ.get('DCHUB_ADMIN_KEY', ''),
+                'Content-Type': 'application/json',
+            }
+        )
+        resp = urllib.request.urlopen(req, timeout=120)
+        result_data = _json.loads(resp.read())
+        winner = result_data.get('winner', 'unknown')
+        logger.info(f"   [3/7] AI Wars: {cat} battle — winner: {winner}")
     except Exception as e:
-        logger.warning(f"   [3/5] AI Wars error: {e}")
+        logger.warning(f"   [3/7] AI Wars error: {e}")
 
     if _stop_event.is_set():
         return
@@ -332,12 +335,12 @@ def _run_market_refresh():
         req = urllib.request.Request(
             'https://dchub-backend-production.up.railway.app/api/ai-ecosystem/run',
             method='POST',
-            headers={'X-Admin-Key': __import__('os').environ.get('DCHUB_ADMIN_KEY', '')}
+            headers={'X-Admin-Key': os.environ.get('DCHUB_ADMIN_KEY', '')}
         )
         urllib.request.urlopen(req, timeout=30)
-        logger.info("   [4/5] Ecosystem discovery: triggered")
+        logger.info("   [4/7] Ecosystem discovery: triggered")
     except Exception as e:
-        logger.warning(f"   [4/5] Ecosystem discovery error: {e}")
+        logger.warning(f"   [4/7] Ecosystem discovery error: {e}")
 
     if _stop_event.is_set():
         return
@@ -362,9 +365,9 @@ def _run_market_refresh():
         """)
         new_pipeline = c.rowcount
         conn.commit()
-        logger.info(f"   [5/5] Pipeline sync: +{new_pipeline} new projects")
+        logger.info(f"   [5/7] Pipeline sync: +{new_pipeline} new projects")
     except Exception as e:
-        logger.warning(f"   [5/5] Pipeline sync error: {e}")
+        logger.warning(f"   [5/7] Pipeline sync error: {e}")
 
     # STEP 6: Refresh GDCI scores from facility data
     try:
@@ -381,9 +384,47 @@ def _run_market_refresh():
             ON CONFLICT (market, country) DO UPDATE SET facility_count=EXCLUDED.facility_count, total_mw=EXCLUDED.total_mw, gdci_score=EXCLUDED.gdci_score, tier=EXCLUDED.tier, computed_at=NOW()
         """)
         conn.commit()
-        logger.info(f"   [6/6] GDCI refresh: {c.rowcount} markets scored")
+        logger.info(f"   [6/7] GDCI refresh: {c.rowcount} markets scored")
     except Exception as e:
-        logger.warning(f"   [6/6] GDCI refresh error: {e}")
+        logger.warning(f"   [6/7] GDCI refresh error: {e}")
+
+    # STEP 7: Refresh market_intelligence with current facility counts
+    try:
+        from db_utils import get_db
+        conn = get_db()
+        c = conn.cursor()
+        # Map of market_name → city filter lists
+        MARKET_CITY_MAP = {
+            'Northern Virginia': ['Ashburn','Sterling','Manassas','Leesburg','Bristow','Chantilly','Herndon','Reston'],
+            'Phoenix': ['Phoenix','Mesa','Chandler','Goodyear','Tempe','Scottsdale'],
+            'Chicago': ['Chicago','Aurora','Elk Grove Village'],
+            'Atlanta': ['Atlanta','Douglasville','Lithia Springs','Suwanee'],
+            'Columbus': ['Columbus','New Albany'],
+            'Houston': ['Houston'],
+            'Denver': ['Denver'],
+            'Miami': ['Miami'],
+            'Austin': ['Austin'],
+        }
+        updated = 0
+        for market_name, cities in MARKET_CITY_MAP.items():
+            placeholders = ','.join(['%s'] * len(cities))
+            c.execute(f"""
+                UPDATE market_intelligence SET
+                    facility_count = sub.cnt,
+                    total_mw = sub.mw,
+                    last_updated = NOW()::text
+                FROM (
+                    SELECT COUNT(*) as cnt, ROUND(COALESCE(SUM(power_mw),0)::numeric) as mw
+                    FROM discovered_facilities WHERE city IN ({placeholders}) AND country = 'US'
+                ) sub
+                WHERE market_intelligence.market_name = %s
+            """, (*cities, market_name))
+            if c.rowcount:
+                updated += 1
+        conn.commit()
+        logger.info(f"   [7/7] Market intelligence: {updated} markets refreshed")
+    except Exception as e:
+        logger.warning(f"   [7/7] Market intelligence error: {e}")
 
     logger.info("   === MARKET REFRESH COMPLETE ===")
 
@@ -394,7 +435,11 @@ def _run_deals_crawler():
     """Run AI deals discovery using auto_pilot extractors, saving to Neon PostgreSQL."""
     import os, hashlib, psycopg2, sys
     from datetime import datetime, timezone
-    sys.path.insert(0, '/home/runner/workspace')
+    # Railway uses /app/, Replit used /home/runner/workspace
+    if os.path.exists('/app'):
+        sys.path.insert(0, '/app')
+    elif os.path.exists('/home/runner/workspace'):
+        sys.path.insert(0, '/home/runner/workspace')
 
     logger.info("💼 Deals crawler starting (Neon-backed)...")
 
