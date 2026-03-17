@@ -590,6 +590,17 @@ async def get_fiber_intel(
     # Get carrier sources summary from connectivity_providers
     if include_sources:
         results["sources"] = _api_get("/api/v1/fiber/sources")
+    # Metro dark fiber intelligence (market-level carrier data)
+    metro_params = {}
+    if carrier:
+        metro_params["carrier"] = carrier
+    metro_data = _api_get("/api/v1/fiber/metro", metro_params)
+    if metro_data and metro_data.get("success"):
+        results["metro_dark_fiber"] = {
+            "markets": metro_data.get("markets", []),
+            "total_markets": metro_data.get("total_markets", 0),
+            "total_route_miles": metro_data.get("total_route_miles", 0),
+        }
 
     results["source"] = "DC Hub Fiber Intelligence (dchub.cloud)"
     return json.dumps(results, indent=2)

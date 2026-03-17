@@ -2868,14 +2868,26 @@ def _gate_teaser_result(result_content, tool_name):
             return [{"type": "text", "text": json.dumps({k: v for k, v in teaser.items() if v is not None})}]
 
         elif tool_name == 'get_fiber_intel':
+            # Free tier: show metro fiber market rankings as teaser
+            metro_preview = []
+            try:
+                pg = _pg_connection()
+                mc = pg.cursor()
+                mc.execute("SELECT market, total_carriers, fiber_density_score, tier FROM metro_fiber_summary ORDER BY fiber_density_score DESC LIMIT 5")
+                for r in mc.fetchall():
+                    metro_preview.append({"market": r[0], "carriers": r[1], "density_score": r[2], "tier": r[3]})
+                mc.close()
+            except Exception:
+                pass
             teaser = {
                 '_user_facing_note': MCP_USER_NOTES['get_fiber_intel'],
                 'success': True,
+                'metro_fiber_preview': metro_preview,
                 'carriers_available': '██ upgrade to see carrier details',
                 'total_routes': '██',
                 '_upgrade': {
                     'tier': 'free_teaser',
-                    'message': "Fiber intelligence preview — Developer plan ($49/mo) unlocks full dark fiber routes, carrier networks, and connectivity scoring.",
+                    'message': "Fiber intelligence preview — Developer plan ($49/mo) unlocks full dark fiber routes, carrier networks, metro fiber density, and connectivity scoring across 19 US markets.",
                     'url': 'https://dchub.cloud/pricing#developer',
                     'checkout': 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c',
                     'price': '$49/mo',
@@ -3103,7 +3115,7 @@ def _gate_facility_data(data, tool_name):
             "price": "$49/mo",
         }
 
-        if sample_full and isinstance(sample_full, dict):
+        if sample_full and isinstance(sample_full, dict) and total_count > MCP_FREE_FACILITY_LIMIT:
             data['_sample_full_result'] = {
                 "_note": "This is what every result looks like on the Developer plan",
                 **sample_full
@@ -3209,6 +3221,8 @@ def _gate_mcp_response_bytes(resp_bytes, rpc_method, rpc_params, tier):
 
     gated_content = _gate_mcp_result(content, tool_name, tier)
     rpc_resp['result']['content'] = gated_content
+    # Strip structuredContent — contains raw ungated data from internal MCP
+    rpc_resp.get('result', {}).pop('structuredContent', None)
     return json.dumps(rpc_resp).encode('utf-8'), True
 
 
@@ -9895,6 +9909,81 @@ def _evolution_scheduler_loop():
 #     logger.info("🧬 Evolution Engine scheduler started (6h cycle)")
 if IS_RAILWAY and EVOLUTION_AVAILABLE:
     logger.info("🧬 Evolution Engine: DISABLED as background thread (managed by crawler_scheduler.py)")
+
+
+@app.route('/api/v1/fiber/metro', methods=['GET'])
+@app.route('/api/v1/fiber/metro/<market_name>', methods=['GET'])
+def fiber_metro_api(market_name=None):
+    """Metro dark fiber intelligence by market — carriers, route miles, density scores."""
+    try:
+        conn = _pg_connection()
+        cur = conn.cursor()
+        
+        if market_name:
+            # Single market detail
+            cur.execute("""
+                SELECT carrier, route_miles_approx, on_net_buildings, key_endpoints,
+                       services, notes, source, fiber_type
+                FROM metro_dark_fiber WHERE LOWER(market) = LOWER(%s)
+                ORDER BY route_miles_approx DESC
+            """, (market_name.replace('-', ' '),))
+            cols = ['carrier','route_miles_approx','on_net_buildings','key_endpoints','services','notes','source','fiber_type']
+            carriers = [dict(zip(cols, r)) for r in cur.fetchall()]
+            
+            cur.execute("""
+                SELECT market, state, total_carriers, total_route_miles_approx,
+                       total_on_net_buildings, fiber_density_score, tier,
+                       key_ix_points, key_carrier_hotels, notes
+                FROM metro_fiber_summary WHERE LOWER(market) = LOWER(%s)
+            """, (market_name.replace('-', ' '),))
+            row = cur.fetchone()
+            summary = None
+            if row:
+                summary = {
+                    'market': row[0], 'state': row[1], 'total_carriers': row[2],
+                    'total_route_miles': row[3], 'total_on_net_buildings': row[4],
+                    'fiber_density_score': row[5], 'tier': row[6],
+                    'key_ix_points': row[7], 'key_carrier_hotels': row[8], 'notes': row[9]
+                }
+            cur.close()
+            return jsonify({'success': True, 'market': market_name, 'summary': summary, 'carriers': carriers})
+        
+        else:
+            # All markets summary
+            carrier_filter = request.args.get('carrier', '')
+            cur.execute("""
+                SELECT market, state, total_carriers, total_route_miles_approx,
+                       total_on_net_buildings, fiber_density_score, tier
+                FROM metro_fiber_summary
+                ORDER BY fiber_density_score DESC
+            """)
+            cols = ['market','state','total_carriers','total_route_miles','total_on_net_buildings','fiber_density_score','tier']
+            markets = [dict(zip(cols, r)) for r in cur.fetchall()]
+            
+            if carrier_filter:
+                cur.execute("""
+                    SELECT market, route_miles_approx, on_net_buildings, services
+                    FROM metro_dark_fiber WHERE LOWER(carrier) = LOWER(%s)
+                    ORDER BY route_miles_approx DESC
+                """, (carrier_filter,))
+                cols2 = ['market','route_miles_approx','on_net_buildings','services']
+                carrier_markets = [dict(zip(cols2, r)) for r in cur.fetchall()]
+                cur.close()
+                return jsonify({'success': True, 'carrier': carrier_filter, 'markets': carrier_markets, 'total_markets': len(carrier_markets)})
+            
+            cur.execute("SELECT COUNT(*), SUM(route_miles_approx) FROM metro_dark_fiber")
+            row = cur.fetchone()
+            cur.close()
+            return jsonify({
+                'success': True,
+                'markets': markets,
+                'total_markets': len(markets),
+                'total_carrier_market_records': row[0] or 0,
+                'total_route_miles': row[1] or 0,
+                'source': 'DC Hub Metro Dark Fiber Intelligence (dchub.cloud)'
+            })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/api/schedulers/audit', methods=['GET'])
 def audit_schedulers():
