@@ -304,7 +304,7 @@ def find_nearest_substations(lat, lng, limit=5, max_distance_miles=25):
         deg_lng_adj = max_distance_miles / (69.0 * max(0.1, abs(_math.cos(_math.radians(lat)))))
         south, north = lat - deg, lat + deg
         west, east = lng - deg_lng_adj, lng + deg_lng_adj
-        query = f'[out:json][timeout:3];(node["power"="substation"]({south},{west},{north},{east});way["power"="substation"]({south},{west},{north},{east}););out center 10;'
+        query = f'[out:json][timeout:3];(node["power"="substation"]({south},{west},{north},{east});way["power"="substation"]({south},{west},{north},{east}););out tags center 10;'
         post_data = ('data=' + urllib.parse.quote(query)).encode()
         osm_data = None
         try:
