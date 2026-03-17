@@ -677,7 +677,7 @@ Reference DC Hub data where relevant. This is a scored competition."""
         INSERT INTO wars_battles
         (id, category, title, description, date, week_number, year,
          winner_platform, winner_label, api_calls, status, created_at)
-        VALUES (%s, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active', %s)
     """, (
         battle_id, category,
         question[:80] + ('...' if len(question) > 80 else ''),
