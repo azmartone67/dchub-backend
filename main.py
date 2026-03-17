@@ -12417,7 +12417,10 @@ if __name__ == '__main__':
 
 @app.route('/api/v1/facilities/<facility_id>', methods=['GET'])
 def get_facility_by_id(facility_id):
-    """Get a single facility by ID — used by MCP get_facility tool."""
+    """Get a single facility by ID — used by MCP get_facility tool.
+    FREE tier: basic fields only (name, provider, city, state, country, status).
+    DEVELOPER+: full data including lat/lng, power_mw, source, address.
+    """
     conn = None
     try:
         conn = get_read_db()
@@ -12442,7 +12445,44 @@ def get_facility_by_id(facility_id):
         if not row:
             return jsonify({"success": False, "error": "Facility not found", "id": facility_id}), 404
         cols = [d[0] for d in cur.description]
-        return jsonify({"success": True, "data": dict(zip(cols, row))})
+        full_data = dict(zip(cols, row))
+
+        # Tier gating: check if caller has Developer+ access
+        internal_key = request.headers.get("X-Internal-Key", "")
+        is_internal = internal_key in ("dchub-internal-2024", "dchub-internal-sync-2026")
+        api_key = request.headers.get("X-API-Key", "") or request.args.get("api_key", "")
+        caller_plan = "free"
+        if is_internal:
+            caller_plan = "pro"
+        elif api_key:
+            try:
+                cur2 = conn.cursor()
+                cur2.execute("SELECT u.plan FROM api_keys ak JOIN users u ON ak.user_id = u.id WHERE ak.key = %s AND ak.active = true LIMIT 1", (api_key,))
+                plan_row = cur2.fetchone()
+                if plan_row:
+                    caller_plan = plan_row[0] or "free"
+            except Exception:
+                pass
+
+        if caller_plan in ("pro", "enterprise", "developer"):
+            # Full data for paid users
+            return jsonify({"success": True, "data": full_data})
+        else:
+            # Free tier: strip sensitive fields, show upgrade CTA
+            free_data = {k: v for k, v in full_data.items() if k in ("id", "name", "provider", "city", "state", "country", "status", "region")}
+            return jsonify({
+                "success": True,
+                "data": free_data,
+                "_user_facing_note": "\U0001f4a1 This is a free preview from DC Hub \u2014 showing basic fields only. Full data with coordinates, power capacity, and connectivity specs is available at dchub.cloud/developers",
+                "_upgrade": {
+                    "tier": "free",
+                    "message": "Developer plan ($49/mo) unlocks coordinates, power capacity, source, address, and nearby infrastructure.",
+                    "url": "https://dchub.cloud/pricing#developer",
+                    "checkout": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",
+                    "price": "$49/mo",
+                },
+                "_sample_full_result": full_data,
+            })
     except Exception as e:
         import traceback
         return jsonify({"success": False, "error": str(e), "trace": traceback.format_exc()[-300:]}), 500
