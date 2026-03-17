@@ -452,31 +452,8 @@ def get_deals():
             deals = db_deals
         except Exception as e:
             logger.warning(f"Deals PG query failed, trying SQLite: {e}")
+    # SQLite fallback removed — Neon PG is source of truth
 
-    if not pg_url or len(deals) <= len(SAMPLE_DEALS):
-        try:
-            conn = _get_db()
-            c = conn.cursor()
-            c.execute("SELECT id, date, year, buyer, seller, value, mw, type, region, market FROM deals ORDER BY COALESCE(date, '1970-01-01') DESC LIMIT 200")
-            db_deals = []
-            for row in c.fetchall():
-                buyer = row[3] or ''
-                seller = row[4] or ''
-                if buyer.lower() in ['tbd', 'unknown', 'n/a', ''] or seller.lower() in ['tbd', 'unknown', 'n/a', '']:
-                    continue
-                db_deals.append({
-                    'id': row[0], 'date': row[1], 'year': row[2],
-                    'buyer': buyer, 'seller': seller, 'value': row[5],
-                    'mw': row[6], 'type': row[7], 'region': row[8], 'market': row[9]
-                })
-            conn.close()
-            existing_ids = {d['id'] for d in db_deals}
-            for d in deals:
-                if d['id'] not in existing_ids:
-                    db_deals.append(d)
-            deals = db_deals
-        except Exception as e:
-            logger.warning(f"Deals SQLite query also failed: {e}, using sample data")
     
     # Filter by category (group deal types)
     if category:
@@ -636,26 +613,8 @@ def _get_transactions_free():
         except Exception as e:
             logger.warning(f"Free transactions PG query failed: {e}")
 
-    if not loaded_from_db:
-        try:
-            conn = _get_db()
-            c = conn.cursor()
-            c.execute("SELECT id, date, year, buyer, seller, value, mw, type, region, market FROM deals ORDER BY COALESCE(date, '1970-01-01') DESC LIMIT 200")
-            db_deals = []
-            for row in c.fetchall():
-                buyer = row[3] or ''
-                seller = row[4] or ''
-                if buyer.lower() in ['tbd', 'unknown', 'n/a', ''] or seller.lower() in ['tbd', 'unknown', 'n/a', '']:
-                    continue
-                db_deals.append({'id': row[0], 'date': row[1], 'year': row[2], 'buyer': buyer, 'seller': seller, 'value': row[5], 'mw': row[6], 'type': row[7], 'region': row[8], 'market': row[9]})
-            conn.close()
-            existing_ids = {d['id'] for d in db_deals}
-            for d in deals:
-                if d['id'] not in existing_ids:
-                    db_deals.append(d)
-            deals = db_deals
-        except Exception as e:
-            logger.warning(f"Free transactions DB query failed: {e}, using sample data")
+    # SQLite fallback removed — Neon PG is source of truth
+
 
     deals.sort(key=lambda x: x.get('date') or '', reverse=True)
     total_matching = len(deals)
