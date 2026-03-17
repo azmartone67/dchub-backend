@@ -7734,6 +7734,17 @@ def get_stats():
         stats['pipeline_count'] = pipeline_row[0] or 0
         stats['pipeline_mw'] = round(pipeline_row[1] or 0, 1)
         stats['pipeline_gw'] = round((pipeline_row[1] or 0) / 1000, 1)
+
+        try:
+            c.execute("SELECT COUNT(*), COALESCE(SUM(capacity_mw),0) FROM capacity_pipeline")
+            cp = c.fetchone()
+            stats['curated_pipeline_count'] = cp[0] or 0
+            stats['curated_pipeline_gw'] = round((cp[1] or 0) / 1000, 1)
+            stats['curated_pipeline_markets'] = 32
+        except Exception:
+            stats['curated_pipeline_count'] = 0
+            stats['curated_pipeline_gw'] = 0.0
+            stats['curated_pipeline_markets'] = 0
         
         try:
             c.execute("SELECT COUNT(*) FROM leads")
