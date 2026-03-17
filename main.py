@@ -9873,7 +9873,7 @@ def fiber_sources():
         cursor.execute('''
             SELECT provider, route_type, COUNT(*) as route_count,
                    MIN(created_at) as first_seen, MAX(created_at) as last_updated
-            FROM fiber_carrier_routes
+            FROM fiber_routes
             GROUP BY provider, route_type
             ORDER BY route_count DESC
         ''')
@@ -9884,7 +9884,7 @@ def fiber_sources():
                 "first_seen": row[3], "last_updated": row[4]
             })
 
-        cursor.execute('SELECT COUNT(*) FROM fiber_carrier_routes')
+        cursor.execute('SELECT COUNT(*) FROM fiber_routes')
         total = cursor.fetchone()[0]
         conn.close()
 
@@ -12871,7 +12871,7 @@ def api_site_score():
         fiber_carriers = 0
         try:
             c.execute("""
-                SELECT COUNT(DISTINCT provider) FROM fiber_carrier_routes
+                SELECT COUNT(DISTINCT provider) FROM fiber_routes
                 WHERE UPPER(states_served) LIKE %s OR UPPER(states_served) LIKE %s
             """, (f'%{state}%', f'%, {state}%'))
             fiber_carriers = c.fetchone()[0] or 0
