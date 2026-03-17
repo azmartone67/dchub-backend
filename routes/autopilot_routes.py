@@ -521,6 +521,15 @@ def autopilot_detected_transactions():
 @autopilot_bp.route('/api/autopilot/capacity-pipeline')
 def autopilot_capacity_pipeline():
     """Return capacity pipeline data - merges DB with fallback if < 20 projects or < 5 GW"""
+    from flask import request as _req
+    _api_key = _req.headers.get('X-API-Key','') or _req.args.get('api_key','')
+    _auth = _req.headers.get('Authorization','')
+    if _auth.startswith('Bearer '): _api_key = _api_key or _auth[7:]
+    _admin = _req.headers.get('X-Admin-Key','')
+    _internal = _req.headers.get('X-Internal-Key','')
+    if not _api_key and _admin != 'f4f961b15334c7b3a570681354638ed5' and _internal != 'dchub-internal-sync-2026':
+        from flask import jsonify as _j
+        return _j({'error':'unauthorized','message':'API key required','upgrade':'https://dchub.cloud/pricing'}), 401
     conn = None
     try:
         conn = _get_db()
