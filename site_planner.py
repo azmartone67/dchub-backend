@@ -221,38 +221,7 @@ def find_nearest_substations(lat, lng, limit=5, max_distance_miles=25):
     
     Uses the substations table in Neon (populated from HIFLD).
     """
-    # Try PostGIS first (ST_DWithin + ST_Distance)
-    postgis_query = """
-        SELECT 
-            name,
-            state,
-            COALESCE(voltage_kv, 0) as voltage_kv,
-            operator,
-            lat,
-            lng,
-            ST_Distance(
-                ST_SetSRID(ST_MakePoint(lng, lat), 4326)::geography,
-                ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography
-            ) / 1609.34 as distance_miles
-        FROM substations
-        WHERE lat IS NOT NULL 
-          AND lng IS NOT NULL
-          AND ST_DWithin(
-                ST_SetSRID(ST_MakePoint(lng, lat), 4326)::geography,
-                ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography,
-                %s
-              )
-        ORDER BY distance_miles ASC
-        LIMIT %s;
-    """
-    max_distance_meters = max_distance_miles * 1609.34
-    result = execute_query(
-        postgis_query, 
-        (lng, lat, lng, lat, max_distance_meters, limit)
-    )
-    
-    if result:
-        return result
+    # Skip PostGIS (not installed in Neon) — go straight to Haversine
 
     # Fallback: Haversine with bounding box pre-filter (FAST)
     # 1 degree lat ≈ 69 miles, 1 degree lng ≈ 69 * cos(lat) miles
