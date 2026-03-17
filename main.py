@@ -7816,7 +7816,7 @@ def get_stats():
             'data': stats,
             'generated_at': datetime.utcnow().isoformat(),
             'version': 'v92',
-            'build': '92',
+            'build': '93',
             'facilities': stats.get('total_facilities', 20000),
             'markets': len(stats.get('top_countries', {})),
             'deals': stats.get('total_announcements', 673),
