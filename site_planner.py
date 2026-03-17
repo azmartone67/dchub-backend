@@ -1569,7 +1569,7 @@ def register_site_planner_routes(app):
                                      'DC Hub Facilities DB', 'EIA Power Pricing',
                                      'Gas Pipelines (10K+)', 'Capacity Pipeline (191 projects)'],
                 },
-            })
+            }))
         
         except Exception as e:
             logger.error(f"Site analysis failed: {e}\n{traceback.format_exc()}")
