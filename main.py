@@ -9916,7 +9916,7 @@ if IS_RAILWAY and EVOLUTION_AVAILABLE:
 def fiber_metro_api(market_name=None):
     """Metro dark fiber intelligence by market — carriers, route miles, density scores."""
     try:
-        conn = get_db()
+        conn = get_pg_connection()
         cur = conn.cursor()
         
         if market_name:
