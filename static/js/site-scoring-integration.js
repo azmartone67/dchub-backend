@@ -5,7 +5,16 @@
 
 const SiteScoring = {
     baseUrl: '',
-    
+
+    _getAuthHeaders() {
+        try {
+            const session = JSON.parse(localStorage.getItem('dchub_session') || '{}');
+            const key = session.api_key || session.apiKey || '';
+            if (key) return { 'X-API-Key': key };
+        } catch(e) {}
+        return {};
+    },
+
     async scoreSite(lat, lng, options = {}) {
         const params = new URLSearchParams({
             lat: lat,
@@ -15,7 +24,7 @@ const SiteScoring = {
         });
         
         try {
-            const response = await fetch(`${this.baseUrl}/api/site-score?${params}`);
+            const response = await fetch(`${this.baseUrl}/api/site-score?${params}`, { headers: this._getAuthHeaders() });
             const data = await response.json();
             return data;
         } catch (error) {
@@ -26,7 +35,7 @@ const SiteScoring = {
     
     async getEnergyPrices(state) {
         try {
-            const response = await fetch(`${this.baseUrl}/api/energy/prices/${state}`);
+            const response = await fetch(`${this.baseUrl}/api/energy/prices/${state}`, { headers: this._getAuthHeaders() });
             return await response.json();
         } catch (error) {
             console.error('Energy prices error:', error);
@@ -37,7 +46,7 @@ const SiteScoring = {
     async getCarbonIntensity(lat, lng) {
         const params = new URLSearchParams({ lat, lng });
         try {
-            const response = await fetch(`${this.baseUrl}/api/carbon/intensity?${params}`);
+            const response = await fetch(`${this.baseUrl}/api/carbon/intensity?${params}`, { headers: this._getAuthHeaders() });
             return await response.json();
         } catch (error) {
             console.error('Carbon intensity error:', error);
@@ -48,7 +57,7 @@ const SiteScoring = {
     async getSolarPotential(lat, lng) {
         const params = new URLSearchParams({ lat, lng });
         try {
-            const response = await fetch(`${this.baseUrl}/api/renewable/solar?${params}`);
+            const response = await fetch(`${this.baseUrl}/api/renewable/solar?${params}`, { headers: this._getAuthHeaders() });
             return await response.json();
         } catch (error) {
             console.error('Solar potential error:', error);
@@ -59,7 +68,7 @@ const SiteScoring = {
     async getWindPotential(lat, lng) {
         const params = new URLSearchParams({ lat, lng });
         try {
-            const response = await fetch(`${this.baseUrl}/api/renewable/wind?${params}`);
+            const response = await fetch(`${this.baseUrl}/api/renewable/wind?${params}`, { headers: this._getAuthHeaders() });
             return await response.json();
         } catch (error) {
             console.error('Wind potential error:', error);
@@ -70,7 +79,7 @@ const SiteScoring = {
     async getRenewableCombined(lat, lng) {
         const params = new URLSearchParams({ lat, lng });
         try {
-            const response = await fetch(`${this.baseUrl}/api/renewable/combined?${params}`);
+            const response = await fetch(`${this.baseUrl}/api/renewable/combined?${params}`, { headers: this._getAuthHeaders() });
             return await response.json();
         } catch (error) {
             console.error('Renewable combined error:', error);
@@ -81,7 +90,7 @@ const SiteScoring = {
     async getNearbyInfrastructure(lat, lng, radius = 50) {
         const params = new URLSearchParams({ lat, lng, radius });
         try {
-            const response = await fetch(`${this.baseUrl}/api/v1/infrastructure/nearby?${params}`);
+            const response = await fetch(`${this.baseUrl}/api/v1/infrastructure/nearby?${params}`, { headers: this._getAuthHeaders() });
             return await response.json();
         } catch (error) {
             console.error('Infrastructure error:', error);
@@ -96,7 +105,7 @@ const SiteScoring = {
             ...options
         });
         try {
-            const response = await fetch(`${this.baseUrl}/api/v1/gas-pipelines?${params}`);
+            const response = await fetch(`${this.baseUrl}/api/v1/gas-pipelines?${params}`, { headers: this._getAuthHeaders() });
             return await response.json();
         } catch (error) {
             console.error('Gas pipelines error:', error);
@@ -111,7 +120,7 @@ const SiteScoring = {
             ...options
         });
         try {
-            const response = await fetch(`${this.baseUrl}/api/v1/energy/substations?${params}`);
+            const response = await fetch(`${this.baseUrl}/api/v1/energy/substations?${params}`, { headers: this._getAuthHeaders() });
             return await response.json();
         } catch (error) {
             console.error('Substations error:', error);
@@ -123,7 +132,7 @@ const SiteScoring = {
         try {
             const response = await fetch(`${this.baseUrl}/api/v1/energy/compare-sites`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', ...this._getAuthHeaders() },
                 body: JSON.stringify({ sites })
             });
             return await response.json();
@@ -140,7 +149,7 @@ const SiteScoring = {
             radius: options.radius || 50
         });
         try {
-            const response = await fetch(`${this.baseUrl}/api/v1/energy/site-analysis?${params}`);
+            const response = await fetch(`${this.baseUrl}/api/v1/energy/site-analysis?${params}`, { headers: this._getAuthHeaders() });
             return await response.json();
         } catch (error) {
             console.error('Site analysis error:', error);

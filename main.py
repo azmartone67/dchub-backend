@@ -12724,12 +12724,33 @@ def get_facility_by_id(facility_id):
 @app.route('/api/site-score', methods=['GET'])
 def api_site_score():
     """Composite site suitability score for data center development."""
+    # Auth: internal key, X-API-Key header, Bearer token, or session user
     internal_key = request.headers.get("X-Internal-Key", "")
-    if internal_key not in ("dchub-internal-2024", "dchub-internal-sync-2026"):
-        user = getattr(request, "current_user", None)
-        plan = (user or {}).get("plan", "free") if isinstance(user, dict) else "free"
-        if plan not in ("pro", "enterprise"):
-            return jsonify({"error": "plan_required", "message": "Site scoring requires Pro plan.", "success": False}), 403
+    _authed = internal_key in ("dchub-internal-2024", "dchub-internal-sync-2026")
+    if not _authed:
+        # Check X-API-Key / Bearer token against DB
+        _api_key = (
+            request.headers.get('X-API-Key', '') or
+            request.args.get('api_key', '') or
+            (request.headers.get('Authorization', '')[7:].strip()
+             if request.headers.get('Authorization', '').startswith('Bearer ') else '')
+        )
+        if _api_key and _api_key.startswith('dchub_'):
+            try:
+                _kconn = get_read_db()
+                _kc = _kconn.cursor()
+                _kc.execute("SELECT u.plan FROM api_keys ak JOIN users u ON ak.user_id = u.id WHERE ak.key_value = %s AND ak.is_active = TRUE LIMIT 1", (_api_key,))
+                _krow = _kc.fetchone()
+                _kconn.close()
+                if _krow and _krow[0] in ('pro', 'enterprise', 'developer'):
+                    _authed = True
+            except Exception as _ke:
+                logger.warning(f"site-score key lookup failed: {_ke}")
+        if not _authed:
+            user = getattr(request, "current_user", None)
+            plan = (user or {}).get("plan", "free") if isinstance(user, dict) else "free"
+            if plan not in ("pro", "enterprise", "developer"):
+                return jsonify({"error": "plan_required", "message": "Site scoring requires Pro plan. Upgrade at dchub.cloud/pricing", "upgrade_url": "https://dchub.cloud/pricing", "success": False}), 403
     lat = request.args.get('lat', type=float)
     lon = request.args.get('lon', type=float)
     state = request.args.get('state', '').upper()
