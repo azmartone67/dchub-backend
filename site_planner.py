@@ -251,7 +251,7 @@ def find_nearest_substations(lat, lng, limit=5, max_distance_miles=25):
         (lng, lat, lng, lat, max_distance_meters, limit)
     )
     
-    if result is not None:
+    if result:
         return result
 
     # Fallback: Haversine with bounding box pre-filter (FAST)
@@ -291,7 +291,7 @@ def find_nearest_substations(lat, lng, limit=5, max_distance_miles=25):
         limit
     ))
     
-    if result is not None:
+    if result:
         return result
 
     logger.warning("Local substations query returned empty — trying HIFLD API fallback")

@@ -1,6 +1,6 @@
 {
-  "report_date": "2026-03-16",
-  "generated_at": "2026-03-16T23:57:08.536858",
+  "report_date": "2026-03-17",
+  "generated_at": "2026-03-17T03:36:43.805574",
   "summary": {
     "total_facilities": 11798,
     "total_providers": 2808,
@@ -89,54 +89,54 @@
   ],
   "recent_news": [
     {
-      "title": "Switch integrates Nvidia Omniverse DSX Blueprint into EVO AI data center design",
-      "source": "Data Center Dynamics",
-      "date": "2026-03-16T19:59:18"
-    },
-    {
-      "title": "Pharmaceutical company Roche deploys 3,500 Nvidia Blackwell GPUs across hybrid cloud and on\u2010premises",
-      "source": "Data Center Dynamics",
-      "date": "2026-03-16T19:57:44"
-    },
-    {
-      "title": "Nvidia unveils Vera Rubin DSX AI Factory Reference Design and Omniverse DSX digital twin",
-      "source": "Data Center Dynamics",
-      "date": "2026-03-16T19:57:23"
-    },
-    {
-      "title": "Workshop tackles AI data center power, security challenges",
-      "source": "EurekAlert!",
-      "date": "2026-03-16T19:54:22"
-    },
-    {
-      "title": "Apex weighs pause on data centers as resistance spreads across NC",
-      "source": "NC Newsline",
-      "date": "2026-03-16T19:40:24"
-    },
-    {
-      "title": "Nvidia powers further into the CPU market with new rack systems packing 256 Vera processors",
+      "title": "Nvidia's DLSS 5 promises to bring you out the other side of the uncanny valley",
       "source": "The Register DC",
-      "date": "2026-03-16T19:35:32"
+      "date": "2026-03-16T21:35:05"
     },
     {
-      "title": "Nvidia Vera CPU enters full production, pitched at agentic AI workloads",
-      "source": "Data Center Dynamics",
-      "date": "2026-03-16T19:32:01"
+      "title": "Google to invest $500M into Allen Co. for data center",
+      "source": "WTVG",
+      "date": "2026-03-16T21:31:00"
     },
     {
-      "title": "Nvidia slaps $20B Groq tech into massive new LPX racks to speed AI response time",
-      "source": "The Register DC",
-      "date": "2026-03-16T19:30:56"
+      "title": "795-acre proposed data center to take center stage at Joliet City Council meeting",
+      "source": "WGN-TV",
+      "date": "2026-03-16T21:29:18"
     },
     {
-      "title": "Nvidia announces Groq 3 LPU AI inference chip, plans 256-LPU rack",
-      "source": "Data Center Dynamics",
-      "date": "2026-03-16T19:26:46"
+      "title": "Nvidia CEO predicts $1tn compute demand as AI reaches \u2018platform shift\u2019",
+      "source": "Capacity Media",
+      "date": "2026-03-16T21:28:36"
     },
     {
-      "title": "Nvidia CEO Jensen Huang says company has one trillion dollars in orders through 2027",
-      "source": "Data Center Dynamics",
-      "date": "2026-03-16T19:18:55"
+      "title": "800 VDC Architecture for AI Data Centers",
+      "source": "NVIDIA",
+      "date": "2026-03-16T21:27:46"
+    },
+    {
+      "title": "Meta to spend up to $27 billion on AI infrastructure deal with Nebius",
+      "source": "The American Bazaar",
+      "date": "2026-03-16T21:18:04"
+    },
+    {
+      "title": "Nvidia Moves To Control AI Data Centers End To End",
+      "source": "findarticles.com",
+      "date": "2026-03-16T21:13:37"
+    },
+    {
+      "title": "TI unveils complete 800 VDC power architecture for future generation AI data centers with NVIDIA",
+      "source": "Morningstar",
+      "date": "2026-03-16T21:02:11"
+    },
+    {
+      "title": "Flex Accelerates AI Factory Deployment with NVIDIA Omniverse DSX Reference Designs - Flex",
+      "source": "Investor Relations",
+      "date": "2026-03-16T20:53:12"
+    },
+    {
+      "title": "Buy Eaton Stock, Analyst Says. It\u2019s an AI Data Center Play.",
+      "source": "Barron's",
+      "date": "2026-03-16T20:50:00"
     }
   ],
   "data_sources": [
