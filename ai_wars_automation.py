@@ -21,7 +21,6 @@ Endpoints:
   POST /api/v1/ai-wars/submit-challenge - User-submitted challenge from the website
 """
 
-import sqlite3
 import uuid
 import json
 import time
@@ -32,8 +31,6 @@ import re
 from datetime import datetime, timezone, timedelta
 
 logger = logging.getLogger(__name__)
-
-AI_WARS_DB = "ai_wars.db"
 
 # ─── Battle question templates ───
 QUESTION_TEMPLATES = [
@@ -85,6 +82,34 @@ QUESTION_TEMPLATES = [
             "What are the 3 most significant data center deals, announcements, or market shifts this week?",
         ]
     },
+    {
+        'category': 'mcp-tool-test',
+        'templates': [
+            "Use DC Hub's search_facilities tool to find all {provider1} facilities in Virginia. How many are there and what's the total MW?",
+            "Use DC Hub's analyze_site tool to score {market} for a {mw}MW data center. What infrastructure is nearby?",
+            "Use DC Hub's get_infrastructure tool to find substations within 50km of {market}. What's the highest voltage available?",
+            "Using DC Hub's MCP tools, compare {market} vs Phoenix for a {mw}MW hyperscale campus. Which scores higher?",
+            "Query DC Hub's search_facilities for the largest data center under construction in the US. What is it and who's building it?",
+            "Use DC Hub to find all Tallgrass Energy data center sites. How many MW total across their portfolio?",
+            "Use DC Hub's get_news tool to find the latest M&A deal. What was the transaction value?",
+        ]
+    },
+    {
+        'category': 'energy-ppa',
+        'templates': [
+            "Which data center operators have signed nuclear power purchase agreements? Use DC Hub data.",
+            "Compare behind-the-meter vs front-of-meter power strategies for hyperscale data centers using DC Hub energy data.",
+            "What is the total MW of nuclear PPAs signed for data centers? Which operators are leading this trend?",
+        ]
+    },
+    {
+        'category': 'construction-pipeline',
+        'templates': [
+            "What are the 5 largest data center projects currently under construction? Use DC Hub pipeline data.",
+            "How many GW of data center capacity is in the construction pipeline? Break it down by status.",
+            "Which markets have the most data center construction activity right now? Use DC Hub capacity pipeline data.",
+        ]
+    },
 ]
 
 # Markets and providers for template filling
@@ -104,12 +129,28 @@ MW_OPTIONS = [50, 100, 200, 300, 500]
 REGIONS = ['North America', 'EMEA', 'APAC']
 
 
+
+
+def _row_to_dict(cursor, row):
+    """Convert a database row to dict using cursor description."""
+    if row is None:
+        return None
+    if isinstance(row, dict):
+        return row
+    try:
+        cols = [desc[0] for desc in cursor.description]
+        return dict(zip(cols, row))
+    except Exception:
+        return dict(row) if hasattr(row, 'keys') else {}
+
 def _get_db():
-    conn = sqlite3.connect(AI_WARS_DB, timeout=10)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
-    return conn
+    """Get Neon PostgreSQL connection for AI Wars."""
+    try:
+        from db_utils import get_db
+        return get_db()
+    except Exception as e:
+        logger.error(f"AI Wars DB connection error: {e}")
+        raise
 
 
 def _generate_question():
@@ -134,7 +175,7 @@ def _generate_question():
     }
 
 
-def _enrich_question_with_data(question, api_base='http://localhost:5000'):
+def _enrich_question_with_data(question, api_base='https://dchub-backend-production.up.railway.app'):
     """Pull fresh DC Hub data to include as context for the AI platforms."""
     import requests
     context = {}
@@ -521,7 +562,7 @@ def _call_perplexity(prompt, max_tokens=1000):
     return ""
 
 
-def _run_battle(question, category, fighters_config=None, api_base='http://localhost:5000'):
+def _run_battle(question, category, fighters_config=None, api_base='https://dchub-backend-production.up.railway.app'):
     """Run a battle: send question to platforms, score responses, save results.
     
     fighters_config: list of dicts with platform keys to include.
@@ -579,7 +620,7 @@ Reference DC Hub data where relevant. This is a scored competition."""
             scores['speed'] = max(20, min(100, int(100 - elapsed * 2)))
         else:
             # Simulated scoring based on historical platform performance
-            c.execute("SELECT * FROM wars_platform_stats WHERE platform = ?", (platform_key,))
+            c.execute("SELECT * FROM wars_platform_stats WHERE platform = %s", (platform_key,))
             stats = c.fetchone()
             if stats:
                 import random
@@ -636,7 +677,7 @@ Reference DC Hub data where relevant. This is a scored competition."""
         INSERT INTO wars_battles
         (id, category, title, description, date, week_number, year,
          winner_platform, winner_label, api_calls, status, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
+        VALUES (%s, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
     """, (
         battle_id, category,
         question[:80] + ('...' if len(question) > 80 else ''),
@@ -654,7 +695,7 @@ Reference DC Hub data where relevant. This is a scored competition."""
             (id, battle_id, platform, role,
              score_accuracy, score_depth, score_speed, score_citation, score_insight, score_overall,
              api_calls, pick, is_winner)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             fid, battle_id, f['platform'], f.get('role'),
             f['scores']['accuracy'], f['scores']['depth'], f['scores']['speed'],
@@ -692,7 +733,7 @@ def _recalculate_all_stats(conn):
                    AVG(score_citation) as cit,
                    AVG(score_insight) as ins,
                    AVG(score_overall) as ovr
-            FROM wars_fighters WHERE platform = ?
+            FROM wars_fighters WHERE platform = %s
         """, (platform,))
         row = c.fetchone()
 
@@ -702,7 +743,7 @@ def _recalculate_all_stats(conn):
                 (platform, total_battles, total_wins, total_api_calls,
                  avg_accuracy, avg_depth, avg_speed, avg_citation, avg_insight,
                  overall_score, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(platform) DO UPDATE SET
                     total_battles = excluded.total_battles,
                     total_wins = excluded.total_wins,
@@ -724,7 +765,7 @@ def _recalculate_all_stats(conn):
             ))
 
 
-def _weekly_battle_runner(api_base='http://localhost:5000'):
+def _weekly_battle_runner(api_base='https://dchub-backend-production.up.railway.app'):
     """Run a set of weekly battles across all categories."""
     logger.info("⚔️ AI Wars weekly battle runner starting...")
     battles_run = 0
@@ -879,7 +920,7 @@ def register_wars_automation(app):
             try:
                 battle_id, results = _run_battle(question, 'stump-the-ai')
                 if battle_id:
-                    c.execute("UPDATE wars_challenges SET status='completed', battle_id=? WHERE id=?",
+                    c.execute("UPDATE wars_challenges SET status='completed', battle_id=? WHERE id=%s",
                               (battle_id, challenge_id))
                     conn.commit()
                     battle_result = {
@@ -947,7 +988,7 @@ def register_wars_automation(app):
                     conn = _get_db()
                     c = conn.cursor()
                     today = now.strftime('%Y-%m-%d')
-                    c.execute("SELECT COUNT(*) FROM wars_battles WHERE date = ? AND category = 'weekly-brief'", (today,))
+                    c.execute("SELECT COUNT(*) FROM wars_battles WHERE date = %s AND category = 'weekly-brief'", (today,))
                     ran_today = c.fetchone()[0]
                     conn.close()
 
@@ -971,7 +1012,7 @@ def register_wars_automation(app):
                             battle_id, results = _run_battle(challenge['question'], 'stump-the-ai')
                             if battle_id:
                                 conn = _get_db()
-                                conn.execute("UPDATE wars_challenges SET status='completed', battle_id=? WHERE id=?",
+                                conn.execute("UPDATE wars_challenges SET status='completed', battle_id=%s WHERE id=%s",
                                              (battle_id, challenge['id']))
                                 conn.commit()
                                 conn.close()
