@@ -9903,7 +9903,7 @@ def fiber_routes_api():
         conn = get_db()
         cursor = conn.cursor()
 
-        query = 'SELECT * FROM fiber_carrier_routes WHERE 1=1'
+        query = 'SELECT * FROM fiber_routes WHERE 1=1'
         params = []
         if carrier:
             query += ' AND provider = %s'
@@ -9921,9 +9921,13 @@ def fiber_routes_api():
         features = []
         for row in rows:
             row_dict = dict(zip(columns, row))
-            coords_raw = row_dict.get('coordinates', '[]')
+            # fiber_routes stores start/end lat/lng, build 2-point LineString
             try:
-                coords = json.loads(coords_raw) if isinstance(coords_raw, str) else coords_raw
+                slat = float(row_dict.get('start_lat') or 0)
+                slng = float(row_dict.get('start_lng') or 0)
+                elat = float(row_dict.get('end_lat') or 0)
+                elng = float(row_dict.get('end_lng') or 0)
+                coords = [[slng, slat], [elng, elat]] if slat and slng and elat and elng else []
             except Exception:
                 coords = []
 
@@ -9933,9 +9937,9 @@ def fiber_routes_api():
                     "name": row_dict.get('name', ''),
                     "carrier": row_dict.get('provider', ''),
                     "route_type": row_dict.get('route_type', ''),
-                    "start_point": row_dict.get('start_point', ''),
-                    "end_point": row_dict.get('end_point', ''),
-                    "distance_km": row_dict.get('distance_km'),
+                    "start_point": row_dict.get('start_location', ''),
+                    "end_point": row_dict.get('end_location', ''),
+                    "distance_km": row_dict.get('distance_miles'),
                 },
                 "geometry": {
                     "type": "LineString",
@@ -10202,7 +10206,7 @@ def data_freshness():
             'health': 'healthy' if deals_count > 0 else 'stale'
         }
 
-        pipeline_count = safe_query("SELECT COUNT(*) FROM pipeline", 0)
+        pipeline_count = safe_query("SELECT COUNT(*) FROM capacity_pipeline", 0)
         feeds['pipeline'] = {
             'record_count': pipeline_count if pipeline_count else len(PIPELINE_DATA) if 'PIPELINE_DATA' in dir() else 0,
             'last_updated': now.isoformat(),
