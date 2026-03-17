@@ -495,7 +495,7 @@ def get_hifld_substations():
 
 @expanded_infra_bp.route('/api/v2/infrastructure/hifld/transmission', methods=['GET'])
 def get_hifld_transmission():
-    """Query transmission lines from Neon PostgreSQL via nearby substations."""
+    """Query transmission lines from Neon PostgreSQL. Uses market mapping for fast queries."""
     lat = request.args.get('lat', type=float)
     lng = request.args.get('lng', type=float)
     radius = request.args.get('radius', 30, type=float)
@@ -504,6 +504,29 @@ def get_hifld_transmission():
     state = request.args.get('state')
     market = request.args.get('market')
     limit = min(request.args.get('limit', 200, type=int), 1000)
+
+    # Market centers for lat/lng → market mapping
+    MARKET_CENTERS = {
+        'northern_virginia': (39.04, -77.49), 'atlanta': (33.75, -84.39),
+        'dallas': (32.78, -96.80), 'chicago': (41.88, -87.63),
+        'phoenix': (33.45, -112.07), 'las_vegas': (36.17, -115.14),
+        'houston': (29.76, -95.37), 'denver': (39.74, -104.99),
+        'silicon_valley': (37.39, -122.08), 'seattle_quincy': (47.23, -119.85),
+        'portland_hillsboro': (45.52, -122.99), 'salt_lake': (40.76, -111.89),
+        'new_york_nj': (40.77, -74.17), 'columbus': (40.00, -82.88),
+        'san_antonio': (29.42, -98.49), 'kansas_city': (39.10, -94.58),
+        'miami': (25.76, -80.19), 'nashville': (36.16, -86.78),
+        'minneapolis': (44.98, -93.27), 'des_moines': (41.59, -93.62),
+    }
+
+    def find_nearest_market(lat, lng, radius_miles=100):
+        import math
+        best_market, best_dist = None, float('inf')
+        for mkt, (mlat, mlng) in MARKET_CENTERS.items():
+            dist = math.sqrt((lat - mlat)**2 + (lng - mlng)**2) * 69
+            if dist < best_dist:
+                best_market, best_dist = mkt, dist
+        return best_market if best_dist <= radius_miles else None
 
     try:
         from db_utils import get_db
@@ -517,40 +540,28 @@ def get_hifld_transmission():
             conditions.append('t.voltage_kv >= %s')
             params.append(min_kv)
         if state:
-            conditions.append('(s1.state = %s OR s2.state = %s)')
-            params.extend([state.upper(), state.upper()])
+            conditions.append('t.market IN (SELECT DISTINCT market FROM discovered_transmission_lines WHERE market IS NOT NULL)')
         if market:
             conditions.append('t.market ILIKE %s')
             params.append(f'%{market}%')
 
-        if lat and lng:
-            # Find transmission lines connected to substations near the point
-            lat_range = radius / 69.0
-            import math
-            lng_range = radius / (69.0 * max(0.1, abs(math.cos(math.radians(lat)))))
-
+        if lat and lng and not market:
+            # Map lat/lng to nearest market for fast indexed query
+            nearest_market = find_nearest_market(lat, lng, radius * 1.5)
+            if nearest_market:
+                conditions.append('t.market = %s')
+                params.append(nearest_market)
+        where = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
+        if conditions:
             query = f"""
-                SELECT DISTINCT ON (t.id)
-                    t.id, t.owner, t.voltage_kv, t.volt_class, t.sub_1, t.sub_2, t.status, t.market,
-                    s1.lat as sub1_lat, s1.lng as sub1_lng, s1.name as sub1_name,
-                    s2.lat as sub2_lat, s2.lng as sub2_lng, s2.name as sub2_name,
-                    LEAST(
-                        ROUND((3959 * acos(LEAST(1.0, cos(radians(%s)) * cos(radians(s1.lat)) * cos(radians(s1.lng) - radians(%s)) + sin(radians(%s)) * sin(radians(s1.lat)))))::numeric, 2),
-                        ROUND((3959 * acos(LEAST(1.0, cos(radians(%s)) * cos(radians(s2.lat)) * cos(radians(s2.lng) - radians(%s)) + sin(radians(%s)) * sin(radians(s2.lat)))))::numeric, 2)
-                    ) as distance_miles
+                SELECT t.id, t.owner, t.voltage_kv, t.volt_class, t.sub_1, t.sub_2, t.status, t.market,
+                       NULL as distance_miles
                 FROM discovered_transmission_lines t
-                LEFT JOIN substations s1 ON LOWER(s1.name) LIKE LOWER(t.sub_1 || '%%')
-                LEFT JOIN substations s2 ON LOWER(s2.name) LIKE LOWER(t.sub_2 || '%%')
-                WHERE (s1.lat BETWEEN %s AND %s OR s2.lat BETWEEN %s AND %s)
-                  AND (s1.lng BETWEEN %s AND %s OR s2.lng BETWEEN %s AND %s)
-                  {'AND ' + ' AND '.join(conditions) if conditions else ''}
-                ORDER BY t.id, distance_miles
+                {where}
+                ORDER BY t.voltage_kv DESC NULLS LAST
                 LIMIT %s
             """
-            params_full = [lat, lng, lat, lat, lng, lat,
-                          lat - lat_range, lat + lat_range, lat - lat_range, lat + lat_range,
-                          lng - lng_range, lng + lng_range, lng - lng_range, lng + lng_range
-                          ] + params + [limit]
+            params_full = params + [limit]
         else:
             # No location - filter by market or state
             where = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
