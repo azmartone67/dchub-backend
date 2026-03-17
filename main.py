@@ -9903,7 +9903,7 @@ def fiber_routes_api():
         conn = get_db()
         cursor = conn.cursor()
 
-        query = 'SELECT * FROM fiber_routes WHERE 1=1'
+        query = 'SELECT * FROM fiber_routes WHERE start_lat IS NOT NULL'
         params = []
         if carrier:
             query += ' AND provider = %s'
