@@ -22,7 +22,7 @@ import logging
 import threading
 from datetime import datetime, timedelta
 from functools import wraps
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, make_response
 
 logger = logging.getLogger(__name__)
 
@@ -262,7 +262,7 @@ def register_user():
 
             token = generate_jwt(user_id, email, 'user', 'free')
 
-            return jsonify({
+            resp = make_response(jsonify({
                 'success': True,
                 'token': token,
                 'user': {
@@ -273,7 +273,11 @@ def register_user():
                     'plan': 'free',
                     'role': 'user'
                 }
-            }), 201
+            }), 201)
+            resp.set_cookie('dchub_token', token, domain='.dchub.cloud',
+                            httponly=False, secure=True, samesite='Lax',
+                            max_age=30 * 24 * 60 * 60)
+            return resp
     except Exception as e:
         logger.error(f"Registration error: {e}")
         return jsonify({'error': 'Registration failed'}), 500
@@ -328,7 +332,7 @@ def login_user():
                     pass
             threading.Thread(target=_update_last_login_bg, args=(user_id,), daemon=True).start()
 
-            return jsonify({
+            resp = make_response(jsonify({
                 'success': True,
                 'token': token,
                 'user': {
@@ -339,7 +343,18 @@ def login_user():
                     'plan': plan or 'free',
                     'role': role or 'user'
                 }
-            })
+            }))
+            # Set cross-subdomain cookie so dchub.cloud picks up auth from dashboard.dchub.cloud
+            resp.set_cookie(
+                'dchub_token',
+                token,
+                domain='.dchub.cloud',
+                httponly=False,   # JS must read this for access gate
+                secure=True,
+                samesite='Lax',
+                max_age=30 * 24 * 60 * 60  # 30 days
+            )
+            return resp
     except Exception as e:
         logger.error(f"Login error: {e}")
         return jsonify({'error': 'Login failed'}), 500
@@ -567,7 +582,7 @@ def google_auth():
 
         jwt_token = generate_jwt(user_id, email, user_role, user_plan)
 
-        return jsonify({
+        resp = make_response(jsonify({
             'success': True,
             'token': jwt_token,
             'user': {
@@ -578,7 +593,11 @@ def google_auth():
                 'plan': user_plan,
                 'role': user_role
             }
-        })
+        }))
+        resp.set_cookie('dchub_token', jwt_token, domain='.dchub.cloud',
+                        httponly=False, secure=True, samesite='Lax',
+                        max_age=30 * 24 * 60 * 60)
+        return resp
     except Exception as e:
         logger.error(f"Google auth error: {e}")
         import traceback; traceback.print_exc()
