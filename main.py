@@ -2871,7 +2871,7 @@ def _gate_teaser_result(result_content, tool_name):
             # Free tier: show metro fiber market rankings as teaser
             metro_preview = []
             try:
-                pg = _pg_connection()
+                pg = get_pg_connection()
                 mc = pg.cursor()
                 mc.execute("SELECT market, total_carriers, fiber_density_score, tier FROM metro_fiber_summary ORDER BY fiber_density_score DESC LIMIT 5")
                 for r in mc.fetchall():
@@ -9916,7 +9916,7 @@ if IS_RAILWAY and EVOLUTION_AVAILABLE:
 def fiber_metro_api(market_name=None):
     """Metro dark fiber intelligence by market — carriers, route miles, density scores."""
     try:
-        conn = _pg_connection()
+        conn = get_pg_connection()
         cur = conn.cursor()
         
         if market_name:
