@@ -51,6 +51,7 @@ GATED_PREFIXES = [
 
 # Never gated
 ALWAYS_OPEN_PREFIXES = [
+    '/api/v1/fiber/metro',
     '/api/v1/auth',
     '/api/v1/usage-status',
     '/api/v1/map/register-load',
