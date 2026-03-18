@@ -13249,6 +13249,15 @@ try:
 except Exception as e:
     print(f"💳 Webhook Alert Endpoint: ⚠️ Failed to load: {e}")
 
+
+    # API Integration Wiring (carbon, climate, risk, water, energy rates)
+    try:
+        from routes.api_integration_wiring import register_api_integration_routes, enrich_site_analysis
+        register_api_integration_routes(app)
+        print("🔬 API Integration Wiring: ✅ Registered (4 routes)")
+    except Exception as e:
+        print(f"❌ API integration wiring failed: {e}")
+
 # =============================================================================
 # FACILITY AUTO-APPROVE PIPELINE v2.0
 # Moves discovered_facilities → facilities with dedup logic
