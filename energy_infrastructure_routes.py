@@ -546,7 +546,7 @@ def setup_energy_routes(app):
                            CAST(NULLIF(metadata->>'voltage_kv', '') AS NUMERIC) as voltage
                     FROM infrastructure_layers
                     WHERE latitude BETWEEN %s AND %s AND longitude BETWEEN %s AND %s
-                      AND LOWER(layer_type) IN ('transmission', 'transmission_line', 'electric_power_transmission_lines')
+                      AND LOWER(layer_name) IN ('transmission', 'transmission_line', 'electric_power_transmission_lines', 'transmission lines')
                     LIMIT 200
                 """, (bounds['minLat'], bounds['maxLat'], bounds['minLng'], bounds['maxLng']))
                 for row in _nc.fetchall():
