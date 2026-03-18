@@ -1051,7 +1051,16 @@ except ImportError:
 except Exception as e:
     print(f"📊 DC Hub Index: ⚠️ Error: {e}")
 # =============================================================================
-# EARLY require_plan STUB - Must be available before first @app.route usage
+# EARLY require_plan STUB - Must be available before first 
+@app.route('/research')
+def research_page():
+    try:
+        with open(os.path.join(os.path.dirname(__file__), 'research.html')) as fh:
+            return fh.read(), 200, {'Content-Type': 'text/html'}
+    except FileNotFoundError:
+        return '<h1>Coming soon</h1>', 200
+
+@app.route usage
 # The real enforcer is loaded at the bottom of this file via init_tier_gating.
 # =============================================================================
 from functools import wraps as _early_wraps
