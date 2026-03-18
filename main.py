@@ -3323,8 +3323,14 @@ def _gate_mcp_response_bytes(resp_bytes, rpc_method, rpc_params, tier):
 
     gated_content = _gate_mcp_result(content, tool_name, tier)
     rpc_resp['result']['content'] = gated_content
-    # Strip structuredContent entirely for gated tools — prevents data leakage
-    rpc_resp.get('result', {}).pop('structuredContent', None)
+    # Replace structuredContent with gated content (Claude requires it with outputSchema)
+    gated_text = None
+    for block in gated_content:
+        if block.get('type') == 'text':
+            gated_text = block['text']
+            break
+    if gated_text and 'structuredContent' in rpc_resp.get('result', {}):
+        rpc_resp['result']['structuredContent'] = {'result': gated_text}
     
     # WHITELIST: only allow approved fields through for free tier
     ALLOWED_FIELDS = {
