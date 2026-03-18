@@ -2799,54 +2799,38 @@ def _gate_teaser_result(result_content, tool_name):
         if not isinstance(data, dict):
             continue
 
-        if tool_name == 'analyze_site':
+if tool_name == 'analyze_site':
             score = data.get('overall_score', 'N/A')
+            # Build tight teaser — headline samples only, no full datasets
+            carbon = data.get('carbon_intensity', {})
+            risk = data.get('natural_disaster_risk', {})
+            top_risk = risk.get('top_risk_counties', [{}])[0] if risk.get('top_risk_counties') else {}
+            rates = data.get('retail_energy_rates', {}).get('rates', [{}])[0] if data.get('retail_energy_rates', {}).get('rates') else {}
             teaser = {
-                '_user_facing_note': f"\U0001f4a1 DC Hub scored this site {score}/100. Detailed sub-scores for power, fiber, gas, and risk require a Developer key. Unlock at dchub.cloud/developers",
+                '_user_facing_note': f"💡 DC Hub scored this site {score}/100. Detailed sub-scores for power, fiber, gas, and risk require a Developer key. Unlock at dchub.cloud/developers",
                 'success': data.get('success', True),
                 'location': data.get('location', {}),
                 'overall_score': score,
                 'interpretation': data.get('interpretation', ''),
                 'capacity_requested_mw': data.get('capacity_requested_mw'),
-                'scores': {
-                    'power_infrastructure': data.get('scores', {}).get('power_infrastructure', '██ upgrade to see'),
-                    'gas_pipeline_access': '██ upgrade to see',
-                    'fiber_connectivity': '██ upgrade to see',
-                    'market_conditions': '██ upgrade to see',
-                    'risk_resilience': '██ upgrade to see',
+                'sample_insights': {
+                    'carbon_co2_lb_mwh': carbon.get('co2_rate_lb_mwh', '██') if carbon else '██',
+                    'grid_subregion': carbon.get('subregion_name', '██') if carbon else '██',
+                    'top_county_risk_rating': top_risk.get('risk_rating', '██') if top_risk else '██',
+                    'industrial_rate_cents_kwh': rates.get('rate_cents_kwh', '██') if rates else '██',
+                    'note': 'Sample only — full breakdowns require Developer plan',
                 },
-                'nearby': {
-                    'facilities_100km': data.get('nearby', {}).get('facilities_100km', '\u2588\u2588'),
-                    'total_capacity_mw': '\u2588\u2588 upgrade to see',
-                    'substations_50km': data.get('nearby', {}).get('substations_50km', '\u2588\u2588'),
-                    'gas_pipelines_50km': '\u2588\u2588 upgrade to see',
-                    'power_plants_80km': '\u2588\u2588 upgrade to see',
-                    'generation_capacity_mw': '\u2588\u2588 upgrade to see',
-                    'fiber_carriers_in_state': '\u2588\u2588 upgrade to see',
-                },
-                'data_sources': {
-                    'epa_egrid': '20 subregions — carbon intensity + fuel mix',
-                    'fema_risk': '3,232 counties — composite risk scoring',
-                    'eia_rates': '50 states — retail electricity rates',
-                    'usgs_water': '16 states — water stress index',
-                    'hifld': '79,755 substations + transmission lines',
-                },
+                'scores': {k: '██ upgrade to see' for k in ['power_infrastructure','gas_pipeline_access','fiber_connectivity','market_conditions','risk_resilience']},
+                'nearby': {k: '██ upgrade to see' for k in ['facilities_100km','substations_50km','gas_pipelines_50km','power_plants_80km','total_capacity_mw','generation_capacity_mw','fiber_carriers_in_state']},
+                'data_available': ['epa_egrid (20 subregions)', 'fema_risk (3,232 counties)', 'eia_rates (50 states)', 'usgs_water (16 states)', 'hifld (79,755 substations)'],
                 '_upgrade': {
                     'tier': 'free_teaser',
-                    'message': (
-                        f"Site score: {score} — "
-                        f"Developer plan ($49/mo) unlocks detailed power, gas pipeline, fiber, "
-                        f"market, and risk sub-scores plus nearby infrastructure counts."
-                    ),
+                    'message': f"Site score: {score} — Developer plan ($49/mo) unlocks full carbon analysis, FEMA risk scores, water stress data, EIA rates, and infrastructure counts.",
                     'url': 'https://dchub.cloud/pricing#developer',
                     'checkout': 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c',
                     'price': '$49/mo',
                 }
             }
-            # Pass through enrichment fields (free value hook)
-            for ekey in ('carbon_intensity', 'climate_profile', 'natural_disaster_risk', 'water_stress', 'retail_energy_rates'):
-                if ekey in data:
-                    teaser[ekey] = data[ekey]
             return [{"type": "text", "text": json.dumps(teaser)}]
 
         elif tool_name == 'get_grid_data':
