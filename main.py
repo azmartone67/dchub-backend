@@ -7622,7 +7622,7 @@ def energy_discovery_status():
             discovery['metro_fiber_markets'] = c.fetchone()[0] or 0
             c.execute("SELECT COUNT(DISTINCT carrier) FROM metro_dark_fiber")
             discovery['metro_fiber_carriers'] = c.fetchone()[0] or 0
-            c.execute("SELECT COALESCE(SUM(route_miles), 0) FROM metro_dark_fiber")
+            c.execute("SELECT COALESCE(SUM(route_miles_approx), 0) FROM metro_dark_fiber")
             discovery['metro_fiber_route_miles'] = round(c.fetchone()[0] or 0, 0)
         except:
             pass
@@ -9918,6 +9918,13 @@ def fiber_sources():
                 "first_seen": row[3], "last_updated": row[4]
             })
 
+        # Include metro dark fiber stats
+        try:
+            cursor.execute('SELECT COUNT(*), COUNT(DISTINCT carrier), COUNT(DISTINCT market), COALESCE(SUM(route_miles_approx),0) FROM metro_dark_fiber')
+            mrow = cursor.fetchone()
+            metro_stats = {'total_records': mrow[0] or 0, 'carriers': mrow[1] or 0, 'markets': mrow[2] or 0, 'total_route_miles': mrow[3] or 0}
+        except Exception:
+            metro_stats = {'total_records': 0, 'carriers': 0, 'markets': 0, 'total_route_miles': 0}
         cursor.execute('SELECT COUNT(*) FROM fiber_routes')
         total = cursor.fetchone()[0]
         conn.close()
@@ -10340,14 +10347,16 @@ def refresh_news():
 @app.route('/api/transactions/refresh', methods=['POST'])
 def refresh_transactions():
     """Force immediate transactions/deals data check"""
+    conn = None
     try:
         conn = get_pg_connection()
         c = conn.cursor()
         c.execute("SELECT COUNT(*) FROM deals")
         total = c.fetchone()[0] or 0
-        c.execute("SELECT MAX(date) FROM deals")
-        newest = c.fetchone()[0]
-        conn.close()
+        c.execute("SELECT date FROM deals WHERE date IS NOT NULL ORDER BY date DESC LIMIT 1")
+        row = c.fetchone()
+        newest = row[0] if row else None
+        c.close()
         if 'autopilot' in _scheduler_registry:
             _scheduler_registry['autopilot']['last_run'] = datetime.utcnow().isoformat()
             _scheduler_registry['autopilot']['total_runs'] += 1
@@ -10360,6 +10369,9 @@ def refresh_transactions():
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        if conn:
+            return_pg_connection(conn)
 
 @app.route('/api/deals/refresh', methods=['POST'])
 def refresh_deals():

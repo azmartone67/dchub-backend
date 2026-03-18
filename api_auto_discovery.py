@@ -70,7 +70,7 @@ KNOWN_API_SOURCES = [
         'name': 'HIFLD Natural Gas Pipelines',
         'category': 'gas',
         'type': 'arcgis',
-        'url': 'https://geo.dot.gov/server/rest/services/Hosted/Natural_Gas_Pipelines_US_EIA/FeatureServer/0'  # replaces HIFLD,
+        'url': 'https://geo.dot.gov/server/rest/services/Hosted/Natural_Gas_Pipelines_US_EIA/FeatureServer/0',  # replaces HIFLD
         'record_count': '300000+',
         'fields': ['OPERATOR', 'TYPEPIPE', 'DIAMETER']
     },
