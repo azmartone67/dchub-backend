@@ -1060,7 +1060,7 @@ def research_page():
     except FileNotFoundError:
         return '<h1>Coming soon</h1>', 200
 
-@app.route usage
+
 # The real enforcer is loaded at the bottom of this file via init_tier_gating.
 # =============================================================================
 from functools import wraps as _early_wraps
@@ -12796,21 +12796,24 @@ def get_facility_by_id(facility_id):
         try:
             int_id = int(facility_id)
             cur.execute("""
-                SELECT id, name, provider, city, state, country, market AS region,
-                       latitude, longitude, power_mw, status, address, source,
-                       permit_date, approval_date, co_date,
-                       permit_source, permit_confidence
-                FROM discovered_facilities WHERE id = %s LIMIT 1
+                SELECT df.id, df.name, df.provider, df.city, df.state, df.country, df.market AS region,
+                       df.latitude, df.longitude, df.power_mw, df.status, df.address, df.source,
+                       f.permit_date, f.approval_date, f.co_date,
+                       f.permit_source, f.permit_confidence
+                FROM discovered_facilities df
+                LEFT JOIN facilities f ON f.id = df.merged_facility_id
+                WHERE df.id = %s LIMIT 1
             """, (int_id,))
         except ValueError:
             # hex string — look up via merged_facility_id
             cur.execute("""
-                SELECT id, name, provider, city, state, country, market AS region,
-                       latitude, longitude, power_mw, status, address, source,
-                       permit_date, approval_date, co_date,
-                       permit_source, permit_confidence
-                FROM discovered_facilities WHERE merged_facility_id = %s
-                   OR source_id = %s LIMIT 1
+                SELECT df.id, df.name, df.provider, df.city, df.state, df.country, df.market AS region,
+                       df.latitude, df.longitude, df.power_mw, df.status, df.address, df.source,
+                       f.permit_date, f.approval_date, f.co_date,
+                       f.permit_source, f.permit_confidence
+                FROM discovered_facilities df
+                LEFT JOIN facilities f ON f.id = df.merged_facility_id
+                WHERE df.merged_facility_id = %s OR df.source_id = %s LIMIT 1
             """, (facility_id, facility_id))
         row = cur.fetchone()
         if not row:
