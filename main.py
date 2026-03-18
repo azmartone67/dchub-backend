@@ -8081,6 +8081,8 @@ def list_facilities():
     if "dchub.cloud" in origin:
     from api_tier_gating import get_request_tier
     plan = get_request_tier()
+    from api_tier_gating import get_request_tier
+    plan = get_request_tier()
         return _list_facilities_full()
     if plan in ('developer', 'founding', 'pro', 'enterprise', 'admin'):
         if _real_require_plan is not None:
