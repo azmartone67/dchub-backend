@@ -2816,13 +2816,13 @@ def _gate_teaser_result(result_content, tool_name):
                     'risk_resilience': '██ upgrade to see',
                 },
                 'nearby': {
-                    'facilities_100km': '██',
-                    'total_capacity_mw': '██',
-                    'substations_50km': '██',
-                    'gas_pipelines_50km': '██',
-                    'power_plants_80km': '██',
-                    'generation_capacity_mw': '██',
-                    'fiber_carriers_in_state': '██',
+                    'facilities_100km': data.get('nearby', {}).get('facilities_100km', '\u2588\u2588'),
+                    'total_capacity_mw': '\u2588\u2588 upgrade to see',
+                    'substations_50km': data.get('nearby', {}).get('substations_50km', '\u2588\u2588'),
+                    'gas_pipelines_50km': '\u2588\u2588 upgrade to see',
+                    'power_plants_80km': '\u2588\u2588 upgrade to see',
+                    'generation_capacity_mw': '\u2588\u2588 upgrade to see',
+                    'fiber_carriers_in_state': '\u2588\u2588 upgrade to see',
                 },
                 '_upgrade': {
                     'tier': 'free_teaser',
@@ -2913,15 +2913,35 @@ def _gate_teaser_result(result_content, tool_name):
             return [{"type": "text", "text": json.dumps(teaser)}]
 
         elif tool_name == 'get_energy_prices':
+            energy_preview = []
+            pg_e = None
+            try:
+                pg_e = get_pg_connection()
+                ec = pg_e.cursor()
+                state_q = data.get('state', '') or ''
+                if state_q:
+                    ec.execute("SELECT state, sector, rate_cents_kwh FROM eia_retail_rates WHERE UPPER(state) = UPPER(%s) AND sector IN ('commercial','industrial') ORDER BY sector", (state_q,))
+                else:
+                    ec.execute("SELECT state, sector, rate_cents_kwh FROM eia_retail_rates WHERE sector = 'commercial' ORDER BY rate_cents_kwh ASC LIMIT 5")
+                for r in ec.fetchall():
+                    energy_preview.append({'state': r[0], 'sector': r[1], 'rate_cents_kwh': float(r[2]) if r[2] else None})
+                ec.close()
+            except Exception:
+                pass
+            finally:
+                if pg_e:
+                    return_pg_connection(pg_e)
             teaser = {
                 '_user_facing_note': MCP_USER_NOTES['get_energy_prices'],
                 'success': True,
                 'data_type': data.get('data_type', 'energy pricing'),
-                'preview': 'Energy pricing data available',
-                'rates': '██ upgrade to see',
+                'rates_preview': energy_preview if energy_preview else [{'note': 'EIA retail rate data for all 50 states'}],
+                'states_covered': 50,
+                'data_source': 'EIA (U.S. Energy Information Administration)',
+                'detailed_rates': '\u2588\u2588 upgrade for full breakdowns, gas, grid status',
                 '_upgrade': {
                     'tier': 'free_teaser',
-                    'message': "Energy pricing preview — Developer plan ($49/mo) unlocks retail rates, natural gas prices, and grid status data.",
+                    'message': "Showing sample rates \u2014 Developer plan ($49/mo) unlocks full retail rates, natural gas, grid status, and trends.",
                     'url': 'https://dchub.cloud/pricing#developer',
                     'checkout': 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c',
                     'price': '$49/mo',
@@ -2930,15 +2950,32 @@ def _gate_teaser_result(result_content, tool_name):
             return [{"type": "text", "text": json.dumps(teaser)}]
 
         elif tool_name == 'get_renewable_energy':
+            ppa_preview = []
+            pg_r = None
+            try:
+                pg_r = get_pg_connection()
+                rc = pg_r.cursor()
+                rc.execute("SELECT buyer, capacity_mw, energy_type, state FROM energy_ppas ORDER BY capacity_mw DESC LIMIT 5")
+                for r in rc.fetchall():
+                    ppa_preview.append({'buyer': r[0], 'capacity_mw': r[1], 'type': r[2], 'state': r[3]})
+                rc.execute("SELECT COUNT(*), COALESCE(SUM(capacity_mw),0) FROM energy_ppas")
+                totals = rc.fetchone()
+                rc.close()
+            except Exception:
+                totals = (0, 0)
+            finally:
+                if pg_r:
+                    return_pg_connection(pg_r)
             teaser = {
                 '_user_facing_note': MCP_USER_NOTES['get_renewable_energy'],
                 'success': True,
-                'preview': 'Renewable energy capacity data available',
-                'installations': '██ upgrade to see',
-                'total_capacity_mw': '██',
+                'dc_industry_ppas': ppa_preview if ppa_preview else [{'note': 'PPA data available'}],
+                'total_ppas': totals[0] if totals else 0,
+                'total_contracted_mw': round(totals[1] or 0, 0) if totals else 0,
+                'installations': '\u2588\u2588 upgrade for full installation data',
                 '_upgrade': {
                     'tier': 'free_teaser',
-                    'message': "Renewable energy preview — Developer plan ($49/mo) unlocks solar/wind farm locations, capacity data, and proximity analysis.",
+                    'message': "Renewable preview \u2014 Developer plan ($49/mo) unlocks solar/wind locations, PPA details, and proximity analysis.",
                     'url': 'https://dchub.cloud/pricing#developer',
                     'checkout': 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c',
                     'price': '$49/mo',
