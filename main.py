@@ -3306,12 +3306,9 @@ def _gate_mcp_response_bytes(resp_bytes, rpc_method, rpc_params, tier):
     gated_content = _gate_mcp_result(content, tool_name, tier)
     rpc_resp['result']['content'] = gated_content
     # Strip structuredContent — contains raw ungated data from internal MCP
-    # Update structuredContent to match gated content (Claude expects this)
-    if 'structuredContent' in rpc_resp.get('result', {}):
-        for block in gated_content:
-            if block.get('type') == 'text':
-                rpc_resp['result']['structuredContent'] = {'result': block['text']}
-                break
+    # Strip structuredContent entirely for gated tools — prevents data leakage
+    # The gated content in result.content is the authoritative response
+    rpc_resp.get('result', {}).pop('structuredContent', None)
     return json.dumps(rpc_resp).encode('utf-8'), True
 
 
