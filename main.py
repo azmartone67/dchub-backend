@@ -3085,9 +3085,11 @@ if tool_name == 'analyze_site':
                     'price': '$49/mo',
                 }
             }
-            # Preserve MCP server comparisons (compare_to param)
-            if 'comparisons' in data:
-                teaser['comparisons'] = data['comparisons']
+            # Preserve MCP server enrichments
+            if isinstance(data, dict):
+                for pk in ('comparisons', 'comparison', 'compare_results'):
+                    if pk in data and data[pk]:
+                        teaser[pk] = data[pk]
             return [{"type": "text", "text": json.dumps(teaser)}]
 
         elif tool_name == 'list_transactions':
