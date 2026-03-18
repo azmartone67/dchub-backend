@@ -16,6 +16,20 @@ def _return_db(conn, error=False):
         try: conn.close()
         except: pass
 
+STATE_ABBR_TO_NAME = {
+    "AL":"Alabama","AK":"Alaska","AZ":"Arizona","AR":"Arkansas","CA":"California",
+    "CO":"Colorado","CT":"Connecticut","DE":"Delaware","FL":"Florida","GA":"Georgia",
+    "HI":"Hawaii","ID":"Idaho","IL":"Illinois","IN":"Indiana","IA":"Iowa",
+    "KS":"Kansas","KY":"Kentucky","LA":"Louisiana","ME":"Maine","MD":"Maryland",
+    "MA":"Massachusetts","MI":"Michigan","MN":"Minnesota","MS":"Mississippi","MO":"Missouri",
+    "MT":"Montana","NE":"Nebraska","NV":"Nevada","NH":"New Hampshire","NJ":"New Jersey",
+    "NM":"New Mexico","NY":"New York","NC":"North Carolina","ND":"North Dakota","OH":"Ohio",
+    "OK":"Oklahoma","OR":"Oregon","PA":"Pennsylvania","RI":"Rhode Island","SC":"South Carolina",
+    "SD":"South Dakota","TN":"Tennessee","TX":"Texas","UT":"Utah","VT":"Vermont",
+    "VA":"Virginia","WA":"Washington","WV":"West Virginia","WI":"Wisconsin","WY":"Wyoming",
+    "DC":"District of Columbia",
+}
+
 def _safe_json(row):
     result = {}
     for k, v in row.items():
@@ -192,7 +206,8 @@ def enrich_site_analysis(lat, lng, state=None):
                     recs.append(_safe_json(d))
                 enrichment["water_stress"] = {"nearest_sites":recs}
         if state:
-            cur.execute("SELECT * FROM eia_retail_rates WHERE UPPER(state) = %s AND LOWER(sector) = 'industrial' ORDER BY period DESC LIMIT 3", (state.upper(),))
+            state_full = STATE_ABBR_TO_NAME.get(state.upper(), state)
+            cur.execute("SELECT * FROM eia_retail_rates WHERE state = %s AND LOWER(sector) = 'industrial' ORDER BY period DESC LIMIT 3", (state_full,))
             rows = cur.fetchall()
             if rows:
                 cols = [d[0] for d in cur.description]
@@ -211,7 +226,8 @@ def get_eia_rates_from_neon(state=None):
         conn = _get_db()
         cur = conn.cursor()
         if state:
-            cur.execute("SELECT * FROM eia_retail_rates WHERE UPPER(state) = %s ORDER BY period DESC", (state.upper(),))
+            state_full = STATE_ABBR_TO_NAME.get(state.upper(), state)
+        cur.execute("SELECT * FROM eia_retail_rates WHERE state = %s ORDER BY period DESC", (state_full,))
         else:
             cur.execute("SELECT * FROM eia_retail_rates ORDER BY state, period DESC")
         cols = [d[0] for d in cur.description]
