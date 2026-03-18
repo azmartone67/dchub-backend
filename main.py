@@ -3323,14 +3323,7 @@ def _gate_mcp_response_bytes(resp_bytes, rpc_method, rpc_params, tier):
 
     gated_content = _gate_mcp_result(content, tool_name, tier)
     rpc_resp['result']['content'] = gated_content
-    # Replace structuredContent with gated content (Claude requires it with outputSchema)
-    gated_text = None
-    for block in gated_content:
-        if block.get('type') == 'text':
-            gated_text = block['text']
-            break
-    if gated_text and 'structuredContent' in rpc_resp.get('result', {}):
-        rpc_resp['result']['structuredContent'] = {'result': gated_text}
+    # structuredContent will be rebuilt AFTER whitelist strip below
     
     # WHITELIST: only allow approved fields through for free tier
     ALLOWED_FIELDS = {
@@ -3362,6 +3355,17 @@ def _gate_mcp_response_bytes(resp_bytes, rpc_method, rpc_params, tier):
             except (json.JSONDecodeError, TypeError):
                 pass
 
+    # Rebuild structuredContent from the now-clean whitelist-stripped content
+    final_text = None
+    for block in rpc_resp.get('result', {}).get('content', []):
+        if block.get('type') == 'text':
+            final_text = block['text']
+            break
+    if final_text:
+        rpc_resp['result']['structuredContent'] = {'result': final_text}
+    else:
+        rpc_resp.get('result', {}).pop('structuredContent', None)
+    
     return json.dumps(rpc_resp).encode('utf-8'), True
 
 
