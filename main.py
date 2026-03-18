@@ -8076,6 +8076,7 @@ def facilities_by_provider():
 def list_facilities():
     """List facilities with tiered response gating."""
     plan = get_request_tier()
+    from api_tier_gating import get_request_tier
     if plan in ('developer', 'founding', 'pro', 'enterprise', 'admin'):
         if _real_require_plan is not None:
             @_real_require_plan('developer')
