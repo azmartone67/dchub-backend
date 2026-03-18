@@ -13107,7 +13107,15 @@ def api_site_score():
             (risk_score * 0.35)
         , 1)
 
-        return jsonify({
+        # --- Site Enrichment (5 Neon tables: carbon, climate, risk, water, energy) ---
+        site_enrichment = {}
+        try:
+            from routes.api_integration_wiring import enrich_site_analysis
+            site_enrichment = enrich_site_analysis(lat=lat, lng=lon, state=state)
+        except Exception as _enrich_err:
+            logger.warning(f"Site enrichment failed (non-fatal): {_enrich_err}")
+
+        result = {
             'success': True,
             'location': {'lat': lat, 'lon': lon, 'state': state},
             'capacity_requested_mw': capacity,
@@ -13136,7 +13144,19 @@ def api_site_score():
             ),
             'source': 'DC Hub Site Intelligence',
             'upgrade_url': 'https://dchub.cloud/pricing',
-        })
+        }
+        # Merge enrichment data
+        if site_enrichment.get('carbon'):
+            result['carbon_intensity'] = site_enrichment['carbon']
+        if site_enrichment.get('climate'):
+            result['climate_profile'] = site_enrichment['climate']
+        if site_enrichment.get('risk'):
+            result['natural_disaster_risk'] = site_enrichment['risk']
+        if site_enrichment.get('water_stress'):
+            result['water_stress'] = site_enrichment['water_stress']
+        if site_enrichment.get('energy_rates'):
+            result['retail_energy_rates'] = site_enrichment['energy_rates']
+        return jsonify(result)
 
     except Exception as e:
         logger.error(f"site-score error: {e}")
