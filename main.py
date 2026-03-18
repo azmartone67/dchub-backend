@@ -2800,61 +2800,65 @@ def _gate_teaser_result(result_content, tool_name):
             continue
 
         if tool_name == 'analyze_site':
-                    score = data.get('overall_score', 'N/A')
-                    # Build tight teaser — headline samples only, no full datasets
-                    carbon = data.get('carbon_intensity', {})
-                    risk = data.get('natural_disaster_risk', {})
-                    top_risk = risk.get('top_risk_counties', [{}])[0] if risk.get('top_risk_counties') else {}
-                    rates = data.get('retail_energy_rates', {}).get('rates', [{}])[0] if data.get('retail_energy_rates', {}).get('rates') else {}
-                    teaser = {
-                        '_user_facing_note': f"💡 DC Hub scored this site {score}/100. Detailed sub-scores for power, fiber, gas, and risk require a Developer key. Unlock at dchub.cloud/developers",
-                        'success': data.get('success', True),
-                        'location': data.get('location', {}),
-                        'overall_score': score,
-                        'interpretation': data.get('interpretation', ''),
-                        'capacity_requested_mw': data.get('capacity_requested_mw'),
-                        'sample_insights': {
-                            'carbon_co2_lb_mwh': carbon.get('co2_rate_lb_mwh', '██') if carbon else '██',
-                            'grid_subregion': carbon.get('subregion_name', '██') if carbon else '██',
-                            'top_county_risk_rating': top_risk.get('risk_rating', '██') if top_risk else '██',
-                            'industrial_rate_cents_kwh': rates.get('rate_cents_kwh', '██') if rates else '██',
-                            'note': 'Sample only — full breakdowns require Developer plan',
-                        },
-                        'scores': {k: '██ upgrade to see' for k in ['power_infrastructure','gas_pipeline_access','fiber_connectivity','market_conditions','risk_resilience']},
-                        'nearby': {k: '██ upgrade to see' for k in ['facilities_100km','substations_50km','gas_pipelines_50km','power_plants_80km','total_capacity_mw','generation_capacity_mw','fiber_carriers_in_state']},
-                        'data_available': ['epa_egrid (20 subregions)', 'fema_risk (3,232 counties)', 'eia_rates (50 states)', 'usgs_water (16 states)', 'hifld (79,755 substations)'],
-                        '_upgrade': {
-                            'tier': 'free_teaser',
-                            'message': f"Site score: {score} — Developer plan ($49/mo) unlocks full carbon analysis, FEMA risk scores, water stress data, EIA rates, and infrastructure counts.",
-                            'url': 'https://dchub.cloud/pricing#developer',
-                            'checkout': 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c',
-                            'price': '$49/mo',
-                        }
-                    }
-                    return [{"type": "text", "text": json.dumps(teaser)}]
+            score = data.get('overall_score', 'N/A')
+            # Build tight teaser — headline samples only, no full datasets
+            carbon = data.get('carbon_intensity', {})
+            risk = data.get('natural_disaster_risk', {})
+            top_risk = risk.get('top_risk_counties', [{}])[0] if risk.get('top_risk_counties') else {}
+            rates = data.get('retail_energy_rates', {}).get('rates', [{}])[0] if data.get('retail_energy_rates', {}).get('rates') else {}
+            teaser = {
+                '_user_facing_note': f"💡 DC Hub scored this site {score}/100. Detailed sub-scores for power, fiber, gas, and risk require a Developer key. Unlock at dchub.cloud/developers",
+                'success': data.get('success', True),
+                'location': data.get('location', {}),
+                'overall_score': score,
+                'interpretation': data.get('interpretation', ''),
+                'capacity_requested_mw': data.get('capacity_requested_mw'),
+                'sample_insights': {
+                    'carbon_co2_lb_mwh': carbon.get('co2_rate_lb_mwh', '██') if carbon else '██',
+                    'grid_subregion': carbon.get('subregion_name', '██') if carbon else '██',
+                    'top_county_risk_rating': top_risk.get('risk_rating', '██') if top_risk else '██',
+                    'industrial_rate_cents_kwh': rates.get('rate_cents_kwh', '██') if rates else '██',
+                    'note': 'Sample only — full breakdowns require Developer plan',
+                },
+                'scores': {k: '██ upgrade to see' for k in ['power_infrastructure','gas_pipeline_access','fiber_connectivity','market_conditions','risk_resilience']},
+                'nearby': {k: '██ upgrade to see' for k in ['facilities_100km','substations_50km','gas_pipelines_50km','power_plants_80km','total_capacity_mw','generation_capacity_mw','fiber_carriers_in_state']},
+                'data_available': ['epa_egrid (20 subregions)', 'fema_risk (3,232 counties)', 'eia_rates (50 states)', 'usgs_water (16 states)', 'hifld (79,755 substations)'],
+                '_upgrade': {
+                    'tier': 'free_teaser',
+                    'message': f"Site score: {score} — Developer plan ($49/mo) unlocks full carbon analysis, FEMA risk scores, water stress data, EIA rates, and infrastructure counts.",
+                    'url': 'https://dchub.cloud/pricing#developer',
+                    'checkout': 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c',
+                    'price': '$49/mo',
+                }
+            }
+            # Pass through enrichment fields (free value hook)
+            for ekey in ('carbon_intensity', 'climate_profile', 'natural_disaster_risk', 'water_stress', 'retail_energy_rates'):
+                if ekey in data:
+                    teaser[ekey] = data[ekey]
+            return [{"type": "text", "text": json.dumps(teaser)}]
 
         elif tool_name == 'get_grid_data':
-                    teaser = {
-                        '_user_facing_note': MCP_USER_NOTES['get_grid_data'],
-                        'success': data.get('success', True),
-                        'region': data.get('region') or data.get('iso') or data.get('grid', ''),
-                        'timestamp': data.get('timestamp', ''),
-                        'summary': data.get('summary', 'Real-time grid data available'),
-                        'fuel_mix': '██ upgrade to see detailed fuel mix breakdown',
-                        'demand_mw': '██',
-                        'price_per_mwh': '██',
-                        '_upgrade': {
-                            'tier': 'free_teaser',
-                            'message': (
-                                "Grid data preview — Developer plan ($49/mo) unlocks "
-                                "real-time fuel mix, demand curves, LMP pricing, and carbon intensity."
-                            ),
-                            'url': 'https://dchub.cloud/pricing#developer',
-                            'checkout': 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c',
-                            'price': '$49/mo',
-                        }
-                    }
-                    return [{"type": "text", "text": json.dumps(teaser)}]
+            teaser = {
+                '_user_facing_note': MCP_USER_NOTES['get_grid_data'],
+                'success': data.get('success', True),
+                'region': data.get('region') or data.get('iso') or data.get('grid', ''),
+                'timestamp': data.get('timestamp', ''),
+                'summary': data.get('summary', 'Real-time grid data available'),
+                'fuel_mix': '██ upgrade to see detailed fuel mix breakdown',
+                'demand_mw': '██',
+                'price_per_mwh': '██',
+                '_upgrade': {
+                    'tier': 'free_teaser',
+                    'message': (
+                        "Grid data preview — Developer plan ($49/mo) unlocks "
+                        "real-time fuel mix, demand curves, LMP pricing, and carbon intensity."
+                    ),
+                    'url': 'https://dchub.cloud/pricing#developer',
+                    'checkout': 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c',
+                    'price': '$49/mo',
+                }
+            }
+            return [{"type": "text", "text": json.dumps(teaser)}]
 
         elif tool_name == 'get_infrastructure':
             teaser = {
