@@ -648,8 +648,9 @@ async def get_fiber_intel(
                 results["routes"]["data"] = filtered
             elif "routes" in results["routes"]:
                 results["routes"]["routes"] = filtered
-            results["routes"]["filtered_by_carrier"] = carrier
             results["routes"]["count"] = len(filtered)
+            results["filtered_by_carrier"] = carrier
+            results["carrier_routes_found"] = len(filtered)
 
     # Get carrier sources summary from connectivity_providers
     if include_sources:
