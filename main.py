@@ -8076,14 +8076,11 @@ def facilities_by_provider():
 def list_facilities():
     """List facilities with tiered response gating."""
     # dchub.cloud frontend — serve full data (Origin already trusted by require_plan)
-    # dchub.cloud frontend — serve full data
     origin = request.headers.get("Origin", "") or request.headers.get("Referer", "")
     if "dchub.cloud" in origin:
-    from api_tier_gating import get_request_tier
-    plan = get_request_tier()
-    from api_tier_gating import get_request_tier
-    plan = get_request_tier()
         return _list_facilities_full()
+    from api_tier_gating import get_request_tier
+    plan = get_request_tier()
     if plan in ('developer', 'founding', 'pro', 'enterprise', 'admin'):
         if _real_require_plan is not None:
             @_real_require_plan('developer')
@@ -8094,8 +8091,6 @@ def list_facilities():
         else:
             pass
     return _list_facilities_free(plan)
-
-
 def _list_facilities_full():
     """Full facility listing for authenticated users."""
     page = request.args.get('page', 1, type=int)
