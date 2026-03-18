@@ -74,6 +74,24 @@ log = logging.getLogger('dchub-scheduler')
 # JOB DEFINITIONS — 19 active
 # ============================================================
 JOBS = {
+    'permit_scraper': {
+        'name': 'Permit Scraper (Phase 1)',
+        'endpoint': '/api/jobs/permit-scraper',
+        'method': 'POST',
+        'hours': [2],
+        'minute': 0,
+        'day_of_week': 6,  # Sunday only
+        'timeout': 3600,
+    },
+    'sec_parser': {
+        'name': 'SEC/EDGAR Parser (Phase 2)',
+        'endpoint': '/api/jobs/sec-parser',
+        'method': 'POST',
+        'hours': [3],
+        'minute': 0,
+        'day_of_month': 1,  # 1st of month only
+        'timeout': 3600,
+    },
     'news': {
         'name': 'News/RSS Refresh',
         'endpoint': '/api/jobs/news-refresh',

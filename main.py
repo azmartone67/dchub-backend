@@ -10379,6 +10379,46 @@ def refresh_facilities():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
+@app.route('/api/jobs/permit-scraper', methods=['POST'])
+def job_permit_scraper():
+    """Trigger Phase 1 permit scraper job."""
+    admin_key = request.headers.get('X-Admin-Key', '')
+    if admin_key != os.environ.get('DCHUB_ADMIN_KEY', ''):
+        return jsonify({'error': 'Unauthorized'}), 401
+    try:
+        import subprocess, threading
+        def run():
+            env = dict(os.environ)
+            env['PERMIT_MAX_FACILITIES'] = '500'
+            subprocess.run(
+                ['python3', os.path.expanduser('~/workspace/permit_scraper.py')],
+                env=env, timeout=3600
+            )
+        threading.Thread(target=run, daemon=True).start()
+        return jsonify({'success': True, 'job': 'permit_scraper', 'status': 'started'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/jobs/sec-parser', methods=['POST'])
+def job_sec_parser():
+    """Trigger Phase 2 SEC/EDGAR permit parser job."""
+    admin_key = request.headers.get('X-Admin-Key', '')
+    if admin_key != os.environ.get('DCHUB_ADMIN_KEY', ''):
+        return jsonify({'error': 'Unauthorized'}), 401
+    try:
+        import subprocess, threading
+        def run():
+            subprocess.run(
+                ['python3', os.path.expanduser('~/workspace/sec_permit_parser.py')],
+                env=dict(os.environ), timeout=3600
+            )
+        threading.Thread(target=run, daemon=True).start()
+        return jsonify({'success': True, 'job': 'sec_parser', 'status': 'started'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @app.route('/api/jobs/fiber-sync', methods=['POST'])
 def job_fiber_sync():
     """Cron job: Sync fiber routes from PeeringDB facilities, HIFLD, OSM.
@@ -12666,14 +12706,18 @@ def get_facility_by_id(facility_id):
             int_id = int(facility_id)
             cur.execute("""
                 SELECT id, name, provider, city, state, country, market AS region,
-                       latitude, longitude, power_mw, status, address, source
+                       latitude, longitude, power_mw, status, address, source,
+                       permit_date, approval_date, co_date,
+                       permit_source, permit_confidence
                 FROM discovered_facilities WHERE id = %s LIMIT 1
             """, (int_id,))
         except ValueError:
             # hex string — look up via merged_facility_id
             cur.execute("""
                 SELECT id, name, provider, city, state, country, market AS region,
-                       latitude, longitude, power_mw, status, address, source
+                       latitude, longitude, power_mw, status, address, source,
+                       permit_date, approval_date, co_date,
+                       permit_source, permit_confidence
                 FROM discovered_facilities WHERE merged_facility_id = %s
                    OR source_id = %s LIMIT 1
             """, (facility_id, facility_id))
@@ -12705,7 +12749,7 @@ def get_facility_by_id(facility_id):
             return jsonify({"success": True, "data": full_data})
         else:
             # Free tier: strip sensitive fields, show upgrade CTA
-            free_data = {k: v for k, v in full_data.items() if k in ("id", "name", "provider", "city", "state", "country", "status", "region")}
+            free_data = {k: v for k, v in full_data.items() if k in ("id", "name", "provider", "city", "state", "country", "status", "region", "permit_date", "permit_source")}
             return jsonify({
                 "success": True,
                 "data": free_data,
