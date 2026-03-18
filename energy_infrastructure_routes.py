@@ -483,156 +483,124 @@ def setup_energy_routes(app):
         }
         envelope = bounds_to_envelope(bounds['minLat'], bounds['maxLat'], bounds['minLng'], bounds['maxLng'])
         
-        # Query infrastructure
+        # Query infrastructure from Neon (replaces external ArcGIS calls)
         substations = []
         pipelines = []
         transmission = []
         power_plants = []
         
-        # HIFLD Substations - try multiple endpoints
+        _neon_conn = None
         try:
-            # Try primary endpoint first
-            sub_data = query_arcgis(f"{HIFLD_BASE}/Electric_Substations/FeatureServer/0", {
-                'where': '1=1',
-                'geometry': envelope,
-                'geometryType': 'esriGeometryEnvelope',
-                'spatialRel': 'esriSpatialRelIntersects',
-                'outFields': 'NAME,CITY,STATE,ZIP,TYPE,STATUS,OWNER,MAX_VOLT,MIN_VOLT',
-                'inSR': '4326',
-                'resultRecordCount': '500'
-            })
-            substations = sub_data.get('features', [])
+            from main import get_pg_connection, return_pg_connection
+            _neon_conn = get_pg_connection()
+            _nc = _neon_conn.cursor()
             
-            # If primary returns empty, try alternative endpoint
-            if len(substations) == 0:
-                print("Primary substation endpoint empty, trying alternative...")
-                sub_data = query_arcgis(HIFLD_ALT_SUBSTATIONS, {
-                    'where': '1=1',
-                    'geometry': envelope,
-                    'geometryType': 'esriGeometryEnvelope',
-                    'spatialRel': 'esriSpatialRelIntersects',
-                    'outFields': '*',
-                    'inSR': '4326',
-                    'resultRecordCount': '500'
+            # Substations from Neon (79K+ HIFLD records)
+            _nc.execute("""
+                SELECT name, city, state, zip, type, status, owner, 
+                       COALESCE(max_volt, voltage_kv) as max_volt, 
+                       COALESCE(min_volt, 0) as min_volt, lat, lng
+                FROM substations
+                WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s
+                LIMIT 500
+            """, (bounds['minLat'], bounds['maxLat'], bounds['minLng'], bounds['maxLng']))
+            for row in _nc.fetchall():
+                substations.append({
+                    'geometry': {'x': row[10], 'y': row[9]},
+                    'attributes': {
+                        'NAME': row[0] or 'Unknown', 'CITY': row[1], 'STATE': row[2],
+                        'ZIP': row[3], 'TYPE': row[4], 'STATUS': row[5],
+                        'OWNER': row[6], 'MAX_VOLT': row[7] or 0, 'MIN_VOLT': row[8] or 0
+                    }
                 })
-                substations = sub_data.get('features', [])
         except Exception as e:
-            print(f"Substation query error: {e}")
+            print(f"Neon substation query error: {e}")
         
-        # DOT Gas Pipelines
+        # Gas pipelines from Neon (37K+ records)
         try:
-            pipe_data = query_arcgis(DOT_PIPELINES, {
-                'where': '1=1',
-                'geometry': envelope,
-                'geometryType': 'esriGeometryEnvelope',
-                'spatialRel': 'esriSpatialRelIntersects',
-                'outFields': 'typepipe,operator,status',
-                'inSR': '4326',
-                'resultRecordCount': '500'
-            })
-            pipelines = pipe_data.get('features', [])
+            if _neon_conn:
+                _nc.execute("""
+                    SELECT name, operator, pipeline_type, diameter_inches, status, lat, lng
+                    FROM gas_pipelines
+                    WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s
+                      AND status = 'active'
+                    LIMIT 500
+                """, (bounds['minLat'], bounds['maxLat'], bounds['minLng'], bounds['maxLng']))
+                for row in _nc.fetchall():
+                    pipelines.append({
+                        'geometry': {'x': row[6], 'y': row[5]},
+                        'attributes': {
+                            'typepipe': row[2] or 'gas', 'operator': row[1],
+                            'status': row[4], 'COMMODITY': 'gas',
+                            'diameter': row[3] or 0
+                        }
+                    })
         except Exception as e:
-            print(f"Pipeline query error: {e}")
+            print(f"Neon pipeline query error: {e}")
         
-        # HIFLD Transmission Lines - try multiple endpoints
+        # Transmission lines from Neon (infrastructure_layers)
         try:
-            trans_data = query_arcgis(f"{HIFLD_BASE}/Electric_Power_Transmission_Lines/FeatureServer/0", {
-                'where': 'VOLTAGE >= 69',
-                'geometry': envelope,
-                'geometryType': 'esriGeometryEnvelope',
-                'spatialRel': 'esriSpatialRelIntersects',
-                'outFields': 'VOLTAGE,OWNER,STATUS,SHAPE_Length',
-                'inSR': '4326',
-                'resultRecordCount': '200'
-            })
-            transmission = trans_data.get('features', [])
-            
-            # If primary returns empty, try alternative endpoint
-            if len(transmission) == 0:
-                print("Primary transmission endpoint empty, trying alternative...")
-                trans_data = query_arcgis(HIFLD_ALT_TRANSMISSION, {
-                    'where': '1=1',
-                    'geometry': envelope,
-                    'geometryType': 'esriGeometryEnvelope',
-                    'spatialRel': 'esriSpatialRelIntersects',
-                    'outFields': '*',
-                    'inSR': '4326',
-                    'resultRecordCount': '200'
-                })
-                transmission = trans_data.get('features', [])
+            if _neon_conn:
+                _nc.execute("""
+                    SELECT name, operator, latitude, longitude,
+                           CAST(NULLIF(metadata->>'voltage_kv', '') AS NUMERIC) as voltage
+                    FROM infrastructure_layers
+                    WHERE latitude BETWEEN %s AND %s AND longitude BETWEEN %s AND %s
+                      AND LOWER(layer_type) IN ('transmission', 'transmission_line', 'electric_power_transmission_lines')
+                    LIMIT 200
+                """, (bounds['minLat'], bounds['maxLat'], bounds['minLng'], bounds['maxLng']))
+                for row in _nc.fetchall():
+                    transmission.append({
+                        'geometry': {'x': row[3], 'y': row[2]},
+                        'attributes': {
+                            'VOLTAGE': row[4] or 0, 'OWNER': row[1] or 'Unknown',
+                            'STATUS': 'In Service'
+                        }
+                    })
         except Exception as e:
-            print(f"Transmission query error: {e}")
+            print(f"Neon transmission query error: {e}")
         
-        # HIFLD Power Plants - try multiple endpoints
+        # Power plants from Neon (discovered_power_plants — 6,900+ records)
         try:
-            plant_data = query_arcgis(f"{HIFLD_BASE}/Power_Plants/FeatureServer/0", {
-                'where': '1=1',
-                'geometry': envelope,
-                'geometryType': 'esriGeometryEnvelope',
-                'spatialRel': 'esriSpatialRelIntersects',
-                'outFields': 'NAME,TOTAL_MW,PRIM_FUEL,SEC_FUEL,STATUS,UTILITY_NA',
-                'inSR': '4326',
-                'resultRecordCount': '100'
-            })
-            power_plants = plant_data.get('features', [])
-            
-            # If HIFLD returns empty, try EIA endpoint
-            if len(power_plants) == 0:
-                print("HIFLD power plants empty, trying EIA endpoint...")
-                plant_data = query_arcgis(EIA_POWER_PLANTS, {
-                    'where': '1=1',
-                    'geometry': envelope,
-                    'geometryType': 'esriGeometryEnvelope',
-                    'spatialRel': 'esriSpatialRelIntersects',
-                    'outFields': '*',
-                    'inSR': '4326',
-                    'resultRecordCount': '100'
-                })
-                power_plants = plant_data.get('features', [])
+            if _neon_conn:
+                _nc.execute("""
+                    SELECT name, fuel_type, capacity_mw, generation_mwh,
+                           operator, status, latitude, longitude, source
+                    FROM discovered_power_plants
+                    WHERE latitude BETWEEN %s AND %s AND longitude BETWEEN %s AND %s
+                    LIMIT 100
+                """, (bounds['minLat'], bounds['maxLat'], bounds['minLng'], bounds['maxLng']))
+                for row in _nc.fetchall():
+                    cap_mw = row[2] or 0
+                    gen_mwh = row[3] or 0
+                    capacity_factor = None
+                    if gen_mwh > 0 and cap_mw > 0:
+                        capacity_factor = round(min(100, (gen_mwh / (cap_mw * 8760)) * 100), 1)
+                    power_plants.append({
+                        'geometry': {'x': row[7], 'y': row[6]},
+                        'attributes': {
+                            'NAME': row[0] or 'Unknown',
+                            'TOTAL_MW': cap_mw,
+                            'PRIM_FUEL': row[1] or 'Unknown',
+                            'STATUS': row[5] or 'Operating',
+                            'UTILITY_NA': row[4] or 'Unknown',
+                            'GENERATION_MWH': gen_mwh,
+                            'CAPACITY_FACTOR': capacity_factor,
+                            'SOURCE': row[8] or 'EIA'
+                        }
+                    })
         except Exception as e:
-            print(f"Power plant query error: {e}")
+            print(f"Neon power plant query error: {e}")
         
-        # Fallback to local EIA data if HIFLD returns empty
-        if len(power_plants) == 0:
-            state = detect_state_from_coords(lat, lng)
-            if state and state != 'US':
-                try:
-                    import sqlite3
-                    conn = get_db()
-                    conn.row_factory = sqlite3.Row
-                    cursor = conn.cursor()
-                    cursor.execute("""
-                        SELECT id, name, fuel_type, capacity_mw, generation_mwh, 
-                               operator, status, state, county, sector, source
-                        FROM discovered_power_plants
-                        WHERE state = ?
-                    """, (state,))
-                    
-                    for row in cursor.fetchall():
-                        gen_mwh = row['generation_mwh'] or 0
-                        cap_mw = row['capacity_mw'] or 0
-                        # Calculate capacity factor: actual generation / max possible (MW * 8760 hours)
-                        capacity_factor = None
-                        if gen_mwh > 0 and cap_mw > 0:
-                            max_gen = cap_mw * 8760
-                            capacity_factor = round(min(100, (gen_mwh / max_gen) * 100), 1)
-                        
-                        power_plants.append({
-                            'attributes': {
-                                'NAME': row['name'] or 'Unknown',
-                                'TOTAL_MW': cap_mw,
-                                'PRIM_FUEL': row['fuel_type'] or 'Unknown',
-                                'STATUS': row['status'] or 'Operating',
-                                'UTILITY_NA': row['operator'] or 'Unknown',
-                                'GENERATION_MWH': gen_mwh,
-                                'CAPACITY_FACTOR': capacity_factor,
-                                'SOURCE': row['source'] or 'EIA'
-                            }
-                        })
-                    conn.close()
-                    print(f"📊 Site analysis fallback: Found {len(power_plants)} plants from local DB for {state}")
-                except Exception as db_err:
-                    print(f"Local DB fallback error: {db_err}")
+        # Close Neon connection
+        try:
+            if _neon_conn:
+                _nc.close()
+                return_pg_connection(_neon_conn)
+        except Exception:
+            if _neon_conn:
+                try: _neon_conn.close()
+                except: pass
         
         # Calculate score
         score_data = calculate_infrastructure_score(lat, lng, substations, pipelines, transmission, power_plants)
