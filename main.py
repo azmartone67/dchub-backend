@@ -7922,33 +7922,18 @@ def facilities_by_provider():
 
 @app.route('/api/v1/facilities', methods=['GET'])
 def list_facilities():
-    """List facilities with pagination and filtering.
-    
-    Freemium: unauthenticated requests get max 5 results with basic fields.
-    Authenticated Pro/Enterprise requests get full data as before.
-    AI Wars verification keys also get Pro-tier access.
-    """
-    api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
-    is_authenticated = bool(api_key)
-    
-    # AI Wars verification keys get Pro-tier access
-    if not is_authenticated:
-        ai_wars_info = get_ai_wars_key_info()
-        if ai_wars_info:
-            is_authenticated = True
-
-    if is_authenticated:
+    """List facilities with tiered response gating."""
+    plan = get_request_tier()
+    if plan in ('developer', 'founding', 'pro', 'enterprise', 'admin'):
         if _real_require_plan is not None:
-            @_real_require_plan('pro')
+            @_real_require_plan('developer')
             @protect_data
             def _authed_facilities():
                 return _list_facilities_full()
             return _authed_facilities()
         else:
-            return jsonify({'success': False, 'error': 'tier_gating_unavailable',
-                            'message': 'Authentication system is starting up. Please try again in a moment.'}), 503
-
-    return _list_facilities_free()
+            pass
+    return _list_facilities_free(plan)
 
 
 def _list_facilities_full():
@@ -8080,19 +8065,19 @@ def _list_facilities_full():
     })
 
 
-def _list_facilities_free():
-    """Freemium facility listing -- max 5 results, basic fields only."""
-    FREE_LIMIT = 5
-    BASIC_FIELDS = ('name', 'city', 'state', 'country', 'provider')
-
+def _list_facilities_free(plan='anon'):
+    """Tiered facility listing for anon/free users."""
+    from api_tier_gating import FACILITY_TIER_LIMITS
+    tier_limit = FACILITY_TIER_LIMITS.get(plan, 50)
     q = request.args.get('q', '').strip()
     country = request.args.get('country')
     provider = request.args.get('provider')
-
-    sql = "SELECT * FROM discovered_facilities WHERE 1=1"
-    count_sql = "SELECT COUNT(*) FROM discovered_facilities WHERE 1=1"
+    status = request.args.get('status')
+    region = request.args.get('region')
+    state = request.args.get('state')
+    sql = "SELECT * FROM facilities WHERE 1=1"
+    count_sql = "SELECT COUNT(*) FROM facilities WHERE 1=1"
     params = []
-
     if q:
         query_lower = q.lower()
         if query_lower in MARKET_ALIASES:
@@ -8111,7 +8096,6 @@ def _list_facilities_free():
             params.extend([f'%{q}%', f'%{q}%', f'%{q}%', f'%{q}%'])
         sql += search_clause
         count_sql += search_clause
-
     if country:
         sql += " AND country = %s"
         count_sql += " AND country = %s"
@@ -8120,26 +8104,30 @@ def _list_facilities_free():
         sql += " AND provider LIKE %s"
         count_sql += " AND provider LIKE %s"
         params.append(f"%{provider}%")
-    state = request.args.get('state')
+    if status:
+        sql += " AND status = %s"
+        count_sql += " AND status = %s"
+        params.append(status)
+    if region:
+        sql += " AND region = %s"
+        count_sql += " AND region = %s"
+        params.append(region)
     if state:
         sql += " AND state = %s"
         count_sql += " AND state = %s"
         params.append(state.upper())
-
-    sql += f" ORDER BY confidence_score DESC, power_mw DESC LIMIT {FREE_LIMIT}"
-
+    sql += f" ORDER BY confidence DESC, power_mw DESC LIMIT {tier_limit}"
     conn = None
     try:
         conn = get_read_db()
         c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-
         c.execute(count_sql, params)
-        row = c.fetchone(); total_matching = row['count'] if isinstance(row, dict) else row[0]
-
+        row = c.fetchone()
+        total = row['count'] if isinstance(row, dict) else row[0]
         c.execute(sql, params)
-        rows = c.fetchall()
+        facilities = [dict_from_row(row) for row in c.fetchall()]
     except Exception as e:
-        logger.error(f"Facilities free endpoint error: {e}")
+        logger.error(f"Facilities gated endpoint error: {e}")
         return jsonify({'error': 'Database temporarily unavailable', 'detail': str(e)}), 503
     finally:
         if conn:
@@ -8147,32 +8135,14 @@ def _list_facilities_free():
                 conn.close()
             except:
                 pass
-
-    facilities = []
-    for row in rows:
-        full = dict_from_row(row)
-        fac = {k: full.get(k) for k in BASIC_FIELDS}
-        # Add resolved names even in free tier (for SEO rendering)
-        if resolve_location_name:
-            fac['state_name'] = get_state_name(fac.get('state', ''), fac.get('country', 'US'))
-            fac['country_name'] = get_country_name(fac.get('country', ''))
-            fac['location_display'] = format_location_for_title(
-                fac.get('city'), fac.get('state'), fac.get('country')
+    if resolve_location_name:
+        for f in facilities:
+            f['state_name'] = get_state_name(f.get('state', ''), f.get('country', 'US'))
+            f['country_name'] = get_country_name(f.get('country', ''))
+            f['location_display'] = format_location_for_title(
+                f.get('city'), f.get('state'), f.get('country')
             )
-        facilities.append(fac)
-
-    return jsonify({
-        'success': True,
-        'data': facilities,
-        'count': len(facilities),
-        'total_matching': total_matching,
-        'full_results_available': total_matching > FREE_LIMIT,
-        'tier': 'free',
-        'upgrade_url': 'https://dchub.cloud/pricing',
-        'note': f'Free tier: showing {len(facilities)} of {total_matching} matching facilities with basic fields. Upgrade for full data including capacity, coordinates, and detailed specs.'
-    })
-
-
+    return jsonify(gate_facilities_response(facilities, plan, total_in_db=total))
 
 @app.route('/api/v1/search', methods=['GET'])
 @protect_data
