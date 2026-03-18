@@ -34,7 +34,7 @@ from mcp.server.fastmcp import FastMCP
 # CONFIG
 # =============================================================================
 
-DCHUB_API_BASE = os.environ.get("DCHUB_API_BASE", "http://127.0.0.1:5000")
+DCHUB_API_BASE = os.environ.get("DCHUB_API_BASE", "https://dchub-backend-production.up.railway.app")
 MCP_PORT = int(os.environ.get("MCP_PORT", "8888"))
 
 logging.basicConfig(level=logging.INFO)
