@@ -5195,6 +5195,15 @@ except Exception as e:
     def send_password_reset_email(*a, **k): pass
     def send_admin_alert_email(*a, **k): pass
 
+# =============================================================================
+# MAP & LAND POWER TIERED GATING (anon=blank, free=taste, dev=more, pro=all)
+# Overrides: /api/v1/map, /api/v1/land-power/data, /api/v1/capacity/heatmap/public
+# =============================================================================
+try:
+    from map_tier_gating import register_map_tier_gating
+    register_map_tier_gating(app, decode_jwt_func=decode_jwt)
+except Exception as e:
+    print(f"🗺️ Map Tier Gating: ⚠️ {e}")
 
 # =============================================================================
 # LEAD CAPTURE ENDPOINTS
