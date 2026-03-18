@@ -8080,15 +8080,6 @@ def list_facilities():
     origin = request.headers.get("Origin", "") or request.headers.get("Referer", "")
     if "dchub.cloud" in origin:
         return _list_facilities_full()
-    origin = request.headers.get("Origin", "") or request.headers.get("Referer", "")
-    if "dchub.cloud" in origin:
-        return _list_facilities_full()
-    # dchub.cloud frontend — serve full data (Origin already trusted by require_plan)
-    origin = request.headers.get("Origin", "") or request.headers.get("Referer", "")
-    if "dchub.cloud" in origin:
-        return _list_facilities_full()
-    from api_tier_gating import get_request_tier
-    plan = get_request_tier()
     if plan in ('developer', 'founding', 'pro', 'enterprise', 'admin'):
         if _real_require_plan is not None:
             @_real_require_plan('developer')
