@@ -227,7 +227,7 @@ def get_eia_rates_from_neon(state=None):
         cur = conn.cursor()
         if state:
             state_full = STATE_ABBR_TO_NAME.get(state.upper(), state)
-        cur.execute("SELECT * FROM eia_retail_rates WHERE state = %s ORDER BY period DESC", (state_full,))
+            cur.execute("SELECT * FROM eia_retail_rates WHERE state = %s ORDER BY period DESC", (state_full,))
         else:
             cur.execute("SELECT * FROM eia_retail_rates ORDER BY state, period DESC")
         cols = [d[0] for d in cur.description]
