@@ -10379,6 +10379,88 @@ def refresh_facilities():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
+
+@app.route('/api/facilities/permit-coverage', methods=['GET'])
+def permit_coverage_stats():
+    """
+    Public endpoint — returns permit date coverage stats for research page.
+    No auth required. Cached-friendly (add Cache-Control header).
+    """
+    conn = None
+    try:
+        conn = get_read_db()
+        cur = conn.cursor()
+
+        # Total facilities with permit_date
+        cur.execute("SELECT COUNT(*) FROM facilities WHERE permit_date IS NOT NULL")
+        total = cur.fetchone()[0]
+
+        # Breakdown by source
+        cur.execute("""
+            SELECT permit_source, COUNT(*) as cnt
+            FROM facilities
+            WHERE permit_date IS NOT NULL AND permit_source IS NOT NULL
+            GROUP BY permit_source
+            ORDER BY cnt DESC
+            LIMIT 10
+        """)
+        sources = [{"source": r[0], "count": r[1]} for r in cur.fetchall()]
+
+        # Market breakdown (US only)
+        cur.execute("""
+            SELECT city, state, COUNT(*) as cnt
+            FROM facilities
+            WHERE permit_date IS NOT NULL
+              AND country = 'US'
+              AND city IS NOT NULL
+            GROUP BY city, state
+            ORDER BY cnt DESC
+            LIMIT 20
+        """)
+        markets = [{"city": r[0], "state": r[1], "count": r[2]} for r in cur.fetchall()]
+
+        # Average confidence
+        cur.execute("""
+            SELECT ROUND(AVG(permit_confidence)::numeric, 3)
+            FROM facilities
+            WHERE permit_date IS NOT NULL AND permit_confidence IS NOT NULL
+        """)
+        avg_conf = float(cur.fetchone()[0] or 0)
+
+        # Total facilities
+        cur.execute("SELECT COUNT(*) FROM facilities")
+        total_facilities = cur.fetchone()[0]
+
+        # US facilities with permit_date
+        cur.execute("""
+            SELECT COUNT(*) FROM facilities
+            WHERE permit_date IS NOT NULL AND country = 'US'
+        """)
+        us_count = cur.fetchone()[0]
+
+        # US total
+        cur.execute("SELECT COUNT(*) FROM facilities WHERE country = 'US'")
+        us_total = cur.fetchone()[0]
+
+        return jsonify({
+            "success": True,
+            "count": total,
+            "us_count": us_count,
+            "us_total": us_total,
+            "us_coverage_pct": round(us_count / us_total * 100, 1) if us_total else 0,
+            "avg_confidence": avg_conf,
+            "total_facilities": total_facilities,
+            "sources": sources,
+            "markets": markets,
+            "updated_at": __import__('datetime').datetime.utcnow().isoformat() + "Z"
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if conn:
+            try: conn.close()
+            except: pass
+
 @app.route('/api/jobs/permit-scraper', methods=['POST'])
 def job_permit_scraper():
     """Trigger Phase 1 permit scraper job."""
