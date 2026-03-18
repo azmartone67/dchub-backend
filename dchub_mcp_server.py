@@ -240,6 +240,24 @@ async def list_transactions(
     }.items() if v}
     _track("list_transactions", params)
     result = _api_get("/api/v1/transactions", params)
+    # Post-filter: backend may ignore buyer/seller/region params
+    txns = result.get("transactions") or result.get("data") or []
+    if buyer and txns:
+        bl = buyer.lower()
+        txns = [t for t in txns if bl in (t.get("buyer","") or "").lower()]
+    if seller and txns:
+        sl = seller.lower()
+        txns = [t for t in txns if sl in (t.get("seller","") or "").lower()]
+    if region and txns:
+        rl = region.lower()
+        txns = [t for t in txns if rl in (t.get("region","") or "").lower() or rl in (t.get("market","") or "").lower()]
+    if min_value_usd and txns:
+        txns = [t for t in txns if (t.get("value_usd") or t.get("value_millions",0)*1e6 or 0) >= min_value_usd]
+    if "transactions" in result:
+        result["transactions"] = txns
+    elif "data" in result:
+        result["data"] = txns
+    result["count"] = len(txns)
     return json.dumps(result, indent=2)
 
 
@@ -279,7 +297,19 @@ async def get_market_intel(
     }.items() if v}
     _track("get_market_intel", params)
     market_slug = market.lower().replace(" ", "-").replace(",", "")
-    result = _api_get(f"/api/v1/markets/{market_slug}", {k: v for k, v in params.items() if k != "market"})
+    result = _api_get(f"/api/v1/markets/{market_slug}", {k: v for k, v in params.items() if k not in ("market", "compare")})
+    # Handle compare_to: fetch each comparison market and merge
+    if compare_to:
+        comparisons = {}
+        for comp_market in [m.strip() for m in compare_to.split(",") if m.strip()]:
+            comp_slug = comp_market.lower().replace(" ", "-").replace(",", "")
+            comp_result = _api_get(f"/api/v1/markets/{comp_slug}", {"period": period})
+            comparisons[comp_market] = {
+                "facility_count": (comp_result.get("stats") or {}).get("facility_count"),
+                "by_status": comp_result.get("by_status"),
+                "top_providers": (comp_result.get("top_providers") or [])[:3],
+            }
+        result["comparisons"] = comparisons
     return json.dumps(result, indent=2)
 
 
@@ -325,6 +355,13 @@ async def get_news(
     }.items() if v}
     _track("get_news", params)
     result = _api_get("/api/v1/news", params)
+    # Post-filter: backend may ignore q param for keyword search
+    articles = result.get("articles") or []
+    if query and articles:
+        ql = query.lower().split()
+        articles = [a for a in articles if any(w in (a.get("title","") or "").lower() or w in (a.get("summary","") or "").lower() or w in (a.get("category","") or "").lower() for w in ql)]
+        result["articles"] = articles
+        result["count"] = len(articles)
     return json.dumps(result, indent=2)
 
 
@@ -459,6 +496,21 @@ async def get_pipeline(
     }.items() if v}
     _track("get_pipeline", params)
     result = _api_get("/api/v1/pipeline", params)
+    # Post-filter: backend may ignore operator param
+    projects = result.get("data") or []
+    if operator and projects:
+        ol = operator.lower()
+        projects = [p for p in projects if ol in (p.get("company","") or "").lower() or ol in (p.get("operator","") or "").lower()]
+        result["data"] = projects
+        result["count"] = len(projects)
+    if min_capacity_mw and projects:
+        projects = [p for p in projects if (p.get("capacity") or p.get("capacity_mw") or 0) >= min_capacity_mw]
+        result["data"] = projects
+        result["count"] = len(projects)
+    # Cap: limit investment details to prevent full data leak
+    for p in (result.get("data") or []):
+        if "investment" in p and isinstance(p["investment"], (int, float)):
+            p["investment_display"] = f"${p['investment']}M" if p["investment"] < 1000 else f"${round(p['investment']/1000,1)}B"
     return json.dumps(result, indent=2)
 
 
