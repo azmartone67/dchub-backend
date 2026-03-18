@@ -8076,6 +8076,14 @@ def facilities_by_provider():
 def list_facilities():
     """List facilities with tiered response gating."""
     # dchub.cloud frontend — serve full data (Origin already trusted by require_plan)
+    # dchub.cloud frontend — serve full data
+    origin = request.headers.get("Origin", "") or request.headers.get("Referer", "")
+    if "dchub.cloud" in origin:
+        return _list_facilities_full()
+    origin = request.headers.get("Origin", "") or request.headers.get("Referer", "")
+    if "dchub.cloud" in origin:
+        return _list_facilities_full()
+    # dchub.cloud frontend — serve full data (Origin already trusted by require_plan)
     origin = request.headers.get("Origin", "") or request.headers.get("Referer", "")
     if "dchub.cloud" in origin:
         return _list_facilities_full()
