@@ -612,6 +612,69 @@ def _get_free_alternative(path):
     return '/api/v1/stats (free, no auth required)'
 
 
+FACILITY_TIER_LIMITS = {
+    'anon': 50, 'free': 200, 'founding': 9999, 'developer': 9999,
+    'pro': 9999, 'enterprise': 9999, 'admin': 9999,
+}
+FACILITY_VISIBLE_FIELDS = {
+    'anon': {'name', 'city', 'country', 'latitude', 'longitude', 'status'},
+    'free': {'name', 'city', 'country', 'latitude', 'longitude', 'status',
+             'provider', 'operator', 'region', 'market'},
+}
+
+def get_request_tier():
+    """Non-blocking tier detection from JWT/API key/cookie. Returns plan or 'anon'."""
+    try:
+        from flask import request
+        internal_key = request.headers.get('X-Internal-Key', '')
+        if internal_key == 'dchub-internal-sync-2026':
+            return 'admin'
+        auth_header = request.headers.get('Authorization', '')
+        if auth_header.startswith('Bearer '):
+            decode_jwt = _get_decode_jwt()
+            if decode_jwt:
+                payload = decode_jwt(auth_header.split(' ', 1)[1])
+                if payload:
+                    uid = payload.get('user_id') or payload.get('sub') or payload.get('email')
+                    return get_user_plan(user_id=uid, email=payload.get('email')) or 'free'
+        api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
+        if api_key:
+            valid, info = validate_api_key(api_key)
+            if valid and info:
+                return info.get('plan', 'free')
+        session_token = (request.cookies.get('session_token') or request.cookies.get('dchub_session') or
+                         request.cookies.get('dchub_token') or request.cookies.get('token'))
+        if session_token:
+            decode_jwt = _get_decode_jwt()
+            if decode_jwt:
+                payload = decode_jwt(session_token)
+                if payload:
+                    uid = payload.get('user_id') or payload.get('sub') or payload.get('email')
+                    return get_user_plan(user_id=uid, email=payload.get('email')) or 'free'
+    except Exception:
+        pass
+    return 'anon'
+
+def gate_facilities_response(facilities, plan, total_in_db=None):
+    """Shape facility response based on plan: row limits + field stripping + upgrade CTA."""
+    plan = (plan or 'anon').lower()
+    limit = FACILITY_TIER_LIMITS.get(plan, 50)
+    total = total_in_db or len(facilities)
+    gated = facilities[:limit]
+    visible = FACILITY_VISIBLE_FIELDS.get(plan)
+    if visible:
+        gated = [{k: v for k, v in f.items() if k in visible} if isinstance(f, dict) else f for f in gated]
+    result = {'success': True, 'data': gated, 'count': len(gated), 'total_available': total, 'plan': plan}
+    if len(facilities) > limit or len(facilities) < total:
+        if plan == 'anon':
+            result['upgrade'] = {'message': f'Showing {len(gated)} of {total:,}. Sign up free for more.',
+                                 'url': 'https://dchub.cloud/login.html'}
+        elif plan == 'free':
+            result['upgrade'] = {'message': f'Showing {len(gated)} of {total:,}. Upgrade to Pro for full access.',
+                                 'url': 'https://dchub.cloud/pricing'}
+    return result
+
+
 # ═══════════════════════════════════════════════════════════════
 #  AFTER-REQUEST: ADD TIER HEADERS
 # ═══════════════════════════════════════════════════════════════
