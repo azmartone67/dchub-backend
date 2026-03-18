@@ -8220,7 +8220,7 @@ def _list_facilities_full():
 
 def _list_facilities_free(plan='anon'):
     """Tiered facility listing for anon/free users."""
-    from api_tier_gating import FACILITY_TIER_LIMITS
+    from api_tier_gating import FACILITY_TIER_LIMITS, gate_facilities_response
     tier_limit = FACILITY_TIER_LIMITS.get(plan, 50)
     q = request.args.get('q', '').strip()
     country = request.args.get('country')
