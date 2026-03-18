@@ -12799,7 +12799,7 @@ def get_facility_by_id(facility_id):
                 SELECT df.id, df.name, df.provider, df.city, df.state, df.country, df.market AS region,
                        df.latitude, df.longitude, df.power_mw, df.status, df.address, df.source,
                        f.permit_date, f.approval_date, f.co_date,
-                       f.permit_source, f.permit_confidence
+                       f.permit_source, f.permit_confidence::float AS permit_confidence
                 FROM discovered_facilities df
                 LEFT JOIN facilities f ON f.id = df.merged_facility_id
                 WHERE df.id = %s LIMIT 1
@@ -12810,7 +12810,7 @@ def get_facility_by_id(facility_id):
                 SELECT df.id, df.name, df.provider, df.city, df.state, df.country, df.market AS region,
                        df.latitude, df.longitude, df.power_mw, df.status, df.address, df.source,
                        f.permit_date, f.approval_date, f.co_date,
-                       f.permit_source, f.permit_confidence
+                       f.permit_source, f.permit_confidence::float AS permit_confidence
                 FROM discovered_facilities df
                 LEFT JOIN facilities f ON f.id = df.merged_facility_id
                 WHERE df.merged_facility_id = %s OR df.source_id = %s LIMIT 1
