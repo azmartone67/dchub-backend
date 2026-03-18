@@ -498,7 +498,7 @@ def setup_energy_routes(app):
             # Substations from Neon (79K+ HIFLD records)
             _nc.execute("""
                 SELECT name, city, state, zip, type, status, owner, 
-                       COALESCE(max_volt, voltage_kv) as max_volt, 
+                       COALESCE(max_volt, 0) as max_volt, 
                        COALESCE(min_volt, 0) as min_volt, lat, lng
                 FROM substations
                 WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s
@@ -565,9 +565,9 @@ def setup_energy_routes(app):
             if _neon_conn:
                 _nc.execute("""
                     SELECT name, fuel_type, capacity_mw, generation_mwh,
-                           operator, status, latitude, longitude, source
+                           operator, status, lat, lng, source
                     FROM discovered_power_plants
-                    WHERE latitude BETWEEN %s AND %s AND longitude BETWEEN %s AND %s
+                    WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s
                     LIMIT 100
                 """, (bounds['minLat'], bounds['maxLat'], bounds['minLng'], bounds['maxLng']))
                 for row in _nc.fetchall():
