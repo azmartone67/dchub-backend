@@ -2905,6 +2905,13 @@ if tool_name == 'analyze_site':
                     'price': '$49/mo',
                 }
             }
+            # Preserve MCP server carrier filter info
+            if 'filtered_by_carrier' in data:
+                routes = data.get('routes', {})
+                route_list = routes.get('data', routes.get('routes', []))
+                teaser['carrier_filter'] = data['filtered_by_carrier']
+                teaser['carrier_routes_found'] = len(route_list) if isinstance(route_list, list) else 0
+                teaser['carrier_note'] = f"Found routes for {data['filtered_by_carrier']} — upgrade for full details"
             return [{"type": "text", "text": json.dumps(teaser)}]
 
         elif tool_name == 'get_energy_prices':
@@ -2995,11 +3002,12 @@ if tool_name == 'analyze_site':
 
         elif tool_name == 'get_news':
             articles = data.get('articles', [])
-            total = len(articles)
+            total = data.get('count', len(articles)) if data.get('count', 0) > len(articles) else len(articles)
             basic_fields = ['title', 'source', 'published_at', 'category']
+            # MCP server may have already keyword-filtered; respect that, just cap at 5
             gated_articles = [
                 {k: a.get(k) for k in basic_fields if k in a}
-                for a in articles[:3]
+                for a in articles[:5]
             ]
             teaser = {
                 '_user_facing_note': MCP_USER_NOTES['get_news'],
@@ -3077,15 +3085,19 @@ if tool_name == 'analyze_site':
                     'price': '$49/mo',
                 }
             }
+            # Preserve MCP server comparisons (compare_to param)
+            if 'comparisons' in data:
+                teaser['comparisons'] = data['comparisons']
             return [{"type": "text", "text": json.dumps(teaser)}]
 
         elif tool_name == 'list_transactions':
             transactions = data.get('transactions', data.get('deals', data.get('results', [])))
-            total = len(transactions) if isinstance(transactions, list) else 0
-            free_fields = ['title', 'buyer', 'seller', 'deal_type', 'date', 'announced_date']
+            total = data.get('total_available', data.get('count', len(transactions) if isinstance(transactions, list) else 0))
+            free_fields = ['title', 'buyer', 'seller', 'deal_type', 'date', 'announced_date', 'region', 'market']
+            # MCP server already filtered by buyer/seller/region; respect that, cap at 5
             gated_deals = [
                 {k: t.get(k) for k in free_fields if k in t}
-                for t in (transactions[:3] if isinstance(transactions, list) else [])
+                for t in (transactions[:5] if isinstance(transactions, list) else [])
             ]
             teaser = {
                 '_user_facing_note': MCP_USER_NOTES['list_transactions'],
