@@ -3305,10 +3305,29 @@ def _gate_mcp_response_bytes(resp_bytes, rpc_method, rpc_params, tier):
 
     gated_content = _gate_mcp_result(content, tool_name, tier)
     rpc_resp['result']['content'] = gated_content
-    # Strip structuredContent — contains raw ungated data from internal MCP
     # Strip structuredContent entirely for gated tools — prevents data leakage
-    # The gated content in result.content is the authoritative response
     rpc_resp.get('result', {}).pop('structuredContent', None)
+    
+    # Nuclear strip: remove enrichment fields from content text for free tier
+    STRIP_FIELDS = {'carbon_intensity', 'climate_profile', 'natural_disaster_risk', 
+                    'water_stress', 'retail_energy_rates', 'grid_data', 'fiber_details',
+                    'ppa_details', 'detailed_infrastructure'}
+    gated = rpc_resp.get('result', {}).get('content', [])
+    for i, block in enumerate(gated):
+        if block.get('type') == 'text':
+            try:
+                obj = json.loads(block['text'])
+                if isinstance(obj, dict):
+                    stripped = {k: v for k, v in obj.items() if k not in STRIP_FIELDS}
+                    # Also lock down leaky fields
+                    if 'scores' in stripped and isinstance(stripped['scores'], dict):
+                        stripped['scores'] = {k: '\u2588\u2588 upgrade to see' for k in stripped['scores']}
+                    if 'nearby' in stripped and isinstance(stripped['nearby'], dict):
+                        stripped['nearby'] = {k: '\u2588\u2588 upgrade to see' for k in stripped['nearby']}
+                    rpc_resp['result']['content'][i] = {'type': 'text', 'text': json.dumps(stripped)}
+            except (json.JSONDecodeError, TypeError):
+                pass
+    
     return json.dumps(rpc_resp).encode('utf-8'), True
 
 
