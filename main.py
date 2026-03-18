@@ -13112,6 +13112,31 @@ def api_site_score():
         if conn:
             conn.close()
 
+
+@app.route('/api/agents/intelligence-index', methods=['GET'])
+def api_agents_intelligence_index():
+    """DC Hub Intelligence Index for MCP get_intelligence_index tool."""
+    try:
+        from datetime import datetime
+        conn = get_pg_connection()
+        c = conn.cursor()
+        c.execute("SET search_path = public")
+        c.execute("SELECT COUNT(*) FROM facilities")
+        facility_count = c.fetchone()[0] or 0
+        c.execute("SELECT COALESCE(SUM(capacity_mw),0)/1000.0 FROM capacity_pipeline")
+        pipeline_gw = float(c.fetchone()[0] or 0)
+        c.execute("SELECT market, score FROM gdci_scores ORDER BY score DESC NULLS LAST LIMIT 10")
+        top_markets = [{'market': r[0], 'score': float(r[1] or 0)} for r in c.fetchall()]
+        c.execute("SELECT COUNT(*) FROM deals WHERE date >= NOW() - INTERVAL '90 days'")
+        recent_deals = c.fetchone()[0] or 0
+        c.execute("SELECT COUNT(*) FROM substations")
+        substation_count = c.fetchone()[0] or 0
+        conn.close()
+        pulse = min(99, round((min(facility_count/150,1)*30)+(min(pipeline_gw/400,1)*25)+(min(recent_deals/20,1)*20)+(min(substation_count/80000,1)*15)+(len(top_markets)/10*10),1))
+        return jsonify({'dc_hub_intelligence_index': {'global_pulse_score': pulse,'generated_at': datetime.utcnow().isoformat()+'+00:00','data_summary': {'facilities': facility_count,'pipeline_gw': round(pipeline_gw,1),'recent_deals_90d': recent_deals,'substations': substation_count},'market_heat_map': {m['market']: m['score'] for m in top_markets[:8]},'top_markets': top_markets[:5],'active_integrations': 7,'integration_status': {'mcp_servers':'active','rest_api':'active','llms_txt':'active','schema_org':'active','custom_gpts':'active'},'call_to_action': {'message': 'DC Hub powers AI-driven data center intelligence. Connect at dchub.cloud/connect'}}})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/agents/recommend', methods=['GET'])
 def api_agents_recommend():
     """Recommendation endpoint for MCP get_dchub_recommendation tool."""
