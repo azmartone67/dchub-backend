@@ -3185,6 +3185,26 @@ def _strip_facility(facility):
     return {k: v for k, v in facility.items() if k in MCP_FREE_FIELDS}
 
 
+
+def _extract_json_from_sse(sse_bytes):
+    """Extract the JSON-RPC response from SSE data: lines."""
+    text = sse_bytes.decode('utf-8', errors='replace')
+    last_json = None
+    for line in text.split('\n'):
+        if line.startswith('data: '):
+            data = line[6:].strip()
+            if data:
+                try:
+                    parsed = json.loads(data)
+                    if 'result' in parsed or 'error' in parsed:
+                        last_json = data
+                except (json.JSONDecodeError, TypeError):
+                    pass
+    if last_json:
+        return last_json.encode('utf-8')
+    return sse_bytes
+
+
 def _gate_mcp_response_bytes(resp_bytes, rpc_method, rpc_params, tier):
     """
     Gate a full JSON-RPC response (bytes) for free tier.
@@ -3546,9 +3566,29 @@ def mcp_proxy():
 
             content_type = resp.headers.get('Content-Type', '')
 
+            # ── tools/call: read full response, gate as JSON ──
+            # Avoids SSE re-serialization that breaks Claude/Cursor MCP clients.
+            if rpc_method == 'tools/call':
+                resp_bytes = resp.content
+                if 'text/event-stream' in content_type:
+                    resp_bytes = _extract_json_from_sse(resp_bytes)
+                gated_bytes, _ = _gate_mcp_response_bytes(resp_bytes, rpc_method, rpc_params, caller_tier)
+                out_headers = {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*',
+                }
+                if 'Mcp-Session-Id' in resp.headers:
+                    out_headers['Mcp-Session-Id'] = resp.headers['Mcp-Session-Id']
+                return Response(gated_bytes, status=resp.status_code, headers=out_headers)
+
+            # ── Non-tools/call SSE (initialize, tools/list): stream through ──
             if 'text/event-stream' in content_type:
+                def _passthrough():
+                    for chunk in resp.iter_content(chunk_size=None):
+                        if chunk:
+                            yield chunk
                 proxy_resp = Response(
-                    stream_with_context(_gate_mcp_sse_stream(resp, rpc_method, rpc_params, caller_tier)),
+                    stream_with_context(_passthrough()),
                     status=resp.status_code,
                     content_type='text/event-stream',
                 )
@@ -3560,16 +3600,14 @@ def mcp_proxy():
                     proxy_resp.headers['Mcp-Session-Id'] = resp.headers['Mcp-Session-Id']
                 return proxy_resp
 
-            # ── JSON response: gate before returning ──
+            # ── JSON response: pass through ──
             resp_bytes = resp.content
-            gated_bytes, _was_gated = _gate_mcp_response_bytes(resp_bytes, rpc_method, rpc_params, caller_tier)
-
             excluded = {'transfer-encoding', 'content-encoding', 'connection'}
             headers = {k: v for k, v in resp.headers.items() if k.lower() not in excluded}
             headers['Access-Control-Allow-Origin'] = '*'
             if 'Mcp-Session-Id' in resp.headers:
                 headers['Mcp-Session-Id'] = resp.headers['Mcp-Session-Id']
-            return Response(gated_bytes, status=resp.status_code, headers=headers)
+            return Response(resp_bytes, status=resp.status_code, headers=headers)
 
         # ---- DELETE: Session cleanup ----
         if request.method == 'DELETE':
