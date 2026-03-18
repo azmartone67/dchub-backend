@@ -2961,7 +2961,8 @@ def _gate_teaser_result(result_content, tool_name):
                 rc.execute("SELECT COUNT(*), COALESCE(SUM(capacity_mw),0) FROM energy_ppas")
                 totals = rc.fetchone()
                 rc.close()
-            except Exception:
+            except Exception as _ppa_err:
+                logger.error(f"PPA teaser query failed: {_ppa_err}")
                 totals = (0, 0)
             finally:
                 if pg_r:
