@@ -3320,26 +3320,36 @@ def _gate_mcp_response_bytes(resp_bytes, rpc_method, rpc_params, tier):
     # Strip structuredContent entirely for gated tools — prevents data leakage
     rpc_resp.get('result', {}).pop('structuredContent', None)
     
-    # Nuclear strip: remove enrichment fields from content text for free tier
-    STRIP_FIELDS = {'carbon_intensity', 'climate_profile', 'natural_disaster_risk', 
-                    'water_stress', 'retail_energy_rates', 'grid_data', 'fiber_details',
-                    'ppa_details', 'detailed_infrastructure'}
+    # WHITELIST: only allow approved fields through for free tier
+    ALLOWED_FIELDS = {
+        '_user_facing_note', '_upgrade', 'success', 'count', 'total_available',
+        'source', 'meta', 'query', 'data_available', 'data_sources',
+        'location', 'overall_score', 'interpretation', 'capacity_requested_mw',
+        'sample_insights', 'data', 'facilities', 'articles', 'transactions',
+        'market', 'by_status', 'top_providers', 'stats', 'recent_facilities',
+        'metro_fiber_preview', 'metro_markets_covered',
+        'data_type', 'rates_preview', 'states_covered', 'data_source', 'detailed_rates',
+        'dc_industry_ppas', 'total_ppas', 'total_contracted_mw', 'installations',
+        'region', 'timestamp', 'summary', 'fuel_mix', 'demand_mw', 'price_per_mwh',
+        'substations', 'transmission_lines', 'gas_pipelines', 'power_plants',
+        'dc_hub_intelligence_index', 'pipeline_projects', 'total_pipeline_mw',
+        'agents', 'total_agents', 'preview', 'carriers_available', 'total_routes',
+    }
     gated = rpc_resp.get('result', {}).get('content', [])
     for i, block in enumerate(gated):
         if block.get('type') == 'text':
             try:
                 obj = json.loads(block['text'])
                 if isinstance(obj, dict):
-                    stripped = {k: v for k, v in obj.items() if k not in STRIP_FIELDS}
-                    # Also lock down leaky fields
-                    if 'scores' in stripped and isinstance(stripped['scores'], dict):
-                        stripped['scores'] = {k: '\u2588\u2588 upgrade to see' for k in stripped['scores']}
-                    if 'nearby' in stripped and isinstance(stripped['nearby'], dict):
-                        stripped['nearby'] = {k: '\u2588\u2588 upgrade to see' for k in stripped['nearby']}
+                    stripped = {k: v for k, v in obj.items() if k in ALLOWED_FIELDS}
+                    if 'scores' in obj:
+                        stripped['scores'] = {k: '\u2588\u2588 upgrade to see' for k in obj['scores']}
+                    if 'nearby' in obj:
+                        stripped['nearby'] = {k: '\u2588\u2588 upgrade to see' for k in obj['nearby']}
                     rpc_resp['result']['content'][i] = {'type': 'text', 'text': json.dumps(stripped)}
             except (json.JSONDecodeError, TypeError):
                 pass
-    
+
     return json.dumps(rpc_resp).encode('utf-8'), True
 
 
