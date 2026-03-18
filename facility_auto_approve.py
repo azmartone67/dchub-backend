@@ -390,6 +390,15 @@ def run_auto_approve(conn, batch_size=100, dry_run=False):
                     """, (f'inserted as {new_id}', disc_id))
 
                 results['approved'] += 1
+                # Queue US facilities for permit enrichment
+                if row.get('country') in ('US', 'United States', None) and new_id:
+                    try:
+                        cur.execute('''
+                            INSERT INTO permit_enrichment_queue (facility_id)
+                            VALUES (%s) ON CONFLICT (facility_id) DO NOTHING
+                        ''', (str(new_id),))
+                    except Exception:
+                        pass
 
             except Exception as e:
                 logger.error(f"Error processing discovered facility {row.get('id')}: {e}")

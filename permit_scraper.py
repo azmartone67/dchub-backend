@@ -70,6 +70,39 @@ def get_conn():
     return psycopg2.connect(DATABASE_URL)
 
 
+def get_queued_facilities(conn) -> list[dict]:
+    """Get facilities from permit_enrichment_queue (newly approved)."""
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""
+            SELECT f.id, f.name, f.address, f.city, f.state, f.country,
+                   f.operational_year, f.permit_confidence
+            FROM permit_enrichment_queue q
+            JOIN facilities f ON f.id = q.facility_id
+            WHERE q.status = 'pending'
+              AND f.permit_date IS NULL
+              AND f.country = 'US'
+            ORDER BY q.queued_at ASC
+            LIMIT 50
+        """)
+        rows = [dict(r) for r in cur.fetchall()]
+        if rows:
+            ids = [r['id'] for r in rows]
+            cur.execute(
+                "UPDATE permit_enrichment_queue SET status='processing' WHERE facility_id = ANY(%s)",
+                (ids,)
+            )
+        return rows
+
+
+def mark_queue_processed(conn, facility_ids: list):
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE permit_enrichment_queue SET status='done', processed_at=NOW() WHERE facility_id = ANY(%s)",
+            (facility_ids,)
+        )
+    conn.commit()
+
+
 def get_facilities_needing_permits(conn, limit: int) -> list[dict]:
     """
     Return facilities missing permit_date, prioritising:
@@ -431,6 +464,13 @@ async def run():
     log.info("── DC Hub Permit Scraper (Phase 1) starting ──")
     conn = get_conn()
     try:
+        # Drain newly approved facilities from queue first
+        queued = get_queued_facilities(conn)
+        if queued:
+            log.info("Processing %d queued newly-approved facilities", len(queued))
+            await enrich_batch(queued, conn)
+            mark_queue_processed(conn, [f["id"] for f in queued])
+
         facilities = get_facilities_needing_permits(conn, MAX_FACILITIES)
         log.info("Found %d facilities needing permit enrichment", len(facilities))
 
