@@ -351,7 +351,7 @@ async def get_news(
     params = {k: v for k, v in {
         "q": query, "category": category, "source": source,
         "from": date_from, "to": date_to,
-        "limit": min(limit, 50), "min_score": min_relevance,
+        "limit": min(limit, 50) if not query else 50, "min_score": min_relevance,
     }.items() if v}
     _track("get_news", params)
     result = _api_get("/api/v1/news", params)
@@ -638,6 +638,18 @@ async def get_fiber_intel(
         "carrier": carrier, "type": route_type,
     }.items() if v}
     results["routes"] = _api_get("/api/v1/infrastructure/fiber", route_params)
+    # Post-filter routes by carrier if backend didn't
+    if carrier and isinstance(results.get("routes"), dict):
+        route_data = results["routes"].get("data") or results["routes"].get("routes") or []
+        if route_data and isinstance(route_data, list):
+            cl = carrier.lower()
+            filtered = [r for r in route_data if cl in (r.get("carrier","") or r.get("provider","") or r.get("name","") or "").lower()]
+            if "data" in results["routes"]:
+                results["routes"]["data"] = filtered
+            elif "routes" in results["routes"]:
+                results["routes"]["routes"] = filtered
+            results["routes"]["filtered_by_carrier"] = carrier
+            results["routes"]["count"] = len(filtered)
 
     # Get carrier sources summary from connectivity_providers
     if include_sources:
