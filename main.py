@@ -2836,6 +2836,10 @@ def _gate_teaser_result(result_content, tool_name):
                     'price': '$49/mo',
                 }
             }
+            # Pass through enrichment fields (free value hook)
+            for ekey in ('carbon_intensity', 'climate_profile', 'natural_disaster_risk', 'water_stress', 'retail_energy_rates'):
+                if ekey in data:
+                    teaser[ekey] = data[ekey]
             return [{"type": "text", "text": json.dumps(teaser)}]
 
         elif tool_name == 'get_grid_data':
