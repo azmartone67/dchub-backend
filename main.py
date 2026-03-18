@@ -3514,11 +3514,19 @@ def mcp_proxy():
             }
 
         # ---- POST: JSON-RPC tool calls ----
+        # ---- POST: JSON-RPC tool calls ----
         if request.method == 'POST':
-            if 'Accept' not in fwd_headers:
+            # Always ensure Accept includes application/json for MCP SDK compatibility
+            accept = fwd_headers.get('Accept', '')
+            if 'application/json' not in accept:
                 fwd_headers['Accept'] = 'application/json, text/event-stream'
-            elif 'text/event-stream' not in fwd_headers.get('Accept', ''):
-                fwd_headers['Accept'] = fwd_headers['Accept'] + ', text/event-stream'
+            elif 'text/event-stream' not in accept:
+                fwd_headers['Accept'] = accept + ', text/event-stream'
+
+
+
+
+
 
             # ── Determine caller tier BEFORE forwarding ──
             caller_tier, _tier_info = _get_mcp_caller_tier()
