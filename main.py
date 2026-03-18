@@ -2833,7 +2833,7 @@ if tool_name == 'analyze_site':
             }
             return [{"type": "text", "text": json.dumps(teaser)}]
 
-        elif tool_name == 'get_grid_data':
+elif tool_name == 'get_grid_data':
             teaser = {
                 '_user_facing_note': MCP_USER_NOTES['get_grid_data'],
                 'success': data.get('success', True),
