@@ -2,7 +2,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # =================================================================
-# BOOT GUARD — Syntax self-check + Neon hostname monitor 
+# BOOT GUARD — Syntax self-check + Neon hostname monitor 2.0 
 # Prevents crash-loops and detects silent DB migrations
 # Added: 2026-03-07 (Neon outage prevention) 
 # =================================================================
