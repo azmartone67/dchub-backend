@@ -80,7 +80,8 @@ class HealthWatchdog:
     def _check_self_response(self):
         try:
             import requests
-            resp = requests.get("http://127.0.0.1:{}/health".format(os.environ.get("PORT", "8080")), timeout=10)
+            port = os.environ.get("PORT", "5000")
+            resp = requests.get(f"http://127.0.0.1:{port}/api/v1/stats", timeout=10)
             if resp.status_code == 200:
                 return True, f"ok ({resp.elapsed.total_seconds():.2f}s)"
             return False, f"HTTP {resp.status_code}"

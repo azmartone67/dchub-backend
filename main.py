@@ -1045,10 +1045,10 @@ except Exception as e:
 try:
     from index_api import index_bp
     app.register_blueprint(index_bp)
-except ImportError:                          
- print("📊 DC Hub Index: i️ index_api.py not found (replaced by gdci.py)") 
-except Exception as e:                       
- print(f"📊 DC Hub Index: ⚠️ Error: {e}")
+except ImportError:
+    print("📊 DC Hub Index: ℹ️ index_api.py not found (replaced by gdci.py)")
+except Exception as e:
+    print(f"📊 DC Hub Index: ⚠️ Error: {e}")
 
 # HIFLD Neon routes — query Neon directly, no more ArcGIS proxy 503s
 try:
@@ -1056,11 +1056,6 @@ try:
     register_hifld_neon_routes(app)
 except Exception as e:
     logger.warning(f"HIFLD Neon routes failed: {e}")
-    print("📊 DC Hub Index: ✅ Legacy index endpoints registered")
-except ImportError:
-    print("📊 DC Hub Index: ℹ️ index_api.py not found (replaced by gdci.py)")
-except Exception as e:
-    print(f"📊 DC Hub Index: ⚠️ Error: {e}")
 # =============================================================================
 # EARLY require_plan STUB - Must be available before first 
 @app.route('/research')
@@ -4963,8 +4958,14 @@ def strip_html(text):
 def init_new_tables():
     """Initialize new tables for v74 features"""
     conn = get_db()
-    c = conn.cursor()
-    
+    try:
+        c = conn.cursor()
+        _init_new_tables_inner(conn, c)
+    finally:
+        try: conn.close()
+        except: pass
+
+def _init_new_tables_inner(conn, c):
     # Leads table for email capture
     c.execute("""
         CREATE TABLE IF NOT EXISTS leads (
@@ -5014,12 +5015,10 @@ def init_new_tables():
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_status TEXT",
     ]:
         try:
-            conn2 = get_db()
-            conn2.execute(col_sql)
-            conn2.commit()
-            conn2.close()
+            c.execute(col_sql)
+            conn.commit()
         except:
-            try: conn2.close()
+            try: conn.rollback()
             except: pass
     
     # Generated reports table
@@ -5128,7 +5127,6 @@ def init_new_tables():
     c.execute('CREATE INDEX IF NOT EXISTS idx_testimonials_approved ON ai_testimonials(approved, featured, created_at DESC)')
 
     conn.commit()
-    conn.close()
     print("✅ New v74 tables initialized (including MCP analytics + AI testimonials)")
 
 # Initialize tables on startup - DEFERRED TO BACKGROUND THREAD
