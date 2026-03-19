@@ -34,11 +34,41 @@ from mcp.server.fastmcp import FastMCP
 # CONFIG
 # =============================================================================
 
-DCHUB_API_BASE = os.environ.get("DCHUB_API_BASE", "https://dchub-backend-production.up.railway.app")
 MCP_PORT = int(os.environ.get("MCP_PORT", "8888"))
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("dchub-mcp")
+
+# ---------------------------------------------------------------------------
+# DCHUB_API_BASE — Smart detection (prevents recurring Railway deadlock)
+# The MCP server runs as a uvicorn thread INSIDE Flask on Railway.
+# Calling localhost = Flask calling itself = deadlock.  This has broken MCP
+# at least 3 times.  DO NOT simplify back to a one-liner with localhost default.
+# ---------------------------------------------------------------------------
+def _resolve_api_base():
+    explicit = os.environ.get("DCHUB_API_BASE", "").strip()
+    on_railway = bool(
+        os.environ.get("RAILWAY_ENVIRONMENT")
+        or os.environ.get("RAILWAY_SERVICE_NAME")
+    )
+    if explicit:
+        # Block localhost on Railway — always a deadlock
+        if on_railway and ("127.0.0.1" in explicit or "localhost" in explicit):
+            logger.warning(
+                "⚠️  DCHUB_API_BASE is %s on Railway — deadlock! "
+                "Overriding to external URL.", explicit
+            )
+            return "https://dchub-backend-production.up.railway.app"
+        return explicit
+    # No env var set — pick the right default
+    if on_railway:
+        return "https://dchub-backend-production.up.railway.app"
+    # Local dev / Replit
+    port = os.environ.get("PORT", "5000")
+    return f"http://127.0.0.1:{port}"
+
+DCHUB_API_BASE = _resolve_api_base()
+logger.info("🔗 DCHUB_API_BASE resolved to: %s", DCHUB_API_BASE)
 
 # SDK 1.26.0 supports stateless_http and json_response on constructor
 mcp = FastMCP("DC Hub Nexus", stateless_http=True, json_response=True)
