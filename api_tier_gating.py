@@ -332,8 +332,10 @@ def validate_api_key(raw_key):
         conn.close()
         return False, None
 
-    # Convert tuple row to dict using known column order
-    if isinstance(row, dict):
+    # Convert row to a real dict — handles PGRowProxy, dict, or tuple
+    if hasattr(row, 'items'):
+        info = dict(row.items())
+    elif isinstance(row, dict):
         info = dict(row)
     else:
         info = dict(zip(API_KEYS_COLUMNS, row))
@@ -1289,7 +1291,7 @@ def register_api_key_routes(app):
             ORDER BY created_at DESC
         """, (user_id,))
         cols = ['id', 'key_prefix', 'plan', 'name', 'calls_today', 'calls_total', 'last_used', 'is_active', 'created_at']
-        keys = [dict(zip(cols, r)) if not isinstance(r, dict) else dict(r) for r in c.fetchall()]
+        keys = [dict(r.items()) if hasattr(r, 'items') else dict(zip(cols, r)) for r in c.fetchall()]
         conn.close()
 
         return jsonify({'success': True, 'keys': keys})
@@ -1369,7 +1371,9 @@ def register_api_key_routes(app):
             FROM api_keys WHERE user_id = %s AND is_active = 1
         """, (user_id,))
         row = c.fetchone()
-        if row and not isinstance(row, dict):
+        if row and hasattr(row, 'items'):
+            usage = dict(row.items())
+        elif row and not isinstance(row, dict):
             usage = {'today': row[0], 'total': row[1]}
         elif row:
             usage = dict(row)
