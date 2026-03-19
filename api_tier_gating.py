@@ -312,13 +312,17 @@ def validate_api_key(raw_key):
 
     key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
 
+    # Column order in api_keys table (Neon PostgreSQL)
+    API_KEYS_COLUMNS = [
+        'id', 'user_id', 'key_hash', 'key_prefix', 'name', 'permissions',
+        'rate_limit_tier', 'is_active', 'last_used_at', 'created_at',
+        'expires_at', 'usage_count', 'plan', 'last_reset_date',
+        'calls_today', 'calls_total', 'last_used'
+    ]
+
     conn = get_db()
     
-    try:
-        import psycopg2.extras
-        c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    except Exception:
-        c = conn.cursor()
+    c = conn.cursor()
     c.execute("""
         SELECT * FROM api_keys WHERE key_hash = %s AND is_active = 1
     """, (key_hash,))
@@ -328,7 +332,11 @@ def validate_api_key(raw_key):
         conn.close()
         return False, None
 
-    info = dict(row)
+    # Convert tuple row to dict using known column order
+    if isinstance(row, dict):
+        info = dict(row)
+    else:
+        info = dict(zip(API_KEYS_COLUMNS, row))
 
     # ── Auto-correct plan/prefix mismatches ──
     stored_plan = info.get('plan', 'free')
@@ -1274,17 +1282,14 @@ def register_api_key_routes(app):
         user_id = payload.get('user_id')
         conn = get_db()
         
-        try:
-            import psycopg2.extras
-            c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        except Exception:
-            c = conn.cursor()
+        c = conn.cursor()
         c.execute("""
             SELECT id, key_prefix, plan, name, calls_today, calls_total, last_used, is_active, created_at
             FROM api_keys WHERE user_id = %s
             ORDER BY created_at DESC
         """, (user_id,))
-        keys = [dict(r) for r in c.fetchall()]
+        cols = ['id', 'key_prefix', 'plan', 'name', 'calls_today', 'calls_total', 'last_used', 'is_active', 'created_at']
+        keys = [dict(zip(cols, r)) if not isinstance(r, dict) else dict(r) for r in c.fetchall()]
         conn.close()
 
         return jsonify({'success': True, 'keys': keys})
@@ -1358,17 +1363,18 @@ def register_api_key_routes(app):
 
         conn = get_db()
         
-        try:
-            import psycopg2.extras
-            c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        except Exception:
-            c = conn.cursor()
+        c = conn.cursor()
         c.execute("""
             SELECT SUM(calls_today) as today, SUM(calls_total) as total
             FROM api_keys WHERE user_id = %s AND is_active = 1
         """, (user_id,))
         row = c.fetchone()
-        usage = dict(row) if row else {'today': 0, 'total': 0}
+        if row and not isinstance(row, dict):
+            usage = {'today': row[0], 'total': row[1]}
+        elif row:
+            usage = dict(row)
+        else:
+            usage = {'today': 0, 'total': 0}
         conn.close()
 
         limit = TIER_RATE_LIMITS.get(plan, 100)
