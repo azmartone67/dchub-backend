@@ -12969,6 +12969,12 @@ else:
 # =============================================================================
 start_self_restart_monitor(app)
 
+@app.route('/api/self-restart-monitor/status')
+def srm_status():
+    from self_restart_monitor import get_monitor
+    m = get_monitor()
+    return jsonify(m.get_status()) if m else jsonify({"error": "not initialized"})
+
 # =============================================================================
 # GDCI INDEX DASHBOARD (moved to gdci.py blueprint — serves JSON API)
 # Frontend dashboard at dchub.cloud/gdci (Cloudflare Pages)
