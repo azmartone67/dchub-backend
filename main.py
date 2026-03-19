@@ -4840,6 +4840,7 @@ if 'GRIDSTATUS_CACHE' not in dir():
     EIA_CACHE = BoundedCache(max_size=1, ttl=1) if 'BoundedCache' in dir() else {}
     HIFLD_CACHE = BoundedCache(max_size=1, ttl=1) if 'BoundedCache' in dir() else {}
     OILGAS_CACHE = BoundedCache(max_size=1, ttl=1) if 'BoundedCache' in dir() else {}
+    DEALS_CACHE = BoundedCache(max_size=1, ttl=1) if 'BoundedCache' in dir() else {}
     gridstatus_get_load = lambda iso: None
 
 @app.route('/api/grid/fuel-mix-live', methods=['GET'])
