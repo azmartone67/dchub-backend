@@ -755,7 +755,6 @@ def get_pipeline():
 
 @deals_bp.route('/api/v1/gas-pipelines', methods=['GET'])
 @_lazy_require_plan("free")
-@_lazy_protect_data
 def get_gas_pipelines():
     """Get natural gas pipeline infrastructure data"""
     state_filter = request.args.get('state', '').upper()
@@ -763,50 +762,36 @@ def get_gas_pipelines():
     pipeline_type = request.args.get('type', '')  # Transmission, Distribution, Gathering
     limit = request.args.get('limit', 100, type=int)
     
+    lat = request.args.get('lat', type=float)
+    lng = request.args.get('lng', type=float)
+    radius = request.args.get('radius', 50, type=int)
     try:
         conn = _get_db()
         c = conn.cursor()
-        
-        query = "SELECT * FROM gas_pipelines WHERE 1=1"
+        query = "SELECT id, name, operator, pipeline_type, diameter_inches, capacity_mcf, status, lat, lng, city, state, country, source FROM gas_pipelines WHERE lat IS NOT NULL AND lng IS NOT NULL"
         params = []
-        
+        if lat is not None and lng is not None:
+            import math
+            lat_d = radius / 69.0
+            lng_d = radius / (69.0 * max(math.cos(math.radians(lat)), 0.1))
+            query += " AND lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s"
+            params.extend([lat - lat_d, lat + lat_d, lng - lng_d, lng + lng_d])
         if state_filter:
-            query += " AND state = %s"
+            query += " AND UPPER(state) = %s"
             params.append(state_filter)
         if operator_filter:
-            query += " AND operator LIKE %s"
+            query += " AND operator ILIKE %s"
             params.append(f"%{operator_filter}%")
         if pipeline_type:
-            query += " AND pipeline_type = %s"
+            query += " AND LOWER(pipeline_type) = LOWER(%s)"
             params.append(pipeline_type)
-        
-        query += " ORDER BY diameter_inches DESC LIMIT %s"
-        params.append(limit)
-        
+        query += " ORDER BY diameter_inches DESC NULLS LAST LIMIT %s"
+        params.append(min(limit, 500))
         c.execute(query, params)
         rows = c.fetchall()
-        
         pipelines = []
         for r in rows:
-            pipelines.append({
-                'id': r[0],
-                'operator': r[1],
-                'pipeline_type': r[2],
-                'status': r[3],
-                'diameter_inches': r[4],
-                'commodity': r[5],
-                'state': r[6],
-                'market': r[7],
-                'discovered_at': r[8],
-                'source': r[10]
-            })
-        
-        # Enhance with geographic coordinates
-        try:
-            from pipeline_coordinates import enhance_pipeline_coordinates
-            pipelines = enhance_pipeline_coordinates(pipelines)
-        except ImportError:
-            pass
+            pipelines.append({'id': r[0], 'name': r[1], 'operator': r[2], 'pipeline_type': r[3], 'diameter_inches': float(r[4]) if r[4] else None, 'capacity_mcf': float(r[5]) if r[5] else None, 'status': r[6], 'lat': float(r[7]), 'lng': float(r[8]), 'city': r[9], 'state': r[10], 'country': r[11], 'source': r[12]})
         
         # Get summary stats
         c.execute("SELECT COUNT(*), COUNT(DISTINCT operator), COUNT(DISTINCT state) FROM discovered_pipelines WHERE commodity = 'Natural Gas'")
