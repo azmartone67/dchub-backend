@@ -8130,7 +8130,7 @@ def _list_facilities_full():
     if "dchub.cloud" in origin:
         limit = min(limit, 12000)
     else:
-        limit = min(limit, 100)
+        limit = min(limit, 500)
     offset = (page - 1) * limit
     
     q = request.args.get('q', '').strip()
