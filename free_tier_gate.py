@@ -36,7 +36,7 @@ GATED_PREFIXES = [
     '/api/v1/substations',
     '/api/v1/power-plants',
     '/api/v1/transmission',
-    '/api/v1/gas-pipelines',
+
     '/api/v1/fiber',
     '/api/v1/site-score',
     '/api/v1/layers',
