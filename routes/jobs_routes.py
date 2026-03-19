@@ -110,40 +110,29 @@ def job_discovery():
     if auth_err:
         return auth_err
     try:
+        import concurrent.futures
         total_added = 0
         total_found = 0
         errors = []
-        sources = []
         try:
-            from discovery_engine import (init_discovery_tables, run_peeringdb_discovery,
-                                          run_osm_discovery, run_datacentermap_discovery)
+            from routes.discovery_routes import (run_peeringdb_discovery,
+                                                  run_osm_discovery, run_datacentermap_discovery)
             sources = [('peeringdb', run_peeringdb_discovery),
                        ('openstreetmap', run_osm_discovery),
                        ('datacentermap', run_datacentermap_discovery)]
-            try:
-                init_discovery_tables()
-            except Exception:
-                pass
         except ImportError:
-            try:
-                from main import (init_discovery_tables, run_peeringdb_discovery,
-                                  run_osm_discovery, run_datacentermap_discovery)
-                sources = [('peeringdb', run_peeringdb_discovery),
-                           ('openstreetmap', run_osm_discovery),
-                           ('datacentermap', run_datacentermap_discovery)]
-                try:
-                    init_discovery_tables()
-                except Exception:
-                    pass
-            except ImportError:
-                return jsonify({'success': True, 'job': 'discovery', 'found': 0, 'added': 0,
-                                'note': 'discovery functions not available', 'ts': datetime.utcnow().isoformat()})
-
+            return jsonify({'success': True, 'job': 'discovery', 'found': 0, 'added': 0,
+                            'note': 'discovery_routes not available', 'ts': datetime.utcnow().isoformat()})
         for source_name, run_func in sources:
             try:
-                result = run_func()
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(run_func)
+                    result = future.result(timeout=120)
                 total_found += result.get('found', 0)
                 total_added += result.get('added', 0)
+            except concurrent.futures.TimeoutError:
+                errors.append(f"{source_name}: timed out after 120s")
+                logger.warning("JOB discovery: %s timed out after 120s", source_name)
             except Exception as e:
                 errors.append(f"{source_name}: {str(e)[:100]}")
 
