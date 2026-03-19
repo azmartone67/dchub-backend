@@ -8125,7 +8125,12 @@ def _list_facilities_full():
     """Full facility listing for authenticated users."""
     page = request.args.get('page', 1, type=int)
     limit = request.args.get('limit', 50, type=int)
-    limit = min(limit, 100)
+    # Allow dchub.cloud frontend to fetch all facilities for the map
+    origin = request.headers.get("Origin", "") or request.headers.get("Referer", "")
+    if "dchub.cloud" in origin:
+        limit = min(limit, 12000)
+    else:
+        limit = min(limit, 100)
     offset = (page - 1) * limit
     
     q = request.args.get('q', '').strip()
