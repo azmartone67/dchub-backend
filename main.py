@@ -1820,6 +1820,13 @@ except ImportError as e:
 
 logger.info("✅ Feature modules loaded")
 
+# ── MCP teaser bug fixes (energy_prices state filter, renewable filters, tool count) ──
+try:
+    import mcp_teaser_fixes
+    logger.info("🔧 MCP teaser fixes: ✅ Patches applied")
+except Exception as e:
+    logger.warning(f"🔧 MCP teaser fixes: ⚠️ {e}")
+
 # =============================================================================
 # RATE LIMITER & SECURITY MIDDLEWARE
 # =============================================================================
