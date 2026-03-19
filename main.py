@@ -1490,6 +1490,7 @@ from html import unescape, escape as html_escape
 import jwt
 import io
 from collections import defaultdict
+from self_restart_monitor import start_self_restart_monitor
 
 logger.info("✅ Core modules loaded")
 
@@ -12961,6 +12962,12 @@ if CRAWLER_SCHEDULER_AVAILABLE:
         logger.error(f"📅 Crawler Scheduler: ⚠️ Failed to start: {e}")
 else:
     logger.info("📅 Crawler Scheduler: Not available — crawlers will not run on schedule")
+
+# =============================================================================
+# SELF-RESTART MONITOR — auto-heals memory leaks, DB failures, thread exhaustion
+# Triggers Railway ON_FAILURE restart after 3 consecutive check failures
+# =============================================================================
+start_self_restart_monitor(app)
 
 # =============================================================================
 # GDCI INDEX DASHBOARD (moved to gdci.py blueprint — serves JSON API)
