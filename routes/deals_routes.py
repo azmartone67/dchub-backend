@@ -754,7 +754,7 @@ def get_pipeline():
 
 
 @deals_bp.route('/api/v1/gas-pipelines', methods=['GET'])
-@_lazy_require_plan('enterprise')
+@_lazy_require_plan("free")
 @_lazy_protect_data
 def get_gas_pipelines():
     """Get natural gas pipeline infrastructure data"""
@@ -767,7 +767,7 @@ def get_gas_pipelines():
         conn = _get_db()
         c = conn.cursor()
         
-        query = "SELECT * FROM discovered_pipelines WHERE commodity = 'Natural Gas'"
+        query = "SELECT * FROM gas_pipelines WHERE 1=1"
         params = []
         
         if state_filter:
