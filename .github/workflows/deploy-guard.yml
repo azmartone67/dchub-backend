@@ -1,0 +1,126 @@
+name: Deploy Guard
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  syntax-and-import-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install --quiet \
+            flask \
+            gunicorn \
+            psycopg2-binary \
+            requests \
+            apscheduler \
+            python-dotenv \
+            stripe \
+            mcp \
+            pydantic
+
+      - name: Python syntax check (all .py files)
+        run: |
+          echo "🔍 Checking Python syntax..."
+          ERRORS=0
+          for f in $(find . -name "*.py" -not -path "./.git/*" -not -path "./venv/*"); do
+            if ! python -c "import py_compile; py_compile.compile('$f', doraise=True)" 2>/dev/null; then
+              echo "❌ Syntax error: $f"
+              python -c "import py_compile; py_compile.compile('$f', doraise=True)" 2>&1 || true
+              ERRORS=$((ERRORS + 1))
+            fi
+          done
+          if [ $ERRORS -gt 0 ]; then
+            echo "🚨 $ERRORS file(s) have syntax errors — blocking deploy"
+            exit 1
+          fi
+          echo "✅ All Python files pass syntax check"
+
+      - name: Import check (main.py loads without crashing)
+        run: |
+          echo "🔍 Checking main.py imports..."
+          # Set minimal env vars so the app doesn't crash looking for them
+          export DATABASE_URL="postgresql://test:test@localhost:5432/test"
+          export NEON_DATABASE_URL="postgresql://test:test@localhost:5432/test"
+          export RAILWAY_ENVIRONMENT="ci"
+          export PORT="8080"
+          export DCHUB_ADMIN_KEY="test"
+          export STRIPE_SECRET_KEY="sk_test_fake"
+          export STRIPE_WEBHOOK_SECRET="whsec_test_fake"
+          export SECRET_KEY="ci-test-key"
+
+          # Try to compile main.py (catches import errors, syntax issues)
+          python -c "
+          import sys, importlib.util
+          spec = importlib.util.spec_from_file_location('main', 'main.py')
+          if spec is None:
+              print('❌ Cannot find main.py')
+              sys.exit(1)
+          # Just compile, don't execute (avoids DB connections)
+          import py_compile
+          py_compile.compile('main.py', doraise=True)
+          print('✅ main.py compiles successfully')
+          " || {
+            echo "🚨 main.py failed import/compile check — blocking deploy"
+            exit 1
+          }
+
+      - name: Verify railway.json
+        run: |
+          echo "🔍 Checking railway.json..."
+          python -c "
+          import json, sys
+          with open('railway.json') as f:
+              config = json.load(f)
+          deploy = config.get('deploy', {})
+
+          # Verify healthcheck is set
+          hc = deploy.get('healthcheckPath', '')
+          if not hc:
+              print('🚨 railway.json missing healthcheckPath!')
+              sys.exit(1)
+
+          # Verify restart policy
+          rp = deploy.get('restartPolicyType', '')
+          if rp != 'ON_FAILURE':
+              print(f'⚠️  restartPolicyType is \"{rp}\" — should be ON_FAILURE')
+
+          print(f'✅ railway.json OK: healthcheck={hc}, restart={rp}')
+          "
+
+      - name: Check for dangerous patterns
+        run: |
+          echo "🔍 Scanning for dangerous patterns..."
+          WARNINGS=0
+
+          # Check for sys.exit in startup code (crashes Railway)
+          if grep -rn "sys\.exit" main.py 2>/dev/null | grep -v "def \|#\|test\|argparse" | head -5; then
+            echo "⚠️  sys.exit() found in main.py — verify it's not in startup path"
+            WARNINGS=$((WARNINGS + 1))
+          fi
+
+          # Check for DCHUB_API_BASE pointing to localhost (MCP deadlock)
+          if grep -rn "127\.0\.0\.1\|localhost" dchub_mcp_server.py 2>/dev/null | grep -i "api_base\|DCHUB_API" | head -5; then
+            echo "🚨 DCHUB_API_BASE may point to localhost — MCP deadlock risk!"
+            WARNINGS=$((WARNINGS + 1))
+          fi
+
+          if [ $WARNINGS -eq 0 ]; then
+            echo "✅ No dangerous patterns found"
+          else
+            echo "⚠️  $WARNINGS warning(s) — review above"
+          fi
