@@ -1045,6 +1045,13 @@ except Exception as e:
 try:
     from index_api import index_bp
     app.register_blueprint(index_bp)
+
+# HIFLD Neon routes — query Neon directly, no more ArcGIS proxy 503s
+try:
+    from hifld_neon_routes import register_hifld_neon_routes
+    register_hifld_neon_routes(app)
+except Exception as e:
+    logger.warning(f"HIFLD Neon routes failed: {e}")
     print("📊 DC Hub Index: ✅ Legacy index endpoints registered")
 except ImportError:
     print("📊 DC Hub Index: ℹ️ index_api.py not found (replaced by gdci.py)")
