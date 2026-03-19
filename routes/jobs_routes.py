@@ -588,8 +588,9 @@ def job_energy_discovery():
         return auth_err
     try:
         from energy_auto_discovery_pg import run_full_sync as run_energy_discovery
-        from db_utils import get_db_connection
-        conn = get_db_connection()
+        import psycopg2
+        db_url = os.environ.get('DATABASE_URL') or os.environ.get('NEON_DATABASE_URL')
+        conn = psycopg2.connect(db_url)
         try:
             result = run_energy_discovery(conn)
         finally:
