@@ -2931,9 +2931,16 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
             try:
                 pg_e = get_pg_connection()
                 ec = pg_e.cursor()
-                state_q = data.get('state', '') or ''
+                # Read state from tool INPUT arguments, not response data
+                state_q = (tool_params or {}).get('arguments', {}).get('state', '') if isinstance(tool_params, dict) else ''
+                if not state_q:
+                    state_q = data.get('state', '') or ''
+                logger.info(f"ENERGY_DEBUG: state_q='{state_q}' tp_type={type(tool_params)} tp_keys={list((tool_params or {}).keys()) if isinstance(tool_params, dict) else 'N/A'}")
                 if state_q:
-                    ec.execute("SELECT state, sector, rate_cents_kwh FROM eia_retail_rates WHERE UPPER(state) = UPPER(%s) AND sector IN ('commercial','industrial') ORDER BY sector", (state_q,))
+                    # EIA table stores full names ("Texas"), tool sends abbreviations ("TX")
+                    _SN = {'AL':'Alabama','AK':'Alaska','AZ':'Arizona','AR':'Arkansas','CA':'California','CO':'Colorado','CT':'Connecticut','DE':'Delaware','FL':'Florida','GA':'Georgia','HI':'Hawaii','ID':'Idaho','IL':'Illinois','IN':'Indiana','IA':'Iowa','KS':'Kansas','KY':'Kentucky','LA':'Louisiana','ME':'Maine','MD':'Maryland','MA':'Massachusetts','MI':'Michigan','MN':'Minnesota','MS':'Mississippi','MO':'Missouri','MT':'Montana','NE':'Nebraska','NV':'Nevada','NH':'New Hampshire','NJ':'New Jersey','NM':'New Mexico','NY':'New York','NC':'North Carolina','ND':'North Dakota','OH':'Ohio','OK':'Oklahoma','OR':'Oregon','PA':'Pennsylvania','RI':'Rhode Island','SC':'South Carolina','SD':'South Dakota','TN':'Tennessee','TX':'Texas','UT':'Utah','VT':'Vermont','VA':'Virginia','WA':'Washington','WV':'West Virginia','WI':'Wisconsin','WY':'Wyoming','DC':'District of Columbia'}
+                    state_full = _SN.get(state_q.upper(), state_q)
+                    ec.execute("SELECT state, sector, rate_cents_kwh FROM eia_retail_rates WHERE (UPPER(state) = UPPER(%s) OR UPPER(state) = UPPER(%s)) AND sector IN ('commercial','industrial') ORDER BY sector", (state_full, state_q))
                 else:
                     ec.execute("SELECT state, sector, rate_cents_kwh FROM eia_retail_rates WHERE sector = 'commercial' ORDER BY rate_cents_kwh ASC LIMIT 5")
                 for r in ec.fetchall():
@@ -2969,7 +2976,20 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
             try:
                 pg_r = get_pg_connection()
                 rc = pg_r.cursor()
-                rc.execute("SELECT buyer, capacity_mw, energy_type, state FROM energy_ppas ORDER BY capacity_mw DESC LIMIT 5")
+                # Read filters from tool INPUT arguments
+                _re_args = (tool_params or {}).get('arguments', {}) if isinstance(tool_params, dict) else {}
+                _re_state = _re_args.get('state', '')
+                _re_type = _re_args.get('energy_type', '')
+                _re_where = []
+                _re_params = []
+                if _re_state and len(_re_state) <= 3:
+                    _re_where.append("UPPER(state) = UPPER(%s)")
+                    _re_params.append(_re_state)
+                if _re_type and _re_type not in ('combined', ''):
+                    _re_where.append("LOWER(energy_type) = LOWER(%s)")
+                    _re_params.append(_re_type)
+                _re_clause = " AND ".join(_re_where) if _re_where else "1=1"
+                rc.execute(f"SELECT buyer, capacity_mw, energy_type, state FROM energy_ppas WHERE {_re_clause} ORDER BY capacity_mw DESC LIMIT 5", _re_params)
                 rows = rc.fetchall()
                 for r in rows:
                     ppa_preview.append({'buyer': r[0], 'capacity_mw': r[1], 'type': r[2], 'state': r[3]})
