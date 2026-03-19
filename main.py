@@ -2738,63 +2738,120 @@ def _get_mcp_caller_tier():
 
 def _gate_mcp_result(result_content, tool_name, tier, tool_params=None):
     """
-    Gate a tools/call result for free tier users.
-    result_content: list of MCP content blocks [{"type":"text","text":"..."}]
-    Returns: modified content list with gating applied.
+    Gate a tools/call result based on caller tier.
+    Free tier: stripped fields + teaser CTAs + daily rate limit.
+    Developer/Pro: full fields but capped result count.
+    Enterprise/admin: pass through (handled before this is called).
     """
-    if tier not in ('free', 'rate_limited'):
-        return result_content  # paid tiers pass through
+    # ── Enterprise/admin: never gated (shouldn't reach here, but safety) ──
+    if tier in ('enterprise', 'admin'):
+        return result_content
 
-    # ── Daily rate limit check (free tier only) ──
-    if tier == 'free':
-        ip = request.remote_addr or 'unknown'
-        allowed, remaining, used = _check_mcp_daily_limit(ip)
-        if not allowed:
-            return [{
-                "type": "text",
-                "text": json.dumps({
-                    "_user_facing_note": MCP_RATE_LIMIT_NOTE,
-                    "error": "daily_limit_reached",
-                    "message": (
-                        f"You've used all {MCP_FREE_DAILY_LIMIT} free MCP calls for today. "
-                        f"Developer plan ($49/mo) gives you 1,000 calls/day with full data."
-                    ),
-                    "calls_used": used,
-                    "daily_limit": MCP_FREE_DAILY_LIMIT,
-                    "resets": "midnight UTC",
-                    "upgrade": {
-                        "url": "https://dchub.cloud/pricing#developer",
-                        "checkout": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",
-                        "price": "$49/mo",
-                        "includes": "1,000 calls/day, full facility data, coordinates, power specs, site scoring, grid data"
-                    }
-                })
-            }]
+    # ── Free tier: original strict gating ──
+    if tier in ('free', 'rate_limited'):
+        # Daily rate limit check (free tier only)
+        if tier == 'free':
+            ip = request.remote_addr or 'unknown'
+            allowed, remaining, used = _check_mcp_daily_limit(ip)
+            if not allowed:
+                return [{
+                    "type": "text",
+                    "text": json.dumps({
+                        "_user_facing_note": MCP_RATE_LIMIT_NOTE,
+                        "error": "daily_limit_reached",
+                        "message": (
+                            f"You've used all {MCP_FREE_DAILY_LIMIT} free MCP calls for today. "
+                            f"Developer plan ($49/mo) gives you 1,000 calls/day with full data."
+                        ),
+                        "calls_used": used,
+                        "daily_limit": MCP_FREE_DAILY_LIMIT,
+                        "resets": "midnight UTC",
+                        "upgrade": {
+                            "url": "https://dchub.cloud/pricing#developer",
+                            "checkout": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",
+                            "price": "$49/mo",
+                            "includes": "1,000 calls/day, full facility data, coordinates, power specs, site scoring, grid data"
+                        }
+                    })
+                }]
 
-    # ── Teaser tools: return degraded results with upgrade CTA ──
-    if tool_name in MCP_TEASER_TOOLS:
-        return _gate_teaser_result(result_content, tool_name, tool_params=tool_params)
+        # Teaser tools: return degraded results with upgrade CTA
+        if tool_name in MCP_TEASER_TOOLS:
+            return _gate_teaser_result(result_content, tool_name, tool_params=tool_params)
 
-    # ── Facility tools: parse the text content, gate results ──
-    if tool_name in MCP_FACILITY_TOOLS:
-        gated = []
-        for block in result_content:
-            if block.get('type') != 'text':
-                gated.append(block)
-                continue
-            try:
-                data = json.loads(block['text'])
-            except (json.JSONDecodeError, TypeError):
-                gated.append(block)
-                continue
+        # Facility tools: parse the text content, gate results
+        if tool_name in MCP_FACILITY_TOOLS:
+            gated = []
+            for block in result_content:
+                if block.get('type') != 'text':
+                    gated.append(block)
+                    continue
+                try:
+                    data = json.loads(block['text'])
+                except (json.JSONDecodeError, TypeError):
+                    gated.append(block)
+                    continue
+                gated_data = _gate_facility_data(data, tool_name)
+                gated.append({"type": "text", "text": json.dumps(gated_data)})
+            return gated
 
-            # Gate facility arrays — look for common keys
-            gated_data = _gate_facility_data(data, tool_name)
-            gated.append({"type": "text", "text": json.dumps(gated_data)})
-        return gated
+        # All other tools: pass through for free tier
+        return result_content
 
-    # All other tools: pass through for free tier (news, recommendations, etc.)
-    return result_content
+    # ── Paid tiers (developer, founding, pro): full fields, capped count ──
+    from api_tier_gating import MCP_TIER_RESULT_LIMITS
+    result_cap = MCP_TIER_RESULT_LIMITS.get(tier, 25)
+
+    if tool_name not in MCP_FACILITY_TOOLS:
+        return result_content  # non-facility tools pass through for paid
+
+    gated = []
+    for block in result_content:
+        if block.get('type') != 'text':
+            gated.append(block)
+            continue
+        try:
+            data = json.loads(block['text'])
+        except (json.JSONDecodeError, TypeError):
+            gated.append(block)
+            continue
+
+        # Cap result arrays but keep ALL fields (paid users get full data)
+        if isinstance(data, dict):
+            for key in ('facilities', 'results', 'pipeline', 'data', 'operators', 'items'):
+                if key in data and isinstance(data[key], list):
+                    total_count = len(data[key])
+                    if total_count > result_cap:
+                        data[key] = data[key][:result_cap]
+                        data['_result_cap'] = {
+                            'tier': tier,
+                            'showing': result_cap,
+                            'total': total_count,
+                            'message': f'Showing {result_cap} of {total_count} results on {tier} plan.',
+                        }
+                        if tier in ('developer', 'founding'):
+                            data['_result_cap']['upgrade'] = {
+                                'message': f'Pro plan ($199/mo) returns up to {MCP_TIER_RESULT_LIMITS.get("pro", 100)} results per query.',
+                                'url': 'https://dchub.cloud/pricing',
+                            }
+                    break
+        elif isinstance(data, list):
+            total_count = len(data)
+            if total_count > result_cap:
+                data = data[:result_cap]
+
+        gated.append({"type": "text", "text": json.dumps(data)})
+
+    # ── Track MCP records served for paid tiers ──
+    try:
+        from api_tier_gating import increment_daily_records, get_user_key_from_request
+        user_key, _ = get_user_key_from_request()
+        served = min(result_cap, 100)  # approximate
+        increment_daily_records(user_key, tier, served, endpoint=f'/mcp/{tool_name}')
+    except Exception:
+        pass
+
+    return gated
 
 
 def _gate_teaser_result(result_content, tool_name, tool_params=None):
@@ -3328,11 +3385,13 @@ def _extract_json_from_sse(sse_bytes):
 
 def _gate_mcp_response_bytes(resp_bytes, rpc_method, rpc_params, tier):
     """
-    Gate a full JSON-RPC response (bytes) for free tier.
+    Gate a full JSON-RPC response (bytes) for ALL tiers (not just free).
+    Enterprise/admin pass through. Developer/Pro get result caps.
     Only gates tools/call results. Pass through everything else.
     Returns: (gated_bytes, was_modified)
     """
-    if tier not in ('free', 'rate_limited'):
+    # Enterprise and admin pass through completely
+    if tier in ('enterprise', 'admin'):
         return resp_bytes, False
 
     if rpc_method != 'tools/call':
@@ -3342,29 +3401,35 @@ def _gate_mcp_response_bytes(resp_bytes, rpc_method, rpc_params, tier):
     if not tool_name:
         return resp_bytes, False
 
-    # Gate facility tools + teaser tools; also enforce daily rate limit on ALL tools
-    all_gated_tools = MCP_FACILITY_TOOLS | MCP_TEASER_TOOLS
-    if tool_name not in all_gated_tools:
-        # Still check daily rate limit even for ungated tools (news, etc.)
-        if tier == 'free':
-            ip = request.remote_addr or 'unknown'
-            allowed, _, _ = _check_mcp_daily_limit(ip)
-            if not allowed:
-                rpc_resp_rl = {
-                    "jsonrpc": "2.0",
-                    "result": {
-                        "content": _gate_mcp_result([], tool_name, tier)
+    # For free tier: gate facility tools + teaser tools + daily rate limit
+    # For paid tiers: only gate facility/search result counts (no teasers)
+    if tier in ('free', 'rate_limited'):
+        all_gated_tools = MCP_FACILITY_TOOLS | MCP_TEASER_TOOLS
+        if tool_name not in all_gated_tools:
+            # Still check daily rate limit even for ungated tools (news, etc.)
+            if tier == 'free':
+                ip = request.remote_addr or 'unknown'
+                allowed, _, _ = _check_mcp_daily_limit(ip)
+                if not allowed:
+                    rpc_resp_rl = {
+                        "jsonrpc": "2.0",
+                        "result": {
+                            "content": _gate_mcp_result([], tool_name, tier)
+                        }
                     }
-                }
-                try:
-                    orig = json.loads(resp_bytes)
-                    if 'id' in orig:
-                        rpc_resp_rl['id'] = orig['id']
-                except Exception:
-                    pass
-                return json.dumps(rpc_resp_rl).encode('utf-8'), True
+                    try:
+                        orig = json.loads(resp_bytes)
+                        if 'id' in orig:
+                            rpc_resp_rl['id'] = orig['id']
+                    except Exception:
+                        pass
+                    return json.dumps(rpc_resp_rl).encode('utf-8'), True
+                return resp_bytes, False
             return resp_bytes, False
-        return resp_bytes, False
+    else:
+        # Paid tiers (developer, founding, pro): only gate facility data tools
+        if tool_name not in MCP_FACILITY_TOOLS:
+            return resp_bytes, False
 
     try:
         rpc_resp = json.loads(resp_bytes)
@@ -3379,39 +3444,40 @@ def _gate_mcp_response_bytes(resp_bytes, rpc_method, rpc_params, tier):
 
     gated_content = _gate_mcp_result(content, tool_name, tier, tool_params=rpc_params)
     rpc_resp['result']['content'] = gated_content
-    # structuredContent will be rebuilt AFTER whitelist strip below
-    
-    # WHITELIST: only allow approved fields through for free tier
-    ALLOWED_FIELDS = {
-        '_user_facing_note', '_upgrade', 'success', 'count', 'total_available',
-        'source', 'meta', 'query', 'data_available', 'data_sources',
-        'location', 'overall_score', 'interpretation', 'capacity_requested_mw',
-        'sample_insights', 'data', 'facilities', 'articles', 'transactions',
-        'market', 'by_status', 'top_providers', 'stats', 'recent_facilities',
-        'metro_fiber_preview', 'metro_markets_covered',
-        'data_type', 'rates_preview', 'states_covered', 'data_source', 'detailed_rates',
-        'dc_industry_ppas', 'total_ppas', 'total_contracted_mw', 'installations',
-        'region', 'timestamp', 'summary', 'fuel_mix', 'demand_mw', 'price_per_mwh',
-        'substations', 'transmission_lines', 'gas_pipelines', 'power_plants',
-        'dc_hub_intelligence_index', 'pipeline_projects', 'total_pipeline_mw',
-        'agents', 'total_agents', 'preview', 'carriers_available', 'total_routes',
-    }
-    gated = rpc_resp.get('result', {}).get('content', [])
-    for i, block in enumerate(gated):
-        if block.get('type') == 'text':
-            try:
-                obj = json.loads(block['text'])
-                if isinstance(obj, dict):
-                    stripped = {k: v for k, v in obj.items() if k in ALLOWED_FIELDS}
-                    if 'scores' in obj:
-                        stripped['scores'] = {k: '\u2588\u2588 upgrade to see' for k in obj['scores']}
-                    if 'nearby' in obj:
-                        stripped['nearby'] = {k: '\u2588\u2588 upgrade to see' for k in obj['nearby']}
-                    rpc_resp['result']['content'][i] = {'type': 'text', 'text': json.dumps(stripped)}
-            except (json.JSONDecodeError, TypeError):
-                pass
 
-    # Rebuild structuredContent from the now-clean whitelist-stripped content
+    # WHITELIST strip for FREE tier only — paid tiers keep all fields
+    if tier in ('free', 'rate_limited'):
+        # structuredContent will be rebuilt AFTER whitelist strip below
+        ALLOWED_FIELDS = {
+            '_user_facing_note', '_upgrade', 'success', 'count', 'total_available',
+            'source', 'meta', 'query', 'data_available', 'data_sources',
+            'location', 'overall_score', 'interpretation', 'capacity_requested_mw',
+            'sample_insights', 'data', 'facilities', 'articles', 'transactions',
+            'market', 'by_status', 'top_providers', 'stats', 'recent_facilities',
+            'metro_fiber_preview', 'metro_markets_covered',
+            'data_type', 'rates_preview', 'states_covered', 'data_source', 'detailed_rates',
+            'dc_industry_ppas', 'total_ppas', 'total_contracted_mw', 'installations',
+            'region', 'timestamp', 'summary', 'fuel_mix', 'demand_mw', 'price_per_mwh',
+            'substations', 'transmission_lines', 'gas_pipelines', 'power_plants',
+            'dc_hub_intelligence_index', 'pipeline_projects', 'total_pipeline_mw',
+            'agents', 'total_agents', 'preview', 'carriers_available', 'total_routes',
+        }
+        gated = rpc_resp.get('result', {}).get('content', [])
+        for i, block in enumerate(gated):
+            if block.get('type') == 'text':
+                try:
+                    obj = json.loads(block['text'])
+                    if isinstance(obj, dict):
+                        stripped = {k: v for k, v in obj.items() if k in ALLOWED_FIELDS}
+                        if 'scores' in obj:
+                            stripped['scores'] = {k: '\u2588\u2588 upgrade to see' for k in obj['scores']}
+                        if 'nearby' in obj:
+                            stripped['nearby'] = {k: '\u2588\u2588 upgrade to see' for k in obj['nearby']}
+                        rpc_resp['result']['content'][i] = {'type': 'text', 'text': json.dumps(stripped)}
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+    # Rebuild structuredContent from the now-clean content
     final_text = None
     for block in rpc_resp.get('result', {}).get('content', []):
         if block.get('type') == 'text':
@@ -3427,10 +3493,10 @@ def _gate_mcp_response_bytes(resp_bytes, rpc_method, rpc_params, tier):
 
 def _gate_mcp_sse_stream(resp, rpc_method, rpc_params, tier):
     """
-    Gate an SSE stream for free tier.
+    Gate an SSE stream for all non-enterprise tiers.
     Buffers SSE events, finds JSON-RPC results, gates them.
     """
-    if tier not in ('free', 'rate_limited') or rpc_method != 'tools/call':
+    if tier in ('enterprise', 'admin') or rpc_method != 'tools/call':
         for chunk in resp.iter_content(chunk_size=None):
             if chunk:
                 yield chunk
@@ -8157,16 +8223,37 @@ def list_facilities():
             pass
     return _list_facilities_free(plan)
 def _list_facilities_full():
-    """Full facility listing for authenticated users."""
+    """Full facility listing for authenticated users — with tier-aware caps."""
+    from api_tier_gating import (get_request_tier, enforce_page_cap, enforce_search_limit,
+                                  check_daily_record_budget, increment_daily_records,
+                                  get_user_key_from_request, build_record_cap_error,
+                                  build_page_cap_error, TIER_PAGE_CAPS)
+    
+    tier = get_request_tier()
+    user_key, _ = get_user_key_from_request()
+    
     page = request.args.get('page', 1, type=int)
     limit = request.args.get('limit', 50, type=int)
+    
+    # ── Enforce page cap ──
+    page_cap = TIER_PAGE_CAPS.get(tier, 2)
+    if page > page_cap:
+        return build_page_cap_error(page, tier, page_cap)
+    
     # Allow dchub.cloud frontend to fetch all facilities for the map
     origin = request.headers.get("Origin", "") or request.headers.get("Referer", "")
     if "dchub.cloud" in origin:
         limit = min(limit, 12000)
     else:
-        limit = min(limit, 500)
+        # ── Enforce per-query result limit ──
+        limit = enforce_search_limit(limit, tier)
+    
     offset = (page - 1) * limit
+    
+    # ── Check daily record budget BEFORE querying DB ──
+    allowed, remaining, used, cap = check_daily_record_budget(user_key, tier, records_requested=limit)
+    if not allowed and "dchub.cloud" not in origin:
+        return build_record_cap_error(user_key, tier, used, cap)
     
     q = request.args.get('q', '').strip()
     country = request.args.get('country')
@@ -8278,6 +8365,25 @@ def _list_facilities_full():
             except:
                 pass
     
+    # ── Track records served (skip for dchub.cloud frontend) ──
+    origin_check = request.headers.get("Origin", "") or request.headers.get("Referer", "")
+    if "dchub.cloud" not in origin_check:
+        try:
+            from api_tier_gating import increment_daily_records, get_user_key_from_request
+            uk, t = get_user_key_from_request()
+            increment_daily_records(uk, t, len(facilities), endpoint='/api/v1/facilities')
+        except Exception:
+            pass
+    
+    # ── Cap displayed total pages to tier page cap ──
+    actual_pages = (total + limit - 1) // limit
+    try:
+        from api_tier_gating import TIER_PAGE_CAPS
+        t = get_request_tier() if 'tier' not in dir() else tier
+        capped_pages = min(actual_pages, TIER_PAGE_CAPS.get(t, 2))
+    except Exception:
+        capped_pages = actual_pages
+    
     return jsonify({
         'success': True,
         'data': facilities,
@@ -8285,7 +8391,8 @@ def _list_facilities_full():
             'page': page,
             'limit': limit,
             'total': total,
-            'pages': (total + limit - 1) // limit
+            'pages': capped_pages,
+            'max_page': capped_pages,
         }
     })
 
@@ -8373,6 +8480,14 @@ def _list_facilities_free(plan='anon'):
 @protect_data
 def search_facilities():
     """Search facilities — supports q, operator, city, state, country, min_mw, max_mw, tier, limit, offset"""
+    from api_tier_gating import (get_request_tier, enforce_page_cap, enforce_search_limit,
+                                  check_daily_record_budget, increment_daily_records,
+                                  get_user_key_from_request, build_record_cap_error,
+                                  build_page_cap_error, TIER_PAGE_CAPS)
+    
+    tier = get_request_tier()
+    user_key, _ = get_user_key_from_request()
+    
     query    = request.args.get('q', '').strip()
     operator = request.args.get('operator', '').strip()
     city     = request.args.get('city', '').strip()
@@ -8380,9 +8495,20 @@ def search_facilities():
     country  = request.args.get('country', '').strip()
     min_mw   = request.args.get('min_capacity_mw', request.args.get('min_mw', 0), type=float)
     max_mw   = request.args.get('max_capacity_mw', request.args.get('max_mw', 0), type=float)
-    tier     = request.args.get('tier', 0, type=int)
-    limit    = min(request.args.get('limit', 25, type=int), 100)
+    tier_filter = request.args.get('tier', 0, type=int)
+    limit    = enforce_search_limit(request.args.get('limit', 25, type=int), tier)
     offset   = request.args.get('offset', 0, type=int)
+    
+    # ── Enforce page cap (offset-based: page = offset/limit + 1) ──
+    effective_page = (offset // max(limit, 1)) + 1
+    page_cap = TIER_PAGE_CAPS.get(tier, 2)
+    if effective_page > page_cap:
+        return build_page_cap_error(effective_page, tier, page_cap)
+    
+    # ── Check daily record budget ──
+    allowed, remaining, used, cap = check_daily_record_budget(user_key, tier, records_requested=limit)
+    if not allowed:
+        return build_record_cap_error(user_key, tier, used, cap)
 
     # Need at least one filter
     if not any([query, operator, city, state, country, min_mw, max_mw, tier]):
@@ -8441,9 +8567,9 @@ def search_facilities():
             conditions.append('power_mw <= %s')
             params.append(max_mw)
     
-        if tier:
+        if tier_filter:
             conditions.append('tier = %s')
-            params.append(tier)
+            params.append(tier_filter)
     
         # Phase 4: min_confidence filter
         min_confidence = request.args.get('min_confidence', type=float)
@@ -8474,6 +8600,12 @@ def search_facilities():
                 f['confidence_badge'] = 'high' if cs >= 0.8 else ('medium' if cs >= 0.5 else 'low')
         except Exception:
             pass  # Never let badge enrichment crash the response
+
+        # ── Track records served ──
+        try:
+            increment_daily_records(user_key, tier, len(facilities), endpoint='/api/v1/search')
+        except Exception:
+            pass
 
         return jsonify({
             'success': True,
