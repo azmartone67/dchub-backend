@@ -10882,7 +10882,7 @@ def job_fiber_sync():
 
     # 2. Fiber network discovery module
     try:
-        from fiber_network_discovery import sync_fiber_routes
+        from fiber_network_discovery import run_fiber_discovery as sync_fiber_routes
         fiber_result = sync_fiber_routes()
         results['sources']['fiber_network'] = fiber_result
         results['total_new'] += fiber_result.get('new_routes', 0) if isinstance(fiber_result, dict) else 0
