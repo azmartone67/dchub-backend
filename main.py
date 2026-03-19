@@ -2936,7 +2936,6 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
                 state_q = (tool_params or {}).get('arguments', {}).get('state', '') if isinstance(tool_params, dict) else ''
                 if not state_q:
                     state_q = data.get('state', '') or ''
-                logger.info(f"ENERGY_DEBUG: state_q='{state_q}' tp_type={type(tool_params)} tp_keys={list((tool_params or {}).keys()) if isinstance(tool_params, dict) else 'N/A'}")
                 if state_q:
                     # EIA table stores full names ("Texas"), tool sends abbreviations ("TX")
                     _SN = {'AL':'Alabama','AK':'Alaska','AZ':'Arizona','AR':'Arkansas','CA':'California','CO':'Colorado','CT':'Connecticut','DE':'Delaware','FL':'Florida','GA':'Georgia','HI':'Hawaii','ID':'Idaho','IL':'Illinois','IN':'Indiana','IA':'Iowa','KS':'Kansas','KY':'Kentucky','LA':'Louisiana','ME':'Maine','MD':'Maryland','MA':'Massachusetts','MI':'Michigan','MN':'Minnesota','MS':'Mississippi','MO':'Missouri','MT':'Montana','NE':'Nebraska','NV':'Nevada','NH':'New Hampshire','NJ':'New Jersey','NM':'New Mexico','NY':'New York','NC':'North Carolina','ND':'North Dakota','OH':'Ohio','OK':'Oklahoma','OR':'Oregon','PA':'Pennsylvania','RI':'Rhode Island','SC':'South Carolina','SD':'South Dakota','TN':'Tennessee','TX':'Texas','UT':'Utah','VT':'Vermont','VA':'Virginia','WA':'Washington','WV':'West Virginia','WI':'Wisconsin','WY':'Wyoming','DC':'District of Columbia'}
@@ -13486,24 +13485,25 @@ try:
 except Exception as e:
     print(f"❌ Rankings blueprint failed: {e}")
 
-    # Energy Discovery Routes (Land & Power map integration)
-    try:
-        from routes.energy_discovery_routes import energy_discovery_bp
-        app.register_blueprint(energy_discovery_bp)
-        print("⚡ Energy Discovery Blueprint: ✅ Registered (6 routes)")
-    except Exception as e:
-        print(f"❌ Energy Discovery blueprint failed: {e}")
+# Energy Discovery Routes (Land & Power map integration)
+try:
+    from routes.energy_discovery_routes import energy_discovery_bp
+    app.register_blueprint(energy_discovery_bp)
+    print("⚡ Energy Discovery Blueprint: ✅ Registered (6 routes)")
+except Exception as e:
+    print(f"❌ Energy Discovery blueprint failed: {e}")
 
-    # Visit Tracking Routes
-    try:
-        from routes.track_routes import track_bp
-        app.register_blueprint(track_bp)
-        print("📊 Visit Tracking Blueprint: ✅ Registered (1 route)")
-    except Exception as e:
-        print(f"❌ Track blueprint failed: {e}")
+# Visit Tracking Routes
+try:
+    from routes.track_routes import track_bp
+    app.register_blueprint(track_bp)
+    print("📊 Visit Tracking Blueprint: ✅ Registered (1 route)")
+except Exception as e:
+    print(f"❌ Track blueprint failed: {e}")
 
 @app.route('/api/v1/plan-sync.js')
 def serve_plan_sync():
     """Serve plan-sync script via API route (bypasses Cloudflare Pages static)"""
-    js = open('static/js/dchub-plan-sync.js', 'r').read()
+    with open('static/js/dchub-plan-sync.js', 'r') as f:
+        js = f.read()
     return Response(js, mimetype='application/javascript', headers={'Cache-Control': 'public, max-age=3600'})
