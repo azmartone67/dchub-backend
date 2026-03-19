@@ -2722,7 +2722,7 @@ def _get_mcp_caller_tier():
     return 'free', None
 
 
-def _gate_mcp_result(result_content, tool_name, tier):
+def _gate_mcp_result(result_content, tool_name, tier, tool_params=None):
     """
     Gate a tools/call result for free tier users.
     result_content: list of MCP content blocks [{"type":"text","text":"..."}]
@@ -2759,7 +2759,7 @@ def _gate_mcp_result(result_content, tool_name, tier):
 
     # ── Teaser tools: return degraded results with upgrade CTA ──
     if tool_name in MCP_TEASER_TOOLS:
-        return _gate_teaser_result(result_content, tool_name)
+        return _gate_teaser_result(result_content, tool_name, tool_params=tool_params)
 
     # ── Facility tools: parse the text content, gate results ──
     if tool_name in MCP_FACILITY_TOOLS:
@@ -2783,7 +2783,7 @@ def _gate_mcp_result(result_content, tool_name, tier):
     return result_content
 
 
-def _gate_teaser_result(result_content, tool_name):
+def _gate_teaser_result(result_content, tool_name, tool_params=None):
     """
     Return teaser/degraded results for premium tools instead of hard-blocking.
     Free users see enough to know the data is valuable, but not enough to build with.
@@ -3089,11 +3089,34 @@ def _gate_teaser_result(result_content, tool_name):
                     'price': '$49/mo',
                 }
             }
-            # Preserve MCP server enrichments
-            if isinstance(data, dict):
-                for pk in ('comparisons', 'comparison', 'compare_results'):
-                    if pk in data and data[pk]:
-                        teaser[pk] = data[pk]
+            # Compare_to: query DB directly (MCP server can't reach localhost)
+            compare_to_raw = (tool_params or {}).get('arguments', {}).get('compare_to', '') if isinstance(tool_params, dict) else ''
+            if not compare_to_raw and isinstance(data, dict):
+                compare_to_raw = data.get('_compare_to', '')
+            if compare_to_raw:
+                comparisons = {}
+                for comp_name in [m.strip() for m in compare_to_raw.split(',') if m.strip()]:
+                    comp_slug = comp_name.lower().replace(' ', '-').replace(',', '')
+                    pg_c = None
+                    try:
+                        pg_c = get_pg_connection()
+                        cc = pg_c.cursor()
+                        cc.execute("SELECT COUNT(*) FROM facilities WHERE market ILIKE %s OR city ILIKE %s", (f'%{comp_name}%', f'%{comp_name}%'))
+                        fc = cc.fetchone()[0]
+                        cc.execute("SELECT provider, COUNT(*) as cnt FROM facilities WHERE market ILIKE %s OR city ILIKE %s GROUP BY provider ORDER BY cnt DESC LIMIT 3", (f'%{comp_name}%', f'%{comp_name}%'))
+                        top_p = [{'name': r[0], 'facilities': r[1]} for r in cc.fetchall()]
+                        cc.execute("SELECT status, COUNT(*) FROM facilities WHERE market ILIKE %s OR city ILIKE %s GROUP BY status", (f'%{comp_name}%', f'%{comp_name}%'))
+                        by_st = {r[0]: r[1] for r in cc.fetchall()}
+                        cc.close()
+                        comparisons[comp_name] = {'facility_count': fc, 'top_providers': top_p, 'by_status': by_st}
+                    except Exception as cmp_err:
+                        logger.warning(f"compare_to query failed for {comp_name}: {cmp_err}")
+                    finally:
+                        if pg_c:
+                            try: return_pg_connection(pg_c)
+                            except: pass
+                if comparisons:
+                    teaser['comparisons'] = comparisons
             return [{"type": "text", "text": json.dumps(teaser)}]
 
         elif tool_name == 'list_transactions':
@@ -3321,7 +3344,7 @@ def _gate_mcp_response_bytes(resp_bytes, rpc_method, rpc_params, tier):
     if not content:
         return resp_bytes, False
 
-    gated_content = _gate_mcp_result(content, tool_name, tier)
+    gated_content = _gate_mcp_result(content, tool_name, tier, tool_params=rpc_params)
     rpc_resp['result']['content'] = gated_content
     # structuredContent will be rebuilt AFTER whitelist strip below
     
