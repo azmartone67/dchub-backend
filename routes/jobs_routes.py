@@ -587,8 +587,13 @@ def job_energy_discovery():
     if auth_err:
         return auth_err
     try:
-        from energy_auto_discovery import run_full_sync as run_energy_discovery
-        result = run_energy_discovery()
+        from energy_auto_discovery_pg import run_full_sync as run_energy_discovery
+        from db_utils import get_db_connection
+        conn = get_db_connection()
+        try:
+            result = run_energy_discovery(conn)
+        finally:
+            conn.close()
         _reg_update('energy_discovery')
         logger.info("JOB energy-discovery: ✅")
         return jsonify({'success': True, 'job': 'energy-discovery', 'result': str(result)[:500] if result else 'ok', 'ts': datetime.utcnow().isoformat()})
