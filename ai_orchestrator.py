@@ -360,7 +360,7 @@ Return JSON with:
 JSON only, no markdown."""
 
             response = self.claude.messages.create(
-                model="claude-haiku-4-5-20241022",
+                model="claude-haiku-4-5-20241001",
                 max_tokens=1500,
                 messages=[{"role": "user", "content": prompt}]
             )

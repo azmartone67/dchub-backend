@@ -353,7 +353,7 @@ Success Rates by Technology: {json.dumps(tech_stats, indent=2)}
 Effort Estimation Accuracy: {json.dumps(effort_acc, indent=2)}
 Format as JSON: [{{"insight": "...", "category": "...", "action": "..."}}]"""
             response = self.claude.messages.create(
-                model="claude-haiku-4-5-20241022", max_tokens=600,
+                model="claude-haiku-4-5-20241001", max_tokens=600,
                 messages=[{"role": "user", "content": prompt}])
             content = response.content[0].text
             json_match = re.search(r'\[.*\]', content, re.DOTALL)
@@ -656,7 +656,7 @@ Format as JSON: [{{"insight": "...", "category": "...", "action": "..."}}]"""
 Recent Headlines: {chr(10).join(recent_news[:15])}
 Top Operators: {', '.join(top_operators[:5])}
 Format as JSON: [{{"insight": "...", "category": "..."}}]"""
-            response = self.claude.messages.create(model="claude-haiku-4-5-20241022", max_tokens=500,
+            response = self.claude.messages.create(model="claude-haiku-4-5-20241001", max_tokens=500,
                 messages=[{"role": "user", "content": prompt}])
             content = response.content[0].text
             json_match = re.search(r'\[.*\]', content, re.DOTALL)
@@ -676,7 +676,7 @@ Format as JSON: [{{"insight": "...", "category": "..."}}]"""
 Current Stats: {stats.get('total_facilities', 0)} facilities, {stats.get('operators', 0)} operators,
 {news_stats.get('total_articles', 0)} news articles, {news_stats.get('unique_sources', 0)} sources.
 Return as JSON: [{{"improvement": "...", "priority": "high/medium/low"}}]"""
-            response = self.claude.messages.create(model="claude-haiku-4-5-20241022", max_tokens=500,
+            response = self.claude.messages.create(model="claude-haiku-4-5-20241001", max_tokens=500,
                 messages=[{"role": "user", "content": prompt}])
             content = response.content[0].text
             json_match = re.search(r'\[.*\]', content, re.DOTALL)
@@ -820,7 +820,7 @@ Return as JSON: [{{"improvement": "...", "priority": "high/medium/low"}}]"""
             prompt = f"""You are a data center industry expert. Teach me about: "{topic}"
 Provide: definition, key players, market trends, important metrics, related technologies.
 Format as JSON: {{"topic": "{topic}", "definition": "...", "key_players": [], "trends": [], "metrics": {{}}, "related_topics": []}}"""
-            response = self.claude.messages.create(model="claude-haiku-4-5-20241022", max_tokens=1000,
+            response = self.claude.messages.create(model="claude-haiku-4-5-20241001", max_tokens=1000,
                 messages=[{"role": "user", "content": prompt}])
             content = response.content[0].text
             json_match = re.search(r'\{.*\}', content, re.DOTALL)
