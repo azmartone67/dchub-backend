@@ -8213,14 +8213,8 @@ def list_facilities():
     from api_tier_gating import get_request_tier
     plan = get_request_tier()
     if plan in ('developer', 'founding', 'pro', 'enterprise', 'admin'):
-        if _real_require_plan is not None:
-            @_real_require_plan('developer')
-            @protect_data
-            def _authed_facilities():
-                return _list_facilities_full()
-            return _authed_facilities()
-        else:
-            pass
+        # Direct call — get_request_tier() already validated the key/JWT
+        return _list_facilities_full()
     return _list_facilities_free(plan)
 def _list_facilities_full():
     """Full facility listing for authenticated users — with tier-aware caps."""
