@@ -81,6 +81,7 @@ def get_power_plants():
     except:
         min_mw = None
 
+    conn = None
     try:
         conn = _get_db()
         cur = conn.cursor()
@@ -127,8 +128,6 @@ def get_power_plants():
                 'lat': float(r[16]), 'lng': float(r[17])
             })
 
-        conn.close()
-
         return jsonify({
             'success': True,
             'plants': plants,
@@ -142,6 +141,10 @@ def get_power_plants():
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        if conn:
+            try: conn.close()
+            except: pass
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -184,6 +187,7 @@ def get_transmission_lines():
     except:
         min_voltage = None
 
+    conn = None
     try:
         conn = _get_db()
         cur = conn.cursor()
@@ -225,8 +229,6 @@ def get_transmission_lines():
                 'state': r[7]
             })
 
-        conn.close()
-
         return jsonify({
             'success': True,
             'lines': lines,
@@ -240,6 +242,10 @@ def get_transmission_lines():
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        if conn:
+            try: conn.close()
+            except: pass
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -274,6 +280,7 @@ def get_submarine_cables():
     except:
         radius = 200
 
+    conn = None
     try:
         conn = _get_db()
         cur = conn.cursor()
@@ -307,17 +314,18 @@ def get_submarine_cables():
         lp_query += " LIMIT %s"
         lp_params.append(min(limit, 500))
 
-        cur.execute(lp_query, lp_params)
-        lp_rows = cur.fetchall()
-        landings = []
-        for r in lp_rows:
-            landings.append({
-                'id': r[0], 'name': r[1], 'country': r[2],
-                'lat': float(r[3]), 'lng': float(r[4]),
-                'cable_ids': r[5]
-            })
-
-        conn.close()
+        try:
+            cur.execute(lp_query, lp_params)
+            lp_rows = cur.fetchall()
+            landings = []
+            for r in lp_rows:
+                landings.append({
+                    'id': r[0], 'name': r[1], 'country': r[2],
+                    'lat': float(r[3]), 'lng': float(r[4]),
+                    'cable_ids': r[5]
+                })
+        except:
+            landings = []
 
         return jsonify({
             'success': True,
@@ -328,6 +336,10 @@ def get_submarine_cables():
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        if conn:
+            try: conn.close()
+            except: pass
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -337,6 +349,7 @@ def get_submarine_cables():
 @infra_data_bp.route('/api/v1/infrastructure/stats', methods=['GET'])
 def get_infrastructure_stats():
     """Get counts from all infrastructure tables."""
+    conn = None
     try:
         conn = _get_db()
         cur = conn.cursor()
@@ -361,8 +374,6 @@ def get_infrastructure_stats():
                 stats[key] = 0
                 conn.rollback()
 
-        conn.close()
-
         return jsonify({
             'success': True,
             'stats': stats,
@@ -370,3 +381,7 @@ def get_infrastructure_stats():
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        if conn:
+            try: conn.close()
+            except: pass
