@@ -6774,12 +6774,7 @@ def handle_checkout_completed(session):
                  (new_user_id, customer_email, hashed_pw, display_name, plan_name, api_tier, now, stripe_cust)),
             ])
 
-            c.execute("""INSERT INTO users (id, email, password_hash, name, plan, role, api_calls_today, api_calls_total,
-                         created_at, stripe_customer_id, subscription_status)
-                         VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, 'active')""",
-                      (new_user_id, customer_email, hashed_pw, display_name,
-                       plan_name, api_tier, now, stripe_cust))
-            print(f"🔐 Account created for {customer_email} (PG + SQLite)")
+            print(f"🔐 Account created for {customer_email} via Neon")
 
             raw_key = 'dchub_' + sec.token_urlsafe(32)
             key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
@@ -6789,11 +6784,7 @@ def handle_checkout_completed(session):
                 "INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions, rate_limit_tier, is_active, created_at, usage_count, plan, calls_today, calls_total) VALUES (%s, %s, %s, %s, '[\"read\",\"write\"]', %s, 1, %s, 0, %s, 0, 0)",
                 (new_user_id, key_hash, key_prefix, f'{customer_email} Pro Key', api_tier, now, plan_name))
 
-            c.execute("""INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions,
-                         rate_limit_tier, is_active, created_at, usage_count, plan, calls_today, calls_total)
-                         VALUES (?, ?, ?, ?, '["read","write"]', ?, 1, ?, 0, ?, 0, 0)""",
-                      (new_user_id, key_hash, key_prefix, f'{customer_email} Pro Key',
-                       api_tier, now, plan_name))
+            # SQLite removed — _pg_execute above handles Neon
 
             print(f"✨ Created new user account for {customer_email} (id: {new_user_id})")
             print(f"🔑 Generated {plan_name} API key: {key_prefix}...")
@@ -6807,19 +6798,14 @@ def handle_checkout_completed(session):
                 if pg_rows:
                     resolved_user_id = pg_rows[0][0]
                 else:
-                    c.execute("SELECT id FROM users WHERE email = %s", (customer_email,))
-                    row = c.fetchone()
-                    resolved_user_id = row[0] if row else None
+                    resolved_user_id = None  # Not found in Neon
                 print(f"🔍 Looked up user_id for {customer_email}: {resolved_user_id}")
 
             if resolved_user_id:
                 now = datetime.utcnow().isoformat()
                 _pg_execute("UPDATE api_keys SET rate_limit_tier = %s, last_used_at = %s WHERE user_id = %s",
                            (api_tier, now, resolved_user_id))
-                c.execute("UPDATE api_keys SET rate_limit_tier = %s, updated_at = %s WHERE user_id = %s",
-                          (api_tier, now, resolved_user_id))
-                api_keys_updated = c.rowcount
-                print(f"🔑 Updated {api_keys_updated} API key(s) to tier: {api_tier}")
+                print(f"🔑 Updated API key(s) to tier: {api_tier}")
 
                 import secrets as sec
                 raw_key = 'dchub_' + sec.token_urlsafe(32)
@@ -6830,18 +6816,11 @@ def handle_checkout_completed(session):
                     "INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions, rate_limit_tier, is_active, created_at, usage_count, plan, calls_today, calls_total) VALUES (%s, %s, %s, %s, '[\"read\",\"write\"]', %s, 1, %s, 0, %s, 0, 0)",
                     (resolved_user_id, key_hash, key_prefix, f'{customer_email} Pro Key', api_tier, now, plan_name))
 
-                c.execute("""INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions,
-                             rate_limit_tier, is_active, created_at, usage_count, plan, calls_today, calls_total)
-                             VALUES (?, ?, ?, ?, '["read","write"]', ?, 1, ?, 0, ?, 0, 0)""",
-                          (resolved_user_id, key_hash, key_prefix, f'{customer_email} Pro Key',
-                           api_tier, now, plan_name))
+                # SQLite removed — _pg_execute above handles Neon
                 print(f"🔑 Generated new {plan_name} API key for existing user: {key_prefix}...")
                 send_welcome_email_sendgrid(customer_email, raw_key, plan_name)
             else:
                 print(f"⚠️ Could not find user_id for email {customer_email} -- skipping api_keys update")
-
-        conn.commit()
-        conn.close()
 
         print(f"✅ User upgraded to {plan_name} (API tier: {api_tier}): {customer_email or user_id}")
     except Exception as e:
@@ -6858,13 +6837,6 @@ def handle_subscription_created(subscription):
         # Only update subscription_status to 'active'.
         _pg_execute("UPDATE users SET subscription_status = %s WHERE stripe_customer_id = %s",
                    (status, customer_id))
-        conn = get_db()
-        c = conn.cursor()
-        c.execute("UPDATE users SET subscription_status = %s WHERE stripe_customer_id = %s",
-                  (status, customer_id))
-        conn.commit()
-        conn.close()
-        _sync_tables_bg('users')
         print(f"✅ Subscription activated for customer: {customer_id}")
 
 def handle_subscription_updated(subscription):
@@ -6886,18 +6858,6 @@ def handle_subscription_updated(subscription):
                 _pg_execute("UPDATE api_keys SET rate_limit_tier = 'free', last_used_at = %s WHERE user_id = %s", (now, row[0]))
         print(f"🔑 Downgraded API keys to free tier for customer: {customer_id}")
 
-    conn = get_db()
-    c = conn.cursor()
-    if status in ['active', 'trialing', 'past_due', 'unpaid']:
-        c.execute("UPDATE users SET subscription_status = %s WHERE stripe_customer_id = %s", (status, customer_id))
-    elif status == 'canceled':
-        c.execute("UPDATE users SET plan = 'free', role = 'free', subscription_status = %s WHERE stripe_customer_id = %s",
-                  (status, customer_id))
-        c.execute("UPDATE api_keys SET rate_limit_tier = 'free', updated_at = %s WHERE user_id IN (SELECT id FROM users WHERE stripe_customer_id = %s)",
-                  (now, customer_id))
-    conn.commit()
-    conn.close()
-    _sync_tables_bg('users', 'api_keys')
     print(f"📝 Subscription updated for customer {customer_id}: {status}")
 
 def handle_subscription_deleted(subscription):
@@ -6912,15 +6872,6 @@ def handle_subscription_deleted(subscription):
         for row in pg_rows:
             _pg_execute("UPDATE api_keys SET rate_limit_tier = 'free', last_used_at = %s WHERE user_id = %s", (now, row[0]))
 
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("UPDATE users SET plan = 'free', role = 'free', subscription_status = 'canceled' WHERE stripe_customer_id = %s",
-              (customer_id,))
-    c.execute("UPDATE api_keys SET rate_limit_tier = 'free', updated_at = %s WHERE user_id IN (SELECT id FROM users WHERE stripe_customer_id = %s)",
-              (now, customer_id))
-    conn.commit()
-    conn.close()
-    _sync_tables_bg('users', 'api_keys')
     print(f"❌ Subscription canceled for customer: {customer_id}")
     print(f"🔑 API keys downgraded to free tier")
 
@@ -6934,13 +6885,6 @@ def handle_payment_failed(invoice):
     customer_id = invoice.get('customer', '')
     
     _pg_execute("UPDATE users SET subscription_status = 'payment_failed' WHERE stripe_customer_id = %s", (customer_id,))
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("UPDATE users SET subscription_status = 'payment_failed' WHERE stripe_customer_id = %s",
-              (customer_id,))
-    conn.commit()
-    conn.close()
-    _sync_tables_bg('users')
     print(f"⚠️ Payment failed for customer: {customer_id}")
 
 @app.route('/api/stripe/subscription', methods=['GET'])
