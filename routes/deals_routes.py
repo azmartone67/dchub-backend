@@ -1438,7 +1438,13 @@ def get_gas_pipelines_test():
         else:
             c.execute("SELECT id, name, operator, lat, lng, state FROM gas_pipelines LIMIT 10")
         rows = c.fetchall()
+        # DB info
+        c2 = conn.cursor()
+        c2.execute("SELECT current_database(), count(*) FROM gas_pipelines")
+        db_info = c2.fetchone()
+        c2.execute("SELECT count(*) FROM gas_pipelines WHERE lat IS NOT NULL")
+        has_lat = c2.fetchone()[0]
         conn.close()
-        return jsonify({'count': len(rows), 'rows': [{'id':r[0],'name':r[1],'lat':float(r[3]),'lng':float(r[4]),'state':r[5]} for r in rows]})
+        return jsonify({'count': len(rows), 'db': db_info[0], 'total_rows': db_info[1], 'rows_with_lat': has_lat, 'rows': [{'id':r[0],'name':r[1],'lat':float(r[3]),'lng':float(r[4]),'state':r[5]} for r in rows]})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
