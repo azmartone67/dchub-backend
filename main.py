@@ -3466,7 +3466,6 @@ def _gate_mcp_response_bytes(resp_bytes, rpc_method, rpc_params, tier):
             'substations', 'transmission_lines', 'gas_pipelines', 'power_plants',
             'dc_hub_intelligence_index', 'pipeline_projects', 'total_pipeline_mw',
             'agents', 'total_agents', 'preview', 'carriers_available', 'total_routes',
-        ,
     'incentives', 'program_count', 'types', 'comparison', 'winners_by_category', 'overall_winner', 'overall_winner_score', 'locations_compared', 'water_stress', 'cooling_recommendation', 'comparisons', 'carrier_filter', 'carrier_routes_found', 'carrier_note', 'tables', 'freshness', 'db_size_mb', 'total_rows', 'backup_provider', 'redundancy', 'database',
 }
         gated = rpc_resp.get('result', {}).get('content', [])
