@@ -643,7 +643,7 @@ def call_claude(system_prompt: str, user_message: str, max_tokens: int = 500):
     
     try:
         response = client.messages.create(
-            model="claude-haiku-4-5-20241001",
+            model="claude-haiku-4-5-20251001",
             max_tokens=max_tokens,
             system=system_prompt,
             messages=[{"role": "user", "content": user_message}]
