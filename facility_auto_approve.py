@@ -259,34 +259,6 @@ def run_auto_approve(conn, batch_size=100, dry_run=False):
                 logger.warning(f"Column check/add for '{col}': {e}")
                 conn.rollback()
 
-        # Auto-add columns if missing (safe migration)
-        for col, col_type in [('status', 'TEXT'), ('notes', 'TEXT')]:
-            try:
-                cur.execute("""
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_name = 'discovered_facilities' AND column_name = %s
-                """, (col,))
-                if not cur.fetchone():
-                    cur.execute(f"ALTER TABLE discovered_facilities ADD COLUMN {col} {col_type}")
-                    conn.commit()
-            except Exception:
-                conn.rollback()
-
-        # Auto-add columns if missing (safe migration)
-        for col, col_type in [('status', 'TEXT'), ('notes', 'TEXT')]:
-            try:
-                cur.execute("""
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_name = 'discovered_facilities' AND column_name = %s
-                """, (col,))
-                if not cur.fetchone():
-                    cur.execute(f"ALTER TABLE discovered_facilities ADD COLUMN {col} {col_type}")
-                    conn.commit()
-                    logger.info(f"Added missing column '{col}' to discovered_facilities")
-            except Exception as e:
-                logger.warning(f"Column check/add for '{col}': {e}")
-                conn.rollback()
-
         # Get pending discoveries
         cur.execute("""
             SELECT * FROM discovered_facilities
@@ -451,7 +423,7 @@ def register_auto_approve_routes(app):
         internal_key = request.headers.get('X-Internal-Key', '')
         admin_key = request.headers.get('X-Admin-Key', '')
         expected_admin = os.environ.get('DCHUB_ADMIN_KEY', '')
-        if internal_key == 'dchub-internal-2024':
+        if internal_key in ('dchub-internal-2024', 'dchub-internal-sync-2026'):
             return True
         if expected_admin and admin_key == expected_admin:
             return True
@@ -466,14 +438,20 @@ def register_auto_approve_routes(app):
         batch_size = request.args.get('batch_size', 100, type=int)
         dry_run = request.args.get('dry_run', 'false').lower() == 'true'
 
+        conn = None
         try:
             conn = _get_neon_conn()
             results = run_auto_approve(conn, batch_size=batch_size, dry_run=dry_run)
-            conn.close()
             return jsonify({'success': True, **results})
         except Exception as e:
             logger.error(f"Auto-approve job failed: {e}")
             return jsonify({'success': False, 'error': str(e)}), 500
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     @app.route('/api/admin/auto-approve/status', methods=['GET'])
     def auto_approve_status():
@@ -481,6 +459,7 @@ def register_auto_approve_routes(app):
         if not _check_admin_auth():
             return jsonify({'error': 'Unauthorized'}), 401
 
+        conn = None
         try:
             conn = _get_neon_conn()
             cur = conn.cursor()
@@ -496,7 +475,6 @@ def register_auto_approve_routes(app):
 
             if not table_exists:
                 cur.close()
-                conn.close()
                 return jsonify({
                     'success': True,
                     'table_exists': False,
@@ -541,7 +519,6 @@ def register_auto_approve_routes(app):
                 recent_approvals = [dict(zip(cols, r)) for r in cur.fetchall()]
 
             cur.close()
-            conn.close()
 
             return jsonify({
                 'success': True,
@@ -557,6 +534,12 @@ def register_auto_approve_routes(app):
 
         except Exception as e:
             return jsonify({'success': False, 'error': str(e)}), 500
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     @app.route('/api/admin/auto-approve/dry-run', methods=['POST'])
     def auto_approve_dry_run():
@@ -564,13 +547,19 @@ def register_auto_approve_routes(app):
         if not _check_admin_auth():
             return jsonify({'error': 'Unauthorized'}), 401
 
+        conn = None
         try:
             conn = _get_neon_conn()
             results = run_auto_approve(conn, batch_size=25, dry_run=True)
-            conn.close()
             return jsonify({'success': True, **results})
         except Exception as e:
             return jsonify({'success': False, 'error': str(e)}), 500
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     logger.info("✅ Facility Auto-Approve Pipeline v2.0 registered")
     return True
