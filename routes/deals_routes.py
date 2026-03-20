@@ -1412,3 +1412,33 @@ def get_announcements():
             'data': [],
             'count': 0
         })
+
+
+@deals_bp.route('/api/v1/gas-pipelines-test', methods=['GET'])
+def get_gas_pipelines_test():
+    """Temporary debug endpoint - direct psycopg2, no pool"""
+    import math, psycopg2, os
+    lat = request.args.get('lat', None)
+    lng = request.args.get('lng', None)
+    radius = request.args.get('radius', 50)
+    try:
+        lat = float(lat) if lat else None
+        lng = float(lng) if lng else None
+        radius = int(float(radius)) if radius else 50
+    except:
+        lat = lng = None
+    try:
+        conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        c = conn.cursor()
+        if lat is not None and lng is not None:
+            lat_d = radius / 69.0
+            lng_d = radius / (69.0 * max(math.cos(math.radians(lat)), 0.1))
+            c.execute("SELECT id, name, operator, lat, lng, state FROM gas_pipelines WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s LIMIT 10",
+                      [lat - lat_d, lat + lat_d, lng - lng_d, lng + lng_d])
+        else:
+            c.execute("SELECT id, name, operator, lat, lng, state FROM gas_pipelines LIMIT 10")
+        rows = c.fetchall()
+        conn.close()
+        return jsonify({'count': len(rows), 'rows': [{'id':r[0],'name':r[1],'lat':float(r[3]),'lng':float(r[4]),'state':r[5]} for r in rows]})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
