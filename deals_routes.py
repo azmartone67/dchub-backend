@@ -754,66 +754,102 @@ def get_pipeline():
 
 
 @deals_bp.route('/api/v1/gas-pipelines', methods=['GET'])
-@_lazy_require_plan('enterprise')
-@_lazy_protect_data
+@_lazy_require_plan("free")
 def get_gas_pipelines():
-    """Get natural gas pipeline infrastructure data"""
+    """Get natural gas pipeline infrastructure data - spatial fix v3
+    
+    Queries gas_pipelines table (32K+ rows) with spatial bounding box.
+    Sources: EIA, HIFLD, DOT NPMS.
+    
+    Query params:
+        lat, lng, radius (miles) - spatial bounding box filter
+        state - filter by state abbreviation
+        operator - partial match on operator name
+        type - pipeline_type (interstate, intrastate, gathering, etc.)
+        limit - max results (default 100, cap 500)
+    """
+    import math
+
     state_filter = request.args.get('state', '').upper()
     operator_filter = request.args.get('operator', '')
-    pipeline_type = request.args.get('type', '')  # Transmission, Distribution, Gathering
+    pipeline_type = request.args.get('type', '')
     limit = request.args.get('limit', 100, type=int)
-    
+
+    # ── BULLETPROOF lat/lng parsing ──
+    # Do NOT use type=float — it silently returns None on some Flask/Werkzeug versions
+    lat = request.args.get('lat', None)
+    lng = request.args.get('lng', None)
+    radius = request.args.get('radius', 50)
+
+    try:
+        lat = float(lat) if lat is not None else None
+    except (ValueError, TypeError):
+        lat = None
+    try:
+        lng = float(lng) if lng is not None else None
+    except (ValueError, TypeError):
+        lng = None
+    try:
+        radius = int(float(radius)) if radius else 50
+    except (ValueError, TypeError):
+        radius = 50
+
     try:
         conn = _get_db()
         c = conn.cursor()
-        
-        query = "SELECT * FROM discovered_pipelines WHERE commodity = 'Natural Gas'"
+
+        query = """SELECT id, name, operator, pipeline_type, diameter_inches, 
+                   capacity_mcf, status, lat, lng, city, state, country, source 
+                   FROM gas_pipelines 
+                   WHERE lat IS NOT NULL AND lng IS NOT NULL"""
         params = []
-        
+
+        # Spatial bounding box filter
+        if lat is not None and lng is not None:
+            lat_d = radius / 69.0
+            lng_d = radius / (69.0 * max(math.cos(math.radians(lat)), 0.1))
+            query += " AND lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s"
+            params.extend([lat - lat_d, lat + lat_d, lng - lng_d, lng + lng_d])
+
         if state_filter:
-            query += " AND state = %s"
+            query += " AND UPPER(state) = %s"
             params.append(state_filter)
         if operator_filter:
-            query += " AND operator LIKE %s"
+            query += " AND operator ILIKE %s"
             params.append(f"%{operator_filter}%")
         if pipeline_type:
-            query += " AND pipeline_type = %s"
+            query += " AND LOWER(pipeline_type) = LOWER(%s)"
             params.append(pipeline_type)
-        
-        query += " ORDER BY diameter_inches DESC LIMIT %s"
-        params.append(limit)
-        
+
+        query += " ORDER BY diameter_inches DESC NULLS LAST LIMIT %s"
+        params.append(min(limit, 500))
+
         c.execute(query, params)
         rows = c.fetchall()
-        
+
         pipelines = []
         for r in rows:
             pipelines.append({
-                'id': r[0],
-                'operator': r[1],
-                'pipeline_type': r[2],
-                'status': r[3],
-                'diameter_inches': r[4],
-                'commodity': r[5],
-                'state': r[6],
-                'market': r[7],
-                'discovered_at': r[8],
-                'source': r[10]
+                'id': r[0], 'name': r[1], 'operator': r[2],
+                'pipeline_type': r[3],
+                'diameter_inches': float(r[4]) if r[4] else None,
+                'capacity_mcf': float(r[5]) if r[5] else None,
+                'status': r[6],
+                'lat': float(r[7]), 'lng': float(r[8]),
+                'city': r[9], 'state': r[10], 'country': r[11],
+                'source': r[12]
             })
-        
-        # Enhance with geographic coordinates
+
+        # Stats query (safe — can't kill the main response)
+        stats = (0, 0, 0)
         try:
-            from pipeline_coordinates import enhance_pipeline_coordinates
-            pipelines = enhance_pipeline_coordinates(pipelines)
-        except ImportError:
+            c.execute("SELECT COUNT(*), COUNT(DISTINCT operator), COUNT(DISTINCT state) FROM discovered_pipelines WHERE commodity = 'Natural Gas'")
+            stats = c.fetchone()
+        except Exception:
             pass
-        
-        # Get summary stats
-        c.execute("SELECT COUNT(*), COUNT(DISTINCT operator), COUNT(DISTINCT state) FROM discovered_pipelines WHERE commodity = 'Natural Gas'")
-        stats = c.fetchone()
-        
+
         conn.close()
-        
+
         return jsonify({
             'success': True,
             'pipelines': pipelines,
@@ -827,6 +863,12 @@ def get_gas_pipelines():
                 'state': state_filter or 'all',
                 'operator': operator_filter or 'all',
                 'type': pipeline_type or 'all'
+            },
+            '_debug': {
+                'lat_received': lat,
+                'lng_received': lng,
+                'radius': radius,
+                'spatial_filter_applied': lat is not None and lng is not None
             }
         })
     except Exception as e:
