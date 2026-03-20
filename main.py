@@ -2650,7 +2650,7 @@ def test_auto_capture():
 # ═══════════════════════════════════════════════════════════════
 
 # Fields free users can see per facility
-MCP_FREE_FIELDS = {'name', 'city', 'state', 'country', 'provider', 'operator', 'status'}
+MCP_FREE_FIELDS = {'id', 'name', 'city', 'state', 'country', 'provider', 'operator', 'status'}
 MCP_FREE_FACILITY_LIMIT = 5          # was 3 — enough to evaluate, not enough to build
 MCP_FREE_DAILY_LIMIT = 10            # NEW — tool calls per day per IP for free tier
 
@@ -13154,6 +13154,20 @@ def get_facility_by_id(facility_id):
                 WHERE df.merged_facility_id = %s OR df.source_id = %s LIMIT 1
             """, (facility_id, facility_id))
         row = cur.fetchone()
+        if not row:
+            # Fallback: name-based search (MCP tools pass names, not IDs)
+            cur.execute("""
+                SELECT df.id, df.name, df.provider, df.city, df.state, df.country,
+                       df.market AS region, df.latitude, df.longitude, df.power_mw,
+                       df.status, df.address, df.source,
+                       f.permit_date, f.approval_date, f.co_date,
+                       f.permit_source, f.permit_confidence::float AS permit_confidence
+                FROM discovered_facilities df
+                LEFT JOIN facilities f ON f.id = df.merged_facility_id
+                WHERE df.name ILIKE %s OR df.source_id = %s
+                LIMIT 1
+            """, (f'%{facility_id}%', facility_id))
+            row = cur.fetchone()
         if not row:
             return jsonify({"success": False, "error": "Facility not found", "id": facility_id}), 404
         cols = [d[0] for d in cur.description]
