@@ -3746,13 +3746,10 @@ def mcp_proxy():
                         "get_fiber_intel",
                         "get_energy_prices",
                         "get_renewable_energy",
-                        "get_trends",
-                        "get_market_compare",
-                        "get_portfolio",
-                        "get_market_velocity",
-                        "get_delivery_forecast",
                         "get_top_operators",
-                        "get_data_quality"
+                        "get_tax_incentives",
+                        "get_water_risk",
+                        "compare_sites"
                     ],
                     "authentication": {
                         "type": "api_key",
@@ -4115,6 +4112,7 @@ _RATE_LIMIT_BYPASS_PATHS = {
     '/api/v1/gas-pipelines', '/api/v1/power-plants',
     '/api/v1/transmission-lines', '/api/v1/submarine-cables',
     '/api/energy-discovery/pipelines', '/api/v1/infrastructure/stats',
+    '/api/v1/infrastructure/substations',
 }
 
 def _get_request_tier():
@@ -4485,12 +4483,6 @@ def identify_crawler(user_agent_str):
         if pattern.lower() in user_agent_str.lower():
             return (name, family)
     return None
-
-@app.before_request
-def track_crawler_visit():
-    """Crawler visit tracking -- SQLite logging DISABLED to prevent lock contention.
-    Crawler identification still runs for in-memory stats only."""
-    pass
 
 AUTO_REGISTER_PATHS = {
     '/mcp', '/mcp/', '/api/ai/discover', '/.well-known/mcp.json',
@@ -4940,12 +4932,6 @@ def grid_fuel_mix_live_alias():
 # Note: CORS headers are handled at the top of the app (before blueprints)
 # =============================================================================
 
-@app.before_request
-def track_api_request_start():
-    """Track request start time for analytics"""
-    if request.path.startswith('/api/'):
-        request._analytics_start_time = time.time()
-
 @app.after_request
 def add_security_headers(response):
     """Add CORS safety net, security headers, smart caching, and log API calls"""
@@ -4982,8 +4968,8 @@ def add_security_headers(response):
     
     # API usage tracking (for Admin Analytics)
     if ADMIN_ANALYTICS_AVAILABLE and user_analytics and request.path.startswith('/api/'):
-        if hasattr(request, '_analytics_start_time'):
-            response_time = int((time.time() - request._analytics_start_time) * 1000)
+        if hasattr(request, '_start_time'):
+            response_time = int((time.time() - request._start_time) * 1000)
             ip = request.headers.get('CF-Connecting-IP') or \
                  request.headers.get('X-Forwarded-For', '').split(',')[0].strip() or \
                  request.remote_addr or 'unknown'
