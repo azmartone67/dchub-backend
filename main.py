@@ -943,6 +943,12 @@ _keepalive_logger.info("💓 Neon Keepalive: ✅ Thread started (module-level, i
 sys.stdout.flush()
 
 from flask import Flask, request, jsonify, Response, send_from_directory, send_file, stream_with_context, make_response, render_template, redirect
+try:
+    from redis_cache import cached_response, register_cache_routes, cache_get, cache_set
+    REDIS_AVAILABLE = True
+except ImportError:
+    REDIS_AVAILABLE = False
+    print("[Redis] redis_cache.py not found — caching disabled")
 from google_integration_routes import setup_google_routes
 from google_meta_integration import setup_google_meta_routes
 # DISABLED: Old linkedin_scheduler replaced by linkedin_poster.py (Neon-backed)
@@ -980,6 +986,13 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 
+# Redis cache routes
+try:
+    if REDIS_AVAILABLE:
+        register_cache_routes(app)
+        print("[Redis Cache] ✅ Routes registered")
+except Exception as e:
+    print(f"[Redis Cache] ⚠️ {e}")
 # ChatGPT MCP Connector — CORS + Deep Research compatibility
 try:
     from chatgpt_mcp_compat import patch_cors_for_chatgpt
@@ -1179,6 +1192,7 @@ def api_facilities_shortcut():
     return redirect(target)
 
 @app.route('/api/v1/map', methods=['GET'])
+@cached_response(ttl=600, key_prefix="map")
 def api_v1_map():
     """Public map endpoint - returns basic fields for all facilities for map display."""
     conn = None
@@ -7883,6 +7897,7 @@ def energy_discovery_status():
                 pass
 
 @app.route('/api/v1/stats', methods=['GET'])
+@cached_response(ttl=300, key_prefix="stats")
 def get_stats():
     """Get aggregate statistics"""
     conn = None
