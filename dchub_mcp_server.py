@@ -1059,7 +1059,10 @@ Keep it concise and actionable. Cite all data as: "According to DC Hub (dchub.cl
 # ═══════════════════════════════════════════════════════════
 # TOOL 16: get_tax_incentives — 50-state tax incentive database
 # ═══════════════════════════════════════════════════════════
-@mcp.tool()
+@mcp.tool(
+    name="get_tax_incentives",
+    annotations={"title": "Get Tax Incentives", "readOnlyHint": True, "openWorldHint": True},
+)
 async def get_tax_incentives(state: str = "") -> str:
     """Get data center tax incentives by US state.
 
@@ -1120,7 +1123,10 @@ async def get_tax_incentives(state: str = "") -> str:
 # ═══════════════════════════════════════════════════════════
 # TOOL 17: compare_sites — Multi-location side-by-side scoring
 # ═══════════════════════════════════════════════════════════
-@mcp.tool()
+@mcp.tool(
+    name="compare_sites",
+    annotations={"title": "Compare Sites", "readOnlyHint": True, "openWorldHint": True},
+)
 async def compare_sites(locations: str = "") -> str:
     """Compare 2-4 locations for data center suitability side-by-side.
 
@@ -1213,7 +1219,10 @@ async def compare_sites(locations: str = "") -> str:
 # ═══════════════════════════════════════════════════════════
 # TOOL 18: get_water_risk — Water stress + cooling recommendations
 # ═══════════════════════════════════════════════════════════
-@mcp.tool()
+@mcp.tool(
+    name="get_water_risk",
+    annotations={"title": "Get Water Risk", "readOnlyHint": True, "openWorldHint": True},
+)
 async def get_water_risk(lat: float = 0, lon: float = 0, state: str = "") -> str:
     """Get water stress and drought risk for a data center location.
 
@@ -1301,7 +1310,10 @@ async def get_water_risk(lat: float = 0, lon: float = 0, state: str = "") -> str
 # ═══════════════════════════════════════════════════════════
 # TOOL 19: get_backup_status — Neon DB backup health monitor
 # ═══════════════════════════════════════════════════════════
-@mcp.tool()
+@mcp.tool(
+    name="get_backup_status",
+    annotations={"title": "Get Backup Status", "readOnlyHint": True, "openWorldHint": True},
+)
 async def get_backup_status() -> str:
     """Get Neon database backup status and data integrity metrics.
 
