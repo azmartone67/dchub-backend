@@ -22,9 +22,9 @@ def _get_redis():
         import redis
         _redis_client = redis.from_url(url, decode_responses=True, socket_timeout=2, socket_connect_timeout=2)
         _redis_client.ping()
-        print("[Redis Cache] ✅ Connected")
+        print(f"[Redis Cache] ✅ Connected to {url[:30]}...")
     except Exception as e:
-        print(f"[Redis Cache] ⚠️ {e}")
+        print(f"[Redis Cache] ⚠️ FAILED: {e} (URL prefix: {url[:40]})")
         _redis_client = None
     return _redis_client
 
