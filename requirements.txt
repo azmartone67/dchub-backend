@@ -1,49 +1,26 @@
-# cache bust 2026-02-25
-# DC Hub Nexus - Dependencies  v3.02
-# Core HTTP
-requests>=2.28.0
-httpx
-# API Server
-flask>=2.3.0
-flask-cors>=4.0.0
-flask-compress
-gunicorn>=21.0.0
-uvicorn
-gevent
-# Web Scraping
-beautifulsoup4>=4.12.0
-lxml>=5.0.0
-# RSS/News Parsing
-feedparser>=6.0.0
-# Data Processing
-python-dateutil>=2.8.0
-openpyxl>=3.1.0
-# Environment
-python-dotenv>=1.0.0
-# AI
-anthropic>=0.75.0
-mcp
-# Scheduling
-apscheduler>=3.10.0
-# Auth & Payments
-pyjwt
-stripe
-requests_oauthlib
-# PDF & Reports
-reportlab
-# Email
-sendgrid
-# Database
-psycopg2-binary
-# Energy/Grid Data
-# Utilities
-pytz
-psutil
-# Backup (R2/S3)
-boto3
-h3>=4.0
-# Energy/Grid Data
-gridstatus
-tzdata
-fastkml
-shapely
+APScheduler==3.11.2
+beautifulsoup4==4.14.3
+feedparser==6.0.12
+Flask==3.0.0
+Flask-Compress==1.23
+Flask-Cors==4.0.0
+google-api-core==2.29.0
+google-auth==2.49.0.dev0
+google-cloud-core==2.5.0
+google-cloud-storage==2.19.0
+google-crc32c==1.8.0
+google-resumable-media==2.8.0
+googleapis-common-protos==1.72.0
+gunicorn==21.2.0
+httpx==0.28.1
+httpx-sse==0.4.3
+lxml==6.0.2
+mcp==1.26.0
+oauthlib==3.3.1
+psycopg2-binary==2.9.11
+PyJWT==2.10.1
+python-dotenv==1.2.1
+redis==7.3.0
+requests==2.32.5
+requests-oauthlib==2.0.0
+stripe==14.1.0
