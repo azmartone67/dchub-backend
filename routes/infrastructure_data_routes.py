@@ -143,8 +143,12 @@ def get_power_plants():
         return jsonify({'success': False, 'error': str(e)}), 500
     finally:
         if conn:
-            try: conn.close()
-            except: pass
+            try:
+                from main import return_pg_connection
+                return_pg_connection(conn)
+            except:
+                try: conn.close()
+                except: pass
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -244,8 +248,12 @@ def get_transmission_lines():
         return jsonify({'success': False, 'error': str(e)}), 500
     finally:
         if conn:
-            try: conn.close()
-            except: pass
+            try:
+                from main import return_pg_connection
+                return_pg_connection(conn)
+            except:
+                try: conn.close()
+                except: pass
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -338,8 +346,12 @@ def get_submarine_cables():
         return jsonify({'success': False, 'error': str(e)}), 500
     finally:
         if conn:
-            try: conn.close()
-            except: pass
+            try:
+                from main import return_pg_connection
+                return_pg_connection(conn)
+            except:
+                try: conn.close()
+                except: pass
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -383,5 +395,9 @@ def get_infrastructure_stats():
         return jsonify({'success': False, 'error': str(e)}), 500
     finally:
         if conn:
-            try: conn.close()
-            except: pass
+            try:
+                from main import return_pg_connection
+                return_pg_connection(conn)
+            except:
+                try: conn.close()
+                except: pass
