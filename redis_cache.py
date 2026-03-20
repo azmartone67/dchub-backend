@@ -64,3 +64,33 @@ def cache_stats():
         }
     except Exception as e:
         return {"status": "error", "error": str(e)}
+
+def register_cache_routes(app):
+    """Register cache management routes."""
+    from flask import request, jsonify
+    import os
+
+    @app.route('/api/cache/redis/stats', methods=['GET'])
+    def redis_cache_stats_route():
+        admin_key = request.headers.get('X-Admin-Key')
+        if admin_key != os.environ.get('DCHUB_ADMIN_KEY'):
+            return jsonify({"error": "unauthorized"}), 401
+        return jsonify(cache_stats())
+
+    @app.route('/api/cache/redis/purge', methods=['POST'])
+    def redis_cache_purge_route():
+        admin_key = request.headers.get('X-Admin-Key')
+        if admin_key != os.environ.get('DCHUB_ADMIN_KEY'):
+            return jsonify({"error": "unauthorized"}), 401
+        count = cache_clear()
+        return jsonify({"purged": count})
+
+def cached_response(ttl=300, key_prefix="api"):
+    """No-op decorator when Redis isn't wired yet."""
+    import functools
+    def decorator(f):
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            return f(*args, **kwargs)
+        return wrapper
+    return decorator
