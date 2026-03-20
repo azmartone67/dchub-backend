@@ -632,6 +632,59 @@ def job_ambassador():
         return jsonify({'success': False, 'job': 'ambassador', 'error': str(e)}), 500
 
 
+@jobs_bp.route('/api/jobs/db-backup', methods=['POST'])
+def job_db_backup():
+    """Cron: Neon database backup to local + optional R2"""
+    auth_err = _require_admin_key()
+    if auth_err:
+        return auth_err
+    try:
+        from db_backup import run_backup, list_backups
+        result = run_backup(include_secondary=True)
+        _reg_update('db_backup')
+        logger.info("JOB db-backup: ✅ %d tables, %d rows, %.1f MB",
+                     result.get('tables_exported', 0), result.get('total_rows', 0),
+                     result.get('compressed_size_mb', 0))
+        return jsonify({'success': True, 'job': 'db-backup', 'result': result, 'ts': datetime.utcnow().isoformat()})
+    except Exception as e:
+        logger.error("JOB db-backup: ❌ %s", e)
+        return jsonify({'success': False, 'job': 'db-backup', 'error': str(e)}), 500
+
+
+@jobs_bp.route('/api/jobs/db-backup/list', methods=['GET'])
+def job_db_backup_list():
+    """List available database backups"""
+    auth_err = _require_admin_key()
+    if auth_err:
+        return auth_err
+    try:
+        from db_backup import list_backups
+        backups = list_backups()
+        return jsonify({'success': True, 'backups': backups, 'count': len(backups)})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@jobs_bp.route('/api/jobs/db-backup/verify', methods=['GET'])
+def job_db_backup_verify():
+    """Verify the most recent backup is valid"""
+    auth_err = _require_admin_key()
+    if auth_err:
+        return auth_err
+    try:
+        from db_backup import list_backups, verify_backup
+        from pathlib import Path
+        backups = list_backups()
+        if not backups:
+            return jsonify({'success': False, 'error': 'No backups found'}), 404
+        backup_dir = Path(os.path.dirname(os.path.abspath(__file__))).parent / "backups"
+        latest = backup_dir / backups[0]['filename']
+        result = verify_backup(str(latest))
+        return jsonify({'success': True, 'verification': result})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @jobs_bp.route('/api/scheduler/status', methods=['GET'])
 def scheduler_status():
     try:
