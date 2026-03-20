@@ -94,3 +94,24 @@ def cached_response(ttl=300, key_prefix="api"):
             return f(*args, **kwargs)
         return wrapper
     return decorator
+
+def debug_redis_env():
+    """Debug helper — check what REDIS_URL looks like in the deploy."""
+    import os
+    url = os.environ.get('REDIS_URL', 'NOT SET')
+    masked = url[:20] + '***' if url != 'NOT SET' else url
+    result = {"redis_url_prefix": masked, "redis_url_length": len(url)}
+    try:
+        import redis as _r
+        result["redis_package"] = _r.__version__
+    except ImportError:
+        result["redis_package"] = "NOT INSTALLED"
+    try:
+        r = _get_redis()
+        if r:
+            result["ping"] = r.ping()
+        else:
+            result["ping"] = "client is None"
+    except Exception as e:
+        result["ping"] = str(e)
+    return result

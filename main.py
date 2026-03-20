@@ -991,6 +991,13 @@ try:
     if REDIS_AVAILABLE:
         register_cache_routes(app)
         print("[Redis Cache] ✅ Routes registered")
+        from redis_cache import debug_redis_env
+        @app.route("/api/cache/redis/debug")
+        def _redis_debug():
+            from flask import jsonify, request
+            if request.headers.get("X-Admin-Key") != __import__("os").environ.get("DCHUB_ADMIN_KEY"):
+                return jsonify({"error": "unauthorized"}), 401
+            return jsonify(debug_redis_env())
 except Exception as e:
     print(f"[Redis Cache] ⚠️ {e}")
 # ChatGPT MCP Connector — CORS + Deep Research compatibility
