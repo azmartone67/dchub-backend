@@ -69,7 +69,7 @@ def bbox_from_params(lat, lng, radius_miles=50):
     return f"{lng-delta},{lat-delta},{lng+delta},{lat+delta}"
 
 LAYER_REGISTRY = {
-    'hifld_substations': {
+    'substations': {
         'name': 'Electric Substations',
         'url': None,  # HIFLD decommissioned Aug 2025 — data served from Neon (79,755 records)
         'count': '79k+',
@@ -399,7 +399,7 @@ def get_infrastructure_layer(layer_id):
 
 
 @expanded_infra_bp.route('/api/v2/infrastructure/hifld/substations', methods=['GET'])
-def get_hifld_substations():
+def get_substations():
     """Query substations from Neon PostgreSQL (with ArcGIS fallback)."""
     lat = request.args.get('lat', type=float)
     lng = request.args.get('lng', type=float)

@@ -33,7 +33,7 @@ def _pg_query(sql, params=None):
 
 
 @hifld_neon_bp.route('/api/v2/infrastructure/hifld/substations')
-def hifld_substations():
+def substations():
     try:
         lat = float(request.args.get('lat', 0))
         lng = float(request.args.get('lng', 0))
@@ -47,7 +47,7 @@ def hifld_substations():
         deg = radius / 69.0
         rows, cols = _pg_query("""
             SELECT name, city, state, status, max_volt, owner, latitude, longitude
-            FROM hifld_substations
+            FROM substations
             WHERE latitude BETWEEN %s AND %s
               AND longitude BETWEEN %s AND %s
               AND COALESCE(max_volt, 0) >= %s
@@ -73,7 +73,7 @@ def hifld_substations():
         return jsonify({'substations': subs, 'count': len(subs), 'source': 'neon'})
 
     except Exception as e:
-        logger.error(f"hifld_substations error: {e}")
+        logger.error(f"substations error: {e}")
         return jsonify({'substations': [], 'count': 0, 'error': str(e)}), 200
 
 

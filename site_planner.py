@@ -928,7 +928,7 @@ def assess_water_risk(state_code):
 
 
 # ─── Enhancement: HIFLD Live Substation Fallback ────────────────────────────
-def query_hifld_substations_live(lat, lng, radius_miles=25):
+def query_substations_live(lat, lng, radius_miles=25):
     """
     Direct HIFLD API query for substations as fallback/supplement.
     Use when local DB returns fewer than 5 results.
@@ -1494,7 +1494,7 @@ def register_site_planner_routes(app):
             
             # If fewer than 5, supplement from HIFLD live API
             if len(substations) < 5:
-                live_subs = query_hifld_substations_live(lat, lng)
+                live_subs = query_substations_live(lat, lng)
                 for ls in live_subs:
                     if ls.get('name') not in seen_names and len(substations) < 5:
                         seen_names.add(ls.get('name'))

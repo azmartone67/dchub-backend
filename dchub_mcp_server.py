@@ -1346,7 +1346,7 @@ async def get_backup_status() -> str:
             ('users', "SELECT COUNT(*) FROM users"),
             ('api_keys', "SELECT COUNT(*) FROM api_keys"),
             ('fiber_routes', "SELECT COUNT(*) FROM fiber_routes"),
-            ('hifld_substations', "SELECT COUNT(*) FROM hifld_substations"),
+            ('substations', "SELECT COUNT(*) FROM substations"),
             ('discovered_pipelines', "SELECT COUNT(*) FROM discovered_pipelines"),
             ('capacity_pipeline', "SELECT COUNT(*) FROM capacity_pipeline"),
             ('tax_incentives_neon', "SELECT COUNT(*) FROM tax_incentives_neon"),
