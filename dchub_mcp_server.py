@@ -34,6 +34,16 @@ from mcp.server.fastmcp import FastMCP
 # CONFIG
 # =============================================================================
 
+# ═══════════════════════════════════════════════════════════════
+# DCHUB_API_BASE PROTECTION — Never allow localhost (5th time fix)
+# Other AI agents keep setting this to 127.0.0.1 causing deadlock
+# ═══════════════════════════════════════════════════════════════
+import os
+_api_base = os.environ.get('DCHUB_API_BASE', '')
+if '127.0.0.1' in _api_base or 'localhost' in _api_base or '0.0.0.0' in _api_base:
+    os.environ['DCHUB_API_BASE'] = 'https://dchub-backend-production.up.railway.app'
+    print(f"🛡️ BLOCKED localhost DCHUB_API_BASE: was '{_api_base}' → forced to Railway URL")
+
 MCP_PORT = int(os.environ.get("MCP_PORT", "8888"))
 
 logging.basicConfig(level=logging.INFO)
