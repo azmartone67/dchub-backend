@@ -304,7 +304,9 @@ def generate_api_key(user_id, email, plan='free', name='Default'):
 
 def validate_api_key(raw_key):
     """
-    Validate an API key.
+    Validate an API key — uses DIRECT psycopg2 connection (bypasses db_utils).
+    PGConnectionWrapper.fetchone() returns None for valid rows due to internal
+    cursor/transaction issues. This is the same fix pattern used in energy-discovery.
     Returns (valid: bool, key_info: dict or None)
     """
     if not raw_key or not raw_key.startswith('dchub_'):
@@ -312,77 +314,77 @@ def validate_api_key(raw_key):
 
     key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
 
-    # Column order in api_keys table (Neon PostgreSQL)
-    API_KEYS_COLUMNS = [
-        'id', 'user_id', 'key_hash', 'key_prefix', 'name', 'permissions',
-        'rate_limit_tier', 'is_active', 'last_used_at', 'created_at',
-        'expires_at', 'usage_count', 'plan', 'last_reset_date',
-        'calls_today', 'calls_total', 'last_used'
-    ]
-
-    conn = get_db()
-    
-    c = conn.cursor()
-    c.execute("""
-        SELECT * FROM api_keys WHERE key_hash = %s AND is_active = 1
-    """, (key_hash,))
-    row = c.fetchone()
-
-    if not row:
-        conn.close()
+    # ── Direct psycopg2 connection (bypass db_utils) ──
+    import psycopg2, psycopg2.extras
+    db_url = os.environ.get('NEON_DATABASE_URL') or os.environ.get('DATABASE_URL', '')
+    if not db_url:
         return False, None
 
-    # Convert row to a real dict — handles PGRowProxy, dict, or tuple
-    if hasattr(row, 'items'):
-        info = dict(row.items())
-    elif isinstance(row, dict):
-        info = dict(row)
-    else:
-        info = dict(zip(API_KEYS_COLUMNS, row))
-
-    # ── Auto-correct plan/prefix mismatches ──
-    stored_plan = info.get('plan', 'free')
-    prefix = info.get('key_prefix', '')
-    corrected = False
-    if '_pro_' in raw_key and stored_plan not in ('pro', 'enterprise', 'admin'):
-        info['plan'] = 'pro'
-        info['rate_limit_tier'] = 'pro'
-        corrected = True
-    elif '_ent_' in raw_key and stored_plan not in ('enterprise', 'admin'):
-        info['plan'] = 'enterprise'
-        info['rate_limit_tier'] = 'enterprise'
-        corrected = True
-    if corrected:
-        try:
-            c.execute("UPDATE api_keys SET plan = %s, rate_limit_tier = %s WHERE key_hash = %s",
-                      (info['plan'], info['rate_limit_tier'], key_hash))
-            import logging
-            logging.getLogger('tier_gating').warning(
-                f"Auto-corrected key {prefix}: plan {stored_plan} → {info['plan']}")
-        except Exception as e:
-            import logging
-            logging.getLogger('tier_gating').error(f"Auto-correct failed for {prefix}: {e}")
-
-    # Reset daily counter if new day
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    if info.get('last_reset_date') != today:
+    conn = None
+    try:
+        conn = psycopg2.connect(db_url, connect_timeout=5)
+        c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         c.execute("""
-            UPDATE api_keys SET calls_today = 0, last_reset_date = %s WHERE key_hash = %s
-        """, (today, key_hash))
+            SELECT * FROM api_keys WHERE key_hash = %s AND is_active = 1
+        """, (key_hash,))
+        row = c.fetchone()
 
-    # Increment usage
-    c.execute("""
-        UPDATE api_keys SET calls_today = calls_today + 1, calls_total = calls_total + 1, last_used = %s
-        WHERE key_hash = %s
-    """, (datetime.now(timezone.utc).isoformat(), key_hash))
-    conn.commit()
-    conn.close()
+        if not row:
+            return False, None
 
-    # Check daily limit
-    plan = info.get('plan', 'free')
-    limit = TIER_RATE_LIMITS.get(plan, 100)
-    if info.get('calls_today', 0) >= limit:
-        return False, {**info, 'error': 'daily_limit_exceeded', 'limit': limit, 'plan': plan}
+        info = dict(row)
+
+        # ── Auto-correct plan/prefix mismatches ──
+        stored_plan = info.get('plan', 'free')
+        prefix = info.get('key_prefix', '')
+        corrected = False
+        if '_pro_' in raw_key and stored_plan not in ('pro', 'enterprise', 'admin'):
+            info['plan'] = 'pro'
+            info['rate_limit_tier'] = 'pro'
+            corrected = True
+        elif '_ent_' in raw_key and stored_plan not in ('enterprise', 'admin'):
+            info['plan'] = 'enterprise'
+            info['rate_limit_tier'] = 'enterprise'
+            corrected = True
+        if corrected:
+            try:
+                c.execute("UPDATE api_keys SET plan = %s, rate_limit_tier = %s WHERE key_hash = %s",
+                          (info['plan'], info['rate_limit_tier'], key_hash))
+            except Exception:
+                pass
+
+        # Reset daily counter if new day
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if info.get('last_reset_date') != today:
+            c.execute("""
+                UPDATE api_keys SET calls_today = 0, last_reset_date = %s WHERE key_hash = %s
+            """, (today, key_hash))
+
+        # Increment usage
+        c.execute("""
+            UPDATE api_keys SET calls_today = calls_today + 1, calls_total = calls_total + 1, last_used = %s
+            WHERE key_hash = %s
+        """, (datetime.now(timezone.utc).isoformat(), key_hash))
+        conn.commit()
+
+        # Check daily limit
+        plan = info.get('plan', 'free')
+        limit = TIER_RATE_LIMITS.get(plan, 100)
+        if info.get('calls_today', 0) >= limit:
+            return False, {**info, 'error': 'daily_limit_exceeded', 'limit': limit, 'plan': plan}
+
+        return True, info
+
+    except Exception as e:
+        import logging
+        logging.getLogger('tier_gating').error(f"validate_api_key error: {e}")
+        return False, None
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     return True, info
 
@@ -392,15 +394,21 @@ def validate_api_key(raw_key):
 # ═══════════════════════════════════════════════════════════════
 
 def get_user_plan(user_id=None, email=None):
-    """Get a user's current plan from the database — PostgreSQL first, SQLite fallback."""
+    """Get a user's current plan from Neon — direct psycopg2 (bypasses db_utils)."""
     if not user_id and not email:
         return 'free'
 
-    row = None
+    import psycopg2
+    db_url = os.environ.get('NEON_DATABASE_URL') or os.environ.get('DATABASE_URL', '')
+    if not db_url:
+        return 'free'
 
+    conn = None
     try:
-        conn = get_db()
+        conn = psycopg2.connect(db_url, connect_timeout=5)
         c = conn.cursor()
+        row = None
+
         if user_id:
             c.execute("SELECT plan, subscription_status, role FROM users WHERE id = %s", (str(user_id),))
             row = c.fetchone()
@@ -410,40 +418,6 @@ def get_user_plan(user_id=None, email=None):
         if not row and user_id and isinstance(user_id, str) and '@' in str(user_id):
             c.execute("SELECT plan, subscription_status, role FROM users WHERE email = %s", (user_id,))
             row = c.fetchone()
-        if row:
-            plan_val = row[0] or 'free'
-            status_val = row[1] or ''
-            role_val = row[2] or ''
-            if role_val == 'admin':
-                conn.close()
-                return 'admin'
-            if status_val in ('canceled', 'unpaid'):
-                conn.close()
-                return 'free'
-            conn.close()
-            return plan_val
-        conn.close()
-    except Exception as e:
-        import logging
-        logging.warning(f"get_user_plan PG lookup failed: {e}")
-
-    try:
-        conn = get_db()
-        c = conn.cursor()
-
-        if user_id:
-            c.execute("SELECT plan, subscription_status, role FROM users WHERE id = %s", (str(user_id),))
-            row = c.fetchone()
-
-        if not row and email:
-            c.execute("SELECT plan, subscription_status, role FROM users WHERE email = %s", (email,))
-            row = c.fetchone()
-
-        if not row and user_id and isinstance(user_id, str) and '@' in str(user_id):
-            c.execute("SELECT plan, subscription_status, role FROM users WHERE email = %s", (user_id,))
-            row = c.fetchone()
-
-        conn.close()
 
         if not row:
             return 'free'
@@ -457,10 +431,17 @@ def get_user_plan(user_id=None, email=None):
         if status_val in ('canceled', 'unpaid'):
             return 'free'
         return plan_val
+
     except Exception as e:
         import logging
-        logging.warning(f"get_user_plan fallback lookup failed: {e}")
+        logging.warning(f"get_user_plan error: {e}")
         return 'free'
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def user_has_access(user_plan, required_plan):
