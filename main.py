@@ -4112,6 +4112,9 @@ _RATE_LIMIT_BYPASS_PATHS = {
     '/api/v1/stats', '/api/health', '/api/stripe/webhook',
     '/api/stripe/config', '/api/verify-key', '/api/ecosystem/health',
     '/api/v1/map',
+    '/api/v1/gas-pipelines', '/api/v1/power-plants',
+    '/api/v1/transmission-lines', '/api/v1/submarine-cables',
+    '/api/energy-discovery/pipelines', '/api/v1/infrastructure/stats',
 }
 
 def _get_request_tier():
@@ -8640,6 +8643,15 @@ except Exception as e:
     SAMPLE_DEALS = []
     PIPELINE_DATA = []
     SAMPLE_MARKETS = []
+
+# =============================================================================
+# INFRASTRUCTURE DATA ROUTES v2 (power plants, transmission lines, submarine cables)
+# =============================================================================
+try:
+    from routes.infrastructure_data_routes import register_infra_data_routes
+    register_infra_data_routes(app, get_pg_connection)
+except Exception as e:
+    logger.warning(f"⚡ Infrastructure Data Routes: ⚠️ Failed: {e}")
 
 
 # =============================================================================
