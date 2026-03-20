@@ -316,7 +316,7 @@ def validate_api_key(raw_key):
 
     # ── Direct psycopg2 connection (bypass db_utils) ──
     import psycopg2, psycopg2.extras
-    db_url = os.environ.get('NEON_DATABASE_URL') or os.environ.get('DATABASE_URL', '')
+    db_url = os.environ.get('DATABASE_URL') or os.environ.get('NEON_DATABASE_URL', '')
     if not db_url:
         return False, None
 
@@ -399,7 +399,7 @@ def get_user_plan(user_id=None, email=None):
         return 'free'
 
     import psycopg2
-    db_url = os.environ.get('NEON_DATABASE_URL') or os.environ.get('DATABASE_URL', '')
+    db_url = os.environ.get('DATABASE_URL') or os.environ.get('NEON_DATABASE_URL', '')
     if not db_url:
         return 'free'
 
