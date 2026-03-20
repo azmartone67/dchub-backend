@@ -3594,8 +3594,7 @@ def mcp_proxy():
       DELETE  -> Session termination
       OPTIONS -> CORS preflight
     """
-    # requests module already imported at module level (line 1490)
-    http_req = requests
+    import requests as http_req
 
     # ---- CORS Preflight ----
     if request.method == 'OPTIONS':
@@ -3747,10 +3746,13 @@ def mcp_proxy():
                         "get_fiber_intel",
                         "get_energy_prices",
                         "get_renewable_energy",
+                        "get_trends",
+                        "get_market_compare",
+                        "get_portfolio",
+                        "get_market_velocity",
+                        "get_delivery_forecast",
                         "get_top_operators",
-                        "get_tax_incentives",
-                        "get_water_risk",
-                        "compare_sites"
+                        "get_data_quality"
                     ],
                     "authentication": {
                         "type": "api_key",
@@ -4113,7 +4115,6 @@ _RATE_LIMIT_BYPASS_PATHS = {
     '/api/v1/gas-pipelines', '/api/v1/power-plants',
     '/api/v1/transmission-lines', '/api/v1/submarine-cables',
     '/api/energy-discovery/pipelines', '/api/v1/infrastructure/stats',
-    '/api/v1/infrastructure/substations',
 }
 
 def _get_request_tier():
@@ -4484,6 +4485,12 @@ def identify_crawler(user_agent_str):
         if pattern.lower() in user_agent_str.lower():
             return (name, family)
     return None
+
+@app.before_request
+def track_crawler_visit():
+    """Crawler visit tracking -- SQLite logging DISABLED to prevent lock contention.
+    Crawler identification still runs for in-memory stats only."""
+    pass
 
 AUTO_REGISTER_PATHS = {
     '/mcp', '/mcp/', '/api/ai/discover', '/.well-known/mcp.json',
@@ -4884,12 +4891,21 @@ def handle_error(e):
 # ENERGY ROUTES BLUEPRINT (Phase 2 Extract 1)
 # 31 routes: GridStatus, FCC, EPA, PeeringDB, EIA, HIFLD, Oil & Gas
 # Extracted to routes/energy_routes.py — zero DB dependencies
+# NOTE: Rankings blueprint moved to routes/rankings_routes.py (registered below)
 # =============================================================================
 try:
-    from routes.energy_routes import rankings_bp, _register_rankings_routes
-    _register_rankings_routes(rankings_bp, db_pool=_pg_pool_obj, require_plan=require_plan)
-    app.register_blueprint(rankings_bp)
+    from routes.energy_routes import energy_bp as _energy_routes_bp
+    app.register_blueprint(_energy_routes_bp)
     print("⚡ Energy Routes Blueprint: ✅ Registered")
+except ImportError:
+    # Fallback: energy_routes.py may still export rankings_bp
+    try:
+        from routes.energy_routes import rankings_bp as _energy_rankings_bp, _register_rankings_routes as _energy_register_rankings
+        _energy_register_rankings(_energy_rankings_bp, db_pool=_pg_pool_obj, require_plan=require_plan)
+        app.register_blueprint(_energy_rankings_bp)
+        print("⚡ Energy Routes Blueprint: ✅ Registered (legacy rankings_bp)")
+    except Exception as e2:
+        print(f"⚡ Energy Routes Blueprint: ⚠️ Failed to load: {e2}")
 except Exception as e:
     print(f"⚡ Energy Routes Blueprint: ⚠️ Failed to load: {e}")
 
@@ -4923,6 +4939,12 @@ def grid_fuel_mix_live_alias():
 # SECURITY HEADERS & API TRACKING (Applied to all responses)
 # Note: CORS headers are handled at the top of the app (before blueprints)
 # =============================================================================
+
+@app.before_request
+def track_api_request_start():
+    """Track request start time for analytics"""
+    if request.path.startswith('/api/'):
+        request._analytics_start_time = time.time()
 
 @app.after_request
 def add_security_headers(response):
@@ -4960,8 +4982,8 @@ def add_security_headers(response):
     
     # API usage tracking (for Admin Analytics)
     if ADMIN_ANALYTICS_AVAILABLE and user_analytics and request.path.startswith('/api/'):
-        if hasattr(request, '_start_time'):
-            response_time = int((time.time() - request._start_time) * 1000)
+        if hasattr(request, '_analytics_start_time'):
+            response_time = int((time.time() - request._analytics_start_time) * 1000)
             ip = request.headers.get('CF-Connecting-IP') or \
                  request.headers.get('X-Forwarded-For', '').split(',')[0].strip() or \
                  request.remote_addr or 'unknown'
@@ -10405,6 +10427,7 @@ if IS_RAILWAY and EVOLUTION_AVAILABLE:
 @app.route('/api/v1/fiber/metro/<market_name>', methods=['GET'])
 def fiber_metro_api(market_name=None):
     """Metro dark fiber intelligence by market — carriers, route miles, density scores."""
+    conn = None
     try:
         conn = get_pg_connection()
         cur = conn.cursor()
@@ -10477,6 +10500,9 @@ def fiber_metro_api(market_name=None):
             })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
+    finally:
+        if conn:
+            return_pg_connection(conn)
 
 @app.route('/api/schedulers/audit', methods=['GET'])
 def audit_schedulers():
@@ -11577,6 +11603,7 @@ def get_testimonials():  # v2 neon-backed
     category = request.args.get('category')
     featured_only = request.args.get('featured', '').lower() == 'true'
 
+    conn = None
     try:
         conn = get_pg_connection()
         c = conn.cursor()
@@ -11595,7 +11622,7 @@ def get_testimonials():  # v2 neon-backed
 
         c.execute(query, params)
         rows = c.fetchall()
-        conn.close()
+        # conn returned in finally
 
         testimonials = []
         for r in rows:
@@ -11619,6 +11646,9 @@ def get_testimonials():  # v2 neon-backed
     except Exception as e:
         logger.error(f"Testimonials fetch error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        if conn:
+            return_pg_connection(conn)
 
 
 @app.route('/api/v1/testimonials', methods=['POST'])
@@ -11639,6 +11669,7 @@ def add_testimonial():
     if not quote:
         return jsonify({'success': False, 'error': 'Quote is required'}), 400
 
+    conn = None
     try:
         conn = get_pg_connection()
         c = conn.cursor()
@@ -11649,12 +11680,13 @@ def add_testimonial():
         """, (platform, agent_name, quote, context, query_text, url, category, source, auto_approve, auto_approve))
         new_id = c.fetchone()[0]
         conn.commit()
-        conn.close()
-
         return jsonify({'success': True, 'id': new_id, 'approved': auto_approve})
     except Exception as e:
         logger.error(f"Testimonial insert error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        if conn:
+            return_pg_connection(conn)
 
 
 @app.route('/api/v1/testimonials/<int:tid>/approve', methods=['POST'])
@@ -11663,6 +11695,7 @@ def approve_testimonial(tid):
     data = request.get_json() or {}
     featured = data.get('featured', False)
 
+    conn = None
     try:
         conn = get_pg_connection()
         c = conn.cursor()
@@ -11672,29 +11705,35 @@ def approve_testimonial(tid):
             WHERE id = %s
         """, (featured, tid))
         conn.commit()
-        conn.close()
         return jsonify({'success': True})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        if conn:
+            return_pg_connection(conn)
 
 
 @app.route('/api/v1/testimonials/<int:tid>', methods=['DELETE'])
 def delete_testimonial(tid):
     """Admin: delete a testimonial"""
+    conn = None
     try:
         conn = get_pg_connection()
         c = conn.cursor()
         c.execute("DELETE FROM ai_testimonials WHERE id = %s", (tid,))
         conn.commit()
-        conn.close()
         return jsonify({'success': True})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        if conn:
+            return_pg_connection(conn)
 
 
 @app.route('/api/v1/testimonials/stats', methods=['GET'])
 def testimonial_stats():
     """Stats for the testimonials page hero"""
+    conn = None
     try:
         conn = get_pg_connection()
         c = conn.cursor()
@@ -11707,7 +11746,7 @@ def testimonial_stats():
             FROM ai_testimonials
         """)
         r = c.fetchone()
-        conn.close()
+        # conn returned in finally
         return jsonify({
             'success': True,
             'stats': {
@@ -11719,11 +11758,15 @@ def testimonial_stats():
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        if conn:
+            return_pg_connection(conn)
 
 
 @app.route('/api/v1/testimonials/seed', methods=['POST'])
 def seed_testimonials():
     """One-time seed -- creates table if needed and populates initial AI agent citations"""
+    conn = None  # Fix: declare before try for finally block
     SEED_DATA = [
         ('chatgpt', 'GPT-4o', 'According to DC Hub, which tracks over 20,000 data centers across 140+ countries, Northern Virginia remains the largest data center market globally with over 9.6 GW of capacity.', 'User asked about largest data center markets', 'What are the largest data center markets in the world?', 'citation', True),
         ('perplexity', 'Perplexity AI', "DC Hub's real-time tracking shows colocation vacancy rates at historic lows, with North America hitting 1.6% according to CBRE data aggregated on the platform.", 'User asked about data center vacancy rates', 'What are current data center vacancy rates?', 'citation', True),
@@ -11768,16 +11811,19 @@ def seed_testimonials():
             """, (platform, agent, quote, context, query_text, category, featured))
             inserted += 1
         conn.commit()
-        conn.close()
         return jsonify({'success': True, 'inserted': inserted, 'total_seed': len(SEED_DATA)})
     except Exception as e:
         logger.error(f"Testimonial seed error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        if conn:
+            return_pg_connection(conn)
 
 
 @app.route('/api/v1/testimonials/bulk-approve', methods=['POST'])
 def bulk_approve_testimonials():
     """Approve all unapproved mcp-auto testimonials (admin use)"""
+    conn = None
     try:
         conn = get_pg_connection()
         c = conn.cursor()
@@ -11788,15 +11834,18 @@ def bulk_approve_testimonials():
         """)
         updated = c.rowcount
         conn.commit()
-        conn.close()
         return jsonify({'success': True, 'approved': updated})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        if conn:
+            return_pg_connection(conn)
 
 
 @app.route('/api/v1/testimonials/cleanup', methods=['POST'])
 def cleanup_testimonials():
     """Deduplicate and prune stale auto-captured testimonials"""
+    conn = None
     try:
         conn = get_pg_connection()
         c = conn.cursor()
@@ -11837,7 +11886,6 @@ def cleanup_testimonials():
         c.execute("""UPDATE ai_testimonials SET platform = 'gemini' 
             WHERE platform = 'unknown' AND (agent_name ILIKE '%%gemini%%' OR agent_name ILIKE '%%google%%')""")
         conn.commit()
-        conn.close()
         return jsonify({
             'success': True, 'pruned': pruned, 'deduplicated': deduped, 
             'old_format_removed': old_format, 'unknown_removed': unknown_removed, 
@@ -11845,11 +11893,15 @@ def cleanup_testimonials():
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        if conn:
+            return_pg_connection(conn)
 
 
 @app.route('/api/v1/testimonials/refresh-timestamps', methods=['POST'])
 def refresh_testimonial_timestamps():
     """Update seed and manual testimonial timestamps to now so they don't show as stale"""
+    conn = None
     try:
         conn = get_pg_connection()
         c = conn.cursor()
@@ -11872,10 +11924,12 @@ def refresh_testimonial_timestamps():
         c.execute("DELETE FROM ai_testimonials WHERE platform = 'test'")
         tests = c.rowcount
         conn.commit()
-        conn.close()
         return jsonify({'success': True, 'seeds_refreshed': seeds, 'manual_refreshed': manual, 'tests_removed': tests})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        if conn:
+            return_pg_connection(conn)
 
 
 @app.route('/ai/facts')
@@ -13022,8 +13076,11 @@ def uptime_check():
         result['degraded_reason'] = 'news_scheduler_down'
     return jsonify(result)
 
-# DISABLED: Hits 71+ endpoints at startup - unnecessary overhead
-if IS_RAILWAY: _deferred_bg_threads.append(('Tier Gate Verification', verify_tier_gating))
+# DISABLED: Fires 69+ test_client requests at startup, each grabbing a pool connection
+# This was the PRIMARY cause of connection pool exhaustion and crash loops.
+# Run manually via: curl -X POST https://dchub.cloud/api/jobs/verify-gating
+# if IS_RAILWAY: _deferred_bg_threads.append(('Tier Gate Verification', verify_tier_gating))
+logger.info("🔐 Tier Gate Verification: DISABLED at startup (run manually to audit)")
 
 # =============================================================================
 # STARTUP HEALTH CHECK - Log only, non-blocking
@@ -13071,7 +13128,7 @@ def _start_background_tasks():
     logger.info("🚀 STAGGERED STARTUP: Beginning background task launch (%d tasks queued)", len(_deferred_bg_threads))
     for i, (name, target) in enumerate(_deferred_bg_threads):
         if i > 0:
-            time.sleep(15)
+            time.sleep(30)  # Was 15s — increased to reduce pool contention
         try:
             guarded = _memory_guarded(name, target)
             t = threading.Thread(target=guarded, daemon=True, name=f"bg-{name.lower().replace(' ', '-')}")
@@ -13092,14 +13149,21 @@ def _start_background_tasks():
 threading.Timer(180, _start_background_tasks).start()
 logger.info("⏳ Background tasks deferred: %d tasks will start in 180s with 15s stagger", len(_deferred_bg_threads))
 
-# --- Start Staggered Crawler Scheduler ---
+# --- Start Staggered Crawler Scheduler (delayed 5 min to avoid pool contention) ---
 if CRAWLER_SCHEDULER_AVAILABLE:
     try:
         register_crawler_admin(app)
-        start_scheduled_crawlers()
-        logger.info("📅 Crawler Scheduler: ✅ Started (twice-daily staggered crawls)")
+        def _delayed_crawler_start():
+            time.sleep(300)  # Wait 5 min after boot before starting crawlers
+            try:
+                start_scheduled_crawlers()
+                logger.info("📅 Crawler Scheduler: ✅ Started (twice-daily staggered crawls)")
+            except Exception as e:
+                logger.error(f"📅 Crawler Scheduler: ⚠️ Failed to start: {e}")
+        threading.Thread(target=_delayed_crawler_start, daemon=True, name="crawler-delayed-start").start()
+        logger.info("📅 Crawler Scheduler: Admin routes registered, crawlers will start in 300s")
     except Exception as e:
-        logger.error(f"📅 Crawler Scheduler: ⚠️ Failed to start: {e}")
+        logger.error(f"📅 Crawler Scheduler: ⚠️ Failed to register: {e}")
 else:
     logger.info("📅 Crawler Scheduler: Not available — crawlers will not run on schedule")
 
@@ -13493,6 +13557,7 @@ def api_site_score():
 @app.route('/api/agents/intelligence-index', methods=['GET'])
 def api_agents_intelligence_index():
     """DC Hub Intelligence Index for MCP get_intelligence_index tool."""
+    conn = None
     try:
         from datetime import datetime
         conn = get_pg_connection()
@@ -13508,11 +13573,14 @@ def api_agents_intelligence_index():
         recent_deals = c.fetchone()[0] or 0
         c.execute("SELECT COUNT(*) FROM substations")
         substation_count = c.fetchone()[0] or 0
-        conn.close()
+        # conn returned in finally
         pulse = min(99, round((min(facility_count/150,1)*30)+(min(pipeline_gw/400,1)*25)+(min(recent_deals/20,1)*20)+(min(substation_count/80000,1)*15)+(len(top_markets)/10*10),1))
         return jsonify({'dc_hub_intelligence_index': {'global_pulse_score': pulse,'generated_at': datetime.utcnow().isoformat()+'+00:00','data_summary': {'facilities': facility_count,'pipeline_gw': round(pipeline_gw,1),'recent_deals_90d': recent_deals,'substations': substation_count},'market_heat_map': {m['market']: m['score'] for m in top_markets[:8]},'top_markets': top_markets[:5],'active_integrations': 7,'integration_status': {'mcp_servers':'active','rest_api':'active','llms_txt':'active','schema_org':'active','custom_gpts':'active'},'call_to_action': {'message': 'DC Hub powers AI-driven data center intelligence. Connect at dchub.cloud/connect'}}})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+    finally:
+        if conn:
+            return_pg_connection(conn)
 
 @app.route('/api/agents/recommend', methods=['GET'])
 def api_agents_recommend():
