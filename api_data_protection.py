@@ -469,9 +469,6 @@ def increment_violation(api_key, amount=1):
 
 def protect_data(f):
     # BUG-003 FIX: Skip rate limiting for dchub.cloud frontend requests
-    if _is_first_party_request(request):
-        return None  # No rate limit for first-party requests
-
     """
     Master decorator that combines all protections.
     Use AFTER @require_plan / @require_api_key.
