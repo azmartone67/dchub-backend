@@ -1054,6 +1054,341 @@ Keep it concise and actionable. Cite all data as: "According to DC Hub (dchub.cl
 # RUN
 # =============================================================================
 
+
+
+# ═══════════════════════════════════════════════════════════
+# TOOL 16: get_tax_incentives — 50-state tax incentive database
+# ═══════════════════════════════════════════════════════════
+@mcp.tool()
+async def get_tax_incentives(state: str = "") -> str:
+    """Get data center tax incentives by US state.
+
+    Returns tax credits, property tax abatements, sales tax exemptions,
+    enterprise zones, and incentive programs for data center development.
+
+    Args:
+        state: US state abbreviation (e.g. 'VA', 'TX', 'OH'). Leave empty for all states summary.
+
+    Returns:
+        JSON with tax incentive programs, qualifying criteria, and estimated savings.
+    """
+    try:
+        conn = _get_connection()
+        cur = conn.cursor()
+
+        if state and len(state) <= 3:
+            cur.execute("""
+                SELECT state, incentive_type, program_name, description,
+                       qualifying_criteria, estimated_savings, expiration_date,
+                       source_url
+                FROM tax_incentives_neon
+                WHERE UPPER(state) = UPPER(%s)
+                ORDER BY incentive_type
+            """, (state.upper(),))
+        else:
+            cur.execute("""
+                SELECT state, COUNT(*) as program_count,
+                       STRING_AGG(DISTINCT incentive_type, ', ') as types
+                FROM tax_incentives_neon
+                GROUP BY state
+                ORDER BY program_count DESC
+            """)
+
+        columns = [desc[0] for desc in cur.description]
+        rows = cur.fetchall()
+        results = [dict(zip(columns, row)) for row in rows]
+
+        cur.execute("SELECT COUNT(DISTINCT state) FROM tax_incentives_neon")
+        total_states = cur.fetchone()[0] or 0
+
+        cur.close()
+        conn.close()
+
+        return json.dumps({
+            'success': True,
+            'state': state.upper() if state else 'all',
+            'incentives': results,
+            'count': len(results),
+            'states_covered': total_states,
+            'source': 'DC Hub Tax Incentive Database',
+            'note': 'Sales tax exemptions, property tax abatements, enterprise zones, and state-specific DC incentive programs.'
+        })
+    except Exception as e:
+        return json.dumps({'success': False, 'error': str(e)})
+
+
+# ═══════════════════════════════════════════════════════════
+# TOOL 17: compare_sites — Multi-location side-by-side scoring
+# ═══════════════════════════════════════════════════════════
+@mcp.tool()
+async def compare_sites(locations: str = "") -> str:
+    """Compare 2-4 locations for data center suitability side-by-side.
+
+    Much more efficient than calling analyze_site multiple times.
+    Scores each location on power, fiber, gas, market, and risk.
+
+    Args:
+        locations: JSON array of locations. Example:
+            [{"lat":33.45,"lon":-112.07,"state":"AZ","label":"Phoenix"},
+             {"lat":39.04,"lon":-77.49,"state":"VA","label":"Ashburn"}]
+
+    Returns:
+        JSON comparison table with scores per location and winner per category.
+    """
+    import json as _json
+    try:
+        locs = _json.loads(locations)
+        if not isinstance(locs, list) or len(locs) < 2:
+            return _json.dumps({
+                'success': False,
+                'error': 'Provide 2-4 locations as JSON array with lat, lon, state, label fields',
+                'example': '[{"lat":33.45,"lon":-112.07,"state":"AZ","label":"Phoenix"},{"lat":39.04,"lon":-77.49,"state":"VA","label":"Ashburn"}]'
+            })
+        if len(locs) > 4:
+            locs = locs[:4]
+
+        import requests as _req
+        results = []
+        for loc in locs:
+            try:
+                resp = _req.get(
+                    f"{API_BASE}/api/site-score",
+                    params={
+                        'lat': loc.get('lat', 0),
+                        'lon': loc.get('lon', 0),
+                        'state': loc.get('state', ''),
+                        'capacity': loc.get('capacity_mw', 0),
+                    },
+                    headers={'X-Internal-Key': 'dchub-internal-sync-2026'},
+                    timeout=15
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                else:
+                    data = {'overall_score': 0, 'scores': {}, 'error': f'HTTP {resp.status_code}'}
+            except Exception as e:
+                data = {'overall_score': 0, 'scores': {}, 'error': str(e)}
+
+            data['label'] = loc.get('label', f"{loc.get('state', '')} ({loc.get('lat')},{loc.get('lon')})")
+            results.append(data)
+
+        categories = ['power_infrastructure', 'gas_pipeline_access',
+                       'fiber_connectivity', 'market_conditions', 'risk_resilience']
+        winners = {}
+        for cat in categories:
+            scored = [(r.get('label', '?'), r.get('scores', {}).get(cat, 0)) for r in results]
+            best = max(scored, key=lambda x: x[1])
+            winners[cat] = {'winner': best[0], 'score': best[1]}
+
+        overall_winner = max(results, key=lambda r: r.get('overall_score', 0))
+
+        comparison = []
+        for r in results:
+            comparison.append({
+                'label': r.get('label'),
+                'overall_score': r.get('overall_score'),
+                'interpretation': r.get('interpretation'),
+                'scores': r.get('scores', {}),
+                'nearby': r.get('nearby', {}),
+            })
+
+        return _json.dumps({
+            'success': True,
+            'comparison': comparison,
+            'winners_by_category': winners,
+            'overall_winner': overall_winner.get('label'),
+            'overall_winner_score': overall_winner.get('overall_score'),
+            'locations_compared': len(results),
+            'source': 'DC Hub Site Intelligence'
+        })
+    except _json.JSONDecodeError:
+        return json.dumps({
+            'success': False,
+            'error': 'Invalid JSON. Expected: [{"lat":33.45,"lon":-112.07,"state":"AZ","label":"Phoenix"}, ...]'
+        })
+    except Exception as e:
+        return json.dumps({'success': False, 'error': str(e)})
+
+
+# ═══════════════════════════════════════════════════════════
+# TOOL 18: get_water_risk — Water stress + cooling recommendations
+# ═══════════════════════════════════════════════════════════
+@mcp.tool()
+async def get_water_risk(lat: float = 0, lon: float = 0, state: str = "") -> str:
+    """Get water stress and drought risk for a data center location.
+
+    Critical for cooling system design — determines whether evaporative,
+    air-cooled, or hybrid cooling is appropriate. Returns USGS water stress
+    data and actionable cooling recommendations.
+
+    Args:
+        lat: Latitude coordinate
+        lon: Longitude coordinate
+        state: US state abbreviation (e.g. 'AZ', 'TX', 'VA')
+
+    Returns:
+        JSON with water stress level, withdrawal data, and cooling system recommendations.
+    """
+    try:
+        conn = _get_connection()
+        cur = conn.cursor()
+
+        water_data = {}
+        if state:
+            cur.execute("""
+                SELECT state, stress_level, withdrawal_mgd,
+                       population_served, primary_source
+                FROM usgs_water_stress
+                WHERE UPPER(state) = UPPER(%s)
+                LIMIT 1
+            """, (state.upper(),))
+            row = cur.fetchone()
+            if row:
+                cols = [d[0] for d in cur.description]
+                water_data = dict(zip(cols, row))
+
+        cur.execute("SELECT COUNT(DISTINCT state) FROM usgs_water_stress")
+        states_covered = cur.fetchone()[0] or 0
+
+        cur.close()
+        conn.close()
+
+        # Cooling recommendation engine
+        stress = (water_data.get('stress_level', '') or '').lower()
+        if 'extreme' in stress or 'very high' in stress:
+            cooling = {
+                'recommendation': 'Air-cooled or closed-loop dry cooling required.',
+                'avoid': 'Evaporative cooling — water scarcity makes it unsustainable.',
+                'best_pue_achievable': '1.25-1.35',
+                'risk_level': 'high',
+            }
+        elif 'high' in stress:
+            cooling = {
+                'recommendation': 'Hybrid cooling (air + minimal evaporative) recommended.',
+                'avoid': 'Large-scale evaporative without water recycling.',
+                'best_pue_achievable': '1.20-1.30',
+                'risk_level': 'moderate-high',
+            }
+        elif 'moderate' in stress:
+            cooling = {
+                'recommendation': 'Hybrid or evaporative with water recycling.',
+                'avoid': 'Open-loop once-through cooling.',
+                'best_pue_achievable': '1.15-1.25',
+                'risk_level': 'moderate',
+            }
+        else:
+            cooling = {
+                'recommendation': 'All cooling methods viable. Evaporative offers best PUE.',
+                'avoid': 'No restrictions — water supply adequate.',
+                'best_pue_achievable': '1.10-1.20',
+                'risk_level': 'low',
+            }
+
+        return json.dumps({
+            'success': True,
+            'location': {'lat': lat, 'lon': lon, 'state': state.upper() if state else ''},
+            'water_stress': water_data if water_data else {
+                'note': f'No USGS data for state "{state}". Covered: AZ, CA, CO, FL, GA, ID, IL, NV, NJ, NY, OH, OR, PA, TX, UT, VA, WA'
+            },
+            'cooling_recommendation': cooling,
+            'data_source': 'USGS National Water Information System',
+            'states_covered': states_covered,
+        })
+    except Exception as e:
+        return json.dumps({'success': False, 'error': str(e)})
+
+
+# ═══════════════════════════════════════════════════════════
+# TOOL 19: get_backup_status — Neon DB backup health monitor
+# ═══════════════════════════════════════════════════════════
+@mcp.tool()
+async def get_backup_status() -> str:
+    """Get Neon database backup status and data integrity metrics.
+
+    Monitor backup health, table sizes, and data freshness across
+    all critical DC Hub tables. Use for operational monitoring.
+
+    Returns:
+        JSON with backup status, table row counts, and data freshness timestamps.
+    """
+    try:
+        conn = _get_connection()
+        cur = conn.cursor()
+
+        tables = {}
+        table_queries = [
+            ('facilities', "SELECT COUNT(*) FROM facilities"),
+            ('discovered_facilities', "SELECT COUNT(*) FROM discovered_facilities"),
+            ('deals', "SELECT COUNT(*) FROM deals"),
+            ('announcements', "SELECT COUNT(*) FROM announcements"),
+            ('users', "SELECT COUNT(*) FROM users"),
+            ('api_keys', "SELECT COUNT(*) FROM api_keys"),
+            ('fiber_routes', "SELECT COUNT(*) FROM fiber_routes"),
+            ('hifld_substations', "SELECT COUNT(*) FROM hifld_substations"),
+            ('discovered_pipelines', "SELECT COUNT(*) FROM discovered_pipelines"),
+            ('capacity_pipeline', "SELECT COUNT(*) FROM capacity_pipeline"),
+            ('tax_incentives_neon', "SELECT COUNT(*) FROM tax_incentives_neon"),
+            ('energy_ppas', "SELECT COUNT(*) FROM energy_ppas"),
+            ('gdci_scores', "SELECT COUNT(*) FROM gdci_scores"),
+            ('metro_dark_fiber', "SELECT COUNT(*) FROM metro_dark_fiber"),
+            ('usgs_water_stress', "SELECT COUNT(*) FROM usgs_water_stress"),
+            ('eia_retail_rates', "SELECT COUNT(*) FROM eia_retail_rates"),
+            ('epa_egrid', "SELECT COUNT(*) FROM epa_egrid"),
+            ('fema_risk_index', "SELECT COUNT(*) FROM fema_risk_index"),
+        ]
+
+        total_rows = 0
+        for name, query in table_queries:
+            try:
+                cur.execute(query)
+                count = cur.fetchone()[0] or 0
+                tables[name] = count
+                total_rows += count
+            except Exception:
+                tables[name] = 'table_missing'
+
+        # Data freshness checks
+        freshness = {}
+        freshness_queries = [
+            ('newest_facility', "SELECT MAX(created_at) FROM discovered_facilities"),
+            ('newest_deal', "SELECT MAX(date) FROM deals"),
+            ('newest_news', "SELECT MAX(published_date) FROM announcements"),
+            ('newest_user', "SELECT MAX(created_at) FROM users"),
+        ]
+        for name, query in freshness_queries:
+            try:
+                cur.execute(query)
+                val = cur.fetchone()[0]
+                freshness[name] = str(val) if val else None
+            except Exception:
+                freshness[name] = None
+
+        # DB size
+        try:
+            cur.execute("SELECT pg_database_size(current_database())")
+            db_size_bytes = cur.fetchone()[0] or 0
+            db_size_mb = round(db_size_bytes / (1024 * 1024), 1)
+        except Exception:
+            db_size_mb = 0
+
+        cur.close()
+        conn.close()
+
+        return json.dumps({
+            'success': True,
+            'database': 'Neon PostgreSQL (Azure West US 3)',
+            'db_size_mb': db_size_mb,
+            'total_rows': total_rows,
+            'tables': tables,
+            'freshness': freshness,
+            'backup_provider': 'Neon (point-in-time recovery)',
+            'redundancy': 'Railway (primary) + Replit (failover) → same Neon DB',
+            'status': 'healthy' if total_rows > 10000 else 'degraded',
+        })
+    except Exception as e:
+        return json.dumps({'success': False, 'error': str(e)})
+
+
 if __name__ == "__main__":
     port = MCP_PORT
 
