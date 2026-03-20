@@ -121,6 +121,11 @@ def rate_limit_before():
     Register as: app.before_request(rate_limit_before)
     Place AFTER the request timer, BEFORE route handlers.
     """
+    # BUG-003 FIX: Skip rate limiting for dchub.cloud frontend requests
+    origin = request.headers.get("Origin", "") or request.headers.get("Referer", "")
+    if "dchub.cloud" in origin:
+        return None
+
     path = request.path
 
     # Skip health checks and static files

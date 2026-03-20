@@ -302,96 +302,51 @@ def generate_api_key(user_id, email, plan='free', name='Default'):
     return raw_key
 
 
-def validate_api_key(raw_key):
-    """
-    Validate an API key — uses DIRECT psycopg2 connection (bypasses db_utils).
-    PGConnectionWrapper.fetchone() returns None for valid rows due to internal
-    cursor/transaction issues. This is the same fix pattern used in energy-discovery.
-    Returns (valid: bool, key_info: dict or None)
-    """
-    if not raw_key or not raw_key.startswith('dchub_'):
-        return False, None
 
-    key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
-
-    # ── Direct psycopg2 connection (bypass db_utils) ──
-    import psycopg2, psycopg2.extras
-    db_url = os.environ.get('DATABASE_URL') or os.environ.get('NEON_DATABASE_URL', '')
-    if not db_url:
-        return False, None
-
+def validate_api_key(api_key):
+    """Validate API key and return user info. BUG-005 FIX: Direct psycopg2 connection."""
+    if not api_key:
+        return None
+    
+    import psycopg2
     conn = None
     try:
-        conn = psycopg2.connect(db_url, connect_timeout=5)
-        c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        c.execute("""
-            SELECT * FROM api_keys WHERE key_hash = %s AND is_active = 1
-        """, (key_hash,))
-        row = c.fetchone()
-
-        if not row:
-            return False, None
-
-        info = dict(row)
-
-        # ── Auto-correct plan/prefix mismatches ──
-        stored_plan = info.get('plan', 'free')
-        prefix = info.get('key_prefix', '')
-        corrected = False
-        if '_pro_' in raw_key and stored_plan not in ('pro', 'enterprise', 'admin'):
-            info['plan'] = 'pro'
-            info['rate_limit_tier'] = 'pro'
-            corrected = True
-        elif '_ent_' in raw_key and stored_plan not in ('enterprise', 'admin'):
-            info['plan'] = 'enterprise'
-            info['rate_limit_tier'] = 'enterprise'
-            corrected = True
-        if corrected:
-            try:
-                c.execute("UPDATE api_keys SET plan = %s, rate_limit_tier = %s WHERE key_hash = %s",
-                          (info['plan'], info['rate_limit_tier'], key_hash))
-            except Exception:
-                pass
-
-        # Reset daily counter if new day
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        if info.get('last_reset_date') != today:
-            c.execute("""
-                UPDATE api_keys SET calls_today = 0, last_reset_date = %s WHERE key_hash = %s
-            """, (today, key_hash))
-
-        # Increment usage
-        c.execute("""
-            UPDATE api_keys SET calls_today = calls_today + 1, calls_total = calls_total + 1, last_used = %s
-            WHERE key_hash = %s
-        """, (datetime.now(timezone.utc).isoformat(), key_hash))
-        conn.commit()
-
-        # Check daily limit
-        plan = info.get('plan', 'free')
-        limit = TIER_RATE_LIMITS.get(plan, 100)
-        if info.get('calls_today', 0) >= limit:
-            return False, {**info, 'error': 'daily_limit_exceeded', 'limit': limit, 'plan': plan}
-
-        return True, info
-
+        database_url = os.environ.get('DATABASE_URL') or os.environ.get('DATABASE_READ_URL')
+        if not database_url:
+            print("[BUG-005] No DATABASE_URL found")
+            return None
+        
+        conn = psycopg2.connect(database_url, connect_timeout=5)
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT u.id, u.email, u.plan, u.role, ak.rate_limit_tier
+            FROM api_keys ak
+            JOIN users u ON ak.user_id = u.id
+            WHERE ak.key = %s AND ak.is_active = true
+            LIMIT 1
+        """, (api_key,))
+        row = cur.fetchone()
+        cur.close()
+        
+        if row:
+            return {
+                'user_id': row[0],
+                'email': row[1],
+                'plan': row[2],
+                'role': row[3],
+                'rate_limit_tier': row[4] or row[2]  # fallback to plan
+            }
+        return None
     except Exception as e:
-        import logging
-        logging.getLogger('tier_gating').error(f"validate_api_key error: {e}")
-        return False, None
+        print(f"[BUG-005] validate_api_key error: {e}")
+        return None
     finally:
         if conn:
             try:
                 conn.close()
-            except Exception:
+            except:
                 pass
 
-    return True, info
-
-
-# ═══════════════════════════════════════════════════════════════
-#  USER PLAN HELPERS
-# ═══════════════════════════════════════════════════════════════
 
 def get_user_plan(user_id=None, email=None):
     """Get a user's current plan from Neon — direct psycopg2 (bypasses db_utils)."""
