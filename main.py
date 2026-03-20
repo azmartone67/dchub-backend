@@ -5033,8 +5033,7 @@ def init_new_tables():
         c = conn.cursor()
         _init_new_tables_inner(conn, c)
     finally:
-        try: conn.close()
-        except: pass
+        return_pg_connection(conn)
 
 def _init_new_tables_inner(conn, c):
     # Leads table for email capture
@@ -5520,23 +5519,25 @@ def unsubscribe_lead():
 def init_partner_inquiries_table():
     """Initialize partner inquiries table"""
     conn = get_db()
-    c = conn.cursor()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS partner_inquiries (
-            id TEXT PRIMARY KEY,
-            name TEXT,
-            email TEXT NOT NULL,
-            company TEXT,
-            partner_type TEXT,
-            message TEXT,
-            status TEXT DEFAULT 'new',
-            created_at TEXT,
-            responded_at TEXT,
-            notes TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS partner_inquiries (
+                id TEXT PRIMARY KEY,
+                name TEXT,
+                email TEXT NOT NULL,
+                company TEXT,
+                partner_type TEXT,
+                message TEXT,
+                status TEXT DEFAULT 'new',
+                created_at TEXT,
+                responded_at TEXT,
+                notes TEXT
+            )
+        """)
+        conn.commit()
+    finally:
+        return_pg_connection(conn)
 
 # Initialize on startup - DEFERRED TO BACKGROUND THREAD
 # try:
