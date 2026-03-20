@@ -137,6 +137,15 @@ def rate_limit_before():
     if raw_ip in ('127.0.0.1', '::1', 'localhost'):
         return None
 
+    # Bypass dchub.cloud frontend — the map fires dozens of spatial API
+    # calls on every pan/zoom.  These are already gated by the tier-aware
+    # enforce_tier_rate_limits() in main.py; double-limiting here causes
+    # pro/paid users to see 429s with tier=anonymous.
+    # v2.7: Fixes orange-dot disappearing bug on Land & Power map.
+    origin = request.headers.get('Origin', '') or request.headers.get('Referer', '')
+    if 'dchub.cloud' in origin:
+        return None
+
     key, tier = _get_key_and_tier()
     limits = LIMITS[tier]
 
