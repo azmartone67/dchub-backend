@@ -8009,7 +8009,7 @@ def get_stats():
         stats['pipeline_gw'] = round((pipeline_row[1] or 0) / 1000, 1)
 
         try:
-            c.execute("SELECT COUNT(*), COALESCE(SUM(capacity_mw),0) FROM capacity_pipeline")
+            c.execute("SELECT COUNT(*), COALESCE(SUM(power_mw),0) FROM capacity_pipeline")
             cp = c.fetchone()
             stats['curated_pipeline_count'] = cp[0] or 0
             stats['curated_pipeline_gw'] = round((cp[1] or 0) / 1000, 1)
