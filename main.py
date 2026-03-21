@@ -3078,7 +3078,7 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
                     _re_where.append("LOWER(fuel_source) = LOWER(%s)")
                     _re_params.append(_re_type)
                 _re_clause = " AND ".join(_re_where) if _re_where else "1=1"
-                rc.execute(f"SELECT buyer, power_mw, fuel_source, state FROM energy_ppas WHERE {_re_clause} ORDER BY capacity_mw DESC LIMIT 5", _re_params)
+                rc.execute(f"SELECT buyer, power_mw, fuel_source, state FROM energy_ppas WHERE {_re_clause} ORDER BY power_mw DESC LIMIT 5", _re_params)
                 rows = rc.fetchall()
                 for r in rows:
                     ppa_preview.append({'buyer': r[0], 'capacity_mw': float(r[1]) if r[1] else 0, 'type': r[2] or 'solar', 'state': r[3]})
