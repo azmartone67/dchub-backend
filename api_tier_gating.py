@@ -614,8 +614,8 @@ FACILITY_TIER_LIMITS = {
     'pro': 2000, 'enterprise': 9999, 'admin': 9999,
 }
 FACILITY_VISIBLE_FIELDS = {
-    'anon': {'name', 'city', 'country', 'latitude', 'longitude', 'status'},
-    'free': {'name', 'city', 'country', 'latitude', 'longitude', 'status',
+    'anon': {'name', 'city', 'country', 'latitude', 'longitude', 'status', 'slug'},
+    'free': {'name', 'city', 'country', 'latitude', 'longitude', 'status', 'slug',
              'provider', 'operator', 'region', 'market'},
 }
 
