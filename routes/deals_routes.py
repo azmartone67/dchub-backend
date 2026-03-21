@@ -20,6 +20,11 @@ import os
 import time
 import logging
 from datetime import datetime
+try:
+    from redis_cache import cache_get, cache_set
+except ImportError:
+    cache_get = lambda k: None
+    cache_set = lambda k, v, ttl=300: None
 from functools import wraps
 from flask import Blueprint, request, jsonify
 
@@ -1310,11 +1315,13 @@ def get_live_news():
                         article[key] = article[key].isoformat()
                 articles.append(article)
 
-            return jsonify({
+            _news_result = {
                 'success': True, 'articles': articles, 'count': len(articles),
                 'total': total, 'fetched_at': datetime.utcnow().isoformat(),
                 'source': 'postgresql'
-            })
+            }
+            cache_set(_news_cache_key, _news_result, ttl=300)
+            return jsonify(_news_result)
         except Exception as pg_err:
             logger.error(f"Live news PG read failed: {pg_err}")
             return jsonify({'success': False, 'error': str(pg_err), 'articles': []}), 200

@@ -9482,6 +9482,14 @@ def api_transactions_alias():
     api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
     auth_header = request.headers.get('Authorization')
     has_auth = bool(api_key) or (auth_header and auth_header.startswith('Bearer '))
+    # ── Redis cache for transactions (5 min) ──
+    import hashlib as _hl
+    _txn_args = f"txn:{request.args.get('limit',50)}:{request.args.get('offset',0)}:{request.args.get('region','')}:{request.args.get('buyer','')}"
+    _txn_cache_key = "txn:" + _hl.md5(_txn_args.encode()).hexdigest()
+    if not has_auth:
+        _txn_cached = cache_get(_txn_cache_key)
+        if _txn_cached is not None:
+            return jsonify(_txn_cached)
     
     # AI Wars verification keys get direct access
     ai_wars_info = get_ai_wars_key_info()
@@ -9517,11 +9525,13 @@ def api_transactions_alias():
                     })
                 pg_cur.execute("SELECT COUNT(*) FROM deals")
                 total = pg_cur.fetchone()[0] or 0
-            return jsonify({
+            _txn_result = {
                 'success': True, 'transactions': transactions, 'data': transactions,
                 'count': len(transactions), 'total_count': total,
                 'total_value': sum(t.get('value', 0) or 0 for t in transactions), 'source': 'postgresql'
-            })
+            }
+            cache_set(_txn_cache_key, _txn_result, ttl=300)
+            return jsonify(_txn_result)
         except Exception as pg_err:
             logger.error(f"Transactions PG query failed: {pg_err}")
             return jsonify({'success': False, 'error': str(pg_err), 'transactions': [], 'data': []}), 500
