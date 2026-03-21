@@ -1199,7 +1199,7 @@ def api_facilities_shortcut():
     return redirect(target)
 
 @app.route('/api/v1/map', methods=['GET'])
-# @cached_response(ttl=600, key_prefix="map")  # enabled when redis_cache.py deployed
+@cached_response(ttl=600, key_prefix="map")
 def api_v1_map():
     """Public map endpoint - returns basic fields for all facilities for map display."""
     conn = None
@@ -7904,7 +7904,7 @@ def energy_discovery_status():
                 pass
 
 @app.route('/api/v1/stats', methods=['GET'])
-# @cached_response(ttl=300, key_prefix="stats")  # enabled when redis_cache.py deployed
+@cached_response(ttl=300, key_prefix="stats")
 def get_stats():
     """Get aggregate statistics"""
     conn = None
