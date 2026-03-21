@@ -71,7 +71,8 @@ def _get_db():
 
 
 def _init_tables():
-    """Create AI Wars tables if they don't exist."""
+    """Tables already exist in Neon — skip DDL."""
+    return
     conn = _get_db()
     c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
