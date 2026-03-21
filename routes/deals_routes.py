@@ -911,7 +911,7 @@ SAMPLE_MARKETS = [
 ]
 
 @deals_bp.route('/api/dc-markets', methods=['GET'])
-@_lazy_require_plan('enterprise')
+@_lazy_require_plan('free')
 def get_dc_markets():
     """Get data center market data for analytics"""
     region = request.args.get('region')
@@ -928,7 +928,7 @@ def get_dc_markets():
     })
 
 @deals_bp.route('/api/markets', methods=['GET'])
-@_lazy_require_plan('enterprise')
+@_lazy_require_plan('free')
 def get_markets():
     """Public markets endpoint - returns all tracked markets"""
     region = request.args.get('region')
@@ -1277,7 +1277,7 @@ def get_news_feed():
     return get_agent_news()
 
 @deals_bp.route('/api/news/live', methods=['GET'])
-@_lazy_require_plan('enterprise')
+@_lazy_require_plan('free')
 def get_live_news():
     """Return cached news from DB (fast) -- requires at least a free account"""
     try:
@@ -1320,7 +1320,7 @@ def get_live_news():
                 'total': total, 'fetched_at': datetime.utcnow().isoformat(),
                 'source': 'postgresql'
             }
-            cache_set(_news_cache_key, _news_result, ttl=300)
+            cache_set('news_live_result', _news_result, ttl=300)
             return jsonify(_news_result)
         except Exception as pg_err:
             logger.error(f"Live news PG read failed: {pg_err}")
