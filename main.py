@@ -10093,6 +10093,13 @@ def land_power_consolidated():
     in a single response. Reduces frontend API calls from 20+ to 1.
     """
     import concurrent.futures
+    # ── Redis cache for land-power (5 min) ──
+    import hashlib as _hl
+    _lp_raw = f"lp:{request.query_string.decode()}"
+    _lp_key = "lp:" + _hl.md5(_lp_raw.encode()).hexdigest()
+    _lp_cached = cache_get(_lp_key)
+    if _lp_cached is not None:
+        return jsonify(_lp_cached)
 
     lat = request.args.get('lat', type=float)
     lng = request.args.get('lng', type=float)
@@ -10180,6 +10187,7 @@ def land_power_consolidated():
         except Exception:
             result["epa_summary"] = {"lat": lat, "lng": lng, "count": 0, "error": "unavailable"}
 
+    cache_set(_lp_key, result, ttl=300)
     return jsonify(result)
 
 @app.route('/api/v1/capacity/heatmap/public', methods=['GET'])
