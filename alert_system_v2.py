@@ -41,7 +41,7 @@ from db_utils import get_db
 # =============================================================================
 
 SENDGRID_API_KEY = os.environ.get('SENDGRID_API_KEY', '')
-SENDGRID_FROM_EMAIL = os.environ.get('SENDGRID_FROM_EMAIL', 'alerts@dchub.cloud')
+SENDGRID_FROM_EMAIL = os.environ.get('SENDGRID_FROM_EMAIL', 'info@dchub.cloud')
 SENDGRID_FROM_NAME = os.environ.get('SENDGRID_FROM_NAME', 'DC Hub Alerts')
 
 DB_PATH = os.environ.get('DB_PATH', 'dc_nexus.db')

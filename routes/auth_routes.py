@@ -193,7 +193,7 @@ def send_admin_alert_email(subject, body_text):
             import urllib.request, urllib.error, json as _json
             payload = {
                 "personalizations": [{"to": [{"email": admin_email}]}],
-                "from": {"email": "alerts@dchub.cloud", "name": "DC Hub Alerts"},
+                "from": {"email": "info@dchub.cloud", "name": "DC Hub Alerts"},
                 "subject": subject,
                 "content": [{"type": "text/plain", "value": body_text}]
             }

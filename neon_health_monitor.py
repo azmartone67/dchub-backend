@@ -30,7 +30,7 @@ def _send_alert(subject, body_html):
         import urllib.request
         payload = json.dumps({
             "personalizations": [{"to": [{"email": admin_email}]}],
-            "from": {"email": os.environ.get('SENDGRID_FROM_EMAIL', 'alerts@dchub.cloud'), "name": "DC Hub Alerts"},
+            "from": {"email": os.environ.get('SENDGRID_FROM_EMAIL', 'info@dchub.cloud'), "name": "DC Hub Alerts"},
             "subject": subject,
             "content": [{"type": "text/html", "value": body_html}]
         }).encode('utf-8')

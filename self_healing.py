@@ -575,7 +575,7 @@ class AlertManager:
             cfg = self.email_config
             msg = MIMEText(body)
             msg["Subject"] = subject
-            msg["From"] = cfg.get("from_addr", "alerts@dchub.cloud")
+            msg["From"] = cfg.get("from_addr", "info@dchub.cloud")
             msg["To"] = cfg.get("to_addr", "jonathan@dchub.cloud")
 
             with smtplib.SMTP(
@@ -653,7 +653,7 @@ alert_manager = AlertManager(
     # email_config={
     #     "smtp_host": "smtp.gmail.com",
     #     "smtp_port": 587,
-    #     "from_addr": "alerts@dchub.cloud",
+    #     "from_addr": "info@dchub.cloud",
     #     "to_addr": "jonathan@dchub.cloud",
     #     "password": os.environ.get("EMAIL_ALERT_PASSWORD"),
     # }

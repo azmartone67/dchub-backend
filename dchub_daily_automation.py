@@ -19,7 +19,7 @@ SETUP:
 
 REQUIRED ENV VARS:
   SENDGRID_API_KEY          - SendGrid API key for emails
-  SENDGRID_FROM_EMAIL       - Sender email (default: alerts@dchub.cloud)
+  SENDGRID_FROM_EMAIL       - Sender email (default: info@dchub.cloud)
   LINKEDIN_ACCESS_TOKEN     - LinkedIn OAuth token
   LINKEDIN_ORG_ID           - LinkedIn organization/company page ID
   DAILY_ADMIN_KEY           - Secret key to authorize cron triggers
@@ -36,7 +36,7 @@ from flask import Blueprint, request, jsonify
 # CONFIG
 # ---------------------------------------------------------------------------
 SENDGRID_API_KEY = os.environ.get('SENDGRID_API_KEY', '')
-SENDGRID_FROM_EMAIL = os.environ.get('SENDGRID_FROM_EMAIL', 'alerts@dchub.cloud')
+SENDGRID_FROM_EMAIL = os.environ.get('SENDGRID_FROM_EMAIL', 'info@dchub.cloud')
 LINKEDIN_ACCESS_TOKEN = os.environ.get('LINKEDIN_ACCESS_TOKEN', '')
 LINKEDIN_ORG_ID = os.environ.get('LINKEDIN_ORG_ID', '')
 LINKEDIN_API_VERSION = '202601'  # Jan 2026 - current active version

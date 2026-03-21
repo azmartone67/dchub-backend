@@ -43,7 +43,7 @@ SMTP_PORT = int(os.environ.get('SMTP_PORT', '587'))
 SMTP_USER = os.environ.get('SMTP_USER', '')
 SMTP_PASS = os.environ.get('SMTP_PASS', '')
 
-FROM_EMAIL = os.environ.get('FROM_EMAIL', 'alerts@dchub.cloud')
+FROM_EMAIL = os.environ.get('FROM_EMAIL', 'info@dchub.cloud')
 FROM_NAME = os.environ.get('FROM_NAME', 'DC Hub Alerts')
 
 # =============================================================================
