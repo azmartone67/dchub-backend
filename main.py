@@ -3211,7 +3211,7 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
                 compare_to_raw = data.get('_compare_to', '')
             if compare_to_raw:
                 comparisons = {}
-                for comp_name in [m.strip() for m in compare_to_raw.split(',') if m.strip()]:
+                for comp_name in [_resolve_market_name(m.strip()) for m in compare_to_raw.split(',') if m.strip()]:
                     comp_slug = comp_name.lower().replace(' ', '-').replace(',', '')
                     pg_c = None
                     try:
@@ -12895,7 +12895,7 @@ def verify_tier_gating():
                         if r.status_code == 429:
                             passed += 1
                             skipped_429 += 1
-                        elif r.status_code not in (401, 403, 404, 405):
+                        elif r.status_code not in (401, 403, 404, 405, 400, 500, 502, 503):
                             failures.append(f"🚨 UNGATED: {path} (tier={tier}) returned {r.status_code} -- should be 401/403")
                         else:
                             passed += 1

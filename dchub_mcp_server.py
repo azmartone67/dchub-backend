@@ -104,6 +104,23 @@ def _api_get(path: str, params: dict = None) -> dict:
         return {"error": str(e), "path": path}
 
 
+
+# Market name aliases
+MARKET_ALIASES = {
+    'northern virginia': 'Ashburn', 'nova': 'Ashburn', 'n. virginia': 'Ashburn',
+    'n virginia': 'Ashburn', 'loudoun': 'Ashburn', 'data center alley': 'Ashburn',
+    'dmv': 'Ashburn', 'silicon valley': 'Santa Clara', 'bay area': 'San Jose',
+    'sf bay': 'San Jose', 'dfw': 'Dallas', 'dallas-fort worth': 'Dallas',
+    'dallas fort worth': 'Dallas', 'nyc': 'New York', 'new york city': 'New York',
+    'la': 'Los Angeles', 'socal': 'Los Angeles', 'rdu': 'Raleigh',
+    'research triangle': 'Raleigh', 'puget sound': 'Seattle', 'pnw': 'Seattle',
+    'pacific northwest': 'Seattle', 'twin cities': 'Minneapolis',
+    'south florida': 'Miami', 'hk': 'Hong Kong', 'sg': 'Singapore',
+}
+def _resolve_market(name):
+    if not name: return name
+    return MARKET_ALIASES.get(name.strip().lower(), name.strip())
+
 def _track(tool_name: str, params: dict):
     """Log MCP tool invocations for analytics."""
     entry = {
@@ -332,8 +349,8 @@ async def get_market_intel(
     if not market:
         return json.dumps({"error": "market parameter is required"})
     params = {k: v for k, v in {
-        "market": market, "metric": metric, "period": period,
-        "compare": compare_to,
+        "market": _resolve_market(market), "metric": metric, "period": period,
+        "compare": ",".join(_resolve_market(m) for m in compare_to.split(",") if m.strip()) if compare_to else "",
     }.items() if v}
     _track("get_market_intel", params)
     market_slug = market.lower().replace(" ", "-").replace(",", "")
@@ -341,7 +358,7 @@ async def get_market_intel(
     # Handle compare_to: fetch each comparison market and merge
     if compare_to:
         comparisons = {}
-        for comp_market in [m.strip() for m in compare_to.split(",") if m.strip()]:
+        for comp_market in [_resolve_market(m.strip()) for m in compare_to.split(",") if m.strip()]:
             comp_slug = comp_market.lower().replace(" ", "-").replace(",", "")
             comp_result = _api_get(f"/api/v1/markets/{comp_slug}", {"period": period})
             comparisons[comp_market] = {
