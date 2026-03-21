@@ -85,8 +85,8 @@ def _init_tables():
             icon_url TEXT DEFAULT '',
             auto_registered INTEGER DEFAULT 0,
             status TEXT DEFAULT 'active',
-            registered_at TEXT DEFAULT (datetime('now')),
-            last_seen TEXT DEFAULT (datetime('now')),
+            registered_at TEXT DEFAULT (NOW()),
+            last_seen TEXT DEFAULT (NOW()),
             metadata TEXT DEFAULT '{}'
         )
     """)
@@ -104,8 +104,8 @@ def _init_tables():
             winner_label TEXT,
             api_calls INTEGER DEFAULT 0,
             status TEXT DEFAULT 'active',
-            created_at TEXT DEFAULT (datetime('now')),
-            updated_at TEXT DEFAULT (datetime('now'))
+            created_at TEXT DEFAULT (NOW()),
+            updated_at TEXT DEFAULT (NOW())
         )
     """)
 
@@ -135,7 +135,7 @@ def _init_tables():
             battle_id TEXT NOT NULL,
             platform TEXT NOT NULL,
             voter_ip TEXT,
-            created_at TEXT DEFAULT (datetime('now')),
+            created_at TEXT DEFAULT (NOW()),
             UNIQUE(battle_id, voter_ip)
         )
     """)
@@ -152,7 +152,7 @@ def _init_tables():
             avg_citation REAL DEFAULT 0,
             avg_insight REAL DEFAULT 0,
             overall_score REAL DEFAULT 0,
-            updated_at TEXT DEFAULT (datetime('now'))
+            updated_at TEXT DEFAULT (NOW())
         )
     """)
 
