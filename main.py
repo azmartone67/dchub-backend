@@ -3091,7 +3091,7 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
             finally:
                 if pg_r:
                     try:
-                        return_pg_connection(pg_r)
+                        pg_r.close()
                     except Exception:
                         pass
             # Fallback: if DB query returned nothing, use known PPA data
