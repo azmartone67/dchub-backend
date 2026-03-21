@@ -3206,6 +3206,27 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
                 }
             }
             # Compare_to: query DB directly (MCP server can't reach localhost)
+
+            # Resolve common market names to DB city names
+            def _resolve_market_name(name):
+                _MARKET_NAME_MAP = {
+                    'northern virginia': 'Ashburn', 'nova': 'Ashburn',
+                    'n. virginia': 'Ashburn', 'n virginia': 'Ashburn',
+                    'loudoun': 'Ashburn', 'data center alley': 'Ashburn',
+                    'dmv': 'Ashburn', 'silicon valley': 'Santa Clara',
+                    'bay area': 'San Jose', 'sf bay': 'San Jose',
+                    'dfw': 'Dallas', 'dallas-fort worth': 'Dallas',
+                    'dallas fort worth': 'Dallas', 'nyc': 'New York',
+                    'new york city': 'New York', 'la': 'Los Angeles',
+                    'socal': 'Los Angeles', 'rdu': 'Raleigh',
+                    'research triangle': 'Raleigh', 'puget sound': 'Seattle',
+                    'pnw': 'Seattle', 'pacific northwest': 'Seattle',
+                    'twin cities': 'Minneapolis', 'south florida': 'Miami',
+                }
+                if not name: return name
+                return _MARKET_NAME_MAP.get(name.strip().lower(), name.strip())
+
+
             compare_to_raw = (tool_params or {}).get('arguments', {}).get('compare_to', '') if isinstance(tool_params, dict) else ''
             if not compare_to_raw and isinstance(data, dict):
                 compare_to_raw = data.get('_compare_to', '')
