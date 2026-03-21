@@ -8572,12 +8572,14 @@ def search_facilities():
         except Exception:
             pass
 
-        return jsonify({
+        _result = {
             'success': True,
             'query': query or operator or city or state or country,
             'count': len(facilities),
             'data': facilities
-        })
+        }
+        cache_set(_cache_key, _result, ttl=120)
+        return jsonify(_result)
     except Exception as e:
         import traceback
         logger.error(f"search_facilities error: {traceback.format_exc()}")
