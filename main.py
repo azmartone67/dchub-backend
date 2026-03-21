@@ -3075,10 +3075,10 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
                     _re_where.append("UPPER(state) = UPPER(%s)")
                     _re_params.append(_re_state)
                 if _re_type and _re_type not in ('combined', ''):
-                    _re_where.append("LOWER(energy_type) = LOWER(%s)")
+                    _re_where.append("LOWER(COALESCE(energy_type, type)) = LOWER(%s)")
                     _re_params.append(_re_type)
                 _re_clause = " AND ".join(_re_where) if _re_where else "1=1"
-                rc.execute(f"SELECT buyer, capacity_mw, energy_type, state FROM energy_ppas WHERE {_re_clause} ORDER BY capacity_mw DESC LIMIT 5", _re_params)
+                rc.execute(f"SELECT buyer, capacity_mw, COALESCE(energy_type, type) as energy_type, state FROM energy_ppas WHERE {_re_clause} ORDER BY capacity_mw DESC LIMIT 5", _re_params)
                 rows = rc.fetchall()
                 for r in rows:
                     ppa_preview.append({'buyer': r[0], 'capacity_mw': r[1], 'type': r[2], 'state': r[3]})
