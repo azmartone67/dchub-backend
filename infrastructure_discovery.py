@@ -7,6 +7,11 @@ All reads/writes go to PostgreSQL via db_utils.
 import requests
 import json
 import logging
+try:
+    from redis_cache import cache_get, cache_set
+except ImportError:
+    cache_get = lambda k: None
+    cache_set = lambda k, v, ttl=300: None
 from datetime import datetime, timedelta
 from threading import Thread
 import time
@@ -1552,15 +1557,23 @@ def register_infrastructure_routes(app, start_scheduler=True):
 
     @bp.route('/api/infrastructure/substations')
     def get_substations():
+        _cached = cache_get("infra:substations")
+        if _cached is not None:
+            return jsonify(_cached)
         conn = get_db()
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM substations WHERE voltage_kv > 69 OR voltage_kv IS NULL OR voltage_kv = 0 ORDER BY voltage_kv DESC LIMIT 100")
         substations = [dict(row) for row in cursor.fetchall()]
         conn.close()
-        return jsonify({"success": True, "data": substations, "count": len(substations)})
+        _result = {"success": True, "data": substations, "count": len(substations)}
+        cache_set("infra:substations", _result, ttl=600)
+        return jsonify(_result)
 
     @bp.route('/api/infrastructure/gas-pipelines')
     def get_gas_pipelines():
+        _cached = cache_get("infra:gas_pipelines")
+        if _cached is not None:
+            return jsonify(_cached)
         conn = get_db()
         cursor = conn.cursor()
         try:
@@ -1569,7 +1582,9 @@ def register_infrastructure_routes(app, start_scheduler=True):
         except:
             pipelines = []
         conn.close()
-        return jsonify({"success": True, "data": pipelines, "count": len(pipelines)})
+        _result = {"success": True, "data": pipelines, "count": len(pipelines)}
+        cache_set("infra:gas_pipelines", _result, ttl=600)
+        return jsonify(_result)
 
     @bp.route('/api/infrastructure/weekly-digest')
     def get_weekly_digest():
