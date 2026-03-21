@@ -9552,6 +9552,7 @@ def api_transactions_alias():
 @app.route('/api/news', methods=['GET'])
 def api_news_alias():
     """Alias for /api/news-feed - frontend compatibility"""
+    from routes.deals_routes import get_news_feed
     return get_news_feed()
 
 @app.route('/api/agent/chat', methods=['POST'])
