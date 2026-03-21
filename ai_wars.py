@@ -427,13 +427,13 @@ def register_ai_wars_routes(app):
         params = []
 
         if category and category != 'all':
-            query += " AND category = ?"
+            query += " AND category = %s"
             params.append(category)
         if week:
-            query += " AND week_number = ?"
+            query += " AND week_number = %s"
             params.append(week)
 
-        query += " ORDER BY date DESC, created_at DESC LIMIT ?"
+        query += " ORDER BY date DESC, created_at DESC LIMIT %s"
         params.append(min(limit, 50))
 
         c.execute(query, params)
