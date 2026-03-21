@@ -7855,7 +7855,7 @@ def energy_discovery_status():
 
         # Energy PPAs
         try:
-            c.execute("SELECT COUNT(*), COALESCE(SUM(capacity_mw), 0) FROM energy_ppas")
+            c.execute("SELECT COUNT(*), COALESCE(SUM(power_mw), 0) FROM energy_ppas")
             row = c.fetchone()
             discovery['energy_ppas'] = {'count': row[0] or 0, 'total_mw': round(row[1] or 0, 1)}
         except:
