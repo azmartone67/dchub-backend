@@ -3063,7 +3063,7 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
             totals = (0, 0)
             pg_r = None
             try:
-                import psycopg2 as _rpg; logger.info('PPA_DIRECT_CONNECT'); pg_r = _rpg.connect(os.environ.get('DATABASE_URL') or os.environ.get('NEON_DATABASE_URL',''))
+                import psycopg2 as _rpg; logger.info('PPA_DIRECT_CONNECT'); pg_r = _rpg.connect(os.environ.get('NEON_DATABASE_URL') or os.environ.get('DATABASE_URL',''))
                 rc = pg_r.cursor()
                 # Read filters from tool INPUT arguments
                 _re_args = (tool_params or {}).get('arguments', {}) if isinstance(tool_params, dict) else {}
@@ -3086,7 +3086,8 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
                 totals = rc.fetchone() or (0, 0)
                 rc.close()
             except Exception as _ppa_err:
-                logger.error(f"PPA teaser query failed: {_ppa_err}")
+                import traceback as _tb
+                logger.error(f"PPA TEASER FAIL: {_ppa_err}\n{_tb.format_exc()}")
             finally:
                 if pg_r:
                     try:
