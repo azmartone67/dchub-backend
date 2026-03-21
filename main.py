@@ -8479,6 +8479,13 @@ def search_facilities():
     if not any([query, operator, city, state, country, min_mw, max_mw, tier]):
         return jsonify({'error': 'Provide at least one filter: q, operator, city, state, country, min_capacity_mw, tier'}), 400
 
+    # ── Redis cache for search results (120s TTL) ──
+    import hashlib as _hl
+    _cache_raw = f"search:{query}:{operator}:{city}:{state}:{country}:{min_mw}:{max_mw}:{tier}:{limit}:{offset}"
+    _cache_key = "search:" + _hl.md5(_cache_raw.encode()).hexdigest()
+    _cached = cache_get(_cache_key)
+    if _cached is not None:
+        return jsonify(_cached)
     conn = get_read_db()
     try:
         import psycopg2.extras
