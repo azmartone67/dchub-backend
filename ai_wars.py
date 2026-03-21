@@ -16,12 +16,15 @@ Endpoints created:
   GET  /api/v1/ai-wars/battles/<id>     - Single battle detail
   POST /api/v1/ai-wars/battles          - Create a battle (admin)
   GET  /api/v1/ai-wars/leaderboard      - Platform rankings
-  GET  /api/v1/ai-wars/h2h?a=claude&b=gemini  - Head-to-head comparison
+  GET  /api/v1/ai-wars/h2h%sa=claude&b=gemini  - Head-to-head comparison
   GET  /api/v1/ai-wars/platforms        - All platform stats
   POST /api/v1/ai-wars/battles/<id>/vote - Vote on a battle
 """
 
-import sqlite3
+import psycopg2
+import psycopg2.extras
+import psycopg2.errors
+import os
 import uuid
 import json
 import logging
@@ -29,7 +32,6 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-AI_WARS_DB = "ai_wars.db"
 
 # ─── Platform definitions ───
 PLATFORMS = {
@@ -63,18 +65,15 @@ CATEGORY_LABELS = {
 
 
 def _get_db():
-    """Get AI Wars database connection."""
-    conn = sqlite3.connect(AI_WARS_DB, timeout=10)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
+    """Get AI Wars database connection (Neon PostgreSQL)."""
+    conn = psycopg2.connect(os.environ.get("DATABASE_URL", ""))
     return conn
 
 
 def _init_tables():
     """Create AI Wars tables if they don't exist."""
     conn = _get_db()
-    c = conn.cursor()
+    c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS wars_platforms (
@@ -175,18 +174,19 @@ def _init_tables():
     if c.fetchone()[0] == 0:
         for key, info in PLATFORMS.items():
             c.execute("""
-                INSERT OR IGNORE INTO wars_platforms (platform, name, color, provider, auto_registered)
-                VALUES (?, ?, ?, ?, 0)
+                INSERT INTO wars_platforms (platform, name, color, provider, auto_registered)
+                VALUES (%s, %s, %s, %s, 0)
             """, (key, info['name'], info['color'], info['provider']))
         conn.commit()
 
+    conn.commit()
     conn.close()
     logger.info("⚔️ AI Wars tables initialized")
 
 
 def _seed_data(conn):
     """Seed initial battle data and platform stats."""
-    c = conn.cursor()
+    c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     now = datetime.now(timezone.utc).isoformat()
 
     # Seed platform stats
@@ -206,10 +206,10 @@ def _seed_data(conn):
     ]
     for s in seed_stats:
         c.execute("""
-            INSERT OR IGNORE INTO wars_platform_stats
+            INSERT INTO wars_platform_stats
             (platform, total_battles, total_wins, total_api_calls,
              avg_accuracy, avg_depth, avg_speed, avg_citation, avg_insight, overall_score, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (*s, now))
 
     # Seed battles
@@ -217,7 +217,7 @@ def _seed_data(conn):
         {
             'id': 'battle-wk6-site-selection',
             'category': 'site-selection',
-            'title': '500MW Hyperscaler: Where to Build?',
+            'title': '500MW Hyperscaler: Where to Build%s',
             'description': 'Seven AIs analyzed every US market for a massive hyperscale deployment. Each tackled a different angle — scanning, infrastructure, financials, risk, and European alternatives.',
             'date': '2026-02-10',
             'week_number': 6, 'year': 2026,
@@ -268,7 +268,7 @@ def _seed_data(conn):
         {
             'id': 'battle-wk6-stump-the-ai',
             'category': 'stump-the-ai',
-            'title': 'One Market, $1B — Where Would You Invest?',
+            'title': 'One Market, $1B — Where Would You Invest%s',
             'description': 'All 7 AIs answered the same question using DC Hub data. Each picked a different market. The community voted on who made the best case.',
             'date': '2026-02-10',
             'week_number': 6, 'year': 2026,
@@ -322,10 +322,10 @@ def _seed_data(conn):
     for b in battles:
         fighters = b.pop('fighters')
         c.execute("""
-            INSERT OR IGNORE INTO wars_battles
+            INSERT INTO wars_battles
             (id, category, title, description, date, week_number, year,
              winner_platform, winner_label, api_calls, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active', %s)
         """, (b['id'], b['category'], b['title'], b['description'],
               b['date'], b['week_number'], b['year'],
               b['winner_platform'], b['winner_label'], b['api_calls'], now))
@@ -333,11 +333,11 @@ def _seed_data(conn):
         for f in fighters:
             fid = f"fighter-{b['id']}-{f[0]}"
             c.execute("""
-                INSERT OR IGNORE INTO wars_fighters
+                INSERT INTO wars_fighters
                 (id, battle_id, platform, role,
                  score_accuracy, score_depth, score_speed, score_citation, score_insight, score_overall,
                  api_calls, pick, is_winner)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (fid, b['id'], f[0], f[1],
                   f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9],
                   1 if f[0] == b.get('winner_platform') else 0))
@@ -386,7 +386,7 @@ def register_ai_wars_routes(app):
         merged = dict(PLATFORMS)
         try:
             conn = _get_db()
-            c = conn.cursor()
+            c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
             c.execute("SELECT platform, name, color, provider, api_endpoint, icon_url, auto_registered, status, metadata FROM wars_platforms WHERE status = 'active'")
             for row in c.fetchall():
                 key = row['platform']
@@ -421,7 +421,7 @@ def register_ai_wars_routes(app):
         limit = request.args.get('limit', 20, type=int)
 
         conn = _get_db()
-        c = conn.cursor()
+        c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
         query = "SELECT * FROM wars_battles WHERE status = 'active'"
         params = []
@@ -444,7 +444,7 @@ def register_ai_wars_routes(app):
             c.execute("""
                 SELECT platform, role, score_overall, score_accuracy, score_depth,
                        score_speed, score_citation, score_insight, api_calls, pick, is_winner
-                FROM wars_fighters WHERE battle_id = ?
+                FROM wars_fighters WHERE battle_id = %s
                 ORDER BY score_overall DESC
             """, (b['id'],))
             b['fighters'] = [dict(row) for row in c.fetchall()]
@@ -452,7 +452,7 @@ def register_ai_wars_routes(app):
             # Attach vote counts
             c.execute("""
                 SELECT platform, COUNT(*) as votes
-                FROM wars_votes WHERE battle_id = ?
+                FROM wars_votes WHERE battle_id = %s
                 GROUP BY platform ORDER BY votes DESC
             """, (b['id'],))
             b['votes'] = dict(c.fetchall())
@@ -472,9 +472,9 @@ def register_ai_wars_routes(app):
         """Get a single battle with full fighter details."""
         ensure_tables()
         conn = _get_db()
-        c = conn.cursor()
+        c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-        c.execute("SELECT * FROM wars_battles WHERE id = ?", (battle_id,))
+        c.execute("SELECT * FROM wars_battles WHERE id = %s", (battle_id,))
         battle = c.fetchone()
         if not battle:
             conn.close()
@@ -483,14 +483,14 @@ def register_ai_wars_routes(app):
         battle = dict(battle)
 
         c.execute("""
-            SELECT * FROM wars_fighters WHERE battle_id = ?
+            SELECT * FROM wars_fighters WHERE battle_id = %s
             ORDER BY score_overall DESC
         """, (battle_id,))
         battle['fighters'] = [dict(row) for row in c.fetchall()]
 
         c.execute("""
             SELECT platform, COUNT(*) as votes
-            FROM wars_votes WHERE battle_id = ?
+            FROM wars_votes WHERE battle_id = %s
             GROUP BY platform ORDER BY votes DESC
         """, (battle_id,))
         battle['votes'] = dict(c.fetchall())
@@ -513,14 +513,14 @@ def register_ai_wars_routes(app):
         now = datetime.now(timezone.utc).isoformat()
 
         conn = _get_db()
-        c = conn.cursor()
+        c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
         try:
             c.execute("""
                 INSERT INTO wars_battles
                 (id, category, title, description, date, week_number, year,
                  winner_platform, winner_label, api_calls, status, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active', %s)
             """, (
                 battle_id,
                 data.get('category', 'stump-the-ai'),
@@ -543,7 +543,7 @@ def register_ai_wars_routes(app):
                     (id, battle_id, platform, role,
                      score_accuracy, score_depth, score_speed, score_citation,
                      score_insight, score_overall, api_calls, pick, is_winner)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """, (
                     fid, battle_id, f['platform'], f.get('role'),
                     f.get('score_accuracy', 0), f.get('score_depth', 0),
@@ -582,17 +582,17 @@ def register_ai_wars_routes(app):
         vote_id = f"vote-{battle_id}-{voter_ip}"
 
         conn = _get_db()
-        c = conn.cursor()
+        c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
         try:
             c.execute("""
                 INSERT INTO wars_votes (id, battle_id, platform, voter_ip)
-                VALUES (?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s)
             """, (vote_id, battle_id, platform, voter_ip))
             conn.commit()
             conn.close()
             return jsonify({'success': True, 'message': 'Vote recorded'})
-        except sqlite3.IntegrityError:
+        except psycopg2.errors.UniqueViolation:
             conn.close()
             return jsonify({'success': False, 'error': 'Already voted on this battle'}), 409
 
@@ -602,7 +602,7 @@ def register_ai_wars_routes(app):
         """Get platform leaderboard ranked by overall score."""
         ensure_tables()
         conn = _get_db()
-        c = conn.cursor()
+        c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         all_platforms = get_all_platforms()
 
         c.execute("""
@@ -640,12 +640,12 @@ def register_ai_wars_routes(app):
             return jsonify({'success': False, 'error': f'Unknown platform. Use GET /api/v1/ai-wars/platforms to see available platforms.'}), 400
 
         conn = _get_db()
-        c = conn.cursor()
+        c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
         # Get platform stats
-        c.execute("SELECT * FROM wars_platform_stats WHERE platform = ?", (a,))
+        c.execute("SELECT * FROM wars_platform_stats WHERE platform = %s", (a,))
         stats_a = dict(c.fetchone() or {})
-        c.execute("SELECT * FROM wars_platform_stats WHERE platform = ?", (b,))
+        c.execute("SELECT * FROM wars_platform_stats WHERE platform = %s", (b,))
         stats_b = dict(c.fetchone() or {})
 
         # Find shared battles and compute H2H record
@@ -657,7 +657,7 @@ def register_ai_wars_routes(app):
                    f2.is_winner AS winner_b
             FROM wars_fighters f1
             JOIN wars_fighters f2 ON f1.battle_id = f2.battle_id
-            WHERE f1.platform = ? AND f2.platform = ?
+            WHERE f1.platform = %s AND f2.platform = %s
         """, (a, b))
 
         shared_battles = c.fetchall()
@@ -762,23 +762,23 @@ def register_ai_wars_routes(app):
             return jsonify({'success': False, 'error': 'Invalid platform slug'}), 400
 
         conn = _get_db()
-        c = conn.cursor()
+        c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         now = datetime.now(timezone.utc).isoformat()
 
         try:
             # Check if already exists
-            c.execute("SELECT platform, status FROM wars_platforms WHERE platform = ?", (slug,))
+            c.execute("SELECT platform, status FROM wars_platforms WHERE platform = %s", (slug,))
             existing = c.fetchone()
 
             if existing:
                 # Update last_seen and reactivate if needed
                 c.execute("""
-                    UPDATE wars_platforms SET last_seen = ?, status = 'active',
-                    name = COALESCE(?, name), color = COALESCE(?, color),
-                    provider = COALESCE(?, provider),
-                    api_endpoint = COALESCE(?, api_endpoint),
-                    icon_url = COALESCE(?, icon_url)
-                    WHERE platform = ?
+                    UPDATE wars_platforms SET last_seen = %s, status = 'active',
+                    name = COALESCE(%s, name), color = COALESCE(%s, color),
+                    provider = COALESCE(%s, provider),
+                    api_endpoint = COALESCE(%s, api_endpoint),
+                    icon_url = COALESCE(%s, icon_url)
+                    WHERE platform = %s
                 """, (now, data.get('name'), data.get('color'), data.get('provider'),
                       data.get('api_endpoint'), data.get('icon_url'), slug))
                 conn.commit()
@@ -799,17 +799,17 @@ def register_ai_wars_routes(app):
             c.execute("""
                 INSERT INTO wars_platforms
                 (platform, name, color, provider, api_endpoint, icon_url, auto_registered, status, registered_at, last_seen, metadata)
-                VALUES (?, ?, ?, ?, ?, ?, 1, 'pending', ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, 1, 'pending', %s, %s, %s)
             """, (slug, data['name'], data.get('color', '#666666'), data.get('provider', ''),
                   data.get('api_endpoint', ''), data.get('icon_url', ''),
                   now, now, metadata))
 
             # Create initial platform stats entry
             c.execute("""
-                INSERT OR IGNORE INTO wars_platform_stats
+                INSERT INTO wars_platform_stats
                 (platform, total_battles, total_wins, total_api_calls,
                  avg_accuracy, avg_depth, avg_speed, avg_citation, avg_insight, overall_score, updated_at)
-                VALUES (?, 0, 0, 0, 0, 0, 0, 0, 0, 0, ?)
+                VALUES (%s, 0, 0, 0, 0, 0, 0, 0, 0, 0, %s)
             """, (slug, now))
 
             conn.commit()
@@ -859,14 +859,14 @@ def register_ai_wars_routes(app):
 
         slug = ''.join(c for c in platform if c.isalnum() or c == '-')[:32]
         conn = _get_db()
-        c = conn.cursor()
+        c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         now = datetime.now(timezone.utc).isoformat()
 
-        c.execute("SELECT platform FROM wars_platforms WHERE platform = ?", (slug,))
+        c.execute("SELECT platform FROM wars_platforms WHERE platform = %s", (slug,))
         exists = c.fetchone()
 
         if exists:
-            c.execute("UPDATE wars_platforms SET last_seen = ? WHERE platform = ?", (now, slug))
+            c.execute("UPDATE wars_platforms SET last_seen = %s WHERE platform = %s", (now, slug))
             conn.commit()
             conn.close()
             return jsonify({'success': True, 'platform': slug, 'status': 'active'})
@@ -876,15 +876,15 @@ def register_ai_wars_routes(app):
         c.execute("""
             INSERT INTO wars_platforms
             (platform, name, color, provider, auto_registered, status, registered_at, last_seen, metadata)
-            VALUES (?, ?, ?, ?, 1, 'pending', ?, ?, ?)
+            VALUES (%s, %s, %s, %s, 1, 'pending', %s, %s, %s)
         """, (slug, name, data.get('color', '#666666'), data.get('provider', ''),
               now, now, json.dumps({'auto_detected': True, 'user_agent': ua[:200]})))
 
         c.execute("""
-            INSERT OR IGNORE INTO wars_platform_stats
+            INSERT INTO wars_platform_stats
             (platform, total_battles, total_wins, total_api_calls,
              avg_accuracy, avg_depth, avg_speed, avg_citation, avg_insight, overall_score, updated_at)
-            VALUES (?, 0, 0, 0, 0, 0, 0, 0, 0, 0, ?)
+            VALUES (%s, 0, 0, 0, 0, 0, 0, 0, 0, 0, %s)
         """, (slug, now))
 
         conn.commit()
@@ -905,7 +905,7 @@ def register_ai_wars_routes(app):
         """Get all platform definitions and stats (built-in + registered)."""
         ensure_tables()
         conn = _get_db()
-        c = conn.cursor()
+        c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
         all_platforms = get_all_platforms()
 
@@ -941,7 +941,7 @@ def register_ai_wars_routes(app):
 
 def _recalculate_platform_stats(conn):
     """Recalculate platform aggregate stats from fighter data."""
-    c = conn.cursor()
+    c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     now = datetime.now(timezone.utc).isoformat()
 
     for platform in PLATFORMS:
@@ -955,7 +955,7 @@ def _recalculate_platform_stats(conn):
                    AVG(score_citation) as cit,
                    AVG(score_insight) as ins,
                    AVG(score_overall) as ovr
-            FROM wars_fighters WHERE platform = ?
+            FROM wars_fighters WHERE platform = %s
         """, (platform,))
         row = c.fetchone()
 
@@ -965,7 +965,7 @@ def _recalculate_platform_stats(conn):
                 (platform, total_battles, total_wins, total_api_calls,
                  avg_accuracy, avg_depth, avg_speed, avg_citation, avg_insight,
                  overall_score, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT(platform) DO UPDATE SET
                     total_battles = excluded.total_battles,
                     total_wins = excluded.total_wins,
