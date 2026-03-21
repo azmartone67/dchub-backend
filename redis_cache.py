@@ -86,12 +86,43 @@ def register_cache_routes(app):
         return jsonify({"purged": count})
 
 def cached_response(ttl=300, key_prefix="api"):
-    """No-op decorator when Redis isn't wired yet."""
+    """Flask route decorator that caches JSON responses in Redis."""
     import functools
+    import hashlib
+    from flask import request, jsonify
     def decorator(f):
         @functools.wraps(f)
         def wrapper(*args, **kwargs):
-            return f(*args, **kwargs)
+            # Skip cache for authenticated/admin requests
+            if request.headers.get('Authorization') or request.headers.get('X-Admin-Key'):
+                return f(*args, **kwargs)
+            # Build cache key from route + query params
+            args_str = json.dumps(dict(sorted(request.args.items())))
+            raw_key = f"{key_prefix}:{request.path}:{args_str}"
+            cache_key = hashlib.md5(raw_key.encode()).hexdigest()
+            # Try cache
+            cached = cache_get(cache_key)
+            if cached is not None:
+                resp = jsonify(cached)
+                resp.headers['X-Cache'] = 'HIT'
+                return resp
+            # Cache miss — run actual function
+            result = f(*args, **kwargs)
+            # Store result in cache
+            try:
+                if hasattr(result, 'get_json'):
+                    data = result.get_json()
+                elif isinstance(result, dict):
+                    data = result
+                elif isinstance(result, tuple) and isinstance(result[0], dict):
+                    data = result[0]
+                else:
+                    data = None
+                if data:
+                    cache_set(cache_key, data, ttl)
+            except Exception:
+                pass
+            return result
         return wrapper
     return decorator
 
