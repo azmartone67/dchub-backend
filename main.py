@@ -13618,7 +13618,7 @@ def api_site_score():
                         result["eia_natural_gas"] = _pd.get("natural_gas", {})
                         result["eia_gas_storage"] = _pd.get("gas_storage")
             if lat and lon:
-                _url = _base + "/api/v1/connectivity/site-connectivity?lat=" + str(lat) + "\&lng=" + str(lon) + "\&state=" + _st + "\&radius=50"
+                _url = _base + "/api/v1/connectivity/site-connectivity?lat=" + str(lat) + "&lng=" + str(lon) + "&state=" + _st + "&radius=50"
                 _cr = _req.get(_url, timeout=5)
                 if _cr.status_code == 200:
                     _cd = _cr.json()
