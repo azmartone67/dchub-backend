@@ -8013,7 +8013,7 @@ def get_stats():
         stats['pipeline_gw'] = round((pipeline_row[1] or 0) / 1000, 1)
 
         try:
-            c.execute("SELECT COUNT(*), COALESCE(SUM(power_mw),0) FROM capacity_pipeline")
+            c.execute("SELECT COUNT(*), COALESCE(SUM(capacity_mw),0) FROM capacity_pipeline")
             cp = c.fetchone()
             stats['curated_pipeline_count'] = cp[0] or 0
             stats['curated_pipeline_gw'] = round((cp[1] or 0) / 1000, 1)
@@ -13097,7 +13097,7 @@ def _startup_health_check():
     for attempt in range(1, 11):
         try:
             import requests as _req
-            r = _req.get(f"http://localhost:{os.environ.get('PORT', '8080')}/health", timeout=5)
+            r = _req.get(f"http://localhost:5000/api/v1/stats", timeout=5)
             if r.status_code == 200:
                 logger.info("STARTUP HEALTH CHECK: OK on attempt %d (%0.2fs)", attempt, r.elapsed.total_seconds())
                 return
