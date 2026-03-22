@@ -570,6 +570,10 @@ def _run_battle(question, category, fighters_config=None, api_base='https://dchu
                      If None, uses all active platforms with API endpoints.
     """
     conn = _get_db()
+    try:
+        conn.rollback()  # Clear any stale aborted transaction
+    except Exception:
+        pass
     c = conn.cursor()
 
     # Get active platforms
