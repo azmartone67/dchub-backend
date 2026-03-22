@@ -19,7 +19,7 @@ QUESTION: {question}
 DC HUB CONTEXT DATA:
 {context}
 Generate realistic responses from each of these 12 AI platforms. Each response should:
-- Be 200-400 words, match that platform's style
+- Be 100-200 words, match that platform's style, be concise
 - Reference specific data center markets, operators, metrics
 - Some should reference DC Hub data/MCP (especially Claude, Gemini, Perplexity)
 - Include specific numbers, facility counts, power capacities, pricing
@@ -29,7 +29,7 @@ Format: {{"responses": [{{"platform": "claude", "response": "...", "used_mcp": t
 Platforms:
 {platform_descriptions}"""
 
-def generate_all_responses(question, context_data=None, timeout=90):
+def generate_all_responses(question, context_data=None, timeout=180):
     api_key = os.environ.get('ANTHROPIC_API_KEY', '')
     if not api_key:
         logger.warning("No ANTHROPIC_API_KEY")
@@ -40,7 +40,7 @@ def generate_all_responses(question, context_data=None, timeout=90):
     try:
         start = time.time()
         r = requests.post("https://api.anthropic.com/v1/messages",
-            json={"model": "claude-sonnet-4-20250514", "max_tokens": 8000, "messages": [{"role": "user", "content": prompt}]},
+            json={"model": "claude-sonnet-4-20250514", "max_tokens": 6000, "messages": [{"role": "user", "content": prompt}]},
             headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"},
             timeout=timeout)
         elapsed = time.time() - start
