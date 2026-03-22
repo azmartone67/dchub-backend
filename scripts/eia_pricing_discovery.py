@@ -104,7 +104,7 @@ def fetch_electricity_rates(conn):
             "facets[sectorid][]": sector,
             "sort[0][column]": "period",
             "sort[0][direction]": "desc",
-            "length": 5000,  # Get all states at once, last ~100 months
+            "length": 500,  # Smaller batches to avoid EIA 504 timeouts
             "offset": 0
         })
         
