@@ -255,13 +255,15 @@ def _get_usage_boost(platform_key, context):
         'copilot': ['bingbot', 'BingPreview', 'Copilot'],
         'perplexity': ['PerplexityBot', 'perplexity'],
         'deepseek': ['DeepSeek', 'deepseek'],
-        'meta': ['meta-externalagent', 'Meta', 'FacebookBot'],
+        'meta_ai': ['meta-externalagent', 'Meta', 'FacebookBot'],
         'cohere': ['cohere', 'CohereBot'],
         'mistral': ['MistralBot', 'mistral'],
         'you': ['YouBot', 'you.com'],
         'huggingchat': ['HuggingFace', 'huggingchat'],
         'cursor': ['Cursor', 'cursor'],
         'windsurf': ['Windsurf', 'windsurf', 'Codeium'],
+        'groq': ['Groq', 'groq'],
+        'amazon_q': ['AmazonBot', 'Amazon', 'aws'],
     }
 
     crawlers = PLATFORM_CRAWLER_MAP.get(platform_key, [])
@@ -474,6 +476,10 @@ def _call_platform_api(platform_key, prompt, max_tokens=1000):
         'groq':       _call_groq,
         'cursor':     _call_mcp_native,  # MCP-native adapter
         'windsurf':   _call_mcp_native,  # MCP-native adapter
+        'amazon_q':   _call_amazon_q,
+        'meta_ai':    _call_meta_ai,
+        'you':        _call_you,
+        'copilot':    _call_copilot,
     }
 
     adapter = adapters.get(platform_key)
@@ -484,6 +490,8 @@ def _call_platform_api(platform_key, prompt, max_tokens=1000):
         start = time.time()
         if platform_key in ('cursor', 'windsurf'):
             result = adapter(platform_key, prompt, max_tokens)
+        elif platform_key == 'amazon_q':
+            result = adapter(prompt, max_tokens)
         else:
             result = adapter(prompt, max_tokens)
         elapsed = time.time() - start
@@ -795,6 +803,114 @@ def _call_mcp_native(platform_key, prompt, max_tokens=1000):
 
     logger.warning(f"MCP-native ({platform_key}) {r.status_code}: {r.text[:200]}")
     return "", False
+
+
+def _call_amazon_q(prompt, max_tokens=1000):
+    """Amazon Q / Bedrock API (Nova Lite for cost efficiency).
+    Uses Bedrock's converse API. Requires AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY + AWS_REGION."""
+    access_key = os.environ.get('AWS_ACCESS_KEY_ID', '')
+    secret_key = os.environ.get('AWS_SECRET_ACCESS_KEY', '')
+    region = os.environ.get('AWS_REGION', 'us-east-1')
+    if not access_key or not secret_key:
+        return ""
+
+    # Use boto3 if available, otherwise skip
+    try:
+        import boto3
+        client = boto3.client('bedrock-runtime', region_name=region,
+                              aws_access_key_id=access_key, aws_secret_access_key=secret_key)
+        response = client.converse(
+            modelId='amazon.nova-lite-v1:0',
+            messages=[{'role': 'user', 'content': [{'text': f"{SYSTEM_PROMPT}\n\n{prompt}"}]}],
+            inferenceConfig={'maxTokens': max_tokens, 'temperature': 0.7},
+        )
+        output = response.get('output', {}).get('message', {}).get('content', [])
+        return output[0].get('text', '') if output else ''
+    except ImportError:
+        logger.warning("boto3 not installed — Amazon Q adapter unavailable")
+        return ""
+    except Exception as e:
+        logger.warning(f"Amazon Q: {e}")
+        return ""
+
+
+def _call_meta_ai(prompt, max_tokens=1000):
+    """Meta AI / Llama — via Together AI inference API (OpenAI-compatible).
+    Set TOGETHER_API_KEY in Railway Variables."""
+    key = os.environ.get('TOGETHER_API_KEY', '')
+    if not key:
+        return ""
+
+    import requests
+    r = requests.post('https://api.together.xyz/v1/chat/completions',
+        headers={'Authorization': f'Bearer {key}', 'Content-Type': 'application/json'},
+        json={
+            'model': 'meta-llama/Llama-3.3-70B-Instruct-Turbo',
+            'messages': [
+                {'role': 'system', 'content': SYSTEM_PROMPT},
+                {'role': 'user', 'content': prompt},
+            ],
+            'max_tokens': max_tokens,
+            'temperature': 0.7,
+        },
+        timeout=30,
+    )
+    if r.ok:
+        data = r.json()
+        return data.get('choices', [{}])[0].get('message', {}).get('content', '')
+    logger.warning(f"Meta AI (Together) {r.status_code}: {r.text[:200]}")
+    return ""
+
+
+def _call_you(prompt, max_tokens=1000):
+    """You.com API (Smart mode — web-grounded)."""
+    key = os.environ.get('YOU_API_KEY', '')
+    if not key:
+        return ""
+
+    import requests
+    r = requests.post('https://chat-api.you.com/smart',
+        headers={'X-API-Key': key, 'Content-Type': 'application/json'},
+        json={
+            'query': f"{SYSTEM_PROMPT}\n\n{prompt}",
+            'chat_mode': 'research',
+        },
+        timeout=30,
+    )
+    if r.ok:
+        data = r.json()
+        return data.get('answer', '') or data.get('response', '')
+    logger.warning(f"You.com {r.status_code}: {r.text[:200]}")
+    return ""
+
+
+def _call_copilot(prompt, max_tokens=1000):
+    """Microsoft Copilot — uses OpenAI API (same key, Azure-hosted GPT-4o-mini)."""
+    # Copilot doesn't have a public chat API, so we use OpenAI as proxy
+    # (Microsoft's models are GPT-based anyway)
+    key = os.environ.get('OPENAI_API_KEY', '')
+    if not key:
+        return ""
+
+    import requests
+    r = requests.post('https://api.openai.com/v1/chat/completions',
+        headers={'Authorization': f'Bearer {key}', 'Content-Type': 'application/json'},
+        json={
+            'model': 'gpt-4o-mini',
+            'messages': [
+                {'role': 'system', 'content': SYSTEM_PROMPT + "\nYou are responding as Microsoft Copilot."},
+                {'role': 'user', 'content': prompt},
+            ],
+            'max_tokens': max_tokens,
+            'temperature': 0.7,
+        },
+        timeout=30,
+    )
+    if r.ok:
+        data = r.json()
+        return data.get('choices', [{}])[0].get('message', {}).get('content', '')
+    logger.warning(f"Copilot (via OpenAI) {r.status_code}: {r.text[:200]}")
+    return ""
 
 
 # =============================================================================
@@ -1498,11 +1614,18 @@ def register_wars_automation(app):
         # Available API keys
         available_keys = []
         key_map = {
-            'ANTHROPIC_API_KEY': 'Claude', 'OPENAI_API_KEY': 'ChatGPT',
-            'GOOGLE_AI_KEY': 'Gemini', 'XAI_API_KEY': 'Grok',
-            'DEEPSEEK_API_KEY': 'DeepSeek', 'MISTRAL_API_KEY': 'Mistral',
-            'COHERE_API_KEY': 'Cohere', 'PERPLEXITY_API_KEY': 'Perplexity',
+            'ANTHROPIC_API_KEY': 'Claude (+ Cursor + Windsurf)',
+            'OPENAI_API_KEY': 'ChatGPT (+ Copilot)',
+            'GOOGLE_AI_KEY': 'Gemini',
+            'XAI_API_KEY': 'Grok',
+            'DEEPSEEK_API_KEY': 'DeepSeek',
+            'MISTRAL_API_KEY': 'Mistral',
+            'COHERE_API_KEY': 'Cohere',
+            'PERPLEXITY_API_KEY': 'Perplexity',
             'GROQ_API_KEY': 'Groq',
+            'TOGETHER_API_KEY': 'Meta AI (Llama)',
+            'YOU_API_KEY': 'You.com',
+            'AWS_ACCESS_KEY_ID': 'Amazon Q (Bedrock)',
         }
         for env_var, name in key_map.items():
             if os.environ.get(env_var):
