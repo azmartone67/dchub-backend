@@ -145,10 +145,13 @@ def _row_to_dict(cursor, row):
         return dict(row) if hasattr(row, 'keys') else {}
 
 def _get_db():
-    """Get Neon PostgreSQL connection for AI Wars."""
+    """Get fresh Neon PostgreSQL connection for AI Wars (bypasses pool)."""
+    import psycopg2, psycopg2.extras
     try:
-        from db_utils import get_db
-        return get_db()
+        db_url = os.environ.get('DATABASE_URL', '')
+        conn = psycopg2.connect(db_url, cursor_factory=psycopg2.extras.RealDictCursor)
+        conn.autocommit = False
+        return conn
     except Exception as e:
         logger.error(f"AI Wars DB connection error: {e}")
         raise
