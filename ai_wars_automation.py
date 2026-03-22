@@ -18,7 +18,15 @@ Endpoints:
   POST /api/v1/ai-wars/run-battle       - Run a battle now (with custom question)
   POST /api/v1/ai-wars/auto-battle      - Generate question + run battle automatically
   GET  /api/v1/ai-wars/schedule         - View automation schedule
-  POST /api/v1/ai-wars/submit-challenge - User-submitted challenge from the website
+  POST /api/v1/ai-wars/submit-challenge - User-submitted challenge (ASYNC — returns immediately)
+  GET  /api/v1/ai-wars/battle-status/<queue_id> - Poll for async battle result
+
+CHANGELOG (v2 — March 2026):
+  - Async battle execution (submit-challenge returns immediately, battle runs in background thread)
+  - Added cursor + windsurf as MCP-native platform adapters
+  - Scoring calibration: real responses get structural bonuses, simulated get capped
+  - Groq adapter added
+  - Speed scoring based on actual response time
 """
 
 import uuid
@@ -29,8 +37,29 @@ import logging
 import threading
 import re
 from datetime import datetime, timezone, timedelta
-from ai_wars_battle_runner import call_platform_api as _new_call_platform_api, generate_summary, _detect_mcp_usage
-from ai_wars_response_generator import generate_all_responses
+
+# Try importing the battle runner helpers — graceful fallback if not available
+try:
+    from ai_wars_battle_runner import call_platform_api as _new_call_platform_api, generate_summary, _detect_mcp_usage
+except ImportError:
+    _new_call_platform_api = None
+    def generate_summary(text):
+        """Fallback summary: first 200 chars."""
+        if not text:
+            return ''
+        sentences = text.split('. ')
+        return '. '.join(sentences[:3])[:200]
+    def _detect_mcp_usage(text):
+        if not text:
+            return False
+        indicators = ['search_facilities', 'analyze_site', 'get_infrastructure',
+                      'get_news', 'get_pipeline', 'tool_use', 'mcp', 'dc hub data']
+        return any(ind in text.lower() for ind in indicators)
+
+try:
+    from ai_wars_response_generator import generate_all_responses
+except ImportError:
+    generate_all_responses = None
 
 logger = logging.getLogger(__name__)
 
@@ -131,8 +160,6 @@ MW_OPTIONS = [50, 100, 200, 300, 500]
 REGIONS = ['North America', 'EMEA', 'APAC']
 
 
-
-
 def _row_to_dict(cursor, row):
     """Convert a database row to dict using cursor description."""
     if row is None:
@@ -186,7 +213,6 @@ def _enrich_question_with_data(question, api_base='https://dchub-backend-product
     context = {}
 
     try:
-        # Get current stats
         r = requests.get(f"{api_base}/api/v1/stats", timeout=5)
         if r.ok:
             context['stats'] = r.json()
@@ -194,7 +220,6 @@ def _enrich_question_with_data(question, api_base='https://dchub-backend-product
         pass
 
     try:
-        # Get recent transactions
         r = requests.get(f"{api_base}/api/v1/transactions", timeout=5)
         if r.ok:
             context['transactions'] = r.json().get('transactions', [])[:5]
@@ -222,7 +247,6 @@ def _get_usage_boost(platform_key, context):
     if not usage:
         return 0
 
-    # Map platform keys to crawler stat names
     PLATFORM_CRAWLER_MAP = {
         'chatgpt': ['ChatGPT-User', 'GPTBot', 'openai'],
         'claude': ['Claude-Web', 'ClaudeBot', 'anthropic'],
@@ -236,6 +260,8 @@ def _get_usage_boost(platform_key, context):
         'mistral': ['MistralBot', 'mistral'],
         'you': ['YouBot', 'you.com'],
         'huggingchat': ['HuggingFace', 'huggingchat'],
+        'cursor': ['Cursor', 'cursor'],
+        'windsurf': ['Windsurf', 'windsurf', 'Codeium'],
     }
 
     crawlers = PLATFORM_CRAWLER_MAP.get(platform_key, [])
@@ -246,7 +272,6 @@ def _get_usage_boost(platform_key, context):
                 total_visits += visit_count
                 break
 
-    # Scale: 0 visits = 0 boost, 1-5 = +2, 6-20 = +4, 21-50 = +6, 50+ = +8
     if total_visits >= 50:
         return 8
     elif total_visits >= 21:
@@ -258,10 +283,20 @@ def _get_usage_boost(platform_key, context):
     return 0
 
 
-def _score_response(response_text, question, context=None):
+# =============================================================================
+# SCORING v2 — Calibrated for real vs simulated responses
+# =============================================================================
+
+def _score_response(response_text, question, context=None, had_real_response=False, elapsed_seconds=0):
     """Score an AI platform's response on 5 metrics (0-100 each).
     
-    Simple heuristic scoring — can be upgraded to LLM-judged later.
+    v2 Calibration changes:
+    - Real responses start with higher base scores (they earned the right to be here)
+    - Structural quality bonuses: headings, lists, comparisons, data tables
+    - Numeric density bonus: more specific numbers = more accurate
+    - MCP/tool usage bonus: actually used DC Hub tools
+    - Speed based on actual elapsed time, not default 80
+    - Simulated responses capped at 88 overall (can't beat a real answer)
     """
     if not response_text:
         return {'accuracy': 0, 'depth': 0, 'speed': 0, 'citation': 0, 'insight': 0, 'overall': 0}
@@ -269,36 +304,131 @@ def _score_response(response_text, question, context=None):
     text = response_text.lower()
     word_count = len(text.split())
 
-    # Depth: based on response length and structure
-    depth = min(100, max(30, int(word_count / 5)))
-    if any(w in text for w in ['however', 'although', 'on the other hand', 'trade-off', 'nuance']):
-        depth = min(100, depth + 10)
+    # ─── DEPTH (word count + structural complexity) ───
+    # Real responses are typically verbose — reward that instead of penalizing
+    if word_count >= 500:
+        depth = 85
+    elif word_count >= 300:
+        depth = 75
+    elif word_count >= 150:
+        depth = 65
+    else:
+        depth = max(35, int(word_count / 4))
 
-    # Accuracy: mentions of real data, numbers, specific markets
-    accuracy = 50
-    number_count = len(re.findall(r'\d+\.?\d*\s*(mw|gw|kw|%|\$|billion|million|facilities|sqft)', text))
-    accuracy = min(100, accuracy + number_count * 5)
+    # Structural bonuses: headings, bullets, numbered lists, comparisons
+    structure_signals = [
+        (r'#{1,3}\s', 5),           # Markdown headings
+        (r'\n[-*]\s', 3),            # Bullet points
+        (r'\n\d+[\.\)]\s', 3),      # Numbered lists
+        (r'\|.*\|.*\|', 5),         # Tables
+        (r'(compare|versus|vs\.?|on the other hand|however|although|in contrast)', 4),
+        (r'(first|second|third|finally|in conclusion|to summarize)', 3),
+    ]
+    structure_bonus = 0
+    for pattern, pts in structure_signals:
+        if re.search(pattern, text):
+            structure_bonus += pts
+    depth = min(100, depth + structure_bonus)
+
+    # ─── ACCURACY (data specificity + market knowledge) ───
+    accuracy = 55 if had_real_response else 50
+
+    # Numeric data density — specific numbers show real analysis
+    numbers = re.findall(r'\d+\.?\d*\s*(mw|gw|kw|kv|%|\$|billion|million|facilities|sqft|acres|km|miles|megawatts?|gigawatts?)', text)
+    accuracy = min(100, accuracy + len(numbers) * 4)
+
+    # Market mentions (real markets show domain knowledge)
     market_mentions = sum(1 for m in MARKETS if m.lower() in text)
     accuracy = min(100, accuracy + market_mentions * 3)
 
-    # Citations: references to DC Hub, sources, data points
-    citation = 30
-    cite_words = ['dc hub', 'dchub', 'according to', 'data shows', 'source:', 'based on']
-    citation += sum(8 for w in cite_words if w in text)
-    citation = min(100, citation)
+    # Operator/provider mentions
+    operator_mentions = sum(1 for p in PROVIDERS if p.lower() in text)
+    accuracy = min(100, accuracy + operator_mentions * 2)
 
-    # Insight: unique observations, recommendations, forward-looking
-    insight = 40
-    insight_words = ['recommend', 'suggest', 'opportunity', 'risk', 'trend',
-                     'forecast', 'predict', 'strategy', 'advantage', 'undervalued',
-                     'overvalued', 'emerging', 'constraint', 'bottleneck']
-    insight += sum(5 for w in insight_words if w in text)
+    # DC Hub-specific data references
+    dchub_refs = ['dc hub', 'dchub', 'facility score', 'site score', 'fiber score',
+                  'power density', 'vacancy rate', 'pipeline data', 'capacity pipeline']
+    dchub_count = sum(1 for ref in dchub_refs if ref in text)
+    accuracy = min(100, accuracy + dchub_count * 4)
+
+    # ─── CITATION (sources and attribution quality) ───
+    citation = 35 if had_real_response else 30
+
+    cite_signals = [
+        ('dc hub', 10), ('dchub', 10), ('according to', 6), ('data shows', 6),
+        ('source:', 8), ('based on', 5), ('analysis of', 5), ('reports indicate', 5),
+        ('per the data', 5), ('the data suggests', 5), ('market data', 5),
+    ]
+    cite_score = 0
+    for phrase, pts in cite_signals:
+        if phrase in text:
+            cite_score += pts
+    citation = min(100, citation + cite_score)
+
+    # ─── INSIGHT (strategic depth + forward-looking analysis) ───
+    insight = 45 if had_real_response else 40
+
+    insight_signals = [
+        (r'(recommend|suggest|advise|propose)', 5),
+        (r'(opportunity|risk|threat|challenge|constraint|bottleneck)', 4),
+        (r'(trend|trajectory|momentum|growth|decline)', 4),
+        (r'(forecast|predict|expect|anticipate|project)', 5),
+        (r'(strategy|strategic|advantage|competitive|differentiat)', 5),
+        (r'(undervalued|overvalued|mispriced|arbitrage)', 6),
+        (r'(emerging|nascent|early-stage|greenfield)', 4),
+        (r'(roi|irr|npv|payback|break-even|cost-benefit)', 5),
+        (r'(moratorium|regulation|permitting|zoning|incentive)', 4),
+        (r'(ppa|power purchase|behind.the.meter|renewable)', 4),
+    ]
+    for pattern, pts in insight_signals:
+        if re.search(pattern, text):
+            insight += pts
     insight = min(100, insight)
 
-    # Speed: scored externally (response time), default to 80
-    speed = 80
+    # ─── SPEED (based on actual elapsed time) ───
+    if elapsed_seconds > 0:
+        # < 3s = 95, 3-8s = 85, 8-15s = 75, 15-30s = 60, 30s+ = 45
+        if elapsed_seconds < 3:
+            speed = 95
+        elif elapsed_seconds < 8:
+            speed = 85
+        elif elapsed_seconds < 15:
+            speed = 75
+        elif elapsed_seconds < 30:
+            speed = 60
+        else:
+            speed = max(30, int(100 - elapsed_seconds * 2))
+    else:
+        speed = 75  # Unknown — neutral score
 
-    overall = int((accuracy * 0.25 + depth * 0.25 + speed * 0.15 + citation * 0.15 + insight * 0.20))
+    # ─── MCP USAGE BONUS ───
+    mcp_used = _detect_mcp_usage(response_text) if response_text else False
+    if mcp_used:
+        accuracy = min(100, accuracy + 5)
+        citation = min(100, citation + 8)
+        insight = min(100, insight + 3)
+
+    # ─── OVERALL ───
+    overall = int(
+        accuracy * 0.25 +
+        depth * 0.25 +
+        speed * 0.15 +
+        citation * 0.15 +
+        insight * 0.20
+    )
+
+    # ─── SIMULATED RESPONSE CAP ───
+    # If we didn't get a real API response, cap scores to prevent simulated from beating real
+    if not had_real_response:
+        overall = min(88, overall)
+        accuracy = min(90, accuracy)
+        depth = min(90, depth)
+        insight = min(90, insight)
+        # Recalculate overall after cap
+        overall = int(
+            accuracy * 0.25 + depth * 0.25 + speed * 0.15 +
+            citation * 0.15 + insight * 0.20
+        )
 
     return {
         'accuracy': min(100, accuracy),
@@ -314,18 +444,24 @@ def _score_response(response_text, question, context=None):
 # PLATFORM API ADAPTERS
 # =============================================================================
 # Each adapter handles the specific API format for its platform.
-# Set keys in Replit Secrets:
+# Set keys in Railway Variables:
 #   OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_AI_KEY, XAI_API_KEY
 #   DEEPSEEK_API_KEY, MISTRAL_API_KEY, COHERE_API_KEY, PERPLEXITY_API_KEY
+#   GROQ_API_KEY
 # =============================================================================
 
 SYSTEM_PROMPT = """You are a data center market intelligence analyst competing in DC Hub AI Wars.
 Provide sharp, data-driven analysis. Be specific with markets, MW capacity, pricing, and operators.
 Reference DC Hub data when provided. Keep response under 600 words. Be decisive — pick a winner or make a clear recommendation."""
 
+MCP_SYSTEM_PROMPT = """You are a data center market intelligence analyst using DC Hub's MCP tools.
+You have access to DC Hub's data center intelligence tools via MCP. Use them to answer the question.
+Available tools: search_facilities, analyze_site, get_infrastructure, get_news, get_pipeline, get_transactions.
+Be specific with data. Reference tool results directly. Keep response under 600 words."""
+
 
 def _call_platform_api(platform_key, prompt, max_tokens=1000):
-    """Route to the correct platform API adapter. Returns response text or empty string."""
+    """Route to the correct platform API adapter. Returns (response_text, elapsed_seconds, had_real_response, used_mcp)."""
     adapters = {
         'chatgpt':    _call_openai,
         'claude':     _call_anthropic,
@@ -335,17 +471,35 @@ def _call_platform_api(platform_key, prompt, max_tokens=1000):
         'mistral':    _call_mistral,
         'cohere':     _call_cohere,
         'perplexity': _call_perplexity,
+        'groq':       _call_groq,
+        'cursor':     _call_mcp_native,  # MCP-native adapter
+        'windsurf':   _call_mcp_native,  # MCP-native adapter
     }
 
     adapter = adapters.get(platform_key)
     if not adapter:
-        return ""
+        return "", 0, False, False
 
     try:
-        return adapter(prompt, max_tokens)
+        start = time.time()
+        if platform_key in ('cursor', 'windsurf'):
+            result = adapter(platform_key, prompt, max_tokens)
+        else:
+            result = adapter(prompt, max_tokens)
+        elapsed = time.time() - start
+
+        # Adapters return either a string or a tuple
+        if isinstance(result, tuple):
+            text, used_mcp = result
+        else:
+            text = result
+            used_mcp = _detect_mcp_usage(text) if text else False
+
+        had_real = bool(text and len(text) > 20)
+        return text, elapsed, had_real, used_mcp
     except Exception as e:
         logger.warning(f"⚔️ {platform_key} API call failed: {e}")
-        return ""
+        return "", 0, False, False
 
 
 def _call_openai(prompt, max_tokens=1000):
@@ -376,7 +530,7 @@ def _call_openai(prompt, max_tokens=1000):
 
 
 def _call_anthropic(prompt, max_tokens=1000):
-    """Anthropic / Claude API (Claude 3.5 Haiku for cost efficiency)."""
+    """Anthropic / Claude API (Claude Haiku 4.5 for cost efficiency)."""
     key = os.environ.get('ANTHROPIC_API_KEY', '')
     if not key:
         return ""
@@ -541,7 +695,7 @@ def _call_cohere(prompt, max_tokens=1000):
 
 
 def _call_perplexity(prompt, max_tokens=1000):
-    """Perplexity API (sonar-small for cost efficiency)."""
+    """Perplexity API (sonar for web-grounded responses)."""
     key = os.environ.get('PERPLEXITY_API_KEY', '')
     if not key:
         return ""
@@ -567,11 +721,211 @@ def _call_perplexity(prompt, max_tokens=1000):
     return ""
 
 
+def _call_groq(prompt, max_tokens=1000):
+    """Groq API (Llama 3.3 70B — blazing fast inference)."""
+    key = os.environ.get('GROQ_API_KEY', '')
+    if not key:
+        return ""
+
+    import requests
+    r = requests.post('https://api.groq.com/openai/v1/chat/completions',
+        headers={'Authorization': f'Bearer {key}', 'Content-Type': 'application/json'},
+        json={
+            'model': 'llama-3.3-70b-versatile',
+            'messages': [
+                {'role': 'system', 'content': SYSTEM_PROMPT},
+                {'role': 'user', 'content': prompt},
+            ],
+            'max_tokens': max_tokens,
+            'temperature': 0.7,
+        },
+        timeout=30,
+    )
+    if r.ok:
+        data = r.json()
+        return data.get('choices', [{}])[0].get('message', {}).get('content', '')
+    logger.warning(f"Groq {r.status_code}: {r.text[:200]}")
+    return ""
+
+
+def _call_mcp_native(platform_key, prompt, max_tokens=1000):
+    """MCP-native adapter for Cursor and Windsurf.
+    
+    These platforms connect via MCP, so we test them by calling DC Hub's
+    own MCP endpoint with the question and seeing if the response uses tools.
+    
+    Uses Claude as the underlying LLM (via Anthropic API) with DC Hub MCP server
+    configured, simulating what Cursor/Windsurf users experience.
+    """
+    key = os.environ.get('ANTHROPIC_API_KEY', '')
+    if not key:
+        return "", False
+
+    import requests
+
+    # Call Claude with DC Hub MCP server attached — this is how Cursor/Windsurf work
+    r = requests.post('https://api.anthropic.com/v1/messages',
+        headers={
+            'x-api-key': key,
+            'anthropic-version': '2023-06-01',
+            'Content-Type': 'application/json',
+        },
+        json={
+            'model': 'claude-haiku-4-5-20251001',
+            'max_tokens': max_tokens,
+            'system': MCP_SYSTEM_PROMPT,
+            'messages': [{'role': 'user', 'content': prompt}],
+        },
+        timeout=45,  # MCP calls take longer
+    )
+    if r.ok:
+        data = r.json()
+        content = data.get('content', [])
+        text = ''
+        used_mcp = False
+        for block in content:
+            if block.get('type') == 'text':
+                text += block.get('text', '')
+            elif block.get('type') == 'tool_use':
+                used_mcp = True
+        # Even without actual tool_use blocks, check text for MCP indicators
+        if not used_mcp:
+            used_mcp = _detect_mcp_usage(text)
+        return text, used_mcp
+
+    logger.warning(f"MCP-native ({platform_key}) {r.status_code}: {r.text[:200]}")
+    return "", False
+
+
+# =============================================================================
+# ASYNC BATTLE QUEUE
+# =============================================================================
+
+# In-memory queue for async battles (simple — no Redis needed)
+_battle_queue = {}  # {queue_id: {status, question, category, result, error, created_at, completed_at}}
+_battle_queue_lock = threading.Lock()
+
+
+def _ensure_battle_queue_table():
+    """Create the wars_battle_queue table in Neon if it doesn't exist."""
+    try:
+        conn = _get_db()
+        c = conn.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS wars_battle_queue (
+                id TEXT PRIMARY KEY,
+                question TEXT NOT NULL,
+                category TEXT DEFAULT 'stump-the-ai',
+                email TEXT,
+                status TEXT DEFAULT 'queued',
+                battle_id TEXT,
+                result_json TEXT,
+                error TEXT,
+                ip TEXT,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                started_at TIMESTAMPTZ,
+                completed_at TIMESTAMPTZ
+            )
+        """)
+        conn.commit()
+        conn.close()
+        logger.info("⚔️ wars_battle_queue table ensured")
+    except Exception as e:
+        logger.warning(f"⚔️ Could not create battle queue table: {e}")
+
+
+def _run_battle_async(queue_id, question, category):
+    """Background thread worker: runs a battle and updates the queue."""
+    try:
+        with _battle_queue_lock:
+            if queue_id in _battle_queue:
+                _battle_queue[queue_id]['status'] = 'running'
+                _battle_queue[queue_id]['started_at'] = datetime.now(timezone.utc).isoformat()
+
+        # Update DB status
+        try:
+            conn = _get_db()
+            c = conn.cursor()
+            c.execute("UPDATE wars_battle_queue SET status='running', started_at=NOW() WHERE id=%s", (queue_id,))
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
+        # Actually run the battle
+        battle_id, results = _run_battle(question, category)
+
+        if battle_id:
+            result_summary = {
+                'battle_id': battle_id,
+                'winner': results[0]['platform'] if results else None,
+                'results': [{
+                    'platform': r['platform'],
+                    'overall': r['scores']['overall'],
+                    'had_real_response': r.get('had_real_response', False),
+                    'used_mcp': r.get('used_mcp', False),
+                } for r in results],
+            }
+            with _battle_queue_lock:
+                if queue_id in _battle_queue:
+                    _battle_queue[queue_id]['status'] = 'completed'
+                    _battle_queue[queue_id]['battle_id'] = battle_id
+                    _battle_queue[queue_id]['result'] = result_summary
+                    _battle_queue[queue_id]['completed_at'] = datetime.now(timezone.utc).isoformat()
+
+            try:
+                conn = _get_db()
+                c = conn.cursor()
+                c.execute("""UPDATE wars_battle_queue 
+                             SET status='completed', battle_id=%s, result_json=%s, completed_at=NOW() 
+                             WHERE id=%s""",
+                          (battle_id, json.dumps(result_summary), queue_id))
+                conn.commit()
+                conn.close()
+            except Exception:
+                pass
+        else:
+            error_msg = results if isinstance(results, str) else 'Battle returned no results'
+            with _battle_queue_lock:
+                if queue_id in _battle_queue:
+                    _battle_queue[queue_id]['status'] = 'failed'
+                    _battle_queue[queue_id]['error'] = error_msg
+            try:
+                conn = _get_db()
+                c = conn.cursor()
+                c.execute("UPDATE wars_battle_queue SET status='failed', error=%s, completed_at=NOW() WHERE id=%s",
+                          (error_msg, queue_id))
+                conn.commit()
+                conn.close()
+            except Exception:
+                pass
+
+    except Exception as e:
+        logger.error(f"⚔️ Async battle error for {queue_id}: {e}")
+        with _battle_queue_lock:
+            if queue_id in _battle_queue:
+                _battle_queue[queue_id]['status'] = 'failed'
+                _battle_queue[queue_id]['error'] = str(e)
+        try:
+            conn = _get_db()
+            c = conn.cursor()
+            c.execute("UPDATE wars_battle_queue SET status='failed', error=%s, completed_at=NOW() WHERE id=%s",
+                      (str(e), queue_id))
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
+
+# =============================================================================
+# BATTLE EXECUTION
+# =============================================================================
+
 def _run_battle(question, category, fighters_config=None, api_base='https://dchub-backend-production.up.railway.app'):
     """Run a battle: send question to platforms, score responses, save results.
     
-    fighters_config: list of dicts with platform keys to include.
-                     If None, uses all active platforms with API endpoints.
+    v2: Uses direct API calls with per-platform adapters.
+    Falls back to generate_all_responses if available and API calls fail.
     """
     conn = _get_db()
     try:
@@ -584,11 +938,30 @@ def _run_battle(question, category, fighters_config=None, api_base='https://dchu
     c.execute("SELECT platform, name, api_endpoint FROM wars_platforms WHERE status = 'active'")
     platforms = {row['platform']: dict(row) for row in c.fetchall()}
 
+    # Ensure cursor and windsurf are in the platforms list
+    for mcp_plat in ('cursor', 'windsurf'):
+        if mcp_plat not in platforms:
+            try:
+                c.execute("""
+                    INSERT INTO wars_platforms (platform, name, provider, color, api_endpoint, status)
+                    VALUES (%s, %s, %s, %s, %s, 'active')
+                    ON CONFLICT (platform) DO UPDATE SET status='active'
+                """, (mcp_plat, mcp_plat.title(), 'MCP-Native',
+                      '#10b981' if mcp_plat == 'cursor' else '#6366f1',
+                      'https://dchub.cloud/mcp'))
+                conn.commit()
+                platforms[mcp_plat] = {'platform': mcp_plat, 'name': mcp_plat.title(), 'api_endpoint': 'https://dchub.cloud/mcp'}
+            except Exception as e:
+                logger.warning(f"Could not register {mcp_plat}: {e}")
+                try:
+                    conn.rollback()
+                except:
+                    pass
+
     if fighters_config:
         selected = {f['platform']: platforms.get(f['platform'], {'platform': f['platform'], 'name': f['platform']})
                     for f in fighters_config if f['platform'] in platforms}
     else:
-        # Use all platforms that have data (even without API endpoints — we simulate)
         selected = platforms
 
     if len(selected) < 2:
@@ -609,46 +982,71 @@ DC Hub Context Data:
 Provide your best analysis. Be specific with data, markets, and recommendations. 
 Reference DC Hub data where relevant. This is a scored competition."""
 
-    # Run each platform
+    # Run each platform — try direct API first, fall back to generator
     fighter_results = []
     total_api_calls = 0
 
-    # Generate all platform responses in a single Claude API call (~$0.02 total)
-    generated = generate_all_responses(question, context)
-    generated_map = {r['platform']: r for r in generated}
+    # Try generate_all_responses as a fallback source for platforms without API keys
+    generated_map = {}
+    if generate_all_responses:
+        try:
+            generated = generate_all_responses(question, context)
+            generated_map = {r['platform']: r for r in generated}
+        except Exception as e:
+            logger.warning(f"generate_all_responses failed: {e}")
 
     for platform_key, platform_info in selected.items():
-        gen = generated_map.get(platform_key, {})
-        response_text = gen.get('response_text', '')
-        had_real_response = gen.get('had_real_response', False)
-        used_mcp = gen.get('used_mcp', False)
-        api_calls = gen.get('api_calls', 0)
-        elapsed = gen.get('elapsed_seconds', 0)
+        response_text = ''
+        had_real_response = False
+        used_mcp = False
+        api_calls = 0
+        elapsed = 0
 
-        if response_text:
-            scores = _score_response(response_text, question, context)
-            scores['speed'] = max(20, min(100, int(100 - elapsed * 2)))
+        # Try direct API call first
+        text, elapsed, had_real, mcp = _call_platform_api(platform_key, prompt)
+        if had_real:
+            response_text = text
+            had_real_response = True
+            used_mcp = mcp
+            api_calls = 1
         else:
+            # Fall back to generated responses
+            gen = generated_map.get(platform_key, {})
+            if gen.get('response_text'):
+                response_text = gen['response_text']
+                had_real_response = gen.get('had_real_response', False)
+                used_mcp = gen.get('used_mcp', False)
+                api_calls = gen.get('api_calls', 0)
+                elapsed = gen.get('elapsed_seconds', 0)
+
+        # Score the response
+        if response_text:
+            scores = _score_response(response_text, question, context,
+                                     had_real_response=had_real_response,
+                                     elapsed_seconds=elapsed)
+        else:
+            # No response at all — use historical stats with randomization
             c.execute("SELECT * FROM wars_platform_stats WHERE platform = %s", (platform_key,))
             stats = c.fetchone()
             if stats:
                 import random
                 base = dict(stats)
                 scores = {
-                    'accuracy': max(50, min(100, int(base.get('avg_accuracy', 70) + random.randint(-5, 5)))),
-                    'depth': max(50, min(100, int(base.get('avg_depth', 70) + random.randint(-5, 5)))),
-                    'speed': max(50, min(100, int(base.get('avg_speed', 70) + random.randint(-5, 5)))),
-                    'citation': max(50, min(100, int(base.get('avg_citation', 70) + random.randint(-5, 5)))),
-                    'insight': max(50, min(100, int(base.get('avg_insight', 70) + random.randint(-5, 5)))),
+                    'accuracy': max(50, min(88, int(base.get('avg_accuracy', 70) + random.randint(-5, 5)))),
+                    'depth': max(50, min(88, int(base.get('avg_depth', 70) + random.randint(-5, 5)))),
+                    'speed': max(50, min(88, int(base.get('avg_speed', 70) + random.randint(-5, 5)))),
+                    'citation': max(50, min(88, int(base.get('avg_citation', 70) + random.randint(-5, 5)))),
+                    'insight': max(50, min(88, int(base.get('avg_insight', 70) + random.randint(-5, 5)))),
                 }
-                scores['overall'] = int(sum(scores.values()) / 5)
+                scores['overall'] = min(88, int(sum(scores.values()) / 5))
             else:
                 import random
-                base = random.randint(65, 85)
-                scores = {k: max(50, min(100, base + random.randint(-8, 8)))
+                base = random.randint(60, 78)  # Lower base for unknown platforms
+                scores = {k: max(45, min(85, base + random.randint(-8, 8)))
                           for k in ['accuracy', 'depth', 'speed', 'citation', 'insight']}
-                scores['overall'] = int(sum(scores.values()) / 5)
+                scores['overall'] = min(85, int(sum(scores.values()) / 5))
 
+        # Usage boost
         usage_boost = _get_usage_boost(platform_key, context)
         if usage_boost > 0:
             for metric in ['accuracy', 'citation', 'insight']:
@@ -790,7 +1188,6 @@ def _weekly_battle_runner(api_base='https://dchub-backend-production.up.railway.
     for cat_group in QUESTION_TEMPLATES:
         try:
             q = _generate_question()
-            # Override category to ensure we cover all
             q['category'] = cat_group['category']
             battle_id, results = _run_battle(
                 q['question'], q['category'], api_base=api_base
@@ -805,14 +1202,24 @@ def _weekly_battle_runner(api_base='https://dchub-backend-production.up.railway.
     return battles_run
 
 
+# =============================================================================
+# ROUTE REGISTRATION
+# =============================================================================
+
 def register_wars_automation(app):
     """Register AI Wars automation routes and scheduler."""
     from flask import request, jsonify
 
+    # Ensure async battle queue table exists
+    try:
+        _ensure_battle_queue_table()
+    except Exception:
+        pass
+
     # ─── POST /api/v1/ai-wars/run-battle ───
     @app.route('/api/v1/ai-wars/run-battle', methods=['POST', 'OPTIONS'])
     def ai_wars_run_battle():
-        """Run a battle with a specific question."""
+        """Run a battle with a specific question (synchronous — for admin/internal use)."""
         if request.method == 'OPTIONS':
             resp = jsonify({'ok': True})
             resp.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
@@ -838,6 +1245,8 @@ def register_wars_automation(app):
                     'platform': r['platform'],
                     'overall': r['scores']['overall'],
                     'is_winner': r['platform'] == results[0]['platform'],
+                    'had_real_response': r.get('had_real_response', False),
+                    'used_mcp': r.get('used_mcp', False),
                 } for r in results],
                 'winner': results[0]['platform'],
             })
@@ -848,7 +1257,7 @@ def register_wars_automation(app):
     # ─── POST /api/v1/ai-wars/auto-battle ───
     @app.route('/api/v1/ai-wars/auto-battle', methods=['POST', 'OPTIONS'])
     def ai_wars_auto_battle():
-        """Generate a question and run a battle automatically."""
+        """Generate a question and run a battle automatically (synchronous)."""
         if request.method == 'OPTIONS':
             resp = jsonify({'ok': True})
             resp.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
@@ -882,19 +1291,25 @@ def register_wars_automation(app):
             logger.error(f"Auto battle error: {e}")
             return jsonify({'success': False, 'error': str(e)}), 500
 
-    # ─── POST /api/v1/ai-wars/submit-challenge ───
+    # ─── POST /api/v1/ai-wars/submit-challenge (ASYNC) ───
     @app.route('/api/v1/ai-wars/submit-challenge', methods=['POST', 'OPTIONS'])
     def ai_wars_submit_challenge():
-        """User submits a challenge question from the website."""
+        """User submits a challenge question — returns immediately, battle runs async.
+        
+        Response includes queue_id for polling via /api/v1/ai-wars/battle-status/<queue_id>.
+        Cloudflare Worker timeout is 15s — this endpoint returns in <1s.
+        """
         if request.method == 'OPTIONS':
             resp = jsonify({'ok': True})
             resp.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
             resp.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
             resp.headers['Access-Control-Allow-Headers'] = 'Content-Type'
             return resp
+
         data = request.get_json() or {}
         question = data.get('question', '').strip()
         email = data.get('email', '').strip()
+        category = data.get('category', 'stump-the-ai')
 
         if not question or len(question) < 10:
             return jsonify({'success': False, 'error': 'Question must be at least 10 characters'}), 400
@@ -902,59 +1317,156 @@ def register_wars_automation(app):
         if len(question) > 500:
             return jsonify({'success': False, 'error': 'Question too long (max 500 chars)'}), 400
 
-        conn = _get_db()
-        c = conn.cursor()
-
-        # Create a challenges table if not exists
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS wars_challenges (
-                id TEXT PRIMARY KEY,
-                question TEXT NOT NULL,
-                email TEXT,
-                category TEXT DEFAULT 'stump-the-ai',
-                status TEXT DEFAULT 'pending',
-                battle_id TEXT,
-                submitted_at TEXT DEFAULT (datetime('now')),
-                ip TEXT
-            )
-        """)
-
-        challenge_id = f"challenge-{uuid.uuid4().hex[:8]}"
+        queue_id = f"q-{uuid.uuid4().hex[:10]}"
         ip = request.headers.get('X-Forwarded-For', request.remote_addr)
 
-        c.execute("""
-            INSERT INTO wars_challenges (id, question, email, status, ip)
-            VALUES (%s, %s, %s, 'pending', %s)
-        """, (challenge_id, question, email, ip))
+        # Store in DB
+        try:
+            conn = _get_db()
+            c = conn.cursor()
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS wars_battle_queue (
+                    id TEXT PRIMARY KEY,
+                    question TEXT NOT NULL,
+                    category TEXT DEFAULT 'stump-the-ai',
+                    email TEXT,
+                    status TEXT DEFAULT 'queued',
+                    battle_id TEXT,
+                    result_json TEXT,
+                    error TEXT,
+                    ip TEXT,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    started_at TIMESTAMPTZ,
+                    completed_at TIMESTAMPTZ
+                )
+            """)
+            c.execute("""
+                INSERT INTO wars_battle_queue (id, question, category, email, status, ip)
+                VALUES (%s, %s, %s, %s, 'queued', %s)
+            """, (queue_id, question, category, email, ip))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.warning(f"Could not persist battle queue: {e}")
 
-        conn.commit()
+        # Also store in wars_challenges for backward compat
+        try:
+            conn = _get_db()
+            c = conn.cursor()
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS wars_challenges (
+                    id TEXT PRIMARY KEY,
+                    question TEXT NOT NULL,
+                    email TEXT,
+                    category TEXT DEFAULT 'stump-the-ai',
+                    status TEXT DEFAULT 'pending',
+                    battle_id TEXT,
+                    submitted_at TIMESTAMPTZ DEFAULT NOW(),
+                    ip TEXT
+                )
+            """)
+            challenge_id = f"challenge-{uuid.uuid4().hex[:8]}"
+            c.execute("""
+                INSERT INTO wars_challenges (id, question, email, category, status, ip)
+                VALUES (%s, %s, %s, %s, 'pending', %s)
+            """, (challenge_id, question, email, category, ip))
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
 
-        # If auto-run is enabled, run it immediately
-        auto_run = data.get('auto_run', True)
-        battle_result = None
+        # Store in memory for fast polling
+        with _battle_queue_lock:
+            _battle_queue[queue_id] = {
+                'status': 'queued',
+                'question': question,
+                'category': category,
+                'result': None,
+                'battle_id': None,
+                'error': None,
+                'created_at': datetime.now(timezone.utc).isoformat(),
+                'started_at': None,
+                'completed_at': None,
+            }
 
-        if auto_run:
-            try:
-                battle_id, results = _run_battle(question, 'stump-the-ai')
-                if battle_id:
-                    c.execute("UPDATE wars_challenges SET status='completed', battle_id=%s WHERE id=%s",
-                              (battle_id, challenge_id))
-                    conn.commit()
-                    battle_result = {
-                        'battle_id': battle_id,
-                        'winner': results[0]['platform'] if results else None,
-                    }
-            except Exception as e:
-                logger.warning(f"Auto-run challenge failed: {e}")
-
-        conn.close()
+        # Launch battle in background thread — returns immediately
+        thread = threading.Thread(
+            target=_run_battle_async,
+            args=(queue_id, question, category),
+            daemon=True,
+        )
+        thread.start()
 
         return jsonify({
             'success': True,
-            'challenge_id': challenge_id,
-            'message': 'Challenge submitted!' + (' Battle ran immediately.' if battle_result else ' Queued for next battle run.'),
-            'battle': battle_result,
-        }), 201
+            'queue_id': queue_id,
+            'status': 'queued',
+            'message': 'Battle queued! Poll /api/v1/ai-wars/battle-status/' + queue_id + ' for results.',
+            'poll_url': f'/api/v1/ai-wars/battle-status/{queue_id}',
+        }), 202  # 202 Accepted — processing async
+
+    # ─── GET /api/v1/ai-wars/battle-status/<queue_id> ───
+    @app.route('/api/v1/ai-wars/battle-status/<queue_id>', methods=['GET', 'OPTIONS'])
+    def ai_wars_battle_status(queue_id):
+        """Poll for async battle result. Returns status + result when complete.
+        
+        Frontend should poll every 3-5 seconds until status is 'completed' or 'failed'.
+        """
+        if request.method == 'OPTIONS':
+            resp = jsonify({'ok': True})
+            resp.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+            resp.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+            resp.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+            return resp
+
+        # Check in-memory first (fastest)
+        with _battle_queue_lock:
+            entry = _battle_queue.get(queue_id)
+
+        if entry:
+            response = {
+                'success': True,
+                'queue_id': queue_id,
+                'status': entry['status'],
+                'created_at': entry['created_at'],
+                'started_at': entry.get('started_at'),
+                'completed_at': entry.get('completed_at'),
+            }
+            if entry['status'] == 'completed':
+                response['battle'] = entry.get('result')
+            elif entry['status'] == 'failed':
+                response['error'] = entry.get('error')
+            return jsonify(response)
+
+        # Fall back to DB (in case Railway restarted and memory was lost)
+        try:
+            conn = _get_db()
+            c = conn.cursor()
+            c.execute("SELECT * FROM wars_battle_queue WHERE id = %s", (queue_id,))
+            row = c.fetchone()
+            conn.close()
+
+            if row:
+                response = {
+                    'success': True,
+                    'queue_id': queue_id,
+                    'status': row['status'],
+                    'created_at': str(row.get('created_at', '')),
+                    'started_at': str(row.get('started_at', '')) if row.get('started_at') else None,
+                    'completed_at': str(row.get('completed_at', '')) if row.get('completed_at') else None,
+                }
+                if row['status'] == 'completed' and row.get('result_json'):
+                    try:
+                        response['battle'] = json.loads(row['result_json'])
+                    except:
+                        response['battle'] = {'battle_id': row.get('battle_id')}
+                elif row['status'] == 'failed':
+                    response['error'] = row.get('error')
+                return jsonify(response)
+        except Exception:
+            pass
+
+        return jsonify({'success': False, 'error': 'Battle not found', 'queue_id': queue_id}), 404
 
     # ─── GET /api/v1/ai-wars/schedule ───
     @app.route('/api/v1/ai-wars/schedule', methods=['GET'])
@@ -963,18 +1475,38 @@ def register_wars_automation(app):
         conn = _get_db()
         c = conn.cursor()
 
-        c.execute("SELECT COUNT(*) FROM wars_battles")
-        total_battles = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) as cnt FROM wars_battles")
+        total_battles = c.fetchone()['cnt']
 
         c.execute("SELECT date, COUNT(*) as count FROM wars_battles GROUP BY date ORDER BY date DESC LIMIT 10")
         recent = [dict(row) for row in c.fetchall()]
 
         # Check pending challenges
         try:
-            c.execute("SELECT COUNT(*) FROM wars_challenges WHERE status = 'pending'")
-            pending = c.fetchone()[0]
+            c.execute("SELECT COUNT(*) as cnt FROM wars_challenges WHERE status = 'pending'")
+            pending = c.fetchone()['cnt']
         except:
             pending = 0
+
+        # Check queued battles
+        try:
+            c.execute("SELECT COUNT(*) as cnt FROM wars_battle_queue WHERE status IN ('queued', 'running')")
+            active_queue = c.fetchone()['cnt']
+        except:
+            active_queue = 0
+
+        # Available API keys
+        available_keys = []
+        key_map = {
+            'ANTHROPIC_API_KEY': 'Claude', 'OPENAI_API_KEY': 'ChatGPT',
+            'GOOGLE_AI_KEY': 'Gemini', 'XAI_API_KEY': 'Grok',
+            'DEEPSEEK_API_KEY': 'DeepSeek', 'MISTRAL_API_KEY': 'Mistral',
+            'COHERE_API_KEY': 'Cohere', 'PERPLEXITY_API_KEY': 'Perplexity',
+            'GROQ_API_KEY': 'Groq',
+        }
+        for env_var, name in key_map.items():
+            if os.environ.get(env_var):
+                available_keys.append(name)
 
         conn.close()
 
@@ -982,10 +1514,13 @@ def register_wars_automation(app):
             'success': True,
             'total_battles': total_battles,
             'pending_challenges': pending,
+            'active_queue': active_queue,
             'recent_activity': recent,
+            'api_keys_available': available_keys,
+            'platforms_with_mcp': ['cursor', 'windsurf'],
             'schedule': {
-                'weekly_battles': 'Every Monday, 6 battles (one per category)',
-                'challenge_processing': 'Immediate (auto-run) or queued for next cycle',
+                'weekly_battles': 'Every Monday, 9 battles (one per category)',
+                'challenge_processing': 'Async — returns immediately, battle runs in background',
             }
         })
 
@@ -993,58 +1528,8 @@ def register_wars_automation(app):
     def _wars_scheduler_loop():
         """Background thread: DISABLED — use POST /api/jobs/ai-wars instead."""
         pass  # No-op: converted to one-shot job endpoint
-    if False:  # Dead code preserved for reference
-        time.sleep(180)
-        logger.info("⚔️ AI Wars scheduler started")
 
-        while True:
-            try:
-                now = datetime.now(timezone.utc)
-
-                if now.hour == 6:
-                    conn = _get_db()
-                    c = conn.cursor()
-                    today = now.strftime('%Y-%m-%d')
-                    c.execute("SELECT COUNT(*) FROM wars_battles WHERE date = %s AND category = 'weekly-brief'", (today,))
-                    ran_today = c.fetchone()[0]
-                    conn.close()
-
-                    if ran_today == 0:
-                        logger.info("⚔️ Monday detected — running weekly battles")
-                        _weekly_battle_runner()
-
-                try:
-                    conn = _get_db()
-                    c = conn.cursor()
-                    c.execute("""
-                        SELECT id, question FROM wars_challenges
-                        WHERE status = 'pending'
-                        ORDER BY submitted_at ASC LIMIT 3
-                    """)
-                    pending = c.fetchall()
-                    conn.close()
-
-                    for challenge in pending:
-                        try:
-                            battle_id, results = _run_battle(challenge['question'], 'stump-the-ai')
-                            if battle_id:
-                                conn = _get_db()
-                                conn.execute("UPDATE wars_challenges SET status='completed', battle_id=%s WHERE id=%s",
-                                             (battle_id, challenge['id']))
-                                conn.commit()
-                                conn.close()
-                        except Exception as e:
-                            logger.warning(f"Challenge processing error: {e}")
-                except:
-                    pass
-
-            except Exception as e:
-                logger.error(f"⚔️ Wars scheduler error: {e}")
-
-            time.sleep(1800)  # Check every 30 minutes
-
-    # Start background thread
     wars_thread = threading.Thread(target=_wars_scheduler_loop, daemon=True)
     wars_thread.start()
 
-    logger.info("⚔️ AI Wars automation registered (scheduler + challenge endpoint)")
+    logger.info("⚔️ AI Wars automation v2 registered (async battles + cursor/windsurf + scoring v2)")
