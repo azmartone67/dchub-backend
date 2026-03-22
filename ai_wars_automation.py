@@ -760,7 +760,7 @@ def _recalculate_all_stats(conn):
                 (platform, total_battles, total_wins, total_api_calls,
                  avg_accuracy, avg_depth, avg_speed, avg_citation, avg_insight,
                  overall_score, updated_at)
-                VALUES (%s, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT(platform) DO UPDATE SET
                     total_battles = excluded.total_battles,
                     total_wins = excluded.total_wins,
@@ -937,7 +937,7 @@ def register_wars_automation(app):
             try:
                 battle_id, results = _run_battle(question, 'stump-the-ai')
                 if battle_id:
-                    c.execute("UPDATE wars_challenges SET status='completed', battle_id=? WHERE id=%s",
+                    c.execute("UPDATE wars_challenges SET status='completed', battle_id=%s WHERE id=%s",
                               (battle_id, challenge_id))
                     conn.commit()
                     battle_result = {
