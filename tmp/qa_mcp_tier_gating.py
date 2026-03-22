@@ -222,13 +222,21 @@ print("\n" + "=" * 60)
 print("DEPLOYMENT CHECKLIST")
 print("=" * 60)
 print("""
-  1. git add main.py api_tier_gating.py
-  2. git commit -m "fix: MCP tier gating — validate_api_key tuple unpack bug"
-  3. git push origin main  (Railway auto-deploys)
-  4. Wait ~60s for Railway to rebuild
-  5. Check Railway logs for: 🔐 MCP tier: free
-  6. Run this script: python /tmp/qa_mcp_tier_gating.py
-  7. Test from Claude.ai: ask DC Hub to search_facilities
-     → Should see upgrade CTA + 5 results max
-  8. Test with API key header: should get full results
+## Deploy Steps
+
+1. Upload `main.py` and `api_tier_gating.py` to GitHub (`azmartone67/dchub-backend`)
+2. Railway auto-deploys on push
+3. Upload this script to Railway shell as `/tmp/qa_mcp_tier_gating.py` and run it
+4. Check logs for `🔐 MCP tier: free` on any MCP call without an API key
+
+## Bugs Fixed (Round 2)
+
+- BUG-CRITICAL: `valid, info = validate_api_key()` tuple unpack — 4 instances total
+  - main.py `_get_mcp_caller_tier()` (line ~2754)
+  - main.py auth check (line ~11481)
+  - api_tier_gating.py `get_request_tier()` (line ~643)
+  - api_tier_gating.py `require_plan` decorator (line ~500)
+- BUG-003: `@protect_data` on `/api/v1/search` causing 429s for MCP internal calls
+  - Removed decorator; endpoint has its own tier gating
+- NEON_DATABASE_URL fallback added to `validate_api_key()`
 """)
