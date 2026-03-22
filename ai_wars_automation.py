@@ -30,6 +30,7 @@ import threading
 import re
 from datetime import datetime, timezone, timedelta
 from ai_wars_battle_runner import call_platform_api as _new_call_platform_api, generate_summary, _detect_mcp_usage
+from ai_wars_response_generator import generate_all_responses
 
 logger = logging.getLogger(__name__)
 
@@ -612,22 +613,22 @@ Reference DC Hub data where relevant. This is a scored competition."""
     fighter_results = []
     total_api_calls = 0
 
+    # Generate all platform responses in a single Claude API call (~$0.02 total)
+    generated = generate_all_responses(question, context)
+    generated_map = {r['platform']: r for r in generated}
+
     for platform_key, platform_info in selected.items():
-        start_time = time.time()
-        response_text = ""
-        api_calls = 1
+        gen = generated_map.get(platform_key, {})
+        response_text = gen.get('response_text', '')
+        had_real_response = gen.get('had_real_response', False)
+        used_mcp = gen.get('used_mcp', False)
+        api_calls = gen.get('api_calls', 0)
+        elapsed = gen.get('elapsed_seconds', 0)
 
-        # Call real API using per-platform adapter
-        response_text = _call_platform_api(platform_key, prompt)
-
-        elapsed = time.time() - start_time
-
-        # Score the response (or generate simulated scores if no real response)
         if response_text:
             scores = _score_response(response_text, question, context)
             scores['speed'] = max(20, min(100, int(100 - elapsed * 2)))
         else:
-            # Simulated scoring based on historical platform performance
             c.execute("SELECT * FROM wars_platform_stats WHERE platform = %s", (platform_key,))
             stats = c.fetchone()
             if stats:
@@ -648,7 +649,6 @@ Reference DC Hub data where relevant. This is a scored competition."""
                           for k in ['accuracy', 'depth', 'speed', 'citation', 'insight']}
                 scores['overall'] = int(sum(scores.values()) / 5)
 
-        # Apply usage boost — platforms that actively use DC Hub API get rewarded
         usage_boost = _get_usage_boost(platform_key, context)
         if usage_boost > 0:
             for metric in ['accuracy', 'citation', 'insight']:
@@ -661,9 +661,9 @@ Reference DC Hub data where relevant. This is a scored competition."""
             'scores': scores,
             'api_calls': api_calls,
             'response_length': len(response_text),
-            'had_real_response': bool(response_text),
+            'had_real_response': had_real_response,
             'response_text': response_text,
-            'used_mcp': _detect_mcp_usage(response_text) if response_text else False,
+            'used_mcp': used_mcp,
         })
         total_api_calls += api_calls
 
