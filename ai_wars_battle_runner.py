@@ -155,7 +155,7 @@ def generate_summary(response_text, max_length=300):
             if summary_lines:
                 break
             continue
-        if stripped.startswith("#") or stripped.startswith("```"):
+        if stripped.startswith("#") or stripped.startswith("```") or stripped == "---":
             continue
         summary_lines.append(stripped)
         if len(" ".join(summary_lines)) > max_length:
