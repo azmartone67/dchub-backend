@@ -2735,7 +2735,13 @@ def _check_mcp_daily_limit(ip_address):
 
 
 def _get_mcp_caller_tier():
-    """Determine caller's tier from API key. Returns (tier, key_info)."""
+    """Determine caller's tier from API key. Returns (tier, key_info).
+    
+    BUG-FIX: validate_api_key() returns dict|None, NOT (bool, dict) tuple.
+    Previous code did `valid, info = validate_api_key(key)` which crashed with
+    ValueError on every call, silently falling through to 'free' for ALL users.
+    This was the root cause of MCP tier gating never working for paid users.
+    """
     api_key = (
         request.headers.get('X-API-Key', '') or
         request.args.get('api_key', '')
@@ -2751,11 +2757,15 @@ def _get_mcp_caller_tier():
 
     try:
         from api_tier_gating import validate_api_key
-        valid, info = validate_api_key(api_key)
-        if valid and info:
-            return info.get('plan', 'free'), info
-        if info and info.get('error') == 'daily_limit_exceeded':
-            return 'rate_limited', info
+        info = validate_api_key(api_key)  # Returns dict or None (NOT a tuple)
+        if info and isinstance(info, dict):
+            plan = info.get('plan', 'free')
+            role = info.get('role', '')
+            if role == 'admin':
+                return 'admin', info
+            return plan, info
+        # Key was provided but not found / invalid
+        logger.warning(f"MCP tier check: API key provided but not valid (prefix: {api_key[:10]}...)")
     except Exception as e:
         logger.error(f"MCP tier check error: {e}")
 
@@ -3828,6 +3838,8 @@ def mcp_proxy():
 
             # ── Determine caller tier BEFORE forwarding ──
             caller_tier, _tier_info = _get_mcp_caller_tier()
+            _tier_email = _tier_info.get('email', 'anonymous') if _tier_info else 'anonymous'
+            logger.info(f"🔐 MCP tier: {caller_tier} | user: {_tier_email} | method: {rpc_method} | tool: {rpc_params.get('name', '') if rpc_params else ''}")
 
             resp = http_req.post(
                 MCP_INTERNAL_URL,
@@ -3850,7 +3862,12 @@ def mcp_proxy():
                 resp_bytes = resp.content
                 if 'text/event-stream' in content_type:
                     resp_bytes = _extract_json_from_sse(resp_bytes)
-                gated_bytes, _ = _gate_mcp_response_bytes(resp_bytes, rpc_method, rpc_params, caller_tier)
+                gated_bytes, was_gated = _gate_mcp_response_bytes(resp_bytes, rpc_method, rpc_params, caller_tier)
+                tool_name = rpc_params.get('name', '') if rpc_params else ''
+                if was_gated:
+                    logger.info(f"🚧 MCP GATED: tool={tool_name} tier={caller_tier} original_size={len(resp_bytes)} gated_size={len(gated_bytes)}")
+                else:
+                    logger.info(f"✅ MCP PASSTHROUGH: tool={tool_name} tier={caller_tier} (ungated)")
                 out_headers = {
                     'Content-Type': 'application/json',
                     'Access-Control-Allow-Origin': '*',
@@ -8649,12 +8666,6 @@ try:
     register_infra_data_routes(app, get_pg_connection)
 except Exception as e:
     logger.warning(f"⚡ Infrastructure Data Routes: ⚠️ Failed: {e}")
-
-try:
-    from routes.pricing_connectivity_routes import register_pricing_connectivity_routes
-    register_pricing_connectivity_routes(app, get_pg_connection)
-except Exception as e:
-    logger.warning(f"⚡ Pricing & Connectivity Routes: Failed: {e}")
 
 
 # =============================================================================
