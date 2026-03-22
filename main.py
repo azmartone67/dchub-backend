@@ -8485,7 +8485,9 @@ def _list_facilities_free(plan='anon'):
     return jsonify(gate_facilities_response(facilities, plan, total_in_db=total))
 
 @app.route('/api/v1/search', methods=['GET'])
-@protect_data
+# NOTE: @protect_data removed — was causing 429s for MCP internal calls (BUG-003).
+# Endpoint has its own tier gating: get_request_tier(), enforce_search_limit(),
+# check_daily_record_budget(). MCP proxy adds additional gating layer.
 def search_facilities():
     """Search facilities — supports q, operator, city, state, country, min_mw, max_mw, tier, limit, offset"""
     from api_tier_gating import (get_request_tier, enforce_page_cap, enforce_search_limit,
@@ -8666,12 +8668,6 @@ try:
     register_infra_data_routes(app, get_pg_connection)
 except Exception as e:
     logger.warning(f"⚡ Infrastructure Data Routes: ⚠️ Failed: {e}")
-
-try:
-    from routes.pricing_connectivity_routes import register_pricing_connectivity_routes
-    register_pricing_connectivity_routes(app, get_pg_connection)
-except Exception as e:
-    logger.warning(f"Pricing Connectivity Routes: Failed: {e}")
 
 
 # =============================================================================
@@ -11482,8 +11478,8 @@ def ai_query():
         if not has_auth and api_key:
             try:
                 from api_tier_gating import validate_api_key, user_has_access
-                valid, info = validate_api_key(api_key)
-                if valid and user_has_access(info.get('plan', 'free'), 'pro'):
+                info = validate_api_key(api_key)  # Returns dict or None (NOT tuple)
+                if info and isinstance(info, dict) and user_has_access(info.get('plan', 'free'), 'pro'):
                     has_auth = True
             except:
                 pass
@@ -13574,34 +13570,6 @@ def api_site_score():
             result['water_stress'] = site_enrichment['water_stress']
         if site_enrichment.get('energy_rates'):
             result['retail_energy_rates'] = site_enrichment['energy_rates']
-
-        # --- EIA Pricing + Connectivity Enrichment (Mar 22) ---
-        try:
-            import requests as _req
-            _base = "http://localhost:8080"
-            # EIA pricing for this state
-            if state:
-                _pr = _req.get(f"{_base}/api/v1/energy/site-pricing?state={state}", timeout=5)
-                if _pr.status_code == 200:
-                    _pd = _pr.json()
-                    if _pd.get("success"):
-                        result["eia_electricity"] = _pd.get("electricity", {})
-                        result["eia_natural_gas"] = _pd.get("natural_gas", {})
-                        result["eia_gas_storage"] = _pd.get("gas_storage")
-            # PeeringDB connectivity near site
-            if lat and lon:
-                _st = state or ""
-                _cr = _req.get(f"{_base}/api/v1/connectivity/site-connectivity?lat={lat}&lng={lon}&state={_st}&radius=50", timeout=5)
-                if _cr.status_code == 200:
-                    _cd = _cr.json()
-                    if _cd.get("success"):
-                        result["connectivity"] = {
-                            "internet_exchanges": _cd.get("internet_exchanges", []),
-                            "networks": _cd.get("networks", {}),
-                            "fiber_coverage": _cd.get("fiber_coverage")
-                        }
-        except Exception as _e:
-            logger.warning(f"Pricing/connectivity enrichment (non-fatal): {_e}")
         return jsonify(result)
 
     except Exception as e:
