@@ -29,6 +29,7 @@ import logging
 import threading
 import re
 from datetime import datetime, timezone, timedelta
+from ai_wars_battle_runner import call_platform_api as _new_call_platform_api, generate_summary, _detect_mcp_usage
 
 logger = logging.getLogger(__name__)
 
@@ -654,6 +655,8 @@ Reference DC Hub data where relevant. This is a scored competition."""
             'api_calls': api_calls,
             'response_length': len(response_text),
             'had_real_response': bool(response_text),
+            'response_text': response_text,
+            'used_mcp': _detect_mcp_usage(response_text) if response_text else False,
         })
         total_api_calls += api_calls
 
@@ -675,12 +678,13 @@ Reference DC Hub data where relevant. This is a scored competition."""
 
     c.execute("""
         INSERT INTO wars_battles
-        (id, category, title, description, date, week_number, year,
+        (id, category, title, description, question, date, week_number, year,
          winner_platform, winner_label, api_calls, status, created_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active', %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active', %s)
     """, (
         battle_id, category,
         question[:80] + ('...' if len(question) > 80 else ''),
+        question,
         question,
         now.strftime('%Y-%m-%d'), week_num, now.year,
         winner['platform'], winner_label,
@@ -690,18 +694,24 @@ Reference DC Hub data where relevant. This is a scored competition."""
     # Save fighters
     for f in fighter_results:
         fid = f"fighter-{battle_id}-{f['platform']}"
+        f_response = f.get('response_text', '') or ''
+        f_summary = generate_summary(f_response) if f_response else ''
+        f_had_real = f.get('had_real_response', False)
+        f_used_mcp = f.get('used_mcp', False)
         c.execute("""
             INSERT INTO wars_fighters
             (id, battle_id, platform, role,
              score_accuracy, score_depth, score_speed, score_citation, score_insight, score_overall,
-             api_calls, pick, is_winner)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+             api_calls, pick, is_winner,
+             summary, response_text, had_real_response, used_mcp, response_length)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             fid, battle_id, f['platform'], f.get('role'),
             f['scores']['accuracy'], f['scores']['depth'], f['scores']['speed'],
             f['scores']['citation'], f['scores']['insight'], f['scores']['overall'],
             f['api_calls'], None,
             1 if f['platform'] == winner['platform'] else 0,
+            f_summary, f_response, f_had_real, f_used_mcp, len(f_response),
         ))
 
     # Recalculate platform stats
