@@ -8667,6 +8667,12 @@ try:
 except Exception as e:
     logger.warning(f"⚡ Infrastructure Data Routes: ⚠️ Failed: {e}")
 
+try:
+    from routes.pricing_connectivity_routes import register_pricing_connectivity_routes
+    register_pricing_connectivity_routes(app, get_pg_connection)
+except Exception as e:
+    logger.warning(f"Pricing Connectivity Routes: Failed: {e}")
+
 
 # =============================================================================
 # AGENT HUB ROUTES (existing)
