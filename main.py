@@ -3624,8 +3624,8 @@ def _gate_mcp_sse_stream(resp, rpc_method, rpc_params, tier):
 
 
 
-@app.route('/mcp', methods=['GET', 'POST', 'DELETE', 'OPTIONS'])
-@app.route('/mcp/', methods=['GET', 'POST', 'DELETE', 'OPTIONS'])
+@app.route('/mcp', methods=['GET', 'POST', 'DELETE', 'OPTIONS', 'HEAD'])
+@app.route('/mcp/', methods=['GET', 'POST', 'DELETE', 'OPTIONS', 'HEAD'])
 def mcp_proxy():
     """
     Proxy MCP Streamable HTTP requests to internal MCP server on port 8888.
@@ -3646,6 +3646,10 @@ def mcp_proxy():
         resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, DELETE, OPTIONS'
         resp.headers['Access-Control-Allow-Headers'] = 'Content-Type, Accept, Authorization, Mcp-Session-Id'
         resp.headers['Access-Control-Expose-Headers'] = 'Mcp-Session-Id'
+        return resp
+    # ---- HEAD request (health checks / monitoring) ----
+    if request.method == 'HEAD':
+        return '', 200, {'Content-Type': 'application/json'}
         return resp
 
     # ---- Build forwarding headers ----
