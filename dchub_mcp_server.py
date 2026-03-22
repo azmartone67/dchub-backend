@@ -49,6 +49,23 @@ MCP_PORT = int(os.environ.get("MCP_PORT", "8888"))
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("dchub-mcp")
 
+# ═══════════════════════════════════════════════════════════════
+# DATABASE CONNECTION — Direct psycopg2 for MCP process
+# MCP runs as separate process (port 8888), cannot share main.py pool
+# Uses NEON_DATABASE_URL with proper cleanup
+# ═══════════════════════════════════════════════════════════════
+import psycopg2
+
+def _get_connection():
+    """Get a direct Neon database connection for MCP tools."""
+    url = os.environ.get('NEON_DATABASE_URL') or os.environ.get('DATABASE_URL', '')
+    if not url:
+        raise Exception("No database URL configured for MCP server")
+    conn = psycopg2.connect(url, connect_timeout=10)
+    conn.autocommit = True
+    return conn
+
+
 # ---------------------------------------------------------------------------
 # DCHUB_API_BASE — Smart detection (prevents recurring Railway deadlock)
 # The MCP server runs as a uvicorn thread INSIDE Flask on Railway.
