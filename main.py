@@ -13590,7 +13590,8 @@ def api_site_score():
                         result["eia_gas_storage"] = _pd.get("gas_storage")
             # PeeringDB connectivity near site
             if lat and lon:
-                _cr = _req.get(f"{_base}/api/v1/connectivity/site-connectivity?lat={lat}&lng={lon}&state={state or ""}&radius=50", timeout=5)
+                _st = state or ""
+                _cr = _req.get(f"{_base}/api/v1/connectivity/site-connectivity?lat={lat}&lng={lon}&state={_st}&radius=50", timeout=5)
                 if _cr.status_code == 200:
                     _cd = _cr.json()
                     if _cd.get("success"):
