@@ -984,6 +984,16 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # CREATE FLASK APP IMMEDIATELY - Before any heavy imports
 # =============================================================================
+# Region normalization (MCP fix Mar 22)
+REGION_ALIASES = {
+    'north_america': 'North America', 'na': 'North America',
+    'north america': 'North America', 'us': 'North America',
+    'europe': 'EMEA', 'emea': 'EMEA', 'eu': 'EMEA',
+    'apac': 'APAC', 'asia': 'APAC', 'asia_pacific': 'APAC',
+    'latam': 'LATAM', 'latin_america': 'LATAM',
+    'mea': 'MEA', 'middle_east': 'MEA',
+}
+
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 
 # Redis cache routes
@@ -8335,6 +8345,7 @@ def _list_facilities_full():
         count_sql += " AND status = %s"
         params.append(status)
     if region:
+        region = REGION_ALIASES.get(region.strip(), region.strip())
         sql += " AND region = %s"
         count_sql += " AND region = %s"
         params.append(region)
@@ -13283,7 +13294,21 @@ def get_facility_by_id(facility_id):
             """, (facility_id, facility_id))
         row = cur.fetchone()
         if not row:
-            # Fallback: name-based search (MCP tools pass names, not IDs)
+            # Fallback 1: slug lookup (MCP tools may pass slugs)
+            cur.execute("""
+                SELECT df.id, df.name, df.provider, df.city, df.state, df.country,
+                       df.market AS region, df.latitude, df.longitude, df.power_mw,
+                       df.status, df.address, df.source,
+                       f.permit_date, f.approval_date, f.co_date,
+                       f.permit_source, f.permit_confidence::float AS permit_confidence
+                FROM discovered_facilities df
+                LEFT JOIN facilities f ON f.id = df.merged_facility_id
+                WHERE df.slug = %s
+                LIMIT 1
+            """, (facility_id,))
+            row = cur.fetchone()
+        if not row:
+            # Fallback 2: name-based search (MCP tools pass names, not IDs)
             cur.execute("""
                 SELECT df.id, df.name, df.provider, df.city, df.state, df.country,
                        df.market AS region, df.latitude, df.longitude, df.power_mw,

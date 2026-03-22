@@ -43,6 +43,17 @@ _get_ai_wars_key_info = None
 _real_require_plan_ref = None
 
 
+# Region normalization (MCP fix Mar 22)
+REGION_ALIASES = {
+    'north_america': 'North America', 'na': 'North America',
+    'north america': 'North America', 'us': 'North America',
+    'europe': 'EMEA', 'emea': 'EMEA', 'eu': 'EMEA',
+    'apac': 'APAC', 'asia': 'APAC', 'asia_pacific': 'APAC',
+    'latam': 'LATAM', 'latin_america': 'LATAM',
+    'mea': 'MEA', 'middle_east': 'MEA',
+}
+
+
 def init_deals_routes(require_plan, protect_data, get_db, pg_connection, get_ai_wars_key_info, real_require_plan=None):
     """Inject dependencies from main.py (late-binding pattern)."""
     global _require_plan, _protect_data, _get_db, _pg_connection, _get_ai_wars_key_info, _real_require_plan_ref
@@ -478,6 +489,7 @@ def get_deals():
     
     # Filter by region
     if region and region != 'All Regions':
+        region = REGION_ALIASES.get(region.strip(), region.strip())
         deals = [d for d in deals if d.get('region') == region]
     
     # Filter by type
@@ -919,6 +931,7 @@ def get_dc_markets():
     markets = SAMPLE_MARKETS.copy()
     
     if region and region != 'All':
+        region = REGION_ALIASES.get(region.strip(), region.strip())
         markets = [m for m in markets if m['region'] == region]
     
     return jsonify({
@@ -934,6 +947,7 @@ def get_markets():
     region = request.args.get('region')
     markets = SAMPLE_MARKETS.copy()
     if region and region != 'All':
+        region = REGION_ALIASES.get(region.strip(), region.strip())
         markets = [m for m in markets if m['region'] == region]
     try:
         conn = _get_db()
