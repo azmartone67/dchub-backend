@@ -13574,6 +13574,33 @@ def api_site_score():
             result['water_stress'] = site_enrichment['water_stress']
         if site_enrichment.get('energy_rates'):
             result['retail_energy_rates'] = site_enrichment['energy_rates']
+
+        # --- EIA Pricing + Connectivity Enrichment (Mar 22) ---
+        try:
+            import requests as _req
+            _base = "http://localhost:8080"
+            # EIA pricing for this state
+            if state:
+                _pr = _req.get(f"{_base}/api/v1/energy/site-pricing?state={state}", timeout=5)
+                if _pr.status_code == 200:
+                    _pd = _pr.json()
+                    if _pd.get("success"):
+                        result["eia_electricity"] = _pd.get("electricity", {})
+                        result["eia_natural_gas"] = _pd.get("natural_gas", {})
+                        result["eia_gas_storage"] = _pd.get("gas_storage")
+            # PeeringDB connectivity near site
+            if lat and lon:
+                _cr = _req.get(f"{_base}/api/v1/connectivity/site-connectivity?lat={lat}&lng={lon}&state={state or }&radius=50", timeout=5)
+                if _cr.status_code == 200:
+                    _cd = _cr.json()
+                    if _cd.get("success"):
+                        result["connectivity"] = {
+                            "internet_exchanges": _cd.get("internet_exchanges", []),
+                            "networks": _cd.get("networks", {}),
+                            "fiber_coverage": _cd.get("fiber_coverage")
+                        }
+        except Exception as _e:
+            logger.warning(f"Pricing/connectivity enrichment (non-fatal): {_e}")
         return jsonify(result)
 
     except Exception as e:
