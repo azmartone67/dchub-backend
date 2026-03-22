@@ -125,6 +125,12 @@ def fetch_electricity_rates(conn):
             if not state or not period or price is None:
                 continue
             
+            # EIA sometimes returns 'W' (withheld) or other strings
+            try:
+                price = float(price)
+            except (TypeError, ValueError):
+                continue
+            
             # Only keep last 12 months per state
             batch.append((state, sector, price, period))
         
@@ -142,6 +148,8 @@ def fetch_electricity_rates(conn):
                     total_inserted += 1
                 except Exception as e:
                     errors += 1
+                    conn.rollback()
+                    cur = conn.cursor()
             
             conn.commit()
             print(f"  ✓ Upserted {len(batch)} records for {sector}")
@@ -177,7 +185,8 @@ def fetch_natural_gas_prices(conn):
     errors = 0
     
     gas_sectors = {
-        "PRS": "citygate",
+        "PCS": "citygate",
+        "PRS": "residential",
         "PIN": "industrial", 
         "PCO": "commercial",
         "PEU": "electric_power"
@@ -219,6 +228,12 @@ def fetch_natural_gas_prices(conn):
             if not state_abbr:
                 continue
             
+            # EIA sometimes returns 'W' (withheld) or other strings
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                continue
+            
             try:
                 cur.execute("""
                     INSERT INTO eia_natural_gas_prices 
@@ -232,6 +247,8 @@ def fetch_natural_gas_prices(conn):
                 total_inserted += 1
             except Exception as e:
                 errors += 1
+                conn.rollback()
+                cur = conn.cursor()
         
         conn.commit()
         time.sleep(0.5)
@@ -285,6 +302,12 @@ def fetch_gas_storage(conn):
         if not region or not period or value is None:
             continue
         
+        # EIA sometimes returns 'W' (withheld) or other strings
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            continue
+        
         # Calculate net change
         key = region
         net_change = None
@@ -305,6 +328,8 @@ def fetch_gas_storage(conn):
             total_inserted += 1
         except Exception as e:
             errors += 1
+            conn.rollback()
+            cur = conn.cursor()
     
     conn.commit()
     
