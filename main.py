@@ -1741,6 +1741,16 @@ except ImportError:
     WELCOME_DRIP_AVAILABLE = False
     logger.warning("⚠️ welcome_emails.py not found — drip emails disabled")
 
+# Usage limit email triggers (nudge at 80%, alert at 100%)
+try:
+    from usage_limit_emails import trigger_usage_email, setup_usage_email_routes
+    USAGE_EMAILS_AVAILABLE = True
+    logger.info("✅ Usage limit email triggers loaded")
+except ImportError:
+    USAGE_EMAILS_AVAILABLE = False
+    trigger_usage_email = lambda *a, **kw: None  # no-op fallback
+    logger.warning("⚠️ usage_limit_emails.py not found — usage emails disabled")
+
 # Override get_read_db to route reads through the Neon read replica pool
 def get_db(*args, **kwargs):
     """Alias for get_pg_connection — legacy SQLite name, now points to Neon pool."""
@@ -3841,6 +3851,16 @@ def mcp_proxy():
             _tier_email = _tier_info.get('email', 'anonymous') if _tier_info else 'anonymous'
             logger.info(f"🔐 MCP tier: {caller_tier} | user: {_tier_email} | method: {rpc_method} | tool: {rpc_params.get('name', '') if rpc_params else ''}")
 
+            # ── Usage email trigger for registered users ──
+            if rpc_method == 'tools/call' and _tier_info and _tier_email != 'anonymous':
+                try:
+                    ip = request.remote_addr or 'unknown'
+                    entry = _mcp_free_rate_limits.get(ip, {})
+                    calls_used = entry.get('count', 0)
+                    trigger_usage_email(_tier_email, caller_tier, calls_used)
+                except Exception:
+                    pass  # Never let email trigger crash the proxy
+
             resp = http_req.post(
                 MCP_INTERNAL_URL,
                 headers=fwd_headers,
@@ -4469,6 +4489,13 @@ if WELCOME_DRIP_AVAILABLE:
         logger.info("✅ Welcome email drip routes registered")
     except Exception as e:
         logger.warning(f"⚠️ Drip routes failed: {e}")
+
+if USAGE_EMAILS_AVAILABLE:
+    try:
+        setup_usage_email_routes(app)
+        logger.info("✅ Usage limit email routes registered")
+    except Exception as e:
+        logger.warning(f"⚠️ Usage email routes failed: {e}")
 
 # =============================================================================
 # CRAWLER TRACKING SYSTEM
