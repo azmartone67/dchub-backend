@@ -828,7 +828,39 @@ async def get_renewable_energy(
     }.items() if v}
 
     if energy_type == "solar":
-        result = _api_get("/api/renewable/solar", params)
+        # Query Neon directly — REST route is gated by middleware
+        import psycopg2 as _rpg2
+        _rc = None
+        try:
+            _rc = _rpg2.connect(_resolve_api_base().replace('https://dchub-backend-production.up.railway.app', os.environ.get('NEON_DATABASE_URL', os.environ.get('DATABASE_URL', ''))))
+        except:
+            pass
+        if not _rc:
+            try:
+                _rc = _rpg2.connect(os.environ.get('NEON_DATABASE_URL') or os.environ.get('DATABASE_URL', ''))
+            except:
+                result = {"success": False, "error": "DB unavailable"}
+        if _rc:
+            try:
+                _cur = _rc.cursor()
+                _where, _p = [], []
+                if params.get("state") and len(params["state"]) <= 3:
+                    _where.append("UPPER(state) = UPPER(%s)")
+                    _p.append(params["state"])
+                if params.get("energy_type") and params["energy_type"] not in ("combined", ""):
+                    _where.append("LOWER(fuel_source) = LOWER(%s)")
+                    _p.append(params["energy_type"])
+                _cl = " AND ".join(_where) if _where else "1=1"
+                _cur.execute(f"SELECT buyer, power_mw, fuel_source, state FROM energy_ppas WHERE {_cl} ORDER BY power_mw DESC LIMIT 25", _p)
+                rows = [{"buyer": r[0], "capacity_mw": float(r[1]) if r[1] else 0, "type": r[2], "state": r[3]} for r in _cur.fetchall()]
+                _cur.execute("SELECT COUNT(*), COALESCE(SUM(power_mw),0) FROM energy_ppas")
+                _t = _cur.fetchone() or (0, 0)
+                result = {"success": True, "count": len(rows), "data": rows, "total_ppas": _t[0], "total_contracted_mw": round(float(_t[1] or 0), 0)}
+            except Exception as _e:
+                result = {"success": False, "error": str(_e)}
+            finally:
+                try: _rc.close()
+                except: pass
     elif energy_type == "wind":
         result = _api_get("/api/renewable/wind", params)
     else:
