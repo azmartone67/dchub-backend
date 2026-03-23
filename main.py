@@ -3321,19 +3321,11 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
         _tc = get_pg_connection()
         _tcur = _tc.cursor()
         if tool_name == "get_tax_incentives":
-            _st = params.get("state", "") if isinstance(params, dict) else ""
-            if _st:
-                _tcur.execute("SELECT state_abbr, state_name, incentive_details FROM tax_incentives_neon WHERE UPPER(state_abbr) = UPPER(%s) LIMIT 2", (_st,))
-            else:
-                _tcur.execute("SELECT state_abbr, state_name, incentive_details FROM tax_incentives_neon ORDER BY state_abbr LIMIT 3")
+            _tcur.execute("SELECT state_abbr, state_name, incentive_details FROM tax_incentives_neon WHERE incentive_details IS NOT NULL AND incentive_details != '' ORDER BY state_abbr LIMIT 3")
             _rows = _tcur.fetchall()
             teaser_data = {"sample_incentives": [{"state": r[0], "state_name": r[1], "incentives": (r[2] or "")[:120] + "..."} for r in _rows], "states_covered": 50}
         elif tool_name == "get_water_risk":
-            _st = params.get("state", "") if isinstance(params, dict) else ""
-            if _st:
-                _tcur.execute("SELECT site_name, state, water_level_ft, water_level_date FROM usgs_water_stress WHERE UPPER(state) = UPPER(%s) ORDER BY water_level_date DESC LIMIT 2", (_st,))
-            else:
-                _tcur.execute("SELECT site_name, state, water_level_ft, water_level_date FROM usgs_water_stress ORDER BY water_level_date DESC LIMIT 2")
+            _tcur.execute("SELECT site_name, state, water_level_ft, water_level_date FROM usgs_water_stress ORDER BY water_level_date DESC LIMIT 3")
             _rows = _tcur.fetchall()
             teaser_data = {"sample_sites": [{"site": r[0], "state": r[1], "water_level_ft": float(r[2]) if r[2] else None, "date": str(r[3])} for r in _rows], "monitoring_states": 16, "cooling_hint": "High water stress areas: air-cooled or hybrid recommended"}
         elif tool_name == "get_backup_status":
