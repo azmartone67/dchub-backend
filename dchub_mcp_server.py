@@ -1477,5 +1477,5 @@ if __name__ == "__main__":
         mcp.run(transport="stdio")
     else:
         import uvicorn
-        app = mcp.streamable_http_app(allowed_origins=["https://dchub.cloud", "https://www.dchub.cloud", "https://dchub-backend-production.up.railway.app", "*"])
+        app = mcp.streamable_http_app()
         uvicorn.run(app, host="0.0.0.0", port=port)
