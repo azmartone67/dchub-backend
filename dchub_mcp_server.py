@@ -774,7 +774,7 @@ async def get_energy_prices(
 
     if data_type == "retail_rates":
         params = {"state": state} if state else {}
-        result = _api_get("/api/v1/energy/electricity-rates", params)
+        result = _api_get("/api/v1/energy/retail/rates", params)
     elif data_type == "natural_gas":
         params = {"state": state} if state else {}
         result = _api_get("/api/v1/energy/naturalgas/price", params)
@@ -1196,25 +1196,17 @@ async def compare_sites(locations: str = "") -> str:
         if len(locs) > 4:
             locs = locs[:4]
 
-        import requests as _req
         results = []
         for loc in locs:
             try:
-                resp = _req.get(
-                    f"{API_BASE}/api/site-score",
-                    params={
-                        'lat': loc.get('lat', 0),
-                        'lon': loc.get('lon', 0),
-                        'state': loc.get('state', ''),
-                        'capacity': loc.get('capacity_mw', 0),
-                    },
-                    headers={'X-Internal-Key': 'dchub-internal-sync-2026'},
-                    timeout=15
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                else:
-                    data = {'overall_score': 0, 'scores': {}, 'error': f'HTTP {resp.status_code}'}
+                data = _api_get("/api/site-score", {
+                    'lat': loc.get('lat', 0),
+                    'lon': loc.get('lon', 0),
+                    'state': loc.get('state', ''),
+                    'capacity': loc.get('capacity_mw', 0),
+                })
+                if 'error' in data and 'overall_score' not in data:
+                    data = {'overall_score': 0, 'scores': {}, 'error': data.get('error', 'API error')}
             except Exception as e:
                 data = {'overall_score': 0, 'scores': {}, 'error': str(e)}
 
