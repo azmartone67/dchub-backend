@@ -3211,24 +3211,122 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
             return [{"type": "text", "text": json.dumps(teaser)}]
 
         elif tool_name == 'get_market_intel':
-            total_providers = len(data.get('top_providers', []))
+            # ── Direct DB fallback when REST API returns empty ──
+            # The MCP server calls /api/v1/markets/<slug> which may fail (timeout, 403, etc.)
+            # Detect empty response and query discovered_facilities directly using MARKET_ALIASES.
+            market_data = data.get('market', {})
+            by_status = data.get('by_status', {})
+            top_providers_raw = data.get('top_providers', [])
+            stats = data.get('stats', {})
+            facility_count = stats.get('facility_count') if stats else None
+            recent_count = len(data.get('recent_facilities', []))
+
+            # Detect empty REST response → direct DB query
+            if not market_data and not top_providers_raw and facility_count is None:
+                # Extract market name from tool input params
+                market_input = ''
+                if isinstance(tool_params, dict):
+                    market_input = (tool_params.get('arguments', {}) or {}).get('market', '')
+                if not market_input and isinstance(data, dict):
+                    market_input = data.get('market_name', '') or data.get('query', '')
+
+                if market_input:
+                    logger.info(f"get_market_intel: REST empty for '{market_input}', using DB fallback")
+                    market_lower = market_input.lower().replace('-', ' ').strip()
+
+                    # Resolve to MARKET_ALIASES cities
+                    _db_cities = MARKET_ALIASES.get(market_lower)
+                    if not _db_cities:
+                        # Try common aliases
+                        _MKT_RESOLVE = {
+                            'northern virginia': 'northern virginia', 'nova': 'nova',
+                            'n. virginia': 'northern virginia', 'n virginia': 'northern virginia',
+                            'dfw': 'dfw', 'dallas-fort worth': 'dallas', 'dallas fort worth': 'dallas',
+                            'silicon valley': 'silicon valley', 'bay area': 'silicon valley',
+                            'nyc': 'new york', 'new york city': 'new york',
+                            'la': 'los angeles', 'socal': 'los angeles',
+                        }
+                        resolved = _MKT_RESOLVE.get(market_lower, market_lower)
+                        _db_cities = MARKET_ALIASES.get(resolved)
+
+                    if _db_cities:
+                        pg_mi = None
+                        try:
+                            pg_mi = get_pg_connection()
+                            mc = pg_mi.cursor()
+
+                            # Build WHERE clause from city list (same logic as get_market_stats)
+                            conditions = []
+                            qparams = []
+                            for city in _db_cities:
+                                if len(city) == 2 and city.isupper():
+                                    conditions.append('state = %s')
+                                    qparams.append(city)
+                                else:
+                                    conditions.append('city ILIKE %s')
+                                    qparams.append(f'%{city}%')
+                            where_c = ' OR '.join(conditions)
+                            country_g = "AND (country = 'US' OR country = 'USA' OR country IS NULL OR country = '')"
+
+                            # Stats
+                            mc.execute(f"""
+                                SELECT COUNT(*) as fc, COUNT(DISTINCT provider) as pc
+                                FROM discovered_facilities
+                                WHERE ({where_c}) {country_g} {RAILWAY_EXCLUSION}
+                            """, qparams)
+                            srow = mc.fetchone()
+                            s_fc = _row_val(srow, 0)
+                            s_pc = srow[1] if srow and len(srow) > 1 else (list(srow.values())[1] if isinstance(srow, dict) else 0)
+                            facility_count = s_fc
+
+                            # Top providers
+                            mc.execute(f"""
+                                SELECT provider, COUNT(*) as cnt
+                                FROM discovered_facilities
+                                WHERE ({where_c}) AND provider != '' {country_g} {RAILWAY_EXCLUSION}
+                                GROUP BY provider ORDER BY cnt DESC LIMIT 10
+                            """, qparams)
+                            top_providers_raw = [{'name': r[0], 'facilities': r[1]} for r in _rows_to_tuples(mc.fetchall())]
+
+                            # By status
+                            mc.execute(f"""
+                                SELECT status, COUNT(*) FROM discovered_facilities
+                                WHERE ({where_c}) {country_g} {RAILWAY_EXCLUSION}
+                                GROUP BY status
+                            """, qparams)
+                            by_status = {r[0]: r[1] for r in _rows_to_tuples(mc.fetchall())}
+
+                            market_data = {
+                                'id': market_lower,
+                                'name': market_input.replace('-', ' ').title(),
+                                'cities': _db_cities,
+                            }
+                            mc.close()
+                        except Exception as mi_err:
+                            logger.error(f"get_market_intel DB fallback error for '{market_input}': {mi_err}")
+                        finally:
+                            if pg_mi:
+                                try: return_pg_connection(pg_mi)
+                                except: pass
+
+            total_providers = len(top_providers_raw)
             gated_providers = [
                 {'name': p.get('name'), 'facilities': p.get('facilities')}
-                for p in data.get('top_providers', [])[:3]
+                for p in top_providers_raw[:3]
             ]
             teaser = {
                 '_user_facing_note': MCP_USER_NOTES['get_market_intel'],
-                'success': data.get('success', True),
-                'market': data.get('market', {}),
-                'by_status': data.get('by_status', {}),
+                'success': True,
+                'market': market_data,
+                'by_status': by_status,
                 'top_providers': gated_providers,
                 'stats': {
-                    'facility_count': data.get('stats', {}).get('facility_count'),
+                    'facility_count': facility_count,
                     'total_power_mw': 'upgrade to see',
                     'avg_power_mw': 'upgrade to see',
                     'provider_count': 'upgrade to see',
                 },
-                'recent_facilities': f"blocked -- {len(data.get('recent_facilities', []))} recent facilities -- upgrade to see",
+                'recent_facilities': f"blocked -- {recent_count} recent facilities -- upgrade to see",
                 '_upgrade': {
                     'tier': 'free_teaser',
                     'showing_providers': min(3, total_providers),
@@ -3361,9 +3459,60 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
     }
     return [{"type": "text", "text": json.dumps(result)}]
 
+def _is_corrupt_facility(facility_dict):
+    """Detect the {k: k} corruption pattern where values equal their key names.
+    e.g. {"city": "city", "name": "name", "id": "id"} — all values are strings matching the key."""
+    if not facility_dict or not isinstance(facility_dict, dict):
+        return False
+    str_items = [(k, v) for k, v in facility_dict.items() if isinstance(v, str) and k not in ('status',)]
+    if len(str_items) < 3:
+        return False  # Not enough string fields to detect pattern
+    return all(v == k for k, v in str_items)
+
+
+def _get_facility_free_from_db(facility_id):
+    """Direct DB lookup for a single facility — free-tier fields only.
+    Bypasses the REST API entirely. Returns dict or None."""
+    if not facility_id:
+        return None
+    conn = None
+    try:
+        conn = get_read_db()
+        cur = conn.cursor()
+        # Try integer ID first
+        try:
+            int_id = int(facility_id)
+            cur.execute("""
+                SELECT id, name, provider, city, state, country, status
+                FROM discovered_facilities WHERE id = %s LIMIT 1
+            """, (int_id,))
+        except (ValueError, TypeError):
+            # Hex / slug / name fallback
+            cur.execute("""
+                SELECT id, name, provider, city, state, country, status
+                FROM discovered_facilities
+                WHERE slug = %s OR merged_facility_id = %s OR source_id = %s OR name ILIKE %s
+                LIMIT 1
+            """, (str(facility_id), str(facility_id), str(facility_id), f'%{facility_id}%'))
+        row = cur.fetchone()
+        if not row:
+            return None
+        cols = [d[0] for d in cur.description]
+        return dict(zip(cols, row)) if not isinstance(row, dict) else {k: row[k] for k in cols if k in row}
+    except Exception as e:
+        logger.error(f"_get_facility_free_from_db({facility_id}) error: {e}")
+        return None
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
 def _gate_facility_data(data, tool_name):
     """Strip facility data down to free-tier fields, limit count, add CTA.
-    v2: includes 1 full sample result so devs see what they're missing."""
+    v3: direct DB fallback for get_facility when response data is corrupt ({k:k} pattern)."""
     total_count = 0
     sample_full = None  # one ungated result as sample
 
@@ -3383,7 +3532,18 @@ def _gate_facility_data(data, tool_name):
                 if 'name' in inner or 'facility_name' in inner or 'provider' in inner:
                     total_count = 1
                     sample_full = dict(inner)
-                    data[key] = _strip_facility(inner)
+                    # ── BUG FIX: detect {k: k} corruption and use direct DB fallback ──
+                    stripped = _strip_facility(inner)
+                    if _is_corrupt_facility(stripped) and tool_name == 'get_facility':
+                        # Extract facility_id from the original inner dict or the response
+                        fac_id = inner.get('id') if inner.get('id') != 'id' else data.get('facility_id', '')
+                        db_facility = _get_facility_free_from_db(fac_id)
+                        if db_facility:
+                            logger.info(f"get_facility: DB fallback succeeded for id={fac_id}")
+                            stripped = db_facility
+                        else:
+                            logger.warning(f"get_facility: DB fallback failed for id={fac_id}, corrupt data will show")
+                    data[key] = stripped
                     break
         else:
             # Single facility object — strip it (top-level, no wrapper)
@@ -3464,10 +3624,18 @@ def _gate_facility_data(data, tool_name):
 
 
 def _strip_facility(facility):
-    """Strip a facility dict to free-tier fields only."""
+    """Strip a facility dict to free-tier fields only.
+    v2: defensive check — detect and prevent {k: k} pattern where values equal key names."""
     if not isinstance(facility, dict):
         return facility
-    return {k: v for k, v in facility.items() if k in MCP_FREE_FIELDS}
+    stripped = {k: v for k, v in facility.items() if k in MCP_FREE_FIELDS}
+    # Safety: detect broken {k: k} pattern (all string values equal their key name)
+    str_items = [(k, v) for k, v in stripped.items() if isinstance(v, str) and k != 'status']
+    if str_items and all(v == k for k, v in str_items):
+        logger.error(f"_strip_facility BUG DETECTED: values equal key names! Input had {len(facility)} keys: {list(facility.keys())[:15]}")
+        # The input dict itself has the broken pattern — cannot recover here.
+        # Return stripped anyway (caller will handle via _gate_facility_data fallback)
+    return stripped
 
 
 
@@ -3553,7 +3721,9 @@ def _gate_mcp_response_bytes(resp_bytes, rpc_method, rpc_params, tier):
     rpc_resp['result']['content'] = gated_content
 
     # WHITELIST strip for FREE tier only — paid tiers keep all fields
-    if tier in ('free', 'rate_limited'):
+    # SKIP for facility tools: _gate_facility_data already stripped fields correctly.
+    # Double-gating facility data through the whitelist can corrupt single-facility responses.
+    if tier in ('free', 'rate_limited') and tool_name not in MCP_FACILITY_TOOLS:
         # structuredContent will be rebuilt AFTER whitelist strip below
         ALLOWED_FIELDS = {
             '_user_facing_note', '_upgrade', 'success', 'count', 'total_available',
