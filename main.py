@@ -1739,23 +1739,7 @@ except ImportError as e:
     init_ai_tracking = None
     logger.warning(f"  ⚠️ ai_tracking: {e}")
 
-from api_data_protection import init_data_protection, protect_data as _original_protect_data
-
-# Wrap @protect_data with Origin + X-Internal-Key bypass
-# Same pattern as require_plan — dchub.cloud requests and MCP internal calls skip rate limiting
-def protect_data(f):
-    """Wrapper around @protect_data that bypasses for dchub.cloud and MCP internal calls."""
-    from functools import wraps
-    protected = _original_protect_data(f)
-    @wraps(f)
-    def wrapper(*args, **kwargs):
-        origin = request.headers.get("Origin", "") or request.headers.get("Referer", "")
-        internal_key = request.headers.get("X-Internal-Key", "")
-        # Bypass for our own frontend and MCP server
-        if "dchub.cloud" in origin or internal_key in ("dchub-internal-2024", "dchub-internal-sync-2026"):
-            return f(*args, **kwargs)
-        return protected(*args, **kwargs)
-    return wrapper
+from api_data_protection import init_data_protection, protect_data
 from db_utils import get_db, get_read_db as _original_get_read_db, safe_write
 
 # Welcome email drip sequence for new signups
@@ -4321,6 +4305,11 @@ def enforce_tier_rate_limits():
     # Bypass requests from dchub.cloud frontend
     origin = request.headers.get('Origin', '') or request.headers.get('Referer', '')
     if 'dchub.cloud' in origin:
+        return None
+
+    # Bypass internal MCP and admin tool calls
+    internal_key = request.headers.get('X-Internal-Key', '')
+    if internal_key in ('dchub-internal-2024', 'dchub-internal-sync-2026'):
         return None
 
     # Skip OPTIONS preflight
