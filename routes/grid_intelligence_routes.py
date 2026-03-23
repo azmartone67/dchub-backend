@@ -115,7 +115,7 @@ def _determine_tier(api_key):
     try:
         import jwt, os
         from flask import request as _req
-        JWT_SECRET = os.environ.get('JWT_SECRET', os.environ.get('SECRET_KEY', 'dchub-secret'))
+        JWT_SECRET = os.environ.get('JWT_SECRET', 'dchub-super-secret-key-change-in-production')
         auth_header = _req.headers.get('Authorization', '')
         token = None
         if auth_header.startswith('Bearer ') and not auth_header[7:].strip().startswith('dchub_'):
