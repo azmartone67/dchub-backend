@@ -167,9 +167,7 @@ def _determine_tier(api_key):
 def _get_infra_counts(lat, lon, radius_km=50, conn=None):
     """Get infrastructure counts near a corridor point.
     
-    substations uses lat/lng columns.
-    transmission_lines_eia and power_plants_eia use latitude/longitude.
-    gas_pipelines uses lat/lng.
+    All four tables use lat/lng columns (not latitude/longitude).
     
     Each query is independently try/excepted so one table failure
     doesn't zero out the others. With autocommit=True on the connection,
@@ -205,24 +203,24 @@ def _get_infra_counts(lat, lon, radius_km=50, conn=None):
         except Exception as e:
             logger.warning(f"[grid_intel] Substations query failed near ({lat},{lon}): {e}")
 
-        # Transmission lines (EIA uses latitude/longitude)
+        # Transmission lines (uses lat/lng)
         try:
             cur.execute("""
                 SELECT COUNT(*) FROM transmission_lines_eia
-                WHERE latitude IS NOT NULL AND longitude IS NOT NULL
-                AND ABS(latitude - %s) < %s AND ABS(longitude - %s) < %s
+                WHERE lat IS NOT NULL AND lng IS NOT NULL
+                AND ABS(lat - %s) < %s AND ABS(lng - %s) < %s
             """, (lat, deg_lat, lon, deg_lon))
             row = cur.fetchone()
             counts['transmission_lines'] = row[0] if row else 0
         except Exception as e:
             logger.warning(f"[grid_intel] Transmission query failed near ({lat},{lon}): {e}")
 
-        # Power plants (EIA uses latitude/longitude)
+        # Power plants (uses lat/lng)
         try:
             cur.execute("""
                 SELECT COUNT(*) FROM power_plants_eia
-                WHERE latitude IS NOT NULL AND longitude IS NOT NULL
-                AND ABS(latitude - %s) < %s AND ABS(longitude - %s) < %s
+                WHERE lat IS NOT NULL AND lng IS NOT NULL
+                AND ABS(lat - %s) < %s AND ABS(lng - %s) < %s
             """, (lat, deg_lat, lon, deg_lon))
             row = cur.fetchone()
             counts['power_plants'] = row[0] if row else 0
