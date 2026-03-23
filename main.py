@@ -11495,6 +11495,17 @@ except ImportError:
     print("⚠️ Health Watchdog: Not installed")
 
 # =============================================================================
+# SELF-HEALING ORCHESTRATOR (preemptive issue detection + auto-repair)
+# =============================================================================
+try:
+    from self_healing_orchestrator import start_healing_orchestrator
+    start_healing_orchestrator(app)
+except ImportError:
+    print("⚠️ Self-Healing Orchestrator: Module not found (self_healing_orchestrator.py)")
+except Exception as e:
+    print("⚠️ Self-Healing Orchestrator: Failed to start: %s" % str(e))
+
+# =============================================================================
 # NEWS SCHEDULER (module-level so gunicorn picks it up)
 # =============================================================================
 _news_admin_registered = False
