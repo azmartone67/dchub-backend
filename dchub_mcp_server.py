@@ -836,7 +836,7 @@ async def get_energy_prices(
         if data_type == "retail_rates":
             if state:
                 cur.execute("""
-                    SELECT state, sector, rate_cents_kwh, period, source
+                    SELECT state, sector, rate_cents_kwh, period
                     FROM eia_retail_rates
                     WHERE UPPER(state) = UPPER(%s)
                     ORDER BY rate_cents_kwh ASC LIMIT 50
@@ -844,7 +844,7 @@ async def get_energy_prices(
             else:
                 # No state filter: return cheapest rates as preview
                 cur.execute("""
-                    SELECT state, sector, rate_cents_kwh, period, source
+                    SELECT state, sector, rate_cents_kwh, period
                     FROM eia_retail_rates
                     ORDER BY rate_cents_kwh ASC LIMIT 25
                 """)
@@ -867,14 +867,14 @@ async def get_energy_prices(
             try:
                 if state:
                     cur.execute("""
-                        SELECT state, price, period, sector, source
+                        SELECT state, price, period, sector
                         FROM eia_gas_prices
                         WHERE UPPER(state) = UPPER(%s)
                         ORDER BY period DESC LIMIT 25
                     """, (state,))
                 else:
                     cur.execute("""
-                        SELECT state, price, period, sector, source
+                        SELECT state, price, period, sector
                         FROM eia_gas_prices
                         ORDER BY period DESC LIMIT 25
                     """)
