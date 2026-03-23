@@ -68,7 +68,7 @@ logger = logging.getLogger("dchub.self_healing")
 
 HEALTH_CHECK_INTERVAL = 120       # seconds between health checks
 HEALTH_CHECK_TIMEOUT = 5         # seconds to wait for DB ping
-MAX_CONSECUTIVE_FAILURES = 3     # failures before alerting
+MAX_CONSECUTIVE_FAILURES = 5     # failures before alerting (was 3, increased to avoid false alerts during long jobs)
 QUERY_MAX_RETRIES = 2            # retry count for transient errors
 QUERY_RETRY_BACKOFF = [0.5, 1.5] # seconds to wait between retries
 
