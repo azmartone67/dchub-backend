@@ -307,18 +307,96 @@ async def search_facilities(
     elif operator and query and operator.lower() not in query.lower():
         effective_query = f"{query} {operator}"
 
-    params = {k: v for k, v in {
-        "q": effective_query,
-        "country": country, "state": state, "city": city,
-        "operator": operator,
-        "provider": operator,
-        "min_mw": min_capacity_mw if min_capacity_mw else None,
-        "max_mw": max_capacity_mw if max_capacity_mw else None,
-        "tier": tier if tier else None,
-        "limit": min(limit, 100), "offset": offset,
-    }.items() if v}
-    _track("search_facilities", params)
-    result = _api_get("/api/v1/search", params)
+    _track("search_facilities", {
+        "q": effective_query, "country": country, "state": state,
+        "city": city, "operator": operator, "limit": min(limit, 100),
+    })
+
+    # ── Neon-direct query (v2.1.1 — eliminates circular Flask call) ──
+    conn = None
+    try:
+        conn = _get_connection()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SET LOCAL statement_timeout = 8000")
+
+        conditions = []
+        params_list = []
+
+        # Text search on name, provider, city, state
+        if effective_query:
+            q = f"%{effective_query}%"
+            conditions.append("(name ILIKE %s OR provider ILIKE %s OR city ILIKE %s OR state ILIKE %s)")
+            params_list.extend([q, q, q, q])
+
+        if country:
+            conditions.append("country = %s")
+            params_list.append(country.upper())
+
+        if state:
+            conditions.append("state = %s")
+            params_list.append(state.upper())
+
+        if city:
+            conditions.append("city ILIKE %s")
+            params_list.append(f"%{city}%")
+
+        if operator:
+            conditions.append("provider ILIKE %s")
+            params_list.append(f"%{operator}%")
+
+        if min_capacity_mw:
+            conditions.append("power_mw >= %s")
+            params_list.append(min_capacity_mw)
+
+        if max_capacity_mw:
+            conditions.append("power_mw <= %s")
+            params_list.append(max_capacity_mw)
+
+        if tier:
+            conditions.append("tier = %s")
+            params_list.append(tier)
+
+        # Railway exclusion
+        conditions.append("provider NOT LIKE '%%Railway%%'")
+        conditions.append("provider NOT LIKE '%%Railroad%%'")
+
+        where = "WHERE " + " AND ".join(conditions) if conditions else ""
+        safe_limit = min(limit, 100)
+        params_list.extend([safe_limit, offset])
+
+        cur.execute(f"""
+            SELECT id, name, provider, city, state, country, status, power_mw, tier, slug
+            FROM discovered_facilities
+            {where}
+            ORDER BY power_mw DESC NULLS LAST, name ASC
+            LIMIT %s OFFSET %s
+        """, params_list)
+
+        facilities = [dict(r) for r in cur.fetchall()]
+        cur.close()
+
+        result = {
+            "success": True,
+            "query": effective_query or operator or city or state or country,
+            "count": len(facilities),
+            "data": facilities,
+        }
+
+    except psycopg2.extensions.QueryCanceledError:
+        result = {"success": False, "error": "Search timed out — try a more specific query"}
+    except Exception as e:
+        logger.warning(f"search_facilities Neon error, falling back to REST: {e}")
+        result = _api_get("/api/v1/search", {
+            "q": effective_query, "limit": min(limit, 100), "offset": offset,
+            "state": state, "country": country, "city": city, "operator": operator,
+        }, retries=1)
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
     return json.dumps(result, indent=2)
 
 
@@ -519,20 +597,73 @@ async def get_news(
     Returns:
         JSON array of articles with title, source, date, summary, category, and URL.
     """
-    params = {k: v for k, v in {
-        "q": query, "category": category, "source": source,
-        "from": date_from, "to": date_to,
-        "limit": min(limit, 50) if not query else 50, "min_score": min_relevance,
-    }.items() if v}
-    _track("get_news", params)
-    result = _api_get("/api/v1/news", params)
-    # Post-filter: backend may ignore q param for keyword search
-    articles = result.get("articles") or []
-    if query and articles:
-        ql = query.lower().split()
-        articles = [a for a in articles if any(w in (a.get("title","") or "").lower() or w in (a.get("summary","") or "").lower() or w in (a.get("category","") or "").lower() for w in ql)]
-        result["articles"] = articles
-        result["count"] = len(articles)
+    _track("get_news", {"q": query, "category": category, "limit": min(limit, 50)})
+
+    # ── Neon-direct query (v2.1.1) ──
+    conn = None
+    try:
+        conn = _get_connection()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SET LOCAL statement_timeout = 8000")
+
+        conditions = []
+        params_list = []
+
+        if query:
+            ql = f"%{query}%"
+            conditions.append("(title ILIKE %s OR summary ILIKE %s OR category ILIKE %s)")
+            params_list.extend([ql, ql, ql])
+
+        if category:
+            conditions.append("LOWER(category) = LOWER(%s)")
+            params_list.append(category)
+
+        if source:
+            conditions.append("LOWER(source) = LOWER(%s)")
+            params_list.append(source)
+
+        if date_from:
+            conditions.append("published_at >= %s")
+            params_list.append(date_from)
+
+        if date_to:
+            conditions.append("published_at <= %s")
+            params_list.append(date_to)
+
+        where = "WHERE " + " AND ".join(conditions) if conditions else ""
+        safe_limit = min(limit, 50)
+        params_list.append(safe_limit)
+
+        cur.execute(f"""
+            SELECT title, source, published_at::text, summary, category, url, relevance_score
+            FROM news_articles
+            {where}
+            ORDER BY published_at DESC NULLS LAST
+            LIMIT %s
+        """, params_list)
+
+        articles = [dict(r) for r in cur.fetchall()]
+        cur.close()
+
+        result = {
+            "success": True,
+            "articles": articles,
+            "count": len(articles),
+        }
+
+    except Exception as e:
+        logger.warning(f"get_news Neon error, falling back to REST: {e}")
+        result = _api_get("/api/v1/news", {
+            "q": query, "category": category, "source": source,
+            "from": date_from, "to": date_to, "limit": min(limit, 50),
+        }, retries=1)
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
     return json.dumps(result, indent=2)
 
 
@@ -658,30 +789,86 @@ async def get_pipeline(
     Returns:
         JSON array of pipeline projects with operator, location, capacity, status, and timeline.
     """
-    params = {k: v for k, v in {
-        "status": status if status != "all" else None,
-        "country": country, "operator": operator,
-        "min_mw": min_capacity_mw if min_capacity_mw else None,
-        "before": expected_completion_before,
-        "limit": min(limit, 100), "offset": offset,
-    }.items() if v}
-    _track("get_pipeline", params)
-    result = _api_get("/api/v1/pipeline", params)
-    # Post-filter: backend may ignore operator param
-    projects = result.get("data") or []
-    if operator and projects:
-        ol = operator.lower()
-        projects = [p for p in projects if ol in (p.get("company","") or "").lower() or ol in (p.get("operator","") or "").lower()]
-        result["data"] = projects
-        result["count"] = len(projects)
-    if min_capacity_mw and projects:
-        projects = [p for p in projects if (p.get("capacity") or p.get("capacity_mw") or 0) >= min_capacity_mw]
-        result["data"] = projects
-        result["count"] = len(projects)
-    # Cap: limit investment details to prevent full data leak
-    for p in (result.get("data") or []):
-        if "investment" in p and isinstance(p["investment"], (int, float)):
-            p["investment_display"] = f"${p['investment']}M" if p["investment"] < 1000 else f"${round(p['investment']/1000,1)}B"
+    _track("get_pipeline", {"status": status, "country": country, "operator": operator, "limit": min(limit, 100)})
+
+    # ── Neon-direct query (v2.1.1) ──
+    conn = None
+    try:
+        conn = _get_connection()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SET LOCAL statement_timeout = 8000")
+
+        conditions = []
+        params_list = []
+
+        if status and status != "all":
+            conditions.append("LOWER(status) = LOWER(%s)")
+            params_list.append(status.replace("_", " "))
+
+        if country:
+            conditions.append("UPPER(country) = UPPER(%s)")
+            params_list.append(country)
+
+        if operator:
+            conditions.append("(operator ILIKE %s OR company ILIKE %s)")
+            params_list.extend([f"%{operator}%", f"%{operator}%"])
+
+        if min_capacity_mw:
+            conditions.append("capacity_mw >= %s")
+            params_list.append(min_capacity_mw)
+
+        if expected_completion_before:
+            conditions.append("expected_completion <= %s")
+            params_list.append(expected_completion_before)
+
+        where = "WHERE " + " AND ".join(conditions) if conditions else ""
+        safe_limit = min(limit, 100)
+        params_list.extend([safe_limit, offset])
+
+        cur.execute(f"""
+            SELECT operator, market, capacity_mw, status, country,
+                   expected_completion, investment, city, state
+            FROM capacity_pipeline
+            {where}
+            ORDER BY capacity_mw DESC NULLS LAST
+            LIMIT %s OFFSET %s
+        """, params_list)
+
+        projects = [dict(r) for r in cur.fetchall()]
+
+        # Total stats
+        cur.execute("SELECT COUNT(*), COALESCE(SUM(capacity_mw), 0) FROM capacity_pipeline")
+        totals = cur.fetchone()
+        cur.close()
+
+        # Investment display formatting
+        for p in projects:
+            inv = p.get("investment")
+            if inv and isinstance(inv, (int, float)):
+                p["investment_display"] = f"${inv}M" if inv < 1000 else f"${round(inv/1000,1)}B"
+
+        result = {
+            "success": True,
+            "data": projects,
+            "count": len(projects),
+            "total_projects": totals['count'] if totals else 0,
+            "total_capacity_gw": round(float(totals['coalesce'] or 0) / 1000, 1) if totals else 0,
+        }
+
+    except Exception as e:
+        logger.warning(f"get_pipeline Neon error, falling back to REST: {e}")
+        result = _api_get("/api/v1/pipeline", {
+            "status": status if status != "all" else None,
+            "country": country, "operator": operator,
+            "limit": min(limit, 100), "offset": offset,
+        }, retries=1)
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
     return json.dumps(result, indent=2)
 
 
