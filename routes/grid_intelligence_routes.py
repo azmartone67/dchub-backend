@@ -20,10 +20,9 @@ Tier gating:
 
 Fixes (Mar 23):
   - autocommit=True prevents transaction poisoning across corridor queries
-  - COALESCE(latitude, lat) handles dual-column substations schema
+  - Substations query uses correct lat/lng columns (not latitude/longitude which don't exist)
   - Facility count queries BOTH discovered_facilities AND facilities tables
-  - conn.rollback() in each except block as belt-and-suspenders
-  - Logging instead of silent pass
+  - Per-query try/except with logging instead of silent pass
 """
 
 import logging
@@ -168,9 +167,9 @@ def _determine_tier(api_key):
 def _get_infra_counts(lat, lon, radius_km=50, conn=None):
     """Get infrastructure counts near a corridor point.
     
-    Uses COALESCE(latitude, lat) to handle substations table having
-    data split across two column pairs (HIFLD bulk load used latitude/longitude,
-    older records used lat/lng).
+    substations uses lat/lng columns.
+    transmission_lines_eia and power_plants_eia use latitude/longitude.
+    gas_pipelines uses lat/lng.
     
     Each query is independently try/excepted so one table failure
     doesn't zero out the others. With autocommit=True on the connection,
@@ -193,14 +192,12 @@ def _get_infra_counts(lat, lon, radius_km=50, conn=None):
         deg_lat = radius_km / 111.0
         deg_lon = radius_km / (111.0 * 0.85)
 
-        # Substations — COALESCE handles dual-column schema
+        # Substations — uses lat/lng columns (no latitude/longitude columns exist)
         try:
             cur.execute("""
                 SELECT COUNT(*) FROM substations
-                WHERE COALESCE(latitude, lat) IS NOT NULL
-                AND COALESCE(longitude, lng) IS NOT NULL
-                AND ABS(COALESCE(latitude, lat) - %s) < %s
-                AND ABS(COALESCE(longitude, lng) - %s) < %s
+                WHERE lat IS NOT NULL AND lng IS NOT NULL
+                AND ABS(lat - %s) < %s AND ABS(lng - %s) < %s
             """, (lat, deg_lat, lon, deg_lon))
             row = cur.fetchone()
             counts['substations'] = row[0] if row else 0
