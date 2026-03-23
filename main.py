@@ -3275,9 +3275,9 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
                         cc.execute("SELECT COUNT(*) FROM facilities WHERE market ILIKE %s OR city ILIKE %s", (f'%{comp_name}%', f'%{comp_name}%'))
                         fc = _row_val(cc.fetchone(), 0)
                         cc.execute("SELECT provider, COUNT(*) as cnt FROM facilities WHERE market ILIKE %s OR city ILIKE %s GROUP BY provider ORDER BY cnt DESC LIMIT 3", (f'%{comp_name}%', f'%{comp_name}%'))
-                        top_p = [{'name': r[0], 'facilities': r[1]} for r in cc.fetchall()]
+                        top_p = [{'name': r[0], 'facilities': r[1]} for r in _rows_to_tuples(cc.fetchall())]
                         cc.execute("SELECT status, COUNT(*) FROM facilities WHERE market ILIKE %s OR city ILIKE %s GROUP BY status", (f'%{comp_name}%', f'%{comp_name}%'))
-                        by_st = {r[0]: r[1] for r in cc.fetchall()}
+                        by_st = {r[0]: r[1] for r in _rows_to_tuples(cc.fetchall())}
                         cc.close()
                         comparisons[comp_name] = {'facility_count': fc, 'top_providers': top_p, 'by_status': by_st}
                     except Exception as cmp_err:
@@ -4740,7 +4740,7 @@ def crawler_stats():
         cursor = conn.cursor()
 
         cursor.execute('SELECT crawler_name, COUNT(*) as visits FROM crawler_visits GROUP BY crawler_name ORDER BY visits DESC')
-        by_crawler = [dict(row) for row in cursor.fetchall()]
+        by_crawler = [dict(row) for row in _rows_to_tuples(cursor.fetchall())]
 
         cursor.execute('SELECT crawler_family, COUNT(*) as visits FROM crawler_visits GROUP BY crawler_family ORDER BY visits DESC')
         by_family = {row['crawler_family']: row['visits'] for row in cursor.fetchall()}
@@ -4750,7 +4750,7 @@ def crawler_stats():
         last_24h = _row_val(cursor.fetchone(), 0)
 
         cursor.execute('SELECT crawler_name, crawler_family, path, ip_address, timestamp FROM crawler_visits ORDER BY timestamp DESC LIMIT 50')
-        recent = [dict(row) for row in cursor.fetchall()]
+        recent = [dict(row) for row in _rows_to_tuples(cursor.fetchall())]
 
         conn.close()
 
@@ -4802,7 +4802,7 @@ def crawler_recent():
         conn = get_read_db(CRAWLER_DB_PATH)
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM crawler_visits ORDER BY timestamp DESC LIMIT %s', (limit,))
-        visits = [dict(row) for row in cursor.fetchall()]
+        visits = [dict(row) for row in _rows_to_tuples(cursor.fetchall())]
         conn.close()
         return jsonify({'success': True, 'visits': visits, 'count': len(visits)})
     except Exception as e:
@@ -6321,10 +6321,10 @@ def stripe_webhook_test():
             cur = conn.cursor()
 
             cur.execute("SELECT plan, COUNT(*) FROM users GROUP BY plan")
-            checks['user_plans'] = {row[0]: row[1] for row in cur.fetchall()}
+            checks['user_plans'] = {row[0]: row[1] for row in _rows_to_tuples(cur.fetchall())}
 
             cur.execute("SELECT subscription_status, COUNT(*) FROM users WHERE subscription_status IS NOT NULL GROUP BY subscription_status")
-            checks['subscription_statuses'] = {row[0]: row[1] for row in cur.fetchall()}
+            checks['subscription_statuses'] = {row[0]: row[1] for row in _rows_to_tuples(cur.fetchall())}
 
             cur.execute("SELECT COUNT(*) FROM users WHERE stripe_customer_id IS NOT NULL AND stripe_customer_id != ''")
             checks['users_with_stripe_id'] = _row_val(cur.fetchone(), 0)
@@ -7235,7 +7235,7 @@ def get_market_stats(market):
             LIMIT 10
         """, params)
         
-        top_providers = [{'name': r[0], 'facilities': r[1], 'power_mw': round(r[2], 1)} for r in c.fetchall()]
+        top_providers = [{'name': r[0], 'facilities': r[1], 'power_mw': round(r[2], 1)} for r in _rows_to_tuples(c.fetchall())]
         
         # By status
         c.execute(f"""
@@ -7367,7 +7367,7 @@ def compare_markets():
                 LIMIT 5
             """, params)
             
-            top_providers = [r[0] for r in c.fetchall()]
+            top_providers = [r[0] for r in _rows_to_tuples(c.fetchall())]
             
             comparison.append({
                 'market': market,
@@ -7680,7 +7680,7 @@ def get_marketing_stats():
             WHERE city IS NOT NULL AND city != '' 
             GROUP BY city ORDER BY cnt DESC LIMIT 5
         """)
-        top_markets = [row[0] for row in c.fetchall()]
+        top_markets = [row[0] for row in _rows_to_tuples(c.fetchall())]
         
         # Recent news count
         c.execute("SELECT COUNT(*) FROM announcements WHERE date(published_date) = date('now')")
@@ -7985,7 +7985,7 @@ def energy_discovery_status():
         # Discovery sources breakdown
         try:
             c.execute("SELECT source, COUNT(*) FROM facilities WHERE source IS NOT NULL AND source != '' GROUP BY source ORDER BY COUNT(*) DESC LIMIT 10")
-            discovery['top_sources'] = dict(c.fetchall())
+            discovery['top_sources'] = dict(_rows_to_tuples(c.fetchall()))
         except:
             discovery['top_sources'] = {}
 
@@ -8032,6 +8032,22 @@ def _row_vals(row, count=2):
         vals = list(row.values())
         return [vals[i] if i < len(vals) else 0 for i in range(count)]
     return [row[i] if i < len(row) else 0 for i in range(count)]
+
+def _row_to_tuple(row):
+    """Convert a RealDictCursor row (dict) to a tuple for index access.
+    Works with both dict rows and tuple rows transparently."""
+    if row is None:
+        return ()
+    if isinstance(row, dict):
+        return tuple(row.values())
+    return row
+
+def _rows_to_tuples(rows):
+    """Convert a list of RealDictCursor rows to tuples for index access."""
+    if not rows:
+        return []
+    return [_row_to_tuple(r) for r in rows]
+
 
 @app.route('/api/v1/stats', methods=['GET'])
 @cached_response(ttl=300, key_prefix="stats")
@@ -8082,10 +8098,10 @@ def get_stats():
             stats['total_announcements'] = 0
         
         c.execute("SELECT source, COUNT(*) FROM facilities WHERE source IS NOT NULL AND source != '' GROUP BY source ORDER BY COUNT(*) DESC")
-        stats['by_source'] = dict(c.fetchall())
+        stats['by_source'] = dict(_rows_to_tuples(c.fetchall()))
         
         c.execute("SELECT country, COUNT(*) FROM facilities WHERE country != '' GROUP BY country ORDER BY COUNT(*) DESC LIMIT 10")
-        stats['top_countries'] = dict(c.fetchall())
+        stats['top_countries'] = dict(_rows_to_tuples(c.fetchall()))
         
         c.execute(f"""
             SELECT provider, COUNT(*) FROM facilities 
@@ -8093,10 +8109,10 @@ def get_stats():
             {RAILWAY_EXCLUSION}
             GROUP BY provider ORDER BY COUNT(*) DESC LIMIT 10
         """)
-        stats['top_providers'] = dict(c.fetchall())
+        stats['top_providers'] = dict(_rows_to_tuples(c.fetchall()))
         
         c.execute("SELECT status, COUNT(*) FROM facilities WHERE status IS NOT NULL GROUP BY status")
-        stats['by_status'] = dict(c.fetchall())
+        stats['by_status'] = dict(_rows_to_tuples(c.fetchall()))
         
         try:
             c.execute("SELECT COUNT(*) FROM facilities WHERE first_seen::timestamp > NOW() - INTERVAL '7 days'")
@@ -8170,7 +8186,7 @@ def get_stats():
         # User breakdown for dashboard visibility
         try:
             c.execute("SELECT plan, COUNT(*) FROM users GROUP BY plan")
-            stats['users_by_plan'] = dict(c.fetchall())
+            stats['users_by_plan'] = dict(_rows_to_tuples(c.fetchall()))
         except:
             stats['users_by_plan'] = {}
         
@@ -8431,7 +8447,7 @@ def _list_facilities_full():
         row = c.fetchone(); total = row['count'] if isinstance(row, dict) else row[0]
         
         c.execute(sql, params)
-        facilities = [dict_from_row(row) for row in c.fetchall()]
+        facilities = [dict_from_row(row) for row in _rows_to_tuples(c.fetchall())]
         
         # Enrich with confidence badge and resolved location names
         try:
@@ -8553,7 +8569,7 @@ def _list_facilities_free(plan='anon'):
         row = c.fetchone()
         total = row['count'] if isinstance(row, dict) else row[0]
         c.execute(sql, params)
-        facilities = [dict_from_row(row) for row in c.fetchall()]
+        facilities = [dict_from_row(row) for row in _rows_to_tuples(c.fetchall())]
     except Exception as e:
         logger.error(f"Facilities gated endpoint error: {e}")
         return jsonify({'error': 'Database temporarily unavailable', 'detail': str(e)}), 503
@@ -8692,7 +8708,7 @@ def search_facilities():
             LIMIT %s OFFSET %s
         """, params)
     
-        facilities = [dict_from_row(row) for row in c.fetchall()]
+        facilities = [dict_from_row(row) for row in _rows_to_tuples(c.fetchall())]
 
         # Enrich with confidence badge
         try:
@@ -9760,7 +9776,7 @@ def api_facilities_stats():
     
     # By status
     c.execute("SELECT status, COUNT(*) FROM discovered_facilities WHERE status IS NOT NULL GROUP BY status")
-    by_status = dict(c.fetchall())
+    by_status = dict(_rows_to_tuples(c.fetchall()))
     
     # By region (top 10)
     c.execute("""
@@ -9768,7 +9784,7 @@ def api_facilities_stats():
         WHERE region IS NOT NULL 
         GROUP BY region ORDER BY cnt DESC LIMIT 10
     """)
-    by_region = dict(c.fetchall())
+    by_region = dict(_rows_to_tuples(c.fetchall()))
     
     # Total power
     c.execute("SELECT SUM(power_mw) FROM discovered_facilities WHERE power_mw IS NOT NULL")
@@ -10583,7 +10599,7 @@ def fiber_metro_api(market_name=None):
                 ORDER BY route_miles_approx DESC
             """, (market_name.replace('-', ' '),))
             cols = ['carrier','route_miles_approx','on_net_buildings','key_endpoints','services','notes','source','fiber_type']
-            carriers = [dict(zip(cols, r)) for r in cur.fetchall()]
+            carriers = [dict(zip(cols, r)) for r in _rows_to_tuples(cur.fetchall())]
             
             cur.execute("""
                 SELECT market, state, total_carriers, total_route_miles_approx,
@@ -10614,7 +10630,7 @@ def fiber_metro_api(market_name=None):
                 ORDER BY fiber_density_score DESC
             """)
             cols = ['market','state','total_carriers','total_route_miles','total_on_net_buildings','fiber_density_score','tier']
-            markets = [dict(zip(cols, r)) for r in cur.fetchall()]
+            markets = [dict(zip(cols, r)) for r in _rows_to_tuples(cur.fetchall())]
             
             if carrier_filter:
                 cur.execute("""
@@ -10623,7 +10639,7 @@ def fiber_metro_api(market_name=None):
                     ORDER BY route_miles_approx DESC
                 """, (carrier_filter,))
                 cols2 = ['market','route_miles_approx','on_net_buildings','services']
-                carrier_markets = [dict(zip(cols2, r)) for r in cur.fetchall()]
+                carrier_markets = [dict(zip(cols2, r)) for r in _rows_to_tuples(cur.fetchall())]
                 cur.close()
                 return_pg_connection(conn)
                 return jsonify({'success': True, 'carrier': carrier_filter, 'markets': carrier_markets, 'total_markets': len(carrier_markets)})
@@ -10930,7 +10946,7 @@ def permit_coverage_stats():
             ORDER BY cnt DESC
             LIMIT 10
         """)
-        sources = [{"source": r[0], "count": r[1]} for r in cur.fetchall()]
+        sources = [{"source": r[0], "count": r[1]} for r in _rows_to_tuples(cur.fetchall())]
 
         # Market breakdown (US only)
         cur.execute("""
@@ -10943,7 +10959,7 @@ def permit_coverage_stats():
             ORDER BY cnt DESC
             LIMIT 20
         """)
-        markets = [{"city": r[0], "state": r[1], "count": r[2]} for r in cur.fetchall()]
+        markets = [{"city": r[0], "state": r[1], "count": r[2]} for r in _rows_to_tuples(cur.fetchall())]
 
         # Average confidence
         cur.execute("""
@@ -11232,7 +11248,7 @@ def admin_deals_cleanup():
             cursor.execute("SELECT COUNT(*), SUM(CASE WHEN verified=1 THEN 1 ELSE 0 END) FROM deals")
             final = cursor.fetchone()
             cursor.execute("SELECT type, COUNT(*) FROM deals GROUP BY type ORDER BY COUNT(*) DESC")
-            types = dict(cursor.fetchall())
+            types = dict(_rows_to_tuples(cursor.fetchall()))
         return jsonify({'success': True, 'stats': stats, 'final': {'total': final[0], 'verified': final[1], 'types': types}})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -11634,19 +11650,19 @@ def ai_query():
                         total_count = _row_val(pg_cur.fetchone(), 0)
                         pg_cur.execute("SELECT name, city, country, provider FROM discovered_facilities WHERE name ILIKE %s OR city ILIKE %s OR provider ILIKE %s LIMIT 2", (f'%{query}%', f'%{query}%', f'%{query}%'))
                         cols = [d[0] for d in pg_cur.description]
-                        preview_data = [dict(zip(cols, row)) for row in pg_cur.fetchall()]
+                        preview_data = [dict(zip(cols, row)) for row in _rows_to_tuples(pg_cur.fetchall())]
                     elif query_type == 'deals':
                         pg_cur.execute("SELECT COUNT(*) FROM deals")
                         total_count = _row_val(pg_cur.fetchone(), 0)
                         pg_cur.execute("SELECT buyer, seller, value as deal_value, year FROM deals ORDER BY year DESC LIMIT 2")
                         cols = [d[0] for d in pg_cur.description]
-                        preview_data = [dict(zip(cols, row)) for row in pg_cur.fetchall()]
+                        preview_data = [dict(zip(cols, row)) for row in _rows_to_tuples(pg_cur.fetchall())]
                     elif query_type == 'capacity':
                         pg_cur.execute("SELECT COUNT(*) FROM capacity_pipeline")
                         total_count = _row_val(pg_cur.fetchone(), 0)
                         pg_cur.execute("SELECT operator as company, market, capacity_mw FROM capacity_pipeline ORDER BY capacity_mw DESC LIMIT 2")
                         cols = [d[0] for d in pg_cur.description]
-                        preview_data = [dict(zip(cols, row)) for row in pg_cur.fetchall()]
+                        preview_data = [dict(zip(cols, row)) for row in _rows_to_tuples(pg_cur.fetchall())]
             except Exception as e:
                 logger.warning(f"ai_query preview error: {e}")
 
@@ -11695,21 +11711,21 @@ def ai_query():
             elif query_type == 'facilities' and query:
                 pg_cur.execute("SELECT name, city, country, provider FROM discovered_facilities WHERE name ILIKE %s OR city ILIKE %s OR provider ILIKE %s LIMIT 10", (f'%{query}%', f'%{query}%', f'%{query}%'))
                 cols = [d[0] for d in pg_cur.description]
-                facilities = [dict(zip(cols, row)) for row in pg_cur.fetchall()]
+                facilities = [dict(zip(cols, row)) for row in _rows_to_tuples(pg_cur.fetchall())]
                 response['data'] = {'facilities': facilities, 'count': len(facilities)}
                 response['suggested_response'] = f"According to DC Hub Nexus, there are {len(facilities)} data center facilities matching '{query}'."
 
             elif query_type == 'deals':
                 pg_cur.execute("SELECT buyer, seller, value as deal_value, year, market FROM deals ORDER BY year DESC, id DESC LIMIT 10")
                 cols = [d[0] for d in pg_cur.description]
-                deals = [dict(zip(cols, row)) for row in pg_cur.fetchall()]
+                deals = [dict(zip(cols, row)) for row in _rows_to_tuples(pg_cur.fetchall())]
                 response['data'] = {'deals': deals, 'count': len(deals)}
                 response['suggested_response'] = f"DC Hub Nexus tracks {len(deals)} recent M&A transactions in the data center industry."
 
             elif query_type == 'capacity':
                 pg_cur.execute("SELECT operator, capacity_mw, market, status FROM capacity_pipeline ORDER BY capacity_mw DESC LIMIT 20")
                 cols = [d[0] for d in pg_cur.description]
-                pipeline = [dict(zip(cols, row)) for row in pg_cur.fetchall()]
+                pipeline = [dict(zip(cols, row)) for row in _rows_to_tuples(pg_cur.fetchall())]
                 total_mw = sum((p['capacity_mw'] or 0) for p in pipeline)
                 response['data'] = {'pipeline': pipeline, 'total_mw': total_mw}
                 response['suggested_response'] = f"According to DC Hub Nexus capacity tracking, there is {total_mw/1000:.1f} GW of data center capacity currently under development."
@@ -12125,7 +12141,7 @@ def ai_facts():
                 ORDER BY cnt DESC
                 LIMIT 10
             """)
-            top_operators = [{'name': row[0], 'facilities': row[1]} for row in pg_cur.fetchall()]
+            top_operators = [{'name': row[0], 'facilities': row[1]} for row in _rows_to_tuples(pg_cur.fetchall())]
 
             pg_cur.execute("""
                 SELECT country, COUNT(*) as cnt
@@ -12134,7 +12150,7 @@ def ai_facts():
                 ORDER BY cnt DESC
                 LIMIT 10
             """)
-            top_markets = [{'country': row[0], 'facilities': row[1]} for row in pg_cur.fetchall()]
+            top_markets = [{'country': row[0], 'facilities': row[1]} for row in _rows_to_tuples(pg_cur.fetchall())]
 
     except Exception as e:
         logger.warning(f"ai_facts error: {e}")
@@ -12633,7 +12649,7 @@ def get_market_intelligence():
             """)
             agg = cur.fetchone()
             cur.execute("SELECT DISTINCT region FROM market_intelligence WHERE region IS NOT NULL ORDER BY region")
-            regions = [r['region'] for r in cur.fetchall()]
+            regions = [r['region'] for r in _rows_to_tuples(cur.fetchall())]
         markets = []
         for r in rows:
             v = r.get('vacancy_rate')
@@ -13477,7 +13493,7 @@ def api_site_score():
                 _kc.execute("SELECT u.plan FROM api_keys ak JOIN users u ON ak.user_id = u.id WHERE ak.key_value = %s AND ak.is_active = TRUE LIMIT 1", (_api_key,))
                 _krow = _kc.fetchone()
                 _kconn.close()
-                if _krow and _krow[0] in ('pro', 'enterprise', 'developer'):
+                if _krow and _row_val(_krow, '') in ('pro', 'enterprise', 'developer'):
                     _authed = True
             except Exception as _ke:
                 logger.warning(f"site-score key lookup failed: {_ke}")
@@ -13507,8 +13523,9 @@ def api_site_score():
               AND (latitude - %s)*(latitude - %s) + (longitude - %s)*(longitude - %s) < 0.81
         """, (lat, lat, lon, lon))
         row = c.fetchone()
-        nearby_facilities = row[0] or 0
-        nearby_mw = float(row[1] or 0)
+        nearby_facilities = _row_val(row, 0)
+        _row_list = _row_vals(row, 2)
+        nearby_mw = float(_row_list[1] or 0)
 
         # 2. Nearby substations — MULTI-TABLE (~50km radius)
         nearby_substations = 0
@@ -13566,7 +13583,7 @@ def api_site_score():
                   AND LOWER(layer_type) IN ('power_plant', 'power_plants', 'generation')
                   AND (latitude - %s)*(latitude - %s) + (longitude - %s)*(longitude - %s) < 0.52
             """, (lat, lat, lon, lon))
-            pp_row = c.fetchone()
+            pp_row = _row_vals(c.fetchone(), 2)
             nearby_power_plants = pp_row[0] or 0
             nearby_generation_mw = float(pp_row[1] or 0)
         except Exception:
@@ -13580,7 +13597,7 @@ def api_site_score():
                 WHERE latitude IS NOT NULL AND longitude IS NOT NULL
                   AND (latitude - %s)*(latitude - %s) + (longitude - %s)*(longitude - %s) < 0.52
             """, (lat, lat, lon, lon))
-            dpp_row = c.fetchone()
+            dpp_row = _row_vals(c.fetchone(), 2)
             nearby_power_plants += (dpp_row[0] or 0)
             nearby_generation_mw += float(dpp_row[1] or 0)
         except Exception:
@@ -13759,7 +13776,7 @@ def api_agents_intelligence_index():
         c.execute("SELECT COALESCE(SUM(capacity_mw),0)/1000.0 FROM capacity_pipeline")
         pipeline_gw = float(_row_val(c.fetchone(), 0))
         c.execute("SELECT market, score FROM gdci_scores ORDER BY score DESC NULLS LAST LIMIT 10")
-        top_markets = [{'market': r[0], 'score': float(r[1] or 0)} for r in c.fetchall()]
+        top_markets = [{'market': r[0], 'score': float(r[1] or 0)} for r in _rows_to_tuples(c.fetchall())]
         c.execute("SELECT COUNT(*) FROM deals WHERE date >= NOW() - INTERVAL '90 days'")
         recent_deals = _row_val(c.fetchone(), 0)
         c.execute("SELECT COUNT(*) FROM substations")
