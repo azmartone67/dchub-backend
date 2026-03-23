@@ -1234,7 +1234,7 @@ def api_v1_map():
         facilities = [dict(zip(cols, row)) for row in rows]
         
         c.execute("SELECT COUNT(*) FROM discovered_facilities WHERE latitude IS NOT NULL AND longitude IS NOT NULL")
-        total = c.fetchone()[0]
+        total = _row_val(c.fetchone(), 0)
         
         return jsonify({
             'success': True,
@@ -1377,7 +1377,7 @@ def system_status():
             for table in ['facilities', 'deals', 'announcements', 'users']:
                 try:
                     pg_cur.execute(f"SELECT COUNT(*) FROM {table}")
-                    counts[table] = pg_cur.fetchone()[0]
+                    counts[table] = _row_val(pg_cur.fetchone(), 0)
                 except:
                     counts[table] = 0
             pg_check = {
@@ -3273,7 +3273,7 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
                         pg_c = get_pg_connection()
                         cc = pg_c.cursor()
                         cc.execute("SELECT COUNT(*) FROM facilities WHERE market ILIKE %s OR city ILIKE %s", (f'%{comp_name}%', f'%{comp_name}%'))
-                        fc = cc.fetchone()[0]
+                        fc = _row_val(cc.fetchone(), 0)
                         cc.execute("SELECT provider, COUNT(*) as cnt FROM facilities WHERE market ILIKE %s OR city ILIKE %s GROUP BY provider ORDER BY cnt DESC LIMIT 3", (f'%{comp_name}%', f'%{comp_name}%'))
                         top_p = [{'name': r[0], 'facilities': r[1]} for r in cc.fetchall()]
                         cc.execute("SELECT status, COUNT(*) FROM facilities WHERE market ILIKE %s OR city ILIKE %s GROUP BY status", (f'%{comp_name}%', f'%{comp_name}%'))
@@ -3336,7 +3336,7 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
             for _tbl in ["discovered_facilities", "deals", "news_articles", "gas_pipelines", "hifld_substations", "fiber_routes"]:
                 try:
                     _tcur.execute(f"SELECT COUNT(*) FROM {_tbl}")
-                    _counts[_tbl] = _tcur.fetchone()[0]
+                    _counts[_tbl] = _row_val(_tcur.fetchone(), 0)
                 except Exception:
                     _counts[_tbl] = "n/a"
                     _tc.rollback()
@@ -4656,7 +4656,7 @@ def admin_key_audit():
     no_plan = c.fetchall()
 
     c.execute("SELECT COUNT(*) FROM api_keys WHERE is_active = 1")
-    total_active = c.fetchone()[0]
+    total_active = _row_val(c.fetchone(), 0)
 
     conn.close()
 
@@ -4747,7 +4747,7 @@ def crawler_stats():
 
         since_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
         cursor.execute('SELECT COUNT(*) FROM crawler_visits WHERE timestamp > ?', (since_24h,))
-        last_24h = cursor.fetchone()[0]
+        last_24h = _row_val(cursor.fetchone(), 0)
 
         cursor.execute('SELECT crawler_name, crawler_family, path, ip_address, timestamp FROM crawler_visits ORDER BY timestamp DESC LIMIT 50')
         recent = [dict(row) for row in cursor.fetchall()]
@@ -4825,16 +4825,16 @@ def generate_market_report():
         
         # Get facility stats
         cursor.execute("SELECT COUNT(*) FROM facilities")
-        total_facilities = cursor.fetchone()[0]
+        total_facilities = _row_val(cursor.fetchone(), 0)
         
         cursor.execute("SELECT COUNT(DISTINCT provider) FROM discovered_facilities WHERE provider IS NOT NULL AND provider != ''")
-        total_providers = cursor.fetchone()[0]
+        total_providers = _row_val(cursor.fetchone(), 0)
         
         cursor.execute("SELECT COUNT(DISTINCT country) FROM discovered_facilities WHERE country IS NOT NULL AND country != ''")
-        total_countries = cursor.fetchone()[0]
+        total_countries = _row_val(cursor.fetchone(), 0)
         
         cursor.execute("SELECT SUM(power_mw) FROM discovered_facilities WHERE power_mw IS NOT NULL")
-        total_power = cursor.fetchone()[0] or 0
+        total_power = _row_val(cursor.fetchone(), 0)
         
         # Get recent deals
         cursor.execute("""
@@ -5937,7 +5937,7 @@ def create_alert():
     
     # Check alert limit (max 10 for free users)
     c.execute("SELECT COUNT(*) FROM user_alerts WHERE user_id = %s", (user_id,))
-    count = c.fetchone()[0]
+    count = _row_val(c.fetchone(), 0)
     
     # Get user plan
     c.execute("SELECT plan FROM users WHERE id = %s", (user_id,))
@@ -6056,7 +6056,7 @@ def check_and_send_alert_emails():
                     WHERE market LIKE %s
                     AND created_at > datetime('now', '-1 day')
                 """, (f'%{market}%',))
-                new_count = c.fetchone()[0]
+                new_count = _row_val(c.fetchone(), 0)
                 
                 if new_count > 0:
                     # Update last triggered
@@ -6327,7 +6327,7 @@ def stripe_webhook_test():
             checks['subscription_statuses'] = {row[0]: row[1] for row in cur.fetchall()}
 
             cur.execute("SELECT COUNT(*) FROM users WHERE stripe_customer_id IS NOT NULL AND stripe_customer_id != ''")
-            checks['users_with_stripe_id'] = cur.fetchone()[0]
+            checks['users_with_stripe_id'] = _row_val(cur.fetchone(), 0)
 
             cur.execute("""
                 SELECT email, plan, subscription_status, stripe_customer_id
@@ -6398,7 +6398,7 @@ def founding_members_status():
         c = conn.cursor()
         # Count users on the founding plan
         c.execute("SELECT COUNT(*) FROM users WHERE plan = 'founding'")
-        db_count = c.fetchone()[0]
+        db_count = _row_val(c.fetchone(), 0)
         conn.close()
         if db_count > 0:
             claimed = db_count
@@ -7647,7 +7647,7 @@ def get_marketing_stats():
         
         # Live facility count
         c.execute("SELECT COUNT(*) FROM discovered_facilities")
-        facilities = c.fetchone()[0] or 0
+        facilities = _row_val(c.fetchone(), 0)
         
         # Live pipeline from facilities table (all non-active statuses)
         try:
@@ -7669,7 +7669,7 @@ def get_marketing_stats():
         # Live deal volume from transactions
         try:
             c.execute("SELECT SUM(value_usd) FROM deals WHERE value_usd > 0")
-            total_deals = c.fetchone()[0] or 0
+            total_deals = _row_val(c.fetchone(), 0)
             deal_volume = f"${total_deals / 1e9:.0f}B+" if total_deals > 1e9 else "$85B+"
         except:
             deal_volume = "$85B+"
@@ -7684,11 +7684,11 @@ def get_marketing_stats():
         
         # Recent news count
         c.execute("SELECT COUNT(*) FROM announcements WHERE date(published_date) = date('now')")
-        news_today = c.fetchone()[0] or 0
+        news_today = _row_val(c.fetchone(), 0)
         
         # Countries count
         c.execute("SELECT COUNT(DISTINCT country) FROM discovered_facilities WHERE country IS NOT NULL")
-        countries = c.fetchone()[0] or 100
+        countries = _row_val(c.fetchone(), 0) or 100
         
         conn.close()
         
@@ -7771,9 +7771,9 @@ def mcp_analytics():
         hours = request.args.get('hours', 24, type=int)
         since = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
 
-        total_calls = db.execute(
+        total_calls = _row_val(db.execute(
             'SELECT COUNT(*) FROM mcp_tool_calls WHERE created_at > ?', (since,)
-        ).fetchone()[0]
+        ).fetchone(), 0)
 
         tool_breakdown = db.execute('''
             SELECT tool_name, COUNT(*) as count, AVG(response_time_ms) as avg_ms
@@ -7903,14 +7903,14 @@ def energy_discovery_status():
         # Substations (HIFLD bulk load)
         try:
             c.execute("SELECT COUNT(*) FROM substations")
-            discovery['substations'] = c.fetchone()[0] or 0
+            discovery['substations'] = _row_val(c.fetchone(), 0)
         except:
             discovery['substations'] = 0
 
         # Fiber routes
         try:
             c.execute("SELECT COUNT(*) FROM fiber_routes")
-            discovery['fiber_routes'] = c.fetchone()[0] or 0
+            discovery['fiber_routes'] = _row_val(c.fetchone(), 0)
         except:
             discovery['fiber_routes'] = 0
 
@@ -7925,18 +7925,18 @@ def energy_discovery_status():
         # Metro fiber summary (markets + carriers)
         try:
             c.execute("SELECT COUNT(DISTINCT market) FROM metro_dark_fiber")
-            discovery['metro_fiber_markets'] = c.fetchone()[0] or 0
+            discovery['metro_fiber_markets'] = _row_val(c.fetchone(), 0)
             c.execute("SELECT COUNT(DISTINCT carrier) FROM metro_dark_fiber")
-            discovery['metro_fiber_carriers'] = c.fetchone()[0] or 0
+            discovery['metro_fiber_carriers'] = _row_val(c.fetchone(), 0)
             c.execute("SELECT COALESCE(SUM(route_miles_approx), 0) FROM metro_dark_fiber")
-            discovery['metro_fiber_route_miles'] = round(c.fetchone()[0] or 0, 0)
+            discovery['metro_fiber_route_miles'] = round(_row_val(c.fetchone(), 0), 0)
         except:
             pass
 
         # Gas pipelines
         try:
             c.execute("SELECT COUNT(*) FROM gas_pipelines")
-            discovery['gas_pipelines'] = c.fetchone()[0] or 0
+            discovery['gas_pipelines'] = _row_val(c.fetchone(), 0)
         except:
             discovery['gas_pipelines'] = 0
 
@@ -7951,34 +7951,34 @@ def energy_discovery_status():
         # Tax incentives
         try:
             c.execute("SELECT COUNT(DISTINCT state) FROM tax_incentives_neon")
-            discovery['tax_incentive_states'] = c.fetchone()[0] or 0
+            discovery['tax_incentive_states'] = _row_val(c.fetchone(), 0)
         except:
             discovery['tax_incentive_states'] = 0
 
         # GDCI scores
         try:
             c.execute("SELECT COUNT(*) FROM gdci_scores")
-            discovery['gdci_markets'] = c.fetchone()[0] or 0
+            discovery['gdci_markets'] = _row_val(c.fetchone(), 0)
         except:
             discovery['gdci_markets'] = 0
 
         # Facilities discovered recently
         try:
             c.execute("SELECT COUNT(*) FROM facilities WHERE first_seen::timestamp > NOW() - INTERVAL '24 hours'")
-            discovery['new_facilities_24h'] = c.fetchone()[0] or 0
+            discovery['new_facilities_24h'] = _row_val(c.fetchone(), 0)
         except:
             discovery['new_facilities_24h'] = 0
 
         try:
             c.execute("SELECT COUNT(*) FROM facilities WHERE first_seen::timestamp > NOW() - INTERVAL '7 days'")
-            discovery['new_facilities_7d'] = c.fetchone()[0] or 0
+            discovery['new_facilities_7d'] = _row_val(c.fetchone(), 0)
         except:
             discovery['new_facilities_7d'] = 0
 
         # Total facilities
         try:
             c.execute("SELECT COUNT(*) FROM facilities")
-            discovery['total_facilities'] = c.fetchone()[0] or 0
+            discovery['total_facilities'] = _row_val(c.fetchone(), 0)
         except:
             discovery['total_facilities'] = 0
 
@@ -8012,6 +8012,27 @@ def energy_discovery_status():
             except:
                 pass
 
+def _row_val(row, default=0):
+    """Extract first value from a cursor row — works with both RealDictCursor (dict) and regular cursor (tuple)."""
+    if row is None:
+        return default
+    if isinstance(row, dict):
+        vals = list(row.values())
+        return vals[0] if vals else default
+    try:
+        return row[0]
+    except (IndexError, KeyError):
+        return default
+
+def _row_vals(row, count=2):
+    """Extract multiple values from a cursor row — works with both dict and tuple cursors."""
+    if row is None:
+        return [0] * count
+    if isinstance(row, dict):
+        vals = list(row.values())
+        return [vals[i] if i < len(vals) else 0 for i in range(count)]
+    return [row[i] if i < len(row) else 0 for i in range(count)]
+
 @app.route('/api/v1/stats', methods=['GET'])
 @cached_response(ttl=300, key_prefix="stats")
 def get_stats():
@@ -8024,11 +8045,11 @@ def get_stats():
         stats = {}
         
         c.execute("SELECT COUNT(*) FROM facilities")
-        main_count = (c.fetchone() or (0,))[0] or 0
+        main_count = _row_val(c.fetchone(), 0)
         
         try:
             c.execute("SELECT COUNT(*) FROM discovered_facilities WHERE is_duplicate = 0")
-            discovered_count = (c.fetchone() or (0,))[0] or 0
+            discovered_count = _row_val(c.fetchone(), 0)
         except:
             discovered_count = 0
         
@@ -8037,26 +8058,26 @@ def get_stats():
         stats['discovered_facilities'] = discovered_count
         
         c.execute("SELECT COALESCE(SUM(power_mw), 0) FROM facilities")
-        stats['total_power_mw'] = round((c.fetchone() or (0,))[0] or 0, 1)
+        stats['total_power_mw'] = round(_row_val(c.fetchone(), 0) or 0, 1)
         stats['total_mw'] = stats['total_power_mw']  # alias for frontends
         
         # total_substations
         try:
             c.execute("SELECT COUNT(*) FROM substations")
-            stats['total_substations'] = (c.fetchone() or (0,))[0] or 0
+            stats['total_substations'] = _row_val(c.fetchone(), 0)
         except Exception:
             stats['total_substations'] = 0
         
         c.execute(f"SELECT COUNT(DISTINCT provider) FROM facilities WHERE provider != '' AND provider IS NOT NULL {RAILWAY_EXCLUSION}")
-        stats['total_providers'] = (c.fetchone() or (0,))[0] or 0
+        stats['total_providers'] = _row_val(c.fetchone(), 0)
         
         c.execute("SELECT COUNT(DISTINCT country) FROM facilities WHERE country != '' AND country IS NOT NULL")
-        stats['total_countries'] = (c.fetchone() or (0,))[0] or 0
+        stats['total_countries'] = _row_val(c.fetchone(), 0)
         stats['countries'] = stats['total_countries']  # alias for frontends
         
         try:
             c.execute("SELECT COUNT(*) FROM announcements")
-            stats['total_announcements'] = (c.fetchone() or (0,))[0] or 0
+            stats['total_announcements'] = _row_val(c.fetchone(), 0)
         except:
             stats['total_announcements'] = 0
         
@@ -8079,7 +8100,7 @@ def get_stats():
         
         try:
             c.execute("SELECT COUNT(*) FROM facilities WHERE first_seen::timestamp > NOW() - INTERVAL '7 days'")
-            stats['new_last_7_days'] = c.fetchone()[0] or 0
+            stats['new_last_7_days'] = _row_val(c.fetchone(), 0)
         except Exception:
             stats['new_last_7_days'] = 0
         
@@ -8090,14 +8111,14 @@ def get_stats():
                                     'under_construction', 'pre-construction',
                                     'in development', 'permitting')
         """)
-        pipeline_row = c.fetchone()
-        stats['pipeline_count'] = pipeline_row[0] or 0
-        stats['pipeline_mw'] = round(pipeline_row[1] or 0, 1)
-        stats['pipeline_gw'] = round((pipeline_row[1] or 0) / 1000, 1)
+        pipeline_vals = _row_vals(c.fetchone(), 2)
+        stats['pipeline_count'] = pipeline_vals[0] or 0
+        stats['pipeline_mw'] = round(pipeline_vals[1] or 0, 1)
+        stats['pipeline_gw'] = round((pipeline_vals[1] or 0) / 1000, 1)
 
         try:
             c.execute("SELECT COUNT(*), COALESCE(SUM(capacity_mw),0) FROM capacity_pipeline")
-            cp = c.fetchone()
+            cp = _row_vals(c.fetchone(), 2)
             stats['curated_pipeline_count'] = cp[0] or 0
             stats['curated_pipeline_gw'] = round((cp[1] or 0) / 1000, 1)
             stats['curated_pipeline_markets'] = 32
@@ -8108,13 +8129,13 @@ def get_stats():
         
         try:
             c.execute("SELECT COUNT(*) FROM leads")
-            stats['total_leads'] = c.fetchone()[0] or 0
+            stats["total_leads"] = _row_val(c.fetchone(), 0) or 0
         except:
             stats['total_leads'] = 0
         
         try:
             c.execute("SELECT COUNT(*) FROM substations")
-            stats['total_substations'] = c.fetchone()[0] or 0
+            stats['total_substations'] = _row_val(c.fetchone(), 0)
         except:
             stats['total_substations'] = 0
         
@@ -8126,23 +8147,23 @@ def get_stats():
         stats['total_substations_hifld'] = stats.get('total_substations', 0)
         try:
             c.execute("SELECT COUNT(*) FROM fiber_routes")
-            stats['total_fiber_routes'] = c.fetchone()[0] or 0
+            stats['total_fiber_routes'] = _row_val(c.fetchone(), 0)
         except:
             stats['total_fiber_routes'] = 0
         try:
             c.execute("SELECT COUNT(*) FROM metro_dark_fiber")
-            stats['total_metro_dark_fiber'] = c.fetchone()[0] or 0
+            stats['total_metro_dark_fiber'] = _row_val(c.fetchone(), 0)
         except:
             stats['total_metro_dark_fiber'] = 0
         try:
             c.execute("SELECT COUNT(*) FROM gas_pipelines")
-            stats['total_gas_pipelines'] = c.fetchone()[0] or 0
+            stats['total_gas_pipelines'] = _row_val(c.fetchone(), 0)
         except:
             stats['total_gas_pipelines'] = 0
         
         try:
             c.execute("SELECT COUNT(*) FROM users")
-            stats['total_users'] = c.fetchone()[0] or 0
+            stats['total_users'] = _row_val(c.fetchone(), 0)
         except:
             stats['total_users'] = 0
         
@@ -8155,19 +8176,19 @@ def get_stats():
         
         try:
             c.execute("SELECT COUNT(*) FROM users WHERE created_at::timestamp > NOW() - INTERVAL '7 days'")
-            stats['new_users_7d'] = c.fetchone()[0] or 0
+            stats['new_users_7d'] = _row_val(c.fetchone(), 0)
         except:
             stats['new_users_7d'] = 0
         
         try:
             c.execute("SELECT COUNT(*) FROM users WHERE created_at::timestamp > NOW() - INTERVAL '30 days'")
-            stats['new_users_30d'] = c.fetchone()[0] or 0
+            stats['new_users_30d'] = _row_val(c.fetchone(), 0)
         except:
             stats['new_users_30d'] = 0
         
         try:
             c.execute("SELECT COUNT(*) FROM users WHERE subscription_status = 'active'")
-            stats['active_subscribers'] = c.fetchone()[0] or 0
+            stats['active_subscribers'] = _row_val(c.fetchone(), 0)
         except:
             stats['active_subscribers'] = 0
         
@@ -8850,17 +8871,17 @@ def api_health():
         cur = conn.cursor()
         try:
             cur.execute("SELECT COUNT(*) FROM discovered_facilities")
-            health['facility_count'] = cur.fetchone()[0] or 0
+            health['facility_count'] = _row_val(cur.fetchone(), 0)
         except Exception:
             pass
         try:
             cur.execute("SELECT COUNT(*) FROM deals")
-            health['deal_count'] = cur.fetchone()[0] or 0
+            health['deal_count'] = _row_val(cur.fetchone(), 0)
         except Exception:
             pass
         try:
             cur.execute("SELECT COUNT(*) FROM announcements")
-            health['news_count'] = cur.fetchone()[0] or 0
+            health['news_count'] = _row_val(cur.fetchone(), 0)
         except Exception:
             pass
     except Exception:
@@ -9664,7 +9685,7 @@ def api_transactions_alias():
                         'type': row[7] or 'acquisition', 'region': row[8] or 'North America', 'market': row[9] or ''
                     })
                 pg_cur.execute("SELECT COUNT(*) FROM deals")
-                total = pg_cur.fetchone()[0] or 0
+                total = _row_val(pg_cur.fetchone(), 0)
             _txn_result = {
                 'success': True, 'transactions': transactions, 'data': transactions,
                 'count': len(transactions), 'total_count': total,
@@ -9735,7 +9756,7 @@ def api_facilities_stats():
     
     # Total facilities
     c.execute("SELECT COUNT(*) FROM discovered_facilities")
-    total = c.fetchone()[0]
+    total = _row_val(c.fetchone(), 0)
     
     # By status
     c.execute("SELECT status, COUNT(*) FROM discovered_facilities WHERE status IS NOT NULL GROUP BY status")
@@ -9751,7 +9772,7 @@ def api_facilities_stats():
     
     # Total power
     c.execute("SELECT SUM(power_mw) FROM discovered_facilities WHERE power_mw IS NOT NULL")
-    total_power = c.fetchone()[0] or 0
+    total_power = _row_val(c.fetchone(), 0)
     
     conn.close()
     
@@ -10385,7 +10406,7 @@ def fiber_sources():
         except Exception:
             metro_stats = {'total_records': 0, 'carriers': 0, 'markets': 0, 'total_route_miles': 0}
         cursor.execute('SELECT COUNT(*) FROM fiber_routes')
-        total = cursor.fetchone()[0]
+        total = _row_val(cursor.fetchone(), 0)
         conn.close()
 
         return jsonify({"success": True, "total_routes": total, "sources": sources})
@@ -10815,7 +10836,7 @@ def refresh_transactions():
         conn = get_pg_connection()
         c = conn.cursor()
         c.execute("SELECT COUNT(*) FROM deals")
-        total = c.fetchone()[0] or 0
+        total = _row_val(c.fetchone(), 0)
         c.execute("SELECT date FROM deals WHERE date IS NOT NULL ORDER BY date DESC LIMIT 1")
         row = c.fetchone()
         newest = row[0] if row else None
@@ -10898,7 +10919,7 @@ def permit_coverage_stats():
 
         # Total facilities with permit_date
         cur.execute("SELECT COUNT(*) FROM facilities WHERE permit_date IS NOT NULL")
-        total = cur.fetchone()[0]
+        total = _row_val(cur.fetchone(), 0)
 
         # Breakdown by source
         cur.execute("""
@@ -10930,22 +10951,22 @@ def permit_coverage_stats():
             FROM facilities
             WHERE permit_date IS NOT NULL AND permit_confidence IS NOT NULL
         """)
-        avg_conf = float(cur.fetchone()[0] or 0)
+        avg_conf = float(_row_val(cur.fetchone(), 0))
 
         # Total facilities
         cur.execute("SELECT COUNT(*) FROM facilities")
-        total_facilities = cur.fetchone()[0]
+        total_facilities = _row_val(cur.fetchone(), 0)
 
         # US facilities with permit_date
         cur.execute("""
             SELECT COUNT(*) FROM facilities
             WHERE permit_date IS NOT NULL AND country = 'US'
         """)
-        us_count = cur.fetchone()[0]
+        us_count = _row_val(cur.fetchone(), 0)
 
         # US total
         cur.execute("SELECT COUNT(*) FROM facilities WHERE country = 'US'")
-        us_total = cur.fetchone()[0]
+        us_total = _row_val(cur.fetchone(), 0)
 
         return jsonify({
             "success": True,
@@ -11288,7 +11309,7 @@ def admin_news_archive():
                 SELECT COUNT(*) FROM announcements
                 WHERE published_date < NOW() - INTERVAL '%s days'
             """, (days,))
-            to_archive = cursor.fetchone()[0]
+            to_archive = _row_val(cursor.fetchone(), 0)
             if to_archive > 0:
                 cursor.execute("""
                     INSERT INTO announcements_archive
@@ -11302,9 +11323,9 @@ def admin_news_archive():
                 """, (days,))
             conn.commit()
             cursor.execute("SELECT COUNT(*) FROM announcements")
-            remaining = cursor.fetchone()[0]
+            remaining = _row_val(cursor.fetchone(), 0)
             cursor.execute("SELECT COUNT(*) FROM announcements_archive")
-            archived_total = cursor.fetchone()[0]
+            archived_total = _row_val(cursor.fetchone(), 0)
         return jsonify({'success': True, 'archived_now': to_archive, 'remaining_active': remaining, 'total_archived': archived_total, 'days_threshold': days})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -11406,7 +11427,7 @@ if ENABLE_DISCOVERY_THREADS:
                     with pg_connection() as conn_chk:
                         cur = conn_chk.cursor()
                         cur.execute("SELECT COUNT(*) FROM discovered_facilities WHERE merged_at IS NULL AND is_duplicate = 0")
-                        pending_ct = cur.fetchone()[0]
+                        pending_ct = _row_val(cur.fetchone(), 0)
                     if pending_ct > 0:
                         print(f"[AUTO-APPROVAL] {pending_ct} pending, processing batch of 100...")
                         result = run_auto_approval(max_records=100)
@@ -11599,19 +11620,19 @@ def ai_query():
                     pg_cur = pg_conn.cursor()
                     if query_type == 'facilities' and query:
                         pg_cur.execute("SELECT COUNT(*) FROM discovered_facilities WHERE name ILIKE %s OR city ILIKE %s OR provider ILIKE %s", (f'%{query}%', f'%{query}%', f'%{query}%'))
-                        total_count = pg_cur.fetchone()[0]
+                        total_count = _row_val(pg_cur.fetchone(), 0)
                         pg_cur.execute("SELECT name, city, country, provider FROM discovered_facilities WHERE name ILIKE %s OR city ILIKE %s OR provider ILIKE %s LIMIT 2", (f'%{query}%', f'%{query}%', f'%{query}%'))
                         cols = [d[0] for d in pg_cur.description]
                         preview_data = [dict(zip(cols, row)) for row in pg_cur.fetchall()]
                     elif query_type == 'deals':
                         pg_cur.execute("SELECT COUNT(*) FROM deals")
-                        total_count = pg_cur.fetchone()[0]
+                        total_count = _row_val(pg_cur.fetchone(), 0)
                         pg_cur.execute("SELECT buyer, seller, value as deal_value, year FROM deals ORDER BY year DESC LIMIT 2")
                         cols = [d[0] for d in pg_cur.description]
                         preview_data = [dict(zip(cols, row)) for row in pg_cur.fetchall()]
                     elif query_type == 'capacity':
                         pg_cur.execute("SELECT COUNT(*) FROM capacity_pipeline")
-                        total_count = pg_cur.fetchone()[0]
+                        total_count = _row_val(pg_cur.fetchone(), 0)
                         pg_cur.execute("SELECT operator as company, market, capacity_mw FROM capacity_pipeline ORDER BY capacity_mw DESC LIMIT 2")
                         cols = [d[0] for d in pg_cur.description]
                         preview_data = [dict(zip(cols, row)) for row in pg_cur.fetchall()]
@@ -11644,13 +11665,13 @@ def ai_query():
 
             if query_type == 'stats' or query_type == 'general' or not query:
                 pg_cur.execute("SELECT COUNT(*) FROM discovered_facilities")
-                facilities = pg_cur.fetchone()[0]
+                facilities = _row_val(pg_cur.fetchone(), 0)
                 pg_cur.execute("SELECT COUNT(*) FROM announcements")
-                news = pg_cur.fetchone()[0]
+                news = _row_val(pg_cur.fetchone(), 0)
                 pg_cur.execute("SELECT COUNT(*) FROM deals")
-                deals = pg_cur.fetchone()[0]
+                deals = _row_val(pg_cur.fetchone(), 0)
                 pg_cur.execute("SELECT COALESCE(SUM(capacity_mw), 0) FROM capacity_pipeline")
-                capacity = pg_cur.fetchone()[0]
+                capacity = _row_val(pg_cur.fetchone(), 0)
 
                 response['data'] = {
                     'facilities': facilities,
@@ -11799,7 +11820,7 @@ def add_testimonial():
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, CASE WHEN %s THEN CURRENT_TIMESTAMP ELSE NULL END)
             RETURNING id
         """, (platform, agent_name, quote, context, query_text, url, category, source, auto_approve, auto_approve))
-        new_id = c.fetchone()[0]
+        new_id = _row_val(c.fetchone(), 0)
         conn.commit()
         return jsonify({'success': True, 'id': new_id, 'approved': auto_approve})
     except Exception as e:
@@ -12062,25 +12083,25 @@ def ai_facts():
             pg_cur = pg_conn.cursor()
 
             pg_cur.execute("SELECT COUNT(*) FROM discovered_facilities")
-            total_facilities = pg_cur.fetchone()[0]
+            total_facilities = _row_val(pg_cur.fetchone(), 0)
             pg_cur.execute("SELECT COUNT(DISTINCT country) FROM discovered_facilities")
-            total_countries = pg_cur.fetchone()[0]
+            total_countries = _row_val(pg_cur.fetchone(), 0)
             pg_cur.execute("SELECT COUNT(DISTINCT provider) FROM discovered_facilities")
-            total_providers = pg_cur.fetchone()[0]
+            total_providers = _row_val(pg_cur.fetchone(), 0)
             pg_cur.execute("SELECT COUNT(*) FROM deals")
-            total_deals = pg_cur.fetchone()[0]
+            total_deals = _row_val(pg_cur.fetchone(), 0)
             pg_cur.execute("SELECT COALESCE(SUM(capacity_mw), 0) FROM capacity_pipeline")
-            pipeline_mw = pg_cur.fetchone()[0] or 0
+            pipeline_mw = _row_val(pg_cur.fetchone(), 0)
             try:
                 pg_cur.execute("SELECT COUNT(*) FROM fiber_routes")
-                fiber_routes = pg_cur.fetchone()[0]
+                fiber_routes = _row_val(pg_cur.fetchone(), 0)
             except:
                 fiber_routes = 128
             try:
                 pg_cur.execute("SELECT COUNT(*) FROM discovered_power_plants")
-                power_plants = pg_cur.fetchone()[0]
+                power_plants = _row_val(pg_cur.fetchone(), 0)
                 pg_cur.execute("SELECT COALESCE(SUM(capacity_mw), 0) FROM discovered_power_plants")
-                power_capacity = pg_cur.fetchone()[0] or 0
+                power_capacity = _row_val(pg_cur.fetchone(), 0)
             except:
                 power_plants = 52
                 power_capacity = 96318
@@ -12828,9 +12849,9 @@ if __name__ == '__main__':
                 try:
                     from discovery_auto_approve import run_auto_approval
                     conn_check = get_db()
-                    pending_count = conn_check.execute(
+                    pending_count = _row_val(conn_check.execute(
                         "SELECT COUNT(*) FROM discovered_facilities WHERE merged_at IS NULL AND is_duplicate = 0"
-                    ).fetchone()[0]
+                    ).fetchone(), 0)
                     conn_check.close()
                     if pending_count > 0:
                         print(f"\n🔄 Auto-approval: {pending_count} pending records, processing batch of 100...")
@@ -13487,7 +13508,7 @@ def api_site_score():
                   AND (voltage_kv > 69 OR voltage_kv IS NULL OR voltage_kv = 0)
                   AND (lat - %s)*(lat - %s) + (lng - %s)*(lng - %s) < 0.20
             """, (lat, lat, lon, lon))
-            nearby_substations = c.fetchone()[0] or 0
+            nearby_substations = _row_val(c.fetchone(), 0)
         except Exception:
             pass
 
@@ -13500,7 +13521,7 @@ def api_site_score():
                   AND LOWER(layer_type) IN ('substation', 'electric_substation', 'substations', 'power')
                   AND (latitude - %s)*(latitude - %s) + (longitude - %s)*(longitude - %s) < 0.20
             """, (lat, lat, lon, lon))
-            infra_substations = c.fetchone()[0] or 0
+            infra_substations = _row_val(c.fetchone(), 0)
         except Exception:
             pass
 
@@ -13515,7 +13536,7 @@ def api_site_score():
                   AND status = 'active'
                   AND (lat - %s)*(lat - %s) + (lng - %s)*(lng - %s) < 0.20
             """, (lat, lat, lon, lon))
-            nearby_gas_pipelines = c.fetchone()[0] or 0
+            nearby_gas_pipelines = _row_val(c.fetchone(), 0)
         except Exception:
             pass
 
@@ -13573,7 +13594,7 @@ def api_site_score():
                 SELECT COUNT(DISTINCT provider) FROM fiber_routes
                 WHERE UPPER(states_served) LIKE %s OR UPPER(states_served) LIKE %s
             """, (f'%{state}%', f'%, {state}%'))
-            fiber_carriers = c.fetchone()[0] or 0
+            fiber_carriers = _row_val(c.fetchone(), 0)
             if fiber_carriers >= 5:
                 fiber_score = min(100, fiber_score + 10)
             elif fiber_carriers >= 2:
@@ -13723,15 +13744,15 @@ def api_agents_intelligence_index():
         c = conn.cursor()
         c.execute("SET search_path = public")
         c.execute("SELECT COUNT(*) FROM facilities")
-        facility_count = c.fetchone()[0] or 0
+        facility_count = _row_val(c.fetchone(), 0)
         c.execute("SELECT COALESCE(SUM(capacity_mw),0)/1000.0 FROM capacity_pipeline")
-        pipeline_gw = float(c.fetchone()[0] or 0)
+        pipeline_gw = float(_row_val(c.fetchone(), 0))
         c.execute("SELECT market, score FROM gdci_scores ORDER BY score DESC NULLS LAST LIMIT 10")
         top_markets = [{'market': r[0], 'score': float(r[1] or 0)} for r in c.fetchall()]
         c.execute("SELECT COUNT(*) FROM deals WHERE date >= NOW() - INTERVAL '90 days'")
-        recent_deals = c.fetchone()[0] or 0
+        recent_deals = _row_val(c.fetchone(), 0)
         c.execute("SELECT COUNT(*) FROM substations")
-        substation_count = c.fetchone()[0] or 0
+        substation_count = _row_val(c.fetchone(), 0)
         # conn returned in finally
         pulse = min(99, round((min(facility_count/150,1)*30)+(min(pipeline_gw/400,1)*25)+(min(recent_deals/20,1)*20)+(min(substation_count/80000,1)*15)+(len(top_markets)/10*10),1))
         return jsonify({'dc_hub_intelligence_index': {'global_pulse_score': pulse,'generated_at': datetime.utcnow().isoformat()+'+00:00','data_summary': {'facilities': facility_count,'pipeline_gw': round(pipeline_gw,1),'recent_deals_90d': recent_deals,'substations': substation_count},'market_heat_map': {m['market']: m['score'] for m in top_markets[:8]},'top_markets': top_markets[:5],'active_integrations': 7,'integration_status': {'mcp_servers':'active','rest_api':'active','llms_txt':'active','schema_org':'active','custom_gpts':'active'},'call_to_action': {'message': 'DC Hub powers AI-driven data center intelligence. Connect at dchub.cloud/connect'}}})
