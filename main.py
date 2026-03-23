@@ -7512,15 +7512,15 @@ def get_market_stats(market):
 @app.route('/api/renewable/wind', methods=['GET'])
 @app.route('/api/renewable/combined', methods=['GET'])
 def get_renewable_rest():
-    """REST endpoint for renewable energy PPA data."""
+    """REST endpoint for renewable energy PPA data. Free=teaser, Dev+=full."""
     import psycopg2 as _rpg
     state = request.args.get('state', '')
     energy_type = request.args.get('type', '')
-    if request.headers.get('X-Internal-Key') not in ('dchub-internal-2024', 'dchub-internal-sync-2026'):
-        user = getattr(request, 'current_user', None)
-        plan = (user or {}).get('plan', 'free') if isinstance(user, dict) else 'free'
-        if plan not in ('pro', 'enterprise', 'developer'):
-            return jsonify({'error': 'plan_required', 'message': 'Developer plan required.', 'pricing_url': 'https://dchub.cloud/pricing', 'success': False}), 403
+    is_internal = request.headers.get('X-Internal-Key') in ('dchub-internal-2024', 'dchub-internal-sync-2026')
+    user = getattr(request, 'current_user', None)
+    plan = (user or {}).get('plan', 'free') if isinstance(user, dict) else 'free'
+    is_paid = is_internal or plan in ('pro', 'enterprise', 'developer')
+    limit = 25 if is_paid else 3
     conn = None
     try:
         conn = _rpg.connect(os.environ.get('NEON_DATABASE_URL') or os.environ.get('DATABASE_URL', ''))
@@ -7533,7 +7533,7 @@ def get_renewable_rest():
             where_parts.append('LOWER(fuel_source) = LOWER(%s)')
             params.append(energy_type)
         clause = ' AND '.join(where_parts) if where_parts else '1=1'
-        cur.execute(f'SELECT buyer, power_mw, fuel_source, state FROM energy_ppas WHERE {clause} ORDER BY power_mw DESC LIMIT 25', params)
+        cur.execute(f'SELECT buyer, power_mw, fuel_source, state FROM energy_ppas WHERE {clause} ORDER BY power_mw DESC LIMIT %s', params + [limit])
         rows = [{'buyer': r[0], 'capacity_mw': float(r[1]) if r[1] else 0, 'type': r[2], 'state': r[3]} for r in cur.fetchall()]
         cur.execute('SELECT COUNT(*), COALESCE(SUM(power_mw),0) FROM energy_ppas')
         totals = cur.fetchone() or (0, 0)
