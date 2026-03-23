@@ -162,7 +162,11 @@ def _get_pg_connection():
 
 
 def _ensure_fiber_routes_table():
-    """Verify fiber_routes table exists in Neon."""
+    """Verify fiber_routes table and required unique indexes exist in Neon.
+    
+    Self-healing: creates the (name, provider) unique index if missing.
+    This prevents the ON CONFLICT crash that caused the watchdog restart loop.
+    """
     conn = _get_pg_connection()
     if not conn:
         return False
@@ -170,6 +174,12 @@ def _ensure_fiber_routes_table():
         cur = conn.cursor()
         cur.execute("SELECT COUNT(*) FROM fiber_routes")
         cur.fetchone()
+        # Ensure the unique index exists — ON CONFLICT (name, provider) needs this
+        cur.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS fiber_routes_name_provider_unique
+            ON fiber_routes (name, provider)
+        """)
+        conn.commit()
         cur.close()
         conn.close()
         return True
@@ -227,6 +237,7 @@ def _upsert_fiber_route(conn, route):
             route.get('source', 'seed'),
             route.get('source_id', ''),
         ))
+        conn.commit()
         return True
     except Exception as e:
         logger.warning("Fiber route upsert failed: %s" % e)
@@ -406,7 +417,6 @@ def run_fiber_discovery():
             route['route_type'] = 'long_haul'
             if _upsert_fiber_route(conn, route):
                 results['seeded'] += 1
-                conn.commit()
             else:
                 results['errors'] += 1
 
@@ -418,7 +428,6 @@ def run_fiber_discovery():
             for route in pdb_routes:
                 if _upsert_fiber_route(conn, route):
                     results['discovered'] += 1
-                    conn.commit()
                 else:
                     results['errors'] += 1
             logger.info("PeeringDB fiber: %d routes discovered" % results['discovered'])
