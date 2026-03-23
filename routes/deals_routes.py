@@ -811,6 +811,7 @@ def get_gas_pipelines():
     except (ValueError, TypeError):
         radius = 50
 
+    conn = None
     try:
         conn = _get_db()
         c = conn.cursor()
@@ -864,8 +865,6 @@ def get_gas_pipelines():
             stats = c.fetchone()
         except Exception:
             pass
-
-        conn.close()
 
         return jsonify({
             'success': True,

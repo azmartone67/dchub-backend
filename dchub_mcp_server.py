@@ -1110,20 +1110,20 @@ async def get_tax_incentives(state: str = "") -> str:
 
         if state and len(state) <= 3:
             cur.execute("""
-                SELECT state, incentive_type, program_name, description,
-                       qualifying_criteria, estimated_savings, expiration_date,
-                       source_url
+                SELECT state_abbr, state_name, sales_tax_exempt, property_tax_abatement,
+                       enterprise_zone, investment_tax_credit, job_creation_credit,
+                       energy_incentive, data_center_specific, incentive_details,
+                       qualifying_investment, source_url
                 FROM tax_incentives_neon
-                WHERE UPPER(state) = UPPER(%s)
-                ORDER BY incentive_type
+                WHERE UPPER(state_abbr) = UPPER(%s)
             """, (state.upper(),))
         else:
             cur.execute("""
-                SELECT state, COUNT(*) as program_count,
-                       STRING_AGG(DISTINCT incentive_type, ', ') as types
+                SELECT state_abbr, state_name,
+                       sales_tax_exempt, property_tax_abatement, data_center_specific,
+                       LEFT(incentive_details, 80) as summary
                 FROM tax_incentives_neon
-                GROUP BY state
-                ORDER BY program_count DESC
+                ORDER BY state_abbr
             """)
 
         columns = [desc[0] for desc in cur.description]
@@ -1274,16 +1274,16 @@ async def get_water_risk(lat: float = 0, lon: float = 0, state: str = "") -> str
         water_data = {}
         if state:
             cur.execute("""
-                SELECT state, stress_level, withdrawal_mgd,
-                       population_served, primary_source
+                SELECT state, site_name, water_level_ft, water_level_date
                 FROM usgs_water_stress
                 WHERE UPPER(state) = UPPER(%s)
-                LIMIT 1
+                ORDER BY water_level_date DESC
+                LIMIT 5
             """, (state.upper(),))
-            row = cur.fetchone()
-            if row:
+            rows = cur.fetchall()
+            if rows:
                 cols = [d[0] for d in cur.description]
-                water_data = dict(zip(cols, row))
+                water_data = {"state": state.upper(), "sites": [dict(zip(cols, r)) for r in rows]}
 
         cur.execute("SELECT COUNT(DISTINCT state) FROM usgs_water_stress")
         states_covered = cur.fetchone()[0] or 0
