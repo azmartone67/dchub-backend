@@ -1,8 +1,16 @@
 """
-DC Hub Nexus — MCP Server (Production) v2.0
+DC Hub Nexus — MCP Server (Production) v2.1
 =============================================
 Compatible with: mcp==1.26.0 (uses `from mcp.server.fastmcp import FastMCP`)
 Transport: Streamable HTTP on port 8888, proxied via Flask /mcp
+
+v2.1 Changes (Mar 23, 2026):
+  - get_energy_prices: switched from REST proxy to Neon-direct (fixes timeout)
+  - get_renewable_energy: ALL branches now Neon-direct (fixes 45s timeout)
+  - Added connection pool warmup on startup via mcp_connection_pool
+  - Added _api_get retry logic for REST-dependent tools
+  - Added keepalive thread to prevent Railway idle shutdown
+  - httpx timeout bumped from 15s to 20s
 
 v2.0 Changes:
   - Added get_infrastructure tool (substations, transmission, gas pipelines, power plants)
@@ -25,6 +33,7 @@ import sys
 import json
 import logging
 import time
+import threading
 from datetime import datetime
 
 import httpx
@@ -43,7 +52,6 @@ from mcp.server.fastmcp import FastMCP
 # localhost:8080 is now SAFE and saves 200-400ms per tool call by
 # skipping the Cloudflare round-trip.
 # ═══════════════════════════════════════════════════════════════
-import os
 
 RAILWAY_EXTERNAL_URL = "https://dchub-backend-production.up.railway.app"
 
@@ -53,11 +61,23 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("dchub-mcp")
 
 # ═══════════════════════════════════════════════════════════════
+# MCP Connection Pool — warm connections on startup
+# ═══════════════════════════════════════════════════════════════
+try:
+    from mcp_connection_pool import init as init_pool, get_healthy_connection, mcp_timeout
+    _POOL_AVAILABLE = True
+    logger.info("✅ mcp_connection_pool module loaded")
+except ImportError:
+    _POOL_AVAILABLE = False
+    logger.warning("⚠️ mcp_connection_pool not found — running without pool warmup")
+
+# ═══════════════════════════════════════════════════════════════
 # DATABASE CONNECTION — Direct psycopg2 for MCP process
 # MCP runs as separate process (port 8888), cannot share main.py pool
 # Uses NEON_DATABASE_URL with proper cleanup
 # ═══════════════════════════════════════════════════════════════
 import psycopg2
+import psycopg2.extras
 
 def _get_connection():
     """Get a direct Neon database connection for MCP tools."""
@@ -119,20 +139,50 @@ mcp = FastMCP("DC Hub Nexus", stateless_http=True, json_response=True)
 # HELPERS
 # =============================================================================
 
-_http = httpx.Client(base_url=DCHUB_API_BASE, timeout=15.0, headers={"Referer": "https://dchub.cloud", "X-Forwarded-Host": "dchub.cloud", "User-Agent": "DCHub-MCP/2.0.0", "X-Internal-Key": "dchub-internal-sync-2026"})
+_http = httpx.Client(base_url=DCHUB_API_BASE, timeout=20.0, headers={"Referer": "https://dchub.cloud", "X-Forwarded-Host": "dchub.cloud", "User-Agent": "DCHub-MCP/2.1.0", "X-Internal-Key": "dchub-internal-sync-2026"})
 _request_log = []
 
 
-def _api_get(path: str, params: dict = None) -> dict:
-    """Call a DC Hub REST API endpoint and return JSON."""
+def _api_get(path: str, params: dict = None, retries: int = 1) -> dict:
+    """Call a DC Hub REST API endpoint with retry logic."""
+    last_error = None
+    for attempt in range(retries + 1):
+        try:
+            resp = _http.get(path, params=params or {})
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPStatusError as e:
+            last_error = f"API returned {e.response.status_code}"
+            if e.response.status_code < 500:
+                return {"error": last_error, "path": path}
+            # 5xx: retry
+            logger.warning(f"_api_get {path} attempt {attempt+1}: {last_error}")
+        except Exception as e:
+            last_error = str(e)
+            logger.warning(f"_api_get {path} attempt {attempt+1}: {last_error}")
+        if attempt < retries:
+            time.sleep(1.0 * (attempt + 1))
+    return {"error": last_error or "Unknown error", "path": path}
+
+
+def _neon_query(sql: str, params: tuple = None, single: bool = False) -> list:
+    """Execute a Neon query and return list of dicts. Used by Neon-direct tools."""
+    conn = None
     try:
-        resp = _http.get(path, params=params or {})
-        resp.raise_for_status()
-        return resp.json()
-    except httpx.HTTPStatusError as e:
-        return {"error": f"API returned {e.response.status_code}", "path": path}
-    except Exception as e:
-        return {"error": str(e), "path": path}
+        conn = _get_connection()
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SET LOCAL statement_timeout = 8000")  # 8s max per query
+            cur.execute(sql, params)
+            if single:
+                row = cur.fetchone()
+                return [dict(row)] if row else []
+            return [dict(r) for r in cur.fetchall()]
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def _track(tool_name: str, params: dict):
@@ -481,7 +531,7 @@ async def analyze_site(
         "capacity": capacity_mw if capacity_mw else None,
     }.items() if v}
     _track("analyze_site", params)
-    result = _api_get("/api/site-score", params)
+    result = _api_get("/api/site-score", params, retries=1)
     if isinstance(result, str):
         try:
             result = json.loads(result)
@@ -521,7 +571,7 @@ async def get_grid_data(
         return json.dumps({"error": "iso parameter is required"})
     params = {"iso": iso, "metric": metric, "period": period}
     _track("get_grid_data", params)
-    result = _api_get("/api/grid/fuel-mix-live", params)
+    result = _api_get("/api/grid/fuel-mix-live", params, retries=1)
     return json.dumps(result, indent=2)
 
 
@@ -744,6 +794,11 @@ async def get_fiber_intel(
     return json.dumps(results, indent=2)
 
 
+# ═══════════════════════════════════════════════════════════
+# TOOL: get_energy_prices — NEON-DIRECT (v2.1 fix)
+# Was: REST proxy to /api/v1/energy/* — caused timeouts on cold start
+# Now: Direct Neon queries, same pattern as get_water_risk (which works)
+# ═══════════════════════════════════════════════════════════
 @mcp.tool(
     name="get_energy_prices",
     annotations={
@@ -772,23 +827,106 @@ async def get_energy_prices(
     """
     _track("get_energy_prices", {"data_type": data_type, "state": state, "iso": iso})
 
-    if data_type == "retail_rates":
-        params = {"state": state} if state else {}
-        result = _api_get("/api/v1/energy/retail/rates", params)
-    elif data_type == "natural_gas":
-        params = {"state": state} if state else {}
-        result = _api_get("/api/v1/energy/naturalgas/price", params)
-    elif data_type == "grid_status":
-        params = {"iso": iso} if iso else {}
-        result = _api_get("/api/v1/grid/status", params)
-    elif data_type == "gas_storage":
-        result = _api_get("/api/v1/energy/gas-storage")
-    else:
-        result = {"error": f"Unknown data_type: {data_type}. Use: retail_rates, natural_gas, grid_status, gas_storage"}
+    conn = None
+    try:
+        conn = _get_connection()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SET LOCAL statement_timeout = 8000")
+
+        if data_type == "retail_rates":
+            if state:
+                cur.execute("""
+                    SELECT state, sector, rate_cents_kwh, period, source
+                    FROM eia_retail_rates
+                    WHERE UPPER(state) = UPPER(%s)
+                    ORDER BY rate_cents_kwh ASC LIMIT 50
+                """, (state,))
+            else:
+                # No state filter: return cheapest rates as preview
+                cur.execute("""
+                    SELECT state, sector, rate_cents_kwh, period, source
+                    FROM eia_retail_rates
+                    ORDER BY rate_cents_kwh ASC LIMIT 25
+                """)
+            rows = [dict(r) for r in cur.fetchall()]
+
+            cur.execute("SELECT COUNT(DISTINCT state) FROM eia_retail_rates")
+            states_count = cur.fetchone()['count'] or 0
+
+            result = {
+                "success": True,
+                "data_type": "retail_rates",
+                "rates": rows,
+                "count": len(rows),
+                "states_covered": states_count,
+                "data_source": "EIA (U.S. Energy Information Administration)",
+            }
+
+        elif data_type == "natural_gas":
+            # Try eia_gas_prices table
+            try:
+                if state:
+                    cur.execute("""
+                        SELECT state, price, period, sector, source
+                        FROM eia_gas_prices
+                        WHERE UPPER(state) = UPPER(%s)
+                        ORDER BY period DESC LIMIT 25
+                    """, (state,))
+                else:
+                    cur.execute("""
+                        SELECT state, price, period, sector, source
+                        FROM eia_gas_prices
+                        ORDER BY period DESC LIMIT 25
+                    """)
+                rows = [dict(r) for r in cur.fetchall()]
+                result = {
+                    "success": True,
+                    "data_type": "natural_gas",
+                    "prices": rows,
+                    "count": len(rows),
+                    "data_source": "EIA Natural Gas",
+                }
+            except Exception:
+                # Table may not exist — fall back to REST
+                result = _api_get("/api/v1/energy/naturalgas/price", {"state": state} if state else {})
+
+        elif data_type == "grid_status":
+            # Grid status needs live data — use REST with retry
+            params = {"iso": iso} if iso else {}
+            result = _api_get("/api/v1/grid/status", params, retries=1)
+
+        elif data_type == "gas_storage":
+            result = _api_get("/api/v1/energy/gas-storage", retries=1)
+
+        else:
+            result = {"error": f"Unknown data_type: {data_type}. Use: retail_rates, natural_gas, grid_status, gas_storage"}
+
+    except psycopg2.extensions.QueryCanceledError:
+        result = {"success": False, "error": "Query timed out", "data_type": data_type}
+    except Exception as e:
+        logger.warning(f"get_energy_prices Neon error, falling back to REST: {e}")
+        # Fallback to REST proxy
+        if data_type == "retail_rates":
+            result = _api_get("/api/v1/energy/retail/rates", {"state": state} if state else {}, retries=1)
+        elif data_type == "natural_gas":
+            result = _api_get("/api/v1/energy/naturalgas/price", {"state": state} if state else {}, retries=1)
+        else:
+            result = {"success": False, "error": str(e)}
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     return json.dumps(result, indent=2)
 
 
+# ═══════════════════════════════════════════════════════════
+# TOOL: get_renewable_energy — NEON-DIRECT (v2.1 fix)
+# Was: Broken _resolve_api_base() as DB URL + missing REST routes
+# Now: All branches query Neon directly (energy_ppas + power_plants_eia)
+# ═══════════════════════════════════════════════════════════
 @mcp.tool(
     name="get_renewable_energy",
     annotations={
@@ -821,52 +959,96 @@ async def get_renewable_energy(
     """
     _track("get_renewable_energy", {"energy_type": energy_type, "state": state})
 
-    params = {k: v for k, v in {
-        "state": state,
-        "lat": lat if lat else None,
-        "lon": lon if lon else None,
-    }.items() if v}
+    conn = None
+    try:
+        conn = _get_connection()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SET LOCAL statement_timeout = 8000")
 
-    if energy_type == "solar":
-        # Query Neon directly — REST route is gated by middleware
-        import psycopg2 as _rpg2
-        _rc = None
+        # --- 1. PPAs from energy_ppas table ---
+        ppa_where, ppa_params = [], []
+        if state and len(state) <= 3:
+            ppa_where.append("UPPER(state) = UPPER(%s)")
+            ppa_params.append(state)
+        if energy_type and energy_type not in ("combined", ""):
+            ppa_where.append("LOWER(fuel_source) LIKE %s")
+            ppa_params.append(f"%{energy_type.lower()}%")
+
+        ppa_clause = " AND ".join(ppa_where) if ppa_where else "1=1"
+        cur.execute(f"""
+            SELECT buyer, power_mw, fuel_source, state, facility_name
+            FROM energy_ppas
+            WHERE {ppa_clause}
+            ORDER BY power_mw DESC LIMIT 50
+        """, ppa_params)
+        ppas = [dict(r) for r in cur.fetchall()]
+
+        # Totals
+        cur.execute("SELECT COUNT(*), COALESCE(SUM(power_mw), 0) FROM energy_ppas")
+        totals = cur.fetchone()
+        total_ppas = totals['count'] or 0
+        total_mw = round(float(totals['coalesce'] or 0), 0)
+
+        # --- 2. Power plants from power_plants_eia (if available) ---
+        installations = []
         try:
-            _rc = _rpg2.connect(_resolve_api_base().replace('https://dchub-backend-production.up.railway.app', os.environ.get('NEON_DATABASE_URL', os.environ.get('DATABASE_URL', ''))))
-        except:
-            pass
-        if not _rc:
-            try:
-                _rc = _rpg2.connect(os.environ.get('NEON_DATABASE_URL') or os.environ.get('DATABASE_URL', ''))
-            except:
-                result = {"success": False, "error": "DB unavailable"}
-        if _rc:
-            try:
-                _cur = _rc.cursor()
-                _where, _p = [], []
-                if params.get("state") and len(params["state"]) <= 3:
-                    _where.append("UPPER(state) = UPPER(%s)")
-                    _p.append(params["state"])
-                if params.get("energy_type") and params["energy_type"] not in ("combined", ""):
-                    _where.append("LOWER(fuel_source) = LOWER(%s)")
-                    _p.append(params["energy_type"])
-                _cl = " AND ".join(_where) if _where else "1=1"
-                _cur.execute(f"SELECT buyer, power_mw, fuel_source, state FROM energy_ppas WHERE {_cl} ORDER BY power_mw DESC LIMIT 25", _p)
-                rows = [{"buyer": r[0], "capacity_mw": float(r[1]) if r[1] else 0, "type": r[2], "state": r[3]} for r in _cur.fetchall()]
-                _cur.execute("SELECT COUNT(*), COALESCE(SUM(power_mw),0) FROM energy_ppas")
-                _t = _cur.fetchone() or (0, 0)
-                result = {"success": True, "count": len(rows), "data": rows, "total_ppas": _t[0], "total_contracted_mw": round(float(_t[1] or 0), 0)}
-            except Exception as _e:
-                result = {"success": False, "error": str(_e)}
-            finally:
-                try: _rc.close()
-                except: pass
-    elif energy_type == "wind":
-        result = _api_get("/api/renewable/wind", params)
-    else:
-        result = _api_get("/api/renewable/combined", params)
+            plant_where, plant_params = [], []
 
-    return json.dumps(result, indent=2)
+            # Filter by energy type
+            if energy_type == "solar":
+                plant_where.append("UPPER(energy_source) IN ('SUN', 'SOLAR')")
+            elif energy_type == "wind":
+                plant_where.append("UPPER(energy_source) IN ('WND', 'WIND')")
+            else:
+                plant_where.append("UPPER(energy_source) IN ('SUN', 'SOLAR', 'WND', 'WIND')")
+
+            if state and len(state) <= 3:
+                plant_where.append("UPPER(state) = UPPER(%s)")
+                plant_params.append(state)
+
+            if lat and lon:
+                plant_where.append("lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s")
+                plant_params.extend([lat - 1.0, lat + 1.0, lon - 1.0, lon + 1.0])
+
+            plant_clause = " AND ".join(plant_where)
+            cur.execute(f"""
+                SELECT plant_name, state, capacity_mw, energy_source, lat, lng
+                FROM power_plants_eia
+                WHERE {plant_clause}
+                ORDER BY capacity_mw DESC LIMIT 25
+            """, plant_params)
+            installations = [dict(r) for r in cur.fetchall()]
+        except Exception as plant_err:
+            logger.debug(f"power_plants_eia query skipped: {plant_err}")
+
+        cur.close()
+        conn.close()
+        conn = None
+
+        result = {
+            "success": True,
+            "dc_industry_ppas": ppas,
+            "total_ppas": total_ppas,
+            "total_contracted_mw": total_mw,
+        }
+        if installations:
+            result["renewable_installations"] = installations
+            result["installations_count"] = len(installations)
+        result["data_source"] = "DC Hub + EIA"
+
+        return json.dumps(result, indent=2)
+
+    except psycopg2.extensions.QueryCanceledError:
+        return json.dumps({"success": False, "error": "Query timed out — try a specific state"})
+    except Exception as e:
+        logger.error(f"get_renewable_energy error: {e}")
+        return json.dumps({"success": False, "error": str(e)})
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # =============================================================================
@@ -892,7 +1074,7 @@ async def get_agent_registry() -> str:
         JSON with connected agents, tiers, query counts, and connection info.
     """
     _track("get_agent_registry", {})
-    result = _api_get("/api/agents/registry")
+    result = _api_get("/api/agents/registry", retries=1)
     return json.dumps(result, indent=2)
 
 
@@ -916,7 +1098,7 @@ async def get_intelligence_index() -> str:
         JSON with global pulse score, market heat map, weekly movers, and exclusive insights.
     """
     _track("get_intelligence_index", {})
-    result = _api_get("/api/agents/intelligence-index")
+    result = _api_get("/api/agents/intelligence-index", retries=1)
     return json.dumps(result, indent=2)
 
 
@@ -996,7 +1178,7 @@ async def resource_server_stats() -> str:
             tool: sum(1 for r in _request_log if r["tool"] == tool)
             for tool in set(r["tool"] for r in _request_log)
         },
-        "server_version": "2.0.0",
+        "server_version": "2.1.0",
         "protocol_version": "2024-11-05",
         "uptime_since": datetime.utcnow().isoformat(),
     }, indent=2)
@@ -1150,9 +1332,11 @@ async def get_tax_incentives(state: str = "") -> str:
     Returns:
         JSON with tax incentive programs, qualifying criteria, and estimated savings.
     """
+    conn = None
     try:
         conn = _get_connection()
         cur = conn.cursor()
+        cur.execute("SET LOCAL statement_timeout = 8000")
 
         if state and len(state) <= 3:
             cur.execute("""
@@ -1193,6 +1377,12 @@ async def get_tax_incentives(state: str = "") -> str:
         })
     except Exception as e:
         return json.dumps({'success': False, 'error': str(e)})
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1236,7 +1426,7 @@ async def compare_sites(locations: str = "") -> str:
                     'lon': loc.get('lon', 0),
                     'state': loc.get('state', ''),
                     'capacity': loc.get('capacity_mw', 0),
-                })
+                }, retries=1)
                 if 'error' in data and 'overall_score' not in data:
                     data = {'overall_score': 0, 'scores': {}, 'error': data.get('error', 'API error')}
             except Exception as e:
@@ -1305,9 +1495,11 @@ async def get_water_risk(lat: float = 0, lon: float = 0, state: str = "") -> str
     Returns:
         JSON with water stress level, withdrawal data, and cooling system recommendations.
     """
+    conn = None
     try:
         conn = _get_connection()
         cur = conn.cursor()
+        cur.execute("SET LOCAL statement_timeout = 8000")
 
         water_data = {}
         if state:
@@ -1377,6 +1569,12 @@ async def get_water_risk(lat: float = 0, lon: float = 0, state: str = "") -> str
         })
     except Exception as e:
         return json.dumps({'success': False, 'error': str(e)})
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1395,9 +1593,11 @@ async def get_backup_status() -> str:
     Returns:
         JSON with backup status, table row counts, and data freshness timestamps.
     """
+    conn = None
     try:
         conn = _get_connection()
         cur = conn.cursor()
+        cur.execute("SET LOCAL statement_timeout = 8000")
 
         tables = {}
         table_queries = [
@@ -1471,6 +1671,12 @@ async def get_backup_status() -> str:
         })
     except Exception as e:
         return json.dumps({'success': False, 'error': str(e)})
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1504,11 +1710,39 @@ async def get_grid_intelligence(region_id: str = "") -> str:
         path = "/api/v1/grid-intelligence"
 
     _track("get_grid_intelligence", {"region_id": region_id})
-    result = _api_get(path)
+    result = _api_get(path, retries=1)
     return json.dumps(result, indent=2)
 
 
+# ═══════════════════════════════════════════════════════════
+# KEEPALIVE — Prevent Railway idle shutdown
+# ═══════════════════════════════════════════════════════════
+def _mcp_keepalive():
+    """Background thread: ping DB every 2 min to keep connections warm."""
+    while True:
+        try:
+            conn = _get_connection()
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+            conn.close()
+        except Exception as e:
+            logger.debug(f"Keepalive ping failed: {e}")
+        time.sleep(120)
+
+_keepalive_thread = threading.Thread(target=_mcp_keepalive, daemon=True)
+_keepalive_thread.start()
+logger.info("🫀 MCP keepalive thread started (120s interval)")
+
+
 if __name__ == "__main__":
+    # Warm connection pool on startup
+    if _POOL_AVAILABLE:
+        try:
+            init_pool()
+            logger.info("✅ Connection pool warmed")
+        except Exception as e:
+            logger.warning(f"⚠️ Pool warmup failed: {e}")
+
     port = MCP_PORT
 
     # Parse --port from command line
@@ -1525,11 +1759,13 @@ if __name__ == "__main__":
         transport = "stdio"
 
     logger.info(f"=" * 60)
-    logger.info(f"DC Hub Nexus MCP Server v2.0")
+    logger.info(f"DC Hub Nexus MCP Server v2.1")
     logger.info(f"  Transport: {transport}")
     logger.info(f"  Port: {port}")
     logger.info(f"  API backend: {DCHUB_API_BASE}")
     logger.info(f"  Tools: 16 | Resources: 6 | Prompts: 4")
+    logger.info(f"  Pool: {'warmed' if _POOL_AVAILABLE else 'disabled'}")
+    logger.info(f"  Keepalive: active (120s)")
     logger.info(f"=" * 60)
 
     if transport == "stdio":
