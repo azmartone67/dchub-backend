@@ -3323,11 +3323,11 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
         if tool_name == "get_tax_incentives":
             _st = params.get("state", "") if isinstance(params, dict) else ""
             if _st:
-                _tcur.execute("SELECT state, incentive_type, description FROM tax_incentives_neon WHERE UPPER(state) = UPPER(%s) LIMIT 2", (_st,))
+                _tcur.execute("SELECT state_abbr, state_name, incentive_details FROM tax_incentives_neon WHERE UPPER(state_abbr) = UPPER(%s) LIMIT 2", (_st,))
             else:
-                _tcur.execute("SELECT state, incentive_type, description FROM tax_incentives_neon ORDER BY state LIMIT 3")
+                _tcur.execute("SELECT state_abbr, state_name, incentive_details FROM tax_incentives_neon ORDER BY state_abbr LIMIT 3")
             _rows = _tcur.fetchall()
-            teaser_data = {"sample_incentives": [{"state": r[0], "type": r[1], "summary": (r[2] or "")[:100] + "..."} for r in _rows], "states_covered": 50}
+            teaser_data = {"sample_incentives": [{"state": r[0], "state_name": r[1], "incentives": (r[2] or "")[:120] + "..."} for r in _rows], "states_covered": 50}
         elif tool_name == "get_water_risk":
             _st = params.get("state", "") if isinstance(params, dict) else ""
             if _st:
