@@ -7507,6 +7507,44 @@ def get_market_stats(market):
             pass
 
 
+
+@app.route('/api/renewable/solar', methods=['GET'])
+@app.route('/api/renewable/wind', methods=['GET'])
+@app.route('/api/renewable/combined', methods=['GET'])
+def get_renewable_rest():
+    """REST endpoint for renewable energy PPA data."""
+    import psycopg2 as _rpg
+    state = request.args.get('state', '')
+    energy_type = request.args.get('type', '')
+    if request.headers.get('X-Internal-Key') not in ('dchub-internal-2024', 'dchub-internal-sync-2026'):
+        user = getattr(request, 'current_user', None)
+        plan = (user or {}).get('plan', 'free') if isinstance(user, dict) else 'free'
+        if plan not in ('pro', 'enterprise', 'developer'):
+            return jsonify({'error': 'plan_required', 'message': 'Developer plan required.', 'pricing_url': 'https://dchub.cloud/pricing', 'success': False}), 403
+    conn = None
+    try:
+        conn = _rpg.connect(os.environ.get('NEON_DATABASE_URL') or os.environ.get('DATABASE_URL', ''))
+        cur = conn.cursor()
+        where_parts, params = [], []
+        if state and len(state) <= 3:
+            where_parts.append('UPPER(state) = UPPER(%s)')
+            params.append(state)
+        if energy_type and energy_type not in ('combined', ''):
+            where_parts.append('LOWER(fuel_source) = LOWER(%s)')
+            params.append(energy_type)
+        clause = ' AND '.join(where_parts) if where_parts else '1=1'
+        cur.execute(f'SELECT buyer, power_mw, fuel_source, state FROM energy_ppas WHERE {clause} ORDER BY power_mw DESC LIMIT 25', params)
+        rows = [{'buyer': r[0], 'capacity_mw': float(r[1]) if r[1] else 0, 'type': r[2], 'state': r[3]} for r in cur.fetchall()]
+        cur.execute('SELECT COUNT(*), COALESCE(SUM(power_mw),0) FROM energy_ppas')
+        totals = cur.fetchone() or (0, 0)
+        return jsonify({'success': True, 'count': len(rows), 'data': rows, 'total_ppas': totals[0], 'total_contracted_mw': round(float(totals[1] or 0), 0)})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        if conn:
+            try: conn.close()
+            except: pass
+
 @app.route('/api/v1/markets/compare', methods=['GET'])
 @require_plan('pro')
 @protect_data
