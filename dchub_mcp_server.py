@@ -120,8 +120,8 @@ def _resolve_api_base():
         except Exception:
             pass
         
-        # Flask not ready yet (during boot) — use external URL, will switch on next restart
-        logger.info("🔗 MCP: External URL (localhost:%s not ready yet — will use fast path after boot)", flask_port)
+        # Flask not ready yet (during boot) — will retry on first request
+        logger.info("🔗 MCP: External URL at boot (localhost:%s not ready yet)", flask_port)
         return RAILWAY_EXTERNAL_URL
     
     # Local dev / Replit
@@ -139,16 +139,64 @@ mcp = FastMCP("DC Hub Nexus", stateless_http=True, json_response=True)
 # HELPERS
 # =============================================================================
 
-_http = httpx.Client(base_url=DCHUB_API_BASE, timeout=20.0, headers={"Referer": "https://dchub.cloud", "X-Forwarded-Host": "dchub.cloud", "User-Agent": "DCHub-MCP/2.1.0", "X-Internal-Key": "dchub-internal-sync-2026"})
+# ═══════════════════════════════════════════════════════════════
+# Lazy-resolving HTTP client — retries localhost after boot
+# ═══════════════════════════════════════════════════════════════
+_MCP_HEADERS = {
+    "Referer": "https://dchub.cloud",
+    "X-Forwarded-Host": "dchub.cloud",
+    "User-Agent": "DCHub-MCP/2.1.1",
+    "X-Internal-Key": "dchub-internal-sync-2026",
+}
+_http = None  # Created lazily
+_http_base = DCHUB_API_BASE
+_localhost_checked = False
+
+
+def _get_http() -> httpx.Client:
+    """Get or create httpx client, upgrading to localhost when Flask is ready."""
+    global _http, _http_base, _localhost_checked
+    
+    on_railway = bool(
+        os.environ.get("RAILWAY_ENVIRONMENT")
+        or os.environ.get("RAILWAY_SERVICE_NAME")
+    )
+    
+    # Try to upgrade to localhost if we're on the external URL
+    if on_railway and not _localhost_checked and RAILWAY_EXTERNAL_URL in _http_base:
+        flask_port = os.environ.get("PORT", "8080")
+        local_url = "http://127.0.0.1:%s" % flask_port
+        try:
+            import urllib.request
+            req = urllib.request.Request(local_url + "/health", method="GET")
+            resp = urllib.request.urlopen(req, timeout=2)
+            if resp.status == 200:
+                logger.info("🚀 MCP FAST PATH ACTIVATED: switching to localhost:%s", flask_port)
+                _http_base = local_url
+                _http = httpx.Client(base_url=local_url, timeout=15.0, headers=_MCP_HEADERS)
+                _localhost_checked = True
+                return _http
+        except Exception:
+            pass
+    
+    if _http is None:
+        _http = httpx.Client(base_url=_http_base, timeout=20.0, headers=_MCP_HEADERS)
+        if RAILWAY_EXTERNAL_URL not in _http_base:
+            _localhost_checked = True  # Already on localhost, no need to retry
+    
+    return _http
+
 _request_log = []
 
 
 def _api_get(path: str, params: dict = None, retries: int = 1) -> dict:
-    """Call a DC Hub REST API endpoint with retry logic."""
+    """Call a DC Hub REST API endpoint with retry logic and lazy localhost upgrade."""
     last_error = None
+    http = _get_http()
+    
     for attempt in range(retries + 1):
         try:
-            resp = _http.get(path, params=params or {})
+            resp = http.get(path, params=params or {})
             resp.raise_for_status()
             return resp.json()
         except httpx.HTTPStatusError as e:
@@ -197,7 +245,7 @@ def _track(tool_name: str, params: dict):
         _request_log.pop(0)
     # Fire-and-forget tracking to Flask backend
     try:
-        _http.post("/api/v1/ai-tracking/log", json={
+        _get_http().post("/api/v1/ai-tracking/log", json={
             "platform": "mcp",
             "tool": tool_name,
             "params": params,
