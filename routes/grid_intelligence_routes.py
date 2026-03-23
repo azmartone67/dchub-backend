@@ -124,46 +124,53 @@ def _get_infra_counts(lat, lon, radius_km=50, conn=None):
             close_conn = True
         cur = conn.cursor()
 
-        # Substations within radius (using simple distance approximation)
-        cur.execute("""
-            SELECT COUNT(*) FROM substations
-            WHERE latitude IS NOT NULL AND longitude IS NOT NULL
-            AND ABS(latitude - %s) < %s AND ABS(longitude - %s) < %s
-        """, (lat, radius_km / 111.0, lon, radius_km / (111.0 * 0.85)))
-        row = cur.fetchone()
-        counts['substations'] = row[0] if row else 0
+        # Degree approximation for radius
+        deg_lat = radius_km / 111.0
+        deg_lon = radius_km / (111.0 * 0.85)
 
-        # Transmission lines
+        # Substations (columns: lat, lng)
+        try:
+            cur.execute("""
+                SELECT COUNT(*) FROM substations
+                WHERE lat IS NOT NULL AND lng IS NOT NULL
+                AND ABS(lat - %s) < %s AND ABS(lng - %s) < %s
+            """, (lat, deg_lat, lon, deg_lon))
+            row = cur.fetchone()
+            counts['substations'] = row[0] if row else 0
+        except Exception:
+            pass
+
+        # Transmission lines (columns: latitude, longitude)
         try:
             cur.execute("""
                 SELECT COUNT(*) FROM transmission_lines_eia
                 WHERE latitude IS NOT NULL AND longitude IS NOT NULL
                 AND ABS(latitude - %s) < %s AND ABS(longitude - %s) < %s
-            """, (lat, radius_km / 111.0, lon, radius_km / (111.0 * 0.85)))
+            """, (lat, deg_lat, lon, deg_lon))
             row = cur.fetchone()
             counts['transmission_lines'] = row[0] if row else 0
         except Exception:
             pass
 
-        # Power plants
+        # Power plants (columns: latitude, longitude)
         try:
             cur.execute("""
                 SELECT COUNT(*) FROM power_plants_eia
                 WHERE latitude IS NOT NULL AND longitude IS NOT NULL
                 AND ABS(latitude - %s) < %s AND ABS(longitude - %s) < %s
-            """, (lat, radius_km / 111.0, lon, radius_km / (111.0 * 0.85)))
+            """, (lat, deg_lat, lon, deg_lon))
             row = cur.fetchone()
             counts['power_plants'] = row[0] if row else 0
         except Exception:
             pass
 
-        # Gas pipelines
+        # Gas pipelines (columns: lat, lng, has status field)
         try:
             cur.execute("""
                 SELECT COUNT(*) FROM gas_pipelines
-                WHERE latitude IS NOT NULL AND longitude IS NOT NULL
-                AND ABS(latitude - %s) < %s AND ABS(longitude - %s) < %s
-            """, (lat, radius_km / 111.0, lon, radius_km / (111.0 * 0.85)))
+                WHERE lat IS NOT NULL AND lng IS NOT NULL
+                AND ABS(lat - %s) < %s AND ABS(lng - %s) < %s
+            """, (lat, deg_lat, lon, deg_lon))
             row = cur.fetchone()
             counts['gas_pipelines'] = row[0] if row else 0
         except Exception:
@@ -182,6 +189,22 @@ def _get_infra_counts(lat, lon, radius_km=50, conn=None):
 
 def _get_energy_rates(states, conn=None):
     """Get average industrial energy rate for a list of states."""
+    # State abbreviation to full name mapping
+    STATE_NAMES = {
+        'AL': 'Alabama', 'AK': 'Alaska', 'AZ': 'Arizona', 'AR': 'Arkansas',
+        'CA': 'California', 'CO': 'Colorado', 'CT': 'Connecticut', 'DE': 'Delaware',
+        'FL': 'Florida', 'GA': 'Georgia', 'HI': 'Hawaii', 'ID': 'Idaho',
+        'IL': 'Illinois', 'IN': 'Indiana', 'IA': 'Iowa', 'KS': 'Kansas',
+        'KY': 'Kentucky', 'LA': 'Louisiana', 'ME': 'Maine', 'MD': 'Maryland',
+        'MA': 'Massachusetts', 'MI': 'Michigan', 'MN': 'Minnesota', 'MS': 'Mississippi',
+        'MO': 'Missouri', 'MT': 'Montana', 'NE': 'Nebraska', 'NV': 'Nevada',
+        'NH': 'New Hampshire', 'NJ': 'New Jersey', 'NM': 'New Mexico', 'NY': 'New York',
+        'NC': 'North Carolina', 'ND': 'North Dakota', 'OH': 'Ohio', 'OK': 'Oklahoma',
+        'OR': 'Oregon', 'PA': 'Pennsylvania', 'RI': 'Rhode Island', 'SC': 'South Carolina',
+        'SD': 'South Dakota', 'TN': 'Tennessee', 'TX': 'Texas', 'UT': 'Utah',
+        'VT': 'Vermont', 'VA': 'Virginia', 'WA': 'Washington', 'WV': 'West Virginia',
+        'WI': 'Wisconsin', 'WY': 'Wyoming',
+    }
     rates = {}
     close_conn = False
     try:
@@ -190,11 +213,12 @@ def _get_energy_rates(states, conn=None):
             close_conn = True
         cur = conn.cursor()
         for st in states:
+            state_full = STATE_NAMES.get(st.upper(), st)
             cur.execute("""
                 SELECT AVG(rate_cents_kwh) FROM eia_retail_rates
-                WHERE (state_abbr = %s OR state_name ILIKE %s)
+                WHERE (UPPER(state) = UPPER(%s) OR UPPER(state) = UPPER(%s))
                 AND sector = 'industrial'
-            """, (st, f'%{st}%'))
+            """, (state_full, st))
             row = cur.fetchone()
             if row and row[0]:
                 rates[st] = round(float(row[0]), 2)
@@ -219,8 +243,8 @@ def _get_facility_count(state, conn=None):
         cur = conn.cursor()
         cur.execute("""
             SELECT COUNT(*) FROM discovered_facilities
-            WHERE state = %s OR state_full ILIKE %s
-        """, (state, f'%{state}%'))
+            WHERE UPPER(state) = UPPER(%s)
+        """, (state,))
         row = cur.fetchone()
         return row[0] if row else 0
     except Exception:
