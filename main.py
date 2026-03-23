@@ -2702,7 +2702,7 @@ MCP_FREE_DAILY_LIMIT = 10            # NEW — tool calls per day per IP for fre
 MCP_FACILITY_TOOLS = {'search_facilities', 'get_facility', 'get_pipeline', 'get_top_operators'}
 
 # Tools that return teaser results for free tier (was MCP_BLOCKED_TOOLS — hard block)
-MCP_TEASER_TOOLS = {'analyze_site', 'get_grid_data', 'get_infrastructure', 'get_fiber_intel', 'get_energy_prices', 'get_renewable_energy', 'get_news', 'get_intelligence_index', 'get_market_intel', 'list_transactions', 'compare_sites'}  # tax_incentives, water_risk, backup_status pass through (handled in dchub_mcp_server.py)
+MCP_TEASER_TOOLS = {'analyze_site', 'get_grid_data', 'get_infrastructure', 'get_fiber_intel', 'get_energy_prices', 'get_renewable_energy', 'get_news', 'get_intelligence_index', 'get_market_intel', 'list_transactions', 'compare_sites', 'get_grid_intelligence', 'get_tax_incentives', 'get_water_risk'}
 
 # User-facing notes per tool category — AI agents surface these to end users
 MCP_USER_NOTES = {
@@ -2723,6 +2723,7 @@ MCP_USER_NOTES = {
     'compare_sites': "💡 DC Hub free preview — full site comparison with sub-scores requires a Developer key. Details at dchub.cloud/developers",
     'get_water_risk': "💡 DC Hub free preview — detailed water stress data requires a Developer key ($49/mo). Unlock at dchub.cloud/developers",
     'get_backup_status': "💡 DC Hub operational monitoring — backup and data health status.",
+    'get_grid_intelligence': "💡 DC Hub free preview — full grid intelligence briefs with corridor scores require a Developer key ($49/mo). Unlock at dchub.cloud/developers",
 }
 MCP_RATE_LIMIT_NOTE = "\u26a0\ufe0f DC Hub free tier limit reached (10 calls/day). The user can unlock 1,000 calls/day with a Developer key at dchub.cloud/developers"
 
