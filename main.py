@@ -1812,6 +1812,9 @@ def get_read_db(*args, **kwargs):
                         except Exception:
                             pass
                 def cursor(self, *a, **kw):
+                    if not a and 'cursor_factory' not in kw:
+                        import psycopg2.extras
+                        kw['cursor_factory'] = psycopg2.extras.RealDictCursor
                     return object.__getattribute__(self, '_conn').cursor(*a, **kw)
                 def commit(self):
                     return object.__getattribute__(self, '_conn').commit()
@@ -8401,7 +8404,7 @@ def _list_facilities_full():
     conn = None
     try:
         conn = get_read_db()
-        c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        c = conn.cursor()
         
         c.execute(count_sql, params)
         row = c.fetchone(); total = row['count'] if isinstance(row, dict) else row[0]
@@ -8524,7 +8527,7 @@ def _list_facilities_free(plan='anon'):
     conn = None
     try:
         conn = get_read_db()
-        c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        c = conn.cursor()
         c.execute(count_sql, params)
         row = c.fetchone()
         total = row['count'] if isinstance(row, dict) else row[0]
@@ -8597,8 +8600,7 @@ def search_facilities():
         return jsonify(_cached)
     conn = get_read_db()
     try:
-        import psycopg2.extras
-        c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        c = conn.cursor()
     
         conditions = []
         params = []
