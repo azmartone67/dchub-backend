@@ -9632,17 +9632,30 @@ def api_transactions_alias():
     conn = None
     try:
         limit = request.args.get('limit', 50, type=int)
+        region_filter = request.args.get('region', '')
+        REGION_ALIASES = {'north_america': 'North America', 'europe': 'EMEA', 'emea': 'EMEA', 'apac': 'APAC', 'asia': 'APAC', 'latam': 'LATAM', 'mea': 'MEA', 'global': 'Global'}
+        region_filter = REGION_ALIASES.get(region_filter.lower(), region_filter) if region_filter else ''
 
         try:
             with pg_connection() as pg_conn:
                 pg_cur = pg_conn.cursor()
-                pg_cur.execute("""
-                    SELECT id, date, year, buyer, seller, value, mw, type, region, market
-                    FROM deals
-                    WHERE buyer IS NOT NULL AND buyer != '' AND buyer NOT IN ('tbd','unknown','n/a')
-                      AND seller IS NOT NULL AND seller != '' AND seller NOT IN ('tbd','unknown','n/a')
-                    ORDER BY COALESCE(date, '1970-01-01') DESC LIMIT %s
-                """, (limit,))
+                if region_filter:
+                    pg_cur.execute("""
+                        SELECT id, date, year, buyer, seller, value, mw, type, region, market
+                        FROM deals
+                        WHERE buyer IS NOT NULL AND buyer != '' AND buyer NOT IN ('tbd','unknown','n/a')
+                          AND seller IS NOT NULL AND seller != '' AND seller NOT IN ('tbd','unknown','n/a')
+                          AND LOWER(region) = LOWER(%s)
+                        ORDER BY COALESCE(date, '1970-01-01') DESC LIMIT %s
+                    """, (region_filter, limit))
+                else:
+                    pg_cur.execute("""
+                        SELECT id, date, year, buyer, seller, value, mw, type, region, market
+                        FROM deals
+                        WHERE buyer IS NOT NULL AND buyer != '' AND buyer NOT IN ('tbd','unknown','n/a')
+                          AND seller IS NOT NULL AND seller != '' AND seller NOT IN ('tbd','unknown','n/a')
+                        ORDER BY COALESCE(date, '1970-01-01') DESC LIMIT %s
+                    """, (limit,))
                 transactions = []
                 for row in pg_cur.fetchall():
                     transactions.append({
