@@ -13932,6 +13932,16 @@ try:
 except Exception as e:
     print(f"❌ Track blueprint failed: {e}")
 
+# Grid Intelligence Briefs (Research product — /api/v1/grid-intelligence)
+try:
+    from routes.grid_intelligence_routes import register_grid_intel_routes
+    register_grid_intel_routes(app)
+    print("🗺️ Grid Intelligence Briefs: ✅ Registered (2 routes)")
+except ImportError:
+    print("⚠️ grid_intelligence_routes.py not found — Grid Intelligence disabled")
+except Exception as e:
+    print(f"❌ Grid Intelligence routes failed: {e}")
+
 @app.route('/api/v1/plan-sync.js')
 def serve_plan_sync():
     """Serve plan-sync script via API route (bypasses Cloudflare Pages static)"""
