@@ -146,7 +146,7 @@ def send_password_reset_email(email, name, reset_url):
             import urllib.request, urllib.error, json as _json
             payload = {
                 "personalizations": [{"to": [{"email": email}]}],
-                "from": {"email": "noreply@dchub.cloud", "name": "DC Hub"},
+                "from": {"email": "info@dchub.cloud", "name": "DC Hub"},
                 "subject": "Reset Your DC Hub Password",
                 "content": [{
                     "type": "text/html",
@@ -806,14 +806,8 @@ def forgot_password():
                     (email, token, expires_at)
                 )
                 pg_conn.commit()
-            # Send free welcome email
-            try:
-                from main import send_free_welcome_email_sendgrid
-                send_free_welcome_email_sendgrid(email, name)
-            except Exception as email_err:
-                logger.warning(f"Free welcome email failed for {email}: {email_err}")
 
-                reset_url = f"https://dchub.cloud/reset-password?token={token}"
+                reset_url = f"https://dchub.cloud/reset-password.html?token={token}"
                 send_password_reset_email(email, user_name, reset_url)
     except Exception as e:
         print(f"❌ Forgot password error: {e}")

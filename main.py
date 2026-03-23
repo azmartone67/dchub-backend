@@ -9373,6 +9373,16 @@ def land_power_page():
 def login_page():
     return send_from_directory('static', 'login.html')
 
+@app.route('/forgot-password')
+@app.route('/forgot-password.html')
+def forgot_password_page():
+    return send_from_directory('static', 'forgot-password.html')
+
+@app.route('/reset-password')
+@app.route('/reset-password.html')
+def reset_password_page():
+    return send_from_directory('static', 'reset-password.html')
+
 @app.route('/dashboard.html')
 def dashboard_page():
     return send_from_directory('static', 'dashboard.html')
