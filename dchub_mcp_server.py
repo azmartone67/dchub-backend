@@ -1274,7 +1274,7 @@ async def get_water_risk(lat: float = 0, lon: float = 0, state: str = "") -> str
         water_data = {}
         if state:
             cur.execute("""
-                SELECT state, site_name, water_level_ft, water_level_date
+                SELECT state, site_name, water_level_ft, water_level_date::text
                 FROM usgs_water_stress
                 WHERE UPPER(state) = UPPER(%s)
                 ORDER BY water_level_date DESC
