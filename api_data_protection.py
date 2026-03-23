@@ -486,6 +486,10 @@ def protect_data(f):
         origin = request.headers.get("Origin", "") or request.headers.get("Referer", "")
         if "dchub.cloud" in origin:
             return f(*args, **kwargs)
+        # Internal MCP bypass — trust calls from our own MCP server and admin tools
+        internal_key = request.headers.get("X-Internal-Key", "")
+        if internal_key in ("dchub-internal-2024", "dchub-internal-sync-2026"):
+            return f(*args, **kwargs)
         api_key = (
             request.headers.get("X-API-Key")
             or request.headers.get("Authorization", "").replace("Bearer ", "")
