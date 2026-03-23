@@ -4740,7 +4740,7 @@ def crawler_stats():
         cursor = conn.cursor()
 
         cursor.execute('SELECT crawler_name, COUNT(*) as visits FROM crawler_visits GROUP BY crawler_name ORDER BY visits DESC')
-        by_crawler = [dict(row) for row in _rows_to_tuples(cursor.fetchall())]
+        by_crawler = [dict(row) for row in cursor.fetchall()]
 
         cursor.execute('SELECT crawler_family, COUNT(*) as visits FROM crawler_visits GROUP BY crawler_family ORDER BY visits DESC')
         by_family = {row['crawler_family']: row['visits'] for row in cursor.fetchall()}
@@ -4750,7 +4750,7 @@ def crawler_stats():
         last_24h = _row_val(cursor.fetchone(), 0)
 
         cursor.execute('SELECT crawler_name, crawler_family, path, ip_address, timestamp FROM crawler_visits ORDER BY timestamp DESC LIMIT 50')
-        recent = [dict(row) for row in _rows_to_tuples(cursor.fetchall())]
+        recent = [dict(row) for row in cursor.fetchall()]
 
         conn.close()
 
@@ -4802,7 +4802,7 @@ def crawler_recent():
         conn = get_read_db(CRAWLER_DB_PATH)
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM crawler_visits ORDER BY timestamp DESC LIMIT %s', (limit,))
-        visits = [dict(row) for row in _rows_to_tuples(cursor.fetchall())]
+        visits = [dict(row) for row in cursor.fetchall()]
         conn.close()
         return jsonify({'success': True, 'visits': visits, 'count': len(visits)})
     except Exception as e:
@@ -8447,7 +8447,7 @@ def _list_facilities_full():
         row = c.fetchone(); total = row['count'] if isinstance(row, dict) else row[0]
         
         c.execute(sql, params)
-        facilities = [dict_from_row(row) for row in _rows_to_tuples(c.fetchall())]
+        facilities = [dict_from_row(row) for row in c.fetchall()]
         
         # Enrich with confidence badge and resolved location names
         try:
@@ -8569,7 +8569,7 @@ def _list_facilities_free(plan='anon'):
         row = c.fetchone()
         total = row['count'] if isinstance(row, dict) else row[0]
         c.execute(sql, params)
-        facilities = [dict_from_row(row) for row in _rows_to_tuples(c.fetchall())]
+        facilities = [dict_from_row(row) for row in c.fetchall()]
     except Exception as e:
         logger.error(f"Facilities gated endpoint error: {e}")
         return jsonify({'error': 'Database temporarily unavailable', 'detail': str(e)}), 503
@@ -8708,7 +8708,7 @@ def search_facilities():
             LIMIT %s OFFSET %s
         """, params)
     
-        facilities = [dict_from_row(row) for row in _rows_to_tuples(c.fetchall())]
+        facilities = [dict_from_row(row) for row in c.fetchall()]
 
         # Enrich with confidence badge
         try:
