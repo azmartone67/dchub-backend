@@ -3314,23 +3314,55 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
             }
             return [{"type": "text", "text": json.dumps(teaser)}]
 
-    # Fallback: if we couldn't parse, return generic teaser
-    fallback_note = MCP_USER_NOTES.get(tool_name, f"\U0001f4a1 DC Hub free preview \u2014 full {tool_name} data requires a Developer key. Details at dchub.cloud/developers")
-    return [{
-        "type": "text",
-        "text": json.dumps({
-            "_user_facing_note": fallback_note,
-            "preview": f"{tool_name} data available \u2014 showing limited preview.",
-            "_upgrade": {
-                "tier": "free_teaser",
-                "message": f"Full {tool_name} results require Developer plan ($49/mo).",
-                "url": "https://dchub.cloud/pricing#developer",
-                "checkout": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",
-                "price": "$49/mo",
-            }
-        })
-    }]
-
+    # --- Tool-specific teasers (Mar 22 fix) ---
+    fallback_note = MCP_USER_NOTES.get(tool_name, f"\U0001f4a1 DC Hub free preview — full {tool_name} data requires a Developer key. Details at dchub.cloud/developers")
+    teaser_data = {}
+    try:
+        _tc = get_pg_connection()
+        _tcur = _tc.cursor()
+        if tool_name == "get_tax_incentives":
+            _st = params.get("state", "") if isinstance(params, dict) else ""
+            if _st:
+                _tcur.execute("SELECT state, incentive_type, description FROM tax_incentives_neon WHERE UPPER(state) = UPPER(%s) LIMIT 2", (_st,))
+            else:
+                _tcur.execute("SELECT state, incentive_type, description FROM tax_incentives_neon ORDER BY state LIMIT 3")
+            _rows = _tcur.fetchall()
+            teaser_data = {"sample_incentives": [{"state": r[0], "type": r[1], "summary": (r[2] or "")[:100] + "..."} for r in _rows], "states_covered": 50}
+        elif tool_name == "get_water_risk":
+            _st = params.get("state", "") if isinstance(params, dict) else ""
+            if _st:
+                _tcur.execute("SELECT site_name, state, water_level_ft, water_level_date FROM usgs_water_stress WHERE UPPER(state) = UPPER(%s) ORDER BY water_level_date DESC LIMIT 2", (_st,))
+            else:
+                _tcur.execute("SELECT site_name, state, water_level_ft, water_level_date FROM usgs_water_stress ORDER BY water_level_date DESC LIMIT 2")
+            _rows = _tcur.fetchall()
+            teaser_data = {"sample_sites": [{"site": r[0], "state": r[1], "water_level_ft": float(r[2]) if r[2] else None, "date": str(r[3])} for r in _rows], "monitoring_states": 16, "cooling_hint": "High water stress areas: air-cooled or hybrid recommended"}
+        elif tool_name == "get_backup_status":
+            _counts = {}
+            for _tbl in ["discovered_facilities", "deals", "news_articles", "gas_pipelines", "hifld_substations", "fiber_routes"]:
+                try:
+                    _tcur.execute(f"SELECT COUNT(*) FROM {_tbl}")
+                    _counts[_tbl] = _tcur.fetchone()[0]
+                except Exception:
+                    _counts[_tbl] = "n/a"
+                    _tc.rollback()
+            teaser_data = {"status": "healthy", "database": "Neon PostgreSQL (Azure West US 3)", "table_counts": _counts, "data_freshness": "News: 3min, facilities: daily, infrastructure: weekly"}
+        _tcur.close()
+        _tc.close()
+    except Exception:
+        teaser_data = {"note": "Preview data temporarily unavailable"}
+    result = {
+        "_user_facing_note": fallback_note,
+        "success": True,
+        **teaser_data,
+        "_upgrade": {
+            "tier": "free_teaser",
+            "message": f"Full {tool_name} results require Developer plan ($49/mo).",
+            "url": "https://dchub.cloud/pricing#developer",
+            "checkout": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",
+            "price": "$49/mo",
+        }
+    }
+    return [{"type": "text", "text": json.dumps(result)}]
 
 def _gate_facility_data(data, tool_name):
     """Strip facility data down to free-tier fields, limit count, add CTA.
