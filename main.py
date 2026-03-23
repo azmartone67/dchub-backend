@@ -2850,7 +2850,7 @@ def _gate_mcp_result(result_content, tool_name, tier, tool_params=None):
                 except (json.JSONDecodeError, TypeError):
                     gated.append(block)
                     continue
-                gated_data = _gate_facility_data(data, tool_name)
+                gated_data = _gate_facility_data(data, tool_name, tool_params=tool_params)
                 gated.append({"type": "text", "text": json.dumps(gated_data)})
             return gated
 
@@ -3510,7 +3510,7 @@ def _get_facility_free_from_db(facility_id):
                 pass
 
 
-def _gate_facility_data(data, tool_name):
+def _gate_facility_data(data, tool_name, tool_params=None):
     """Strip facility data down to free-tier fields, limit count, add CTA.
     v3: direct DB fallback for get_facility when response data is corrupt ({k:k} pattern)."""
     total_count = 0
@@ -3535,8 +3535,15 @@ def _gate_facility_data(data, tool_name):
                     # ── BUG FIX: detect {k: k} corruption and use direct DB fallback ──
                     stripped = _strip_facility(inner)
                     if _is_corrupt_facility(stripped) and tool_name == 'get_facility':
-                        # Extract facility_id from the original inner dict or the response
-                        fac_id = inner.get('id') if inner.get('id') != 'id' else data.get('facility_id', '')
+                        # Extract facility_id from tool_params (original MCP request),
+                        # NOT from the corrupt response where inner.get('id') == 'id'
+                        fac_id = ''
+                        if isinstance(tool_params, dict):
+                            fac_id = (tool_params.get('arguments', {}) or {}).get('facility_id', '')
+                        if not fac_id:
+                            raw_id = inner.get('id')
+                            if raw_id and raw_id != 'id':
+                                fac_id = str(raw_id)
                         db_facility = _get_facility_free_from_db(fac_id)
                         if db_facility:
                             logger.info(f"get_facility: DB fallback succeeded for id={fac_id}")
