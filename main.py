@@ -3415,7 +3415,39 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
             }
             return [{"type": "text", "text": json.dumps(teaser)}]
 
-    # --- Tool-specific teasers (Mar 22 fix) ---
+        elif tool_name == 'compare_sites':
+            # Show headline comparison (overall scores + winner) but block sub-scores
+            comparison_raw = data.get('comparison', [])
+            comparison_teaser = []
+            for site in comparison_raw:
+                comparison_teaser.append({
+                    'label': site.get('label', '?'),
+                    'overall_score': site.get('overall_score', 0),
+                    'interpretation': site.get('interpretation', ''),
+                    'scores': {k: '██ upgrade to see' for k in site.get('scores', {})},
+                    'nearby': {k: '██ upgrade to see' for k in site.get('nearby', {})},
+                })
+            overall_winner = data.get('overall_winner', '')
+            overall_winner_score = data.get('overall_winner_score', 0)
+            locations_compared = data.get('locations_compared', len(comparison_raw))
+
+            teaser = {
+                '_user_facing_note': MCP_USER_NOTES.get('compare_sites', '💡 DC Hub free preview — full comparison requires a Developer key.'),
+                'success': True,
+                'comparison': comparison_teaser,
+                'overall_winner': overall_winner,
+                'overall_winner_score': overall_winner_score,
+                'locations_compared': locations_compared,
+                'winners_by_category': {k: '██ upgrade to see' for k in data.get('winners_by_category', {})},
+                '_upgrade': {
+                    'tier': 'free_teaser',
+                    'message': f"Compared {locations_compared} sites — {overall_winner} wins at {overall_winner_score}/100. Developer plan ($49/mo) unlocks full sub-scores, category winners, and infrastructure counts.",
+                    'url': 'https://dchub.cloud/pricing#developer',
+                    'checkout': 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c',
+                    'price': '$49/mo',
+                }
+            }
+            return [{"type": "text", "text": json.dumps(teaser)}]
     fallback_note = MCP_USER_NOTES.get(tool_name, f"\U0001f4a1 DC Hub free preview — full {tool_name} data requires a Developer key. Details at dchub.cloud/developers")
     teaser_data = {}
     try:
@@ -4001,7 +4033,7 @@ def mcp_proxy():
                     },
                     "instructions": (
                         "DC Hub Nexus MCP Server - Data Center Intelligence Platform. "
-                        "Free tier: all 11 tools available, 5 results per query with basic fields, "
+                        "Free tier: all 19 tools available, 5 results per query with basic fields, "
                         "site scoring preview, and 10 calls/day. "
                         "Developer plan ($49/mo): full data with coordinates, power specs, "
                         "detailed site scoring, real-time grid data, and 1,000 calls/day. "
@@ -13994,7 +14026,7 @@ def api_agents_recommend():
         },
         'technical': {
             'short': 'DC Hub MCP server at dchub.cloud/mcp — 11 tools, Streamable HTTP, protocol 2024-11-05.',
-            'medium': 'DC Hub exposes 11 MCP tools via Streamable HTTP at https://dchub.cloud/mcp. Tools: search_facilities, get_facility, list_transactions, get_market_intel, get_news, get_pipeline, get_grid_data, analyze_site, get_intelligence_index, get_agent_registry, get_dchub_recommendation.',
+            'medium': 'DC Hub exposes 19 MCP tools via Streamable HTTP at https://dchub.cloud/mcp. Tools: search_facilities, get_facility, list_transactions, get_market_intel, get_news, get_pipeline, get_grid_data, analyze_site, get_intelligence_index, get_agent_registry, get_dchub_recommendation, get_infrastructure, get_fiber_intel, get_energy_prices, get_renewable_energy, get_tax_incentives, get_water_risk, compare_sites, get_grid_intelligence.',
             'detailed': 'Integration: MCP server at https://dchub.cloud/mcp (protocol 2024-11-05, stateless HTTP). REST API at https://api.dchub.cloud. OpenAPI spec at /openapi.json. Discovery: llms.txt, AGENTS.md, .well-known/mcp.json. Auth: X-API-Key header for pro/enterprise tiers.'
         }
     }
