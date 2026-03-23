@@ -13683,14 +13683,16 @@ def get_facility_by_id(facility_id):
         elif api_key:
             try:
                 cur2 = conn.cursor()
-                cur2.execute("SELECT u.plan FROM api_keys ak JOIN users u ON ak.user_id = u.id WHERE ak.key = %s AND ak.active = true LIMIT 1", (api_key,))
+                import hashlib
+                _kh = hashlib.sha256(api_key.encode()).hexdigest()
+                cur2.execute("SELECT u.plan FROM api_keys ak JOIN users u ON ak.user_id = u.id WHERE ak.key_hash = %s AND ak.is_active = 1 LIMIT 1", (_kh,))
                 plan_row = cur2.fetchone()
                 if plan_row:
                     caller_plan = plan_row[0] or "free"
             except Exception:
                 pass
 
-        if caller_plan in ("pro", "enterprise", "developer"):
+        if caller_plan in ("pro", "enterprise", "developer", "founding"):
             # Full data for paid users
             return jsonify({"success": True, "data": full_data})
         else:
@@ -13747,7 +13749,7 @@ def api_site_score():
         if not _authed:
             user = getattr(request, "current_user", None)
             plan = (user or {}).get("plan", "free") if isinstance(user, dict) else "free"
-            if plan not in ("pro", "enterprise", "developer"):
+            if plan not in ("pro", "enterprise", "developer", "founding"):
                 return jsonify({"error": "plan_required", "message": "Site scoring requires Pro plan. Upgrade at dchub.cloud/pricing", "upgrade_url": "https://dchub.cloud/pricing", "success": False}), 403
     lat = request.args.get('lat', type=float)
     lon = request.args.get('lon', type=float)

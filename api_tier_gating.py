@@ -322,13 +322,14 @@ def validate_api_key(api_key):
         
         conn = psycopg2.connect(database_url, connect_timeout=5)
         cur = conn.cursor()
+        key_hash = hashlib.sha256(api_key.encode()).hexdigest()
         cur.execute("""
             SELECT u.id, u.email, u.plan, u.role, ak.rate_limit_tier
             FROM api_keys ak
             JOIN users u ON ak.user_id = u.id
-            WHERE ak.key = %s AND ak.is_active = true
+            WHERE ak.key_hash = %s AND ak.is_active = 1
             LIMIT 1
-        """, (api_key,))
+        """, (key_hash,))
         row = cur.fetchone()
         cur.close()
         
