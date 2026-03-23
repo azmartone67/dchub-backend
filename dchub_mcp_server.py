@@ -269,7 +269,7 @@ async def list_transactions(
     limit: int = 25,
     offset: int = 0,
 ) -> str:
-    """Retrieve M&A transactions in the data center industry. Tracks $51B+ in deals.
+    """Retrieve M&A transactions in the data center industry. Tracks $185B+ in deals.
 
     Filter by buyer, seller, deal value, type, date range, and geographic region.
 
