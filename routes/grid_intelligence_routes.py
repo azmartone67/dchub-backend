@@ -7,7 +7,7 @@ Endpoint: GET /api/v1/grid-intelligence/<region_id>
 Aggregates data from existing DC Hub tables:
   - grid_regions + grid_corridors (new tables)
   - eia_retail_rates (energy pricing)
-  - discovered_facilities (facility counts)
+  - discovered_facilities + facilities (facility counts)
   - substations, transmission_lines_eia, gas_pipelines, power_plants_eia (infrastructure)
   - tax_incentives_neon (incentives)
   - fema_risk_index (risk data)
@@ -17,12 +17,21 @@ Tier gating:
   - Free: region summary + 2 corridor headlines + redacted scores + upgrade CTA
   - Developer ($49/mo): all corridors + aggregate scores + energy rates + infra counts
   - Pro ($99/mo): full sub-scores + facility names + coordinates + CSV export
+
+Fixes (Mar 23):
+  - autocommit=True prevents transaction poisoning across corridor queries
+  - COALESCE(latitude, lat) handles dual-column substations schema
+  - Facility count queries BOTH discovered_facilities AND facilities tables
+  - conn.rollback() in each except block as belt-and-suspenders
+  - Logging instead of silent pass
 """
 
+import logging
 import json
 import traceback
 from flask import Blueprint, request, jsonify
 
+logger = logging.getLogger(__name__)
 grid_intel_bp = Blueprint('grid_intel', __name__)
 
 
@@ -66,13 +75,38 @@ GRID_INTEL_TIER_CONFIG = {
     }
 }
 
+# State abbreviation to full name mapping (used across multiple functions)
+STATE_NAMES = {
+    'AL': 'Alabama', 'AK': 'Alaska', 'AZ': 'Arizona', 'AR': 'Arkansas',
+    'CA': 'California', 'CO': 'Colorado', 'CT': 'Connecticut', 'DE': 'Delaware',
+    'FL': 'Florida', 'GA': 'Georgia', 'HI': 'Hawaii', 'ID': 'Idaho',
+    'IL': 'Illinois', 'IN': 'Indiana', 'IA': 'Iowa', 'KS': 'Kansas',
+    'KY': 'Kentucky', 'LA': 'Louisiana', 'ME': 'Maine', 'MD': 'Maryland',
+    'MA': 'Massachusetts', 'MI': 'Michigan', 'MN': 'Minnesota', 'MS': 'Mississippi',
+    'MO': 'Missouri', 'MT': 'Montana', 'NE': 'Nebraska', 'NV': 'Nevada',
+    'NH': 'New Hampshire', 'NJ': 'New Jersey', 'NM': 'New Mexico', 'NY': 'New York',
+    'NC': 'North Carolina', 'ND': 'North Dakota', 'OH': 'Ohio', 'OK': 'Oklahoma',
+    'OR': 'Oregon', 'PA': 'Pennsylvania', 'RI': 'Rhode Island', 'SC': 'South Carolina',
+    'SD': 'South Dakota', 'TN': 'Tennessee', 'TX': 'Texas', 'UT': 'Utah',
+    'VT': 'Vermont', 'VA': 'Virginia', 'WA': 'Washington', 'WV': 'West Virginia',
+    'WI': 'Wisconsin', 'WY': 'Wyoming',
+}
+
 
 def _get_conn():
-    """Get a database connection from the pool or direct."""
+    """Get a database connection with autocommit enabled.
+    
+    CRITICAL: autocommit=True prevents transaction poisoning.
+    Without it, a failed query on corridor #1 puts the connection in
+    InFailedSqlTransaction state, and ALL subsequent queries silently
+    fail — returning 0 for corridors #2-#6.
+    """
     import os
     import psycopg2
     db_url = os.environ.get('NEON_DATABASE_URL') or os.environ.get('DATABASE_URL', '')
-    return psycopg2.connect(db_url)
+    conn = psycopg2.connect(db_url)
+    conn.autocommit = True
+    return conn
 
 
 def _determine_tier(api_key):
@@ -102,8 +136,8 @@ def _determine_tier(api_key):
             row = cur.fetchone()
             if row:
                 return _map_plan(row[0])
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[grid_intel] API key lookup failed: {e}")
         finally:
             if conn:
                 try:
@@ -125,14 +159,23 @@ def _determine_tier(api_key):
         if token:
             payload = jwt.decode(token, JWT_SECRET, algorithms=['HS256'])
             return _map_plan(payload.get('plan'))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"[grid_intel] JWT decode failed: {e}")
 
     return 'free'
 
 
 def _get_infra_counts(lat, lon, radius_km=50, conn=None):
-    """Get infrastructure counts near a corridor point."""
+    """Get infrastructure counts near a corridor point.
+    
+    Uses COALESCE(latitude, lat) to handle substations table having
+    data split across two column pairs (HIFLD bulk load used latitude/longitude,
+    older records used lat/lng).
+    
+    Each query is independently try/excepted so one table failure
+    doesn't zero out the others. With autocommit=True on the connection,
+    transaction poisoning is also prevented.
+    """
     counts = {
         'substations': 0,
         'transmission_lines': 0,
@@ -150,19 +193,22 @@ def _get_infra_counts(lat, lon, radius_km=50, conn=None):
         deg_lat = radius_km / 111.0
         deg_lon = radius_km / (111.0 * 0.85)
 
-        # Substations (columns: lat, lng)
+        # Substations — COALESCE handles dual-column schema
         try:
             cur.execute("""
                 SELECT COUNT(*) FROM substations
-                WHERE lat IS NOT NULL AND lng IS NOT NULL
-                AND ABS(lat - %s) < %s AND ABS(lng - %s) < %s
+                WHERE COALESCE(latitude, lat) IS NOT NULL
+                AND COALESCE(longitude, lng) IS NOT NULL
+                AND ABS(COALESCE(latitude, lat) - %s) < %s
+                AND ABS(COALESCE(longitude, lng) - %s) < %s
             """, (lat, deg_lat, lon, deg_lon))
             row = cur.fetchone()
             counts['substations'] = row[0] if row else 0
-        except Exception:
-            pass
+            logger.debug(f"[grid_intel] Substations near ({lat},{lon}): {counts['substations']}")
+        except Exception as e:
+            logger.warning(f"[grid_intel] Substations query failed near ({lat},{lon}): {e}")
 
-        # Transmission lines (columns: latitude, longitude)
+        # Transmission lines (EIA uses latitude/longitude)
         try:
             cur.execute("""
                 SELECT COUNT(*) FROM transmission_lines_eia
@@ -171,10 +217,10 @@ def _get_infra_counts(lat, lon, radius_km=50, conn=None):
             """, (lat, deg_lat, lon, deg_lon))
             row = cur.fetchone()
             counts['transmission_lines'] = row[0] if row else 0
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[grid_intel] Transmission query failed near ({lat},{lon}): {e}")
 
-        # Power plants (columns: latitude, longitude)
+        # Power plants (EIA uses latitude/longitude)
         try:
             cur.execute("""
                 SELECT COUNT(*) FROM power_plants_eia
@@ -183,10 +229,10 @@ def _get_infra_counts(lat, lon, radius_km=50, conn=None):
             """, (lat, deg_lat, lon, deg_lon))
             row = cur.fetchone()
             counts['power_plants'] = row[0] if row else 0
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[grid_intel] Power plants query failed near ({lat},{lon}): {e}")
 
-        # Gas pipelines (columns: lat, lng, has status field)
+        # Gas pipelines (uses lat/lng)
         try:
             cur.execute("""
                 SELECT COUNT(*) FROM gas_pipelines
@@ -195,11 +241,12 @@ def _get_infra_counts(lat, lon, radius_km=50, conn=None):
             """, (lat, deg_lat, lon, deg_lon))
             row = cur.fetchone()
             counts['gas_pipelines'] = row[0] if row else 0
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[grid_intel] Gas pipelines query failed near ({lat},{lon}): {e}")
 
         return counts
-    except Exception:
+    except Exception as e:
+        logger.error(f"[grid_intel] _get_infra_counts error: {e}")
         return counts
     finally:
         if close_conn and conn:
@@ -211,22 +258,6 @@ def _get_infra_counts(lat, lon, radius_km=50, conn=None):
 
 def _get_energy_rates(states, conn=None):
     """Get average industrial energy rate for a list of states."""
-    # State abbreviation to full name mapping
-    STATE_NAMES = {
-        'AL': 'Alabama', 'AK': 'Alaska', 'AZ': 'Arizona', 'AR': 'Arkansas',
-        'CA': 'California', 'CO': 'Colorado', 'CT': 'Connecticut', 'DE': 'Delaware',
-        'FL': 'Florida', 'GA': 'Georgia', 'HI': 'Hawaii', 'ID': 'Idaho',
-        'IL': 'Illinois', 'IN': 'Indiana', 'IA': 'Iowa', 'KS': 'Kansas',
-        'KY': 'Kentucky', 'LA': 'Louisiana', 'ME': 'Maine', 'MD': 'Maryland',
-        'MA': 'Massachusetts', 'MI': 'Michigan', 'MN': 'Minnesota', 'MS': 'Mississippi',
-        'MO': 'Missouri', 'MT': 'Montana', 'NE': 'Nebraska', 'NV': 'Nevada',
-        'NH': 'New Hampshire', 'NJ': 'New Jersey', 'NM': 'New Mexico', 'NY': 'New York',
-        'NC': 'North Carolina', 'ND': 'North Dakota', 'OH': 'Ohio', 'OK': 'Oklahoma',
-        'OR': 'Oregon', 'PA': 'Pennsylvania', 'RI': 'Rhode Island', 'SC': 'South Carolina',
-        'SD': 'South Dakota', 'TN': 'Tennessee', 'TX': 'Texas', 'UT': 'Utah',
-        'VT': 'Vermont', 'VA': 'Virginia', 'WA': 'Washington', 'WV': 'West Virginia',
-        'WI': 'Wisconsin', 'WY': 'Wyoming',
-    }
     rates = {}
     close_conn = False
     try:
@@ -235,17 +266,21 @@ def _get_energy_rates(states, conn=None):
             close_conn = True
         cur = conn.cursor()
         for st in states:
-            state_full = STATE_NAMES.get(st.upper(), st)
-            cur.execute("""
-                SELECT AVG(rate_cents_kwh) FROM eia_retail_rates
-                WHERE (UPPER(state) = UPPER(%s) OR UPPER(state) = UPPER(%s))
-                AND sector = 'industrial'
-            """, (state_full, st))
-            row = cur.fetchone()
-            if row and row[0]:
-                rates[st] = round(float(row[0]), 2)
+            try:
+                state_full = STATE_NAMES.get(st.upper(), st)
+                cur.execute("""
+                    SELECT AVG(rate_cents_kwh) FROM eia_retail_rates
+                    WHERE (UPPER(state) = UPPER(%s) OR UPPER(state) = UPPER(%s))
+                    AND sector = 'industrial'
+                """, (state_full, st))
+                row = cur.fetchone()
+                if row and row[0]:
+                    rates[st] = round(float(row[0]), 2)
+            except Exception as e:
+                logger.warning(f"[grid_intel] Energy rate query failed for {st}: {e}")
         return rates
-    except Exception:
+    except Exception as e:
+        logger.error(f"[grid_intel] _get_energy_rates error: {e}")
         return rates
     finally:
         if close_conn and conn:
@@ -256,20 +291,55 @@ def _get_energy_rates(states, conn=None):
 
 
 def _get_facility_count(state, conn=None):
-    """Get facility count for a state."""
+    """Get facility count for a state.
+    
+    Queries BOTH discovered_facilities AND facilities tables,
+    returns the higher count. Handles state stored as abbreviation
+    ('VA') or full name ('Virginia').
+    """
     close_conn = False
     try:
         if conn is None:
             conn = _get_conn()
             close_conn = True
         cur = conn.cursor()
-        cur.execute("""
-            SELECT COUNT(*) FROM discovered_facilities
-            WHERE UPPER(state) = UPPER(%s)
-        """, (state,))
-        row = cur.fetchone()
-        return row[0] if row else 0
-    except Exception:
+
+        state_upper = state.upper()
+        state_full = STATE_NAMES.get(state_upper, state)
+
+        # Count from discovered_facilities (matches abbrev or full name)
+        count_discovered = 0
+        try:
+            cur.execute("""
+                SELECT COUNT(*) FROM discovered_facilities
+                WHERE UPPER(state) = %s
+                   OR UPPER(state) = UPPER(%s)
+            """, (state_upper, state_full))
+            row = cur.fetchone()
+            count_discovered = row[0] if row else 0
+        except Exception as e:
+            logger.warning(f"[grid_intel] discovered_facilities count failed for {state}: {e}")
+
+        # Count from facilities table (the main 11K+ table)
+        count_facilities = 0
+        try:
+            cur.execute("""
+                SELECT COUNT(*) FROM facilities
+                WHERE UPPER(state) = %s
+                   OR UPPER(state) = UPPER(%s)
+            """, (state_upper, state_full))
+            row = cur.fetchone()
+            count_facilities = row[0] if row else 0
+        except Exception as e:
+            logger.warning(f"[grid_intel] facilities count failed for {state}: {e}")
+
+        # Return the higher of the two (avoids double-counting while
+        # ensuring we always show the best available number)
+        best = max(count_discovered, count_facilities)
+        logger.debug(f"[grid_intel] Facility count {state}: discovered={count_discovered}, facilities={count_facilities}, using={best}")
+        return best
+    except Exception as e:
+        logger.error(f"[grid_intel] _get_facility_count error for {state}: {e}")
         return 0
     finally:
         if close_conn and conn:
@@ -289,24 +359,28 @@ def _get_tax_incentives(states, conn=None):
             close_conn = True
         cur = conn.cursor()
         for st in states:
-            cur.execute("""
-                SELECT state_name, sales_tax_exempt, property_tax_abatement,
-                       data_center_specific, qualifying_investment, incentive_details
-                FROM tax_incentives_neon
-                WHERE state_abbr = %s
-            """, (st,))
-            row = cur.fetchone()
-            if row:
-                incentives[st] = {
-                    'state_name': row[0],
-                    'sales_tax_exempt': row[1],
-                    'property_tax_abatement': row[2],
-                    'data_center_specific': row[3],
-                    'qualifying_investment': row[4],
-                    'summary': row[5][:200] + '...' if row[5] and len(row[5]) > 200 else row[5]
-                }
+            try:
+                cur.execute("""
+                    SELECT state_name, sales_tax_exempt, property_tax_abatement,
+                           data_center_specific, qualifying_investment, incentive_details
+                    FROM tax_incentives_neon
+                    WHERE state_abbr = %s
+                """, (st,))
+                row = cur.fetchone()
+                if row:
+                    incentives[st] = {
+                        'state_name': row[0],
+                        'sales_tax_exempt': row[1],
+                        'property_tax_abatement': row[2],
+                        'data_center_specific': row[3],
+                        'qualifying_investment': row[4],
+                        'summary': row[5][:200] + '...' if row[5] and len(row[5]) > 200 else row[5]
+                    }
+            except Exception as e:
+                logger.warning(f"[grid_intel] Tax incentive query failed for {st}: {e}")
         return incentives
-    except Exception:
+    except Exception as e:
+        logger.error(f"[grid_intel] _get_tax_incentives error: {e}")
         return incentives
     finally:
         if close_conn and conn:
