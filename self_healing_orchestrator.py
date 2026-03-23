@@ -109,8 +109,8 @@ def heal_fiber_index():
 
 def heal_daily_record_usage():
     """Fix 3: Add missing columns to daily_record_usage table.
-    The 'last_endpoint' column was missing, causing every MCP call 
-    to log an error (non-blocking but noisy).
+    Other agents keep adding column references without ALTERing the table.
+    This healer auto-adds any missing columns.
     """
     try:
         import psycopg2
@@ -120,18 +120,28 @@ def heal_daily_record_usage():
         conn = psycopg2.connect(db_url)
         conn.autocommit = True
         cur = conn.cursor()
-        # Check if column exists
-        cur.execute("""
-            SELECT 1 FROM information_schema.columns 
-            WHERE table_name = 'daily_record_usage' 
-            AND column_name = 'last_endpoint'
-        """)
-        if not cur.fetchone():
-            cur.execute("ALTER TABLE daily_record_usage ADD COLUMN last_endpoint TEXT")
-            logger.warning("HEALED: Added last_endpoint column to daily_record_usage")
-            conn.close()
-            return True, "Added last_endpoint column"
+        
+        # All columns that code references but may not exist yet
+        required_columns = {
+            'last_endpoint': 'TEXT',
+            'last_access': 'TIMESTAMP',
+        }
+        
+        added = []
+        for col_name, col_type in required_columns.items():
+            cur.execute("""
+                SELECT 1 FROM information_schema.columns 
+                WHERE table_name = 'daily_record_usage' 
+                AND column_name = %s
+            """, (col_name,))
+            if not cur.fetchone():
+                cur.execute("ALTER TABLE daily_record_usage ADD COLUMN %s %s" % (col_name, col_type))
+                added.append(col_name)
+                logger.warning("HEALED: Added %s column to daily_record_usage", col_name)
+        
         conn.close()
+        if added:
+            return True, "Added columns: %s" % ', '.join(added)
         return False, "OK"
     except Exception as e:
         logger.debug("daily_record_usage check: %s", str(e)[:80])
