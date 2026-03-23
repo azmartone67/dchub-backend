@@ -1130,7 +1130,7 @@ async def get_tax_incentives(state: str = "") -> str:
         rows = cur.fetchall()
         results = [dict(zip(columns, row)) for row in rows]
 
-        cur.execute("SELECT COUNT(DISTINCT state) FROM tax_incentives_neon")
+        cur.execute("SELECT COUNT(DISTINCT state_abbr) FROM tax_incentives_neon")
         total_states = cur.fetchone()[0] or 0
 
         cur.close()
@@ -1291,8 +1291,13 @@ async def get_water_risk(lat: float = 0, lon: float = 0, state: str = "") -> str
         cur.close()
         conn.close()
 
-        # Cooling recommendation engine
-        stress = (water_data.get('stress_level', '') or '').lower()
+        # Cooling recommendation engine — based on water level data
+        # Low water levels = high stress, high levels = low stress
+        _wl = None
+        if water_data.get('sites'):
+            _levels = [s.get('water_level_ft') for s in water_data.get('sites', []) if s.get('water_level_ft') is not None]
+            _wl = sum(_levels) / len(_levels) if _levels else None
+        stress = 'high' if (_wl is not None and _wl < 20) else 'moderate' if (_wl is not None and _wl < 100) else 'low' if _wl is not None else 'unknown' 
         if 'extreme' in stress or 'very high' in stress:
             cooling = {
                 'recommendation': 'Air-cooled or closed-loop dry cooling required.',
@@ -1365,8 +1370,8 @@ async def get_backup_status() -> str:
             ('users', "SELECT COUNT(*) FROM users"),
             ('api_keys', "SELECT COUNT(*) FROM api_keys"),
             ('fiber_routes', "SELECT COUNT(*) FROM fiber_routes"),
-            ('substations', "SELECT COUNT(*) FROM substations"),
-            ('discovered_pipelines', "SELECT COUNT(*) FROM discovered_pipelines"),
+            ('hifld_substations', "SELECT COUNT(*) FROM hifld_substations"),
+            ('gas_pipelines', "SELECT COUNT(*) FROM gas_pipelines"),
             ('capacity_pipeline', "SELECT COUNT(*) FROM capacity_pipeline"),
             ('tax_incentives_neon', "SELECT COUNT(*) FROM tax_incentives_neon"),
             ('energy_ppas', "SELECT COUNT(*) FROM energy_ppas"),
@@ -1393,7 +1398,7 @@ async def get_backup_status() -> str:
         freshness_queries = [
             ('newest_facility', "SELECT MAX(created_at) FROM discovered_facilities"),
             ('newest_deal', "SELECT MAX(date) FROM deals"),
-            ('newest_news', "SELECT MAX(published_date) FROM announcements"),
+            ('newest_news', "SELECT MAX(published_at) FROM news_articles"),
             ('newest_user', "SELECT MAX(created_at) FROM users"),
         ]
         for name, query in freshness_queries:
