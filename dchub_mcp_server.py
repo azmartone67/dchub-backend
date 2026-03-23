@@ -1449,6 +1449,41 @@ async def get_backup_status() -> str:
         return json.dumps({'success': False, 'error': str(e)})
 
 
+# ═══════════════════════════════════════════════════════════
+# TOOL 20: get_grid_intelligence — Grid Intelligence Briefs
+# ═══════════════════════════════════════════════════════════
+@mcp.tool(
+    name="get_grid_intelligence",
+    annotations={"title": "Grid Intelligence Brief", "readOnlyHint": True, "openWorldHint": True},
+)
+async def get_grid_intelligence(region_id: str = "") -> str:
+    """Get grid intelligence brief for a US ISO region.
+
+    Returns transmission corridors, queue congestion, energy rates,
+    infrastructure counts, tax incentives, and facility data.
+    Tier-gated: free shows 2 corridors, Developer shows all with scores,
+    Pro shows full detail with coordinates.
+
+    Available regions: ercot, pjm, miso-spp, caiso, southeast.
+    Leave region_id empty to list all available regions.
+
+    Args:
+        region_id: Region identifier (ercot, pjm, miso-spp, caiso, southeast).
+                   Empty string returns list of all regions.
+
+    Returns:
+        JSON with region data, corridors, energy rates, tax incentives, and facility counts.
+    """
+    if region_id and region_id.strip():
+        path = f"/api/v1/grid-intelligence/{region_id.strip()}"
+    else:
+        path = "/api/v1/grid-intelligence"
+
+    _track("get_grid_intelligence", {"region_id": region_id})
+    result = _api_get(path)
+    return json.dumps(result, indent=2)
+
+
 if __name__ == "__main__":
     port = MCP_PORT
 
@@ -1470,7 +1505,7 @@ if __name__ == "__main__":
     logger.info(f"  Transport: {transport}")
     logger.info(f"  Port: {port}")
     logger.info(f"  API backend: {DCHUB_API_BASE}")
-    logger.info(f"  Tools: 15 | Resources: 6 | Prompts: 4")
+    logger.info(f"  Tools: 16 | Resources: 6 | Prompts: 4")
     logger.info(f"=" * 60)
 
     if transport == "stdio":
