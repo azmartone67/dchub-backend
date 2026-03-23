@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 logger = logging.getLogger('watchdog')
 
 class HealthWatchdog:
-    def __init__(self, app=None, check_interval=60, max_failures=3):
+    def __init__(self, app=None, check_interval=90, max_failures=5):
         self.app = app
         self.check_interval = check_interval
         self.max_failures = max_failures
@@ -427,7 +427,7 @@ def register_watchdog_routes(app):
         return jsonify({'error': 'watchdog not initialized'}), 503
 
 
-def init_watchdog(app, check_interval=60, max_failures=3):
+def init_watchdog(app, check_interval=90, max_failures=5):
     """Start the watchdog background thread (call after routes are registered)."""
     global watchdog_instance
     watchdog_instance = HealthWatchdog(app=app, check_interval=check_interval, max_failures=max_failures)
