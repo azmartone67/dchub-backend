@@ -76,37 +76,59 @@ def _get_conn():
 
 
 def _determine_tier(api_key):
-    """Determine user tier from API key. Returns tier string."""
-    if not api_key:
+    """Determine user tier from API key (SHA256 hashed) or JWT token. Returns tier string."""
+    import hashlib
+
+    def _map_plan(plan):
+        p = (plan or 'free').lower()
+        if p in ('pro', 'enterprise'):
+            return p
+        elif p in ('developer', 'dev'):
+            return 'developer'
         return 'free'
-    conn = None
+
+    # 1. Try API key (hashed lookup — api_keys stores SHA256 hash, not plaintext)
+    if api_key and api_key.startswith('dchub_'):
+        conn = None
+        try:
+            key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+            conn = _get_conn()
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT u.plan FROM api_keys ak
+                JOIN users u ON ak.user_id = u.id
+                WHERE ak.key_hash = %s AND ak.is_active = 1
+            """, (key_hash,))
+            row = cur.fetchone()
+            if row:
+                return _map_plan(row[0])
+        except Exception:
+            pass
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    # 2. Try JWT token from cookies or Authorization header
     try:
-        conn = _get_conn()
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT u.plan FROM api_keys ak
-            JOIN users u ON ak.user_id = u.id
-            WHERE ak.key = %s AND ak.is_active = true
-        """, (api_key,))
-        row = cur.fetchone()
-        if row:
-            plan = (row[0] or 'free').lower()
-            # Map plan names to tier names
-            if plan in ('pro', 'enterprise'):
-                return plan
-            elif plan in ('developer', 'dev'):
-                return 'developer'
-            else:
-                return 'free'
-        return 'free'
+        import jwt, os
+        from flask import request as _req
+        JWT_SECRET = os.environ.get('JWT_SECRET', os.environ.get('SECRET_KEY', 'dchub-secret'))
+        auth_header = _req.headers.get('Authorization', '')
+        token = None
+        if auth_header.startswith('Bearer ') and not auth_header[7:].strip().startswith('dchub_'):
+            token = auth_header[7:].strip()
+        if not token:
+            token = _req.cookies.get('auth_token') or _req.cookies.get('token')
+        if token:
+            payload = jwt.decode(token, JWT_SECRET, algorithms=['HS256'])
+            return _map_plan(payload.get('plan'))
     except Exception:
-        return 'free'
-    finally:
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
+        pass
+
+    return 'free'
 
 
 def _get_infra_counts(lat, lon, radius_km=50, conn=None):
