@@ -774,7 +774,7 @@ async def get_energy_prices(
 
     if data_type == "retail_rates":
         params = {"state": state} if state else {}
-        result = _api_get("/api/v1/energy/retail/rates", params)
+        result = _api_get("/api/v1/energy/electricity-rates", params)
     elif data_type == "natural_gas":
         params = {"state": state} if state else {}
         result = _api_get("/api/v1/energy/naturalgas/price", params)
