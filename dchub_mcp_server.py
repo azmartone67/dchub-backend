@@ -306,7 +306,9 @@ async def list_transactions(
         sl = seller.lower()
         txns = [t for t in txns if sl in (t.get("seller","") or "").lower()]
     if region and txns:
-        rl = region.lower()
+        # Normalize region aliases (Mar 22 fix)
+        _ra = {'north_america': 'north america', 'asia_pacific': 'apac', 'latin_america': 'latam', 'middle_east': 'mea'}
+        rl = _ra.get(region.lower(), region.lower()).replace('_', ' ')
         txns = [t for t in txns if rl in (t.get("region","") or "").lower() or rl in (t.get("market","") or "").lower()]
     if min_value_usd and txns:
         txns = [t for t in txns if (t.get("value_usd") or t.get("value_millions",0)*1e6 or 0) >= min_value_usd]
