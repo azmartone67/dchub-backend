@@ -8024,11 +8024,11 @@ def get_stats():
         stats = {}
         
         c.execute("SELECT COUNT(*) FROM facilities")
-        main_count = c.fetchone()[0] or 0
+        main_count = (c.fetchone() or (0,))[0] or 0
         
         try:
             c.execute("SELECT COUNT(*) FROM discovered_facilities WHERE is_duplicate = 0")
-            discovered_count = c.fetchone()[0] or 0
+            discovered_count = (c.fetchone() or (0,))[0] or 0
         except:
             discovered_count = 0
         
@@ -8037,26 +8037,26 @@ def get_stats():
         stats['discovered_facilities'] = discovered_count
         
         c.execute("SELECT COALESCE(SUM(power_mw), 0) FROM facilities")
-        stats['total_power_mw'] = round(c.fetchone()[0] or 0, 1)
+        stats['total_power_mw'] = round((c.fetchone() or (0,))[0] or 0, 1)
         stats['total_mw'] = stats['total_power_mw']  # alias for frontends
         
         # total_substations
         try:
             c.execute("SELECT COUNT(*) FROM substations")
-            stats['total_substations'] = c.fetchone()[0] or 0
+            stats['total_substations'] = (c.fetchone() or (0,))[0] or 0
         except Exception:
             stats['total_substations'] = 0
         
         c.execute(f"SELECT COUNT(DISTINCT provider) FROM facilities WHERE provider != '' AND provider IS NOT NULL {RAILWAY_EXCLUSION}")
-        stats['total_providers'] = c.fetchone()[0] or 0
+        stats['total_providers'] = (c.fetchone() or (0,))[0] or 0
         
         c.execute("SELECT COUNT(DISTINCT country) FROM facilities WHERE country != '' AND country IS NOT NULL")
-        stats['total_countries'] = c.fetchone()[0] or 0
+        stats['total_countries'] = (c.fetchone() or (0,))[0] or 0
         stats['countries'] = stats['total_countries']  # alias for frontends
         
         try:
             c.execute("SELECT COUNT(*) FROM announcements")
-            stats['total_announcements'] = c.fetchone()[0] or 0
+            stats['total_announcements'] = (c.fetchone() or (0,))[0] or 0
         except:
             stats['total_announcements'] = 0
         
@@ -13211,7 +13211,8 @@ def _startup_health_check():
     for attempt in range(1, 11):
         try:
             import requests as _req
-            r = _req.get(f"http://localhost:5000/api/v1/stats", timeout=5)
+            _port = os.environ.get("PORT", "5000")
+            r = _req.get(f"http://localhost:{_port}/api/v1/stats", timeout=5)
             if r.status_code == 200:
                 logger.info("STARTUP HEALTH CHECK: OK on attempt %d (%0.2fs)", attempt, r.elapsed.total_seconds())
                 return
