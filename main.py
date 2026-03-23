@@ -2699,7 +2699,7 @@ MCP_FREE_DAILY_LIMIT = 10            # NEW — tool calls per day per IP for fre
 MCP_FACILITY_TOOLS = {'search_facilities', 'get_facility', 'get_pipeline', 'get_top_operators'}
 
 # Tools that return teaser results for free tier (was MCP_BLOCKED_TOOLS — hard block)
-MCP_TEASER_TOOLS = {'analyze_site', 'get_grid_data', 'get_infrastructure', 'get_fiber_intel', 'get_energy_prices', 'get_renewable_energy', 'get_news', 'get_intelligence_index', 'get_market_intel', 'list_transactions', 'get_tax_incentives', 'get_water_risk', 'get_backup_status', 'compare_sites'}
+MCP_TEASER_TOOLS = {'analyze_site', 'get_grid_data', 'get_infrastructure', 'get_fiber_intel', 'get_energy_prices', 'get_renewable_energy', 'get_news', 'get_intelligence_index', 'get_market_intel', 'list_transactions', 'compare_sites'}  # tax_incentives, water_risk, backup_status pass through (handled in dchub_mcp_server.py)
 
 # User-facing notes per tool category — AI agents surface these to end users
 MCP_USER_NOTES = {
