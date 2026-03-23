@@ -7435,7 +7435,7 @@ def get_market_stats(market):
         
         row = c.fetchone()
         cols = [d[0] for d in c.description]
-        stats = dict(zip(cols, row)) if row else {}
+        stats = dict(row) if (row and hasattr(row, "keys")) else (dict(zip(cols, row)) if row else {"facility_count": 0, "total_power": 0, "avg_power": 0, "provider_count": 0})
         
         # Top providers
         c.execute(f"""
@@ -7462,7 +7462,7 @@ def get_market_stats(market):
         """, params)
         
         by_status_rows = c.fetchall()
-        by_status = {r[0]: r[1] for r in by_status_rows}
+        by_status = {(r.get("status") if hasattr(r,"get") else r[0]): (r.get("count") if hasattr(r,"get") else r[1]) for r in by_status_rows}
         
         # Recent facilities
         c.execute(f"""
@@ -7477,7 +7477,7 @@ def get_market_stats(market):
         
         recent_rows = c.fetchall()
         recent_cols = [d[0] for d in c.description]
-        recent = [dict(zip(recent_cols, r)) for r in recent_rows]
+        recent = [dict(r) if hasattr(r, "keys") else dict(zip(recent_cols, r)) for r in recent_rows]
         
         return jsonify({
             'success': True,
