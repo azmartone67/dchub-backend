@@ -11485,8 +11485,8 @@ try:
     register_watchdog_routes(app)
     def _deferred_watchdog():
         try:
-            init_watchdog(app, check_interval=60, max_failures=3)
-            print("🐕 Health Watchdog: ✅ Running (check every 60s, restart after 3 failures)")
+            init_watchdog(app, check_interval=90, max_failures=5)
+            print("🐕 Health Watchdog: ✅ Running (check every 90s, restart after 5 failures)")
         except Exception as e:
             print(f"⚠️ Health Watchdog: Failed to start: {e}")
     _deferred_bg_threads.append(('Health Watchdog', _deferred_watchdog))
@@ -13487,11 +13487,6 @@ def api_site_score():
     try:
         conn = get_read_db()
         c = conn.cursor()
-        # Set 3s statement timeout to prevent long-running site-score queries
-        try:
-            c.execute("SET statement_timeout = '3000'")
-        except Exception:
-            pass
 
         # 1. Nearby facilities (competitive density, ~100km radius)
         c.execute("""
