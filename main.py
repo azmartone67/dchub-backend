@@ -13487,6 +13487,11 @@ def api_site_score():
     try:
         conn = get_read_db()
         c = conn.cursor()
+        # Set 3s statement timeout to prevent long-running site-score queries
+        try:
+            c.execute("SET statement_timeout = '3000'")
+        except Exception:
+            pass
 
         # 1. Nearby facilities (competitive density, ~100km radius)
         c.execute("""
