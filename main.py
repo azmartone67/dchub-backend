@@ -944,7 +944,7 @@ sys.stdout.flush()
 
 from flask import Flask, request, jsonify, Response, send_from_directory, send_file, stream_with_context, make_response, render_template, redirect
 try:
-    from redis_cache import cached_response, register_cache_routes, cache_get, cache_set
+    from redis_cache import cached_endpoint, register_cache_routes, cache_get, cache_set
     REDIS_AVAILABLE = True
 except ImportError:
     REDIS_AVAILABLE = False
@@ -1209,7 +1209,7 @@ def api_facilities_shortcut():
     return redirect(target)
 
 @app.route('/api/v1/map', methods=['GET'])
-@cached_response(ttl=600, key_prefix="map")
+@cached_endpoint(ttl=600, key_prefix="map")
 def api_v1_map():
     """Public map endpoint - returns basic fields for all facilities for map display."""
     conn = None
@@ -8303,7 +8303,7 @@ def _rows_to_tuples(rows):
 
 
 @app.route('/api/v1/stats', methods=['GET'])
-@cached_response(ttl=300, key_prefix="stats")
+@cached_endpoint(ttl=300, key_prefix="stats")
 def get_stats():
     """Get aggregate statistics"""
     conn = None
