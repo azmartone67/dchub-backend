@@ -8707,7 +8707,7 @@ def _list_facilities_full():
     conn = None
     try:
         conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))  # direct conn for heavy map query
-        c = conn.cursor()
+        c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         
         c.execute(count_sql, params)
         row = c.fetchone(); total = row['count'] if isinstance(row, dict) else row[0]
@@ -8830,7 +8830,7 @@ def _list_facilities_free(plan='anon'):
     conn = None
     try:
         conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))  # direct conn for heavy map query
-        c = conn.cursor()
+        c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         c.execute(count_sql, params)
         row = c.fetchone()
         total = row['count'] if isinstance(row, dict) else row[0]
