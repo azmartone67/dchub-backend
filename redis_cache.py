@@ -232,6 +232,36 @@ def cache_status():
         return {"available": False, "error": str(e)}
 
 
+def register_cache_routes(app):
+    """Register cache admin/health routes on the Flask app.
+    
+    Usage in main.py:
+        register_cache_routes(app)
+    
+    Adds:
+        GET  /api/health/cache — cache status
+        POST /api/admin/cache/flush — flush by prefix (admin only)
+    """
+    from flask import jsonify as flask_jsonify, request as flask_request
+
+    @app.route("/api/health/cache")
+    def _cache_health():
+        return flask_jsonify(cache_status())
+
+    @app.route("/api/admin/cache/flush", methods=["POST"])
+    def _cache_flush():
+        # Require admin key
+        admin_key = flask_request.headers.get("X-Admin-Key", "")
+        expected = os.environ.get("DCHUB_ADMIN_KEY", "")
+        if not expected or admin_key != expected:
+            return flask_jsonify({"error": "unauthorized"}), 403
+        prefix = flask_request.args.get("prefix", "")
+        count = cache_flush(prefix)
+        return flask_jsonify({"flushed": count, "prefix": prefix or "all"})
+
+    logger.info("✅ Redis cache routes registered: /api/health/cache, /api/admin/cache/flush")
+
+
 # ═══════════════════════════════════════════════════════════
 # RECOMMENDED CACHE STRATEGY
 # ═══════════════════════════════════════════════════════════
