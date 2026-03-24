@@ -9988,6 +9988,7 @@ def api_transactions_alias():
                 pass
 
 @app.route('/api/news', methods=['GET'])
+@cached_endpoint(ttl=300)
 def api_news_alias():
     """Alias for /api/news-feed - frontend compatibility"""
     from routes.deals_routes import get_news_feed
