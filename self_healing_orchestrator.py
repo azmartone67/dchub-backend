@@ -185,7 +185,7 @@ def heal_mcp_process():
                 'http://127.0.0.1:%d/mcp' % MCP_PORT,
                 json={"jsonrpc": "2.0", "method": "tools/list", "id": 1,
                       "params": {}},
-                headers={'Content-Type': 'application/json'},
+                headers={'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream'},
                 timeout=15
             )
             mcp_latency = round((time.time() - start) * 1000)
