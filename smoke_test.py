@@ -387,9 +387,9 @@ def test_mcp_tools():
     total_latency = 0
 
     for i, (tool_name, args, expected_key, desc) in enumerate(tools):
-        # Add small delay between calls to avoid 429 rate limiting
+        # Delay between calls to avoid 429 rate limiting (20 calls × 1.5s = 30s extra)
         if i > 0 and IS_EXTERNAL:
-            time.sleep(0.8)
+            time.sleep(1.5)
 
         ok, result, lat = _mcp_tool_call(tool_name, args)
         total_latency += lat
