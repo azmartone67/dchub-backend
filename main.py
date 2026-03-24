@@ -3035,7 +3035,7 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
                 'success': True,
                 'metro_fiber_preview': metro_preview,
                 'carriers_available': '██ upgrade to see carrier details',
-                'total_routes': '██',
+                'total_routes': 1069,
                 '_upgrade': {
                     'tier': 'free_teaser',
                     'message': "Fiber intelligence preview — Developer plan ($49/mo) unlocks full dark fiber routes, carrier networks, metro fiber density, and connectivity scoring across 19 US markets.",
@@ -3288,7 +3288,7 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
                             mc.execute(f"""
                                 SELECT provider, COUNT(*) as cnt
                                 FROM discovered_facilities
-                                WHERE ({where_c}) AND provider != '' {country_g} {RAILWAY_EXCLUSION}
+                                WHERE ({where_c}) AND provider IS NOT NULL AND provider != '' {country_g} {RAILWAY_EXCLUSION}
                                 GROUP BY provider ORDER BY cnt DESC LIMIT 10
                             """, qparams)
                             top_providers_raw = [{'name': r[0], 'facilities': r[1]} for r in _rows_to_tuples(mc.fetchall())]
@@ -3466,6 +3466,10 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
             _tcur.execute("SELECT site_name, state, water_level_ft, water_level_date FROM usgs_water_stress ORDER BY water_level_date DESC LIMIT 3")
             _rows = _tcur.fetchall()
             teaser_data = {"sample_sites": [{"site": r[0], "state": r[1], "water_level_ft": float(r[2]) if r[2] else None, "date": str(r[3])} for r in _rows], "monitoring_states": 16, "cooling_hint": "High water stress areas: air-cooled or hybrid recommended"}
+        elif tool_name == "get_grid_intelligence":
+            _tcur.execute("SELECT COUNT(DISTINCT region) as corridors, COUNT(*) as facilities FROM discovered_facilities WHERE market IS NOT NULL")
+            _r = _tcur.fetchone()
+            teaser_data = {"total_corridors": _r[0] if _r else 0, "total_facilities": _r[1] if _r else 0, "headline": "PJM: 45 active | ERCOT: 38 active | CAISO: 22 active", "iso_regions_covered": 6}
         elif tool_name == "get_backup_status":
             _counts = {}
             for _tbl in ["discovered_facilities", "deals", "news_articles", "gas_pipelines", "hifld_substations", "fiber_routes"]:
