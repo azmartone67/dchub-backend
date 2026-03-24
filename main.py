@@ -3511,6 +3511,100 @@ def _is_corrupt_facility(facility_dict):
     return all(v == k for k, v in str_items)
 
 
+def _get_agent_registry_from_neon():
+    """Build live agent registry from real MCP usage in Neon.
+    Replaces SQLite-backed ecosystem_routes (ephemeral on Railway)."""
+    conn = None
+    try:
+        conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))
+        cur = conn.cursor()
+
+        # Real platform activity from auto-captured MCP testimonials
+        cur.execute("""
+            SELECT platform,
+                   COUNT(*) as total_queries,
+                   COUNT(CASE WHEN created_at > CURRENT_TIMESTAMP - INTERVAL '24 hours' THEN 1 END) as queries_24h,
+                   MAX(created_at) as last_active,
+                   array_agg(DISTINCT category ORDER BY category) as categories
+            FROM ai_testimonials
+            WHERE source = 'mcp-auto'
+              AND created_at > CURRENT_TIMESTAMP - INTERVAL '90 days'
+            GROUP BY platform
+            ORDER BY queries_24h DESC, total_queries DESC
+        """)
+        rows = cur.fetchall()
+
+        agents = []
+        total_24h = 0
+        known_platforms = set()
+        for platform, total, q24h, last_active, categories in rows:
+            total_24h += (q24h or 0)
+            known_platforms.add((platform or 'unknown').lower())
+            agents.append({
+                "platform": platform or "unknown",
+                "total_queries": total or 0,
+                "queries_24h": q24h or 0,
+                "last_active": last_active.isoformat() if last_active else None,
+                "categories": [c for c in (categories or []) if c],
+                "status": "active" if (q24h or 0) > 0 else "inactive",
+                "connection": "MCP (Streamable HTTP)"
+            })
+
+        # Supplement with API-key-based agents from mcp_rate_limits
+        try:
+            cur.execute("""
+                SELECT ak.name, ak.rate_limit_tier,
+                       SUM(rl.request_count) as total_reqs,
+                       MAX(rl.request_date) as last_date
+                FROM mcp_rate_limits rl
+                JOIN api_keys ak ON rl.api_key = ak.key
+                WHERE rl.request_date >= CURRENT_DATE - INTERVAL '30 days'
+                GROUP BY ak.name, ak.rate_limit_tier
+                ORDER BY total_reqs DESC
+                LIMIT 20
+            """)
+            for name, tier, total_reqs, last_date in cur.fetchall():
+                if name and name.lower() not in known_platforms:
+                    agents.append({
+                        "platform": name,
+                        "total_queries": total_reqs or 0,
+                        "queries_24h": 0,
+                        "last_active": last_date.isoformat() if last_date else None,
+                        "categories": ["api"],
+                        "status": "active",
+                        "tier": tier or "free",
+                        "connection": "API Key"
+                    })
+        except Exception as e2:
+            logger.debug(f"Agent registry: mcp_rate_limits query skipped: {e2}")
+
+        return {
+            "success": True,
+            "agents": agents,
+            "total_connected": len(agents),
+            "active": sum(1 for a in agents if a.get('status') == 'active'),
+            "total_queries_24h": total_24h,
+            "source": "DC Hub Agent Registry (dchub.cloud)",
+            "registry_url": "https://dchub.cloud/ecosystem",
+            "mcp_endpoint": "https://dchub.cloud/mcp"
+        }
+    except Exception as e:
+        logger.error(f"_get_agent_registry_from_neon error: {e}")
+        return {
+            "success": True,
+            "agents": [],
+            "total_connected": 0,
+            "active": 0,
+            "source": "DC Hub Agent Registry (dchub.cloud)"
+        }
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
 def _get_facility_free_from_db(facility_id):
     """Direct DB lookup for a single facility — free-tier fields only.
     Bypasses the REST API entirely. Returns dict or None."""
@@ -3576,25 +3670,57 @@ def _gate_facility_data(data, tool_name, tool_params=None):
                     # ── BUG FIX: detect {k: k} corruption and use direct DB fallback ──
                     stripped = _strip_facility(inner)
                     if tool_name == 'get_facility':
-                        # Extract facility_id from tool_params (original MCP request),
-                        # NOT from the corrupt response where inner.get('id') == 'id'
+                        # Extract facility_id with multiple fallback paths
+                        # MCP clients pass params differently:
+                        #   A) {arguments: {facility_id: "123"}}  — standard
+                        #   B) {facility_id: "123"}               — flat
+                        #   C) {input: {facility_id: "123"}}      — variant
                         fac_id = ''
                         if isinstance(tool_params, dict):
+                            # Path A: standard MCP arguments wrapper
                             fac_id = (tool_params.get('arguments', {}) or {}).get('facility_id', '')
+                            # Path B: flat params (no arguments wrapper)
+                            if not fac_id:
+                                fac_id = tool_params.get('facility_id', '')
+                            # Path C: input wrapper variant
+                            if not fac_id:
+                                fac_id = (tool_params.get('input', {}) or {}).get('facility_id', '')
+                            # Path D: generic 'id' at top level
+                            if not fac_id:
+                                fac_id = tool_params.get('id', '')
+                            # Path E: 'id' inside arguments
+                            if not fac_id:
+                                fac_id = (tool_params.get('arguments', {}) or {}).get('id', '')
+                        # Path F: from response data, only if not corrupt ({k:k} pattern)
                         if not fac_id:
                             raw_id = inner.get('id')
-                            if raw_id and raw_id != 'id':
+                            if raw_id and str(raw_id) != 'id':
                                 fac_id = str(raw_id)
+                        # Path G: name-based lookup as last resort
+                        if not fac_id:
+                            raw_name = inner.get('name')
+                            if raw_name and raw_name != 'name':
+                                fac_id = str(raw_name)
+
+                        if fac_id:
+                            logger.info(f"get_facility: DB fallback lookup fac_id={fac_id}")
+                        else:
+                            logger.warning(f"get_facility BUG-008: no facility_id extracted, tool_params keys={list(tool_params.keys()) if isinstance(tool_params, dict) else type(tool_params)}")
+
                         db_facility = _get_facility_free_from_db(fac_id)
 
                         db_facility = _validate_facility_result(db_facility)
-                        if db_facility is None:
-                            return {"error": "Facility not found", "success": False}, 404
                         if db_facility:
                             logger.info(f"get_facility: DB fallback succeeded for id={fac_id}")
                             stripped = db_facility
                         else:
-                            logger.warning(f"get_facility: DB fallback failed for id={fac_id}, corrupt data will show")
+                            # DB fallback failed — check if stripped data is also corrupt
+                            stripped_check = _validate_facility_result(stripped)
+                            if stripped_check is None:
+                                logger.warning(f"get_facility: DB fallback AND stripped data corrupt for id={fac_id}, returning error")
+                                data[key] = {"error": "Facility data unavailable", "facility_id": fac_id or "unknown", "success": False}
+                                break
+                            logger.warning(f"get_facility: DB fallback returned None for id={fac_id}, using stripped data")
                     data[key] = stripped
                     break
         else:
@@ -4121,6 +4247,32 @@ def mcp_proxy():
                     trigger_usage_email(_tier_email, caller_tier, calls_used)
                 except Exception:
                     pass  # Never let email trigger crash the proxy
+
+            # ── Neon-direct intercept for get_agent_registry ──
+            # Bypasses REST proxy entirely (ecosystem_routes uses ephemeral SQLite)
+            tool_name_check = rpc_params.get('name', '') if rpc_params else ''
+            if rpc_method == 'tools/call' and tool_name_check == 'get_agent_registry':
+                try:
+                    registry_data = _get_agent_registry_from_neon()
+                    rpc_id = (request.get_json(silent=True) or {}).get('id')
+                    rpc_resp_reg = {
+                        "jsonrpc": "2.0",
+                        "result": {
+                            "content": [{"type": "text", "text": json.dumps(registry_data)}]
+                        }
+                    }
+                    if rpc_id is not None:
+                        rpc_resp_reg["id"] = rpc_id
+                    duration_ms = int((time.time() - start_time) * 1000)
+                    _log_mcp_analytics(rpc_method, rpc_params, platform, client_name, duration_ms, success=True)
+                    logger.info(f"✅ MCP get_agent_registry: Neon-direct, {len(registry_data.get('agents', []))} agents, {registry_data.get('total_queries_24h', 0)} queries/24h")
+                    return Response(
+                        json.dumps(rpc_resp_reg),
+                        status=200,
+                        headers={'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'}
+                    )
+                except Exception as e:
+                    logger.error(f"get_agent_registry Neon-direct failed, falling through to proxy: {e}")
 
             resp = http_req.post(
                 MCP_INTERNAL_URL,
