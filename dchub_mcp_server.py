@@ -480,16 +480,14 @@ async def get_facility(
             int_id = int(facility_id)
             cur.execute("""
                 SELECT id, name, provider, city, state, country, status,
-                       power_mw, pue, floor_space_sqft, tier, slug,
-                       lat, lng, certifications, carriers, ix_points
+                       power_mw, slug, lat, lng
                 FROM discovered_facilities WHERE id = %s LIMIT 1
             """, (int_id,))
         except (ValueError, TypeError):
             # Slug / name / source_id fallback
             cur.execute("""
                 SELECT id, name, provider, city, state, country, status,
-                       power_mw, pue, floor_space_sqft, tier, slug,
-                       lat, lng, certifications, carriers, ix_points
+                       power_mw, slug, lat, lng
                 FROM discovered_facilities
                 WHERE slug = %s OR name ILIKE %s
                 LIMIT 1
