@@ -2878,7 +2878,7 @@ def _gate_mcp_result(result_content, tool_name, tier, tool_params=None):
 
         # Cap result arrays but keep ALL fields (paid users get full data)
         if isinstance(data, dict):
-            for key in ('facilities', 'results', 'pipeline', 'data', 'operators', 'items'):
+            for key in ('facilities', 'results', 'pipeline', 'data', 'operators', 'items', 'facility'):
                 if key in data and isinstance(data[key], list):
                     total_count = len(data[key])
                     if total_count > result_cap:
@@ -3551,7 +3551,7 @@ def _gate_facility_data(data, tool_name, tool_params=None):
 
     if isinstance(data, dict):
         # Find the array of results
-        for key in ('facilities', 'results', 'pipeline', 'data', 'operators', 'items'):
+        for key in ('facilities', 'results', 'pipeline', 'data', 'operators', 'items', 'facility'):
             if key in data and isinstance(data[key], list):
                 total_count = len(data[key])
                 # Grab first full result as sample BEFORE stripping
