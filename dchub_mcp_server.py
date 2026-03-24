@@ -687,20 +687,110 @@ async def get_market_intel(
         "compare": compare_to,
     }.items() if v}
     _track("get_market_intel", params)
-    market_slug = market.lower().replace(" ", "-").replace(",", "")
-    result = _api_get(f"/api/v1/markets/{market_slug}", {k: v for k, v in params.items() if k not in ("market", "compare")})
-    # Handle compare_to: fetch each comparison market and merge
-    if compare_to:
-        comparisons = {}
-        for comp_market in [m.strip() for m in compare_to.split(",") if m.strip()]:
-            comp_slug = comp_market.lower().replace(" ", "-").replace(",", "")
-            comp_result = _api_get(f"/api/v1/markets/{comp_slug}", {"period": period})
-            comparisons[comp_market] = {
-                "facility_count": (comp_result.get("stats") or {}).get("facility_count"),
-                "by_status": comp_result.get("by_status"),
-                "top_providers": (comp_result.get("top_providers") or [])[:3],
-            }
-        result["comparisons"] = comparisons
+
+    # ── Neon-direct (v2.2 — eliminates REST round-trip) ──
+    conn = None
+    try:
+        conn = _get_connection()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SET LOCAL statement_timeout = 8000")
+
+        # Market name → city patterns for facility lookup
+        market_lower = market.lower()
+        city_patterns = [f"%{market}%"]
+        # Common market aliases
+        MARKET_CITIES = {
+            'northern virginia': ['Ashburn', 'Loudoun', 'Sterling', 'Reston', 'Herndon', 'Manassas', 'Leesburg'],
+            'dallas': ['Dallas', 'Richardson', 'Plano', 'Irving', 'Garland'],
+            'chicago': ['Chicago', 'Elk Grove Village', 'Schaumburg'],
+            'phoenix': ['Phoenix', 'Mesa', 'Chandler', 'Goodyear', 'Tempe'],
+            'silicon valley': ['San Jose', 'Santa Clara', 'Sunnyvale', 'Milpitas', 'Fremont'],
+            'new york': ['New York', 'Newark', 'Secaucus', 'Jersey City'],
+            'atlanta': ['Atlanta', 'Suwanee', 'Lithia Springs', 'Douglasville'],
+        }
+        cities = MARKET_CITIES.get(market_lower, [market])
+        city_clauses = " OR ".join(["city ILIKE %s"] * len(cities))
+        city_params = [f"%{c}%" for c in cities]
+
+        # Facility count + status breakdown
+        cur.execute(f"""
+            SELECT status, COUNT(*) as cnt
+            FROM discovered_facilities
+            WHERE {city_clauses}
+            GROUP BY status
+        """, city_params)
+        by_status = {}
+        total = 0
+        for row in cur.fetchall():
+            by_status[row['status'] or 'Unknown'] = row['cnt']
+            total += row['cnt']
+
+        # Top providers
+        cur.execute(f"""
+            SELECT provider, COUNT(*) as facilities
+            FROM discovered_facilities
+            WHERE {city_clauses} AND provider IS NOT NULL
+            GROUP BY provider
+            ORDER BY facilities DESC
+            LIMIT 10
+        """, city_params)
+        top_providers = [dict(r) for r in cur.fetchall()]
+
+        # Power stats
+        cur.execute(f"""
+            SELECT COALESCE(SUM(power_mw), 0) as total_mw,
+                   ROUND(AVG(power_mw)::numeric, 1) as avg_mw,
+                   COUNT(DISTINCT provider) as provider_count
+            FROM discovered_facilities
+            WHERE {city_clauses} AND power_mw > 0
+        """, city_params)
+        power = cur.fetchone() or {}
+
+        cur.close()
+
+        result = {
+            "success": True,
+            "market": {"id": market_lower.replace(" ", "-"), "name": market, "cities": cities},
+            "by_status": by_status,
+            "top_providers": top_providers,
+            "stats": {
+                "facility_count": total,
+                "total_power_mw": float(power.get('total_mw', 0) or 0),
+                "avg_power_mw": float(power.get('avg_mw', 0) or 0),
+                "provider_count": int(power.get('provider_count', 0) or 0),
+            },
+        }
+
+        # Handle compare_to
+        if compare_to:
+            comparisons = {}
+            for comp_market in [m.strip() for m in compare_to.split(",") if m.strip()]:
+                comp_cities = MARKET_CITIES.get(comp_market.lower(), [comp_market])
+                comp_clauses = " OR ".join(["city ILIKE %s"] * len(comp_cities))
+                comp_params = [f"%{c}%" for c in comp_cities]
+                try:
+                    conn2 = _get_connection()
+                    cur2 = conn2.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+                    cur2.execute(f"SELECT COUNT(*) as cnt FROM discovered_facilities WHERE {comp_clauses}", comp_params)
+                    cnt = cur2.fetchone()['cnt'] or 0
+                    cur2.close()
+                    conn2.close()
+                    comparisons[comp_market] = {"facility_count": cnt}
+                except Exception:
+                    comparisons[comp_market] = {"facility_count": 0, "error": "lookup failed"}
+            result["comparisons"] = comparisons
+
+    except Exception as e:
+        logger.warning(f"get_market_intel Neon error, falling back to REST: {e}")
+        market_slug = market.lower().replace(" ", "-").replace(",", "")
+        result = _api_get(f"/api/v1/markets/{market_slug}", {k: v for k, v in params.items() if k not in ("market", "compare")}, retries=1)
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
     return json.dumps(result, indent=2)
 
 
@@ -1043,7 +1133,90 @@ async def get_grid_data(
         return json.dumps({"error": "iso parameter is required"})
     params = {"iso": iso, "metric": metric, "period": period}
     _track("get_grid_data", params)
-    result = _api_get("/api/grid/fuel-mix-live", params, retries=1)
+
+    # ── Neon-direct (v2.2 — eliminates REST round-trip) ──
+    # Map ISO to states for data lookup
+    ISO_STATES = {
+        'ERCOT': ['TX'], 'PJM': ['VA', 'PA', 'NJ', 'MD', 'OH', 'WV', 'DE', 'DC', 'NC', 'IN', 'IL', 'KY', 'TN'],
+        'CAISO': ['CA'], 'MISO': ['MN', 'WI', 'IA', 'IN', 'MI', 'IL', 'MO', 'AR', 'MS', 'LA', 'TX'],
+        'SPP': ['KS', 'OK', 'NE', 'SD', 'ND', 'NM', 'TX'], 'NYISO': ['NY'],
+        'ISONE': ['MA', 'CT', 'RI', 'NH', 'VT', 'ME'],
+    }
+    states = ISO_STATES.get(iso.upper(), [])
+
+    conn = None
+    try:
+        conn = _get_connection()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SET LOCAL statement_timeout = 8000")
+
+        result_data = {"success": True, "iso": iso.upper(), "metric": metric}
+
+        # Carbon intensity from epa_egrid
+        if states:
+            placeholders = ','.join(['%s'] * len(states))
+            cur.execute(f"""
+                SELECT state, co2_rate_lb_mwh, generation_mwh, fuel_mix
+                FROM epa_egrid
+                WHERE UPPER(state) IN ({placeholders})
+                ORDER BY generation_mwh DESC NULLS LAST
+            """, [s.upper() for s in states])
+            egrid = [dict(r) for r in cur.fetchall()]
+            if egrid:
+                avg_co2 = sum(float(r.get('co2_rate_lb_mwh', 0) or 0) for r in egrid) / len(egrid)
+                result_data["carbon_intensity"] = {
+                    "avg_co2_lb_mwh": round(avg_co2, 1),
+                    "by_state": egrid,
+                }
+
+            # Energy rates
+            cur.execute(f"""
+                SELECT state, sector, rate_cents_kwh, period
+                FROM eia_retail_rates
+                WHERE UPPER(state) IN ({placeholders}) AND sector = 'industrial'
+                ORDER BY period DESC
+                LIMIT %s
+            """, [s.upper() for s in states] + [len(states) * 2])
+            rates = [dict(r) for r in cur.fetchall()]
+            if rates:
+                avg_rate = sum(float(r.get('rate_cents_kwh', 0) or 0) for r in rates) / len(rates)
+                result_data["energy_rates"] = {
+                    "avg_industrial_cents_kwh": round(avg_rate, 2),
+                    "by_state": rates,
+                }
+
+            # Renewable capacity in the ISO footprint
+            try:
+                cur.execute(f"""
+                    SELECT COUNT(*) as plants,
+                           COALESCE(SUM(capacity_mw), 0) as total_mw
+                    FROM power_plants_eia
+                    WHERE UPPER(state) IN ({placeholders})
+                      AND UPPER(energy_source) IN ('SUN', 'SOLAR', 'WND', 'WIND')
+                """, [s.upper() for s in states])
+                renew = cur.fetchone()
+                result_data["renewable_capacity"] = {
+                    "plants": renew['plants'] or 0,
+                    "total_mw": float(renew['total_mw'] or 0),
+                }
+            except Exception:
+                pass
+
+        result_data["states_in_iso"] = states
+        result_data["data_source"] = "EPA eGRID + EIA"
+        cur.close()
+        result = result_data
+
+    except Exception as e:
+        logger.warning(f"get_grid_data Neon error, falling back to REST: {e}")
+        result = _api_get("/api/grid/fuel-mix-live", params, retries=1)
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
     return json.dumps(result, indent=2)
 
 
@@ -1727,7 +1900,59 @@ async def get_agent_registry() -> str:
         JSON with connected agents, tiers, query counts, and connection info.
     """
     _track("get_agent_registry", {})
-    result = _api_get("/api/agents/registry", retries=1)
+
+    # ── Neon-direct (v2.2) ──
+    conn = None
+    try:
+        conn = _get_connection()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SET LOCAL statement_timeout = 5000")
+
+        # Query ecosystem table for connected agents
+        try:
+            cur.execute("""
+                SELECT name, platform_type, status, tier, description,
+                       query_count, last_active::text
+                FROM ecosystem
+                ORDER BY query_count DESC NULLS LAST
+                LIMIT 30
+            """)
+            agents = [dict(r) for r in cur.fetchall()]
+        except Exception:
+            agents = []
+
+        # Fallback: if ecosystem table doesn't exist, use ai_wars platforms
+        if not agents:
+            try:
+                cur.execute("""
+                    SELECT name, provider, status, tier
+                    FROM wars_platforms
+                    ORDER BY name
+                """)
+                agents = [dict(r) for r in cur.fetchall()]
+            except Exception:
+                pass
+
+        cur.close()
+
+        result = {
+            "success": True,
+            "agents": agents,
+            "total_connected": len(agents),
+            "active": sum(1 for a in agents if (a.get('status') or '').lower() in ('active', 'connected', 'operational')),
+            "source": "DC Hub Agent Registry (dchub.cloud)",
+        }
+
+    except Exception as e:
+        logger.warning(f"get_agent_registry Neon error, falling back to REST: {e}")
+        result = _api_get("/api/agents/registry", retries=1)
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
     return json.dumps(result, indent=2)
 
 
@@ -1751,7 +1976,74 @@ async def get_intelligence_index() -> str:
         JSON with global pulse score, market heat map, weekly movers, and exclusive insights.
     """
     _track("get_intelligence_index", {})
-    result = _api_get("/api/agents/intelligence-index", retries=1)
+
+    # ── Neon-direct (v2.2) — builds intelligence index from Neon data ──
+    conn = None
+    try:
+        conn = _get_connection()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SET LOCAL statement_timeout = 8000")
+
+        # Global stats
+        cur.execute("SELECT COUNT(*) as facilities FROM discovered_facilities")
+        fac_count = cur.fetchone()['count'] or 0
+
+        cur.execute("SELECT COUNT(*) as deals, COALESCE(SUM(value_millions), 0) as total_value FROM deals")
+        deals = cur.fetchone()
+
+        cur.execute("SELECT COUNT(*) as projects, COALESCE(SUM(capacity_mw), 0) as total_mw FROM pipeline")
+        pipeline = cur.fetchone()
+
+        cur.execute("SELECT COUNT(*) as articles FROM news_articles WHERE published_at > NOW() - INTERVAL '7 days'")
+        news_week = cur.fetchone()['count'] or 0
+
+        # Market heat — top markets by facility count
+        cur.execute("""
+            SELECT state, COUNT(*) as cnt
+            FROM discovered_facilities
+            WHERE country = 'US' AND state IS NOT NULL
+            GROUP BY state
+            ORDER BY cnt DESC
+            LIMIT 10
+        """)
+        market_heat = [dict(r) for r in cur.fetchall()]
+
+        # Compute pulse score (0-100) from data freshness + volume
+        pulse = min(100, int(
+            (min(fac_count, 20000) / 200) +  # up to 100 from facilities
+            (min(news_week, 50) * 0.4) +      # up to 20 from news
+            (min(int(deals.get('count', 0) or 0), 500) / 25)  # up to 20 from deals
+        ))
+
+        cur.close()
+
+        result = {
+            "success": True,
+            "global_pulse_score": pulse,
+            "interpretation": "Strong" if pulse >= 70 else "Moderate" if pulse >= 40 else "Cooling",
+            "stats": {
+                "total_facilities": fac_count,
+                "total_deals": int(deals.get('count', 0) or 0),
+                "total_deal_value_millions": float(deals.get('total_value', 0) or 0),
+                "pipeline_projects": int(pipeline.get('projects', 0) or 0),
+                "pipeline_capacity_mw": float(pipeline.get('total_mw', 0) or 0),
+                "news_last_7_days": news_week,
+            },
+            "market_heat": market_heat,
+            "data_source": "DC Hub Intelligence (dchub.cloud)",
+            "exclusive": True,
+        }
+
+    except Exception as e:
+        logger.warning(f"get_intelligence_index Neon error, falling back to REST: {e}")
+        result = _api_get("/api/agents/intelligence-index", retries=1)
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
     return json.dumps(result, indent=2)
 
 
