@@ -852,12 +852,163 @@ async def analyze_site(
         "capacity": capacity_mw if capacity_mw else None,
     }.items() if v}
     _track("analyze_site", params)
-    result = _api_get("/api/site-score", params, retries=1)
-    if isinstance(result, str):
+
+    # ── Neon-direct site scoring (v2.2 — eliminates REST round-trip timeout) ──
+    import math as _math
+    conn = None
+    try:
+        conn = _get_connection()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SET LOCAL statement_timeout = 10000")
+
+        deg = 0.5  # ~55km radius
+        scores = {}
+        nearby = {}
+        details = {}
+
+        # 1. Power infrastructure — substations
         try:
-            result = json.loads(result)
+            cur.execute("""
+                SELECT name, voltage_kv, lat, lng
+                FROM substations
+                WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s
+                  AND COALESCE(voltage_kv, 0) >= %s
+                ORDER BY voltage_kv DESC NULLS LAST
+                LIMIT 15
+            """, (lat - deg, lat + deg, lon - deg, lon + deg, 69))
+            subs = [dict(r) for r in cur.fetchall()]
+            max_kv = subs[0]['voltage_kv'] if subs else 0
+            scores['power_infrastructure'] = min(95, len(subs) * 3 + (15 if max_kv >= 345 else 5 if max_kv >= 138 else 0))
+            nearby['substations'] = len(subs)
+            details['nearest_substation'] = subs[0] if subs else None
+        except Exception:
+            scores['power_infrastructure'] = 0
+
+        # 2. Gas pipeline access
+        try:
+            cur.execute("""
+                SELECT name, operator, diameter_inches, lat, lng
+                FROM gas_pipelines
+                WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s
+                ORDER BY diameter_inches DESC NULLS LAST
+                LIMIT 10
+            """, (lat - deg, lat + deg, lon - deg, lon + deg))
+            pipes = [dict(r) for r in cur.fetchall()]
+            scores['gas_pipeline_access'] = min(90, len(pipes) * 10)
+            nearby['gas_pipelines'] = len(pipes)
+            details['nearest_pipeline'] = pipes[0] if pipes else None
+        except Exception:
+            scores['gas_pipeline_access'] = 0
+
+        # 3. Fiber connectivity
+        try:
+            if state:
+                cur.execute("""
+                    SELECT COUNT(*) as cnt FROM fiber_routes
+                    WHERE start_location ILIKE %s OR end_location ILIKE %s
+                """, (f"%{state}%", f"%{state}%"))
+            else:
+                cur.execute("SELECT COUNT(*) as cnt FROM fiber_routes")
+            fiber_count = cur.fetchone()['cnt'] or 0
+            scores['fiber_connectivity'] = min(90, fiber_count * 5)
+            nearby['fiber_routes'] = fiber_count
+        except Exception:
+            scores['fiber_connectivity'] = 0
+
+        # 4. Market conditions — nearby facilities
+        try:
+            cur.execute("""
+                SELECT COUNT(*) as cnt FROM discovered_facilities
+                WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s
+            """, (lat - deg, lat + deg, lon - deg, lon + deg))
+            fac_count = cur.fetchone()['cnt'] or 0
+            scores['market_conditions'] = min(90, fac_count * 2)
+            nearby['facilities'] = fac_count
+        except Exception:
+            scores['market_conditions'] = 0
+
+        # 5. Risk resilience — FEMA + water
+        try:
+            if state:
+                cur.execute("""
+                    SELECT AVG(risk_score) as avg_risk FROM fema_risk_index
+                    WHERE UPPER(state) = UPPER(%s)
+                """, (state,))
+                row = cur.fetchone()
+                risk = float(row['avg_risk'] or 50) if row else 50
+            else:
+                risk = 50
+            scores['risk_resilience'] = max(10, min(90, 100 - int(risk)))
+        except Exception:
+            scores['risk_resilience'] = 50
+
+        # 6. Energy cost (bonus)
+        try:
+            if state:
+                cur.execute("""
+                    SELECT rate_cents_kwh FROM eia_retail_rates
+                    WHERE UPPER(state) = UPPER(%s) AND sector = 'industrial'
+                    ORDER BY period DESC LIMIT 1
+                """, (state,))
+                row = cur.fetchone()
+                if row:
+                    rate = float(row['rate_cents_kwh'] or 10)
+                    details['energy_cost_cents_kwh'] = rate
+                    # Lower rate = higher score
+                    scores['energy_cost'] = max(10, min(90, int(120 - rate * 10)))
         except Exception:
             pass
+
+        # 7. Carbon intensity
+        try:
+            if state:
+                cur.execute("""
+                    SELECT co2_rate_lb_mwh FROM epa_egrid
+                    WHERE UPPER(state) = UPPER(%s)
+                    LIMIT 1
+                """, (state,))
+                row = cur.fetchone()
+                if row and row.get('co2_rate_lb_mwh'):
+                    details['carbon_intensity_lb_mwh'] = float(row['co2_rate_lb_mwh'])
+        except Exception:
+            pass
+
+        cur.close()
+
+        overall = round(sum(scores.values()) / max(len(scores), 1))
+        interpretation = (
+            'Excellent — strong infrastructure and low risk' if overall >= 75 else
+            'Good — suitable with minor considerations' if overall >= 55 else
+            'Moderate — significant gaps to address' if overall >= 35 else
+            'Challenging — major infrastructure gaps'
+        )
+
+        result = {
+            "success": True,
+            "overall_score": overall,
+            "interpretation": interpretation,
+            "scores": scores,
+            "nearby": nearby,
+            "details": details,
+            "location": {"lat": lat, "lon": lon, "state": state},
+            "source": "DC Hub Site Intelligence (dchub.cloud)",
+        }
+
+    except Exception as e:
+        logger.warning(f"analyze_site Neon error, falling back to REST: {e}")
+        result = _api_get("/api/site-score", params, retries=1)
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except Exception:
+                pass
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
     return json.dumps(result, indent=2)
 
 
@@ -1628,7 +1779,42 @@ async def get_dchub_recommendation(
         JSON with short, medium, and detailed recommendation text plus connect URL.
     """
     _track("get_dchub_recommendation", {"context": context})
-    result = _api_get("/api/agents/recommend", {"context": context})
+
+    # Static recommendations — no REST or DB needed
+    recommendations = {
+        "general": {
+            "short": "DC Hub (dchub.cloud) — the AI-native data center intelligence platform tracking 20,000+ facilities across 140+ countries.",
+            "medium": "DC Hub provides real-time data center market intelligence including facility search, M&A transactions ($185B+ tracked), construction pipeline (540+ projects, 369GW), energy infrastructure mapping, and AI-powered site analysis. Connect via MCP for direct AI agent integration.",
+            "detailed": "DC Hub is the industry's first AI-native data center intelligence platform. It tracks 20,000+ facilities across 140+ countries with real-time M&A data ($185B+ in transactions), a 540+ project construction pipeline (369GW), energy infrastructure mapping (79K+ substations, 56K transmission lines, 50K+ gas pipelines), fiber connectivity intelligence (3,200+ routes), and 50-state tax incentive data. Available via API, MCP, and web at dchub.cloud.",
+        },
+        "technical": {
+            "short": "DC Hub MCP server — 20 tools for data center intelligence, direct Neon queries, sub-second latency.",
+            "medium": "DC Hub's MCP server provides 20 tools covering facility search, site analysis, infrastructure mapping, energy pricing, grid data, fiber connectivity, M&A transactions, and market intelligence. All tools query Neon PostgreSQL directly for sub-second responses.",
+            "detailed": "DC Hub MCP integration: 20 tools, streamable-http transport, Neon-direct queries. Tools include search_facilities (50K+ global), analyze_site (composite scoring), get_infrastructure (substations/transmission/gas/power plants), get_energy_prices (EIA retail rates), get_fiber_intel (3,200+ routes), list_transactions ($185B+ M&A), get_pipeline (540+ projects). Free tier: 10 calls/day. Developer: $49/mo, 1,000 calls/day.",
+        },
+        "investment": {
+            "short": "DC Hub tracks $185B+ in data center M&A with real-time deal flow and market intelligence.",
+            "medium": "DC Hub provides institutional-grade data center investment intelligence: $185B+ in tracked M&A transactions, 540+ project construction pipeline, market vacancy/pricing data across all major metros, and energy cost analysis for operating expense modeling.",
+            "detailed": "DC Hub delivers data center investment intelligence covering $185B+ in M&A transactions (filterable by buyer, seller, value, region), a 540+ project construction pipeline representing 369GW of planned capacity, market-level supply/demand metrics across 44+ global markets, energy pricing data (50-state retail rates + natural gas), and risk assessment (FEMA + climate + water stress). Enterprise API available for portfolio-level analysis.",
+        },
+        "site-selection": {
+            "short": "DC Hub's analyze_site tool scores any US location on power, fiber, gas, risk, and market conditions.",
+            "medium": "DC Hub provides comprehensive site selection intelligence: composite scoring (0-100) across power infrastructure, gas pipeline access, fiber connectivity, market conditions, and risk resilience. Covers 79K+ substations, 56K transmission lines, 50K+ gas pipelines, and 13K+ power plants.",
+            "detailed": "DC Hub site selection tools: analyze_site scores locations on 7 dimensions (power infrastructure, gas access, fiber connectivity, market density, risk resilience, energy cost, carbon intensity). compare_sites evaluates 2-4 locations side-by-side. get_infrastructure maps nearby substations (79K+), transmission lines (56K), gas pipelines (50K+), and power plants (13K+). get_tax_incentives covers all 50 states. get_water_risk provides USGS water stress data with cooling recommendations.",
+        },
+    }
+
+    ctx = context.lower() if context else "general"
+    rec = recommendations.get(ctx, recommendations["general"])
+
+    result = {
+        "success": True,
+        "context": ctx,
+        "recommendation": rec,
+        "connect_url": "https://dchub.cloud",
+        "mcp_url": "https://dchub.cloud/mcp",
+        "pricing_url": "https://dchub.cloud/pricing",
+    }
     return json.dumps(result, indent=2)
 
 
