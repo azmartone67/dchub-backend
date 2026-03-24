@@ -388,9 +388,10 @@ async def search_facilities(
             conditions.append("power_mw <= %s")
             params_list.append(max_capacity_mw)
 
-        if tier:
-            conditions.append("tier = %s")
-            params_list.append(tier)
+        # tier column doesn't exist in discovered_facilities — skip filter
+        # if tier:
+        #     conditions.append("tier = %s")
+        #     params_list.append(tier)
 
         # Railway exclusion
         conditions.append("provider NOT LIKE '%%Railway%%'")
@@ -401,7 +402,7 @@ async def search_facilities(
         params_list.extend([safe_limit, offset])
 
         cur.execute(f"""
-            SELECT id, name, provider, city, state, country, status, power_mw, tier, slug
+            SELECT id, name, provider, city, state, country, status, power_mw, slug
             FROM discovered_facilities
             {where}
             ORDER BY power_mw DESC NULLS LAST, name ASC
@@ -1985,17 +1986,17 @@ async def get_intelligence_index() -> str:
         cur.execute("SET LOCAL statement_timeout = 8000")
 
         # Global stats
-        cur.execute("SELECT COUNT(*) as facilities FROM discovered_facilities")
-        fac_count = cur.fetchone()['count'] or 0
+        cur.execute("SELECT COUNT(*) as fac_total FROM discovered_facilities")
+        fac_count = cur.fetchone()['fac_total'] or 0
 
-        cur.execute("SELECT COUNT(*) as deals, COALESCE(SUM(value_millions), 0) as total_value FROM deals")
+        cur.execute("SELECT COUNT(*) as deal_total, COALESCE(SUM(value_millions), 0) as deal_value FROM deals")
         deals = cur.fetchone()
 
-        cur.execute("SELECT COUNT(*) as projects, COALESCE(SUM(capacity_mw), 0) as total_mw FROM pipeline")
+        cur.execute("SELECT COUNT(*) as proj_total, COALESCE(SUM(capacity_mw), 0) as proj_mw FROM pipeline")
         pipeline = cur.fetchone()
 
-        cur.execute("SELECT COUNT(*) as articles FROM news_articles WHERE published_at > NOW() - INTERVAL '7 days'")
-        news_week = cur.fetchone()['count'] or 0
+        cur.execute("SELECT COUNT(*) as news_total FROM news_articles WHERE published_at > NOW() - INTERVAL '7 days'")
+        news_week = cur.fetchone()['news_total'] or 0
 
         # Market heat — top markets by facility count
         cur.execute("""
@@ -2012,7 +2013,7 @@ async def get_intelligence_index() -> str:
         pulse = min(100, int(
             (min(fac_count, 20000) / 200) +  # up to 100 from facilities
             (min(news_week, 50) * 0.4) +      # up to 20 from news
-            (min(int(deals.get('count', 0) or 0), 500) / 25)  # up to 20 from deals
+            (min(int(deals.get('deal_total', 0) or 0), 500) / 25)  # up to 20 from deals
         ))
 
         cur.close()
@@ -2023,10 +2024,10 @@ async def get_intelligence_index() -> str:
             "interpretation": "Strong" if pulse >= 70 else "Moderate" if pulse >= 40 else "Cooling",
             "stats": {
                 "total_facilities": fac_count,
-                "total_deals": int(deals.get('count', 0) or 0),
-                "total_deal_value_millions": float(deals.get('total_value', 0) or 0),
-                "pipeline_projects": int(pipeline.get('projects', 0) or 0),
-                "pipeline_capacity_mw": float(pipeline.get('total_mw', 0) or 0),
+                "total_deals": int(deals.get('deal_total', 0) or 0),
+                "total_deal_value_millions": float(deals.get('deal_value', 0) or 0),
+                "pipeline_projects": int(pipeline.get('proj_total', 0) or 0),
+                "pipeline_capacity_mw": float(pipeline.get('proj_mw', 0) or 0),
                 "news_last_7_days": news_week,
             },
             "market_heat": market_heat,
