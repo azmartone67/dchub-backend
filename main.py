@@ -1209,17 +1209,16 @@ def api_facilities_shortcut():
     return redirect(target)
 
 @app.route('/api/v1/map', methods=['GET'])
-@cached_endpoint(ttl=600)
 @cached_endpoint(ttl=600, key_prefix="map")
 def api_v1_map():
     """Public map endpoint - returns basic fields for all facilities for map display."""
     conn = None
     try:
-        conn = get_read_db()
+        conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))  # direct conn for heavy map query
         c = conn.cursor()
         limit = request.args.get('limit', 5000, type=int)
         offset = request.args.get('offset', 0, type=int)
-        limit = min(limit, 10000)
+        limit = min(limit, 5000)  # cap: 50K markers crashes browsers
         
         c.execute("""
             SELECT id, name, provider, city, state, country, market AS region,
@@ -2242,8 +2241,12 @@ def add_cors_headers(response):
             response.headers['Access-Control-Allow-Origin'] = 'https://dchub.cloud'
             response.headers['Access-Control-Allow-Credentials'] = 'true'
     else:
-        response.headers['Access-Control-Allow-Origin'] = '*'
-        response.headers.pop('Access-Control-Allow-Credentials', None)
+        if origin in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+        else:
+            response.headers["Access-Control-Allow-Origin"] = "*"
+            response.headers.pop("Access-Control-Allow-Credentials", None)
     response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, PATCH, OPTIONS'
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-API-Key, Accept, X-Requested-With'
     return response
@@ -3511,7 +3514,7 @@ def _get_facility_free_from_db(facility_id):
         return None
     conn = None
     try:
-        conn = get_read_db()
+        conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))  # direct conn for heavy map query
         cur = conn.cursor()
         # Try integer ID first
         try:
@@ -8153,7 +8156,7 @@ def energy_discovery_status():
     """Energy infrastructure auto-discovery status and counts"""
     conn = None
     try:
-        conn = get_read_db()
+        conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))  # direct conn for heavy map query
         c = conn.cursor()
 
         discovery = {}
@@ -8314,7 +8317,7 @@ def get_stats():
     """Get aggregate statistics"""
     conn = None
     try:
-        conn = get_read_db()
+        conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))  # direct conn for heavy map query
         c = conn.cursor()
         
         stats = {}
@@ -8519,7 +8522,7 @@ def facilities_by_market():
     limit = min(limit, 50)
     conn = None
     try:
-        conn = get_read_db()
+        conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))  # direct conn for heavy map query
         c = conn.cursor()
         c.execute(f"""
             SELECT city as market, COUNT(*) as count, 
@@ -8550,7 +8553,7 @@ def facilities_by_provider():
     limit = min(limit, 50)
     conn = None
     try:
-        conn = get_read_db()
+        conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))  # direct conn for heavy map query
         c = conn.cursor()
         c.execute(f"""
             SELECT provider, COUNT(*) as count,
@@ -8699,7 +8702,7 @@ def _list_facilities_full():
     
     conn = None
     try:
-        conn = get_read_db()
+        conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))  # direct conn for heavy map query
         c = conn.cursor()
         
         c.execute(count_sql, params)
@@ -8822,7 +8825,7 @@ def _list_facilities_free(plan='anon'):
     sql += f" ORDER BY confidence DESC, power_mw DESC LIMIT {tier_limit}"
     conn = None
     try:
-        conn = get_read_db()
+        conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))  # direct conn for heavy map query
         c = conn.cursor()
         c.execute(count_sql, params)
         row = c.fetchone()
@@ -9143,7 +9146,7 @@ def api_health():
     }
     conn = None
     try:
-        conn = get_read_db()
+        conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))  # direct conn for heavy map query
         cur = conn.cursor()
         try:
             cur.execute("SELECT COUNT(*) FROM discovered_facilities")
@@ -11192,7 +11195,7 @@ def permit_coverage_stats():
     """
     conn = None
     try:
-        conn = get_read_db()
+        conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))  # direct conn for heavy map query
         cur = conn.cursor()
 
         # Total facilities with permit_date
@@ -12670,7 +12673,7 @@ def serve_sitemap_xml():
     fac_rows = []
     loc_rows = []
     try:
-        conn = get_read_db()
+        conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))  # direct conn for heavy map query
         c = conn.cursor()
         
         # Get facility data for individual pages (include provider + id for slug generation)
@@ -13635,7 +13638,7 @@ def get_facility_by_id(facility_id):
     """
     conn = None
     try:
-        conn = get_read_db()
+        conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))  # direct conn for heavy map query
         cur = conn.cursor()
         # Try integer id first, then hex merged_facility_id
         try:
@@ -13782,7 +13785,7 @@ def api_site_score():
 
     conn = None
     try:
-        conn = get_read_db()
+        conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))  # direct conn for heavy map query
         c = conn.cursor()
 
         # 1. Nearby facilities (competitive density, ~100km radius)
