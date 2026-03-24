@@ -156,7 +156,7 @@ def _upgrade_cta(tier, feature_name='full map data'):
 
 # Fields visible per tier
 MAP_FIELDS = {
-    'anonymous': ['name', 'city', 'state', 'country'],  # basic preview
+    'anonymous': [],  # No data
     'free':      ['name', 'city', 'state', 'country', 'status'],
     'developer': ['name', 'provider', 'city', 'state', 'country', 'status',
                   'power_mw', 'latitude', 'longitude'],
@@ -165,7 +165,7 @@ MAP_FIELDS = {
 
 # Max facilities returned per tier
 MAP_LIMITS = {
-    'anonymous': 25,  # small preview so map renders
+    'anonymous': 0,
     'free':      50,
     'developer': 1000,
     'pro':       10000,
@@ -177,37 +177,14 @@ def _gated_map_handler(decode_jwt_func):
     plan, user_info = _detect_caller_tier(decode_jwt_func)
     tier = _normalize_tier(plan)
 
-    # ── Anonymous: small preview so map renders ──
+    # ── Anonymous: blank map ──
     if tier == 'anonymous':
-        try:
-            import psycopg2 as _pg2
-            _conn = _pg2.connect(os.environ.get('NEON_DATABASE_URL', os.environ.get('DATABASE_URL', '')))
-            _c = _conn.cursor()
-            _c.execute("""
-                SELECT id, name, city, state, country, 
-                       ROUND(latitude::numeric, 1) as latitude, 
-                       ROUND(longitude::numeric, 1) as longitude
-                FROM discovered_facilities
-                WHERE latitude IS NOT NULL AND longitude IS NOT NULL
-                ORDER BY power_mw DESC NULLS LAST
-                LIMIT 25
-            """)
-            _rows = _c.fetchall()
-            _cols = [d[0] for d in _c.description]
-            _c.execute('SELECT COUNT(*) FROM discovered_facilities WHERE latitude IS NOT NULL')
-            _total = _c.fetchone()[0]
-            _conn.close()
-            _facs = [dict(zip(_cols, r)) for r in _rows]
-        except Exception as _e:
-            logger.error(f'map_tier_gating anon query: {_e}')
-            _facs, _total = [], 0
         return jsonify({
             'success': True,
-            'data': _facs,
-            'total': _total,
-            'showing': len(_facs),
+            'data': [],
+            'total': 0,
             'tier': 'anonymous',
-            'message': f'Showing 25 of {_total} facilities. Sign up free for 50 with more detail.',
+            'message': 'Sign up free at dchub.cloud to view data center locations on the map.',
             '_upgrade': _upgrade_cta('anonymous', 'the facility map'),
         }), 200
 
@@ -219,8 +196,8 @@ def _gated_map_handler(decode_jwt_func):
     offset = request.args.get('offset', 0, type=int)
 
     try:
-        import psycopg2, os
-        conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))  # direct conn
+        from main import get_read_db
+        conn = get_read_db()
         c = conn.cursor()
 
         # Always query all fields, strip later
