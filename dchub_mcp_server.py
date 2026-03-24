@@ -429,11 +429,57 @@ async def get_facility(
     """
     if not facility_id:
         return json.dumps({"error": "facility_id is required"})
-    params = {k: v for k, v in {
-        "nearby": include_nearby, "power": include_power,
-    }.items() if v}
-    _track("get_facility", {"facility_id": facility_id, **params})
-    result = _api_get(f"/api/v1/facilities/{facility_id}", params)
+    _track("get_facility", {"facility_id": facility_id})
+
+    # ── Neon-direct lookup (v2.1.2 — fixes 404 on slug lookups) ──
+    conn = None
+    try:
+        conn = _get_connection()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SET LOCAL statement_timeout = 8000")
+
+        # Try integer ID first
+        try:
+            int_id = int(facility_id)
+            cur.execute("""
+                SELECT id, name, provider, city, state, country, status,
+                       power_mw, pue, floor_space_sqft, tier, slug,
+                       lat, lng, certifications, carriers, ix_points
+                FROM discovered_facilities WHERE id = %s LIMIT 1
+            """, (int_id,))
+        except (ValueError, TypeError):
+            # Slug / name / source_id fallback
+            cur.execute("""
+                SELECT id, name, provider, city, state, country, status,
+                       power_mw, pue, floor_space_sqft, tier, slug,
+                       lat, lng, certifications, carriers, ix_points
+                FROM discovered_facilities
+                WHERE slug = %s OR name ILIKE %s
+                LIMIT 1
+            """, (str(facility_id), f"%{facility_id}%"))
+
+        row = cur.fetchone()
+        cur.close()
+
+        if row:
+            facility = dict(row)
+            # Clean up None values
+            facility = {k: v for k, v in facility.items() if v is not None}
+            result = {"success": True, "facility": facility}
+        else:
+            result = {"success": False, "error": f"Facility '{facility_id}' not found", "suggestion": "Use search_facilities to find the correct facility ID or name"}
+
+    except Exception as e:
+        logger.warning(f"get_facility Neon error, falling back to REST: {e}")
+        params = {k: v for k, v in {"nearby": include_nearby, "power": include_power}.items() if v}
+        result = _api_get(f"/api/v1/facilities/{facility_id}", params, retries=1)
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
     return json.dumps(result, indent=2)
 
 
@@ -1269,7 +1315,12 @@ async def get_renewable_energy(
         if installations:
             result["renewable_installations"] = installations
             result["installations_count"] = len(installations)
+        if not ppas and not installations:
+            result["note"] = f"No {energy_type} PPAs or installations found" + (f" in {state}" if state else "") + ". Try 'combined' or a different state."
+        elif not ppas and installations:
+            result["note"] = f"No {energy_type} PPAs found, but {len(installations)} EIA power plants match."
         result["data_source"] = "DC Hub + EIA"
+        result["filters_applied"] = {"energy_type": energy_type, "state": state or "all"}
 
         return json.dumps(result, indent=2)
 
