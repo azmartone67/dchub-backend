@@ -3567,7 +3567,7 @@ def _gate_facility_data(data, tool_name, tool_params=None):
                     sample_full = dict(inner)
                     # ── BUG FIX: detect {k: k} corruption and use direct DB fallback ──
                     stripped = _strip_facility(inner)
-                    if _is_corrupt_facility(stripped) and tool_name == 'get_facility':
+                    if tool_name == 'get_facility':
                         # Extract facility_id from tool_params (original MCP request),
                         # NOT from the corrupt response where inner.get('id') == 'id'
                         fac_id = ''
