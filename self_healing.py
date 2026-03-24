@@ -1,8 +1,17 @@
 """
-DC Hub Self-Healing Module v1.2.0
+DC Hub Self-Healing Module v1.3.0
 ═══════════════════════════════════════════════════════════
 
 Phase 5 of the DC Hub architecture improvement plan.
+
+v1.3 changelog:
+  - NEW: MCPMonitor class for MCP process health checking.
+    Uses PID check + proper JSON-RPC initialize request instead of
+    bare POST (which triggers 406 Not Acceptable from streamable-http).
+    The old check in main.py was KILLING healthy MCP processes every
+    2-4 minutes because it got 406 back and assumed MCP was down.
+  - MCPMonitor tracks restart count with safety cap (20 max).
+  - Exports: MCPMonitor added to module interface.
 
 v1.2 changelog:
   - FIXED: Health monitor now uses a DIRECT psycopg2 connection (bypasses pool)
@@ -51,6 +60,7 @@ Requires:
 
 import os
 import time
+import json
 import logging
 import threading
 import traceback
@@ -496,8 +506,123 @@ class HealthMonitor:
 
 
 # ============================================================
-# 4. ALERT MANAGER
+# 3b. MCP PROCESS MONITOR
 # ============================================================
+
+class MCPMonitor:
+    """
+    Monitors the MCP uvicorn process health.
+
+    v1.3 FIX: The old MCP health check in main.py sent a bare POST to /mcp
+    without the correct Accept/Content-Type headers. The MCP server (streamable-http)
+    requires either:
+      - GET /mcp with Accept: text/event-stream (SSE session init)
+      - POST /mcp with Content-Type: application/json (JSON-RPC)
+    
+    A bare POST triggers HTTP 406 Not Acceptable. The self-healer saw 406,
+    concluded MCP was down, killed it, restarted it. Every 2-4 minutes.
+    This is why MCP "flaps" — it wasn't crashing, it was being murdered.
+
+    Fix: Check MCP health via:
+      1. PID existence check (os.kill(pid, 0)) — fast, no HTTP
+      2. If PID alive, optionally do a proper JSON-RPC initialize handshake
+    
+    Usage in main.py:
+        from self_healing import MCPMonitor
+        mcp_monitor = MCPMonitor(mcp_port=8888)
+        # In the self-heal cycle, replace the old HTTP check with:
+        if not mcp_monitor.is_healthy():
+            restart_mcp()
+    """
+
+    def __init__(self, mcp_port=8888, mcp_pid=None):
+        self.mcp_port = mcp_port
+        self.mcp_pid = mcp_pid
+        self._consecutive_failures = 0
+        self._restart_count = 0
+        self._max_restarts = 20  # Safety cap
+
+    def set_pid(self, pid):
+        """Update the MCP process PID after a restart."""
+        self.mcp_pid = pid
+        self._consecutive_failures = 0
+
+    def is_healthy(self):
+        """Check if MCP is healthy. Uses PID check first, then HTTP as fallback.
+        
+        Returns True if healthy, False if needs restart.
+        """
+        # Method 1: PID check (fast, no HTTP overhead)
+        if self.mcp_pid:
+            try:
+                os.kill(self.mcp_pid, 0)  # Signal 0 = existence check
+                self._consecutive_failures = 0
+                return True
+            except OSError:
+                pass  # Process doesn't exist
+
+        # Method 2: Proper MCP JSON-RPC health check
+        # Send a valid initialize request with correct headers
+        try:
+            import urllib.request
+            url = "http://127.0.0.1:%d/mcp" % self.mcp_port
+            payload = json.dumps({
+                "jsonrpc": "2.0",
+                "method": "initialize",
+                "id": 0,
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "self-heal", "version": "1.0"}
+                }
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                url,
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream",
+                },
+                method="POST",
+            )
+            resp = urllib.request.urlopen(req, timeout=5)
+            if resp.status in (200, 202):
+                self._consecutive_failures = 0
+                return True
+        except Exception as e:
+            logger.debug("MCP health check failed: %s" % e)
+
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= 3:
+            logger.warning(
+                "MCP unhealthy: %d consecutive failures (pid=%s, port=%d)",
+                self._consecutive_failures, self.mcp_pid, self.mcp_port
+            )
+        return False
+
+    def should_restart(self):
+        """Returns True if MCP should be restarted (3+ failures, under cap)."""
+        if self._restart_count >= self._max_restarts:
+            logger.error("MCP restart cap reached (%d). Manual intervention needed.", self._max_restarts)
+            return False
+        return self._consecutive_failures >= 3
+
+    def record_restart(self, new_pid=None):
+        """Record a restart and optionally update PID."""
+        self._restart_count += 1
+        self._consecutive_failures = 0
+        if new_pid:
+            self.mcp_pid = new_pid
+        logger.info("MCP restarted (#%d), new PID: %s", self._restart_count, new_pid)
+
+    def status(self):
+        return {
+            "pid": self.mcp_pid,
+            "port": self.mcp_port,
+            "consecutive_failures": self._consecutive_failures,
+            "restart_count": self._restart_count,
+            "healthy": self._consecutive_failures == 0,
+        }
 
 class AlertManager:
     """
