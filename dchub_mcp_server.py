@@ -1183,41 +1183,109 @@ async def get_fiber_intel(
     """
     _track("get_fiber_intel", {"carrier": carrier, "route_type": route_type})
 
+    # ── Neon-direct (v2.2 — eliminates 3 REST round-trips that caused 20s timeout) ──
     results = {}
+    conn = None
+    try:
+        conn = _get_connection()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SET LOCAL statement_timeout = 8000")
 
-    # Get fiber routes from infrastructure API (queries Neon fiber_routes table)
-    route_params = {k: v for k, v in {
-        "carrier": carrier, "type": route_type,
-    }.items() if v}
-    results["routes"] = _api_get("/api/v1/infrastructure/fiber", route_params)
-    # Post-filter routes by carrier if backend didn't
-    if carrier and isinstance(results.get("routes"), dict):
-        route_data = results["routes"].get("data") or results["routes"].get("routes") or []
-        if route_data and isinstance(route_data, list):
-            cl = carrier.lower()
-            filtered = [r for r in route_data if cl in (r.get("carrier","") or r.get("provider","") or r.get("name","") or "").lower()]
-            if "data" in results["routes"]:
-                results["routes"]["data"] = filtered
-            elif "routes" in results["routes"]:
-                results["routes"]["routes"] = filtered
-            results["routes"]["count"] = len(filtered)
-            results["filtered_by_carrier"] = carrier
-            results["carrier_routes_found"] = len(filtered)
+        # 1. Fiber routes from fiber_routes table
+        conditions = []
+        params_list = []
+        if carrier:
+            conditions.append("(provider ILIKE %s OR name ILIKE %s)")
+            params_list.extend([f"%{carrier}%", f"%{carrier}%"])
+        if route_type:
+            conditions.append("route_type = %s")
+            params_list.append(route_type)
 
-    # Get carrier sources summary from connectivity_providers
-    if include_sources:
-        results["sources"] = _api_get("/api/v1/fiber/sources")
-    # Metro dark fiber intelligence (market-level carrier data)
-    metro_params = {}
-    if carrier:
-        metro_params["carrier"] = carrier
-    metro_data = _api_get("/api/v1/fiber/metro", metro_params)
-    if metro_data and metro_data.get("success"):
-        results["metro_dark_fiber"] = {
-            "markets": metro_data.get("markets", []),
-            "total_markets": metro_data.get("total_markets", 0),
-            "total_route_miles": metro_data.get("total_route_miles", 0),
+        where = "WHERE " + " AND ".join(conditions) if conditions else ""
+        cur.execute(f"""
+            SELECT name, provider, route_type, start_location, end_location,
+                   distance_miles, fiber_count, status, start_lat, start_lng, end_lat, end_lng
+            FROM fiber_routes
+            {where}
+            ORDER BY distance_miles DESC NULLS LAST
+            LIMIT 100
+        """, params_list)
+        routes = [dict(r) for r in cur.fetchall()]
+
+        cur.execute("SELECT COUNT(*) as total, COUNT(DISTINCT provider) as carriers FROM fiber_routes")
+        totals = cur.fetchone()
+
+        results["routes"] = {
+            "data": routes,
+            "count": len(routes),
+            "total_routes": totals['total'] if totals else 0,
+            "total_carriers": totals['carriers'] if totals else 0,
         }
+        if carrier:
+            results["filtered_by_carrier"] = carrier
+            results["carrier_routes_found"] = len(routes)
+
+        # 2. Carrier source summary
+        if include_sources:
+            try:
+                cur.execute("""
+                    SELECT provider, COUNT(*) as route_count,
+                           ROUND(COALESCE(SUM(distance_miles), 0)::numeric, 0) as total_miles
+                    FROM fiber_routes
+                    GROUP BY provider
+                    ORDER BY total_miles DESC
+                    LIMIT 20
+                """)
+                results["sources"] = [dict(r) for r in cur.fetchall()]
+            except Exception:
+                results["sources"] = []
+
+        # 3. Metro dark fiber intelligence
+        try:
+            metro_conditions = []
+            metro_params = []
+            if carrier:
+                metro_conditions.append("carrier ILIKE %s")
+                metro_params.append(f"%{carrier}%")
+            metro_where = "WHERE " + " AND ".join(metro_conditions) if metro_conditions else ""
+
+            cur.execute(f"""
+                SELECT market, carrier, route_miles, density_score, tier
+                FROM metro_dark_fiber
+                {metro_where}
+                ORDER BY route_miles DESC
+                LIMIT 50
+            """, metro_params)
+            metro = [dict(r) for r in cur.fetchall()]
+
+            cur.execute("SELECT COUNT(DISTINCT market) FROM metro_dark_fiber")
+            metro_total = cur.fetchone()['count'] or 0
+
+            results["metro_dark_fiber"] = {
+                "markets": metro,
+                "total_markets": metro_total,
+                "total_route_miles": sum(m.get('route_miles', 0) or 0 for m in metro),
+            }
+        except Exception as metro_err:
+            logger.debug(f"metro_dark_fiber query skipped: {metro_err}")
+
+        cur.close()
+
+    except Exception as e:
+        logger.warning(f"get_fiber_intel Neon error, falling back to REST: {e}")
+        route_params = {k: v for k, v in {"carrier": carrier, "type": route_type}.items() if v}
+        results["routes"] = _api_get("/api/v1/infrastructure/fiber", route_params)
+        if include_sources:
+            results["sources"] = _api_get("/api/v1/fiber/sources")
+        metro_data = _api_get("/api/v1/fiber/metro", {"carrier": carrier} if carrier else {})
+        if metro_data and metro_data.get("success"):
+            results["metro_dark_fiber"] = metro_data
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     results["source"] = "DC Hub Fiber Intelligence (dchub.cloud)"
     return json.dumps(results, indent=2)
@@ -1841,6 +1909,7 @@ async def compare_sites(locations: str = "") -> str:
         JSON comparison table with scores per location and winner per category.
     """
     import json as _json
+    import math as _math
     try:
         locs = _json.loads(locations)
         if not isinstance(locs, list) or len(locs) < 2:
@@ -1852,22 +1921,127 @@ async def compare_sites(locations: str = "") -> str:
         if len(locs) > 4:
             locs = locs[:4]
 
+        # ── Neon-direct scoring (v2.2 — eliminates 2-4 REST round-trips) ──
         results = []
-        for loc in locs:
-            try:
-                data = _api_get("/api/site-score", {
-                    'lat': loc.get('lat', 0),
-                    'lon': loc.get('lon', 0),
-                    'state': loc.get('state', ''),
-                    'capacity': loc.get('capacity_mw', 0),
-                }, retries=1)
-                if 'error' in data and 'overall_score' not in data:
-                    data = {'overall_score': 0, 'scores': {}, 'error': data.get('error', 'API error')}
-            except Exception as e:
-                data = {'overall_score': 0, 'scores': {}, 'error': str(e)}
+        conn = None
+        try:
+            conn = _get_connection()
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute("SET LOCAL statement_timeout = 10000")
 
-            data['label'] = loc.get('label', f"{loc.get('state', '')} ({loc.get('lat')},{loc.get('lon')})")
-            results.append(data)
+            for loc in locs:
+                lat = float(loc.get('lat', 0))
+                lon = float(loc.get('lon', 0))
+                state = loc.get('state', '')
+                label = loc.get('label', f"{state} ({lat},{lon})")
+                deg = 0.5  # ~55km search radius
+
+                scores = {}
+                nearby = {}
+
+                # Power: count substations within 50km, score by voltage
+                try:
+                    cur.execute("""
+                        SELECT COUNT(*) as cnt,
+                               MAX(COALESCE(voltage_kv, 0)) as max_kv
+                        FROM substations
+                        WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s
+                          AND COALESCE(voltage_kv, 0) >= 69
+                    """, (lat - deg, lat + deg, lon - deg, lon + deg))
+                    row = cur.fetchone()
+                    sub_count = row['cnt'] or 0
+                    max_kv = row['max_kv'] or 0
+                    scores['power_infrastructure'] = min(95, sub_count * 3 + (15 if max_kv >= 345 else 5 if max_kv >= 138 else 0))
+                    nearby['substations'] = sub_count
+                except Exception:
+                    scores['power_infrastructure'] = 0
+
+                # Gas: count pipelines nearby
+                try:
+                    cur.execute("""
+                        SELECT COUNT(*) as cnt FROM gas_pipelines
+                        WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s
+                    """, (lat - deg, lat + deg, lon - deg, lon + deg))
+                    gas_count = cur.fetchone()['cnt'] or 0
+                    scores['gas_pipeline_access'] = min(90, gas_count * 10)
+                    nearby['gas_pipelines'] = gas_count
+                except Exception:
+                    scores['gas_pipeline_access'] = 0
+
+                # Fiber: count routes in state
+                try:
+                    cur.execute("""
+                        SELECT COUNT(*) as cnt FROM fiber_routes
+                        WHERE start_location ILIKE %s OR end_location ILIKE %s
+                    """, (f"%{state}%", f"%{state}%"))
+                    fiber_count = cur.fetchone()['cnt'] or 0
+                    scores['fiber_connectivity'] = min(90, fiber_count * 5)
+                    nearby['fiber_routes'] = fiber_count
+                except Exception:
+                    scores['fiber_connectivity'] = 0
+
+                # Market: count facilities nearby
+                try:
+                    cur.execute("""
+                        SELECT COUNT(*) as cnt FROM discovered_facilities
+                        WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s
+                    """, (lat - deg, lat + deg, lon - deg, lon + deg))
+                    fac_count = cur.fetchone()['cnt'] or 0
+                    scores['market_conditions'] = min(90, fac_count * 2)
+                    nearby['facilities'] = fac_count
+                except Exception:
+                    scores['market_conditions'] = 0
+
+                # Risk: check FEMA risk index for state
+                try:
+                    cur.execute("""
+                        SELECT AVG(risk_score) as avg_risk FROM fema_risk_index
+                        WHERE UPPER(state) = UPPER(%s)
+                    """, (state,))
+                    row = cur.fetchone()
+                    risk = float(row['avg_risk'] or 50) if row else 50
+                    scores['risk_resilience'] = max(10, min(90, 100 - int(risk)))
+                except Exception:
+                    scores['risk_resilience'] = 50  # Default moderate
+
+                overall = round(sum(scores.values()) / max(len(scores), 1))
+                interpretation = (
+                    'Excellent' if overall >= 75 else
+                    'Good' if overall >= 55 else
+                    'Moderate' if overall >= 35 else 'Challenging'
+                )
+
+                results.append({
+                    'label': label,
+                    'overall_score': overall,
+                    'interpretation': interpretation,
+                    'scores': scores,
+                    'nearby': nearby,
+                })
+
+            cur.close()
+
+        except Exception as e:
+            logger.warning(f"compare_sites Neon error, falling back to REST: {e}")
+            # Fallback to REST for any locations not yet scored
+            for loc in locs[len(results):]:
+                try:
+                    data = _api_get("/api/site-score", {
+                        'lat': loc.get('lat', 0), 'lon': loc.get('lon', 0),
+                        'state': loc.get('state', ''),
+                    }, retries=1)
+                    if 'error' in data and 'overall_score' not in data:
+                        data = {'overall_score': 0, 'scores': {}, 'error': data.get('error')}
+                except Exception as ex:
+                    data = {'overall_score': 0, 'scores': {}, 'error': str(ex)}
+                data['label'] = loc.get('label', f"{loc.get('state', '')} ({loc.get('lat')},{loc.get('lon')})")
+                results.append(data)
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
         categories = ['power_infrastructure', 'gas_pipeline_access',
                        'fiber_connectivity', 'market_conditions', 'risk_resilience']
