@@ -1,7 +1,12 @@
-# .github/workflows/dchub-qa.yml, v2.6
+# .github/workflows/dchub-qa.yml, v2.7
 # DC Hub — Automated QA Health Check
 # Runs automated infra + frontend checks on schedule and after deploys
 # Emails you only when something fails
+#
+# v2.7 CHANGES (Mar 24 2026):
+#   - FIXED: Email sender switched from Office365 SMTP to SendGrid
+#     (Microsoft security defaults were blocking SMTP AUTH)
+#   - Uses SENDGRID_API_KEY secret with username "apikey"
 #
 # v2.6 CHANGES (Mar 15 2026):
 #   - FIXED: Map data URL → /api/v1/map (was /api/v1/map-data, route never existed)
@@ -211,11 +216,11 @@ jobs:
         if: failure()
         uses: dawidd6/action-send-mail@v4
         with:
-          server_address: smtp.office365.com
+          server_address: smtp.sendgrid.net
           server_port: 587
-          secure: false
-          username: ${{ secrets.SMTP_USERNAME }}
-          password: ${{ secrets.SMTP_PASSWORD }}
+          secure: true
+          username: apikey
+          password: ${{ secrets.SENDGRID_API_KEY }}
           subject: "🚨 DC Hub QA Failed — ${{ github.run_id }}"
           to: jonathan@dchub.cloud
           from: jonathan@dchub.cloud
