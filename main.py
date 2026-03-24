@@ -1209,6 +1209,7 @@ def api_facilities_shortcut():
     return redirect(target)
 
 @app.route('/api/v1/map', methods=['GET'])
+@cached_endpoint(ttl=600)
 @cached_endpoint(ttl=600, key_prefix="map")
 def api_v1_map():
     """Public map endpoint - returns basic fields for all facilities for map display."""
@@ -3578,6 +3579,10 @@ def _gate_facility_data(data, tool_name, tool_params=None):
                             if raw_id and raw_id != 'id':
                                 fac_id = str(raw_id)
                         db_facility = _get_facility_free_from_db(fac_id)
+
+                        db_facility = _validate_facility_result(db_facility)
+                        if db_facility is None:
+                            return {"error": "Facility not found", "success": False}, 404
                         if db_facility:
                             logger.info(f"get_facility: DB fallback succeeded for id={fac_id}")
                             stripped = db_facility
@@ -5035,7 +5040,7 @@ os.makedirs(MARKET_REPORTS_DIR, exist_ok=True)
 def generate_market_report():
     """Generate a daily market intelligence report"""
     try:
-        conn = get_read_db()
+        conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))  # fixed: was get_read_db()
         cursor = conn.cursor()
         
         # Get facility stats
@@ -8303,6 +8308,7 @@ def _rows_to_tuples(rows):
 
 
 @app.route('/api/v1/stats', methods=['GET'])
+@cached_endpoint(ttl=300)
 @cached_endpoint(ttl=300, key_prefix="stats")
 def get_stats():
     """Get aggregate statistics"""
@@ -8842,6 +8848,7 @@ def _list_facilities_free(plan='anon'):
     return jsonify(gate_facilities_response(facilities, plan, total_in_db=total))
 
 @app.route('/api/v1/search', methods=['GET'])
+@cached_endpoint(ttl=120)
 # NOTE: @protect_data removed — was causing 429s for MCP internal calls (BUG-003).
 # Endpoint has its own tier gating: get_request_tier(), enforce_search_limit(),
 # check_daily_record_budget(). MCP proxy adds additional gating layer.
@@ -9894,6 +9901,7 @@ def api_signup():
 # =============================================================================
 
 @app.route('/api/transactions', methods=['GET'])
+@cached_endpoint(ttl=300)
 def api_transactions_alias():
     """Transactions endpoint - freemium taste data unauthenticated, full data with Pro auth"""
     api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
@@ -10329,7 +10337,7 @@ def seed_serverfarm_facilities():
     time.sleep(20)
     conn = None
     try:
-        conn = get_db()
+        conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))  # fixed: was get_db()
         added = 0
         for f in missing_facilities:
             try:
@@ -13383,6 +13391,17 @@ def verify_tier_gating():
 # UPTIME CHECK ENDPOINT - Read-only, no auth (registered BEFORE test_client)
 # =============================================================================
 import psutil as _psutil_mod
+
+def _validate_facility_result(data):
+    """Validate facility data isn't returning column names as values (BUG-008 fix)."""
+    if not data or not isinstance(data, dict):
+        return None
+    # Telltale: value equals its own key name means garbage data
+    garbage = [k for k, v in data.items() if isinstance(v, str) and v == k]
+    if len(garbage) >= 3:
+        return None
+    return data
+
 _SERVER_RESTART_TS = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
 
 _MEMORY_LIMIT_MB = 256
