@@ -1,11 +1,19 @@
 """
-Fiber Network Discovery Module v2.2
+Fiber Network Discovery Module v2.3
 ====================================
 - Seeds Neon fiber_routes table with major carrier routes
 - Discovers fiber networks from PeeringDB IX data
 - NTIA BEAD Allocations ($42.45B)
 - Carrier Hotels & Lit Buildings
 - Fiber Provider Coverage APIs
+
+v2.3 CHANGES:
+  - FIXED: Connection pool starvation. run_fiber_discovery() now uses a DIRECT
+    psycopg2 connection instead of the pooled connection from db_utils.get_db().
+    The old code held a pooled connection for 196 seconds while doing PeeringDB
+    HTTP scraping, keeping the pool at 84-88% and triggering force-reclaims.
+  - Batch commits every 50 rows instead of per-row conn.commit() (was 2200+
+    individual commits per run).
 
 v2.2 CHANGES:
   - Added US_CITY_COORDS geocoding fallback for PeeringDB (API no longer returns lat/lng)
@@ -389,6 +397,12 @@ def run_fiber_discovery():
     """
     Main fiber discovery function — called by /api/jobs/fiber-sync.
     
+    v2.3 FIX: Uses a DIRECT psycopg2 connection (not pooled) because this
+    job runs 2-3 minutes. Holding a pooled connection for 196s was starving
+    the pool (42-44/50 = 84-88% usage) and triggering force-reclaims.
+    
+    Also batches commits every 50 rows instead of per-row commits.
+
     1. Ensures fiber_routes table exists
     2. Seeds 20 major carrier routes
     3. Discovers additional routes from PeeringDB
@@ -406,30 +420,67 @@ def run_fiber_discovery():
     if not _ensure_fiber_routes_table():
         return {'status': 'error', 'message': 'Could not create/verify fiber_routes table'}
 
-    conn = _get_pg_connection()
-    if not conn:
-        return {'status': 'error', 'message': 'Database connection failed'}
+    # v2.3: Use DIRECT connection, not pooled — this job runs 2-3 minutes
+    db_url = os.environ.get('NEON_DATABASE_URL') or os.environ.get('DATABASE_URL', '')
+    if not db_url:
+        return {'status': 'error', 'message': 'No DATABASE_URL configured'}
 
+    conn = None
     try:
+        import psycopg2 as pg2
+        conn = pg2.connect(db_url, connect_timeout=15)
+        conn.autocommit = False  # We'll batch-commit
+
         # Step 1: Seed major carrier routes
+        batch_count = 0
         for route in MAJOR_ROUTES:
             route['source'] = 'seed'
             route['route_type'] = 'long_haul'
             if _upsert_fiber_route(conn, route):
                 results['seeded'] += 1
+                batch_count += 1
             else:
                 results['errors'] += 1
+
+            # Batch commit every 50 rows
+            if batch_count >= 50:
+                try:
+                    conn.commit()
+                except Exception:
+                    pass
+                batch_count = 0
+
+        # Commit remaining seed routes
+        try:
+            conn.commit()
+        except Exception:
+            pass
 
         logger.info("Fiber seed: %d carrier routes written" % results['seeded'])
 
         # Step 2: Discover from PeeringDB
         try:
             pdb_routes = _discover_peeringdb_fiber()
+            batch_count = 0
             for route in pdb_routes:
                 if _upsert_fiber_route(conn, route):
                     results['discovered'] += 1
+                    batch_count += 1
                 else:
                     results['errors'] += 1
+
+                if batch_count >= 50:
+                    try:
+                        conn.commit()
+                    except Exception:
+                        pass
+                    batch_count = 0
+
+            # Final commit
+            try:
+                conn.commit()
+            except Exception:
+                pass
             logger.info("PeeringDB fiber: %d routes discovered" % results['discovered'])
         except Exception as e:
             logger.warning("PeeringDB discovery failed (non-fatal): %s" % e)
@@ -444,10 +495,11 @@ def run_fiber_discovery():
         logger.error("Fiber discovery error: %s" % e)
         results['error'] = str(e)
     finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     results['duration_seconds'] = round(time.time() - start, 2)
     results['status'] = 'success' if results['errors'] == 0 else 'partial'
