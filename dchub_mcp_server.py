@@ -1,5 +1,5 @@
 """
-DC Hub Nexus — MCP Server (Production) v2.2
+DC Hub Nexus — MCP Server (Production) v2.2.1
 =============================================
 Compatible with: mcp==1.26.0 (uses `from mcp.server.fastmcp import FastMCP`)
 Transport: Streamable HTTP on port 8888, proxied via Flask /mcp
