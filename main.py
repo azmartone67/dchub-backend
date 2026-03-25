@@ -4264,32 +4264,6 @@ def mcp_proxy():
                 except Exception:
                     pass  # Never let email trigger crash the proxy
 
-            # ── Neon-direct intercept for get_agent_registry ──
-            # Bypasses REST proxy entirely (ecosystem_routes uses ephemeral SQLite)
-            tool_name_check = rpc_params.get('name', '') if rpc_params else ''
-            if rpc_method == 'tools/call' and tool_name_check == 'get_agent_registry':
-                try:
-                    registry_data = _get_agent_registry_from_neon()
-                    rpc_id = (request.get_json(silent=True) or {}).get('id')
-                    rpc_resp_reg = {
-                        "jsonrpc": "2.0",
-                        "result": {
-                            "content": [{"type": "text", "text": json.dumps(registry_data)}],
-                            "isError": False
-                        }
-                    }
-                    if rpc_id is not None:
-                        rpc_resp_reg["id"] = rpc_id
-                    duration_ms = int((time.time() - start_time) * 1000)
-                    _log_mcp_analytics(rpc_method, rpc_params, platform, client_name, duration_ms, success=True)
-                    logger.info(f"✅ MCP get_agent_registry: Neon-direct, {len(registry_data.get('agents', []))} agents, {registry_data.get('total_queries_24h', 0)} queries/24h")
-                    return Response(
-                        json.dumps(rpc_resp_reg),
-                        status=200,
-                        headers={'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'}
-                    )
-                except Exception as e:
-                    logger.error(f"get_agent_registry Neon-direct failed, falling through to proxy: {e}")
 
                         # ── BUG-035: Rewrite news category aliases BEFORE proxy call ──
             if rpc_method == 'tools/call' and tool_name_check == 'get_news':
