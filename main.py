@@ -4305,7 +4305,7 @@ def mcp_proxy():
                 except Exception as _e:
                     logger.debug(f"News category rewrite skipped: {_e}")
 
-resp = http_req.post(
+            resp = http_req.post(
                 MCP_INTERNAL_URL,
                 headers=fwd_headers,
                 data=getattr(request, '_cached_data', None) or request.get_data(),
