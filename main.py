@@ -4270,7 +4270,7 @@ def mcp_proxy():
 
 
                         # ── Neon-direct intercept for get_agent_registry (v2 — no structuredContent) ──
-            if rpc_method == 'tools/call' and tool_name_check == 'get_agent_registry':
+            if rpc_method == 'tools/call' and tool_name == 'get_agent_registry':
                 try:
                     _ar_conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))
                     _ar_cur = _ar_conn.cursor()
@@ -4290,6 +4290,7 @@ def mcp_proxy():
                 except Exception as _ar_e:
                     logger.error(f"get_agent_registry Neon-direct v2 failed: {_ar_e}")
 
+            tool_name = rpc_params.get("name", "") if rpc_params else ""
             # ── BUG-035: Rewrite news category aliases BEFORE proxy call ──
             tool_name = rpc_params.get("name", "") if rpc_params else ""
             if rpc_method == 'tools/call' and tool_name == 'get_news':
@@ -4307,13 +4308,13 @@ def mcp_proxy():
 
             # ── MCP Response Cache: check before proxy ──
             _mcp_cache_key = None
-            if rpc_method == 'tools/call' and tool_name_check in _MCP_CACHEABLE_TOOLS:
+            if rpc_method == 'tools/call' and tool_name in _MCP_CACHEABLE_TOOLS:
                 import hashlib
                 _cache_args = json.dumps(rpc_params.get('arguments', {}), sort_keys=True) if rpc_params else '{}'
-                _mcp_cache_key = f"mcp:{tool_name_check}:{hashlib.md5(_cache_args.encode()).hexdigest()[:8]}"
+                _mcp_cache_key = f"mcp:{tool_name}:{hashlib.md5(_cache_args.encode()).hexdigest()[:8]}"
                 _cached = _MCP_RESPONSE_CACHE.get(_mcp_cache_key)
                 if _cached:
-                    logger.info(f"MCP CACHE HIT: tool={tool_name_check}")
+                    logger.info(f"MCP CACHE HIT: tool={tool_name}")
                     return Response(_cached, status=200, headers={'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'})
 
             resp = http_req.post(
