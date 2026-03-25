@@ -4265,7 +4265,28 @@ def mcp_proxy():
                     pass  # Never let email trigger crash the proxy
 
 
-                        # ── BUG-035: Rewrite news category aliases BEFORE proxy call ──
+                        # ── Neon-direct intercept for get_agent_registry (v2 — no structuredContent) ──
+            if rpc_method == 'tools/call' and tool_name_check == 'get_agent_registry':
+                try:
+                    _ar_conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))
+                    _ar_cur = _ar_conn.cursor()
+                    _ar_cur.execute("SELECT id, name, slug, integration_type, status, description, last_seen, created_at FROM agent_registry ORDER BY last_seen DESC NULLS LAST")
+                    _ar_agents = []
+                    for row in _ar_cur.fetchall():
+                        _ar_agents.append({"platform": row[1] or row[2] or "unknown", "slug": row[2], "integration_type": row[3] or "api", "status": row[4] or "active", "description": row[5] or "", "last_active": row[6].isoformat() if row[6] else None, "connection": "MCP (Streamable HTTP)" if row[3] == "mcp" else "API"})
+                    _ar_cur.close()
+                    _ar_conn.close()
+                    _ar_result = {"success": True, "agents": _ar_agents, "total_connected": len(_ar_agents), "active": sum(1 for a in _ar_agents if a.get("status") == "active"), "source": "DC Hub Agent Registry (dchub.cloud)"}
+                    rpc_id = (request.get_json(silent=True) or {}).get('id')
+                    _ar_resp = {"jsonrpc": "2.0", "result": {"content": [{"type": "text", "text": json.dumps(_ar_result)}], "isError": False}}
+                    if rpc_id is not None:
+                        _ar_resp["id"] = rpc_id
+                    logger.info(f"MCP get_agent_registry: Neon-direct v2, {len(_ar_agents)} agents")
+                    return Response(json.dumps(_ar_resp), status=200, headers={"Content-Type": "application/json", "Access-Control-Allow-Origin": "*"})
+                except Exception as _ar_e:
+                    logger.error(f"get_agent_registry Neon-direct v2 failed: {_ar_e}")
+
+            # ── BUG-035: Rewrite news category aliases BEFORE proxy call ──
             tool_name = rpc_params.get("name", "") if rpc_params else ""
             if rpc_method == 'tools/call' and tool_name == 'get_news':
                 try:
