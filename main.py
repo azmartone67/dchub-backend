@@ -4332,6 +4332,14 @@ def mcp_proxy():
                     logger.info(f"🚧 MCP GATED: tool={tool_name} tier={caller_tier} original_size={len(resp_bytes)} gated_size={len(gated_bytes)}")
                 else:
                     logger.info(f"✅ MCP PASSTHROUGH: tool={tool_name} tier={caller_tier} (ungated)")
+                # Strip structuredContent — Claude MCP client rejects responses with both fields
+                try:
+                    _resp_obj = json.loads(gated_bytes)
+                    if 'result' in _resp_obj and isinstance(_resp_obj['result'], dict):
+                        _resp_obj['result'].pop('structuredContent', None)
+                        gated_bytes = json.dumps(_resp_obj).encode('utf-8')
+                except Exception:
+                    pass  # If not valid JSON, pass through as-is
                 out_headers = {
                     'Content-Type': 'application/json',
                     'Access-Control-Allow-Origin': '*',
