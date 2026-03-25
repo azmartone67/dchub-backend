@@ -2708,6 +2708,17 @@ MCP_FACILITY_TOOLS = {'search_facilities', 'get_facility', 'get_pipeline', 'get_
 # Tools that return teaser results for free tier (was MCP_BLOCKED_TOOLS — hard block)
 MCP_TEASER_TOOLS = {'analyze_site', 'get_grid_data', 'get_infrastructure', 'get_fiber_intel', 'get_energy_prices', 'get_renewable_energy', 'get_news', 'get_intelligence_index', 'get_market_intel', 'list_transactions', 'compare_sites', 'get_grid_intelligence', 'get_tax_incentives', 'get_water_risk'}
 
+
+# News category aliases — map MCP tool categories to DB categories
+NEWS_CATEGORY_MAP = {
+    'deals': 'M&A', 'ma': 'M&A', 'm&a': 'M&A', 'mergers': 'M&A',
+    'construction': 'Expansion', 'expansion': 'Expansion',
+    'policy': 'Industry', 'technology': 'AI', 'tech': 'AI',
+    'sustainability': 'Power', 'energy': 'Power',
+    'earnings': 'Financial', 'financial': 'Financial',
+    'network': 'Network', 'cooling': 'Cooling', 'cloud': 'Cloud',
+}
+
 # User-facing notes per tool category — AI agents surface these to end users
 MCP_USER_NOTES = {
     'search_facilities': "\U0001f4a1 This is a free preview from DC Hub \u2014 showing basic fields only. Full data with coordinates, power capacity, and connectivity specs is available at dchub.cloud/developers",
@@ -3163,6 +3174,10 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
             articles = data.get('articles', [])
             total = data.get('count', len(articles)) if data.get('count', 0) > len(articles) else len(articles)
             basic_fields = ['title', 'source', 'published_at', 'category']
+
+            # Normalize category aliases (BUG-035 fix)
+            if category:
+                category = NEWS_CATEGORY_MAP.get(category.lower(), category)
             # MCP server may have already keyword-filtered; respect that, just cap at 5
             gated_articles = [
                 {k: a.get(k) for k in basic_fields if k in a}
@@ -3398,9 +3413,17 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
             total = data.get('total_available', data.get('count', len(transactions) if isinstance(transactions, list) else 0))
             free_fields = ['title', 'buyer', 'seller', 'deal_type', 'date', 'announced_date', 'region', 'market']
             # MCP server already filtered by buyer/seller/region; respect that, cap at 5
+            # Apply region filter if specified (BUG-037 fix)
+            filtered_txns = transactions if isinstance(transactions, list) else []
+            _region_param = tool_params.get('arguments', {}).get('region', '') if isinstance(tool_params, dict) else ''
+            if not _region_param and isinstance(tool_params, dict):
+                _region_param = tool_params.get('region', '')
+            if _region_param:
+                _region_norm = _region_param.lower().replace('_', ' ')
+                filtered_txns = [t for t in filtered_txns if _region_norm in (t.get('region', '') or '').lower()]
             gated_deals = [
                 {k: t.get(k) for k in free_fields if k in t}
-                for t in (transactions[:5] if isinstance(transactions, list) else [])
+                for t in filtered_txns[:5]
             ]
             teaser = {
                 '_user_facing_note': MCP_USER_NOTES['list_transactions'],
@@ -3472,7 +3495,7 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
             teaser_data = {"total_corridors": _r[0] if _r else 0, "total_facilities": _r[1] if _r else 0, "headline": "PJM: 45 active | ERCOT: 38 active | CAISO: 22 active", "iso_regions_covered": 6}
         elif tool_name == "get_backup_status":
             _counts = {}
-            for _tbl in ["discovered_facilities", "deals", "news_articles", "gas_pipelines", "hifld_substations", "fiber_routes"]:
+            for _tbl in ["discovered_facilities", "deals", "news_articles", "gas_pipelines", "substations", "fiber_routes"]:
                 try:
                     _tcur.execute(f"SELECT COUNT(*) FROM {_tbl}")
                     _counts[_tbl] = _row_val(_tcur.fetchone(), 0)
@@ -3512,45 +3535,38 @@ def _is_corrupt_facility(facility_dict):
 
 
 def _get_agent_registry_from_neon():
-    """Build live agent registry from real MCP usage in Neon.
-    Replaces SQLite-backed ecosystem_routes (ephemeral on Railway)."""
+    """Build live agent registry from Neon agent_registry table + MCP usage stats."""
     conn = None
     try:
         conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))
         cur = conn.cursor()
 
-        # Real platform activity from auto-captured MCP testimonials
-        cur.execute("""
-            SELECT platform,
-                   COUNT(*) as total_queries,
-                   COUNT(CASE WHEN created_at > CURRENT_TIMESTAMP - INTERVAL '24 hours' THEN 1 END) as queries_24h,
-                   MAX(created_at) as last_active,
-                   array_agg(DISTINCT category ORDER BY category) as categories
-            FROM ai_testimonials
-            WHERE source = 'mcp-auto'
-              AND created_at > CURRENT_TIMESTAMP - INTERVAL '90 days'
-            GROUP BY platform
-            ORDER BY queries_24h DESC, total_queries DESC
-        """)
-        rows = cur.fetchall()
-
+        # Primary: query the actual agent_registry table
         agents = []
         total_24h = 0
-        known_platforms = set()
-        for platform, total, q24h, last_active, categories in rows:
-            total_24h += (q24h or 0)
-            known_platforms.add((platform or 'unknown').lower())
-            agents.append({
-                "platform": platform or "unknown",
-                "total_queries": total or 0,
-                "queries_24h": q24h or 0,
-                "last_active": last_active.isoformat() if last_active else None,
-                "categories": [c for c in (categories or []) if c],
-                "status": "active" if (q24h or 0) > 0 else "inactive",
-                "connection": "MCP (Streamable HTTP)"
-            })
+        try:
+            cur.execute("""
+                SELECT id, name, slug, integration_type, status, description, last_seen, created_at
+                FROM agent_registry
+                ORDER BY last_seen DESC NULLS LAST
+            """)
+            for row in cur.fetchall():
+                agent_id, name, slug, int_type, status, desc, last_seen, created = row
+                agents.append({
+                    "platform": name or slug or "unknown",
+                    "slug": slug,
+                    "integration_type": int_type or "api",
+                    "status": status or "active",
+                    "description": desc or "",
+                    "last_active": last_seen.isoformat() if last_seen else None,
+                    "created_at": created.isoformat() if created else None,
+                    "connection": "MCP (Streamable HTTP)" if int_type == "mcp" else "API"
+                })
+        except Exception as e1:
+            logger.debug(f"Agent registry: agent_registry table query failed: {e1}")
 
         # Supplement with API-key-based agents from mcp_rate_limits
+        known_slugs = {a.get('slug', '').lower() for a in agents}
         try:
             cur.execute("""
                 SELECT ak.name, ak.rate_limit_tier,
@@ -3564,14 +3580,14 @@ def _get_agent_registry_from_neon():
                 LIMIT 20
             """)
             for name, tier, total_reqs, last_date in cur.fetchall():
-                if name and name.lower() not in known_platforms:
+                if name and name.lower() not in known_slugs:
                     agents.append({
                         "platform": name,
-                        "total_queries": total_reqs or 0,
-                        "queries_24h": 0,
-                        "last_active": last_date.isoformat() if last_date else None,
-                        "categories": ["api"],
+                        "slug": name.lower().replace(" ", "-"),
+                        "integration_type": "api",
                         "status": "active",
+                        "total_queries": total_reqs or 0,
+                        "last_active": last_date.isoformat() if last_date else None,
                         "tier": tier or "free",
                         "connection": "API Key"
                     })
@@ -3603,7 +3619,6 @@ def _get_agent_registry_from_neon():
                 conn.close()
             except Exception:
                 pass
-
 
 def _get_facility_free_from_db(facility_id):
     """Direct DB lookup for a single facility — free-tier fields only.
