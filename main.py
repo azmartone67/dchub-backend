@@ -3175,7 +3175,13 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
             total = data.get('count', len(articles)) if data.get('count', 0) > len(articles) else len(articles)
             basic_fields = ['title', 'source', 'published_at', 'category']
 
-            # Normalize category aliases (BUG-035 fix)
+            # Extract category from tool_params (BUG-035 fix)
+            category = ''
+            try:
+                _args = tool_params.get('arguments', tool_params) if isinstance(tool_params, dict) else {}
+                category = (_args.get('category', '') or '').strip()
+            except Exception:
+                pass
             if category:
                 category = NEWS_CATEGORY_MAP.get(category.lower(), category)
             # MCP server may have already keyword-filtered; respect that, just cap at 5
