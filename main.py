@@ -3092,7 +3092,7 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
                 pass
             finally:
                 if pg_e:
-                    pg_e.close()
+                    return_pg_connection(pg_e)
             teaser = {
                 '_user_facing_note': MCP_USER_NOTES['get_energy_prices'],
                 'success': True,
@@ -3514,11 +3514,14 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
                     _tc.rollback()
             teaser_data = {"status": "healthy", "database": "Neon PostgreSQL (Azure West US 3)", "table_counts": _counts, "data_freshness": "News: 3min, facilities: daily, infrastructure: weekly"}
         _tcur.close()
-        _tc.close()
     except Exception as _teaser_err:
         import traceback as _ttb
         logger.error(f"MCP TEASER DB ERROR for {tool_name}: {_teaser_err}\n{_ttb.format_exc()}")
         teaser_data = {"note": f"Preview data temporarily unavailable ({type(_teaser_err).__name__})"}
+    finally:
+        if _tc:
+            try: return_pg_connection(_tc)
+            except Exception: pass
     result = {
         "_user_facing_note": fallback_note,
         "success": True,
