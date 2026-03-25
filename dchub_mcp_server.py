@@ -583,7 +583,7 @@ async def list_transactions(
             params_list.append(f"%{seller}%")
 
         if deal_type:
-            conditions.append("LOWER(deal_type) = LOWER(%s)")
+            conditions.append("LOWER(type) = LOWER(%s)")
             params_list.append(deal_type)
 
         if region:
@@ -600,13 +600,13 @@ async def list_transactions(
             conditions.append("date <= %s")
             params_list.append(date_to)
 
-        # deals table stores value_millions
+        # deals table stores value
         if min_value_usd:
-            conditions.append("value_millions >= %s")
+            conditions.append("value >= %s")
             params_list.append(min_value_usd / 1e6)
 
         if max_value_usd:
-            conditions.append("value_millions <= %s")
+            conditions.append("value <= %s")
             params_list.append(max_value_usd / 1e6)
 
         where = "WHERE " + " AND ".join(conditions) if conditions else ""
@@ -614,11 +614,11 @@ async def list_transactions(
         params_list.extend([safe_limit, offset])
 
         cur.execute(f"""
-            SELECT id, buyer, seller, value_millions, deal_type, date::text,
+            SELECT id, buyer, seller, value, type, date::text,
                    market, region, assets, notes
             FROM deals
             {where}
-            ORDER BY date DESC NULLS LAST, value_millions DESC NULLS LAST
+            ORDER BY date DESC NULLS LAST, value DESC NULLS LAST
             LIMIT %s OFFSET %s
         """, params_list)
 
@@ -1986,7 +1986,7 @@ async def get_intelligence_index() -> str:
         cur.execute("SELECT COUNT(*) as fac_total FROM discovered_facilities")
         fac_count = cur.fetchone()['fac_total'] or 0
 
-        cur.execute("SELECT COUNT(*) as deal_total, COALESCE(SUM(value_millions), 0) as deal_value FROM deals")
+        cur.execute("SELECT COUNT(*) as deal_total, COALESCE(SUM(value), 0) as deal_value FROM deals")
         deals = cur.fetchone()
 
         cur.execute("SELECT COUNT(*) as proj_total, COALESCE(SUM(capacity_mw), 0) as proj_mw FROM pipeline")
@@ -2022,7 +2022,7 @@ async def get_intelligence_index() -> str:
             "stats": {
                 "total_facilities": fac_count,
                 "total_deals": int(deals.get('deal_total', 0) or 0),
-                "total_deal_value_millions": float(deals.get('deal_value', 0) or 0),
+                "total_deal_value": float(deals.get('deal_value', 0) or 0),
                 "pipeline_projects": int(pipeline.get('proj_total', 0) or 0),
                 "pipeline_capacity_mw": float(pipeline.get('proj_mw', 0) or 0),
                 "news_last_7_days": news_week,
