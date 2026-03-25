@@ -3500,7 +3500,7 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
             _rows = _tcur.fetchall()
             teaser_data = {"sample_sites": [{"site": r[0], "state": r[1], "water_level_ft": float(r[2]) if r[2] else None, "date": str(r[3])} for r in _rows], "monitoring_states": 16, "cooling_hint": "High water stress areas: air-cooled or hybrid recommended"}
         elif tool_name == "get_grid_intelligence":
-            _tcur.execute("SELECT COUNT(DISTINCT region) as corridors, COUNT(*) as facilities FROM discovered_facilities WHERE market IS NOT NULL")
+            _tcur.execute("SELECT COUNT(DISTINCT market) as corridors, COUNT(*) as facilities FROM discovered_facilities WHERE market IS NOT NULL")
             _r = _tcur.fetchone()
             teaser_data = {"total_corridors": _r[0] if _r else 0, "total_facilities": _r[1] if _r else 0, "headline": "PJM: 45 active | ERCOT: 38 active | CAISO: 22 active", "iso_regions_covered": 6}
         elif tool_name == "get_backup_status":
