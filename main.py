@@ -8522,7 +8522,6 @@ def _rows_to_tuples(rows):
 
 
 @app.route('/api/v1/stats', methods=['GET'])
-@cached_endpoint(ttl=300)
 @cached_endpoint(ttl=300, key_prefix="stats")
 def get_stats():
     """Get aggregate statistics"""
@@ -8542,7 +8541,7 @@ def get_stats():
         except:
             discovered_count = 0
         
-        stats['total_facilities'] = main_count
+        stats['total_facilities'] = main_count + discovered_count
         stats['main_facilities'] = main_count
         stats['discovered_facilities'] = discovered_count
         
@@ -8621,12 +8620,6 @@ def get_stats():
             stats["total_leads"] = _row_val(c.fetchone(), 0) or 0
         except:
             stats['total_leads'] = 0
-        
-        try:
-            c.execute("SELECT COUNT(*) FROM substations")
-            stats['total_substations'] = _row_val(c.fetchone(), 0)
-        except:
-            stats['total_substations'] = 0
         
         # Infrastructure layer counts — real Neon DB queries (fixed Mar 17 2026)
         # HIFLD data now lives in substations table (79,755 records from CSV bulk load)
