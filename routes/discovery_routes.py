@@ -128,8 +128,7 @@ OPERATOR_WEBSITES = {
 def init_discovery_tables():
     """Ensure discovered_facilities staging table exists in PostgreSQL."""
     try:
-        from db_utils import get_db as _gdb
-        conn = _gdb()
+        conn = _db()
         c = conn.cursor()
         c.execute("""
             CREATE TABLE IF NOT EXISTS discovered_facilities (
@@ -227,8 +226,7 @@ def run_peeringdb_discovery():
         facilities = data.get('data', [])
         result['found'] = len(facilities)
 
-        from db_utils import get_db as _gdb
-        conn = _gdb()
+        conn = _db()
 
         for fac in facilities:
             name = fac.get('name', '').strip()
@@ -301,8 +299,7 @@ def run_osm_discovery():
         elements = data.get('elements', [])
         result['found'] = len(elements)
 
-        from db_utils import get_db as _gdb
-        conn = _gdb()
+        conn = _db()
 
         for elem in elements:
             tags = elem.get('tags', {})
@@ -371,8 +368,7 @@ def run_datacentermap_discovery():
         facilities = data if isinstance(data, list) else data.get('data', data.get('datacenters', []))
         result['found'] = len(facilities)
 
-        from db_utils import get_db as _gdb
-        conn = _gdb()
+        conn = _db()
 
         for fac in facilities:
             name = fac.get('name', '').strip()
@@ -498,8 +494,7 @@ def discovery_status():
     """Get discovery system status and counts."""
     conn = None
     try:
-        from db_utils import get_db as _gdb
-        conn = _gdb()
+        conn = _db()
         c = conn.cursor()
 
         c.execute("SELECT COUNT(*) FROM discovered_facilities WHERE is_duplicate = 0")
@@ -549,8 +544,7 @@ def discovery_facilities():
 
     conn = None
     try:
-        from db_utils import get_db as _gdb
-        conn = _gdb()
+        conn = _db()
         c = conn.cursor()
 
         conditions = ["is_duplicate = 0"]
@@ -708,11 +702,11 @@ def brain_status():
     try:
         from autonomous_brain import get_brain_status
         status = get_brain_status()
-        return jsonify({'success': True, 'status': status})
+        return jsonify({'success': True, 'available': True, 'status': status})
     except ImportError:
-        return jsonify({'success': False, 'available': False, 'message': 'Brain module not installed'})
+        return jsonify({'success': True, 'available': False, 'message': 'Brain module not installed'})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': True, 'available': True, 'degraded': True, 'error': str(e)})
 
 
 @discovery_bp.route('/api/brain/run', methods=['POST'])
