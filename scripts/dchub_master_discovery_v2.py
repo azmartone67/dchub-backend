@@ -1,27 +1,17 @@
 #!/usr/bin/env python3
 """
-DC Hub Master Discovery Enhancement v2.0
-=========================================
-One script to rule them all. Grabs every data gap identified in the
-March 24-25 2026 audit and loads directly into Neon PostgreSQL.
+DC Hub Discovery Patch v2.1
+============================
+Fixes 5 bugs from v2.0 first run and re-runs all failed steps.
 
-Data Sources & Targets:
-  1. EIA-860 Operating Generator Capacity → eia_generators (NEW table)
-  2. EIA Natural Gas Storage → eia_gas_storage (NEW table)  
-  3. EIA Natural Gas Consumption → eia_gas_consumption (NEW table)
-  4. HIFLD Gas Compressor Stations → hifld_gas_compressors (NEW table)
-  5. HIFLD Gas Processing Plants → hifld_gas_processing_plants (NEW table)
-  6. HIFLD Electric Service Territories → hifld_service_territories (NEW table)
-  7. NASA POWER Climate Expansion → nasa_power_climate (UPDATE existing, add markets)
-  8. PeeringDB IX Completion → peeringdb_ix (NEW table)
-  9. HIFLD substations table audit → diagnose the 0-row mystery
-  10. EIA RTO Hourly Grid Ops → eia_rto_hourly (NEW table - latest snapshot)
+Fixes:
+  1. EIA Generators: int() cast on total_available
+  2. HIFLD: Use correct open ArcGIS endpoints  
+  3. NASA POWER: ALTER TABLE to add new columns before INSERT
+  4. PeeringDB: Proper transaction rollback on errors
+  5. EIA RTO: Same transaction fix
 
-Run: python3 dchub_master_discovery_v2.py
-Env: DATABASE_URL or NEON_DATABASE_URL must be set
-
-Author: DC Hub Auto-Discovery Engine
-Date: 2026-03-25
+Run: python3 dchub_discovery_patch_v2_1.py
 """
 
 import os
@@ -29,19 +19,21 @@ import sys
 import json
 import time
 import traceback
-from datetime import datetime, timedelta
+from datetime import datetime
 from urllib.request import urlopen, Request
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode
-
-# ──────────────────────────────────────────────
-# CONFIG
-# ──────────────────────────────────────────────
+from urllib.parse import urlencode
 
 EIA_API_KEY = os.environ.get("EIA_API_KEY", "SuphqqIra7G46LHVDwb9CL5n4WYRwLu7ujeFXJMG")
 DATABASE_URL = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL", "")
 
-# All 44 DC Hub markets for NASA POWER expansion
+# Correct HIFLD Open Data ArcGIS URLs
+HIFLD_URLS = {
+    "gas_compressors": "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Natural_Gas_Compressor_Stations/FeatureServer/0/query",
+    "gas_processing": "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Natural_Gas_Processing_Plants/FeatureServer/0/query",
+}
+
+# All 44 markets
 DC_HUB_MARKETS = [
     {"market": "Northern Virginia", "lat": 39.04, "lon": -77.49, "state": "VA"},
     {"market": "Dallas-Fort Worth", "lat": 32.78, "lon": -96.80, "state": "TX"},
@@ -89,163 +81,81 @@ DC_HUB_MARKETS = [
     {"market": "Sydney", "lat": -33.87, "lon": 151.21, "state": ""},
 ]
 
-# HIFLD ArcGIS Feature Service URLs
-HIFLD_URLS = {
-    "gas_compressors": "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Natural_Gas_Compressor_Stations/FeatureServer/0/query",
-    "gas_processing": "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Natural_Gas_Processing_Plants/FeatureServer/0/query",
-    "service_territories": "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Retail_Service_Territories/FeatureServer/0/query",
-}
 
-# ──────────────────────────────────────────────
-# DB CONNECTION
-# ──────────────────────────────────────────────
-
-def get_db_connection():
-    """Get a psycopg2 connection to Neon."""
-    try:
-        import psycopg2
-    except ImportError:
-        print("[!] Installing psycopg2-binary...")
-        os.system("pip install psycopg2-binary --break-system-packages -q")
-        import psycopg2
-    
+def get_db():
+    import psycopg2
     db_url = DATABASE_URL
-    if not db_url:
-        print("[FATAL] No DATABASE_URL or NEON_DATABASE_URL set!")
-        sys.exit(1)
-    
-    # Force SSL
     if "sslmode" not in db_url:
         db_url += ("&" if "?" in db_url else "?") + "sslmode=require"
-    
     conn = psycopg2.connect(db_url)
     conn.autocommit = False
     return conn
 
 
 def api_get(url, headers=None, timeout=30):
-    """Simple HTTP GET with error handling."""
-    req = Request(url, headers=headers or {"User-Agent": "DCHub-Discovery/2.0"})
+    req = Request(url, headers=headers or {"User-Agent": "DCHub-Discovery/2.1"})
     try:
         resp = urlopen(req, timeout=timeout)
         return json.loads(resp.read().decode("utf-8"))
     except HTTPError as e:
-        print(f"  [HTTP {e.code}] {url[:120]}")
+        print(f"  [HTTP {e.code}] {url[:100]}")
         try:
-            body = e.read().decode("utf-8")[:500]
-            print(f"  Response: {body}")
+            print(f"  Body: {e.read().decode()[:300]}")
         except:
             pass
         return None
-    except (URLError, Exception) as e:
-        print(f"  [ERROR] {e} — {url[:120]}")
+    except Exception as e:
+        print(f"  [ERROR] {e}")
         return None
 
 
 # ──────────────────────────────────────────────
-# 0. DIAGNOSTIC: Find where HIFLD substations live
+# FIX 1: EIA Generators (remaining pages after 5000)
 # ──────────────────────────────────────────────
 
-def diagnose_substations(conn):
-    """Find where the 79,755 HIFLD substation records actually are."""
+def fix_eia_generators(conn):
     print("\n" + "="*60)
-    print("STEP 0: Diagnosing HIFLD Substations (79,755 missing from hifld_substations)")
+    print("FIX 1: EIA-860 Generators (continue from offset 5000)")
     print("="*60)
     
     cur = conn.cursor()
     
-    # Check all tables that might have substation data
-    candidate_tables = [
-        "hifld_substations", "substations", "infrastructure_layers",
-        "hifld_data", "energy_substations", "power_substations",
-        "discovered_substations", "hifld_electric_substations"
-    ]
+    # Check current count
+    try:
+        cur.execute("SELECT COUNT(*) FROM eia_generators")
+        existing = cur.fetchone()[0]
+        print(f"  Existing records: {existing}")
+    except:
+        conn.rollback()
+        # Table doesn't exist, create it
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS eia_generators (
+                id SERIAL PRIMARY KEY,
+                plant_id TEXT,
+                plant_name TEXT,
+                state TEXT,
+                county TEXT,
+                latitude FLOAT,
+                longitude FLOAT,
+                sector TEXT,
+                nameplate_capacity_mw FLOAT,
+                net_summer_capacity_mw FLOAT,
+                energy_source TEXT,
+                energy_source_desc TEXT,
+                prime_mover TEXT,
+                operating_status TEXT,
+                operating_year INT,
+                balancing_authority TEXT,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        conn.commit()
+        existing = 0
+        print("  Created eia_generators table")
     
-    for table in candidate_tables:
-        try:
-            cur.execute(f"SELECT COUNT(*) FROM {table}")
-            count = cur.fetchone()[0]
-            print(f"  ✓ {table}: {count:,} rows")
-            if count > 0:
-                cur.execute(f"SELECT * FROM {table} LIMIT 1")
-                cols = [desc[0] for desc in cur.description]
-                print(f"    Columns: {', '.join(cols[:10])}{'...' if len(cols) > 10 else ''}")
-        except Exception:
-            conn.rollback()
-            # Table doesn't exist
-            pass
-    
-    # Also check for any table with 'sub' or 'hifld' in the name
-    cur.execute("""
-        SELECT table_name 
-        FROM information_schema.tables 
-        WHERE table_schema = 'public' 
-        AND (table_name LIKE '%sub%' OR table_name LIKE '%hifld%' OR table_name LIKE '%infra%')
-        ORDER BY table_name
-    """)
-    tables = cur.fetchall()
-    print(f"\n  Tables matching sub/hifld/infra patterns:")
-    for (t,) in tables:
-        try:
-            cur.execute(f"SELECT COUNT(*) FROM \"{t}\"")
-            count = cur.fetchone()[0]
-            print(f"    {t}: {count:,} rows")
-        except:
-            conn.rollback()
-    
-    conn.commit()
-    print("  [DONE] Substation diagnosis complete\n")
-
-
-# ──────────────────────────────────────────────
-# 1. EIA-860 Operating Generator Capacity
-# ──────────────────────────────────────────────
-
-def load_eia_generators(conn):
-    """
-    Load EIA-860 operable generator inventory.
-    Every US power plant with coordinates, fuel type, capacity, status.
-    """
-    print("\n" + "="*60)
-    print("STEP 1: EIA-860 Operating Generator Capacity")
-    print("="*60)
-    
-    cur = conn.cursor()
-    
-    # Create table
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS eia_generators (
-            id SERIAL PRIMARY KEY,
-            plant_id TEXT,
-            plant_name TEXT,
-            state TEXT,
-            county TEXT,
-            latitude FLOAT,
-            longitude FLOAT,
-            sector TEXT,
-            nameplate_capacity_mw FLOAT,
-            net_summer_capacity_mw FLOAT,
-            energy_source TEXT,
-            energy_source_desc TEXT,
-            prime_mover TEXT,
-            operating_status TEXT,
-            operating_year INT,
-            balancing_authority TEXT,
-            created_at TIMESTAMP DEFAULT NOW()
-        )
-    """)
-    cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_eia_gen_state ON eia_generators(state);
-        CREATE INDEX IF NOT EXISTS idx_eia_gen_coords ON eia_generators(latitude, longitude);
-        CREATE INDEX IF NOT EXISTS idx_eia_gen_source ON eia_generators(energy_source);
-    """)
-    conn.commit()
-    
-    # EIA APIv2 - operating generator capacity
     base_url = "https://api.eia.gov/v2/electricity/operating-generator-capacity/data/"
-    
-    total_loaded = 0
-    offset = 0
+    total_loaded = existing
+    offset = existing  # Resume from where we left off
     batch_size = 5000
     
     while True:
@@ -265,38 +175,39 @@ def load_eia_generators(conn):
         
         data = api_get(url, timeout=60)
         if not data or "response" not in data:
-            print(f"  [WARN] No response at offset {offset}, stopping.")
+            print(f"  [WARN] No response at offset {offset}")
             break
         
         records = data["response"].get("data", [])
         if not records:
-            print(f"  No more records at offset {offset}.")
+            print(f"  No more records.")
             break
         
-        # Batch insert
         insert_count = 0
         for r in records:
             try:
                 lat = r.get("latitude")
                 lon = r.get("longitude")
                 if lat is not None:
-                    lat = float(lat)
+                    try: lat = float(lat)
+                    except: lat = None
                 if lon is not None:
-                    lon = float(lon)
+                    try: lon = float(lon)
+                    except: lon = None
                 
                 cap = r.get("nameplate-capacity-mw")
                 if cap is not None:
-                    cap = float(cap)
+                    try: cap = float(cap)
+                    except: cap = None
                 net_cap = r.get("net-summer-capacity-mw")
                 if net_cap is not None:
-                    net_cap = float(net_cap)
+                    try: net_cap = float(net_cap)
+                    except: net_cap = None
                 
                 op_year = r.get("operating_year") or r.get("operatingyear")
                 if op_year:
-                    try:
-                        op_year = int(op_year)
-                    except:
-                        op_year = None
+                    try: op_year = int(op_year)
+                    except: op_year = None
                 
                 cur.execute("""
                     INSERT INTO eia_generators 
@@ -312,8 +223,7 @@ def load_eia_generators(conn):
                     r.get("county", ""),
                     lat, lon,
                     r.get("sector") or r.get("sector_name", ""),
-                    cap,
-                    net_cap,
+                    cap, net_cap,
                     r.get("energy_source_code") or r.get("energysourcecode", ""),
                     r.get("energy_source_desc") or r.get("energysourcedesc", ""),
                     r.get("prime_mover_code") or r.get("primemovercode", ""),
@@ -324,236 +234,162 @@ def load_eia_generators(conn):
                 insert_count += 1
             except Exception as e:
                 conn.rollback()
-                if insert_count == 0:
-                    print(f"  [ERR] First record failed: {e}")
-                    print(f"  Sample record keys: {list(r.keys())[:15]}")
                 continue
         
         conn.commit()
         total_loaded += insert_count
-        print(f"  Loaded {insert_count} generators (total: {total_loaded})")
+        print(f"  Loaded {insert_count} (total: {total_loaded})")
         
-        # Check if we got a full page
-        total_available = data["response"].get("total", 0)
+        # FIX: Cast total to int
+        total_available = int(data["response"].get("total", 0))
         offset += batch_size
         
         if offset >= total_available or len(records) < batch_size:
             break
         
-        time.sleep(1)  # Rate limit respect
+        time.sleep(1)
     
-    print(f"  [DONE] EIA Generators: {total_loaded} total records loaded\n")
-    return total_loaded
+    # Add indexes
+    try:
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_eia_gen_state ON eia_generators(state)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_eia_gen_coords ON eia_generators(latitude, longitude)")
+        conn.commit()
+    except:
+        conn.rollback()
+    
+    print(f"  [DONE] EIA Generators total: {total_loaded}\n")
+    return total_loaded - existing
 
 
 # ──────────────────────────────────────────────
-# 2. EIA Natural Gas Storage
+# FIX 2: HIFLD - try alternative endpoints and diagnose
 # ──────────────────────────────────────────────
 
-def load_eia_gas_storage(conn):
-    """Load EIA weekly natural gas storage data."""
+def fix_hifld(conn):
     print("\n" + "="*60)
-    print("STEP 2: EIA Natural Gas Storage (Weekly)")
+    print("FIX 2: HIFLD Gas Infrastructure (alternative endpoints)")
     print("="*60)
     
     cur = conn.cursor()
     
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS eia_gas_storage (
-            id SERIAL PRIMARY KEY,
-            period TEXT,
-            region TEXT,
-            process TEXT,
-            process_name TEXT,
-            series TEXT,
-            series_desc TEXT,
-            value FLOAT,
-            units TEXT,
-            created_at TIMESTAMP DEFAULT NOW()
-        )
-    """)
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_gas_storage_region ON eia_gas_storage(region)")
-    conn.commit()
+    # Try multiple URL patterns for HIFLD open data
+    endpoints = [
+        {
+            "name": "Gas Compressor Stations",
+            "table": "hifld_gas_compressors",
+            "urls": [
+                "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Natural_Gas_Compressor_Stations/FeatureServer/0/query",
+                "https://hifld-geoplatform.opendata.arcgis.com/api/v3/datasets/natural-gas-compressor-stations/downloads/data?format=geojson",
+                "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/ArcGIS/rest/services/Natural_Gas_Compressor_Stations_1/FeatureServer/0/query",
+            ]
+        },
+        {
+            "name": "Gas Processing Plants",
+            "table": "hifld_gas_processing_plants", 
+            "urls": [
+                "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Natural_Gas_Processing_Plants/FeatureServer/0/query",
+                "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/ArcGIS/rest/services/Natural_Gas_Processing_Plants_1/FeatureServer/0/query",
+            ]
+        },
+    ]
     
-    url = (
-        f"https://api.eia.gov/v2/natural-gas/stor/wkly/data/"
-        f"?api_key={EIA_API_KEY}"
-        f"&frequency=weekly"
-        f"&data[0]=value"
-        f"&sort[0][column]=period&sort[0][direction]=desc"
-        f"&length=500"
-    )
+    total = 0
     
-    data = api_get(url, timeout=60)
-    if not data or "response" not in data:
-        print("  [WARN] No data from EIA gas storage API")
+    for ep in endpoints:
+        print(f"\n  --- {ep['name']} ---")
+        loaded = 0
+        
+        for url_base in ep["urls"]:
+            print(f"  Trying: {url_base[:80]}...")
+            
+            # Check if it's a query endpoint or direct download
+            if "/query" in url_base:
+                params = {
+                    "where": "1=1",
+                    "outFields": "*",
+                    "outSR": "4326",
+                    "f": "json",
+                    "resultRecordCount": 5,
+                    "returnGeometry": "true",
+                    "returnCountOnly": "true"
+                }
+                count_url = url_base + "?" + urlencode(params)
+                data = api_get(count_url, timeout=30)
+                
+                if data and "count" in data:
+                    feature_count = data["count"]
+                    print(f"  Found {feature_count} features!")
+                    
+                    if feature_count > 0:
+                        loaded = _load_arcgis_features(conn, cur, ep["table"], url_base, feature_count)
+                        break
+                elif data and "error" in data:
+                    print(f"  ArcGIS error: {data['error'].get('message', 'unknown')}")
+                else:
+                    print(f"  No count returned, trying next URL...")
+            else:
+                # GeoJSON direct download
+                data = api_get(url_base, timeout=60)
+                if data and "features" in data:
+                    print(f"  GeoJSON: {len(data['features'])} features")
+                    loaded = _load_geojson_features(conn, cur, ep["table"], data["features"])
+                    break
+        
+        if loaded == 0:
+            print(f"  [WARN] All URLs failed for {ep['name']}. These may be restricted HIFLD datasets.")
+            print(f"  Manual download may be needed from: https://hifld-geoplatform.opendata.arcgis.com/")
+        
+        total += loaded
+    
+    return total
+
+
+def _load_arcgis_features(conn, cur, table_name, url_base, total_count):
+    """Load features from ArcGIS with pagination."""
+    
+    # First get a sample to discover fields
+    params = {
+        "where": "1=1",
+        "outFields": "*",
+        "outSR": "4326",
+        "f": "json",
+        "resultRecordCount": 1,
+        "returnGeometry": "true"
+    }
+    sample = api_get(url_base + "?" + urlencode(params), timeout=30)
+    if not sample or not sample.get("features"):
         return 0
     
-    records = data["response"].get("data", [])
-    loaded = 0
+    # Get field names from first feature
+    first_attrs = sample["features"][0].get("attributes", {})
+    fields = list(first_attrs.keys())
     
-    for r in records:
-        try:
-            val = r.get("value")
-            if val is not None:
-                val = float(val)
-            cur.execute("""
-                INSERT INTO eia_gas_storage 
-                (period, region, process, process_name, series, series_desc, value, units)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
-            """, (
-                r.get("period", ""),
-                r.get("area-name") or r.get("areaName", ""),
-                r.get("process") or r.get("process-name", ""),
-                r.get("process-name") or r.get("processName", ""),
-                r.get("series") or "",
-                r.get("series-description") or r.get("seriesDescription", ""),
-                val,
-                r.get("value-units") or r.get("units", "Bcf")
-            ))
-            loaded += 1
-        except Exception as e:
-            conn.rollback()
-            if loaded == 0:
-                print(f"  [ERR] {e}")
-                print(f"  Keys: {list(r.keys())}")
-            continue
-    
-    conn.commit()
-    print(f"  [DONE] EIA Gas Storage: {loaded} records loaded\n")
-    return loaded
-
-
-# ──────────────────────────────────────────────
-# 3. EIA Natural Gas Consumption
-# ──────────────────────────────────────────────
-
-def load_eia_gas_consumption(conn):
-    """Load EIA natural gas consumption by state."""
-    print("\n" + "="*60)
-    print("STEP 3: EIA Natural Gas Consumption")
-    print("="*60)
-    
-    cur = conn.cursor()
-    
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS eia_gas_consumption (
-            id SERIAL PRIMARY KEY,
-            period TEXT,
-            state TEXT,
-            state_name TEXT,
-            sector TEXT,
-            sector_name TEXT,
-            value FLOAT,
-            units TEXT,
-            created_at TIMESTAMP DEFAULT NOW()
-        )
-    """)
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_gas_cons_state ON eia_gas_consumption(state)")
-    conn.commit()
-    
-    url = (
-        f"https://api.eia.gov/v2/natural-gas/cons/sum/data/"
-        f"?api_key={EIA_API_KEY}"
-        f"&frequency=monthly"
-        f"&data[0]=value"
-        f"&sort[0][column]=period&sort[0][direction]=desc"
-        f"&length=2000"
-    )
-    
-    data = api_get(url, timeout=60)
-    if not data or "response" not in data:
-        print("  [WARN] No data from EIA gas consumption API")
-        return 0
-    
-    records = data["response"].get("data", [])
-    loaded = 0
-    
-    for r in records:
-        try:
-            val = r.get("value")
-            if val is not None:
-                val = float(val)
-            cur.execute("""
-                INSERT INTO eia_gas_consumption
-                (period, state, state_name, sector, sector_name, value, units)
-                VALUES (%s,%s,%s,%s,%s,%s,%s)
-            """, (
-                r.get("period", ""),
-                r.get("stateid") or r.get("stateId", ""),
-                r.get("stateDescription") or r.get("state-name", ""),
-                r.get("process") or r.get("sectorid", ""),
-                r.get("process-name") or r.get("sectorDescription", ""),
-                val,
-                r.get("value-units") or r.get("units", "MMcf")
-            ))
-            loaded += 1
-        except Exception as e:
-            conn.rollback()
-            if loaded == 0:
-                print(f"  [ERR] {e}")
-                print(f"  Keys: {list(r.keys())}")
-            continue
-    
-    conn.commit()
-    print(f"  [DONE] EIA Gas Consumption: {loaded} records loaded\n")
-    return loaded
-
-
-# ──────────────────────────────────────────────
-# 4. HIFLD Gas Compressor Stations
-# ──────────────────────────────────────────────
-
-def load_hifld_arcgis(conn, table_name, url_key, label):
-    """Generic HIFLD ArcGIS Feature Service loader with pagination."""
-    print(f"\n{'='*60}")
-    print(f"STEP: {label}")
-    print("="*60)
-    
-    cur = conn.cursor()
-    base_url = HIFLD_URLS.get(url_key)
-    if not base_url:
-        print(f"  [SKIP] No URL for {url_key}")
-        return 0
-    
-    # First, get field info
-    info_url = base_url.replace("/query", "") + "?f=json"
-    info = api_get(info_url, timeout=30)
-    
-    if not info:
-        print(f"  [WARN] Cannot reach HIFLD endpoint: {label}")
-        return 0
-    
-    fields = info.get("fields", [])
-    field_names = [f["name"] for f in fields if f["name"].upper() != "OBJECTID"]
-    print(f"  Fields: {', '.join(field_names[:10])}{'...' if len(field_names) > 10 else ''}")
-    
-    # Create table dynamically
+    # Create table
     col_defs = ["id SERIAL PRIMARY KEY"]
-    safe_cols = []
+    safe_map = []
     for f in fields:
-        name = f["name"].lower().replace(" ", "_")
-        if name == "objectid":
+        safe = f.lower().replace(" ", "_").replace(".", "_")
+        if safe == "objectid" or safe == "fid":
             continue
-        ftype = f.get("type", "esriFieldTypeString")
-        if "Double" in ftype or "Single" in ftype:
-            col_defs.append(f'"{name}" FLOAT')
-        elif "Integer" in ftype or "Small" in ftype:
-            col_defs.append(f'"{name}" BIGINT')
+        val = first_attrs[f]
+        if isinstance(val, float):
+            col_defs.append(f'"{safe}" FLOAT')
+        elif isinstance(val, int):
+            col_defs.append(f'"{safe}" BIGINT')
         else:
-            col_defs.append(f'"{name}" TEXT')
-        safe_cols.append((f["name"], name))
+            col_defs.append(f'"{safe}" TEXT')
+        safe_map.append((f, safe))
     
-    col_defs.append("latitude FLOAT")
-    col_defs.append("longitude FLOAT")
-    col_defs.append("created_at TIMESTAMP DEFAULT NOW()")
+    col_defs.extend(["latitude FLOAT", "longitude FLOAT", "created_at TIMESTAMP DEFAULT NOW()"])
     
-    cur.execute(f'DROP TABLE IF EXISTS {table_name}')
-    cur.execute(f'CREATE TABLE {table_name} ({", ".join(col_defs)})')
+    cur.execute(f"DROP TABLE IF EXISTS {table_name}")
+    cur.execute(f"CREATE TABLE {table_name} ({', '.join(col_defs)})")
     conn.commit()
     
-    # Paginated query
-    total_loaded = 0
+    print(f"  Created table {table_name} with {len(safe_map)} columns")
+    
+    # Paginate
+    loaded = 0
     offset = 0
     page_size = 2000
     
@@ -568,117 +404,143 @@ def load_hifld_arcgis(conn, table_name, url_key, label):
             "returnGeometry": "true"
         }
         
-        query_url = base_url + "?" + urlencode(params)
-        print(f"  Fetching offset={offset}...")
-        
-        data = api_get(query_url, timeout=60)
-        if not data:
-            print(f"  [WARN] No response at offset {offset}")
+        data = api_get(url_base + "?" + urlencode(params), timeout=60)
+        if not data or not data.get("features"):
             break
         
-        features = data.get("features", [])
-        if not features:
-            break
-        
+        features = data["features"]
         for feat in features:
             attrs = feat.get("attributes", {})
             geom = feat.get("geometry", {})
             lat = geom.get("y")
             lon = geom.get("x")
             
-            values = []
-            placeholders = []
-            col_names_sql = []
+            cols = []
+            phs = []
+            vals = []
+            for orig, safe in safe_map:
+                cols.append(f'"{safe}"')
+                phs.append("%s")
+                vals.append(attrs.get(orig))
             
-            for orig_name, safe_name in safe_cols:
-                val = attrs.get(orig_name)
-                col_names_sql.append(f'"{safe_name}"')
-                placeholders.append("%s")
-                values.append(val)
-            
-            col_names_sql.extend(["latitude", "longitude"])
-            placeholders.extend(["%s", "%s"])
-            values.extend([lat, lon])
+            cols.extend(["latitude", "longitude"])
+            phs.extend(["%s", "%s"])
+            vals.extend([lat, lon])
             
             try:
-                cur.execute(
-                    f'INSERT INTO {table_name} ({", ".join(col_names_sql)}) VALUES ({", ".join(placeholders)})',
-                    values
-                )
-                total_loaded += 1
-            except Exception as e:
+                cur.execute(f"INSERT INTO {table_name} ({','.join(cols)}) VALUES ({','.join(phs)})", vals)
+                loaded += 1
+            except:
                 conn.rollback()
-                if total_loaded == 0:
-                    print(f"  [ERR] {e}")
-                continue
         
         conn.commit()
-        print(f"  Loaded {len(features)} features (total: {total_loaded})")
+        print(f"  Loaded {len(features)} (total: {loaded})")
         
-        exceeded = data.get("exceededTransferLimit", False)
-        offset += page_size
-        
-        if not exceeded and len(features) < page_size:
+        if not data.get("exceededTransferLimit") and len(features) < page_size:
             break
-        
+        offset += page_size
         time.sleep(0.5)
     
-    # Add spatial index
-    try:
-        cur.execute(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_coords ON {table_name}(latitude, longitude)")
-        conn.commit()
-    except:
-        conn.rollback()
+    print(f"  [DONE] {table_name}: {loaded} records")
+    return loaded
+
+
+def _load_geojson_features(conn, cur, table_name, features):
+    """Load GeoJSON features into table."""
+    if not features:
+        return 0
     
-    print(f"  [DONE] {label}: {total_loaded} records loaded\n")
-    return total_loaded
+    # Discover fields from first feature
+    first_props = features[0].get("properties", {})
+    col_defs = ["id SERIAL PRIMARY KEY"]
+    safe_map = []
+    for k, v in first_props.items():
+        safe = k.lower().replace(" ", "_").replace(".", "_")
+        if isinstance(v, float):
+            col_defs.append(f'"{safe}" FLOAT')
+        elif isinstance(v, int):
+            col_defs.append(f'"{safe}" BIGINT')
+        else:
+            col_defs.append(f'"{safe}" TEXT')
+        safe_map.append((k, safe))
+    
+    col_defs.extend(["latitude FLOAT", "longitude FLOAT", "created_at TIMESTAMP DEFAULT NOW()"])
+    
+    cur.execute(f"DROP TABLE IF EXISTS {table_name}")
+    cur.execute(f"CREATE TABLE {table_name} ({', '.join(col_defs)})")
+    conn.commit()
+    
+    loaded = 0
+    for feat in features:
+        props = feat.get("properties", {})
+        geom = feat.get("geometry", {})
+        coords = geom.get("coordinates", [None, None])
+        lon = coords[0] if len(coords) > 0 else None
+        lat = coords[1] if len(coords) > 1 else None
+        
+        cols = []
+        phs = []
+        vals = []
+        for orig, safe in safe_map:
+            cols.append(f'"{safe}"')
+            phs.append("%s")
+            vals.append(props.get(orig))
+        
+        cols.extend(["latitude", "longitude"])
+        phs.extend(["%s", "%s"])
+        vals.extend([lat, lon])
+        
+        try:
+            cur.execute(f"INSERT INTO {table_name} ({','.join(cols)}) VALUES ({','.join(phs)})", vals)
+            loaded += 1
+        except:
+            conn.rollback()
+    
+    conn.commit()
+    print(f"  [DONE] {table_name}: {loaded} records")
+    return loaded
 
 
 # ──────────────────────────────────────────────
-# 7. NASA POWER Climate Expansion
+# FIX 3: NASA POWER - ALTER TABLE then expand
 # ──────────────────────────────────────────────
 
-def load_nasa_power_expansion(conn):
-    """
-    Expand NASA POWER climate data to all 44 DC Hub markets.
-    Adds CDD, wet bulb temp, solar irradiance, wind speed.
-    """
+def fix_nasa_power(conn):
     print("\n" + "="*60)
-    print("STEP 7: NASA POWER Climate Expansion (44 markets)")
+    print("FIX 3: NASA POWER Climate (ALTER TABLE + expand to 44 markets)")
     print("="*60)
     
     cur = conn.cursor()
     
-    # Ensure table exists with expanded columns
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS nasa_power_climate (
-            id SERIAL PRIMARY KEY,
-            market TEXT,
-            state TEXT,
-            latitude FLOAT,
-            longitude FLOAT,
-            avg_temp_c FLOAT,
-            max_temp_c FLOAT,
-            min_temp_c FLOAT,
-            avg_humidity_pct FLOAT,
-            avg_wind_speed_m_s FLOAT,
-            avg_solar_irradiance_kwh_m2 FLOAT,
-            cooling_degree_days FLOAT,
-            heating_degree_days FLOAT,
-            avg_wet_bulb_temp_c FLOAT,
-            avg_precipitation_mm FLOAT,
-            avg_surface_pressure_kpa FLOAT,
-            data_source TEXT DEFAULT 'NASA POWER Climatology',
-            updated_at TIMESTAMP DEFAULT NOW(),
-            UNIQUE(market)
-        )
-    """)
-    conn.commit()
+    # Add missing columns to existing table
+    new_cols = [
+        ("avg_wet_bulb_temp_c", "FLOAT"),
+        ("cooling_degree_days", "FLOAT"),
+        ("heating_degree_days", "FLOAT"),
+        ("avg_solar_irradiance_kwh_m2", "FLOAT"),
+        ("avg_wind_speed_m_s", "FLOAT"),
+        ("avg_precipitation_mm", "FLOAT"),
+        ("avg_surface_pressure_kpa", "FLOAT"),
+        ("max_temp_c", "FLOAT"),
+        ("min_temp_c", "FLOAT"),
+    ]
     
-    # NASA POWER parameters for data center siting
-    # T2M=temp, T2M_MAX, T2M_MIN, RH2M=humidity, WS10M=wind,
-    # ALLSKY_SFC_SW_DWN=solar, T2MDEW=dew point (proxy wet bulb),
-    # PRECTOTCORR=precipitation, PS=surface pressure, CDD18_3=CDD, HDD18_3=HDD
+    for col_name, col_type in new_cols:
+        try:
+            cur.execute(f"ALTER TABLE nasa_power_climate ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
+            conn.commit()
+        except:
+            conn.rollback()
+    
+    print("  Added new columns to nasa_power_climate")
+    
+    # Ensure UNIQUE constraint exists
+    try:
+        cur.execute("ALTER TABLE nasa_power_climate ADD CONSTRAINT nasa_power_market_unique UNIQUE (market)")
+        conn.commit()
+    except:
+        conn.rollback()  # Already exists
+    
     params_list = "T2M,T2M_MAX,T2M_MIN,RH2M,WS10M,ALLSKY_SFC_SW_DWN,T2MDEW,PRECTOTCORR,PS"
     
     loaded = 0
@@ -690,12 +552,15 @@ def load_nasa_power_expansion(conn):
         lon = m["lon"]
         state = m["state"]
         
-        # Check if already exists with expanded data
-        cur.execute("SELECT avg_wet_bulb_temp_c FROM nasa_power_climate WHERE market = %s", (market,))
-        existing = cur.fetchone()
-        if existing and existing[0] is not None:
-            skipped += 1
-            continue
+        # Check if already has expanded data
+        try:
+            cur.execute("SELECT cooling_degree_days FROM nasa_power_climate WHERE market = %s", (market,))
+            row = cur.fetchone()
+            if row and row[0] is not None:
+                skipped += 1
+                continue
+        except:
+            conn.rollback()
         
         url = (
             f"https://power.larc.nasa.gov/api/temporal/climatology/point"
@@ -705,16 +570,15 @@ def load_nasa_power_expansion(conn):
             f"&format=JSON"
         )
         
-        print(f"  Fetching: {market} ({lat}, {lon})...")
+        print(f"  {market} ({lat}, {lon})...")
         data = api_get(url, timeout=45)
         
         if not data or "properties" not in data:
-            print(f"  [WARN] No NASA data for {market}")
+            print(f"    [WARN] No data")
             continue
         
         props = data["properties"]["parameter"]
         
-        # Extract annual averages
         avg_temp = props.get("T2M", {}).get("ANN")
         max_temp = props.get("T2M_MAX", {}).get("ANN")
         min_temp = props.get("T2M_MIN", {}).get("ANN")
@@ -725,73 +589,78 @@ def load_nasa_power_expansion(conn):
         precip = props.get("PRECTOTCORR", {}).get("ANN")
         pressure = props.get("PS", {}).get("ANN")
         
-        # Approximate CDD (sum of monthly (T-18.3) where T > 18.3)
+        # Calculate CDD/HDD
         monthly_temps = props.get("T2M", {})
         cdd = 0
         hdd = 0
         for month_key in ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"]:
             mt = monthly_temps.get(month_key)
             if mt is not None:
-                days_in_month = 30  # approx
                 if mt > 18.3:
-                    cdd += (mt - 18.3) * days_in_month
+                    cdd += (mt - 18.3) * 30
                 else:
-                    hdd += (18.3 - mt) * days_in_month
+                    hdd += (18.3 - mt) * 30
         
         try:
+            # Try UPSERT
             cur.execute("""
                 INSERT INTO nasa_power_climate 
                 (market, state, latitude, longitude, avg_temp_c, max_temp_c, min_temp_c,
                  avg_humidity_pct, avg_wind_speed_m_s, avg_solar_irradiance_kwh_m2,
                  cooling_degree_days, heating_degree_days, avg_wet_bulb_temp_c,
-                 avg_precipitation_mm, avg_surface_pressure_kpa, updated_at)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+                 avg_precipitation_mm, avg_surface_pressure_kpa)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (market) DO UPDATE SET
-                    avg_temp_c = EXCLUDED.avg_temp_c,
                     max_temp_c = EXCLUDED.max_temp_c,
                     min_temp_c = EXCLUDED.min_temp_c,
-                    avg_humidity_pct = EXCLUDED.avg_humidity_pct,
                     avg_wind_speed_m_s = EXCLUDED.avg_wind_speed_m_s,
                     avg_solar_irradiance_kwh_m2 = EXCLUDED.avg_solar_irradiance_kwh_m2,
                     cooling_degree_days = EXCLUDED.cooling_degree_days,
                     heating_degree_days = EXCLUDED.heating_degree_days,
                     avg_wet_bulb_temp_c = EXCLUDED.avg_wet_bulb_temp_c,
                     avg_precipitation_mm = EXCLUDED.avg_precipitation_mm,
-                    avg_surface_pressure_kpa = EXCLUDED.avg_surface_pressure_kpa,
-                    updated_at = NOW()
+                    avg_surface_pressure_kpa = EXCLUDED.avg_surface_pressure_kpa
             """, (
                 market, state, lat, lon,
                 avg_temp, max_temp, min_temp,
                 humidity, wind, solar,
                 round(cdd, 1) if cdd else None,
                 round(hdd, 1) if hdd else None,
-                dew_point,  # dew point as proxy for wet bulb
-                precip, pressure
+                dew_point, precip, pressure
             ))
             conn.commit()
             loaded += 1
-            print(f"    ✓ {market}: {avg_temp}°C avg, CDD={round(cdd,0)}, solar={solar} kWh/m²/day")
+            print(f"    ✓ {avg_temp}°C, CDD={round(cdd)}, solar={solar} kWh/m²/day")
         except Exception as e:
             conn.rollback()
-            print(f"    [ERR] {market}: {e}")
+            print(f"    [ERR] {e}")
         
         time.sleep(1)  # NASA rate limit
     
-    print(f"  [DONE] NASA POWER: {loaded} markets loaded, {skipped} already had data\n")
+    print(f"  [DONE] NASA POWER: {loaded} loaded, {skipped} skipped\n")
     return loaded
 
 
 # ──────────────────────────────────────────────
-# 8. PeeringDB IX Completion
+# FIX 4: PeeringDB IX (with proper transaction handling)
 # ──────────────────────────────────────────────
 
-def load_peeringdb_ix(conn):
-    """Load PeeringDB Internet Exchange points."""
+def fix_peeringdb(conn):
     print("\n" + "="*60)
-    print("STEP 8: PeeringDB Internet Exchanges")
+    print("FIX 4: PeeringDB Internet Exchanges")
     print("="*60)
     
     cur = conn.cursor()
+    
+    # Check if already loaded
+    try:
+        cur.execute("SELECT COUNT(*) FROM peeringdb_ix")
+        existing = cur.fetchone()[0]
+        if existing > 0:
+            print(f"  Already have {existing} IX records. Skipping.")
+            return 0
+    except:
+        conn.rollback()
     
     cur.execute("""
         CREATE TABLE IF NOT EXISTS peeringdb_ix (
@@ -802,15 +671,9 @@ def load_peeringdb_ix(conn):
             city TEXT,
             country TEXT,
             region TEXT,
-            media TEXT,
-            proto_unicast BOOLEAN,
-            proto_multicast BOOLEAN,
-            proto_ipv6 BOOLEAN,
             net_count INT,
             fac_count INT,
             website TEXT,
-            tech_email TEXT,
-            policy_general TEXT,
             latitude FLOAT,
             longitude FLOAT,
             created_at TIMESTAMP DEFAULT NOW(),
@@ -819,18 +682,14 @@ def load_peeringdb_ix(conn):
     """)
     conn.commit()
     
-    # PeeringDB API - no auth needed for basic IX list
     url = "https://www.peeringdb.com/api/ix?depth=0&limit=0"
-    headers = {
-        "User-Agent": "DCHub-Discovery/2.0 (dchub.cloud)",
-        "Accept": "application/json"
-    }
+    headers = {"User-Agent": "DCHub-Discovery/2.1 (dchub.cloud)", "Accept": "application/json"}
     
-    print("  Fetching PeeringDB IX list...")
+    print("  Fetching PeeringDB IX...")
     data = api_get(url, headers=headers, timeout=60)
     
     if not data or "data" not in data:
-        print("  [WARN] PeeringDB rate limited or unavailable. Try again in 1 hour.")
+        print("  [WARN] Rate limited or unavailable")
         return 0
     
     records = data["data"]
@@ -839,56 +698,33 @@ def load_peeringdb_ix(conn):
     for r in records:
         try:
             cur.execute("""
-                INSERT INTO peeringdb_ix
-                (ix_id, name, name_long, city, country, region, media,
-                 proto_unicast, proto_multicast, proto_ipv6,
-                 net_count, fac_count, website, tech_email, policy_general,
-                 latitude, longitude)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                ON CONFLICT (ix_id) DO UPDATE SET
-                    name = EXCLUDED.name,
-                    net_count = EXCLUDED.net_count,
-                    fac_count = EXCLUDED.fac_count
+                INSERT INTO peeringdb_ix (ix_id, name, name_long, city, country, region, net_count, fac_count, website, latitude, longitude)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT (ix_id) DO NOTHING
             """, (
-                r.get("id"),
-                r.get("name", ""),
-                r.get("name_long", ""),
-                r.get("city", ""),
-                r.get("country", ""),
-                r.get("region_continent", ""),
-                r.get("media", ""),
-                r.get("proto_unicast", False),
-                r.get("proto_multicast", False),
-                r.get("proto_ipv6", False),
-                r.get("net_count", 0),
-                r.get("fac_count", 0),
-                r.get("website", ""),
-                r.get("tech_email", ""),
-                r.get("policy_general", ""),
-                r.get("latitude"),
-                r.get("longitude")
+                r.get("id"), r.get("name",""), r.get("name_long",""),
+                r.get("city",""), r.get("country",""), r.get("region_continent",""),
+                r.get("net_count",0), r.get("fac_count",0), r.get("website",""),
+                r.get("latitude"), r.get("longitude")
             ))
             loaded += 1
         except Exception as e:
             conn.rollback()
             if loaded == 0:
                 print(f"  [ERR] {e}")
-                print(f"  Keys: {list(r.keys())}")
-            continue
     
     conn.commit()
-    print(f"  [DONE] PeeringDB IX: {loaded} exchanges loaded\n")
+    print(f"  [DONE] PeeringDB: {loaded} exchanges\n")
     return loaded
 
 
 # ──────────────────────────────────────────────
-# 10. EIA RTO Hourly Grid Operations (latest)
+# FIX 5: EIA RTO Hourly
 # ──────────────────────────────────────────────
 
-def load_eia_rto_grid(conn):
-    """Load latest EIA RTO hourly grid operations data."""
+def fix_eia_rto(conn):
     print("\n" + "="*60)
-    print("STEP 10: EIA RTO Hourly Grid Operations")
+    print("FIX 5: EIA RTO Hourly Grid Operations")
     print("="*60)
     
     cur = conn.cursor()
@@ -906,10 +742,8 @@ def load_eia_rto_grid(conn):
             created_at TIMESTAMP DEFAULT NOW()
         )
     """)
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_rto_respondent ON eia_rto_hourly(respondent)")
     conn.commit()
     
-    # Get latest fuel mix by BA
     url = (
         f"https://api.eia.gov/v2/electricity/rto/fuel-type-data/data/"
         f"?api_key={EIA_API_KEY}"
@@ -921,30 +755,29 @@ def load_eia_rto_grid(conn):
     
     data = api_get(url, timeout=60)
     if not data or "response" not in data:
-        print("  [WARN] No data from EIA RTO API")
+        print("  [WARN] No data")
         return 0
     
     records = data["response"].get("data", [])
-    loaded = 0
     
-    # Clear old data and replace with fresh
-    cur.execute("TRUNCATE TABLE eia_rto_hourly")
+    cur.execute("DELETE FROM eia_rto_hourly")
+    loaded = 0
     
     for r in records:
         try:
             val = r.get("value")
             if val is not None:
-                val = float(val)
+                try: val = float(val)
+                except: val = None
             cur.execute("""
-                INSERT INTO eia_rto_hourly
-                (period, respondent, respondent_name, fueltype, type_name, value, units)
+                INSERT INTO eia_rto_hourly (period, respondent, respondent_name, fueltype, type_name, value, units)
                 VALUES (%s,%s,%s,%s,%s,%s,%s)
             """, (
-                r.get("period", ""),
-                r.get("respondent", ""),
-                r.get("respondent-name") or r.get("respondentName", ""),
-                r.get("fueltype") or r.get("fueltypeid", ""),
-                r.get("type-name") or r.get("fueltypeDescription", ""),
+                r.get("period",""),
+                r.get("respondent",""),
+                r.get("respondent-name") or r.get("respondentName",""),
+                r.get("fueltype") or r.get("fueltypeid",""),
+                r.get("type-name") or r.get("fueltypeDescription",""),
                 val,
                 r.get("value-units") or "MWh"
             ))
@@ -953,156 +786,101 @@ def load_eia_rto_grid(conn):
             conn.rollback()
             if loaded == 0:
                 print(f"  [ERR] {e}")
-                print(f"  Keys: {list(r.keys())}")
-            continue
     
     conn.commit()
-    print(f"  [DONE] EIA RTO Hourly: {loaded} records loaded\n")
+    
+    try:
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_rto_respondent ON eia_rto_hourly(respondent)")
+        conn.commit()
+    except:
+        conn.rollback()
+    
+    print(f"  [DONE] EIA RTO: {loaded} records\n")
     return loaded
 
 
 # ──────────────────────────────────────────────
-# MASTER RUNNER
+# MAIN
 # ──────────────────────────────────────────────
 
 def main():
-    start_time = time.time()
+    start = time.time()
     
-    print("╔" + "═"*58 + "╗")
-    print("║  DC Hub Master Discovery Enhancement v2.0               ║")
-    print("║  Loading ALL identified data gaps into Neon              ║")
-    print("╚" + "═"*58 + "╝")
+    print("╔══════════════════════════════════════════════════════════╗")
+    print("║  DC Hub Discovery Patch v2.1 — Fixing 5 bugs           ║")
+    print("╚══════════════════════════════════════════════════════════╝")
     print(f"\nStarted: {datetime.now().isoformat()}")
-    print(f"Database: {'SET' if DATABASE_URL else 'MISSING!'}")
-    print(f"EIA Key: {EIA_API_KEY[:8]}...")
     
-    if not DATABASE_URL:
-        print("\n[FATAL] Set NEON_DATABASE_URL or DATABASE_URL first!")
-        sys.exit(1)
-    
-    conn = get_db_connection()
+    conn = get_db()
     results = {}
     
-    # Step 0: Diagnose substations mystery
+    # Fix 1: EIA Generators
     try:
-        diagnose_substations(conn)
+        results["eia_generators"] = fix_eia_generators(conn)
     except Exception as e:
-        print(f"  [ERR] Substation diagnosis failed: {e}")
-    
-    # Step 1: EIA Generators
-    try:
-        results["eia_generators"] = load_eia_generators(conn)
-    except Exception as e:
-        print(f"  [ERR] EIA Generators failed: {e}")
+        print(f"  [ERR] {e}")
         traceback.print_exc()
         results["eia_generators"] = f"FAILED: {e}"
     
-    # Step 2: EIA Gas Storage
+    # Fix 2: HIFLD
     try:
-        results["eia_gas_storage"] = load_eia_gas_storage(conn)
+        results["hifld_gas"] = fix_hifld(conn)
     except Exception as e:
-        print(f"  [ERR] EIA Gas Storage failed: {e}")
-        results["eia_gas_storage"] = f"FAILED: {e}"
+        print(f"  [ERR] {e}")
+        results["hifld_gas"] = f"FAILED: {e}"
     
-    # Step 3: EIA Gas Consumption
+    # Fix 3: NASA POWER
     try:
-        results["eia_gas_consumption"] = load_eia_gas_consumption(conn)
+        results["nasa_power"] = fix_nasa_power(conn)
     except Exception as e:
-        print(f"  [ERR] EIA Gas Consumption failed: {e}")
-        results["eia_gas_consumption"] = f"FAILED: {e}"
+        print(f"  [ERR] {e}")
+        results["nasa_power"] = f"FAILED: {e}"
     
-    # Step 4: HIFLD Gas Compressor Stations
+    # Fix 4: PeeringDB
     try:
-        results["hifld_gas_compressors"] = load_hifld_arcgis(
-            conn, "hifld_gas_compressors", "gas_compressors",
-            "HIFLD Gas Compressor Stations"
-        )
+        results["peeringdb_ix"] = fix_peeringdb(conn)
     except Exception as e:
-        print(f"  [ERR] HIFLD Compressors failed: {e}")
-        results["hifld_gas_compressors"] = f"FAILED: {e}"
-    
-    # Step 5: HIFLD Gas Processing Plants
-    try:
-        results["hifld_gas_processing"] = load_hifld_arcgis(
-            conn, "hifld_gas_processing_plants", "gas_processing",
-            "HIFLD Gas Processing Plants"
-        )
-    except Exception as e:
-        print(f"  [ERR] HIFLD Processing Plants failed: {e}")
-        results["hifld_gas_processing"] = f"FAILED: {e}"
-    
-    # Step 6: HIFLD Electric Service Territories
-    try:
-        results["hifld_service_territories"] = load_hifld_arcgis(
-            conn, "hifld_service_territories", "service_territories",
-            "HIFLD Electric Retail Service Territories"
-        )
-    except Exception as e:
-        print(f"  [ERR] HIFLD Service Territories failed: {e}")
-        results["hifld_service_territories"] = f"FAILED: {e}"
-    
-    # Step 7: NASA POWER Expansion
-    try:
-        results["nasa_power_climate"] = load_nasa_power_expansion(conn)
-    except Exception as e:
-        print(f"  [ERR] NASA POWER failed: {e}")
-        results["nasa_power_climate"] = f"FAILED: {e}"
-    
-    # Step 8: PeeringDB IX
-    try:
-        results["peeringdb_ix"] = load_peeringdb_ix(conn)
-    except Exception as e:
-        print(f"  [ERR] PeeringDB failed: {e}")
+        print(f"  [ERR] {e}")
         results["peeringdb_ix"] = f"FAILED: {e}"
     
-    # Step 10: EIA RTO Hourly
+    # Fix 5: EIA RTO
     try:
-        results["eia_rto_hourly"] = load_eia_rto_grid(conn)
+        results["eia_rto"] = fix_eia_rto(conn)
     except Exception as e:
-        print(f"  [ERR] EIA RTO failed: {e}")
-        results["eia_rto_hourly"] = f"FAILED: {e}"
+        print(f"  [ERR] {e}")
+        results["eia_rto"] = f"FAILED: {e}"
     
-    # ── FINAL REPORT ──
-    elapsed = time.time() - start_time
+    elapsed = time.time() - start
     
-    print("\n" + "╔" + "═"*58 + "╗")
-    print("║  MASTER DISCOVERY RESULTS                                ║")
-    print("╠" + "═"*58 + "╣")
-    
-    total_new = 0
-    for source, count in results.items():
-        if isinstance(count, int):
-            total_new += count
-            status = f"{count:>8,} records"
+    print("\n╔══════════════════════════════════════════════════════════╗")
+    print("║  PATCH v2.1 RESULTS                                     ║")
+    print("╠══════════════════════════════════════════════════════════╣")
+    total = 0
+    for k, v in results.items():
+        if isinstance(v, int):
+            total += v
+            print(f"║  {k:<30} {v:>8,} new records  ║")
         else:
-            status = f"  {count}"
-        print(f"║  {source:<30} {status:>25} ║")
+            print(f"║  {k:<30} {str(v)[:25]:>25}  ║")
+    print("╠══════════════════════════════════════════════════════════╣")
+    print(f"║  TOTAL NEW: {total:>10,}  |  Elapsed: {elapsed:.0f}s              ║")
+    print("╚══════════════════════════════════════════════════════════╝")
     
-    print("╠" + "═"*58 + "╣")
-    print(f"║  TOTAL NEW RECORDS: {total_new:>10,}                          ║")
-    print(f"║  Elapsed: {elapsed:.1f}s                                      ║")
-    print("╚" + "═"*58 + "╝")
-    
-    # Verify final totals
-    print("\n── POST-LOAD TABLE VERIFICATION ──")
+    # Verify
+    print("\n── TABLE COUNTS ──")
     cur = conn.cursor()
-    for table in [
-        "eia_generators", "eia_gas_storage", "eia_gas_consumption",
-        "hifld_gas_compressors", "hifld_gas_processing_plants",
-        "hifld_service_territories", "nasa_power_climate",
-        "peeringdb_ix", "eia_rto_hourly"
-    ]:
+    for t in ["eia_generators","eia_gas_storage","eia_gas_consumption",
+              "hifld_gas_compressors","hifld_gas_processing_plants",
+              "nasa_power_climate","peeringdb_ix","eia_rto_hourly"]:
         try:
-            cur.execute(f"SELECT COUNT(*) FROM {table}")
-            count = cur.fetchone()[0]
-            print(f"  {table}: {count:,} rows")
+            cur.execute(f"SELECT COUNT(*) FROM {t}")
+            print(f"  {t}: {cur.fetchone()[0]:,}")
         except:
             conn.rollback()
-            print(f"  {table}: TABLE NOT FOUND")
+            print(f"  {t}: NOT FOUND")
     
     conn.close()
-    print(f"\nCompleted: {datetime.now().isoformat()}")
-    print("🚀 DC Hub Discovery Enhancement v2.0 complete!")
+    print(f"\n🚀 Patch v2.1 complete!")
 
 
 if __name__ == "__main__":
