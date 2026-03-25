@@ -4266,6 +4266,7 @@ def mcp_proxy():
 
 
                         # ── BUG-035: Rewrite news category aliases BEFORE proxy call ──
+            tool_name = rpc_params.get("name", "") if rpc_params else ""
             if rpc_method == 'tools/call' and tool_name == 'get_news':
                 try:
                     _body = request.get_json(silent=True) or {}
