@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-DC Hub External Scheduler v3.6
+DC Hub External Scheduler v3.7
 ===============================
 Triggers discovery jobs via HTTP POST to the DC Hub API /api/jobs/* endpoints.
 All jobs are staggered to prevent Railway resource conflicts.
@@ -16,6 +16,14 @@ Environment:
   DCHUB_API_BASE    — API base URL (default: https://dchub-backend-production.up.railway.app)
   DCHUB_ADMIN_KEY   — Admin API key (required)
 
+v3.7 changelog:
+  - DISABLED infra_sync — runaway substation INSERT loop was exhausting Neon
+    pool (49-50/50 connections) due to missing UNIQUE constraint on substations
+    table + il.latitude column reference bug. Re-enable after DB fixes.
+  - FIXED X-Internal-Key header (was dchub-internal-2024, now dchub-internal-sync-2026)
+  - REMOVED orphaned @scheduler.task decorator at EOF (referenced nonexistent scheduler object)
+  - 18 active jobs (was 19)
+
 v3.6 changelog:
   - REMOVED keep-alive (Railway doesn't sleep — it was wasting pool connections)
   - DISABLED autopilot, autonomous_brain, ambassador (modules not installed,
@@ -24,13 +32,12 @@ v3.6 changelog:
   - Fixed version strings throughout
   - 19 active jobs (was 23)
 
-Schedule (UTC) — 19 active jobs, verified no overlaps:
+Schedule (UTC) — 18 active jobs, verified no overlaps:
   00:00  News/RSS Refresh        (also 04, 08, 12, 16, 20)
   00:20  Auto-Approve            (also 04, 08, 12, 16, 20)
   00:45  Simple Alerts           (also 02,04,06,08,10,12,14,16,18,20,22)
   01:00  Facility Discovery      (also 07, 14, 19)
   01:15  Alert Emails            (also 05,09,13,17,21)
-  02:30  Infrastructure Sync     (also 08:30, 14:30, 20:30)
   03:00  AI Ecosystem Agent      (also 10, 15, 22)
   03:10  MCP Rate Limit Cleanup  (daily)
   03:15  Neon DB Backup          (daily)
@@ -45,6 +52,9 @@ Schedule (UTC) — 19 active jobs, verified no overlaps:
   11:30  Content Publishing      (daily)
   12:30  Market Report           (daily)
   16:30  Ambassador + Drip       (daily)
+
+  DISABLED:
+  xx:xx  Infrastructure Sync     — pool exhaustion (substations UNIQUE constraint + il.latitude bug)
 """
 
 import os
@@ -71,7 +81,7 @@ logging.basicConfig(
 log = logging.getLogger('dchub-scheduler')
 
 # ============================================================
-# JOB DEFINITIONS — 19 active
+# JOB DEFINITIONS — 20 active
 # ============================================================
 JOBS = {
     'permit_scraper': {
@@ -204,14 +214,11 @@ JOBS = {
         'minute': 30,
         'timeout': 300,
     },
-    'infra_sync': {
-        'name': 'Infrastructure Sync',
-        'endpoint': '/api/jobs/infrastructure-sync',
-        'method': 'POST',
-        'hours': [2, 8, 14, 20],
-        'minute': 30,
-        'timeout': 300,
-    },
+    # 'infra_sync' DISABLED v3.7 — runaway substation INSERT loop
+    # exhausts Neon pool (49/50) due to missing UNIQUE constraint +
+    # column il.latitude does not exist bug. Re-enable after:
+    #   1) ALTER TABLE substations ADD CONSTRAINT ... UNIQUE(name, lat, lng)
+    #   2) Fix il.latitude → lat column reference in infrastructure_layers query
     'capacity_headroom': {
         'name': 'Capacity Headroom',
         'endpoint': '/api/jobs/capacity-headroom',
@@ -252,6 +259,15 @@ JOBS = {
 #   'autonomous_brain' → autonomous_brain module required
 #   'ambassador'       → ai_outreach_agent ambassador module required
 DISABLED_JOBS = {
+    'infra_sync': {
+        'name': 'Infrastructure Sync',
+        'endpoint': '/api/jobs/infrastructure-sync',
+        'method': 'POST',
+        'hours': [2, 8, 14, 20],
+        'minute': 30,
+        'timeout': 300,
+        'disabled_reason': 'Pool exhaustion — substations missing UNIQUE constraint + il.latitude column bug',
+    },
     'autopilot': {
         'name': 'Auto-Pilot (Deals)',
         'endpoint': '/api/jobs/autopilot',
@@ -288,12 +304,12 @@ def api_call(endpoint, method='POST', timeout=60):
     url = API_BASE.rstrip('/') + endpoint
     headers = {
         'Content-Type': 'application/json',
-        'User-Agent': 'DCHub-Scheduler/3.6',
+        'User-Agent': 'DCHub-Scheduler/3.7',
     }
     if ADMIN_KEY:
         headers['X-Admin-Key'] = ADMIN_KEY
         headers['Authorization'] = f'Bearer {ADMIN_KEY}'
-        headers['X-Internal-Key'] = 'dchub-internal-2024'
+        headers['X-Internal-Key'] = 'dchub-internal-sync-2026'
 
     try:
         req = Request(url, method=method, headers=headers)
@@ -389,7 +405,7 @@ def show_status():
     healthy = check_health()
     now = datetime.now(timezone.utc)
     print(f"\n{'─'*65}")
-    print(f"  DC Hub External Scheduler v3.6")
+    print(f"  DC Hub External Scheduler v3.7")
     print(f"  Time:   {now.strftime('%Y-%m-%d %H:%M UTC')}")
     print(f"  API:    {API_BASE}")
     print(f"  Auth:   {'✅ key set' if ADMIN_KEY else '❌ DCHUB_ADMIN_KEY not set'}")
@@ -420,7 +436,7 @@ def show_status():
 # MAIN LOOP — no keep-alive, just scheduled jobs
 # ============================================================
 def scheduler_loop():
-    log.info(f"DC Hub External Scheduler v3.6 starting")
+    log.info(f"DC Hub External Scheduler v3.7 starting")
     log.info(f"  API:  {API_BASE}")
     log.info(f"  Jobs: {len(JOBS)} active, {len(DISABLED_JOBS)} disabled")
     log.info(f"  Auth: {'✅ key set' if ADMIN_KEY else '❌ DCHUB_ADMIN_KEY not set — jobs will fail!'}")
@@ -454,7 +470,7 @@ def scheduler_loop():
 # CLI
 # ============================================================
 def main():
-    parser = argparse.ArgumentParser(description='DC Hub External Scheduler v3.6')
+    parser = argparse.ArgumentParser(description='DC Hub External Scheduler v3.7')
     parser.add_argument('--once',   action='store_true', help='Run all due jobs once and exit')
     parser.add_argument('--job',    type=str,            help=f'Run specific job: {", ".join(JOBS.keys())}')
     parser.add_argument('--all',    action='store_true', help='Run ALL jobs immediately')
@@ -491,8 +507,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-@scheduler.task('cron', id='news_facility_extraction', hour=6, minute=0)
-def run_news_facility_extraction():
-    from news_facility_extractor import scan_news_sources
-    scan_news_sources()
