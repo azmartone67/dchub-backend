@@ -2504,7 +2504,7 @@ def mcp_messages_proxy():
         resp = requests.post(
             'http://127.0.0.1:8888/messages/',
             headers={'Content-Type': request.content_type or 'application/json'},
-            data=request.get_data(),
+            data=getattr(request, '_cached_data', None) or request.get_data(),
             params=request.args,
             timeout=30,
         )
@@ -4274,7 +4274,8 @@ def mcp_proxy():
                     rpc_resp_reg = {
                         "jsonrpc": "2.0",
                         "result": {
-                            "content": [{"type": "text", "text": json.dumps(registry_data)}]
+                            "content": [{"type": "text", "text": json.dumps(registry_data)}],
+                            "isError": False
                         }
                     }
                     if rpc_id is not None:
@@ -4290,10 +4291,24 @@ def mcp_proxy():
                 except Exception as e:
                     logger.error(f"get_agent_registry Neon-direct failed, falling through to proxy: {e}")
 
-            resp = http_req.post(
+                        # ── BUG-035: Rewrite news category aliases BEFORE proxy call ──
+            if rpc_method == 'tools/call' and tool_name_check == 'get_news':
+                try:
+                    _body = request.get_json(silent=True) or {}
+                    _news_args = (_body.get('params', {}) or {}).get('arguments', {}) or {}
+                    _cat = (_news_args.get('category', '') or '').strip().lower()
+                    if _cat and _cat in NEWS_CATEGORY_MAP:
+                        _news_args['category'] = NEWS_CATEGORY_MAP[_cat]
+                        _body['params']['arguments'] = _news_args
+                        request._cached_data = __import__('json').dumps(_body).encode('utf-8')
+                        logger.info(f"MCP news category rewrite: '{_cat}' -> '{NEWS_CATEGORY_MAP[_cat]}'")
+                except Exception as _e:
+                    logger.debug(f"News category rewrite skipped: {_e}")
+
+resp = http_req.post(
                 MCP_INTERNAL_URL,
                 headers=fwd_headers,
-                data=request.get_data(),
+                data=getattr(request, '_cached_data', None) or request.get_data(),
                 stream=True,
                 timeout=30,
             )
