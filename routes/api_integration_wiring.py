@@ -177,11 +177,44 @@ def enrich_site_analysis(lat=None, lng=None, state=None):
                     enrichment["nearby_generation"] = {"source": "EIA-860", "radius_km": 50}
                 enrichment["nearby_generation"]["largest_plants"] = plants[:10]
 
+        # Fallback: state-level generation summary if spatial returned nothing (lat/lng may be NULL)
+        if "nearby_generation" not in enrichment and state:
+            cur.execute("""
+                SELECT energy_source_desc,
+                       COUNT(*) as generator_count,
+                       ROUND(CAST(SUM(nameplate_capacity_mw) AS numeric), 1) as total_capacity_mw,
+                       ROUND(CAST(AVG(operating_year) AS numeric), 0) as avg_vintage
+                FROM eia_generators
+                WHERE UPPER(state) = %s AND nameplate_capacity_mw > 0
+                GROUP BY energy_source_desc
+                ORDER BY total_capacity_mw DESC
+            """, (state.upper(),))
+            rows = cur.fetchall()
+            if rows:
+                cols = [d[0] for d in cur.description]
+                total_mw = 0
+                total_gen = 0
+                fuel_mix = []
+                for r in rows:
+                    d = dict(zip(cols, r))
+                    cap = float(d.get("total_capacity_mw") or 0)
+                    cnt = int(d.get("generator_count") or 0)
+                    total_mw += cap
+                    total_gen += cnt
+                for r in rows:
+                    d = dict(zip(cols, r))
+                    cap = float(d.get("total_capacity_mw") or 0)
+                    pct = round(cap / total_mw * 100, 1) if total_mw > 0 else 0
+                    fuel_mix.append({"fuel_type": d.get("energy_source_desc"), "capacity_mw": cap, "share_pct": pct, "generator_count": int(d.get("generator_count") or 0)})
+                enrichment["nearby_generation"] = {"source": "EIA-860 (state-level)", "scope": "state", "state": state.upper(), "total_capacity_mw": round(total_mw, 1), "total_generators": total_gen, "fuel_mix": fuel_mix[:10]}
+
         # Gas Infrastructure (eia_gas_consumption + eia_gas_storage)
         if state:
             gas_data = {}
             state_upper = state.upper()
-            cur.execute("SELECT sector_name, value, units, period FROM eia_gas_consumption WHERE UPPER(state) = %s ORDER BY period DESC LIMIT 10", (state_upper,))
+            # Try state abbreviation first, then full name
+            state_full = STATE_ABBR_TO_NAME.get(state_upper, state_upper)
+            cur.execute("SELECT sector_name, value, units, period FROM eia_gas_consumption WHERE UPPER(state) = %s OR UPPER(state_name) = %s OR UPPER(state) = %s ORDER BY period DESC LIMIT 10", (state_upper, state_full.upper(), state_full.upper()))
             rows = cur.fetchall()
             if rows:
                 cols = [d[0] for d in cur.description]
