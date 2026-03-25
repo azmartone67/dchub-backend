@@ -1910,11 +1910,10 @@ async def get_agent_registry() -> str:
         # Query ecosystem table for connected agents
         try:
             cur.execute("""
-                SELECT name, platform_type, status, tier, description,
-                       query_count, last_active::text
-                FROM ecosystem
-                ORDER BY query_count DESC NULLS LAST
-                LIMIT 30
+                SELECT name, slug, integration_type, status, description,
+                       last_seen::text as last_active, created_at::text
+                FROM agent_registry
+                ORDER BY last_seen DESC NULLS LAST
             """)
             agents = [dict(r) for r in cur.fetchall()]
         except Exception:
