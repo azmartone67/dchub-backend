@@ -59,6 +59,20 @@ STATE_TO_BA = {
     "LA":"MISO","OK":"SWPP","KS":"SWPP","NE":"SWPP",
     "CT":"ISNE","MA":"ISNE","ME":"ISNE","NH":"ISNE",
 }
+# EIA energy source codes → human names
+EIA_FUEL_CODES = {
+    "NG": "Natural Gas", "SUB": "Subbituminous Coal", "BIT": "Bituminous Coal",
+    "WAT": "Hydroelectric", "SUN": "Solar", "WND": "Wind", "NUC": "Nuclear",
+    "DFO": "Distillate Fuel Oil", "RFO": "Residual Fuel Oil", "PC": "Petroleum Coke",
+    "WDS": "Wood/Wood Waste", "LFG": "Landfill Gas", "OBG": "Other Biomass Gas",
+    "GEO": "Geothermal", "MWH": "Batteries/Storage", "WH": "Waste Heat",
+    "BLQ": "Black Liquor", "AB": "Agricultural Byproducts", "MSW": "Municipal Solid Waste",
+    "OG": "Other Gas", "KER": "Kerosene", "JF": "Jet Fuel", "PUR": "Purchased Steam",
+    "TDF": "Tire-Derived Fuel", "OBS": "Other Biomass Solids", "LIG": "Lignite Coal",
+    "ANT": "Anthracite Coal", "SGC": "Coal-Derived Syngas", "BFG": "Blast Furnace Gas",
+    "SC": "Coal Synfuel", "OTH": "Other", "WC": "Waste Coal",
+}
+
 
 def enrich_site_analysis(lat=None, lng=None, state=None):
     enrichment = {}
@@ -177,36 +191,34 @@ def enrich_site_analysis(lat=None, lng=None, state=None):
                     enrichment["nearby_generation"] = {"source": "EIA-860", "radius_km": 50}
                 enrichment["nearby_generation"]["largest_plants"] = plants[:10]
 
-        # Fallback: state-level generation summary if spatial returned nothing (lat/lng may be NULL)
+        # Fallback: state-level generation summary (deduplicated by plant_id + energy_source)
         if "nearby_generation" not in enrichment and state:
             cur.execute("""
-                SELECT energy_source_desc,
-                       COUNT(*) as generator_count,
-                       ROUND(CAST(SUM(nameplate_capacity_mw) AS numeric), 1) as total_capacity_mw,
-                       ROUND(CAST(AVG(operating_year) AS numeric), 0) as avg_vintage
-                FROM eia_generators
-                WHERE UPPER(state) = %s AND nameplate_capacity_mw > 0
-                GROUP BY energy_source_desc
+                SELECT energy_source,
+                       COUNT(DISTINCT plant_id) as plant_count,
+                       ROUND(CAST(SUM(cap) AS numeric), 1) as total_capacity_mw
+                FROM (
+                    SELECT DISTINCT ON (plant_id, energy_source, nameplate_capacity_mw)
+                           plant_id, energy_source, nameplate_capacity_mw as cap
+                    FROM eia_generators
+                    WHERE UPPER(state) = %s AND nameplate_capacity_mw > 0
+                ) deduped
+                GROUP BY energy_source
                 ORDER BY total_capacity_mw DESC
             """, (state.upper(),))
             rows = cur.fetchall()
             if rows:
                 cols = [d[0] for d in cur.description]
-                total_mw = 0
-                total_gen = 0
+                total_mw = sum(float(dict(zip(cols, r)).get("total_capacity_mw") or 0) for r in rows)
+                total_plants = sum(int(dict(zip(cols, r)).get("plant_count") or 0) for r in rows)
                 fuel_mix = []
                 for r in rows:
                     d = dict(zip(cols, r))
                     cap = float(d.get("total_capacity_mw") or 0)
-                    cnt = int(d.get("generator_count") or 0)
-                    total_mw += cap
-                    total_gen += cnt
-                for r in rows:
-                    d = dict(zip(cols, r))
-                    cap = float(d.get("total_capacity_mw") or 0)
+                    code = d.get("energy_source") or "UNK"
                     pct = round(cap / total_mw * 100, 1) if total_mw > 0 else 0
-                    fuel_mix.append({"fuel_type": d.get("energy_source_desc"), "capacity_mw": cap, "share_pct": pct, "generator_count": int(d.get("generator_count") or 0)})
-                enrichment["nearby_generation"] = {"source": "EIA-860 (state-level)", "scope": "state", "state": state.upper(), "total_capacity_mw": round(total_mw, 1), "total_generators": total_gen, "fuel_mix": fuel_mix[:10]}
+                    fuel_mix.append({"fuel_type": EIA_FUEL_CODES.get(code, code), "fuel_code": code, "capacity_mw": cap, "share_pct": pct, "plant_count": int(d.get("plant_count") or 0)})
+                enrichment["nearby_generation"] = {"source": "EIA-860 (state-level, deduplicated)", "scope": "state", "state": state.upper(), "total_capacity_mw": round(total_mw, 1), "total_plants": total_plants, "fuel_mix": fuel_mix[:10]}
 
         # Gas Infrastructure (eia_gas_consumption + eia_gas_storage)
         if state:
