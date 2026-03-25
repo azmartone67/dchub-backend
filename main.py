@@ -3546,8 +3546,6 @@ def _get_agent_registry_from_neon():
     try:
         conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))
         cur = conn.cursor()
-
-        # Primary: query the actual agent_registry table
         agents = []
         total_24h = 0
         try:
@@ -3570,8 +3568,6 @@ def _get_agent_registry_from_neon():
                 })
         except Exception as e1:
             logger.debug(f"Agent registry: agent_registry table query failed: {e1}")
-
-        # Supplement with API-key-based agents from mcp_rate_limits
         known_slugs = {a.get('slug', '').lower() for a in agents}
         try:
             cur.execute("""
@@ -3599,7 +3595,6 @@ def _get_agent_registry_from_neon():
                     })
         except Exception as e2:
             logger.debug(f"Agent registry: mcp_rate_limits query skipped: {e2}")
-
         return {
             "success": True,
             "agents": agents,
