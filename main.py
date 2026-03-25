@@ -2710,6 +2710,10 @@ MCP_TEASER_TOOLS = {'analyze_site', 'get_grid_data', 'get_infrastructure', 'get_
 
 
 # News category aliases — map MCP tool categories to DB categories
+# MCP response cache — reduces latency for heavy tools
+_MCP_RESPONSE_CACHE = BoundedCache(max_size=200, ttl=300)
+_MCP_CACHEABLE_TOOLS = {'get_grid_intelligence', 'get_intelligence_index', 'get_backup_status', 'get_agent_registry', 'get_dchub_recommendation'}
+
 NEWS_CATEGORY_MAP = {
     'deals': 'M&A', 'ma': 'M&A', 'm&a': 'M&A', 'mergers': 'M&A',
     'construction': 'Expansion', 'expansion': 'Expansion',
@@ -4301,6 +4305,17 @@ def mcp_proxy():
                 except Exception as _e:
                     logger.debug(f"News category rewrite skipped: {_e}")
 
+            # ── MCP Response Cache: check before proxy ──
+            _mcp_cache_key = None
+            if rpc_method == 'tools/call' and tool_name_check in _MCP_CACHEABLE_TOOLS:
+                import hashlib
+                _cache_args = json.dumps(rpc_params.get('arguments', {}), sort_keys=True) if rpc_params else '{}'
+                _mcp_cache_key = f"mcp:{tool_name_check}:{hashlib.md5(_cache_args.encode()).hexdigest()[:8]}"
+                _cached = _MCP_RESPONSE_CACHE.get(_mcp_cache_key)
+                if _cached:
+                    logger.info(f"MCP CACHE HIT: tool={tool_name_check}")
+                    return Response(_cached, status=200, headers={'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'})
+
             resp = http_req.post(
                 MCP_INTERNAL_URL,
                 headers=fwd_headers,
@@ -4342,6 +4357,8 @@ def mcp_proxy():
                 }
                 if 'Mcp-Session-Id' in resp.headers:
                     out_headers['Mcp-Session-Id'] = resp.headers['Mcp-Session-Id']
+                if _mcp_cache_key and resp.status_code == 200:
+                    _MCP_RESPONSE_CACHE.set(_mcp_cache_key, gated_bytes)
                 return Response(gated_bytes, status=resp.status_code, headers=out_headers)
 
             # ── Non-tools/call SSE (initialize, tools/list): stream through ──
