@@ -14194,28 +14194,15 @@ def api_site_score():
         if site_enrichment.get('energy_rates'):
             result['retail_energy_rates'] = site_enrichment['energy_rates']
 
-        # --- EIA Pricing + Connectivity Enrichment (Mar 22) ---
-        try:
-            import requests as _req
-            _base = "http://localhost:8080"
-            _st = state if state else ""
-            if _st:
-                _pr = _req.get(_base + "/api/v1/energy/site-pricing?state=" + _st, timeout=5)
-                if _pr.status_code == 200:
-                    _pd = _pr.json()
-                    if _pd.get("success"):
-                        result["eia_electricity"] = _pd.get("electricity", {})
-                        result["eia_natural_gas"] = _pd.get("natural_gas", {})
-                        result["eia_gas_storage"] = _pd.get("gas_storage")
-            if lat and lon:
-                _url = _base + "/api/v1/connectivity/site-connectivity?lat=" + str(lat) + "&lng=" + str(lon) + "&state=" + _st + "&radius=50"
-                _cr = _req.get(_url, timeout=5)
-                if _cr.status_code == 200:
-                    _cd = _cr.json()
-                    if _cd.get("success"):
-                        result["connectivity"] = {"internet_exchanges": _cd.get("internet_exchanges", []), "networks": _cd.get("networks", {}), "fiber_coverage": _cd.get("fiber_coverage")}
-        except Exception as _e:
-            logger.warning("Pricing/connectivity enrichment non-fatal: " + str(_e))
+        # ── v2 enrichment (Mar 25) — direct DB via enrich_site_analysis, no localhost ──
+        if site_enrichment.get('nearby_generation'):
+            result['nearby_generation'] = site_enrichment['nearby_generation']
+        if site_enrichment.get('gas_infrastructure'):
+            result['gas_infrastructure'] = site_enrichment['gas_infrastructure']
+        if site_enrichment.get('grid_generation'):
+            result['grid_generation'] = site_enrichment['grid_generation']
+        if site_enrichment.get('internet_exchanges'):
+            result['internet_exchanges'] = site_enrichment['internet_exchanges']
         return jsonify(result)
 
     except Exception as e:
