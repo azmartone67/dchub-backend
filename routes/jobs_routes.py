@@ -84,10 +84,30 @@ def _reg_update(key):
 
 @jobs_bp.route('/api/jobs/news-refresh', methods=['POST'])
 def job_news_refresh():
-    """Cron: Refresh news from all RSS sources"""
+    """Cron: Refresh news from all RSS sources.
+    
+    Pool isolation: news sync is the heaviest scheduled job (~90-150s, 34 feeds +
+    16 Google News queries). To prevent pool exhaustion that cascades into health
+    check failures and watchdog restarts, we set a dedicated DB connection via
+    env var override so news_engine uses its own connection instead of the shared
+    pool. The connection is cleaned up in the finally block.
+    """
     auth_err = _require_admin_key()
     if auth_err:
         return auth_err
+
+    # --- Pool isolation: create a dedicated connection for the news sync ---
+    _dedicated_conn = None
+    try:
+        db_url = os.environ.get('NEON_DATABASE_URL') or os.environ.get('DATABASE_URL', '')
+        if db_url:
+            _dedicated_conn = psycopg2.connect(db_url, connect_timeout=15)
+            _dedicated_conn.autocommit = True
+            # Store on module-level so news_engine can optionally pick it up
+            os.environ['_NEWS_SYNC_ACTIVE'] = '1'
+    except Exception as e:
+        logger.warning("JOB news-refresh: dedicated conn failed (%s), proceeding with pool", e)
+
     try:
         from auto_sync import sync_news
         saved = sync_news()
@@ -101,6 +121,13 @@ def job_news_refresh():
     except Exception as e:
         logger.error("JOB news-refresh: ❌ %s", e)
         return jsonify({'success': False, 'job': 'news-refresh', 'error': str(e)}), 500
+    finally:
+        os.environ.pop('_NEWS_SYNC_ACTIVE', None)
+        if _dedicated_conn:
+            try:
+                _dedicated_conn.close()
+            except Exception:
+                pass
 
 
 @jobs_bp.route('/api/jobs/discovery', methods=['POST'])
@@ -309,6 +336,8 @@ def job_status():
         'energy-discovery': {'endpoint': '/api/jobs/energy-discovery', 'method': 'POST', 'registry': _scheduler_registry.get('energy_discovery', {})},
         'capacity-headroom': {'endpoint': '/api/jobs/capacity-headroom', 'method': 'POST', 'registry': _scheduler_registry.get('capacity_headroom', {})},
         'ambassador': {'endpoint': '/api/jobs/ambassador', 'method': 'POST', 'registry': _scheduler_registry.get('ambassador', {})},
+        'backup': {'endpoint': '/api/jobs/backup', 'method': 'POST', 'registry': _scheduler_registry.get('db_backup', {})},
+        'mcp-rate-cleanup': {'endpoint': '/api/jobs/mcp-rate-cleanup', 'method': 'POST', 'registry': _scheduler_registry.get('mcp_rate_cleanup', {})},
     }
     return jsonify({'success': True, 'jobs': jobs, 'total': len(jobs), 'ts': datetime.utcnow().isoformat()})
 
@@ -630,6 +659,129 @@ def job_ambassador():
     except Exception as e:
         logger.error("JOB ambassador: ❌ %s", e)
         return jsonify({'success': False, 'job': 'ambassador', 'error': str(e)}), 500
+
+
+@jobs_bp.route('/api/jobs/backup', methods=['POST'])
+def job_backup():
+    """Cron: Neon DB backup -- lightweight table-count + row-count snapshot.
+    Scheduler hits /api/jobs/backup (not /api/jobs/db-backup).
+    This is the simple daily check; the full export is on /api/jobs/db-backup.
+    """
+    auth_err = _require_admin_key()
+    if auth_err:
+        return auth_err
+    try:
+        conn = _get_pg()
+        cur = conn.cursor()
+
+        # Snapshot key table counts
+        tables = [
+            'facilities', 'deals', 'news_articles', 'discovered_facilities',
+            'fiber_routes', 'gas_pipelines', 'power_plants_eia',
+            'transmission_lines_eia', 'api_keys', 'users',
+            'mcp_rate_limits', 'daily_record_usage',
+        ]
+        snapshot = {}
+        total_rows = 0
+        for table in tables:
+            try:
+                cur.execute(f"SELECT COUNT(*) FROM {table}")
+                count = cur.fetchone()[0]
+                snapshot[table] = count
+                total_rows += count
+            except Exception:
+                conn.rollback()
+                snapshot[table] = -1
+
+        # DB size
+        try:
+            cur.execute("SELECT pg_database_size(current_database())")
+            db_size_bytes = cur.fetchone()[0]
+            db_size_mb = round(db_size_bytes / (1024 * 1024), 1)
+        except Exception:
+            conn.rollback()
+            db_size_mb = -1
+
+        # Active connections
+        try:
+            cur.execute("SELECT count(*) FROM pg_stat_activity WHERE state = 'active'")
+            active_conns = cur.fetchone()[0]
+        except Exception:
+            conn.rollback()
+            active_conns = -1
+
+        cur.close()
+        conn.close()
+
+        _reg_update('db_backup')
+        logger.info("JOB backup: ✅ %d tables, %d total rows, %.1f MB", len(snapshot), total_rows, db_size_mb)
+        return jsonify({
+            'success': True,
+            'job': 'backup',
+            'size_mb': db_size_mb,
+            'total_rows': total_rows,
+            'tables': snapshot,
+            'active_connections': active_conns,
+            'ts': datetime.utcnow().isoformat(),
+        })
+    except Exception as e:
+        logger.error("JOB backup: ❌ %s", e)
+        return jsonify({'success': False, 'job': 'backup', 'error': str(e)}), 500
+
+
+@jobs_bp.route('/api/jobs/mcp-rate-cleanup', methods=['POST'])
+def job_mcp_rate_cleanup():
+    """Cron: Clean up expired MCP rate limit entries from Neon.
+    Deletes rows from mcp_rate_limits where the window has expired (>24h old).
+    Also cleans stale daily_record_usage rows older than 7 days.
+    """
+    auth_err = _require_admin_key()
+    if auth_err:
+        return auth_err
+    try:
+        conn = _get_pg()
+        cur = conn.cursor()
+        cleaned = {}
+
+        # Clean expired MCP rate limits (older than 24 hours)
+        try:
+            cur.execute("""
+                DELETE FROM mcp_rate_limits
+                WHERE window_start < NOW() - INTERVAL '24 hours'
+            """)
+            cleaned['mcp_rate_limits'] = cur.rowcount
+        except Exception as e:
+            conn.rollback()
+            cleaned['mcp_rate_limits'] = f'error: {str(e)[:100]}'
+
+        # Clean stale daily record usage (older than 7 days)
+        try:
+            cur.execute("""
+                DELETE FROM daily_record_usage
+                WHERE usage_date < CURRENT_DATE - INTERVAL '7 days'
+            """)
+            cleaned['daily_record_usage'] = cur.rowcount
+        except Exception as e:
+            conn.rollback()
+            cleaned['daily_record_usage'] = f'error: {str(e)[:100]}'
+
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        total_cleaned = sum(v for v in cleaned.values() if isinstance(v, int))
+        _reg_update('mcp_rate_cleanup')
+        logger.info("JOB mcp-rate-cleanup: ✅ cleaned %d rows", total_cleaned)
+        return jsonify({
+            'success': True,
+            'job': 'mcp-rate-cleanup',
+            'cleaned': cleaned,
+            'total_cleaned': total_cleaned,
+            'ts': datetime.utcnow().isoformat(),
+        })
+    except Exception as e:
+        logger.error("JOB mcp-rate-cleanup: ❌ %s", e)
+        return jsonify({'success': False, 'job': 'mcp-rate-cleanup', 'error': str(e)}), 500
 
 
 @jobs_bp.route('/api/jobs/db-backup', methods=['POST'])
