@@ -223,9 +223,8 @@ def _get_user_tier(user_id: int) -> str:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                SELECT u.id, u.email, u.plan, s.status, s.current_period_end
+                SELECT u.id, u.email, u.plan, u.subscription_status
                 FROM users u
-                LEFT JOIN subscriptions s ON u.id = s.user_id
                 WHERE u.id = %s
                 """,
                 (user_id,)
@@ -236,20 +235,24 @@ def _get_user_tier(user_id: int) -> str:
             if not row:
                 raise TierNotFoundError(f'User {user_id} not found')
 
-            user_id, email, plan, sub_status, current_period_end = row
+            user_id, email, plan, sub_status = row
 
-            # Determine tier based on subscription status
+            # Normalize plan name (founding -> pro for tier purposes)
+            plan = (plan or 'free').lower()
+            if plan == 'founding':
+                plan = 'pro'
+
+            # Determine tier based on plan and subscription status
             if plan == 'enterprise':
                 tier = 'enterprise'
             elif plan in ('pro', 'developer'):
                 # Check if subscription is active
-                if sub_status in ('active', 'trialing'):
-                    if current_period_end and current_period_end < datetime.utcnow():
-                        tier = 'free'
-                    else:
-                        tier = plan
-                else:
+                if sub_status in ('active', 'trialing', None, ''):
+                    tier = plan
+                elif sub_status in ('canceled', 'cancelled', 'past_due', 'unpaid'):
                     tier = 'free'
+                else:
+                    tier = plan  # default to plan if status unknown
             elif plan == 'registered':
                 tier = 'registered'
             else:
@@ -534,7 +537,8 @@ def verify_session():
     email = g.user['email']
     tier = g.user['tier']
 
-    # Get subscription details
+    # Get subscription details from users table
+    expires_at = None
     try:
         db_pool = _get_db_pool()
         conn = db_pool.getconn()
@@ -542,25 +546,19 @@ def verify_session():
             cursor = conn.cursor()
             cursor.execute(
                 """
-                SELECT s.status, s.current_period_end
-                FROM subscriptions s
-                WHERE s.user_id = %s
+                SELECT subscription_status
+                FROM users
+                WHERE id = %s
                 """,
                 (user_id,)
             )
             sub_row = cursor.fetchone()
             cursor.close()
-
-            expires_at = None
-            if sub_row:
-                status, current_period_end = sub_row
-                if current_period_end:
-                    expires_at = current_period_end.isoformat()
+            # No expiration tracking in current schema — tier is authoritative
         finally:
             db_pool.putconn(conn)
     except Exception as e:
         logger.error(f'Error fetching subscription: {str(e)}')
-        expires_at = None
 
     return jsonify({
         'authenticated': True,
