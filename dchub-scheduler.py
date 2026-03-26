@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-DC Hub External Scheduler v3.8
+DC Hub External Scheduler v3.9
 ===============================
 Triggers discovery jobs via HTTP POST to the DC Hub API /api/jobs/* endpoints.
 All jobs are staggered to prevent Railway resource conflicts.
@@ -15,6 +15,12 @@ Usage:
 Environment:
   DCHUB_API_BASE    — API base URL (default: https://dchub-backend-production.up.railway.app)
   DCHUB_ADMIN_KEY   — Admin API key (required)
+
+v3.9 changelog:
+  - NEW '/api/jobs/backup' endpoint (lightweight Neon snapshot) — fixes 404
+  - NEW '/api/jobs/mcp-rate-cleanup' endpoint — fixes 404
+  - NEW 'smoke_test' job — runs /api/jobs/smoke-test 6x/day at :55 past
+  - 21 active jobs (was 20)
 
 v3.8 changelog:
   - RE-ENABLED infra_sync as 'infra_sync_safe' — reduced from 4x to 1x/day (02:30 UTC)
@@ -39,10 +45,11 @@ v3.6 changelog:
   - Fixed version strings throughout
   - 19 active jobs (was 23)
 
-Schedule (UTC) — 20 active jobs, verified no overlaps:
+Schedule (UTC) — 21 active jobs, verified no overlaps:
   00:00  News/RSS Refresh        (also 04, 08, 12, 16, 20)
   00:20  Auto-Approve            (also 04, 08, 12, 16, 20)
   00:45  Simple Alerts           (also 02,04,06,08,10,12,14,16,18,20,22)
+  00:55  Production Smoke Test   (also 04, 08, 12, 16, 20)
   01:00  Facility Discovery      (also 07, 14, 19)
   01:15  Alert Emails            (also 05,09,13,17,21)
   02:30  Infrastructure Sync     (1x/day, pool-gated — aborts if pool >60%)
@@ -90,7 +97,7 @@ logging.basicConfig(
 log = logging.getLogger('dchub-scheduler')
 
 # ============================================================
-# JOB DEFINITIONS — 23 active (v3.8)
+# JOB DEFINITIONS — 21 active (v3.9)
 # ============================================================
 JOBS = {
     'permit_scraper': {
@@ -287,6 +294,14 @@ JOBS = {
         'minute': 50,
         'timeout': 30,
     },
+    'smoke_test': {
+        'name': 'Production Smoke Test',
+        'endpoint': '/api/jobs/smoke-test',
+        'method': 'POST',
+        'hours': [0, 4, 8, 12, 16, 20],
+        'minute': 55,
+        'timeout': 120,
+    },
 }
 
 # ── Disabled jobs (modules not installed on Railway) ──────────
@@ -371,7 +386,7 @@ def api_call(endpoint, method='POST', timeout=60):
     url = API_BASE.rstrip('/') + endpoint
     headers = {
         'Content-Type': 'application/json',
-        'User-Agent': 'DCHub-Scheduler/3.8',
+        'User-Agent': 'DCHub-Scheduler/3.9',
     }
     if ADMIN_KEY:
         headers['X-Admin-Key'] = ADMIN_KEY
@@ -492,7 +507,7 @@ def show_status():
     healthy = check_health()
     now = datetime.now(timezone.utc)
     print(f"\n{'─'*65}")
-    print(f"  DC Hub External Scheduler v3.8")
+    print(f"  DC Hub External Scheduler v3.9")
     print(f"  Time:   {now.strftime('%Y-%m-%d %H:%M UTC')}")
     print(f"  API:    {API_BASE}")
     print(f"  Auth:   {'✅ key set' if ADMIN_KEY else '❌ DCHUB_ADMIN_KEY not set'}")
@@ -523,7 +538,7 @@ def show_status():
 # MAIN LOOP — no keep-alive, just scheduled jobs
 # ============================================================
 def scheduler_loop():
-    log.info(f"DC Hub External Scheduler v3.8 starting")
+    log.info(f"DC Hub External Scheduler v3.9 starting")
     log.info(f"  API:  {API_BASE}")
     log.info(f"  Jobs: {len(JOBS)} active, {len(DISABLED_JOBS)} disabled")
     log.info(f"  Auth: {'✅ key set' if ADMIN_KEY else '❌ DCHUB_ADMIN_KEY not set — jobs will fail!'}")
@@ -557,7 +572,7 @@ def scheduler_loop():
 # CLI
 # ============================================================
 def main():
-    parser = argparse.ArgumentParser(description='DC Hub External Scheduler v3.8')
+    parser = argparse.ArgumentParser(description='DC Hub External Scheduler v3.9')
     parser.add_argument('--once',   action='store_true', help='Run all due jobs once and exit')
     parser.add_argument('--job',    type=str,            help=f'Run specific job: {", ".join(JOBS.keys())}')
     parser.add_argument('--all',    action='store_true', help='Run ALL jobs immediately')
