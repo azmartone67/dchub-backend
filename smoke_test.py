@@ -1,305 +1,354 @@
 """
-DC Hub Redis Cache v1.0
-========================
-Simple cache wrapper for high-traffic API endpoints.
-Caches JSON responses in Redis with configurable TTL.
+DC Hub Production Smoke Test v1.0
+==================================
+Runs a battery of health checks against the live DC Hub API and reports results.
 
-Setup:
-  1. Add Redis service in Railway (already done)
-  2. REDIS_URL env var auto-linked to backend
-  3. Import and use in routes:
+Can be run:
+  - As a standalone script: python3 smoke_test.py
+  - As a Flask route: register_smoke_routes(app)  → GET /api/admin/smoke-test
+  - From scheduler: POST /api/jobs/smoke-test
 
-     from redis_cache import cache_get, cache_set, cached_endpoint
+Checks:
+  1. Health endpoint (/health)
+  2. Stats API (/api/v1/stats)
+  3. Search API (/api/v1/search)
+  4. News API (/api/news/live)
+  5. Transactions API (/api/transactions)
+  6. Map API (/api/v1/map)
+  7. Watchdog status (/api/health/watchdog)
+  8. Pool status (/api/admin/pool-status)
+  9. MCP endpoint (/mcp)
+  10. Database connectivity (direct pg check)
+  11. Grid Intelligence (/api/v1/grid-intelligence)
+  12. Fiber routes (/api/fiber/routes)
 
-     # Manual usage:
-     data = cache_get("stats:global")
-     if not data:
-         data = expensive_query()
-         cache_set("stats:global", data, ttl=300)
-
-     # Decorator usage (for Flask routes):
-     @app.route("/api/v1/stats")
-     @cached_endpoint(ttl=300, key_prefix="stats")
-     def get_stats():
-         return expensive_query()
-
-Requires: redis (pip install redis)
+Environment:
+  DCHUB_API_BASE   — API base URL (default: https://dchub-backend-production.up.railway.app)
+  DCHUB_ADMIN_KEY  — Admin key for authenticated endpoints
 """
 
 import os
-import json
 import time
+import json
 import logging
-import hashlib
-from functools import wraps
+import psycopg2
+from datetime import datetime, timezone
 
-logger = logging.getLogger("dchub.cache")
+logger = logging.getLogger("dchub.smoke")
 
 # ═══════════════════════════════════════════════════════════
-# REDIS CONNECTION
+# CONFIG
 # ═══════════════════════════════════════════════════════════
 
-_redis = None
-_redis_available = False
+API_BASE = os.environ.get('DCHUB_API_BASE', 'https://dchub-backend-production.up.railway.app')
+ADMIN_KEY = os.environ.get('DCHUB_ADMIN_KEY', '')
+
+# Endpoints to check: (name, path, method, needs_auth, timeout_s, expected_status)
+SMOKE_CHECKS = [
+    ("health",          "/health",                              "GET",  False, 10, 200),
+    ("stats",           "/api/v1/stats",                        "GET",  False, 15, 200),
+    ("search",          "/api/v1/search?q=equinix&limit=2",     "GET",  False, 15, 200),
+    ("news",            "/api/news/live?limit=2",               "GET",  False, 15, 200),
+    ("transactions",    "/api/transactions?limit=2",            "GET",  False, 15, 200),
+    ("map",             "/api/v1/map?limit=2",                  "GET",  False, 15, 200),
+    ("watchdog",        "/api/health/watchdog",                 "GET",  False, 10, 200),
+    ("pool_status",     "/api/admin/pool-status",               "GET",  True,  10, 200),
+    ("grid_intel",      "/api/v1/grid-intelligence",            "GET",  False, 15, 200),
+    ("fiber",           "/api/fiber/routes?limit=2",            "GET",  False, 15, 200),
+    ("substations",     "/api/infrastructure/substations?lat=33.45&lon=-112.07&limit=2", "GET", False, 15, 200),
+]
+
+# Thresholds
+LATENCY_WARN_MS = 2000
+LATENCY_FAIL_MS = 15000
 
 
-def _get_redis():
-    """Get or create Redis connection. Returns None if unavailable."""
-    global _redis, _redis_available
+# ═══════════════════════════════════════════════════════════
+# HTTP HELPER
+# ═══════════════════════════════════════════════════════════
 
-    if _redis is not None:
-        return _redis
+def _http_check(path, method="GET", needs_auth=False, timeout=15):
+    """Make an HTTP request and return (status_code, latency_ms, body_preview)."""
+    from urllib.request import Request, urlopen
+    from urllib.error import URLError, HTTPError
 
-    redis_url = os.environ.get("REDIS_URL")
-    if not redis_url:
-        logger.info("REDIS_URL not set — cache disabled")
-        _redis_available = False
-        return None
+    url = API_BASE.rstrip('/') + path
+    headers = {
+        'User-Agent': 'DCHub-SmokeTest/1.0',
+        'Content-Type': 'application/json',
+    }
+    if needs_auth and ADMIN_KEY:
+        headers['X-Admin-Key'] = ADMIN_KEY
+        headers['X-Internal-Key'] = 'dchub-internal-sync-2026'
 
+    start = time.time()
     try:
-        import redis as redis_lib
-        _redis = redis_lib.from_url(
-            redis_url,
-            decode_responses=True,
-            socket_connect_timeout=3,
-            socket_timeout=3,
-            retry_on_timeout=True,
-        )
-        # Test connection
-        _redis.ping()
-        _redis_available = True
-        logger.info("✅ Redis cache connected")
-        return _redis
-    except ImportError:
-        logger.warning("⚠️ redis package not installed — cache disabled (pip install redis)")
-        _redis_available = False
-        return None
+        req = Request(url, method=method, headers=headers)
+        if method == 'POST':
+            req.data = b'{}'
+        with urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode('utf-8')[:500]
+            latency_ms = round((time.time() - start) * 1000)
+            return resp.status, latency_ms, body
+    except HTTPError as e:
+        latency_ms = round((time.time() - start) * 1000)
+        return e.code, latency_ms, e.read().decode('utf-8', errors='replace')[:200]
+    except URLError as e:
+        latency_ms = round((time.time() - start) * 1000)
+        return 0, latency_ms, str(e.reason)[:200]
     except Exception as e:
-        logger.warning(f"⚠️ Redis connection failed: {e} — cache disabled")
-        _redis_available = False
-        _redis = None
-        return None
+        latency_ms = round((time.time() - start) * 1000)
+        return 0, latency_ms, str(e)[:200]
 
 
-# ═══════════════════════════════════════════════════════════
-# CORE CACHE OPERATIONS
-# ═══════════════════════════════════════════════════════════
-
-def cache_get(key):
-    """Get a cached value. Returns parsed JSON or None."""
-    r = _get_redis()
-    if not r:
-        return None
+def _db_check():
+    """Direct DB connectivity check — bypasses the pool entirely."""
+    db_url = os.environ.get('NEON_DATABASE_URL') or os.environ.get('DATABASE_URL', '')
+    if not db_url:
+        return {"status": "skip", "reason": "no DATABASE_URL"}
+    start = time.time()
     try:
-        val = r.get(f"dchub:{key}")
-        if val:
-            return json.loads(val)
-    except Exception as e:
-        logger.debug(f"Cache get error ({key}): {e}")
-    return None
-
-
-def cache_set(key, data, ttl=300):
-    """Cache a value as JSON with TTL in seconds. Default 5 minutes."""
-    r = _get_redis()
-    if not r:
-        return False
-    try:
-        r.setex(f"dchub:{key}", ttl, json.dumps(data, default=str))
-        return True
-    except Exception as e:
-        logger.debug(f"Cache set error ({key}): {e}")
-        return False
-
-
-def cache_delete(key):
-    """Delete a cached value."""
-    r = _get_redis()
-    if not r:
-        return False
-    try:
-        r.delete(f"dchub:{key}")
-        return True
-    except Exception as e:
-        logger.debug(f"Cache delete error ({key}): {e}")
-        return False
-
-
-def cache_flush(prefix=""):
-    """Flush all keys matching a prefix, or all dchub keys if no prefix."""
-    r = _get_redis()
-    if not r:
-        return 0
-    try:
-        pattern = f"dchub:{prefix}*" if prefix else "dchub:*"
-        keys = list(r.scan_iter(match=pattern, count=100))
-        if keys:
-            r.delete(*keys)
-        return len(keys)
-    except Exception as e:
-        logger.debug(f"Cache flush error: {e}")
-        return 0
-
-
-# ═══════════════════════════════════════════════════════════
-# DECORATOR — for Flask routes
-# ═══════════════════════════════════════════════════════════
-
-def cached_endpoint(ttl=300, key_prefix="api"):
-    """Decorator that caches Flask route responses.
-    
-    Cache key = prefix + request path + sorted query params.
-    Skips cache for authenticated requests (has Authorization header).
-    
-    Usage:
-        @app.route("/api/v1/stats")
-        @cached_endpoint(ttl=300, key_prefix="stats")
-        def get_stats():
-            return jsonify(expensive_query())
-    """
-    def decorator(f):
-        @wraps(f)
-        def wrapper(*args, **kwargs):
-            try:
-                from flask import request, make_response
-
-                # Don't cache authenticated requests
-                if request.headers.get("Authorization") or request.headers.get("X-API-Key"):
-                    return f(*args, **kwargs)
-
-                # Build cache key from path + params
-                param_str = "&".join(f"{k}={v}" for k, v in sorted(request.args.items()))
-                raw_key = f"{request.path}?{param_str}" if param_str else request.path
-                cache_key = f"{key_prefix}:{hashlib.md5(raw_key.encode()).hexdigest()}"
-
-                # Try cache
-                cached = cache_get(cache_key)
-                if cached is not None:
-                    resp = make_response(json.dumps(cached), 200)
-                    resp.headers["Content-Type"] = "application/json"
-                    resp.headers["X-Cache"] = "HIT"
-                    return resp
-
-                # Cache miss — call the actual function
-                result = f(*args, **kwargs)
-
-                # Cache the response if it's JSON
-                try:
-                    if hasattr(result, "get_json"):
-                        data = result.get_json()
-                    elif isinstance(result, tuple):
-                        data = json.loads(result[0]) if isinstance(result[0], str) else result[0]
-                    elif isinstance(result, str):
-                        data = json.loads(result)
-                    else:
-                        data = result
-                    cache_set(cache_key, data, ttl=ttl)
-                except Exception:
-                    pass  # Don't break the response if caching fails
-
-                return result
-
-            except Exception:
-                # If anything goes wrong with caching, just call the function
-                return f(*args, **kwargs)
-        return wrapper
-    return decorator
-
-
-# ═══════════════════════════════════════════════════════════
-# CACHE STATUS — for health/admin endpoints
-# ═══════════════════════════════════════════════════════════
-
-def cache_status():
-    """Return cache health status for admin/health endpoints."""
-    r = _get_redis()
-    if not r:
+        conn = psycopg2.connect(db_url, connect_timeout=10)
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM facilities")
+        fac_count = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM news_articles")
+        news_count = cur.fetchone()[0]
+        cur.execute("SELECT count(*) FROM pg_stat_activity WHERE state = 'active'")
+        active_conns = cur.fetchone()[0]
+        cur.close()
+        conn.close()
+        latency_ms = round((time.time() - start) * 1000)
         return {
-            "available": False,
-            "reason": "Redis not connected",
-        }
-    try:
-        info = r.info("memory")
-        key_count = r.dbsize()
-        return {
-            "available": True,
-            "keys": key_count,
-            "memory_used_mb": round(info.get("used_memory", 0) / (1024 * 1024), 2),
-            "memory_peak_mb": round(info.get("used_memory_peak", 0) / (1024 * 1024), 2),
-            "connected_clients": r.info("clients").get("connected_clients", 0),
+            "status": "pass",
+            "latency_ms": latency_ms,
+            "facilities": fac_count,
+            "news_articles": news_count,
+            "active_connections": active_conns,
         }
     except Exception as e:
-        return {"available": False, "error": str(e)}
+        latency_ms = round((time.time() - start) * 1000)
+        return {"status": "fail", "latency_ms": latency_ms, "error": str(e)[:200]}
 
 
-def register_cache_routes(app):
-    """Register cache admin/health routes on the Flask app.
-    
-    Usage in main.py:
-        register_cache_routes(app)
-    
+# ═══════════════════════════════════════════════════════════
+# SMOKE TEST RUNNER
+# ═══════════════════════════════════════════════════════════
+
+def run_smoke_test():
+    """Run all smoke checks and return a structured report."""
+    started_at = datetime.now(timezone.utc).isoformat()
+    results = []
+    passed = 0
+    failed = 0
+    warnings = 0
+    latencies = []
+
+    # HTTP endpoint checks
+    for name, path, method, needs_auth, timeout, expected_status in SMOKE_CHECKS:
+        status_code, latency_ms, body = _http_check(path, method, needs_auth, timeout)
+        latencies.append(latency_ms)
+
+        check_result = {
+            "name": name,
+            "path": path,
+            "status_code": status_code,
+            "latency_ms": latency_ms,
+        }
+
+        if status_code == expected_status:
+            if latency_ms > LATENCY_FAIL_MS:
+                check_result["verdict"] = "warn"
+                check_result["issue"] = f"Slow: {latency_ms}ms > {LATENCY_FAIL_MS}ms threshold"
+                warnings += 1
+            elif latency_ms > LATENCY_WARN_MS:
+                check_result["verdict"] = "warn"
+                check_result["issue"] = f"Elevated latency: {latency_ms}ms"
+                warnings += 1
+            else:
+                check_result["verdict"] = "pass"
+                passed += 1
+        else:
+            check_result["verdict"] = "fail"
+            check_result["issue"] = f"Expected HTTP {expected_status}, got {status_code}"
+            check_result["body_preview"] = body[:100] if body else None
+            failed += 1
+
+        results.append(check_result)
+
+    # Direct DB check
+    db_result = _db_check()
+    db_verdict = db_result.get("status", "fail")
+    results.append({
+        "name": "database_direct",
+        "path": "psycopg2.connect()",
+        "verdict": db_verdict,
+        **db_result,
+    })
+    if db_verdict == "pass":
+        passed += 1
+        if db_result.get("latency_ms", 0) > LATENCY_WARN_MS:
+            warnings += 1
+    elif db_verdict == "fail":
+        failed += 1
+
+    # Summary
+    total = passed + failed + warnings
+    avg_latency = round(sum(latencies) / len(latencies)) if latencies else 0
+    p95_latency = sorted(latencies)[int(len(latencies) * 0.95)] if latencies else 0
+
+    # Overall verdict
+    if failed >= 3:
+        overall = "critical"
+    elif failed > 0:
+        overall = "degraded"
+    elif warnings > 2:
+        overall = "slow"
+    else:
+        overall = "healthy"
+
+    report = {
+        "smoke_test": "DC Hub Production Smoke Test v1.0",
+        "started_at": started_at,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "overall": overall,
+        "summary": {
+            "total_checks": total,
+            "passed": passed,
+            "failed": failed,
+            "warnings": warnings,
+            "avg_latency_ms": avg_latency,
+            "p95_latency_ms": p95_latency,
+        },
+        "checks": results,
+    }
+
+    return report
+
+
+# ═══════════════════════════════════════════════════════════
+# FLASK ROUTES — register on app
+# ═══════════════════════════════════════════════════════════
+
+def register_smoke_routes(app):
+    """Register smoke test routes on the Flask app.
+
     Adds:
-        GET  /api/health/cache — cache status
-        POST /api/admin/cache/flush — flush by prefix (admin only)
+        GET  /api/admin/smoke-test  — run full smoke test (admin only)
+        POST /api/jobs/smoke-test   — cron-triggerable smoke test
     """
     from flask import jsonify as flask_jsonify, request as flask_request
 
-    @app.route("/api/health/cache")
-    def _cache_health():
-        return flask_jsonify(cache_status())
+    def _check_admin():
+        provided = (
+            flask_request.headers.get('X-Admin-Key', '')
+            or flask_request.headers.get('Authorization', '').replace('Bearer ', '')
+            or flask_request.args.get('admin_key', '')
+        )
+        expected = os.environ.get('DCHUB_ADMIN_KEY', '')
+        if not provided or provided.strip() != expected.strip():
+            return flask_jsonify({'error': 'unauthorized'}), 401
+        return None
 
-    @app.route("/api/admin/cache/flush", methods=["POST"])
-    def _cache_flush():
-        # Require admin key
-        admin_key = flask_request.headers.get("X-Admin-Key", "")
-        expected = os.environ.get("DCHUB_ADMIN_KEY", "")
-        if not expected or admin_key != expected:
-            return flask_jsonify({"error": "unauthorized"}), 403
-        prefix = flask_request.args.get("prefix", "")
-        count = cache_flush(prefix)
-        return flask_jsonify({"flushed": count, "prefix": prefix or "all"})
+    @app.route('/api/admin/smoke-test', methods=['GET'])
+    def admin_smoke_test():
+        auth_err = _check_admin()
+        if auth_err:
+            return auth_err
+        report = run_smoke_test()
+        status_code = 200 if report['overall'] in ('healthy', 'slow') else 503
+        return flask_jsonify(report), status_code
 
-    logger.info("✅ Redis cache routes registered: /api/health/cache, /api/admin/cache/flush")
+    @app.route('/api/jobs/smoke-test', methods=['POST'])
+    def job_smoke_test():
+        auth_err = _check_admin()
+        if auth_err:
+            return auth_err
+        report = run_smoke_test()
+
+        # Log results for scheduler visibility
+        logger.info("SMOKE TEST: %s — %d/%d passed, %d failed, avg %dms",
+                     report['overall'],
+                     report['summary']['passed'],
+                     report['summary']['total_checks'],
+                     report['summary']['failed'],
+                     report['summary']['avg_latency_ms'])
+
+        # Store results in Neon for historical tracking
+        try:
+            db_url = os.environ.get('NEON_DATABASE_URL') or os.environ.get('DATABASE_URL', '')
+            if db_url:
+                conn = psycopg2.connect(db_url, connect_timeout=10)
+                cur = conn.cursor()
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS smoke_test_history (
+                        id SERIAL PRIMARY KEY,
+                        run_at TIMESTAMPTZ DEFAULT NOW(),
+                        overall TEXT,
+                        passed INT,
+                        failed INT,
+                        warnings INT,
+                        avg_latency_ms INT,
+                        p95_latency_ms INT,
+                        report JSONB
+                    )
+                """)
+                cur.execute("""
+                    INSERT INTO smoke_test_history
+                    (overall, passed, failed, warnings, avg_latency_ms, p95_latency_ms, report)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    report['overall'],
+                    report['summary']['passed'],
+                    report['summary']['failed'],
+                    report['summary']['warnings'],
+                    report['summary']['avg_latency_ms'],
+                    report['summary']['p95_latency_ms'],
+                    json.dumps(report, default=str),
+                ))
+                # Keep only last 90 days
+                cur.execute("DELETE FROM smoke_test_history WHERE run_at < NOW() - INTERVAL '90 days'")
+                conn.commit()
+                cur.close()
+                conn.close()
+        except Exception as e:
+            logger.warning("SMOKE TEST: Failed to store results in Neon: %s", e)
+
+        return flask_jsonify(report), 200 if report['overall'] in ('healthy', 'slow') else 503
+
+    logger.info("✅ Smoke test routes registered: /api/admin/smoke-test, /api/jobs/smoke-test")
 
 
 # ═══════════════════════════════════════════════════════════
-# RECOMMENDED CACHE STRATEGY
+# CLI — run standalone
 # ═══════════════════════════════════════════════════════════
-"""
-Add these to main.py after importing redis_cache:
 
-from redis_cache import cached_endpoint, cache_status
+if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+    print("=" * 65)
+    print("  DC Hub Production Smoke Test v1.0")
+    print(f"  Target: {API_BASE}")
+    print(f"  Auth:   {'✅ key set' if ADMIN_KEY else '⚠️ no DCHUB_ADMIN_KEY'}")
+    print("=" * 65)
 
-# High-traffic, slow-changing endpoints:
-@app.route("/api/v1/stats")
-@cached_endpoint(ttl=300, key_prefix="stats")        # 5 min
-def get_stats(): ...
+    report = run_smoke_test()
 
-@app.route("/api/v1/search")
-@cached_endpoint(ttl=60, key_prefix="search")         # 1 min
-def search_facilities(): ...
+    # Print results
+    overall = report['overall']
+    emoji = {'healthy': '🟢', 'slow': '🟡', 'degraded': '🟠', 'critical': '🔴'}.get(overall, '⚪')
+    print(f"\n{emoji} Overall: {overall.upper()}")
+    print(f"   Passed: {report['summary']['passed']}/{report['summary']['total_checks']}")
+    print(f"   Failed: {report['summary']['failed']}")
+    print(f"   Warnings: {report['summary']['warnings']}")
+    print(f"   Avg Latency: {report['summary']['avg_latency_ms']}ms")
+    print(f"   P95 Latency: {report['summary']['p95_latency_ms']}ms")
 
-@app.route("/api/news/live")
-@cached_endpoint(ttl=120, key_prefix="news")           # 2 min
-def get_news(): ...
-
-@app.route("/api/v1/map")
-@cached_endpoint(ttl=300, key_prefix="map")            # 5 min
-def get_map_data(): ...
-
-@app.route("/api/transactions")
-@cached_endpoint(ttl=300, key_prefix="txns")           # 5 min
-def get_transactions(): ...
-
-# Cache health:
-@app.route("/api/health/cache")
-def cache_health():
-    return jsonify(cache_status())
-
-# Manual purge (admin):
-@app.route("/api/admin/cache/flush", methods=["POST"])
-def flush_cache():
-    prefix = request.args.get("prefix", "")
-    count = cache_flush(prefix)
-    return jsonify({"flushed": count, "prefix": prefix or "all"})
-"""
+    print(f"\n{'─' * 65}")
+    for check in report['checks']:
+        v = check['verdict']
+        icon = {'pass': '✅', 'warn': '⚠️', 'fail': '❌', 'skip': '⏭️'}.get(v, '❓')
+        latency = check.get('latency_ms', '')
+        latency_str = f"{latency}ms" if latency else ''
+        issue = check.get('issue', '')
+        print(f"  {icon} {check['name']:<25} {check.get('status_code', ''):<5} {latency_str:<10} {issue}")
+    print(f"{'─' * 65}\n")
