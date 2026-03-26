@@ -8363,7 +8363,7 @@ def mcp_platforms_status():
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/v1/energy/discovery/status', methods=['GET'])
-def energy_discovery_status():
+def energy_discovery_status_inline():
     """Energy infrastructure auto-discovery status and counts"""
     conn = None
     try:
@@ -14436,10 +14436,15 @@ except Exception as e:
     print(f"⚠️ Facility Auto-Approve error: {e}")
 
 try:
-    from routes.rankings_routes import rankings_bp, _register_rankings_routes
-    _register_rankings_routes(rankings_bp, get_db_connection=get_pg_connection)
-    app.register_blueprint(rankings_bp)
-    print("📊 Rankings Series Blueprint: ✅ Registered (5 routes)")
+    # Guard: skip if energy_routes.py already registered a 'rankings' blueprint
+    _existing_bps = {bp.name for bp in app.iter_blueprints()}
+    if 'rankings' in _existing_bps:
+        print("📊 Rankings Series Blueprint: ⏭️ Skipped (already registered by energy_routes)")
+    else:
+        from routes.rankings_routes import rankings_bp, _register_rankings_routes
+        _register_rankings_routes(rankings_bp, get_db_connection=get_pg_connection)
+        app.register_blueprint(rankings_bp)
+        print("📊 Rankings Series Blueprint: ✅ Registered (5 routes)")
 except Exception as e:
     print(f"❌ Rankings blueprint failed: {e}")
 
