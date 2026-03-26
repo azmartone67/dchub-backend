@@ -13505,6 +13505,20 @@ except Exception as e:
     logger.error(f"⚠️ Free Tier Map Gate failed: {e} -- map free-tier enforcement disabled")
 
 # =============================================================================
+# PAYWALL MIDDLEWARE — Server-side session/tier verification for website frontend
+# Closes the localStorage bypass (DCHubGate.setTier('pro', 30) no longer works)
+# Provides /api/verify-session endpoint + require_auth/require_tier decorators
+# =============================================================================
+try:
+    from paywall_middleware import paywall_bp, require_auth, require_tier, check_rate_limit
+    app.register_blueprint(paywall_bp)
+    logger.info("🔐 Paywall Middleware: ✅ Registered (/api/verify-session, /api/stripe/tier-webhook)")
+except ImportError:
+    logger.warning("⚠️ paywall_middleware.py not found -- server-side session verification disabled")
+except Exception as e:
+    logger.error(f"⚠️ Paywall Middleware failed: {e} -- server-side session verification disabled")
+
+# =============================================================================
 # STARTUP GATE VERIFICATION - Locked-down manifest of ALL gated endpoints
 # If ANY endpoint in this list is accessible without auth, server REFUSES to start.
 # This prevents accidental ungating during redeployments.
@@ -13565,6 +13579,7 @@ LOCKED_GATE_MANIFEST = {
         '/ai/discovery',
         '/api/ai/discover',
         '/api/ai/cite',
+        '/api/verify-session',
     ],
 }
 
