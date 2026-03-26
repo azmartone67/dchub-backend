@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-DC Hub External Scheduler v3.7
+DC Hub External Scheduler v3.8
 ===============================
 Triggers discovery jobs via HTTP POST to the DC Hub API /api/jobs/* endpoints.
 All jobs are staggered to prevent Railway resource conflicts.
@@ -15,6 +15,13 @@ Usage:
 Environment:
   DCHUB_API_BASE    — API base URL (default: https://dchub-backend-production.up.railway.app)
   DCHUB_ADMIN_KEY   — Admin API key (required)
+
+v3.8 changelog:
+  - RE-ENABLED infra_sync as 'infra_sync_safe' — reduced from 4x to 1x/day (02:30 UTC)
+  - NEW pre-flight pool health check: infra_sync_safe checks /api/admin/pool-status
+    before running; aborts if pool utilization >60% or circuit breaker is open
+  - NEW 'pool_watchdog' job — checks pool health every 2 hours, logs alerts
+  - 20 active jobs (was 18)
 
 v3.7 changelog:
   - DISABLED infra_sync — runaway substation INSERT loop was exhausting Neon
@@ -32,12 +39,13 @@ v3.6 changelog:
   - Fixed version strings throughout
   - 19 active jobs (was 23)
 
-Schedule (UTC) — 18 active jobs, verified no overlaps:
+Schedule (UTC) — 20 active jobs, verified no overlaps:
   00:00  News/RSS Refresh        (also 04, 08, 12, 16, 20)
   00:20  Auto-Approve            (also 04, 08, 12, 16, 20)
   00:45  Simple Alerts           (also 02,04,06,08,10,12,14,16,18,20,22)
   01:00  Facility Discovery      (also 07, 14, 19)
   01:15  Alert Emails            (also 05,09,13,17,21)
+  02:30  Infrastructure Sync     (1x/day, pool-gated — aborts if pool >60%)
   03:00  AI Ecosystem Agent      (also 10, 15, 22)
   03:10  MCP Rate Limit Cleanup  (daily)
   03:15  Neon DB Backup          (daily)
@@ -47,6 +55,7 @@ Schedule (UTC) — 18 active jobs, verified no overlaps:
   05:00  AI Outreach Agent       (also 13, 21)
   06:00  Global Intelligence     (also 18)
   06:45  Capacity Headroom       (also 12:45, 18:45)
+  07:00  Pool Watchdog           (also 13, 19, 01)
   08:30  Evolution Engine        (also 20:30)
   10:00  Energy Discovery        (also 18:00) — reduced from 3x to 2x
   11:30  Content Publishing      (daily)
@@ -81,7 +90,7 @@ logging.basicConfig(
 log = logging.getLogger('dchub-scheduler')
 
 # ============================================================
-# JOB DEFINITIONS — 20 active
+# JOB DEFINITIONS — 23 active (v3.8)
 # ============================================================
 JOBS = {
     'permit_scraper': {
@@ -251,6 +260,33 @@ JOBS = {
         'minute': 10,
         'timeout': 30,
     },
+    'infra_sync_safe': {
+        'name': 'Infrastructure Sync (pool-gated)',
+        'endpoint': '/api/jobs/infrastructure-sync',
+        'method': 'POST',
+        'hours': [2],
+        'minute': 30,
+        'timeout': 300,
+        'pool_gate': True,       # Pre-flight pool check — aborts if pool >60%
+        'pool_max_pct': 60,
+    },
+    'pool_watchdog': {
+        'name': 'Pool Health Watchdog',
+        'endpoint': '/api/admin/pool-status',
+        'method': 'GET',
+        'hours': [1, 7, 13, 19],
+        'minute': 0,
+        'timeout': 15,
+        'watchdog': True,        # Log alert level, don't treat non-200 as failure
+    },
+    'mcp_cache_seed': {
+        'name': 'MCP Cache Seed',
+        'endpoint': '/api/admin/seed-mcp-cache',
+        'method': 'POST',
+        'hours': [0, 6, 12, 18],
+        'minute': 50,
+        'timeout': 30,
+    },
 }
 
 # ── Disabled jobs (modules not installed on Railway) ──────────
@@ -258,16 +294,8 @@ JOBS = {
 #   'autopilot'        → autonomous_brain module required
 #   'autonomous_brain' → autonomous_brain module required
 #   'ambassador'       → ai_outreach_agent ambassador module required
+# NOTE: infra_sync moved to JOBS as 'infra_sync_safe' in v3.8 (pool-gated, 1x/day)
 DISABLED_JOBS = {
-    'infra_sync': {
-        'name': 'Infrastructure Sync',
-        'endpoint': '/api/jobs/infrastructure-sync',
-        'method': 'POST',
-        'hours': [2, 8, 14, 20],
-        'minute': 30,
-        'timeout': 300,
-        'disabled_reason': 'Pool exhaustion — substations missing UNIQUE constraint + il.latitude column bug',
-    },
     'autopilot': {
         'name': 'Auto-Pilot (Deals)',
         'endpoint': '/api/jobs/autopilot',
@@ -298,13 +326,52 @@ DISABLED_JOBS = {
 }
 
 # ============================================================
+# POOL GATE — Pre-flight check before heavy jobs (v3.8)
+# ============================================================
+def check_pool_health():
+    """Query /api/admin/pool-status and return (utilization_pct, alert_level, is_safe).
+    Returns (0, 'unknown', False) on failure."""
+    try:
+        status, data = api_call('/api/admin/pool-status', method='GET', timeout=10)
+        if status != 200 or not isinstance(data, dict):
+            return 0, 'unknown', False
+        pool = data.get('pool', {})
+        alert = data.get('alert', {})
+        util_pct = pool.get('utilization_pct', 0)
+        alert_level = alert.get('level', 'unknown')
+        cb_open = data.get('circuit_breaker', {}).get('open', False)
+        is_safe = not cb_open  # Safe if circuit breaker is closed
+        return util_pct, alert_level, is_safe
+    except Exception as e:
+        log.warning(f"  Pool health check failed: {e}")
+        return 0, 'error', False
+
+
+def pool_gate(job):
+    """Returns True if pool utilization is below the job's threshold, False to skip."""
+    max_pct = job.get('pool_max_pct', 60)
+    util_pct, alert_level, is_safe = check_pool_health()
+
+    if not is_safe:
+        log.warning(f"  🚫 POOL GATE: Circuit breaker open — skipping {job['name']}")
+        return False
+
+    if util_pct > max_pct:
+        log.warning(f"  🚫 POOL GATE: Utilization {util_pct}% > {max_pct}% threshold — skipping {job['name']}")
+        return False
+
+    log.info(f"  ✅ POOL GATE: Utilization {util_pct}% (threshold {max_pct}%) — proceeding with {job['name']}")
+    return True
+
+
+# ============================================================
 # HTTP HELPER
 # ============================================================
 def api_call(endpoint, method='POST', timeout=60):
     url = API_BASE.rstrip('/') + endpoint
     headers = {
         'Content-Type': 'application/json',
-        'User-Agent': 'DCHub-Scheduler/3.7',
+        'User-Agent': 'DCHub-Scheduler/3.8',
     }
     if ADMIN_KEY:
         headers['X-Admin-Key'] = ADMIN_KEY
@@ -346,10 +413,30 @@ def is_job_in_window(job, now=None, window_minutes=3):
 
 
 def run_job(key, job):
+    # Pool gate: check pool health before heavy jobs
+    if job.get('pool_gate'):
+        if not pool_gate(job):
+            return 0, {'skipped': 'pool_gate'}, 0
+
     log.info(f"▶ Running: {job['name']} → {job['endpoint']}")
     start = time.time()
     status, data = api_call(job['endpoint'], job['method'], job['timeout'])
     elapsed = round(time.time() - start, 1)
+
+    # Watchdog jobs: log alert level from pool-status response
+    if job.get('watchdog') and isinstance(data, dict):
+        alert = data.get('alert', {})
+        level = alert.get('level', 'unknown')
+        reasons = alert.get('reasons', [])
+        pool = data.get('pool', {})
+        util = pool.get('utilization_pct', '?')
+        emoji = {'green': '🟢', 'yellow': '🟡', 'red': '🔴'}.get(level, '⚪')
+        log.info(f"  {emoji} POOL WATCHDOG: {level.upper()} — utilization {util}% — {'; '.join(reasons)}")
+        leaked = data.get('leaked_connections', [])
+        if leaked:
+            for lc in leaked:
+                log.warning(f"     🔪 Leaked conn {lc.get('conn_id')} held {lc.get('held_seconds')}s by {lc.get('thread')}")
+        return status, data, elapsed
 
     if 200 <= status < 300:
         log.info(f"  ✅ {job['name']} completed in {elapsed}s (HTTP {status})")
@@ -405,7 +492,7 @@ def show_status():
     healthy = check_health()
     now = datetime.now(timezone.utc)
     print(f"\n{'─'*65}")
-    print(f"  DC Hub External Scheduler v3.7")
+    print(f"  DC Hub External Scheduler v3.8")
     print(f"  Time:   {now.strftime('%Y-%m-%d %H:%M UTC')}")
     print(f"  API:    {API_BASE}")
     print(f"  Auth:   {'✅ key set' if ADMIN_KEY else '❌ DCHUB_ADMIN_KEY not set'}")
@@ -436,7 +523,7 @@ def show_status():
 # MAIN LOOP — no keep-alive, just scheduled jobs
 # ============================================================
 def scheduler_loop():
-    log.info(f"DC Hub External Scheduler v3.7 starting")
+    log.info(f"DC Hub External Scheduler v3.8 starting")
     log.info(f"  API:  {API_BASE}")
     log.info(f"  Jobs: {len(JOBS)} active, {len(DISABLED_JOBS)} disabled")
     log.info(f"  Auth: {'✅ key set' if ADMIN_KEY else '❌ DCHUB_ADMIN_KEY not set — jobs will fail!'}")
@@ -470,7 +557,7 @@ def scheduler_loop():
 # CLI
 # ============================================================
 def main():
-    parser = argparse.ArgumentParser(description='DC Hub External Scheduler v3.7')
+    parser = argparse.ArgumentParser(description='DC Hub External Scheduler v3.8')
     parser.add_argument('--once',   action='store_true', help='Run all due jobs once and exit')
     parser.add_argument('--job',    type=str,            help=f'Run specific job: {", ".join(JOBS.keys())}')
     parser.add_argument('--all',    action='store_true', help='Run ALL jobs immediately')
