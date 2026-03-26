@@ -14397,6 +14397,15 @@ try:
 except Exception as e:
     print(f"❌ API integration wiring failed: {e}")
 
+# Smoke Test Routes
+try:
+    from smoke_test import register_smoke_routes
+    register_smoke_routes(app)
+    print("🔬 Smoke Test: ✅ Registered (2 routes)")
+except Exception as e:
+    print(f"🔬 Smoke Test: ⚠️ Failed to load: {e}")
+
+
 # =============================================================================
 # FACILITY AUTO-APPROVE PIPELINE v2.0
 # Moves discovered_facilities → facilities with dedup logic
