@@ -64,6 +64,22 @@ from mcp.server.fastmcp import FastMCP
 
 RAILWAY_EXTERNAL_URL = "https://dchub-backend-production.up.railway.app"
 
+# State → eGRID subregion mapping (epa_egrid table uses subregion codes, not state abbrevs)
+# Primary subregion for each state (used for single-state lookups like analyze_site)
+STATE_TO_EGRID_SUBREGION = {
+    'AL': 'SRSO', 'AK': 'AKGD', 'AZ': 'AZNM', 'AR': 'SRMV', 'CA': 'CAMX',
+    'CO': 'RMPA', 'CT': 'NEWE', 'DE': 'RFCE', 'FL': 'FRCC', 'GA': 'SRSO',
+    'HI': 'HIMS', 'ID': 'NWPP', 'IL': 'RFCW', 'IN': 'RFCW', 'IA': 'MROW',
+    'KS': 'SPNO', 'KY': 'SRVC', 'LA': 'SRMV', 'ME': 'NEWE', 'MD': 'RFCE',
+    'MA': 'NEWE', 'MI': 'RFCM', 'MN': 'MROW', 'MS': 'SRMV', 'MO': 'SRMW',
+    'MT': 'NWPP', 'NE': 'MROW', 'NV': 'NWPP', 'NH': 'NEWE', 'NJ': 'RFCE',
+    'NM': 'AZNM', 'NY': 'NYCW', 'NC': 'SRVC', 'ND': 'MROW', 'OH': 'RFCW',
+    'OK': 'SPSO', 'OR': 'NWPP', 'PA': 'RFCE', 'RI': 'NEWE', 'SC': 'SRVC',
+    'SD': 'MROW', 'TN': 'SRVC', 'TX': 'ERCT', 'UT': 'NWPP', 'VT': 'NEWE',
+    'VA': 'SRVC', 'WA': 'NWPP', 'WV': 'RFCW', 'WI': 'MROE', 'WY': 'RMPA',
+    'DC': 'RFCE',
+}
+
 MCP_PORT = int(os.environ.get("MCP_PORT", "8888"))
 
 logging.basicConfig(level=logging.INFO)
@@ -1048,17 +1064,19 @@ async def analyze_site(
         except Exception:
             pass
 
-        # 7. Carbon intensity
+        # 7. Carbon intensity (epa_egrid uses subregion codes, not state)
         try:
             if state:
-                cur.execute("""
-                    SELECT co2_rate_lb_mwh FROM epa_egrid
-                    WHERE UPPER(state) = UPPER(%s)
-                    LIMIT 1
-                """, (state,))
-                row = cur.fetchone()
-                if row and row.get('co2_rate_lb_mwh'):
-                    details['carbon_intensity_lb_mwh'] = float(row['co2_rate_lb_mwh'])
+                subregion = STATE_TO_EGRID_SUBREGION.get(state.upper(), '')
+                if subregion:
+                    cur.execute("""
+                        SELECT co2_rate_lb_mwh FROM epa_egrid
+                        WHERE UPPER(subregion) = UPPER(%s)
+                        LIMIT 1
+                    """, (subregion,))
+                    row = cur.fetchone()
+                    if row and row.get('co2_rate_lb_mwh'):
+                        details['carbon_intensity_lb_mwh'] = float(row['co2_rate_lb_mwh'])
         except Exception:
             pass
 
@@ -1142,6 +1160,14 @@ async def get_grid_data(
         'ISONE': ['MA', 'CT', 'RI', 'NH', 'VT', 'ME'],
     }
     states = ISO_STATES.get(iso.upper(), [])
+    # Map ISO → eGRID subregion codes (epa_egrid uses subregion, not state)
+    ISO_EGRID_SUBREGIONS = {
+        'ERCOT': ['ERCT'], 'PJM': ['RFCE', 'RFCM', 'RFCW'],
+        'CAISO': ['CAMX'], 'MISO': ['MROE', 'MROW', 'SRMV', 'RFCM', 'RFCW'],
+        'SPP': ['SPSO', 'SPNO'], 'NYISO': ['NYCW', 'NYLI', 'NYUP'],
+        'ISONE': ['NEWE'],
+    }
+    egrid_subregions = ISO_EGRID_SUBREGIONS.get(iso.upper(), [])
 
     conn = None
     try:
@@ -1151,28 +1177,29 @@ async def get_grid_data(
 
         result_data = {"success": True, "iso": iso.upper(), "metric": metric}
 
-        # Carbon intensity from epa_egrid
-        if states:
-            placeholders = ','.join(['%s'] * len(states))
+        # Carbon intensity from epa_egrid (uses subregion codes, not state)
+        if egrid_subregions:
+            placeholders = ','.join(['%s'] * len(egrid_subregions))
             cur.execute(f"""
-                SELECT state, co2_rate_lb_mwh, generation_mwh, fuel_mix
+                SELECT subregion, co2_rate_lb_mwh, generation_mwh, fuel_mix
                 FROM epa_egrid
-                WHERE UPPER(state) IN ({placeholders})
+                WHERE UPPER(subregion) IN ({placeholders})
                 ORDER BY generation_mwh DESC NULLS LAST
-            """, [s.upper() for s in states])
+            """, [s.upper() for s in egrid_subregions])
             egrid = [dict(r) for r in cur.fetchall()]
             if egrid:
                 avg_co2 = sum(float(r.get('co2_rate_lb_mwh', 0) or 0) for r in egrid) / len(egrid)
                 result_data["carbon_intensity"] = {
                     "avg_co2_lb_mwh": round(avg_co2, 1),
-                    "by_state": egrid,
+                    "by_subregion": egrid,
                 }
 
-            # Energy rates
+            # Energy rates (eia_retail_rates uses state abbreviations)
+            state_placeholders = ','.join(['%s'] * len(states))
             cur.execute(f"""
                 SELECT state, sector, rate_cents_kwh, period
                 FROM eia_retail_rates
-                WHERE UPPER(state) IN ({placeholders}) AND sector = 'industrial'
+                WHERE UPPER(state) IN ({state_placeholders}) AND sector = 'industrial'
                 ORDER BY period DESC
                 LIMIT %s
             """, [s.upper() for s in states] + [len(states) * 2])
@@ -1190,7 +1217,7 @@ async def get_grid_data(
                     SELECT COUNT(*) as plants,
                            COALESCE(SUM(capacity_mw), 0) as total_mw
                     FROM power_plants_eia
-                    WHERE UPPER(state) IN ({placeholders})
+                    WHERE UPPER(state) IN ({state_placeholders})
                       AND UPPER(energy_source) IN ('SUN', 'SOLAR', 'WND', 'WIND')
                 """, [s.upper() for s in states])
                 renew = cur.fetchone()
@@ -1989,7 +2016,7 @@ async def get_intelligence_index() -> str:
         cur.execute("SELECT COUNT(*) as deal_total, COALESCE(SUM(value), 0) as deal_value FROM deals")
         deals = cur.fetchone()
 
-        cur.execute("SELECT COUNT(*) as proj_total, COALESCE(SUM(capacity_mw), 0) as proj_mw FROM pipeline")
+        cur.execute("SELECT COUNT(*) as proj_total, COALESCE(SUM(capacity_mw), 0) as proj_mw FROM capacity_pipeline")
         pipeline = cur.fetchone()
 
         cur.execute("SELECT COUNT(*) as news_total FROM news_articles WHERE published_at > NOW() - INTERVAL '7 days'")
