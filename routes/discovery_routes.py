@@ -127,6 +127,7 @@ OPERATOR_WEBSITES = {
 
 def init_discovery_tables():
     """Ensure discovered_facilities staging table exists in PostgreSQL."""
+    conn = None
     try:
         conn = _db()
         c = conn.cursor()
@@ -163,10 +164,15 @@ def init_discovery_tables():
         c.execute("CREATE INDEX IF NOT EXISTS idx_disc_merged ON discovered_facilities(merged_at)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_disc_dup ON discovered_facilities(is_duplicate)")
         conn.commit()
-        conn.close()
         logger.info("✅ Discovery tables initialized")
     except Exception as e:
         logger.warning(f"Discovery tables init: {e}")
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ─────────────────────────────────────────────────────────────
