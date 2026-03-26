@@ -655,11 +655,12 @@ def get_pipeline():
     
     pipeline = PIPELINE_DATA.copy()
 
+    conn = None
     try:
         conn = _get_db()
         c = conn.cursor()
         c.execute("""
-            SELECT operator, market, capacity_mw, phase, status, announcement_date, 
+            SELECT operator, market, capacity_mw, phase, status, announcement_date,
                    completion_date, notes, confidence_label
             FROM capacity_pipeline
             WHERE operator != 'Unknown' AND capacity_mw > 0 AND confidence_label IN ('high', 'medium')
@@ -690,9 +691,14 @@ def get_pipeline():
                 'preleased': False,
                 'type': 'wholesale'
             })
-        conn.close()
     except Exception as e:
         logger.debug(f"capacity_pipeline query: {e}")
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
     
     # Apply filters
     if status_filter and status_filter != 'all':
@@ -794,13 +800,14 @@ def get_gas_pipelines():
     except (ValueError, TypeError):
         radius = 50
 
+    conn = None
     try:
         conn = _get_db()
         c = conn.cursor()
 
-        query = """SELECT id, name, operator, pipeline_type, diameter_inches, 
-                   capacity_mcf, status, lat, lng, city, state, country, source 
-                   FROM gas_pipelines 
+        query = """SELECT id, name, operator, pipeline_type, diameter_inches,
+                   capacity_mcf, status, lat, lng, city, state, country, source
+                   FROM gas_pipelines
                    WHERE lat IS NOT NULL AND lng IS NOT NULL"""
         params = []
 
@@ -848,8 +855,6 @@ def get_gas_pipelines():
         except Exception:
             pass
 
-        conn.close()
-
         return jsonify({
             'success': True,
             'pipelines': pipelines,
@@ -873,6 +878,12 @@ def get_gas_pipelines():
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @deals_bp.route('/api/v1/deals', methods=['GET'])
@@ -930,6 +941,7 @@ def get_markets():
     markets = SAMPLE_MARKETS.copy()
     if region and region != 'All':
         markets = [m for m in markets if m['region'] == region]
+    conn = None
     try:
         conn = _get_db()
         c = conn.cursor()
@@ -940,9 +952,14 @@ def get_markets():
             live_count = c.fetchone()[0]
             if live_count > 0:
                 m['facilities_live'] = live_count
-        conn.close()
     except:
         pass
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
     return jsonify({
         'success': True,
         'markets': markets,
@@ -972,6 +989,7 @@ def get_public_pipeline():
             'preleased': p.get('preleased', False),
         })
 
+    conn = None
     try:
         conn = _get_db()
         c = conn.cursor()
@@ -1011,9 +1029,14 @@ def get_public_pipeline():
                 'type': 'wholesale',
                 'preleased': False,
             })
-        conn.close()
     except Exception as e:
         logger.debug(f"Pipeline facilities query: {e}")
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     projects.sort(key=lambda x: x.get('capacity_mw', 0), reverse=True)
 
@@ -1074,6 +1097,7 @@ def get_pipeline_summary():
             else:
                 announced += 1
 
+    conn = None
     try:
         conn = _get_db()
         c = conn.cursor()
@@ -1095,9 +1119,14 @@ def get_pipeline_summary():
                 construction += 1
             else:
                 announced += 1
-        conn.close()
     except Exception as e:
         logger.debug(f"Pipeline summary DB query: {e}")
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     try:
         conn2 = _get_db()
@@ -1347,6 +1376,7 @@ def get_v1_news():
 @deals_bp.route('/api/v1/announcements', methods=['GET'])
 def get_announcements():
     """Get pipeline facilities - under construction, planning, announced, or approved"""
+    conn = None
     try:
         conn = _get_db()
         c = conn.cursor()
@@ -1399,7 +1429,6 @@ def get_announcements():
             del item['raw_data']
             announcements.append(item)
 
-        conn.close()
         return jsonify({
             'success': True,
             'data': announcements,
@@ -1412,3 +1441,9 @@ def get_announcements():
             'data': [],
             'count': 0
         })
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
