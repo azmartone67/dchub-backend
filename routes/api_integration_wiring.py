@@ -224,9 +224,9 @@ def enrich_site_analysis(lat=None, lng=None, state=None):
         if state:
             gas_data = {}
             state_upper = state.upper()
-            # Try state abbreviation first, then full name
+            # eia_gas_consumption uses state_code (abbrev) and state_name (full)
             state_full = STATE_ABBR_TO_NAME.get(state_upper, state_upper)
-            cur.execute("SELECT sector_name, value, units, period FROM eia_gas_consumption WHERE UPPER(state) = %s OR UPPER(state_name) = %s OR UPPER(state) = %s ORDER BY period DESC LIMIT 10", (state_upper, state_full.upper(), state_full.upper()))
+            cur.execute("SELECT sector, value, units, period FROM eia_gas_consumption WHERE UPPER(state_code) = %s OR UPPER(state_name) = %s ORDER BY period DESC LIMIT 10", (state_upper, state_full.upper()))
             rows = cur.fetchall()
             if rows:
                 cols = [d[0] for d in cur.description]
