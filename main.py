@@ -9378,9 +9378,48 @@ def api_health():
     return jsonify(health)
 
 
-# =============================================================================
-# AI DISCOVERY & SIGNUP ROUTES (v90)
-# =============================================================================
+@app.route('/api/admin/pool-status', methods=['GET'])
+def admin_pool_status():
+    """Connection pool deep status with alerting thresholds.
+    RFO Follow-Up Item #7: Pool utilization alerting.
+    Returns pool health, circuit breaker state, leaked connections, and alert level.
+    """
+    admin_key = request.headers.get('X-Admin-Key') or request.args.get('admin_key', '')
+    internal_key = request.headers.get('X-Internal-Key', '')
+    if admin_key != os.environ.get('DCHUB_ADMIN_KEY', '') and internal_key != 'dchub-internal-sync-2026':
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    health = get_pool_health()
+    pool = health.get('pool', {})
+    utilization = pool.get('utilization_pct', 0)
+    leaked = health.get('leaked_connections', [])
+
+    # Alert thresholds
+    alert_level = 'green'
+    alert_reasons = []
+    if utilization >= 90:
+        alert_level = 'red'
+        alert_reasons.append(f'Pool utilization CRITICAL at {utilization}%')
+    elif utilization >= 75:
+        alert_level = 'yellow'
+        alert_reasons.append(f'Pool utilization WARNING at {utilization}%')
+    if len(leaked) > 0:
+        alert_level = 'red' if len(leaked) >= 3 else max(alert_level, 'yellow')
+        alert_reasons.append(f'{len(leaked)} leaked connection(s) detected')
+    if health.get('circuit_breaker', {}).get('open'):
+        alert_level = 'red'
+        alert_reasons.append('Circuit breaker is OPEN')
+    if health.get('memory', {}).get('warning'):
+        if alert_level != 'red':
+            alert_level = 'yellow'
+        alert_reasons.append(f'Memory usage high: {health["memory"]["rss_mb"]}MB')
+
+    health['alert'] = {
+        'level': alert_level,
+        'reasons': alert_reasons if alert_reasons else ['All systems nominal'],
+        'thresholds': {'yellow_pct': 75, 'red_pct': 90, 'leaked_yellow': 1, 'leaked_red': 3},
+    }
+    return jsonify(health)
 
 # OLD robots.txt, llms.txt routes REMOVED -- now served by ai_discovery_routes.py (inline)
 
