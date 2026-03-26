@@ -1064,19 +1064,26 @@ async def analyze_site(
         except Exception:
             pass
 
-        # 7. Carbon intensity (epa_egrid uses subregion codes, not state)
+        # 7. Carbon intensity (epa_egrid uses subregion_code column)
         try:
             if state:
                 subregion = STATE_TO_EGRID_SUBREGION.get(state.upper(), '')
                 if subregion:
                     cur.execute("""
-                        SELECT co2_rate_lb_mwh FROM epa_egrid
-                        WHERE UPPER(subregion) = UPPER(%s)
+                        SELECT co2_rate_lb_mwh, coal_pct, gas_pct, nuclear_pct,
+                               wind_pct, solar_pct, hydro_pct
+                        FROM epa_egrid
+                        WHERE UPPER(subregion_code) = UPPER(%s)
                         LIMIT 1
                     """, (subregion,))
                     row = cur.fetchone()
                     if row and row.get('co2_rate_lb_mwh'):
                         details['carbon_intensity_lb_mwh'] = float(row['co2_rate_lb_mwh'])
+                        details['fuel_mix_pct'] = {
+                            k.replace('_pct', ''): round(float(row.get(k) or 0), 1)
+                            for k in ('coal_pct', 'gas_pct', 'nuclear_pct', 'wind_pct', 'solar_pct', 'hydro_pct')
+                            if row.get(k)
+                        }
         except Exception:
             pass
 
@@ -1177,18 +1184,26 @@ async def get_grid_data(
 
         result_data = {"success": True, "iso": iso.upper(), "metric": metric}
 
-        # Carbon intensity from epa_egrid (uses subregion codes, not state)
+        # Carbon intensity from epa_egrid (uses subregion_code column)
         if egrid_subregions:
             placeholders = ','.join(['%s'] * len(egrid_subregions))
             cur.execute(f"""
-                SELECT subregion, co2_rate_lb_mwh, generation_mwh, fuel_mix
+                SELECT subregion_code, co2_rate_lb_mwh,
+                       coal_pct, gas_pct, nuclear_pct, wind_pct, solar_pct, hydro_pct,
+                       data_year
                 FROM epa_egrid
-                WHERE UPPER(subregion) IN ({placeholders})
-                ORDER BY generation_mwh DESC NULLS LAST
+                WHERE UPPER(subregion_code) IN ({placeholders})
+                ORDER BY co2_rate_lb_mwh DESC NULLS LAST
             """, [s.upper() for s in egrid_subregions])
             egrid = [dict(r) for r in cur.fetchall()]
             if egrid:
                 avg_co2 = sum(float(r.get('co2_rate_lb_mwh', 0) or 0) for r in egrid) / len(egrid)
+                # Build fuel mix from individual percentage columns
+                for row in egrid:
+                    row['fuel_mix'] = {
+                        k.replace('_pct', ''): round(float(row.pop(k) or 0), 1)
+                        for k in list(row.keys()) if k.endswith('_pct')
+                    }
                 result_data["carbon_intensity"] = {
                     "avg_co2_lb_mwh": round(avg_co2, 1),
                     "by_subregion": egrid,
