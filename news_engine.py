@@ -341,7 +341,11 @@ def fetch_all_rss_feeds(db_path=NEWS_DB_PATH):
     all_articles = []
     successful = 0
     failed = []
-    with ThreadPoolExecutor(max_workers=15) as executor:
+    # POOL FIX: Reduced from 15 to 5 workers. 15 threads each calling
+    # update_feed_health → get_db() → pool checkout was the #1 cause of
+    # pool exhaustion during news sync. 5 workers still fetches all 34
+    # feeds in ~20s but keeps pool pressure to max 5 concurrent checkouts.
+    with ThreadPoolExecutor(max_workers=5) as executor:
         futures = {executor.submit(fetch_single_feed, f, db_path): f for f in RSS_FEEDS}
         for future in as_completed(futures, timeout=90):
             try:
@@ -361,6 +365,8 @@ def fetch_all_rss_feeds(db_path=NEWS_DB_PATH):
 
 
 def update_feed_health(url, name, success, article_count=0, db_path=NEWS_DB_PATH):
+    """Update feed health tracking. Uses get_db which routes to pool.
+    POOL FIX: Added proper finally-close to prevent leaked connections."""
     conn = None
     try:
         conn = get_db(db_path)
@@ -368,13 +374,13 @@ def update_feed_health(url, name, success, article_count=0, db_path=NEWS_DB_PATH
         now = datetime.utcnow().isoformat()
         if success:
             c.execute('''INSERT INTO feed_health (url,name,last_success,success_count,avg_articles_per_fetch)
-                VALUES (?,?,?,1,?) ON CONFLICT(url) DO UPDATE SET last_success=EXCLUDED.last_success,
+                VALUES (%s,%s,%s,1,%s) ON CONFLICT(url) DO UPDATE SET last_success=EXCLUDED.last_success,
                 success_count=feed_health.success_count+1, failure_count=0,
                 avg_articles_per_fetch=(feed_health.avg_articles_per_fetch*0.7+EXCLUDED.avg_articles_per_fetch*0.3), is_active=1''',
                 (url, name, now, article_count))
         else:
             c.execute('''INSERT INTO feed_health (url,name,last_failure,failure_count)
-                VALUES (?,?,?,1) ON CONFLICT(url) DO UPDATE SET last_failure=EXCLUDED.last_failure,
+                VALUES (%s,%s,%s,1) ON CONFLICT(url) DO UPDATE SET last_failure=EXCLUDED.last_failure,
                 failure_count=feed_health.failure_count+1,
                 is_active=CASE WHEN feed_health.failure_count>=10 THEN 0 ELSE feed_health.is_active END''',
                 (url, name, now))
@@ -454,10 +460,11 @@ def save_articles(articles, db_path=NEWS_DB_PATH):
         try:
             pub = a.get('published_at')
             if isinstance(pub, datetime): pub = pub.isoformat()
-            c.execute('''INSERT OR IGNORE INTO news_articles
+            c.execute('''INSERT INTO news_articles
                 (id,title,url,source,category,summary,author,published_at,
                  relevance_score,keywords,image_url,fetched_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT (id) DO NOTHING''',
                 (a['id'], a['title'], a['url'], a['source'],
                  a.get('category','Industry'), a.get('summary',''),
                  a.get('author',''), pub, a.get('relevance_score',0.5),
@@ -483,143 +490,168 @@ def save_articles(articles, db_path=NEWS_DB_PATH):
 
 def _sync_articles_to_pg(articles):
     """Sync articles to PostgreSQL — write-through so PG stays current.
-    Uses raw psycopg2 cursor with savepoints for speed and robustness.
+    
+    POOL FIX v2: Uses a dedicated direct psycopg2 connection (NOT from the pool)
+    and batch-inserts with execute_values for speed. The old approach grabbed a
+    pool connection via get_bg_db() and did row-by-row SAVEPOINTs across 300+
+    articles — holding a pool slot for 30-60s and causing pool exhaustion.
+    
     Failures here are non-fatal; SQLite remains the fallback."""
     if not articles:
         return
+    import psycopg2
+    from psycopg2.extras import execute_values
+    
+    db_url = os.environ.get('NEON_DATABASE_URL') or os.environ.get('DATABASE_URL', '')
+    if not db_url:
+        logger.warning("⚠️ News PG sync skipped: no DATABASE_URL")
+        return
+    
+    pg_conn = None
     try:
-        from db_utils import get_bg_db
-        pg_wrapper = get_bg_db()
-        raw_conn = pg_wrapper._conn
-        try:
-            raw_conn.rollback()
-        except Exception:
-            pass
-        raw_cur = raw_conn.cursor()
-        synced = 0
-        failed = 0
+        # Dedicated connection — bypasses the shared pool entirely
+        pg_conn = psycopg2.connect(db_url, connect_timeout=15)
+        cur = pg_conn.cursor()
+        
         now_ts = datetime.utcnow().isoformat()
         insert_sql = '''INSERT INTO news_articles
             (id,title,url,source,category,summary,author,published_at,
              relevance_score,keywords,image_url,fetched_at)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            VALUES %s
             ON CONFLICT (id) DO NOTHING'''
+        
+        # Build values tuples
+        values = []
         for a in articles:
+            pub = a.get('published_at')
+            if isinstance(pub, datetime):
+                pub = pub.isoformat()
+            values.append((
+                a['id'], a['title'], a['url'], a['source'],
+                a.get('category', 'Industry'), a.get('summary', ''),
+                a.get('author', ''), pub, a.get('relevance_score', 0.5),
+                a.get('keywords', '[]'), a.get('image_url'), now_ts
+            ))
+        
+        # Batch insert in chunks of 100
+        synced = 0
+        for i in range(0, len(values), 100):
+            chunk = values[i:i+100]
             try:
-                raw_cur.execute("SAVEPOINT article_sp")
-                pub = a.get('published_at')
-                if isinstance(pub, datetime):
-                    pub = pub.isoformat()
-                raw_cur.execute(insert_sql,
-                    (a['id'], a['title'], a['url'], a['source'],
-                     a.get('category', 'Industry'), a.get('summary', ''),
-                     a.get('author', ''), pub, a.get('relevance_score', 0.5),
-                     a.get('keywords', '[]'), a.get('image_url'), now_ts))
-                raw_cur.execute("RELEASE SAVEPOINT article_sp")
-                if raw_cur.rowcount > 0:
-                    synced += 1
-            except Exception:
-                failed += 1
+                execute_values(cur, insert_sql, chunk,
+                    template='(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)')
+                synced += cur.rowcount
+            except Exception as chunk_err:
+                logger.warning(f"⚠️ News PG batch insert chunk failed: {chunk_err}")
                 try:
-                    raw_cur.execute("ROLLBACK TO SAVEPOINT article_sp")
+                    pg_conn.rollback()
                 except Exception:
-                    try:
-                        raw_conn.rollback()
-                    except Exception:
-                        pass
+                    pass
+        
+        pg_conn.commit()
+        
+        # Cleanup old articles
         try:
-            raw_conn.commit()
-        except Exception:
-            try:
-                raw_conn.rollback()
-            except Exception:
-                pass
-        try:
-            raw_cur.execute("DELETE FROM news_articles WHERE fetched_at::timestamptz < NOW() - INTERVAL '90 days'")
-            raw_conn.commit()
+            cur.execute("DELETE FROM news_articles WHERE fetched_at::timestamptz < NOW() - INTERVAL '90 days'")
+            pg_conn.commit()
         except Exception as e:
             logger.warning(f"⚠️ News PG cleanup failed (non-fatal): {e}")
             try:
-                raw_conn.rollback()
+                pg_conn.rollback()
             except Exception:
                 pass
-        try:
-            raw_cur.close()
-        except Exception:
-            pass
-        try:
-            pg_wrapper.close()
-        except Exception:
-            pass
-        if synced > 0 or failed > 0:
-            logger.info(f"📰 PG sync: {synced} new articles inserted, {failed} failed, {len(articles) - synced - failed} duplicates skipped")
+        
+        cur.close()
+        if synced > 0:
+            logger.info(f"📰 PG sync: {synced} new articles inserted ({len(articles)} total, batch mode)")
     except Exception as e:
         logger.warning(f"⚠️ News PG sync failed (falling back to SQLite only): {e}")
+    finally:
+        if pg_conn:
+            try:
+                pg_conn.close()
+            except Exception:
+                pass
 
 
 def sync_to_announcements(articles, db_path=MAIN_DB_PATH):
-    """Sync into announcements table in PostgreSQL using savepoints for robustness."""
+    """Sync into announcements table in PostgreSQL.
+    
+    POOL FIX v2: Uses dedicated direct connection (not pool) and batch insert
+    via execute_values. Old approach grabbed pool connection via get_bg_db()
+    and did row-by-row SAVEPOINTs across 300+ articles."""
     if not articles: return 0
+    import psycopg2
+    from psycopg2.extras import execute_values
+    
+    db_url = os.environ.get('NEON_DATABASE_URL') or os.environ.get('DATABASE_URL', '')
+    if not db_url:
+        logger.warning("⚠️ Announcements sync skipped: no DATABASE_URL")
+        return 0
+    
+    pg_conn = None
     try:
         ensure_announcements_table(db_path)
-        from db_utils import get_bg_db
-        pg_wrapper = get_bg_db()
-        raw_conn = pg_wrapper._conn
-        try:
-            raw_conn.rollback()
-        except Exception:
-            pass
-        raw_cur = raw_conn.cursor()
+        
+        # Dedicated connection — bypasses shared pool
+        pg_conn = psycopg2.connect(db_url, connect_timeout=15)
+        cur = pg_conn.cursor()
         saved = 0
         now = datetime.utcnow().isoformat()
+        
         insert_sql = '''INSERT INTO announcements
             (id,title,summary,source_url,source,published_date,discovered_at,category,url)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            VALUES %s
             ON CONFLICT(id) DO UPDATE SET title=EXCLUDED.title, summary=EXCLUDED.summary'''
+        
+        values = []
         for a in articles:
+            pub = a.get('published_at')
+            if isinstance(pub, datetime): pub = pub.isoformat()
+            values.append((
+                a['id'], a['title'], a.get('summary', ''), a['url'],
+                a['source'], pub or now, now,
+                a.get('category', 'Industry'), a['url']
+            ))
+        
+        # Batch insert in chunks of 100
+        for i in range(0, len(values), 100):
+            chunk = values[i:i+100]
             try:
-                raw_cur.execute("SAVEPOINT ann_sp")
-                pub = a.get('published_at')
-                if isinstance(pub, datetime): pub = pub.isoformat()
-                raw_cur.execute(insert_sql,
-                    (a['id'], a['title'], a.get('summary', ''), a['url'],
-                     a['source'], pub or now, now,
-                     a.get('category', 'Industry'), a['url']))
-                raw_cur.execute("RELEASE SAVEPOINT ann_sp")
-                if raw_cur.rowcount > 0: saved += 1
-            except Exception:
+                execute_values(cur, insert_sql, chunk,
+                    template='(%s,%s,%s,%s,%s,%s,%s,%s,%s)')
+                saved += cur.rowcount
+            except Exception as chunk_err:
+                logger.warning(f"⚠️ Announcements batch chunk failed: {chunk_err}")
                 try:
-                    raw_cur.execute("ROLLBACK TO SAVEPOINT ann_sp")
+                    pg_conn.rollback()
                 except Exception:
-                    try:
-                        raw_conn.rollback()
-                    except Exception:
-                        pass
+                    pass
+        
+        pg_conn.commit()
+        
+        # Cleanup old announcements
         try:
-            raw_conn.commit()
+            cur.execute("DELETE FROM announcements WHERE published_date::timestamptz < NOW() - INTERVAL '90 days'")
+            pg_conn.commit()
         except Exception:
             try:
-                raw_conn.rollback()
+                pg_conn.rollback()
             except Exception:
                 pass
-        try:
-            raw_cur.execute("DELETE FROM announcements WHERE published_date::timestamptz < NOW() - INTERVAL '90 days'")
-            raw_conn.commit()
-        except Exception:
-            try:
-                raw_conn.rollback()
-            except Exception:
-                pass
-        try:
-            raw_cur.close()
-        except Exception:
-            pass
-        pg_wrapper.close()
-        logger.info(f"📋 Synced {saved} articles to announcements (PostgreSQL)")
+        
+        cur.close()
+        logger.info(f"📋 Synced {saved} articles to announcements (PostgreSQL, batch mode)")
         return saved
     except Exception as e:
         logger.error(f"❌ Failed to sync to announcements: {e}")
         return 0
+    finally:
+        if pg_conn:
+            try:
+                pg_conn.close()
+            except Exception:
+                pass
 
 
 # ============================================================
