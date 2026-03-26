@@ -14394,14 +14394,6 @@ try:
     from routes.api_integration_wiring import register_api_integration_routes, enrich_site_analysis
     register_api_integration_routes(app)
     print("🔬 API Integration Wiring: ✅ Registered (4 routes)")
-
-# Smoke Test Routes
-try:
-    from smoke_test import register_smoke_routes
-    register_smoke_routes(app)
-    print("🔬 Smoke Test: ✅ Registered (2 routes)")
-except Exception as e:
-    print(f"🔬 Smoke Test: ⚠️ Failed to load: {e}")
 except Exception as e:
     print(f"❌ API integration wiring failed: {e}")
 
