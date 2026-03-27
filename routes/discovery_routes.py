@@ -160,6 +160,18 @@ def init_discovery_tables():
                 UNIQUE(source, source_id)
             )
         """)
+        # Migrate: add columns that may be missing on older tables
+        for col, col_def in [
+            ('last_updated', 'TEXT'),
+            ('first_seen', 'TEXT'),
+            ('confidence_score', 'REAL DEFAULT 0.5'),
+            ('market', 'TEXT'),
+        ]:
+            try:
+                c.execute(f"ALTER TABLE discovered_facilities ADD COLUMN {col} {col_def}")
+                logger.info(f"  ✅ Added missing column: discovered_facilities.{col}")
+            except Exception:
+                conn.rollback()  # rollback failed ALTER so next statement works
         c.execute("CREATE INDEX IF NOT EXISTS idx_disc_source ON discovered_facilities(source)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_disc_merged ON discovered_facilities(merged_at)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_disc_dup ON discovered_facilities(is_duplicate)")
