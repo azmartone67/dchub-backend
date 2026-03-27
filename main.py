@@ -14474,6 +14474,30 @@ except ImportError:
 except Exception as e:
     print(f"❌ Grid Intelligence routes failed: {e}")
 
+# Fiber Intelligence (TeleGeography subsea cables + PeeringDB carriers + coverage zones)
+try:
+    from fiber_integration import register_fiber_intelligence
+    register_fiber_intelligence(app, get_db)
+    print("🌐 Fiber Intelligence: ✅ Registered (subsea, carriers, coverage, sync endpoints)")
+except ImportError:
+    print("⚠️ fiber_integration.py not found — Fiber Intelligence disabled")
+except Exception as e:
+    print(f"❌ Fiber Intelligence routes failed: {e}")
+
+# MCP Analytics — PostgreSQL (replaces broken SQLite that resets on deploy)
+try:
+    from mcp_analytics_postgres import (
+        init_mcp_analytics_tables,
+        register_mcp_analytics_routes,
+    )
+    init_mcp_analytics_tables(get_db)
+    register_mcp_analytics_routes(app, get_db)
+    print("📊 MCP Analytics (PostgreSQL): ✅ Registered (analytics, upgrade signals, conversions)")
+except ImportError:
+    print("⚠️ mcp_analytics_postgres.py not found — MCP Analytics (PG) disabled")
+except Exception as e:
+    print(f"❌ MCP Analytics (PG) routes failed: {e}")
+
 @app.route('/api/v1/plan-sync.js')
 def serve_plan_sync():
     """Serve plan-sync script via API route (bypasses Cloudflare Pages static)"""
