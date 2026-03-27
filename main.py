@@ -1113,7 +1113,7 @@ def require_plan(min_plan='pro'):
                 return f(*args, **kwargs)
             # Internal MCP bypass -- trust calls from our own MCP server
             internal_key = request.headers.get("X-Internal-Key", "")
-            if internal_key in ("dchub-internal-2024", "dchub-internal-sync-2026"):
+            if internal_key and internal_key in (os.environ.get('DCHUB_INTERNAL_KEY', ''), os.environ.get('DCHUB_SYNC_KEY', '')):
                 return f(*args, **kwargs)
             try:
                 ai_info = get_ai_wars_key_info()
@@ -4738,7 +4738,7 @@ def enforce_tier_rate_limits():
 
     # Bypass internal MCP and admin tool calls
     internal_key = request.headers.get('X-Internal-Key', '')
-    if internal_key in ('dchub-internal-2024', 'dchub-internal-sync-2026'):
+    if internal_key and internal_key in (os.environ.get('DCHUB_INTERNAL_KEY', ''), os.environ.get('DCHUB_SYNC_KEY', '')):
         return None
 
     # Skip OPTIONS preflight
@@ -9386,7 +9386,7 @@ def admin_pool_status():
     """
     admin_key = request.headers.get('X-Admin-Key') or request.args.get('admin_key', '')
     internal_key = request.headers.get('X-Internal-Key', '')
-    if admin_key != os.environ.get('DCHUB_ADMIN_KEY', '') and internal_key != 'dchub-internal-sync-2026':
+    if admin_key != os.environ.get('DCHUB_ADMIN_KEY', '') and internal_key not in (os.environ.get('DCHUB_INTERNAL_KEY', ''), os.environ.get('DCHUB_SYNC_KEY', '')):
         return jsonify({'error': 'Unauthorized'}), 401
 
     health = get_pool_health()
@@ -11387,7 +11387,7 @@ def refresh_deals():
     # Allow internal/admin calls to bypass plan gate
     admin_key = request.headers.get('X-Admin-Key', '')
     internal_key = request.headers.get('X-Internal-Key', '')
-    if admin_key != os.environ.get('DCHUB_ADMIN_KEY', '') and internal_key != 'dchub-internal-sync-2026':
+    if admin_key != os.environ.get('DCHUB_ADMIN_KEY', '') and internal_key not in (os.environ.get('DCHUB_INTERNAL_KEY', ''), os.environ.get('DCHUB_SYNC_KEY', '')):
         return require_plan('enterprise')(lambda: refresh_transactions())()
     return refresh_transactions()
 
@@ -11558,7 +11558,7 @@ def job_fiber_sync():
     internal_key = request.headers.get('X-Internal-Key', '')
     admin_key = request.headers.get('X-Admin-Key', '')
     expected_admin = os.environ.get('DCHUB_ADMIN_KEY', '')
-    if internal_key != 'dchub-internal-2024' and admin_key != expected_admin:
+    if internal_key not in (os.environ.get('DCHUB_INTERNAL_KEY', ''), os.environ.get('DCHUB_SYNC_KEY', '')) and admin_key != expected_admin:
         return jsonify({'error': 'Unauthorized'}), 401
 
     results = {'success': True, 'sources': {}, 'total_new': 0}
@@ -11619,7 +11619,7 @@ def admin_run_auto_approval():
     admin_key = request.headers.get('X-Admin-Key', '')
     expected = os.environ.get('DCHUB_ADMIN_KEY', '')
     admin_secret = os.environ.get('ADMIN_SECRET', '')
-    valid_keys = [k for k in [expected, admin_secret, 'dchub-admin'] if k]
+    valid_keys = [k for k in [expected, admin_secret] if k]
     if not admin_key or admin_key != expected:
         return jsonify({'error': 'Unauthorized'}), 401
     try:
@@ -11635,7 +11635,7 @@ def admin_update_deal():
     admin_key = request.headers.get('X-Admin-Key', '')
     expected = os.environ.get('DCHUB_ADMIN_KEY', '')
     admin_secret = os.environ.get('ADMIN_SECRET', '')
-    valid_keys = [k for k in [expected, admin_secret, 'dchub-admin'] if k]
+    valid_keys = [k for k in [expected, admin_secret] if k]
     if not admin_key or admin_key != expected:
         return jsonify({'error': 'Unauthorized'}), 401
     try:
@@ -11670,7 +11670,7 @@ def admin_deals_cleanup():
     admin_key = request.headers.get('X-Admin-Key', '')
     expected = os.environ.get('DCHUB_ADMIN_KEY', '')
     admin_secret = os.environ.get('ADMIN_SECRET', '')
-    valid_keys = [k for k in [expected, admin_secret, 'dchub-admin'] if k]
+    valid_keys = [k for k in [expected, admin_secret] if k]
     if not admin_key or admin_key != expected:
         return jsonify({'error': 'Unauthorized'}), 401
     try:
@@ -11769,7 +11769,7 @@ def admin_reset_password():
     admin_key = (request.headers.get('X-Admin-Key', '') or data.get('admin_key', '')).strip()
     expected = os.environ.get('DCHUB_ADMIN_KEY', '')
     admin_secret = os.environ.get('ADMIN_SECRET', '')
-    valid_keys = [k for k in [expected, admin_secret, 'dchub-admin'] if k].strip()
+    valid_keys = [k for k in [expected, admin_secret] if k].strip()
     logging.info(f"[RESET-PW] key_len={len(admin_key)}, expected_len={len(expected)}, match={admin_key == expected}")
     if not admin_key or not expected or admin_key != expected:
         return jsonify({'error': 'Unauthorized'}), 401
@@ -11793,7 +11793,7 @@ def admin_reset_password():
 @app.route('/api/admin/users', methods=['GET'])
 def admin_list_users():
     key = request.headers.get('X-Admin-Key') or request.args.get('key', '')
-    valid_keys = [k for k in [os.environ.get('DCHUB_ADMIN_KEY', ''), 'dchub-admin'] if k]
+    valid_keys = [k for k in [os.environ.get('DCHUB_ADMIN_KEY', '')] if k]
     if key not in valid_keys:
         return jsonify({'error': 'Unauthorized'}), 401
     plan_filter = request.args.get('plan', '')
@@ -11818,7 +11818,7 @@ def admin_news_archive():
     admin_key = request.headers.get('X-Admin-Key', '')
     expected = os.environ.get('DCHUB_ADMIN_KEY', '')
     admin_secret = os.environ.get('ADMIN_SECRET', '')
-    valid_keys = [k for k in [expected, admin_secret, 'dchub-admin'] if k]
+    valid_keys = [k for k in [expected, admin_secret] if k]
     if not admin_key or admin_key != expected:
         return jsonify({'error': 'Unauthorized'}), 401
     try:
@@ -13592,7 +13592,7 @@ def verify_tier_gating():
     failures = []
     passed = 0
     skipped_429 = 0
-    INTERNAL_HEADERS = {'X-Internal-Key': 'dchub-internal-sync-2026'}
+    INTERNAL_HEADERS = {'X-Internal-Key': os.environ.get('DCHUB_SYNC_KEY', '')}
     try:
         with app.test_client() as client:
             for tier in ('pro', 'enterprise', 'free'):
@@ -13957,7 +13957,7 @@ def get_facility_by_id(facility_id):
 
         # Tier gating: check if caller has Developer+ access
         internal_key = request.headers.get("X-Internal-Key", "")
-        is_internal = internal_key in ("dchub-internal-2024", "dchub-internal-sync-2026")
+        is_internal = internal_key and internal_key in (os.environ.get('DCHUB_INTERNAL_KEY', ''), os.environ.get('DCHUB_SYNC_KEY', ''))
         api_key = request.headers.get("X-API-Key", "") or request.args.get("api_key", "")
         caller_plan = "free"
         if is_internal:
@@ -14008,7 +14008,7 @@ def api_site_score():
     """Composite site suitability score for data center development."""
     # Auth: internal key, X-API-Key header, Bearer token, or session user
     internal_key = request.headers.get("X-Internal-Key", "")
-    _authed = internal_key in ("dchub-internal-2024", "dchub-internal-sync-2026")
+    _authed = internal_key and internal_key in (os.environ.get('DCHUB_INTERNAL_KEY', ''), os.environ.get('DCHUB_SYNC_KEY', ''))
     if not _authed:
         # Check X-API-Key / Bearer token against DB
         _api_key = (
