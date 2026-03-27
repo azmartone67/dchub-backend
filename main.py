@@ -14508,6 +14508,17 @@ except ImportError:
 except Exception as e:
     print(f"❌ Network/IX routes failed: {e}")
 
+# AI Agent Teaching + Self-Awareness + Self-Learning
+try:
+    from ai_agent_teaching import register_ai_teaching_routes
+    register_ai_teaching_routes(app, get_db)
+    print("🎓 AI Teaching & Self-Learning: ✅ Registered")
+except ImportError:
+    print("⚠️ ai_agent_teaching.py not found")
+except Exception as e:
+    print(f"❌ AI Teaching routes failed: {e}")
+
+
 
 @app.route('/api/v1/plan-sync.js')
 def serve_plan_sync():
