@@ -14498,6 +14498,17 @@ except ImportError:
 except Exception as e:
     print(f"❌ MCP Analytics (PG) routes failed: {e}")
 
+# Network/IX Intelligence (PeeringDB networks, IXes, campus)
+try:
+    from network_ix_ingestion import register_network_ix_routes
+    register_network_ix_routes(app, get_db)
+    print("🌐 Network/IX Intelligence: ✅ Registered")
+except ImportError:
+    print("⚠️ network_ix_ingestion.py not found — Network/IX Intelligence disabled")
+except Exception as e:
+    print(f"❌ Network/IX routes failed: {e}")
+
+
 @app.route('/api/v1/plan-sync.js')
 def serve_plan_sync():
     """Serve plan-sync script via API route (bypasses Cloudflare Pages static)"""
