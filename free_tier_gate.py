@@ -112,6 +112,8 @@ ON CONFLICT (user_id, session_date) DO UPDATE SET
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 def is_gated(path):
+    if any(path.startswith(p) for p in ['/api/v1/fiber/summary', '/api/v1/fiber/coverage', '/api/v1/fiber/nearby', '/api/v1/subsea/', '/api/v1/carriers', '/api/jobs/', '/api/admin/mcp/', '/api/v1/track-conversion']):
+        return False
     return any(path.startswith(p) for p in GATED_PREFIXES)
 
 def is_always_open(path):
@@ -248,7 +250,7 @@ def init_free_tier_gate(app, get_db_conn):
             return None
         path = request.path
         # Bypass internal MCP server calls
-        if request.headers.get("X-Internal-Key") in ("dchub-internal-2024", "dchub-internal-sync-2026"):
+        if request.headers.get("X-Internal-Key") in (os.environ.get("DCHUB_INTERNAL_KEY", ""), os.environ.get("DCHUB_SYNC_KEY", "")):
             return None
         if is_always_open(path):
             return None
