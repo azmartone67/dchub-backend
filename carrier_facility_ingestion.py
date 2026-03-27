@@ -63,7 +63,7 @@ def init_carrier_tables(get_db):
         c.execute("""
             CREATE TABLE IF NOT EXISTS carrier_profiles (
                 id SERIAL PRIMARY KEY,
-                pdb_id INTEGER UNIQUE,
+                pdb_id TEXT UNIQUE,
                 name TEXT NOT NULL,
                 aka TEXT,
                 name_long TEXT,
@@ -80,12 +80,13 @@ def init_carrier_tables(get_db):
         """)
 
         # 2. Carrier ↔ Facility cross-reference
+        # Note: PeeringDB IDs can be integers or hex strings, so we use TEXT
         c.execute("""
             CREATE TABLE IF NOT EXISTS carrier_facility_presence (
                 id SERIAL PRIMARY KEY,
-                carrier_pdb_id INTEGER NOT NULL,
+                carrier_pdb_id TEXT NOT NULL,
                 carrier_name TEXT,
-                facility_pdb_id INTEGER NOT NULL,
+                facility_pdb_id TEXT NOT NULL,
                 facility_name TEXT,
                 facility_city TEXT,
                 facility_state TEXT,
@@ -153,6 +154,18 @@ def init_carrier_tables(get_db):
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # Migration: fix column types from INTEGER to TEXT if needed
+        for tbl, col in [
+            ('carrier_profiles', 'pdb_id'),
+            ('carrier_facility_presence', 'carrier_pdb_id'),
+            ('carrier_facility_presence', 'facility_pdb_id'),
+        ]:
+            try:
+                c.execute(f"ALTER TABLE {tbl} ALTER COLUMN {col} TYPE TEXT USING {col}::TEXT")
+                logger.info(f"  ✅ Migrated {tbl}.{col} to TEXT")
+            except Exception:
+                conn.rollback()  # rollback failed ALTER so next statement works
 
         # Indexes
         c.execute("CREATE INDEX IF NOT EXISTS idx_carrier_profiles_name ON carrier_profiles(name)")
@@ -235,7 +248,7 @@ def ingest_carriers(get_db):
 
         for carrier in carriers:
             try:
-                pdb_id = carrier.get('id')
+                pdb_id = str(carrier.get('id', ''))
                 if not pdb_id:
                     continue
 
@@ -360,15 +373,15 @@ def ingest_carrier_facilities(get_db):
 
         for cfac in carrierfacs:
             try:
-                carrier_id = cfac.get('carrier_id') or cfac.get('carrier', {}).get('id') if isinstance(cfac.get('carrier'), dict) else cfac.get('carrier_id')
-                fac_id = cfac.get('fac_id') or cfac.get('facility', {}).get('id') if isinstance(cfac.get('facility'), dict) else cfac.get('fac_id')
+                carrier_id = str(cfac.get('carrier_id') or (cfac.get('carrier', {}).get('id') if isinstance(cfac.get('carrier'), dict) else cfac.get('carrier_id', '')))
+                fac_id = str(cfac.get('fac_id') or (cfac.get('facility', {}).get('id') if isinstance(cfac.get('facility'), dict) else cfac.get('fac_id', '')))
 
                 if not carrier_id or not fac_id:
                     continue
 
-                # Enrich from lookups
-                carrier_name = carrier_lookup.get(carrier_id, '')
-                fac_info = fac_lookup.get(fac_id, {})
+                # Enrich from lookups (try both string and int keys)
+                carrier_name = carrier_lookup.get(carrier_id, carrier_lookup.get(int(carrier_id), '')) if carrier_id.isdigit() else carrier_lookup.get(carrier_id, '')
+                fac_info = fac_lookup.get(fac_id, fac_lookup.get(int(fac_id), {})) if fac_id.isdigit() else fac_lookup.get(fac_id, {})
                 fac_name = fac_info.get('name', '')
                 fac_city = fac_info.get('city', '')
                 fac_state = fac_info.get('state', '')
