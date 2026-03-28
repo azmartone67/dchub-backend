@@ -2342,7 +2342,7 @@ try:
     # CRM admin routes
     try:
         from routes.crm_routes import register_crm_routes
-        register_crm_routes(app, get_db_connection, require_admin)
+        register_crm_routes(app, get_db, require_admin)
     except Exception as e:
         print(f"[CRM] Failed to load CRM routes: {e}")
     print("KMZ Processor: Available")
