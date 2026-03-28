@@ -1703,6 +1703,22 @@ except ImportError as e:
     logger.warning(f"  ⚠️ land_power_routes: {e}")
 
 try:
+    from land_power_crawler import register_land_power_routes, init_land_power_tables
+    logger.info("  ✅ land_power_crawler")
+except ImportError as e:
+    register_land_power_routes = None
+    init_land_power_tables = None
+    logger.warning(f"  ⚠️ land_power_crawler: {e}")
+
+try:
+    from mcp_tier_config import register_mcp_trial_routes, init_mcp_tier_tables
+    logger.info("  ✅ mcp_tier_config")
+except ImportError as e:
+    register_mcp_trial_routes = None
+    init_mcp_tier_tables = None
+    logger.warning(f"  ⚠️ mcp_tier_config: {e}")
+
+try:
     from site_planner import register_site_planner_routes
     logger.info("  ✅ site_planner")
 except ImportError as e:
@@ -2386,6 +2402,36 @@ try:
         logger.info("✅ Land Power API registered")
 except Exception as e:
     logger.error(f"⚠️ Land Power API failed: {e}")
+
+# Land & Power Crawler routes (auto-content pipeline for EIA + HIFLD data)
+try:
+    if register_land_power_routes:
+        register_land_power_routes(app, get_db, require_admin)
+        logger.info("✅ Land & Power Crawler routes registered")
+except Exception as e:
+    logger.error(f"⚠️ Land & Power Crawler routes failed: {e}")
+
+try:
+    if init_land_power_tables:
+        init_land_power_tables(get_db)
+        logger.info("✅ Land & Power tables initialized")
+except Exception as e:
+    logger.error(f"⚠️ Land & Power table init failed: {e}")
+
+# MCP Tier Config routes (developer trial, usage tracking)
+try:
+    if register_mcp_trial_routes:
+        register_mcp_trial_routes(app, get_db)
+        logger.info("✅ MCP Trial routes registered")
+except Exception as e:
+    logger.error(f"⚠️ MCP Trial routes failed: {e}")
+
+try:
+    if init_mcp_tier_tables:
+        init_mcp_tier_tables(get_db)
+        logger.info("✅ MCP Tier tables initialized")
+except Exception as e:
+    logger.error(f"⚠️ MCP Tier table init failed: {e}")
 
 try:
     if ADMIN_ANALYTICS_AVAILABLE:
@@ -5311,6 +5357,31 @@ def crawler_recent():
         return jsonify({'success': False, 'error': str(e), 'visits': [], 'count': 0})
 
 logger.info("✅ Crawler tracking system registered (/api/crawlers/stats, /api/crawlers/recent)")
+
+# =============================================================================
+# HELPER: _row_val / _row_vals (defined early so market report can use them)
+# Original def at ~line 8555 is kept as well — Python is fine with duplicate defs.
+# =============================================================================
+def _row_val(row, default=0):
+    """Extract first value from a cursor row — works with both RealDictCursor (dict) and regular cursor (tuple)."""
+    if row is None:
+        return default
+    if isinstance(row, dict):
+        vals = list(row.values())
+        return vals[0] if vals else default
+    try:
+        return row[0]
+    except (IndexError, KeyError):
+        return default
+
+def _row_vals(row, count=2):
+    """Extract multiple values from a cursor row — works with both dict and tuple cursors."""
+    if row is None:
+        return [0] * count
+    if isinstance(row, dict):
+        vals = list(row.values())
+        return [vals[i] if i < len(vals) else 0 for i in range(count)]
+    return [row[i] if i < len(row) else 0 for i in range(count)]
 
 # =============================================================================
 # DAILY MARKET REPORT GENERATOR
