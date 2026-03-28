@@ -323,9 +323,9 @@ def fetch_platform_stats():
         # Total deal value
         try:
             if db_type == 'postgres':
-                cur.execute("""
-                    SELECT COALESCE(SUM(CAST(value_usd AS DOUBLE PRECISION)), 0) 
-                    FROM transactions 
+                cur.execute(r"""
+                    SELECT COALESCE(SUM(CAST(value_usd AS DOUBLE PRECISION)), 0)
+                    FROM transactions
                     WHERE value_usd IS NOT NULL AND value_usd != '' AND value_usd ~ '^[0-9eE.+\-]+$'
                 """)
             else:
