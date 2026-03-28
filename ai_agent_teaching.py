@@ -56,9 +56,12 @@ def init_ai_teaching_tables(get_db):
                     metric_category VARCHAR(100),
                     metric_name VARCHAR(255),
                     metric_value VARCHAR(500),
-                    recorded_at TIMESTAMP DEFAULT NOW(),
-                    UNIQUE(metric_category, metric_name, recorded_at::DATE)
+                    recorded_at TIMESTAMP DEFAULT NOW()
                 )
+            """)
+            cur.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS platform_health_metrics_uniq
+                ON platform_health_metrics (metric_category, metric_name, (recorded_at::DATE))
             """)
 
             # Table: Data source freshness
