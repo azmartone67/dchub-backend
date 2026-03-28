@@ -3340,10 +3340,12 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
                                 except: pass
 
             total_providers = len(top_providers_raw)
+            # Filter out null-named providers, then gate to top 3
             gated_providers = [
                 {'name': p.get('name'), 'facilities': p.get('facilities')}
-                for p in top_providers_raw[:3]
-            ]
+                for p in top_providers_raw[:10]
+                if p.get('name')
+            ][:3]
             teaser = {
                 '_user_facing_note': MCP_USER_NOTES['get_market_intel'],
                 'success': True,
@@ -3421,6 +3423,46 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
         elif tool_name == 'list_transactions':
             transactions = data.get('transactions', data.get('deals', data.get('results', [])))
             total = data.get('total_available', data.get('count', len(transactions) if isinstance(transactions, list) else 0))
+
+            # DB fallback when REST returns empty/error
+            if not transactions or total == 0:
+                try:
+                    _pg = get_pg_connection()
+                    _dc = _pg.cursor()
+                    # Apply filters from tool params
+                    _tp = tool_params.get('arguments', {}) if isinstance(tool_params, dict) else {}
+                    _where = []
+                    _qp = []
+                    if _tp.get('buyer'):
+                        _where.append('buyer ILIKE %s')
+                        _qp.append(f"%{_tp['buyer']}%")
+                    if _tp.get('seller'):
+                        _where.append('seller ILIKE %s')
+                        _qp.append(f"%{_tp['seller']}%")
+                    if _tp.get('region'):
+                        _where.append('region ILIKE %s')
+                        _qp.append(f"%{_tp['region']}%")
+                    if _tp.get('deal_type'):
+                        _where.append('type ILIKE %s')
+                        _qp.append(f"%{_tp['deal_type']}%")
+                    if _tp.get('min_value_usd'):
+                        _where.append('value >= %s')
+                        _qp.append(_tp['min_value_usd'])
+                    if _tp.get('date_from'):
+                        _where.append('date >= %s')
+                        _qp.append(_tp['date_from'])
+                    _wc = ('WHERE ' + ' AND '.join(_where)) if _where else ''
+                    _dc.execute(f"SELECT buyer, seller, value, type, date, title, region, market FROM deals {_wc} ORDER BY date DESC LIMIT 25", _qp)
+                    _rows = _dc.fetchall()
+                    _cols = ['buyer', 'seller', 'value', 'type', 'date', 'title', 'region', 'market']
+                    transactions = [{_cols[i]: r[i] for i in range(len(_cols)) if i < len(r)} for r in _rows]
+                    _dc.execute(f"SELECT COUNT(*) FROM deals {_wc}", _qp)
+                    total = _dc.fetchone()[0] or 0
+                    _dc.close()
+                    return_pg_connection(_pg)
+                    logger.info(f"list_transactions: DB fallback returned {len(transactions)} deals")
+                except Exception as _te:
+                    logger.error(f"list_transactions DB fallback error: {_te}")
             free_fields = ['title', 'buyer', 'seller', 'deal_type', 'date', 'announced_date', 'region', 'market']
             # MCP server already filtered by buyer/seller/region; respect that, cap at 5
             # Apply region filter if specified (BUG-037 fix)
@@ -7608,7 +7650,7 @@ def list_markets():
 def get_market_stats(market):
     """Get detailed stats for a single market"""
     # Internal key bypass — skip plan gate for MCP calls
-    if request.headers.get('X-Internal-Key') not in ('dchub-internal-2024', 'dchub-internal-sync-2026'):
+    if request.headers.get('X-Internal-Key') not in (os.environ.get('DCHUB_INTERNAL_KEY', ''), os.environ.get('DCHUB_SYNC_KEY', '')):
         user = getattr(request, 'current_user', None)
         plan = (user or {}).get('plan', 'free') if isinstance(user, dict) else 'free'
         if plan not in ('pro', 'enterprise'):
