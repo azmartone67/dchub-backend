@@ -144,6 +144,7 @@ def log_mcp_request(get_db, session_id, tool_name, method, params,
                     response_status='success', response_time_ms=0,
                     ip_address=None, user_agent=None, mcp_client=None):
     """Log an MCP request to PostgreSQL. Non-blocking — errors are swallowed."""
+    conn = None
     try:
         conn = get_db()
         c = conn.cursor()
@@ -171,9 +172,14 @@ def log_mcp_request(get_db, session_id, tool_name, method, params,
         """, (today, tool_name, tier, response_time_ms, response_time_ms))
 
         conn.commit()
-        conn.close()
     except Exception as e:
         logger.debug(f"Analytics log (non-fatal): {e}")
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ─────────────────────────────────────────────────────────────
@@ -196,6 +202,7 @@ def log_upgrade_signal(get_db, signal_type, tool_requested=None,
     Capture an upgrade signal — a moment when a free user bumps against limits.
     These are sales leads for Developer tier outreach.
     """
+    conn = None
     try:
         conn = get_db()
         c = conn.cursor()
@@ -209,7 +216,6 @@ def log_upgrade_signal(get_db, signal_type, tool_requested=None,
         """, (session_id, signal_type))
 
         if c.fetchone():
-            conn.close()
             return None  # Already captured this signal recently
 
         c.execute("""
@@ -225,7 +231,6 @@ def log_upgrade_signal(get_db, signal_type, tool_requested=None,
 
         signal_id = c.fetchone()[0]
         conn.commit()
-        conn.close()
 
         logger.info(f"📈 Upgrade signal #{signal_id}: {signal_type} for {tool_requested or 'general'}")
         return signal_id
@@ -233,6 +238,12 @@ def log_upgrade_signal(get_db, signal_type, tool_requested=None,
     except Exception as e:
         logger.debug(f"Upgrade signal log (non-fatal): {e}")
         return None
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # ─────────────────────────────────────────────────────────────
@@ -599,6 +610,7 @@ def register_mcp_analytics_routes(app, get_db):
     @app.route('/api/v1/track-conversion', methods=['POST'])
     def track_conversion_event():
         """Track CTA click from developer signup page (public endpoint)."""
+        conn = None
         try:
             data = request.get_json(silent=True) or {}
             conn = get_db()
@@ -613,9 +625,14 @@ def register_mcp_analytics_routes(app, get_db):
                   request.headers.get('User-Agent', '')))
 
             conn.commit()
-            conn.close()
             return jsonify({'success': True})
         except Exception:
             return jsonify({'success': True})  # Don't expose errors on tracking endpoint
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     logger.info("📊 MCP analytics routes registered: /api/admin/mcp/analytics, /api/admin/mcp/upgrade-signals")
