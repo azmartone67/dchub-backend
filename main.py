@@ -2153,17 +2153,11 @@ except ImportError as e:
     print(f"⚠️ Email service not available: {e}")
 
 # Auto-Pilot System Integration
-try:
-    from auto_pilot import AutoDiscoveryEngine, AutoPilotScheduler, setup_admin_routes, user_analytics
-    AUTOPILOT_AVAILABLE = True
-    ADMIN_ANALYTICS_AVAILABLE = True
-    print("🤖 Auto-Pilot system loaded")
-    print("📊 Admin Analytics loaded")
-except ImportError as e:
-    AUTOPILOT_AVAILABLE = False
-    ADMIN_ANALYTICS_AVAILABLE = False
-    user_analytics = None
-    print(f"⚠️ Auto-Pilot not available: {e}")
+# NOTE: AutoDiscoveryEngine/AutoPilotScheduler were refactored into autopilot_routes.py
+# The routes blueprint handles everything now; these flags remain for compatibility.
+AUTOPILOT_AVAILABLE = False
+ADMIN_ANALYTICS_AVAILABLE = False
+user_analytics = None
 
 # Intelligence Engine (Daily Email, LinkedIn, Deal Alerts)
 try:
