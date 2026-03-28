@@ -3346,6 +3346,38 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
                 for p in top_providers_raw[:10]
                 if p.get('name')
             ][:3]
+
+            # If providers are all null (REST bug), do direct DB lookup
+            if not gated_providers and facility_count and facility_count > 0:
+                try:
+                    _pg_mp = get_pg_connection()
+                    _mc_mp = _pg_mp.cursor()
+                    market_input_mp = (market_data or {}).get('name', '') or ''
+                    market_lower_mp = market_input_mp.lower().replace('-', ' ').strip()
+                    _db_cities_mp = MARKET_ALIASES.get(market_lower_mp)
+                    if not _db_cities_mp:
+                        _MKT_R2 = {'northern virginia': 'northern virginia', 'nova': 'nova', 'dallas': 'dallas', 'dfw': 'dfw', 'chicago': 'chicago', 'phoenix': 'phoenix', 'silicon valley': 'silicon valley', 'new york': 'new york', 'atlanta': 'atlanta', 'los angeles': 'los angeles', 'seattle': 'seattle', 'portland': 'portland', 'denver': 'denver', 'houston': 'houston', 'columbus': 'columbus', 'minneapolis': 'minneapolis', 'kansas city': 'kansas city', 'salt lake city': 'salt lake city'}
+                        resolved_mp = _MKT_R2.get(market_lower_mp, market_lower_mp)
+                        _db_cities_mp = MARKET_ALIASES.get(resolved_mp)
+                    if _db_cities_mp:
+                        conds_mp = []
+                        prms_mp = []
+                        for city in _db_cities_mp:
+                            if len(city) == 2 and city.isupper():
+                                conds_mp.append('state = %s')
+                                prms_mp.append(city)
+                            else:
+                                conds_mp.append('city ILIKE %s')
+                                prms_mp.append(f'%{city}%')
+                        wh_mp = ' OR '.join(conds_mp)
+                        cg_mp = "AND (country = 'US' OR country = 'USA' OR country IS NULL OR country = '')"
+                        _mc_mp.execute(f"""SELECT provider, COUNT(*) as cnt FROM discovered_facilities WHERE ({wh_mp}) AND provider IS NOT NULL AND provider != '' {cg_mp} GROUP BY provider ORDER BY cnt DESC LIMIT 10""", prms_mp)
+                        gated_providers = [{'name': r[0], 'facilities': r[1]} for r in _mc_mp.fetchall()][:3]
+                    _mc_mp.close()
+                    return_pg_connection(_pg_mp)
+                    logger.info(f"get_market_intel: provider DB fallback returned {len(gated_providers)} providers")
+                except Exception as _mpe:
+                    logger.error(f"get_market_intel provider fallback error: {_mpe}")
             teaser = {
                 '_user_facing_note': MCP_USER_NOTES['get_market_intel'],
                 'success': True,
