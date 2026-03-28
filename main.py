@@ -531,7 +531,7 @@ def try_get_pg_connection():
         if _validate_connection(conn, timeout_ms=5000):
             _pool_stats['acquired'] += 1
             _track_checkout(conn)
-            return conn
+            return _PoolConnWrapper(conn)
         else:
             try:
                 _pg_pool_obj.putconn(conn, close=True)
@@ -542,6 +542,38 @@ def try_get_pg_connection():
         return None
     except Exception:
         return None
+
+class _PoolConnWrapper:
+    """Wraps a psycopg2 pool connection so .close() returns it to pool instead of destroying it."""
+    __slots__ = ('_conn', '_returned')
+    def __init__(self, real_conn):
+        object.__setattr__(self, '_conn', real_conn)
+        object.__setattr__(self, '_returned', False)
+    def close(self):
+        if object.__getattribute__(self, '_returned'):
+            return
+        object.__setattr__(self, '_returned', True)
+        c = object.__getattribute__(self, '_conn')
+        return_pg_connection(c)
+    def cursor(self, *a, **kw):
+        return object.__getattribute__(self, '_conn').cursor(*a, **kw)
+    def commit(self):
+        return object.__getattribute__(self, '_conn').commit()
+    def rollback(self):
+        return object.__getattribute__(self, '_conn').rollback()
+    @property
+    def autocommit(self):
+        return object.__getattribute__(self, '_conn').autocommit
+    @autocommit.setter
+    def autocommit(self, val):
+        object.__getattribute__(self, '_conn').autocommit = val
+    def __getattr__(self, name):
+        return getattr(object.__getattribute__(self, '_conn'), name)
+    def __enter__(self):
+        return self
+    def __exit__(self, *exc):
+        self.close()
+        return False
 
 def get_pg_connection(retries=3, pool_type=None):
     global _pg_pool_obj
@@ -584,7 +616,7 @@ def get_pg_connection(retries=3, pool_type=None):
                 if max_conn > 0 and used >= int(max_conn * 0.75):
                     logging.getLogger('db_pool').warning(f"⚠️ Pool at {used}/{max_conn} ({int(used/max_conn*100)}%) -- high usage")
                 
-                return conn
+                return _PoolConnWrapper(conn)
             else:
                 pg_url = os.environ.get('DATABASE_URL', '')
                 if not pg_url:
@@ -611,6 +643,9 @@ def get_pg_connection(retries=3, pool_type=None):
 
 def return_pg_connection(conn, pool_type=None, error=False):
     if conn is None:
+        return
+    if isinstance(conn, _PoolConnWrapper):
+        conn.close()
         return
     _track_return(conn)
     # ALWAYS rollback before returning to pool.

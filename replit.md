@@ -52,6 +52,7 @@ The platform uses **Neon PostgreSQL** exclusively as the sole production databas
 
 **Connection Pool Architecture (Feb 2026):**
 -   **Single pool:** One shared pool (1-8 connections, 30s statement timeout) for all requests and background tasks. Total max: 8 connections (well within Neon's 100 limit).
+-   **Pool connection wrapper (Mar 2026):** `_PoolConnWrapper` in `main.py` wraps every pool-managed connection so that `conn.close()` properly returns the connection to the pool via `return_pg_connection()` instead of destroying the raw TCP socket. Both `get_pg_connection()` and `try_get_pg_connection()` return wrapped connections. This eliminates the startup deadlock where init functions calling `conn.close()` would permanently lose pool slots.
 -   **Connection checkout tracking:** Every connection checkout records thread name, stack trace, and timestamp in `_active_checkouts` dict for leak detection.
 -   **Forced connection reclaim:** Background thread checks every 30s, forcibly kills and returns connections held > 60 seconds. Logs offending stack trace for debugging.
 -   **Circuit breaker:** After 3 consecutive connectivity failures, all requests fail fast for 30s instead of hanging, then auto-recover. Only real connectivity errors trip the breaker (not constraint violations or statement timeouts).

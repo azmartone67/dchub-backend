@@ -117,6 +117,7 @@ class AutonomousBrain:
 
     def _init_db_state(self):
         """Initialize brain_state table in PostgreSQL if it doesn't exist"""
+        conn = None
         try:
             conn = get_db()
             cur = conn.cursor()
@@ -133,15 +134,22 @@ class AutonomousBrain:
             conn.commit()
             cur.close()
             conn.close()
+            conn = None
             logger.info("brain_state table initialized in PostgreSQL")
         except Exception as e:
             logger.error(f"Error initializing brain_state table: {e}")
+            if conn:
+                try:
+                    conn.close()
+                except:
+                    pass
 
     def _load_state(self) -> Dict:
         """Load state from PostgreSQL brain_state table"""
+        conn = None
         try:
             conn = get_db()
-            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur = conn.cursor()
 
             cur.execute("""
                 SELECT state_value FROM brain_state
@@ -151,12 +159,20 @@ class AutonomousBrain:
             result = cur.fetchone()
             cur.close()
             conn.close()
+            conn = None
 
-            if result and result['state_value']:
-                logger.debug("Loaded state from PostgreSQL")
-                return result['state_value']
+            if result:
+                val = result['state_value'] if isinstance(result, dict) else result[0]
+                if val:
+                    logger.debug("Loaded state from PostgreSQL")
+                    return val
         except Exception as e:
             logger.debug(f"Error loading state from PostgreSQL: {e}")
+            if conn:
+                try:
+                    conn.close()
+                except:
+                    pass
 
         # Default state if not found
         return {
