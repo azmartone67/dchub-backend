@@ -1635,9 +1635,11 @@ logger.info("📦 Loading feature modules...")
 try:
     from land_power_rate_limiting import setup_land_power_routes
     logger.info("  ✅ land_power_rate_limiting")
-except ImportError as e:
+except Exception as e:
+    import traceback
     setup_land_power_routes = None
-    logger.warning(f"  ⚠️ land_power_rate_limiting: {e}")
+    logger.warning(f"  ⚠️ land_power_rate_limiting: {type(e).__name__}: {e}")
+    logger.warning(traceback.format_exc())
 
 try:
     from energy_infrastructure_routes import setup_energy_routes
@@ -1733,9 +1735,11 @@ except ImportError as e:
 try:
     from land_power_routes import register_land_power_api
     logger.info("  ✅ land_power_routes")
-except ImportError as e:
+except Exception as e:
+    import traceback
     register_land_power_api = None
-    logger.warning(f"  ⚠️ land_power_routes: {e}")
+    logger.warning(f"  ⚠️ land_power_routes: {type(e).__name__}: {e}")
+    logger.warning(traceback.format_exc())
 
 try:
     from land_power_crawler import register_land_power_routes, init_land_power_tables
