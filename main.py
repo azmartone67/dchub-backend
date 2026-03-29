@@ -2261,6 +2261,7 @@ ALLOWED_ORIGINS = [
     'https://dc-hub-replit-fixedzip--azmartone1.replit.app',
     'https://7c74a886-cf19-4d61-8484-6fc80a961825-00-1sshfhdrgioa2.riker.replit.dev',
     f"https://{os.environ.get('REPLIT_DEV_DOMAIN', '')}",
+    'https://web-production-e6382.up.railway.app',
 ]
 
 # ⚠️ CRITICAL: These paths must match Cloudflare Worker v3.1 TRANSPARENT_PROXY_PATHS.
@@ -2607,6 +2608,7 @@ def mcp_messages_proxy():
         return jsonify({'error': f'MCP message error: {str(e)}'}), 502
 
 MCP_INTERNAL_URL = 'http://127.0.0.1:8888/mcp'
+MCP_HEALTH_CHECKED = False
 
 MCP_PLATFORM_MAP = {
     'claude': 'Claude', 'claude-desktop': 'Claude', 'anthropic': 'Claude',
@@ -7955,7 +7957,7 @@ def get_renewable_rest():
             except: pass
 
 @app.route('/api/v1/markets/compare', methods=['GET'])
-@require_plan('pro')
+@require_plan('free')
 @protect_data
 def compare_markets():
     """Compare 2-3 markets side-by-side"""
@@ -8433,18 +8435,18 @@ def mcp_analytics():
         since = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
 
         total_calls = _row_val(db.execute(
-            'SELECT COUNT(*) FROM mcp_tool_calls WHERE created_at > ?', (since,)
+            'SELECT COUNT(*) FROM mcp_tool_calls WHERE created_at > %s', (since,)
         ).fetchone(), 0)
 
         tool_breakdown = db.execute('''
             SELECT tool_name, COUNT(*) as count, AVG(response_time_ms) as avg_ms
-            FROM mcp_tool_calls WHERE created_at > ?
+            FROM mcp_tool_calls WHERE created_at > %s
             GROUP BY tool_name ORDER BY count DESC
         ''', (since,)).fetchall()
 
         platform_breakdown = db.execute('''
             SELECT platform, COUNT(*) as count
-            FROM mcp_tool_calls WHERE created_at > ?
+            FROM mcp_tool_calls WHERE created_at > %s
             GROUP BY platform ORDER BY count DESC
         ''', (since,)).fetchall()
 
@@ -8456,8 +8458,8 @@ def mcp_analytics():
         ''', (since,)).fetchall()
 
         hourly = db.execute('''
-            SELECT strftime('%Y-%m-%d %H:00', created_at) as hour, COUNT(*) as count
-            FROM mcp_tool_calls WHERE created_at > ?
+            SELECT to_char(created_at, 'YYYY-MM-DD HH24:00') as hour, COUNT(*) as count
+            FROM mcp_tool_calls WHERE created_at > %s
             GROUP BY hour ORDER BY hour
         ''', (since,)).fetchall()
 
