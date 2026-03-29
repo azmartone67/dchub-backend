@@ -111,7 +111,7 @@ def init_land_power_tables(get_db):
         c.execute("""
             CREATE TABLE IF NOT EXISTS substations (
                 id SERIAL PRIMARY KEY,
-                hifld_id VARCHAR(50),
+                hifld_objectid VARCHAR(50),
                 name VARCHAR(500),
                 operator VARCHAR(500),
                 state VARCHAR(10),
@@ -131,8 +131,8 @@ def init_land_power_tables(get_db):
             )
         """)
         c.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS substations_hifld_id_uniq
-            ON substations (hifld_id)
+            CREATE UNIQUE INDEX IF NOT EXISTS substations_hifld_objectid_uniq
+            ON substations (hifld_objectid)
         """)
 
         # Transmission lines (HIFLD)
@@ -521,11 +521,11 @@ def _upsert_substations(cur, batch):
         try:
             cur.execute("""
                 INSERT INTO substations (
-                    hifld_id, name, operator, state, county, city,
+                    hifld_objectid, name, operator, state, county, city,
                     lat, lon, voltage_kv, max_voltage_kv, min_voltage_kv,
                     sub_type, status, lines_count, source, last_updated
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'hifld', NOW())
-                ON CONFLICT (hifld_id)
+                ON CONFLICT (hifld_objectid)
                 DO UPDATE SET
                     name = EXCLUDED.name,
                     operator = EXCLUDED.operator,
