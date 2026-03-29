@@ -41,9 +41,9 @@ logger = logging.getLogger('dchub-land-power')
 # DATA SOURCE URLS
 # ─────────────────────────────────────────────────────────────
 
-# EIA-860: Annual Electric Generator Report (plant-level data)
-# Updated annually, supplemented quarterly
-EIA_860_PLANTS_URL = "https://api.eia.gov/v2/electricity/facility-fuel/data/"
+# EIA-860: Operating Generator Capacity (plant-level capacity + fuel data)
+# Updated annually — the facility-fuel endpoint does NOT have capacity columns
+EIA_860_PLANTS_URL = "https://api.eia.gov/v2/electricity/operating-generator-capacity/data/"
 
 # HIFLD Open Data: Homeland Infrastructure Foundation-Level Data
 # Public GeoJSON endpoints — no API key needed
@@ -319,9 +319,8 @@ def crawl_power_plants(get_db, full_refresh=False):
                 'api_key': EIA_API_KEY,
                 'frequency': 'annual',
                 'data[0]': 'nameplate-capacity-mw',
-                'facets[stateid][]': [],  # All states
-                'sort[0][column]': 'plantid',
-                'sort[0][direction]': 'asc',
+                'sort[0][column]': 'period',
+                'sort[0][direction]': 'desc',
                 'offset': offset,
                 'length': page_size,
             }
@@ -349,7 +348,7 @@ def crawl_power_plants(get_db, full_refresh=False):
         # Deduplicate by plant_id (keep latest)
         plant_map = {}
         for rec in all_plants:
-            pid = str(rec.get('plantid', ''))
+            pid = str(rec.get('plantid', rec.get('plantCode', '')))
             if not pid:
                 continue
             # Keep the record with highest capacity or most recent
@@ -385,19 +384,19 @@ def crawl_power_plants(get_db, full_refresh=False):
                         last_updated = NOW()
                 """, (
                     pid,
-                    _safe_str(rec.get('plantName', '')),
-                    _safe_str(rec.get('operator', '')),
-                    _safe_str(rec.get('stateid', '')),
+                    _safe_str(rec.get('plantName', rec.get('plant_name', ''))),
+                    _safe_str(rec.get('entityName', rec.get('operator', ''))),
+                    _safe_str(rec.get('stateid', rec.get('state', ''))),
                     _safe_str(rec.get('county', '')),
                     _safe_str(rec.get('city', '')),
                     _safe_float(rec.get('latitude')),
                     _safe_float(rec.get('longitude')),
                     _safe_float(rec.get('nameplate-capacity-mw', 0)),
-                    _safe_str(rec.get('fuel2002', '')),
-                    classify_fuel(rec.get('fuel2002', '')),
-                    _safe_str(rec.get('reported-prime-mover', '')),
+                    _safe_str(rec.get('energy_source_code', rec.get('fuel2002', ''))),
+                    classify_fuel(rec.get('energy_source_code', rec.get('fuel2002', ''))),
+                    _safe_str(rec.get('prime_mover_code', rec.get('reported-prime-mover', ''))),
                     _safe_str(rec.get('status', 'OP')),
-                    _safe_str(rec.get('sectorName', '')),
+                    _safe_str(rec.get('sectorName', rec.get('sector_name', ''))),
                     'eia-860',
                 ))
                 upserted += 1
@@ -689,7 +688,7 @@ def crawl_gas_pipelines(get_db, full_refresh=False):
                 'api_key': EIA_API_KEY,
                 'frequency': 'annual',
                 'data[0]': 'value',
-                'facets[process][]': ['FPR'],  # Pipeline receipts
+                'facets[process][]': 'FPR',  # Pipeline receipts
                 'sort[0][column]': 'period',
                 'sort[0][direction]': 'desc',
                 'offset': offset,
