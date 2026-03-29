@@ -1635,7 +1635,8 @@ logger.info("📦 Loading feature modules...")
 try:
     from land_power_rate_limiting import setup_land_power_routes
     logger.info("  ✅ land_power_rate_limiting")
-except ImportError as e:
+except Exception as e:
+    import traceback; traceback.print_exc()
     setup_land_power_routes = None
     logger.warning(f"  ⚠️ land_power_rate_limiting: {e}")
 
@@ -1733,7 +1734,8 @@ except ImportError as e:
 try:
     from land_power_routes import register_land_power_api
     logger.info("  ✅ land_power_routes")
-except ImportError as e:
+except Exception as e:
+    import traceback; traceback.print_exc()
     register_land_power_api = None
     logger.warning(f"  ⚠️ land_power_routes: {e}")
 
@@ -1741,21 +1743,18 @@ try:
     from land_power_crawler import register_land_power_routes, init_land_power_tables
     logger.info("  ✅ land_power_crawler")
 except Exception as e:
-    import traceback
+    import traceback; traceback.print_exc()
     register_land_power_routes = None
     init_land_power_tables = None
-    logger.warning(f"  ⚠️ land_power_crawler: {type(e).__name__}: {e}")
-    logger.warning(traceback.format_exc())
+    logger.warning(f"  ⚠️ land_power_crawler: {e}")
 
 try:
     from mcp_tier_config import register_mcp_trial_routes, init_mcp_tier_tables
     logger.info("  ✅ mcp_tier_config")
-except Exception as e:
-    import traceback
+except ImportError as e:
     register_mcp_trial_routes = None
     init_mcp_tier_tables = None
-    logger.warning(f"  ⚠️ mcp_tier_config: {type(e).__name__}: {e}")
-    logger.warning(traceback.format_exc())
+    logger.warning(f"  ⚠️ mcp_tier_config: {e}")
 
 try:
     from site_planner import register_site_planner_routes
