@@ -1740,18 +1740,22 @@ except ImportError as e:
 try:
     from land_power_crawler import register_land_power_routes, init_land_power_tables
     logger.info("  ✅ land_power_crawler")
-except ImportError as e:
+except Exception as e:
+    import traceback
     register_land_power_routes = None
     init_land_power_tables = None
-    logger.warning(f"  ⚠️ land_power_crawler: {e}")
+    logger.warning(f"  ⚠️ land_power_crawler: {type(e).__name__}: {e}")
+    logger.warning(traceback.format_exc())
 
 try:
     from mcp_tier_config import register_mcp_trial_routes, init_mcp_tier_tables
     logger.info("  ✅ mcp_tier_config")
-except ImportError as e:
+except Exception as e:
+    import traceback
     register_mcp_trial_routes = None
     init_mcp_tier_tables = None
-    logger.warning(f"  ⚠️ mcp_tier_config: {e}")
+    logger.warning(f"  ⚠️ mcp_tier_config: {type(e).__name__}: {e}")
+    logger.warning(traceback.format_exc())
 
 try:
     from site_planner import register_site_planner_routes
