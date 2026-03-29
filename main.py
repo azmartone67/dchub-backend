@@ -1762,13 +1762,6 @@ except Exception as e:
     logger.warning(traceback.format_exc())
 
 try:
-    from ai_deals_api import register_ai_deals_routes
-    logger.info("  ✅ ai_deals_api")
-except Exception as e:
-    register_ai_deals_routes = None
-    logger.warning(f"  ⚠️ ai_deals_api: {e}")
-
-try:
     from site_planner import register_site_planner_routes
     logger.info("  ✅ site_planner")
 except ImportError as e:
@@ -2489,14 +2482,6 @@ try:
         logger.info("✅ MCP Tier tables initialized")
 except Exception as e:
     logger.error(f"⚠️ MCP Tier table init failed: {e}")
-
-# AI Deals API routes (Neon-backed M&A tracker)
-try:
-    if register_ai_deals_routes:
-        register_ai_deals_routes(app, get_db)
-        logger.info("✅ AI Deals API routes registered: /api/ai-deals/*")
-except Exception as e:
-    logger.error(f"⚠️ AI Deals API routes failed: {e}")
 
 try:
     if ADMIN_ANALYTICS_AVAILABLE:
@@ -14722,6 +14707,18 @@ except ImportError:
 except Exception as e:
     print(f"❌ AI Teaching routes failed: {e}")
 
+# =============================================================================
+# DC HUB DISCOVERY API — GeoJSON Map Layers (power/gas/fiber/facilities)
+# Feeds the Land & Power map (discovery-map.html) with Neon-backed data
+# =============================================================================
+try:
+    from routes.discovery_api import dchub_discovery_api_bp
+    app.register_blueprint(dchub_discovery_api_bp, url_prefix='/api')
+    print("🗺️ DC Hub Discovery API: ✅ Registered (layers/power, layers/gas, layers/fiber, layers/facilities, intelligence-index, news, energy-prices, discovery/status)")
+except ImportError:
+    print("⚠️ routes/discovery_api.py not found — Discovery API (map layers) disabled")
+except Exception as e:
+    print(f"❌ DC Hub Discovery API failed: {e}")
 
 
 @app.route('/api/v1/plan-sync.js')
