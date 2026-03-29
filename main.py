@@ -2325,6 +2325,29 @@ except Exception as e:
     logger.warning(f"Google & Meta routes failed: {e}")
 
 # =============================================================================
+# ADMIN DECORATOR — used by land_power_crawler and crm_routes
+# =============================================================================
+def require_admin(f):
+    """Decorator that checks X-Admin-Key or X-Internal-Key headers."""
+    from functools import wraps
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        admin_key = request.headers.get('X-Admin-Key', '')
+        internal_key = request.headers.get('X-Internal-Key', '')
+        expected_admin = os.environ.get('DCHUB_ADMIN_KEY', '')
+        expected_internal = os.environ.get('DCHUB_INTERNAL_KEY', '')
+        expected_sync = os.environ.get('DCHUB_SYNC_KEY', '')
+        if not (
+            (admin_key and admin_key == expected_admin) or
+            (internal_key and internal_key in (expected_internal, expected_sync))
+        ):
+            return jsonify({'error': 'unauthorized', 'success': False}), 403
+        return f(*args, **kwargs)
+    return decorated
+
+logger.info("✅ require_admin decorator defined")
+
+# =============================================================================
 # BLUEPRINT REGISTRATIONS - All wrapped in try/except
 # =============================================================================
 logger.info("📦 Registering blueprints...")
