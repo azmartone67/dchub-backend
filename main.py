@@ -1635,8 +1635,7 @@ logger.info("📦 Loading feature modules...")
 try:
     from land_power_rate_limiting import setup_land_power_routes
     logger.info("  ✅ land_power_rate_limiting")
-except Exception as e:
-    import traceback; traceback.print_exc()
+except ImportError as e:
     setup_land_power_routes = None
     logger.warning(f"  ⚠️ land_power_rate_limiting: {e}")
 
@@ -1734,8 +1733,7 @@ except ImportError as e:
 try:
     from land_power_routes import register_land_power_api
     logger.info("  ✅ land_power_routes")
-except Exception as e:
-    import traceback; traceback.print_exc()
+except ImportError as e:
     register_land_power_api = None
     logger.warning(f"  ⚠️ land_power_routes: {e}")
 
@@ -1743,18 +1741,21 @@ try:
     from land_power_crawler import register_land_power_routes, init_land_power_tables
     logger.info("  ✅ land_power_crawler")
 except Exception as e:
-    import traceback; traceback.print_exc()
+    import traceback
     register_land_power_routes = None
     init_land_power_tables = None
-    logger.warning(f"  ⚠️ land_power_crawler: {e}")
+    logger.warning(f"  ⚠️ land_power_crawler: {type(e).__name__}: {e}")
+    logger.warning(traceback.format_exc())
 
 try:
     from mcp_tier_config import register_mcp_trial_routes, init_mcp_tier_tables
     logger.info("  ✅ mcp_tier_config")
-except ImportError as e:
+except Exception as e:
+    import traceback
     register_mcp_trial_routes = None
     init_mcp_tier_tables = None
-    logger.warning(f"  ⚠️ mcp_tier_config: {e}")
+    logger.warning(f"  ⚠️ mcp_tier_config: {type(e).__name__}: {e}")
+    logger.warning(traceback.format_exc())
 
 try:
     from site_planner import register_site_planner_routes
@@ -1931,6 +1932,13 @@ try:
     logger.info("🔧 MCP teaser fixes: ✅ Patches applied")
 except Exception as e:
     logger.warning(f"🔧 MCP teaser fixes: ⚠️ {e}")
+
+# ── QA fixes v7 (Ashburn scoring, tier gating, transactions, tool count) ──
+try:
+    import mcp_qa_fixes_v7
+    logger.info("🔧 QA fixes v7: ✅ Patches applied")
+except Exception as e:
+    logger.warning(f"🔧 QA fixes v7: ⚠️ {e}")
 
 # =============================================================================
 # RATE LIMITER & SECURITY MIDDLEWARE
