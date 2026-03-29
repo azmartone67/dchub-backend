@@ -1762,6 +1762,13 @@ except Exception as e:
     logger.warning(traceback.format_exc())
 
 try:
+    from ai_deals_api import register_ai_deals_routes
+    logger.info("  ✅ ai_deals_api")
+except Exception as e:
+    register_ai_deals_routes = None
+    logger.warning(f"  ⚠️ ai_deals_api: {e}")
+
+try:
     from site_planner import register_site_planner_routes
     logger.info("  ✅ site_planner")
 except ImportError as e:
@@ -2482,6 +2489,14 @@ try:
         logger.info("✅ MCP Tier tables initialized")
 except Exception as e:
     logger.error(f"⚠️ MCP Tier table init failed: {e}")
+
+# AI Deals API routes (Neon-backed M&A tracker)
+try:
+    if register_ai_deals_routes:
+        register_ai_deals_routes(app, get_db)
+        logger.info("✅ AI Deals API routes registered: /api/ai-deals/*")
+except Exception as e:
+    logger.error(f"⚠️ AI Deals API routes failed: {e}")
 
 try:
     if ADMIN_ANALYTICS_AVAILABLE:
