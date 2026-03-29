@@ -1,169 +1,153 @@
 """
-DC Hub Discovery API Routes — GeoJSON map layer endpoints
-Serves power, gas, fiber, and facility data for the frontend map.
-Import and register with your main Flask app:
-    from routes.discovery_api import discovery_bp
-    app.register_blueprint(discovery_bp, url_prefix='/api')
+DC Hub Discovery API — GeoJSON map layers + intelligence data
+Blueprint: dchub_discovery_api_bp (registered at /api prefix)
+
+Endpoints:
+  GET /api/layers/power       — Power infrastructure GeoJSON
+  GET /api/layers/gas         — Gas infrastructure GeoJSON
+  GET /api/layers/fiber       — Fiber infrastructure GeoJSON
+  GET /api/layers/facilities  — Facilities GeoJSON
+  GET /api/layers/all         — All layers combined
+  GET /api/intelligence-index — Latest intelligence index
+  GET /api/news               — Recent news articles
+  GET /api/energy-prices      — Energy price data
+  GET /api/discovery/status   — Pipeline run status
 """
+
 from flask import Blueprint, jsonify, request
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'discovery'))
-from db import get_cursor
+import psycopg2
+import psycopg2.extras
+import os
+from contextlib import contextmanager
 
-discovery_bp = Blueprint('discovery', __name__)
+dchub_discovery_api_bp = Blueprint('dchub_discovery_api', __name__)
 
+# ---------------------------------------------------------------------------
+# DB helpers (uses same NEON_DATABASE_URL / DATABASE_URL as the main app)
+# ---------------------------------------------------------------------------
+def _get_discovery_conn():
+    url = os.environ.get('NEON_DATABASE_URL') or os.environ.get('DATABASE_URL', '')
+    return psycopg2.connect(url, cursor_factory=psycopg2.extras.RealDictCursor)
 
-@discovery_bp.route('/layers/power')
+@contextmanager
+def _discovery_cursor():
+    conn = _get_discovery_conn()
+    try:
+        with conn.cursor() as cur:
+            yield cur
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+# ---------------------------------------------------------------------------
+# Helper: run query -> GeoJSON FeatureCollection
+# ---------------------------------------------------------------------------
+def _geojson_response(view_name, filters=None):
+    """Query a GeoJSON view with optional WHERE filters."""
+    where_clauses = []
+    params = []
+    if filters:
+        for col, val in filters.items():
+            if val:
+                where_clauses.append(f"{col} ILIKE %s")
+                params.append(f"%{val}%")
+
+    sql = f"SELECT json_build_object('type','FeatureCollection','features',COALESCE(json_agg(feature),'[]'::json)) AS fc FROM (SELECT json_build_object('type','Feature','geometry',ST_AsGeoJSON(geom)::json,'properties',to_jsonb(t.*) - 'geom') AS feature FROM {view_name} t"
+    if where_clauses:
+        sql += " WHERE " + " AND ".join(where_clauses)
+    sql += ") sub"
+
+    try:
+        with _discovery_cursor() as cur:
+            cur.execute(sql, params)
+            row = cur.fetchone()
+            return jsonify(row['fc'] if row and row['fc'] else {"type": "FeatureCollection", "features": []})
+    except psycopg2.errors.UndefinedTable:
+        return jsonify({"type": "FeatureCollection", "features": [], "_note": "Table not yet created -- run migration 002_discovery_tables.sql"}), 200
+    except Exception as e:
+        return jsonify({"type": "FeatureCollection", "features": [], "error": str(e)}), 200
+
+# ---------------------------------------------------------------------------
+# GeoJSON layer endpoints
+# ---------------------------------------------------------------------------
+@dchub_discovery_api_bp.route('/layers/power')
 def layer_power():
-    market = request.args.get('market')
-    infra_type = request.args.get('type')
-    query = """SELECT json_build_object('type','FeatureCollection','features',
-        COALESCE(json_agg(json_build_object('type','Feature',
-        'geometry',ST_AsGeoJSON(geom)::json,
-        'properties',json_build_object('id',id,'type',type,'name',name,
-        'capacity_mw',capacity_mw,'voltage_kv',voltage_kv,'fuel_type',fuel_type,
-        'operator',operator,'source_market',source_market,'status',status)
-        )) FILTER (WHERE geom IS NOT NULL),'[]'::json)) AS geojson
-        FROM infrastructure_power WHERE 1=1"""
-    params = []
-    if market:
-        query += " AND source_market=%s"; params.append(market)
-    if infra_type:
-        query += " AND type=%s"; params.append(infra_type)
-    with get_cursor() as cur:
-        cur.execute(query, params)
-        row = cur.fetchone()
-    return jsonify(row["geojson"] if row else {"type":"FeatureCollection","features":[]})
+    return _geojson_response('v_power_geojson', {'market': request.args.get('market'), 'type': request.args.get('type')})
 
-
-@discovery_bp.route('/layers/gas')
+@dchub_discovery_api_bp.route('/layers/gas')
 def layer_gas():
-    market = request.args.get('market')
-    query = """SELECT json_build_object('type','FeatureCollection','features',
-        COALESCE(json_agg(json_build_object('type','Feature',
-        'geometry',ST_AsGeoJSON(geom)::json,
-        'properties',json_build_object('id',id,'name',name,'operator',operator,
-        'diameter_inches',diameter_inches,'pressure_psi',pressure_psi,
-        'source_market',source_market,'status',status)
-        )) FILTER (WHERE geom IS NOT NULL),'[]'::json)) AS geojson
-        FROM infrastructure_gas WHERE 1=1"""
-    params = []
-    if market:
-        query += " AND source_market=%s"; params.append(market)
-    with get_cursor() as cur:
-        cur.execute(query, params)
-        row = cur.fetchone()
-    return jsonify(row["geojson"] if row else {"type":"FeatureCollection","features":[]})
+    return _geojson_response('v_gas_geojson', {'market': request.args.get('market')})
 
-
-@discovery_bp.route('/layers/fiber')
+@dchub_discovery_api_bp.route('/layers/fiber')
 def layer_fiber():
-    carrier = request.args.get('carrier')
-    route_type = request.args.get('type')
-    query = """SELECT json_build_object('type','FeatureCollection','features',
-        COALESCE(json_agg(json_build_object('type','Feature',
-        'geometry',COALESCE(geojson->'geometry',ST_AsGeoJSON(geom)::jsonb),
-        'properties',json_build_object('id',id,'carrier',carrier,
-        'route_name',route_name,'route_type',route_type,'distance_km',distance_km,
-        'endpoint_a',endpoint_a,'endpoint_b',endpoint_b)
-        )),'[]'::json)) AS geojson
-        FROM infrastructure_fiber WHERE 1=1"""
-    params = []
-    if carrier:
-        query += " AND carrier=%s"; params.append(carrier)
-    if route_type:
-        query += " AND route_type=%s"; params.append(route_type)
-    with get_cursor() as cur:
-        cur.execute(query, params)
-        row = cur.fetchone()
-    return jsonify(row["geojson"] if row else {"type":"FeatureCollection","features":[]})
+    return _geojson_response('v_fiber_geojson', {'carrier': request.args.get('carrier')})
 
-
-@discovery_bp.route('/layers/facilities')
+@dchub_discovery_api_bp.route('/layers/facilities')
 def layer_facilities():
-    state = request.args.get('state')
-    provider = request.args.get('provider')
-    status_filter = request.args.get('status')
-    query = """SELECT json_build_object('type','FeatureCollection','features',
-        COALESCE(json_agg(json_build_object('type','Feature',
-        'geometry',ST_AsGeoJSON(geom)::json,
-        'properties',json_build_object('id',id,'dchub_id',dchub_id,
-        'name',name,'provider',provider,'city',city,'state',state,
-        'status',status,'capacity_mw',capacity_mw)
-        )) FILTER (WHERE geom IS NOT NULL),'[]'::json)) AS geojson
-        FROM facilities WHERE 1=1"""
-    params = []
-    if state:
-        query += " AND state=%s"; params.append(state)
-    if provider:
-        query += " AND provider ILIKE %s"; params.append(f"%{provider}%")
-    if status_filter:
-        query += " AND status=%s"; params.append(status_filter)
-    with get_cursor() as cur:
-        cur.execute(query, params)
-        row = cur.fetchone()
-    return jsonify(row["geojson"] if row else {"type":"FeatureCollection","features":[]})
+    return _geojson_response('v_facilities_geojson', {'state': request.args.get('state'), 'provider': request.args.get('provider'), 'status': request.args.get('status')})
 
-
-@discovery_bp.route('/layers/all')
+@dchub_discovery_api_bp.route('/layers/all')
 def layers_all():
-    result = {}
-    views = [("power","v_power_geojson"),("gas","v_gas_geojson"),
-             ("fiber","v_fiber_geojson"),("facilities","v_facilities_geojson")]
-    for name, view in views:
+    """Return all four layers in one response for initial map load."""
+    results = {}
+    for name, view, filters in [
+        ('power', 'v_power_geojson', {}),
+        ('gas', 'v_gas_geojson', {}),
+        ('fiber', 'v_fiber_geojson', {}),
+        ('facilities', 'v_facilities_geojson', {}),
+    ]:
         try:
-            with get_cursor() as cur:
-                cur.execute(f"SELECT geojson FROM {view}")
+            with _discovery_cursor() as cur:
+                cur.execute(f"SELECT json_build_object('type','FeatureCollection','features',COALESCE(json_agg(json_build_object('type','Feature','geometry',ST_AsGeoJSON(geom)::json,'properties',to_jsonb(t.*) - 'geom')),'[]'::json)) AS fc FROM {view} t")
                 row = cur.fetchone()
-                result[name] = row["geojson"] if row else {"type":"FeatureCollection","features":[]}
+                results[name] = row['fc'] if row and row['fc'] else {"type": "FeatureCollection", "features": []}
         except Exception:
-            result[name] = {"type":"FeatureCollection","features":[]}
-    return jsonify(result)
+            results[name] = {"type": "FeatureCollection", "features": []}
+    return jsonify(results)
 
-
-@discovery_bp.route('/intelligence-index')
+# ---------------------------------------------------------------------------
+# Data endpoints
+# ---------------------------------------------------------------------------
+@dchub_discovery_api_bp.route('/intelligence-index')
 def intelligence_index():
-    with get_cursor() as cur:
-        cur.execute("""SELECT pulse_score, version, agent_queries_24h,
-            active_integrations, unique_facilities_queried_24h, fetched_at
-            FROM intelligence_index ORDER BY fetched_at DESC LIMIT 1""")
-        row = cur.fetchone()
-    return jsonify(row or {"error":"No data"})
+    try:
+        with _discovery_cursor() as cur:
+            cur.execute("SELECT * FROM intelligence_index ORDER BY captured_at DESC LIMIT 30")
+            rows = cur.fetchall()
+            return jsonify([dict(r) for r in rows])
+    except Exception as e:
+        return jsonify({"error": str(e), "data": []}), 200
 
-
-@discovery_bp.route('/news')
+@dchub_discovery_api_bp.route('/news')
 def news():
-    category = request.args.get('category')
-    limit = min(int(request.args.get('limit', 25)), 100)
-    query = "SELECT * FROM news_articles"
-    params = []
-    if category:
-        query += " WHERE category=%s"; params.append(category)
-    query += " ORDER BY published_at DESC LIMIT %s"; params.append(limit)
-    with get_cursor() as cur:
-        cur.execute(query, params)
-        rows = cur.fetchall()
-    return jsonify({"articles": rows, "count": len(rows)})
+    limit = request.args.get('limit', 50, type=int)
+    try:
+        with _discovery_cursor() as cur:
+            cur.execute("SELECT * FROM news_articles ORDER BY published_at DESC NULLS LAST LIMIT %s", (limit,))
+            rows = cur.fetchall()
+            return jsonify([dict(r) for r in rows])
+    except Exception as e:
+        return jsonify({"error": str(e), "data": []}), 200
 
-
-@discovery_bp.route('/energy-prices')
+@dchub_discovery_api_bp.route('/energy-prices')
 def energy_prices():
-    state = request.args.get('state')
-    data_type = request.args.get('type', 'retail_rates')
-    query = "SELECT * FROM energy_prices WHERE data_type=%s"
-    params = [data_type]
-    if state:
-        query += " AND state=%s"; params.append(state)
-    query += " ORDER BY fetched_at DESC LIMIT 50"
-    with get_cursor() as cur:
-        cur.execute(query, params)
-        rows = cur.fetchall()
-    return jsonify({"prices": rows, "count": len(rows)})
+    try:
+        with _discovery_cursor() as cur:
+            cur.execute("SELECT * FROM energy_prices ORDER BY captured_at DESC LIMIT 100")
+            rows = cur.fetchall()
+            return jsonify([dict(r) for r in rows])
+    except Exception as e:
+        return jsonify({"error": str(e), "data": []}), 200
 
-
-@discovery_bp.route('/discovery/status')
+@dchub_discovery_api_bp.route('/discovery/status')
 def discovery_status():
-    with get_cursor() as cur:
-        cur.execute("SELECT * FROM discovery_runs ORDER BY run_date DESC LIMIT 5")
-        rows = cur.fetchall()
-    return jsonify({"runs": rows})
+    try:
+        with _discovery_cursor() as cur:
+            cur.execute("SELECT * FROM discovery_runs ORDER BY started_at DESC LIMIT 10")
+            rows = cur.fetchall()
+            return jsonify({"runs": [dict(r) for r in rows]})
+    except Exception as e:
+        return jsonify({"error": str(e), "runs": []}), 200
