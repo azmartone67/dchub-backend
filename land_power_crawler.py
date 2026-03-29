@@ -830,9 +830,11 @@ def generate_market_power_profiles(get_db):
 
         for market, state in MARKET_STATES.items():
             try:
-                # Substation stats
+                # Substation stats (filter out sentinel values like -999999)
                 cur.execute("""
-                    SELECT COUNT(*), COALESCE(AVG(voltage_kv), 0), COALESCE(MAX(max_voltage_kv), 0)
+                    SELECT COUNT(*),
+                           COALESCE(AVG(voltage_kv) FILTER (WHERE voltage_kv > 0), 0),
+                           COALESCE(MAX(max_voltage_kv) FILTER (WHERE max_voltage_kv > 0), 0)
                     FROM substations WHERE state = %s
                 """, (state,))
                 sub_count, avg_volt, max_volt = cur.fetchone()
