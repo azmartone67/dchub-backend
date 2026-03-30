@@ -175,6 +175,19 @@ def init_discovery_tables():
         c.execute("CREATE INDEX IF NOT EXISTS idx_disc_source ON discovered_facilities(source)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_disc_merged ON discovered_facilities(merged_at)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_disc_dup ON discovered_facilities(is_duplicate)")
+        # Ensure unique constraint exists for ON CONFLICT (source, source_id) upserts
+        try:
+            c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_disc_source_source_id ON discovered_facilities(source, source_id)")
+        except Exception:
+            conn.rollback()
+            # Dedup first, then retry
+            c.execute("""DELETE FROM discovered_facilities a USING discovered_facilities b
+                         WHERE a.id < b.id AND a.source = b.source AND a.source_id = b.source_id""")
+            conn.commit()
+            try:
+                c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_disc_source_source_id ON discovered_facilities(source, source_id)")
+            except Exception:
+                pass
         conn.commit()
         logger.info("✅ Discovery tables initialized")
     except Exception as e:
