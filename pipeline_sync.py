@@ -24,7 +24,7 @@ from psycopg2.extras import execute_values
 
 NEON_URL = os.environ["NEON_DATABASE_URL"]
 DCHUB_API_KEY = os.environ.get("DCHUB_API_KEY", "")
-DCHUB_BASE = "https://api.dchub.cloud"  # adjust if different
+DCHUB_BASE = os.environ.get("DCHUB_API_BASE", "http://127.0.0.1:5000")  # calls local DC Hub backend
 TODAY = date.today().isoformat()
 
 logging.basicConfig(
@@ -121,24 +121,50 @@ REGION_MAP = {
 
 
 def fetch_pipeline():
-    """Pull pipeline data from DC Hub API."""
-    params = urllib.parse.urlencode({"status": "all", "limit": 100, "offset": 0})
-    url = f"{DCHUB_BASE}/v1/pipeline?{params}"
-    headers = {}
-    if DCHUB_API_KEY:
-        headers["Authorization"] = f"Bearer {DCHUB_API_KEY}"
-
-    req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        data = json.loads(resp.read().decode())
-
-    projects = data.get("data", [])
-    log.info(f"Fetched {len(projects)} pipeline projects from DC Hub")
-    return projects, data.get("stats", {})
+    """Pull pipeline data directly from Neon capacity_pipeline table."""
+    conn = psycopg2.connect(NEON_URL, sslmode="require")
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, operator, market, region, capacity_mw, phase, status,
+               source, source_url, notes, confidence_score
+        FROM capacity_pipeline
+        ORDER BY capacity_mw DESC NULLS LAST
+    """)
+    cols = [d[0] for d in cur.description]
+    rows = cur.fetchall()
+    cur.execute("""
+        SELECT COUNT(*) AS cnt, COALESCE(SUM(capacity_mw), 0) AS total_mw
+        FROM capacity_pipeline
+    """)
+    sr = cur.fetchone()
+    stats = {"project_count": sr[0], "total_mw": float(sr[1])}
+    cur.close()
+    conn.close()
+    projects = []
+    for row in rows:
+        r = dict(zip(cols, row))
+        projects.append({
+            "company": r.get("operator", "Unknown"),
+            "project": f"{r.get('operator', 'Unknown')} {r.get('market', 'Unknown')}",
+            "_db_id": r.get("id"),
+            "market": r.get("market", "Unknown"),
+            "capacity_mw": r.get("capacity_mw"),
+            "status": (r.get("status") or "announced").lower(),
+            "delivery": r.get("phase") or "TBD",
+            "type": "wholesale",
+            "preleased": False,
+            "investment": 0,
+            "_source_url": r.get("source_url", ""),
+            "_notes": r.get("notes", ""),
+            "_confidence": r.get("confidence_score"),
+        })
+    log.info(f"Fetched {len(projects)} pipeline projects from Neon capacity_pipeline")
+    return projects, stats
 
 
 def slugify(text):
     """Create a slug-style ID from text."""
+    text = str(text)
     return (
         text.lower()
         .replace(" ", "-")
@@ -155,6 +181,8 @@ def slugify(text):
 
 
 def parse_market(market):
+    if not market:
+        return None, None, "US"
     """Extract city, state, country from market string."""
     city, state, country = None, None, "US"
 
@@ -248,7 +276,7 @@ def build_facility(project):
         "region": region,
         "latitude": lat,
         "longitude": lon,
-        "power_mw": project.get("capacity"),
+        "power_mw": project.get("capacity_mw") or project.get("capacity_mw") or project.get("capacity"),
         "sqft": None,
         "status": status,
         "tier": None,

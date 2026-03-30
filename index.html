@@ -920,5 +920,16 @@
     <script src="/static/js/chat.js"></script>
     <script src="/static/js/mobile.js"></script>
 <script src="/js/dchub-nav.js"></script>
-</body>
+<script>
+(function(){
+    fetch('/api/v1/stats').then(r=>r.json()).then(s=>{
+        document.querySelectorAll('.metric-value, .feature-stat, td.check').forEach(el=>{
+            if(el.textContent.includes('20,000')){
+                var n=(s.total_facilities||20000).toLocaleString();
+                el.textContent=el.textContent.replace(/20,000\+?/,n+'+');
+            }
+        });
+    }).catch(()=>{});
+})();
+</script></body>
 </html>

@@ -14074,6 +14074,111 @@ def srm_status():
 # Frontend dashboard at dchub.cloud/gdci (Cloudflare Pages)
 # =============================================================================
 
+# =============================================================================
+# CLOUDFLARE WORKER PROXY ROUTE STUBS
+# =============================================================================
+
+@app.route('/api/v1/ecosystem', methods=['GET'])
+def api_v1_ecosystem_redirect():
+    """Redirect alias for /api/ecosystem (Cloudflare Worker compat)."""
+    from flask import redirect
+    return redirect('/api/ecosystem' + ('?' + request.query_string.decode() if request.query_string else ''), code=307)
+
+@app.route('/api/rankings/states', methods=['GET'])
+def api_rankings_states():
+    """Facility counts grouped by state."""
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT state, COUNT(*) as facility_count FROM facilities WHERE state IS NOT NULL AND state != '' GROUP BY state ORDER BY facility_count DESC")
+        rows = c.fetchall()
+        conn.close()
+        states = [{"state": r[0], "facility_count": r[1]} for r in rows]
+        return jsonify({"success": True, "data": states, "total": len(states)})
+    except Exception as e:
+        logger.warning(f"rankings/states error: {e}")
+        return jsonify({"success": True, "data": [], "total": 0, "note": "temporary fallback"})
+
+@app.route('/api/v1/infrastructure', methods=['GET'])
+def api_v1_infrastructure():
+    """Infrastructure asset counts."""
+    counts = {}
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        for table in ['substations', 'transmission_lines', 'gas_pipelines', 'power_plants']:
+            try:
+                c.execute(f"SELECT COUNT(*) FROM {table}")
+                counts[table] = c.fetchone()[0]
+            except Exception:
+                conn.rollback()
+                counts[table] = 0
+        conn.close()
+    except Exception as e:
+        logger.warning(f"infrastructure count error: {e}")
+    return jsonify({"success": True, "data": counts})
+
+@app.route('/api/v1/energy/summary', methods=['GET'])
+def api_v1_energy_summary():
+    """Energy infrastructure summary from power_plants and gas_pipelines."""
+    summary = {"power_plants": {}, "gas_pipelines": {}}
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        try:
+            c.execute("SELECT COUNT(*) FROM power_plants")
+            summary["power_plants"]["total"] = c.fetchone()[0]
+            c.execute("SELECT primary_fuel, COUNT(*) FROM power_plants WHERE primary_fuel IS NOT NULL GROUP BY primary_fuel ORDER BY COUNT(*) DESC LIMIT 10")
+            summary["power_plants"]["by_fuel"] = [{"fuel": r[0], "count": r[1]} for r in c.fetchall()]
+        except Exception:
+            conn.rollback()
+            summary["power_plants"] = {"total": 0, "by_fuel": []}
+        try:
+            c.execute("SELECT COUNT(*) FROM gas_pipelines")
+            summary["gas_pipelines"]["total"] = c.fetchone()[0]
+        except Exception:
+            conn.rollback()
+            summary["gas_pipelines"] = {"total": 0}
+        conn.close()
+    except Exception as e:
+        logger.warning(f"energy summary error: {e}")
+    return jsonify({"success": True, "data": summary})
+
+@app.route('/api/v1/gdci', methods=['GET'])
+def api_v1_gdci():
+    """Global Data Center Composite Index — static market scores."""
+    markets = [
+        {"market": "Northern Virginia", "country": "US", "score": 94, "rank": 1, "capacity_mw": 12500, "growth": "moderate"},
+        {"market": "Dallas", "country": "US", "score": 89, "rank": 2, "capacity_mw": 8200, "growth": "strong"},
+        {"market": "Chicago", "country": "US", "score": 86, "rank": 3, "capacity_mw": 4800, "growth": "moderate"},
+        {"market": "Silicon Valley", "country": "US", "score": 85, "rank": 4, "capacity_mw": 4200, "growth": "constrained"},
+        {"market": "Phoenix", "country": "US", "score": 84, "rank": 5, "capacity_mw": 3800, "growth": "strong"},
+        {"market": "London", "country": "UK", "score": 83, "rank": 6, "capacity_mw": 3500, "growth": "moderate"},
+        {"market": "Frankfurt", "country": "DE", "score": 82, "rank": 7, "capacity_mw": 3200, "growth": "moderate"},
+        {"market": "Amsterdam", "country": "NL", "score": 81, "rank": 8, "capacity_mw": 2800, "growth": "constrained"},
+        {"market": "Singapore", "country": "SG", "score": 80, "rank": 9, "capacity_mw": 2600, "growth": "constrained"},
+        {"market": "Tokyo", "country": "JP", "score": 79, "rank": 10, "capacity_mw": 2400, "growth": "moderate"},
+    ]
+    return jsonify({"success": True, "data": markets, "index_version": "2.0", "last_updated": "2026-03-28"})
+
+@app.route('/api/energy-discovery/overview', methods=['GET'])
+def api_energy_discovery_overview():
+    """Energy discovery overview — power plant and substation counts."""
+    overview = {"power_plants": 0, "substations": 0}
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        for table in ['power_plants', 'substations']:
+            try:
+                c.execute(f"SELECT COUNT(*) FROM {table}")
+                overview[table] = c.fetchone()[0]
+            except Exception:
+                conn.rollback()
+        conn.close()
+    except Exception as e:
+        logger.warning(f"energy-discovery overview error: {e}")
+    return jsonify({"success": True, "data": overview})
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', '8080')), debug=False, use_reloader=False)
