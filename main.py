@@ -8056,21 +8056,33 @@ def compare_markets():
                 {RAILWAY_EXCLUSION}
             """, params)
             
-            stats = dict(c.fetchone())
-            
+            row = c.fetchone()
+            if row is None:
+                row = (0, 0, 0, 0, 0, 0, 0)
+            # Map tuple positions to named fields
+            stats = {
+                'facility_count': row[0] or 0,
+                'total_power': float(row[1] or 0),
+                'avg_power': float(row[2] or 0),
+                'max_power': float(row[3] or 0),
+                'provider_count': row[4] or 0,
+                'operational': row[5] or 0,
+                'pipeline': row[6] or 0,
+            }
+
             # Top 5 providers
             c.execute(f"""
                 SELECT provider, COUNT(*) as count
-                FROM discovered_facilities 
+                FROM discovered_facilities
                 WHERE ({where_clause}) AND provider != ''
                 {RAILWAY_EXCLUSION}
                 GROUP BY provider
                 ORDER BY count DESC
                 LIMIT 5
             """, params)
-            
+
             top_providers = [r[0] for r in _rows_to_tuples(c.fetchall())]
-            
+
             comparison.append({
                 'market': market,
                 'display_name': market.replace('_', ' ').title(),
@@ -8080,8 +8092,8 @@ def compare_markets():
                     'avg_power_mw': round(stats['avg_power'], 1),
                     'max_power_mw': round(stats['max_power'], 1),
                     'providers': stats['provider_count'],
-                    'operational': stats['operational'] or 0,
-                    'pipeline': stats['pipeline'] or 0
+                    'operational': stats['operational'],
+                    'pipeline': stats['pipeline']
                 },
                 'top_providers': top_providers
             })
