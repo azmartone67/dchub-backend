@@ -2280,7 +2280,7 @@ try:
     # CRM admin routes
     try:
         from routes.crm_routes import register_crm_routes
-        register_crm_routes(app, get_db_connection, require_admin)
+        register_crm_routes(app, get_db, require_admin)
     except Exception as e:
         print(f"[CRM] Failed to load CRM routes: {e}")
     print("KMZ Processor: Available")
@@ -13383,30 +13383,30 @@ except ImportError:
     print("⚠️ facility_auto_approve.py not found — auto-approve disabled")
 except Exception as e:
     print(f"⚠️ Facility Auto-Approve error: {e}")
+# DISABLED (duplicate) 
+# DISABLED (duplicate) try:
+# DISABLED (duplicate)     from routes.rankings_routes import rankings_bp, _register_rankings_routes
+# DISABLED (duplicate)     _register_rankings_routes(rankings_bp, get_db_connection=get_pg_connection)
+# DISABLED (duplicate)     app.register_blueprint(rankings_bp)
+# DISABLED (duplicate)     print("📊 Rankings Series Blueprint: ✅ Registered (5 routes)")
+# DISABLED (duplicate) except Exception as e:
+# DISABLED (duplicate)     print(f"❌ Rankings blueprint failed: {e}")
 
+# Energy Discovery Routes (Land & Power map integration)
 try:
-    from routes.rankings_routes import rankings_bp, _register_rankings_routes
-    _register_rankings_routes(rankings_bp, get_db_connection=get_pg_connection)
-    app.register_blueprint(rankings_bp)
-    print("📊 Rankings Series Blueprint: ✅ Registered (5 routes)")
+    from routes.energy_discovery_routes import energy_discovery_bp
+    app.register_blueprint(energy_discovery_bp)
+    print("⚡ Energy Discovery Blueprint: ✅ Registered (6 routes)")
 except Exception as e:
-    print(f"❌ Rankings blueprint failed: {e}")
+    print(f"❌ Energy Discovery blueprint failed: {e}")
 
-    # Energy Discovery Routes (Land & Power map integration)
-    try:
-        from routes.energy_discovery_routes import energy_discovery_bp
-        app.register_blueprint(energy_discovery_bp)
-        print("⚡ Energy Discovery Blueprint: ✅ Registered (6 routes)")
-    except Exception as e:
-        print(f"❌ Energy Discovery blueprint failed: {e}")
-
-    # Visit Tracking Routes
-    try:
-        from routes.track_routes import track_bp
-        app.register_blueprint(track_bp)
-        print("📊 Visit Tracking Blueprint: ✅ Registered (1 route)")
-    except Exception as e:
-        print(f"❌ Track blueprint failed: {e}")
+# Visit Tracking Routes
+try:
+    from routes.track_routes import track_bp
+    app.register_blueprint(track_bp)
+    print("📊 Visit Tracking Blueprint: ✅ Registered (1 route)")
+except Exception as e:
+    print(f"❌ Track blueprint failed: {e}")
 
 @app.route('/api/v1/plan-sync.js')
 def serve_plan_sync():
