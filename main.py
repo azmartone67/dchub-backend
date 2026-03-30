@@ -1635,9 +1635,11 @@ logger.info("📦 Loading feature modules...")
 try:
     from land_power_rate_limiting import setup_land_power_routes
     logger.info("  ✅ land_power_rate_limiting")
-except ImportError as e:
+except Exception as e:
+    import traceback
     setup_land_power_routes = None
-    logger.warning(f"  ⚠️ land_power_rate_limiting: {e}")
+    logger.warning(f"  ⚠️ land_power_rate_limiting: {type(e).__name__}: {e}")
+    logger.warning(traceback.format_exc())
 
 try:
     from energy_infrastructure_routes import setup_energy_routes
@@ -1733,9 +1735,11 @@ except ImportError as e:
 try:
     from land_power_routes import register_land_power_api
     logger.info("  ✅ land_power_routes")
-except ImportError as e:
+except Exception as e:
+    import traceback
     register_land_power_api = None
-    logger.warning(f"  ⚠️ land_power_routes: {e}")
+    logger.warning(f"  ⚠️ land_power_routes: {type(e).__name__}: {e}")
+    logger.warning(traceback.format_exc())
 
 try:
     from land_power_crawler import register_land_power_routes, init_land_power_tables
@@ -2319,6 +2323,29 @@ try:
     logger.info("✅ Google & Meta AI integration routes configured")
 except Exception as e:
     logger.warning(f"Google & Meta routes failed: {e}")
+
+# =============================================================================
+# ADMIN DECORATOR — used by land_power_crawler and crm_routes
+# =============================================================================
+def require_admin(f):
+    """Decorator that checks X-Admin-Key or X-Internal-Key headers."""
+    from functools import wraps
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        admin_key = request.headers.get('X-Admin-Key', '')
+        internal_key = request.headers.get('X-Internal-Key', '')
+        expected_admin = os.environ.get('DCHUB_ADMIN_KEY', '')
+        expected_internal = os.environ.get('DCHUB_INTERNAL_KEY', '')
+        expected_sync = os.environ.get('DCHUB_SYNC_KEY', '')
+        if not (
+            (admin_key and admin_key == expected_admin) or
+            (internal_key and internal_key in (expected_internal, expected_sync))
+        ):
+            return jsonify({'error': 'unauthorized', 'success': False}), 403
+        return f(*args, **kwargs)
+    return decorated
+
+logger.info("✅ require_admin decorator defined")
 
 # =============================================================================
 # BLUEPRINT REGISTRATIONS - All wrapped in try/except
@@ -5329,6 +5356,7 @@ def crawler_stats():
         resp.headers['Access-Control-Allow-Headers'] = 'Content-Type'
         return resp
 
+    conn = None
     try:
         conn = get_read_db(CRAWLER_DB_PATH)
         cursor = conn.cursor()
@@ -5345,8 +5373,6 @@ def crawler_stats():
 
         cursor.execute('SELECT crawler_name, crawler_family, path, ip_address, timestamp FROM crawler_visits ORDER BY timestamp DESC LIMIT 50')
         recent = [dict(row) for row in cursor.fetchall()]
-
-        conn.close()
 
         # Build response matching what agent-hub.html expects
         stats = {}
@@ -5380,6 +5406,10 @@ def crawler_stats():
             'recent_visits': [],
             'summary': {'google_visits': 0, 'meta_visits': 0, 'last_24_hours': 0, 'total': 0}
         })
+    finally:
+        if conn:
+            try: conn.close()
+            except Exception: pass
 
 @app.route('/api/crawlers/recent', methods=['GET', 'OPTIONS'])
 def crawler_recent():
@@ -5391,16 +5421,20 @@ def crawler_recent():
         resp.headers['Access-Control-Allow-Headers'] = 'Content-Type'
         return resp
 
+    conn = None
     try:
         limit = min(int(request.args.get('limit', 100)), 500)
         conn = get_read_db(CRAWLER_DB_PATH)
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM crawler_visits ORDER BY timestamp DESC LIMIT %s', (limit,))
         visits = [dict(row) for row in cursor.fetchall()]
-        conn.close()
         return jsonify({'success': True, 'visits': visits, 'count': len(visits)})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e), 'visits': [], 'count': 0})
+    finally:
+        if conn:
+            try: conn.close()
+            except Exception: pass
 
 logger.info("✅ Crawler tracking system registered (/api/crawlers/stats, /api/crawlers/recent)")
 
@@ -6314,10 +6348,11 @@ def submit_partner_inquiry():
     
     inquiry_id = secrets.token_hex(8)
     
+    conn = None
     try:
         conn = get_db()
         c = conn.cursor()
-        
+
         # Save to database
         c.execute("""
             INSERT INTO partner_inquiries (id, name, email, company, partner_type, message, created_at)
@@ -6331,7 +6366,7 @@ def submit_partner_inquiry():
             message,
             datetime.utcnow().isoformat()
         ))
-        
+
         # Also add to leads if not exists
         c.execute("SELECT id FROM leads WHERE email = %s", (email,))
         if not c.fetchone():
@@ -6347,13 +6382,12 @@ def submit_partner_inquiry():
         else:
             # Update existing lead score
             c.execute("""
-                UPDATE leads SET lead_score = lead_score + 30, last_activity = %s, 
+                UPDATE leads SET lead_score = lead_score + 30, last_activity = %s,
                 source_detail = COALESCE(source_detail, '') || ',partner_inquiry'
                 WHERE email = %s
             """, (datetime.utcnow().isoformat(), email))
-        
+
         conn.commit()
-        conn.close()
         
         # Log to console immediately (visible in Replit logs)
         print("\n" + "="*60)
@@ -6368,12 +6402,13 @@ def submit_partner_inquiry():
         print("="*60 + "\n")
         
         # Try to send notification email
+        conn2 = None
         try:
             if EMAIL_SERVICE_AVAILABLE:
                 # Queue notification email to admin
                 conn2 = get_db()
                 c2 = conn2.cursor()
-                
+
                 email_body = f"""
                 <h1>New Partner Inquiry</h1>
                 <p><strong>Name:</strong> {name}</p>
@@ -6387,7 +6422,7 @@ def submit_partner_inquiry():
                 <p>Submitted: {datetime.utcnow().isoformat()}</p>
                 <p><a href="https://dchub.cloud/admin.html">View all inquiries</a></p>
                 """
-                
+
                 c2.execute("""
                     INSERT INTO email_queue (id, email, template_name, subject, body_html, scheduled_at, status, created_at)
                     VALUES (?, ?, ?, ?, ?, ?, 'scheduled', ?)
@@ -6401,20 +6436,27 @@ def submit_partner_inquiry():
                     datetime.utcnow().isoformat()
                 ))
                 conn2.commit()
-                conn2.close()
                 print(f"📧 Partner inquiry email queued for jonathan@dchub.cloud")
         except Exception as e:
             print(f"Partner notification email error: {e}")
-        
+        finally:
+            if conn2:
+                try: conn2.close()
+                except Exception: pass
+
         return jsonify({
             'success': True,
             'message': 'Partnership inquiry received! We will be in touch soon.',
             'inquiry_id': inquiry_id
         })
-        
+
     except Exception as e:
         print(f"Partner inquiry error: {e}")
         return jsonify({'error': 'Failed to submit inquiry', 'details': str(e)}), 500
+    finally:
+        if conn:
+            try: conn.close()
+            except Exception: pass
 
 @app.route('/api/partner/inquiries', methods=['GET'])
 @require_auth
@@ -7011,18 +7053,21 @@ def founding_members_status():
     REGULAR_PRICE = 299
     
     claimed = 3  # Default fallback
-    
+    conn = None
     try:
         conn = get_db()
         c = conn.cursor()
         # Count users on the founding plan
         c.execute("SELECT COUNT(*) FROM users WHERE plan = 'founding'")
         db_count = _row_val(c.fetchone(), 0)
-        conn.close()
         if db_count > 0:
             claimed = db_count
     except Exception:
         pass  # Use fallback
+    finally:
+        if conn:
+            try: conn.close()
+            except Exception: pass
     
     remaining = FOUNDING_TOTAL - claimed
     
@@ -8011,21 +8056,33 @@ def compare_markets():
                 {RAILWAY_EXCLUSION}
             """, params)
             
-            stats = dict(c.fetchone())
-            
+            row = c.fetchone()
+            if row is None:
+                row = (0, 0, 0, 0, 0, 0, 0)
+            # Map tuple positions to named fields
+            stats = {
+                'facility_count': row[0] or 0,
+                'total_power': float(row[1] or 0),
+                'avg_power': float(row[2] or 0),
+                'max_power': float(row[3] or 0),
+                'provider_count': row[4] or 0,
+                'operational': row[5] or 0,
+                'pipeline': row[6] or 0,
+            }
+
             # Top 5 providers
             c.execute(f"""
                 SELECT provider, COUNT(*) as count
-                FROM discovered_facilities 
+                FROM discovered_facilities
                 WHERE ({where_clause}) AND provider != ''
                 {RAILWAY_EXCLUSION}
                 GROUP BY provider
                 ORDER BY count DESC
                 LIMIT 5
             """, params)
-            
+
             top_providers = [r[0] for r in _rows_to_tuples(c.fetchall())]
-            
+
             comparison.append({
                 'market': market,
                 'display_name': market.replace('_', ' ').title(),
@@ -8035,8 +8092,8 @@ def compare_markets():
                     'avg_power_mw': round(stats['avg_power'], 1),
                     'max_power_mw': round(stats['max_power'], 1),
                     'providers': stats['provider_count'],
-                    'operational': stats['operational'] or 0,
-                    'pipeline': stats['pipeline'] or 0
+                    'operational': stats['operational'],
+                    'pipeline': stats['pipeline']
                 },
                 'top_providers': top_providers
             })
@@ -8085,9 +8142,10 @@ def generate_report():
     
     # Capture lead if email provided
     if email:
+        _lead_conn = None
         try:
-            conn = get_db()
-            c = conn.cursor()
+            _lead_conn = get_db()
+            c = _lead_conn.cursor()
             c.execute("SELECT id FROM leads WHERE email = %s", (email,))
             if not c.fetchone():
                 lead_id = secrets.token_hex(8)
@@ -8098,17 +8156,21 @@ def generate_report():
             else:
                 c.execute("UPDATE leads SET lead_score = lead_score + 25, last_activity = %s WHERE email = %s",
                          (datetime.utcnow().isoformat(), email))
-            conn.commit()
-            conn.close()
+            _lead_conn.commit()
         except:
             pass
+        finally:
+            if _lead_conn:
+                try: _lead_conn.close()
+                except Exception: pass
     
     # Generate report
     report_id = secrets.token_hex(8)
     
+    conn = None
     try:
         pdf_buffer = generate_market_pdf(markets, report_type)
-        
+
         # Save report record
         conn = get_db()
         c = conn.cursor()
@@ -8125,8 +8187,7 @@ def generate_report():
             datetime.utcnow().isoformat()
         ))
         conn.commit()
-        conn.close()
-        
+
         # Return PDF
         pdf_buffer.seek(0)
         return send_file(
@@ -8135,9 +8196,13 @@ def generate_report():
             as_attachment=True,
             download_name=f'dc-hub-{"-".join(markets)}-report.pdf'
         )
-        
+
     except Exception as e:
         return jsonify({'error': f'Report generation failed: {str(e)}', 'code': 'GENERATION_ERROR'}), 500
+    finally:
+        if conn:
+            try: conn.close()
+            except Exception: pass
 
 def generate_market_pdf(markets, report_type):
     """Generate the actual PDF report"""
@@ -8403,11 +8468,13 @@ def get_ai_platforms_status():
 @app.route('/api/v1/ambassador/log', methods=['POST'])
 def log_ambassador_broadcast():
     data = request.get_json(silent=True) or {}
+    db = None
     try:
         db = get_db()
-        db.execute('''INSERT INTO ambassador_broadcasts
+        c = db.cursor()
+        c.execute('''INSERT INTO ambassador_broadcasts
             (platform, action, endpoint, status_code, success, response_snippet, duration_ms)
-            VALUES (?, ?, ?, ?, ?, ?, ?)''',
+            VALUES (%s, %s, %s, %s, %s, %s, %s)''',
             (data.get('platform', 'unknown'),
              data.get('action', 'ping'),
              data.get('endpoint', ''),
@@ -8416,54 +8483,62 @@ def log_ambassador_broadcast():
              str(data.get('response', ''))[:500],
              data.get('duration_ms', 0)))
         db.commit()
-        db.close()
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if db:
+            try: db.close()
+            except Exception: pass
 
 @app.route('/api/v1/mcp/analytics', methods=['GET'])
 def mcp_analytics():
+    db = None
     try:
         db = get_db()
+        c = db.cursor()
+        c.execute("SET statement_timeout = '10s'")
         hours = request.args.get('hours', 24, type=int)
         since = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
 
-        total_calls = _row_val(db.execute(
-            'SELECT COUNT(*) FROM mcp_tool_calls WHERE created_at > ?', (since,)
-        ).fetchone(), 0)
+        c.execute('SELECT COUNT(*) FROM mcp_tool_calls WHERE created_at > %s', (since,))
+        total_calls = _row_val(c.fetchone(), 0)
 
-        tool_breakdown = db.execute('''
+        c.execute('''
             SELECT tool_name, COUNT(*) as count, AVG(response_time_ms) as avg_ms
-            FROM mcp_tool_calls WHERE created_at > ?
+            FROM mcp_tool_calls WHERE created_at > %s
             GROUP BY tool_name ORDER BY count DESC
-        ''', (since,)).fetchall()
+        ''', (since,))
+        tool_breakdown = c.fetchall()
 
-        platform_breakdown = db.execute('''
+        c.execute('''
             SELECT platform, COUNT(*) as count
-            FROM mcp_tool_calls WHERE created_at > ?
+            FROM mcp_tool_calls WHERE created_at > %s
             GROUP BY platform ORDER BY count DESC
-        ''', (since,)).fetchall()
+        ''', (since,))
+        platform_breakdown = c.fetchall()
 
-        connections = db.execute('''
-            SELECT platform, client_name, client_version, method, 
+        c.execute('''
+            SELECT platform, client_name, client_version, method,
                    COUNT(*) as count, MAX(created_at) as last_seen
-            FROM mcp_connections WHERE created_at > ?
-            GROUP BY platform, client_name ORDER BY last_seen DESC
-        ''', (since,)).fetchall()
+            FROM mcp_connections WHERE created_at > %s
+            GROUP BY platform, client_name, client_version, method ORDER BY last_seen DESC
+        ''', (since,))
+        connections = c.fetchall()
 
-        hourly = db.execute('''
-            SELECT strftime('%Y-%m-%d %H:00', created_at) as hour, COUNT(*) as count
-            FROM mcp_tool_calls WHERE created_at > ?
+        c.execute('''
+            SELECT to_char(created_at, 'YYYY-MM-DD HH24:00') as hour, COUNT(*) as count
+            FROM mcp_tool_calls WHERE created_at > %s
             GROUP BY hour ORDER BY hour
-        ''', (since,)).fetchall()
+        ''', (since,))
+        hourly = c.fetchall()
 
-        recent = db.execute('''
-            SELECT tool_name, platform, client_name, params, 
+        c.execute('''
+            SELECT tool_name, platform, client_name, params,
                    response_time_ms, created_at
             FROM mcp_tool_calls ORDER BY created_at DESC LIMIT 20
-        ''').fetchall()
-
-        db.close()
+        ''')
+        recent = c.fetchall()
 
         return jsonify({
             "success": True,
@@ -8484,27 +8559,36 @@ def mcp_analytics():
         })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if db:
+            try: db.close()
+            except Exception: pass
 
 @app.route('/api/v1/mcp/platforms', methods=['GET'])
 def mcp_platforms_status():
+    db = None
     try:
         db = get_db()
+        c = db.cursor()
+        c.execute("SET statement_timeout = '10s'")
 
-        platforms = db.execute('''
-            SELECT platform, 
+        c.execute('''
+            SELECT platform,
                    COUNT(*) as total_calls,
                    MAX(created_at) as last_seen,
                    MIN(created_at) as first_seen
-            FROM mcp_connections 
+            FROM mcp_connections
             GROUP BY platform ORDER BY last_seen DESC
-        ''').fetchall()
+        ''')
+        platforms = c.fetchall()
 
-        broadcasts = db.execute('''
-            SELECT platform, action, success, status_code, 
+        c.execute('''
+            SELECT platform, action, success, status_code,
                    created_at, duration_ms
-            FROM ambassador_broadcasts 
+            FROM ambassador_broadcasts
             ORDER BY created_at DESC LIMIT 50
-        ''').fetchall()
+        ''')
+        broadcasts = c.fetchall()
 
         platform_list = []
         for p in platforms:
@@ -8529,8 +8613,6 @@ def mcp_platforms_status():
                     "last_seen": None, "first_seen": None, "status": "pending"
                 })
 
-        db.close()
-
         return jsonify({
             "success": True,
             "platforms": platform_list,
@@ -8546,6 +8628,10 @@ def mcp_platforms_status():
         })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if db:
+            try: db.close()
+            except Exception: pass
 
 @app.route('/api/v1/energy/discovery/status', methods=['GET'])
 def energy_discovery_status_inline():
@@ -10125,12 +10211,12 @@ def capacity_map_page():
 @app.route('/news')
 @app.route('/news.html')
 def news_page():
+    conn = None
     try:
         conn = get_db()
         rows = conn.execute(
             "SELECT title, summary, published_date, source FROM announcements ORDER BY published_date DESC LIMIT 20"
         ).fetchall()
-        conn.close()
         seo_block = '\n'.join(
             f'<article><h3>{html_escape(str(row["title"] or ""))}</h3><p>{html_escape(str(row["summary"] or "")[:200])}</p>'
             f'<time>{html_escape(str(row["published_date"] or ""))}</time><span>{html_escape(str(row["source"] or "DC Hub"))}</span></article>'
@@ -10138,6 +10224,10 @@ def news_page():
         )
     except Exception:
         seo_block = ''
+    finally:
+        if conn:
+            try: conn.close()
+            except Exception: pass
     with open('static/news.html', 'r') as f:
         html = f.read()
     seo_section = f'<div id="seo-prerender" style="display:none" aria-hidden="false"><h1>Data Center Industry News</h1>{seo_block}</div>'
@@ -10280,33 +10370,32 @@ def api_signup():
     if not company:
         return jsonify({'success': False, 'error': 'Company name required'}), 400
     
+    conn = None
     try:
         conn = get_db()
         c = conn.cursor()
-        
+
         c.execute("SELECT id FROM api_keys WHERE user_id = %s", (email,))
         existing = c.fetchone()
         if existing:
-            conn.close()
             return jsonify({'success': False, 'error': 'Email already registered. Contact support for key recovery.'}), 400
-        
+
         api_key = f"dchub_{secrets.token_urlsafe(32)}"
         key_hash = hashlib.sha256(api_key.encode()).hexdigest()
         key_prefix = api_key[:12]
-        
+
         c.execute("""
             INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions, rate_limit_tier, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (email, key_hash, key_prefix, company, '["read"]', 'free', datetime.utcnow().isoformat()))
-        
+
         c.execute("""
             INSERT OR IGNORE INTO signups (email, company, use_case, created_at, source)
             VALUES (?, ?, ?, ?, 'api_signup')
         """, (email, company, usecase, datetime.utcnow().isoformat()))
-        
+
         conn.commit()
-        conn.close()
-        
+
         try:
             from db_persistence import sync_on_write
             sync_on_write('api_keys')
@@ -10314,7 +10403,7 @@ def api_signup():
             pass
 
         logger.info(f"New API signup: {email} ({company})")
-        
+
         return jsonify({
             'success': True,
             'api_key': api_key,
@@ -10322,10 +10411,14 @@ def api_signup():
             'rate_limit': '100 requests/month',
             'docs': '/api-docs'
         })
-        
+
     except Exception as e:
         logger.error(f"Signup error: {e}")
         return jsonify({'success': False, 'error': 'Signup failed. Please try again.'}), 500
+    finally:
+        if conn:
+            try: conn.close()
+            except Exception: pass
 
 # =============================================================================
 # API ALIASES (Frontend Compatibility)
@@ -11089,6 +11182,7 @@ except Exception as e:
 @require_plan('pro')
 def fiber_sources():
     """List all fiber data sources and their status"""
+    conn = None
     try:
         conn = get_db()
         cursor = conn.cursor()
@@ -11116,11 +11210,14 @@ def fiber_sources():
             metro_stats = {'total_records': 0, 'carriers': 0, 'markets': 0, 'total_route_miles': 0}
         cursor.execute('SELECT COUNT(*) FROM fiber_routes')
         total = _row_val(cursor.fetchone(), 0)
-        conn.close()
 
         return jsonify({"success": True, "total_routes": total, "sources": sources})
     except Exception as e:
         return jsonify({"success": True, "total_routes": 0, "sources": [], "note": str(e)})
+    finally:
+        if conn:
+            try: conn.close()
+            except Exception: pass
 
 @app.route('/api/v1/fiber/routes', methods=['GET'])
 @require_plan('pro')
@@ -11128,6 +11225,7 @@ def fiber_routes_api():
     """Get fiber routes with optional filtering, returns GeoJSON"""
     carrier = request.args.get('carrier')
     route_type = request.args.get('type')
+    conn = None
 
     try:
         conn = get_db()
@@ -11146,7 +11244,6 @@ def fiber_routes_api():
         cursor.execute(query, params)
         columns = [desc[0] for desc in cursor.description]
         rows = cursor.fetchall()
-        conn.close()
 
         features = []
         for row in rows:
@@ -11184,6 +11281,10 @@ def fiber_routes_api():
         })
     except Exception as e:
         return jsonify({"type": "FeatureCollection", "features": [], "total": 0, "note": str(e)})
+    finally:
+        if conn:
+            try: conn.close()
+            except Exception: pass
 
 logger.info("✅ Fiber routes endpoints registered: /api/v1/fiber/sources, /api/v1/fiber/routes")
 
@@ -14203,16 +14304,20 @@ def api_site_score():
              if request.headers.get('Authorization', '').startswith('Bearer ') else '')
         )
         if _api_key and _api_key.startswith('dchub_'):
+            _kconn = None
             try:
                 _kconn = get_read_db()
                 _kc = _kconn.cursor()
                 _kc.execute("SELECT u.plan FROM api_keys ak JOIN users u ON ak.user_id = u.id WHERE ak.key_value = %s AND ak.is_active = TRUE LIMIT 1", (_api_key,))
                 _krow = _kc.fetchone()
-                _kconn.close()
                 if _krow and _row_val(_krow, '') in ('pro', 'enterprise', 'developer'):
                     _authed = True
             except Exception as _ke:
                 logger.warning(f"site-score key lookup failed: {_ke}")
+            finally:
+                if _kconn:
+                    try: _kconn.close()
+                    except Exception: pass
         if not _authed:
             user = getattr(request, "current_user", None)
             plan = (user or {}).get("plan", "free") if isinstance(user, dict) else "free"
