@@ -1031,6 +1031,9 @@ REGION_ALIASES = {
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 
+from backend_patch_mcp_routes import register_mcp_v1_routes
+register_mcp_v1_routes(app)
+
 # Redis cache routes
 try:
     if REDIS_AVAILABLE:
