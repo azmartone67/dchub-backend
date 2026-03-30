@@ -121,55 +121,53 @@ ALERT_LIMITS = {
 def init_alerts_v2_table():
     """Initialize enhanced alerts table"""
     conn = get_db()
-    try:
-        c = conn.cursor()
-
-        # Enhanced alerts table with JSON criteria
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS alerts_v2 (
-                id SERIAL PRIMARY KEY,
-                user_id TEXT NOT NULL,
-                name TEXT,
-                alert_type TEXT NOT NULL,
-                criteria TEXT NOT NULL,
-                enabled INTEGER DEFAULT 1,
-                email_notify INTEGER DEFAULT 1,
-                push_notify INTEGER DEFAULT 0,
-                webhook_url TEXT,
-                frequency TEXT DEFAULT 'instant',
-                created_at TEXT,
-                updated_at TEXT,
-                last_triggered TEXT,
-                last_checked TEXT,
-                trigger_count INTEGER DEFAULT 0,
-                UNIQUE(user_id, alert_type, criteria)
-            )
-        """)
-
-        # Alert history for tracking what was sent
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS alert_history (
-                id SERIAL PRIMARY KEY,
-                alert_id INTEGER NOT NULL,
-                user_id TEXT NOT NULL,
-                triggered_at TEXT NOT NULL,
-                trigger_reason TEXT,
-                email_sent INTEGER DEFAULT 0,
-                email_sent_at TEXT,
-                data_snapshot TEXT,
-                FOREIGN KEY (alert_id) REFERENCES alerts_v2(id)
-            )
-        """)
-
-        # Index for faster queries
-        c.execute("CREATE INDEX IF NOT EXISTS idx_alerts_v2_user ON alerts_v2(user_id)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_alerts_v2_type ON alerts_v2(alert_type)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_alerts_v2_enabled ON alerts_v2(enabled)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_alert_history_alert ON alert_history(alert_id)")
-
-        conn.commit()
-    finally:
-        conn.close()
+    c = conn.cursor()
+    
+    # Enhanced alerts table with JSON criteria
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS alerts_v2 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            name TEXT,
+            alert_type TEXT NOT NULL,
+            criteria TEXT NOT NULL,
+            enabled INTEGER DEFAULT 1,
+            email_notify INTEGER DEFAULT 1,
+            push_notify INTEGER DEFAULT 0,
+            webhook_url TEXT,
+            frequency TEXT DEFAULT 'instant',
+            created_at TEXT,
+            updated_at TEXT,
+            last_triggered TEXT,
+            last_checked TEXT,
+            trigger_count INTEGER DEFAULT 0,
+            UNIQUE(user_id, alert_type, criteria)
+        )
+    """)
+    
+    # Alert history for tracking what was sent
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS alert_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            alert_id INTEGER NOT NULL,
+            user_id TEXT NOT NULL,
+            triggered_at TEXT NOT NULL,
+            trigger_reason TEXT,
+            email_sent INTEGER DEFAULT 0,
+            email_sent_at TEXT,
+            data_snapshot TEXT,
+            FOREIGN KEY (alert_id) REFERENCES alerts_v2(id)
+        )
+    """)
+    
+    # Index for faster queries
+    c.execute("CREATE INDEX IF NOT EXISTS idx_alerts_v2_user ON alerts_v2(user_id)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_alerts_v2_type ON alerts_v2(alert_type)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_alerts_v2_enabled ON alerts_v2(enabled)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_alert_history_alert ON alert_history(alert_id)")
+    
+    conn.commit()
+    conn.close()
     print("✅ Alerts v2 tables initialized")
 
 # =============================================================================
@@ -321,8 +319,8 @@ def check_market_watch_alert(criteria, last_checked):
         query = """
             SELECT COUNT(*) as count, SUM(COALESCE(capacity_mw, 0)) as total_mw
             FROM facilities
-            WHERE (market LIKE %s OR city LIKE %s OR state LIKE %s)
-            AND created_at > %s
+            WHERE (market LIKE ? OR city LIKE ? OR state LIKE ?)
+            AND created_at > ?
         """
         market_pattern = f'%{market}%'
         check_time = last_checked or (datetime.utcnow() - timedelta(days=1)).isoformat()
@@ -366,8 +364,8 @@ def check_operator_watch_alert(criteria, last_checked):
         c.execute("""
             SELECT COUNT(*) as count
             FROM facilities
-            WHERE provider LIKE %s
-            AND created_at > %s
+            WHERE provider LIKE ?
+            AND created_at > ?
         """, (f'%{operator}%', check_time))
         fac_row = c.fetchone()
         
@@ -379,8 +377,8 @@ def check_operator_watch_alert(criteria, last_checked):
             c.execute("""
                 SELECT COUNT(*) as count
                 FROM news
-                WHERE (title LIKE %s OR content LIKE %s)
-                AND published_at > %s
+                WHERE (title LIKE ? OR content LIKE ?)
+                AND published_at > ?
             """, (f'%{operator}%', f'%{operator}%', check_time))
             news_row = c.fetchone()
             
@@ -415,7 +413,7 @@ def check_capacity_threshold_alert(criteria, last_checked):
         c.execute("""
             SELECT SUM(COALESCE(capacity_mw, 0)) as total_mw
             FROM facilities
-            WHERE market LIKE %s OR city LIKE %s
+            WHERE market LIKE ? OR city LIKE ?
         """, (f'%{market}%', f'%{market}%'))
         row = c.fetchone()
         
@@ -456,16 +454,16 @@ def check_deal_watch_alert(criteria, last_checked):
         check_time = last_checked or (datetime.utcnow() - timedelta(days=1)).isoformat()
         
         # Build query dynamically
-        query = "SELECT * FROM deals WHERE created_at > %s"
+        query = "SELECT * FROM deals WHERE created_at > ?"
         params = [check_time]
         
         if deal_types:
-            placeholders = ','.join(['%s' for _ in deal_types])
+            placeholders = ','.join(['?' for _ in deal_types])
             query += f" AND deal_type IN ({placeholders})"
             params.extend(deal_types)
         
         if min_value:
-            query += " AND value_usd >= %s"
+            query += " AND value_usd >= ?"
             params.append(min_value)
         
         c.execute(query, params)
@@ -514,7 +512,7 @@ def check_news_keyword_alert(criteria, last_checked):
         check_time = last_checked or (datetime.utcnow() - timedelta(days=1)).isoformat()
         
         # Build OR query for keywords
-        keyword_conditions = ' OR '.join(['title LIKE %s OR content LIKE %s' for _ in keywords])
+        keyword_conditions = ' OR '.join(['title LIKE ? OR content LIKE ?' for _ in keywords])
         params = []
         for kw in keywords:
             params.extend([f'%{kw}%', f'%{kw}%'])
@@ -523,7 +521,7 @@ def check_news_keyword_alert(criteria, last_checked):
             SELECT id, title, source, published_at
             FROM news
             WHERE ({keyword_conditions})
-            AND published_at > %s
+            AND published_at > ?
             ORDER BY published_at DESC
             LIMIT 10
         """
@@ -615,7 +613,7 @@ def process_all_alerts():
                 trigger_data = check_single_alert(alert_dict)
                 
                 # Update last_checked regardless
-                c.execute("UPDATE alerts_v2 SET last_checked = %s WHERE id = %s", 
+                c.execute("UPDATE alerts_v2 SET last_checked = ? WHERE id = ?", 
                          (now, alert_dict['id']))
                 
                 if trigger_data:
@@ -624,14 +622,14 @@ def process_all_alerts():
                     # Update alert stats
                     c.execute("""
                         UPDATE alerts_v2 
-                        SET last_triggered = %s, trigger_count = trigger_count + 1
-                        WHERE id = %s
+                        SET last_triggered = ?, trigger_count = trigger_count + 1
+                        WHERE id = ?
                     """, (now, alert_dict['id']))
                     
                     # Record in history
                     c.execute("""
                         INSERT INTO alert_history (alert_id, user_id, triggered_at, trigger_reason, data_snapshot)
-                        VALUES (%s, %s, %s, %s, %s)
+                        VALUES (?, ?, ?, ?, ?)
                     """, (
                         alert_dict['id'],
                         alert_dict['user_id'],
@@ -661,8 +659,8 @@ def process_all_alerts():
                             results['emails_sent'] += 1
                             c.execute("""
                                 UPDATE alert_history 
-                                SET email_sent = 1, email_sent_at = %s
-                                WHERE alert_id = %s AND triggered_at = %s
+                                SET email_sent = 1, email_sent_at = ?
+                                WHERE alert_id = ? AND triggered_at = ?
                             """, (now, alert_dict['id'], now))
                             
             except Exception as e:
@@ -731,27 +729,25 @@ def list_alerts():
     user_id = request.user['user_id']
     
     conn = get_db()
-    try:
-        c = conn.cursor()
-
-        c.execute("""
-            SELECT * FROM alerts_v2
-            WHERE user_id = %s
-            ORDER BY created_at DESC
-        """, (user_id,))
-
-        alerts = []
-        for row in c.fetchall():
-            alert = dict(row)
-            alert['criteria'] = json.loads(alert['criteria']) if alert['criteria'] else {}
-            alert['enabled'] = bool(alert['enabled'])
-            alert['email_notify'] = bool(alert['email_notify'])
-            alert['push_notify'] = bool(alert['push_notify'])
-            alert['type_info'] = ALERT_TYPES.get(alert['alert_type'], {})
-            alerts.append(alert)
-
-    finally:
-        conn.close()
+    c = conn.cursor()
+    
+    c.execute("""
+        SELECT * FROM alerts_v2
+        WHERE user_id = ?
+        ORDER BY created_at DESC
+    """, (user_id,))
+    
+    alerts = []
+    for row in c.fetchall():
+        alert = dict(row)
+        alert['criteria'] = json.loads(alert['criteria']) if alert['criteria'] else {}
+        alert['enabled'] = bool(alert['enabled'])
+        alert['email_notify'] = bool(alert['email_notify'])
+        alert['push_notify'] = bool(alert['push_notify'])
+        alert['type_info'] = ALERT_TYPES.get(alert['alert_type'], {})
+        alerts.append(alert)
+    
+    conn.close()
     
     return jsonify({
         'success': True,
@@ -789,13 +785,13 @@ def create_alert():
     
     try:
         # Check user's plan and alert limit
-        c.execute("SELECT plan FROM users WHERE id = %s", (user_id,))
+        c.execute("SELECT plan FROM users WHERE id = ?", (user_id,))
         user_row = c.fetchone()
         plan = user_row['plan'] if user_row else 'free'
         
         max_alerts = ALERT_LIMITS.get(plan, ALERT_LIMITS['free'])
         
-        c.execute("SELECT COUNT(*) as count FROM alerts_v2 WHERE user_id = %s", (user_id,))
+        c.execute("SELECT COUNT(*) as count FROM alerts_v2 WHERE user_id = ?", (user_id,))
         current_count = c.fetchone()['count']
         
         if current_count >= max_alerts:
@@ -811,7 +807,7 @@ def create_alert():
         criteria_json = json.dumps(criteria, sort_keys=True)
         c.execute("""
             SELECT id FROM alerts_v2 
-            WHERE user_id = %s AND alert_type = %s AND criteria = %s
+            WHERE user_id = ? AND alert_type = ? AND criteria = ?
         """, (user_id, alert_type, criteria_json))
         
         if c.fetchone():
@@ -822,7 +818,7 @@ def create_alert():
         now = datetime.utcnow().isoformat()
         c.execute("""
             INSERT INTO alerts_v2 (user_id, name, alert_type, criteria, email_notify, frequency, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             user_id,
             name or ALERT_TYPES[alert_type]['name'],
@@ -865,14 +861,12 @@ def get_alert(alert_id):
     user_id = request.user['user_id']
     
     conn = get_db()
-    try:
-        c = conn.cursor()
-
-        c.execute("SELECT * FROM alerts_v2 WHERE id = %s AND user_id = %s", (alert_id, user_id))
-        row = c.fetchone()
-
-        if not row:
-    finally:
+    c = conn.cursor()
+    
+    c.execute("SELECT * FROM alerts_v2 WHERE id = ? AND user_id = ?", (alert_id, user_id))
+    row = c.fetchone()
+    
+    if not row:
         conn.close()
         return jsonify({'error': 'Alert not found'}), 404
     
@@ -884,7 +878,7 @@ def get_alert(alert_id):
     # Get recent history
     c.execute("""
         SELECT * FROM alert_history
-        WHERE alert_id = %s
+        WHERE alert_id = ?
         ORDER BY triggered_at DESC
         LIMIT 10
     """, (alert_id,))
@@ -912,13 +906,11 @@ def update_alert(alert_id):
     data = request.get_json()
     
     conn = get_db()
-    try:
-        c = conn.cursor()
-
-        # Verify ownership
-        c.execute("SELECT id FROM alerts_v2 WHERE id = %s AND user_id = %s", (alert_id, user_id))
-        if not c.fetchone():
-    finally:
+    c = conn.cursor()
+    
+    # Verify ownership
+    c.execute("SELECT id FROM alerts_v2 WHERE id = ? AND user_id = ?", (alert_id, user_id))
+    if not c.fetchone():
         conn.close()
         return jsonify({'error': 'Alert not found'}), 404
     
@@ -927,31 +919,31 @@ def update_alert(alert_id):
     params = []
     
     if 'name' in data:
-        updates.append('name = %s')
+        updates.append('name = ?')
         params.append(data['name'])
     
     if 'criteria' in data:
-        updates.append('criteria = %s')
+        updates.append('criteria = ?')
         params.append(json.dumps(data['criteria'], sort_keys=True))
     
     if 'enabled' in data:
-        updates.append('enabled = %s')
+        updates.append('enabled = ?')
         params.append(1 if data['enabled'] else 0)
     
     if 'email_notify' in data:
-        updates.append('email_notify = %s')
+        updates.append('email_notify = ?')
         params.append(1 if data['email_notify'] else 0)
     
     if 'frequency' in data:
-        updates.append('frequency = %s')
+        updates.append('frequency = ?')
         params.append(data['frequency'])
     
     if updates:
-        updates.append('updated_at = %s')
+        updates.append('updated_at = ?')
         params.append(datetime.utcnow().isoformat())
         params.append(alert_id)
         
-        c.execute(f"UPDATE alerts_v2 SET {', '.join(updates)} WHERE id = %s", params)
+        c.execute(f"UPDATE alerts_v2 SET {', '.join(updates)} WHERE id = ?", params)
         conn.commit()
     
     conn.close()
@@ -965,19 +957,17 @@ def delete_alert(alert_id):
     user_id = request.user['user_id']
     
     conn = get_db()
-    try:
-        c = conn.cursor()
-
-        # Verify ownership
-        c.execute("SELECT id FROM alerts_v2 WHERE id = %s AND user_id = %s", (alert_id, user_id))
-        if not c.fetchone():
-    finally:
+    c = conn.cursor()
+    
+    # Verify ownership
+    c.execute("SELECT id FROM alerts_v2 WHERE id = ? AND user_id = ?", (alert_id, user_id))
+    if not c.fetchone():
         conn.close()
         return jsonify({'error': 'Alert not found'}), 404
     
     # Delete history first (foreign key)
-    c.execute("DELETE FROM alert_history WHERE alert_id = %s", (alert_id,))
-    c.execute("DELETE FROM alerts_v2 WHERE id = %s", (alert_id,))
+    c.execute("DELETE FROM alert_history WHERE alert_id = ?", (alert_id,))
+    c.execute("DELETE FROM alerts_v2 WHERE id = ?", (alert_id,))
     conn.commit()
     conn.close()
     
@@ -990,19 +980,17 @@ def test_alert(alert_id):
     user_id = request.user['user_id']
     
     conn = get_db()
-    try:
-        c = conn.cursor()
-
-        c.execute("""
-            SELECT a.*, u.email as user_email
-            FROM alerts_v2 a
-            LEFT JOIN users u ON a.user_id = u.id
-            WHERE a.id = %s AND a.user_id = %s
-        """, (alert_id, user_id))
-
-        row = c.fetchone()
-    finally:
-        conn.close()
+    c = conn.cursor()
+    
+    c.execute("""
+        SELECT a.*, u.email as user_email
+        FROM alerts_v2 a
+        LEFT JOIN users u ON a.user_id = u.id
+        WHERE a.id = ? AND a.user_id = ?
+    """, (alert_id, user_id))
+    
+    row = c.fetchone()
+    conn.close()
     
     if not row:
         return jsonify({'error': 'Alert not found'}), 404

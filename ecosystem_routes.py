@@ -3,6 +3,7 @@ DC Hub Ecosystem - Dynamic Partner Directory with AI Enrichment
 Companies can self-register and get AI-enhanced profiles
 """
 
+import sqlite3
 import json
 import os
 import re
@@ -36,93 +37,91 @@ COMPANY_CATEGORIES = [
 def init_ecosystem_tables():
     """Initialize ecosystem database tables"""
     conn = get_db()
-    try:
-        cursor = conn.cursor()
-
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS ecosystem_companies (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                description TEXT,
-                category TEXT,
-                subcategory TEXT,
-                website TEXT,
-                logo_url TEXT,
-                headquarters TEXT,
-                markets TEXT,
-                services TEXT,
-                contact_email TEXT,
-                linkedin_url TEXT,
-                twitter_url TEXT,
-                founded_year INTEGER,
-                employee_count TEXT,
-                facility_count INTEGER,
-                total_mw REAL,
-                verified INTEGER DEFAULT 0,
-                featured INTEGER DEFAULT 0,
-                ai_enriched INTEGER DEFAULT 0,
-                ai_summary TEXT,
-                ai_keywords TEXT,
-                submitted_by TEXT,
-                submitted_at TEXT,
-                approved_at TEXT,
-                updated_at TEXT,
-                status TEXT DEFAULT 'pending'
-            )
-        ''')
-
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS ecosystem_submissions (
-                id SERIAL PRIMARY KEY,
-                company_id TEXT,
-                submitted_at TEXT,
-                submitter_email TEXT,
-                submitter_name TEXT,
-                ip_address TEXT,
-                status TEXT DEFAULT 'pending',
-                notes TEXT
-            )
-        ''')
-
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS ecosystem_integrations (
-                id TEXT PRIMARY KEY,
-                company_id TEXT,
-                company_name TEXT,
-                api_key TEXT UNIQUE,
-                api_endpoint TEXT,
-                webhook_url TEXT,
-                data_types TEXT,
-                sync_direction TEXT DEFAULT 'pull',
-                sync_frequency TEXT DEFAULT 'daily',
-                last_sync TEXT,
-                sync_count INTEGER DEFAULT 0,
-                status TEXT DEFAULT 'pending',
-                created_at TEXT,
-                updated_at TEXT,
-                contact_email TEXT,
-                documentation_url TEXT,
-                FOREIGN KEY (company_id) REFERENCES ecosystem_companies(id)
-            )
-        ''')
-
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS integration_logs (
-                id SERIAL PRIMARY KEY,
-                integration_id TEXT,
-                action TEXT,
-                direction TEXT,
-                records_count INTEGER,
-                status TEXT,
-                error_message TEXT,
-                timestamp TEXT,
-                FOREIGN KEY (integration_id) REFERENCES ecosystem_integrations(id)
-            )
-        ''')
-
-        conn.commit()
-    finally:
-        conn.close()
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS ecosystem_companies (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT,
+            category TEXT,
+            subcategory TEXT,
+            website TEXT,
+            logo_url TEXT,
+            headquarters TEXT,
+            markets TEXT,
+            services TEXT,
+            contact_email TEXT,
+            linkedin_url TEXT,
+            twitter_url TEXT,
+            founded_year INTEGER,
+            employee_count TEXT,
+            facility_count INTEGER,
+            total_mw REAL,
+            verified INTEGER DEFAULT 0,
+            featured INTEGER DEFAULT 0,
+            ai_enriched INTEGER DEFAULT 0,
+            ai_summary TEXT,
+            ai_keywords TEXT,
+            submitted_by TEXT,
+            submitted_at TEXT,
+            approved_at TEXT,
+            updated_at TEXT,
+            status TEXT DEFAULT 'pending'
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS ecosystem_submissions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            company_id TEXT,
+            submitted_at TEXT,
+            submitter_email TEXT,
+            submitter_name TEXT,
+            ip_address TEXT,
+            status TEXT DEFAULT 'pending',
+            notes TEXT
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS ecosystem_integrations (
+            id TEXT PRIMARY KEY,
+            company_id TEXT,
+            company_name TEXT,
+            api_key TEXT UNIQUE,
+            api_endpoint TEXT,
+            webhook_url TEXT,
+            data_types TEXT,
+            sync_direction TEXT DEFAULT 'pull',
+            sync_frequency TEXT DEFAULT 'daily',
+            last_sync TEXT,
+            sync_count INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'pending',
+            created_at TEXT,
+            updated_at TEXT,
+            contact_email TEXT,
+            documentation_url TEXT,
+            FOREIGN KEY (company_id) REFERENCES ecosystem_companies(id)
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS integration_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            integration_id TEXT,
+            action TEXT,
+            direction TEXT,
+            records_count INTEGER,
+            status TEXT,
+            error_message TEXT,
+            timestamp TEXT,
+            FOREIGN KEY (integration_id) REFERENCES ecosystem_integrations(id)
+        )
+    ''')
+    
+    conn.commit()
+    conn.close()
     print("✅ Ecosystem tables initialized")
 
 def generate_company_id(name):
@@ -193,52 +192,50 @@ def list_companies():
     offset = int(request.args.get('offset', 0))
     
     conn = get_db()
-    try:
-        # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
-        cursor = conn.cursor()
-
-        query = "SELECT * FROM ecosystem_companies WHERE 1=1"
-        params = []
-
-        if status:
-            query += " AND status = %s"
-            params.append(status)
-
-        if category:
-            query += " AND category = %s"
-            params.append(category)
-
-        if featured:
-            query += " AND featured = 1"
-
-        if search:
-            query += " AND (LOWER(name) LIKE %s OR LOWER(description) LIKE %s OR LOWER(ai_keywords) LIKE %s)"
-            search_param = f"%{search}%"
-            params.extend([search_param, search_param, search_param])
-
-        count_query = query.replace("SELECT *", "SELECT COUNT(*)")
-        cursor.execute(count_query, params)
-        total = cursor.fetchone()[0]
-
-        query += " ORDER BY featured DESC, verified DESC, name ASC LIMIT %s OFFSET %s"
-        params.extend([limit, offset])
-
-        cursor.execute(query, params)
-        rows = cursor.fetchall()
-
-        companies = []
-        for row in rows:
-            company = dict(row)
-            for field in ['markets', 'services', 'ai_keywords']:
-                if company.get(field):
-                    try:
-                        company[field] = json.loads(company[field])
-                    except:
-                        pass
-            companies.append(company)
-
-    finally:
-        conn.close()
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    query = "SELECT * FROM ecosystem_companies WHERE 1=1"
+    params = []
+    
+    if status:
+        query += " AND status = ?"
+        params.append(status)
+    
+    if category:
+        query += " AND category = ?"
+        params.append(category)
+    
+    if featured:
+        query += " AND featured = 1"
+    
+    if search:
+        query += " AND (LOWER(name) LIKE ? OR LOWER(description) LIKE ? OR LOWER(ai_keywords) LIKE ?)"
+        search_param = f"%{search}%"
+        params.extend([search_param, search_param, search_param])
+    
+    count_query = query.replace("SELECT *", "SELECT COUNT(*)")
+    cursor.execute(count_query, params)
+    total = cursor.fetchone()[0]
+    
+    query += " ORDER BY featured DESC, verified DESC, name ASC LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
+    
+    cursor.execute(query, params)
+    rows = cursor.fetchall()
+    
+    companies = []
+    for row in rows:
+        company = dict(row)
+        for field in ['markets', 'services', 'ai_keywords']:
+            if company.get(field):
+                try:
+                    company[field] = json.loads(company[field])
+                except:
+                    pass
+        companies.append(company)
+    
+    conn.close()
     
     return jsonify({
         'companies': companies,
@@ -252,14 +249,12 @@ def list_companies():
 def get_company(company_id):
     """Get single company details"""
     conn = get_db()
-    try:
-        # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
-        cursor = conn.cursor()
-
-        cursor.execute("SELECT * FROM ecosystem_companies WHERE id = %s", (company_id,))
-        row = cursor.fetchone()
-    finally:
-        conn.close()
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT * FROM ecosystem_companies WHERE id = ?", (company_id,))
+    row = cursor.fetchone()
+    conn.close()
     
     if not row:
         return jsonify({'error': 'Company not found', 'success': False}), 404
@@ -289,12 +284,10 @@ def submit_company():
     now = datetime.utcnow().isoformat()
     
     conn = get_db()
-    try:
-        cursor = conn.cursor()
-
-        cursor.execute("SELECT id FROM ecosystem_companies WHERE id = %s", (company_id,))
-        if cursor.fetchone():
-    finally:
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT id FROM ecosystem_companies WHERE id = ?", (company_id,))
+    if cursor.fetchone():
         conn.close()
         return jsonify({'error': 'A company with this name already exists', 'success': False}), 409
     
@@ -311,7 +304,7 @@ def submit_company():
             twitter_url, founded_year, employee_count, facility_count, total_mw,
             ai_enriched, ai_summary, ai_keywords, submitted_by, submitted_at,
             status
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         company_id,
         data['name'],
@@ -341,7 +334,7 @@ def submit_company():
     cursor.execute('''
         INSERT INTO ecosystem_submissions (
             company_id, submitted_at, submitter_email, submitter_name, status
-        ) VALUES (%s, %s, %s, %s, %s)
+        ) VALUES (?, ?, ?, ?, ?)
     ''', (
         company_id,
         now,
@@ -370,18 +363,16 @@ def approve_company(company_id):
         return jsonify({'error': 'Admin access required', 'success': False}), 403
     
     conn = get_db()
-    try:
-        cursor = conn.cursor()
-
-        now = datetime.utcnow().isoformat()
-        cursor.execute('''
-            UPDATE ecosystem_companies
-            SET status = 'approved', approved_at = %s, updated_at = %s
-            WHERE id = %s
-        ''', (now, now, company_id))
-
-        if cursor.rowcount == 0:
-    finally:
+    cursor = conn.cursor()
+    
+    now = datetime.utcnow().isoformat()
+    cursor.execute('''
+        UPDATE ecosystem_companies 
+        SET status = 'approved', approved_at = ?, updated_at = ?
+        WHERE id = ?
+    ''', (now, now, company_id))
+    
+    if cursor.rowcount == 0:
         conn.close()
         return jsonify({'error': 'Company not found', 'success': False}), 404
     
@@ -400,18 +391,16 @@ def feature_company(company_id):
         return jsonify({'error': 'Admin access required', 'success': False}), 403
     
     conn = get_db()
-    try:
-        cursor = conn.cursor()
-
-        cursor.execute("SELECT featured FROM ecosystem_companies WHERE id = %s", (company_id,))
-        row = cursor.fetchone()
-        if not row:
-    finally:
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT featured FROM ecosystem_companies WHERE id = ?", (company_id,))
+    row = cursor.fetchone()
+    if not row:
         conn.close()
         return jsonify({'error': 'Company not found', 'success': False}), 404
     
     new_status = 0 if row[0] else 1
-    cursor.execute("UPDATE ecosystem_companies SET featured = %s WHERE id = %s", (new_status, company_id))
+    cursor.execute("UPDATE ecosystem_companies SET featured = ? WHERE id = ?", (new_status, company_id))
     
     conn.commit()
     conn.close()
@@ -422,32 +411,30 @@ def feature_company(company_id):
 def ecosystem_stats():
     """Get ecosystem statistics"""
     conn = get_db()
-    try:
-        cursor = conn.cursor()
-
-        cursor.execute("SELECT COUNT(*) FROM ecosystem_companies WHERE status = 'approved'")
-        total = cursor.fetchone()[0]
-
-        cursor.execute("SELECT COUNT(*) FROM ecosystem_companies WHERE status = 'pending'")
-        pending = cursor.fetchone()[0]
-
-        cursor.execute("SELECT COUNT(*) FROM ecosystem_companies WHERE featured = 1 AND status = 'approved'")
-        featured = cursor.fetchone()[0]
-
-        cursor.execute("SELECT COUNT(*) FROM ecosystem_companies WHERE ai_enriched = 1")
-        ai_enriched = cursor.fetchone()[0]
-
-        cursor.execute('''
-            SELECT category, COUNT(*) as count
-            FROM ecosystem_companies
-            WHERE status = 'approved'
-            GROUP BY category
-            ORDER BY count DESC
-        ''')
-        by_category = {row[0]: row[1] for row in cursor.fetchall()}
-
-    finally:
-        conn.close()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT COUNT(*) FROM ecosystem_companies WHERE status = 'approved'")
+    total = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) FROM ecosystem_companies WHERE status = 'pending'")
+    pending = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) FROM ecosystem_companies WHERE featured = 1 AND status = 'approved'")
+    featured = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) FROM ecosystem_companies WHERE ai_enriched = 1")
+    ai_enriched = cursor.fetchone()[0]
+    
+    cursor.execute('''
+        SELECT category, COUNT(*) as count 
+        FROM ecosystem_companies 
+        WHERE status = 'approved'
+        GROUP BY category 
+        ORDER BY count DESC
+    ''')
+    by_category = {row[0]: row[1] for row in cursor.fetchall()}
+    
+    conn.close()
     
     return jsonify({
         'total_companies': total,
@@ -466,28 +453,26 @@ def search_companies():
         return jsonify({'error': 'Search query required', 'success': False}), 400
     
     conn = get_db()
-    try:
-        # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
-        cursor = conn.cursor()
-
-        cursor.execute('''
-            SELECT * FROM ecosystem_companies
-            WHERE status = 'approved' AND (
-                LOWER(name) LIKE ? OR
-                LOWER(description) LIKE ? OR
-                LOWER(category) LIKE ? OR
-                LOWER(ai_summary) LIKE ? OR
-                LOWER(ai_keywords) LIKE ? OR
-                LOWER(services) LIKE ? OR
-                LOWER(markets) LIKE ?
-            )
-            ORDER BY featured DESC, verified DESC, name ASC
-            LIMIT 50
-        ''', tuple([f"%{query}%"] * 7))
-
-        rows = cursor.fetchall()
-    finally:
-        conn.close()
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT * FROM ecosystem_companies 
+        WHERE status = 'approved' AND (
+            LOWER(name) LIKE ? OR
+            LOWER(description) LIKE ? OR
+            LOWER(category) LIKE ? OR
+            LOWER(ai_summary) LIKE ? OR
+            LOWER(ai_keywords) LIKE ? OR
+            LOWER(services) LIKE ? OR
+            LOWER(markets) LIKE ?
+        )
+        ORDER BY featured DESC, verified DESC, name ASC
+        LIMIT 50
+    ''', tuple([f"%{query}%"] * 7))
+    
+    rows = cursor.fetchall()
+    conn.close()
     
     companies = []
     for row in rows:
@@ -510,12 +495,10 @@ def search_companies():
 def seed_ecosystem_data():
     """Seed initial ecosystem data"""
     conn = get_db()
-    try:
-        cursor = conn.cursor()
-
-        cursor.execute("SELECT COUNT(*) FROM ecosystem_companies")
-        if cursor.fetchone()[0] > 0:
-    finally:
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT COUNT(*) FROM ecosystem_companies")
+    if cursor.fetchone()[0] > 0:
         conn.close()
         return
     
@@ -648,10 +631,10 @@ def seed_ecosystem_data():
     for company in companies:
         company_id = generate_company_id(company['name'])
         cursor.execute('''
-            INSERT INTO ecosystem_companies (
+            INSERT OR IGNORE INTO ecosystem_companies (
                 id, name, description, category, website, headquarters,
                 facility_count, verified, featured, status, submitted_at, approved_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             company_id,
             company['name'],
@@ -686,29 +669,27 @@ def generate_integration_id(company_name):
 def list_integrations():
     """List all active API integrations"""
     conn = get_db()
-    try:
-        # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
-        cursor = conn.cursor()
-
-        cursor.execute('''
-            SELECT id, company_id, company_name, api_endpoint, data_types,
-                   sync_direction, sync_frequency, last_sync, sync_count,
-                   status, created_at, documentation_url
-            FROM ecosystem_integrations
-            WHERE status = 'active'
-            ORDER BY sync_count DESC
-        ''')
-
-        integrations = [dict(row) for row in cursor.fetchall()]
-
-        cursor.execute('SELECT COUNT(*) FROM ecosystem_integrations WHERE status = %s', ('active',))
-        active_count = cursor.fetchone()[0]
-
-        cursor.execute('SELECT SUM(sync_count) FROM ecosystem_integrations')
-        total_syncs = cursor.fetchone()[0] or 0
-
-    finally:
-        conn.close()
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT id, company_id, company_name, api_endpoint, data_types, 
+               sync_direction, sync_frequency, last_sync, sync_count, 
+               status, created_at, documentation_url
+        FROM ecosystem_integrations
+        WHERE status = 'active'
+        ORDER BY sync_count DESC
+    ''')
+    
+    integrations = [dict(row) for row in cursor.fetchall()]
+    
+    cursor.execute('SELECT COUNT(*) FROM ecosystem_integrations WHERE status = ?', ('active',))
+    active_count = cursor.fetchone()[0]
+    
+    cursor.execute('SELECT SUM(sync_count) FROM ecosystem_integrations')
+    total_syncs = cursor.fetchone()[0] or 0
+    
+    conn.close()
     
     return jsonify({
         'success': True,
@@ -732,37 +713,35 @@ def register_integration():
     now = datetime.now().isoformat()
     
     conn = get_db()
-    try:
-        cursor = conn.cursor()
-
-        data_types = json.dumps(data.get('data_types', ['facilities', 'news']))
-
-        cursor.execute('''
-            INSERT INTO ecosystem_integrations
-            (id, company_id, company_name, api_key, api_endpoint, webhook_url,
-             data_types, sync_direction, sync_frequency, status, created_at,
-             updated_at, contact_email, documentation_url)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ''', (
-            integration_id,
-            data.get('company_id'),
-            data['company_name'],
-            api_key,
-            data.get('api_endpoint'),
-            data.get('webhook_url'),
-            data_types,
-            data.get('sync_direction', 'pull'),
-            data.get('sync_frequency', 'daily'),
-            'pending',
-            now,
-            now,
-            data['contact_email'],
-            data.get('documentation_url')
-        ))
-
-        conn.commit()
-    finally:
-        conn.close()
+    cursor = conn.cursor()
+    
+    data_types = json.dumps(data.get('data_types', ['facilities', 'news']))
+    
+    cursor.execute('''
+        INSERT INTO ecosystem_integrations 
+        (id, company_id, company_name, api_key, api_endpoint, webhook_url,
+         data_types, sync_direction, sync_frequency, status, created_at, 
+         updated_at, contact_email, documentation_url)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        integration_id,
+        data.get('company_id'),
+        data['company_name'],
+        api_key,
+        data.get('api_endpoint'),
+        data.get('webhook_url'),
+        data_types,
+        data.get('sync_direction', 'pull'),
+        data.get('sync_frequency', 'daily'),
+        'pending',
+        now,
+        now,
+        data['contact_email'],
+        data.get('documentation_url')
+    ))
+    
+    conn.commit()
+    conn.close()
     
     return jsonify({
         'success': True,
@@ -782,28 +761,26 @@ def register_integration():
 def get_integration(integration_id):
     """Get integration details"""
     conn = get_db()
-    try:
-        # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
-        cursor = conn.cursor()
-
-        cursor.execute('''
-            SELECT id, company_id, company_name, api_endpoint, data_types,
-                   sync_direction, sync_frequency, last_sync, sync_count,
-                   status, created_at, updated_at, documentation_url
-            FROM ecosystem_integrations WHERE id = %s
-        ''', (integration_id,))
-
-        row = cursor.fetchone()
-
-        if not row:
-    finally:
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT id, company_id, company_name, api_endpoint, data_types,
+               sync_direction, sync_frequency, last_sync, sync_count,
+               status, created_at, updated_at, documentation_url
+        FROM ecosystem_integrations WHERE id = ?
+    ''', (integration_id,))
+    
+    row = cursor.fetchone()
+    
+    if not row:
         conn.close()
         return jsonify({'success': False, 'error': 'Integration not found'}), 404
     
     cursor.execute('''
         SELECT action, direction, records_count, status, timestamp
         FROM integration_logs
-        WHERE integration_id = %s
+        WHERE integration_id = ?
         ORDER BY timestamp DESC
         LIMIT 10
     ''', (integration_id,))
@@ -833,15 +810,13 @@ def receive_push_data():
         return jsonify({'success': False, 'error': 'API key required'}), 401
     
     conn = get_db()
-    try:
-        # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
-        cursor = conn.cursor()
-
-        cursor.execute('SELECT * FROM ecosystem_integrations WHERE api_key = %s AND status = %s', (api_key, 'active'))
-        integration = cursor.fetchone()
-
-        if not integration:
-    finally:
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT * FROM ecosystem_integrations WHERE api_key = ? AND status = ?', (api_key, 'active'))
+    integration = cursor.fetchone()
+    
+    if not integration:
         conn.close()
         return jsonify({'success': False, 'error': 'Invalid or inactive API key'}), 403
     
@@ -852,13 +827,13 @@ def receive_push_data():
     now = datetime.now().isoformat()
     cursor.execute('''
         INSERT INTO integration_logs (integration_id, action, direction, records_count, status, timestamp)
-        VALUES (%s, %s, %s, %s, %s, %s)
+        VALUES (?, ?, ?, ?, ?, ?)
     ''', (integration['id'], f'push_{data_type}', 'inbound', len(records), 'received', now))
     
     cursor.execute('''
         UPDATE ecosystem_integrations 
-        SET last_sync = %s, sync_count = sync_count + 1, updated_at = %s
-        WHERE id = %s
+        SET last_sync = ?, sync_count = sync_count + 1, updated_at = ?
+        WHERE id = ?
     ''', (now, now, integration['id']))
     
     conn.commit()
@@ -975,15 +950,13 @@ def register_webhook():
         return jsonify({'success': False, 'error': 'API key required'}), 401
     
     conn = get_db()
-    try:
-        # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
-        cursor = conn.cursor()
-
-        cursor.execute('SELECT * FROM ecosystem_integrations WHERE api_key = %s', (api_key,))
-        integration = cursor.fetchone()
-
-        if not integration:
-    finally:
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT * FROM ecosystem_integrations WHERE api_key = ?', (api_key,))
+    integration = cursor.fetchone()
+    
+    if not integration:
         conn.close()
         return jsonify({'success': False, 'error': 'Invalid API key'}), 403
     
@@ -997,13 +970,13 @@ def register_webhook():
     now = datetime.now().isoformat()
     cursor.execute('''
         UPDATE ecosystem_integrations 
-        SET webhook_url = %s, updated_at = %s
-        WHERE id = %s
+        SET webhook_url = ?, updated_at = ?
+        WHERE id = ?
     ''', (webhook_url, now, integration['id']))
     
     cursor.execute('''
         INSERT INTO integration_logs (integration_id, action, direction, records_count, status, timestamp)
-        VALUES (%s, %s, %s, %s, %s, %s)
+        VALUES (?, ?, ?, ?, ?, ?)
     ''', (integration['id'], 'webhook_registered', 'config', 0, 'success', now))
     
     conn.commit()
@@ -1020,34 +993,32 @@ def register_webhook():
 def integration_stats():
     """Get integration statistics"""
     conn = get_db()
-    try:
-        cursor = conn.cursor()
-
-        cursor.execute('SELECT COUNT(*) FROM ecosystem_integrations WHERE status = %s', ('active',))
-        active = cursor.fetchone()[0]
-
-        cursor.execute('SELECT COUNT(*) FROM ecosystem_integrations WHERE status = %s', ('pending',))
-        pending = cursor.fetchone()[0]
-
-        cursor.execute('SELECT SUM(sync_count) FROM ecosystem_integrations')
-        total_syncs = cursor.fetchone()[0] or 0
-
-        cursor.execute('''
-            SELECT sync_direction, COUNT(*) as count
-            FROM ecosystem_integrations
-            WHERE status = 'active'
-            GROUP BY sync_direction
-        ''')
-        by_direction = {row[0]: row[1] for row in cursor.fetchall()}
-
-        cursor.execute('''
-            SELECT COUNT(*) FROM integration_logs
-            WHERE timestamp > datetime('now', '-24 hours')
-        ''')
-        syncs_24h = cursor.fetchone()[0]
-
-    finally:
-        conn.close()
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT COUNT(*) FROM ecosystem_integrations WHERE status = ?', ('active',))
+    active = cursor.fetchone()[0]
+    
+    cursor.execute('SELECT COUNT(*) FROM ecosystem_integrations WHERE status = ?', ('pending',))
+    pending = cursor.fetchone()[0]
+    
+    cursor.execute('SELECT SUM(sync_count) FROM ecosystem_integrations')
+    total_syncs = cursor.fetchone()[0] or 0
+    
+    cursor.execute('''
+        SELECT sync_direction, COUNT(*) as count
+        FROM ecosystem_integrations
+        WHERE status = 'active'
+        GROUP BY sync_direction
+    ''')
+    by_direction = {row[0]: row[1] for row in cursor.fetchall()}
+    
+    cursor.execute('''
+        SELECT COUNT(*) FROM integration_logs 
+        WHERE timestamp > datetime('now', '-24 hours')
+    ''')
+    syncs_24h = cursor.fetchone()[0]
+    
+    conn.close()
     
     return jsonify({
         'success': True,

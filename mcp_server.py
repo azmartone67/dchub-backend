@@ -20,6 +20,7 @@ Tools Exposed:
 """
 
 import json
+import sqlite3
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 from flask import Blueprint, request, jsonify
@@ -35,15 +36,12 @@ def get_db_connection():
     """Get database connection"""
     try:
         conn = get_db()
-        try:
-            # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
-            return conn
-            except:
-            return None
+        conn.row_factory = sqlite3.Row
+        return conn
+    except:
+        return None
 
 
-        finally:
-            conn.close()
 TOOL_DEFINITIONS = [
     {
         "name": "search_facilities",
@@ -337,26 +335,25 @@ def _search_facilities(args: Dict) -> Dict:
         params = []
         
         if query:
-            sql += " AND (name LIKE %s OR city LIKE %s OR region LIKE %s OR provider LIKE %s)"
+            sql += " AND (name LIKE ? OR city LIKE ? OR region LIKE ? OR provider LIKE ?)"
             q = f"%{query}%"
             params.extend([q, q, q, q])
         
         if country:
-            sql += " AND country = %s"
+            sql += " AND country = ?"
             params.append(country.upper())
         
         if provider:
-            sql += " AND provider LIKE %s"
+            sql += " AND provider LIKE ?"
             params.append(f"%{provider}%")
         
         if min_capacity > 0:
-            sql += " AND CAST(power_mw AS REAL) >= %s"
+            sql += " AND CAST(power_mw AS REAL) >= ?"
             params.append(min_capacity)
         
         sql += f" ORDER BY CAST(power_mw AS REAL) DESC LIMIT {limit}"
         
-        c = conn.cursor()
-        cursor = c.execute(sql, params)
+        cursor = conn.execute(sql, params)
         rows = cursor.fetchall()
         
         facilities = []
@@ -402,10 +399,9 @@ def _get_market_stats(args: Dict) -> Dict:
                     SUM(CAST(power_mw AS REAL)) as total_mw,
                     COUNT(DISTINCT provider) as provider_count
                 FROM facilities 
-                WHERE city LIKE %s OR region LIKE %s
+                WHERE city LIKE ? OR region LIKE ?
             """
-            c = conn.cursor()
-            cursor = c.execute(sql, [f"%{market}%", f"%{market}%"])
+            cursor = conn.execute(sql, [f"%{market}%", f"%{market}%"])
         elif country:
             sql = """
                 SELECT 
@@ -413,10 +409,9 @@ def _get_market_stats(args: Dict) -> Dict:
                     SUM(CAST(power_mw AS REAL)) as total_mw,
                     COUNT(DISTINCT provider) as provider_count
                 FROM facilities 
-                WHERE country = %s
+                WHERE country = ?
             """
-            c = conn.cursor()
-            cursor = c.execute(sql, [country.upper()])
+            cursor = conn.execute(sql, [country.upper()])
         else:
             sql = """
                 SELECT 
@@ -426,8 +421,7 @@ def _get_market_stats(args: Dict) -> Dict:
                     COUNT(DISTINCT country) as country_count
                 FROM facilities
             """
-            c = conn.cursor()
-            cursor = c.execute(sql)
+            cursor = conn.execute(sql)
         
         row = cursor.fetchone()
         
@@ -439,8 +433,7 @@ def _get_market_stats(args: Dict) -> Dict:
             ORDER BY total_mw DESC 
             LIMIT 10
         """
-        c = conn.cursor()
-        top_providers = c.execute(top_providers_sql).fetchall()
+        top_providers = conn.execute(top_providers_sql).fetchall()
         
         conn.close()
         
@@ -478,20 +471,19 @@ def _get_news(args: Dict) -> Dict:
         params = []
         
         if topic:
-            sql += " AND (title LIKE %s OR summary LIKE %s)"
+            sql += " AND (title LIKE ? OR summary LIKE ?)"
             t = f"%{topic}%"
             params.extend([t, t])
         
         if company:
-            sql += " AND (title LIKE %s OR companies LIKE %s)"
+            sql += " AND (title LIKE ? OR companies LIKE ?)"
             c = f"%{company}%"
             params.extend([c, c])
         
-        sql += " ORDER BY published_date DESC LIMIT %s"
+        sql += " ORDER BY published_date DESC LIMIT ?"
         params.append(limit)
         
-        c = conn.cursor()
-        cursor = c.execute(sql, params)
+        cursor = conn.execute(sql, params)
         rows = cursor.fetchall()
         
         articles = []
@@ -580,20 +572,18 @@ def _analyze_site(args: Dict) -> Dict:
                 SELECT COUNT(*) as nearby_count,
                        AVG(CAST(power_mw AS REAL)) as avg_capacity
                 FROM facilities 
-                WHERE latitude BETWEEN %s AND %s
-                AND longitude BETWEEN %s AND %s
+                WHERE latitude BETWEEN ? AND ?
+                AND longitude BETWEEN ? AND ?
             """
-            c = conn.cursor()
-            cursor = c.execute(sql, [lat - 0.5, lat + 0.5, lon - 0.5, lon + 0.5])
+            cursor = conn.execute(sql, [lat - 0.5, lat + 0.5, lon - 0.5, lon + 0.5])
         else:
             sql = """
                 SELECT COUNT(*) as nearby_count,
                        AVG(CAST(power_mw AS REAL)) as avg_capacity
                 FROM facilities 
-                WHERE city LIKE %s OR region LIKE %s
+                WHERE city LIKE ? OR region LIKE ?
             """
-            c = conn.cursor()
-            cursor = c.execute(sql, [f"%{location}%", f"%{location}%"])
+            cursor = conn.execute(sql, [f"%{location}%", f"%{location}%"])
         
         row = cursor.fetchone()
         nearby = row['nearby_count'] or 0
@@ -638,11 +628,10 @@ def _get_providers(args: Dict) -> Dict:
                        SUM(CAST(power_mw AS REAL)) as total_mw,
                        GROUP_CONCAT(DISTINCT country) as countries
                 FROM facilities 
-                WHERE provider LIKE %s
+                WHERE provider LIKE ?
                 GROUP BY provider
             """
-            c = conn.cursor()
-            cursor = c.execute(sql, [f"%{name}%"])
+            cursor = conn.execute(sql, [f"%{name}%"])
         else:
             sql = f"""
                 SELECT provider, 
@@ -655,8 +644,7 @@ def _get_providers(args: Dict) -> Dict:
                 ORDER BY total_mw DESC
                 LIMIT {top}
             """
-            c = conn.cursor()
-            cursor = c.execute(sql)
+            cursor = conn.execute(sql)
         
         rows = cursor.fetchall()
         
@@ -701,19 +689,18 @@ def _get_capacity_pipeline(args: Dict) -> Dict:
         params = []
         
         if operator:
-            sql += " AND operator LIKE %s"
+            sql += " AND operator LIKE ?"
             params.append(f"%{operator}%")
         if market:
-            sql += " AND market LIKE %s"
+            sql += " AND market LIKE ?"
             params.append(f"%{market}%")
         if min_mw:
-            sql += " AND capacity_mw >= %s"
+            sql += " AND capacity_mw >= ?"
             params.append(min_mw)
         
         sql += f" ORDER BY capacity_mw DESC LIMIT {limit}"
         
-        c = conn.cursor()
-        cursor = c.execute(sql, params)
+        cursor = conn.execute(sql, params)
         rows = cursor.fetchall()
         
         pipeline = []

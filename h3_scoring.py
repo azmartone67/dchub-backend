@@ -266,59 +266,57 @@ def get_h3_heatmap():
     
     # Score each cell
     conn = get_db()
-    try:
-        features = []
-
-        for cell_id in cells:
-            result = score_hex_cell(cell_id, conn=conn)
-
-            # Get cell boundary for GeoJSON polygon
-            try:
-                boundary = h3.cell_to_boundary(cell_id)
-                coords = [[lng, lat] for lat, lng in boundary]
-                coords.append(coords[0])  # Close the polygon
-            except Exception:
-                continue
-
-            score = result['score']
-
-            # Color based on score
-            if score >= 70:
-                color = '#22c55e'  # Green - excellent
-            elif score >= 50:
-                color = '#84cc16'  # Lime - good
-            elif score >= 30:
-                color = '#eab308'  # Yellow - moderate
-            elif score >= 15:
-                color = '#f97316'  # Orange - low
-            else:
-                color = '#ef4444'  # Red - poor
-
-            features.append({
-                'type': 'Feature',
-                'geometry': {
-                    'type': 'Polygon',
-                    'coordinates': [coords]
-                },
-                'properties': {
-                    'hex_id': cell_id,
-                    'score': score,
-                    'grade': result['grade'],
-                    'color': color,
-                    'power': result['breakdown']['power'],
-                    'fiber': result['breakdown']['fiber'],
-                    'gas': result['breakdown']['gas'],
-                    'connectivity': result['breakdown']['connectivity'],
-                    'water': result['breakdown']['water'],
-                    'center_lat': result['center']['lat'],
-                    'center_lng': result['center']['lng'],
-                }
-            })
-
-        if conn:
-            try:
-    finally:
-        conn.close()
+    features = []
+    
+    for cell_id in cells:
+        result = score_hex_cell(cell_id, conn=conn)
+        
+        # Get cell boundary for GeoJSON polygon
+        try:
+            boundary = h3.cell_to_boundary(cell_id)
+            coords = [[lng, lat] for lat, lng in boundary]
+            coords.append(coords[0])  # Close the polygon
+        except Exception:
+            continue
+        
+        score = result['score']
+        
+        # Color based on score
+        if score >= 70:
+            color = '#22c55e'  # Green - excellent
+        elif score >= 50:
+            color = '#84cc16'  # Lime - good
+        elif score >= 30:
+            color = '#eab308'  # Yellow - moderate
+        elif score >= 15:
+            color = '#f97316'  # Orange - low
+        else:
+            color = '#ef4444'  # Red - poor
+        
+        features.append({
+            'type': 'Feature',
+            'geometry': {
+                'type': 'Polygon',
+                'coordinates': [coords]
+            },
+            'properties': {
+                'hex_id': cell_id,
+                'score': score,
+                'grade': result['grade'],
+                'color': color,
+                'power': result['breakdown']['power'],
+                'fiber': result['breakdown']['fiber'],
+                'gas': result['breakdown']['gas'],
+                'connectivity': result['breakdown']['connectivity'],
+                'water': result['breakdown']['water'],
+                'center_lat': result['center']['lat'],
+                'center_lng': result['center']['lng'],
+            }
+        })
+    
+    if conn:
+        try:
+            conn.close()
         except Exception:
             pass
     
@@ -368,16 +366,14 @@ def score_single_cell():
     try:
         ring = h3.grid_ring(cell_id, 1)
         conn = get_db()
-        try:
-            for n_cell in list(ring)[:6]:
-                n_result = score_hex_cell(n_cell, conn=conn)
-                neighbors.append({
-                    'hex': n_cell,
-                    'score': n_result['score'],
-                    'grade': n_result['grade']
-                })
-            if conn:
-        finally:
+        for n_cell in list(ring)[:6]:
+            n_result = score_hex_cell(n_cell, conn=conn)
+            neighbors.append({
+                'hex': n_cell,
+                'score': n_result['score'],
+                'grade': n_result['grade']
+            })
+        if conn:
             conn.close()
     except Exception:
         pass
