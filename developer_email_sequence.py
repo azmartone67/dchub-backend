@@ -225,66 +225,64 @@ def run_drip_check(get_db) -> int:
 
     try:
         conn = get_db()
-    try:
-            cur = conn.cursor()
+        cur = conn.cursor()
 
-            now = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc)
 
-            # Find trials that need Day 3 email (created 3 days ago, not yet sent)
-            cur.execute("""
-                SELECT ak.email, ak.key, ak.created_at
-                FROM api_keys ak
-                WHERE ak.rate_limit_tier = 'trial'
-                  AND ak.is_active = true
-                  AND ak.created_at BETWEEN %s AND %s
-                  AND NOT EXISTS (
-                      SELECT 1 FROM email_drip_log
-                      WHERE email = ak.email AND drip_name = 'day3_power'
-                  )
-            """, (now - timedelta(days=4), now - timedelta(days=2)))
+        # Find trials that need Day 3 email (created 3 days ago, not yet sent)
+        cur.execute("""
+            SELECT ak.email, ak.key, ak.created_at
+            FROM api_keys ak
+            WHERE ak.rate_limit_tier = 'trial'
+              AND ak.is_active = true
+              AND ak.created_at BETWEEN %s AND %s
+              AND NOT EXISTS (
+                  SELECT 1 FROM email_drip_log
+                  WHERE email = ak.email AND drip_name = 'day3_power'
+              )
+        """, (now - timedelta(days=4), now - timedelta(days=2)))
 
-            for row in cur.fetchall():
-                email, api_key = row[0], row[1]
-                template = _email_day3_power(api_key)
-                if _send_email(email, template['subject'], template['html']):
-                    _log_drip(cur, email, 'day3_power')
-                    sent += 1
+        for row in cur.fetchall():
+            email, api_key = row[0], row[1]
+            template = _email_day3_power(api_key)
+            if _send_email(email, template['subject'], template['html']):
+                _log_drip(cur, email, 'day3_power')
+                sent += 1
 
-            # Find trials that need Day 7 email
-            cur.execute("""
-                SELECT ak.email, ak.key, ak.created_at
-                FROM api_keys ak
-                WHERE ak.rate_limit_tier = 'trial'
-                  AND ak.is_active = true
-                  AND ak.created_at BETWEEN %s AND %s
-                  AND NOT EXISTS (
-                      SELECT 1 FROM email_drip_log
-                      WHERE email = ak.email AND drip_name = 'day7_convert'
-                  )
-            """, (now - timedelta(days=8), now - timedelta(days=6)))
+        # Find trials that need Day 7 email
+        cur.execute("""
+            SELECT ak.email, ak.key, ak.created_at
+            FROM api_keys ak
+            WHERE ak.rate_limit_tier = 'trial'
+              AND ak.is_active = true
+              AND ak.created_at BETWEEN %s AND %s
+              AND NOT EXISTS (
+                  SELECT 1 FROM email_drip_log
+                  WHERE email = ak.email AND drip_name = 'day7_convert'
+              )
+        """, (now - timedelta(days=8), now - timedelta(days=6)))
 
-            for row in cur.fetchall():
-                email, api_key = row[0], row[1]
-                template = _email_day7_convert(api_key)
-                if _send_email(email, template['subject'], template['html']):
-                    _log_drip(cur, email, 'day7_convert')
-                    sent += 1
+        for row in cur.fetchall():
+            email, api_key = row[0], row[1]
+            template = _email_day7_convert(api_key)
+            if _send_email(email, template['subject'], template['html']):
+                _log_drip(cur, email, 'day7_convert')
+                sent += 1
 
-            conn.commit()
-            logger.info(f"✅ Drip check complete: {sent} emails sent")
+        conn.commit()
+        logger.info(f"✅ Drip check complete: {sent} emails sent")
 
-        except Exception as e:
-            logger.error(f"❌ Drip check error: {e}")
-            if conn:
-                conn.rollback()
-        finally:
-            if conn:
-
-        return sent
-
-
+    except Exception as e:
+        logger.error(f"❌ Drip check error: {e}")
+        if conn:
+            conn.rollback()
     finally:
-        conn.close()
+        if conn:
+            conn.close()
+
+    return sent
+
+
 def _log_drip(cur, email, drip_name):
     """Log that a drip email was sent."""
     try:

@@ -276,62 +276,60 @@ def init_facility_count_history():
     db = None
     try:
         db = get_db()
-    try:
-            c = db.cursor()
-            c.execute("""
-                CREATE TABLE IF NOT EXISTS facility_count_history (
-                    id SERIAL PRIMARY KEY,
-                    recorded_date TEXT NOT NULL UNIQUE,
-                    facility_count INTEGER NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            db.commit()
-            logger.info("✅ facility_count_history table initialized")
-        except Exception as e:
-            logger.warning(f"facility_count_history init: {e}")
-        finally:
-            if db:
-
-
+        c = db.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS facility_count_history (
+                id SERIAL PRIMARY KEY,
+                recorded_date TEXT NOT NULL UNIQUE,
+                facility_count INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        db.commit()
+        logger.info("✅ facility_count_history table initialized")
+    except Exception as e:
+        logger.warning(f"facility_count_history init: {e}")
     finally:
-        db.close()
+        if db:
+            try: db.close()
+            except: pass
+
+
 def record_facility_count_snapshot():
     from db_utils import get_db
     db = None
     try:
         db = get_db()
-    try:
-            today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        c = db.cursor()
+        existing = c.execute(
+            "SELECT 1 FROM facility_count_history WHERE recorded_date = %s", (today,)
+        ).fetchone()
+
+        if not existing:
             c = db.cursor()
-            existing = c.execute(
-                "SELECT 1 FROM facility_count_history WHERE recorded_date = %s", (today,)
-            ).fetchone()
-
-            if not existing:
-                c = db.cursor()
-                count = c.execute('SELECT COUNT(*) FROM facilities').fetchone()[0]
-                c = db.cursor()
-                c.execute(
-                    "INSERT INTO facility_count_history (recorded_date, facility_count) VALUES (%s, %s) ON CONFLICT (recorded_date) DO UPDATE SET facility_count = EXCLUDED.facility_count",
-                    (today, count)
-                )
-                db.commit()
-                logger.info(f"Recorded facility count history: {today} = {count}")
-                return {'recorded': True, 'date': today, 'count': count}
-            return {'recorded': False, 'date': today, 'reason': 'already_recorded'}
-        except Exception as e:
-            logger.warning(f"facility_count_history update: {e}")
-            try:
-                if db: db.rollback()
-            except: pass
-            return {'recorded': False, 'error': str(e)}
-        finally:
-            if db:
-
-
+            count = c.execute('SELECT COUNT(*) FROM facilities').fetchone()[0]
+            c = db.cursor()
+            c.execute(
+                "INSERT INTO facility_count_history (recorded_date, facility_count) VALUES (%s, %s) ON CONFLICT (recorded_date) DO UPDATE SET facility_count = EXCLUDED.facility_count",
+                (today, count)
+            )
+            db.commit()
+            logger.info(f"Recorded facility count history: {today} = {count}")
+            return {'recorded': True, 'date': today, 'count': count}
+        return {'recorded': False, 'date': today, 'reason': 'already_recorded'}
+    except Exception as e:
+        logger.warning(f"facility_count_history update: {e}")
+        try:
+            if db: db.rollback()
+        except: pass
+        return {'recorded': False, 'error': str(e)}
     finally:
-        db.close()
+        if db:
+            try: db.close()
+            except: pass
+
+
 @discovery_monitor_bp.route('/api/admin/discovery/trigger', methods=['POST'])
 @_require_admin
 def discovery_trigger():

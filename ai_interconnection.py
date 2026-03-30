@@ -11,6 +11,7 @@ Goals:
 5. Track AI platform usage and citations
 """
 
+import sqlite3
 import json
 import os
 import re

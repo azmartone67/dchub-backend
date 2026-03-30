@@ -50,18 +50,16 @@ def auto_capture_testimonial(platform, agent_name, tool_name, tool_input, tool_o
         category = _categorize_tool(tool_name)
         
         conn = get_db()
-        try:
-            c = conn.cursor()
-
-            # Check for recent duplicate (same platform + tool + input in last hour)
-            c.execute("""
-                SELECT id FROM ai_testimonials
-                WHERE dedup_hash = %s
-                AND created_at > CURRENT_TIMESTAMP - INTERVAL '1 hour'
-            """, (dedup_hash,))
-
-            if c.fetchone():
-        finally:
+        c = conn.cursor()
+        
+        # Check for recent duplicate (same platform + tool + input in last hour)
+        c.execute("""
+            SELECT id FROM ai_testimonials 
+            WHERE dedup_hash = %s 
+            AND created_at > CURRENT_TIMESTAMP - INTERVAL '1 hour'
+        """, (dedup_hash,))
+        
+        if c.fetchone():
             conn.close()
             return  # Skip duplicate
         
@@ -274,30 +272,28 @@ def cleanup_testimonials():
     """Daily maintenance: deduplicate and prune stale auto-captures."""
     try:
         conn = get_db()
-        try:
-            c = conn.cursor()
-
-            # Remove auto-captured entries older than 90 days (keep manual/featured)
-            c.execute("""
-                DELETE FROM ai_testimonials
-                WHERE source = 'mcp-auto'
-                AND featured = FALSE
-                AND created_at < CURRENT_TIMESTAMP - INTERVAL '90 days'
-            """)
-
-            # Remove exact duplicates (same quote from same platform)
-            c.execute("""
-                DELETE FROM ai_testimonials a
-                USING ai_testimonials b
-                WHERE a.id < b.id
-                AND a.quote = b.quote
-                AND a.platform = b.platform
-            """)
-
-            deleted = c.rowcount
-            conn.commit()
-        finally:
-            conn.close()
+        c = conn.cursor()
+        
+        # Remove auto-captured entries older than 90 days (keep manual/featured)
+        c.execute("""
+            DELETE FROM ai_testimonials 
+            WHERE source = 'mcp-auto' 
+            AND featured = FALSE 
+            AND created_at < CURRENT_TIMESTAMP - INTERVAL '90 days'
+        """)
+        
+        # Remove exact duplicates (same quote from same platform)
+        c.execute("""
+            DELETE FROM ai_testimonials a
+            USING ai_testimonials b
+            WHERE a.id < b.id
+            AND a.quote = b.quote
+            AND a.platform = b.platform
+        """)
+        
+        deleted = c.rowcount
+        conn.commit()
+        conn.close()
         
         print(f"[testimonials] Cleanup: removed {deleted} stale/duplicate entries")
         

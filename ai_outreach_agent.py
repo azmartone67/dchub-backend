@@ -325,158 +325,154 @@ def init_outreach_db():
     conn = None
     try:
         conn = get_db()
-    try:
-            cursor = conn.cursor()
-
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS ai_outreach_log (
-                    id SERIAL PRIMARY KEY,
-                    platform TEXT NOT NULL,
-                    action TEXT NOT NULL,
-                    endpoint TEXT,
-                    status TEXT,
-                    response_code INTEGER,
-                    message TEXT,
-                    created_at TEXT NOT NULL DEFAULT (NOW())
-                )
-            ''')
-
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS ai_outreach_stats (
-                    platform TEXT PRIMARY KEY,
-                    total_pings INTEGER DEFAULT 0,
-                    successful_pings INTEGER DEFAULT 0,
-                    last_ping TEXT,
-                    last_success TEXT
-                )
-            ''')
-
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS directory_submissions (
-                    id SERIAL PRIMARY KEY,
-                    directory TEXT NOT NULL,
-                    status TEXT DEFAULT 'pending',
-                    submitted_at TEXT,
-                    approved_at TEXT,
-                    notes TEXT,
-                    created_at TEXT NOT NULL DEFAULT (NOW())
-                )
-            ''')
-
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS organic_traffic_alerts (
-                    id SERIAL PRIMARY KEY,
-                    platform TEXT NOT NULL,
-                    user_agent TEXT,
-                    endpoint TEXT,
-                    is_organic INTEGER DEFAULT 0,
-                    detected_at TEXT NOT NULL DEFAULT (NOW())
-                )
-            ''')
-
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_outreach_platform ON ai_outreach_log(platform)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_outreach_created ON ai_outreach_log(created_at)')
-
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS outreach_learning_memory (
-                    id SERIAL PRIMARY KEY,
-                    channel TEXT NOT NULL,
-                    lesson_type TEXT NOT NULL,
-                    lesson TEXT NOT NULL,
-                    confidence REAL DEFAULT 0.5,
-                    applied_count INTEGER DEFAULT 0,
-                    created_at TEXT NOT NULL DEFAULT (NOW()),
-                    last_applied TEXT
-                )
-            ''')
-
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS outreach_channel_scores (
-                    channel TEXT PRIMARY KEY,
-                    success_rate REAL DEFAULT 0.0,
-                    total_attempts INTEGER DEFAULT 0,
-                    total_successes INTEGER DEFAULT 0,
-                    organic_signals INTEGER DEFAULT 0,
-                    score REAL DEFAULT 50.0,
-                    trend TEXT DEFAULT 'stable',
-                    last_updated TEXT
-                )
-            ''')
-
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS outreach_pitch_variants (
-                    id SERIAL PRIMARY KEY,
-                    platform TEXT NOT NULL,
-                    pitch_text TEXT NOT NULL,
-                    times_used INTEGER DEFAULT 0,
-                    organic_after INTEGER DEFAULT 0,
-                    effectiveness_score REAL DEFAULT 0.0,
-                    active INTEGER DEFAULT 1,
-                    created_at TEXT NOT NULL DEFAULT (NOW())
-                )
-            ''')
-
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS outreach_learning_log (
-                    id SERIAL PRIMARY KEY,
-                    cycle_number INTEGER,
-                    action_taken TEXT,
-                    reason TEXT,
-                    outcome TEXT,
-                    created_at TEXT NOT NULL DEFAULT (NOW())
-                )
-            ''')
-
-            conn.commit()
-            logger.info("   📣 AI Outreach tables initialized (with self-learning)")
-        finally:
-            if conn:
-
-
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ai_outreach_log (
+                id SERIAL PRIMARY KEY,
+                platform TEXT NOT NULL,
+                action TEXT NOT NULL,
+                endpoint TEXT,
+                status TEXT,
+                response_code INTEGER,
+                message TEXT,
+                created_at TEXT NOT NULL DEFAULT (NOW())
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ai_outreach_stats (
+                platform TEXT PRIMARY KEY,
+                total_pings INTEGER DEFAULT 0,
+                successful_pings INTEGER DEFAULT 0,
+                last_ping TEXT,
+                last_success TEXT
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS directory_submissions (
+                id SERIAL PRIMARY KEY,
+                directory TEXT NOT NULL,
+                status TEXT DEFAULT 'pending',
+                submitted_at TEXT,
+                approved_at TEXT,
+                notes TEXT,
+                created_at TEXT NOT NULL DEFAULT (NOW())
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS organic_traffic_alerts (
+                id SERIAL PRIMARY KEY,
+                platform TEXT NOT NULL,
+                user_agent TEXT,
+                endpoint TEXT,
+                is_organic INTEGER DEFAULT 0,
+                detected_at TEXT NOT NULL DEFAULT (NOW())
+            )
+        ''')
+        
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_outreach_platform ON ai_outreach_log(platform)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_outreach_created ON ai_outreach_log(created_at)')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS outreach_learning_memory (
+                id SERIAL PRIMARY KEY,
+                channel TEXT NOT NULL,
+                lesson_type TEXT NOT NULL,
+                lesson TEXT NOT NULL,
+                confidence REAL DEFAULT 0.5,
+                applied_count INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (NOW()),
+                last_applied TEXT
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS outreach_channel_scores (
+                channel TEXT PRIMARY KEY,
+                success_rate REAL DEFAULT 0.0,
+                total_attempts INTEGER DEFAULT 0,
+                total_successes INTEGER DEFAULT 0,
+                organic_signals INTEGER DEFAULT 0,
+                score REAL DEFAULT 50.0,
+                trend TEXT DEFAULT 'stable',
+                last_updated TEXT
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS outreach_pitch_variants (
+                id SERIAL PRIMARY KEY,
+                platform TEXT NOT NULL,
+                pitch_text TEXT NOT NULL,
+                times_used INTEGER DEFAULT 0,
+                organic_after INTEGER DEFAULT 0,
+                effectiveness_score REAL DEFAULT 0.0,
+                active INTEGER DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT (NOW())
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS outreach_learning_log (
+                id SERIAL PRIMARY KEY,
+                cycle_number INTEGER,
+                action_taken TEXT,
+                reason TEXT,
+                outcome TEXT,
+                created_at TEXT NOT NULL DEFAULT (NOW())
+            )
+        ''')
+        
+        conn.commit()
+        logger.info("   📣 AI Outreach tables initialized (with self-learning)")
     finally:
-        conn.close()
+        if conn:
+            conn.close()
+
+
 def log_outreach(platform, action, endpoint=None, status='success', response_code=None, message=None):
     conn = None
     try:
         conn = get_db()
-    try:
-            cursor = conn.cursor()
-
-            cursor.execute('''
-                INSERT INTO ai_outreach_log (platform, action, endpoint, status, response_code, message, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-            ''', (platform, action, endpoint, status, response_code, message, datetime.now(timezone.utc).isoformat()))
-
-            cursor.execute('''
-                INSERT INTO ai_outreach_stats (platform, total_pings, successful_pings, last_ping, last_success)
-                VALUES (%s, 1, %s, %s, %s)
-                ON CONFLICT(platform) DO UPDATE SET
-                    total_pings = ai_outreach_stats.total_pings + 1,
-                    successful_pings = ai_outreach_stats.successful_pings + CASE WHEN %s = 'success' THEN 1 ELSE 0 END,
-                    last_ping = EXCLUDED.last_ping,
-                    last_success = CASE WHEN %s = 'success' THEN EXCLUDED.last_success ELSE ai_outreach_stats.last_success END
-            ''', (
-                platform,
-                1 if status == 'success' else 0,
-                datetime.now(timezone.utc).isoformat(),
-                datetime.now(timezone.utc).isoformat() if status == 'success' else None,
-                status,
-                status
-            ))
-
-            conn.commit()
-        except Exception as e:
-            logger.error(f"Error logging outreach: {e}")
-        finally:
-            if conn:
-
-
-        # =============================================================================
-        # SELF-LEARNING INTELLIGENCE ENGINE
-        # =============================================================================
-
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO ai_outreach_log (platform, action, endpoint, status, response_code, message, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ''', (platform, action, endpoint, status, response_code, message, datetime.now(timezone.utc).isoformat()))
+        
+        cursor.execute('''
+            INSERT INTO ai_outreach_stats (platform, total_pings, successful_pings, last_ping, last_success)
+            VALUES (%s, 1, %s, %s, %s)
+            ON CONFLICT(platform) DO UPDATE SET
+                total_pings = ai_outreach_stats.total_pings + 1,
+                successful_pings = ai_outreach_stats.successful_pings + CASE WHEN %s = 'success' THEN 1 ELSE 0 END,
+                last_ping = EXCLUDED.last_ping,
+                last_success = CASE WHEN %s = 'success' THEN EXCLUDED.last_success ELSE ai_outreach_stats.last_success END
+        ''', (
+            platform,
+            1 if status == 'success' else 0,
+            datetime.now(timezone.utc).isoformat(),
+            datetime.now(timezone.utc).isoformat() if status == 'success' else None,
+            status,
+            status
+        ))
+        
+        conn.commit()
+    except Exception as e:
+        logger.error(f"Error logging outreach: {e}")
     finally:
-        conn.close()
+        if conn:
+            conn.close()
+
+
+# =============================================================================
+# SELF-LEARNING INTELLIGENCE ENGINE
+# =============================================================================
+
 _learning_cycle_count = {'count': -1}
 
 def _update_channel_scores():
@@ -484,311 +480,301 @@ def _update_channel_scores():
     conn = None
     try:
         conn = get_db()
-    try:
-            cursor = conn.cursor()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT platform, 
+                   COUNT(*) as total,
+                   SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as successes
+            FROM ai_outreach_log
+            WHERE created_at > datetime('now', '-7 days')
+            GROUP BY platform
+        ''')
+        rows = cursor.fetchall()
+        
+        cursor.execute('SELECT COUNT(*) FROM organic_traffic_alerts WHERE is_organic = 1')
+        organic_total = cursor.fetchone()[0]
+        
+        cursor.execute('''
+            SELECT platform, COUNT(*) FROM organic_traffic_alerts 
+            WHERE is_organic = 1 AND detected_at > datetime('now', '-7 days')
+            GROUP BY platform
+        ''')
+        organic_by_platform = {r[0]: r[1] for r in cursor.fetchall()}
+        
+        now = datetime.now(timezone.utc).isoformat()
+        for row in rows:
+            platform, total, successes = row[0], row[1], row[2]
+            success_rate = successes / total if total > 0 else 0
+            organic_signals = organic_by_platform.get(platform, 0)
+            
+            base_score = success_rate * 40
+            organic_bonus = min(organic_signals * 15, 40)
+            recency_bonus = 10 if total > 5 else 5
+            score = min(base_score + organic_bonus + recency_bonus, 100)
+            
             cursor.execute('''
-                SELECT platform, 
-                       COUNT(*) as total,
-                       SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as successes
-                FROM ai_outreach_log
-                WHERE created_at > datetime('now', '-7 days')
-                GROUP BY platform
-            ''')
-            rows = cursor.fetchall()
-
-            cursor.execute('SELECT COUNT(*) FROM organic_traffic_alerts WHERE is_organic = 1')
-            organic_total = cursor.fetchone()[0]
-
+                SELECT score FROM outreach_channel_scores WHERE channel = %s
+            ''', (platform,))
+            prev = cursor.fetchone()
+            prev_score = prev[0] if prev else 50.0
+            trend = 'improving' if score > prev_score + 2 else 'declining' if score < prev_score - 2 else 'stable'
+            
             cursor.execute('''
-                SELECT platform, COUNT(*) FROM organic_traffic_alerts 
-                WHERE is_organic = 1 AND detected_at > datetime('now', '-7 days')
-                GROUP BY platform
-            ''')
-            organic_by_platform = {r[0]: r[1] for r in cursor.fetchall()}
-
-            now = datetime.now(timezone.utc).isoformat()
-            for row in rows:
-                platform, total, successes = row[0], row[1], row[2]
-                success_rate = successes / total if total > 0 else 0
-                organic_signals = organic_by_platform.get(platform, 0)
-
-                base_score = success_rate * 40
-                organic_bonus = min(organic_signals * 15, 40)
-                recency_bonus = 10 if total > 5 else 5
-                score = min(base_score + organic_bonus + recency_bonus, 100)
-
-                cursor.execute('''
-                    SELECT score FROM outreach_channel_scores WHERE channel = %s
-                ''', (platform,))
-                prev = cursor.fetchone()
-                prev_score = prev[0] if prev else 50.0
-                trend = 'improving' if score > prev_score + 2 else 'declining' if score < prev_score - 2 else 'stable'
-
-                cursor.execute('''
-                    INSERT INTO outreach_channel_scores (channel, success_rate, total_attempts, total_successes, organic_signals, score, trend, last_updated)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT(channel) DO UPDATE SET
-                        success_rate = ?, total_attempts = ?, total_successes = ?,
-                        organic_signals = %s, score = %s, trend = %s, last_updated = %s
-                ''', (platform, success_rate, total, successes, organic_signals, score, trend, now,
-                      success_rate, total, successes, organic_signals, score, trend, now))
-
-            conn.commit()
-        except Exception as e:
-            logger.error(f"Learning: channel score update failed: {e}")
-        finally:
-            if conn:
-
-
+                INSERT INTO outreach_channel_scores (channel, success_rate, total_attempts, total_successes, organic_signals, score, trend, last_updated)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT(channel) DO UPDATE SET
+                    success_rate = ?, total_attempts = ?, total_successes = ?,
+                    organic_signals = %s, score = %s, trend = %s, last_updated = %s
+            ''', (platform, success_rate, total, successes, organic_signals, score, trend, now,
+                  success_rate, total, successes, organic_signals, score, trend, now))
+        
+        conn.commit()
+    except Exception as e:
+        logger.error(f"Learning: channel score update failed: {e}")
     finally:
-        conn.close()
+        if conn:
+            conn.close()
+
+
 def _learn_from_cycle(cycle_result: dict):
     """Extract lessons from a completed outreach cycle and store in memory"""
     conn = None
     try:
         conn = get_db()
-    try:
-            cursor = conn.cursor()
-            if _learning_cycle_count['count'] < 0:
-                cursor.execute('SELECT MAX(cycle_number) FROM outreach_learning_log')
-                row = cursor.fetchone()
-                _learning_cycle_count['count'] = (row[0] or 0) if row else 0
-            _learning_cycle_count['count'] += 1
-            cycle_num = _learning_cycle_count['count']
-
-            summary = cycle_result.get('summary', {})
-            organic = cycle_result.get('organic_traffic', [])
-
-            dir_parts = summary.get('directories', '0/0').split('/')
-            dir_success_rate = int(dir_parts[0]) / max(int(dir_parts[1]), 1)
-
-            broadcast_parts = summary.get('ai_broadcasts', '0/0').split('/')
-            broadcast_success_rate = int(broadcast_parts[0]) / max(int(broadcast_parts[1]), 1)
-
-            lessons = []
-
-            if dir_success_rate < 0.3:
-                lessons.append(('directories', 'low_reliability', 
-                               f'Directory success rate dropped to {dir_success_rate:.0%} - some directories may be down or blocking', 0.7))
-            elif dir_success_rate > 0.8:
-                lessons.append(('directories', 'high_reliability',
-                               f'Directory channel performing well at {dir_success_rate:.0%} success rate', 0.8))
-
-            if broadcast_success_rate > 0.6:
-                lessons.append(('ai_platforms', 'broadcast_health',
-                               f'AI platform discovery hints reachable at {broadcast_success_rate:.0%}', 0.7))
-
-            if organic:
-                platforms_detected = list(set(o.get('platform', '') for o in organic if o.get('platform')))
-                for plat in platforms_detected:
-                    lessons.append((plat, 'organic_success',
-                                   f'Organic traffic from {plat} detected! Current approach is working for this platform.', 0.95))
-
-            if cycle_num % 10 == 0 and not organic:
-                lessons.append(('all', 'no_organic_pattern',
-                               f'After {cycle_num} cycles, no organic traffic. System should prioritize IndexNow and structured feeds.', 0.6))
-
-            for channel, lesson_type, lesson, confidence in lessons:
-                cursor.execute('''
-                    SELECT id, confidence FROM outreach_learning_memory 
-                    WHERE channel = %s AND lesson_type = %s
-                    ORDER BY created_at DESC LIMIT 1
-                ''', (channel, lesson_type))
-                existing = cursor.fetchone()
-
-                if existing:
-                    new_confidence = min(existing[1] * 0.7 + confidence * 0.3, 1.0)
-                    cursor.execute('''
-                        UPDATE outreach_learning_memory 
-                        SET lesson = %s, confidence = %s, applied_count = applied_count + 1,
-                            last_applied = NOW()
-                        WHERE id = %s
-                    ''', (lesson, new_confidence, existing[0]))
-                else:
-                    cursor.execute('''
-                        INSERT INTO outreach_learning_memory (channel, lesson_type, lesson, confidence)
-                        VALUES (%s, %s, %s, %s)
-                    ''', (channel, lesson_type, lesson, confidence))
-
+        cursor = conn.cursor()
+        if _learning_cycle_count['count'] < 0:
+            cursor.execute('SELECT MAX(cycle_number) FROM outreach_learning_log')
+            row = cursor.fetchone()
+            _learning_cycle_count['count'] = (row[0] or 0) if row else 0
+        _learning_cycle_count['count'] += 1
+        cycle_num = _learning_cycle_count['count']
+        
+        summary = cycle_result.get('summary', {})
+        organic = cycle_result.get('organic_traffic', [])
+        
+        dir_parts = summary.get('directories', '0/0').split('/')
+        dir_success_rate = int(dir_parts[0]) / max(int(dir_parts[1]), 1)
+        
+        broadcast_parts = summary.get('ai_broadcasts', '0/0').split('/')
+        broadcast_success_rate = int(broadcast_parts[0]) / max(int(broadcast_parts[1]), 1)
+        
+        lessons = []
+        
+        if dir_success_rate < 0.3:
+            lessons.append(('directories', 'low_reliability', 
+                           f'Directory success rate dropped to {dir_success_rate:.0%} - some directories may be down or blocking', 0.7))
+        elif dir_success_rate > 0.8:
+            lessons.append(('directories', 'high_reliability',
+                           f'Directory channel performing well at {dir_success_rate:.0%} success rate', 0.8))
+        
+        if broadcast_success_rate > 0.6:
+            lessons.append(('ai_platforms', 'broadcast_health',
+                           f'AI platform discovery hints reachable at {broadcast_success_rate:.0%}', 0.7))
+        
+        if organic:
+            platforms_detected = list(set(o.get('platform', '') for o in organic if o.get('platform')))
+            for plat in platforms_detected:
+                lessons.append((plat, 'organic_success',
+                               f'Organic traffic from {plat} detected! Current approach is working for this platform.', 0.95))
+        
+        if cycle_num % 10 == 0 and not organic:
+            lessons.append(('all', 'no_organic_pattern',
+                           f'After {cycle_num} cycles, no organic traffic. System should prioritize IndexNow and structured feeds.', 0.6))
+        
+        for channel, lesson_type, lesson, confidence in lessons:
             cursor.execute('''
-                INSERT INTO outreach_learning_log (cycle_number, action_taken, reason, outcome)
-                VALUES (%s, %s, %s, %s)
-            ''', (cycle_num, 'learn_from_cycle', 
-                  f'Analyzed cycle results: dirs={summary.get("directories")}, broadcasts={summary.get("ai_broadcasts")}',
-                  f'{len(lessons)} lessons extracted, organic={len(organic)}'))
-
-            conn.commit()
-
-            if lessons:
-                logger.info(f"   🧠 Learning: {len(lessons)} lessons extracted from cycle {cycle_num}")
-
-        except Exception as e:
-            logger.error(f"Learning: lesson extraction failed: {e}")
-        finally:
-            if conn:
-
-
+                SELECT id, confidence FROM outreach_learning_memory 
+                WHERE channel = %s AND lesson_type = %s
+                ORDER BY created_at DESC LIMIT 1
+            ''', (channel, lesson_type))
+            existing = cursor.fetchone()
+            
+            if existing:
+                new_confidence = min(existing[1] * 0.7 + confidence * 0.3, 1.0)
+                cursor.execute('''
+                    UPDATE outreach_learning_memory 
+                    SET lesson = %s, confidence = %s, applied_count = applied_count + 1,
+                        last_applied = NOW()
+                    WHERE id = %s
+                ''', (lesson, new_confidence, existing[0]))
+            else:
+                cursor.execute('''
+                    INSERT INTO outreach_learning_memory (channel, lesson_type, lesson, confidence)
+                    VALUES (%s, %s, %s, %s)
+                ''', (channel, lesson_type, lesson, confidence))
+        
+        cursor.execute('''
+            INSERT INTO outreach_learning_log (cycle_number, action_taken, reason, outcome)
+            VALUES (%s, %s, %s, %s)
+        ''', (cycle_num, 'learn_from_cycle', 
+              f'Analyzed cycle results: dirs={summary.get("directories")}, broadcasts={summary.get("ai_broadcasts")}',
+              f'{len(lessons)} lessons extracted, organic={len(organic)}'))
+        
+        conn.commit()
+        
+        if lessons:
+            logger.info(f"   🧠 Learning: {len(lessons)} lessons extracted from cycle {cycle_num}")
+        
+    except Exception as e:
+        logger.error(f"Learning: lesson extraction failed: {e}")
     finally:
-        conn.close()
+        if conn:
+            conn.close()
+
+
 def _get_adaptive_pitch(platform_id: str) -> str:
     """Get the best-performing pitch for a platform, or generate a variant"""
     conn = None
     try:
         conn = get_db()
-    try:
-            cursor = conn.cursor()
-
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT pitch_text, effectiveness_score FROM outreach_pitch_variants
+            WHERE platform = %s AND active = 1
+            ORDER BY effectiveness_score DESC LIMIT 1
+        ''', (platform_id,))
+        best = cursor.fetchone()
+        
+        if best and best[1] > 0:
             cursor.execute('''
-                SELECT pitch_text, effectiveness_score FROM outreach_pitch_variants
-                WHERE platform = %s AND active = 1
-                ORDER BY effectiveness_score DESC LIMIT 1
-            ''', (platform_id,))
-            best = cursor.fetchone()
-
-            if best and best[1] > 0:
-                cursor.execute('''
-                    UPDATE outreach_pitch_variants SET times_used = times_used + 1
-                    WHERE platform = %s AND pitch_text = %s
-                ''', (platform_id, best[0]))
-                conn.commit()
-                return best[0]
-
-            platform = AI_PLATFORMS.get(platform_id, {})
-            base_pitch = platform.get('pitch', '')
-
+                UPDATE outreach_pitch_variants SET times_used = times_used + 1
+                WHERE platform = %s AND pitch_text = %s
+            ''', (platform_id, best[0]))
+            conn.commit()
+            return best[0]
+        
+        platform = AI_PLATFORMS.get(platform_id, {})
+        base_pitch = platform.get('pitch', '')
+        
+        cursor.execute('''
+            SELECT lesson FROM outreach_learning_memory
+            WHERE (channel = %s OR channel = 'all') AND confidence > 0.5
+            ORDER BY confidence DESC LIMIT 3
+        ''', (platform_id,))
+        lessons = [r[0] for r in cursor.fetchall()]
+        
+        if lessons and base_pitch:
+            enhanced = f"{base_pitch} [Learned: {'; '.join(lessons[:2])}]"
             cursor.execute('''
-                SELECT lesson FROM outreach_learning_memory
-                WHERE (channel = %s OR channel = 'all') AND confidence > 0.5
-                ORDER BY confidence DESC LIMIT 3
-            ''', (platform_id,))
-            lessons = [r[0] for r in cursor.fetchall()]
-
-            if lessons and base_pitch:
-                enhanced = f"{base_pitch} [Learned: {'; '.join(lessons[:2])}]"
-                cursor.execute('''
-                    INSERT INTO outreach_pitch_variants (platform, pitch_text)
-                    VALUES (%s, %s)
-                ''', (platform_id, enhanced))
-                conn.commit()
-
-            return base_pitch
-        except Exception:
-            return AI_PLATFORMS.get(platform_id, {}).get('pitch', '')
-        finally:
-            if conn:
-
-
+                INSERT INTO outreach_pitch_variants (platform, pitch_text)
+                VALUES (%s, %s)
+            ''', (platform_id, enhanced))
+            conn.commit()
+        
+        return base_pitch
+    except Exception:
+        return AI_PLATFORMS.get(platform_id, {}).get('pitch', '')
     finally:
-        conn.close()
+        if conn:
+            conn.close()
+
+
 def _get_adaptive_interval() -> int:
     """Adjust outreach interval based on learning — more aggressive when organic detected"""
     conn = None
     try:
         conn = get_db()
-    try:
-            cursor = conn.cursor()
-
-            cursor.execute('''
-                SELECT COUNT(*) FROM organic_traffic_alerts 
-                WHERE is_organic = 1 AND detected_at > datetime('now', '-24 hours')
-            ''')
-            recent_organic = cursor.fetchone()[0]
-
-            cursor.execute('SELECT AVG(score) FROM outreach_channel_scores')
-            avg_score = cursor.fetchone()[0] or 50.0
-
-            if recent_organic > 5:
-                return 600
-            elif recent_organic > 0:
-                return 900
-            elif avg_score > 70:
-                return 1200
-            else:
-                return 1800
-
-        except Exception:
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT COUNT(*) FROM organic_traffic_alerts 
+            WHERE is_organic = 1 AND detected_at > datetime('now', '-24 hours')
+        ''')
+        recent_organic = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT AVG(score) FROM outreach_channel_scores')
+        avg_score = cursor.fetchone()[0] or 50.0
+        
+        if recent_organic > 5:
+            return 600
+        elif recent_organic > 0:
+            return 900
+        elif avg_score > 70:
             return 1200
-        finally:
-            if conn:
-
-
+        else:
+            return 1800
+        
+    except Exception:
+        return 1200
     finally:
-        conn.close()
+        if conn:
+            conn.close()
+
+
 def get_learning_status():
     """Get comprehensive self-learning status for the dashboard"""
     conn = None
     try:
         conn = get_db()
-    try:
-            cursor = conn.cursor()
-
-            cursor.execute('SELECT COUNT(*) FROM outreach_learning_memory')
-            total_lessons = cursor.fetchone()[0]
-
-            cursor.execute('''
-                SELECT channel, lesson_type, lesson, confidence, applied_count, created_at
-                FROM outreach_learning_memory
-                ORDER BY confidence DESC LIMIT 10
-            ''')
-            top_lessons = [{
-                'channel': r[0], 'type': r[1], 'lesson': r[2],
-                'confidence': round(r[3], 3), 'applied': r[4], 'since': r[5]
-            } for r in cursor.fetchall()]
-
-            cursor.execute('''
-                SELECT channel, score, trend, success_rate, organic_signals, total_attempts
-                FROM outreach_channel_scores
-                ORDER BY score DESC
-            ''')
-            channel_rankings = [{
-                'channel': r[0], 'score': round(r[1], 1), 'trend': r[2],
-                'success_rate': round(r[3], 3), 'organic_signals': r[4], 'attempts': r[5]
-            } for r in cursor.fetchall()]
-
-            cursor.execute('''
-                SELECT platform, pitch_text, times_used, organic_after, effectiveness_score
-                FROM outreach_pitch_variants WHERE active = 1
-                ORDER BY effectiveness_score DESC LIMIT 5
-            ''')
-            pitch_variants = [{
-                'platform': r[0], 'pitch': r[1][:100] + '...' if len(r[1]) > 100 else r[1],
-                'times_used': r[2], 'organic_after': r[3], 'effectiveness': round(r[4], 3)
-            } for r in cursor.fetchall()]
-
-            cursor.execute('SELECT COUNT(*) FROM outreach_learning_log')
-            total_learning_cycles = cursor.fetchone()[0]
-
-            cursor.execute('''
-                SELECT action_taken, reason, outcome, created_at
-                FROM outreach_learning_log ORDER BY id DESC LIMIT 5
-            ''')
-            recent_actions = [{
-                'action': r[0], 'reason': r[1], 'outcome': r[2], 'when': r[3]
-            } for r in cursor.fetchall()]
-
-            maturity = 'seed' if total_lessons < 5 else 'growing' if total_lessons < 20 else 'mature' if total_lessons < 50 else 'expert'
-
-            narrative = _generate_learning_narrative(total_lessons, channel_rankings, top_lessons, total_learning_cycles)
-
-            return {
-                'maturity_level': maturity,
-                'total_lessons_learned': total_lessons,
-                'total_learning_cycles': total_learning_cycles,
-                'adaptive_interval_seconds': _get_adaptive_interval(),
-                'top_lessons': top_lessons,
-                'channel_rankings': channel_rankings,
-                'pitch_variants': pitch_variants,
-                'recent_learning_actions': recent_actions,
-                'narrative': narrative,
-            }
-        except Exception as e:
-            return {'error': str(e), 'maturity_level': 'initializing'}
-        finally:
-            if conn:
-
-
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT COUNT(*) FROM outreach_learning_memory')
+        total_lessons = cursor.fetchone()[0]
+        
+        cursor.execute('''
+            SELECT channel, lesson_type, lesson, confidence, applied_count, created_at
+            FROM outreach_learning_memory
+            ORDER BY confidence DESC LIMIT 10
+        ''')
+        top_lessons = [{
+            'channel': r[0], 'type': r[1], 'lesson': r[2],
+            'confidence': round(r[3], 3), 'applied': r[4], 'since': r[5]
+        } for r in cursor.fetchall()]
+        
+        cursor.execute('''
+            SELECT channel, score, trend, success_rate, organic_signals, total_attempts
+            FROM outreach_channel_scores
+            ORDER BY score DESC
+        ''')
+        channel_rankings = [{
+            'channel': r[0], 'score': round(r[1], 1), 'trend': r[2],
+            'success_rate': round(r[3], 3), 'organic_signals': r[4], 'attempts': r[5]
+        } for r in cursor.fetchall()]
+        
+        cursor.execute('''
+            SELECT platform, pitch_text, times_used, organic_after, effectiveness_score
+            FROM outreach_pitch_variants WHERE active = 1
+            ORDER BY effectiveness_score DESC LIMIT 5
+        ''')
+        pitch_variants = [{
+            'platform': r[0], 'pitch': r[1][:100] + '...' if len(r[1]) > 100 else r[1],
+            'times_used': r[2], 'organic_after': r[3], 'effectiveness': round(r[4], 3)
+        } for r in cursor.fetchall()]
+        
+        cursor.execute('SELECT COUNT(*) FROM outreach_learning_log')
+        total_learning_cycles = cursor.fetchone()[0]
+        
+        cursor.execute('''
+            SELECT action_taken, reason, outcome, created_at
+            FROM outreach_learning_log ORDER BY id DESC LIMIT 5
+        ''')
+        recent_actions = [{
+            'action': r[0], 'reason': r[1], 'outcome': r[2], 'when': r[3]
+        } for r in cursor.fetchall()]
+        
+        maturity = 'seed' if total_lessons < 5 else 'growing' if total_lessons < 20 else 'mature' if total_lessons < 50 else 'expert'
+        
+        narrative = _generate_learning_narrative(total_lessons, channel_rankings, top_lessons, total_learning_cycles)
+        
+        return {
+            'maturity_level': maturity,
+            'total_lessons_learned': total_lessons,
+            'total_learning_cycles': total_learning_cycles,
+            'adaptive_interval_seconds': _get_adaptive_interval(),
+            'top_lessons': top_lessons,
+            'channel_rankings': channel_rankings,
+            'pitch_variants': pitch_variants,
+            'recent_learning_actions': recent_actions,
+            'narrative': narrative,
+        }
+    except Exception as e:
+        return {'error': str(e), 'maturity_level': 'initializing'}
     finally:
-        conn.close()
+        if conn:
+            conn.close()
+
+
 def _generate_learning_narrative(total_lessons, rankings, lessons, cycles):
     """Generate a human-readable story about what the system has learned"""
     parts = []
@@ -1036,62 +1022,60 @@ def check_for_organic_traffic():
     conn = None
     try:
         conn = get_db()
-    try:
-            cursor = conn.cursor()
-            cursor.execute("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'ai_requests')")
-            if not cursor.fetchone()[0]:
-                return {'organic_count': 0, 'recent_requests': [], 'note': 'ai_requests table not found'}
-
-            cursor.execute('''
-                SELECT platform, user_agent, endpoint, created_at
-                FROM ai_requests
-                WHERE platform != 'direct'
-                AND created_at > datetime('now', '-5 minutes')
-                ORDER BY created_at DESC
-            ''')
-
-            recent_requests = cursor.fetchall()
-            organic_traffic = []
-
-            for req in recent_requests:
-                platform, user_agent, endpoint, created_at = req
-                is_organic = False
-
-                if user_agent and (
-                    '+http' in user_agent.lower() or 
-                    'compatible' in user_agent.lower() or
-                    len(user_agent) > 50
-                ):
-                    is_organic = True
-                    organic_traffic.append({
-                        'platform': platform,
-                        'user_agent': user_agent,
-                        'endpoint': endpoint,
-                        'detected_at': created_at
-                    })
-
-                    cursor.execute('''
-                        INSERT INTO organic_traffic_alerts (platform, user_agent, endpoint, is_organic, detected_at)
-                        VALUES (%s, %s, %s, 1, %s)
-                    ''', (platform, user_agent, endpoint, created_at))
-
-            conn.commit()
-
-            if organic_traffic:
-                logger.info(f"🎉 ORGANIC AI TRAFFIC DETECTED: {len(organic_traffic)} requests!")
-                for traffic in organic_traffic:
-                    logger.info(f"   Platform: {traffic['platform']}, Endpoint: {traffic['endpoint']}")
-
-            return organic_traffic
-        except Exception as e:
-            logger.error(f"Error checking organic traffic: {e}")
-            return []
-        finally:
-            if conn:
-
-
+        cursor = conn.cursor()
+        cursor.execute("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'ai_requests')")
+        if not cursor.fetchone()[0]:
+            return {'organic_count': 0, 'recent_requests': [], 'note': 'ai_requests table not found'}
+        
+        cursor.execute('''
+            SELECT platform, user_agent, endpoint, created_at
+            FROM ai_requests
+            WHERE platform != 'direct'
+            AND created_at > datetime('now', '-5 minutes')
+            ORDER BY created_at DESC
+        ''')
+        
+        recent_requests = cursor.fetchall()
+        organic_traffic = []
+        
+        for req in recent_requests:
+            platform, user_agent, endpoint, created_at = req
+            is_organic = False
+            
+            if user_agent and (
+                '+http' in user_agent.lower() or 
+                'compatible' in user_agent.lower() or
+                len(user_agent) > 50
+            ):
+                is_organic = True
+                organic_traffic.append({
+                    'platform': platform,
+                    'user_agent': user_agent,
+                    'endpoint': endpoint,
+                    'detected_at': created_at
+                })
+                
+                cursor.execute('''
+                    INSERT INTO organic_traffic_alerts (platform, user_agent, endpoint, is_organic, detected_at)
+                    VALUES (%s, %s, %s, 1, %s)
+                ''', (platform, user_agent, endpoint, created_at))
+        
+        conn.commit()
+        
+        if organic_traffic:
+            logger.info(f"🎉 ORGANIC AI TRAFFIC DETECTED: {len(organic_traffic)} requests!")
+            for traffic in organic_traffic:
+                logger.info(f"   Platform: {traffic['platform']}, Endpoint: {traffic['endpoint']}")
+        
+        return organic_traffic
+    except Exception as e:
+        logger.error(f"Error checking organic traffic: {e}")
+        return []
     finally:
-        conn.close()
+        if conn:
+            conn.close()
+
+
 def generate_submission_content():
     """Generate content for directory submissions"""
     return {
@@ -1288,63 +1272,61 @@ def get_outreach_stats():
     conn = None
     try:
         conn = get_db()
-    try:
-            cursor = conn.cursor()
-
-            cursor.execute('SELECT * FROM ai_outreach_stats ORDER BY total_pings DESC')
-            rows = cursor.fetchall()
-
-            cursor.execute('SELECT COUNT(*) FROM ai_outreach_log')
-            total_logs = cursor.fetchone()[0]
-
-            cursor.execute('''
-                SELECT COUNT(*) FROM ai_outreach_log 
-                WHERE created_at > datetime('now', '-24 hours')
-            ''')
-            last_24h = cursor.fetchone()[0]
-
-            cursor.execute('''
-                SELECT platform, COUNT(*) as count 
-                FROM ai_outreach_log 
-                WHERE created_at > datetime('now', '-24 hours')
-                GROUP BY platform
-            ''')
-            by_platform = {row[0]: row[1] for row in cursor.fetchall()}
-
-            cursor.execute('SELECT COUNT(*) FROM organic_traffic_alerts WHERE is_organic = 1')
-            organic_count = cursor.fetchone()[0]
-
-            cursor.execute('''
-                SELECT platform, user_agent, endpoint, detected_at
-                FROM organic_traffic_alerts
-                WHERE is_organic = 1
-                ORDER BY detected_at DESC
-                LIMIT 10
-            ''')
-            recent_organic = [{'platform': r[0], 'user_agent': r[1], 'endpoint': r[2], 'detected_at': r[3]} 
-                             for r in cursor.fetchall()]
-
-            return {
-                'total_outreach_events': total_logs,
-                'last_24_hours': last_24h,
-                'by_platform': by_platform,
-                'organic_traffic_total': organic_count,
-                'recent_organic': recent_organic,
-                'platforms': {row[0]: {
-                    'total_pings': row[1],
-                    'successful_pings': row[2],
-                    'last_ping': row[3],
-                    'last_success': row[4]
-                } for row in rows}
-            }
-        except Exception as e:
-            return {'error': str(e)}
-        finally:
-            if conn:
-
-
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT * FROM ai_outreach_stats ORDER BY total_pings DESC')
+        rows = cursor.fetchall()
+        
+        cursor.execute('SELECT COUNT(*) FROM ai_outreach_log')
+        total_logs = cursor.fetchone()[0]
+        
+        cursor.execute('''
+            SELECT COUNT(*) FROM ai_outreach_log 
+            WHERE created_at > datetime('now', '-24 hours')
+        ''')
+        last_24h = cursor.fetchone()[0]
+        
+        cursor.execute('''
+            SELECT platform, COUNT(*) as count 
+            FROM ai_outreach_log 
+            WHERE created_at > datetime('now', '-24 hours')
+            GROUP BY platform
+        ''')
+        by_platform = {row[0]: row[1] for row in cursor.fetchall()}
+        
+        cursor.execute('SELECT COUNT(*) FROM organic_traffic_alerts WHERE is_organic = 1')
+        organic_count = cursor.fetchone()[0]
+        
+        cursor.execute('''
+            SELECT platform, user_agent, endpoint, detected_at
+            FROM organic_traffic_alerts
+            WHERE is_organic = 1
+            ORDER BY detected_at DESC
+            LIMIT 10
+        ''')
+        recent_organic = [{'platform': r[0], 'user_agent': r[1], 'endpoint': r[2], 'detected_at': r[3]} 
+                         for r in cursor.fetchall()]
+        
+        return {
+            'total_outreach_events': total_logs,
+            'last_24_hours': last_24h,
+            'by_platform': by_platform,
+            'organic_traffic_total': organic_count,
+            'recent_organic': recent_organic,
+            'platforms': {row[0]: {
+                'total_pings': row[1],
+                'successful_pings': row[2],
+                'last_ping': row[3],
+                'last_success': row[4]
+            } for row in rows}
+        }
+    except Exception as e:
+        return {'error': str(e)}
     finally:
-        conn.close()
+        if conn:
+            conn.close()
+
+
 def register_outreach_routes(app):
     """Register Flask routes for outreach agent"""
     from flask import jsonify, request
@@ -1598,32 +1580,30 @@ Website: https://dchub.cloud
         conn = None
         try:
             conn = get_db()
-        try:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    INSERT INTO outreach_learning_memory (channel, lesson_type, lesson, confidence)
-                    VALUES (%s, %s, %s, 0.9)
-                ''', (channel, lesson_type, lesson))
-                cursor.execute('''
-                    INSERT INTO outreach_learning_log (cycle_number, action_taken, reason, outcome)
-                    VALUES (%s, 'manual_teach', %s, 'Lesson stored with 0.9 confidence')
-                ''', (_learning_cycle_count['count'], f'Manual lesson: {lesson[:100]}'))
-                conn.commit()
-                return jsonify({'status': 'learned', 'channel': channel, 'lesson': lesson})
-            except Exception as e:
-                return jsonify({'error': str(e)}), 500
-            finally:
-                if conn:
-
-            logger.info("   GET  /api/outreach/feedback - Unified feedback dashboard")
-            logger.info("   GET  /api/outreach/learning - Self-learning intelligence dashboard")
-            logger.info("   POST /api/outreach/learning/teach - Manually teach the system")
-            logger.info("📣 AI Outreach Agent routes registered")
-            logger.info("   GET  /api/outreach/status - Outreach status")
-            logger.info("   POST /api/outreach/run - Run manual cycle")
-            logger.info("   GET  /api/outreach/pitch - Current AI pitch")
-            logger.info("   GET  /api/outreach/directories - Directory list")
-            logger.info("   GET  /api/outreach/organic - Organic traffic status")
-            logger.info("   GET  /api/outreach/social-posts - Social post templates")
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO outreach_learning_memory (channel, lesson_type, lesson, confidence)
+                VALUES (%s, %s, %s, 0.9)
+            ''', (channel, lesson_type, lesson))
+            cursor.execute('''
+                INSERT INTO outreach_learning_log (cycle_number, action_taken, reason, outcome)
+                VALUES (%s, 'manual_teach', %s, 'Lesson stored with 0.9 confidence')
+            ''', (_learning_cycle_count['count'], f'Manual lesson: {lesson[:100]}'))
+            conn.commit()
+            return jsonify({'status': 'learned', 'channel': channel, 'lesson': lesson})
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
         finally:
-            conn.close()
+            if conn:
+                conn.close()
+    
+    logger.info("   GET  /api/outreach/feedback - Unified feedback dashboard")
+    logger.info("   GET  /api/outreach/learning - Self-learning intelligence dashboard")
+    logger.info("   POST /api/outreach/learning/teach - Manually teach the system")
+    logger.info("📣 AI Outreach Agent routes registered")
+    logger.info("   GET  /api/outreach/status - Outreach status")
+    logger.info("   POST /api/outreach/run - Run manual cycle")
+    logger.info("   GET  /api/outreach/pitch - Current AI pitch")
+    logger.info("   GET  /api/outreach/directories - Directory list")
+    logger.info("   GET  /api/outreach/organic - Organic traffic status")
+    logger.info("   GET  /api/outreach/social-posts - Social post templates")

@@ -49,59 +49,53 @@ def _get_fiber_routes_from_neon(carrier=None, route_type=None, limit=500):
     try:
         from db_utils import get_db
         conn = get_db()
-        try:
-            cur = conn.cursor()
+        cur = conn.cursor()
 
-            query = "SELECT id, name, provider, route_type, start_location, end_location, start_lat, start_lng, end_lat, end_lng, distance_miles, fiber_count, status, source_id FROM fiber_routes WHERE 1=1"
-            params = []
+        query = "SELECT id, name, provider, route_type, start_location, end_location, start_lat, start_lng, end_lat, end_lng, distance_miles, fiber_count, status, source_id FROM fiber_routes WHERE 1=1"
+        params = []
 
-            if carrier:
-                query += " AND LOWER(provider) LIKE %s"
-                params.append('%' + carrier.lower() + '%')
-            if route_type:
-                query += " AND route_type = %s"
-                params.append(route_type)
+        if carrier:
+            query += " AND LOWER(provider) LIKE %s"
+            params.append('%' + carrier.lower() + '%')
+        if route_type:
+            query += " AND route_type = %s"
+            params.append(route_type)
 
-            query += " ORDER BY provider, route_type LIMIT %s"
-            params.append(limit)
+        query += " ORDER BY provider, route_type LIMIT %s"
+        params.append(limit)
 
-            cur.execute(query, params)
-            columns = [desc[0] for desc in cur.description]
-            rows = cur.fetchall()
+        cur.execute(query, params)
+        columns = [desc[0] for desc in cur.description]
+        rows = cur.fetchall()
 
-            routes = []
-            for row in rows:
-                r = dict(zip(columns, row))
-                # Map to legacy field names for backward compat with map UI
-                r['carrier'] = r.get('provider', '')
-                r['type'] = r.get('route_type', '')
-                r['lat'] = r.get('start_lat', 0)
-                r['lng'] = r.get('start_lng', 0)
-                r['miles'] = r.get('distance_miles', 0)
-                routes.append(r)
+        routes = []
+        for row in rows:
+            r = dict(zip(columns, row))
+            # Map to legacy field names for backward compat with map UI
+            r['carrier'] = r.get('provider', '')
+            r['type'] = r.get('route_type', '')
+            r['lat'] = r.get('start_lat', 0)
+            r['lng'] = r.get('start_lng', 0)
+            r['miles'] = r.get('distance_miles', 0)
+            routes.append(r)
 
-            return routes
-            except Exception as e:
-            logger.warning("Neon fiber query failed, falling back to in-memory: %s" % e)
-            return None
+        return routes
+    except Exception as e:
+        logger.warning("Neon fiber query failed, falling back to in-memory: %s" % e)
+        return None
 
 
-        finally:
-            conn.close()
 def _get_fiber_count_from_neon():
     """Get total fiber route count from Neon."""
     try:
         from db_utils import get_db
         conn = get_db()
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT COUNT(*) FROM fiber_routes")
-            return cur.fetchone()[0]
-            except Exception:
-            return None
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM fiber_routes")
+        return cur.fetchone()[0]
+    except Exception:
+        return None
 
-        finally:
-            conn.close()
 infra_bp = Blueprint('infrastructure_api', __name__, url_prefix='/api/v1/infrastructure')
 
 # ============================================

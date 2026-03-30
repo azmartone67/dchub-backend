@@ -21,6 +21,7 @@ DATA QUALITY:
 
 from flask import Blueprint, jsonify, request
 from datetime import datetime
+import sqlite3
 import os
 from db_utils import get_db
 
@@ -66,6 +67,7 @@ def get_deals_db():
             conn.cursor_factory = psycopg2.extras.RealDictCursor
         except (ImportError, AttributeError):
             try:
+                import sqlite3
                 # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
             except Exception:
                 pass

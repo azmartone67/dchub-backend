@@ -33,6 +33,7 @@ Endpoints:
 
 import os
 import json
+import sqlite3
 import secrets
 import hashlib
 import time

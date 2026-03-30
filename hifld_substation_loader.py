@@ -157,92 +157,89 @@ def main():
     try:
         from db_utils import get_db
         conn = get_db()
-        try:
-            print("✅ Connected to Neon PostgreSQL")
-            except Exception as e:
-            print(f"❌ Could not connect to database: {e}")
-            sys.exit(1)
-
-            # Check current count
-            cur = conn.cursor()
-            cur.execute("SELECT COUNT(*) FROM substations")
-            current_count = cur.fetchone()[0]
-            print(f"📊 Current substations in Neon: {current_count}")
-
-            # Create unique index for dedup
-            check_for_unique_constraint(conn)
-
-            # Test ArcGIS API availability
-            print("\n🔍 Testing HIFLD ArcGIS API...")
-            test_result = fetch_page(0, 5)
-            if test_result is None:
-            print("❌ Primary HIFLD API unavailable. Trying alternatives...")
-            # TODO: Try alternative URLs
-            print("❌ All HIFLD sources unavailable. Try again later.")
-            print("   You can also download the CSV manually from:")
-            print("   https://hifld-geoplatform.opendata.arcgis.com/datasets/electric-substations")
-            sys.exit(1)
-
-            features, _ = test_result
-            print(f"✅ API available — test returned {len(features)} features")
-
-            # Page through all records
-            print("\n📥 Downloading substations...")
-            total_fetched = 0
-            total_inserted = 0
-            offset = 0
-
-            while offset < MAX_RECORDS:
+        print("✅ Connected to Neon PostgreSQL")
+    except Exception as e:
+        print(f"❌ Could not connect to database: {e}")
+        sys.exit(1)
+    
+    # Check current count
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM substations")
+    current_count = cur.fetchone()[0]
+    print(f"📊 Current substations in Neon: {current_count}")
+    
+    # Create unique index for dedup
+    check_for_unique_constraint(conn)
+    
+    # Test ArcGIS API availability
+    print("\n🔍 Testing HIFLD ArcGIS API...")
+    test_result = fetch_page(0, 5)
+    if test_result is None:
+        print("❌ Primary HIFLD API unavailable. Trying alternatives...")
+        # TODO: Try alternative URLs
+        print("❌ All HIFLD sources unavailable. Try again later.")
+        print("   You can also download the CSV manually from:")
+        print("   https://hifld-geoplatform.opendata.arcgis.com/datasets/electric-substations")
+        sys.exit(1)
+    
+    features, _ = test_result
+    print(f"✅ API available — test returned {len(features)} features")
+    
+    # Page through all records
+    print("\n📥 Downloading substations...")
+    total_fetched = 0
+    total_inserted = 0
+    offset = 0
+    
+    while offset < MAX_RECORDS:
+        result = fetch_page(offset, BATCH_SIZE)
+        if result is None:
+            print(f"  ⚠️ Failed at offset {offset}, retrying in 5s...")
+            time.sleep(5)
             result = fetch_page(offset, BATCH_SIZE)
             if result is None:
-                print(f"  ⚠️ Failed at offset {offset}, retrying in 5s...")
-                time.sleep(5)
-                result = fetch_page(offset, BATCH_SIZE)
-                if result is None:
-                    print(f"  ❌ Giving up at offset {offset}")
-                    break
-
-            features, exceeded = result
-            if not features:
-                print(f"  No more features at offset {offset}")
+                print(f"  ❌ Giving up at offset {offset}")
                 break
+        
+        features, exceeded = result
+        if not features:
+            print(f"  No more features at offset {offset}")
+            break
+        
+        # Parse features
+        substations = []
+        for f in features:
+            sub = parse_substation(f)
+            if sub:
+                substations.append(sub)
+        
+        # Insert batch
+        inserted = insert_batch(conn, substations)
+        total_fetched += len(features)
+        total_inserted += inserted
+        
+        print(f"  Offset {offset}: fetched {len(features)}, parsed {len(substations)}, inserted {inserted} (total: {total_fetched} fetched, {total_inserted} inserted)")
+        
+        if not exceeded or len(features) < BATCH_SIZE:
+            print(f"  ✅ All records retrieved")
+            break
+        
+        offset += BATCH_SIZE
+        time.sleep(1)  # Be polite to the API
+    
+    # Final count
+    cur.execute("SELECT COUNT(*) FROM substations")
+    new_count = cur.fetchone()[0]
+    
+    print(f"\n{'=' * 60}")
+    print(f"✅ HIFLD Substation Load Complete")
+    print(f"   Fetched: {total_fetched}")
+    print(f"   Inserted: {total_inserted}")
+    print(f"   Before: {current_count}")
+    print(f"   After:  {new_count}")
+    print(f"   Net new: {new_count - current_count}")
+    print(f"{'=' * 60}")
 
-            # Parse features
-            substations = []
-            for f in features:
-                sub = parse_substation(f)
-                if sub:
-                    substations.append(sub)
 
-            # Insert batch
-            inserted = insert_batch(conn, substations)
-            total_fetched += len(features)
-            total_inserted += inserted
-
-            print(f"  Offset {offset}: fetched {len(features)}, parsed {len(substations)}, inserted {inserted} (total: {total_fetched} fetched, {total_inserted} inserted)")
-
-            if not exceeded or len(features) < BATCH_SIZE:
-                print(f"  ✅ All records retrieved")
-                break
-
-            offset += BATCH_SIZE
-            time.sleep(1)  # Be polite to the API
-
-            # Final count
-            cur.execute("SELECT COUNT(*) FROM substations")
-            new_count = cur.fetchone()[0]
-
-            print(f"\n{'=' * 60}")
-            print(f"✅ HIFLD Substation Load Complete")
-            print(f"   Fetched: {total_fetched}")
-            print(f"   Inserted: {total_inserted}")
-            print(f"   Before: {current_count}")
-            print(f"   After:  {new_count}")
-            print(f"   Net new: {new_count - current_count}")
-            print(f"{'=' * 60}")
-
-
-        finally:
-            conn.close()
 if __name__ == '__main__':
     main()

@@ -675,67 +675,63 @@ def get_live_stats():
     conn = None
     try:
         conn = get_db()
-    try:
-            cursor = conn.cursor()
-
-            cursor.execute('SELECT COUNT(*) FROM facilities')
-            facility_count = cursor.fetchone()[0]
-
-            cursor.execute('SELECT COUNT(*) FROM announcements WHERE timestamp > datetime("now", "-7 days")')
-            recent_news = cursor.fetchone()[0]
-
-            cursor.execute('SELECT SUM(mw) FROM capacity_pipeline WHERE status != "cancelled"')
-            result = cursor.fetchone()
-            pipeline_mw = result[0] if result and result[0] else 0
-
-            cursor.execute('SELECT COUNT(*) FROM deals')
-            deals = cursor.fetchone()[0]
-
-            return {
-                'facilities': facility_count,
-                'recent_news': recent_news,
-                'pipeline_mw': pipeline_mw,
-                'deals': deals
-            }
-        except Exception as e:
-            return {'facilities': 9603, 'recent_news': 0, 'pipeline_mw': 7194, 'deals': 100}
-        finally:
-            if conn:
-
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT COUNT(*) FROM facilities')
+        facility_count = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT COUNT(*) FROM announcements WHERE timestamp > datetime("now", "-7 days")')
+        recent_news = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT SUM(mw) FROM capacity_pipeline WHERE status != "cancelled"')
+        result = cursor.fetchone()
+        pipeline_mw = result[0] if result and result[0] else 0
+        
+        cursor.execute('SELECT COUNT(*) FROM deals')
+        deals = cursor.fetchone()[0]
+        
+        return {
+            'facilities': facility_count,
+            'recent_news': recent_news,
+            'pipeline_mw': pipeline_mw,
+            'deals': deals
+        }
+    except Exception as e:
+        return {'facilities': 9603, 'recent_news': 0, 'pipeline_mw': 7194, 'deals': 100}
     finally:
-        conn.close()
+        if conn:
+            conn.close()
+
 def learn_from_interaction(agent: str, user_message: str, response: str, success: bool = True):
     """Track interactions for learning patterns"""
     conn = None
     try:
         conn = get_db()
-    try:
-            cursor = conn.cursor()
-
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS agent_interactions (
-                    id SERIAL PRIMARY KEY,
-                    agent TEXT NOT NULL,
-                    user_message TEXT,
-                    response_summary TEXT,
-                    success BOOLEAN DEFAULT 1,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-
-            cursor.execute('''
-                INSERT INTO agent_interactions (agent, user_message, response_summary, success)
-                VALUES (%s, %s, %s, %s)
-            ''', (agent, user_message[:500], response[:200] if response else '', success))
-
-            conn.commit()
-        except Exception:
-            pass
-        finally:
-            if conn:
-
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS agent_interactions (
+                id SERIAL PRIMARY KEY,
+                agent TEXT NOT NULL,
+                user_message TEXT,
+                response_summary TEXT,
+                success BOOLEAN DEFAULT 1,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        cursor.execute('''
+            INSERT INTO agent_interactions (agent, user_message, response_summary, success)
+            VALUES (%s, %s, %s, %s)
+        ''', (agent, user_message[:500], response[:200] if response else '', success))
+        
+        conn.commit()
+    except Exception:
+        pass
     finally:
-        conn.close()
+        if conn:
+            conn.close()
+
 def get_expert_knowledge(topic: str = None) -> str:
     """Get expert knowledge from DC Brain for agent responses"""
     if not BRAIN_AVAILABLE:

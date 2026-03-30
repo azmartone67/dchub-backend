@@ -15,6 +15,7 @@ ISSUES FIXED:
 # =====================================================
 
 from flask import Flask, request, jsonify
+import sqlite3
 import re
 from html import unescape
 from db_utils import get_db

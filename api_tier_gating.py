@@ -244,31 +244,29 @@ PLAN_INFO = {
 def init_api_keys_table():
     """Create/migrate the api_keys table with tier support."""
     conn = get_db()
-    try:
-        c = conn.cursor()
+    c = conn.cursor()
 
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS api_keys (
-                id SERIAL PRIMARY KEY,
-                key_hash TEXT UNIQUE NOT NULL,
-                key_prefix TEXT NOT NULL,
-                user_id TEXT,
-                email TEXT,
-                plan TEXT DEFAULT 'free',
-                name TEXT DEFAULT 'Default',
-                calls_today INTEGER DEFAULT 0,
-                calls_total INTEGER DEFAULT 0,
-                last_used TEXT,
-                last_reset_date TEXT,
-                is_active INTEGER DEFAULT 1,
-                created_at TEXT,
-                expires_at TEXT
-            )
-        """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS api_keys (
+            id SERIAL PRIMARY KEY,
+            key_hash TEXT UNIQUE NOT NULL,
+            key_prefix TEXT NOT NULL,
+            user_id TEXT,
+            email TEXT,
+            plan TEXT DEFAULT 'free',
+            name TEXT DEFAULT 'Default',
+            calls_today INTEGER DEFAULT 0,
+            calls_total INTEGER DEFAULT 0,
+            last_used TEXT,
+            last_reset_date TEXT,
+            is_active INTEGER DEFAULT 1,
+            created_at TEXT,
+            expires_at TEXT
+        )
+    """)
 
-        conn.commit()
-    finally:
-        conn.close()
+    conn.commit()
+    conn.close()
 
     for col_sql in [
         "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS plan TEXT DEFAULT 'free'",
@@ -293,15 +291,13 @@ def generate_api_key(user_id, email, plan='free', name='Default'):
     key_prefix = raw_key[:16]
 
     conn = get_db()
-    try:
-        c = conn.cursor()
-        c.execute("""
-            INSERT INTO api_keys (key_hash, key_prefix, user_id, email, plan, name, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-        """, (key_hash, key_prefix, user_id, email, plan, name, datetime.now(timezone.utc).isoformat()))
-        conn.commit()
-    finally:
-        conn.close()
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO api_keys (key_hash, key_prefix, user_id, email, plan, name, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+    """, (key_hash, key_prefix, user_id, email, plan, name, datetime.now(timezone.utc).isoformat()))
+    conn.commit()
+    conn.close()
 
     return raw_key
 
@@ -704,14 +700,11 @@ def _get_pg_conn_for_tracking():
     try:
         from db_utils import get_db
         conn = get_db()
-        try:
-            return conn, lambda c, **kw: c.close()
-            except Exception:
-            return None, None
+        return conn, lambda c, **kw: c.close()
+    except Exception:
+        return None, None
 
 
-        finally:
-            conn.close()
 def check_daily_record_budget(user_key, tier, records_requested=0):
     """
     Check if a user has remaining daily record budget.
@@ -1076,18 +1069,16 @@ def _handle_checkout_v2(session):
     customer_id = session.get('customer', '')
 
     conn = get_db()
-    try:
-        c = conn.cursor()
+    c = conn.cursor()
 
-        if email:
-            c.execute("""
-                UPDATE users SET plan = %s, stripe_customer_id = %s, subscription_status = 'active'
-                WHERE email = %s
-            """, (tier, customer_id, email))
+    if email:
+        c.execute("""
+            UPDATE users SET plan = %s, stripe_customer_id = %s, subscription_status = 'active'
+            WHERE email = %s
+        """, (tier, customer_id, email))
 
-        conn.commit()
-    finally:
-        conn.close()
+    conn.commit()
+    conn.close()
     print(f"✅ User upgraded to {tier}: {email}")
 
     # Auto-generate API key for Pro/Enterprise users
@@ -1101,15 +1092,13 @@ def _handle_checkout_v2(session):
 def _auto_provision_api_key(email, plan):
     """Auto-generate an API key when a user subscribes."""
     conn = get_db()
-    try:
+    
+    c = conn.cursor()
 
-        c = conn.cursor()
-
-        # Find user
-        c.execute("SELECT id FROM users WHERE email = %s", (email,))
-        user = c.fetchone()
-        if not user:
-    finally:
+    # Find user
+    c.execute("SELECT id FROM users WHERE email = %s", (email,))
+    user = c.fetchone()
+    if not user:
         conn.close()
         return
 
@@ -1147,49 +1136,24 @@ def _handle_sub_updated_v2(subscription):
                 break
 
     conn = get_db()
-    try:
-        c = conn.cursor()
+    c = conn.cursor()
 
-        if status in ('active', 'trialing'):
-            c.execute("""
-                UPDATE users SET plan = %s, subscription_status = %s WHERE stripe_customer_id = %s
-            """, (plan, status, customer_id))
-            # Also upgrade API keys
-            c.execute("SELECT id FROM users WHERE stripe_customer_id = %s", (customer_id,))
-            user = c.fetchone()
-            if user:
-                c.execute("UPDATE api_keys SET plan = %s WHERE user_id = %s AND is_active = 1",
-                          (plan, user[0]))
-        elif status in ('past_due', 'unpaid'):
-            c.execute("UPDATE users SET subscription_status = %s WHERE stripe_customer_id = %s",
-                      (status, customer_id))
-        elif status == 'canceled':
-            c.execute("""
-                UPDATE users SET plan = 'free', subscription_status = 'canceled'
-                WHERE stripe_customer_id = %s
-            """, (customer_id,))
-            # Downgrade API keys
-            c.execute("SELECT id FROM users WHERE stripe_customer_id = %s", (customer_id,))
-            user = c.fetchone()
-            if user:
-                c.execute("UPDATE api_keys SET plan = 'free' WHERE user_id = %s AND is_active = 1",
-                          (user[0],))
-
-        conn.commit()
-    finally:
-        conn.close()
-    print(f"📝 Subscription updated: customer={customer_id}, status={status}, plan={plan}")
-
-
-def _handle_sub_deleted_v2(subscription):
-    """Handle subscription deletion — downgrade to free."""
-    customer_id = subscription.get('customer', '')
-
-    conn = get_db()
-    try:
-        c = conn.cursor()
+    if status in ('active', 'trialing'):
         c.execute("""
-            UPDATE users SET plan = 'free', subscription_status = 'canceled'
+            UPDATE users SET plan = %s, subscription_status = %s WHERE stripe_customer_id = %s
+        """, (plan, status, customer_id))
+        # Also upgrade API keys
+        c.execute("SELECT id FROM users WHERE stripe_customer_id = %s", (customer_id,))
+        user = c.fetchone()
+        if user:
+            c.execute("UPDATE api_keys SET plan = %s WHERE user_id = %s AND is_active = 1",
+                      (plan, user[0]))
+    elif status in ('past_due', 'unpaid'):
+        c.execute("UPDATE users SET subscription_status = %s WHERE stripe_customer_id = %s",
+                  (status, customer_id))
+    elif status == 'canceled':
+        c.execute("""
+            UPDATE users SET plan = 'free', subscription_status = 'canceled' 
             WHERE stripe_customer_id = %s
         """, (customer_id,))
         # Downgrade API keys
@@ -1198,9 +1162,30 @@ def _handle_sub_deleted_v2(subscription):
         if user:
             c.execute("UPDATE api_keys SET plan = 'free' WHERE user_id = %s AND is_active = 1",
                       (user[0],))
-        conn.commit()
-    finally:
-        conn.close()
+
+    conn.commit()
+    conn.close()
+    print(f"📝 Subscription updated: customer={customer_id}, status={status}, plan={plan}")
+
+
+def _handle_sub_deleted_v2(subscription):
+    """Handle subscription deletion — downgrade to free."""
+    customer_id = subscription.get('customer', '')
+
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("""
+        UPDATE users SET plan = 'free', subscription_status = 'canceled' 
+        WHERE stripe_customer_id = %s
+    """, (customer_id,))
+    # Downgrade API keys
+    c.execute("SELECT id FROM users WHERE stripe_customer_id = %s", (customer_id,))
+    user = c.fetchone()
+    if user:
+        c.execute("UPDATE api_keys SET plan = 'free' WHERE user_id = %s AND is_active = 1",
+                  (user[0],))
+    conn.commit()
+    conn.close()
     print(f"❌ Subscription canceled: customer={customer_id}")
 
 
@@ -1234,18 +1219,16 @@ def register_api_key_routes(app):
 
         user_id = payload.get('user_id')
         conn = get_db()
-        try:
-
-            c = conn.cursor()
-            c.execute("""
-                SELECT id, key_prefix, plan, name, calls_today, calls_total, last_used, is_active, created_at
-                FROM api_keys WHERE user_id = %s
-                ORDER BY created_at DESC
-            """, (user_id,))
-            cols = ['id', 'key_prefix', 'plan', 'name', 'calls_today', 'calls_total', 'last_used', 'is_active', 'created_at']
-            keys = [dict(r.items()) if hasattr(r, 'items') else dict(zip(cols, r)) for r in c.fetchall()]
-        finally:
-            conn.close()
+        
+        c = conn.cursor()
+        c.execute("""
+            SELECT id, key_prefix, plan, name, calls_today, calls_total, last_used, is_active, created_at
+            FROM api_keys WHERE user_id = %s
+            ORDER BY created_at DESC
+        """, (user_id,))
+        cols = ['id', 'key_prefix', 'plan', 'name', 'calls_today', 'calls_total', 'last_used', 'is_active', 'created_at']
+        keys = [dict(r.items()) if hasattr(r, 'items') else dict(zip(cols, r)) for r in c.fetchall()]
+        conn.close()
 
         return jsonify({'success': True, 'keys': keys})
 
@@ -1266,12 +1249,10 @@ def register_api_key_routes(app):
         # Limit: 3 keys for free, 10 for pro, 25 for enterprise
         limits = {'free': 3, 'founding': 10, 'pro': 10, 'enterprise': 25}
         conn = get_db()
-        try:
-            c = conn.cursor()
-            c.execute("SELECT COUNT(*) FROM api_keys WHERE user_id = %s AND is_active = 1", (user_id,))
-            count = c.fetchone()[0]
-        finally:
-            conn.close()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM api_keys WHERE user_id = %s AND is_active = 1", (user_id,))
+        count = c.fetchone()[0]
+        conn.close()
 
         if count >= limits.get(plan, 3):
             return jsonify({
@@ -1298,13 +1279,11 @@ def register_api_key_routes(app):
 
         user_id = payload.get('user_id')
         conn = get_db()
-        try:
-            c = conn.cursor()
-            c.execute("UPDATE api_keys SET is_active = 0 WHERE id = %s AND user_id = %s", (key_id, user_id))
-            conn.commit()
-            affected = c.rowcount
-        finally:
-            conn.close()
+        c = conn.cursor()
+        c.execute("UPDATE api_keys SET is_active = 0 WHERE id = %s AND user_id = %s", (key_id, user_id))
+        conn.commit()
+        affected = c.rowcount
+        conn.close()
 
         if affected:
             return jsonify({'success': True, 'message': 'API key revoked'})
@@ -1321,24 +1300,22 @@ def register_api_key_routes(app):
         plan = get_user_plan(user_id=user_id)
 
         conn = get_db()
-        try:
-
-            c = conn.cursor()
-            c.execute("""
-                SELECT SUM(calls_today) as today, SUM(calls_total) as total
-                FROM api_keys WHERE user_id = %s AND is_active = 1
-            """, (user_id,))
-            row = c.fetchone()
-            if row and hasattr(row, 'items'):
-                usage = dict(row.items())
-            elif row and not isinstance(row, dict):
-                usage = {'today': row[0], 'total': row[1]}
-            elif row:
-                usage = dict(row)
-            else:
-                usage = {'today': 0, 'total': 0}
-        finally:
-            conn.close()
+        
+        c = conn.cursor()
+        c.execute("""
+            SELECT SUM(calls_today) as today, SUM(calls_total) as total
+            FROM api_keys WHERE user_id = %s AND is_active = 1
+        """, (user_id,))
+        row = c.fetchone()
+        if row and hasattr(row, 'items'):
+            usage = dict(row.items())
+        elif row and not isinstance(row, dict):
+            usage = {'today': row[0], 'total': row[1]}
+        elif row:
+            usage = dict(row)
+        else:
+            usage = {'today': 0, 'total': 0}
+        conn.close()
 
         limit = TIER_RATE_LIMITS.get(plan, 100)
 
@@ -1420,10 +1397,8 @@ def init_tier_gating(app, decode_jwt_func=None):
     # 5. Add plan migration for users table
     try:
         conn = get_db()
-        try:
-            c = conn.cursor()
-        finally:
-            conn.close()
+        c = conn.cursor()
+        conn.close()
     except:
         pass
 
