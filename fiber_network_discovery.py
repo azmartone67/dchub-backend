@@ -69,15 +69,15 @@ def _ensure_fiber_routes_table():
             except Exception:
                 conn.rollback()
         cur.close()
-        conn.close()
         return True
     except Exception as e:
         logger.error(f"Fiber routes table check failed: {e}")
+        return False
+    finally:
         try:
             conn.close()
         except Exception:
             pass
-        return False
 
 
 def _upsert_fiber_route(conn, route):
@@ -501,6 +501,7 @@ def get_fiber_summary():
     bead = NTIAGrantAPI.get_bead_allocations()
     # Check Neon count
     neon_count = 0
+    conn = None
     try:
         conn = _get_pg_connection()
         if conn:
@@ -508,9 +509,14 @@ def get_fiber_summary():
             cur.execute("SELECT COUNT(*) FROM fiber_routes")
             neon_count = cur.fetchone()[0]
             cur.close()
-            conn.close()
     except Exception:
         pass
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     return jsonify({
         'success': True,
