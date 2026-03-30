@@ -137,7 +137,7 @@ def _init_tables():
     else:
         c.execute("""
             CREATE TABLE IF NOT EXISTS land_power_usage (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 user_id TEXT NOT NULL,
                 email TEXT,
                 year_month TEXT NOT NULL,
@@ -150,7 +150,7 @@ def _init_tables():
         """)
         c.execute("""
             CREATE TABLE IF NOT EXISTS api_monthly_usage (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 user_id TEXT NOT NULL,
                 year_month TEXT NOT NULL,
                 call_count INTEGER DEFAULT 0,
@@ -178,7 +178,7 @@ def _get_usage(user_id):
     if _is_pg():
         c.execute("SELECT search_count, last_search_at FROM land_power_usage WHERE user_id = %s AND year_month = %s", (user_id, ym))
     else:
-        c.execute("SELECT search_count, last_search_at FROM land_power_usage WHERE user_id = ? AND year_month = ?", (user_id, ym))
+        c.execute("SELECT search_count, last_search_at FROM land_power_usage WHERE user_id = %s AND year_month = %s", (user_id, ym))
     
     row = c.fetchone()
     conn.close()
@@ -207,7 +207,7 @@ def _increment_usage(user_id, email=None):
     else:
         c.execute("""
             INSERT INTO land_power_usage (user_id, email, year_month, search_count, last_search_at)
-            VALUES (?, ?, ?, 1, ?)
+            VALUES (%s, %s, %s, 1, %s)
             ON CONFLICT (user_id, year_month)
             DO UPDATE SET search_count = search_count + 1,
                           last_search_at = ?,
@@ -227,7 +227,7 @@ def _get_api_monthly_usage(user_id):
     if _is_pg():
         c.execute("SELECT call_count FROM api_monthly_usage WHERE user_id = %s AND year_month = %s", (user_id, ym))
     else:
-        c.execute("SELECT call_count FROM api_monthly_usage WHERE user_id = ? AND year_month = ?", (user_id, ym))
+        c.execute("SELECT call_count FROM api_monthly_usage WHERE user_id = %s AND year_month = %s", (user_id, ym))
     
     row = c.fetchone()
     conn.close()
@@ -251,9 +251,9 @@ def _increment_api_monthly(user_id):
     else:
         c.execute("""
             INSERT INTO api_monthly_usage (user_id, year_month, call_count, last_call_at)
-            VALUES (?, ?, 1, ?)
+            VALUES (%s, %s, 1, %s)
             ON CONFLICT (user_id, year_month)
-            DO UPDATE SET call_count = call_count + 1, last_call_at = ?
+            DO UPDATE SET call_count = call_count + 1, last_call_at = %s
         """, (user_id, ym, now, now))
     
     conn.commit()
@@ -505,7 +505,7 @@ def register_usage_routes(app):
             if _is_pg():
                 c.execute("DELETE FROM land_power_usage WHERE user_id = %s AND year_month = %s", (target_user, ym))
             else:
-                c.execute("DELETE FROM land_power_usage WHERE user_id = ? AND year_month = ?", (target_user, ym))
+                c.execute("DELETE FROM land_power_usage WHERE user_id = %s AND year_month = %s", (target_user, ym))
             conn.commit()
             conn.close()
             return jsonify({'success': True, 'message': f'Reset usage for {target_user}'})

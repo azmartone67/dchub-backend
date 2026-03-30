@@ -25,9 +25,9 @@ def _get_db(retries=3):
     for attempt in range(retries):
         try:
             conn = sqlite3.connect(DB_PATH, timeout=30)
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA busy_timeout=30000")
+            # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
+            # PRAGMA removed - not needed for PostgreSQL
+            # PRAGMA removed - not needed for PostgreSQL
             return conn
         except (sqlite3.OperationalError, sqlite3.DatabaseError) as e:
             last_error = e
@@ -76,9 +76,9 @@ def content_stats():
     today = datetime.utcnow().strftime('%Y-%m-%d')
     for table in ['social_media_posts', 'press_releases']:
         for status_val in ['draft', 'approved', 'published', 'rejected']:
-            cur.execute(f"SELECT COUNT(*) FROM {table} WHERE status = ?", (status_val,))
+            cur.execute(f"SELECT COUNT(*) FROM {table} WHERE status = %s", (status_val,))
             stats[status_val] += cur.fetchone()[0]
-        cur.execute(f"SELECT COUNT(*) FROM {table} WHERE status = 'published' AND published_at LIKE ?", (today + '%',))
+        cur.execute(f"SELECT COUNT(*) FROM {table} WHERE status = 'published' AND published_at LIKE %s", (today + '%',))
         stats['published_today'] += cur.fetchone()[0]
     linkedin_connected = bool(os.environ.get('LINKEDIN_ACCESS_TOKEN', ''))
     conn.close()
@@ -97,23 +97,23 @@ def content_queue():
     conn = _get_db()
     cur = conn.cursor()
     if content_type == 'press':
-        base_query = "FROM press_releases WHERE status = ?"
+        base_query = "FROM press_releases WHERE status = %s"
         params = [status_filter]
         if platform_filter:
-            base_query += " AND COALESCE(publish_platform, '') = ?"
+            base_query += " AND COALESCE(publish_platform, '') = %s"
             params.append(platform_filter)
         cur.execute(f"SELECT COUNT(*) {base_query}", params)
         total = cur.fetchone()[0]
-        cur.execute(f"SELECT id, 'press' as type, title || '\\n\\n' || content as content, status, COALESCE(publish_platform, '') as publish_platform, created_at, published_at, approved_at {base_query} ORDER BY created_at DESC LIMIT ? OFFSET ?", params + [limit, offset])
+        cur.execute(f"SELECT id, 'press' as type, title || '\\n\\n' || content as content, status, COALESCE(publish_platform, '') as publish_platform, created_at, published_at, approved_at {base_query} ORDER BY created_at DESC LIMIT %s OFFSET %s", params + [limit, offset])
     else:
-        base_query = "FROM social_media_posts WHERE status = ?"
+        base_query = "FROM social_media_posts WHERE status = %s"
         params = [status_filter]
         if platform_filter:
-            base_query += " AND platform = ?"
+            base_query += " AND platform = %s"
             params.append(platform_filter)
         cur.execute(f"SELECT COUNT(*) {base_query}", params)
         total = cur.fetchone()[0]
-        cur.execute(f"SELECT id, 'social' as type, content, status, platform as publish_platform, created_at, COALESCE(posted_at, published_at) as published_at, approved_at {base_query} ORDER BY created_at DESC LIMIT ? OFFSET ?", params + [limit, offset])
+        cur.execute(f"SELECT id, 'social' as type, content, status, platform as publish_platform, created_at, COALESCE(posted_at, published_at) as published_at, approved_at {base_query} ORDER BY created_at DESC LIMIT %s OFFSET %s", params + [limit, offset])
     rows = cur.fetchall()
     items = []
     for r in rows:
@@ -139,7 +139,7 @@ def content_approve(item_id):
     now = datetime.utcnow().isoformat() + 'Z'
     conn = _get_db()
     cur = conn.cursor()
-    cur.execute(f"UPDATE {table} SET status = 'approved', approved_at = ? WHERE id = ?", (now, item_id))
+    cur.execute(f"UPDATE {table} SET status = 'approved', approved_at = %s WHERE id = %s", (now, item_id))
     if cur.rowcount == 0:
         conn.close()
         return jsonify({'success': False, 'error': 'Not found'}), 404
@@ -155,7 +155,7 @@ def content_reject(item_id):
     table = 'press_releases' if content_type == 'press' else 'social_media_posts'
     conn = _get_db()
     cur = conn.cursor()
-    cur.execute(f"UPDATE {table} SET status = 'rejected' WHERE id = ?", (item_id,))
+    cur.execute(f"UPDATE {table} SET status = 'rejected' WHERE id = %s", (item_id,))
     if cur.rowcount == 0:
         conn.close()
         return jsonify({'success': False, 'error': 'Not found'}), 404
@@ -176,9 +176,9 @@ def content_edit(item_id):
     conn = _get_db()
     cur = conn.cursor()
     if auto_approve:
-        cur.execute(f"UPDATE {table} SET content = ?, status = 'approved', approved_at = ? WHERE id = ?", (new_content, now, item_id))
+        cur.execute(f"UPDATE {table} SET content = %s, status = 'approved', approved_at = %s WHERE id = %s", (new_content, now, item_id))
     else:
-        cur.execute(f"UPDATE {table} SET content = ? WHERE id = ?", (new_content, item_id))
+        cur.execute(f"UPDATE {table} SET content = %s WHERE id = %s", (new_content, item_id))
     if cur.rowcount == 0:
         conn.close()
         return jsonify({'success': False, 'error': 'Not found'}), 404
@@ -225,7 +225,7 @@ def publish_linkedin():
         return jsonify({'success': False, 'error': 'LINKEDIN_ACCESS_TOKEN not configured'}), 500
     conn = _get_db()
     cur = conn.cursor()
-    cur.execute("SELECT id, content, status, platform FROM social_media_posts WHERE id = ?", (post_id,))
+    cur.execute("SELECT id, content, status, platform FROM social_media_posts WHERE id = %s", (post_id,))
     row = cur.fetchone()
     if not row:
         conn.close()
@@ -237,7 +237,7 @@ def publish_linkedin():
     success, result = _post_to_linkedin(content_text, access_token)
     now = datetime.utcnow().isoformat() + 'Z'
     if success:
-        cur.execute("UPDATE social_media_posts SET status = 'published', posted_at = ?, published_at = ?, publish_platform = 'linkedin' WHERE id = ?", (now, now, post_id))
+        cur.execute("UPDATE social_media_posts SET status = 'published', posted_at = %s, published_at = %s, publish_platform = 'linkedin' WHERE id = %s", (now, now, post_id))
         conn.commit()
         conn.close()
         logger.info(f"Published post {post_id} to LinkedIn: {result}")
@@ -267,7 +267,7 @@ def start_auto_publisher():
                 conn = _get_db()
                 cur = conn.cursor()
                 today = datetime.utcnow().strftime('%Y-%m-%d')
-                cur.execute("SELECT COUNT(*) FROM social_media_posts WHERE status = 'published' AND publish_platform = 'linkedin' AND published_at LIKE ?", (today + '%',))
+                cur.execute("SELECT COUNT(*) FROM social_media_posts WHERE status = 'published' AND publish_platform = 'linkedin' AND published_at LIKE %s", (today + '%',))
                 published_today = cur.fetchone()[0]
                 if published_today >= 2:
                     logger.info(f"Auto-publisher: Already published {published_today} today, skipping")
@@ -287,7 +287,7 @@ def start_auto_publisher():
                 success, result = _post_to_linkedin(content_text, access_token)
                 now = datetime.utcnow().isoformat() + 'Z'
                 if success:
-                    cur.execute("UPDATE social_media_posts SET status = 'published', posted_at = ?, published_at = ?, publish_platform = 'linkedin' WHERE id = ?", (now, now, post_id))
+                    cur.execute("UPDATE social_media_posts SET status = 'published', posted_at = %s, published_at = %s, publish_platform = 'linkedin' WHERE id = %s", (now, now, post_id))
                     conn.commit()
                     logger.info(f"Auto-published post {post_id} to LinkedIn")
                 else:

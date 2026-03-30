@@ -854,33 +854,34 @@ def setup_energy_routes(app):
                 state = detect_state_from_coords(lat, lng)
                 if state and state != 'US':
                     try:
-                        import sqlite3
                         conn = get_db()
-                        conn.row_factory = sqlite3.Row
-                        cursor = conn.cursor()
-                        cursor.execute("""
-                            SELECT id, name, fuel_type, capacity_mw, generation_mwh, 
-                                   operator, status, state, county, sector, source
-                            FROM discovered_power_plants
-                            WHERE state = ?
-                        """, (state,))
-                        
-                        for row in cursor.fetchall():
-                            plants.append({
-                                'id': row['id'],
-                                'name': row['name'] or 'Unknown',
-                                'fuel_type': row['fuel_type'] or 'Unknown',
-                                'capacity_mw': row['capacity_mw'] or 0,
-                                'generation_mwh': row['generation_mwh'] or 0,
-                                'operator': row['operator'] or 'Unknown',
-                                'status': row['status'] or 'Operating',
-                                'state': row['state'],
-                                'county': row['county'],
-                                'lat': None,
-                                'lng': None,
-                                'source': row['source'] or 'EIA'
-                            })
-                        conn.close()
+                        try:
+                            # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
+                            cursor = conn.cursor()
+                            cursor.execute("""
+                                SELECT id, name, fuel_type, capacity_mw, generation_mwh,
+                                       operator, status, state, county, sector, source
+                                FROM discovered_power_plants
+                                WHERE state = %s
+                            """, (state,))
+
+                            for row in cursor.fetchall():
+                                plants.append({
+                                    'id': row['id'],
+                                    'name': row['name'] or 'Unknown',
+                                    'fuel_type': row['fuel_type'] or 'Unknown',
+                                    'capacity_mw': row['capacity_mw'] or 0,
+                                    'generation_mwh': row['generation_mwh'] or 0,
+                                    'operator': row['operator'] or 'Unknown',
+                                    'status': row['status'] or 'Operating',
+                                    'state': row['state'],
+                                    'county': row['county'],
+                                    'lat': None,
+                                    'lng': None,
+                                    'source': row['source'] or 'EIA'
+                                })
+                        finally:
+                            conn.close()
                         print(f"📊 Fallback: Found {len(plants)} plants from local DB for {state}")
                     except Exception as db_err:
                         print(f"Local DB fallback error: {db_err}")

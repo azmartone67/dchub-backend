@@ -259,7 +259,7 @@ p {{ font-size: 15px; color: #4a4a5a; margin-bottom: 14px; line-height: 1.6; }}
     </div>
 
     <p style="font-size: 13px; color: #8a8a9a; text-align: center;">
-      Questions? Reply to this email or reach us at <a href="mailto:support@dchub.cloud" style="color: #00d4ff;">support@dchub.cloud</a>
+      Questions%s Reply to this email or reach us at <a href="mailto:support@dchub.cloud" style="color: #00d4ff;">support@dchub.cloud</a>
     </p>
   </div>
   <div class="footer">

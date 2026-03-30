@@ -11,7 +11,6 @@ Agents:
 4. Citation Tracker Agent - Monitor when AI platforms cite DC Hub
 """
 
-import sqlite3
 import json
 import os
 import re
@@ -324,7 +323,7 @@ We've built something unique:
 I believe there's a strong opportunity for {partner_name} and DC Hub to collaborate:
 {value_prop}
 
-Would you be open to a brief call to explore how we might work together?
+Would you be open to a brief call to explore how we might work together%s
 
 Best regards,
 DC Hub Team
@@ -367,7 +366,7 @@ We're looking for API partners who could benefit from our data. {partner_name} s
 API docs: dc-hub.replit.app/api/docs
 MCP endpoint: dc-hub.replit.app/.well-known/mcp.json
 
-Interested in exploring an integration?
+Interested in exploring an integration%s
 
 Best,
 DC Hub Team
@@ -385,7 +384,7 @@ Our unique data includes:
 - 40+ infrastructure layers (power substations, fiber routes, water/drought)
 - Real-time news aggregation from 60+ sources
 
-Would you be interested in a data-sharing partnership? We could provide API access in exchange for cross-promotion.
+Would you be interested in a data-sharing partnership%s We could provide API access in exchange for cross-promotion.
 
 Best,
 DC Hub Team
@@ -431,25 +430,27 @@ class AgenticAmbassador:
         """Get current DC Hub statistics for outreach"""
         try:
             conn = get_db()
-            cursor = conn.cursor()
-            
-            cursor.execute("SELECT COUNT(*) FROM facilities")
-            facility_count = cursor.fetchone()[0] or 9603
-            
-            cursor.execute("SELECT COUNT(DISTINCT country) FROM facilities WHERE country IS NOT NULL")
-            country_count = cursor.fetchone()[0] or 179
-            
-            cursor.execute("SELECT COUNT(*) FROM deals")
-            deal_count = cursor.fetchone()[0] or 673
-            
-            cursor.execute("SELECT COALESCE(SUM(value), 0) FROM deals WHERE value > 0")
-            deal_value = round((cursor.fetchone()[0] or 0) / 1000, 0)
-            
-            cursor.execute("SELECT COALESCE(SUM(capacity_mw), 0) FROM capacity_tracking WHERE status IN ('under_construction', 'planned')")
-            pipeline_mw = cursor.fetchone()[0] or 21700
-            pipeline_gw = round(pipeline_mw / 1000, 1)
-            
-            conn.close()
+            try:
+                cursor = conn.cursor()
+
+                cursor.execute("SELECT COUNT(*) FROM facilities")
+                facility_count = cursor.fetchone()[0] or 9603
+
+                cursor.execute("SELECT COUNT(DISTINCT country) FROM facilities WHERE country IS NOT NULL")
+                country_count = cursor.fetchone()[0] or 179
+
+                cursor.execute("SELECT COUNT(*) FROM deals")
+                deal_count = cursor.fetchone()[0] or 673
+
+                cursor.execute("SELECT COALESCE(SUM(value), 0) FROM deals WHERE value > 0")
+                deal_value = round((cursor.fetchone()[0] or 0) / 1000, 0)
+
+                cursor.execute("SELECT COALESCE(SUM(capacity_mw), 0) FROM capacity_tracking WHERE status IN ('under_construction', 'planned')")
+                pipeline_mw = cursor.fetchone()[0] or 21700
+                pipeline_gw = round(pipeline_mw / 1000, 1)
+
+            finally:
+                conn.close()
             
             return {
                 'facility_count': facility_count,

@@ -15,7 +15,6 @@ ISSUES FIXED:
 # =====================================================
 
 from flask import Flask, request, jsonify
-import sqlite3
 import re
 from html import unescape
 from db_utils import get_db
@@ -66,70 +65,72 @@ def get_facilities():
     status = request.args.get('status', '')
     
     conn = get_db()
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    
-    # Build query
-    conditions = []
-    params = []
-    
-    # Exclude railway contamination
-    conditions.append("""
-        provider NOT LIKE '%Railway%' 
-        AND provider NOT LIKE '%Railroad%' 
-        AND provider NOT LIKE '%SNCF%'
-        AND provider NOT LIKE '%NMBS%'
-        AND provider NOT LIKE '%Station&Service%'
-        AND provider NOT LIKE '%chemins de fer%'
-    """)
-    
-    if q:
-        # Check if it's a known market alias
-        search_terms = MARKET_ALIASES.get(q, [q])
-        
-        # Build OR conditions for all aliases
-        alias_conditions = []
-        for term in search_terms:
-            alias_conditions.append("(city LIKE ? OR state LIKE ? OR name LIKE ? OR provider LIKE ? OR address LIKE ?)")
-            params.extend([f'%{term}%'] * 5)
-        
-        conditions.append(f"({' OR '.join(alias_conditions)})")
-    
-    if region:
-        conditions.append("region = ?")
-        params.append(region)
-    
-    if status:
-        conditions.append("status = ?")
-        params.append(status)
-    
-    where_clause = " AND ".join(conditions) if conditions else "1=1"
-    
-    # Get total count
-    count_query = f"SELECT COUNT(*) FROM facilities WHERE {where_clause}"
-    cursor.execute(count_query, params)
-    total = cursor.fetchone()[0]
-    
-    # Get facilities
-    query = f"""
-        SELECT * FROM facilities 
-        WHERE {where_clause}
-        ORDER BY 
-            CASE WHEN city LIKE ? THEN 0 ELSE 1 END,
-            power_mw DESC,
-            name ASC
-        LIMIT ? OFFSET ?
-    """
-    
-    # Add the search term for sorting priority
-    sort_term = f'%{q}%' if q else '%'
-    cursor.execute(query, params + [sort_term, limit, offset])
-    
-    facilities = []
-    for row in cursor.fetchall():
-        facilities.append(dict(row))
-    
-    conn.close()
+    try:
+        # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
+        cursor = conn.cursor()
+
+        # Build query
+        conditions = []
+        params = []
+
+        # Exclude railway contamination
+        conditions.append("""
+            provider NOT LIKE '%Railway%'
+            AND provider NOT LIKE '%Railroad%'
+            AND provider NOT LIKE '%SNCF%'
+            AND provider NOT LIKE '%NMBS%'
+            AND provider NOT LIKE '%Station&Service%'
+            AND provider NOT LIKE '%chemins de fer%'
+        """)
+
+        if q:
+            # Check if it's a known market alias
+            search_terms = MARKET_ALIASES.get(q, [q])
+
+            # Build OR conditions for all aliases
+            alias_conditions = []
+            for term in search_terms:
+                alias_conditions.append("(city LIKE %s OR state LIKE %s OR name LIKE %s OR provider LIKE %s OR address LIKE %s)")
+                params.extend([f'%{term}%'] * 5)
+
+            conditions.append(f"({' OR '.join(alias_conditions)})")
+
+        if region:
+            conditions.append("region = %s")
+            params.append(region)
+
+        if status:
+            conditions.append("status = %s")
+            params.append(status)
+
+        where_clause = " AND ".join(conditions) if conditions else "1=1"
+
+        # Get total count
+        count_query = f"SELECT COUNT(*) FROM facilities WHERE {where_clause}"
+        cursor.execute(count_query, params)
+        total = cursor.fetchone()[0]
+
+        # Get facilities
+        query = f"""
+            SELECT * FROM facilities
+            WHERE {where_clause}
+            ORDER BY
+                CASE WHEN city LIKE ? THEN 0 ELSE 1 END,
+                power_mw DESC,
+                name ASC
+            LIMIT %s OFFSET %s
+        """
+
+        # Add the search term for sorting priority
+        sort_term = f'%{q}%' if q else '%'
+        cursor.execute(query, params + [sort_term, limit, offset])
+
+        facilities = []
+        for row in cursor.fetchall():
+            facilities.append(dict(row))
+
+    finally:
+        conn.close()
     
     return jsonify({
         'success': True,
@@ -157,15 +158,17 @@ def get_news():
     source = request.args.get('source', '')
     
     conn = get_db()
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    
-    # Check if news_articles table exists
-    cursor.execute("""
-        SELECT name FROM sqlite_master 
-        WHERE type='table' AND name='news_articles'
-    """)
-    if not cursor.fetchone():
+    try:
+        # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
+        cursor = conn.cursor()
+
+        # Check if news_articles table exists
+        cursor.execute("""
+            SELECT name FROM sqlite_master
+            WHERE type='table' AND name='news_articles'
+        """)
+        if not cursor.fetchone():
+    finally:
         conn.close()
         return jsonify({
             'success': False,
@@ -177,11 +180,11 @@ def get_news():
     params = []
     
     if category:
-        conditions.append("categories LIKE ?")
+        conditions.append("categories LIKE %s")
         params.append(f'%{category}%')
     
     if source:
-        conditions.append("source LIKE ?")
+        conditions.append("source LIKE %s")
         params.append(f'%{source}%')
     
     where_clause = " AND ".join(conditions) if conditions else "1=1"
@@ -195,7 +198,7 @@ def get_news():
         SELECT * FROM news_articles 
         WHERE {where_clause}
         ORDER BY published_date DESC, id DESC
-        LIMIT ? OFFSET ?
+        LIMIT %s OFFSET %s
     """
     cursor.execute(query, params + [limit, offset])
     
@@ -222,17 +225,19 @@ def get_news():
 def get_news_sources():
     """Get list of news sources"""
     conn = get_db()
-    cursor = conn.cursor()
-    
-    cursor.execute("""
-        SELECT source, COUNT(*) as count 
-        FROM news_articles 
-        GROUP BY source 
-        ORDER BY count DESC
-    """)
-    
-    sources = [{'source': row[0], 'count': row[1]} for row in cursor.fetchall()]
-    conn.close()
+    try:
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT source, COUNT(*) as count
+            FROM news_articles
+            GROUP BY source
+            ORDER BY count DESC
+        """)
+
+        sources = [{'source': row[0], 'count': row[1]} for row in cursor.fetchall()]
+    finally:
+        conn.close()
     
     return jsonify({
         'success': True,
@@ -266,36 +271,38 @@ def sync_news():
 def cleanup_railway_contamination():
     """Remove railway/train station entries from database"""
     conn = get_db()
-    cursor = conn.cursor()
-    
-    # Count before
-    cursor.execute("SELECT COUNT(*) FROM facilities")
-    before_count = cursor.fetchone()[0]
-    
-    # Delete railway entries
-    cursor.execute("""
-        DELETE FROM facilities 
-        WHERE provider LIKE '%Railway%' 
-           OR provider LIKE '%Railroad%' 
-           OR provider LIKE '%SNCF%'
-           OR provider LIKE '%NMBS%'
-           OR provider LIKE '%Station&Service%'
-           OR provider LIKE '%chemins de fer%'
-           OR provider LIKE '%Amtrak%'
-           OR provider LIKE '%Metro%'
-           OR provider LIKE '%Transit%'
-           OR name LIKE '%Station%Railway%'
-           OR name LIKE '%Train Station%'
-    """)
-    
-    deleted = cursor.rowcount
-    
-    # Count after
-    cursor.execute("SELECT COUNT(*) FROM facilities")
-    after_count = cursor.fetchone()[0]
-    
-    conn.commit()
-    conn.close()
+    try:
+        cursor = conn.cursor()
+
+        # Count before
+        cursor.execute("SELECT COUNT(*) FROM facilities")
+        before_count = cursor.fetchone()[0]
+
+        # Delete railway entries
+        cursor.execute("""
+            DELETE FROM facilities
+            WHERE provider LIKE '%Railway%'
+               OR provider LIKE '%Railroad%'
+               OR provider LIKE '%SNCF%'
+               OR provider LIKE '%NMBS%'
+               OR provider LIKE '%Station&Service%'
+               OR provider LIKE '%chemins de fer%'
+               OR provider LIKE '%Amtrak%'
+               OR provider LIKE '%Metro%'
+               OR provider LIKE '%Transit%'
+               OR name LIKE '%Station%Railway%'
+               OR name LIKE '%Train Station%'
+        """)
+
+        deleted = cursor.rowcount
+
+        # Count after
+        cursor.execute("SELECT COUNT(*) FROM facilities")
+        after_count = cursor.fetchone()[0]
+
+        conn.commit()
+    finally:
+        conn.close()
     
     print(f"Railway Cleanup Complete:")
     print(f"  Before: {before_count} facilities")
@@ -313,72 +320,74 @@ def cleanup_railway_contamination():
 def get_stats():
     """Get platform statistics (excluding railway contamination)"""
     conn = get_db()
-    cursor = conn.cursor()
-    
-    # Exclusion clause
-    exclude = """
-        provider NOT LIKE '%Railway%' 
-        AND provider NOT LIKE '%Railroad%' 
-        AND provider NOT LIKE '%SNCF%'
-        AND provider NOT LIKE '%NMBS%'
-        AND provider NOT LIKE '%Station&Service%'
-        AND provider NOT LIKE '%chemins de fer%'
-    """
-    
-    # Total facilities (excluding railways)
-    cursor.execute(f"SELECT COUNT(*) FROM facilities WHERE {exclude}")
-    total_facilities = cursor.fetchone()[0]
-    
-    # Total power
-    cursor.execute(f"SELECT SUM(power_mw) FROM facilities WHERE {exclude} AND power_mw > 0")
-    total_power = cursor.fetchone()[0] or 0
-    
-    # By status
-    cursor.execute(f"""
-        SELECT status, COUNT(*) 
-        FROM facilities 
-        WHERE {exclude}
-        GROUP BY status
-    """)
-    by_status = {row[0]: row[1] for row in cursor.fetchall()}
-    
-    # By source (excluding railways)
-    cursor.execute(f"""
-        SELECT source, COUNT(*) 
-        FROM facilities 
-        WHERE {exclude}
-        GROUP BY source
-        ORDER BY COUNT(*) DESC
-    """)
-    by_source = {row[0]: row[1] for row in cursor.fetchall()}
-    
-    # Top countries
-    cursor.execute(f"""
-        SELECT country, COUNT(*) as cnt 
-        FROM facilities 
-        WHERE {exclude}
-        GROUP BY country 
-        ORDER BY cnt DESC 
-        LIMIT 10
-    """)
-    top_countries = {row[0]: row[1] for row in cursor.fetchall()}
-    
-    # Top providers (REAL data center providers only)
-    cursor.execute(f"""
-        SELECT provider, COUNT(*) as cnt 
-        FROM facilities 
-        WHERE {exclude} AND provider IS NOT NULL AND provider != ''
-        GROUP BY provider 
-        ORDER BY cnt DESC 
-        LIMIT 10
-    """)
-    top_providers = {row[0]: row[1] for row in cursor.fetchall()}
-    
-    # News count
-    cursor.execute("SELECT COUNT(*) FROM news_articles")
-    news_count = cursor.fetchone()[0] if cursor.fetchone() else 0
-    
-    conn.close()
+    try:
+        cursor = conn.cursor()
+
+        # Exclusion clause
+        exclude = """
+            provider NOT LIKE '%Railway%'
+            AND provider NOT LIKE '%Railroad%'
+            AND provider NOT LIKE '%SNCF%'
+            AND provider NOT LIKE '%NMBS%'
+            AND provider NOT LIKE '%Station&Service%'
+            AND provider NOT LIKE '%chemins de fer%'
+        """
+
+        # Total facilities (excluding railways)
+        cursor.execute(f"SELECT COUNT(*) FROM facilities WHERE {exclude}")
+        total_facilities = cursor.fetchone()[0]
+
+        # Total power
+        cursor.execute(f"SELECT SUM(power_mw) FROM facilities WHERE {exclude} AND power_mw > 0")
+        total_power = cursor.fetchone()[0] or 0
+
+        # By status
+        cursor.execute(f"""
+            SELECT status, COUNT(*)
+            FROM facilities
+            WHERE {exclude}
+            GROUP BY status
+        """)
+        by_status = {row[0]: row[1] for row in cursor.fetchall()}
+
+        # By source (excluding railways)
+        cursor.execute(f"""
+            SELECT source, COUNT(*)
+            FROM facilities
+            WHERE {exclude}
+            GROUP BY source
+            ORDER BY COUNT(*) DESC
+        """)
+        by_source = {row[0]: row[1] for row in cursor.fetchall()}
+
+        # Top countries
+        cursor.execute(f"""
+            SELECT country, COUNT(*) as cnt
+            FROM facilities
+            WHERE {exclude}
+            GROUP BY country
+            ORDER BY cnt DESC
+            LIMIT 10
+        """)
+        top_countries = {row[0]: row[1] for row in cursor.fetchall()}
+
+        # Top providers (REAL data center providers only)
+        cursor.execute(f"""
+            SELECT provider, COUNT(*) as cnt
+            FROM facilities
+            WHERE {exclude} AND provider IS NOT NULL AND provider != ''
+            GROUP BY provider
+            ORDER BY cnt DESC
+            LIMIT 10
+        """)
+        top_providers = {row[0]: row[1] for row in cursor.fetchall()}
+
+        # News count
+        cursor.execute("SELECT COUNT(*) FROM news_articles")
+        news_count = cursor.fetchone()[0] if cursor.fetchone() else 0
+
+    finally:
+        conn.close()
     
     return jsonify({
         'success': True,

@@ -2,7 +2,7 @@
 eia_gas_bulk_loader.py — Pull all US gas pipelines from EIA ArcGIS into Neon
 ═══════════════════════════════════════════════════════════════════════════════
 Run in Railway shell:
-  export NEON_URL="postgresql://neondb_owner:...@ep-old-waterfall-aa2rwjzs-pooler.westus3.azure.neon.tech/neondb?sslmode=require"
+  export NEON_URL="postgresql://neondb_owner:...@ep-old-waterfall-aa2rwjzs-pooler.westus3.azure.neon.tech/neondb%ssslmode=require"
   python eia_gas_bulk_loader.py
 
 Pulls from EIA Natural Gas Interstate and Intrastate Pipelines FeatureServer.
@@ -68,7 +68,7 @@ def fetch_batch(fid_start, fid_end, batch_size=1000):
     offset = 0
     while True:
         params = (
-            f"?where=FID>{fid_start}+AND+FID<={fid_end}"
+            f"%swhere=FID>{fid_start}+AND+FID<={fid_end}"
             f"&outFields=Operator,TYPEPIPE,Status,FID"
             f"&returnGeometry=true"
             f"&resultOffset={offset}"
@@ -116,7 +116,7 @@ def main():
     # First, find the max FID in the EIA dataset
     print("🔍 Finding max FID...")
     try:
-        url = EIA_URL + "?where=1=1&outFields=FID&returnGeometry=false&orderByFields=FID+DESC&resultRecordCount=1&f=json"
+        url = EIA_URL + "%swhere=1=1&outFields=FID&returnGeometry=false&orderByFields=FID+DESC&resultRecordCount=1&f=json"
         req = urllib.request.Request(url)
         req.add_header('User-Agent', 'DCHub-GasPipelineLoader/1.0')
         with urllib.request.urlopen(req, timeout=30) as resp:
@@ -212,7 +212,7 @@ def main():
     print(f"   After: {after}")
     print(f"\n   Top states:")
     for state, count in top_states:
-        print(f"     {state or '??'}: {count}")
+        print(f"     {state or '%s%s'}: {count}")
 
 if __name__ == '__main__':
     main()

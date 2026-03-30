@@ -12,7 +12,6 @@ from datetime import datetime, timedelta
 from flask import Blueprint, jsonify, request
 import json
 import hashlib
-import sqlite3
 import os
 from db_utils import get_db
 
@@ -25,36 +24,38 @@ DB_PATH = os.environ.get('DC_NEXUS_DB', 'dc_nexus.db')
 
 def init_competitor_db():
     conn = get_db()
-    c = conn.cursor()
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS competitors (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        competitor_id TEXT UNIQUE,
-        name TEXT,
-        website TEXT,
-        category TEXT,
-        estimated_facilities INTEGER,
-        geographic_coverage TEXT,
-        data_freshness TEXT,
-        api_available INTEGER DEFAULT 0,
-        pricing_model TEXT,
-        strengths TEXT,
-        weaknesses TEXT,
-        last_analyzed TEXT DEFAULT CURRENT_TIMESTAMP
-    )''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS coverage_gaps (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        gap_id TEXT UNIQUE,
-        competitor TEXT,
-        gap_type TEXT,
-        description TEXT,
-        dc_hub_advantage TEXT,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    )''')
-    
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+
+        c.execute('''CREATE TABLE IF NOT EXISTS competitors (
+            id SERIAL PRIMARY KEY,
+            competitor_id TEXT UNIQUE,
+            name TEXT,
+            website TEXT,
+            category TEXT,
+            estimated_facilities INTEGER,
+            geographic_coverage TEXT,
+            data_freshness TEXT,
+            api_available INTEGER DEFAULT 0,
+            pricing_model TEXT,
+            strengths TEXT,
+            weaknesses TEXT,
+            last_analyzed TEXT DEFAULT CURRENT_TIMESTAMP
+        )''')
+
+        c.execute('''CREATE TABLE IF NOT EXISTS coverage_gaps (
+            id SERIAL PRIMARY KEY,
+            gap_id TEXT UNIQUE,
+            competitor TEXT,
+            gap_type TEXT,
+            description TEXT,
+            dc_hub_advantage TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )''')
+
+        conn.commit()
+    finally:
+        conn.close()
     logger.info("✅ Competitor Intelligence tables initialized")
 
 init_competitor_db()

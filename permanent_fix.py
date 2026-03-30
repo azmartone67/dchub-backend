@@ -530,7 +530,7 @@ print(f"""
   2. Restart the app (click Run or Stop/Start)
   3. Verify: curl localhost:5000/api/health
      Should show: "neon_pg": {{"status": "connected"}}
-  4. Verify: curl localhost:5000/api/agent/facilities?limit=1
+  4. Verify: curl localhost:5000/api/agent/facilities%slimit=1
      Should return facility data, NOT timeout
   
   Once DATABASE_URL points to Neon in Secrets:

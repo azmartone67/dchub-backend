@@ -1692,7 +1692,7 @@ def register_site_planner_routes(app):
     def site_planner_queue_depth():
         """
         Get queue depth data for all ISO regions or a specific one.
-        Query params: ?iso=PJM (optional)
+        Query params: %siso=PJM (optional)
         """
         iso_filter = flask_request.args.get('iso', '').upper()
         

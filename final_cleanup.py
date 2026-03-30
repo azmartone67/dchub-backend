@@ -10,8 +10,8 @@ DB_PATH = "dc_nexus.db"
 
 def final_cleanup():
     conn = sqlite3.connect(DB_PATH, timeout=5)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
+    # PRAGMA removed - not needed for PostgreSQL
+    # PRAGMA removed - not needed for PostgreSQL
     c = conn.cursor()
     
     print("=" * 50)
@@ -79,7 +79,7 @@ def final_cleanup():
         print(f"   ✅ Keeping: {keep_id}")
         for del_id in delete_ids:
             print(f"   ❌ Deleting: {del_id}")
-            c.execute("DELETE FROM deals WHERE id = ?", (del_id,))
+            c.execute("DELETE FROM deals WHERE id = %s", (del_id,))
     else:
         print("   No duplicates found")
     

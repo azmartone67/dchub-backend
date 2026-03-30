@@ -31,7 +31,7 @@ SQLITE_TO_PG_FUNC = {
     "datetime('now', '-48 hours')": "(NOW() - INTERVAL '48 hours')",
     "datetime('now', '-90 days')": "(NOW() - INTERVAL '90 days')",
     "datetime('now', '-365 days')": "(NOW() - INTERVAL '365 days')",
-    "datetime('now')": "NOW()",
+    "NOW()": "NOW()",
 }
 
 
@@ -360,9 +360,11 @@ def safe_write(db_path, sql, params=None, retries=5, delay=0.5):
             conn = _get_pg_connection()
             try:
                 if params:
-                    conn.execute(sql, params)
+                    c = conn.cursor()
+                    c.execute(sql, params)
                 else:
-                    conn.execute(sql)
+                    c = conn.cursor()
+                    c.execute(sql)
                 conn.commit()
                 return True
             finally:
@@ -381,7 +383,8 @@ def safe_executemany(db_path, sql, rows, retries=5, delay=0.5):
         try:
             conn = _get_pg_connection()
             try:
-                conn.executemany(sql, rows)
+                c = conn.cursor()
+                c.executemany(sql, rows)
                 conn.commit()
                 return True
             finally:

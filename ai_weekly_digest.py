@@ -10,7 +10,7 @@ Usage in main.py:
 
 Endpoints:
   GET /api/ai/weekly-digest          → JSON digest data
-  GET /api/ai/weekly-digest?format=html  → HTML email-ready report
+  GET /api/ai/weekly-digest%sformat=html  → HTML email-ready report
 """
 
 import os

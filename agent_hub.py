@@ -14,7 +14,6 @@ from flask import request, jsonify
 from datetime import datetime
 import json
 import os
-import sqlite3
 from db_utils import get_db
 
 # Try to import anthropic for AI-powered responses
@@ -139,7 +138,7 @@ class AgentBus:
     
     def _get_conn(self):
         conn = get_db(self.db_path)
-        conn.row_factory = sqlite3.Row
+        # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
         return conn
     
     def _init_tables(self):
@@ -148,7 +147,7 @@ class AgentBus:
             conn = self._get_conn()
             c = conn.cursor()
             c.execute("""CREATE TABLE IF NOT EXISTS agent_bus_messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 timestamp TEXT NOT NULL,
                 from_agent TEXT NOT NULL,
                 to_agent TEXT NOT NULL,
@@ -157,7 +156,7 @@ class AgentBus:
                 read INTEGER DEFAULT 0
             )""")
             c.execute("""CREATE TABLE IF NOT EXISTS agent_bus_handoffs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 timestamp TEXT NOT NULL,
                 from_agent TEXT NOT NULL,
                 to_agent TEXT NOT NULL,
@@ -165,7 +164,7 @@ class AgentBus:
                 status TEXT DEFAULT 'pending'
             )""")
             c.execute("""CREATE TABLE IF NOT EXISTS agent_bus_chains (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 chain_type TEXT NOT NULL,
                 started TEXT NOT NULL,
                 data TEXT DEFAULT '{}',
@@ -173,7 +172,7 @@ class AgentBus:
                 status TEXT DEFAULT 'active'
             )""")
             c.execute("""CREATE TABLE IF NOT EXISTS agent_bus_activity (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 agent TEXT NOT NULL,
                 last_active TEXT NOT NULL
             )""")
@@ -207,8 +206,8 @@ class AgentBus:
         try:
             conn = self._get_conn()
             c = conn.cursor()
-            c.execute("DELETE FROM agent_bus_activity WHERE agent = ?", (agent,))
-            c.execute("INSERT INTO agent_bus_activity (agent, last_active) VALUES (?, ?)", (agent, now))
+            c.execute("DELETE FROM agent_bus_activity WHERE agent = %s", (agent,))
+            c.execute("INSERT INTO agent_bus_activity (agent, last_active) VALUES (%s, %s) ON CONFLICT (agent) DO UPDATE SET last_active = EXCLUDED.last_active", (agent, now))
             conn.commit()
         except:
             pass
@@ -273,7 +272,7 @@ class AgentBus:
             conn = self._get_conn()
             c = conn.cursor()
             c.execute("""INSERT INTO agent_bus_messages (timestamp, from_agent, to_agent, message_type, payload, read)
-                         VALUES (?, ?, ?, ?, ?, 0)""",
+                         VALUES (%s, %s, %s, %s, %s, 0) ON CONFLICT (timestamp) DO UPDATE SET from_agent = EXCLUDED.from_agent, to_agent = EXCLUDED.to_agent, message_type = EXCLUDED.message_type, payload = EXCLUDED.payload, read = EXCLUDED.read""",
                       (now, from_agent, to_agent, message_type, json.dumps(payload)))
             msg_id = c.lastrowid
             conn.commit()
@@ -319,9 +318,9 @@ class AgentBus:
             conn = self._get_conn()
             c = conn.cursor()
             if unread_only:
-                c.execute("SELECT * FROM agent_bus_messages WHERE to_agent = ? AND read = 0 ORDER BY id DESC LIMIT 20", (agent,))
+                c.execute("SELECT * FROM agent_bus_messages WHERE to_agent = %s AND read = 0 ORDER BY id DESC LIMIT 20", (agent,))
             else:
-                c.execute("SELECT * FROM agent_bus_messages WHERE to_agent = ? ORDER BY id DESC LIMIT 20", (agent,))
+                c.execute("SELECT * FROM agent_bus_messages WHERE to_agent = %s ORDER BY id DESC LIMIT 20", (agent,))
             rows = c.fetchall()
             return [dict(r) for r in reversed(rows)]
         except:
@@ -336,7 +335,7 @@ class AgentBus:
         try:
             conn = self._get_conn()
             c = conn.cursor()
-            c.execute("UPDATE agent_bus_messages SET read = 1 WHERE id = ?", (message_id,))
+            c.execute("UPDATE agent_bus_messages SET read = 1 WHERE id = %s", (message_id,))
             conn.commit()
             return True
         except:
@@ -352,7 +351,7 @@ class AgentBus:
             conn = self._get_conn()
             c = conn.cursor()
             c.execute("""INSERT INTO agent_bus_handoffs (timestamp, from_agent, to_agent, context, status)
-                         VALUES (?, ?, ?, ?, 'pending')""",
+                         VALUES (%s, %s, %s, %s, 'pending') ON CONFLICT (timestamp) DO UPDATE SET from_agent = EXCLUDED.from_agent, to_agent = EXCLUDED.to_agent, context = EXCLUDED.context, status = EXCLUDED.status""",
                       (msg['timestamp'], msg['from'], msg['to'], json.dumps(msg.get('payload', {}))))
             handoff_id = c.lastrowid
             conn.commit()
@@ -380,7 +379,7 @@ class AgentBus:
             conn = self._get_conn()
             c = conn.cursor()
             c.execute("""INSERT INTO agent_bus_chains (chain_type, started, data, steps, status)
-                         VALUES (?, ?, ?, '[]', 'active')""",
+                         VALUES (%s, %s, %s, '[]', 'active') ON CONFLICT (chain_type) DO UPDATE SET started = EXCLUDED.started, data = EXCLUDED.data, steps = EXCLUDED.steps, status = EXCLUDED.status""",
                       (chain_type, now, json.dumps(initial_data)))
             chain_id = c.lastrowid
             conn.commit()
@@ -471,7 +470,7 @@ def get_cross_agent_activity(hours: int = 24):
         c = conn.cursor()
         c.execute("""SELECT from_agent, to_agent, message_type, payload, timestamp 
                      FROM agent_bus_messages 
-                     WHERE timestamp > datetime('now', ?)
+                     WHERE timestamp > datetime('now', %s)
                      ORDER BY id DESC LIMIT 50""", (f'-{hours} hours',))
         rows = c.fetchall()
         import json as _json
@@ -673,7 +672,6 @@ def get_orchestrator_context():
 
 def get_live_stats():
     """Get live platform statistics from database"""
-    import sqlite3
     conn = None
     try:
         conn = get_db()
@@ -706,7 +704,6 @@ def get_live_stats():
 
 def learn_from_interaction(agent: str, user_message: str, response: str, success: bool = True):
     """Track interactions for learning patterns"""
-    import sqlite3
     conn = None
     try:
         conn = get_db()
@@ -714,7 +711,7 @@ def learn_from_interaction(agent: str, user_message: str, response: str, success
         
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS agent_interactions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 agent TEXT NOT NULL,
                 user_message TEXT,
                 response_summary TEXT,
@@ -725,7 +722,7 @@ def learn_from_interaction(agent: str, user_message: str, response: str, success
         
         cursor.execute('''
             INSERT INTO agent_interactions (agent, user_message, response_summary, success)
-            VALUES (?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s)
         ''', (agent, user_message[:500], response[:200] if response else '', success))
         
         conn.commit()
@@ -885,27 +882,27 @@ Use this real-time data and expert knowledge to make your responses compelling a
             
             # First check if we have a direct expert answer
             if smart_answer:
-                response = f"{smart_answer}\n\nWould you like more details on this topic or a demo of our platform?"
+                response = f"{smart_answer}\n\nWould you like more details on this topic or a demo of our platform%s"
             elif any(word in message_lower for word in ['pue', 'power usage', 'efficiency']):
-                response = "PUE (Power Usage Effectiveness) is the ratio of total facility power to IT equipment power. Industry average is 1.58, while best-in-class hyperscale facilities achieve under 1.2. DC Hub tracks PUE data across markets. Want to explore efficiency trends?"
+                response = "PUE (Power Usage Effectiveness) is the ratio of total facility power to IT equipment power. Industry average is 1.58, while best-in-class hyperscale facilities achieve under 1.2. DC Hub tracks PUE data across markets. Want to explore efficiency trends%s"
             elif any(word in message_lower for word in ['tier', 'uptime', 'redundancy', 'n+1', '2n']):
-                response = "Data center tiers: Tier III (99.982% uptime, concurrently maintainable) is most common for enterprise. Tier IV (99.995%, fault tolerant) for mission-critical. N+1 means one backup unit, 2N is fully redundant. What tier are you targeting?"
+                response = "Data center tiers: Tier III (99.982% uptime, concurrently maintainable) is most common for enterprise. Tier IV (99.995%, fault tolerant) for mission-critical. N+1 means one backup unit, 2N is fully redundant. What tier are you targeting%s"
             elif any(word in message_lower for word in ['price', 'cost', 'pricing', 'how much']):
-                response = "Wholesale colocation runs $150-250/kW/month in primary markets, up 20% YoY due to AI demand. DC Hub Pro at $99/mo gives you access to pricing data across 64+ markets. Want a demo?"
+                response = "Wholesale colocation runs $150-250/kW/month in primary markets, up 20% YoY due to AI demand. DC Hub Pro at $99/mo gives you access to pricing data across 64+ markets. Want a demo%s"
             elif any(word in message_lower for word in ['demo', 'trial', 'test']):
-                response = f"Absolutely! We're tracking {facilities:,} facilities with {pipeline:,.0f} MW in the construction pipeline. Our Land & Power tool has 40+ government data layers for site selection. What markets are you focused on?"
+                response = f"Absolutely! We're tracking {facilities:,} facilities with {pipeline:,.0f} MW in the construction pipeline. Our Land & Power tool has 40+ government data layers for site selection. What markets are you focused on%s"
                 agent_data["stats"]["demos_booked"] += 1
             elif any(word in message_lower for word in ['ai', 'gpu', 'ml', 'machine learning']):
-                response = "AI/GPU workloads are driving unprecedented demand - 5-10x power density vs traditional compute. Markets like Phoenix and Dallas are seeing 35%+ growth. DC Hub tracks AI-ready capacity specifically. Interested in AI infrastructure data?"
+                response = "AI/GPU workloads are driving unprecedented demand - 5-10x power density vs traditional compute. Markets like Phoenix and Dallas are seeing 35%+ growth. DC Hub tracks AI-ready capacity specifically. Interested in AI infrastructure data%s"
             elif any(word in message_lower for word in ['equinix', 'digital realty', 'operator']):
-                response = "Equinix leads in interconnection with 260+ facilities in 71 markets. Digital Realty focuses on wholesale + hyperscale with 300+ facilities. DC Hub tracks all major operators plus emerging players like Stack, Compass, and Vantage. Which operators are you researching?"
+                response = "Equinix leads in interconnection with 260+ facilities in 71 markets. Digital Realty focuses on wholesale + hyperscale with 300+ facilities. DC Hub tracks all major operators plus emerging players like Stack, Compass, and Vantage. Which operators are you researching%s"
             elif any(word in message_lower for word in ['market', 'trend', 'hot', 'growing', 'virginia', 'dallas', 'phoenix']):
                 trending = orch_context.get('trending_markets', ['Dallas', 'Phoenix', 'Northern Virginia'])[:3]
-                response = f"Hot markets right now: {', '.join(trending)}. Northern Virginia leads at 3.5 GW but faces power constraints. Phoenix and Dallas growing 22-35%. Emerging: Columbus, Nashville, Salt Lake City. What's your focus area?"
+                response = f"Hot markets right now: {', '.join(trending)}. Northern Virginia leads at 3.5 GW but faces power constraints. Phoenix and Dallas growing 22-35%. Emerging: Columbus, Nashville, Salt Lake City. What's your focus area%s"
             elif any(word in message_lower for word in ['feature', 'what can', 'capabilities', 'do you']):
-                response = f"DC Hub offers: (1) Land & Power site analysis with 40+ government data layers, (2) {facilities:,}+ facility tracking globally, (3) {pipeline/1000:.1f} GW construction pipeline, (4) M&A deal tracking ($51B+ volume), (5) Real-time infrastructure mapping. What's your use case?"
+                response = f"DC Hub offers: (1) Land & Power site analysis with 40+ government data layers, (2) {facilities:,}+ facility tracking globally, (3) {pipeline/1000:.1f} GW construction pipeline, (4) M&A deal tracking ($51B+ volume), (5) Real-time infrastructure mapping. What's your use case%s"
             else:
-                response = f"Thanks for reaching out! As a data center intelligence platform, DC Hub tracks {facilities:,}+ facilities, {pipeline/1000:.1f} GW pipeline, and provides Land & Power analysis for site selection. I can discuss markets, operators, or platform features. What interests you?"
+                response = f"Thanks for reaching out! As a data center intelligence platform, DC Hub tracks {facilities:,}+ facilities, {pipeline/1000:.1f} GW pipeline, and provides Land & Power analysis for site selection. I can discuss markets, operators, or platform features. What interests you%s"
         
         # Learn from this interaction
         learn_from_interaction("sales", message, response, success=True)
@@ -1498,7 +1495,7 @@ def invite_external_agent():
                 ],
                 "auth_url": "https://dchub.cloud/auth.md",
                 "skill_file": "https://dchub.cloud/skill.json",
-                "invite_text": "🏢 Looking for data center intelligence? DCHubBot can help! Authenticate with X-Moltbook-Identity header. Details: dchub.cloud/auth.md"
+                "invite_text": "🏢 Looking for data center intelligence%s DCHubBot can help! Authenticate with X-Moltbook-Identity header. Details: dchub.cloud/auth.md"
             }
         })
     
@@ -1764,7 +1761,7 @@ AGENT_HUB_HTML = """<!DOCTYPE html>
     <title>Agent Hub - DC Hub Intelligence Platform</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2%sfamily=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <style>
         :root {
             --bg-base:#060610;--bg-raised:#0c0c1d;--bg-surface:#10102a;--bg-inset:#08081a;
@@ -2014,13 +2011,13 @@ AGENT_HUB_HTML = """<!DOCTYPE html>
             <div class="agent-tags"><span class="tag">Lead Qualification</span><span class="tag">Pricing Analysis</span><span class="tag">Demo Booking</span><span class="tag">Objection Handling</span></div>
             <div class="agent-content">
                 <div class="quick-row">
-                    <button class="qk" onclick="fillChat('sales','What are your pricing plans?')">&#128176; Pricing</button>
+                    <button class="qk" onclick="fillChat('sales','What are your pricing plans%s')">&#128176; Pricing</button>
                     <button class="qk" onclick="fillChat('sales','I would like to schedule a demo')">&#128197; Demo</button>
-                    <button class="qk" onclick="fillChat('sales','What markets do you cover?')">&#128506; Markets</button>
+                    <button class="qk" onclick="fillChat('sales','What markets do you cover%s')">&#128506; Markets</button>
                     <button class="qk" onclick="fillChat('sales','Tell me about API access')">&#128268; API</button>
                 </div>
                 <div class="chat-box">
-                    <div class="chat-msgs" id="salesMsgs"><div class="bubble bot">Hey! I'm the DC Hub Sales Agent. I can help with pricing, demos, and platform questions. What are you looking for?</div></div>
+                    <div class="chat-msgs" id="salesMsgs"><div class="bubble bot">Hey! I'm the DC Hub Sales Agent. I can help with pricing, demos, and platform questions. What are you looking for%s</div></div>
                     <div class="chat-bar"><input class="chat-in" id="salesIn" placeholder="Ask about pricing, features, demos..." onkeydown="if(event.key==='Enter')sendMsg('sales')"><button class="chat-go" onclick="sendMsg('sales')">&rarr;</button></div>
                 </div>
             </div>
@@ -2106,10 +2103,10 @@ async function forceOutreach(){const b=document.getElementById('forceBtn');b.dis
 async function openPitch(){try{const r=await fetch(API+'/api/outreach/pitch'),d=await r.json();document.getElementById('pitchContent').textContent=d.pitch||JSON.stringify(d,null,2);document.getElementById('pitchModal').classList.add('open')}catch(e){alert('Pitch endpoint not available.')}}
 function closePitch(){document.getElementById('pitchModal').classList.remove('open')}
 function openEP(p){window.open(API+p,'_blank')}
-async function loadLog(){try{const r=await fetch(API+'/api/agents/logs?limit=20');if(!r.ok)throw 0;const d=await r.json(),logs=d.logs||d.entries||[],el=document.getElementById('logBody');if(!logs.length){el.innerHTML='<div class="le"><span class="le-t">'+ts()+'</span><span class="le-e">Agent Hub active</span></div>';return}el.innerHTML=logs.map(l=>{const t=l.timestamp?new Date(l.timestamp).toLocaleTimeString():'--:--';return'<div class="le"><span class="le-t">'+t+'</span><span class="le-e"><span class="hi">['+(l.agent||'system')+']</span> '+esc(l.action||l.event||l.message||'')+'</span></div>'}).join('')}catch(e){const t=ts();document.getElementById('logBody').innerHTML='<div class="le"><span class="le-t">'+t+'</span><span class="le-e"><span class="hi">[discovery]</span> <span class="ok">AI Outreach Agent initialized</span></span></div><div class="le"><span class="le-t">'+t+'</span><span class="le-e"><span class="hi">[discovery]</span> IndexNow pings sent <span class="ok">\u2713</span></span></div><div class="le"><span class="le-t">'+t+'</span><span class="le-e"><span class="hi">[sales]</span> Agent <span class="ok">online</span></span></div><div class="le"><span class="le-t">'+t+'</span><span class="le-e"><span class="hi">[enrichment]</span> Agent <span class="ok">online</span></span></div><div class="le"><span class="le-t">'+t+'</span><span class="le-e"><span class="hi">[social]</span> Agent <span class="ok">online</span></span></div>'}}
+async function loadLog(){try{const r=await fetch(API+'/api/agents/logs%slimit=20');if(!r.ok)throw 0;const d=await r.json(),logs=d.logs||d.entries||[],el=document.getElementById('logBody');if(!logs.length){el.innerHTML='<div class="le"><span class="le-t">'+ts()+'</span><span class="le-e">Agent Hub active</span></div>';return}el.innerHTML=logs.map(l=>{const t=l.timestamp%snew Date(l.timestamp).toLocaleTimeString():'--:--';return'<div class="le"><span class="le-t">'+t+'</span><span class="le-e"><span class="hi">['+(l.agent||'system')+']</span> '+esc(l.action||l.event||l.message||'')+'</span></div>'}).join('')}catch(e){const t=ts();document.getElementById('logBody').innerHTML='<div class="le"><span class="le-t">'+t+'</span><span class="le-e"><span class="hi">[discovery]</span> <span class="ok">AI Outreach Agent initialized</span></span></div><div class="le"><span class="le-t">'+t+'</span><span class="le-e"><span class="hi">[discovery]</span> IndexNow pings sent <span class="ok">\u2713</span></span></div><div class="le"><span class="le-t">'+t+'</span><span class="le-e"><span class="hi">[sales]</span> Agent <span class="ok">online</span></span></div><div class="le"><span class="le-t">'+t+'</span><span class="le-e"><span class="hi">[enrichment]</span> Agent <span class="ok">online</span></span></div><div class="le"><span class="le-t">'+t+'</span><span class="le-e"><span class="hi">[social]</span> Agent <span class="ok">online</span></span></div>'}}
 function fillChat(a,t){document.getElementById(a+'In').value=t;document.getElementById(a+'In').focus()}
-async function sendMsg(a){const i=document.getElementById(a+'In'),t=i.value.trim();if(!t)return;addB(a,t,true);i.value='';try{const b={};b[PK[a]]=t;if(a==='enrich'){b.market=t;b.message=t}const r=await fetch(API+EP[a],{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});const d=await r.json();let reply=d.response||d.reply||'';if(a==='enrich'){if(typeof d.analysis==='string')reply=d.analysis;else if(d.analysis){const an=d.analysis;reply='Market: '+d.market+'\\n';if(an.operators)reply+='Operators: '+an.operators.join(', ')+'\\n';if(an.capacity_mw)reply+='Capacity: '+an.capacity_mw+' MW\\n';if(an.pipeline_mw)reply+='Pipeline: '+an.pipeline_mw+' MW\\n';if(an.power_cost)reply+='Power Cost: '+an.power_cost+'\\n';if(an.growth_drivers)reply+='Growth: '+an.growth_drivers.join(', ')}}if(a==='social')reply=d.post?.content||d.post||reply||'Processing...';addB(a,reply||'Processing...',false)}catch(e){addB(a,'Connection issue - verify backend is running.',false)}}
-function addB(a,t,u){const c=document.getElementById(a+'Msgs'),b=document.createElement('div');b.className='bubble '+(u?'usr':'bot');b.textContent=t;c.appendChild(b);c.scrollTop=c.scrollHeight}
+async function sendMsg(a){const i=document.getElementById(a+'In'),t=i.value.trim();if(!t)return;addB(a,t,true);i.value='';try{const b={};b[PK[a]]=t;if(a==='enrich'){b.market=t;b.message=t}const r=await fetch(API+EP[a],{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});const d=await r.json();let reply=d.response||d.reply||'';if(a==='enrich'){if(typeof d.analysis==='string')reply=d.analysis;else if(d.analysis){const an=d.analysis;reply='Market: '+d.market+'\\n';if(an.operators)reply+='Operators: '+an.operators.join(', ')+'\\n';if(an.capacity_mw)reply+='Capacity: '+an.capacity_mw+' MW\\n';if(an.pipeline_mw)reply+='Pipeline: '+an.pipeline_mw+' MW\\n';if(an.power_cost)reply+='Power Cost: '+an.power_cost+'\\n';if(an.growth_drivers)reply+='Growth: '+an.growth_drivers.join(', ')}}if(a==='social')reply=d.post%s.content||d.post||reply||'Processing...';addB(a,reply||'Processing...',false)}catch(e){addB(a,'Connection issue - verify backend is running.',false)}}
+function addB(a,t,u){const c=document.getElementById(a+'Msgs'),b=document.createElement('div');b.className='bubble '+(u%s'usr':'bot');b.textContent=t;c.appendChild(b);c.scrollTop=c.scrollHeight}
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
 function ts(){return new Date().toLocaleTimeString()}
 loadStatus();loadOrganic();loadLog();

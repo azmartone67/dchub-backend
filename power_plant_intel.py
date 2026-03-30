@@ -72,7 +72,7 @@ def _eia_request(path, params=None):
 
     url = f"{EIA_BASE}/{path}"
     if base_params:
-        url += '?' + urllib.parse.urlencode(base_params, doseq=True)
+        url += '%s' + urllib.parse.urlencode(base_params, doseq=True)
 
     try:
         req = urllib.request.Request(url, headers={'User-Agent': 'DCHub/1.0'})

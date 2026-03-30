@@ -403,7 +403,7 @@ def fetch_cloudscene():
             # Extract facility names from listing page
             import re
             # Look for facility card patterns
-            names = re.findall(r'<h[23][^>]*class="[^"]*card[^"]*"[^>]*>(.*?)</h[23]>', html, re.DOTALL)
+            names = re.findall(r'<h[23][^>]*class="[^"]*card[^"]*"[^>]*>(.*%s)</h[23]>', html, re.DOTALL)
             if not names:
                 names = re.findall(r'data-center-name["\s]*[=>]([^<"]+)', html)
 
@@ -451,57 +451,59 @@ def main():
     args = parser.parse_args()
 
     conn = get_db()
+    try:
 
-    # Get baseline
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM facilities")
-    baseline = cur.fetchone()[0]
-    cur.close()
-    print(f"\nBaseline facility count: {baseline}")
+        # Get baseline
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM facilities")
+        baseline = cur.fetchone()[0]
+        cur.close()
+        print(f"\nBaseline facility count: {baseline}")
 
-    total_inserted = 0
-    total_skipped = 0
+        total_inserted = 0
+        total_skipped = 0
 
-    sources = {
-        'peeringdb': ('PeeringDB', fetch_peeringdb),
-        'osm': ('OpenStreetMap', fetch_osm),
-        'news': ('news_pipeline', fetch_news_facilities),
-        'cloudscene': ('Cloudscene', fetch_cloudscene),
-    }
+        sources = {
+            'peeringdb': ('PeeringDB', fetch_peeringdb),
+            'osm': ('OpenStreetMap', fetch_osm),
+            'news': ('news_pipeline', fetch_news_facilities),
+            'cloudscene': ('Cloudscene', fetch_cloudscene),
+        }
 
-    run_sources = sources.keys() if args.source == 'all' else [args.source]
+        run_sources = sources.keys() if args.source == 'all' else [args.source]
 
-    for src_key in run_sources:
-        source_name, fetch_fn = sources[src_key]
-        try:
-            facilities = fetch_fn()
-            inserted, skipped = insert_facilities(conn, facilities, source_name, args.dry_run)
-            print(f"  Result: {inserted} inserted, {skipped} skipped (duplicates)")
-            total_inserted += inserted
-            total_skipped += skipped
-        except Exception as e:
-            print(f"  ERROR in {src_key}: {e}")
-            import traceback
-            traceback.print_exc()
+        for src_key in run_sources:
+            source_name, fetch_fn = sources[src_key]
+            try:
+                facilities = fetch_fn()
+                inserted, skipped = insert_facilities(conn, facilities, source_name, args.dry_run)
+                print(f"  Result: {inserted} inserted, {skipped} skipped (duplicates)")
+                total_inserted += inserted
+                total_skipped += skipped
+            except Exception as e:
+                print(f"  ERROR in {src_key}: {e}")
+                import traceback
+                traceback.print_exc()
 
-    # Final count
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM facilities")
-    final = cur.fetchone()[0]
-    cur.close()
+        # Final count
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM facilities")
+        final = cur.fetchone()[0]
+        cur.close()
 
-    print(f"\n{'='*50}")
-    print(f"SUMMARY")
-    print(f"{'='*50}")
-    print(f"  Baseline:  {baseline}")
-    print(f"  Inserted:  {total_inserted}")
-    print(f"  Skipped:   {total_skipped}")
-    print(f"  Final:     {final}")
-    print(f"  Net new:   {final - baseline}")
-    if args.dry_run:
-        print(f"  (DRY RUN - no records were written)")
+        print(f"\n{'='*50}")
+        print(f"SUMMARY")
+        print(f"{'='*50}")
+        print(f"  Baseline:  {baseline}")
+        print(f"  Inserted:  {total_inserted}")
+        print(f"  Skipped:   {total_skipped}")
+        print(f"  Final:     {final}")
+        print(f"  Net new:   {final - baseline}")
+        if args.dry_run:
+            print(f"  (DRY RUN - no records were written)")
 
-    conn.close()
+    finally:
+        conn.close()
 
 
 if __name__ == '__main__':

@@ -11,7 +11,6 @@ from flask import Blueprint, request, jsonify
 from datetime import datetime, timedelta
 import json
 import os
-import sqlite3
 import requests
 import hashlib
 from db_utils import get_db
@@ -24,49 +23,51 @@ INDEXNOW_KEY = os.environ.get('INDEXNOW_KEY', '')
 def init_seo_tables():
     """Initialize SEO tracking tables"""
     conn = get_db()
-    c = conn.cursor()
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS seo_indexing_log (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        url TEXT NOT NULL,
-        search_engine TEXT NOT NULL,
-        status TEXT,
-        response_code INTEGER,
-        submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS seo_backlinks (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        source_url TEXT NOT NULL,
-        target_url TEXT,
-        anchor_text TEXT,
-        domain_authority INTEGER,
-        status TEXT DEFAULT 'discovered',
-        discovered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        verified_at TIMESTAMP
-    )''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS seo_content_opportunities (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT NOT NULL,
-        content_type TEXT,
-        target_keywords TEXT,
-        priority INTEGER DEFAULT 5,
-        status TEXT DEFAULT 'pending',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS ai_citations (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        platform TEXT NOT NULL,
-        query TEXT,
-        cited_url TEXT,
-        citation_type TEXT,
-        detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )''')
-    
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+
+        c.execute('''CREATE TABLE IF NOT EXISTS seo_indexing_log (
+            id SERIAL PRIMARY KEY,
+            url TEXT NOT NULL,
+            search_engine TEXT NOT NULL,
+            status TEXT,
+            response_code INTEGER,
+            submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+
+        c.execute('''CREATE TABLE IF NOT EXISTS seo_backlinks (
+            id SERIAL PRIMARY KEY,
+            source_url TEXT NOT NULL,
+            target_url TEXT,
+            anchor_text TEXT,
+            domain_authority INTEGER,
+            status TEXT DEFAULT 'discovered',
+            discovered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            verified_at TIMESTAMP
+        )''')
+
+        c.execute('''CREATE TABLE IF NOT EXISTS seo_content_opportunities (
+            id SERIAL PRIMARY KEY,
+            title TEXT NOT NULL,
+            content_type TEXT,
+            target_keywords TEXT,
+            priority INTEGER DEFAULT 5,
+            status TEXT DEFAULT 'pending',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+
+        c.execute('''CREATE TABLE IF NOT EXISTS ai_citations (
+            id SERIAL PRIMARY KEY,
+            platform TEXT NOT NULL,
+            query TEXT,
+            cited_url TEXT,
+            citation_type TEXT,
+            detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+
+        conn.commit()
+    finally:
+        conn.close()
     print("✅ SEO Agent tables initialized")
 
 def ping_indexnow(urls):
@@ -116,14 +117,16 @@ def ping_indexnow(urls):
             })
             
             conn = get_db()
-            c = conn.cursor()
-            for url in urls[:100]:
-                c.execute('''INSERT INTO seo_indexing_log 
-                    (url, search_engine, status, response_code)
-                    VALUES (?, ?, ?, ?)''',
-                    (url, engine["name"], status, response.status_code))
-            conn.commit()
-            conn.close()
+            try:
+                c = conn.cursor()
+                for url in urls[:100]:
+                    c.execute('''INSERT INTO seo_indexing_log
+                        (url, search_engine, status, response_code)
+                        VALUES (%s, %s, %s, %s) ON CONFLICT (url) DO UPDATE SET search_engine = EXCLUDED.search_engine, status = EXCLUDED.status, response_code = EXCLUDED.response_code''',
+                        (url, engine["name"], status, response.status_code))
+                conn.commit()
+            finally:
+                conn.close()
             
         except Exception as e:
             results.append({
@@ -157,23 +160,25 @@ def get_priority_urls():
     
     try:
         conn = get_db()
-        c = conn.cursor()
-        
-        c.execute('''SELECT DISTINCT city, state, country FROM facilities 
-            WHERE city IS NOT NULL LIMIT 50''')
-        markets = c.fetchall()
-        
-        for city, state, country in markets:
-            slug = city.lower().replace(' ', '-') if city else ''
-            if slug:
-                priority_urls.append(f"{base_url}/market/{slug}")
-        
-        c.execute('''SELECT id FROM facilities ORDER BY updated_at DESC LIMIT 100''')
-        facilities = c.fetchall()
-        for (fid,) in facilities:
-            priority_urls.append(f"{base_url}/facility/{fid}")
-        
-        conn.close()
+        try:
+            c = conn.cursor()
+
+            c.execute('''SELECT DISTINCT city, state, country FROM facilities
+                WHERE city IS NOT NULL LIMIT 50''')
+            markets = c.fetchall()
+
+            for city, state, country in markets:
+                slug = city.lower().replace(' ', '-') if city else ''
+                if slug:
+                    priority_urls.append(f"{base_url}/market/{slug}")
+
+            c.execute('''SELECT id FROM facilities ORDER BY updated_at DESC LIMIT 100''')
+            facilities = c.fetchall()
+            for (fid,) in facilities:
+                priority_urls.append(f"{base_url}/facility/{fid}")
+
+        finally:
+            conn.close()
     except Exception as e:
         print(f"Error getting priority URLs: {e}")
     
@@ -185,36 +190,38 @@ def generate_seo_content_ideas():
     
     try:
         conn = get_db()
-        c = conn.cursor()
-        
-        c.execute('''SELECT city, COUNT(*) as cnt FROM facilities 
-            WHERE city IS NOT NULL 
-            GROUP BY city ORDER BY cnt DESC LIMIT 10''')
-        top_markets = c.fetchall()
-        
-        for city, count in top_markets:
-            ideas.append({
-                "title": f"Data Center Market Report: {city}",
-                "type": "market_report",
-                "keywords": f"{city} data center, {city} colocation, {city} cloud",
-                "priority": 9,
-                "backlink_potential": "high"
-            })
-        
-        c.execute('''SELECT headline, source FROM announcements 
-            ORDER BY published_at DESC LIMIT 5''')
-        news = c.fetchall()
-        
-        for headline, source in news:
-            ideas.append({
-                "title": f"Analysis: {headline[:50]}...",
-                "type": "news_analysis",
-                "keywords": "data center news, industry analysis",
-                "priority": 7,
-                "backlink_potential": "medium"
-            })
-        
-        conn.close()
+        try:
+            c = conn.cursor()
+
+            c.execute('''SELECT city, COUNT(*) as cnt FROM facilities
+                WHERE city IS NOT NULL
+                GROUP BY city ORDER BY cnt DESC LIMIT 10''')
+            top_markets = c.fetchall()
+
+            for city, count in top_markets:
+                ideas.append({
+                    "title": f"Data Center Market Report: {city}",
+                    "type": "market_report",
+                    "keywords": f"{city} data center, {city} colocation, {city} cloud",
+                    "priority": 9,
+                    "backlink_potential": "high"
+                })
+
+            c.execute('''SELECT headline, source FROM announcements
+                ORDER BY published_at DESC LIMIT 5''')
+            news = c.fetchall()
+
+            for headline, source in news:
+                ideas.append({
+                    "title": f"Analysis: {headline[:50]}...",
+                    "type": "news_analysis",
+                    "keywords": "data center news, industry analysis",
+                    "priority": 7,
+                    "backlink_potential": "medium"
+                })
+
+        finally:
+            conn.close()
     except Exception as e:
         print(f"Error generating content ideas: {e}")
     
@@ -248,27 +255,29 @@ def get_ai_citation_stats():
     """Track AI platforms citing DC Hub as 'new backlinks'"""
     try:
         conn = get_db()
-        c = conn.cursor()
-        
-        c.execute('''SELECT platform, COUNT(*) as citations,
-            MAX(timestamp) as last_citation
-            FROM ai_usage_tracking
-            GROUP BY platform
-            ORDER BY citations DESC''')
-        
-        citations = []
-        for platform, count, last in c.fetchall():
-            citations.append({
-                "platform": platform,
-                "citations": count,
-                "last_cited": last,
-                "seo_value": "high" if count > 5 else "medium"
-            })
-        
-        c.execute("SELECT COUNT(*) FROM ai_usage_tracking")
-        total = c.fetchone()[0] or 0
-        
-        conn.close()
+        try:
+            c = conn.cursor()
+
+            c.execute('''SELECT platform, COUNT(*) as citations,
+                MAX(timestamp) as last_citation
+                FROM ai_usage_tracking
+                GROUP BY platform
+                ORDER BY citations DESC''')
+
+            citations = []
+            for platform, count, last in c.fetchall():
+                citations.append({
+                    "platform": platform,
+                    "citations": count,
+                    "last_cited": last,
+                    "seo_value": "high" if count > 5 else "medium"
+                })
+
+            c.execute("SELECT COUNT(*) FROM ai_usage_tracking")
+            total = c.fetchone()[0] or 0
+
+        finally:
+            conn.close()
         
         return {
             "total_ai_citations": total,
@@ -285,19 +294,21 @@ def seo_status():
     """Get SEO agent status and metrics"""
     try:
         conn = get_db()
-        c = conn.cursor()
-        
-        c.execute("SELECT COUNT(*) FROM seo_indexing_log WHERE status = 'success'")
-        indexed = c.fetchone()[0] or 0
-        
-        c.execute("SELECT COUNT(*) FROM seo_backlinks")
-        backlinks = c.fetchone()[0] or 0
-        
-        c.execute('''SELECT COUNT(*) FROM seo_indexing_log 
-            WHERE submitted_at > datetime('now', '-24 hours')''')
-        today_pings = c.fetchone()[0] or 0
-        
-        conn.close()
+        try:
+            c = conn.cursor()
+
+            c.execute("SELECT COUNT(*) FROM seo_indexing_log WHERE status = 'success'")
+            indexed = c.fetchone()[0] or 0
+
+            c.execute("SELECT COUNT(*) FROM seo_backlinks")
+            backlinks = c.fetchone()[0] or 0
+
+            c.execute('''SELECT COUNT(*) FROM seo_indexing_log
+                WHERE submitted_at > datetime('now', '-24 hours')''')
+            today_pings = c.fetchone()[0] or 0
+
+        finally:
+            conn.close()
         
         return jsonify({
             "success": True,

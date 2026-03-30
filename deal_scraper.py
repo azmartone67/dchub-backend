@@ -132,10 +132,10 @@ def parse_value_millions(text: str) -> Optional[float]:
     
     # $X billion / $Xbn / $X.Xb
     patterns_billion = [
-        r'\$\s*([\d.]+)\s*(?:billion|bn|b\b)',
-        r'([\d.]+)\s*(?:billion|bn)\s*(?:dollar|usd|\$)',
-        r'worth\s*\$?\s*([\d.]+)\s*(?:billion|bn|b\b)',
-        r'valued?\s*(?:at)?\s*\$?\s*([\d.]+)\s*(?:billion|bn|b\b)',
+        r'\$\s*([\d.]+)\s*(%s:billion|bn|b\b)',
+        r'([\d.]+)\s*(%s:billion|bn)\s*(%s:dollar|usd|\$)',
+        r'worth\s*\$%s\s*([\d.]+)\s*(%s:billion|bn|b\b)',
+        r'valued%s\s*(%s:at)%s\s*\$%s\s*([\d.]+)\s*(%s:billion|bn|b\b)',
     ]
     for pattern in patterns_billion:
         match = re.search(pattern, text)
@@ -146,8 +146,8 @@ def parse_value_millions(text: str) -> Optional[float]:
     
     # $X million / $Xm
     patterns_million = [
-        r'\$\s*([\d.]+)\s*(?:million|mn|m\b)',
-        r'([\d.]+)\s*(?:million|mn)\s*(?:dollar|usd|\$)',
+        r'\$\s*([\d.]+)\s*(%s:million|mn|m\b)',
+        r'([\d.]+)\s*(%s:million|mn)\s*(%s:dollar|usd|\$)',
     ]
     for pattern in patterns_million:
         match = re.search(pattern, text)
@@ -243,7 +243,7 @@ def extract_companies(text: str) -> Tuple[Optional[str], Optional[str]]:
     
     # Pattern: "X acquires Y" / "X to acquire Y" / "X buys Y"
     acq_patterns = [
-        r'([\w\s&/.]+?)\s+(?:acquires?|buys?|purchases?|to acquire|to buy|to purchase)\s+([\w\s&/.]+?)(?:\s+(?:for|in|from)|\s*$)',
+        r'([\w\s&/.]+%s)\s+(%s:acquires%s|buys%s|purchases%s|to acquire|to buy|to purchase)\s+([\w\s&/.]+%s)(%s:\s+(%s:for|in|from)|\s*$)',
         r'([\w\s&/.]+?)\s+(?:and|,)\s+([\w\s&/.]+?)\s+(?:acquire|buy|purchase)\s+([\w\s&/.]+)',
     ]
     

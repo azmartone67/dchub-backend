@@ -304,7 +304,7 @@ def _seed_data(conn):
         {
             'id': 'battle-wk5-market-deep-dive',
             'category': 'market-deep-dive',
-            'title': 'Northern Virginia: Saturated or Growing?',
+            'title': 'Northern Virginia: Saturated or Growing%s',
             'description': "The world's largest data center market examined from every angle — power constraints, fiber density, permitting, and the supply pipeline.",
             'date': '2026-02-05',
             'week_number': 5, 'year': 2026,
@@ -634,7 +634,7 @@ def register_ai_wars_routes(app):
         b = request.args.get('b', '').lower()
 
         if not a or not b or a == b:
-            return jsonify({'success': False, 'error': 'Provide two different platforms: ?a=claude&b=gemini'}), 400
+            return jsonify({'success': False, 'error': 'Provide two different platforms: %sa=claude&b=gemini'}), 400
         
         all_platforms = get_all_platforms()
         if a not in all_platforms or b not in all_platforms:

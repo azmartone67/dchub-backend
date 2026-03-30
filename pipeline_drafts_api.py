@@ -205,7 +205,7 @@ def approve_draft(draft_id):
         proj_type = overrides.get("type", draft["type"])
         preleased = overrides.get("preleased", draft["preleased"])
         if draft["match_type"] == "new":
-            cur.execute("INSERT INTO capacity_pipeline (company, project, market, capacity_mw, investment_millions, status, expected_delivery, type, preleased) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            cur.execute("INSERT INTO capacity_pipeline (company, project, market, capacity_mw, investment_millions, status, expected_delivery, type, preleased) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (company) DO UPDATE SET project = EXCLUDED.project, market = EXCLUDED.market, capacity_mw = EXCLUDED.capacity_mw, investment_millions = EXCLUDED.investment_millions, status = EXCLUDED.status, expected_delivery = EXCLUDED.expected_delivery, type = EXCLUDED.type, preleased = EXCLUDED.preleased RETURNING id",
                 (company, project, market, capacity, investment, status, delivery, proj_type, preleased))
             new_id = cur.fetchone()["id"]
         else:
@@ -270,10 +270,12 @@ def batch_action():
 def health():
     try:
         conn = get_db()
-        cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) as cnt FROM pipeline_drafts WHERE draft_status = 'pending'")
-        pending = cur.fetchone()["cnt"]
-        conn.close()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) as cnt FROM pipeline_drafts WHERE draft_status = 'pending'")
+            pending = cur.fetchone()["cnt"]
+        finally:
+            conn.close()
         return jsonify({"status": "healthy", "pending_drafts": pending})
     except Exception as e:
         return jsonify({"status": "error", "error": str(e)}), 500

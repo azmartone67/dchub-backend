@@ -405,11 +405,11 @@ def seed_major_projects():
                 source_url = f.get('raw_data', {}).get('source_url', '')
 
                 c.execute("""
-                    INSERT OR IGNORE INTO facilities 
+                    INSERT INTO facilities 
                     (id, name, provider, city, state, country, power_mw, status, 
                      latitude, longitude, source, source_id, source_url, raw_data, 
                      first_seen, last_updated, confidence)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'news_pipeline', ?, ?, ?, ?, ?, 0.85)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'news_pipeline', %s, %s, %s, %s, %s, 0.85)
                 """, (
                     source_id, f['name'], f['provider'], f['city'], f.get('state', ''),
                     f['country'], f['power_mw'], f['status'],

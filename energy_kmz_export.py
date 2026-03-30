@@ -5,10 +5,10 @@ Exports discovered energy infrastructure as KMZ files for Google Earth.
 
 Usage:
   - As Flask endpoint: Register with register_kmz_export_routes(app)
-    GET /api/energy-discovery/export/kmz?type=power-plants&market=chicago
-    GET /api/energy-discovery/export/kmz?type=all
-    GET /api/energy-discovery/export/kmz?type=pipelines
-    GET /api/energy-discovery/export/kmz?type=transmission-lines&market=northern_virginia
+    GET /api/energy-discovery/export/kmz%stype=power-plants&market=chicago
+    GET /api/energy-discovery/export/kmz%stype=all
+    GET /api/energy-discovery/export/kmz%stype=pipelines
+    GET /api/energy-discovery/export/kmz%stype=transmission-lines&market=northern_virginia
 
   - Standalone: DATABASE_URL=$NEON_DATABASE_URL python3 energy_kmz_export.py
     Generates files in /workspace/exports/
@@ -98,23 +98,25 @@ def _dict_rows(cursor):
 def generate_power_plants_kml(market=None, state=None, fuel_type=None, min_capacity=None):
     """Generate KML for power plants"""
     conn = get_db()
-    c = conn.cursor()
+    try:
+        c = conn.cursor()
 
-    query = "SELECT * FROM discovered_power_plants WHERE lat IS NOT NULL AND lng IS NOT NULL"
-    params = []
-    if market:
-        query += " AND market = %s"; params.append(market)
-    if state:
-        query += " AND state = %s"; params.append(state)
-    if fuel_type:
-        query += " AND fuel_type ILIKE %s"; params.append(f"%{fuel_type}%")
-    if min_capacity:
-        query += " AND capacity_mw >= %s"; params.append(float(min_capacity))
-    query += " ORDER BY capacity_mw DESC"
+        query = "SELECT * FROM discovered_power_plants WHERE lat IS NOT NULL AND lng IS NOT NULL"
+        params = []
+        if market:
+            query += " AND market = %s"; params.append(market)
+        if state:
+            query += " AND state = %s"; params.append(state)
+        if fuel_type:
+            query += " AND fuel_type ILIKE %s"; params.append(f"%{fuel_type}%")
+        if min_capacity:
+            query += " AND capacity_mw >= %s"; params.append(float(min_capacity))
+        query += " ORDER BY capacity_mw DESC"
 
-    c.execute(query, params)
-    plants = _dict_rows(c)
-    conn.close()
+        c.execute(query, params)
+        plants = _dict_rows(c)
+    finally:
+        conn.close()
 
     title = "DC Hub — Power Plants"
     if market:
@@ -192,18 +194,20 @@ def generate_power_plants_kml(market=None, state=None, fuel_type=None, min_capac
 def generate_pipelines_kml(state=None):
     """Generate KML for gas pipelines"""
     conn = get_db()
-    c = conn.cursor()
+    try:
+        c = conn.cursor()
 
-    query = "SELECT * FROM discovered_pipelines WHERE 1=1"
-    params = []
-    if state:
-        query += " AND (state = %s OR states_served LIKE %s)"
-        params.extend([state, f"%{state}%"])
-    query += " ORDER BY capacity_mdth DESC"
+        query = "SELECT * FROM discovered_pipelines WHERE 1=1"
+        params = []
+        if state:
+            query += " AND (state = %s OR states_served LIKE %s)"
+            params.extend([state, f"%{state}%"])
+        query += " ORDER BY capacity_mdth DESC"
 
-    c.execute(query, params)
-    pipelines = _dict_rows(c)
-    conn.close()
+        c.execute(query, params)
+        pipelines = _dict_rows(c)
+    finally:
+        conn.close()
 
     title = "DC Hub — Gas Pipelines"
     if state:
@@ -257,19 +261,21 @@ def generate_pipelines_kml(state=None):
 def generate_transmission_kml(market=None, min_voltage=None):
     """Generate KML for transmission lines"""
     conn = get_db()
-    c = conn.cursor()
+    try:
+        c = conn.cursor()
 
-    query = "SELECT * FROM discovered_transmission_lines WHERE 1=1"
-    params = []
-    if market:
-        query += " AND market = %s"; params.append(market)
-    if min_voltage:
-        query += " AND voltage_kv >= %s"; params.append(float(min_voltage))
-    query += " ORDER BY voltage_kv DESC"
+        query = "SELECT * FROM discovered_transmission_lines WHERE 1=1"
+        params = []
+        if market:
+            query += " AND market = %s"; params.append(market)
+        if min_voltage:
+            query += " AND voltage_kv >= %s"; params.append(float(min_voltage))
+        query += " ORDER BY voltage_kv DESC"
 
-    c.execute(query, params)
-    lines = _dict_rows(c)
-    conn.close()
+        c.execute(query, params)
+        lines = _dict_rows(c)
+    finally:
+        conn.close()
 
     title = "DC Hub — Transmission Lines"
     if market:
@@ -317,35 +323,37 @@ def generate_transmission_kml(market=None, min_voltage=None):
 def generate_all_kml(market=None):
     """Generate combined KML with all energy infrastructure"""
     conn = get_db()
-    c = conn.cursor()
+    try:
+        c = conn.cursor()
 
-    # Get power plants
-    query = "SELECT * FROM discovered_power_plants WHERE lat IS NOT NULL AND lng IS NOT NULL"
-    params = []
-    if market:
-        query += " AND market = %s"; params.append(market)
-    query += " ORDER BY capacity_mw DESC"
-    c.execute(query, params)
-    plants = _dict_rows(c)
+        # Get power plants
+        query = "SELECT * FROM discovered_power_plants WHERE lat IS NOT NULL AND lng IS NOT NULL"
+        params = []
+        if market:
+            query += " AND market = %s"; params.append(market)
+        query += " ORDER BY capacity_mw DESC"
+        c.execute(query, params)
+        plants = _dict_rows(c)
 
-    # Get pipelines
-    c.execute("SELECT * FROM discovered_pipelines ORDER BY capacity_mdth DESC")
-    pipelines = _dict_rows(c)
+        # Get pipelines
+        c.execute("SELECT * FROM discovered_pipelines ORDER BY capacity_mdth DESC")
+        pipelines = _dict_rows(c)
 
-    # Get transmission lines
-    tx_query = "SELECT * FROM discovered_transmission_lines WHERE 1=1"
-    tx_params = []
-    if market:
-        tx_query += " AND market = %s"; tx_params.append(market)
-    tx_query += " ORDER BY voltage_kv DESC LIMIT 500"
-    c.execute(tx_query, tx_params)
-    tx_lines = _dict_rows(c)
+        # Get transmission lines
+        tx_query = "SELECT * FROM discovered_transmission_lines WHERE 1=1"
+        tx_params = []
+        if market:
+            tx_query += " AND market = %s"; tx_params.append(market)
+        tx_query += " ORDER BY voltage_kv DESC LIMIT 500"
+        c.execute(tx_query, tx_params)
+        tx_lines = _dict_rows(c)
 
-    # Get stats
-    c.execute("SELECT COALESCE(SUM(capacity_mw), 0) FROM discovered_power_plants WHERE lat IS NOT NULL")
-    total_mw = float(c.fetchone()[0])
+        # Get stats
+        c.execute("SELECT COALESCE(SUM(capacity_mw), 0) FROM discovered_power_plants WHERE lat IS NOT NULL")
+        total_mw = float(c.fetchone()[0])
 
-    conn.close()
+    finally:
+        conn.close()
 
     title = "DC Hub — Energy Infrastructure"
     if market:
@@ -456,7 +464,7 @@ def generate_all_kml(market=None):
 # =============================================================================
 
 def _build_kml_header(title, description):
-    return f"""<?xml version="1.0" encoding="UTF-8"?>
+    return f"""<%sxml version="1.0" encoding="UTF-8"%s>
 <kml xmlns="http://www.opengis.net/kml/2.2">
 <Document>
   <name>{_xml_escape(title)}</name>

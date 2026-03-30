@@ -50,8 +50,8 @@ def update_coordinates():
         return
     
     conn = sqlite3.connect(DB_PATH, timeout=60)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=60000")
+    # PRAGMA removed - not needed for PostgreSQL
+    # PRAGMA removed - not needed for PostgreSQL
     cursor = conn.cursor()
     
     # Get all permits without coordinates
@@ -77,8 +77,8 @@ def update_coordinates():
             
             cursor.execute("""
                 UPDATE construction_permits 
-                SET lat = ?, lng = ? 
-                WHERE id = ?
+                SET lat = %s, lng = %s 
+                WHERE id = %s
             """, (new_lat, new_lng, id))
             
             print(f"✅ Updated: {name} ({city}, {state}) -> ({new_lat:.4f}, {new_lng:.4f})")

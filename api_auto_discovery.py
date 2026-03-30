@@ -262,7 +262,7 @@ DATA_GOV_SEARCHES = [
 
 STATE_GIS_ENDPOINTS = [
     {'name': 'TX RRC Oil/Gas Wells', 'category': 'power', 'type': 'rest',
-     'url': 'https://gis.rrc.texas.gov/arcgis/rest/services/public/RRCGIS_Wells/MapServer/0/query?where=1%3D1&outFields=*&f=json&resultRecordCount=5',
+     'url': 'https://gis.rrc.texas.gov/arcgis/rest/services/public/RRCGIS_Wells/MapServer/0/query%swhere=1%3D1&outFields=*&f=json&resultRecordCount=5',
      'description': 'Texas Railroad Commission oil/gas well locations', 'scan_frequency': 'daily'},
     {'name': 'TX RRC Pipelines', 'category': 'gas', 'type': 'arcgis',
      'url': 'https://gis.rrc.texas.gov/arcgis/rest/services/public/RRCGIS_Pipeline/MapServer/0',
@@ -280,10 +280,10 @@ STATE_GIS_ENDPOINTS = [
 
 FEDERAL_AGENCY_ENDPOINTS = [
     {'name': 'NOAA Climate Normals Monthly', 'category': 'environmental', 'type': 'rest',
-     'url': 'https://www.ncei.noaa.gov/cdo-web/api/v2/data?datasetid=NORMAL_MLY&limit=5',
+     'url': 'https://www.ncei.noaa.gov/cdo-web/api/v2/data%sdatasetid=NORMAL_MLY&limit=5',
      'description': 'NOAA monthly climate normals for cooling degree day analysis', 'scan_frequency': 'daily'},
     {'name': 'NOAA Climate Daily Summaries', 'category': 'environmental', 'type': 'rest',
-     'url': 'https://www.ncei.noaa.gov/cdo-web/api/v2/data?datasetid=GHCND&limit=5',
+     'url': 'https://www.ncei.noaa.gov/cdo-web/api/v2/data%sdatasetid=GHCND&limit=5',
      'description': 'NOAA daily climate summaries for temperature analysis', 'scan_frequency': 'daily'},
     {'name': 'DOE Grid Modernization Projects', 'category': 'power', 'type': 'rest',
      'url': 'https://www.energy.gov/oe/services/technology-development/smart-grid',
@@ -292,7 +292,7 @@ FEDERAL_AGENCY_ENDPOINTS = [
      'url': 'https://gis.blm.gov/arcgis/rest/services/lands/BLM_Natl_SMA_LimitedDisp_Cached_Tiles/MapServer/0',
      'description': 'BLM federal land surface management for large DC site selection', 'scan_frequency': 'daily'},
     {'name': 'Census TIGER Urban Areas', 'category': 'other', 'type': 'rest',
-     'url': 'https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/tigerWMS_ACS2023/MapServer/0/query?where=1%3D1&outFields=*&f=json&resultRecordCount=5',
+     'url': 'https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/tigerWMS_ACS2023/MapServer/0/query%swhere=1%3D1&outFields=*&f=json&resultRecordCount=5',
      'description': 'Census TIGER urban area boundaries for demographic analysis', 'scan_frequency': 'daily'},
 ]
 
@@ -338,7 +338,7 @@ class APIAutoDiscovery:
 
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS discovered_apis (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 name TEXT NOT NULL,
                 category TEXT,
                 api_type TEXT,
@@ -356,7 +356,7 @@ class APIAutoDiscovery:
 
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS api_discovery_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 action TEXT,
                 source TEXT,
                 apis_found INTEGER DEFAULT 0,
@@ -369,7 +369,7 @@ class APIAutoDiscovery:
 
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS learned_infrastructure (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 category TEXT,
                 item_type TEXT,
                 name TEXT,
@@ -383,7 +383,7 @@ class APIAutoDiscovery:
 
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS api_health_checks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 api_id INTEGER,
                 url TEXT,
                 status_code INTEGER,
@@ -399,7 +399,7 @@ class APIAutoDiscovery:
 
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS api_change_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 api_id INTEGER,
                 event_type TEXT,
                 old_value TEXT,
@@ -413,7 +413,7 @@ class APIAutoDiscovery:
 
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS api_registry (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 name TEXT NOT NULL,
                 url TEXT UNIQUE,
                 api_type TEXT,
@@ -437,9 +437,9 @@ class APIAutoDiscovery:
         for api in KNOWN_API_SOURCES:
             try:
                 cursor.execute('''
-                    INSERT OR IGNORE INTO discovered_apis
+                    INSERT INTO discovered_apis
                     (name, category, api_type, url, record_count, fields, status)
-                    VALUES (?, ?, ?, ?, ?, ?, 'verified')
+                    VALUES (%s, %s, %s, %s, %s, %s, 'verified')
                 ''', (
                     api['name'], api['category'], api['type'],
                     api['url'], api['record_count'], json.dumps(api['fields'])
@@ -462,7 +462,7 @@ class APIAutoDiscovery:
             start = time.time()
 
             if api_type == 'arcgis':
-                test_url = f"{url}/query?where=1=1&outFields=*&returnCountOnly=true&f=json"
+                test_url = f"{url}/query%swhere=1=1&outFields=*&returnCountOnly=true&f=json"
                 response = self.session.get(test_url, timeout=15)
                 result['response_time_ms'] = round((time.time() - start) * 1000, 1)
 
@@ -851,9 +851,9 @@ class APIAutoDiscovery:
                     try:
                         cursor.execute('''
                             UPDATE discovered_apis
-                            SET status = ?, last_tested = ?, test_result = ?,
-                                record_count = ?, updated_at = ?
-                            WHERE id = ?
+                            SET status = %s, last_tested = %s, test_result = %s,
+                                record_count = %s, updated_at = %s
+                            WHERE id = %s
                         ''', (status, datetime.now().isoformat(), json.dumps(test_result),
                               str(new_count) if new_count else prev_count,
                               datetime.now().isoformat(), api_id))
@@ -861,7 +861,7 @@ class APIAutoDiscovery:
                         cursor.execute('''
                             INSERT INTO api_health_checks
                             (api_id, url, status_code, response_time_ms, record_count, schema_hash, is_healthy, error_message)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                         ''', (api_id, url, 200 if is_healthy else 0, response_time,
                               new_count, schema_hash, 1 if is_healthy else 0,
                               test_result.get('error', '')))
@@ -919,14 +919,14 @@ class APIAutoDiscovery:
                 for attempt in range(3):
                     try:
                         cursor.execute('''
-                            INSERT OR REPLACE INTO api_registry
+                            INSERT INTO api_registry 
                             (name, url, api_type, auth_type, last_success, items_fetched, enabled, discovered_at)
-                            VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+                            VALUES (%s, %s, %s, %s, %s, %s, 1, %s)
                         ''', (name, url, api_type, 'none' if api_type != 'eia' else 'api_key',
                               datetime.now().isoformat(), record_ct, datetime.now().isoformat()))
 
                         cursor.execute('''
-                            UPDATE discovered_apis SET integrated = 1, updated_at = ? WHERE id = ?
+                            UPDATE discovered_apis SET integrated = 1, updated_at = %s WHERE id = %s
                         ''', (datetime.now().isoformat(), api_id))
 
                         results['registered'] += 1
@@ -975,7 +975,7 @@ class APIAutoDiscovery:
                 for attempt in range(3):
                     try:
                         cursor.execute('''
-                            UPDATE discovered_apis SET status = 'deprecated', updated_at = ? WHERE id = ?
+                            UPDATE discovered_apis SET status = 'deprecated', updated_at = %s WHERE id = %s
                         ''', (datetime.now().isoformat(), api_id))
                         break
                     except sqlite3.OperationalError:
@@ -990,7 +990,7 @@ class APIAutoDiscovery:
                 for attempt in range(3):
                     try:
                         cursor.execute('''
-                            UPDATE discovered_apis SET status = 'working', updated_at = ? WHERE id = ?
+                            UPDATE discovered_apis SET status = 'working', updated_at = %s WHERE id = %s
                         ''', (datetime.now().isoformat(), api_id))
                         break
                     except sqlite3.OperationalError:
@@ -1034,8 +1034,8 @@ class APIAutoDiscovery:
                 try:
                     cursor.execute('''
                         UPDATE discovered_apis
-                        SET status = ?, last_tested = ?, test_result = ?, record_count = ?, updated_at = ?
-                        WHERE id = ?
+                        SET status = %s, last_tested = %s, test_result = %s, record_count = %s, updated_at = %s
+                        WHERE id = %s
                     ''', (status, datetime.now().isoformat(), json.dumps(test_result),
                           str(test_result.get('record_count', 0)),
                           datetime.now().isoformat(), api_id))
@@ -1071,7 +1071,7 @@ class APIAutoDiscovery:
 
         for api_id, name, category, url, api_type in apis:
             try:
-                query_url = f"{url}/query?where=1=1&outFields=*&resultRecordCount=100&f=json"
+                query_url = f"{url}/query%swhere=1=1&outFields=*&resultRecordCount=100&f=json"
                 response = self.session.get(query_url, timeout=20)
 
                 if response.status_code == 200:
@@ -1095,9 +1095,9 @@ class APIAutoDiscovery:
             for row in learned_rows:
                 try:
                     conn2.execute('''
-                        INSERT OR IGNORE INTO learned_infrastructure
+                        INSERT INTO learned_infrastructure
                         (category, item_type, name, location, source_api, metadata)
-                        VALUES (?, ?, ?, ?, ?, ?)
+                        VALUES (%s, %s, %s, %s, %s, %s)
                     ''', row)
                     conn2.commit()
                     results['items_learned'] += 1
@@ -1383,7 +1383,7 @@ class APIAutoDiscovery:
 
             cursor.execute('''
                 INSERT INTO api_discovery_log (action, source, apis_found, apis_tested, apis_integrated, details)
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s)
             ''', (
                 'discovery_cycle_v2',
                 'auto_scheduler',
@@ -1438,14 +1438,14 @@ class APIAutoDiscovery:
         cursor = conn.cursor()
 
         try:
-            cursor.execute('SELECT id, status FROM discovered_apis WHERE url = ?', (api_info['url'],))
+            cursor.execute('SELECT id, status FROM discovered_apis WHERE url = %s', (api_info['url'],))
             existing = cursor.fetchone()
 
             if existing:
                 if test_result:
                     cursor.execute('''
-                        UPDATE discovered_apis SET status = ?, last_tested = ?, test_result = ?, updated_at = ?
-                        WHERE url = ?
+                        UPDATE discovered_apis SET status = %s, last_tested = %s, test_result = %s, updated_at = %s
+                        WHERE url = %s
                     ''', (status, datetime.now().isoformat(), json.dumps(test_result),
                           datetime.now().isoformat(), api_info['url']))
                     conn.commit()
@@ -1453,7 +1453,7 @@ class APIAutoDiscovery:
 
             cursor.execute('''
                 INSERT INTO discovered_apis (name, category, api_type, url, status, last_tested, test_result)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
             ''', (
                 api_info['name'][:200], api_info.get('category', 'other'),
                 api_info.get('type', 'rest'), api_info['url'],
@@ -1474,7 +1474,7 @@ class APIAutoDiscovery:
         try:
             cursor.execute('''
                 INSERT INTO api_change_events (api_id, event_type, old_value, new_value, description)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s)
             ''', (api_id, event_type, old_value, new_value, description))
         except Exception:
             pass
@@ -1597,7 +1597,7 @@ def register_api_discovery_routes(app, start_scheduler=True):
                    ce.description, ce.detected_at, ce.acknowledged
             FROM api_change_events ce
             JOIN discovered_apis da ON ce.api_id = da.id
-            WHERE ce.detected_at > datetime('now', ?)
+            WHERE ce.detected_at > datetime('now', %s)
             ORDER BY ce.detected_at DESC
             LIMIT 100
         ''', (f'-{days} days',))
@@ -1645,20 +1645,20 @@ def register_api_discovery_routes(app, start_scheduler=True):
         params = []
 
         if category:
-            query += ' AND category = ?'
+            query += ' AND category = %s'
             params.append(category)
         if status:
-            query += ' AND status = ?'
+            query += ' AND status = %s'
             params.append(status)
         if api_type:
-            query += ' AND api_type = ?'
+            query += ' AND api_type = %s'
             params.append(api_type)
 
         count_query = query.replace('SELECT id, name, category, api_type, url, record_count, status, last_tested, integrated', 'SELECT COUNT(*)')
         cursor.execute(count_query, params)
         total = cursor.fetchone()[0]
 
-        query += ' ORDER BY updated_at DESC LIMIT ? OFFSET ?'
+        query += ' ORDER BY updated_at DESC LIMIT %s OFFSET %s'
         params.extend([per_page, (page - 1) * per_page])
 
         cursor.execute(query, params)

@@ -27,7 +27,7 @@ original = content
 content = content.replace(
     """            c.execute(\"\"\"INSERT INTO users (id, email, password_hash, name, plan, role, api_calls_today, api_calls_total,
                          created_at, stripe_customer_id, subscription_status)
-                         VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, 'active')\"\"\",
+                         VALUES (%s, %s, %s, %s, %s, %s, 0, 0, %s, %s, 'active') ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email, password_hash = EXCLUDED.password_hash, name = EXCLUDED.name, plan = EXCLUDED.plan, role = EXCLUDED.role, api_calls_today = EXCLUDED.api_calls_today, api_calls_total = EXCLUDED.api_calls_total, created_at = EXCLUDED.created_at, stripe_customer_id = EXCLUDED.stripe_customer_id, subscription_status = EXCLUDED.subscription_status\"\"\",
                       (new_user_id, customer_email, hashed_pw, display_name,
                        plan_name, api_tier, now, stripe_cust))
             print(f"🔐 Account created for {customer_email} (PG + SQLite)")""",
@@ -38,7 +38,7 @@ content = content.replace(
 content = content.replace(
     """            c.execute(\"\"\"INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions,
                          rate_limit_tier, is_active, created_at, usage_count, plan, calls_today, calls_total)
-                         VALUES (?, ?, ?, ?, '["read","write"]', ?, 1, ?, 0, ?, 0, 0)\"\"\",
+                         VALUES (%s, %s, %s, %s, '["read","write"]', %s, 1, %s, 0, %s, 0, 0) ON CONFLICT (key) DO UPDATE SET user_id = EXCLUDED.user_id, key_hash = EXCLUDED.key_hash, key_prefix = EXCLUDED.key_prefix, name = EXCLUDED.name, permissions = EXCLUDED.permissions, rate_limit_tier = EXCLUDED.rate_limit_tier, is_active = EXCLUDED.is_active, created_at = EXCLUDED.created_at, usage_count = EXCLUDED.usage_count, plan = EXCLUDED.plan, calls_today = EXCLUDED.calls_today, calls_total = EXCLUDED.calls_total\"\"\",
                       (new_user_id, key_hash, key_prefix, f'{customer_email} Pro Key',
                        api_tier, now, plan_name))""",
     """            # SQLite removed — _pg_execute above handles Neon"""
@@ -67,7 +67,7 @@ content = content.replace(
 content = content.replace(
     """                c.execute(\"\"\"INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions,
                              rate_limit_tier, is_active, created_at, usage_count, plan, calls_today, calls_total)
-                             VALUES (?, ?, ?, ?, '["read","write"]', ?, 1, ?, 0, ?, 0, 0)\"\"\",
+                             VALUES (%s, %s, %s, %s, '["read","write"]', %s, 1, %s, 0, %s, 0, 0) ON CONFLICT (key) DO UPDATE SET user_id = EXCLUDED.user_id, key_hash = EXCLUDED.key_hash, key_prefix = EXCLUDED.key_prefix, name = EXCLUDED.name, permissions = EXCLUDED.permissions, rate_limit_tier = EXCLUDED.rate_limit_tier, is_active = EXCLUDED.is_active, created_at = EXCLUDED.created_at, usage_count = EXCLUDED.usage_count, plan = EXCLUDED.plan, calls_today = EXCLUDED.calls_today, calls_total = EXCLUDED.calls_total\"\"\",
                           (resolved_user_id, key_hash, key_prefix, f'{customer_email} Pro Key',
                            api_tier, now, plan_name))""",
     """                # SQLite removed — _pg_execute above handles Neon"""

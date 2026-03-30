@@ -153,7 +153,7 @@ async def compare_sites(locations: str = "") -> str:
                        'fiber_connectivity', 'market_conditions', 'risk_resilience']
         winners = {}
         for cat in categories:
-            scored = [(r.get('label', '?'), r.get('scores', {}).get(cat, 0)) for r in results]
+            scored = [(r.get('label', '%s'), r.get('scores', {}).get(cat, 0)) for r in results]
             best = max(scored, key=lambda x: x[1])
             winners[cat] = {'winner': best[0], 'score': best[1]}
 

@@ -17,7 +17,6 @@ Database Tables:
 import os
 import json
 import hashlib
-import sqlite3
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from flask import Blueprint, request, jsonify
@@ -37,45 +36,47 @@ DB_PATH = os.environ.get('DB_PATH', 'dc_nexus.db')
 def init_saved_searches_db():
     """Initialize saved searches tables"""
     conn = get_db()
-    c = conn.cursor()
-    
-    # Saved searches table
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS saved_searches (
-            id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            name TEXT NOT NULL,
-            criteria TEXT NOT NULL,
-            alert_frequency TEXT DEFAULT 'daily',
-            alert_enabled INTEGER DEFAULT 1,
-            last_checked TEXT,
-            last_alert_sent TEXT,
-            match_count INTEGER DEFAULT 0,
-            created_at TEXT,
-            updated_at TEXT
-        )
-    """)
-    
-    # Search alerts history
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS search_alerts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            search_id TEXT NOT NULL,
-            user_id TEXT NOT NULL,
-            facilities_matched TEXT,
-            facilities_count INTEGER,
-            email_sent INTEGER DEFAULT 0,
-            created_at TEXT,
-            FOREIGN KEY (search_id) REFERENCES saved_searches(id)
-        )
-    """)
-    
-    # Create indexes
-    c.execute("CREATE INDEX IF NOT EXISTS idx_saved_searches_user ON saved_searches(user_id)")
-    c.execute("CREATE INDEX IF NOT EXISTS idx_search_alerts_search ON search_alerts(search_id)")
-    
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+
+        # Saved searches table
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS saved_searches (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                criteria TEXT NOT NULL,
+                alert_frequency TEXT DEFAULT 'daily',
+                alert_enabled INTEGER DEFAULT 1,
+                last_checked TEXT,
+                last_alert_sent TEXT,
+                match_count INTEGER DEFAULT 0,
+                created_at TEXT,
+                updated_at TEXT
+            )
+        """)
+
+        # Search alerts history
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS search_alerts (
+                id SERIAL PRIMARY KEY,
+                search_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                facilities_matched TEXT,
+                facilities_count INTEGER,
+                email_sent INTEGER DEFAULT 0,
+                created_at TEXT,
+                FOREIGN KEY (search_id) REFERENCES saved_searches(id)
+            )
+        """)
+
+        # Create indexes
+        c.execute("CREATE INDEX IF NOT EXISTS idx_saved_searches_user ON saved_searches(user_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_search_alerts_search ON search_alerts(search_id)")
+
+        conn.commit()
+    finally:
+        conn.close()
 
 # Initialize on import
 init_saved_searches_db()
@@ -136,41 +137,43 @@ def match_criteria(facility: Dict, criteria: Dict) -> bool:
 def get_matching_facilities(criteria: Dict, since: str = None) -> List[Dict]:
     """Find facilities matching criteria"""
     conn = get_db()
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    
-    # Base query
-    query = """
-        SELECT id, name, provider, city, state, country, 
-               latitude, longitude, power_mw, source, first_seen
-        FROM facilities
-        WHERE 1=1
-    """
-    params = []
-    
-    # Add date filter for new facilities
-    if since:
-        query += " AND first_seen > ?"
-        params.append(since)
-    
-    # Add basic filters to query for performance
-    if criteria.get('country'):
-        query += " AND LOWER(country) = LOWER(?)"
-        params.append(criteria['country'])
-    
-    if criteria.get('state'):
-        query += " AND LOWER(state) = LOWER(?)"
-        params.append(criteria['state'])
-    
-    if criteria.get('source'):
-        query += " AND LOWER(source) = LOWER(?)"
-        params.append(criteria['source'])
-    
-    query += " ORDER BY first_seen DESC LIMIT 1000"
-    
-    c.execute(query, params)
-    rows = c.fetchall()
-    conn.close()
+    try:
+        # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
+        c = conn.cursor()
+
+        # Base query
+        query = """
+            SELECT id, name, provider, city, state, country,
+                   latitude, longitude, power_mw, source, first_seen
+            FROM facilities
+            WHERE 1=1
+        """
+        params = []
+
+        # Add date filter for new facilities
+        if since:
+            query += " AND first_seen > %s"
+            params.append(since)
+
+        # Add basic filters to query for performance
+        if criteria.get('country'):
+            query += " AND LOWER(country) = LOWER(%s)"
+            params.append(criteria['country'])
+
+        if criteria.get('state'):
+            query += " AND LOWER(state) = LOWER(%s)"
+            params.append(criteria['state'])
+
+        if criteria.get('source'):
+            query += " AND LOWER(source) = LOWER(%s)"
+            params.append(criteria['source'])
+
+        query += " ORDER BY first_seen DESC LIMIT 1000"
+
+        c.execute(query, params)
+        rows = c.fetchall()
+    finally:
+        conn.close()
     
     # Apply remaining filters in Python
     facilities = []
@@ -191,22 +194,24 @@ def list_saved_searches():
     user_id = request.args.get('user_id') or request.headers.get('X-User-Id', 'anonymous')
     
     conn = get_db()
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    
-    c.execute("""
-        SELECT * FROM saved_searches 
-        WHERE user_id = ? 
-        ORDER BY created_at DESC
-    """, [user_id])
-    
-    searches = []
-    for row in c.fetchall():
-        search = dict(row)
-        search['criteria'] = json.loads(search['criteria'])
-        searches.append(search)
-    
-    conn.close()
+    try:
+        # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
+        c = conn.cursor()
+
+        c.execute("""
+            SELECT * FROM saved_searches
+            WHERE user_id = %s
+            ORDER BY created_at DESC
+        """, [user_id])
+
+        searches = []
+        for row in c.fetchall():
+            search = dict(row)
+            search['criteria'] = json.loads(search['criteria'])
+            searches.append(search)
+
+    finally:
+        conn.close()
     
     return jsonify({
         'success': True,
@@ -232,19 +237,21 @@ def create_saved_search():
     now = datetime.utcnow().isoformat()
     
     conn = get_db()
-    c = conn.cursor()
-    
-    c.execute("""
-        INSERT INTO saved_searches 
-        (id, user_id, name, criteria, alert_frequency, alert_enabled, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, [
-        search_id, user_id, name, json.dumps(criteria),
-        alert_frequency, 1 if alert_enabled else 0, now, now
-    ])
-    
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+
+        c.execute("""
+            INSERT INTO saved_searches
+            (id, user_id, name, criteria, alert_frequency, alert_enabled, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """, [
+            search_id, user_id, name, json.dumps(criteria),
+            alert_frequency, 1 if alert_enabled else 0, now, now
+        ])
+
+        conn.commit()
+    finally:
+        conn.close()
     
     return jsonify({
         'success': True,
@@ -256,12 +263,14 @@ def create_saved_search():
 def get_saved_search(search_id):
     """Get a specific saved search with current matches"""
     conn = get_db()
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    
-    c.execute("SELECT * FROM saved_searches WHERE id = ?", [search_id])
-    row = c.fetchone()
-    conn.close()
+    try:
+        # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
+        c = conn.cursor()
+
+        c.execute("SELECT * FROM saved_searches WHERE id = %s", [search_id])
+        row = c.fetchone()
+    finally:
+        conn.close()
     
     if not row:
         return jsonify({'error': 'Search not found'}), 404
@@ -288,33 +297,35 @@ def update_saved_search(search_id):
     params = []
     
     if 'name' in data:
-        updates.append('name = ?')
+        updates.append('name = %s')
         params.append(data['name'])
     
     if 'criteria' in data:
-        updates.append('criteria = ?')
+        updates.append('criteria = %s')
         params.append(json.dumps(data['criteria']))
     
     if 'alert_frequency' in data:
-        updates.append('alert_frequency = ?')
+        updates.append('alert_frequency = %s')
         params.append(data['alert_frequency'])
     
     if 'alert_enabled' in data:
-        updates.append('alert_enabled = ?')
+        updates.append('alert_enabled = %s')
         params.append(1 if data['alert_enabled'] else 0)
     
     if not updates:
         return jsonify({'error': 'No updates provided'}), 400
     
-    updates.append('updated_at = ?')
+    updates.append('updated_at = %s')
     params.append(datetime.utcnow().isoformat())
     params.append(search_id)
     
     conn = get_db()
-    c = conn.cursor()
-    c.execute(f"UPDATE saved_searches SET {', '.join(updates)} WHERE id = ?", params)
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+        c.execute(f"UPDATE saved_searches SET {', '.join(updates)} WHERE id = %s", params)
+        conn.commit()
+    finally:
+        conn.close()
     
     return jsonify({'success': True, 'message': 'Search updated'})
 
@@ -322,11 +333,13 @@ def update_saved_search(search_id):
 def delete_saved_search(search_id):
     """Delete a saved search"""
     conn = get_db()
-    c = conn.cursor()
-    c.execute("DELETE FROM saved_searches WHERE id = ?", [search_id])
-    c.execute("DELETE FROM search_alerts WHERE search_id = ?", [search_id])
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+        c.execute("DELETE FROM saved_searches WHERE id = %s", [search_id])
+        c.execute("DELETE FROM search_alerts WHERE search_id = %s", [search_id])
+        conn.commit()
+    finally:
+        conn.close()
     
     return jsonify({'success': True, 'message': 'Search deleted'})
 
@@ -334,12 +347,14 @@ def delete_saved_search(search_id):
 def run_saved_search(search_id):
     """Run a saved search and return matches"""
     conn = get_db()
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    
-    c.execute("SELECT criteria FROM saved_searches WHERE id = ?", [search_id])
-    row = c.fetchone()
-    conn.close()
+    try:
+        # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
+        c = conn.cursor()
+
+        c.execute("SELECT criteria FROM saved_searches WHERE id = %s", [search_id])
+        row = c.fetchone()
+    finally:
+        conn.close()
     
     if not row:
         return jsonify({'error': 'Search not found'}), 404
@@ -362,52 +377,54 @@ def check_new_matches():
         since = (datetime.utcnow() - timedelta(hours=24)).isoformat()
     
     conn = get_db()
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    
-    c.execute("SELECT * FROM saved_searches WHERE alert_enabled = 1")
-    searches = c.fetchall()
-    
-    results = []
-    for search in searches:
-        search_dict = dict(search)
-        criteria = json.loads(search_dict['criteria'])
-        
-        # Find new matches since last check
-        check_since = search_dict.get('last_checked') or since
-        new_matches = get_matching_facilities(criteria, check_since)
-        
-        if new_matches:
-            # Record alert
-            alert_id = c.execute("""
-                INSERT INTO search_alerts 
-                (search_id, user_id, facilities_matched, facilities_count, created_at)
-                VALUES (?, ?, ?, ?, ?)
-            """, [
-                search_dict['id'],
-                search_dict['user_id'],
-                json.dumps([m['id'] for m in new_matches[:50]]),
-                len(new_matches),
-                datetime.utcnow().isoformat()
-            ]).lastrowid
-            
-            results.append({
-                'search_id': search_dict['id'],
-                'search_name': search_dict['name'],
-                'user_id': search_dict['user_id'],
-                'new_matches': len(new_matches),
-                'alert_id': alert_id
-            })
-        
-        # Update last checked
-        c.execute("""
-            UPDATE saved_searches 
-            SET last_checked = ?, match_count = ?
-            WHERE id = ?
-        """, [datetime.utcnow().isoformat(), len(new_matches), search_dict['id']])
-    
-    conn.commit()
-    conn.close()
+    try:
+        # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
+        c = conn.cursor()
+
+        c.execute("SELECT * FROM saved_searches WHERE alert_enabled = 1")
+        searches = c.fetchall()
+
+        results = []
+        for search in searches:
+            search_dict = dict(search)
+            criteria = json.loads(search_dict['criteria'])
+
+            # Find new matches since last check
+            check_since = search_dict.get('last_checked') or since
+            new_matches = get_matching_facilities(criteria, check_since)
+
+            if new_matches:
+                # Record alert
+                alert_id = c.execute("""
+                    INSERT INTO search_alerts
+                    (search_id, user_id, facilities_matched, facilities_count, created_at)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, [
+                    search_dict['id'],
+                    search_dict['user_id'],
+                    json.dumps([m['id'] for m in new_matches[:50]]),
+                    len(new_matches),
+                    datetime.utcnow().isoformat()
+                ]).lastrowid
+
+                results.append({
+                    'search_id': search_dict['id'],
+                    'search_name': search_dict['name'],
+                    'user_id': search_dict['user_id'],
+                    'new_matches': len(new_matches),
+                    'alert_id': alert_id
+                })
+
+            # Update last checked
+            c.execute("""
+                UPDATE saved_searches
+                SET last_checked = %s, match_count = %s
+                WHERE id = %s
+            """, [datetime.utcnow().isoformat(), len(new_matches), search_dict['id']])
+
+        conn.commit()
+    finally:
+        conn.close()
     
     return jsonify({
         'success': True,
@@ -423,20 +440,22 @@ def get_alerts_history():
     limit = min(int(request.args.get('limit', 50)), 100)
     
     conn = get_db()
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    
-    c.execute("""
-        SELECT a.*, s.name as search_name
-        FROM search_alerts a
-        JOIN saved_searches s ON a.search_id = s.id
-        WHERE a.user_id = ?
-        ORDER BY a.created_at DESC
-        LIMIT ?
-    """, [user_id, limit])
-    
-    alerts = [dict(row) for row in c.fetchall()]
-    conn.close()
+    try:
+        # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
+        c = conn.cursor()
+
+        c.execute("""
+            SELECT a.*, s.name as search_name
+            FROM search_alerts a
+            JOIN saved_searches s ON a.search_id = s.id
+            WHERE a.user_id = %s
+            ORDER BY a.created_at DESC
+            LIMIT %s
+        """, [user_id, limit])
+
+        alerts = [dict(row) for row in c.fetchall()]
+    finally:
+        conn.close()
     
     return jsonify({
         'success': True,

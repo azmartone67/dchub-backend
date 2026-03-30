@@ -12,7 +12,6 @@ from datetime import datetime, timedelta
 from flask import Blueprint, jsonify, request
 import json
 import re
-import sqlite3
 import os
 from db_utils import get_db
 
@@ -25,56 +24,58 @@ DB_PATH = os.environ.get('DC_NEXUS_DB', 'dc_nexus.db')
 
 def init_sec_db():
     conn = get_db()
-    c = conn.cursor()
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS sec_filings (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        filing_id TEXT UNIQUE,
-        company TEXT,
-        ticker TEXT,
-        cik TEXT,
-        form_type TEXT,
-        filed_date TEXT,
-        period_date TEXT,
-        url TEXT,
-        has_expansion_signal INTEGER DEFAULT 0,
-        has_acquisition_signal INTEGER DEFAULT 0,
-        capex_amount REAL,
-        summary TEXT,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    )''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS dc_companies_sec (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        company_id TEXT UNIQUE,
-        name TEXT,
-        ticker TEXT,
-        cik TEXT,
-        company_type TEXT,
-        market_cap REAL,
-        total_capacity_mw REAL,
-        facility_count INTEGER,
-        last_filing_date TEXT,
-        website TEXT,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    )''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS expansion_signals (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        signal_id TEXT UNIQUE,
-        company TEXT,
-        signal_type TEXT,
-        location TEXT,
-        capacity_mw REAL,
-        investment_amount REAL,
-        expected_completion TEXT,
-        source TEXT,
-        filing_id TEXT,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    )''')
-    
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+
+        c.execute('''CREATE TABLE IF NOT EXISTS sec_filings (
+            id SERIAL PRIMARY KEY,
+            filing_id TEXT UNIQUE,
+            company TEXT,
+            ticker TEXT,
+            cik TEXT,
+            form_type TEXT,
+            filed_date TEXT,
+            period_date TEXT,
+            url TEXT,
+            has_expansion_signal INTEGER DEFAULT 0,
+            has_acquisition_signal INTEGER DEFAULT 0,
+            capex_amount REAL,
+            summary TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )''')
+
+        c.execute('''CREATE TABLE IF NOT EXISTS dc_companies_sec (
+            id SERIAL PRIMARY KEY,
+            company_id TEXT UNIQUE,
+            name TEXT,
+            ticker TEXT,
+            cik TEXT,
+            company_type TEXT,
+            market_cap REAL,
+            total_capacity_mw REAL,
+            facility_count INTEGER,
+            last_filing_date TEXT,
+            website TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )''')
+
+        c.execute('''CREATE TABLE IF NOT EXISTS expansion_signals (
+            id SERIAL PRIMARY KEY,
+            signal_id TEXT UNIQUE,
+            company TEXT,
+            signal_type TEXT,
+            location TEXT,
+            capacity_mw REAL,
+            investment_amount REAL,
+            expected_completion TEXT,
+            source TEXT,
+            filing_id TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )''')
+
+        conn.commit()
+    finally:
+        conn.close()
     logger.info("✅ SEC EDGAR Tracker tables initialized")
 
 init_sec_db()

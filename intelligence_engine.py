@@ -12,7 +12,6 @@ Features:
 
 import os
 import json
-import sqlite3
 import hashlib
 import requests
 from datetime import datetime, timedelta
@@ -31,62 +30,64 @@ intelligence_bp = Blueprint('intelligence', __name__)
 def init_intelligence_db():
     """Initialize intelligence tables"""
     conn = get_db()
-    c = conn.cursor()
-    
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS intelligence_emails (
-            id TEXT PRIMARY KEY,
-            email_type TEXT,
-            subject TEXT,
-            content TEXT,
-            sent_at TEXT,
-            status TEXT DEFAULT 'pending'
-        )
-    """)
-    
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS linkedin_posts (
-            id TEXT PRIMARY KEY,
-            content TEXT NOT NULL,
-            post_type TEXT,
-            source_id TEXT,
-            status TEXT DEFAULT 'draft',
-            scheduled_at TEXT,
-            posted_at TEXT,
-            linkedin_post_id TEXT,
-            engagement TEXT,
-            created_at TEXT
-        )
-    """)
-    
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS deal_alerts (
-            id TEXT PRIMARY KEY,
-            alert_type TEXT,
-            title TEXT,
-            details TEXT,
-            companies TEXT,
-            capacity_mw REAL,
-            location TEXT,
-            detected_at TEXT,
-            notified INTEGER DEFAULT 0
-        )
-    """)
-    
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS alert_subscriptions (
-            id TEXT PRIMARY KEY,
-            webhook_url TEXT,
-            alert_types TEXT,
-            markets TEXT,
-            companies TEXT,
-            created_at TEXT,
-            active INTEGER DEFAULT 1
-        )
-    """)
-    
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS intelligence_emails (
+                id TEXT PRIMARY KEY,
+                email_type TEXT,
+                subject TEXT,
+                content TEXT,
+                sent_at TEXT,
+                status TEXT DEFAULT 'pending'
+            )
+        """)
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS linkedin_posts (
+                id TEXT PRIMARY KEY,
+                content TEXT NOT NULL,
+                post_type TEXT,
+                source_id TEXT,
+                status TEXT DEFAULT 'draft',
+                scheduled_at TEXT,
+                posted_at TEXT,
+                linkedin_post_id TEXT,
+                engagement TEXT,
+                created_at TEXT
+            )
+        """)
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS deal_alerts (
+                id TEXT PRIMARY KEY,
+                alert_type TEXT,
+                title TEXT,
+                details TEXT,
+                companies TEXT,
+                capacity_mw REAL,
+                location TEXT,
+                detected_at TEXT,
+                notified INTEGER DEFAULT 0
+            )
+        """)
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS alert_subscriptions (
+                id TEXT PRIMARY KEY,
+                webhook_url TEXT,
+                alert_types TEXT,
+                markets TEXT,
+                companies TEXT,
+                created_at TEXT,
+                active INTEGER DEFAULT 1
+            )
+        """)
+
+        conn.commit()
+    finally:
+        conn.close()
 
 init_intelligence_db()
 
@@ -115,83 +116,85 @@ def save_linkedin_post_time(posted_at: datetime) -> None:
 def get_daily_stats() -> Dict:
     """Get today's statistics for intelligence reports"""
     conn = get_db()
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    
-    today = datetime.now().strftime('%Y-%m-%d')
-    yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
-    
-    stats = {
-        'date': today,
-        'facilities': {'total': 0, 'new_today': 0},
-        'capacity': {'total_mw': 0, 'new_projects': 0, 'pipeline_mw': 0},
-        'news': {'total': 0, 'new_today': 0},
-        'top_markets': [],
-        'top_operators': [],
-        'recent_deals': [],
-        'capacity_projects': []
-    }
-    
-    c.execute("SELECT COUNT(*) FROM facilities")
-    stats['facilities']['total'] = c.fetchone()[0]
-    
-    c.execute(f"SELECT COUNT(*) FROM facilities WHERE first_seen LIKE '{today}%'")
-    stats['facilities']['new_today'] = c.fetchone()[0]
-    
-    c.execute("SELECT SUM(power_mw) FROM facilities WHERE power_mw > 0")
-    result = c.fetchone()[0]
-    stats['capacity']['total_mw'] = round(result, 1) if result else 0
-    
-    c.execute("SELECT COUNT(*) FROM announcements")
-    stats['news']['total'] = c.fetchone()[0]
-    
-    c.execute(f"SELECT COUNT(*) FROM announcements WHERE discovered_at LIKE '{today}%'")
-    stats['news']['new_today'] = c.fetchone()[0]
-    
-    c.execute("""
-        SELECT city, COUNT(*) as cnt FROM facilities 
-        WHERE city IS NOT NULL AND city != ''
-        GROUP BY city ORDER BY cnt DESC LIMIT 10
-    """)
-    stats['top_markets'] = [{'market': row['city'], 'count': row['cnt']} for row in c.fetchall()]
-    
-    c.execute("""
-        SELECT provider, COUNT(*) as cnt FROM facilities 
-        WHERE provider IS NOT NULL AND provider != ''
-        GROUP BY provider ORDER BY cnt DESC LIMIT 10
-    """)
-    stats['top_operators'] = [{'operator': row['provider'], 'count': row['cnt']} for row in c.fetchall()]
-    
     try:
-        c.execute("""
-            SELECT * FROM capacity_tracking 
-            WHERE discovered_at LIKE ? 
-            AND operator IS NOT NULL AND operator != 'Company'
-            ORDER BY capacity_mw DESC LIMIT 10
-        """, (f'{today}%',))
-        stats['capacity_projects'] = [dict(row) for row in c.fetchall()]
-        
-        # Map 'operator' to 'company' for compatibility
-        for p in stats['capacity_projects']:
-            p['company'] = p.get('operator', 'Unknown')
-        
-        c.execute("SELECT SUM(capacity_mw) FROM capacity_tracking")
+        # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
+        c = conn.cursor()
+
+        today = datetime.now().strftime('%Y-%m-%d')
+        yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+
+        stats = {
+            'date': today,
+            'facilities': {'total': 0, 'new_today': 0},
+            'capacity': {'total_mw': 0, 'new_projects': 0, 'pipeline_mw': 0},
+            'news': {'total': 0, 'new_today': 0},
+            'top_markets': [],
+            'top_operators': [],
+            'recent_deals': [],
+            'capacity_projects': []
+        }
+
+        c.execute("SELECT COUNT(*) FROM facilities")
+        stats['facilities']['total'] = c.fetchone()[0]
+
+        c.execute(f"SELECT COUNT(*) FROM facilities WHERE first_seen LIKE '{today}%'")
+        stats['facilities']['new_today'] = c.fetchone()[0]
+
+        c.execute("SELECT SUM(power_mw) FROM facilities WHERE power_mw > 0")
         result = c.fetchone()[0]
-        stats['capacity']['pipeline_mw'] = round(result, 1) if result else 0
-    except:
-        pass
-    
-    try:
+        stats['capacity']['total_mw'] = round(result, 1) if result else 0
+
+        c.execute("SELECT COUNT(*) FROM announcements")
+        stats['news']['total'] = c.fetchone()[0]
+
+        c.execute(f"SELECT COUNT(*) FROM announcements WHERE discovered_at LIKE '{today}%'")
+        stats['news']['new_today'] = c.fetchone()[0]
+
         c.execute("""
-            SELECT * FROM deals 
-            WHERE date LIKE ? 
-            ORDER BY date DESC LIMIT 5
-        """, (f'{today}%',))
-        stats['recent_deals'] = [dict(row) for row in c.fetchall()]
-    except:
-        pass
-    
-    conn.close()
+            SELECT city, COUNT(*) as cnt FROM facilities
+            WHERE city IS NOT NULL AND city != ''
+            GROUP BY city ORDER BY cnt DESC LIMIT 10
+        """)
+        stats['top_markets'] = [{'market': row['city'], 'count': row['cnt']} for row in c.fetchall()]
+
+        c.execute("""
+            SELECT provider, COUNT(*) as cnt FROM facilities
+            WHERE provider IS NOT NULL AND provider != ''
+            GROUP BY provider ORDER BY cnt DESC LIMIT 10
+        """)
+        stats['top_operators'] = [{'operator': row['provider'], 'count': row['cnt']} for row in c.fetchall()]
+
+        try:
+            c.execute("""
+                SELECT * FROM capacity_tracking
+                WHERE discovered_at LIKE %s
+                AND operator IS NOT NULL AND operator != 'Company'
+                ORDER BY capacity_mw DESC LIMIT 10
+            """, (f'{today}%',))
+            stats['capacity_projects'] = [dict(row) for row in c.fetchall()]
+
+            # Map 'operator' to 'company' for compatibility
+            for p in stats['capacity_projects']:
+                p['company'] = p.get('operator', 'Unknown')
+
+            c.execute("SELECT SUM(capacity_mw) FROM capacity_tracking")
+            result = c.fetchone()[0]
+            stats['capacity']['pipeline_mw'] = round(result, 1) if result else 0
+        except:
+            pass
+
+        try:
+            c.execute("""
+                SELECT * FROM deals
+                WHERE date LIKE %s
+                ORDER BY date DESC LIMIT 5
+            """, (f'{today}%',))
+            stats['recent_deals'] = [dict(row) for row in c.fetchall()]
+        except:
+            pass
+
+    finally:
+        conn.close()
     return stats
 
 
@@ -386,21 +389,23 @@ def post_to_linkedin(content: str) -> Dict:
             post_id = response.headers.get('x-restli-id', response.json().get('id', 'unknown'))
             
             conn = get_db()
-            c = conn.cursor()
-            c.execute("""
-                INSERT OR REPLACE INTO linkedin_posts (id, content, post_type, status, posted_at, linkedin_post_id, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                hashlib.md5(content.encode()).hexdigest()[:16],
-                content,
-                'daily_update',
-                'posted',
-                datetime.now().isoformat(),
-                post_id,
-                datetime.now().isoformat()
-            ))
-            conn.commit()
-            conn.close()
+            try:
+                c = conn.cursor()
+                c.execute("""
+                    INSERT INTO linkedin_posts  (id, content, post_type, status, posted_at, linkedin_post_id, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    hashlib.md5(content.encode()).hexdigest()[:16],
+                    content,
+                    'daily_update',
+                    'posted',
+                    datetime.now().isoformat(),
+                    post_id,
+                    datetime.now().isoformat()
+                ))
+                conn.commit()
+            finally:
+                conn.close()
             
             return {'success': True, 'post_id': post_id}
         else:
@@ -413,55 +418,57 @@ def post_to_linkedin(content: str) -> Dict:
 def check_for_new_deals() -> List[Dict]:
     """Check for new M&A deals and capacity announcements to alert on"""
     conn = get_db()
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    
-    alerts = []
-    today = datetime.now().strftime('%Y-%m-%d')
-    
     try:
-        c.execute("""
-            SELECT * FROM capacity_tracking 
-            WHERE discovered_at LIKE ? AND capacity_mw >= 100
-            ORDER BY capacity_mw DESC LIMIT 10
-        """, (f'{today}%',))
-        
-        for row in c.fetchall():
-            alert = {
-                'type': 'capacity',
-                'title': f"Major Capacity: {row['company']} - {row['capacity_mw']:.0f} MW",
-                'details': f"{row['company']} announced {row['capacity_mw']:.0f} MW in {row['location']}",
-                'company': row['company'],
-                'capacity_mw': row['capacity_mw'],
-                'location': row['location'],
-                'detected_at': row['discovered_at']
-            }
-            alerts.append(alert)
-    except:
-        pass
-    
-    try:
-        c.execute("""
-            SELECT * FROM announcements 
-            WHERE discovered_at LIKE ?
-            AND (LOWER(title) LIKE '%acqui%' OR LOWER(title) LIKE '%merger%' 
-                 OR LOWER(title) LIKE '%billion%' OR LOWER(title) LIKE '%deal%')
-            ORDER BY published_date DESC LIMIT 10
-        """, (f'{today}%',))
-        
-        for row in c.fetchall():
-            alert = {
-                'type': 'deal',
-                'title': row['title'][:100],
-                'details': row['summary'][:200] if row['summary'] else '',
-                'source': row['source'],
-                'detected_at': row['discovered_at']
-            }
-            alerts.append(alert)
-    except:
-        pass
-    
-    conn.close()
+        # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
+        c = conn.cursor()
+
+        alerts = []
+        today = datetime.now().strftime('%Y-%m-%d')
+
+        try:
+            c.execute("""
+                SELECT * FROM capacity_tracking
+                WHERE discovered_at LIKE %s AND capacity_mw >= 100
+                ORDER BY capacity_mw DESC LIMIT 10
+            """, (f'{today}%',))
+
+            for row in c.fetchall():
+                alert = {
+                    'type': 'capacity',
+                    'title': f"Major Capacity: {row['company']} - {row['capacity_mw']:.0f} MW",
+                    'details': f"{row['company']} announced {row['capacity_mw']:.0f} MW in {row['location']}",
+                    'company': row['company'],
+                    'capacity_mw': row['capacity_mw'],
+                    'location': row['location'],
+                    'detected_at': row['discovered_at']
+                }
+                alerts.append(alert)
+        except:
+            pass
+
+        try:
+            c.execute("""
+                SELECT * FROM announcements
+                WHERE discovered_at LIKE %s
+                AND (LOWER(title) LIKE '%acqui%' OR LOWER(title) LIKE '%merger%'
+                     OR LOWER(title) LIKE '%billion%' OR LOWER(title) LIKE '%deal%')
+                ORDER BY published_date DESC LIMIT 10
+            """, (f'{today}%',))
+
+            for row in c.fetchall():
+                alert = {
+                    'type': 'deal',
+                    'title': row['title'][:100],
+                    'details': row['summary'][:200] if row['summary'] else '',
+                    'source': row['source'],
+                    'detected_at': row['discovered_at']
+                }
+                alerts.append(alert)
+        except:
+            pass
+
+    finally:
+        conn.close()
     return alerts
 
 
@@ -471,38 +478,40 @@ def send_deal_alerts(alerts: List[Dict]) -> Dict:
         return {'sent': 0, 'errors': []}
     
     conn = get_db()
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    
-    c.execute("SELECT * FROM alert_subscriptions WHERE active = 1")
-    subscriptions = c.fetchall()
-    
-    sent_count = 0
-    errors = []
-    
-    for sub in subscriptions:
-        try:
-            payload = {
-                'timestamp': datetime.now().isoformat(),
-                'alerts': alerts,
-                'source': 'DC Hub Nexus'
-            }
-            
-            response = requests.post(
-                sub['webhook_url'],
-                json=payload,
-                headers={'Content-Type': 'application/json'},
-                timeout=10
-            )
-            
-            if response.status_code in [200, 201, 202]:
-                sent_count += 1
-            else:
-                errors.append(f"Webhook {sub['id']}: {response.status_code}")
-        except Exception as e:
-            errors.append(f"Webhook {sub['id']}: {str(e)}")
-    
-    conn.close()
+    try:
+        # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
+        c = conn.cursor()
+
+        c.execute("SELECT * FROM alert_subscriptions WHERE active = 1")
+        subscriptions = c.fetchall()
+
+        sent_count = 0
+        errors = []
+
+        for sub in subscriptions:
+            try:
+                payload = {
+                    'timestamp': datetime.now().isoformat(),
+                    'alerts': alerts,
+                    'source': 'DC Hub Nexus'
+                }
+
+                response = requests.post(
+                    sub['webhook_url'],
+                    json=payload,
+                    headers={'Content-Type': 'application/json'},
+                    timeout=10
+                )
+
+                if response.status_code in [200, 201, 202]:
+                    sent_count += 1
+                else:
+                    errors.append(f"Webhook {sub['id']}: {response.status_code}")
+            except Exception as e:
+                errors.append(f"Webhook {sub['id']}: {str(e)}")
+
+    finally:
+        conn.close()
     return {'sent': sent_count, 'total_alerts': len(alerts), 'errors': errors}
 
 
@@ -596,24 +605,26 @@ def api_subscribe_alerts():
         return jsonify({'error': 'webhook_url required'}), 400
     
     conn = get_db()
-    c = conn.cursor()
-    
-    sub_id = hashlib.md5(data['webhook_url'].encode()).hexdigest()[:16]
-    
-    c.execute("""
-        INSERT OR REPLACE INTO alert_subscriptions (id, webhook_url, alert_types, markets, companies, created_at, active)
-        VALUES (?, ?, ?, ?, ?, ?, 1)
-    """, (
-        sub_id,
-        data['webhook_url'],
-        json.dumps(data.get('alert_types', ['deal', 'capacity'])),
-        json.dumps(data.get('markets', [])),
-        json.dumps(data.get('companies', [])),
-        datetime.now().isoformat()
-    ))
-    
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+
+        sub_id = hashlib.md5(data['webhook_url'].encode()).hexdigest()[:16]
+
+        c.execute("""
+            INSERT INTO alert_subscriptions  (id, webhook_url, alert_types, markets, companies, created_at, active)
+            VALUES (%s, %s, %s, %s, %s, %s, 1)
+        """, (
+            sub_id,
+            data['webhook_url'],
+            json.dumps(data.get('alert_types', ['deal', 'capacity'])),
+            json.dumps(data.get('markets', [])),
+            json.dumps(data.get('companies', [])),
+            datetime.now().isoformat()
+        ))
+
+        conn.commit()
+    finally:
+        conn.close()
     
     return jsonify({'success': True, 'subscription_id': sub_id})
 
@@ -622,20 +633,22 @@ def api_subscribe_alerts():
 def api_intelligence_stats():
     """Get intelligence system statistics"""
     conn = get_db()
-    c = conn.cursor()
-    
-    stats = {}
-    
-    c.execute("SELECT COUNT(*) FROM linkedin_posts WHERE status = 'posted'")
-    stats['linkedin_posts'] = c.fetchone()[0]
-    
-    c.execute("SELECT COUNT(*) FROM alert_subscriptions WHERE active = 1")
-    stats['active_subscriptions'] = c.fetchone()[0]
-    
-    c.execute("SELECT COUNT(*) FROM deal_alerts")
-    stats['total_alerts'] = c.fetchone()[0]
-    
-    conn.close()
+    try:
+        c = conn.cursor()
+
+        stats = {}
+
+        c.execute("SELECT COUNT(*) FROM linkedin_posts WHERE status = 'posted'")
+        stats['linkedin_posts'] = c.fetchone()[0]
+
+        c.execute("SELECT COUNT(*) FROM alert_subscriptions WHERE active = 1")
+        stats['active_subscriptions'] = c.fetchone()[0]
+
+        c.execute("SELECT COUNT(*) FROM deal_alerts")
+        stats['total_alerts'] = c.fetchone()[0]
+
+    finally:
+        conn.close()
     
     return jsonify(stats)
 

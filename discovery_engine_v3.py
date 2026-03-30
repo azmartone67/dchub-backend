@@ -137,80 +137,82 @@ MAJOR_OPERATORS = [
 def init_database():
     """Initialize database with discovery tables"""
     conn = get_db()
-    c = conn.cursor()
-    
-    # Main facilities table
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS facilities (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            provider TEXT,
-            address TEXT,
-            city TEXT,
-            state TEXT,
-            country TEXT,
-            region TEXT,
-            latitude REAL,
-            longitude REAL,
-            power_mw REAL DEFAULT 0,
-            sqft REAL DEFAULT 0,
-            tier TEXT,
-            status TEXT DEFAULT 'active',
-            certifications TEXT DEFAULT '[]',
-            connectivity TEXT,
-            source TEXT,
-            source_id TEXT,
-            source_url TEXT,
-            raw_data TEXT,
-            confidence REAL DEFAULT 0.5,
-            first_seen TEXT,
-            last_updated TEXT,
-            UNIQUE(source, source_id)
-        )
-    """)
-    
-    # Announcements/news table
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS announcements (
-            id TEXT PRIMARY KEY,
-            title TEXT NOT NULL,
-            summary TEXT,
-            url TEXT,
-            source TEXT,
-            category TEXT,
-            location TEXT,
-            power_mw REAL,
-            investment_usd REAL,
-            company TEXT,
-            published_date TEXT,
-            discovered_at TEXT
-        )
-    """)
-    
-    # Discovery sync log
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS discovery_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source TEXT NOT NULL,
-            sync_type TEXT,
-            started_at TEXT,
-            completed_at TEXT,
-            facilities_found INTEGER DEFAULT 0,
-            facilities_new INTEGER DEFAULT 0,
-            facilities_updated INTEGER DEFAULT 0,
-            status TEXT,
-            error TEXT
-        )
-    """)
-    
-    # Create indexes
-    c.execute("CREATE INDEX IF NOT EXISTS idx_facilities_source ON facilities(source)")
-    c.execute("CREATE INDEX IF NOT EXISTS idx_facilities_country ON facilities(country)")
-    c.execute("CREATE INDEX IF NOT EXISTS idx_facilities_provider ON facilities(provider)")
-    c.execute("CREATE INDEX IF NOT EXISTS idx_facilities_coords ON facilities(latitude, longitude)")
-    
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+
+        # Main facilities table
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS facilities (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                provider TEXT,
+                address TEXT,
+                city TEXT,
+                state TEXT,
+                country TEXT,
+                region TEXT,
+                latitude REAL,
+                longitude REAL,
+                power_mw REAL DEFAULT 0,
+                sqft REAL DEFAULT 0,
+                tier TEXT,
+                status TEXT DEFAULT 'active',
+                certifications TEXT DEFAULT '[]',
+                connectivity TEXT,
+                source TEXT,
+                source_id TEXT,
+                source_url TEXT,
+                raw_data TEXT,
+                confidence REAL DEFAULT 0.5,
+                first_seen TEXT,
+                last_updated TEXT,
+                UNIQUE(source, source_id)
+            )
+        """)
+
+        # Announcements/news table
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS announcements (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                summary TEXT,
+                url TEXT,
+                source TEXT,
+                category TEXT,
+                location TEXT,
+                power_mw REAL,
+                investment_usd REAL,
+                company TEXT,
+                published_date TEXT,
+                discovered_at TEXT
+            )
+        """)
+
+        # Discovery sync log
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS discovery_log (
+                id SERIAL PRIMARY KEY,
+                source TEXT NOT NULL,
+                sync_type TEXT,
+                started_at TEXT,
+                completed_at TEXT,
+                facilities_found INTEGER DEFAULT 0,
+                facilities_new INTEGER DEFAULT 0,
+                facilities_updated INTEGER DEFAULT 0,
+                status TEXT,
+                error TEXT
+            )
+        """)
+
+        # Create indexes
+        c.execute("CREATE INDEX IF NOT EXISTS idx_facilities_source ON facilities(source)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_facilities_country ON facilities(country)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_facilities_provider ON facilities(provider)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_facilities_coords ON facilities(latitude, longitude)")
+
+        conn.commit()
+    finally:
+        conn.close()
     logger.info("✅ Database initialized")
 
 
@@ -514,7 +516,7 @@ class WikidataSource:
         
         # Strict query - require coordinates, direct instance of data center
         query = """
-        SELECT DISTINCT ?item ?itemLabel ?itemDescription ?coords ?country ?countryLabel ?operator ?operatorLabel WHERE {
+        SELECT DISTINCT %sitem %sitemLabel %sitemDescription %scoords %scountry %scountryLabel %soperator %soperatorLabel WHERE {
           # Must be direct instance of data center (Q1066984)
           ?item wdt:P31 wd:Q1066984 .
           
@@ -522,7 +524,7 @@ class WikidataSource:
           ?item wdt:P625 ?coords .
           
           OPTIONAL { ?item wdt:P17 ?country . }
-          OPTIONAL { ?item wdt:P137 ?operator . }
+          OPTIONAL { %sitem wdt:P137 %soperator . }
           
           SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
         }
@@ -865,7 +867,7 @@ class RSSNewsSource:
         ('https://datacenterfrontier.com/feed/', 'Data Center Frontier'),
         ('https://www.datacenterdynamics.com/en/rss/', 'DCD'),
         ('https://www.datacenterknowledge.com/rss.xml', 'DCK'),
-        ('https://news.google.com/rss/search?q=data+center+construction', 'Google News'),
+        ('https://news.google.com/rss/search%sq=data+center+construction', 'Google News'),
     ]
     
     def fetch(self) -> List[Dict]:
@@ -958,9 +960,9 @@ class DiscoveryEngine:
         for ann in announcements:
             try:
                 c.execute("""
-                    INSERT OR IGNORE INTO announcements 
+                    INSERT INTO announcements 
                     (id, title, summary, url, source, published_date, discovered_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """, (
                     ann['id'], ann['title'], ann['summary'],
                     ann['url'], ann['source'], ann['published_date'],
@@ -1029,7 +1031,7 @@ class DiscoveryEngine:
                 now = datetime.utcnow().isoformat()
                 
                 # Check if exists
-                c.execute("SELECT id FROM facilities WHERE id = ?", (facility_id,))
+                c.execute("SELECT id FROM facilities WHERE id = %s", (facility_id,))
                 exists = c.fetchone()
                 
                 if exists:
@@ -1046,8 +1048,8 @@ class DiscoveryEngine:
                             longitude = COALESCE(?, longitude),
                             power_mw = COALESCE(?, power_mw),
                             confidence = ?,
-                            last_updated = ?
-                        WHERE id = ?
+                            last_updated = %s
+                        WHERE id = %s
                     """, (
                         f.get('name'), f.get('provider'), f.get('address'),
                         f.get('city'), f.get('state'), f.get('country'),
@@ -1062,7 +1064,7 @@ class DiscoveryEngine:
                         (id, name, provider, address, city, state, country, region,
                          latitude, longitude, power_mw, sqft, source, source_id,
                          source_url, raw_data, confidence, first_seen, last_updated)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """, (
                         facility_id, f.get('name'), f.get('provider'),
                         f.get('address'), f.get('city'), f.get('state'),
@@ -1140,7 +1142,7 @@ class DiscoveryEngine:
         
         # Remove duplicates
         if duplicates:
-            c.executemany("DELETE FROM facilities WHERE id = ?", [(d,) for d in duplicates])
+            c.executemany("DELETE FROM facilities WHERE id = %s", [(d,) for d in duplicates])
             conn.commit()
         
         conn.close()

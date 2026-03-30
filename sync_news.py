@@ -227,7 +227,7 @@ if source == 'replit_pg':
 
 elif source == 'sqlite':
     sconn = sqlite3.connect(sqlite_news_path)
-    sconn.row_factory = sqlite3.Row
+    # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
     scur = sconn.cursor()
     
     # Get SQLite columns

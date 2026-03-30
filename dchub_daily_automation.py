@@ -14,8 +14,8 @@ SETUP:
   2. Add to main.py imports and registration (see bottom of file)
   3. Set environment variables (see REQUIRED ENV VARS below)
   4. Set up external cron at cron-job.org or UptimeRobot:
-     - Daily 8:00 AM UTC:  POST /api/v1/daily/run?job=all
-     - Monday 9:00 AM UTC: POST /api/v1/daily/run?job=weekly_digest
+     - Daily 8:00 AM UTC:  POST /api/v1/daily/run%sjob=all
+     - Monday 9:00 AM UTC: POST /api/v1/daily/run%sjob=weekly_digest
 
 REQUIRED ENV VARS:
   SENDGRID_API_KEY          - SendGrid API key for emails
@@ -192,7 +192,7 @@ def get_db_connection():
     try:
         import sqlite3
         conn = sqlite3.connect('dchub.db', timeout=5)
-        conn.row_factory = sqlite3.Row
+        # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
         return conn, 'sqlite'
     except Exception as e:
         log.error(f"No database available: {e}")
@@ -218,7 +218,7 @@ def fetch_latest_news(limit=10):
                 SELECT title, url, source, published_at, summary, category
                 FROM news_articles
                 ORDER BY published_at DESC
-                LIMIT ?
+                LIMIT %s
             """, (limit,))
         rows = cur.fetchall()
         if db_type == 'postgres':
@@ -253,7 +253,7 @@ def fetch_recent_deals(limit=5):
                        mw as capacity_mw, date as announcement_date, notes
                 FROM transactions
                 ORDER BY date DESC
-                LIMIT ?
+                LIMIT %s
             """, (limit,))
         rows = cur.fetchall()
         if db_type == 'postgres':
@@ -366,7 +366,7 @@ def fetch_alert_subscribers(frequency='daily'):
                     SELECT DISTINCT a.user_id, u.email, u.name
                     FROM alerts_v2 a
                     JOIN users u ON a.user_id = u.id
-                    WHERE a.is_active = 1 AND a.frequency = ? AND u.email IS NOT NULL
+                    WHERE a.is_active = 1 AND a.frequency = %s AND u.email IS NOT NULL
                 """, (frequency,))
         except:
             # Fall back to user_alerts table
@@ -741,13 +741,13 @@ def _log_linkedin_post(post_type, text, post_id):
                 )
             """)
             cur.execute(
-                "INSERT INTO linkedin_posts (post_type, content, linkedin_post_id) VALUES (%s, %s, %s)",
+                "INSERT INTO linkedin_posts (post_type, content, linkedin_post_id) VALUES (%s, %s, %s) ON CONFLICT (post_type) DO UPDATE SET content = EXCLUDED.content, linkedin_post_id = EXCLUDED.linkedin_post_id",
                 (post_type, text[:2000], post_id)
             )
         else:
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS linkedin_posts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id SERIAL PRIMARY KEY,
                     post_type TEXT,
                     content TEXT,
                     linkedin_post_id TEXT,
@@ -755,7 +755,7 @@ def _log_linkedin_post(post_type, text, post_id):
                 )
             """)
             cur.execute(
-                "INSERT INTO linkedin_posts (post_type, content, linkedin_post_id) VALUES (?, ?, ?)",
+                "INSERT INTO linkedin_posts (post_type, content, linkedin_post_id) VALUES (%s, %s, %s) ON CONFLICT (post_type) DO UPDATE SET content = EXCLUDED.content, linkedin_post_id = EXCLUDED.linkedin_post_id",
                 (post_type, text[:2000], post_id)
             )
             conn.commit()
@@ -1172,7 +1172,7 @@ def init_daily_tables():
         else:
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS market_brief_subscribers (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id SERIAL PRIMARY KEY,
                     email TEXT UNIQUE NOT NULL,
                     name TEXT,
                     is_active INTEGER DEFAULT 1,
@@ -1182,7 +1182,7 @@ def init_daily_tables():
             """)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS linkedin_posts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id SERIAL PRIMARY KEY,
                     post_type TEXT,
                     content TEXT,
                     linkedin_post_id TEXT,
@@ -1191,7 +1191,7 @@ def init_daily_tables():
             """)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS daily_automation_log (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id SERIAL PRIMARY KEY,
                     job_name TEXT,
                     status TEXT,
                     details TEXT,
@@ -1226,8 +1226,8 @@ def register_daily_automation(app):
     init_daily_tables()
     app.register_blueprint(daily_bp)
     print("📧 Daily Automation Engine: ✅ Registered")
-    print("   📍 POST /api/v1/daily/run?job=all        — Trigger all daily jobs")
+    print("   📍 POST /api/v1/daily/run%sjob=all        — Trigger all daily jobs")
     print("   📍 GET  /api/v1/daily/status              — Check config status")
-    print("   📍 POST /api/v1/daily/test?system=all     — Test systems")
+    print("   📍 POST /api/v1/daily/test%ssystem=all     — Test systems")
     print("   📍 GET  /api/v1/daily/preview/<type>      — Preview content")
     return daily_bp

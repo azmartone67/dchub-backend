@@ -175,17 +175,20 @@ def _get_config():
     cfg = dict(DEFAULT_CONFIG)
     try:
         conn = get_db()
-        cur  = conn.cursor()
-        cur.execute("SELECT key, value FROM gdci_config")
-        for r in cur.fetchall():
-            cfg[r[0]] = r[1]
-        cur.close()
-    except Exception as e:
-        logger.warning("Config load failed: %s", e)
-    _config_cache = cfg
-    _config_ts    = now
-    return cfg
+        try:
+            cur  = conn.cursor()
+            cur.execute("SELECT key, value FROM gdci_config")
+            for r in cur.fetchall():
+                cfg[r[0]] = r[1]
+            cur.close()
+            except Exception as e:
+            logger.warning("Config load failed: %s", e)
+            _config_cache = cfg
+            _config_ts    = now
+            return cfg
 
+        finally:
+            conn.close()
 def _bool(cfg, key):
     return str(cfg.get(key, 'false')).lower() in ('true', '1', 'yes')
 
@@ -487,39 +490,45 @@ def _get_all_markets_scored():
 def init_config_table():
     try:
         conn = get_db()
-        cur  = conn.cursor()
-        cur.execute("""CREATE TABLE IF NOT EXISTS gdci_config (
-            key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TIMESTAMPTZ DEFAULT NOW())""")
-        conn.commit()
-        for k, v in DEFAULT_CONFIG.items():
-            cur.execute("INSERT INTO gdci_config (key,value) VALUES (%s,%s) ON CONFLICT (key) DO NOTHING", (k,str(v)))
-        conn.commit()
-        cur.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='public'")
-        existing = {r[0] for r in cur.fetchall()}
-        for tbl, flag in [('substations','sub_enabled'),('discovered_power_plants','power_enabled'),('market_intelligence','mi_enabled')]:
-            if tbl in existing:
-                cur.execute("INSERT INTO gdci_config (key,value) VALUES (%s,'true') ON CONFLICT (key) DO UPDATE SET value='true'", (flag,))
-        conn.commit()
-        cur.close()
-        logger.info("GDCI: initialized, %d markets", len(MARKETS))
-    except Exception as e:
-        logger.error("GDCI: Config init failed: %s", e)
+        try:
+            cur  = conn.cursor()
+            cur.execute("""CREATE TABLE IF NOT EXISTS gdci_config (
+                key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TIMESTAMPTZ DEFAULT NOW())""")
+            conn.commit()
+            for k, v in DEFAULT_CONFIG.items():
+                cur.execute("INSERT INTO gdci_config (key,value) VALUES (%s,%s) ON CONFLICT (key) DO NOTHING", (k,str(v)))
+            conn.commit()
+            cur.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='public'")
+            existing = {r[0] for r in cur.fetchall()}
+            for tbl, flag in [('substations','sub_enabled'),('discovered_power_plants','power_enabled'),('market_intelligence','mi_enabled')]:
+                if tbl in existing:
+                    cur.execute("INSERT INTO gdci_config (key,value) VALUES (%s,'true') ON CONFLICT (key) DO UPDATE SET value='true'", (flag,))
+            conn.commit()
+            cur.close()
+            logger.info("GDCI: initialized, %d markets", len(MARKETS))
+            except Exception as e:
+            logger.error("GDCI: Config init failed: %s", e)
 
 
-@index_bp.route('/health')
+            @index_bp.route('/health')
+        finally:
+            conn.close()
 def health():
     try:
         conn = get_db()
-        cur  = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM gdci_config")
-        cnt = cur.fetchone()[0]
-        cur.close()
-        return jsonify({'status':'ok','db':'connected','config_keys':cnt,'markets_defined':len(MARKETS),'ts':datetime.now(timezone.utc).isoformat()})
-    except Exception as e:
-        return jsonify({'status':'error','error':str(e)}), 500
+        try:
+            cur  = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM gdci_config")
+            cnt = cur.fetchone()[0]
+            cur.close()
+            return jsonify({'status':'ok','db':'connected','config_keys':cnt,'markets_defined':len(MARKETS),'ts':datetime.now(timezone.utc).isoformat()})
+            except Exception as e:
+            return jsonify({'status':'error','error':str(e)}), 500
 
 
-@index_bp.route('/markets')
+            @index_bp.route('/markets')
+        finally:
+            conn.close()
 def markets_list():
     try:
         region  = request.args.get('region')
@@ -633,17 +642,20 @@ def admin_config_set():
     if not data: return jsonify({'error':'No data'}), 400
     try:
         conn = get_db()
-        cur  = conn.cursor()
-        for k,v in data.items():
-            cur.execute("INSERT INTO gdci_config (key,value,updated_at) VALUES (%s,%s,NOW()) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value,updated_at=NOW()", (k,str(v)))
-        conn.commit(); cur.close()
-        global _config_cache,_config_ts,_bulk_cache,_bulk_ts
-        _config_cache={}; _config_ts=0; _bulk_cache=None; _bulk_ts=0
-        return jsonify({'updated':list(data.keys()),'count':len(data),'note':'Cache cleared.'})
-    except Exception as e:
-        return jsonify({'error':str(e)}), 500
+        try:
+            cur  = conn.cursor()
+            for k,v in data.items():
+                cur.execute("INSERT INTO gdci_config (key,value,updated_at) VALUES (%s,%s,NOW()) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value,updated_at=NOW()", (k,str(v)))
+            conn.commit(); cur.close()
+            global _config_cache,_config_ts,_bulk_cache,_bulk_ts
+            _config_cache={}; _config_ts=0; _bulk_cache=None; _bulk_ts=0
+            return jsonify({'updated':list(data.keys()),'count':len(data),'note':'Cache cleared.'})
+            except Exception as e:
+            return jsonify({'error':str(e)}), 500
 
-@index_bp.route('/admin/refresh', methods=['POST'])
+            @index_bp.route('/admin/refresh', methods=['POST'])
+        finally:
+            conn.close()
 def admin_refresh():
     cfg = _get_config()
     err = _require_admin(cfg)
@@ -659,18 +671,22 @@ def admin_sources():
     if err: return err
     try:
         conn = get_db()
-        cur  = conn.cursor()
-        cur.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='public'")
-        existing = {r[0] for r in cur.fetchall()}
-        cur.close()
-        def src(name,tbl,flag):
-            return {'name':name,'table':tbl,'enabled':_bool(cfg,flag) if flag else True,'exists':tbl in existing}
-        return jsonify({'sources':[
-            src('Facilities (DHCI+DHPI)',cfg.get('fac_table','facilities'),None),
-            src('Transactions (DHDI)',   cfg.get('txn_table','deals'),None),
-            src('Market Intelligence',  cfg.get('mi_table','market_intelligence'),'mi_enabled'),
-            src('Power Plants',         cfg.get('power_table','discovered_power_plants'),'power_enabled'),
-            src('Substations',          cfg.get('sub_table','substations'),'sub_enabled'),
-        ],'markets_defined':len(MARKETS)})
-    except Exception as e:
-        return jsonify({'error':str(e)}), 500
+        try:
+            cur  = conn.cursor()
+            cur.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='public'")
+            existing = {r[0] for r in cur.fetchall()}
+            cur.close()
+            def src(name,tbl,flag):
+                return {'name':name,'table':tbl,'enabled':_bool(cfg,flag) if flag else True,'exists':tbl in existing}
+            return jsonify({'sources':[
+                src('Facilities (DHCI+DHPI)',cfg.get('fac_table','facilities'),None),
+                src('Transactions (DHDI)',   cfg.get('txn_table','deals'),None),
+                src('Market Intelligence',  cfg.get('mi_table','market_intelligence'),'mi_enabled'),
+                src('Power Plants',         cfg.get('power_table','discovered_power_plants'),'power_enabled'),
+                src('Substations',          cfg.get('sub_table','substations'),'sub_enabled'),
+            ],'markets_defined':len(MARKETS)})
+            except Exception as e:
+            return jsonify({'error':str(e)}), 500
+
+        finally:
+            conn.close()

@@ -402,7 +402,7 @@ def update_feed_health(url, name, success, article_count=0, db_path=NEWS_DB_PATH
 def fetch_google_news(query, max_results=20):
     articles = []
     try:
-        url = f"https://news.google.com/rss/search?q={quote_plus(query)}&hl=en-US&gl=US&ceid=US:en"
+        url = f"https://news.google.com/rss/search%sq={quote_plus(query)}&hl=en-US&gl=US&ceid=US:en"
         feed = feedparser.parse(url, agent='Mozilla/5.0 (compatible; DCHub/3.0; +https://dchub.cloud)')
         for entry in feed.entries[:max_results]:
             title = entry.get('title','').strip()
@@ -672,13 +672,13 @@ def format_time_ago(dt):
 def get_latest_news(limit=100, category=None, source=None, hours=168, db_path=NEWS_DB_PATH):
     conn = get_db(db_path)
     c = conn.cursor()
-    query = 'SELECT * FROM news_articles WHERE fetched_at > datetime(\'now\', ?)'
+    query = 'SELECT * FROM news_articles WHERE fetched_at > datetime(\'now\', %s)'
     params = [f'-{hours} hours']
     if category and category.lower() != 'all':
-        query += ' AND category = ?'; params.append(category)
+        query += ' AND category = %s'; params.append(category)
     if source and source.lower() != 'all':
-        query += ' AND source LIKE ?'; params.append(f'%{source}%')
-    query += ' ORDER BY COALESCE(published_at, fetched_at) DESC LIMIT ?'
+        query += ' AND source LIKE %s'; params.append(f'%{source}%')
+    query += ' ORDER BY COALESCE(published_at, fetched_at) DESC LIMIT %s'
     params.append(limit)
     c.execute(query, params)
     articles = []
@@ -918,7 +918,7 @@ if __name__ == '__main__':
                     if not is_p1 and not is_relevant_article(t, s or ''):
                         to_del.append(aid)
                 if to_del:
-                    c.executemany(f"DELETE FROM {table} WHERE id=?", [(x,) for x in to_del])
+                    c.executemany(f"DELETE FROM {table} WHERE id=%s", [(x,) for x in to_del])
                     conn.commit()
                     print(f"   Deleted {len(to_del)} from {db}.{table}")
                 else:

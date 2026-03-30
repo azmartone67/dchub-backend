@@ -166,7 +166,7 @@ def check_hifld_health():
     results = {}
     for key, source in HIFLD_SOURCES.items():
         try:
-            url = f"{source['url']}/query?where=1=1&returnCountOnly=true&f=json"
+            url = f"{source['url']}/query%swhere=1=1&returnCountOnly=true&f=json"
             req = Request(url, headers={'User-Agent': 'DCHub/3.0'})
             resp = urlopen(req, timeout=15)
             data = json.loads(resp.read().decode('utf-8'))

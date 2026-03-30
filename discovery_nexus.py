@@ -288,7 +288,7 @@ class NexusDatabase:
         
         c.execute('''
             CREATE TABLE IF NOT EXISTS webhook_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 api_key TEXT,
                 event_type TEXT,
                 payload TEXT,
@@ -301,7 +301,7 @@ class NexusDatabase:
         
         c.execute('''
             CREATE TABLE IF NOT EXISTS discovery_runs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 run_type TEXT,
                 sources_checked INTEGER,
                 facilities_new INTEGER,
@@ -332,11 +332,11 @@ class NexusDatabase:
         conn = get_db(self.db_path)
         c = conn.cursor()
         
-        c.execute("SELECT id, confidence FROM facilities WHERE id = ?", (facility.id,))
+        c.execute("SELECT id, confidence FROM facilities WHERE id = %s", (facility.id,))
         existing = c.fetchone()
         
         if not existing:
-            c.execute("SELECT id, confidence FROM facilities WHERE name = ? AND city = ? AND country = ?", 
+            c.execute("SELECT id, confidence FROM facilities WHERE name = %s AND city = %s AND country = %s", 
                      (facility.name, facility.city, facility.country))
             existing = c.fetchone()
         
@@ -346,11 +346,11 @@ class NexusDatabase:
             if facility.confidence >= existing[1]:
                 c.execute('''
                     UPDATE facilities SET
-                        name=?, provider=?, address=?, city=?, state=?, country=?, region=?,
-                        latitude=?, longitude=?, power_mw=?, sqft=?, status=?, tier=?,
-                        certifications=?, connectivity=?, source=?, source_url=?, source_id=?,
-                        confidence=?, last_updated=?, raw_data=?
-                    WHERE id=?
+                        name=%s, provider=%s, address=%s, city=%s, state=%s, country=%s, region=%s,
+                        latitude=%s, longitude=%s, power_mw=%s, sqft=%s, status=%s, tier=%s,
+                        certifications=%s, connectivity=%s, source=%s, source_url=%s, source_id=%s,
+                        confidence=%s, last_updated=%s, raw_data=%s
+                    WHERE id=%s
                 ''', (
                     facility.name, facility.provider, facility.address, facility.city,
                     facility.state, facility.country, facility.region, facility.latitude,
@@ -371,7 +371,7 @@ class NexusDatabase:
                         latitude, longitude, power_mw, sqft, status, tier,
                         certifications, connectivity, source, source_url, source_id,
                         confidence, first_seen, last_updated, raw_data
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ''', (
                     facility.id, facility.name, facility.provider, facility.address,
                     facility.city, facility.state, facility.country, facility.region,
@@ -392,7 +392,7 @@ class NexusDatabase:
         conn = get_db(self.db_path)
         c = conn.cursor()
         
-        c.execute("SELECT id FROM announcements WHERE id = ?", (announcement.id,))
+        c.execute("SELECT id FROM announcements WHERE id = %s", (announcement.id,))
         if c.fetchone():
             conn.close()
             return (announcement.id, False)
@@ -402,7 +402,7 @@ class NexusDatabase:
                 id, title, summary, content, source, source_url, published_date,
                 announcement_type, companies, locations, power_mw, investment_usd,
                 sqft, expected_completion, confidence, processed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ''', (
             announcement.id, announcement.title, announcement.summary, announcement.content,
             announcement.source, announcement.source_url, announcement.published_date,
@@ -461,32 +461,32 @@ class NexusDatabase:
     def search_facilities(self, query: str = "", filters: Dict = None, limit: int = 100, offset: int = 0) -> List[Dict]:
         """Search facilities with filters"""
         conn = get_db(self.db_path)
-        conn.row_factory = sqlite3.Row
+        # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
         c = conn.cursor()
         
         sql = "SELECT * FROM facilities WHERE 1=1"
         params = []
         
         if query:
-            sql += " AND (name LIKE ? OR provider LIKE ? OR city LIKE ? OR country LIKE ?)"
+            sql += " AND (name LIKE %s OR provider LIKE %s OR city LIKE %s OR country LIKE %s)"
             q = f"%{query}%"
             params.extend([q, q, q, q])
         
         if filters:
             if filters.get('country'):
-                sql += " AND country = ?"
+                sql += " AND country = %s"
                 params.append(filters['country'])
             if filters.get('provider'):
-                sql += " AND provider = ?"
+                sql += " AND provider = %s"
                 params.append(filters['provider'])
             if filters.get('status'):
-                sql += " AND status = ?"
+                sql += " AND status = %s"
                 params.append(filters['status'])
             if filters.get('min_power'):
-                sql += " AND power_mw >= ?"
+                sql += " AND power_mw >= %s"
                 params.append(filters['min_power'])
             if filters.get('region'):
-                sql += " AND region = ?"
+                sql += " AND region = %s"
                 params.append(filters['region'])
         
         sql += f" ORDER BY confidence DESC, power_mw DESC LIMIT {limit} OFFSET {offset}"
@@ -499,7 +499,7 @@ class NexusDatabase:
     def export_json(self, filepath: str = "facilities_export.json"):
         """Export all facilities to JSON"""
         conn = get_db(self.db_path)
-        conn.row_factory = sqlite3.Row
+        # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
         c = conn.cursor()
         
         c.execute("SELECT * FROM facilities ORDER BY country, city, name")
@@ -828,7 +828,7 @@ class WikidataSource(BaseSource):
         facilities = []
         
         query = """
-        SELECT DISTINCT ?dc ?dcLabel ?coord ?country ?countryLabel ?operator ?operatorLabel ?city ?cityLabel WHERE {
+        SELECT DISTINCT %sdc %sdcLabel %scoord %scountry %scountryLabel %soperator %soperatorLabel %scity %scityLabel WHERE {
           {
             ?dc wdt:P31/wdt:P279* wd:Q1640703.
           } UNION {
@@ -1035,7 +1035,7 @@ class CloudsceneSource(BaseSource):
         for region, countries in self.FALLBACK_REGIONS.items():
             for country in countries:
                 try:
-                    url = f"https://cloudscene.com/search?q={quote_plus(country)}+data+center"
+                    url = f"https://cloudscene.com/search%sq={quote_plus(country)}+data+center"
                     resp = self._safe_request(url)
                     if not resp:
                         continue

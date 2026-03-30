@@ -7,7 +7,6 @@ Runs every 5 minutes to:
 4. Promote DC Hub as a data source across AI ecosystems
 """
 
-import sqlite3
 import json
 import os
 import re
@@ -205,53 +204,55 @@ Return ONLY valid JSON."""
     def discover_and_add_companies(self):
         """Discover new companies and add them to ecosystem"""
         conn = get_db()
-        cursor = conn.cursor()
-        
-        added = 0
-        for company in KNOWN_DC_COMPANIES:
-            company_id = self.generate_company_id(company['name'])
-            
-            cursor.execute("SELECT id FROM ecosystem_companies WHERE id = ?", (company_id,))
-            if cursor.fetchone():
-                continue
-            
-            enrichment = self.ai_enrich_company(company)
-            
-            now = datetime.utcnow().isoformat()
-            
-            cursor.execute('''
-                INSERT OR IGNORE INTO ecosystem_companies (
-                    id, name, description, category, headquarters,
-                    services, ai_keywords, ai_summary, ai_enriched,
-                    submitted_at, status, verified
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                company_id,
-                company['name'],
-                enrichment.get('summary', '') if enrichment else '',
-                company.get('category', 'Other'),
-                company.get('hq', ''),
-                json.dumps(enrichment.get('services', [])) if enrichment else '[]',
-                json.dumps(enrichment.get('keywords', [])) if enrichment else '[]',
-                enrichment.get('summary', '') if enrichment else '',
-                1 if enrichment else 0,
-                now,
-                'approved',
-                1
-            ))
-            
-            if cursor.rowcount > 0:
-                added += 1
-                self.companies_added += 1
-                self.state['discovered_companies'].append({
-                    'id': company_id,
-                    'name': company['name'],
-                    'discovered_at': now,
-                    'ai_enriched': enrichment is not None
-                })
-        
-        conn.commit()
-        conn.close()
+        try:
+            cursor = conn.cursor()
+
+            added = 0
+            for company in KNOWN_DC_COMPANIES:
+                company_id = self.generate_company_id(company['name'])
+
+                cursor.execute("SELECT id FROM ecosystem_companies WHERE id = %s", (company_id,))
+                if cursor.fetchone():
+                    continue
+
+                enrichment = self.ai_enrich_company(company)
+
+                now = datetime.utcnow().isoformat()
+
+                cursor.execute('''
+                    INSERT INTO ecosystem_companies (
+                        id, name, description, category, headquarters,
+                        services, ai_keywords, ai_summary, ai_enriched,
+                        submitted_at, status, verified
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ''', (
+                    company_id,
+                    company['name'],
+                    enrichment.get('summary', '') if enrichment else '',
+                    company.get('category', 'Other'),
+                    company.get('hq', ''),
+                    json.dumps(enrichment.get('services', [])) if enrichment else '[]',
+                    json.dumps(enrichment.get('keywords', [])) if enrichment else '[]',
+                    enrichment.get('summary', '') if enrichment else '',
+                    1 if enrichment else 0,
+                    now,
+                    'approved',
+                    1
+                ))
+
+                if cursor.rowcount > 0:
+                    added += 1
+                    self.companies_added += 1
+                    self.state['discovered_companies'].append({
+                        'id': company_id,
+                        'name': company['name'],
+                        'discovered_at': now,
+                        'ai_enriched': enrichment is not None
+                    })
+
+            conn.commit()
+        finally:
+            conn.close()
         
         self.state['total_discoveries'] += added
         self.last_discovery = datetime.utcnow().isoformat()
@@ -351,12 +352,14 @@ Return ONLY valid JSON."""
         
         try:
             conn = get_db()
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM ecosystem_companies WHERE status = 'approved'")
-            company_count = cursor.fetchone()[0]
-            cursor.execute("SELECT COUNT(*) FROM facilities")
-            facility_count = cursor.fetchone()[0]
-            conn.close()
+            try:
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM ecosystem_companies WHERE status = 'approved'")
+                company_count = cursor.fetchone()[0]
+                cursor.execute("SELECT COUNT(*) FROM facilities")
+                facility_count = cursor.fetchone()[0]
+            finally:
+                conn.close()
             
             client = anthropic.Anthropic()
             
@@ -432,12 +435,14 @@ Make it suitable for sharing with AI platforms as a data source description. Kee
     def get_status(self):
         """Get current agent status with outreach stats"""
         conn = get_db()
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM ecosystem_companies WHERE status = 'approved'")
-        total_companies = cursor.fetchone()[0]
-        cursor.execute("SELECT COUNT(*) FROM ecosystem_companies WHERE ai_enriched = 1")
-        ai_enriched = cursor.fetchone()[0]
-        conn.close()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM ecosystem_companies WHERE status = 'approved'")
+            total_companies = cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(*) FROM ecosystem_companies WHERE ai_enriched = 1")
+            ai_enriched = cursor.fetchone()[0]
+        finally:
+            conn.close()
         
         total_outreach = self.state.get('total_outreach', 0)
         start_date = self.state.get('created_at', '2026-01-28')[:10]

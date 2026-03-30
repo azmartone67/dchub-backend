@@ -106,10 +106,12 @@ def discovery_queue():
     try:
         db = get_read_db()
 
-        total_row = db.execute('SELECT COUNT(*) FROM discovered_facilities').fetchone()
+        c = db.cursor()
+        total_row = c.execute('SELECT COUNT(*) FROM discovered_facilities').fetchone()
         total = total_row[0] if total_row else 0
 
-        status_rows = db.execute(
+        c = db.cursor()
+        status_rows = c.execute(
             "SELECT status, COUNT(*) as cnt FROM discovered_facilities GROUP BY status"
         ).fetchall()
         by_status = {}
@@ -117,7 +119,8 @@ def discovery_queue():
             s = row[0] or 'unknown'
             by_status[s] = row[1]
 
-        source_rows = db.execute("""
+        c = db.cursor()
+        source_rows = c.execute("""
             SELECT source, status, COUNT(*) as cnt
             FROM discovered_facilities
             GROUP BY source, status
@@ -132,7 +135,8 @@ def discovery_queue():
             by_source[src]['total'] += cnt
             by_source[src][status] = cnt
 
-        main_row = db.execute('SELECT COUNT(*) FROM facilities').fetchone()
+        c = db.cursor()
+        main_row = c.execute('SELECT COUNT(*) FROM facilities').fetchone()
         main_count = main_row[0] if main_row else 0
 
         return jsonify({
@@ -159,15 +163,17 @@ def discovery_recent():
     try:
         db = get_read_db()
 
-        total_row = db.execute('SELECT COUNT(*) FROM discovered_facilities').fetchone()
+        c = db.cursor()
+        total_row = c.execute('SELECT COUNT(*) FROM discovered_facilities').fetchone()
         total = total_row[0] if total_row else 0
 
-        rows = db.execute("""
+        c = db.cursor()
+        rows = c.execute("""
             SELECT id, name, provider, city, country, source,
                    confidence_score, status, discovered_at, is_duplicate
             FROM discovered_facilities
             ORDER BY discovered_at DESC
-            LIMIT ?
+            LIMIT %s
         """, (limit,)).fetchall()
 
         discoveries = []
@@ -216,8 +222,9 @@ def discovery_metrics():
 
         approval_rates = {}
         for period_name, since in periods.items():
-            rows = db.execute(
-                "SELECT status, COUNT(*) as cnt FROM discovered_facilities WHERE discovered_at > ? GROUP BY status",
+            c = db.cursor()
+            rows = c.execute(
+                "SELECT status, COUNT(*) as cnt FROM discovered_facilities WHERE discovered_at > %s GROUP BY status",
                 (since,)
             ).fetchall()
             counts = {}
@@ -234,7 +241,8 @@ def discovery_metrics():
 
         growth = []
         try:
-            growth_rows = db.execute("""
+            c = db.cursor()
+            growth_rows = c.execute("""
                 SELECT recorded_date, facility_count
                 FROM facility_count_history
                 ORDER BY recorded_date DESC
@@ -244,7 +252,8 @@ def discovery_metrics():
         except Exception:
             pass
 
-        current_count = db.execute('SELECT COUNT(*) FROM facilities').fetchone()[0]
+        c = db.cursor()
+        current_count = c.execute('SELECT COUNT(*) FROM facilities').fetchone()[0]
         today = now.strftime('%Y-%m-%d')
         if not growth or growth[-1]['date'] != today:
             growth.append({'date': today, 'main_count': current_count})
@@ -267,7 +276,8 @@ def init_facility_count_history():
     db = None
     try:
         db = get_db()
-        db.execute("""
+        c = db.cursor()
+        c.execute("""
             CREATE TABLE IF NOT EXISTS facility_count_history (
                 id SERIAL PRIMARY KEY,
                 recorded_date TEXT NOT NULL UNIQUE,
@@ -291,14 +301,17 @@ def record_facility_count_snapshot():
     try:
         db = get_db()
         today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
-        existing = db.execute(
-            "SELECT 1 FROM facility_count_history WHERE recorded_date = ?", (today,)
+        c = db.cursor()
+        existing = c.execute(
+            "SELECT 1 FROM facility_count_history WHERE recorded_date = %s", (today,)
         ).fetchone()
 
         if not existing:
-            count = db.execute('SELECT COUNT(*) FROM facilities').fetchone()[0]
-            db.execute(
-                "INSERT INTO facility_count_history (recorded_date, facility_count) VALUES (?, ?)",
+            c = db.cursor()
+            count = c.execute('SELECT COUNT(*) FROM facilities').fetchone()[0]
+            c = db.cursor()
+            c.execute(
+                "INSERT INTO facility_count_history (recorded_date, facility_count) VALUES (%s, %s) ON CONFLICT (recorded_date) DO UPDATE SET facility_count = EXCLUDED.facility_count",
                 (today, count)
             )
             db.commit()
@@ -396,9 +409,11 @@ def discovery_ai_tracking():
         from db_utils import get_read_db
         db = get_read_db()
         try:
-            mcp_row = db.execute("SELECT COUNT(*) FROM mcp_tool_calls").fetchone()
+            c = db.cursor()
+            mcp_row = c.execute("SELECT COUNT(*) FROM mcp_tool_calls").fetchone()
             mcp_info['total'] = mcp_row[0] if mcp_row else 0
-            last_row = db.execute("SELECT MAX(created_at) FROM mcp_tool_calls").fetchone()
+            c = db.cursor()
+            last_row = c.execute("SELECT MAX(created_at) FROM mcp_tool_calls").fetchone()
             mcp_info['last_seen'] = last_row[0] if last_row and last_row[0] else None
         except Exception:
             pass

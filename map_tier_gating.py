@@ -478,7 +478,7 @@ def _gated_land_power_handler(decode_jwt_func):
     # EPA data (Pro only)
     if lat and lng:
         try:
-            geo_url = f"https://geo.fcc.gov/api/census/block/find?latitude={lat}&longitude={lng}&format=json"
+            geo_url = f"https://geo.fcc.gov/api/census/block/find%slatitude={lat}&longitude={lng}&format=json"
             epa_state = ''
             try:
                 geo_resp = http_req.get(geo_url, timeout=10)

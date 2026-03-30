@@ -12,7 +12,6 @@ Features:
 - Social media cross-posting
 """
 
-import sqlite3
 import requests
 import hashlib
 import time
@@ -83,7 +82,7 @@ class SEOPromotionEngine:
         
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS seo_submissions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 engine TEXT NOT NULL,
                 url_submitted TEXT NOT NULL,
                 submission_type TEXT,
@@ -95,7 +94,7 @@ class SEOPromotionEngine:
         
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS backlinks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 source_url TEXT NOT NULL,
                 source_domain TEXT,
                 target_url TEXT,
@@ -108,7 +107,7 @@ class SEOPromotionEngine:
         
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS press_releases (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 title TEXT NOT NULL,
                 content TEXT,
                 status TEXT DEFAULT 'draft',
@@ -120,7 +119,7 @@ class SEOPromotionEngine:
         
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS seo_stats (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 date TEXT UNIQUE,
                 pages_indexed INTEGER DEFAULT 0,
                 sitemap_submissions INTEGER DEFAULT 0,
@@ -287,7 +286,7 @@ class SEOPromotionEngine:
             "url": self.site_url,
             "potentialAction": {
                 "@type": "SearchAction",
-                "target": urljoin(self.site_url, "/search?q={search_term_string}"),
+                "target": urljoin(self.site_url, "/search%sq={search_term_string}"),
                 "query-input": "required name=search_term_string"
             }
         }
@@ -366,7 +365,7 @@ Visit {self.site_url} to explore the platform.
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO press_releases (title, content, status)
-                VALUES (?, ?, 'draft')
+                VALUES (%s, %s, 'draft')
             ''', (template['title'], template['content']))
             pr_id = cursor.lastrowid
             conn.commit()
@@ -400,7 +399,7 @@ Visit {self.site_url} to explore the platform.
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO seo_submissions (engine, url_submitted, submission_type, response_code, status)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s)
             ''', (engine, url, sub_type, status_code, 'success' if status_code in [200, 202] else 'failed'))
             conn.commit()
             conn.close()

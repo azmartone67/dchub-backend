@@ -149,7 +149,7 @@ def fix_eia_gas_consumption():
         
         url = (
             f"https://api.eia.gov/v2/natural-gas/cons/sum/data/"
-            f"?api_key={EIA_API_KEY}"
+            f"%sapi_key={EIA_API_KEY}"
             f"&frequency=annual"
             f"&data[0]=value"
             f"&facets[process][]={sector_code}"
@@ -290,7 +290,7 @@ def fix_peeringdb_netfac():
     max_pages = 20  # Safety cap: 20K records max
     
     for page in range(max_pages):
-        url = f"https://www.peeringdb.com/api/netfac?limit={limit}&skip={offset}&depth=0"
+        url = f"https://www.peeringdb.com/api/netfac%slimit={limit}&skip={offset}&depth=0"
         print(f"  Page {page+1} (offset={offset})...")
         
         try:
@@ -333,7 +333,7 @@ def fix_peeringdb_netfac():
     print("Fetching facility names...")
     fac_names = {}
     try:
-        fac_url = "https://www.peeringdb.com/api/fac?limit=5000&skip=0&depth=0"
+        fac_url = "https://www.peeringdb.com/api/fac%slimit=5000&skip=0&depth=0"
         fac_data = fetch_json(fac_url)
         for f in fac_data.get('data', []):
             fac_names[f['id']] = {
@@ -352,7 +352,7 @@ def fix_peeringdb_netfac():
     net_names = {}
     try:
         # Get first 5000 networks
-        net_url = "https://www.peeringdb.com/api/net?limit=5000&skip=0&depth=0"
+        net_url = "https://www.peeringdb.com/api/net%slimit=5000&skip=0&depth=0"
         net_data = fetch_json(net_url)
         for n in net_data.get('data', []):
             net_names[n['id']] = n.get('name', '')
@@ -495,7 +495,7 @@ def fix_fcc_fiber_deployments():
     
     try:
         # FCC broadband map fixed broadband summary
-        fcc_url = "https://broadbandmap.fcc.gov/api/public/map/listAvailabilityFixedWithSpeed?speed_down=1000&speed_up=1000&tech_code=50&state_fips=51&f=json"
+        fcc_url = "https://broadbandmap.fcc.gov/api/public/map/listAvailabilityFixedWithSpeed%sspeed_down=1000&speed_up=1000&tech_code=50&state_fips=51&f=json"
         data = fetch_json(fcc_url)
         if data and 'data' in data:
             print(f"  Got FCC API data: {len(data['data'])} records")

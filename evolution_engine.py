@@ -5,7 +5,6 @@ DC Hub Nexus - Autonomous Evolution Engine v1.0
 
 import os
 import json
-import sqlite3
 import requests
 import hashlib
 import re
@@ -142,7 +141,7 @@ class EvolutionEngine:
                     cursor = conn.cursor()
                     cursor.execute('''INSERT INTO evolution_log 
                         (action_type, action_category, description, details, impact_score, success)
-                        VALUES (%s, %s, %s, %s, %s, %s)''',
+                        VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (action_type) DO UPDATE SET action_category = EXCLUDED.action_category, description = EXCLUDED.description, details = EXCLUDED.details, impact_score = EXCLUDED.impact_score, success = EXCLUDED.success''',
                         (action_type, category, description,
                          json.dumps(details) if details else None, impact, success))
                     conn.commit()
@@ -741,7 +740,7 @@ Return as JSON: [{{"improvement": "...", "priority": "high/medium/low"}}]"""
         try:
             conn = get_db(self.db_path)
             cursor = conn.cursor()
-            cursor.execute('INSERT INTO quality_issues (issue_type, entity_type, entity_id, description, auto_fixable) VALUES (%s, %s, %s, %s, %s)',
+            cursor.execute('INSERT INTO quality_issues (issue_type, entity_type, entity_id, description, auto_fixable) VALUES (%s, %s, %s, %s, %s) ON CONFLICT (issue_type) DO UPDATE SET entity_type = EXCLUDED.entity_type, entity_id = EXCLUDED.entity_id, description = EXCLUDED.description, auto_fixable = EXCLUDED.auto_fixable',
                 (issue_type, entity_type, entity_id, description, auto_fixable))
             conn.commit()
             conn.close()

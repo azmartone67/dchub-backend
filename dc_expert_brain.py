@@ -16,7 +16,6 @@ This brain learns from:
 - User interactions
 """
 
-import sqlite3
 import json
 import os
 import hashlib
@@ -196,7 +195,7 @@ class DCExpertBrain:
             
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS brain_knowledge (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id SERIAL PRIMARY KEY,
                     category TEXT NOT NULL,
                     key TEXT NOT NULL,
                     value TEXT NOT NULL,
@@ -211,7 +210,7 @@ class DCExpertBrain:
             
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS brain_patterns (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id SERIAL PRIMARY KEY,
                     pattern_type TEXT NOT NULL,
                     pattern_data TEXT NOT NULL,
                     frequency INTEGER DEFAULT 1,
@@ -224,7 +223,7 @@ class DCExpertBrain:
             
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS brain_predictions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id SERIAL PRIMARY KEY,
                     prediction_type TEXT NOT NULL,
                     prediction TEXT NOT NULL,
                     confidence REAL,
@@ -237,7 +236,7 @@ class DCExpertBrain:
             
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS operator_intelligence (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id SERIAL PRIMARY KEY,
                     operator_name TEXT UNIQUE NOT NULL,
                     parent_company TEXT,
                     facility_count INTEGER DEFAULT 0,
@@ -252,7 +251,7 @@ class DCExpertBrain:
             
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS market_intelligence (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id SERIAL PRIMARY KEY,
                     market_name TEXT UNIQUE NOT NULL,
                     region TEXT,
                     facility_count INTEGER DEFAULT 0,
@@ -357,12 +356,12 @@ class DCExpertBrain:
                     cursor.execute('''
                         INSERT INTO operator_intelligence 
                         (operator_name, facility_count, total_mw, markets, last_updated)
-                        VALUES (?, ?, ?, ?, ?)
+                        VALUES (%s, %s, %s, %s, %s)
                         ON CONFLICT(operator_name) DO UPDATE SET
                             facility_count = ?,
                             total_mw = ?,
                             markets = ?,
-                            last_updated = ?
+                            last_updated = %s
                     ''', (operator, facility_count, total_mw or 0, countries, 
                           datetime.now().isoformat(),
                           facility_count, total_mw or 0, countries, 
@@ -389,12 +388,12 @@ class DCExpertBrain:
                     cursor.execute('''
                         INSERT INTO market_intelligence 
                         (market_name, facility_count, total_mw, key_operators, last_updated)
-                        VALUES (?, ?, ?, ?, ?)
+                        VALUES (%s, %s, %s, %s, %s)
                         ON CONFLICT(market_name) DO UPDATE SET
                             facility_count = ?,
                             total_mw = ?,
                             key_operators = ?,
-                            last_updated = ?
+                            last_updated = %s
                     ''', (market, facility_count, total_mw or 0, 
                           operators[:500] if operators else '', 
                           datetime.now().isoformat(),
@@ -542,7 +541,7 @@ class DCExpertBrain:
                 if freq > 5:
                     cursor.execute('''
                         INSERT INTO brain_patterns (pattern_type, pattern_data, frequency, last_seen)
-                        VALUES (?, ?, ?, ?)
+                        VALUES (%s, %s, %s, %s)
                     ''', ('naming', pattern, freq, datetime.now().isoformat()))
             
             conn.commit()

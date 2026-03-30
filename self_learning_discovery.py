@@ -126,7 +126,7 @@ class SelfLearningDiscovery:
         
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS discovered_sources (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 domain TEXT UNIQUE NOT NULL,
                 url TEXT NOT NULL,
                 source_type TEXT DEFAULT 'directory',
@@ -143,7 +143,7 @@ class SelfLearningDiscovery:
         
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS discovery_patterns (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 pattern TEXT UNIQUE NOT NULL,
                 pattern_type TEXT,
                 success_count INTEGER DEFAULT 0,
@@ -154,7 +154,7 @@ class SelfLearningDiscovery:
         
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS learned_keywords (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 keyword TEXT UNIQUE NOT NULL,
                 frequency INTEGER DEFAULT 1,
                 relevance_score REAL DEFAULT 0.5,
@@ -258,8 +258,8 @@ class SelfLearningDiscovery:
                 cursor = conn.cursor()
                 
                 cursor.execute('''
-                    INSERT OR IGNORE INTO discovered_sources (domain, url, discovery_method, created_at)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO discovered_sources (domain, url, discovery_method, created_at)
+                    VALUES (%s, %s, %s, %s)
                 ''', (domain, url, method, datetime.now().isoformat()))
                 
                 if cursor.rowcount > 0:
@@ -311,7 +311,7 @@ class SelfLearningDiscovery:
         conn = get_db(self.db_path)
         cursor = conn.cursor()
         
-        cursor.execute('SELECT url FROM discovered_sources WHERE domain = ?', (domain,))
+        cursor.execute('SELECT url FROM discovered_sources WHERE domain = %s', (domain,))
         row = cursor.fetchone()
         conn.close()
         
@@ -388,7 +388,7 @@ class SelfLearningDiscovery:
         country = ''
         
         # Common patterns like "City, State, Country" or "City, Country"
-        location_pattern = r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s*([A-Z]{2}|\w+)'
+        location_pattern = r'([A-Z][a-z]+(%s:\s+[A-Z][a-z]+)*),\s*([A-Z]{2}|\w+)'
         match = re.search(location_pattern, text)
         if match:
             city = match.group(1)
@@ -409,14 +409,14 @@ class SelfLearningDiscovery:
             # Update crawl stats
             cursor.execute('''
                 UPDATE discovered_sources 
-                SET facilities_found = facilities_found + ?,
+                SET facilities_found = facilities_found + %s,
                     crawl_count = crawl_count + 1,
-                    last_crawl = ?,
+                    last_crawl = %s,
                     quality_score = CASE 
-                        WHEN ? > 0 THEN MIN(CAST(1.0 AS numeric), quality_score + CAST(0.1 AS numeric))
+                        WHEN %s > 0 THEN MIN(CAST(1.0 AS numeric), quality_score + CAST(0.1 AS numeric))
                         ELSE MAX(CAST(0.0 AS numeric), quality_score - CAST(0.05 AS numeric))
                     END
-                WHERE domain = ?
+                WHERE domain = %s
             ''', (facilities_found, datetime.now().isoformat(), facilities_found, domain))
             
             conn.commit()
@@ -435,7 +435,7 @@ class SelfLearningDiscovery:
                 SET error_count = error_count + 1,
                     quality_score = MAX(0.0, quality_score - 0.1),
                     enabled = CASE WHEN error_count >= 3 THEN 0 ELSE enabled END
-                WHERE domain = ?
+                WHERE domain = %s
             ''', (domain,))
             
             conn.commit()
@@ -470,8 +470,8 @@ class SelfLearningDiscovery:
             # Save learned keywords
             for keyword, freq in sorted(patterns.items(), key=lambda x: -x[1])[:50]:
                 cursor.execute('''
-                    INSERT OR REPLACE INTO learned_keywords (keyword, frequency, relevance_score)
-                    VALUES (?, ?, ?)
+                    INSERT INTO learned_keywords  (keyword, frequency, relevance_score)
+                    VALUES (%s, %s, %s)
                 ''', (keyword, freq, min(1.0, freq / 100)))
             
             conn.commit()
@@ -668,9 +668,9 @@ class SelfLearningDiscovery:
             cursor = conn.cursor()
             
             cursor.execute('''
-                INSERT OR IGNORE INTO discovered_sources 
+                INSERT INTO discovered_sources 
                 (domain, url, source_type, discovery_method, created_at)
-                VALUES (?, ?, 'permit', 'permit_monitor', CURRENT_TIMESTAMP)
+                VALUES (%s, %s, 'permit', 'permit_monitor', CURRENT_TIMESTAMP)
             ''', (f"permit:{region}", url))
             
             conn.commit()

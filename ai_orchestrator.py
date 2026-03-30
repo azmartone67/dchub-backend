@@ -122,7 +122,7 @@ class AIOrchestrator:
         
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS ai_predictions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 prediction_type TEXT NOT NULL,
                 prediction_data TEXT NOT NULL,
                 confidence REAL DEFAULT 0.5,
@@ -136,7 +136,7 @@ class AIOrchestrator:
         
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS market_signals (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 signal_type TEXT NOT NULL,
                 signal_data TEXT NOT NULL,
                 source TEXT,
@@ -148,7 +148,7 @@ class AIOrchestrator:
         
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS opportunity_alerts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 alert_type TEXT NOT NULL,
                 title TEXT NOT NULL,
                 description TEXT,
@@ -162,7 +162,7 @@ class AIOrchestrator:
         
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS agent_knowledge_share (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 from_agent TEXT NOT NULL,
                 to_agent TEXT,
                 insight_type TEXT NOT NULL,
@@ -434,13 +434,13 @@ JSON only, no markdown."""
                 for deal in predictions.get('next_deals', [])[:3]:
                     cursor.execute('''
                         INSERT INTO ai_predictions (prediction_type, prediction_data, confidence, timeframe)
-                        VALUES (?, ?, ?, ?)
+                        VALUES (%s, %s, %s, %s)
                     ''', ('deal', json.dumps(deal), deal.get('confidence', 0.5), '6_months'))
                 
                 for hotspot in predictions.get('emerging_hotspots', []):
                     cursor.execute('''
                         INSERT INTO ai_predictions (prediction_type, prediction_data, confidence, timeframe)
-                        VALUES (?, ?, ?, ?)
+                        VALUES (%s, %s, %s, %s)
                     ''', ('market_growth', json.dumps(hotspot), hotspot.get('confidence', 0.5), '12_months'))
                 
                 conn.commit()
@@ -598,7 +598,7 @@ JSON only, no markdown."""
                 cursor.execute('''
                     INSERT INTO opportunity_alerts 
                     (alert_type, title, description, entities, priority)
-                    VALUES (?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s)
                 ''', (
                     opp.get('type', 'general'),
                     opp.get('title', '')[:200],
@@ -732,7 +732,7 @@ JSON only, no markdown."""
                 cursor.execute('''
                     INSERT INTO agent_knowledge_share 
                     (from_agent, insight_type, insight_data, confidence)
-                    VALUES (?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s)
                 ''', (
                     'orchestrator',
                     insight.get('insight_type', 'general'),

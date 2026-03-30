@@ -349,88 +349,91 @@ def _run_market_refresh():
     try:
         from db_utils import get_db
         conn = get_db()
-        c = conn.cursor()
-        c.execute("""
-            INSERT INTO capacity_pipeline (operator, market, region, capacity_mw, status, announcement_date, source, source_url, created_at, confidence_score)
-            SELECT df.provider, COALESCE(df.city, df.state), df.country, df.power_mw, df.status,
-                   df.discovered_at, df.source, df.source_url, NOW()::text, COALESCE(df.confidence_score, 0.8)::integer
-            FROM discovered_facilities df
-            WHERE df.status IN ('Under Construction', 'Planned', 'Announced')
-              AND df.power_mw IS NOT NULL
-              AND NOT EXISTS (
-                  SELECT 1 FROM capacity_pipeline cp
-                  WHERE LOWER(COALESCE(cp.operator,'')) = LOWER(COALESCE(df.provider,''))
-                    AND LOWER(COALESCE(cp.market,'')) = LOWER(COALESCE(df.city, df.state, ''))
-              )
-        """)
-        new_pipeline = c.rowcount
-        conn.commit()
-        logger.info(f"   [5/7] Pipeline sync: +{new_pipeline} new projects")
-    except Exception as e:
-        logger.warning(f"   [5/7] Pipeline sync error: {e}")
+        try:
+            c = conn.cursor()
+            c.execute("""
+                INSERT INTO capacity_pipeline (operator, market, region, capacity_mw, status, announcement_date, source, source_url, created_at, confidence_score)
+                SELECT df.provider, COALESCE(df.city, df.state), df.country, df.power_mw, df.status,
+                       df.discovered_at, df.source, df.source_url, NOW()::text, COALESCE(df.confidence_score, 0.8)::integer
+                FROM discovered_facilities df
+                WHERE df.status IN ('Under Construction', 'Planned', 'Announced')
+                  AND df.power_mw IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM capacity_pipeline cp
+                      WHERE LOWER(COALESCE(cp.operator,'')) = LOWER(COALESCE(df.provider,''))
+                        AND LOWER(COALESCE(cp.market,'')) = LOWER(COALESCE(df.city, df.state, ''))
+                  )
+            """)
+            new_pipeline = c.rowcount
+            conn.commit()
+            logger.info(f"   [5/7] Pipeline sync: +{new_pipeline} new projects")
+            except Exception as e:
+            logger.warning(f"   [5/7] Pipeline sync error: {e}")
 
-    # STEP 6: Refresh GDCI scores from facility data
-    try:
-        from db_utils import get_db
-        conn = get_db()
-        c = conn.cursor()
-        c.execute("""
-            INSERT INTO gdci_scores (market, country, facility_count, total_mw, gdci_score, tier, computed_at)
-            SELECT COALESCE(city, state), COALESCE(country,'US'), COUNT(*), ROUND(SUM(COALESCE(power_mw,0))::numeric),
-                ROUND((LEAST(COUNT(*)/5.0, 25)*0.25 + LEAST(SUM(COALESCE(power_mw,0))/100.0, 25)*0.25 + 15*0.20 + 18*0.15 + 16*0.15)::numeric, 1),
-                CASE WHEN COUNT(*) >= 50 THEN 'Tier 1' WHEN COUNT(*) >= 20 THEN 'Tier 2' WHEN COUNT(*) >= 10 THEN 'Tier 3' ELSE 'Tier 4' END,
-                NOW()
-            FROM discovered_facilities WHERE city IS NOT NULL GROUP BY COALESCE(city,state), country HAVING COUNT(*) >= 5
-            ON CONFLICT (market, country) DO UPDATE SET facility_count=EXCLUDED.facility_count, total_mw=EXCLUDED.total_mw, gdci_score=EXCLUDED.gdci_score, tier=EXCLUDED.tier, computed_at=NOW()
-        """)
-        conn.commit()
-        logger.info(f"   [6/7] GDCI refresh: {c.rowcount} markets scored")
-    except Exception as e:
-        logger.warning(f"   [6/7] GDCI refresh error: {e}")
+            # STEP 6: Refresh GDCI scores from facility data
+            try:
+            from db_utils import get_db
+            conn = get_db()
+            c = conn.cursor()
+            c.execute("""
+                INSERT INTO gdci_scores (market, country, facility_count, total_mw, gdci_score, tier, computed_at)
+                SELECT COALESCE(city, state), COALESCE(country,'US'), COUNT(*), ROUND(SUM(COALESCE(power_mw,0))::numeric),
+                    ROUND((LEAST(COUNT(*)/5.0, 25)*0.25 + LEAST(SUM(COALESCE(power_mw,0))/100.0, 25)*0.25 + 15*0.20 + 18*0.15 + 16*0.15)::numeric, 1),
+                    CASE WHEN COUNT(*) >= 50 THEN 'Tier 1' WHEN COUNT(*) >= 20 THEN 'Tier 2' WHEN COUNT(*) >= 10 THEN 'Tier 3' ELSE 'Tier 4' END,
+                    NOW()
+                FROM discovered_facilities WHERE city IS NOT NULL GROUP BY COALESCE(city,state), country HAVING COUNT(*) >= 5
+                ON CONFLICT (market, country) DO UPDATE SET facility_count=EXCLUDED.facility_count, total_mw=EXCLUDED.total_mw, gdci_score=EXCLUDED.gdci_score, tier=EXCLUDED.tier, computed_at=NOW()
+            """)
+            conn.commit()
+            logger.info(f"   [6/7] GDCI refresh: {c.rowcount} markets scored")
+            except Exception as e:
+            logger.warning(f"   [6/7] GDCI refresh error: {e}")
 
-    # STEP 7: Refresh market_intelligence with current facility counts
-    try:
-        from db_utils import get_db
-        conn = get_db()
-        c = conn.cursor()
-        # Map of market_name → city filter lists
-        MARKET_CITY_MAP = {
-            'Northern Virginia': ['Ashburn','Sterling','Manassas','Leesburg','Bristow','Chantilly','Herndon','Reston'],
-            'Phoenix': ['Phoenix','Mesa','Chandler','Goodyear','Tempe','Scottsdale'],
-            'Chicago': ['Chicago','Aurora','Elk Grove Village'],
-            'Atlanta': ['Atlanta','Douglasville','Lithia Springs','Suwanee'],
-            'Columbus': ['Columbus','New Albany'],
-            'Houston': ['Houston'],
-            'Denver': ['Denver'],
-            'Miami': ['Miami'],
-            'Austin': ['Austin'],
-        }
-        updated = 0
-        for market_name, cities in MARKET_CITY_MAP.items():
-            placeholders = ','.join(['%s'] * len(cities))
-            c.execute(f"""
-                UPDATE market_intelligence SET
-                    facility_count = sub.cnt,
-                    total_mw = sub.mw,
-                    last_updated = NOW()::text
-                FROM (
-                    SELECT COUNT(*) as cnt, ROUND(COALESCE(SUM(power_mw),0)::numeric) as mw
-                    FROM discovered_facilities WHERE city IN ({placeholders}) AND country = 'US'
-                ) sub
-                WHERE market_intelligence.market_name = %s
-            """, (*cities, market_name))
-            if c.rowcount:
-                updated += 1
-        conn.commit()
-        logger.info(f"   [7/7] Market intelligence: {updated} markets refreshed")
-    except Exception as e:
-        logger.warning(f"   [7/7] Market intelligence error: {e}")
+            # STEP 7: Refresh market_intelligence with current facility counts
+            try:
+            from db_utils import get_db
+            conn = get_db()
+            c = conn.cursor()
+            # Map of market_name → city filter lists
+            MARKET_CITY_MAP = {
+                'Northern Virginia': ['Ashburn','Sterling','Manassas','Leesburg','Bristow','Chantilly','Herndon','Reston'],
+                'Phoenix': ['Phoenix','Mesa','Chandler','Goodyear','Tempe','Scottsdale'],
+                'Chicago': ['Chicago','Aurora','Elk Grove Village'],
+                'Atlanta': ['Atlanta','Douglasville','Lithia Springs','Suwanee'],
+                'Columbus': ['Columbus','New Albany'],
+                'Houston': ['Houston'],
+                'Denver': ['Denver'],
+                'Miami': ['Miami'],
+                'Austin': ['Austin'],
+            }
+            updated = 0
+            for market_name, cities in MARKET_CITY_MAP.items():
+                placeholders = ','.join(['%s'] * len(cities))
+                c.execute(f"""
+                    UPDATE market_intelligence SET
+                        facility_count = sub.cnt,
+                        total_mw = sub.mw,
+                        last_updated = NOW()::text
+                    FROM (
+                        SELECT COUNT(*) as cnt, ROUND(COALESCE(SUM(power_mw),0)::numeric) as mw
+                        FROM discovered_facilities WHERE city IN ({placeholders}) AND country = 'US'
+                    ) sub
+                    WHERE market_intelligence.market_name = %s
+                """, (*cities, market_name))
+                if c.rowcount:
+                    updated += 1
+            conn.commit()
+            logger.info(f"   [7/7] Market intelligence: {updated} markets refreshed")
+            except Exception as e:
+            logger.warning(f"   [7/7] Market intelligence error: {e}")
 
-    logger.info("   === MARKET REFRESH COMPLETE ===")
+            logger.info("   === MARKET REFRESH COMPLETE ===")
 
 
-# Map names to functions (includes manual-only crawlers)
+            # Map names to functions (includes manual-only crawlers)
 
+        finally:
+            conn.close()
 def _run_deals_crawler():
     """Run AI deals discovery using auto_pilot extractors, saving to Neon PostgreSQL."""
     import os, hashlib, psycopg2, sys
@@ -466,7 +469,7 @@ def _run_deals_crawler():
         "https://www.datacenterdynamics.com/rss/",
         "https://www.datacenterknowledge.com/rss.xml",
         "https://www.prnewswire.com/rss/news-releases-list.rss",
-        "https://www.businesswire.com/rss/home/?rss=G7",
+        "https://www.businesswire.com/rss/home/%srss=G7",
         "https://feeds.reuters.com/reuters/businessNews",
     ]
 
@@ -639,50 +642,53 @@ def _run_facility_discovery():
         from facility_auto_approve import run_auto_approve
         from db_utils import get_db
         conn = get_db()
-        result = run_auto_approve(conn, batch_size=50, dry_run=False)
-        if isinstance(result, dict):
-            logger.info(f"   [3/4] Auto-approve: {result.get('approved', 0)} approved, {result.get('rejected', 0)} rejected")
-        else:
-            logger.info(f"   [3/4] Auto-approve: completed")
-    except ImportError:
-        logger.warning("   [3/4] Auto-approve not available")
-    except Exception as e:
-        logger.warning(f"   [3/4] Auto-approve error: {e}")
+        try:
+            result = run_auto_approve(conn, batch_size=50, dry_run=False)
+            if isinstance(result, dict):
+                logger.info(f"   [3/4] Auto-approve: {result.get('approved', 0)} approved, {result.get('rejected', 0)} rejected")
+            else:
+                logger.info(f"   [3/4] Auto-approve: completed")
+            except ImportError:
+            logger.warning("   [3/4] Auto-approve not available")
+            except Exception as e:
+            logger.warning(f"   [3/4] Auto-approve error: {e}")
 
-    if _stop_event.is_set():
-        return
+            if _stop_event.is_set():
+            return
 
-    # STEP 4: Sync new facilities to capacity_pipeline
-    try:
-        from db_utils import get_db
-        conn = get_db()
-        c = conn.cursor()
-        c.execute("""
-            INSERT INTO capacity_pipeline (operator, market, region, capacity_mw, status, announcement_date, source, source_url, created_at, confidence_score)
-            SELECT df.provider, COALESCE(df.city, df.state), df.country, df.power_mw, df.status,
-                   df.discovered_at, df.source, df.source_url, NOW()::text, COALESCE(df.confidence_score, 0.8)::integer
-            FROM discovered_facilities df
-            WHERE df.status IN ('Under Construction', 'Planned', 'Announced')
-              AND df.power_mw IS NOT NULL
-              AND df.discovered_at >= (NOW() - INTERVAL '7 days')::text
-              AND NOT EXISTS (
-                  SELECT 1 FROM capacity_pipeline cp
-                  WHERE LOWER(COALESCE(cp.operator,'')) = LOWER(COALESCE(df.provider,''))
-                    AND LOWER(COALESCE(cp.market,'')) = LOWER(COALESCE(df.city, df.state, ''))
-              )
-        """)
-        new_pipeline = c.rowcount
-        conn.commit()
-        if new_pipeline > 0:
-            logger.info(f"   [4/4] Pipeline sync: +{new_pipeline} new construction projects")
-        else:
-            logger.info(f"   [4/4] Pipeline sync: no new projects")
-    except Exception as e:
-        logger.warning(f"   [4/4] Pipeline sync error: {e}")
+            # STEP 4: Sync new facilities to capacity_pipeline
+            try:
+            from db_utils import get_db
+            conn = get_db()
+            c = conn.cursor()
+            c.execute("""
+                INSERT INTO capacity_pipeline (operator, market, region, capacity_mw, status, announcement_date, source, source_url, created_at, confidence_score)
+                SELECT df.provider, COALESCE(df.city, df.state), df.country, df.power_mw, df.status,
+                       df.discovered_at, df.source, df.source_url, NOW()::text, COALESCE(df.confidence_score, 0.8)::integer
+                FROM discovered_facilities df
+                WHERE df.status IN ('Under Construction', 'Planned', 'Announced')
+                  AND df.power_mw IS NOT NULL
+                  AND df.discovered_at >= (NOW() - INTERVAL '7 days')::text
+                  AND NOT EXISTS (
+                      SELECT 1 FROM capacity_pipeline cp
+                      WHERE LOWER(COALESCE(cp.operator,'')) = LOWER(COALESCE(df.provider,''))
+                        AND LOWER(COALESCE(cp.market,'')) = LOWER(COALESCE(df.city, df.state, ''))
+                  )
+            """)
+            new_pipeline = c.rowcount
+            conn.commit()
+            if new_pipeline > 0:
+                logger.info(f"   [4/4] Pipeline sync: +{new_pipeline} new construction projects")
+            else:
+                logger.info(f"   [4/4] Pipeline sync: no new projects")
+            except Exception as e:
+            logger.warning(f"   [4/4] Pipeline sync error: {e}")
 
-    logger.info("   === FACILITY PIPELINE COMPLETE ===")
+            logger.info("   === FACILITY PIPELINE COMPLETE ===")
 
 
+        finally:
+            conn.close()
 def _run_infrastructure_sync():
     """Sync infrastructure data: fiber routes, HIFLD transmission lines, substations.
     Calls the same logic as /api/jobs/fiber-sync endpoint.

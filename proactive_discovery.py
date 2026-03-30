@@ -4,7 +4,6 @@ Automatically searches for fiber KMZ files and utility data sources across the w
 Runs autonomously to find and ingest new infrastructure data.
 """
 
-import sqlite3
 import requests
 import re
 import os
@@ -62,7 +61,7 @@ class ProactiveDiscoveryEngine:
         c = conn.cursor()
         
         c.execute('''CREATE TABLE IF NOT EXISTS discovered_fiber_sources (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             source_name TEXT,
             source_url TEXT UNIQUE,
             source_type TEXT,
@@ -77,7 +76,7 @@ class ProactiveDiscoveryEngine:
         )''')
         
         c.execute('''CREATE TABLE IF NOT EXISTS discovered_utility_sources (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             source_name TEXT,
             source_url TEXT UNIQUE,
             data_type TEXT,
@@ -90,7 +89,7 @@ class ProactiveDiscoveryEngine:
         )''')
         
         c.execute('''CREATE TABLE IF NOT EXISTS discovery_runs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             run_type TEXT,
             started_at TEXT,
             completed_at TEXT,
@@ -101,7 +100,7 @@ class ProactiveDiscoveryEngine:
         )''')
         
         c.execute('''CREATE TABLE IF NOT EXISTS downloaded_files (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             source_id INTEGER,
             file_url TEXT UNIQUE,
             file_name TEXT,
@@ -124,7 +123,7 @@ class ProactiveDiscoveryEngine:
         c = conn.cursor()
         
         c.execute('''INSERT INTO discovery_runs (run_type, started_at, status) 
-                     VALUES ('fiber', ?, 'running')''', (datetime.now().isoformat(),))
+                     VALUES ('fiber', %s, 'running') ON CONFLICT (run_type) DO UPDATE SET started_at = EXCLUDED.started_at, status = EXCLUDED.status''', (datetime.now().isoformat(),))
         run_id = c.lastrowid
         conn.commit()
         
@@ -144,7 +143,7 @@ class ProactiveDiscoveryEngine:
         
         c.execute('''UPDATE discovery_runs SET 
                      completed_at = ?, sources_checked = ?, new_sources_found = ?, status = 'completed'
-                     WHERE id = ?''', 
+                     WHERE id = %s''', 
                   (datetime.now().isoformat(), results['sources_checked'], 
                    len(results['new_sources']), run_id))
         conn.commit()
@@ -368,9 +367,11 @@ class ProactiveDiscoveryEngine:
             conn = get_db(self.db_path)
             c = conn.cursor()
             
-            c.execute('''INSERT OR IGNORE INTO discovered_fiber_sources 
+            c.execute('''INSERT INTO discovered_fiber_sources 
                          (source_name, source_url, source_type, file_type, provider, last_checked)
-                         VALUES (?, ?, ?, ?, ?, ?)''',
+                         VALUES (%s, %s, %s, %s, %s, %s)
+                             ON CONFLICT DO NOTHING''',
+
                       (source.get('name', ''), source.get('url', ''), 
                        source.get('type', ''), source.get('file_type', ''),
                        source.get('provider', ''), datetime.now().isoformat()))
@@ -388,7 +389,7 @@ class ProactiveDiscoveryEngine:
         c = conn.cursor()
         
         c.execute('''INSERT INTO discovery_runs (run_type, started_at, status) 
-                     VALUES ('utility', ?, 'running')''', (datetime.now().isoformat(),))
+                     VALUES ('utility', %s, 'running') ON CONFLICT (run_type) DO UPDATE SET started_at = EXCLUDED.started_at, status = EXCLUDED.status''', (datetime.now().isoformat(),))
         run_id = c.lastrowid
         conn.commit()
         
@@ -406,8 +407,8 @@ class ProactiveDiscoveryEngine:
         results = self._search_state_puc(results)
         
         c.execute('''UPDATE discovery_runs SET 
-                     completed_at = ?, sources_checked = ?, new_sources_found = ?, status = 'completed'
-                     WHERE id = ?''', 
+                     completed_at = %s, sources_checked = %s, new_sources_found = %s, status = 'completed'
+                     WHERE id = %s''', 
                   (datetime.now().isoformat(), results['sources_checked'], 
                    len(results['new_sources']), run_id))
         conn.commit()
@@ -594,9 +595,11 @@ class ProactiveDiscoveryEngine:
             conn = get_db(self.db_path)
             c = conn.cursor()
             
-            c.execute('''INSERT OR IGNORE INTO discovered_utility_sources 
+            c.execute('''INSERT INTO discovered_utility_sources 
                          (source_name, source_url, data_type, coverage_area, record_count, api_available)
-                         VALUES (?, ?, ?, ?, ?, ?)''',
+                         VALUES (%s, %s, %s, %s, %s, %s)
+                             ON CONFLICT DO NOTHING''',
+
                       (source.get('name', ''), source.get('url', ''), 
                        source.get('data_type', ''), source.get('coverage_area', ''),
                        source.get('record_count', 0), 1 if source.get('api_available') else 0))
@@ -614,7 +617,7 @@ class ProactiveDiscoveryEngine:
         c.execute('''SELECT id, source_url, source_name, file_type, provider 
                      FROM discovered_fiber_sources 
                      WHERE status = 'pending' AND source_url LIKE '%.km%'
-                     LIMIT ?''', (limit,))
+                     LIMIT %s''', (limit,))
         
         sources = c.fetchall()
         results = {'downloaded': [], 'failed': []}
@@ -638,20 +641,20 @@ class ProactiveDiscoveryEngine:
                         
                     c.execute('''INSERT INTO downloaded_files 
                                  (source_id, file_url, file_name, file_type, file_size, local_path)
-                                 VALUES (?, ?, ?, ?, ?, ?)''',
+                                 VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (source_id) DO UPDATE SET file_url = EXCLUDED.file_url, file_name = EXCLUDED.file_name, file_type = EXCLUDED.file_type, file_size = EXCLUDED.file_size, local_path = EXCLUDED.local_path''',
                               (source_id, url, filename, file_type, len(resp.content), filepath))
                     
-                    c.execute('''UPDATE discovered_fiber_sources SET status = 'downloaded' WHERE id = ?''', 
+                    c.execute('''UPDATE discovered_fiber_sources SET status = 'downloaded' WHERE id = %s''', 
                               (source_id,))
                     
                     results['downloaded'].append({'name': name, 'file': filename, 'size': len(resp.content)})
                 else:
-                    c.execute('''UPDATE discovered_fiber_sources SET status = 'failed' WHERE id = ?''', 
+                    c.execute('''UPDATE discovered_fiber_sources SET status = 'failed' WHERE id = %s''', 
                               (source_id,))
                     results['failed'].append({'name': name, 'error': f'HTTP {resp.status_code}'})
                     
             except Exception as e:
-                c.execute('''UPDATE discovered_fiber_sources SET status = 'failed' WHERE id = ?''', 
+                c.execute('''UPDATE discovered_fiber_sources SET status = 'failed' WHERE id = %s''', 
                           (source_id,))
                 results['failed'].append({'name': name, 'error': str(e)})
                 

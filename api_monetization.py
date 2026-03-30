@@ -33,7 +33,6 @@ Endpoints:
 
 import os
 import json
-import sqlite3
 import secrets
 import hashlib
 import time
@@ -107,116 +106,118 @@ EXEMPT_ENDPOINTS = [
 def init_monetization_tables():
     """Initialize API monetization tables"""
     conn = get_db()
-    c = conn.cursor()
-    
-    # Check if api_keys table exists (PostgreSQL catalog)
-    c.execute("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'api_keys')")
-    table_exists = c.fetchone()[0]
-    
-    if table_exists:
-        c.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'api_keys'")
-        columns = [col[0] for col in c.fetchall()]
-        
-        if 'user_id' not in columns:
-            print("⚠️ Migrating old api_keys table...")
-            try:
-                c.execute("ALTER TABLE api_keys RENAME TO api_keys_old")
-                conn.commit()
-            except Exception:
-                conn.rollback()
-    
-    # API Keys table
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS api_keys (
-            id SERIAL PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            key_hash TEXT NOT NULL UNIQUE,
-            key_prefix TEXT NOT NULL,
-            name TEXT,
-            permissions TEXT DEFAULT '[]',
-            rate_limit_tier TEXT DEFAULT 'free',
-            is_active INTEGER DEFAULT 1,
-            last_used_at TEXT,
-            created_at TEXT,
-            expires_at TEXT,
-            usage_count INTEGER DEFAULT 0
-        )
-    """)
-    
-    # Check if api_usage table exists (PostgreSQL catalog)
-    c.execute("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'api_usage')")
-    usage_table_exists = c.fetchone()[0]
-    
-    if usage_table_exists:
-        c.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'api_usage'")
-        columns = [col[0] for col in c.fetchall()]
-        
-        if 'user_id' not in columns or 'api_key_id' not in columns:
-            print("⚠️ Migrating old api_usage table...")
-            try:
-                c.execute("ALTER TABLE api_usage RENAME TO api_usage_old")
-                conn.commit()
-            except Exception:
-                conn.rollback()
-    
-    # API Usage table (for tracking)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS api_usage (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT,
-            api_key_id INTEGER,
-            endpoint TEXT,
-            method TEXT,
-            status_code INTEGER,
-            response_time_ms INTEGER,
-            ip_address TEXT,
-            user_agent TEXT,
-            timestamp TEXT,
-            date TEXT,
-            FOREIGN KEY (api_key_id) REFERENCES api_keys(id)
-        )
-    """)
-    
-    # Daily usage aggregates (for fast queries)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS api_usage_daily (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT NOT NULL,
-            api_key_id INTEGER,
-            date TEXT NOT NULL,
-            request_count INTEGER DEFAULT 0,
-            error_count INTEGER DEFAULT 0,
-            avg_response_time_ms INTEGER DEFAULT 0,
-            endpoints_used TEXT DEFAULT '{}',
-            UNIQUE(user_id, api_key_id, date)
-        )
-    """)
-    
-    # User plan/subscription info (extends users table)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS user_plans (
-            user_id TEXT PRIMARY KEY,
-            plan TEXT DEFAULT 'free',
-            stripe_subscription_id TEXT,
-            billing_cycle_start TEXT,
-            billing_cycle_end TEXT,
-            usage_this_cycle INTEGER DEFAULT 0,
-            overage_charges REAL DEFAULT 0,
-            updated_at TEXT
-        )
-    """)
-    
-    # Indexes for performance
     try:
-        c.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_api_usage_user_date ON api_usage(user_id, date)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_api_usage_daily_user ON api_usage_daily(user_id, date)")
-    except Exception as e:
-        print(f"⚠️ Index creation warning: {e}")
-    
-    conn.commit()
-    conn.close()
+        c = conn.cursor()
+
+        # Check if api_keys table exists (PostgreSQL catalog)
+        c.execute("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'api_keys')")
+        table_exists = c.fetchone()[0]
+
+        if table_exists:
+            c.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'api_keys'")
+            columns = [col[0] for col in c.fetchall()]
+
+            if 'user_id' not in columns:
+                print("⚠️ Migrating old api_keys table...")
+                try:
+                    c.execute("ALTER TABLE api_keys RENAME TO api_keys_old")
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+
+        # API Keys table
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS api_keys (
+                id SERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                key_hash TEXT NOT NULL UNIQUE,
+                key_prefix TEXT NOT NULL,
+                name TEXT,
+                permissions TEXT DEFAULT '[]',
+                rate_limit_tier TEXT DEFAULT 'free',
+                is_active INTEGER DEFAULT 1,
+                last_used_at TEXT,
+                created_at TEXT,
+                expires_at TEXT,
+                usage_count INTEGER DEFAULT 0
+            )
+        """)
+
+        # Check if api_usage table exists (PostgreSQL catalog)
+        c.execute("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'api_usage')")
+        usage_table_exists = c.fetchone()[0]
+
+        if usage_table_exists:
+            c.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'api_usage'")
+            columns = [col[0] for col in c.fetchall()]
+
+            if 'user_id' not in columns or 'api_key_id' not in columns:
+                print("⚠️ Migrating old api_usage table...")
+                try:
+                    c.execute("ALTER TABLE api_usage RENAME TO api_usage_old")
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+
+        # API Usage table (for tracking)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS api_usage (
+                id SERIAL PRIMARY KEY,
+                user_id TEXT,
+                api_key_id INTEGER,
+                endpoint TEXT,
+                method TEXT,
+                status_code INTEGER,
+                response_time_ms INTEGER,
+                ip_address TEXT,
+                user_agent TEXT,
+                timestamp TEXT,
+                date TEXT,
+                FOREIGN KEY (api_key_id) REFERENCES api_keys(id)
+            )
+        """)
+
+        # Daily usage aggregates (for fast queries)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS api_usage_daily (
+                id SERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                api_key_id INTEGER,
+                date TEXT NOT NULL,
+                request_count INTEGER DEFAULT 0,
+                error_count INTEGER DEFAULT 0,
+                avg_response_time_ms INTEGER DEFAULT 0,
+                endpoints_used TEXT DEFAULT '{}',
+                UNIQUE(user_id, api_key_id, date)
+            )
+        """)
+
+        # User plan/subscription info (extends users table)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS user_plans (
+                user_id TEXT PRIMARY KEY,
+                plan TEXT DEFAULT 'free',
+                stripe_subscription_id TEXT,
+                billing_cycle_start TEXT,
+                billing_cycle_end TEXT,
+                usage_this_cycle INTEGER DEFAULT 0,
+                overage_charges REAL DEFAULT 0,
+                updated_at TEXT
+            )
+        """)
+
+        # Indexes for performance
+        try:
+            c.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_api_usage_user_date ON api_usage(user_id, date)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_api_usage_daily_user ON api_usage_daily(user_id, date)")
+        except Exception as e:
+            print(f"⚠️ Index creation warning: {e}")
+
+        conn.commit()
+    finally:
+        conn.close()
     print("✅ API Monetization tables initialized")
 
 # =============================================================================
@@ -247,17 +248,19 @@ def validate_api_key(key):
     key_hash = hash_api_key(key)
     
     conn = get_db()
-    c = conn.cursor()
-    
-    c.execute("""
-        SELECT ak.*, up.plan
-        FROM api_keys ak
-        LEFT JOIN user_plans up ON ak.user_id = up.user_id
-        WHERE ak.key_hash = ? AND ak.is_active = 1
-    """, (key_hash,))
-    
-    row = c.fetchone()
-    conn.close()
+    try:
+        c = conn.cursor()
+
+        c.execute("""
+            SELECT ak.*, up.plan
+            FROM api_keys ak
+            LEFT JOIN user_plans up ON ak.user_id = up.user_id
+            WHERE ak.key_hash = %s AND ak.is_active = 1
+        """, (key_hash,))
+
+        row = c.fetchone()
+    finally:
+        conn.close()
     
     if not row:
         return None
@@ -272,16 +275,18 @@ def validate_api_key(key):
 def update_key_usage(key_id):
     """Update last used timestamp and usage count"""
     conn = get_db()
-    c = conn.cursor()
-    
-    c.execute("""
-        UPDATE api_keys 
-        SET last_used_at = ?, usage_count = usage_count + 1
-        WHERE id = ?
-    """, (datetime.utcnow().isoformat(), key_id))
-    
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+
+        c.execute("""
+            UPDATE api_keys
+            SET last_used_at = %s, usage_count = usage_count + 1
+            WHERE id = %s
+        """, (datetime.utcnow().isoformat(), key_id))
+
+        conn.commit()
+    finally:
+        conn.close()
 
 # =============================================================================
 # RATE LIMITING
@@ -402,44 +407,46 @@ def track_api_usage(user_id, api_key_id, endpoint, method, status_code, response
     def _track():
         try:
             conn = get_db()
-            c = conn.cursor()
-            
-            now = datetime.utcnow()
-            date = now.strftime('%Y-%m-%d')
-            
-            # Insert detailed log
-            c.execute("""
-                INSERT INTO api_usage (user_id, api_key_id, endpoint, method, status_code, 
-                                       response_time_ms, ip_address, user_agent, timestamp, date)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (user_id, api_key_id, endpoint, method, status_code, 
-                  response_time_ms, ip_address, user_agent, now.isoformat(), date))
-            
-            # Update daily aggregate
-            c.execute("""
-                INSERT INTO api_usage_daily (user_id, api_key_id, date, request_count, error_count, avg_response_time_ms)
-                VALUES (?, ?, ?, 1, ?, ?)
-                ON CONFLICT(user_id, api_key_id, date) DO UPDATE SET
-                    request_count = request_count + 1,
-                    error_count = error_count + ?,
-                    avg_response_time_ms = (avg_response_time_ms * request_count + ?) / (request_count + 1)
-            """, (
-                user_id, api_key_id, date, 
-                1 if status_code >= 400 else 0, 
-                response_time_ms,
-                1 if status_code >= 400 else 0,
-                response_time_ms
-            ))
-            
-            # Update user plan usage
-            c.execute("""
-                UPDATE user_plans 
-                SET usage_this_cycle = usage_this_cycle + 1, updated_at = ?
-                WHERE user_id = ?
-            """, (now.isoformat(), user_id))
-            
-            conn.commit()
-            conn.close()
+            try:
+                c = conn.cursor()
+
+                now = datetime.utcnow()
+                date = now.strftime('%Y-%m-%d')
+
+                # Insert detailed log
+                c.execute("""
+                    INSERT INTO api_usage (user_id, api_key_id, endpoint, method, status_code,
+                                           response_time_ms, ip_address, user_agent, timestamp, date)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (user_id, api_key_id, endpoint, method, status_code,
+                      response_time_ms, ip_address, user_agent, now.isoformat(), date))
+
+                # Update daily aggregate
+                c.execute("""
+                    INSERT INTO api_usage_daily (user_id, api_key_id, date, request_count, error_count, avg_response_time_ms)
+                    VALUES (%s, %s, %s, 1, %s, %s)
+                    ON CONFLICT(user_id, api_key_id, date) DO UPDATE SET
+                        request_count = request_count + 1,
+                        error_count = error_count + %s,
+                        avg_response_time_ms = (avg_response_time_ms * request_count + %s) / (request_count + 1)
+                """, (
+                    user_id, api_key_id, date,
+                    1 if status_code >= 400 else 0,
+                    response_time_ms,
+                    1 if status_code >= 400 else 0,
+                    response_time_ms
+                ))
+
+                # Update user plan usage
+                c.execute("""
+                    UPDATE user_plans
+                    SET usage_this_cycle = usage_this_cycle + 1, updated_at = %s
+                    WHERE user_id = %s
+                """, (now.isoformat(), user_id))
+
+                conn.commit()
+            finally:
+                conn.close()
         except Exception as e:
             print(f"Usage tracking error: {e}")
     
@@ -631,30 +638,32 @@ def get_current_plan():
         return jsonify({'error': 'Auth error'}), 401
     
     conn = get_db()
-    c = conn.cursor()
-    
-    # Get user plan
-    c.execute("SELECT * FROM user_plans WHERE user_id = ?", (user_id,))
-    plan_row = c.fetchone()
-    
-    # Get from users table if not in user_plans
-    if not plan_row:
-        c.execute("SELECT plan FROM users WHERE id = ?", (user_id,))
-        user_row = c.fetchone()
-        plan = user_row['plan'] if user_row else 'free'
-        
-        # Create user_plans entry
-        c.execute("""
-            INSERT INTO user_plans (user_id, plan, updated_at)
-            VALUES (?, ?, ?)
-        """, (user_id, plan, datetime.utcnow().isoformat()))
-        conn.commit()
-        
-        plan_info = {'plan': plan, 'usage_this_cycle': 0}
-    else:
-        plan_info = dict(plan_row)
-    
-    conn.close()
+    try:
+        c = conn.cursor()
+
+        # Get user plan
+        c.execute("SELECT * FROM user_plans WHERE user_id = %s", (user_id,))
+        plan_row = c.fetchone()
+
+        # Get from users table if not in user_plans
+        if not plan_row:
+            c.execute("SELECT plan FROM users WHERE id = %s", (user_id,))
+            user_row = c.fetchone()
+            plan = user_row['plan'] if user_row else 'free'
+
+            # Create user_plans entry
+            c.execute("""
+                INSERT INTO user_plans (user_id, plan, updated_at)
+                VALUES (%s, %s, %s)
+            """, (user_id, plan, datetime.utcnow().isoformat()))
+            conn.commit()
+
+            plan_info = {'plan': plan, 'usage_this_cycle': 0}
+        else:
+            plan_info = dict(plan_row)
+
+    finally:
+        conn.close()
     
     # Get current usage from rate limiter
     plan = plan_info.get('plan') or 'free'
@@ -701,28 +710,30 @@ def list_api_keys():
         return jsonify({'error': 'Auth error'}), 401
     
     conn = get_db()
-    c = conn.cursor()
-    
-    c.execute("""
-        SELECT id, key_prefix, name, is_active, created_at, last_used_at, usage_count
-        FROM api_keys
-        WHERE user_id = ?
-        ORDER BY created_at DESC
-    """, (user_id,))
-    
-    keys = []
-    for row in c.fetchall():
-        keys.append({
-            'id': row['id'],
-            'key_prefix': row['key_prefix'],
-            'name': row['name'],
-            'is_active': bool(row['is_active']),
-            'created_at': row['created_at'],
-            'last_used_at': row['last_used_at'],
-            'usage_count': row['usage_count']
-        })
-    
-    conn.close()
+    try:
+        c = conn.cursor()
+
+        c.execute("""
+            SELECT id, key_prefix, name, is_active, created_at, last_used_at, usage_count
+            FROM api_keys
+            WHERE user_id = %s
+            ORDER BY created_at DESC
+        """, (user_id,))
+
+        keys = []
+        for row in c.fetchall():
+            keys.append({
+                'id': row['id'],
+                'key_prefix': row['key_prefix'],
+                'name': row['name'],
+                'is_active': bool(row['is_active']),
+                'created_at': row['created_at'],
+                'last_used_at': row['last_used_at'],
+                'usage_count': row['usage_count']
+            })
+
+    finally:
+        conn.close()
     
     return jsonify({
         'success': True,
@@ -751,19 +762,21 @@ def create_api_key():
     name = data.get('name', 'Default Key')
     
     conn = get_db()
-    c = conn.cursor()
-    
-    # Check user's plan and key limit
-    c.execute("SELECT plan FROM users WHERE id = ?", (user_id,))
-    user_row = c.fetchone()
-    plan = user_row['plan'] if user_row else 'free'
-    
-    max_keys = RATE_LIMITS.get(plan, RATE_LIMITS['free'])['max_keys']
-    
-    c.execute("SELECT COUNT(*) as count FROM api_keys WHERE user_id = ? AND is_active = 1", (user_id,))
-    current_count = c.fetchone()['count']
-    
-    if current_count >= max_keys:
+    try:
+        c = conn.cursor()
+
+        # Check user's plan and key limit
+        c.execute("SELECT plan FROM users WHERE id = %s", (user_id,))
+        user_row = c.fetchone()
+        plan = user_row['plan'] if user_row else 'free'
+
+        max_keys = RATE_LIMITS.get(plan, RATE_LIMITS['free'])['max_keys']
+
+        c.execute("SELECT COUNT(*) as count FROM api_keys WHERE user_id = %s AND is_active = 1", (user_id,))
+        current_count = c.fetchone()['count']
+
+        if current_count >= max_keys:
+    finally:
         conn.close()
         return jsonify({
             'success': False,
@@ -781,7 +794,7 @@ def create_api_key():
     
     c.execute("""
         INSERT INTO api_keys (user_id, key_hash, key_prefix, name, rate_limit_tier, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s)
     """, (user_id, key_hash, key_prefix, name, plan, now))
     
     key_id = c.lastrowid
@@ -818,16 +831,18 @@ def revoke_api_key(key_id):
         return jsonify({'error': 'Auth error'}), 401
     
     conn = get_db()
-    c = conn.cursor()
-    
-    # Verify ownership
-    c.execute("SELECT id FROM api_keys WHERE id = ? AND user_id = ?", (key_id, user_id))
-    if not c.fetchone():
+    try:
+        c = conn.cursor()
+
+        # Verify ownership
+        c.execute("SELECT id FROM api_keys WHERE id = %s AND user_id = %s", (key_id, user_id))
+        if not c.fetchone():
+    finally:
         conn.close()
         return jsonify({'error': 'API key not found'}), 404
     
     # Soft delete (mark inactive)
-    c.execute("UPDATE api_keys SET is_active = 0 WHERE id = ?", (key_id,))
+    c.execute("UPDATE api_keys SET is_active = 0 WHERE id = %s", (key_id,))
     conn.commit()
     conn.close()
     
@@ -854,13 +869,15 @@ def regenerate_api_key(key_id):
         return jsonify({'error': 'Auth error'}), 401
     
     conn = get_db()
-    c = conn.cursor()
-    
-    # Verify ownership and get old key info
-    c.execute("SELECT * FROM api_keys WHERE id = ? AND user_id = ?", (key_id, user_id))
-    old_key = c.fetchone()
-    
-    if not old_key:
+    try:
+        c = conn.cursor()
+
+        # Verify ownership and get old key info
+        c.execute("SELECT * FROM api_keys WHERE id = %s AND user_id = %s", (key_id, user_id))
+        old_key = c.fetchone()
+
+        if not old_key:
+    finally:
         conn.close()
         return jsonify({'error': 'API key not found'}), 404
     
@@ -873,8 +890,8 @@ def regenerate_api_key(key_id):
     # Update with new key
     c.execute("""
         UPDATE api_keys 
-        SET key_hash = ?, key_prefix = ?, created_at = ?, last_used_at = NULL, usage_count = 0
-        WHERE id = ?
+        SET key_hash = %s, key_prefix = %s, created_at = %s, last_used_at = NULL, usage_count = 0
+        WHERE id = %s
     """, (key_hash, key_prefix, now, key_id))
     
     conn.commit()
@@ -912,54 +929,56 @@ def get_usage_stats():
         return jsonify({'error': 'Auth error'}), 401
     
     conn = get_db()
-    c = conn.cursor()
-    
-    # Get user's plan
-    c.execute("SELECT plan FROM users WHERE id = ?", (user_id,))
-    user_row = c.fetchone()
-    plan = user_row['plan'] if user_row else 'free'
-    
-    # Get today's usage from rate limiter
-    today_usage = monetization_rate_limiter.get_usage(user_id, plan)
-    
-    # Get last 30 days from database
-    thirty_days_ago = (datetime.utcnow() - timedelta(days=30)).strftime('%Y-%m-%d')
-    
-    c.execute("""
-        SELECT date, SUM(request_count) as requests, SUM(error_count) as errors
-        FROM api_usage_daily
-        WHERE user_id = ? AND date >= ?
-        GROUP BY date
-        ORDER BY date DESC
-    """, (user_id, thirty_days_ago))
-    
-    daily_stats = [dict(row) for row in c.fetchall()]
-    
-    # Get total stats
-    c.execute("""
-        SELECT 
-            SUM(request_count) as total_requests,
-            SUM(error_count) as total_errors,
-            AVG(avg_response_time_ms) as avg_response_time
-        FROM api_usage_daily
-        WHERE user_id = ?
-    """, (user_id,))
-    
-    totals = c.fetchone()
-    
-    # Get top endpoints
-    c.execute("""
-        SELECT endpoint, COUNT(*) as count
-        FROM api_usage
-        WHERE user_id = ? AND date >= ?
-        GROUP BY endpoint
-        ORDER BY count DESC
-        LIMIT 10
-    """, (user_id, thirty_days_ago))
-    
-    top_endpoints = [dict(row) for row in c.fetchall()]
-    
-    conn.close()
+    try:
+        c = conn.cursor()
+
+        # Get user's plan
+        c.execute("SELECT plan FROM users WHERE id = %s", (user_id,))
+        user_row = c.fetchone()
+        plan = user_row['plan'] if user_row else 'free'
+
+        # Get today's usage from rate limiter
+        today_usage = monetization_rate_limiter.get_usage(user_id, plan)
+
+        # Get last 30 days from database
+        thirty_days_ago = (datetime.utcnow() - timedelta(days=30)).strftime('%Y-%m-%d')
+
+        c.execute("""
+            SELECT date, SUM(request_count) as requests, SUM(error_count) as errors
+            FROM api_usage_daily
+            WHERE user_id = %s AND date >= %s
+            GROUP BY date
+            ORDER BY date DESC
+        """, (user_id, thirty_days_ago))
+
+        daily_stats = [dict(row) for row in c.fetchall()]
+
+        # Get total stats
+        c.execute("""
+            SELECT
+                SUM(request_count) as total_requests,
+                SUM(error_count) as total_errors,
+                AVG(avg_response_time_ms) as avg_response_time
+            FROM api_usage_daily
+            WHERE user_id = %s
+        """, (user_id,))
+
+        totals = c.fetchone()
+
+        # Get top endpoints
+        c.execute("""
+            SELECT endpoint, COUNT(*) as count
+            FROM api_usage
+            WHERE user_id = %s AND date >= %s
+            GROUP BY endpoint
+            ORDER BY count DESC
+            LIMIT 10
+        """, (user_id, thirty_days_ago))
+
+        top_endpoints = [dict(row) for row in c.fetchall()]
+
+    finally:
+        conn.close()
     
     limits = RATE_LIMITS.get(plan, RATE_LIMITS['free'])
     
@@ -1004,18 +1023,20 @@ def get_usage_history():
     since = (datetime.utcnow() - timedelta(days=days)).strftime('%Y-%m-%d')
     
     conn = get_db()
-    c = conn.cursor()
-    
-    c.execute("""
-        SELECT endpoint, method, status_code, response_time_ms, timestamp
-        FROM api_usage
-        WHERE user_id = ? AND date >= ?
-        ORDER BY timestamp DESC
-        LIMIT 1000
-    """, (user_id, since))
-    
-    history = [dict(row) for row in c.fetchall()]
-    conn.close()
+    try:
+        c = conn.cursor()
+
+        c.execute("""
+            SELECT endpoint, method, status_code, response_time_ms, timestamp
+            FROM api_usage
+            WHERE user_id = %s AND date >= %s
+            ORDER BY timestamp DESC
+            LIMIT 1000
+        """, (user_id, since))
+
+        history = [dict(row) for row in c.fetchall()]
+    finally:
+        conn.close()
     
     return jsonify({
         'success': True,

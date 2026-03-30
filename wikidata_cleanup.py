@@ -181,9 +181,9 @@ def is_valid_datacenter_strict(name: str, provider: str = "", source: str = "") 
 def analyze_database() -> Dict:
     """Analyze current database quality"""
     conn = sqlite3.connect(DB_PATH, timeout=60)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=60000")
-    conn.row_factory = sqlite3.Row
+    # PRAGMA removed - not needed for PostgreSQL
+    # PRAGMA removed - not needed for PostgreSQL
+    # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
     c = conn.cursor()
     
     stats = {
@@ -257,9 +257,9 @@ def analyze_database() -> Dict:
 def clean_database(dry_run: bool = True) -> Dict:
     """Clean invalid entries from database"""
     conn = sqlite3.connect(DB_PATH, timeout=60)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=60000")
-    conn.row_factory = sqlite3.Row
+    # PRAGMA removed - not needed for PostgreSQL
+    # PRAGMA removed - not needed for PostgreSQL
+    # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
     c = conn.cursor()
     
     results = {
@@ -311,12 +311,12 @@ def clean_database(dry_run: bool = True) -> Dict:
     else:
         # Actually perform cleanup
         for id, name, source, reason in to_remove:
-            c.execute("DELETE FROM facilities WHERE id = ?", [id])
+            c.execute("DELETE FROM facilities WHERE id = %s", [id])
             results['removed'] += 1
             results['removed_ids'].append(id)
         
         for id, confidence in to_update:
-            c.execute("UPDATE facilities SET confidence = ? WHERE id = ?", [confidence, id])
+            c.execute("UPDATE facilities SET confidence = %s WHERE id = %s", [confidence, id])
             results['updated_confidence'] += 1
         
         conn.commit()
@@ -331,9 +331,9 @@ def clean_database(dry_run: bool = True) -> Dict:
 def remove_duplicates(dry_run: bool = True) -> Dict:
     """Remove duplicate entries, keeping highest confidence"""
     conn = sqlite3.connect(DB_PATH, timeout=60)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=60000")
-    conn.row_factory = sqlite3.Row
+    # PRAGMA removed - not needed for PostgreSQL
+    # PRAGMA removed - not needed for PostgreSQL
+    # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
     c = conn.cursor()
     
     results = {
@@ -361,7 +361,7 @@ def remove_duplicates(dry_run: bool = True) -> Dict:
         c.execute("""
             SELECT id, name, source, confidence
             FROM facilities
-            WHERE LOWER(TRIM(name)) = ?
+            WHERE LOWER(TRIM(name)) = %s
             ORDER BY 
                 CASE source 
                     WHEN 'peeringdb' THEN 1 
@@ -388,7 +388,7 @@ def remove_duplicates(dry_run: bool = True) -> Dict:
             print(f"  - [{source}] {name[:50]}...")
     else:
         for id, name, source in to_remove:
-            c.execute("DELETE FROM facilities WHERE id = ?", [id])
+            c.execute("DELETE FROM facilities WHERE id = %s", [id])
             results['removed'] += 1
         
         conn.commit()
@@ -407,18 +407,18 @@ def strict_wikidata_sync() -> Dict:
     
     # Stricter SPARQL query - require coordinates and more specific class
     query = """
-    SELECT DISTINCT ?item ?itemLabel ?itemDescription ?coords ?country ?countryLabel ?operator ?operatorLabel WHERE {
+    SELECT DISTINCT %sitem %sitemLabel %sitemDescription %scoords %scountry %scountryLabel %soperator %soperatorLabel WHERE {
       # Must be instance of data center (Q1066984) directly
-      ?item wdt:P31 wd:Q1066984 .
+      %sitem wdt:P31 wd:Q1066984 .
       
       # Must have coordinates
-      ?item wdt:P625 ?coords .
+      %sitem wdt:P625 %scoords .
       
       # Get country
-      OPTIONAL { ?item wdt:P17 ?country . }
+      OPTIONAL { %sitem wdt:P17 %scountry . }
       
       # Get operator
-      OPTIONAL { ?item wdt:P137 ?operator . }
+      OPTIONAL { %sitem wdt:P137 %soperator . }
       
       SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
     }

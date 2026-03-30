@@ -8,7 +8,6 @@ stores in SQLite, and injects into the platform-cards API response.
 
 import re
 import logging
-import sqlite3
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 from db_utils import get_db
@@ -64,25 +63,28 @@ SKIP_USER_AGENTS = [
 def init_auto_register_db():
     conn = get_db()
     try:
-        conn.execute('''
+        c = conn.cursor()
+        c.execute('''
             CREATE TABLE IF NOT EXISTS discovered_platforms (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 user_agent TEXT NOT NULL,
-                first_seen TEXT DEFAULT (datetime('now')),
-                last_seen TEXT DEFAULT (datetime('now')),
+                first_seen TEXT DEFAULT (NOW()),
+                last_seen TEXT DEFAULT (NOW()),
                 request_count INTEGER DEFAULT 1,
                 identified_as TEXT,
                 protocol_guess TEXT,
                 auto_configured INTEGER DEFAULT 0
             )
         ''')
-        conn.execute('''
+        c = conn.cursor()
+        c.execute('''
             CREATE UNIQUE INDEX IF NOT EXISTS idx_discovered_platforms_user_agent
             ON discovered_platforms(user_agent)
         ''')
-        conn.execute('''
+        c = conn.cursor()
+        c.execute('''
             CREATE TABLE IF NOT EXISTS discovery_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 platform_key TEXT NOT NULL,
                 user_agent TEXT,
                 referer TEXT,
@@ -222,7 +224,7 @@ def detect_and_register(request_obj, endpoint_hit):
             cursor.execute('''
                 INSERT INTO discovered_platforms
                 (user_agent, first_seen, last_seen, request_count, identified_as, protocol_guess, auto_configured)
-                VALUES (?, ?, ?, 1, ?, ?, 0)
+                VALUES (%s, %s, %s, 1, %s, %s, 0)
                 ON CONFLICT (user_agent) DO UPDATE SET
                     request_count = discovered_platforms.request_count + 1,
                     last_seen = EXCLUDED.last_seen
@@ -235,7 +237,7 @@ def detect_and_register(request_obj, endpoint_hit):
         try:
             conn2 = get_db()
             cursor2 = conn2.cursor()
-            cursor2.execute('SELECT id FROM discovered_platforms WHERE user_agent = ?', (ua_string[:500],))
+            cursor2.execute('SELECT id FROM discovered_platforms WHERE user_agent = %s', (ua_string[:500],))
             row = cursor2.fetchone()
             conn2.close()
             is_new = row is None
@@ -350,7 +352,7 @@ def get_recent_events(limit=50):
                 SELECT id, user_agent, first_seen, last_seen, request_count, identified_as
                 FROM discovered_platforms
                 ORDER BY last_seen DESC
-                LIMIT ?
+                LIMIT %s
             ''', (limit,))
             rows = cursor.fetchall()
         finally:

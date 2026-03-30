@@ -7,7 +7,7 @@ infrastructure files from public government and industry sources.
 v3.0 CHANGES (Mar 2026):
   - Migrated from SQLite to Neon PostgreSQL (data persists across Railway deploys)
   - Uses late-binding DB connection pattern (injected from main.py)
-  - PostgreSQL parameterized queries (%s instead of ?)
+  - PostgreSQL parameterized queries (%s instead of %s)
   - ON CONFLICT instead of INSERT OR IGNORE
   - datetime('now', '-7 days') → NOW() - INTERVAL '7 days'
 
@@ -926,7 +926,7 @@ class KMZAutoDiscovery:
 
             while total_fetched < MAX_FEATURES:
                 query_url = (
-                    f"{url}/query?where=1%3D1&outFields=*"
+                    f"{url}/query%swhere=1%3D1&outFields=*"
                     f"&resultRecordCount={BATCH_SIZE}&resultOffset={offset}"
                     f"&returnGeometry=true&f=json"
                 )
@@ -1050,7 +1050,7 @@ class KMZAutoDiscovery:
             try:
                 results['checked'] += 1
 
-                catalog_url = f"{state['url']}?f=json"
+                catalog_url = f"{state['url']}%sf=json"
                 response = self.session.get(catalog_url, timeout=15)
 
                 if response.status_code == 200:

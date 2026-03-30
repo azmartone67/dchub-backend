@@ -273,9 +273,9 @@ def get_confidence_label(score):
 def cleanup_capacity_data():
     """Main cleanup function"""
     conn = sqlite3.connect(DB_PATH, timeout=5)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
-    conn.row_factory = sqlite3.Row
+    # PRAGMA removed - not needed for PostgreSQL
+    # PRAGMA removed - not needed for PostgreSQL
+    # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
     c = conn.cursor()
     
     print("=" * 60)
@@ -337,7 +337,7 @@ def cleanup_capacity_data():
     
     # Step 3: Delete duplicates and non-DC content
     if to_delete:
-        placeholders = ','.join('?' * len(to_delete))
+        placeholders = ','.join('%s' * len(to_delete))
         c.execute(f'DELETE FROM capacity_pipeline WHERE id IN ({placeholders})', to_delete)
         print(f"[5] Deleted {c.rowcount} records")
     
@@ -345,9 +345,9 @@ def cleanup_capacity_data():
     for updates in to_update:
         record_id = updates.pop('id')
         if updates:
-            set_clause = ', '.join(f"{k} = ?" for k in updates.keys())
+            set_clause = ', '.join(f"{k} = %s" for k in updates.keys())
             values = list(updates.values()) + [record_id]
-            c.execute(f'UPDATE capacity_pipeline SET {set_clause} WHERE id = ?', values)
+            c.execute(f'UPDATE capacity_pipeline SET {set_clause} WHERE id = %s', values)
     
     print(f"[6] Updated {len(to_update)} records with extracted data")
     
@@ -402,13 +402,13 @@ def cleanup_capacity_data():
 def add_confidence_scores():
     """Add confidence scores to all capacity records"""
     conn = sqlite3.connect(DB_PATH, timeout=5)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
-    conn.row_factory = sqlite3.Row
+    # PRAGMA removed - not needed for PostgreSQL
+    # PRAGMA removed - not needed for PostgreSQL
+    # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
     c = conn.cursor()
     
     # Check if confidence column exists, add if not
-    c.execute("PRAGMA table_info(capacity_pipeline)")
+    # PRAGMA removed - not needed for PostgreSQL
     columns = [col[1] for col in c.fetchall()]
     
     if 'confidence_score' not in columns:
@@ -425,8 +425,8 @@ def add_confidence_scores():
         label = get_confidence_label(score)
         
         c.execute('''UPDATE capacity_pipeline 
-                     SET confidence_score = ?, confidence_label = ? 
-                     WHERE id = ?''', (score, label, record['id']))
+                     SET confidence_score = %s, confidence_label = %s 
+                     WHERE id = %s''', (score, label, record['id']))
     
     conn.commit()
     
@@ -454,9 +454,9 @@ def get_enhanced_capacity_endpoint_code():
 def get_enhanced_capacity():
     """Get capacity pipeline with quality filtering and stats"""
     conn = sqlite3.connect('dc_nexus.db', timeout=5)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
-    conn.row_factory = sqlite3.Row
+    # PRAGMA removed - not needed for PostgreSQL
+    # PRAGMA removed - not needed for PostgreSQL
+    # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
     c = conn.cursor()
     
     # Get filter params
@@ -470,19 +470,19 @@ def get_enhanced_capacity():
     params = []
     
     if min_confidence:
-        query += ' AND confidence_score >= ?'
+        query += ' AND confidence_score >= %s'
         params.append(min_confidence)
     
     if operator:
-        query += ' AND operator LIKE ?'
+        query += ' AND operator LIKE %s'
         params.append(f'%{operator}%')
     
     if region:
-        query += ' AND region = ?'
+        query += ' AND region = %s'
         params.append(region)
     
     if min_mw:
-        query += ' AND capacity_mw >= ?'
+        query += ' AND capacity_mw >= %s'
         params.append(min_mw)
     
     query += ' ORDER BY capacity_mw DESC'

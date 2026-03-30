@@ -25,7 +25,6 @@ from flask import Blueprint, request, jsonify
 import os
 import json
 import requests
-import sqlite3
 from datetime import datetime, timedelta
 from functools import wraps
 from db_utils import get_db
@@ -42,33 +41,35 @@ _token_expiry = None
 
 def init_gsc_tables():
     conn = get_db()
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS gsc_index_requests (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        url TEXT NOT NULL,
-        status TEXT DEFAULT 'pending',
-        requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        indexed_at TIMESTAMP,
-        error TEXT
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS gsc_crawl_errors (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        url TEXT NOT NULL,
-        error_type TEXT,
-        first_detected TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        last_detected TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        resolved BOOLEAN DEFAULT FALSE
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS gsc_sitemap_submissions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sitemap_url TEXT NOT NULL,
-        submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        status TEXT DEFAULT 'pending',
-        urls_submitted INTEGER DEFAULT 0,
-        urls_indexed INTEGER DEFAULT 0
-    )''')
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS gsc_index_requests (
+            id SERIAL PRIMARY KEY,
+            url TEXT NOT NULL,
+            status TEXT DEFAULT 'pending',
+            requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            indexed_at TIMESTAMP,
+            error TEXT
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS gsc_crawl_errors (
+            id SERIAL PRIMARY KEY,
+            url TEXT NOT NULL,
+            error_type TEXT,
+            first_detected TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_detected TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            resolved BOOLEAN DEFAULT FALSE
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS gsc_sitemap_submissions (
+            id SERIAL PRIMARY KEY,
+            sitemap_url TEXT NOT NULL,
+            submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            status TEXT DEFAULT 'pending',
+            urls_submitted INTEGER DEFAULT 0,
+            urls_indexed INTEGER DEFAULT 0
+        )''')
+        conn.commit()
+    finally:
+        conn.close()
     print("✅ Google Search Console tables initialized")
 
 def get_access_token():
@@ -257,11 +258,13 @@ def submit_sitemap(token):
         )
         
         conn = get_db()
-        c = conn.cursor()
-        c.execute('''INSERT INTO gsc_sitemap_submissions (sitemap_url, status) VALUES (?, ?)''',
-                  (sitemap_url, 'submitted' if response.status_code in [200, 204] else 'failed'))
-        conn.commit()
-        conn.close()
+        try:
+            c = conn.cursor()
+            c.execute('''INSERT INTO gsc_sitemap_submissions (sitemap_url, status) VALUES (%s, %s) ON CONFLICT (sitemap_url) DO UPDATE SET status = EXCLUDED.status''',
+                      (sitemap_url, 'submitted' if response.status_code in [200, 204] else 'failed'))
+            conn.commit()
+        finally:
+            conn.close()
         
         if response.status_code in [200, 204]:
             return jsonify({
@@ -398,11 +401,13 @@ def request_indexing(token):
         )
         
         conn = get_db()
-        c = conn.cursor()
-        
-        if response.status_code == 200:
-            c.execute('''INSERT INTO gsc_index_requests (url, status) VALUES (?, 'submitted')''', (url,))
-            conn.commit()
+        try:
+            c = conn.cursor()
+
+            if response.status_code == 200:
+                c.execute('''INSERT INTO gsc_index_requests (url, status) VALUES (%s, 'submitted') ON CONFLICT (url) DO UPDATE SET status = EXCLUDED.status''', (url,))
+                conn.commit()
+        finally:
             conn.close()
             
             return jsonify({
@@ -413,7 +418,7 @@ def request_indexing(token):
             })
         else:
             error_msg = response.text
-            c.execute('''INSERT INTO gsc_index_requests (url, status, error) VALUES (?, 'failed', ?)''', 
+            c.execute('''INSERT INTO gsc_index_requests (url, status, error) VALUES (%s, 'failed', %s) ON CONFLICT (url) DO UPDATE SET status = EXCLUDED.status, error = EXCLUDED.error''', 
                       (url, error_msg))
             conn.commit()
             conn.close()
@@ -432,19 +437,21 @@ def request_indexing(token):
 def crawl_errors(token):
     try:
         conn = get_db()
-        c = conn.cursor()
-        c.execute('''SELECT url, error_type, first_detected, last_detected, resolved 
-                     FROM gsc_crawl_errors ORDER BY last_detected DESC LIMIT 100''')
-        errors = []
-        for row in c.fetchall():
-            errors.append({
-                'url': row[0],
-                'error_type': row[1],
-                'first_detected': row[2],
-                'last_detected': row[3],
-                'resolved': bool(row[4])
-            })
-        conn.close()
+        try:
+            c = conn.cursor()
+            c.execute('''SELECT url, error_type, first_detected, last_detected, resolved
+                         FROM gsc_crawl_errors ORDER BY last_detected DESC LIMIT 100''')
+            errors = []
+            for row in c.fetchall():
+                errors.append({
+                    'url': row[0],
+                    'error_type': row[1],
+                    'first_detected': row[2],
+                    'last_detected': row[3],
+                    'resolved': bool(row[4])
+                })
+        finally:
+            conn.close()
         
         return jsonify({
             'success': True,
@@ -460,20 +467,22 @@ def crawl_errors(token):
 def get_index_requests():
     try:
         conn = get_db()
-        c = conn.cursor()
-        c.execute('''SELECT id, url, status, requested_at, indexed_at, error 
-                     FROM gsc_index_requests ORDER BY requested_at DESC LIMIT 50''')
-        requests_list = []
-        for row in c.fetchall():
-            requests_list.append({
-                'id': row[0],
-                'url': row[1],
-                'status': row[2],
-                'requested_at': row[3],
-                'indexed_at': row[4],
-                'error': row[5]
-            })
-        conn.close()
+        try:
+            c = conn.cursor()
+            c.execute('''SELECT id, url, status, requested_at, indexed_at, error
+                         FROM gsc_index_requests ORDER BY requested_at DESC LIMIT 50''')
+            requests_list = []
+            for row in c.fetchall():
+                requests_list.append({
+                    'id': row[0],
+                    'url': row[1],
+                    'status': row[2],
+                    'requested_at': row[3],
+                    'indexed_at': row[4],
+                    'error': row[5]
+                })
+        finally:
+            conn.close()
         
         return jsonify({
             'success': True,

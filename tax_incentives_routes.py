@@ -509,7 +509,7 @@ def _init_db(db):
     """Create tax_incentives table if it doesn't exist"""
     cursor = db.cursor() if hasattr(db, 'cursor') else db.execute
     try:
-        db.execute('''CREATE TABLE IF NOT EXISTS tax_incentives (
+        cursor.execute('''CREATE TABLE IF NOT EXISTS tax_incentives (
             abbr TEXT PRIMARY KEY,
             data TEXT NOT NULL,
             last_modified TEXT DEFAULT CURRENT_TIMESTAMP
@@ -521,7 +521,7 @@ def _init_db(db):
 def _load_from_db(db):
     """Load all incentives from DB"""
     try:
-        rows = db.execute('SELECT abbr, data FROM tax_incentives').fetchall()
+        rows = cursor.execute('SELECT abbr, data FROM tax_incentives').fetchall()
         return [json.loads(row[1]) for row in rows] if rows else []
     except:
         return []
@@ -530,8 +530,9 @@ def _seed_db(db, defaults):
     """Seed DB with default data"""
     try:
         for state in defaults:
-            db.execute(
-                'INSERT OR REPLACE INTO tax_incentives (abbr, data) VALUES (?, ?)',
+            c = db.cursor()
+            c.execute(
+                'INSERT INTO tax_incentives  (abbr, data) VALUES (%s, %s) ON CONFLICT (abbr) DO UPDATE SET data = EXCLUDED.data',
                 (state['abbr'], json.dumps(state))
             )
         db.commit()
@@ -541,8 +542,9 @@ def _seed_db(db, defaults):
 
 def _update_db(db, abbr, data):
     """Update a single state in DB"""
-    db.execute(
-        'INSERT OR REPLACE INTO tax_incentives (abbr, data, last_modified) VALUES (?, ?, ?)',
+    c = db.cursor()
+    c.execute(
+        'INSERT INTO tax_incentives  (abbr, data, last_modified) VALUES (%s, %s, %s) ON CONFLICT (abbr) DO UPDATE SET data = EXCLUDED.data, last_modified = EXCLUDED.last_modified',
         (abbr, json.dumps(data), datetime.utcnow().isoformat())
     )
     db.commit()

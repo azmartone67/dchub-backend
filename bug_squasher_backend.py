@@ -220,7 +220,7 @@ def fix_bug005(check_only=False):
         
         # Replace the entire validate_api_key function
         # Find the function and its end
-        pattern = r'def validate_api_key\([^)]*\):.*?(?=\ndef |\nclass |\Z)'
+        pattern = r'def validate_api_key\([^)]*\):.*%s(%s=\ndef |\nclass |\Z)'
         match = re.search(pattern, content, re.DOTALL)
         
         if match:
@@ -266,7 +266,7 @@ def fix_bug006(check_only=False):
         # Let's look for the response mapping instead
         
         has_id_in_response = bool(re.search(r"['\"]id['\"]:\s*(?:row|r|facility)\[", content))
-        has_id_in_select = bool(re.search(r"SELECT.*?\bf\.id\b.*?FROM.*?facilities", content, re.DOTALL | re.IGNORECASE))
+        has_id_in_select = bool(re.search(r"SELECT.*%s\bf\.id\b.*%sFROM.*%sfacilities", content, re.DOTALL | re.IGNORECASE))
         
         if has_id_in_response and has_id_in_select:
             results.append(f"  ✅ {path}: search_facilities already includes id field")
@@ -310,7 +310,7 @@ def fix_bug016(check_only=False):
         # Look for post-query filtering pattern
         # Common antipattern: fetch results with LIMIT, then filter in Python
         post_filter = re.search(
-            r'min_capacity.*?=.*?arguments.*?get.*?min_capacity.*?\n.*?(?:results|data|rows).*?=.*?\[.*?for.*?if.*?capacity.*?>',
+            r'min_capacity.*%s=.*%sarguments.*%sget.*%smin_capacity.*%s\n.*%s(%s:results|data|rows).*%s=.*%s\[.*%sfor.*%sif.*%scapacity.*%s>',
             content, re.DOTALL
         )
         

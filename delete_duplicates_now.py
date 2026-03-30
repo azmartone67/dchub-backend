@@ -25,8 +25,8 @@ DELETE_IDS = [
 
 def cleanup():
     conn = sqlite3.connect(DB_PATH, timeout=60)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=60000")
+    # PRAGMA removed - not needed for PostgreSQL
+    # PRAGMA removed - not needed for PostgreSQL
     c = conn.cursor()
     
     print("=" * 50)
@@ -39,11 +39,11 @@ def cleanup():
     
     deleted = 0
     for deal_id in DELETE_IDS:
-        c.execute("SELECT id, buyer, seller FROM deals WHERE id = ?", (deal_id,))
+        c.execute("SELECT id, buyer, seller FROM deals WHERE id = %s", (deal_id,))
         row = c.fetchone()
         if row:
             print(f"❌ Deleting: {row[0]} ({row[1]} → {row[2]})")
-            c.execute("DELETE FROM deals WHERE id = ?", (deal_id,))
+            c.execute("DELETE FROM deals WHERE id = %s", (deal_id,))
             deleted += 1
     
     # Also delete ANY auto-discovered SoftBank/DigitalBridge from today

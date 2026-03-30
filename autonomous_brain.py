@@ -120,20 +120,22 @@ class AutonomousBrain:
         conn = None
         try:
             conn = get_db()
-            cur = conn.cursor()
+            try:
+                cur = conn.cursor()
 
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS brain_state (
-                    id SERIAL PRIMARY KEY,
-                    state_key VARCHAR(100) UNIQUE NOT NULL,
-                    state_value JSONB,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS brain_state (
+                        id SERIAL PRIMARY KEY,
+                        state_key VARCHAR(100) UNIQUE NOT NULL,
+                        state_value JSONB,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
 
-            conn.commit()
-            cur.close()
-            conn.close()
+                conn.commit()
+                cur.close()
+            finally:
+                conn.close()
             conn = None
             logger.info("brain_state table initialized in PostgreSQL")
         except Exception as e:
@@ -149,16 +151,18 @@ class AutonomousBrain:
         conn = None
         try:
             conn = get_db()
-            cur = conn.cursor()
+            try:
+                cur = conn.cursor()
 
-            cur.execute("""
-                SELECT state_value FROM brain_state
-                WHERE state_key = 'autonomous_brain_state'
-            """)
+                cur.execute("""
+                    SELECT state_value FROM brain_state
+                    WHERE state_key = 'autonomous_brain_state'
+                """)
 
-            result = cur.fetchone()
-            cur.close()
-            conn.close()
+                result = cur.fetchone()
+                cur.close()
+            finally:
+                conn.close()
             conn = None
 
             if result:
@@ -196,22 +200,24 @@ class AutonomousBrain:
         """Save state to PostgreSQL brain_state table"""
         try:
             conn = get_db()
-            cur = conn.cursor()
+            try:
+                cur = conn.cursor()
 
-            state_json = json.dumps(self.state, default=str)
+                state_json = json.dumps(self.state, default=str)
 
-            cur.execute("""
-                INSERT INTO brain_state (state_key, state_value, updated_at)
-                VALUES (%s, %s, CURRENT_TIMESTAMP)
-                ON CONFLICT (state_key)
-                DO UPDATE SET
-                    state_value = %s,
-                    updated_at = CURRENT_TIMESTAMP
-            """, ('autonomous_brain_state', state_json, state_json))
+                cur.execute("""
+                    INSERT INTO brain_state (state_key, state_value, updated_at)
+                    VALUES (%s, %s, CURRENT_TIMESTAMP)
+                    ON CONFLICT (state_key)
+                    DO UPDATE SET
+                        state_value = %s,
+                        updated_at = CURRENT_TIMESTAMP
+                """, ('autonomous_brain_state', state_json, state_json))
 
-            conn.commit()
-            cur.close()
-            conn.close()
+                conn.commit()
+                cur.close()
+            finally:
+                conn.close()
             logger.debug("State saved to PostgreSQL")
         except Exception as e:
             logger.error(f"Error saving state to PostgreSQL: {e}")
@@ -222,65 +228,67 @@ class AutonomousBrain:
 
         try:
             conn = get_db()
-            cur = conn.cursor(cursor_factory=RealDictCursor)
+            try:
+                cur = conn.cursor(cursor_factory=RealDictCursor)
 
-            cur.execute("""
-                SELECT id, title, content, source, source_url, published_date
-                FROM announcements
-                WHERE (title ILIKE '%MW%' OR title ILIKE '%GW%'
-                    OR title ILIKE '%megawatt%' OR title ILIKE '%gigawatt%'
-                    OR title ILIKE '%capacity%' OR title ILIKE '%power%'
-                    OR content ILIKE '%MW%' OR content ILIKE '%GW%')
-                ORDER BY published_date DESC
-                LIMIT 500
-            """)
+                cur.execute("""
+                    SELECT id, title, content, source, source_url, published_date
+                    FROM announcements
+                    WHERE (title ILIKE '%MW%' OR title ILIKE '%GW%'
+                        OR title ILIKE '%megawatt%' OR title ILIKE '%gigawatt%'
+                        OR title ILIKE '%capacity%' OR title ILIKE '%power%'
+                        OR content ILIKE '%MW%' OR content ILIKE '%GW%')
+                    ORDER BY published_date DESC
+                    LIMIT 500
+                """)
 
-            articles = cur.fetchall()
+                articles = cur.fetchall()
 
-            for article in articles:
-                text = f"{article['title']} {article['content'] or ''}"
+                for article in articles:
+                    text = f"{article['title']} {article['content'] or ''}"
 
-                for pattern in self.mw_patterns:
-                    matches = re.findall(pattern, text, re.IGNORECASE)
-                    for match in matches:
-                        try:
-                            if isinstance(match, tuple) and len(match) >= 2:
-                                value_str, unit = match[0], match[1]
-                            else:
+                    for pattern in self.mw_patterns:
+                        matches = re.findall(pattern, text, re.IGNORECASE)
+                        for match in matches:
+                            try:
+                                if isinstance(match, tuple) and len(match) >= 2:
+                                    value_str, unit = match[0], match[1]
+                                else:
+                                    continue
+
+                                value = float(value_str.replace(',', ''))
+
+                                if unit.upper() in ['GW', 'GIGAWATT']:
+                                    value *= 1000
+
+                                if 1 <= value <= 10000:
+                                    results['extracted'] += 1
+                                    results['total_mw'] += value
+
+                                    operator = self._extract_operator(text)
+                                    location = self._extract_location(text)
+
+                                    cur.execute("""
+                                        SELECT id FROM capacity_pipeline
+                                        WHERE source_url = %s OR (operator = %s AND capacity_mw = %s)
+                                    """, (article['source_url'], operator, value))
+
+                                    if not cur.fetchone():
+                                        cur.execute("""
+                                            INSERT INTO capacity_pipeline
+                                            (operator, capacity_mw, market, status, source_url, source, created_at)
+                                            VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                                            ON CONFLICT DO NOTHING
+                                        """, (operator, value, location, 'announced', article['source_url'], 'auto_extracted'))
+                                        results['new_pipeline'] += 1
+
+                            except (ValueError, TypeError):
                                 continue
 
-                            value = float(value_str.replace(',', ''))
-
-                            if unit.upper() in ['GW', 'GIGAWATT']:
-                                value *= 1000
-
-                            if 1 <= value <= 10000:
-                                results['extracted'] += 1
-                                results['total_mw'] += value
-
-                                operator = self._extract_operator(text)
-                                location = self._extract_location(text)
-
-                                cur.execute("""
-                                    SELECT id FROM capacity_pipeline
-                                    WHERE source_url = %s OR (operator = %s AND capacity_mw = %s)
-                                """, (article['source_url'], operator, value))
-
-                                if not cur.fetchone():
-                                    cur.execute("""
-                                        INSERT INTO capacity_pipeline
-                                        (operator, capacity_mw, market, status, source_url, source, created_at)
-                                        VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-                                        ON CONFLICT DO NOTHING
-                                    """, (operator, value, location, 'announced', article['source_url'], 'auto_extracted'))
-                                    results['new_pipeline'] += 1
-
-                        except (ValueError, TypeError):
-                            continue
-
-            conn.commit()
-            cur.close()
-            conn.close()
+                conn.commit()
+                cur.close()
+            finally:
+                conn.close()
 
             self.state['capacity_extracted'] += results['new_pipeline']
             self._save_state()
@@ -296,62 +304,64 @@ class AutonomousBrain:
 
         try:
             conn = get_db()
-            cur = conn.cursor(cursor_factory=RealDictCursor)
+            try:
+                cur = conn.cursor(cursor_factory=RealDictCursor)
 
-            cur.execute("""
-                SELECT id, title, content, source, source_url, published_date
-                FROM announcements
-                WHERE (title ILIKE '%acqui%' OR title ILIKE '%merg%'
-                    OR title ILIKE '%buy%' OR title ILIKE '%sell%'
-                    OR title ILIKE '%deal%' OR title ILIKE '%billion%'
-                    OR title ILIKE '%million%')
-                ORDER BY published_date DESC
-                LIMIT 300
-            """)
+                cur.execute("""
+                    SELECT id, title, content, source, source_url, published_date
+                    FROM announcements
+                    WHERE (title ILIKE '%acqui%' OR title ILIKE '%merg%'
+                        OR title ILIKE '%buy%' OR title ILIKE '%sell%'
+                        OR title ILIKE '%deal%' OR title ILIKE '%billion%'
+                        OR title ILIKE '%million%')
+                    ORDER BY published_date DESC
+                    LIMIT 300
+                """)
 
-            articles = cur.fetchall()
+                articles = cur.fetchall()
 
-            for article in articles:
-                results['scanned'] += 1
-                text = f"{article['title']} {article['content'] or ''}"
+                for article in articles:
+                    results['scanned'] += 1
+                    text = f"{article['title']} {article['content'] or ''}"
 
-                deal_score = 0
-                for pattern in self.deal_patterns:
-                    if re.search(pattern, text, re.IGNORECASE):
-                        deal_score += 1
+                    deal_score = 0
+                    for pattern in self.deal_patterns:
+                        if re.search(pattern, text, re.IGNORECASE):
+                            deal_score += 1
 
-                if deal_score >= 2:
-                    value_match = re.search(r'\$\s*(\d+(?:\.\d+)?)\s*(billion|million|B|M)', text, re.IGNORECASE)
-                    deal_value = None
-                    if value_match:
-                        val = float(value_match.group(1))
-                        unit = value_match.group(2).lower()
-                        if unit in ['billion', 'b']:
-                            deal_value = val * 1000000000
-                        else:
-                            deal_value = val * 1000000
+                    if deal_score >= 2:
+                        value_match = re.search(r'\$\s*(\d+(%s:\.\d+)%s)\s*(billion|million|B|M)', text, re.IGNORECASE)
+                        deal_value = None
+                        if value_match:
+                            val = float(value_match.group(1))
+                            unit = value_match.group(2).lower()
+                            if unit in ['billion', 'b']:
+                                deal_value = val * 1000000000
+                            else:
+                                deal_value = val * 1000000
 
-                    buyer, target = self._extract_deal_parties(text)
+                        buyer, target = self._extract_deal_parties(text)
 
-                    cur.execute("""
-                        SELECT id FROM deals WHERE source_url = %s
-                    """, (article['source_url'],))
-
-                    if not cur.fetchone() and (buyer or target):
-                        import uuid
                         cur.execute("""
-                            INSERT INTO deals
-                            (id, buyer, seller, value, type, status,
-                             source_url, notes, created_at)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-                            ON CONFLICT DO NOTHING
-                        """, (str(uuid.uuid4())[:8], buyer, target, deal_value, 'acquisition', 'announced',
-                              article['source_url'], article['title'][:300]))
-                        results['deals_found'] += 1
+                            SELECT id FROM deals WHERE source_url = %s
+                        """, (article['source_url'],))
 
-            conn.commit()
-            cur.close()
-            conn.close()
+                        if not cur.fetchone() and (buyer or target):
+                            import uuid
+                            cur.execute("""
+                                INSERT INTO deals
+                                (id, buyer, seller, value, type, status,
+                                 source_url, notes, created_at)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                                ON CONFLICT DO NOTHING
+                            """, (str(uuid.uuid4())[:8], buyer, target, deal_value, 'acquisition', 'announced',
+                                  article['source_url'], article['title'][:300]))
+                            results['deals_found'] += 1
+
+                conn.commit()
+                cur.close()
+            finally:
+                conn.close()
 
             self.state['deals_found'] += results['deals_found']
             self._save_state()
@@ -367,59 +377,61 @@ class AutonomousBrain:
 
         try:
             conn = get_db()
-            cur = conn.cursor()
+            try:
+                cur = conn.cursor()
 
-            # Fix missing country
-            cur.execute("""
-                UPDATE facilities SET country = 'US'
-                WHERE country IS NULL AND (
-                    city ILIKE '%Virginia%' OR city ILIKE '%Texas%'
-                    OR city ILIKE '%California%' OR city ILIKE '%Arizona%'
-                    OR state IN ('VA', 'TX', 'CA', 'AZ', 'NY', 'NJ', 'IL', 'GA', 'NC', 'OH')
-                )
-            """)
-            results['categories']['country_fixed'] = cur.rowcount
-            results['fixed'] += cur.rowcount
+                # Fix missing country
+                cur.execute("""
+                    UPDATE facilities SET country = 'US'
+                    WHERE country IS NULL AND (
+                        city ILIKE '%Virginia%' OR city ILIKE '%Texas%'
+                        OR city ILIKE '%California%' OR city ILIKE '%Arizona%'
+                        OR state IN ('VA', 'TX', 'CA', 'AZ', 'NY', 'NJ', 'IL', 'GA', 'NC', 'OH')
+                    )
+                """)
+                results['categories']['country_fixed'] = cur.rowcount
+                results['fixed'] += cur.rowcount
 
-            # Fix missing status
-            cur.execute("""
-                UPDATE facilities SET status = 'active'
-                WHERE status IS NULL OR status = ''
-            """)
-            results['categories']['status_fixed'] = cur.rowcount
-            results['fixed'] += cur.rowcount
+                # Fix missing status
+                cur.execute("""
+                    UPDATE facilities SET status = 'active'
+                    WHERE status IS NULL OR status = ''
+                """)
+                results['categories']['status_fixed'] = cur.rowcount
+                results['fixed'] += cur.rowcount
 
-            # Fix missing provider
-            cur.execute("""
-                UPDATE facilities SET provider = name
-                WHERE provider IS NULL AND name IS NOT NULL
-            """)
-            results['categories']['provider_fixed'] = cur.rowcount
-            results['fixed'] += cur.rowcount
+                # Fix missing provider
+                cur.execute("""
+                    UPDATE facilities SET provider = name
+                    WHERE provider IS NULL AND name IS NOT NULL
+                """)
+                results['categories']['provider_fixed'] = cur.rowcount
+                results['fixed'] += cur.rowcount
 
-            # Remove empty announcements
-            cur.execute("""
-                DELETE FROM announcements
-                WHERE title IS NULL OR title = '' OR length(title) < 10
-            """)
-            results['categories']['empty_news_removed'] = cur.rowcount
+                # Remove empty announcements
+                cur.execute("""
+                    DELETE FROM announcements
+                    WHERE title IS NULL OR title = '' OR length(title) < 10
+                """)
+                results['categories']['empty_news_removed'] = cur.rowcount
 
-            # Trim whitespace
-            cur.execute("""
-                UPDATE facilities
-                SET name = TRIM(name),
-                    city = TRIM(city),
-                    provider = TRIM(provider)
-                WHERE name LIKE ' %' OR name LIKE '% '
-                   OR city LIKE ' %' OR city LIKE '% '
-                   OR provider LIKE ' %' OR provider LIKE '% '
-            """)
-            results['categories']['whitespace_trimmed'] = cur.rowcount
-            results['fixed'] += cur.rowcount
+                # Trim whitespace
+                cur.execute("""
+                    UPDATE facilities
+                    SET name = TRIM(name),
+                        city = TRIM(city),
+                        provider = TRIM(provider)
+                    WHERE name LIKE ' %' OR name LIKE '% '
+                       OR city LIKE ' %' OR city LIKE '% '
+                       OR provider LIKE ' %' OR provider LIKE '% '
+                """)
+                results['categories']['whitespace_trimmed'] = cur.rowcount
+                results['fixed'] += cur.rowcount
 
-            conn.commit()
-            cur.close()
-            conn.close()
+                conn.commit()
+                cur.close()
+            finally:
+                conn.close()
 
             self.state['quality_fixes'] += results['fixed']
             self._save_state()
@@ -496,31 +508,33 @@ class AutonomousBrain:
 
         try:
             conn = get_db()
-            cur = conn.cursor(cursor_factory=RealDictCursor)
+            try:
+                cur = conn.cursor(cursor_factory=RealDictCursor)
 
-            cur.execute("""
-                SELECT id, title, content, source_url FROM announcements
-                WHERE published_date > NOW() - INTERVAL '7 days'
-                ORDER BY published_date DESC LIMIT 300
-            """)
-            articles = cur.fetchall()
+                cur.execute("""
+                    SELECT id, title, content, source_url FROM announcements
+                    WHERE published_date > NOW() - INTERVAL '7 days'
+                    ORDER BY published_date DESC LIMIT 300
+                """)
+                articles = cur.fetchall()
 
-            for article in articles:
-                text = f"{article['title']} {article['content'] or ''}"
+                for article in articles:
+                    text = f"{article['title']} {article['content'] or ''}"
 
-                # Check for pipeline mentions
-                for pattern in self.gas_patterns:
-                    if re.search(pattern, text, re.IGNORECASE):
-                        if 'midstream' in text.lower():
-                            results['midstream'] += 1
-                        elif 'lng' in text.lower():
-                            results['lng'] += 1
-                        else:
-                            results['pipelines'] += 1
-                        break
+                    # Check for pipeline mentions
+                    for pattern in self.gas_patterns:
+                        if re.search(pattern, text, re.IGNORECASE):
+                            if 'midstream' in text.lower():
+                                results['midstream'] += 1
+                            elif 'lng' in text.lower():
+                                results['lng'] += 1
+                            else:
+                                results['pipelines'] += 1
+                            break
 
-            cur.close()
-            conn.close()
+                cur.close()
+            finally:
+                conn.close()
             self.state['gas_infrastructure_found'] += results['added']
             self._save_state()
 
@@ -535,31 +549,33 @@ class AutonomousBrain:
 
         try:
             conn = get_db()
-            cur = conn.cursor(cursor_factory=RealDictCursor)
+            try:
+                cur = conn.cursor(cursor_factory=RealDictCursor)
 
-            cur.execute("""
-                SELECT id, title, content, source_url FROM announcements
-                WHERE published_date > NOW() - INTERVAL '7 days'
-                ORDER BY published_date DESC LIMIT 300
-            """)
-            articles = cur.fetchall()
+                cur.execute("""
+                    SELECT id, title, content, source_url FROM announcements
+                    WHERE published_date > NOW() - INTERVAL '7 days'
+                    ORDER BY published_date DESC LIMIT 300
+                """)
+                articles = cur.fetchall()
 
-            for article in articles:
-                text = f"{article['title']} {article['content'] or ''}"
+                for article in articles:
+                    text = f"{article['title']} {article['content'] or ''}"
 
-                # Check for transmission line mentions
-                for pattern in self.transmission_patterns:
-                    if re.search(pattern, text, re.IGNORECASE):
-                        if 'hvdc' in text.lower():
-                            results['hvdc'] += 1
-                        elif 'substation' in text.lower():
-                            results['substations'] += 1
-                        else:
-                            results['transmission_lines'] += 1
-                        break
+                    # Check for transmission line mentions
+                    for pattern in self.transmission_patterns:
+                        if re.search(pattern, text, re.IGNORECASE):
+                            if 'hvdc' in text.lower():
+                                results['hvdc'] += 1
+                            elif 'substation' in text.lower():
+                                results['substations'] += 1
+                            else:
+                                results['transmission_lines'] += 1
+                            break
 
-            cur.close()
-            conn.close()
+                cur.close()
+            finally:
+                conn.close()
             self.state['transmission_infrastructure_found'] += results['added']
             self._save_state()
 
@@ -574,37 +590,39 @@ class AutonomousBrain:
 
         try:
             conn = get_db()
-            cur = conn.cursor(cursor_factory=RealDictCursor)
+            try:
+                cur = conn.cursor(cursor_factory=RealDictCursor)
 
-            cur.execute("""
-                SELECT id, title, content, source_url FROM announcements
-                WHERE published_date > NOW() - INTERVAL '7 days'
-                ORDER BY published_date DESC LIMIT 300
-            """)
-            articles = cur.fetchall()
+                cur.execute("""
+                    SELECT id, title, content, source_url FROM announcements
+                    WHERE published_date > NOW() - INTERVAL '7 days'
+                    ORDER BY published_date DESC LIMIT 300
+                """)
+                articles = cur.fetchall()
 
-            carriers = ['Zayo', 'Lumen', 'Crown Castle', 'Windstream', 'Level3', 'Cogent']
+                carriers = ['Zayo', 'Lumen', 'Crown Castle', 'Windstream', 'Level3', 'Cogent']
 
-            for article in articles:
-                text = f"{article['title']} {article['content'] or ''}"
+                for article in articles:
+                    text = f"{article['title']} {article['content'] or ''}"
 
-                # Check for fiber mentions
-                for pattern in self.fiber_patterns:
-                    if re.search(pattern, text, re.IGNORECASE):
-                        if 'dark' in text.lower():
-                            results['dark_fiber'] += 1
-                        elif 'lit' in text.lower():
-                            results['lit_fiber'] += 1
+                    # Check for fiber mentions
+                    for pattern in self.fiber_patterns:
+                        if re.search(pattern, text, re.IGNORECASE):
+                            if 'dark' in text.lower():
+                                results['dark_fiber'] += 1
+                            elif 'lit' in text.lower():
+                                results['lit_fiber'] += 1
 
-                        # Check for carrier mentions
-                        for carrier in carriers:
-                            if carrier.lower() in text.lower():
-                                results['carriers'] += 1
-                                break
-                        break
+                            # Check for carrier mentions
+                            for carrier in carriers:
+                                if carrier.lower() in text.lower():
+                                    results['carriers'] += 1
+                                    break
+                            break
 
-            cur.close()
-            conn.close()
+                cur.close()
+            finally:
+                conn.close()
             self.state['fiber_infrastructure_found'] += results['added']
             self._save_state()
 
@@ -619,31 +637,33 @@ class AutonomousBrain:
 
         try:
             conn = get_db()
-            cur = conn.cursor(cursor_factory=RealDictCursor)
+            try:
+                cur = conn.cursor(cursor_factory=RealDictCursor)
 
-            cur.execute("""
-                SELECT id, title, content, source_url FROM announcements
-                WHERE published_date > NOW() - INTERVAL '7 days'
-                ORDER BY published_date DESC LIMIT 300
-            """)
-            articles = cur.fetchall()
+                cur.execute("""
+                    SELECT id, title, content, source_url FROM announcements
+                    WHERE published_date > NOW() - INTERVAL '7 days'
+                    ORDER BY published_date DESC LIMIT 300
+                """)
+                articles = cur.fetchall()
 
-            for article in articles:
-                text = f"{article['title']} {article['content'] or ''}"
+                for article in articles:
+                    text = f"{article['title']} {article['content'] or ''}"
 
-                # Check for substation mentions
-                for pattern in self.substation_patterns:
-                    if re.search(pattern, text, re.IGNORECASE):
-                        if 'transformer' in text.lower():
-                            results['transformers'] += 1
-                        elif re.search(r'\d+\s*kV', text, re.IGNORECASE):
-                            results['voltage_levels'] += 1
-                        else:
-                            results['substations'] += 1
-                        break
+                    # Check for substation mentions
+                    for pattern in self.substation_patterns:
+                        if re.search(pattern, text, re.IGNORECASE):
+                            if 'transformer' in text.lower():
+                                results['transformers'] += 1
+                            elif re.search(r'\d+\s*kV', text, re.IGNORECASE):
+                                results['voltage_levels'] += 1
+                            else:
+                                results['substations'] += 1
+                            break
 
-            cur.close()
-            conn.close()
+                cur.close()
+            finally:
+                conn.close()
             self.state['substation_infrastructure_found'] += results['added']
             self._save_state()
 
@@ -658,33 +678,35 @@ class AutonomousBrain:
 
         try:
             conn = get_db()
-            cur = conn.cursor(cursor_factory=RealDictCursor)
+            try:
+                cur = conn.cursor(cursor_factory=RealDictCursor)
 
-            cur.execute("""
-                SELECT id, title, content, source_url FROM announcements
-                WHERE published_date > NOW() - INTERVAL '7 days'
-                ORDER BY published_date DESC LIMIT 300
-            """)
-            articles = cur.fetchall()
+                cur.execute("""
+                    SELECT id, title, content, source_url FROM announcements
+                    WHERE published_date > NOW() - INTERVAL '7 days'
+                    ORDER BY published_date DESC LIMIT 300
+                """)
+                articles = cur.fetchall()
 
-            for article in articles:
-                text = f"{article['title']} {article['content'] or ''}"
+                for article in articles:
+                    text = f"{article['title']} {article['content'] or ''}"
 
-                # Check for power plant mentions
-                for pattern in self.power_plant_patterns:
-                    if re.search(pattern, text, re.IGNORECASE):
-                        if 'gas' in text.lower():
-                            results['natural_gas'] += 1
-                        elif 'nuclear' in text.lower():
-                            results['nuclear'] += 1
-                        elif 'solar' in text.lower():
-                            results['solar'] += 1
-                        elif 'wind' in text.lower():
-                            results['wind'] += 1
-                        break
+                    # Check for power plant mentions
+                    for pattern in self.power_plant_patterns:
+                        if re.search(pattern, text, re.IGNORECASE):
+                            if 'gas' in text.lower():
+                                results['natural_gas'] += 1
+                            elif 'nuclear' in text.lower():
+                                results['nuclear'] += 1
+                            elif 'solar' in text.lower():
+                                results['solar'] += 1
+                            elif 'wind' in text.lower():
+                                results['wind'] += 1
+                            break
 
-            cur.close()
-            conn.close()
+                cur.close()
+            finally:
+                conn.close()
             self.state['power_plant_infrastructure_found'] += results['added']
             self._save_state()
 
@@ -699,56 +721,58 @@ class AutonomousBrain:
 
         try:
             conn = get_db()
-            cur = conn.cursor(cursor_factory=RealDictCursor)
+            try:
+                cur = conn.cursor(cursor_factory=RealDictCursor)
 
-            cur.execute("""
-                SELECT id, title, content, source_url FROM announcements
-                WHERE published_date > NOW() - INTERVAL '3 days'
-                ORDER BY published_date DESC LIMIT 200
-            """)
-            articles = cur.fetchall()
+                cur.execute("""
+                    SELECT id, title, content, source_url FROM announcements
+                    WHERE published_date > NOW() - INTERVAL '3 days'
+                    ORDER BY published_date DESC LIMIT 200
+                """)
+                articles = cur.fetchall()
 
-            fiber_patterns = [
-                r'(\d+(?:,\d+)?)\s*(?:mile|km)\s*(?:fiber|route)',
-                r'fiber\s+(?:route|network|cable)',
-                r'submarine\s+cable',
-                r'dark\s+fiber',
-            ]
+                fiber_patterns = [
+                    r'(\d+(?:,\d+)?)\s*(?:mile|km)\s*(?:fiber|route)',
+                    r'fiber\s+(?:route|network|cable)',
+                    r'submarine\s+cable',
+                    r'dark\s+fiber',
+                ]
 
-            power_patterns = [
-                r'(\d+(?:,\d+)?)\s*(?:MW|GW)\s*(?:substation|transformer)',
-                r'power\s+substation',
-                r'electrical\s+infrastructure',
-                r'utility\s+(?:agreement|contract)',
-            ]
+                power_patterns = [
+                    r'(\d+(?:,\d+)?)\s*(?:MW|GW)\s*(?:substation|transformer)',
+                    r'power\s+substation',
+                    r'electrical\s+infrastructure',
+                    r'utility\s+(?:agreement|contract)',
+                ]
 
-            land_patterns = [
-                r'(\d+(?:,\d+)?)\s*(?:acre|hectare)',
-                r'land\s+(?:acquisition|purchase|deal)',
-                r'site\s+(?:selection|development)',
-                r'construction\s+permit',
-            ]
+                land_patterns = [
+                    r'(\d+(?:,\d+)?)\s*(?:acre|hectare)',
+                    r'land\s+(?:acquisition|purchase|deal)',
+                    r'site\s+(%s:selection|development)',
+                    r'construction\s+permit',
+                ]
 
-            for article in articles:
-                text = f"{article['title']} {article['content'] or ''}"
+                for article in articles:
+                    text = f"{article['title']} {article['content'] or ''}"
 
-                for pattern in fiber_patterns:
-                    if re.search(pattern, text, re.IGNORECASE):
-                        results['fiber_mentions'] += 1
-                        break
+                    for pattern in fiber_patterns:
+                        if re.search(pattern, text, re.IGNORECASE):
+                            results['fiber_mentions'] += 1
+                            break
 
-                for pattern in power_patterns:
-                    if re.search(pattern, text, re.IGNORECASE):
-                        results['power_mentions'] += 1
-                        break
+                    for pattern in power_patterns:
+                        if re.search(pattern, text, re.IGNORECASE):
+                            results['power_mentions'] += 1
+                            break
 
-                for pattern in land_patterns:
-                    if re.search(pattern, text, re.IGNORECASE):
-                        results['land_mentions'] += 1
-                        break
+                    for pattern in land_patterns:
+                        if re.search(pattern, text, re.IGNORECASE):
+                            results['land_mentions'] += 1
+                            break
 
-            cur.close()
-            conn.close()
+                cur.close()
+            finally:
+                conn.close()
 
         except Exception as e:
             logger.error(f"Infrastructure news extraction error: {e}")

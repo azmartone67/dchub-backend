@@ -246,7 +246,7 @@ EXPANDED_FACILITIES = [
 
 def insert_expanded():
     conn = sqlite3.connect('dc_nexus.db', timeout=30)
-    conn.execute('PRAGMA journal_mode=WAL')
+    # PRAGMA removed - not needed for PostgreSQL
     c = conn.cursor()
     
     c.execute('SELECT COUNT(*) FROM facilities')
@@ -268,10 +268,10 @@ def insert_expanded():
                      fac.get('state',''), fac.get('country',''), fac.get('latitude'), fac.get('longitude'),
                      'Operational', 'global_directory', '', f"gd_{name[:40]}", now, now))
     
-    c.executemany('''INSERT OR IGNORE INTO facilities 
+    c.executemany('''INSERT INTO facilities 
         (id, name, provider, city, state, country, latitude, longitude, status, 
          source, source_url, source_id, first_seen, last_updated)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', rows)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, provider = EXCLUDED.provider, city = EXCLUDED.city, state = EXCLUDED.state, country = EXCLUDED.country, latitude = EXCLUDED.latitude, longitude = EXCLUDED.longitude, status = EXCLUDED.status, source = EXCLUDED.source, source_url = EXCLUDED.source_url, source_id = EXCLUDED.source_id, first_seen = EXCLUDED.first_seen, last_updated = EXCLUDED.last_updated''', rows)
     conn.commit()
     
     c.execute('SELECT COUNT(*) FROM facilities')

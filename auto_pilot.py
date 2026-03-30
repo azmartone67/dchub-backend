@@ -126,8 +126,8 @@ def extract_value_from_title(title):
     if not title:
         return 'Undisclosed'
     patterns = [
-        (r'\$([\d.]+)\s*[Bb](?:illion)?', 'B'),
-        (r'\$([\d.]+)\s*[Mm](?:illion)?', 'M'),
+        (r'\$([\d.]+)\s*[Bb](%s:illion)%s', 'B'),
+        (r'\$([\d.]+)\s*[Mm](%s:illion)%s', 'M'),
         (r'([\d.]+)\s*[Bb]illion', 'B'),
         (r'([\d.]+)\s*[Mm]illion', 'M'),
     ]

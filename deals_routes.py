@@ -805,6 +805,9 @@ def get_gas_pipelines():
         conn = _get_db()
         c = conn.cursor()
 
+        # Prevent long-running queries from starving the connection pool
+        c.execute("SET statement_timeout = '15s'")
+
         query = """SELECT id, name, operator, pipeline_type, diameter_inches,
                    capacity_mcf, status, lat, lng, city, state, country, source
                    FROM gas_pipelines
@@ -993,6 +996,7 @@ def get_public_pipeline():
     try:
         conn = _get_db()
         c = conn.cursor()
+        c.execute("SET statement_timeout = '15s'")
         c.execute("""
             SELECT id, name, provider, city, state, country, status, power_mw
             FROM discovered_facilities

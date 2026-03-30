@@ -6,7 +6,6 @@ Google & Meta AI Platform Integration
 """
 
 import logging
-import sqlite3
 import json
 from datetime import datetime, timezone
 from flask import Blueprint, jsonify, request
@@ -22,25 +21,27 @@ google_meta_bp = Blueprint('google_meta', __name__)
 def init_crawler_tracking():
     """Initialize crawler tracking tables"""
     conn = get_db()
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS crawler_visits (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            platform TEXT NOT NULL,
-            crawler_name TEXT,
-            user_agent TEXT,
-            endpoint TEXT,
-            ip_address TEXT,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        )
-    ''')
-    
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_crawler_platform ON crawler_visits(platform)')
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_crawler_created ON crawler_visits(created_at)')
-    
-    conn.commit()
-    conn.close()
+    try:
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS crawler_visits (
+                id SERIAL PRIMARY KEY,
+                platform TEXT NOT NULL,
+                crawler_name TEXT,
+                user_agent TEXT,
+                endpoint TEXT,
+                ip_address TEXT,
+                created_at TEXT NOT NULL DEFAULT (NOW())
+            )
+        ''')
+
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_crawler_platform ON crawler_visits(platform)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_crawler_created ON crawler_visits(created_at)')
+
+        conn.commit()
+    finally:
+        conn.close()
     logger.info("   📊 Crawler tracking tables initialized")
 
 
@@ -89,15 +90,17 @@ def log_crawler_visit(platform, crawler_name, user_agent, endpoint, ip_address=N
     """Log a crawler visit"""
     try:
         conn = get_db()
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            INSERT INTO crawler_visits (platform, crawler_name, user_agent, endpoint, ip_address, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (platform, crawler_name, user_agent, endpoint, ip_address, datetime.now(timezone.utc).isoformat()))
-        
-        conn.commit()
-        conn.close()
+        try:
+            cursor = conn.cursor()
+
+            cursor.execute('''
+                INSERT INTO crawler_visits (platform, crawler_name, user_agent, endpoint, ip_address, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            ''', (platform, crawler_name, user_agent, endpoint, ip_address, datetime.now(timezone.utc).isoformat()))
+
+            conn.commit()
+        finally:
+            conn.close()
         
         logger.info(f"🔍 Crawler visit: {platform}/{crawler_name} -> {endpoint}")
         return True
@@ -280,7 +283,7 @@ def meta_llama_integration():
         "function_calling": {
             "search_datacenters": {
                 "description": "Search for data centers by location or provider",
-                "url": f"{BASE_URL}/api/v1/facilities?search={{query}}"
+                "url": f"{BASE_URL}/api/v1/facilities%ssearch={{query}}"
             },
             "get_deals": {
                 "description": "Get data center M&A deals",
@@ -325,40 +328,42 @@ def crawler_stats():
     """Get crawler visit statistics"""
     try:
         conn = get_db()
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT platform, crawler_name, COUNT(*) as visits, MAX(created_at) as last_visit
-            FROM crawler_visits
-            GROUP BY platform, crawler_name
-            ORDER BY visits DESC
-        ''')
-        by_crawler = [{'platform': r[0], 'crawler': r[1], 'visits': r[2], 'last_visit': r[3]} 
+        try:
+            cursor = conn.cursor()
+
+            cursor.execute('''
+                SELECT platform, crawler_name, COUNT(*) as visits, MAX(created_at) as last_visit
+                FROM crawler_visits
+                GROUP BY platform, crawler_name
+                ORDER BY visits DESC
+            ''')
+            by_crawler = [{'platform': r[0], 'crawler': r[1], 'visits': r[2], 'last_visit': r[3]}
+                          for r in cursor.fetchall()]
+
+            cursor.execute('''
+                SELECT platform, COUNT(*) as visits
+                FROM crawler_visits
+                GROUP BY platform
+            ''')
+            by_platform = {r[0]: r[1] for r in cursor.fetchall()}
+
+            cursor.execute('''
+                SELECT COUNT(*) FROM crawler_visits
+                WHERE created_at > datetime('now', '-24 hours')
+            ''')
+            last_24h = cursor.fetchone()[0]
+
+            cursor.execute('''
+                SELECT platform, crawler_name, endpoint, created_at
+                FROM crawler_visits
+                ORDER BY created_at DESC
+                LIMIT 20
+            ''')
+            recent = [{'platform': r[0], 'crawler': r[1], 'endpoint': r[2], 'time': r[3]}
                       for r in cursor.fetchall()]
-        
-        cursor.execute('''
-            SELECT platform, COUNT(*) as visits
-            FROM crawler_visits
-            GROUP BY platform
-        ''')
-        by_platform = {r[0]: r[1] for r in cursor.fetchall()}
-        
-        cursor.execute('''
-            SELECT COUNT(*) FROM crawler_visits
-            WHERE created_at > datetime('now', '-24 hours')
-        ''')
-        last_24h = cursor.fetchone()[0]
-        
-        cursor.execute('''
-            SELECT platform, crawler_name, endpoint, created_at
-            FROM crawler_visits
-            ORDER BY created_at DESC
-            LIMIT 20
-        ''')
-        recent = [{'platform': r[0], 'crawler': r[1], 'endpoint': r[2], 'time': r[3]} 
-                  for r in cursor.fetchall()]
-        
-        conn.close()
+
+        finally:
+            conn.close()
         
         return jsonify({
             "summary": {

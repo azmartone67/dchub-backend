@@ -120,47 +120,49 @@ ELECTRICITY_RATE_BENCHMARKS = {
 def init_headroom_db():
     try:
         conn = get_db()
-        c = conn.cursor()
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS capacity_headroom_snapshots (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                market TEXT NOT NULL,
-                iso TEXT NOT NULL,
-                installed_capacity_mw REAL,
-                current_demand_mw REAL,
-                spare_capacity_mw REAL,
-                spare_capacity_pct REAL,
-                gas_pipeline_capacity_mdth REAL,
-                gas_utilization_pct REAL,
-                gas_headroom_mdth REAL,
-                fiber_route_count INTEGER,
-                electricity_rate_cents REAL,
-                market_readiness_score REAL,
-                readiness_grade TEXT,
-                grid_signal TEXT,
-                gas_signal TEXT,
-                snapshot_at TEXT NOT NULL,
-                data_source TEXT DEFAULT 'EIA/GridStatus'
-            )
-        """)
-        c.execute("""
-            CREATE INDEX IF NOT EXISTS idx_headroom_market 
-            ON capacity_headroom_snapshots(market, snapshot_at DESC)
-        """)
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS headroom_trend_daily (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                market TEXT NOT NULL,
-                date TEXT NOT NULL,
-                avg_spare_mw REAL,
-                peak_demand_mw REAL,
-                min_spare_pct REAL,
-                avg_readiness_score REAL,
-                UNIQUE(market, date)
-            )
-        """)
-        conn.commit()
-        conn.close()
+        try:
+            c = conn.cursor()
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS capacity_headroom_snapshots (
+                    id SERIAL PRIMARY KEY,
+                    market TEXT NOT NULL,
+                    iso TEXT NOT NULL,
+                    installed_capacity_mw REAL,
+                    current_demand_mw REAL,
+                    spare_capacity_mw REAL,
+                    spare_capacity_pct REAL,
+                    gas_pipeline_capacity_mdth REAL,
+                    gas_utilization_pct REAL,
+                    gas_headroom_mdth REAL,
+                    fiber_route_count INTEGER,
+                    electricity_rate_cents REAL,
+                    market_readiness_score REAL,
+                    readiness_grade TEXT,
+                    grid_signal TEXT,
+                    gas_signal TEXT,
+                    snapshot_at TEXT NOT NULL,
+                    data_source TEXT DEFAULT 'EIA/GridStatus'
+                )
+            """)
+            c.execute("""
+                CREATE INDEX IF NOT EXISTS idx_headroom_market
+                ON capacity_headroom_snapshots(market, snapshot_at DESC)
+            """)
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS headroom_trend_daily (
+                    id SERIAL PRIMARY KEY,
+                    market TEXT NOT NULL,
+                    date TEXT NOT NULL,
+                    avg_spare_mw REAL,
+                    peak_demand_mw REAL,
+                    min_spare_pct REAL,
+                    avg_readiness_score REAL,
+                    UNIQUE(market, date)
+                )
+            """)
+            conn.commit()
+        finally:
+            conn.close()
         logger.info("Capacity headroom tables initialized")
     except Exception as e:
         logger.error(f"Headroom DB init error: {e}")
@@ -219,25 +221,27 @@ def fetch_eia_retail_rate(state):
 def get_market_power_data(market_key):
     try:
         conn = get_db()
-        conn.row_factory = sqlite3.Row
-        c = conn.cursor()
+        try:
+            # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
+            c = conn.cursor()
 
-        c.execute("""
-            SELECT SUM(capacity_mw) as total_mw, COUNT(*) as count
-            FROM discovered_power_plants WHERE market = ?
-        """, (market_key,))
-        row = c.fetchone()
-        local_capacity_mw = round(row['total_mw'] or 0, 1) if row else 0
-        plant_count = row['count'] or 0 if row else 0
+            c.execute("""
+                SELECT SUM(capacity_mw) as total_mw, COUNT(*) as count
+                FROM discovered_power_plants WHERE market = %s
+            """, (market_key,))
+            row = c.fetchone()
+            local_capacity_mw = round(row['total_mw'] or 0, 1) if row else 0
+            plant_count = row['count'] or 0 if row else 0
 
-        c.execute("""
-            SELECT fuel_type, SUM(capacity_mw) as cap
-            FROM discovered_power_plants WHERE market = ?
-            GROUP BY fuel_type ORDER BY cap DESC
-        """, (market_key,))
-        fuel_mix = {r['fuel_type']: round(r['cap'] or 0, 1) for r in c.fetchall()}
+            c.execute("""
+                SELECT fuel_type, SUM(capacity_mw) as cap
+                FROM discovered_power_plants WHERE market = %s
+                GROUP BY fuel_type ORDER BY cap DESC
+            """, (market_key,))
+            fuel_mix = {r['fuel_type']: round(r['cap'] or 0, 1) for r in c.fetchall()}
 
-        conn.close()
+        finally:
+            conn.close()
         return {
             'local_capacity_mw': local_capacity_mw,
             'plant_count': plant_count,
@@ -251,15 +255,17 @@ def get_market_power_data(market_key):
 def get_market_gas_data(market_key):
     try:
         conn = get_db()
-        conn.row_factory = sqlite3.Row
-        c = conn.cursor()
+        try:
+            # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
+            c = conn.cursor()
 
-        c.execute("""
-            SELECT COUNT(*) as count, SUM(capacity_mdth) as total
-            FROM discovered_pipelines WHERE market = ?
-        """, (market_key,))
-        row = c.fetchone()
-        conn.close()
+            c.execute("""
+                SELECT COUNT(*) as count, SUM(capacity_mdth) as total
+                FROM discovered_pipelines WHERE market = %s
+            """, (market_key,))
+            row = c.fetchone()
+        finally:
+            conn.close()
 
         return {
             'pipeline_count': row['count'] or 0 if row else 0,
@@ -422,53 +428,55 @@ def save_snapshot(result):
     for attempt in range(5):
         try:
             conn = get_db()
-            c = conn.cursor()
-            c.execute("""
-                INSERT INTO capacity_headroom_snapshots
-                (market, iso, installed_capacity_mw, current_demand_mw, spare_capacity_mw,
-                 spare_capacity_pct, gas_pipeline_capacity_mdth, gas_utilization_pct,
-                 gas_headroom_mdth, fiber_route_count, electricity_rate_cents,
-                 market_readiness_score, readiness_grade, grid_signal, gas_signal,
-                 snapshot_at, data_source)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                result['market'], result['iso'],
-                result['grid']['installed_capacity_mw'],
-                result['grid']['current_demand_mw'],
-                result['grid']['spare_capacity_mw'],
-                result['grid']['spare_capacity_pct'],
-                result['gas']['total_capacity_mdth'],
-                result['gas']['utilization_pct'],
-                result['gas']['headroom_mdth'],
-                result['fiber']['route_count'],
-                result['cost']['electricity_rate_cents_kwh'],
-                result['readiness']['score'],
-                result['readiness']['grade'],
-                result['grid']['signal'],
-                result['gas']['signal'],
-                result['computed_at'],
-                result['grid']['data_source']
-            ))
+            try:
+                c = conn.cursor()
+                c.execute("""
+                    INSERT INTO capacity_headroom_snapshots
+                    (market, iso, installed_capacity_mw, current_demand_mw, spare_capacity_mw,
+                     spare_capacity_pct, gas_pipeline_capacity_mdth, gas_utilization_pct,
+                     gas_headroom_mdth, fiber_route_count, electricity_rate_cents,
+                     market_readiness_score, readiness_grade, grid_signal, gas_signal,
+                     snapshot_at, data_source)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    result['market'], result['iso'],
+                    result['grid']['installed_capacity_mw'],
+                    result['grid']['current_demand_mw'],
+                    result['grid']['spare_capacity_mw'],
+                    result['grid']['spare_capacity_pct'],
+                    result['gas']['total_capacity_mdth'],
+                    result['gas']['utilization_pct'],
+                    result['gas']['headroom_mdth'],
+                    result['fiber']['route_count'],
+                    result['cost']['electricity_rate_cents_kwh'],
+                    result['readiness']['score'],
+                    result['readiness']['grade'],
+                    result['grid']['signal'],
+                    result['gas']['signal'],
+                    result['computed_at'],
+                    result['grid']['data_source']
+                ))
 
-            today = datetime.utcnow().strftime('%Y-%m-%d')
-            c.execute("""
-                INSERT INTO headroom_trend_daily (market, date, avg_spare_mw, peak_demand_mw, min_spare_pct, avg_readiness_score)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(market, date) DO UPDATE SET
-                    avg_spare_mw = (avg_spare_mw + excluded.avg_spare_mw) / 2,
-                    peak_demand_mw = MAX(peak_demand_mw, excluded.peak_demand_mw),
-                    min_spare_pct = MIN(min_spare_pct, excluded.min_spare_pct),
-                    avg_readiness_score = (avg_readiness_score + excluded.avg_readiness_score) / 2
-            """, (
-                result['market'], today,
-                result['grid']['spare_capacity_mw'],
-                result['grid']['current_demand_mw'],
-                result['grid']['spare_capacity_pct'],
-                result['readiness']['score']
-            ))
+                today = datetime.utcnow().strftime('%Y-%m-%d')
+                c.execute("""
+                    INSERT INTO headroom_trend_daily (market, date, avg_spare_mw, peak_demand_mw, min_spare_pct, avg_readiness_score)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT(market, date) DO UPDATE SET
+                        avg_spare_mw = (avg_spare_mw + excluded.avg_spare_mw) / 2,
+                        peak_demand_mw = MAX(peak_demand_mw, excluded.peak_demand_mw),
+                        min_spare_pct = MIN(min_spare_pct, excluded.min_spare_pct),
+                        avg_readiness_score = (avg_readiness_score + excluded.avg_readiness_score) / 2
+                """, (
+                    result['market'], today,
+                    result['grid']['spare_capacity_mw'],
+                    result['grid']['current_demand_mw'],
+                    result['grid']['spare_capacity_pct'],
+                    result['readiness']['score']
+                ))
 
-            conn.commit()
-            conn.close()
+                conn.commit()
+            finally:
+                conn.close()
             return
         except sqlite3.OperationalError as e:
             if 'locked' in str(e) and attempt < 4:
@@ -663,24 +671,26 @@ def create_headroom_blueprint():
 
         try:
             conn = get_db()
-            conn.row_factory = sqlite3.Row
-            c = conn.cursor()
+            try:
+                # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
+                c = conn.cursor()
 
-            if market:
-                c.execute("""
-                    SELECT * FROM headroom_trend_daily
-                    WHERE market = ? AND date >= date('now', ?)
-                    ORDER BY date ASC
-                """, (market, f'-{days} days'))
-            else:
-                c.execute("""
-                    SELECT * FROM headroom_trend_daily
-                    WHERE date >= date('now', ?)
-                    ORDER BY market, date ASC
-                """, (f'-{days} days',))
+                if market:
+                    c.execute("""
+                        SELECT * FROM headroom_trend_daily
+                        WHERE market = %s AND date >= date('now', %s)
+                        ORDER BY date ASC
+                    """, (market, f'-{days} days'))
+                else:
+                    c.execute("""
+                        SELECT * FROM headroom_trend_daily
+                        WHERE date >= date('now', %s)
+                        ORDER BY market, date ASC
+                    """, (f'-{days} days',))
 
-            rows = [dict(r) for r in c.fetchall()]
-            conn.close()
+                rows = [dict(r) for r in c.fetchall()]
+            finally:
+                conn.close()
 
             by_market = {}
             for row in rows:
@@ -708,7 +718,7 @@ def create_headroom_blueprint():
             return jsonify({
                 'success': False,
                 'error': 'Provide markets parameter (comma-separated)',
-                'example': '/api/v1/capacity/compare?markets=dallas,phoenix,northern_virginia'
+                'example': '/api/v1/capacity/compare%smarkets=dallas,phoenix,northern_virginia'
             }), 400
 
         market_keys = [m.strip().lower().replace('-', '_').replace(' ', '_') for m in markets_param.split(',')]

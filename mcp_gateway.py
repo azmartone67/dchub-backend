@@ -32,7 +32,6 @@ import os
 import sys
 import json
 import time
-import sqlite3
 import hashlib
 import logging
 import threading
@@ -374,12 +373,12 @@ class GatewayDB:
                     total_errors    INTEGER DEFAULT 0,
                     avg_latency_ms  REAL DEFAULT 0.0,
                     config_json     TEXT DEFAULT '{}',
-                    learned_at      TEXT DEFAULT (datetime('now')),
-                    updated_at      TEXT DEFAULT (datetime('now'))
+                    learned_at      TEXT DEFAULT (NOW()),
+                    updated_at      TEXT DEFAULT (NOW())
                 )""",
                 """CREATE TABLE IF NOT EXISTS agent_requests (
-                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp       TEXT DEFAULT (datetime('now')),
+                    id SERIAL PRIMARY KEY,
+                    timestamp       TEXT DEFAULT (NOW()),
                     platform_id     TEXT,
                     user_agent      TEXT,
                     ip_address      TEXT,
@@ -393,8 +392,8 @@ class GatewayDB:
                     session_id      TEXT
                 )""",
                 """CREATE TABLE IF NOT EXISTS discovery_hits (
-                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp       TEXT DEFAULT (datetime('now')),
+                    id SERIAL PRIMARY KEY,
+                    timestamp       TEXT DEFAULT (NOW()),
                     file_path       TEXT NOT NULL,
                     platform_id     TEXT,
                     user_agent      TEXT,
@@ -402,19 +401,19 @@ class GatewayDB:
                     response_code   INTEGER
                 )""",
                 """CREATE TABLE IF NOT EXISTS learned_patterns (
-                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id SERIAL PRIMARY KEY,
                     pattern_type    TEXT NOT NULL,
                     pattern_key     TEXT NOT NULL,
                     pattern_value   TEXT NOT NULL,
                     confidence      REAL DEFAULT 0.5,
                     occurrences     INTEGER DEFAULT 1,
-                    first_seen      TEXT DEFAULT (datetime('now')),
-                    last_seen       TEXT DEFAULT (datetime('now')),
+                    first_seen      TEXT DEFAULT (NOW()),
+                    last_seen       TEXT DEFAULT (NOW()),
                     UNIQUE(pattern_type, pattern_key)
                 )""",
                 """CREATE TABLE IF NOT EXISTS protocol_negotiations (
-                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp       TEXT DEFAULT (datetime('now')),
+                    id SERIAL PRIMARY KEY,
+                    timestamp       TEXT DEFAULT (NOW()),
                     platform_id     TEXT,
                     requested_protocol TEXT,
                     negotiated_protocol TEXT,
@@ -423,10 +422,10 @@ class GatewayDB:
                     handshake_ms    REAL
                 )""",
                 """CREATE TABLE IF NOT EXISTS discovered_platforms (
-                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id SERIAL PRIMARY KEY,
                     user_agent      TEXT NOT NULL,
-                    first_seen      TEXT DEFAULT (datetime('now')),
-                    last_seen       TEXT DEFAULT (datetime('now')),
+                    first_seen      TEXT DEFAULT (NOW()),
+                    last_seen       TEXT DEFAULT (NOW()),
                     request_count   INTEGER DEFAULT 1,
                     identified_as   TEXT,
                     protocol_guess  TEXT,
@@ -440,7 +439,8 @@ class GatewayDB:
             ]
             for stmt in statements:
                 try:
-                    conn.execute(stmt)
+                    c = conn.cursor()
+                    c.execute(stmt)
                     conn.commit()
                 except Exception:
                     try:
@@ -463,10 +463,11 @@ class GatewayDB:
             conn = get_db(self.db_path)
             for pid, pinfo in PLATFORM_REGISTRY.items():
                 try:
-                    conn.execute("""
-                        INSERT OR IGNORE INTO platform_connections
+                    c = conn.cursor()
+                    c.execute("""
+                        INSERT INTO platform_connections
                         (platform_id, platform_name, protocol, status, config_json)
-                        VALUES (?, ?, ?, ?, ?)
+                        VALUES (%s, %s, %s, %s, %s)
                     """, (
                         pid,
                         pinfo["name"],
@@ -500,11 +501,13 @@ class GatewayDB:
             valid_pid = platform_id
             if valid_pid:
                 try:
-                    cur = conn.execute("SELECT platform_id FROM platform_connections WHERE platform_id = ?", (valid_pid,))
+                    c = conn.cursor()
+                    cur = c.execute("SELECT platform_id FROM platform_connections WHERE platform_id = %s", (valid_pid,))
                     if not cur.fetchone():
-                        conn.execute("""
+                        c = conn.cursor()
+                        c.execute("""
                             INSERT INTO platform_connections (platform_id, platform_name, protocol, status, total_requests, total_errors, avg_latency_ms)
-                            VALUES (?, ?, 'auto', 'active', 0, 0, 0)
+                            VALUES (%s, %s, 'auto', 'active', 0, 0, 0)
                         """, (valid_pid, valid_pid))
                         conn.commit()
                 except Exception:
@@ -513,24 +516,26 @@ class GatewayDB:
                     except Exception:
                         pass
 
-            conn.execute("""
+            c = conn.cursor()
+            c.execute("""
                 INSERT INTO agent_requests
                 (platform_id, user_agent, ip_address, method, path,
                  query_params, request_body, response_code, response_time_ms,
                  tools_invoked, session_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (valid_pid, user_agent, ip, method, path, query,
                   body[:2000] if body else "", response_code, response_time,
                   tools, session_id))
 
             if valid_pid:
-                conn.execute("""
+                c = conn.cursor()
+                c.execute("""
                     UPDATE platform_connections SET
                         total_requests = total_requests + 1,
-                        total_errors = total_errors + CASE WHEN ? >= 400 THEN 1 ELSE 0 END,
-                        avg_latency_ms = (avg_latency_ms * total_requests + ?) / (total_requests + 1),
-                        updated_at = datetime('now')
-                    WHERE platform_id = ?
+                        total_errors = total_errors + CASE WHEN %s >= 400 THEN 1 ELSE 0 END,
+                        avg_latency_ms = (avg_latency_ms * total_requests + %s) / (total_requests + 1),
+                        updated_at = NOW()
+                    WHERE platform_id = %s
                 """, (response_code, response_time, valid_pid))
 
             conn.commit()
@@ -555,10 +560,11 @@ class GatewayDB:
             conn = try_get_db()
             if conn is None:
                 return
-            conn.execute("""
+            c = conn.cursor()
+            c.execute("""
                 INSERT INTO discovery_hits
                 (file_path, platform_id, user_agent, ip_address, response_code)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s)
             """, (file_path, platform_id, user_agent, ip, code))
             conn.commit()
         except Exception as e:
@@ -582,14 +588,15 @@ class GatewayDB:
             conn = try_get_db()
             if conn is None:
                 return
-            conn.execute("""
+            c = conn.cursor()
+            c.execute("""
                 INSERT INTO learned_patterns (pattern_type, pattern_key, pattern_value, confidence)
-                VALUES (?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s)
                 ON CONFLICT(pattern_type, pattern_key) DO UPDATE SET
                     pattern_value = excluded.pattern_value,
                     confidence = LEAST(CAST(1.0 AS double precision), learned_patterns.confidence + CAST(0.05 AS double precision)),
                     occurrences = occurrences + 1,
-                    last_seen = datetime('now')
+                    last_seen = NOW()
             """, (pattern_type, key, value, confidence))
             conn.commit()
         except Exception as e:
@@ -611,12 +618,13 @@ class GatewayDB:
             conn = try_get_db()
             if conn is None:
                 return
-            conn.execute("""
+            c = conn.cursor()
+            c.execute("""
                 INSERT INTO discovered_platforms (user_agent, protocol_guess, request_count, first_seen, last_seen)
-                VALUES (?, ?, 1, datetime('now'), datetime('now'))
+                VALUES (%s, %s, 1, NOW(), NOW())
                 ON CONFLICT (user_agent) DO UPDATE SET
                     request_count = discovered_platforms.request_count + 1,
-                    last_seen = datetime('now')
+                    last_seen = NOW()
             """, (user_agent, protocol_guess))
             conn.commit()
         except Exception as e:
@@ -637,7 +645,8 @@ class GatewayDB:
         conn = None
         try:
             conn = get_db(self.db_path)
-            rows = conn.execute("""
+            c = conn.cursor()
+            rows = c.execute("""
                 SELECT platform_id, platform_name, protocol, status,
                        total_requests, total_errors, avg_latency_ms,
                        health_score, last_handshake, updated_at
@@ -659,33 +668,38 @@ class GatewayDB:
         conn = None
         try:
             conn = get_db(self.db_path)
-            total = conn.execute(
-                "SELECT COUNT(*) FROM agent_requests WHERE timestamp > ?",
+            c = conn.cursor()
+            total = c.execute(
+                "SELECT COUNT(*) FROM agent_requests WHERE timestamp > %s",
                 (cutoff,)
             ).fetchone()[0]
 
-            by_platform = conn.execute("""
+            c = conn.cursor()
+            by_platform = c.execute("""
                 SELECT platform_id, COUNT(*) as cnt
-                FROM agent_requests WHERE timestamp > ?
+                FROM agent_requests WHERE timestamp > %s
                 GROUP BY platform_id ORDER BY cnt DESC
             """, (cutoff,)).fetchall()
 
-            by_path = conn.execute("""
+            c = conn.cursor()
+            by_path = c.execute("""
                 SELECT path, COUNT(*) as cnt
-                FROM agent_requests WHERE timestamp > ?
+                FROM agent_requests WHERE timestamp > %s
                 GROUP BY path ORDER BY cnt DESC LIMIT 20
             """, (cutoff,)).fetchall()
 
-            by_tool = conn.execute("""
+            c = conn.cursor()
+            by_tool = c.execute("""
                 SELECT tools_invoked, COUNT(*) as cnt
                 FROM agent_requests
-                WHERE timestamp > ? AND tools_invoked != ''
+                WHERE timestamp > %s AND tools_invoked != ''
                 GROUP BY tools_invoked ORDER BY cnt DESC LIMIT 20
             """, (cutoff,)).fetchall()
 
-            errors = conn.execute("""
+            c = conn.cursor()
+            errors = c.execute("""
                 SELECT COUNT(*) FROM agent_requests
-                WHERE timestamp > ? AND response_code >= 400
+                WHERE timestamp > %s AND response_code >= 400
             """, (cutoff,)).fetchone()[0]
 
             return {
@@ -712,9 +726,10 @@ class GatewayDB:
         conn = None
         try:
             conn = get_db(self.db_path)
-            rows = conn.execute("""
+            c = conn.cursor()
+            rows = c.execute("""
                 SELECT file_path, platform_id, COUNT(*) as hits
-                FROM discovery_hits WHERE timestamp > ?
+                FROM discovery_hits WHERE timestamp > %s
                 GROUP BY file_path, platform_id
                 ORDER BY hits DESC
             """, (cutoff,)).fetchall()
@@ -736,13 +751,15 @@ class GatewayDB:
         try:
             conn = get_db(self.db_path)
             if pattern_type:
-                rows = conn.execute("""
+                c = conn.cursor()
+                rows = c.execute("""
                     SELECT * FROM learned_patterns
-                    WHERE pattern_type = ?
+                    WHERE pattern_type = %s
                     ORDER BY confidence DESC, occurrences DESC
                 """, (pattern_type,)).fetchall()
             else:
-                rows = conn.execute("""
+                c = conn.cursor()
+                rows = c.execute("""
                     SELECT * FROM learned_patterns
                     ORDER BY confidence DESC, occurrences DESC
                 """).fetchall()
@@ -760,7 +777,8 @@ class GatewayDB:
         conn = None
         try:
             conn = get_db(self.db_path)
-            rows = conn.execute("""
+            c = conn.cursor()
+            rows = c.execute("""
                 SELECT * FROM discovered_platforms
                 WHERE identified_as IS NULL
                 ORDER BY request_count DESC
@@ -1018,11 +1036,12 @@ class HealthMonitor:
                 conn = get_db(self.db.db_path)
                 for score, pid in updates:
                     try:
-                        conn.execute("""
+                        c = conn.cursor()
+                        c.execute("""
                             UPDATE platform_connections SET
-                                health_score = ?,
-                                last_health = datetime('now')
-                            WHERE platform_id = ?
+                                health_score = %s,
+                                last_health = NOW()
+                            WHERE platform_id = %s
                         """, (score, pid))
                         conn.commit()
                     except Exception:
@@ -1095,7 +1114,8 @@ class LearningEngine:
         conn = None
         try:
             conn = get_db(self.db.db_path)
-            rows = conn.execute("""
+            c = conn.cursor()
+            rows = c.execute("""
                 SELECT user_agent, platform_id, COUNT(*) as cnt
                 FROM agent_requests
                 WHERE platform_id IS NOT NULL
@@ -1130,7 +1150,8 @@ class LearningEngine:
         conn = None
         try:
             conn = get_db(self.db.db_path)
-            rows = conn.execute("""
+            c = conn.cursor()
+            rows = c.execute("""
                 SELECT platform_id, path, COUNT(*) as cnt
                 FROM agent_requests
                 WHERE platform_id IS NOT NULL
@@ -1160,7 +1181,8 @@ class LearningEngine:
         conn = None
         try:
             conn = get_db(self.db.db_path)
-            rows = conn.execute("""
+            c = conn.cursor()
+            rows = c.execute("""
                 SELECT platform_id, response_code, COUNT(*) as cnt
                 FROM agent_requests
                 WHERE response_code >= 400

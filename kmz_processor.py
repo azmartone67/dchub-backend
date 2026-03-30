@@ -256,13 +256,13 @@ class InfrastructureLayerDB:
     def get_pending_sources(self, limit=10):
         try:
             conn = sqlite3.connect(SQLITE_DB)
-            conn.row_factory = sqlite3.Row
+            # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
             cur = conn.cursor()
             cur.execute("""
                 SELECT id, url, category, name, status FROM kmz_discovered_sources
                 WHERE status = 'empty'
                 ORDER BY CASE WHEN category IN ('fiber','power','transmission','substation') THEN 0 ELSE 1 END, id
-                LIMIT ?
+                LIMIT %s
             """, (limit,))
             rows = [dict(r) for r in cur.fetchall()]
             conn.close()
@@ -274,7 +274,7 @@ class InfrastructureLayerDB:
     def update_source_status(self, source_id, status, features_count=0):
         try:
             conn = sqlite3.connect(SQLITE_DB)
-            conn.execute("UPDATE kmz_discovered_sources SET status=? WHERE id=?", (status, source_id))
+            cur.execute("UPDATE kmz_discovered_sources SET status=%s WHERE id=%s", (status, source_id))
             conn.commit()
             conn.close()
         except Exception as e:

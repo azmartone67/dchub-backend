@@ -66,7 +66,7 @@ def init_alert_log_db():
     
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS alert_notifications (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             alert_id INTEGER NOT NULL,
             email TEXT NOT NULL,
             matches_json TEXT NOT NULL,
@@ -202,11 +202,12 @@ def get_recent_news(hours=24):
     # Try announcements table first (DC Hub schema)
     try:
         cutoff = datetime.now() - timedelta(hours=hours)
-        news = db.execute('''
+        c = db.cursor()
+        news = c.execute('''
             SELECT id, title, summary as description, source, source_url as url, 
                    published_date as published_at, content
             FROM announcements 
-            WHERE published_date > ? OR discovered_at > ?
+            WHERE published_date > %s OR discovered_at > %s
             ORDER BY published_date DESC
             LIMIT 100
         ''', (cutoff.isoformat(), cutoff.isoformat())).fetchall()
@@ -219,10 +220,11 @@ def get_recent_news(hours=24):
     
     # Fallback: try news table (alternate schema)
     try:
-        news = db.execute('''
+        c = db.cursor()
+        news = c.execute('''
             SELECT id, title, description, source, url, published_at, content
             FROM news 
-            WHERE published_at > ? OR created_at > ?
+            WHERE published_at > %s OR created_at > %s
             ORDER BY published_at DESC
             LIMIT 100
         ''', (cutoff.isoformat(), cutoff.isoformat())).fetchall()
@@ -239,10 +241,11 @@ def get_recent_facilities(hours=24):
     
     try:
         cutoff = datetime.now() - timedelta(hours=hours)
-        facilities = db.execute('''
+        c = db.cursor()
+        facilities = c.execute('''
             SELECT id, name, provider as operator, city, state, country, power_mw as capacity_mw, status
             FROM facilities 
-            WHERE last_updated > ? OR first_seen > ?
+            WHERE last_updated > %s OR first_seen > %s
             ORDER BY last_updated DESC
             LIMIT 100
         ''', (cutoff.isoformat(), cutoff.isoformat())).fetchall()
@@ -259,10 +262,11 @@ def get_recent_pipeline(hours=24):
     
     try:
         cutoff = datetime.now() - timedelta(hours=hours)
-        projects = db.execute('''
+        c = db.cursor()
+        projects = c.execute('''
             SELECT id, notes as name, operator, market, region, capacity_mw, status, announcement_date
             FROM capacity_pipeline 
-            WHERE created_at > ? OR announcement_date > ?
+            WHERE created_at > %s OR announcement_date > %s
             ORDER BY created_at DESC
             LIMIT 100
         ''', (cutoff.isoformat(), cutoff.isoformat())).fetchall()
@@ -409,7 +413,7 @@ def match_capacity_threshold(alert_config, news, facilities, pipeline):
             })
     
     # Check news for MW mentions
-    mw_pattern = re.compile(r'(\d+(?:,\d+)?(?:\.\d+)?)\s*(?:MW|megawatt)', re.IGNORECASE)
+    mw_pattern = re.compile(r'(\d+(%s:,\d+)%s(%s:\.\d+)%s)\s*(%s:MW|megawatt)', re.IGNORECASE)
     for item in news:
         text = f"{item.get('title', '')} {item.get('description', '')} {item.get('content', '')}"
         mw_matches = mw_pattern.findall(text)
@@ -654,7 +658,8 @@ def process_all_alerts(frequency_filter=None, dry_run=False):
     
     # Fetch all active alerts
     db = get_alert_db()
-    alerts = db.execute('''
+    c = db.cursor()
+    alerts = c.execute('''
         SELECT * FROM simple_alerts 
         WHERE is_active = 1
         ORDER BY email, id
@@ -722,16 +727,18 @@ def process_all_alerts(frequency_filter=None, dry_run=False):
                 results['notifications_sent'] += 1
                 
                 # Update alert last_triggered
-                db.execute('''
+                c = db.cursor()
+                c.execute('''
                     UPDATE simple_alerts 
-                    SET last_triggered = ?, trigger_count = trigger_count + 1
-                    WHERE id = ?
+                    SET last_triggered = %s, trigger_count = trigger_count + 1
+                    WHERE id = %s
                 ''', (datetime.now().isoformat(), alert_id))
                 
                 # Log notification
-                db.execute('''
+                c = db.cursor()
+                c.execute('''
                     INSERT INTO alert_notifications (alert_id, email, matches_json, status)
-                    VALUES (?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s)
                 ''', (alert_id, email, json.dumps(matches[:10]), 'sent'))
                 
             else:
@@ -799,17 +806,21 @@ def api_alert_status():
     db = get_alert_db()
     
     # Get alert counts
-    total = db.execute('SELECT COUNT(*) as cnt FROM simple_alerts').fetchone()['cnt']
-    active = db.execute('SELECT COUNT(*) as cnt FROM simple_alerts WHERE is_active = 1').fetchone()['cnt']
+    c = db.cursor()
+    total = c.execute('SELECT COUNT(*) as cnt FROM simple_alerts').fetchone()['cnt']
+    c = db.cursor()
+    active = c.execute('SELECT COUNT(*) as cnt FROM simple_alerts WHERE is_active = 1').fetchone()['cnt']
     
     # Get notification stats
     try:
-        sent_today = db.execute('''
+        c = db.cursor()
+        sent_today = c.execute('''
             SELECT COUNT(*) as cnt FROM alert_notifications 
             WHERE date(sent_at) = date('now')
         ''').fetchone()['cnt']
         
-        sent_week = db.execute('''
+        c = db.cursor()
+        sent_week = c.execute('''
             SELECT COUNT(*) as cnt FROM alert_notifications 
             WHERE sent_at > datetime('now', '-7 days')
         ''').fetchone()['cnt']

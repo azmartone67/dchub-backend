@@ -158,7 +158,7 @@ def test_railway_direct_health():
     if r.status_code == 200:
         try:
             data = r.json()
-            return "pass", f"Railway healthy — facilities={data.get('facility_count', '?')}, source={data.get('source', '?')}"
+            return "pass", f"Railway healthy — facilities={data.get('facility_count', '%s')}, source={data.get('source', '%s')}"
         except:
             return "pass", f"HTTP 200 ({len(r.text)} bytes)"
     return "fail", f"HTTP {r.status_code}: {r.text[:200]}"
@@ -181,7 +181,7 @@ def test_railway_neon_connection():
 
 def test_railway_facility_search():
     """Railway returns facility search results from Neon."""
-    r = get(f"{RAILWAY_DIRECT}/api/v1/facilities?q=ashburn&limit=3")
+    r = get(f"{RAILWAY_DIRECT}/api/v1/facilities%sq=ashburn&limit=3")
     if r.status_code == 200:
         try:
             data = r.json()
@@ -217,7 +217,7 @@ def test_replit_direct_health():
     if r.status_code == 200:
         try:
             data = r.json()
-            return "pass", f"Replit healthy — facilities={data.get('facility_count', '?')}, source={data.get('source', '?')}"
+            return "pass", f"Replit healthy — facilities={data.get('facility_count', '%s')}, source={data.get('source', '%s')}"
         except:
             return "pass", f"HTTP 200 ({len(r.text)} bytes)"
     elif r.status_code == 503:
@@ -381,8 +381,8 @@ def test_no_single_point_of_failure():
 def test_shared_database():
     """Both backends share the same Neon database."""
     try:
-        r1 = get(f"{RAILWAY_DIRECT}/api/v1/facilities?q=equinix&limit=1")
-        r2 = get(f"{REPLIT_DIRECT}/api/v1/facilities?q=equinix&limit=1")
+        r1 = get(f"{RAILWAY_DIRECT}/api/v1/facilities%sq=equinix&limit=1")
+        r2 = get(f"{REPLIT_DIRECT}/api/v1/facilities%sq=equinix&limit=1")
         if r1.status_code == 200 and r2.status_code == 200:
             # Both should return similar results since they hit the same Neon DB
             return "pass", "Both backends return search results from shared Neon DB"
@@ -398,14 +398,14 @@ def test_shared_database():
 # ============================================================
 def test_api_facility_search_via_worker():
     """Facility search works through the full Cloudflare Worker chain."""
-    r = get(f"{CLOUDFLARE_API}/v1/facilities?q=dallas&limit=2")
+    r = get(f"{CLOUDFLARE_API}/v1/facilities%sq=dallas&limit=2")
     if r.status_code == 200:
         return "pass", f"Facility search via Worker: HTTP 200 ({len(r.text)} bytes)"
     return "fail", f"HTTP {r.status_code}: {r.text[:200]}"
 
 def test_api_deals_endpoint():
     """M&A deals endpoint works."""
-    r = get(f"{CLOUDFLARE_API}/v1/deals?limit=2")
+    r = get(f"{CLOUDFLARE_API}/v1/deals%slimit=2")
     if r.status_code == 200:
         return "pass", f"Deals endpoint: HTTP 200 ({len(r.text)} bytes)"
     elif r.status_code == 401:
@@ -414,7 +414,7 @@ def test_api_deals_endpoint():
 
 def test_api_news_endpoint():
     """News endpoint works."""
-    r = get(f"{CLOUDFLARE_API}/v1/news?limit=2")
+    r = get(f"{CLOUDFLARE_API}/v1/news%slimit=2")
     if r.status_code == 200:
         return "pass", f"News endpoint: HTTP 200 ({len(r.text)} bytes)"
     return "fail", f"HTTP {r.status_code}: {r.text[:200]}"

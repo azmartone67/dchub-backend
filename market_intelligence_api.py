@@ -706,7 +706,7 @@ def get_all_market_intelligence():
     Optional query params:
       ?region=EMEA          — filter by region
       ?sort=vacancy_rate    — sort field
-      ?order=asc            — asc or desc
+      %sorder=asc            — asc or desc
     """
     region = request.args.get('region', '').strip()
     sort_by = request.args.get('sort', 'vacancy_rate').strip()

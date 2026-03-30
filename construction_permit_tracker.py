@@ -11,7 +11,6 @@ import logging
 from datetime import datetime, timedelta
 from flask import Blueprint, jsonify, request
 import json
-import sqlite3
 import os
 from db_utils import get_db
 
@@ -24,50 +23,52 @@ DB_PATH = os.environ.get('DC_NEXUS_DB', 'dc_nexus.db')
 
 def init_permits_db():
     conn = get_db()
-    c = conn.cursor()
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS construction_permits_detail (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        permit_id TEXT UNIQUE,
-        permit_number TEXT,
-        state TEXT,
-        county TEXT,
-        city TEXT,
-        address TEXT,
-        permit_type TEXT,
-        work_type TEXT,
-        description TEXT,
-        estimated_value REAL,
-        square_footage REAL,
-        stories INTEGER,
-        applicant TEXT,
-        contractor TEXT,
-        issue_date TEXT,
-        expiration_date TEXT,
-        status TEXT,
-        is_datacenter INTEGER DEFAULT 0,
-        confidence_score REAL,
-        latitude REAL,
-        longitude REAL,
-        source TEXT,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    )''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS permit_sources (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        source_id TEXT UNIQUE,
-        state TEXT,
-        county TEXT,
-        name TEXT,
-        url TEXT,
-        api_available INTEGER DEFAULT 0,
-        last_scraped TEXT,
-        permits_found INTEGER DEFAULT 0,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    )''')
-    
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+
+        c.execute('''CREATE TABLE IF NOT EXISTS construction_permits_detail (
+            id SERIAL PRIMARY KEY,
+            permit_id TEXT UNIQUE,
+            permit_number TEXT,
+            state TEXT,
+            county TEXT,
+            city TEXT,
+            address TEXT,
+            permit_type TEXT,
+            work_type TEXT,
+            description TEXT,
+            estimated_value REAL,
+            square_footage REAL,
+            stories INTEGER,
+            applicant TEXT,
+            contractor TEXT,
+            issue_date TEXT,
+            expiration_date TEXT,
+            status TEXT,
+            is_datacenter INTEGER DEFAULT 0,
+            confidence_score REAL,
+            latitude REAL,
+            longitude REAL,
+            source TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )''')
+
+        c.execute('''CREATE TABLE IF NOT EXISTS permit_sources (
+            id SERIAL PRIMARY KEY,
+            source_id TEXT UNIQUE,
+            state TEXT,
+            county TEXT,
+            name TEXT,
+            url TEXT,
+            api_available INTEGER DEFAULT 0,
+            last_scraped TEXT,
+            permits_found INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )''')
+
+        conn.commit()
+    finally:
+        conn.close()
     logger.info("✅ Construction Permit Tracker tables initialized")
 
 init_permits_db()

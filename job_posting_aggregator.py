@@ -11,7 +11,6 @@ import logging
 from datetime import datetime, timedelta
 from flask import Blueprint, jsonify, request
 import json
-import sqlite3
 import os
 from db_utils import get_db
 
@@ -24,40 +23,42 @@ DB_PATH = os.environ.get('DC_NEXUS_DB', 'dc_nexus.db')
 
 def init_jobs_db():
     conn = get_db()
-    c = conn.cursor()
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS job_postings (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        job_id TEXT UNIQUE,
-        company TEXT,
-        title TEXT,
-        location TEXT,
-        job_type TEXT,
-        department TEXT,
-        seniority TEXT,
-        salary_min REAL,
-        salary_max REAL,
-        posted_date TEXT,
-        url TEXT,
-        is_expansion_signal INTEGER DEFAULT 0,
-        skills TEXT,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    )''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS hiring_trends (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        company TEXT,
-        month TEXT,
-        total_postings INTEGER,
-        engineering_postings INTEGER,
-        operations_postings INTEGER,
-        sales_postings INTEGER,
-        executive_postings INTEGER,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    )''')
-    
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+
+        c.execute('''CREATE TABLE IF NOT EXISTS job_postings (
+            id SERIAL PRIMARY KEY,
+            job_id TEXT UNIQUE,
+            company TEXT,
+            title TEXT,
+            location TEXT,
+            job_type TEXT,
+            department TEXT,
+            seniority TEXT,
+            salary_min REAL,
+            salary_max REAL,
+            posted_date TEXT,
+            url TEXT,
+            is_expansion_signal INTEGER DEFAULT 0,
+            skills TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )''')
+
+        c.execute('''CREATE TABLE IF NOT EXISTS hiring_trends (
+            id SERIAL PRIMARY KEY,
+            company TEXT,
+            month TEXT,
+            total_postings INTEGER,
+            engineering_postings INTEGER,
+            operations_postings INTEGER,
+            sales_postings INTEGER,
+            executive_postings INTEGER,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )''')
+
+        conn.commit()
+    finally:
+        conn.close()
     logger.info("✅ Job Posting Aggregator tables initialized")
 
 init_jobs_db()

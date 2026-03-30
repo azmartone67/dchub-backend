@@ -26,7 +26,8 @@ def _get_db():
 
 def init_approval_table():
     conn = _get_db()
-    conn.execute("""
+    c = conn.cursor()
+    c.execute("""
         CREATE TABLE IF NOT EXISTS discovery_approvals (
             id SERIAL PRIMARY KEY,
             discovered_facility_id INTEGER,
@@ -75,7 +76,8 @@ def build_geo_index(facilities):
 
 def _load_facilities_from_db():
     conn = _get_db()
-    existing = conn.execute("""
+    c = conn.cursor()
+    existing = c.execute("""
         SELECT id, name, city, country, latitude, longitude
         FROM facilities
     """).fetchall()
@@ -168,7 +170,8 @@ def run_auto_approval(max_records=None, test_mode=False):
 
     conn = _get_db()
 
-    pending = conn.execute("""
+    c = conn.cursor()
+    pending = c.execute("""
         SELECT id, source, source_id, name, provider, market, city, state, country,
                address, latitude, longitude, power_mw, sqft, status, facility_type,
                source_url, confidence_score
@@ -177,7 +180,7 @@ def run_auto_approval(max_records=None, test_mode=False):
         ORDER BY
             CASE WHEN source IN ('peeringdb','openstreetmap') THEN 0 ELSE 1 END,
             id ASC
-        LIMIT ?
+        LIMIT %s
     """, (max_records,)).fetchall()
 
     if not pending:
@@ -193,7 +196,8 @@ def run_auto_approval(max_records=None, test_mode=False):
 
     name_index, geo_index = get_cached_indexes()
 
-    count_before = conn.execute("SELECT COUNT(*) FROM facilities").fetchone()[0]
+    c = conn.cursor()
+    count_before = c.execute("SELECT COUNT(*) FROM facilities").fetchone()[0]
 
     stats = {
         'approved': 0,
@@ -219,7 +223,8 @@ def run_auto_approval(max_records=None, test_mode=False):
         if batch_idx < len(batches) - 1:
             time.sleep(BATCH_DELAY)
 
-    count_after = conn.execute("SELECT COUNT(*) FROM facilities").fetchone()[0]
+    c = conn.cursor()
+    count_after = c.execute("SELECT COUNT(*) FROM facilities").fetchone()[0]
     stats['count_after'] = count_after
     stats['net_new'] = count_after - count_before
     stats['status'] = 'complete'
@@ -252,13 +257,15 @@ def _process_batch(conn, batch, stats, name_index, geo_index):
 
             if disc_name_norm and name_key in name_index:
                 match_id = name_index[name_key]
-                conn.execute("""
+                c = conn.cursor()
+                c.execute("""
                     INSERT INTO discovery_approvals
                     (discovered_facility_id, source, action, match_reason, promoted_facility_id)
-                    VALUES (?, ?, 'duplicate_skipped', 'name_match', ?)
+                    VALUES (%s, %s, 'duplicate_skipped', 'name_match', %s)
                 """, (disc['id'], disc['source'], match_id))
-                conn.execute("""
-                    UPDATE discovered_facilities SET is_duplicate = 1 WHERE id = ?
+                c = conn.cursor()
+                c.execute("""
+                    UPDATE discovered_facilities SET is_duplicate = 1 WHERE id = %s
                 """, (disc['id'],))
                 stats['duplicate_skipped'] += 1
                 continue
@@ -269,19 +276,21 @@ def _process_batch(conn, batch, stats, name_index, geo_index):
                 disc.get('latitude'), disc.get('longitude'), geo_index
             )
             if geo_match and source not in TRUSTED_SOURCES:
-                conn.execute("""
+                c = conn.cursor()
+                c.execute("""
                     INSERT INTO discovery_approvals
                     (discovered_facility_id, source, action, match_reason, promoted_facility_id)
-                    VALUES (?, ?, 'flagged_review', 'geo_match', ?)
+                    VALUES (%s, %s, 'flagged_review', 'geo_match', %s)
                 """, (disc['id'], disc['source'], geo_match_id))
                 stats['flagged_review'] += 1
                 continue
 
             if source not in TRUSTED_SOURCES:
-                conn.execute("""
+                c = conn.cursor()
+                c.execute("""
                     INSERT INTO discovery_approvals
                     (discovered_facility_id, source, action, match_reason)
-                    VALUES (?, ?, 'flagged_review', 'untrusted_source')
+                    VALUES (%s, %s, 'flagged_review', 'untrusted_source')
                 """, (disc['id'], disc['source']))
                 stats['flagged_review'] += 1
                 continue
@@ -293,12 +302,13 @@ def _process_batch(conn, batch, stats, name_index, geo_index):
             )
 
             try:
-                conn.execute("""
+                c = conn.cursor()
+                c.execute("""
                     INSERT INTO facilities
                     (id, name, provider, city, state, country, latitude, longitude,
                      power_mw, sqft, status, source, source_id, source_url,
                      confidence, first_seen, last_updated)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """, (
                     facility_id,
                     disc['name'],
@@ -319,16 +329,18 @@ def _process_batch(conn, batch, stats, name_index, geo_index):
                     datetime.utcnow().isoformat()
                 ))
 
-                conn.execute("""
+                c = conn.cursor()
+                c.execute("""
                     INSERT INTO discovery_approvals
                     (discovered_facility_id, source, action, match_reason, promoted_facility_id)
-                    VALUES (?, ?, 'approved', NULL, ?)
+                    VALUES (%s, %s, 'approved', NULL, %s)
                 """, (disc['id'], disc['source'], facility_id))
 
-                conn.execute("""
+                c = conn.cursor()
+                c.execute("""
                     UPDATE discovered_facilities
-                    SET merged_at = ?, merged_facility_id = ?
-                    WHERE id = ?
+                    SET merged_at = %s, merged_facility_id = %s
+                    WHERE id = %s
                 """, (datetime.utcnow().isoformat(), facility_id, disc['id']))
 
                 update_cache_incremental(
@@ -350,13 +362,15 @@ def _process_batch(conn, batch, stats, name_index, geo_index):
                 stats['approved'] += 1
 
             except Exception:
-                conn.execute("""
+                c = conn.cursor()
+                c.execute("""
                     INSERT INTO discovery_approvals
                     (discovered_facility_id, source, action, match_reason)
-                    VALUES (?, ?, 'duplicate_skipped', 'unique_constraint')
+                    VALUES (%s, %s, 'duplicate_skipped', 'unique_constraint')
                 """, (disc['id'], disc['source']))
-                conn.execute("""
-                    UPDATE discovered_facilities SET is_duplicate = 1 WHERE id = ?
+                c = conn.cursor()
+                c.execute("""
+                    UPDATE discovered_facilities SET is_duplicate = 1 WHERE id = %s
                 """, (disc['id'],))
                 stats['duplicate_skipped'] += 1
 

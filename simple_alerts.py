@@ -10,12 +10,11 @@ Endpoints:
 - POST   /api/v1/simple-alerts/test/<id> - Send test notification
 
 Usage:
-  GET /api/v1/simple-alerts?email=user@example.com
+  GET /api/v1/simple-alerts%semail=user@example.com
   POST /api/v1/simple-alerts with JSON body
 """
 
 from flask import Blueprint, request, jsonify
-import sqlite3
 import json
 import os
 import hashlib
@@ -39,7 +38,7 @@ def init_simple_alerts_db():
     
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS simple_alerts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             email TEXT NOT NULL,
             alert_type TEXT NOT NULL,
             name TEXT NOT NULL,
@@ -106,8 +105,9 @@ def list_alerts():
         }), 400
     
     db = get_alerts_db()
-    alerts = db.execute(
-        'SELECT * FROM simple_alerts WHERE email = ? ORDER BY created_at DESC',
+    c = db.cursor()
+    alerts = c.execute(
+        'SELECT * FROM simple_alerts WHERE email = %s ORDER BY created_at DESC',
         (email,)
     ).fetchall()
     db.close()
@@ -158,8 +158,9 @@ def create_alert():
     
     # Check for duplicate
     db = get_alerts_db()
-    existing = db.execute(
-        'SELECT id FROM simple_alerts WHERE email = ? AND name = ?',
+    c = db.cursor()
+    existing = c.execute(
+        'SELECT id FROM simple_alerts WHERE email = %s AND name = %s',
         (email, name)
     ).fetchone()
     
@@ -168,8 +169,9 @@ def create_alert():
         return jsonify({'success': False, 'error': 'Alert with this name already exists'}), 409
     
     # Check limit (max 10 alerts per email)
-    count = db.execute(
-        'SELECT COUNT(*) as cnt FROM simple_alerts WHERE email = ?',
+    c = db.cursor()
+    count = c.execute(
+        'SELECT COUNT(*) as cnt FROM simple_alerts WHERE email = %s',
         (email,)
     ).fetchone()['cnt']
     
@@ -181,7 +183,7 @@ def create_alert():
     cursor = db.cursor()
     cursor.execute('''
         INSERT INTO simple_alerts (email, alert_type, name, config, frequency)
-        VALUES (?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s)
     ''', (email, alert_type, name, json.dumps(config), frequency))
     
     alert_id = cursor.lastrowid
@@ -210,8 +212,9 @@ def get_alert(alert_id):
         return jsonify({'success': False, 'error': 'Valid email parameter required'}), 400
     
     db = get_alerts_db()
-    alert = db.execute(
-        'SELECT * FROM simple_alerts WHERE id = ? AND email = ?',
+    c = db.cursor()
+    alert = c.execute(
+        'SELECT * FROM simple_alerts WHERE id = %s AND email = %s',
         (alert_id, email)
     ).fetchone()
     db.close()
@@ -238,8 +241,9 @@ def delete_alert(alert_id):
     db = get_alerts_db()
     
     # Check exists
-    alert = db.execute(
-        'SELECT id, name FROM simple_alerts WHERE id = ? AND email = ?',
+    c = db.cursor()
+    alert = c.execute(
+        'SELECT id, name FROM simple_alerts WHERE id = %s AND email = %s',
         (alert_id, email)
     ).fetchone()
     
@@ -248,7 +252,8 @@ def delete_alert(alert_id):
         return jsonify({'success': False, 'error': 'Alert not found'}), 404
     
     # Delete
-    db.execute('DELETE FROM simple_alerts WHERE id = ?', (alert_id,))
+    c = db.cursor()
+    c.execute('DELETE FROM simple_alerts WHERE id = %s', (alert_id,))
     db.commit()
     db.close()
     
@@ -273,8 +278,9 @@ def update_alert(alert_id):
     db = get_alerts_db()
     
     # Check exists
-    alert = db.execute(
-        'SELECT * FROM simple_alerts WHERE id = ? AND email = ?',
+    c = db.cursor()
+    alert = c.execute(
+        'SELECT * FROM simple_alerts WHERE id = %s AND email = %s',
         (alert_id, email)
     ).fetchone()
     
@@ -287,7 +293,7 @@ def update_alert(alert_id):
     params = []
     
     if 'name' in data:
-        updates.append('name = ?')
+        updates.append('name = %s')
         params.append(data['name'])
     
     if 'config' in data:
@@ -296,18 +302,18 @@ def update_alert(alert_id):
         if not valid:
             db.close()
             return jsonify({'success': False, 'error': error}), 400
-        updates.append('config = ?')
+        updates.append('config = %s')
         params.append(json.dumps(data['config']))
     
     if 'frequency' in data:
         if data['frequency'] not in ('immediate', 'daily', 'weekly'):
             db.close()
             return jsonify({'success': False, 'error': 'Invalid frequency'}), 400
-        updates.append('frequency = ?')
+        updates.append('frequency = %s')
         params.append(data['frequency'])
     
     if 'is_active' in data:
-        updates.append('is_active = ?')
+        updates.append('is_active = %s')
         params.append(1 if data['is_active'] else 0)
     
     if not updates:
@@ -316,14 +322,16 @@ def update_alert(alert_id):
     
     params.extend([alert_id, email])
     
-    db.execute(
-        f'UPDATE simple_alerts SET {", ".join(updates)} WHERE id = ? AND email = ?',
+    c = db.cursor()
+    c.execute(
+        f'UPDATE simple_alerts SET {", ".join(updates)} WHERE id = %s AND email = %s',
         params
     )
     db.commit()
     
     # Fetch updated
-    updated = db.execute('SELECT * FROM simple_alerts WHERE id = ?', (alert_id,)).fetchone()
+    c = db.cursor()
+    updated = c.execute('SELECT * FROM simple_alerts WHERE id = %s', (alert_id,)).fetchone()
     db.close()
     
     result = dict(updated)
@@ -345,8 +353,9 @@ def test_alert(alert_id):
         return jsonify({'success': False, 'error': 'Valid email required in body'}), 400
     
     db = get_alerts_db()
-    alert = db.execute(
-        'SELECT * FROM simple_alerts WHERE id = ? AND email = ?',
+    c = db.cursor()
+    alert = c.execute(
+        'SELECT * FROM simple_alerts WHERE id = %s AND email = %s',
         (alert_id, email)
     ).fetchone()
     db.close()
@@ -409,18 +418,21 @@ def process_alerts():
     """Check active alerts against recent news/deals and queue notifications."""
     db = get_alerts_db()
     try:
-        alerts = db.execute(
+        c = db.cursor()
+        alerts = c.execute(
             'SELECT id, email, alert_type, name, config, frequency FROM simple_alerts WHERE is_active = 1'
         ).fetchall()
 
         if not alerts:
             return {'status': 'ok', 'processed': 0, 'matched': 0, 'message': 'No active alerts'}
 
-        recent_news = db.execute(
+        c = db.cursor()
+        recent_news = c.execute(
             "SELECT id, title, source, published_date FROM news_articles WHERE published_date >= datetime('now', '-1 day') ORDER BY published_date DESC LIMIT 200"
         ).fetchall()
 
-        recent_deals = db.execute(
+        c = db.cursor()
+        recent_deals = c.execute(
             "SELECT id, title, operator, market, mw_it FROM deals WHERE created_at >= datetime('now', '-1 day') ORDER BY created_at DESC LIMIT 100"
         ).fetchall()
 
@@ -479,8 +491,9 @@ def process_alerts():
 
             if hits:
                 matched += 1
-                db.execute(
-                    'UPDATE simple_alerts SET last_triggered = CURRENT_TIMESTAMP, trigger_count = trigger_count + 1 WHERE id = ?',
+                c = db.cursor()
+                c.execute(
+                    'UPDATE simple_alerts SET last_triggered = CURRENT_TIMESTAMP, trigger_count = trigger_count + 1 WHERE id = %s',
                     (alert_dict['id'],)
                 )
 

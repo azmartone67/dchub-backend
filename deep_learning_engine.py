@@ -17,7 +17,6 @@ Features:
 - Trend detection and prediction
 """
 
-import sqlite3
 import requests
 import re
 import json
@@ -80,7 +79,7 @@ class DeepLearningEngine:
         
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS learned_entities (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 entity_type TEXT NOT NULL,
                 entity_value TEXT NOT NULL,
                 confidence REAL DEFAULT 0.5,
@@ -95,7 +94,7 @@ class DeepLearningEngine:
         
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS discovery_queue (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 item_type TEXT NOT NULL,
                 item_data TEXT NOT NULL,
                 priority INTEGER DEFAULT 5,
@@ -108,7 +107,7 @@ class DeepLearningEngine:
         
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS capacity_tracking (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 facility_id TEXT,
                 operator TEXT,
                 location TEXT,
@@ -124,7 +123,7 @@ class DeepLearningEngine:
         
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS transaction_intelligence (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 transaction_hash TEXT UNIQUE,
                 buyer TEXT,
                 seller TEXT,
@@ -142,7 +141,7 @@ class DeepLearningEngine:
         
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS learning_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
                 learning_type TEXT,
                 items_processed INTEGER DEFAULT 0,
@@ -204,7 +203,7 @@ class DeepLearningEngine:
                 if op and len(op) >= 2:
                     cursor.execute('''
                         INSERT INTO learned_entities (entity_type, entity_value, source, first_seen, last_seen)
-                        VALUES (?, ?, ?, ?, ?)
+                        VALUES (%s, %s, %s, %s, %s)
                         ON CONFLICT(entity_type, entity_value) DO UPDATE SET
                             frequency = frequency + 1, last_seen = ?
                     ''', ('operators', op, 'facilities', now, now, now))
@@ -215,7 +214,7 @@ class DeepLearningEngine:
                 if location and len(location) >= 2:
                     cursor.execute('''
                         INSERT INTO learned_entities (entity_type, entity_value, source, first_seen, last_seen)
-                        VALUES (?, ?, ?, ?, ?)
+                        VALUES (%s, %s, %s, %s, %s)
                         ON CONFLICT(entity_type, entity_value) DO UPDATE SET
                             frequency = frequency + 1, last_seen = ?
                     ''', ('locations', location, 'facilities', now, now, now))
@@ -272,7 +271,7 @@ class DeepLearningEngine:
                 
                 try:
                     cursor.execute('''
-                        UPDATE announcements SET processed_for_learning = 1 WHERE id = ?
+                        UPDATE announcements SET processed_for_learning = 1 WHERE id = %s
                     ''', (article_id,))
                 except:
                     pass
@@ -429,14 +428,14 @@ class DeepLearningEngine:
         transactions = []
         
         deal_patterns = [
-            (r'(\w+(?:\s+\w+)*)\s+(?:acquires?|to acquire|acquired)\s+(\w+(?:\s+\w+)*)', 'acquisition'),
-            (r'(\w+(?:\s+\w+)*)\s+(?:buys?|to buy|bought)\s+(\w+(?:\s+\w+)*)', 'acquisition'),
-            (r'(\w+(?:\s+\w+)*)\s+(?:merges? with|merger with)\s+(\w+(?:\s+\w+)*)', 'merger'),
-            (r'(\w+(?:\s+\w+)*)\s+(?:invests?|investing)\s+.*in\s+(\w+(?:\s+\w+)*)', 'investment'),
-            (r'(\w+(?:\s+\w+)*)\s+(?:sells?|sold|divests?)\s+(\w+(?:\s+\w+)*)', 'divestiture'),
+            (r'(\w+(%s:\s+\w+)*)\s+(%s:acquires%s|to acquire|acquired)\s+(\w+(%s:\s+\w+)*)', 'acquisition'),
+            (r'(\w+(%s:\s+\w+)*)\s+(%s:buys%s|to buy|bought)\s+(\w+(%s:\s+\w+)*)', 'acquisition'),
+            (r'(\w+(%s:\s+\w+)*)\s+(%s:merges%s with|merger with)\s+(\w+(%s:\s+\w+)*)', 'merger'),
+            (r'(\w+(%s:\s+\w+)*)\s+(%s:invests%s|investing)\s+.*in\s+(\w+(%s:\s+\w+)*)', 'investment'),
+            (r'(\w+(%s:\s+\w+)*)\s+(%s:sells%s|sold|divests%s)\s+(\w+(%s:\s+\w+)*)', 'divestiture'),
         ]
         
-        value_pattern = r'\$(\d+(?:\.\d+)?)\s*(?:billion|B|bn|million|M|mn)'
+        value_pattern = r'\$(\d+(%s:\.\d+)%s)\s*(%s:billion|B|bn|million|M|mn)'
         
         for pattern, deal_type in deal_patterns:
             matches = re.findall(pattern, text, re.IGNORECASE)
@@ -611,7 +610,7 @@ class DeepLearningEngine:
         known_suffixes = ['Data Centers', 'Digital', 'Infrastructure', 'Realty', 'Capital']
         operators = []
         
-        pattern = r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+(?:Data\s+Center|Digital|Infrastructure)'
+        pattern = r'\b([A-Z][a-z]+(%s:\s+[A-Z][a-z]+)*)\s+(%s:Data\s+Center|Digital|Infrastructure)'
         matches = re.findall(pattern, text)
         operators.extend(matches)
         
@@ -734,7 +733,7 @@ class DeepLearningEngine:
             
             cursor.execute('''
                 INSERT INTO learned_entities (entity_type, entity_value, source, first_seen, last_seen)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT(entity_type, entity_value) DO UPDATE SET
                     frequency = frequency + 1,
                     last_seen = ?,
@@ -760,9 +759,9 @@ class DeepLearningEngine:
             cursor = conn.cursor()
             
             cursor.execute('''
-                INSERT OR IGNORE INTO transaction_intelligence 
+                INSERT INTO transaction_intelligence 
                 (transaction_hash, buyer, target, deal_type, value_millions, source_url, confidence)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
             ''', (tx['hash'], tx['buyer'], tx['target'], tx['deal_type'],
                   tx.get('value_millions'), tx.get('source_url'), tx.get('confidence', 0.5)))
             
@@ -782,7 +781,7 @@ class DeepLearningEngine:
             cursor.execute('''
                 INSERT INTO capacity_tracking 
                 (operator, location, capacity_mw, status, source, confidence)
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s)
             ''', (cap.get('operator'), cap.get('location'), cap.get('capacity_mw'),
                   cap.get('status', 'planned'), cap.get('source_url'), cap.get('confidence', 0.5)))
             
@@ -800,8 +799,8 @@ class DeepLearningEngine:
             cursor = conn.cursor()
             
             cursor.execute('''
-                INSERT OR IGNORE INTO discovered_sources (domain, url, source_type, discovery_method)
-                VALUES (?, ?, ?, 'deep_learning')
+                INSERT INTO discovered_sources (domain, url, source_type, discovery_method)
+                VALUES (%s, %s, %s, 'deep_learning')
             ''', (urlparse(url).netloc, url, source_type))
             
             is_new = cursor.rowcount > 0
@@ -886,7 +885,7 @@ class DeepLearningEngine:
             
             cursor.execute('''
                 INSERT INTO learning_log (learning_type, items_processed, items_learned, duration_seconds)
-                VALUES (?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s)
             ''', ('full_cycle', 100, items_learned, results.get('duration', 0)))
             
             conn.commit()
@@ -962,29 +961,31 @@ def get_detected_transactions(limit: int = 50) -> List[Dict]:
     """Get detected transactions"""
     try:
         conn = get_db()
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT buyer, target, deal_type, value_millions, source_url, confidence, discovered_at
-            FROM transaction_intelligence
-            ORDER BY discovered_at DESC
-            LIMIT ?
-        ''', (limit,))
-        
-        transactions = [
-            {
-                'buyer': row[0],
-                'target': row[1],
-                'deal_type': row[2],
-                'value_millions': row[3],
-                'source_url': row[4],
-                'confidence': row[5],
-                'discovered_at': row[6]
-            }
-            for row in cursor.fetchall()
-        ]
-        
-        conn.close()
+        try:
+            cursor = conn.cursor()
+
+            cursor.execute('''
+                SELECT buyer, target, deal_type, value_millions, source_url, confidence, discovered_at
+                FROM transaction_intelligence
+                ORDER BY discovered_at DESC
+                LIMIT %s
+            ''', (limit,))
+
+            transactions = [
+                {
+                    'buyer': row[0],
+                    'target': row[1],
+                    'deal_type': row[2],
+                    'value_millions': row[3],
+                    'source_url': row[4],
+                    'confidence': row[5],
+                    'discovered_at': row[6]
+                }
+                for row in cursor.fetchall()
+            ]
+
+        finally:
+            conn.close()
         return transactions
     except:
         return []
@@ -994,29 +995,31 @@ def get_capacity_pipeline(limit: int = 50) -> List[Dict]:
     """Get capacity pipeline"""
     try:
         conn = get_db()
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT operator, location, capacity_mw, status, source, confidence, discovered_at
-            FROM capacity_tracking
-            ORDER BY discovered_at DESC
-            LIMIT ?
-        ''', (limit,))
-        
-        pipeline = [
-            {
-                'operator': row[0],
-                'location': row[1],
-                'capacity_mw': row[2],
-                'status': row[3],
-                'source': row[4],
-                'confidence': row[5],
-                'discovered_at': row[6]
-            }
-            for row in cursor.fetchall()
-        ]
-        
-        conn.close()
+        try:
+            cursor = conn.cursor()
+
+            cursor.execute('''
+                SELECT operator, location, capacity_mw, status, source, confidence, discovered_at
+                FROM capacity_tracking
+                ORDER BY discovered_at DESC
+                LIMIT %s
+            ''', (limit,))
+
+            pipeline = [
+                {
+                    'operator': row[0],
+                    'location': row[1],
+                    'capacity_mw': row[2],
+                    'status': row[3],
+                    'source': row[4],
+                    'confidence': row[5],
+                    'discovered_at': row[6]
+                }
+                for row in cursor.fetchall()
+            ]
+
+        finally:
+            conn.close()
         return pipeline
     except:
         return []

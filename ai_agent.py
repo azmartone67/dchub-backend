@@ -25,7 +25,6 @@ ai_agent = Blueprint('ai_agent', __name__, url_prefix='/api/agent')
 # Configuration
 def get_live_dchub_config():
     """Get live stats from database instead of hardcoded values"""
-    import sqlite3
     db_path = os.environ.get('DB_PATH', 'dc_nexus.db')
     
     try:

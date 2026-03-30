@@ -26,68 +26,70 @@ CACHE_DURATION = 3600
 
 def init_real_estate_db():
     conn = get_db()
-    c = conn.cursor()
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS land_parcels (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        parcel_id TEXT UNIQUE,
-        county TEXT,
-        state TEXT,
-        address TEXT,
-        acreage REAL,
-        zoning TEXT,
-        assessed_value REAL,
-        land_value REAL,
-        owner_name TEXT,
-        owner_type TEXT,
-        last_sale_date TEXT,
-        last_sale_price REAL,
-        latitude REAL,
-        longitude REAL,
-        dc_suitable INTEGER DEFAULT 0,
-        power_available INTEGER DEFAULT 0,
-        fiber_available INTEGER DEFAULT 0,
-        water_available INTEGER DEFAULT 0,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-    )''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS building_permits (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        permit_id TEXT UNIQUE,
-        county TEXT,
-        state TEXT,
-        address TEXT,
-        permit_type TEXT,
-        description TEXT,
-        estimated_cost REAL,
-        issue_date TEXT,
-        status TEXT,
-        applicant TEXT,
-        is_datacenter INTEGER DEFAULT 0,
-        latitude REAL,
-        longitude REAL,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    )''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS zoning_districts (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        district_id TEXT UNIQUE,
-        county TEXT,
-        state TEXT,
-        zone_code TEXT,
-        zone_name TEXT,
-        allows_datacenter INTEGER DEFAULT 0,
-        allows_industrial INTEGER DEFAULT 0,
-        max_height_ft REAL,
-        max_lot_coverage REAL,
-        min_setback_ft REAL,
-        notes TEXT,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    )''')
-    
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+
+        c.execute('''CREATE TABLE IF NOT EXISTS land_parcels (
+            id SERIAL PRIMARY KEY,
+            parcel_id TEXT UNIQUE,
+            county TEXT,
+            state TEXT,
+            address TEXT,
+            acreage REAL,
+            zoning TEXT,
+            assessed_value REAL,
+            land_value REAL,
+            owner_name TEXT,
+            owner_type TEXT,
+            last_sale_date TEXT,
+            last_sale_price REAL,
+            latitude REAL,
+            longitude REAL,
+            dc_suitable INTEGER DEFAULT 0,
+            power_available INTEGER DEFAULT 0,
+            fiber_available INTEGER DEFAULT 0,
+            water_available INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )''')
+
+        c.execute('''CREATE TABLE IF NOT EXISTS building_permits (
+            id SERIAL PRIMARY KEY,
+            permit_id TEXT UNIQUE,
+            county TEXT,
+            state TEXT,
+            address TEXT,
+            permit_type TEXT,
+            description TEXT,
+            estimated_cost REAL,
+            issue_date TEXT,
+            status TEXT,
+            applicant TEXT,
+            is_datacenter INTEGER DEFAULT 0,
+            latitude REAL,
+            longitude REAL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )''')
+
+        c.execute('''CREATE TABLE IF NOT EXISTS zoning_districts (
+            id SERIAL PRIMARY KEY,
+            district_id TEXT UNIQUE,
+            county TEXT,
+            state TEXT,
+            zone_code TEXT,
+            zone_name TEXT,
+            allows_datacenter INTEGER DEFAULT 0,
+            allows_industrial INTEGER DEFAULT 0,
+            max_height_ft REAL,
+            max_lot_coverage REAL,
+            min_setback_ft REAL,
+            notes TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )''')
+
+        conn.commit()
+    finally:
+        conn.close()
     logger.info("✅ Real Estate Intelligence tables initialized")
 
 init_real_estate_db()

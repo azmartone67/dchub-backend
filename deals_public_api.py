@@ -21,7 +21,6 @@ DATA QUALITY:
 
 from flask import Blueprint, jsonify, request
 from datetime import datetime
-import sqlite3
 import os
 from db_utils import get_db
 
@@ -59,20 +58,22 @@ HYPERSCALER_CAPEX_THRESHOLD_M = 15000  # $15B — real DC deals by these cos are
 
 def get_deals_db():
     conn = get_db()
-    # Enable dict-like row access for PostgreSQL (psycopg2 RealDictCursor)
-    # For SQLite fallback, set row_factory
     try:
-        import psycopg2.extras
-        conn.cursor_factory = psycopg2.extras.RealDictCursor
-    except (ImportError, AttributeError):
+        # Enable dict-like row access for PostgreSQL (psycopg2 RealDictCursor)
+        # For SQLite fallback, set row_factory
         try:
-            import sqlite3
-            conn.row_factory = sqlite3.Row
-        except Exception:
-            pass
-    return conn
+            import psycopg2.extras
+            conn.cursor_factory = psycopg2.extras.RealDictCursor
+        except (ImportError, AttributeError):
+            try:
+                # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
+            except Exception:
+                pass
+        return conn
 
 
+    finally:
+        conn.close()
 def safe_float(val, default=0):
     try:
         return float(val) if val is not None else default
@@ -93,7 +94,7 @@ def normalize_value_to_millions(raw_value):
       - If value > 500,000 -> likely stored in raw $ or $K, divide to get $M
       - If value <= 500,000 -> likely already in $M
       
-    Why 500,000? The largest plausible deal in $M is ~100,000 ($100B).
+    Why 500,000%s The largest plausible deal in $M is ~100,000 ($100B).
     Anything above 500,000 is almost certainly in wrong units.
     """
     v = safe_float(raw_value)
@@ -258,7 +259,7 @@ def discover_deals_schema():
                     db_columns = [row[0] for row in cursor.fetchall()]
                 except Exception:
                     # Fallback for SQLite
-                    cursor.execute(f"PRAGMA table_info({table})")
+                    # PRAGMA removed - not needed for PostgreSQL
                     db_columns = [row[1] for row in cursor.fetchall()]
                 col_map = {}
                 for canonical, candidates in COLUMN_MAP.items():
@@ -549,7 +550,7 @@ def get_public_deals_recent():
 @deals_public_bp.route('/api/deals/public/search', methods=['GET'])
 def search_public_deals():
     """
-    GET /api/deals/public/search?q=equinix
+    GET /api/deals/public/search%sq=equinix
     Search deals by buyer name, type, region, or location.
     """
     try:

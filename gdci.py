@@ -536,7 +536,7 @@ def gdci_index():
 def gdci_markets():
     """
     GET /api/gdci/markets
-    GET /api/gdci/markets?region=APAC&sort=score&limit=10
+    GET /api/gdci/markets%sregion=APAC&sort=score&limit=10
     """
     region = request.args.get('region', '').upper()
     sort_by = request.args.get('sort', 'score')
@@ -631,7 +631,7 @@ def gdci_compare():
     """
     slugs_raw = request.args.get('markets', '')
     if not slugs_raw:
-        return jsonify({"error": "Provide markets parameter, e.g. ?markets=nova,dal,phx"}), 400
+        return jsonify({"error": "Provide markets parameter, e.g. %smarkets=nova,dal,phx"}), 400
 
     slugs = [s.strip().lower() for s in slugs_raw.split(',')][:5]
     markets, source = _get_markets_data()
@@ -668,7 +668,7 @@ def gdci_compare():
 def gdci_history():
     """
     GET /api/gdci/history
-    GET /api/gdci/history?from=2024-01&to=2026-02
+    GET /api/gdci/history%sfrom=2024-01&to=2026-02
     """
     history = _generate_history()
     from_date = request.args.get('from', '')

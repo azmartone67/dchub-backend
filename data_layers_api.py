@@ -16,7 +16,6 @@ Endpoints:
 from flask import Blueprint, jsonify, request
 import requests
 import json
-import sqlite3
 from datetime import datetime, timedelta
 from functools import wraps
 import os
@@ -203,45 +202,47 @@ def get_all_facilities():
     """Get all facilities from discovery database"""
     try:
         conn = get_db()
-        conn.row_factory = sqlite3.Row
-        c = conn.cursor()
-        
-        # Pagination
-        limit = min(int(request.args.get('limit', 1000)), 5000)
-        offset = int(request.args.get('offset', 0))
-        
-        # Filters
-        country = request.args.get('country')
-        source = request.args.get('source')
-        min_confidence = float(request.args.get('min_confidence', 0.3))
-        
-        query = """
-            SELECT id, name, provider, city, state, country, 
-                   latitude, longitude, power_mw, source, confidence
-            FROM facilities
-            WHERE confidence >= ?
-        """
-        params = [min_confidence]
-        
-        if country:
-            query += " AND country = ?"
-            params.append(country)
-        
-        if source:
-            query += " AND source = ?"
-            params.append(source)
-        
-        query += " ORDER BY confidence DESC LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
-        
-        c.execute(query, params)
-        facilities = [dict(row) for row in c.fetchall()]
-        
-        # Get total count
-        c.execute("SELECT COUNT(*) FROM facilities WHERE confidence >= ?", [min_confidence])
-        total = c.fetchone()[0]
-        
-        conn.close()
+        try:
+            # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
+            c = conn.cursor()
+
+            # Pagination
+            limit = min(int(request.args.get('limit', 1000)), 5000)
+            offset = int(request.args.get('offset', 0))
+
+            # Filters
+            country = request.args.get('country')
+            source = request.args.get('source')
+            min_confidence = float(request.args.get('min_confidence', 0.3))
+
+            query = """
+                SELECT id, name, provider, city, state, country,
+                       latitude, longitude, power_mw, source, confidence
+                FROM facilities
+                WHERE confidence >= %s
+            """
+            params = [min_confidence]
+
+            if country:
+                query += " AND country = %s"
+                params.append(country)
+
+            if source:
+                query += " AND source = %s"
+                params.append(source)
+
+            query += " ORDER BY confidence DESC LIMIT %s OFFSET %s"
+            params.extend([limit, offset])
+
+            c.execute(query, params)
+            facilities = [dict(row) for row in c.fetchall()]
+
+            # Get total count
+            c.execute("SELECT COUNT(*) FROM facilities WHERE confidence >= %s", [min_confidence])
+            total = c.fetchone()[0]
+
+        finally:
+            conn.close()
         
         return jsonify({
             'success': True,
@@ -260,33 +261,35 @@ def get_facility_stats():
     """Get facility statistics"""
     try:
         conn = get_db()
-        c = conn.cursor()
-        
-        c.execute("SELECT COUNT(*) FROM facilities")
-        total = c.fetchone()[0]
-        
-        c.execute("SELECT source, COUNT(*) FROM facilities GROUP BY source")
-        by_source = dict(c.fetchall())
-        
-        c.execute("""
-            SELECT country, COUNT(*) as cnt 
-            FROM facilities 
-            GROUP BY country 
-            ORDER BY cnt DESC 
-            LIMIT 20
-        """)
-        by_country = dict(c.fetchall())
-        
-        c.execute("SELECT SUM(power_mw) FROM facilities WHERE power_mw > 0")
-        total_power = c.fetchone()[0] or 0
-        
-        c.execute("SELECT COUNT(DISTINCT provider) FROM facilities WHERE provider IS NOT NULL")
-        providers = c.fetchone()[0]
-        
-        c.execute("SELECT COUNT(*) FROM announcements")
-        announcements = c.fetchone()[0]
-        
-        conn.close()
+        try:
+            c = conn.cursor()
+
+            c.execute("SELECT COUNT(*) FROM facilities")
+            total = c.fetchone()[0]
+
+            c.execute("SELECT source, COUNT(*) FROM facilities GROUP BY source")
+            by_source = dict(c.fetchall())
+
+            c.execute("""
+                SELECT country, COUNT(*) as cnt
+                FROM facilities
+                GROUP BY country
+                ORDER BY cnt DESC
+                LIMIT 20
+            """)
+            by_country = dict(c.fetchall())
+
+            c.execute("SELECT SUM(power_mw) FROM facilities WHERE power_mw > 0")
+            total_power = c.fetchone()[0] or 0
+
+            c.execute("SELECT COUNT(DISTINCT provider) FROM facilities WHERE provider IS NOT NULL")
+            providers = c.fetchone()[0]
+
+            c.execute("SELECT COUNT(*) FROM announcements")
+            announcements = c.fetchone()[0]
+
+        finally:
+            conn.close()
         
         return jsonify({
             'success': True,

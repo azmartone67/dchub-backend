@@ -1,4 +1,3 @@
-import sqlite3
 import os
 import re
 import json
@@ -155,97 +154,99 @@ STATUS_MAP = {
 
 def init_pipeline_tables():
     conn = get_db()
-    c = conn.cursor()
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS pending_facilities (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            operator TEXT,
-            operator_known BOOLEAN DEFAULT false,
-            location_text TEXT,
-            city TEXT,
-            state TEXT,
-            country TEXT,
-            lat REAL,
-            lng REAL,
-            capacity_mw REAL,
-            capacity_qualifier TEXT,
-            status TEXT,
-            timeline TEXT,
-            investment_usd REAL,
-            confidence_score INTEGER DEFAULT 0,
-            confidence_tier TEXT,
-            classification TEXT,
-            source_url TEXT,
-            source_name TEXT,
-            source_article_title TEXT,
-            source_published_date TEXT,
-            extracted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            reviewed BOOLEAN DEFAULT 0,
-            review_action TEXT,
-            reviewed_at TIMESTAMP,
-            matched_facility_id TEXT,
-            match_type TEXT,
-            notes TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS facility_sources (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            facility_id TEXT,
-            pending_facility_id INTEGER,
-            article_url TEXT,
-            article_title TEXT,
-            source_name TEXT,
-            published_date TEXT,
-            extracted_data TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS pipeline_metrics (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            metric_date TEXT,
-            articles_processed INTEGER DEFAULT 0,
-            articles_classified INTEGER DEFAULT 0,
-            facilities_extracted INTEGER DEFAULT 0,
-            auto_verified INTEGER DEFAULT 0,
-            pending_review INTEGER DEFAULT 0,
-            discarded INTEGER DEFAULT 0,
-            avg_confidence REAL DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-
     try:
-        c.execute("CREATE INDEX IF NOT EXISTS idx_pending_confidence ON pending_facilities(confidence_score DESC)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_pending_reviewed ON pending_facilities(reviewed, confidence_tier)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_sources_facility ON facility_sources(facility_id)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_sources_pending ON facility_sources(pending_facility_id)")
-    except:
-        pass
+        c = conn.cursor()
 
-    try:
-        c.execute("SELECT facility_processed FROM announcements LIMIT 1")
-    except:
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS pending_facilities (
+                id SERIAL PRIMARY KEY,
+                operator TEXT,
+                operator_known BOOLEAN DEFAULT false,
+                location_text TEXT,
+                city TEXT,
+                state TEXT,
+                country TEXT,
+                lat REAL,
+                lng REAL,
+                capacity_mw REAL,
+                capacity_qualifier TEXT,
+                status TEXT,
+                timeline TEXT,
+                investment_usd REAL,
+                confidence_score INTEGER DEFAULT 0,
+                confidence_tier TEXT,
+                classification TEXT,
+                source_url TEXT,
+                source_name TEXT,
+                source_article_title TEXT,
+                source_published_date TEXT,
+                extracted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                reviewed BOOLEAN DEFAULT 0,
+                review_action TEXT,
+                reviewed_at TIMESTAMP,
+                matched_facility_id TEXT,
+                match_type TEXT,
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS facility_sources (
+                id SERIAL PRIMARY KEY,
+                facility_id TEXT,
+                pending_facility_id INTEGER,
+                article_url TEXT,
+                article_title TEXT,
+                source_name TEXT,
+                published_date TEXT,
+                extracted_data TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS pipeline_metrics (
+                id SERIAL PRIMARY KEY,
+                metric_date TEXT,
+                articles_processed INTEGER DEFAULT 0,
+                articles_classified INTEGER DEFAULT 0,
+                facilities_extracted INTEGER DEFAULT 0,
+                auto_verified INTEGER DEFAULT 0,
+                pending_review INTEGER DEFAULT 0,
+                discarded INTEGER DEFAULT 0,
+                avg_confidence REAL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         try:
-            c.execute("ALTER TABLE announcements ADD COLUMN facility_processed BOOLEAN DEFAULT false")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_pending_confidence ON pending_facilities(confidence_score DESC)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_pending_reviewed ON pending_facilities(reviewed, confidence_tier)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_sources_facility ON facility_sources(facility_id)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_sources_pending ON facility_sources(pending_facility_id)")
         except:
             pass
 
-    try:
-        c.execute("SELECT facility_extracted_id FROM announcements LIMIT 1")
-    except:
         try:
-            c.execute("ALTER TABLE announcements ADD COLUMN facility_extracted_id INTEGER")
+            c.execute("SELECT facility_processed FROM announcements LIMIT 1")
         except:
-            pass
+            try:
+                c.execute("ALTER TABLE announcements ADD COLUMN facility_processed BOOLEAN DEFAULT false")
+            except:
+                pass
 
-    conn.commit()
-    conn.close()
+        try:
+            c.execute("SELECT facility_extracted_id FROM announcements LIMIT 1")
+        except:
+            try:
+                c.execute("ALTER TABLE announcements ADD COLUMN facility_extracted_id INTEGER")
+            except:
+                pass
+
+        conn.commit()
+    finally:
+        conn.close()
     print("✅ Discovery pipeline tables initialized")
 
 
@@ -340,7 +341,7 @@ def extract_facility_data(article):
 
     if not operator:
         op_patterns = [
-            r'(?:by|from|operator|developer|built by|owned by|managed by)\s+([A-Z][A-Za-z\s&]+?)(?:\s+(?:is|has|will|plans|broke|announced|data center|facility))',
+            r'(%s:by|from|operator|developer|built by|owned by|managed by)\s+([A-Z][A-Za-z\s&]+%s)(%s:\s+(%s:is|has|will|plans|broke|announced|data center|facility))',
             r'([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,3})\s+(?:breaks ground|broke ground|announces|plans|will build|to build|developing)',
         ]
         for pat in op_patterns:
@@ -573,22 +574,24 @@ def calculate_confidence(extracted, classification=None):
 
 def find_matching_facility(extracted):
     conn = get_db()
-    c = conn.cursor()
-
     try:
-        if extracted.get('operator') and extracted.get('city'):
-            op = extracted['operator']
-            city = extracted['city']
-            c.execute("""
-                SELECT id, name, provider, city, state, country, power_mw, status
-                FROM facilities
-                WHERE (provider LIKE ? OR name LIKE ?)
-                AND city = ?
-                LIMIT 1
-            """, (f"%{op}%", f"%{op}%", city))
-            match = c.fetchone()
-            if match:
-                conn.close()
+        c = conn.cursor()
+
+        try:
+            if extracted.get('operator') and extracted.get('city'):
+                op = extracted['operator']
+                city = extracted['city']
+                c.execute("""
+                    SELECT id, name, provider, city, state, country, power_mw, status
+                    FROM facilities
+                    WHERE (provider LIKE %s OR name LIKE %s)
+                    AND city = %s
+                    LIMIT 1
+                """, (f"%{op}%", f"%{op}%", city))
+                match = c.fetchone()
+                if match:
+    finally:
+        conn.close()
                 return {'action': 'update', 'facility_id': match['id'], 'match_type': 'exact', 'matched': dict(match)}
 
         if extracted.get('operator') and extracted.get('state'):
@@ -597,8 +600,8 @@ def find_matching_facility(extracted):
             c.execute("""
                 SELECT id, name, provider, city, state, country, power_mw, status
                 FROM facilities
-                WHERE (provider LIKE ? OR name LIKE ?)
-                AND state = ?
+                WHERE (provider LIKE %s OR name LIKE %s)
+                AND state = %s
                 LIMIT 5
             """, (f"%{op}%", f"%{op}%", state))
             matches = c.fetchall()
@@ -609,7 +612,7 @@ def find_matching_facility(extracted):
         c.execute("""
             SELECT id, operator, operator AS provider, city, state, source_article_title
             FROM pending_facilities
-            WHERE operator = ? AND city = ?
+            WHERE operator = %s AND city = %s
             AND reviewed = false
             LIMIT 1
         """, (extracted.get('operator'), extracted.get('city')))
@@ -627,59 +630,61 @@ def find_matching_facility(extracted):
 
 def add_to_pending(extracted, match_result):
     conn = get_db()
-    c = conn.cursor()
-
     try:
-        c.execute("""
-            INSERT INTO pending_facilities (
-                operator, operator_known, location_text, city, state, country,
-                lat, lng, capacity_mw, capacity_qualifier, status, timeline,
-                investment_usd, confidence_score, confidence_tier, classification,
-                source_url, source_name, source_article_title, source_published_date,
-                extracted_at, matched_facility_id, match_type
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            extracted.get('operator'),
-            True if extracted.get('operator_known') else False,
-            extracted.get('location_text'),
-            extracted.get('city'),
-            extracted.get('state'),
-            extracted.get('country'),
-            extracted.get('lat'),
-            extracted.get('lng'),
-            extracted.get('capacity_mw'),
-            extracted.get('capacity_qualifier'),
-            extracted.get('status'),
-            extracted.get('timeline'),
-            extracted.get('investment_usd'),
-            extracted.get('confidence_score', 0),
-            extracted.get('confidence_tier', 'low'),
-            extracted.get('classification'),
-            extracted.get('source_url'),
-            extracted.get('source_name'),
-            extracted.get('source_article_title'),
-            extracted.get('source_published_date'),
-            extracted.get('extracted_at'),
-            match_result.get('facility_id') or match_result.get('possible_match'),
-            match_result.get('match_type'),
-        ))
-        pending_id = c.lastrowid
+        c = conn.cursor()
 
-        c.execute("""
-            INSERT INTO facility_sources (
-                pending_facility_id, article_url, article_title,
-                source_name, published_date, extracted_data
-            ) VALUES (?, ?, ?, ?, ?, ?)
-        """, (
-            pending_id,
-            extracted.get('source_url'),
-            extracted.get('source_article_title'),
-            extracted.get('source_name'),
-            extracted.get('source_published_date'),
-            json.dumps(extracted, default=str),
-        ))
+        try:
+            c.execute("""
+                INSERT INTO pending_facilities (
+                    operator, operator_known, location_text, city, state, country,
+                    lat, lng, capacity_mw, capacity_qualifier, status, timeline,
+                    investment_usd, confidence_score, confidence_tier, classification,
+                    source_url, source_name, source_article_title, source_published_date,
+                    extracted_at, matched_facility_id, match_type
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                extracted.get('operator'),
+                True if extracted.get('operator_known') else False,
+                extracted.get('location_text'),
+                extracted.get('city'),
+                extracted.get('state'),
+                extracted.get('country'),
+                extracted.get('lat'),
+                extracted.get('lng'),
+                extracted.get('capacity_mw'),
+                extracted.get('capacity_qualifier'),
+                extracted.get('status'),
+                extracted.get('timeline'),
+                extracted.get('investment_usd'),
+                extracted.get('confidence_score', 0),
+                extracted.get('confidence_tier', 'low'),
+                extracted.get('classification'),
+                extracted.get('source_url'),
+                extracted.get('source_name'),
+                extracted.get('source_article_title'),
+                extracted.get('source_published_date'),
+                extracted.get('extracted_at'),
+                match_result.get('facility_id') or match_result.get('possible_match'),
+                match_result.get('match_type'),
+            ))
+            pending_id = c.lastrowid
 
-        conn.commit()
+            c.execute("""
+                INSERT INTO facility_sources (
+                    pending_facility_id, article_url, article_title,
+                    source_name, published_date, extracted_data
+                ) VALUES (%s, %s, %s, %s, %s, %s)
+            """, (
+                pending_id,
+                extracted.get('source_url'),
+                extracted.get('source_article_title'),
+                extracted.get('source_name'),
+                extracted.get('source_published_date'),
+                json.dumps(extracted, default=str),
+            ))
+
+            conn.commit()
+    finally:
         conn.close()
         return pending_id
     except Exception as e:
@@ -690,14 +695,16 @@ def add_to_pending(extracted, match_result):
 
 def auto_create_facility(extracted):
     conn = get_db()
-    c = conn.cursor()
-
     try:
-        fac_id = f"news_{hashlib.md5((extracted.get('operator', '') + (extracted.get('city', '') or '') + str(extracted.get('capacity_mw', ''))).encode()).hexdigest()[:12]}"
+        c = conn.cursor()
 
-        c.execute("SELECT id FROM facilities WHERE id = ?", (fac_id,))
-        if c.fetchone():
-            conn.close()
+        try:
+            fac_id = f"news_{hashlib.md5((extracted.get('operator', '') + (extracted.get('city', '') or '') + str(extracted.get('capacity_mw', ''))).encode()).hexdigest()[:12]}"
+
+            c.execute("SELECT id FROM facilities WHERE id = %s", (fac_id,))
+            if c.fetchone():
+    finally:
+        conn.close()
             return fac_id
 
         c.execute("""
@@ -706,7 +713,7 @@ def auto_create_facility(extracted):
                 latitude, longitude, power_mw, status,
                 source, source_url, source_id,
                 first_seen, last_updated
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             fac_id,
             f"{extracted.get('operator', 'Unknown')} - {extracted.get('city', 'Unknown')}",
@@ -729,7 +736,7 @@ def auto_create_facility(extracted):
             INSERT INTO facility_sources (
                 facility_id, article_url, article_title,
                 source_name, published_date, extracted_data
-            ) VALUES (?, ?, ?, ?, ?, ?)
+            ) VALUES (%s, %s, %s, %s, %s, %s)
         """, (
             fac_id,
             extracted.get('source_url'),
@@ -750,18 +757,20 @@ def auto_create_facility(extracted):
 
 def run_pipeline(limit=50):
     conn = get_db()
-    c = conn.cursor()
+    try:
+        c = conn.cursor()
 
-    c.execute("""
-        SELECT id, title, summary, source, source_url, published_date, url
-        FROM announcements
-        WHERE (facility_processed IS NULL OR facility_processed = false)
-        AND title IS NOT NULL
-        ORDER BY discovered_at DESC
-        LIMIT ?
-    """, (limit,))
-    articles = [dict(row) for row in c.fetchall()]
-    conn.close()
+        c.execute("""
+            SELECT id, title, summary, source, source_url, published_date, url
+            FROM announcements
+            WHERE (facility_processed IS NULL OR facility_processed = false)
+            AND title IS NOT NULL
+            ORDER BY discovered_at DESC
+            LIMIT %s
+        """, (limit,))
+        articles = [dict(row) for row in c.fetchall()]
+    finally:
+        conn.close()
 
     if not articles:
         return {
@@ -836,101 +845,109 @@ def run_pipeline(limit=50):
 def mark_processed(article_id, facility_id=None):
     try:
         conn = get_db()
-        c = conn.cursor()
-        if facility_id:
-            c.execute("UPDATE announcements SET facility_processed = true, facility_extracted_id = ? WHERE id = ?", (facility_id, article_id))
-        else:
-            c.execute("UPDATE announcements SET facility_processed = true WHERE id = ?", (article_id,))
-        conn.commit()
-        conn.close()
+        try:
+            c = conn.cursor()
+            if facility_id:
+                c.execute("UPDATE announcements SET facility_processed = true, facility_extracted_id = %s WHERE id = %s", (facility_id, article_id))
+            else:
+                c.execute("UPDATE announcements SET facility_processed = true WHERE id = %s", (article_id,))
+            conn.commit()
+        finally:
+            conn.close()
     except:
         pass
 
 
 def get_pending_facilities(tier=None, reviewed=False, sort='confidence_desc', limit=50, offset=0):
     conn = get_db()
-    c = conn.cursor()
+    try:
+        c = conn.cursor()
 
-    query = "SELECT * FROM pending_facilities WHERE reviewed = ?"
-    params = [1 if reviewed else 0]
+        query = "SELECT * FROM pending_facilities WHERE reviewed = %s"
+        params = [1 if reviewed else 0]
 
-    if tier:
-        query += " AND confidence_tier = ?"
-        params.append(tier)
+        if tier:
+            query += " AND confidence_tier = %s"
+            params.append(tier)
 
-    if sort == 'confidence_desc':
-        query += " ORDER BY confidence_score DESC"
-    elif sort == 'newest':
-        query += " ORDER BY created_at DESC"
-    else:
-        query += " ORDER BY confidence_score DESC"
+        if sort == 'confidence_desc':
+            query += " ORDER BY confidence_score DESC"
+        elif sort == 'newest':
+            query += " ORDER BY created_at DESC"
+        else:
+            query += " ORDER BY confidence_score DESC"
 
-    query += " LIMIT ? OFFSET ?"
-    params.extend([limit, offset])
+        query += " LIMIT %s OFFSET %s"
+        params.extend([limit, offset])
 
-    c.execute(query, params)
-    results = [dict(row) for row in c.fetchall()]
-    conn.close()
+        c.execute(query, params)
+        results = [dict(row) for row in c.fetchall()]
+    finally:
+        conn.close()
     return results
 
 
 def get_pending_stats():
     conn = get_db()
-    c = conn.cursor()
-
-    stats = {}
-    c.execute("SELECT COUNT(*) FROM pending_facilities WHERE reviewed = false")
-    stats['total_pending'] = c.fetchone()[0]
-
-    c.execute("SELECT confidence_tier, COUNT(*) FROM pending_facilities WHERE reviewed = false GROUP BY confidence_tier")
-    tier_counts = {row[0]: row[1] for row in c.fetchall()}
-    stats['high'] = tier_counts.get('high', 0)
-    stats['medium'] = tier_counts.get('medium', 0)
-    stats['low'] = tier_counts.get('low', 0)
-
-    c.execute("SELECT COUNT(*) FROM pending_facilities WHERE reviewed = true AND review_action = 'approved' AND DATE(reviewed_at) = DATE('now')")
-    stats['approved_today'] = c.fetchone()[0]
-
     try:
-        c.execute("SELECT COUNT(*) FROM facilities WHERE source = 'news_pipeline' AND DATE(last_updated) = DATE('now')")
-        stats['auto_verified_today'] = c.fetchone()[0]
-    except:
-        stats['auto_verified_today'] = 0
+        c = conn.cursor()
 
-    try:
-        c.execute("SELECT COUNT(*) FROM facilities WHERE source = 'news_pipeline'")
-        stats['total_auto_verified'] = c.fetchone()[0]
-    except:
-        stats['total_auto_verified'] = 0
+        stats = {}
+        c.execute("SELECT COUNT(*) FROM pending_facilities WHERE reviewed = false")
+        stats['total_pending'] = c.fetchone()[0]
 
-    c.execute("SELECT COUNT(*) FROM pending_facilities WHERE reviewed = true")
-    stats['total_reviewed'] = c.fetchone()[0]
+        c.execute("SELECT confidence_tier, COUNT(*) FROM pending_facilities WHERE reviewed = false GROUP BY confidence_tier")
+        tier_counts = {row[0]: row[1] for row in c.fetchall()}
+        stats['high'] = tier_counts.get('high', 0)
+        stats['medium'] = tier_counts.get('medium', 0)
+        stats['low'] = tier_counts.get('low', 0)
 
-    c.execute("""
-        SELECT source_name, COUNT(*) as cnt
-        FROM pending_facilities WHERE reviewed = false
-        GROUP BY source_name ORDER BY cnt DESC LIMIT 10
-    """)
-    stats['top_sources'] = [{'name': row[0], 'count': row[1]} for row in c.fetchall()]
+        c.execute("SELECT COUNT(*) FROM pending_facilities WHERE reviewed = true AND review_action = 'approved' AND DATE(reviewed_at) = DATE('now')")
+        stats['approved_today'] = c.fetchone()[0]
 
-    c.execute("""
-        SELECT COUNT(*) FROM announcements
-        WHERE facility_processed = true
-        AND discovered_at >= datetime('now', '-24 hours')
-    """)
-    stats['processed_24h'] = c.fetchone()[0]
+        try:
+            c.execute("SELECT COUNT(*) FROM facilities WHERE source = 'news_pipeline' AND DATE(last_updated) = DATE('now')")
+            stats['auto_verified_today'] = c.fetchone()[0]
+        except:
+            stats['auto_verified_today'] = 0
 
-    conn.close()
+        try:
+            c.execute("SELECT COUNT(*) FROM facilities WHERE source = 'news_pipeline'")
+            stats['total_auto_verified'] = c.fetchone()[0]
+        except:
+            stats['total_auto_verified'] = 0
+
+        c.execute("SELECT COUNT(*) FROM pending_facilities WHERE reviewed = true")
+        stats['total_reviewed'] = c.fetchone()[0]
+
+        c.execute("""
+            SELECT source_name, COUNT(*) as cnt
+            FROM pending_facilities WHERE reviewed = false
+            GROUP BY source_name ORDER BY cnt DESC LIMIT 10
+        """)
+        stats['top_sources'] = [{'name': row[0], 'count': row[1]} for row in c.fetchall()]
+
+        c.execute("""
+            SELECT COUNT(*) FROM announcements
+            WHERE facility_processed = true
+            AND discovered_at >= datetime('now', '-24 hours')
+        """)
+        stats['processed_24h'] = c.fetchone()[0]
+
+    finally:
+        conn.close()
     return stats
 
 
 def approve_pending(pending_id):
     conn = get_db()
-    c = conn.cursor()
+    try:
+        c = conn.cursor()
 
-    c.execute("SELECT * FROM pending_facilities WHERE id = ?", (pending_id,))
-    pending = c.fetchone()
-    if not pending:
+        c.execute("SELECT * FROM pending_facilities WHERE id = %s", (pending_id,))
+        pending = c.fetchone()
+        if not pending:
+    finally:
         conn.close()
         return {'success': False, 'error': 'Not found'}
 
@@ -944,7 +961,7 @@ def approve_pending(pending_id):
                 latitude, longitude, power_mw, status,
                 source, source_url, source_id,
                 first_seen, last_updated
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             fac_id,
             f"{pending.get('operator', 'Unknown')} - {pending.get('city', 'Unknown')}",
@@ -965,14 +982,14 @@ def approve_pending(pending_id):
 
         c.execute("""
             UPDATE pending_facilities
-            SET reviewed = true, review_action = 'approved', reviewed_at = ?,
-                matched_facility_id = ?
-            WHERE id = ?
+            SET reviewed = true, review_action = 'approved', reviewed_at = %s,
+                matched_facility_id = %s
+            WHERE id = %s
         """, (datetime.utcnow().isoformat(), fac_id, pending_id))
 
         c.execute("""
-            UPDATE facility_sources SET facility_id = ?
-            WHERE pending_facility_id = ?
+            UPDATE facility_sources SET facility_id = %s
+            WHERE pending_facility_id = %s
         """, (fac_id, pending_id))
 
         conn.commit()
@@ -985,30 +1002,34 @@ def approve_pending(pending_id):
 
 def reject_pending(pending_id, notes=None):
     conn = get_db()
-    c = conn.cursor()
-    c.execute("""
-        UPDATE pending_facilities
-        SET reviewed = true, review_action = 'rejected', reviewed_at = ?, notes = ?
-        WHERE id = ?
-    """, (datetime.utcnow().isoformat(), notes, pending_id))
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+        c.execute("""
+            UPDATE pending_facilities
+            SET reviewed = true, review_action = 'rejected', reviewed_at = %s, notes = %s
+            WHERE id = %s
+        """, (datetime.utcnow().isoformat(), notes, pending_id))
+        conn.commit()
+    finally:
+        conn.close()
     return {'success': True}
 
 
 def merge_pending(pending_id, facility_id):
     conn = get_db()
-    c = conn.cursor()
+    try:
+        c = conn.cursor()
 
-    c.execute("SELECT * FROM pending_facilities WHERE id = ?", (pending_id,))
-    pending = c.fetchone()
-    if not pending:
+        c.execute("SELECT * FROM pending_facilities WHERE id = %s", (pending_id,))
+        pending = c.fetchone()
+        if not pending:
+    finally:
         conn.close()
         return {'success': False, 'error': 'Pending not found'}
 
     pending = dict(pending)
 
-    c.execute("SELECT * FROM facilities WHERE id = ?", (facility_id,))
+    c.execute("SELECT * FROM facilities WHERE id = %s", (facility_id,))
     facility = c.fetchone()
     if not facility:
         conn.close()
@@ -1019,7 +1040,7 @@ def merge_pending(pending_id, facility_id):
     updates = []
     params = []
     if pending.get('capacity_mw') and (not facility.get('power_mw') or pending['capacity_mw'] > facility['power_mw']):
-        updates.append("power_mw = ?")
+        updates.append("power_mw = %s")
         params.append(pending['capacity_mw'])
 
     if pending.get('status') and pending['status'] != facility.get('status'):
@@ -1027,25 +1048,25 @@ def merge_pending(pending_id, facility_id):
         old_idx = status_order.index(facility.get('status', 'announced')) if facility.get('status') in status_order else -1
         new_idx = status_order.index(pending['status']) if pending['status'] in status_order else -1
         if new_idx > old_idx:
-            updates.append("status = ?")
+            updates.append("status = %s")
             params.append(pending['status'])
 
     if updates:
-        updates.append("last_updated = ?")
+        updates.append("last_updated = %s")
         params.append(datetime.utcnow().isoformat())
         params.append(facility_id)
-        c.execute(f"UPDATE facilities SET {', '.join(updates)} WHERE id = ?", params)
+        c.execute(f"UPDATE facilities SET {', '.join(updates)} WHERE id = %s", params)
 
     c.execute("""
         UPDATE pending_facilities
-        SET reviewed = true, review_action = 'merged', reviewed_at = ?,
-            matched_facility_id = ?
-        WHERE id = ?
+        SET reviewed = true, review_action = 'merged', reviewed_at = %s,
+            matched_facility_id = %s
+        WHERE id = %s
     """, (datetime.utcnow().isoformat(), facility_id, pending_id))
 
     c.execute("""
-        UPDATE facility_sources SET facility_id = ?
-        WHERE pending_facility_id = ?
+        UPDATE facility_sources SET facility_id = %s
+        WHERE pending_facility_id = %s
     """, (facility_id, pending_id))
 
     conn.commit()
@@ -1055,22 +1076,24 @@ def merge_pending(pending_id, facility_id):
 
 def edit_and_approve_pending(pending_id, edits):
     conn = get_db()
-    c = conn.cursor()
+    try:
+        c = conn.cursor()
 
-    allowed_fields = ['operator', 'city', 'state', 'country', 'capacity_mw', 'status', 'timeline', 'investment_usd', 'location_text', 'lat', 'lng']
-    updates = []
-    params = []
-    for field, value in edits.items():
-        if field in allowed_fields:
-            updates.append(f"{field} = ?")
-            params.append(value)
+        allowed_fields = ['operator', 'city', 'state', 'country', 'capacity_mw', 'status', 'timeline', 'investment_usd', 'location_text', 'lat', 'lng']
+        updates = []
+        params = []
+        for field, value in edits.items():
+            if field in allowed_fields:
+                updates.append(f"{field} = %s")
+                params.append(value)
 
-    if updates:
-        params.append(pending_id)
-        c.execute(f"UPDATE pending_facilities SET {', '.join(updates)} WHERE id = ?", params)
-        conn.commit()
+        if updates:
+            params.append(pending_id)
+            c.execute(f"UPDATE pending_facilities SET {', '.join(updates)} WHERE id = %s", params)
+            conn.commit()
 
-    conn.close()
+    finally:
+        conn.close()
     return approve_pending(pending_id)
 
 

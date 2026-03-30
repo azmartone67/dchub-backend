@@ -36,7 +36,7 @@ def setup_test_db():
         os.remove(TEST_DB)
 
     conn = sqlite3.connect(TEST_DB)
-    conn.row_factory = sqlite3.Row
+    # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
     c = conn.cursor()
 
     c.execute("""
@@ -59,7 +59,7 @@ def setup_test_db():
 
     c.execute("""
         CREATE TABLE api_keys (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id TEXT,
             key_hash TEXT,
             key_prefix TEXT,
@@ -80,7 +80,7 @@ def setup_test_db():
     c.execute("""
         INSERT INTO users (id, email, password_hash, name, plan, role, 
                           api_calls_today, api_calls_total, created_at, subscription_status)
-        VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, 'none')
+        VALUES (%s, %s, %s, %s, %s, %s, 0, 0, %s, 'none')
     """, ('existing_user_001', 'freeuser@example.com',
           hash_password_test('oldpassword123'), 'Free User', 'free', 'free',
           datetime.utcnow().isoformat()))
@@ -91,7 +91,7 @@ def setup_test_db():
     c.execute("""
         INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions,
                              rate_limit_tier, is_active, created_at, usage_count, plan)
-        VALUES (?, ?, ?, ?, '["read"]', 'free', 1, ?, 0, 'free')
+        VALUES (%s, %s, %s, %s, '["read"]', 'free', 1, %s, 0, 'free')
     """, ('existing_user_001', key_hash, raw_key[:12], 'freeuser@example.com Free Key',
           datetime.utcnow().isoformat()))
 
@@ -125,7 +125,7 @@ welcome_emails_sent = []
 
 def mock_get_db():
     conn = sqlite3.connect(TEST_DB)
-    conn.row_factory = sqlite3.Row
+    # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
     return conn
 
 def mock_send_welcome_email(to_email, raw_api_key, plan_name='pro', temp_password=None):
@@ -198,10 +198,10 @@ def load_handle_checkout():
             c = conn.cursor()
 
             if user_id:
-                c.execute("UPDATE users SET plan = ?, role = ?, subscription_status = 'active', stripe_customer_id = ? WHERE id = ?",
+                c.execute("UPDATE users SET plan = %s, role = %s, subscription_status = 'active', stripe_customer_id = %s WHERE id = %s",
                           (plan_name, api_tier, session.get('customer', ''), user_id))
             elif customer_email:
-                c.execute("UPDATE users SET plan = ?, role = ?, subscription_status = 'active', stripe_customer_id = ? WHERE email = ?",
+                c.execute("UPDATE users SET plan = %s, role = %s, subscription_status = 'active', stripe_customer_id = %s WHERE email = %s",
                           (plan_name, api_tier, session.get('customer', ''), customer_email))
             print(f"    💳 Webhook UPDATE: customer_email='{customer_email}', user_id='{user_id}', rows_updated={c.rowcount}")
 
@@ -218,7 +218,7 @@ def load_handle_checkout():
                 hashed_pw = hash_password_test(temp_password)
                 c.execute("""INSERT INTO users (id, email, password_hash, name, plan, role, api_calls_today, api_calls_total,
                              created_at, stripe_customer_id, subscription_status)
-                             VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, 'active')""",
+                             VALUES (%s, %s, %s, %s, %s, %s, 0, 0, %s, %s, 'active') ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email, password_hash = EXCLUDED.password_hash, name = EXCLUDED.name, plan = EXCLUDED.plan, role = EXCLUDED.role, api_calls_today = EXCLUDED.api_calls_today, api_calls_total = EXCLUDED.api_calls_total, created_at = EXCLUDED.created_at, stripe_customer_id = EXCLUDED.stripe_customer_id, subscription_status = EXCLUDED.subscription_status""",
                           (new_user_id, customer_email, hashed_pw, display_name,
                            plan_name, api_tier, now, stripe_customer_id))
                 print(f"    🔐 Account created with temp password for {customer_email}")
@@ -228,7 +228,7 @@ def load_handle_checkout():
                 key_prefix = raw_key[:12]
                 c.execute("""INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions,
                              rate_limit_tier, is_active, created_at, usage_count, plan, calls_today, calls_total)
-                             VALUES (?, ?, ?, ?, '["read","write"]', ?, 1, ?, 0, ?, 0, 0)""",
+                             VALUES (%s, %s, %s, %s, '["read","write"]', %s, 1, %s, 0, %s, 0, 0) ON CONFLICT (key) DO UPDATE SET user_id = EXCLUDED.user_id, key_hash = EXCLUDED.key_hash, key_prefix = EXCLUDED.key_prefix, name = EXCLUDED.name, permissions = EXCLUDED.permissions, rate_limit_tier = EXCLUDED.rate_limit_tier, is_active = EXCLUDED.is_active, created_at = EXCLUDED.created_at, usage_count = EXCLUDED.usage_count, plan = EXCLUDED.plan, calls_today = EXCLUDED.calls_today, calls_total = EXCLUDED.calls_total""",
                           (new_user_id, key_hash, key_prefix, f'{customer_email} Pro Key',
                            api_tier, now, plan_name))
 
@@ -240,15 +240,15 @@ def load_handle_checkout():
             elif customer_email:
                 resolved_user_id = user_id
                 if not resolved_user_id:
-                    c.execute("SELECT id FROM users WHERE email = ?", (customer_email,))
+                    c.execute("SELECT id FROM users WHERE email = %s", (customer_email,))
                     row = c.fetchone()
                     resolved_user_id = row[0] if row else None
                     print(f"    🔍 Looked up user_id for {customer_email}: {resolved_user_id}")
 
                 if resolved_user_id:
                     c.execute("""
-                        UPDATE api_keys SET rate_limit_tier = ?, updated_at = ?
-                        WHERE user_id = ?
+                        UPDATE api_keys SET rate_limit_tier = %s, updated_at = %s
+                        WHERE user_id = %s
                     """, (api_tier, datetime.utcnow().isoformat(), resolved_user_id))
                     api_keys_updated = c.rowcount
                     print(f"    🔑 Updated {api_keys_updated} API key(s) to tier: {api_tier}")
@@ -260,7 +260,7 @@ def load_handle_checkout():
                     now = datetime.utcnow().isoformat()
                     c.execute("""INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions,
                                  rate_limit_tier, is_active, created_at, usage_count, plan, calls_today, calls_total)
-                                 VALUES (?, ?, ?, ?, '["read","write"]', ?, 1, ?, 0, ?, 0, 0)""",
+                                 VALUES (%s, %s, %s, %s, '["read","write"]', %s, 1, %s, 0, %s, 0, 0) ON CONFLICT (key) DO UPDATE SET user_id = EXCLUDED.user_id, key_hash = EXCLUDED.key_hash, key_prefix = EXCLUDED.key_prefix, name = EXCLUDED.name, permissions = EXCLUDED.permissions, rate_limit_tier = EXCLUDED.rate_limit_tier, is_active = EXCLUDED.is_active, created_at = EXCLUDED.created_at, usage_count = EXCLUDED.usage_count, plan = EXCLUDED.plan, calls_today = EXCLUDED.calls_today, calls_total = EXCLUDED.calls_total""",
                               (resolved_user_id, key_hash, key_prefix, f'{customer_email} Pro Key',
                                api_tier, now, plan_name))
                     print(f"    🔑 Generated new {plan_name} API key for existing user: {key_prefix}...")
@@ -314,9 +314,9 @@ def build_session(email=None, name=None, amount_cents=0, metadata=None,
 def verify_user(email, expected_plan, expected_role, expected_status, check_password=False):
     """Verify user record in DB"""
     conn = sqlite3.connect(TEST_DB)
-    conn.row_factory = sqlite3.Row
+    # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
     c = conn.cursor()
-    c.execute("SELECT * FROM users WHERE email = ?", (email,))
+    c.execute("SELECT * FROM users WHERE email = %s", (email,))
     user = c.fetchone()
 
     if not user:
@@ -361,16 +361,16 @@ def verify_user(email, expected_plan, expected_role, expected_status, check_pass
 def verify_api_key(email, expected_tier):
     """Verify API key was created/upgraded"""
     conn = sqlite3.connect(TEST_DB)
-    conn.row_factory = sqlite3.Row
+    # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
     c = conn.cursor()
-    c.execute("SELECT id FROM users WHERE email = ?", (email,))
+    c.execute("SELECT id FROM users WHERE email = %s", (email,))
     user = c.fetchone()
     if not user:
         print(f"    ❌ FAIL: User {email} not found")
         conn.close()
         return False
 
-    c.execute("SELECT * FROM api_keys WHERE user_id = ? ORDER BY created_at DESC", (user['id'],))
+    c.execute("SELECT * FROM api_keys WHERE user_id = %s ORDER BY created_at DESC", (user['id'],))
     keys = c.fetchall()
 
     if not keys:
@@ -426,9 +426,9 @@ def verify_welcome_email(email, expect_password=False):
     # If temp password provided, verify it can authenticate against the DB hash
     if latest['temp_password']:
         conn = sqlite3.connect(TEST_DB)
-        conn.row_factory = sqlite3.Row
+        # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
         c = conn.cursor()
-        c.execute("SELECT password_hash FROM users WHERE email = ?", (email,))
+        c.execute("SELECT password_hash FROM users WHERE email = %s", (email,))
         row = c.fetchone()
         conn.close()
         if row and verify_password_test(latest['temp_password'], row['password_hash']):

@@ -59,7 +59,7 @@ MAX_PAGES = 100   # Safety limit (500K rows max)
 def fetch_eia_page(offset=0):
     """Fetch one page of generator data from EIA API v2."""
     params = (
-        f"?api_key={EIA_API_KEY}"
+        f"%sapi_key={EIA_API_KEY}"
         f"&frequency=monthly"
         f"&data[0]=nameplate-capacity-mw"
         f"&data[1]=latitude"

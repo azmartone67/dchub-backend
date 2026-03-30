@@ -111,35 +111,37 @@ def _init_protection_tables():
     """Create tables for persistent anomaly tracking."""
     try:
         conn = get_db()
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS api_anomaly_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                api_key_hash TEXT NOT NULL,
-                anomaly_type TEXT NOT NULL,
-                details TEXT,
-                severity INTEGER DEFAULT 1,
-                created_at TEXT DEFAULT (datetime('now'))
-            );
+        try:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS api_anomaly_log (
+                    id SERIAL PRIMARY KEY,
+                    api_key_hash TEXT NOT NULL,
+                    anomaly_type TEXT NOT NULL,
+                    details TEXT,
+                    severity INTEGER DEFAULT 1,
+                    created_at TEXT DEFAULT (NOW())
+                );
 
-            CREATE INDEX IF NOT EXISTS idx_anomaly_key
-                ON api_anomaly_log(api_key_hash, created_at);
+                CREATE INDEX IF NOT EXISTS idx_anomaly_key
+                    ON api_anomaly_log(api_key_hash, created_at);
 
-            CREATE TABLE IF NOT EXISTS api_daily_usage (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                api_key_hash TEXT NOT NULL,
-                date TEXT NOT NULL,
-                records_fetched INTEGER DEFAULT 0,
-                requests_made INTEGER DEFAULT 0,
-                unique_endpoints INTEGER DEFAULT 0,
-                flagged INTEGER DEFAULT 0,
-                UNIQUE(api_key_hash, date)
-            );
+                CREATE TABLE IF NOT EXISTS api_daily_usage (
+                    id SERIAL PRIMARY KEY,
+                    api_key_hash TEXT NOT NULL,
+                    date TEXT NOT NULL,
+                    records_fetched INTEGER DEFAULT 0,
+                    requests_made INTEGER DEFAULT 0,
+                    unique_endpoints INTEGER DEFAULT 0,
+                    flagged INTEGER DEFAULT 0,
+                    UNIQUE(api_key_hash, date)
+                );
 
-            CREATE INDEX IF NOT EXISTS idx_daily_usage_key
-                ON api_daily_usage(api_key_hash, date);
-        """)
-        conn.commit()
-        conn.close()
+                CREATE INDEX IF NOT EXISTS idx_daily_usage_key
+                    ON api_daily_usage(api_key_hash, date);
+            """)
+            conn.commit()
+        finally:
+            conn.close()
         logger.info("✅ Data protection tables initialized")
     except Exception as e:
         logger.warning(f"⚠️ Could not init protection tables: {e}")
@@ -343,13 +345,16 @@ def _persist_anomalies(key_hash, anomalies):
         return
     try:
         conn = get_db()
-        for anomaly_type, severity, details in anomalies:
-            conn.execute(
-                "INSERT INTO api_anomaly_log (api_key_hash, anomaly_type, details, severity) VALUES (%s, %s, %s, %s)",
-                (key_hash, anomaly_type, details, severity)
-            )
-        conn.commit()
-        conn.close()
+        try:
+            for anomaly_type, severity, details in anomalies:
+                c = conn.cursor()
+                c.execute(
+                    "INSERT INTO api_anomaly_log (api_key_hash, anomaly_type, details, severity) VALUES (%s, %s, %s, %s) ON CONFLICT (api_key_hash) DO UPDATE SET anomaly_type = EXCLUDED.anomaly_type, details = EXCLUDED.details, severity = EXCLUDED.severity",
+                    (key_hash, anomaly_type, details, severity)
+                )
+            conn.commit()
+        finally:
+            conn.close()
     except Exception as e:
         logger.warning(f"Failed to persist anomaly: {e}")
 
@@ -386,16 +391,19 @@ def _update_daily_usage(key_hash, date, records):
     """Persist daily usage to SQLite."""
     try:
         conn = get_db()
-        conn.execute("""
-            INSERT INTO api_daily_usage (api_key_hash, date, records_fetched, requests_made)
-            VALUES (%s, %s, %s, 1)
-            ON CONFLICT(api_key_hash, date)
-            DO UPDATE SET
-                records_fetched = api_daily_usage.records_fetched + %s,
-                requests_made = api_daily_usage.requests_made + 1
-        """, (key_hash, date, records, records))
-        conn.commit()
-        conn.close()
+        try:
+            c = conn.cursor()
+            c.execute("""
+                INSERT INTO api_daily_usage (api_key_hash, date, records_fetched, requests_made)
+                VALUES (%s, %s, %s, 1)
+                ON CONFLICT(api_key_hash, date)
+                DO UPDATE SET
+                    records_fetched = api_daily_usage.records_fetched + %s,
+                    requests_made = api_daily_usage.requests_made + 1
+            """, (key_hash, date, records, records))
+            conn.commit()
+        finally:
+            conn.close()
     except Exception as e:
         logger.warning(f"Failed to update daily usage: {e}")
 
@@ -614,14 +622,17 @@ def _register_admin_routes(app):
         days = int(request.args.get("days", 7))
         try:
             conn = get_db()
-            rows = conn.execute("""
-                SELECT api_key_hash, anomaly_type, details, severity, created_at
-                FROM api_anomaly_log
-                WHERE created_at > NOW() - INTERVAL '1 day' * %s
-                ORDER BY created_at DESC
-                LIMIT 200
-            """, (f"-{days} days",)).fetchall()
-            conn.close()
+            try:
+                c = conn.cursor()
+                rows = c.execute("""
+                    SELECT api_key_hash, anomaly_type, details, severity, created_at
+                    FROM api_anomaly_log
+                    WHERE created_at > NOW() - INTERVAL '1 day' * %s
+                    ORDER BY created_at DESC
+                    LIMIT 200
+                """, (f"-{days} days",)).fetchall()
+            finally:
+                conn.close()
 
             return jsonify({
                 "anomalies": [dict(r) for r in rows],
@@ -641,14 +652,17 @@ def _register_admin_routes(app):
         days = int(request.args.get("days", 7))
         try:
             conn = get_db()
-            rows = conn.execute("""
-                SELECT api_key_hash, date, records_fetched, requests_made, flagged
-                FROM api_daily_usage
-                WHERE date > CURRENT_DATE - INTERVAL '1 day' * %s
-                ORDER BY records_fetched DESC
-                LIMIT 200
-            """, (f"-{days} days",)).fetchall()
-            conn.close()
+            try:
+                c = conn.cursor()
+                rows = c.execute("""
+                    SELECT api_key_hash, date, records_fetched, requests_made, flagged
+                    FROM api_daily_usage
+                    WHERE date > CURRENT_DATE - INTERVAL '1 day' * %s
+                    ORDER BY records_fetched DESC
+                    LIMIT 200
+                """, (f"-{days} days",)).fetchall()
+            finally:
+                conn.close()
 
             return jsonify({
                 "usage": [dict(r) for r in rows],

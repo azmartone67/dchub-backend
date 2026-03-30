@@ -112,7 +112,7 @@ def _email_day3_power(api_key: str) -> dict:
         </tr>
     </table>
 
-    <p><strong>Try it:</strong> Ask your AI agent: <em>"What power infrastructure is within 50km of Ashburn, Virginia?"</em></p>
+    <p><strong>Try it:</strong> Ask your AI agent: <em>"What power infrastructure is within 50km of Ashburn, Virginia%s"</em></p>
 
     <p>Your agent will use the <code>get_infrastructure</code> tool to find nearby substations, transmission lines, and gas pipelines — data that no other MCP server provides.</p>
 

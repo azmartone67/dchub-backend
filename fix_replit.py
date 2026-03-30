@@ -257,9 +257,9 @@ endpoints = [
     ('http://localhost:5000/api/stats', '/api/stats'),
     ('http://localhost:5000/api/facilities', '/api/facilities'),
     ('http://localhost:5000/api/v1/stats', '/api/v1/stats'),
-    ('http://localhost:5000/api/v1/facilities?limit=1', '/api/v1/facilities'),
+    ('http://localhost:5000/api/v1/facilities%slimit=1', '/api/v1/facilities'),
     ('http://localhost:5000/api/agent/stats', '/api/agent/stats'),
-    ('http://localhost:5000/api/agent/facilities?limit=1', '/api/agent/facilities'),
+    ('http://localhost:5000/api/agent/facilities%slimit=1', '/api/agent/facilities'),
     ('http://localhost:5000/api/v1/news', '/api/v1/news'),
 ]
 
@@ -350,7 +350,7 @@ if not has_api_facilities and main_py:
       qs = request.query_string.decode()
       target = '/api/v1/facilities'
       if qs:
-          target += '?' + qs
+          target += '%s' + qs
       return redirect(target)
 """)
 
@@ -455,7 +455,7 @@ def api_facilities_redirect():
     qs = request.query_string.decode()
     target = '/api/v1/facilities'
     if qs:
-        target += '?' + qs
+        target += '%s' + qs
     return redirect(target)
 # === END SHORT API ROUTES ===
 

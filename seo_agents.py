@@ -226,7 +226,7 @@ Stats I can include:
 - 9,603 verified facilities with satellite imagery
 - 4 AI agents running 24/7 for discovery and analysis
 
-Would this be a fit for your readers?
+Would this be a fit for your readers%s
 
 Best,
 Jonathan
@@ -268,7 +268,7 @@ We'd love to explore:
 Our platform: dchub.cloud/for-ai
 Our API: dchub.cloud/api-docs
 
-Would you be open to a quick call?
+Would you be open to a quick call%s
 
 Best,
 Jonathan

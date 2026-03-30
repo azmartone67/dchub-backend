@@ -412,91 +412,94 @@ def get_substations():
     try:
         from db_utils import get_db
         conn = get_db()
-        c = conn.cursor()
+        try:
+            c = conn.cursor()
 
-        conditions = []
-        params = []
+            conditions = []
+            params = []
 
-        if min_kv:
-            conditions.append('voltage_kv >= %s')
-            params.append(min_kv)
-        if state:
-            conditions.append('state = %s')
-            params.append(state.upper())
+            if min_kv:
+                conditions.append('voltage_kv >= %s')
+                params.append(min_kv)
+            if state:
+                conditions.append('state = %s')
+                params.append(state.upper())
 
-        if lat and lng:
-            # Bounding box pre-filter then Haversine
-            lat_range = radius / 69.0
-            lng_range = radius / (69.0 * max(0.1, abs(__import__('math').cos(__import__('math').radians(lat)))))
-            conditions.append('lat BETWEEN %s AND %s')
-            params.extend([lat - lat_range, lat + lat_range])
-            conditions.append('lng BETWEEN %s AND %s')
-            params.extend([lng - lng_range, lng + lng_range])
+            if lat and lng:
+                # Bounding box pre-filter then Haversine
+                lat_range = radius / 69.0
+                lng_range = radius / (69.0 * max(0.1, abs(__import__('math').cos(__import__('math').radians(lat)))))
+                conditions.append('lat BETWEEN %s AND %s')
+                params.extend([lat - lat_range, lat + lat_range])
+                conditions.append('lng BETWEEN %s AND %s')
+                params.extend([lng - lng_range, lng + lng_range])
 
-            where = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
-            query = f"""
-                SELECT name, city, state, status, voltage_kv, capacity_mva, lat, lng, owner,
-                    ROUND((3959 * acos(LEAST(1.0, cos(radians(%s)) * cos(radians(lat)) * cos(radians(lng) - radians(%s)) + sin(radians(%s)) * sin(radians(lat)))))::numeric, 2) as distance_miles
-                FROM substations
-                {where}
-                AND lat IS NOT NULL AND lng IS NOT NULL
-                ORDER BY distance_miles
-                LIMIT %s
-            """
-            params_full = [lat, lng, lat] + params + [limit]
-        else:
-            where = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
-            query = f"""
-                SELECT name, city, state, status, voltage_kv, capacity_mva, lat, lng, owner,
-                    NULL as distance_miles
-                FROM substations
-                {where}
-                AND lat IS NOT NULL AND lng IS NOT NULL
-                ORDER BY voltage_kv DESC NULLS LAST
-                LIMIT %s
-            """
-            params_full = params + [limit]
+                where = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
+                query = f"""
+                    SELECT name, city, state, status, voltage_kv, capacity_mva, lat, lng, owner,
+                        ROUND((3959 * acos(LEAST(1.0, cos(radians(%s)) * cos(radians(lat)) * cos(radians(lng) - radians(%s)) + sin(radians(%s)) * sin(radians(lat)))))::numeric, 2) as distance_miles
+                    FROM substations
+                    {where}
+                    AND lat IS NOT NULL AND lng IS NOT NULL
+                    ORDER BY distance_miles
+                    LIMIT %s
+                """
+                params_full = [lat, lng, lat] + params + [limit]
+            else:
+                where = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
+                query = f"""
+                    SELECT name, city, state, status, voltage_kv, capacity_mva, lat, lng, owner,
+                        NULL as distance_miles
+                    FROM substations
+                    {where}
+                    AND lat IS NOT NULL AND lng IS NOT NULL
+                    ORDER BY voltage_kv DESC NULLS LAST
+                    LIMIT %s
+                """
+                params_full = params + [limit]
 
-        c.execute(query, params_full)
-        cols = [desc[0] for desc in c.description]
-        rows = c.fetchall()
+            c.execute(query, params_full)
+            cols = [desc[0] for desc in c.description]
+            rows = c.fetchall()
 
-        substations = []
-        for row in rows:
-            r = dict(zip(cols, row))
-            substations.append({
-                'name': r.get('name'),
-                'city': r.get('city'),
-                'state': r.get('state'),
-                'status': r.get('status'),
-                'max_voltage_kv': r.get('voltage_kv'),
-                'capacity_mva': r.get('capacity_mva'),
-                'lat': r.get('lat'),
-                'lng': r.get('lng'),
-                'owner': r.get('owner'),
-                'distance_miles': float(r['distance_miles']) if r.get('distance_miles') is not None else None,
-                'source': 'HIFLD/Neon'
+            substations = []
+            for row in rows:
+                r = dict(zip(cols, row))
+                substations.append({
+                    'name': r.get('name'),
+                    'city': r.get('city'),
+                    'state': r.get('state'),
+                    'status': r.get('status'),
+                    'max_voltage_kv': r.get('voltage_kv'),
+                    'capacity_mva': r.get('capacity_mva'),
+                    'lat': r.get('lat'),
+                    'lng': r.get('lng'),
+                    'owner': r.get('owner'),
+                    'distance_miles': float(r['distance_miles']) if r.get('distance_miles') is not None else None,
+                    'source': 'HIFLD/Neon'
+                })
+
+            return jsonify({
+                'success': True,
+                'count': len(substations),
+                'total_available': '1,042 in Neon',
+                'source': 'HIFLD/DHS (Neon PostgreSQL)',
+                'substations': substations
             })
-
-        return jsonify({
-            'success': True,
-            'count': len(substations),
-            'total_available': '1,042 in Neon',
-            'source': 'HIFLD/DHS (Neon PostgreSQL)',
-            'substations': substations
-        })
-    except Exception as e:
-        import traceback
-        print(f"HIFLD substations Neon error: {traceback.format_exc()}")
-        return jsonify({
-            'success': False,
-            'error': str(e),
-            'count': 0,
-            'substations': []
-        }), 500
+            except Exception as e:
+            import traceback
+            print(f"HIFLD substations Neon error: {traceback.format_exc()}")
+            return jsonify({
+                'success': False,
+                'error': str(e),
+                'count': 0,
+                'substations': []
+            }), 500
 
 
-@expanded_infra_bp.route('/api/v2/infrastructure/hifld/transmission', methods=['GET'])
+            @expanded_infra_bp.route('/api/v2/infrastructure/hifld/transmission', methods=['GET'])
+        finally:
+            conn.close()
 def get_hifld_transmission():
     """Query transmission lines from Neon PostgreSQL. Uses market mapping for fast queries."""
     lat = request.args.get('lat', type=float)
@@ -534,98 +537,101 @@ def get_hifld_transmission():
     try:
         from db_utils import get_db
         conn = get_db()
-        c = conn.cursor()
+        try:
+            c = conn.cursor()
 
-        conditions = []
-        params = []
+            conditions = []
+            params = []
 
-        if min_kv:
-            conditions.append('t.voltage_kv >= %s')
-            params.append(min_kv)
-        if state:
-            conditions.append('t.market IN (SELECT DISTINCT market FROM discovered_transmission_lines WHERE market IS NOT NULL)')
-        if market:
-            conditions.append('t.market ILIKE %s')
-            params.append(f'%{market}%')
+            if min_kv:
+                conditions.append('t.voltage_kv >= %s')
+                params.append(min_kv)
+            if state:
+                conditions.append('t.market IN (SELECT DISTINCT market FROM discovered_transmission_lines WHERE market IS NOT NULL)')
+            if market:
+                conditions.append('t.market ILIKE %s')
+                params.append(f'%{market}%')
 
-        if lat and lng and not market:
-            # Map lat/lng to nearest market for fast indexed query
-            nearest_market = find_nearest_market(lat, lng, radius * 1.5)
-            if nearest_market:
-                conditions.append('t.market = %s')
-                params.append(nearest_market)
-        where = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
-        if conditions:
-            query = f"""
-                SELECT t.id, t.owner, t.voltage_kv, t.volt_class, t.sub_1, t.sub_2, t.status, t.market,
-                       NULL as distance_miles
-                FROM discovered_transmission_lines t
-                {where}
-                ORDER BY t.voltage_kv DESC NULLS LAST
-                LIMIT %s
-            """
-            params_full = params + [limit]
-        else:
-            # No location - filter by market or state
+            if lat and lng and not market:
+                # Map lat/lng to nearest market for fast indexed query
+                nearest_market = find_nearest_market(lat, lng, radius * 1.5)
+                if nearest_market:
+                    conditions.append('t.market = %s')
+                    params.append(nearest_market)
             where = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
-            query = f"""
-                SELECT t.id, t.owner, t.voltage_kv, t.volt_class, t.sub_1, t.sub_2, t.status, t.market,
-                       NULL as sub1_lat, NULL as sub1_lng, t.sub_1 as sub1_name,
-                       NULL as sub2_lat, NULL as sub2_lng, t.sub_2 as sub2_name,
-                       NULL as distance_miles
-                FROM discovered_transmission_lines t
-                {where}
-                ORDER BY t.voltage_kv DESC NULLS LAST
-                LIMIT %s
-            """
-            params_full = params + [limit]
+            if conditions:
+                query = f"""
+                    SELECT t.id, t.owner, t.voltage_kv, t.volt_class, t.sub_1, t.sub_2, t.status, t.market,
+                           NULL as distance_miles
+                    FROM discovered_transmission_lines t
+                    {where}
+                    ORDER BY t.voltage_kv DESC NULLS LAST
+                    LIMIT %s
+                """
+                params_full = params + [limit]
+            else:
+                # No location - filter by market or state
+                where = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
+                query = f"""
+                    SELECT t.id, t.owner, t.voltage_kv, t.volt_class, t.sub_1, t.sub_2, t.status, t.market,
+                           NULL as sub1_lat, NULL as sub1_lng, t.sub_1 as sub1_name,
+                           NULL as sub2_lat, NULL as sub2_lng, t.sub_2 as sub2_name,
+                           NULL as distance_miles
+                    FROM discovered_transmission_lines t
+                    {where}
+                    ORDER BY t.voltage_kv DESC NULLS LAST
+                    LIMIT %s
+                """
+                params_full = params + [limit]
 
-        c.execute(query, params_full)
-        cols = [desc[0] for desc in c.description]
-        rows = c.fetchall()
+            c.execute(query, params_full)
+            cols = [desc[0] for desc in c.description]
+            rows = c.fetchall()
 
-        lines = []
-        for row in rows:
-            r = dict(zip(cols, row))
-            line = {
-                'id': r.get('id'),
-                'voltage_kv': r.get('voltage_kv'),
-                'volt_class': r.get('volt_class'),
-                'owner': r.get('owner'),
-                'status': r.get('status'),
-                'market': r.get('market'),
-                'sub_1': r.get('sub1_name') or r.get('sub_1'),
-                'sub_2': r.get('sub2_name') or r.get('sub_2'),
-                'distance_miles': float(r['distance_miles']) if r.get('distance_miles') is not None else None,
-                'source': 'HIFLD/Neon'
-            }
-            # Include substation coordinates for rendering
-            if r.get('sub1_lat') and r.get('sub2_lat'):
-                line['paths'] = [[[r['sub1_lng'], r['sub1_lat']], [r['sub2_lng'], r['sub2_lat']]]]
-            elif r.get('sub1_lat'):
-                line['lat'] = r['sub1_lat']
-                line['lng'] = r['sub1_lng']
-            lines.append(line)
+            lines = []
+            for row in rows:
+                r = dict(zip(cols, row))
+                line = {
+                    'id': r.get('id'),
+                    'voltage_kv': r.get('voltage_kv'),
+                    'volt_class': r.get('volt_class'),
+                    'owner': r.get('owner'),
+                    'status': r.get('status'),
+                    'market': r.get('market'),
+                    'sub_1': r.get('sub1_name') or r.get('sub_1'),
+                    'sub_2': r.get('sub2_name') or r.get('sub_2'),
+                    'distance_miles': float(r['distance_miles']) if r.get('distance_miles') is not None else None,
+                    'source': 'HIFLD/Neon'
+                }
+                # Include substation coordinates for rendering
+                if r.get('sub1_lat') and r.get('sub2_lat'):
+                    line['paths'] = [[[r['sub1_lng'], r['sub1_lat']], [r['sub2_lng'], r['sub2_lat']]]]
+                elif r.get('sub1_lat'):
+                    line['lat'] = r['sub1_lat']
+                    line['lng'] = r['sub1_lng']
+                lines.append(line)
 
-        return jsonify({
-            'success': True,
-            'count': len(lines),
-            'total_available': '2,821,162 in Neon',
-            'source': 'HIFLD/DHS (Neon PostgreSQL)',
-            'transmission_lines': lines
-        })
-    except Exception as e:
-        import traceback
-        print(f"HIFLD transmission Neon error: {traceback.format_exc()}")
-        return jsonify({
-            'success': False,
-            'error': str(e),
-            'count': 0,
-            'transmission_lines': []
-        }), 500
+            return jsonify({
+                'success': True,
+                'count': len(lines),
+                'total_available': '2,821,162 in Neon',
+                'source': 'HIFLD/DHS (Neon PostgreSQL)',
+                'transmission_lines': lines
+            })
+            except Exception as e:
+            import traceback
+            print(f"HIFLD transmission Neon error: {traceback.format_exc()}")
+            return jsonify({
+                'success': False,
+                'error': str(e),
+                'count': 0,
+                'transmission_lines': []
+            }), 500
 
 
-@expanded_infra_bp.route('/api/v2/infrastructure/hifld/gas-pipelines', methods=['GET'])
+            @expanded_infra_bp.route('/api/v2/infrastructure/hifld/gas-pipelines', methods=['GET'])
+        finally:
+            conn.close()
 def get_hifld_gas_pipelines():
     """Query gas pipelines from Neon PostgreSQL (with ArcGIS fallback)."""
     lat = request.args.get('lat', type=float)
@@ -637,87 +643,90 @@ def get_hifld_gas_pipelines():
     try:
         from db_utils import get_db
         conn = get_db()
-        c = conn.cursor()
+        try:
+            c = conn.cursor()
 
-        conditions = []
-        params = []
+            conditions = []
+            params = []
 
-        if state:
-            conditions.append('state = %s')
-            params.append(state.upper())
+            if state:
+                conditions.append('state = %s')
+                params.append(state.upper())
 
-        if lat and lng:
-            lat_range = radius / 69.0
-            lng_range = radius / (69.0 * max(0.1, abs(__import__('math').cos(__import__('math').radians(lat)))))
-            conditions.append('lat BETWEEN %s AND %s')
-            params.extend([lat - lat_range, lat + lat_range])
-            conditions.append('lng BETWEEN %s AND %s')
-            params.extend([lng - lng_range, lng + lng_range])
+            if lat and lng:
+                lat_range = radius / 69.0
+                lng_range = radius / (69.0 * max(0.1, abs(__import__('math').cos(__import__('math').radians(lat)))))
+                conditions.append('lat BETWEEN %s AND %s')
+                params.extend([lat - lat_range, lat + lat_range])
+                conditions.append('lng BETWEEN %s AND %s')
+                params.extend([lng - lng_range, lng + lng_range])
 
-            where = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
-            query = f"""
-                SELECT name, operator, pipeline_type, diameter_inches, capacity_mcf, status, lat, lng, city, state,
-                    ROUND((3959 * acos(LEAST(1.0, cos(radians(%s)) * cos(radians(lat)) * cos(radians(lng) - radians(%s)) + sin(radians(%s)) * sin(radians(lat)))))::numeric, 2) as distance_miles
-                FROM gas_pipelines
-                {where}
-                AND lat IS NOT NULL AND lng IS NOT NULL
-                ORDER BY distance_miles
-                LIMIT %s
-            """
-            params_full = [lat, lng, lat] + params + [limit]
-        else:
-            where = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
-            query = f"""
-                SELECT name, operator, pipeline_type, diameter_inches, capacity_mcf, status, lat, lng, city, state,
-                    NULL as distance_miles
-                FROM gas_pipelines
-                {where}
-                AND lat IS NOT NULL AND lng IS NOT NULL
-                LIMIT %s
-            """
-            params_full = params + [limit]
+                where = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
+                query = f"""
+                    SELECT name, operator, pipeline_type, diameter_inches, capacity_mcf, status, lat, lng, city, state,
+                        ROUND((3959 * acos(LEAST(1.0, cos(radians(%s)) * cos(radians(lat)) * cos(radians(lng) - radians(%s)) + sin(radians(%s)) * sin(radians(lat)))))::numeric, 2) as distance_miles
+                    FROM gas_pipelines
+                    {where}
+                    AND lat IS NOT NULL AND lng IS NOT NULL
+                    ORDER BY distance_miles
+                    LIMIT %s
+                """
+                params_full = [lat, lng, lat] + params + [limit]
+            else:
+                where = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
+                query = f"""
+                    SELECT name, operator, pipeline_type, diameter_inches, capacity_mcf, status, lat, lng, city, state,
+                        NULL as distance_miles
+                    FROM gas_pipelines
+                    {where}
+                    AND lat IS NOT NULL AND lng IS NOT NULL
+                    LIMIT %s
+                """
+                params_full = params + [limit]
 
-        c.execute(query, params_full)
-        cols = [desc[0] for desc in c.description]
-        rows = c.fetchall()
+            c.execute(query, params_full)
+            cols = [desc[0] for desc in c.description]
+            rows = c.fetchall()
 
-        pipelines = []
-        for row in rows:
-            r = dict(zip(cols, row))
-            pipelines.append({
-                'name': r.get('name'),
-                'operator': r.get('operator'),
-                'pipeline_type': r.get('pipeline_type'),
-                'diameter_inches': r.get('diameter_inches'),
-                'capacity_mcf': r.get('capacity_mcf'),
-                'status': r.get('status'),
-                'lat': r.get('lat'),
-                'lng': r.get('lng'),
-                'city': r.get('city'),
-                'state': r.get('state'),
-                'distance_miles': float(r['distance_miles']) if r.get('distance_miles') is not None else None,
-                'source': 'HIFLD/Neon'
+            pipelines = []
+            for row in rows:
+                r = dict(zip(cols, row))
+                pipelines.append({
+                    'name': r.get('name'),
+                    'operator': r.get('operator'),
+                    'pipeline_type': r.get('pipeline_type'),
+                    'diameter_inches': r.get('diameter_inches'),
+                    'capacity_mcf': r.get('capacity_mcf'),
+                    'status': r.get('status'),
+                    'lat': r.get('lat'),
+                    'lng': r.get('lng'),
+                    'city': r.get('city'),
+                    'state': r.get('state'),
+                    'distance_miles': float(r['distance_miles']) if r.get('distance_miles') is not None else None,
+                    'source': 'HIFLD/Neon'
+                })
+
+            return jsonify({
+                'success': True,
+                'count': len(pipelines),
+                'total_available': '37,705 in Neon',
+                'source': 'HIFLD/DOT (Neon PostgreSQL)',
+                'pipelines': pipelines
             })
-
-        return jsonify({
-            'success': True,
-            'count': len(pipelines),
-            'total_available': '37,705 in Neon',
-            'source': 'HIFLD/DOT (Neon PostgreSQL)',
-            'pipelines': pipelines
-        })
-    except Exception as e:
-        import traceback
-        print(f"HIFLD gas pipelines Neon error: {traceback.format_exc()}")
-        return jsonify({
-            'success': False,
-            'error': str(e),
-            'count': 0,
-            'pipelines': []
-        }), 500
+            except Exception as e:
+            import traceback
+            print(f"HIFLD gas pipelines Neon error: {traceback.format_exc()}")
+            return jsonify({
+                'success': False,
+                'error': str(e),
+                'count': 0,
+                'pipelines': []
+            }), 500
 
 
-@expanded_infra_bp.route('/api/v2/infrastructure/railroads', methods=['GET'])
+            @expanded_infra_bp.route('/api/v2/infrastructure/railroads', methods=['GET'])
+        finally:
+            conn.close()
 def get_railroads():
     lat = request.args.get('lat')
     lng = request.args.get('lng')

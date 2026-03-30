@@ -164,7 +164,7 @@ def _discover_peeringdb_fiber():
     try:
         # Get US Internet Exchanges from PeeringDB
         resp = requests.get(
-            "https://www.peeringdb.com/api/ix?country=US&status=ok",
+            "https://www.peeringdb.com/api/ix%scountry=US&status=ok",
             headers={"User-Agent": "DCHub/2.0 (dchub.cloud)"},
             timeout=15
         )

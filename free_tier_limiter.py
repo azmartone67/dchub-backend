@@ -74,19 +74,21 @@ def _init_tables():
     """Create the free_tier_usage table if it doesn't exist."""
     conn = _get_db()
     try:
-        conn.execute("""
+        c = conn.cursor()
+        c.execute("""
             CREATE TABLE IF NOT EXISTS free_tier_usage (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 user_id TEXT NOT NULL,
                 usage_type TEXT NOT NULL,
                 usage_month TEXT NOT NULL,
                 usage_count INTEGER DEFAULT 0,
                 last_used TEXT,
-                created_at TEXT DEFAULT (datetime('now')),
+                created_at TEXT DEFAULT (NOW()),
                 UNIQUE(user_id, usage_type, usage_month)
             )
         """)
-        conn.execute("""
+        c = conn.cursor()
+        c.execute("""
             CREATE INDEX IF NOT EXISTS idx_free_tier_user_month 
             ON free_tier_usage(user_id, usage_type, usage_month)
         """)
@@ -111,8 +113,9 @@ def _get_usage(user_id, usage_type):
     """Get current month's usage count for a user."""
     conn = _get_db()
     try:
-        row = conn.execute(
-            "SELECT usage_count FROM free_tier_usage WHERE user_id=? AND usage_type=? AND usage_month=?",
+        c = conn.cursor()
+        row = c.execute(
+            "SELECT usage_count FROM free_tier_usage WHERE user_id=%s AND usage_type=%s AND usage_month=%s",
             (str(user_id), usage_type, _current_month())
         ).fetchone()
         return row['usage_count'] if row else 0
@@ -127,17 +130,19 @@ def _increment_usage(user_id, usage_type):
     now = datetime.now(timezone.utc).isoformat()
     try:
         # Try to increment existing record
-        result = conn.execute(
+        c = conn.cursor()
+        result = c.execute(
             """UPDATE free_tier_usage 
-               SET usage_count = usage_count + 1, last_used = ?
-               WHERE user_id=? AND usage_type=? AND usage_month=?""",
+               SET usage_count = usage_count + 1, last_used = %s
+               WHERE user_id=%s AND usage_type=%s AND usage_month=%s""",
             (now, str(user_id), usage_type, month)
         )
         if result.rowcount == 0:
             # No existing record — create one with count=1
-            conn.execute(
+            c = conn.cursor()
+            c.execute(
                 """INSERT INTO free_tier_usage (user_id, usage_type, usage_month, usage_count, last_used)
-                   VALUES (?, ?, ?, 1, ?)""",
+                   VALUES (%s, %s, %s, 1, %s) ON CONFLICT (user_id) DO UPDATE SET usage_type = EXCLUDED.usage_type, usage_month = EXCLUDED.usage_month, usage_count = EXCLUDED.usage_count, last_used = EXCLUDED.last_used""",
                 (str(user_id), usage_type, month, now)
             )
         conn.commit()
@@ -157,9 +162,10 @@ def _get_user_tier(user_id):
     conn = _get_db()
     try:
         # Check users table for plan/subscription info
-        row = conn.execute(
+        c = conn.cursor()
+        row = c.execute(
             """SELECT plan, stripe_subscription_id, stripe_subscription_status 
-               FROM users WHERE id=? OR google_id=? OR email=?""",
+               FROM users WHERE id=%s OR google_id=%s OR email=%s""",
             (str(user_id), str(user_id), str(user_id))
         ).fetchone()
         
@@ -449,8 +455,9 @@ def _get_current_user_id():
     if api_key:
         conn = _get_db()
         try:
-            row = conn.execute(
-                "SELECT user_id FROM api_keys WHERE key_value=? AND is_active=1",
+            c = conn.cursor()
+            row = c.execute(
+                "SELECT user_id FROM api_keys WHERE key_value=%s AND is_active=1",
                 (api_key,)
             ).fetchone()
             if row:
@@ -564,8 +571,9 @@ def init_free_tier_limiter(app):
         # Simple admin check — adjust to match your admin logic
         conn = _get_db()
         try:
-            row = conn.execute(
-                "SELECT is_admin FROM users WHERE id=? OR google_id=?",
+            c = conn.cursor()
+            row = c.execute(
+                "SELECT is_admin FROM users WHERE id=%s OR google_id=%s",
                 (current_user, current_user)
             ).fetchone()
             if not row or not row['is_admin']:
@@ -587,16 +595,18 @@ def init_free_tier_limiter(app):
         
         conn = _get_db()
         try:
-            row = conn.execute(
-                "SELECT is_admin FROM users WHERE id=? OR google_id=?",
+            c = conn.cursor()
+            row = c.execute(
+                "SELECT is_admin FROM users WHERE id=%s OR google_id=%s",
                 (current_user, current_user)
             ).fetchone()
             if not row or not row['is_admin']:
                 return jsonify({'error': 'Admin access required'}), 403
             
             month = _current_month()
-            conn.execute(
-                "DELETE FROM free_tier_usage WHERE user_id=? AND usage_month=?",
+            c = conn.cursor()
+            c.execute(
+                "DELETE FROM free_tier_usage WHERE user_id=%s AND usage_month=%s",
                 (str(user_id), month)
             )
             conn.commit()

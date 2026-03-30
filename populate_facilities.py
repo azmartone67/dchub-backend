@@ -10,8 +10,8 @@ DB_PATH = "dc_nexus.db"
 
 def create_facilities_table():
     conn = sqlite3.connect(DB_PATH, timeout=60)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=60000")
+    # PRAGMA removed - not needed for PostgreSQL
+    # PRAGMA removed - not needed for PostgreSQL
     c = conn.cursor()
     
     # Table already exists with correct schema
@@ -195,8 +195,8 @@ FACILITIES = [
 def populate_facilities():
     """Insert facilities into database"""
     conn = sqlite3.connect(DB_PATH, timeout=60)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=60000")
+    # PRAGMA removed - not needed for PostgreSQL
+    # PRAGMA removed - not needed for PostgreSQL
     c = conn.cursor()
     
     now = datetime.utcnow().isoformat()
@@ -210,7 +210,7 @@ def populate_facilities():
             import uuid
             c.execute("""
                 INSERT INTO facilities (id, name, provider, city, state, country, region, latitude, longitude, power_mw, sqft, status, source, confidence)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'seed', 0.95)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'seed', 0.95)
             """, (
                 str(uuid.uuid4()), f['name'], f['provider'], f['city'], f.get('state', ''), f['country'],
                 f['region'], f['lat'], f['lng'], f['power_mw'], f.get('sqft', 0),
@@ -229,8 +229,8 @@ def populate_facilities():
 def verify_data():
     """Verify the data was inserted"""
     conn = sqlite3.connect(DB_PATH, timeout=60)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=60000")
+    # PRAGMA removed - not needed for PostgreSQL
+    # PRAGMA removed - not needed for PostgreSQL
     c = conn.cursor()
     
     c.execute("SELECT COUNT(*) FROM facilities")

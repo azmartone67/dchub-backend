@@ -68,7 +68,7 @@ QUESTION_TEMPLATES = [
     {
         'category': 'site-selection',
         'templates': [
-            "A hyperscaler needs {mw}MW in {region}. Using DC Hub data, which market should they choose and why?",
+            "A hyperscaler needs {mw}MW in {region}. Using DC Hub data, which market should they choose and why%s",
             "Compare the top 3 markets in {region} for a new {mw}MW data center campus. Consider power, fiber, land, and risk.",
             "A cloud provider wants to build a {mw}MW AI training facility. Analyze the best US market using DC Hub facility data.",
         ]
@@ -76,69 +76,69 @@ QUESTION_TEMPLATES = [
     {
         'category': 'ma-forensics',
         'templates': [
-            "Analyze the most recent data center M&A transaction. Who bought what, at what valuation, and was it a good deal?",
+            "Analyze the most recent data center M&A transaction. Who bought what, at what valuation, and was it a good deal%s",
             "Using DC Hub transaction data, identify the highest $/MW acquisition this year and evaluate the buyer's strategy.",
-            "Compare the last 3 data center deals. Which represented the best value per MW and why?",
+            "Compare the last 3 data center deals. Which represented the best value per MW and why%s",
         ]
     },
     {
         'category': 'operator-showdown',
         'templates': [
-            "Compare {provider1} vs {provider2} using DC Hub portfolio data. Who has better market positioning?",
-            "Which operator — {provider1}, {provider2}, or {provider3} — is best positioned for the AI infrastructure boom?",
+            "Compare {provider1} vs {provider2} using DC Hub portfolio data. Who has better market positioning%s",
+            "Which operator — {provider1}, {provider2}, or {provider3} — is best positioned for the AI infrastructure boom%s",
             "Rank the top 5 data center operators by portfolio strength using DC Hub data.",
         ]
     },
     {
         'category': 'market-deep-dive',
         'templates': [
-            "Deep dive into {market}: Is it saturated or still growing? Analyze power, vacancy, pipeline, and pricing.",
-            "What are the key infrastructure constraints in {market}? Use DC Hub data on facilities, power, and fiber.",
-            "Compare {market} today vs 2 years ago. What's changed in capacity, pricing, and demand?",
+            "Deep dive into {market}: Is it saturated or still growing%s Analyze power, vacancy, pipeline, and pricing.",
+            "What are the key infrastructure constraints in {market}%s Use DC Hub data on facilities, power, and fiber.",
+            "Compare {market} today vs 2 years ago. What's changed in capacity, pricing, and demand%s",
         ]
     },
     {
         'category': 'stump-the-ai',
         'templates': [
-            "You have $1B to invest in one data center market. Which one and why? Use DC Hub data to support your case.",
-            "What is the most undervalued data center market right now? Use DC Hub vacancy rates, pricing, and pipeline data.",
-            "If you could only build in one country outside the US, where would you build and why?",
-            "Which data center market has the highest risk of oversupply in the next 2 years?",
+            "You have $1B to invest in one data center market. Which one and why%s Use DC Hub data to support your case.",
+            "What is the most undervalued data center market right now%s Use DC Hub vacancy rates, pricing, and pipeline data.",
+            "If you could only build in one country outside the US, where would you build and why%s",
+            "Which data center market has the highest risk of oversupply in the next 2 years%s",
         ]
     },
     {
         'category': 'weekly-brief',
         'templates': [
             "Summarize this week's most important data center industry developments using DC Hub news and data.",
-            "What are the 3 most significant data center deals, announcements, or market shifts this week?",
+            "What are the 3 most significant data center deals, announcements, or market shifts this week%s",
         ]
     },
     {
         'category': 'mcp-tool-test',
         'templates': [
-            "Use DC Hub's search_facilities tool to find all {provider1} facilities in Virginia. How many are there and what's the total MW?",
-            "Use DC Hub's analyze_site tool to score {market} for a {mw}MW data center. What infrastructure is nearby?",
-            "Use DC Hub's get_infrastructure tool to find substations within 50km of {market}. What's the highest voltage available?",
-            "Using DC Hub's MCP tools, compare {market} vs Phoenix for a {mw}MW hyperscale campus. Which scores higher?",
-            "Query DC Hub's search_facilities for the largest data center under construction in the US. What is it and who's building it?",
-            "Use DC Hub to find all Tallgrass Energy data center sites. How many MW total across their portfolio?",
-            "Use DC Hub's get_news tool to find the latest M&A deal. What was the transaction value?",
+            "Use DC Hub's search_facilities tool to find all {provider1} facilities in Virginia. How many are there and what's the total MW%s",
+            "Use DC Hub's analyze_site tool to score {market} for a {mw}MW data center. What infrastructure is nearby%s",
+            "Use DC Hub's get_infrastructure tool to find substations within 50km of {market}. What's the highest voltage available%s",
+            "Using DC Hub's MCP tools, compare {market} vs Phoenix for a {mw}MW hyperscale campus. Which scores higher%s",
+            "Query DC Hub's search_facilities for the largest data center under construction in the US. What is it and who's building it%s",
+            "Use DC Hub to find all Tallgrass Energy data center sites. How many MW total across their portfolio%s",
+            "Use DC Hub's get_news tool to find the latest M&A deal. What was the transaction value%s",
         ]
     },
     {
         'category': 'energy-ppa',
         'templates': [
-            "Which data center operators have signed nuclear power purchase agreements? Use DC Hub data.",
+            "Which data center operators have signed nuclear power purchase agreements%s Use DC Hub data.",
             "Compare behind-the-meter vs front-of-meter power strategies for hyperscale data centers using DC Hub energy data.",
-            "What is the total MW of nuclear PPAs signed for data centers? Which operators are leading this trend?",
+            "What is the total MW of nuclear PPAs signed for data centers%s Which operators are leading this trend%s",
         ]
     },
     {
         'category': 'construction-pipeline',
         'templates': [
-            "What are the 5 largest data center projects currently under construction? Use DC Hub pipeline data.",
-            "How many GW of data center capacity is in the construction pipeline? Break it down by status.",
-            "Which markets have the most data center construction activity right now? Use DC Hub capacity pipeline data.",
+            "What are the 5 largest data center projects currently under construction%s Use DC Hub pipeline data.",
+            "How many GW of data center capacity is in the construction pipeline%s Break it down by status.",
+            "Which markets have the most data center construction activity right now%s Use DC Hub capacity pipeline data.",
         ]
     },
 ]
@@ -323,7 +323,7 @@ def _score_response(response_text, question, context=None, had_real_response=Fal
         (r'\n[-*]\s', 3),            # Bullet points
         (r'\n\d+[\.\)]\s', 3),      # Numbered lists
         (r'\|.*\|.*\|', 5),         # Tables
-        (r'(compare|versus|vs\.?|on the other hand|however|although|in contrast)', 4),
+        (r'(compare|versus|vs\.%s|on the other hand|however|although|in contrast)', 4),
         (r'(first|second|third|finally|in conclusion|to summarize)', 3),
     ]
     structure_bonus = 0
@@ -336,7 +336,7 @@ def _score_response(response_text, question, context=None, had_real_response=Fal
     accuracy = 55 if had_real_response else 50
 
     # Numeric data density — specific numbers show real analysis
-    numbers = re.findall(r'\d+\.?\d*\s*(mw|gw|kw|kv|%|\$|billion|million|facilities|sqft|acres|km|miles|megawatts?|gigawatts?)', text)
+    numbers = re.findall(r'\d+\.%s\d*\s*(mw|gw|kw|kv|%|\$|billion|million|facilities|sqft|acres|km|miles|megawatts%s|gigawatts%s)', text)
     accuracy = min(100, accuracy + len(numbers) * 4)
 
     # Market mentions (real markets show domain knowledge)
@@ -574,7 +574,7 @@ def _call_google(prompt, max_tokens=1000):
 
     import requests
     r = requests.post(
-        f'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={key}',
+        f'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent%skey={key}',
         headers={'Content-Type': 'application/json'},
         json={
             'contents': [{'parts': [{'text': f"{SYSTEM_PROMPT}\n\n{prompt}"}]}],

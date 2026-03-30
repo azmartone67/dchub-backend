@@ -6,7 +6,6 @@ Reports when organic traffic is detected
 
 import requests
 import logging
-import sqlite3
 import json
 import os
 import urllib3
@@ -187,7 +186,7 @@ Powered by dchub.cloud API.'''
 
 Ask things like:
 - "Find data centers in Dallas with 10MW+ capacity"
-- "Who are the largest colocation providers in Europe?"
+- "Who are the largest colocation providers in Europe%s"
 - "Recent M&A deals in the data center industry"
 
 Link: {GPT_URL}
@@ -330,14 +329,14 @@ def init_outreach_db():
         
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS ai_outreach_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 platform TEXT NOT NULL,
                 action TEXT NOT NULL,
                 endpoint TEXT,
                 status TEXT,
                 response_code INTEGER,
                 message TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                created_at TEXT NOT NULL DEFAULT (NOW())
             )
         ''')
         
@@ -353,24 +352,24 @@ def init_outreach_db():
         
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS directory_submissions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 directory TEXT NOT NULL,
                 status TEXT DEFAULT 'pending',
                 submitted_at TEXT,
                 approved_at TEXT,
                 notes TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                created_at TEXT NOT NULL DEFAULT (NOW())
             )
         ''')
         
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS organic_traffic_alerts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 platform TEXT NOT NULL,
                 user_agent TEXT,
                 endpoint TEXT,
                 is_organic INTEGER DEFAULT 0,
-                detected_at TEXT NOT NULL DEFAULT (datetime('now'))
+                detected_at TEXT NOT NULL DEFAULT (NOW())
             )
         ''')
         
@@ -379,13 +378,13 @@ def init_outreach_db():
         
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS outreach_learning_memory (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 channel TEXT NOT NULL,
                 lesson_type TEXT NOT NULL,
                 lesson TEXT NOT NULL,
                 confidence REAL DEFAULT 0.5,
                 applied_count INTEGER DEFAULT 0,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                created_at TEXT NOT NULL DEFAULT (NOW()),
                 last_applied TEXT
             )
         ''')
@@ -405,25 +404,25 @@ def init_outreach_db():
         
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS outreach_pitch_variants (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 platform TEXT NOT NULL,
                 pitch_text TEXT NOT NULL,
                 times_used INTEGER DEFAULT 0,
                 organic_after INTEGER DEFAULT 0,
                 effectiveness_score REAL DEFAULT 0.0,
                 active INTEGER DEFAULT 1,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                created_at TEXT NOT NULL DEFAULT (NOW())
             )
         ''')
         
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS outreach_learning_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 cycle_number INTEGER,
                 action_taken TEXT,
                 reason TEXT,
                 outcome TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                created_at TEXT NOT NULL DEFAULT (NOW())
             )
         ''')
         
@@ -442,17 +441,17 @@ def log_outreach(platform, action, endpoint=None, status='success', response_cod
         
         cursor.execute('''
             INSERT INTO ai_outreach_log (platform, action, endpoint, status, response_code, message, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
         ''', (platform, action, endpoint, status, response_code, message, datetime.now(timezone.utc).isoformat()))
         
         cursor.execute('''
             INSERT INTO ai_outreach_stats (platform, total_pings, successful_pings, last_ping, last_success)
-            VALUES (?, 1, ?, ?, ?)
+            VALUES (%s, 1, %s, %s, %s)
             ON CONFLICT(platform) DO UPDATE SET
                 total_pings = ai_outreach_stats.total_pings + 1,
-                successful_pings = ai_outreach_stats.successful_pings + CASE WHEN ? = 'success' THEN 1 ELSE 0 END,
+                successful_pings = ai_outreach_stats.successful_pings + CASE WHEN %s = 'success' THEN 1 ELSE 0 END,
                 last_ping = EXCLUDED.last_ping,
-                last_success = CASE WHEN ? = 'success' THEN EXCLUDED.last_success ELSE ai_outreach_stats.last_success END
+                last_success = CASE WHEN %s = 'success' THEN EXCLUDED.last_success ELSE ai_outreach_stats.last_success END
         ''', (
             platform,
             1 if status == 'success' else 0,
@@ -514,7 +513,7 @@ def _update_channel_scores():
             score = min(base_score + organic_bonus + recency_bonus, 100)
             
             cursor.execute('''
-                SELECT score FROM outreach_channel_scores WHERE channel = ?
+                SELECT score FROM outreach_channel_scores WHERE channel = %s
             ''', (platform,))
             prev = cursor.fetchone()
             prev_score = prev[0] if prev else 50.0
@@ -522,10 +521,10 @@ def _update_channel_scores():
             
             cursor.execute('''
                 INSERT INTO outreach_channel_scores (channel, success_rate, total_attempts, total_successes, organic_signals, score, trend, last_updated)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT(channel) DO UPDATE SET
                     success_rate = ?, total_attempts = ?, total_successes = ?,
-                    organic_signals = ?, score = ?, trend = ?, last_updated = ?
+                    organic_signals = %s, score = %s, trend = %s, last_updated = %s
             ''', (platform, success_rate, total, successes, organic_signals, score, trend, now,
                   success_rate, total, successes, organic_signals, score, trend, now))
         
@@ -585,7 +584,7 @@ def _learn_from_cycle(cycle_result: dict):
         for channel, lesson_type, lesson, confidence in lessons:
             cursor.execute('''
                 SELECT id, confidence FROM outreach_learning_memory 
-                WHERE channel = ? AND lesson_type = ?
+                WHERE channel = %s AND lesson_type = %s
                 ORDER BY created_at DESC LIMIT 1
             ''', (channel, lesson_type))
             existing = cursor.fetchone()
@@ -594,19 +593,19 @@ def _learn_from_cycle(cycle_result: dict):
                 new_confidence = min(existing[1] * 0.7 + confidence * 0.3, 1.0)
                 cursor.execute('''
                     UPDATE outreach_learning_memory 
-                    SET lesson = ?, confidence = ?, applied_count = applied_count + 1,
-                        last_applied = datetime('now')
-                    WHERE id = ?
+                    SET lesson = %s, confidence = %s, applied_count = applied_count + 1,
+                        last_applied = NOW()
+                    WHERE id = %s
                 ''', (lesson, new_confidence, existing[0]))
             else:
                 cursor.execute('''
                     INSERT INTO outreach_learning_memory (channel, lesson_type, lesson, confidence)
-                    VALUES (?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s)
                 ''', (channel, lesson_type, lesson, confidence))
         
         cursor.execute('''
             INSERT INTO outreach_learning_log (cycle_number, action_taken, reason, outcome)
-            VALUES (?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s)
         ''', (cycle_num, 'learn_from_cycle', 
               f'Analyzed cycle results: dirs={summary.get("directories")}, broadcasts={summary.get("ai_broadcasts")}',
               f'{len(lessons)} lessons extracted, organic={len(organic)}'))
@@ -632,7 +631,7 @@ def _get_adaptive_pitch(platform_id: str) -> str:
         
         cursor.execute('''
             SELECT pitch_text, effectiveness_score FROM outreach_pitch_variants
-            WHERE platform = ? AND active = 1
+            WHERE platform = %s AND active = 1
             ORDER BY effectiveness_score DESC LIMIT 1
         ''', (platform_id,))
         best = cursor.fetchone()
@@ -640,7 +639,7 @@ def _get_adaptive_pitch(platform_id: str) -> str:
         if best and best[1] > 0:
             cursor.execute('''
                 UPDATE outreach_pitch_variants SET times_used = times_used + 1
-                WHERE platform = ? AND pitch_text = ?
+                WHERE platform = %s AND pitch_text = %s
             ''', (platform_id, best[0]))
             conn.commit()
             return best[0]
@@ -650,7 +649,7 @@ def _get_adaptive_pitch(platform_id: str) -> str:
         
         cursor.execute('''
             SELECT lesson FROM outreach_learning_memory
-            WHERE (channel = ? OR channel = 'all') AND confidence > 0.5
+            WHERE (channel = %s OR channel = 'all') AND confidence > 0.5
             ORDER BY confidence DESC LIMIT 3
         ''', (platform_id,))
         lessons = [r[0] for r in cursor.fetchall()]
@@ -658,8 +657,8 @@ def _get_adaptive_pitch(platform_id: str) -> str:
         if lessons and base_pitch:
             enhanced = f"{base_pitch} [Learned: {'; '.join(lessons[:2])}]"
             cursor.execute('''
-                INSERT OR IGNORE INTO outreach_pitch_variants (platform, pitch_text)
-                VALUES (?, ?)
+                INSERT INTO outreach_pitch_variants (platform, pitch_text)
+                VALUES (%s, %s)
             ''', (platform_id, enhanced))
             conn.commit()
         
@@ -1058,7 +1057,7 @@ def check_for_organic_traffic():
                 
                 cursor.execute('''
                     INSERT INTO organic_traffic_alerts (platform, user_agent, endpoint, is_organic, detected_at)
-                    VALUES (?, ?, ?, 1, ?)
+                    VALUES (%s, %s, %s, 1, %s)
                 ''', (platform, user_agent, endpoint, created_at))
         
         conn.commit()
@@ -1584,11 +1583,11 @@ Website: https://dchub.cloud
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO outreach_learning_memory (channel, lesson_type, lesson, confidence)
-                VALUES (?, ?, ?, 0.9)
+                VALUES (%s, %s, %s, 0.9)
             ''', (channel, lesson_type, lesson))
             cursor.execute('''
                 INSERT INTO outreach_learning_log (cycle_number, action_taken, reason, outcome)
-                VALUES (?, 'manual_teach', ?, 'Lesson stored with 0.9 confidence')
+                VALUES (%s, 'manual_teach', %s, 'Lesson stored with 0.9 confidence')
             ''', (_learning_cycle_count['count'], f'Manual lesson: {lesson[:100]}'))
             conn.commit()
             return jsonify({'status': 'learned', 'channel': channel, 'lesson': lesson})

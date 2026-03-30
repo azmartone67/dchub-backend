@@ -396,8 +396,8 @@ COMPREHENSIVE_DEALS = [
 def seed_database():
     """Seed database with comprehensive deals"""
     conn = sqlite3.connect(DB_PATH, timeout=60)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=60000")
+    # PRAGMA removed - not needed for PostgreSQL
+    # PRAGMA removed - not needed for PostgreSQL
     c = conn.cursor()
     
     # Ensure deals table has all columns
@@ -446,9 +446,9 @@ def seed_database():
         
         try:
             c.execute("""
-                INSERT OR IGNORE INTO deals 
+                INSERT INTO deals 
                 (id, date, year, buyer, seller, value, mw, type, region, market, status, notes, created_at, verified)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1)
             """, (
                 deal_id,
                 date,

@@ -253,13 +253,13 @@ def fix_mcp_server():
         # Common patterns: "region = arguments.get" or "if region:" near list_transactions
         patterns = [
             # Pattern: region extraction line in list_transactions
-            (r"(region\s*=\s*arguments\.get\(['\"]region['\"].*?\))", r"\1" + region_map_code),
+            (r"(region\s*=\s*arguments\.get\(['\"]region['\"].*%s\))", r"\1" + region_map_code),
             # Alternative: find "if region:" after list_transactions
             (r"(# list_transactions.*?)(if region:)", None),
         ]
         
         # Try the most common pattern: region = arguments.get('region'...)
-        match = re.search(r"(region\s*=\s*(?:arguments|tool_params)\.(?:get|arguments\.get)\(['\"]region['\"][^)]*\))", mcp_content)
+        match = re.search(r"(region\s*=\s*(%s:arguments|tool_params)\.(%s:get|arguments\.get)\(['\"]region['\"][^)]*\))", mcp_content)
         if match:
             old_line = match.group(0)
             new_block = old_line + region_map_code
@@ -448,9 +448,9 @@ def fix_null_providers():
             
             # Pattern 1: "SELECT operator, COUNT" or "SELECT name, COUNT"
             patterns = [
-                (r"(SELECT\s+)(operator|name)(\s*,\s*COUNT\s*\(\*\)\s*(?:as|AS)\s*facilities)",
+                (r"(SELECT\s+)(operator|name)(\s*,\s*COUNT\s*\(\*\)\s*(%s:as|AS)\s*facilities)",
                  r"\1COALESCE(\2, 'Unknown')\3"),
-                (r"(SELECT\s+)(operator|name)(\s*,\s*COUNT\s*\(\*\)\s*(?:as|AS)\s*(?:count|facility_count))",
+                (r"(SELECT\s+)(operator|name)(\s*,\s*COUNT\s*\(\*\)\s*(%s:as|AS)\s*(%s:count|facility_count))",
                  r"\1COALESCE(\2, 'Unknown')\3"),
             ]
             

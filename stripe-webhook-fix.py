@@ -106,7 +106,7 @@ def stripe_webhook_test():
     - Is STRIPE_SECRET_KEY set?
     - Is STRIPE_WEBHOOK_SECRET set?
     - Can we reach Stripe API?
-    - How many users have been upgraded from free?
+    - How many users have been upgraded from free%s
     """
     import traceback
     
@@ -121,38 +121,40 @@ def stripe_webhook_test():
     # Check database for subscription stats
     try:
         conn = get_db()
-        c = conn.cursor()
-        
-        c.execute("SELECT plan, COUNT(*) FROM users GROUP BY plan")
-        plan_counts = {row[0]: row[1] for row in c.fetchall()}
-        checks['user_plans'] = plan_counts
-        
-        c.execute("SELECT subscription_status, COUNT(*) FROM users WHERE subscription_status IS NOT NULL GROUP BY subscription_status")
-        status_counts = {row[0]: row[1] for row in c.fetchall()}
-        checks['subscription_statuses'] = status_counts
-        
-        c.execute("SELECT COUNT(*) FROM users WHERE stripe_customer_id IS NOT NULL AND stripe_customer_id != ''")
-        checks['users_with_stripe_id'] = c.fetchone()[0]
-        
-        # Show recent upgrades
-        c.execute("""
-            SELECT email, plan, subscription_status, stripe_customer_id 
-            FROM users 
-            WHERE plan != 'free' 
-            ORDER BY created_at DESC 
-            LIMIT 10
-        """)
-        paid_users = []
-        for row in c.fetchall():
-            paid_users.append({
-                'email': row[0][:3] + '***' if row[0] else 'N/A',  # Partially mask
-                'plan': row[1],
-                'status': row[2],
-                'has_stripe_id': bool(row[3])
-            })
-        checks['recent_paid_users'] = paid_users
-        
-        conn.close()
+        try:
+            c = conn.cursor()
+
+            c.execute("SELECT plan, COUNT(*) FROM users GROUP BY plan")
+            plan_counts = {row[0]: row[1] for row in c.fetchall()}
+            checks['user_plans'] = plan_counts
+
+            c.execute("SELECT subscription_status, COUNT(*) FROM users WHERE subscription_status IS NOT NULL GROUP BY subscription_status")
+            status_counts = {row[0]: row[1] for row in c.fetchall()}
+            checks['subscription_statuses'] = status_counts
+
+            c.execute("SELECT COUNT(*) FROM users WHERE stripe_customer_id IS NOT NULL AND stripe_customer_id != ''")
+            checks['users_with_stripe_id'] = c.fetchone()[0]
+
+            # Show recent upgrades
+            c.execute("""
+                SELECT email, plan, subscription_status, stripe_customer_id
+                FROM users
+                WHERE plan != 'free'
+                ORDER BY created_at DESC
+                LIMIT 10
+            """)
+            paid_users = []
+            for row in c.fetchall():
+                paid_users.append({
+                    'email': row[0][:3] + '***' if row[0] else 'N/A',  # Partially mask
+                    'plan': row[1],
+                    'status': row[2],
+                    'has_stripe_id': bool(row[3])
+                })
+            checks['recent_paid_users'] = paid_users
+
+        finally:
+            conn.close()
     except Exception as e:
         checks['db_error'] = str(e)
     

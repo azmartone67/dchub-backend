@@ -172,10 +172,11 @@ def _execute(sql, params=None, fetch=False, fetchall=False):
 def _get_buffer_db():
     """Get SQLite connection for the local fallback buffer."""
     conn = sqlite3.connect(SQLITE_BUFFER_PATH, timeout=5)
-    conn.row_factory = sqlite3.Row
-    conn.execute("""
+    # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
+    c = conn.cursor()
+    c.execute("""
         CREATE TABLE IF NOT EXISTS buffered_requests (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             platform TEXT NOT NULL,
             endpoint TEXT,
             user_agent TEXT,
@@ -186,9 +187,10 @@ def _get_buffer_db():
             synced INTEGER DEFAULT 0
         )
     """)
-    conn.execute("""
+    c = conn.cursor()
+    c.execute("""
         CREATE TABLE IF NOT EXISTS buffered_mcp (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             platform TEXT,
             method TEXT,
             user_agent TEXT,
@@ -334,7 +336,7 @@ def log_ai_request(platform, endpoint, user_agent="", ip_address="",
             buf = _get_buffer_db()
             buf.execute("""
                 INSERT INTO buffered_requests (platform, endpoint, user_agent, ip_address, status_code, response_ms, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
             """, (platform, endpoint[:500] if endpoint else "", user_agent[:500] if user_agent else "",
                   ip_address, status_code, response_ms, now.isoformat()))
             buf.commit()
@@ -361,7 +363,7 @@ def log_mcp_connection(platform, method, user_agent="", ip_address="",
             buf = _get_buffer_db()
             buf.execute("""
                 INSERT INTO buffered_mcp (platform, method, user_agent, ip_address, tool_name, params, status_code, response_ms, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (platform, method, user_agent[:500] if user_agent else "",
                   ip_address, tool_name, params[:1000] if params else "",
                   status_code, response_ms, datetime.now(timezone.utc).isoformat()))
@@ -429,7 +431,7 @@ def _sync_buffer_to_neon():
                     break  # Stop on first Neon failure, retry next cycle
 
             if synced_ids:
-                placeholders = ",".join("?" * len(synced_ids))
+                placeholders = ",".join("%s" * len(synced_ids))
                 buf.execute(f"UPDATE buffered_requests SET synced = 1 WHERE id IN ({placeholders})", synced_ids)
                 buf.commit()
                 logger.info(f"Synced {len(synced_ids)} buffered requests to Neon")
@@ -453,14 +455,14 @@ def _sync_buffer_to_neon():
                     break
 
             if mcp_synced:
-                placeholders = ",".join("?" * len(mcp_synced))
+                placeholders = ",".join("%s" * len(mcp_synced))
                 buf.execute(f"UPDATE buffered_mcp SET synced = 1 WHERE id IN ({placeholders})", mcp_synced)
                 buf.commit()
 
             # Clean up old synced rows (keep last 24h for debugging)
             cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
-            buf.execute("DELETE FROM buffered_requests WHERE synced = 1 AND created_at < ?", (cutoff,))
-            buf.execute("DELETE FROM buffered_mcp WHERE synced = 1 AND created_at < ?", (cutoff,))
+            buf.execute("DELETE FROM buffered_requests WHERE synced = 1 AND created_at < %s", (cutoff,))
+            buf.execute("DELETE FROM buffered_mcp WHERE synced = 1 AND created_at < %s", (cutoff,))
             buf.commit()
             buf.close()
 

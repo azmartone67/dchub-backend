@@ -214,7 +214,7 @@ EMAILS = {
 
   <hr class="divider">
 
-  <p><strong>Ready for unlimited access?</strong></p>
+  <p><strong>Ready for unlimited access%s</strong></p>
 
   <p>Founding Members get everything — unlimited comparisons, PDF reports, full API, Land & Power mapping, and site scoring — for <strong>$99/month, locked forever</strong>.</p>
 

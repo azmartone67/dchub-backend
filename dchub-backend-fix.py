@@ -74,13 +74,13 @@ print("\n📌 Fix 2: MCP Analytics — SQLite → PostgreSQL")
 
 # Fix ? placeholders → %s in mcp_analytics
 fix(F,
-    "'SELECT COUNT(*) FROM mcp_tool_calls WHERE created_at > ?', (since,)",
+    "'SELECT COUNT(*) FROM mcp_tool_calls WHERE created_at > %s', (since,)",
     "'SELECT COUNT(*) FROM mcp_tool_calls WHERE created_at > %s', (since,)",
     'Fix analytics: ? → %s placeholder (COUNT)')
 
 fix(F,
     """            SELECT tool_name, COUNT(*) as count, AVG(response_time_ms) as avg_ms
-            FROM mcp_tool_calls WHERE created_at > ?
+            FROM mcp_tool_calls WHERE created_at > %s
             GROUP BY tool_name ORDER BY count DESC
         ''', (since,)""",
     """            SELECT tool_name, COUNT(*) as count, AVG(response_time_ms) as avg_ms
@@ -91,7 +91,7 @@ fix(F,
 
 fix(F,
     """            SELECT platform, COUNT(*) as count
-            FROM mcp_tool_calls WHERE created_at > ?
+            FROM mcp_tool_calls WHERE created_at > %s
             GROUP BY platform ORDER BY count DESC
         ''', (since,)""",
     """            SELECT platform, COUNT(*) as count
@@ -103,7 +103,7 @@ fix(F,
 fix(F,
     """            SELECT platform, client_name, client_version, method,
                    COUNT(*) as count, MAX(created_at) as last_seen
-            FROM mcp_connections WHERE created_at > ?
+            FROM mcp_connections WHERE created_at > %s
             GROUP BY platform, client_name ORDER BY last_seen DESC
         ''', (since,)""",
     """            SELECT platform, client_name, client_version, method,
@@ -116,7 +116,7 @@ fix(F,
 # Fix strftime → to_char for PostgreSQL
 fix(F,
     """            SELECT strftime('%Y-%m-%d %H:00', created_at) as hour, COUNT(*) as count
-            FROM mcp_tool_calls WHERE created_at > ?
+            FROM mcp_tool_calls WHERE created_at > %s
             GROUP BY hour ORDER BY hour
         ''', (since,)""",
     """            SELECT to_char(created_at, 'YYYY-MM-DD HH24:00') as hour, COUNT(*) as count
@@ -153,7 +153,8 @@ fix(F,
 def mcp_platforms_status():
     try:
         db = get_db()
-        platforms = db.execute('''
+        c = db.cursor()
+        platforms = c.execute('''
             SELECT platform,
                    COUNT(*) as total_calls,
                    MAX(created_at) as last_seen,
@@ -161,7 +162,8 @@ def mcp_platforms_status():
             FROM mcp_connections
             GROUP BY platform ORDER BY last_seen DESC
         ''').fetchall()
-        broadcasts = db.execute('''
+        c = db.cursor()
+        broadcasts = c.execute('''
             SELECT platform, action, success, status_code,
                    created_at, duration_ms
             FROM ambassador_broadcasts
@@ -264,7 +266,7 @@ else:
     print()
     print("⚠️  ALSO CHECK:")
     print("  1. Do tables mcp_tool_calls, mcp_connections, ambassador_broadcasts")
-    print("     exist in your Neon PostgreSQL? If not, create them:")
+    print("     exist in your Neon PostgreSQL%s If not, create them:")
     print()
     print("     CREATE TABLE IF NOT EXISTS mcp_tool_calls (")
     print("       id SERIAL PRIMARY KEY,")

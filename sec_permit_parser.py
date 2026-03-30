@@ -219,7 +219,7 @@ async def fetch_properties_section(client: httpx.AsyncClient, filing: dict) -> s
                     rf'href="(/Archives/edgar/data/{cik_int}/{acc}/[^"]+\.htm)"',
                     raw, re.IGNORECASE
                 )
-                main = [l for l in links if not re.search(r'ex-?\d|exhibit', l, re.IGNORECASE)]
+                main = [l for l in links if not re.search(r'ex-%s\d|exhibit', l, re.IGNORECASE)]
                 if main:
                     resp2 = await client.get(
                         "https://www.sec.gov" + main[0],

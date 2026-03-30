@@ -154,91 +154,93 @@ def strip_html(text):
 def init_new_tables():
     """Initialize new tables for v74 features"""
     conn = get_db()
-    c = conn.cursor()
-    
-    # Leads table for email capture
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS leads (
-            id TEXT PRIMARY KEY,
-            email TEXT UNIQUE NOT NULL,
-            name TEXT,
-            company TEXT,
-            source TEXT,
-            source_detail TEXT,
-            verified INTEGER DEFAULT 0,
-            verify_token TEXT,
-            subscribed INTEGER DEFAULT 1,
-            lead_score INTEGER DEFAULT 0,
-            tags TEXT,
-            created_at TEXT,
-            verified_at TEXT,
-            last_activity TEXT
-        )
-    """)
-    
-    # Users table for authentication
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id TEXT PRIMARY KEY,
-            email TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            name TEXT,
-            company TEXT,
-            role TEXT DEFAULT 'free',
-            plan TEXT DEFAULT 'free',
-            api_calls_today INTEGER DEFAULT 0,
-            api_calls_total INTEGER DEFAULT 0,
-            saved_searches TEXT,
-            saved_markets TEXT,
-            preferences TEXT,
-            created_at TEXT,
-            last_login TEXT,
-            reset_token TEXT,
-            reset_expires TEXT,
-            stripe_customer_id TEXT,
-            subscription_status TEXT
-        )
-    """)
-    
-    # Add Stripe columns if they don't exist (migration for existing databases)
     try:
-        c.execute("ALTER TABLE users ADD COLUMN stripe_customer_id TEXT")
-    except:
-        pass
-    try:
-        c.execute("ALTER TABLE users ADD COLUMN subscription_status TEXT")
-    except:
-        pass
-    
-    # Generated reports table
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS reports (
-            id TEXT PRIMARY KEY,
-            user_id TEXT,
-            email TEXT,
-            report_type TEXT,
-            markets TEXT,
-            parameters TEXT,
-            file_path TEXT,
-            status TEXT DEFAULT 'pending',
-            created_at TEXT,
-            completed_at TEXT
-        )
-    """)
-    
-    # Lead activities table for tracking
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS lead_activities (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            lead_id TEXT,
-            activity_type TEXT,
-            details TEXT,
-            created_at TEXT
-        )
-    """)
-    
-    conn.commit()
-    conn.close()
+        c = conn.cursor()
+
+        # Leads table for email capture
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS leads (
+                id TEXT PRIMARY KEY,
+                email TEXT UNIQUE NOT NULL,
+                name TEXT,
+                company TEXT,
+                source TEXT,
+                source_detail TEXT,
+                verified INTEGER DEFAULT 0,
+                verify_token TEXT,
+                subscribed INTEGER DEFAULT 1,
+                lead_score INTEGER DEFAULT 0,
+                tags TEXT,
+                created_at TEXT,
+                verified_at TEXT,
+                last_activity TEXT
+            )
+        """)
+
+        # Users table for authentication
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                email TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                name TEXT,
+                company TEXT,
+                role TEXT DEFAULT 'free',
+                plan TEXT DEFAULT 'free',
+                api_calls_today INTEGER DEFAULT 0,
+                api_calls_total INTEGER DEFAULT 0,
+                saved_searches TEXT,
+                saved_markets TEXT,
+                preferences TEXT,
+                created_at TEXT,
+                last_login TEXT,
+                reset_token TEXT,
+                reset_expires TEXT,
+                stripe_customer_id TEXT,
+                subscription_status TEXT
+            )
+        """)
+
+        # Add Stripe columns if they don't exist (migration for existing databases)
+        try:
+            c.execute("ALTER TABLE users ADD COLUMN stripe_customer_id TEXT")
+        except:
+            pass
+        try:
+            c.execute("ALTER TABLE users ADD COLUMN subscription_status TEXT")
+        except:
+            pass
+
+        # Generated reports table
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS reports (
+                id TEXT PRIMARY KEY,
+                user_id TEXT,
+                email TEXT,
+                report_type TEXT,
+                markets TEXT,
+                parameters TEXT,
+                file_path TEXT,
+                status TEXT DEFAULT 'pending',
+                created_at TEXT,
+                completed_at TEXT
+            )
+        """)
+
+        # Lead activities table for tracking
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS lead_activities (
+                id SERIAL PRIMARY KEY,
+                lead_id TEXT,
+                activity_type TEXT,
+                details TEXT,
+                created_at TEXT
+            )
+        """)
+
+        conn.commit()
+    finally:
+        conn.close()
     print("✅ New v74 tables initialized")
 
 # Initialize tables on startup
@@ -389,19 +391,21 @@ def subscribe_lead():
         return jsonify({'error': 'Invalid email format', 'code': 'VALIDATION_ERROR'}), 400
     
     conn = get_db()
-    c = conn.cursor()
-    
-    # Check if already exists
-    c.execute("SELECT id, subscribed FROM leads WHERE email = ?", (email,))
-    existing = c.fetchone()
-    
-    if existing:
-        if existing[1]:  # Already subscribed
-            conn.close()
+    try:
+        c = conn.cursor()
+
+        # Check if already exists
+        c.execute("SELECT id, subscribed FROM leads WHERE email = %s", (email,))
+        existing = c.fetchone()
+
+        if existing:
+            if existing[1]:  # Already subscribed
+    finally:
+        conn.close()
             return jsonify({'success': True, 'message': 'Already subscribed', 'new': False})
         else:
             # Re-subscribe
-            c.execute("UPDATE leads SET subscribed = 1, last_activity = ? WHERE email = ?",
+            c.execute("UPDATE leads SET subscribed = 1, last_activity = %s WHERE email = %s",
                      (datetime.utcnow().isoformat(), email))
             conn.commit()
             conn.close()
@@ -413,7 +417,7 @@ def subscribe_lead():
     
     c.execute("""
         INSERT INTO leads (id, email, name, company, source, source_detail, verify_token, created_at, last_activity)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
     """, (
         lead_id,
         email,
@@ -429,7 +433,7 @@ def subscribe_lead():
     # Log activity
     c.execute("""
         INSERT INTO lead_activities (lead_id, activity_type, details, created_at)
-        VALUES (?, 'subscribed', ?, ?)
+        VALUES (%s, 'subscribed', %s, %s)
     """, (lead_id, json.dumps({'source': data.get('source', 'newsletter')}), datetime.utcnow().isoformat()))
     
     conn.commit()
@@ -454,62 +458,64 @@ def capture_lead():
     source = data.get('source', 'unknown')  # e.g., 'social_generator', 'pdf_report', 'market_comparison'
     
     conn = get_db()
-    c = conn.cursor()
-    
-    # Check if exists
-    c.execute("SELECT id, lead_score FROM leads WHERE email = ?", (email,))
-    existing = c.fetchone()
-    
-    # Calculate lead score based on source
-    score_map = {
-        'social_generator': 10,
-        'pdf_report': 25,
-        'market_comparison': 20,
-        'newsletter': 5,
-        'chat_widget': 15,
-        'demo_request': 50
-    }
-    score_delta = score_map.get(source, 5)
-    
-    if existing:
-        lead_id = existing[0]
-        new_score = existing[1] + score_delta
-        
+    try:
+        c = conn.cursor()
+
+        # Check if exists
+        c.execute("SELECT id, lead_score FROM leads WHERE email = %s", (email,))
+        existing = c.fetchone()
+
+        # Calculate lead score based on source
+        score_map = {
+            'social_generator': 10,
+            'pdf_report': 25,
+            'market_comparison': 20,
+            'newsletter': 5,
+            'chat_widget': 15,
+            'demo_request': 50
+        }
+        score_delta = score_map.get(source, 5)
+
+        if existing:
+            lead_id = existing[0]
+            new_score = existing[1] + score_delta
+
+            c.execute("""
+                UPDATE leads SET
+                    lead_score = ?,
+                    last_activity = ?,
+                    source_detail = COALESCE(source_detail, '') || ',' || ?
+                WHERE email = %s
+            """, (new_score, datetime.utcnow().isoformat(), source, email))
+        else:
+            lead_id = secrets.token_hex(8)
+            verify_token = secrets.token_urlsafe(32)
+
+            c.execute("""
+                INSERT INTO leads (id, email, name, company, source, source_detail, verify_token, lead_score, created_at, last_activity)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                lead_id,
+                email,
+                data.get('name', ''),
+                data.get('company', ''),
+                source,
+                source,
+                verify_token,
+                score_delta,
+                datetime.utcnow().isoformat(),
+                datetime.utcnow().isoformat()
+            ))
+
+        # Log activity
         c.execute("""
-            UPDATE leads SET 
-                lead_score = ?,
-                last_activity = ?,
-                source_detail = COALESCE(source_detail, '') || ',' || ?
-            WHERE email = ?
-        """, (new_score, datetime.utcnow().isoformat(), source, email))
-    else:
-        lead_id = secrets.token_hex(8)
-        verify_token = secrets.token_urlsafe(32)
-        
-        c.execute("""
-            INSERT INTO leads (id, email, name, company, source, source_detail, verify_token, lead_score, created_at, last_activity)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            lead_id,
-            email,
-            data.get('name', ''),
-            data.get('company', ''),
-            source,
-            source,
-            verify_token,
-            score_delta,
-            datetime.utcnow().isoformat(),
-            datetime.utcnow().isoformat()
-        ))
-    
-    # Log activity
-    c.execute("""
-        INSERT INTO lead_activities (lead_id, activity_type, details, created_at)
-        VALUES (?, 'content_access', ?, ?)
-    """, (lead_id, json.dumps({'source': source, 'content': data.get('content', '')}), datetime.utcnow().isoformat()))
-    
-    conn.commit()
-    conn.close()
+            INSERT INTO lead_activities (lead_id, activity_type, details, created_at)
+            VALUES (%s, 'content_access', %s, %s)
+        """, (lead_id, json.dumps({'source': source, 'content': data.get('content', '')}), datetime.utcnow().isoformat()))
+
+        conn.commit()
+    finally:
+        conn.close()
     
     return jsonify({
         'success': True,
@@ -522,17 +528,19 @@ def capture_lead():
 def verify_lead(token):
     """Verify email via token"""
     conn = get_db()
-    c = conn.cursor()
-    
-    c.execute("SELECT id, email FROM leads WHERE verify_token = ?", (token,))
-    lead = c.fetchone()
-    
-    if not lead:
+    try:
+        c = conn.cursor()
+
+        c.execute("SELECT id, email FROM leads WHERE verify_token = %s", (token,))
+        lead = c.fetchone()
+
+        if not lead:
+    finally:
         conn.close()
         return jsonify({'error': 'Invalid verification token', 'code': 'NOT_FOUND'}), 404
     
     c.execute("""
-        UPDATE leads SET verified = 1, verified_at = ?, verify_token = NULL WHERE id = ?
+        UPDATE leads SET verified = 1, verified_at = %s, verify_token = NULL WHERE id = %s
     """, (datetime.utcnow().isoformat(), lead[0]))
     
     conn.commit()
@@ -550,10 +558,12 @@ def unsubscribe_lead():
         return jsonify({'error': 'Email required'}), 400
     
     conn = get_db()
-    c = conn.cursor()
-    c.execute("UPDATE leads SET subscribed = 0 WHERE email = ?", (email,))
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+        c.execute("UPDATE leads SET subscribed = 0 WHERE email = %s", (email,))
+        conn.commit()
+    finally:
+        conn.close()
     
     return jsonify({'success': True, 'message': 'Unsubscribed successfully'})
 
@@ -585,11 +595,13 @@ def register_user():
         return jsonify({'error': 'Invalid email format', 'code': 'VALIDATION_ERROR'}), 400
     
     conn = get_db()
-    c = conn.cursor()
-    
-    # Check if exists
-    c.execute("SELECT id FROM users WHERE email = ?", (email,))
-    if c.fetchone():
+    try:
+        c = conn.cursor()
+
+        # Check if exists
+        c.execute("SELECT id FROM users WHERE email = %s", (email,))
+        if c.fetchone():
+    finally:
         conn.close()
         return jsonify({'error': 'Email already registered', 'code': 'DUPLICATE'}), 409
     
@@ -599,7 +611,7 @@ def register_user():
     
     c.execute("""
         INSERT INTO users (id, email, password_hash, name, company, created_at, last_login)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
     """, (user_id, email, password_hash, name, company, datetime.utcnow().isoformat(), datetime.utcnow().isoformat()))
     
     conn.commit()
@@ -637,16 +649,18 @@ def register_user():
 def capture_lead_internal(email, name, company, source):
     """Internal helper to capture lead"""
     conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT id FROM leads WHERE email = ?", (email,))
-    if not c.fetchone():
-        lead_id = secrets.token_hex(8)
-        c.execute("""
-            INSERT INTO leads (id, email, name, company, source, lead_score, created_at, last_activity)
-            VALUES (?, ?, ?, ?, ?, 30, ?, ?)
-        """, (lead_id, email, name, company, source, datetime.utcnow().isoformat(), datetime.utcnow().isoformat()))
-        conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+        c.execute("SELECT id FROM leads WHERE email = %s", (email,))
+        if not c.fetchone():
+            lead_id = secrets.token_hex(8)
+            c.execute("""
+                INSERT INTO leads (id, email, name, company, source, lead_score, created_at, last_activity)
+                VALUES (%s, %s, %s, %s, %s, 30, %s, %s)
+            """, (lead_id, email, name, company, source, datetime.utcnow().isoformat(), datetime.utcnow().isoformat()))
+            conn.commit()
+    finally:
+        conn.close()
 
 @app.route('/api/auth/login', methods=['POST'])
 def login_user():
@@ -663,17 +677,19 @@ def login_user():
         return jsonify({'error': 'Email and password required'}), 400
     
     conn = get_db()
-    c = conn.cursor()
-    
-    c.execute("SELECT id, email, password_hash, name, company, role, plan FROM users WHERE email = ?", (email,))
-    user = c.fetchone()
-    
-    if not user or not verify_password(password, user[2]):
+    try:
+        c = conn.cursor()
+
+        c.execute("SELECT id, email, password_hash, name, company, role, plan FROM users WHERE email = %s", (email,))
+        user = c.fetchone()
+
+        if not user or not verify_password(password, user[2]):
+    finally:
         conn.close()
         return jsonify({'error': 'Invalid email or password', 'code': 'AUTH_FAILED'}), 401
     
     # Update last login
-    c.execute("UPDATE users SET last_login = ? WHERE id = ?", (datetime.utcnow().isoformat(), user[0]))
+    c.execute("UPDATE users SET last_login = %s WHERE id = %s", (datetime.utcnow().isoformat(), user[0]))
     conn.commit()
     conn.close()
     
@@ -744,72 +760,74 @@ def google_auth():
         return jsonify({'error': 'Google credential or access token required'}), 400
     
     conn = get_db()
-    c = conn.cursor()
-    
-    # Check if user exists
-    c.execute("SELECT id, email, name, company, role, plan FROM users WHERE email = ?", (email,))
-    user = c.fetchone()
-    
-    if user:
-        # Existing user - update last login
-        c.execute("UPDATE users SET last_login = ? WHERE id = ?", (datetime.utcnow().isoformat(), user[0]))
-        conn.commit()
-        
-        user_data = {
-            'id': user[0],
-            'email': user[1],
-            'name': user[2],
-            'company': user[3],
-            'role': user[4] or 'user',
-            'plan': user[5] or 'free'
-        }
-    else:
-        # New user - create account
-        c.execute("""
-            INSERT INTO users (email, password_hash, name, company, role, plan, created_at, last_login)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            email,
-            'google_oauth',  # No password for Google users
-            name,
-            '',  # No company yet
-            'user',
-            'free',
-            datetime.utcnow().isoformat(),
-            datetime.utcnow().isoformat()
-        ))
-        conn.commit()
-        
-        user_id = c.lastrowid
-        
-        # Also capture as lead
-        try:
-            c.execute("""
-                INSERT OR IGNORE INTO leads (email, name, source, source_detail, lead_score, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (email, name, 'google_signup', 'google_oauth_registration', 30, datetime.utcnow().isoformat()))
+    try:
+        c = conn.cursor()
+
+        # Check if user exists
+        c.execute("SELECT id, email, name, company, role, plan FROM users WHERE email = %s", (email,))
+        user = c.fetchone()
+
+        if user:
+            # Existing user - update last login
+            c.execute("UPDATE users SET last_login = %s WHERE id = %s", (datetime.utcnow().isoformat(), user[0]))
             conn.commit()
-        except:
-            pass
-        
-        # Start welcome email series for new Google users
-        if EMAIL_SERVICE_AVAILABLE:
+
+            user_data = {
+                'id': user[0],
+                'email': user[1],
+                'name': user[2],
+                'company': user[3],
+                'role': user[4] or 'user',
+                'plan': user[5] or 'free'
+            }
+        else:
+            # New user - create account
+            c.execute("""
+                INSERT INTO users (email, password_hash, name, company, role, plan, created_at, last_login)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                email,
+                'google_oauth',  # No password for Google users
+                name,
+                '',  # No company yet
+                'user',
+                'free',
+                datetime.utcnow().isoformat(),
+                datetime.utcnow().isoformat()
+            ))
+            conn.commit()
+
+            user_id = c.lastrowid
+
+            # Also capture as lead
             try:
-                handle_new_signup(str(user_id), email, name, 'google_signup')
-                print(f"📧 Welcome series started for Google user {email}")
-            except Exception as e:
-                print(f"⚠️ Failed to start welcome series: {e}")
-        
-        user_data = {
-            'id': user_id,
-            'email': email,
-            'name': name,
-            'company': '',
-            'role': 'user',
-            'plan': 'free'
-        }
-    
-    conn.close()
+                c.execute("""
+                    INSERT INTO leads (email, name, source, source_detail, lead_score, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """, (email, name, 'google_signup', 'google_oauth_registration', 30, datetime.utcnow().isoformat()))
+                conn.commit()
+            except:
+                pass
+
+            # Start welcome email series for new Google users
+            if EMAIL_SERVICE_AVAILABLE:
+                try:
+                    handle_new_signup(str(user_id), email, name, 'google_signup')
+                    print(f"📧 Welcome series started for Google user {email}")
+                except Exception as e:
+                    print(f"⚠️ Failed to start welcome series: {e}")
+
+            user_data = {
+                'id': user_id,
+                'email': email,
+                'name': name,
+                'company': '',
+                'role': 'user',
+                'plan': 'free'
+            }
+
+    finally:
+        conn.close()
     
     token = generate_jwt(user_data['id'], email, user_data['role'])
     
@@ -825,15 +843,17 @@ def google_auth():
 def get_current_user():
     """Get current authenticated user"""
     conn = get_db()
-    c = conn.cursor()
-    
-    c.execute("""
-        SELECT id, email, name, company, role, plan, saved_searches, saved_markets, preferences, created_at
-        FROM users WHERE id = ?
-    """, (request.user['user_id'],))
-    
-    user = c.fetchone()
-    conn.close()
+    try:
+        c = conn.cursor()
+
+        c.execute("""
+            SELECT id, email, name, company, role, plan, saved_searches, saved_markets, preferences, created_at
+            FROM users WHERE id = %s
+        """, (request.user['user_id'],))
+
+        user = c.fetchone()
+    finally:
+        conn.close()
     
     if not user:
         return jsonify({'error': 'User not found'}), 404
@@ -861,33 +881,35 @@ def update_user():
     data = request.get_json()
     
     conn = get_db()
-    c = conn.cursor()
-    
-    updates = []
-    params = []
-    
-    if 'name' in data:
-        updates.append('name = ?')
-        params.append(data['name'])
-    if 'company' in data:
-        updates.append('company = ?')
-        params.append(data['company'])
-    if 'preferences' in data:
-        updates.append('preferences = ?')
-        params.append(json.dumps(data['preferences']))
-    if 'saved_searches' in data:
-        updates.append('saved_searches = ?')
-        params.append(json.dumps(data['saved_searches']))
-    if 'saved_markets' in data:
-        updates.append('saved_markets = ?')
-        params.append(json.dumps(data['saved_markets']))
-    
-    if updates:
-        params.append(request.user['user_id'])
-        c.execute(f"UPDATE users SET {', '.join(updates)} WHERE id = ?", params)
-        conn.commit()
-    
-    conn.close()
+    try:
+        c = conn.cursor()
+
+        updates = []
+        params = []
+
+        if 'name' in data:
+            updates.append('name = %s')
+            params.append(data['name'])
+        if 'company' in data:
+            updates.append('company = %s')
+            params.append(data['company'])
+        if 'preferences' in data:
+            updates.append('preferences = %s')
+            params.append(json.dumps(data['preferences']))
+        if 'saved_searches' in data:
+            updates.append('saved_searches = %s')
+            params.append(json.dumps(data['saved_searches']))
+        if 'saved_markets' in data:
+            updates.append('saved_markets = %s')
+            params.append(json.dumps(data['saved_markets']))
+
+        if updates:
+            params.append(request.user['user_id'])
+            c.execute(f"UPDATE users SET {', '.join(updates)} WHERE id = %s", params)
+            conn.commit()
+
+    finally:
+        conn.close()
     
     return jsonify({'success': True, 'message': 'Profile updated'})
 
@@ -951,8 +973,8 @@ def create_checkout_session():
                 'quantity': 1,
             }],
             mode='subscription',
-            success_url=f'https://dchub.cloud/dashboard.html?payment=success&plan={plan}',
-            cancel_url='https://dchub.cloud/dashboard.html?payment=cancelled',
+            success_url=f'https://dchub.cloud/dashboard.html%spayment=success&plan={plan}',
+            cancel_url='https://dchub.cloud/dashboard.html%spayment=cancelled',
             metadata={
                 'user_id': str(request.user.get('user_id', '')),
                 'plan': plan
@@ -1027,18 +1049,20 @@ def handle_checkout_completed(session):
     plan_name = 'pro' if plan in ['pro_monthly', 'pro_annual'] else 'founding'
     
     conn = get_db()
-    c = conn.cursor()
-    
-    # Try to find user by ID first, then by email
-    if user_id:
-        c.execute("UPDATE users SET plan = ?, stripe_customer_id = ? WHERE id = ?",
-                  (plan_name, session.get('customer', ''), user_id))
-    elif customer_email:
-        c.execute("UPDATE users SET plan = ?, stripe_customer_id = ? WHERE email = ?",
-                  (plan_name, session.get('customer', ''), customer_email))
-    
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+
+        # Try to find user by ID first, then by email
+        if user_id:
+            c.execute("UPDATE users SET plan = %s, stripe_customer_id = %s WHERE id = %s",
+                      (plan_name, session.get('customer', ''), user_id))
+        elif customer_email:
+            c.execute("UPDATE users SET plan = %s, stripe_customer_id = %s WHERE email = %s",
+                      (plan_name, session.get('customer', ''), customer_email))
+
+        conn.commit()
+    finally:
+        conn.close()
     
     print(f"✅ User upgraded to {plan_name}: {customer_email or user_id}")
 
@@ -1049,11 +1073,13 @@ def handle_subscription_created(subscription):
     
     if status == 'active':
         conn = get_db()
-        c = conn.cursor()
-        c.execute("UPDATE users SET plan = 'pro', subscription_status = ? WHERE stripe_customer_id = ?",
-                  (status, customer_id))
-        conn.commit()
-        conn.close()
+        try:
+            c = conn.cursor()
+            c.execute("UPDATE users SET plan = 'pro', subscription_status = %s WHERE stripe_customer_id = %s",
+                      (status, customer_id))
+            conn.commit()
+        finally:
+            conn.close()
         print(f"✅ Subscription activated for customer: {customer_id}")
 
 def handle_subscription_updated(subscription):
@@ -1062,20 +1088,22 @@ def handle_subscription_updated(subscription):
     status = subscription.get('status', '')
     
     conn = get_db()
-    c = conn.cursor()
-    
-    if status in ['active', 'trialing']:
-        c.execute("UPDATE users SET subscription_status = ? WHERE stripe_customer_id = ?",
-                  (status, customer_id))
-    elif status in ['past_due', 'unpaid']:
-        c.execute("UPDATE users SET subscription_status = ? WHERE stripe_customer_id = ?",
-                  (status, customer_id))
-    elif status == 'canceled':
-        c.execute("UPDATE users SET plan = 'free', subscription_status = ? WHERE stripe_customer_id = ?",
-                  (status, customer_id))
-    
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+
+        if status in ['active', 'trialing']:
+            c.execute("UPDATE users SET subscription_status = %s WHERE stripe_customer_id = %s",
+                      (status, customer_id))
+        elif status in ['past_due', 'unpaid']:
+            c.execute("UPDATE users SET subscription_status = %s WHERE stripe_customer_id = %s",
+                      (status, customer_id))
+        elif status == 'canceled':
+            c.execute("UPDATE users SET plan = 'free', subscription_status = %s WHERE stripe_customer_id = %s",
+                      (status, customer_id))
+
+        conn.commit()
+    finally:
+        conn.close()
     print(f"📝 Subscription updated for customer {customer_id}: {status}")
 
 def handle_subscription_deleted(subscription):
@@ -1083,11 +1111,13 @@ def handle_subscription_deleted(subscription):
     customer_id = subscription.get('customer', '')
     
     conn = get_db()
-    c = conn.cursor()
-    c.execute("UPDATE users SET plan = 'free', subscription_status = 'canceled' WHERE stripe_customer_id = ?",
-              (customer_id,))
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+        c.execute("UPDATE users SET plan = 'free', subscription_status = 'canceled' WHERE stripe_customer_id = %s",
+                  (customer_id,))
+        conn.commit()
+    finally:
+        conn.close()
     print(f"❌ Subscription canceled for customer: {customer_id}")
 
 def handle_invoice_paid(invoice):
@@ -1100,11 +1130,13 @@ def handle_payment_failed(invoice):
     customer_id = invoice.get('customer', '')
     
     conn = get_db()
-    c = conn.cursor()
-    c.execute("UPDATE users SET subscription_status = 'payment_failed' WHERE stripe_customer_id = ?",
-              (customer_id,))
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+        c.execute("UPDATE users SET subscription_status = 'payment_failed' WHERE stripe_customer_id = %s",
+                  (customer_id,))
+        conn.commit()
+    finally:
+        conn.close()
     print(f"⚠️ Payment failed for customer: {customer_id}")
 
 @app.route('/api/stripe/subscription', methods=['GET'])
@@ -1112,15 +1144,17 @@ def handle_payment_failed(invoice):
 def get_subscription_status():
     """Get current user's subscription status"""
     conn = get_db()
-    c = conn.cursor()
-    
-    c.execute("""
-        SELECT plan, stripe_customer_id, subscription_status 
-        FROM users WHERE id = ?
-    """, (request.user['user_id'],))
-    
-    user = c.fetchone()
-    conn.close()
+    try:
+        c = conn.cursor()
+
+        c.execute("""
+            SELECT plan, stripe_customer_id, subscription_status
+            FROM users WHERE id = %s
+        """, (request.user['user_id'],))
+
+        user = c.fetchone()
+    finally:
+        conn.close()
     
     if not user:
         return jsonify({'error': 'User not found'}), 404
@@ -1168,10 +1202,12 @@ def create_portal_session():
         return jsonify({'error': 'Stripe not configured'}), 503
     
     conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT stripe_customer_id FROM users WHERE id = ?", (request.user['user_id'],))
-    user = c.fetchone()
-    conn.close()
+    try:
+        c = conn.cursor()
+        c.execute("SELECT stripe_customer_id FROM users WHERE id = %s", (request.user['user_id'],))
+        user = c.fetchone()
+    finally:
+        conn.close()
     
     if not user or not user[0]:
         return jsonify({'error': 'No subscription found'}), 404
@@ -1194,45 +1230,47 @@ def create_portal_session():
 def list_markets():
     """List all available markets with basic stats"""
     conn = get_db()
-    c = conn.cursor()
-    
-    markets = []
-    
-    for market_key, cities in MARKET_ALIASES.items():
-        # Skip state-level aliases
-        if len(market_key) <= 2 or market_key in ['la', 'sf', 'nj', 'nyc', 'dfw', 'nova']:
-            continue
-        
-        # Build city conditions
-        conditions = []
-        params = []
-        for city in cities:
-            if len(city) == 2 and city.isupper():
-                conditions.append('state = ?')
-            else:
-                conditions.append('city LIKE ?')
-            params.append(f'%{city}%' if len(city) > 2 else city)
-        
-        where_clause = ' OR '.join(conditions)
-        
-        c.execute(f"""
-            SELECT COUNT(*) as count, COALESCE(SUM(power_mw), 0) as total_power
-            FROM facilities 
-            WHERE ({where_clause})
-            {RAILWAY_EXCLUSION}
-        """, params)
-        
-        row = c.fetchone()
-        if row and row[0] > 0:
-            markets.append({
-                'id': market_key,
-                'name': market_key.replace('_', ' ').title(),
-                'cities': cities[:5],  # Top 5 cities
-                'facility_count': row[0],
-                'total_power_mw': round(row[1], 1)
-            })
-    
-    conn.close()
+    try:
+        c = conn.cursor()
+
+        markets = []
+
+        for market_key, cities in MARKET_ALIASES.items():
+            # Skip state-level aliases
+            if len(market_key) <= 2 or market_key in ['la', 'sf', 'nj', 'nyc', 'dfw', 'nova']:
+                continue
+
+            # Build city conditions
+            conditions = []
+            params = []
+            for city in cities:
+                if len(city) == 2 and city.isupper():
+                    conditions.append('state = ?')
+                else:
+                    conditions.append('city LIKE ?')
+                params.append(f'%{city}%' if len(city) > 2 else city)
+
+            where_clause = ' OR '.join(conditions)
+
+            c.execute(f"""
+                SELECT COUNT(*) as count, COALESCE(SUM(power_mw), 0) as total_power
+                FROM facilities
+                WHERE ({where_clause})
+                {RAILWAY_EXCLUSION}
+            """, params)
+
+            row = c.fetchone()
+            if row and row[0] > 0:
+                markets.append({
+                    'id': market_key,
+                    'name': market_key.replace('_', ' ').title(),
+                    'cities': cities[:5],  # Top 5 cities
+                    'facility_count': row[0],
+                    'total_power_mw': round(row[1], 1)
+                })
+
+    finally:
+        conn.close()
     
     # Sort by facility count
     markets.sort(key=lambda x: x['facility_count'], reverse=True)
@@ -1254,72 +1292,74 @@ def get_market_stats(market):
     cities = MARKET_ALIASES[market_lower]
     
     conn = get_db()
-    c = conn.cursor()
-    
-    # Build city conditions
-    conditions = []
-    params = []
-    for city in cities:
-        if len(city) == 2 and city.isupper():
-            conditions.append('state = ?')
-            params.append(city)
-        else:
-            conditions.append('city LIKE ?')
-            params.append(f'%{city}%')
-    
-    where_clause = ' OR '.join(conditions)
-    
-    # Get overall stats
-    c.execute(f"""
-        SELECT 
-            COUNT(*) as facility_count,
-            COALESCE(SUM(power_mw), 0) as total_power,
-            COALESCE(AVG(power_mw), 0) as avg_power,
-            COUNT(DISTINCT provider) as provider_count
-        FROM facilities 
-        WHERE ({where_clause})
-        {RAILWAY_EXCLUSION}
-    """, params)
-    
-    stats = dict(c.fetchone())
-    
-    # Top providers
-    c.execute(f"""
-        SELECT provider, COUNT(*) as count, COALESCE(SUM(power_mw), 0) as power
-        FROM facilities 
-        WHERE ({where_clause}) AND provider != ''
-        {RAILWAY_EXCLUSION}
-        GROUP BY provider
-        ORDER BY count DESC
-        LIMIT 10
-    """, params)
-    
-    top_providers = [{'name': r[0], 'facilities': r[1], 'power_mw': round(r[2], 1)} for r in c.fetchall()]
-    
-    # By status
-    c.execute(f"""
-        SELECT status, COUNT(*) as count
-        FROM facilities 
-        WHERE ({where_clause})
-        {RAILWAY_EXCLUSION}
-        GROUP BY status
-    """, params)
-    
-    by_status = dict(c.fetchall())
-    
-    # Recent facilities
-    c.execute(f"""
-        SELECT id, name, provider, city, power_mw, status, first_seen
-        FROM facilities 
-        WHERE ({where_clause})
-        {RAILWAY_EXCLUSION}
-        ORDER BY first_seen DESC
-        LIMIT 5
-    """, params)
-    
-    recent = [dict(r) for r in c.fetchall()]
-    
-    conn.close()
+    try:
+        c = conn.cursor()
+
+        # Build city conditions
+        conditions = []
+        params = []
+        for city in cities:
+            if len(city) == 2 and city.isupper():
+                conditions.append('state = %s')
+                params.append(city)
+            else:
+                conditions.append('city LIKE %s')
+                params.append(f'%{city}%')
+
+        where_clause = ' OR '.join(conditions)
+
+        # Get overall stats
+        c.execute(f"""
+            SELECT
+                COUNT(*) as facility_count,
+                COALESCE(SUM(power_mw), 0) as total_power,
+                COALESCE(AVG(power_mw), 0) as avg_power,
+                COUNT(DISTINCT provider) as provider_count
+            FROM facilities
+            WHERE ({where_clause})
+            {RAILWAY_EXCLUSION}
+        """, params)
+
+        stats = dict(c.fetchone())
+
+        # Top providers
+        c.execute(f"""
+            SELECT provider, COUNT(*) as count, COALESCE(SUM(power_mw), 0) as power
+            FROM facilities
+            WHERE ({where_clause}) AND provider != ''
+            {RAILWAY_EXCLUSION}
+            GROUP BY provider
+            ORDER BY count DESC
+            LIMIT 10
+        """, params)
+
+        top_providers = [{'name': r[0], 'facilities': r[1], 'power_mw': round(r[2], 1)} for r in c.fetchall()]
+
+        # By status
+        c.execute(f"""
+            SELECT status, COUNT(*) as count
+            FROM facilities
+            WHERE ({where_clause})
+            {RAILWAY_EXCLUSION}
+            GROUP BY status
+        """, params)
+
+        by_status = dict(c.fetchall())
+
+        # Recent facilities
+        c.execute(f"""
+            SELECT id, name, provider, city, power_mw, status, first_seen
+            FROM facilities
+            WHERE ({where_clause})
+            {RAILWAY_EXCLUSION}
+            ORDER BY first_seen DESC
+            LIMIT 5
+        """, params)
+
+        recent = [dict(r) for r in c.fetchall()]
+
+    finally:
+        conn.close()
     
     return jsonify({
         'success': True,
@@ -1362,71 +1402,73 @@ def compare_markets():
         }), 404
     
     conn = get_db()
-    c = conn.cursor()
-    
-    comparison = []
-    
-    for market in market_list:
-        cities = MARKET_ALIASES[market]
-        
-        conditions = []
-        params = []
-        for city in cities:
-            if len(city) == 2 and city.isupper():
-                conditions.append('state = ?')
-                params.append(city)
-            else:
-                conditions.append('city LIKE ?')
-                params.append(f'%{city}%')
-        
-        where_clause = ' OR '.join(conditions)
-        
-        # Get comprehensive stats
-        c.execute(f"""
-            SELECT 
-                COUNT(*) as facility_count,
-                COALESCE(SUM(power_mw), 0) as total_power,
-                COALESCE(AVG(power_mw), 0) as avg_power,
-                COALESCE(MAX(power_mw), 0) as max_power,
-                COUNT(DISTINCT provider) as provider_count,
-                SUM(CASE WHEN status = 'operational' THEN 1 ELSE 0 END) as operational,
-                SUM(CASE WHEN status = 'planned' OR status = 'under_construction' THEN 1 ELSE 0 END) as pipeline
-            FROM facilities 
-            WHERE ({where_clause})
-            {RAILWAY_EXCLUSION}
-        """, params)
-        
-        stats = dict(c.fetchone())
-        
-        # Top 5 providers
-        c.execute(f"""
-            SELECT provider, COUNT(*) as count
-            FROM facilities 
-            WHERE ({where_clause}) AND provider != ''
-            {RAILWAY_EXCLUSION}
-            GROUP BY provider
-            ORDER BY count DESC
-            LIMIT 5
-        """, params)
-        
-        top_providers = [r[0] for r in c.fetchall()]
-        
-        comparison.append({
-            'market': market,
-            'display_name': market.replace('_', ' ').title(),
-            'metrics': {
-                'facilities': stats['facility_count'],
-                'total_power_mw': round(stats['total_power'], 1),
-                'avg_power_mw': round(stats['avg_power'], 1),
-                'max_power_mw': round(stats['max_power'], 1),
-                'providers': stats['provider_count'],
-                'operational': stats['operational'] or 0,
-                'pipeline': stats['pipeline'] or 0
-            },
-            'top_providers': top_providers
-        })
-    
-    conn.close()
+    try:
+        c = conn.cursor()
+
+        comparison = []
+
+        for market in market_list:
+            cities = MARKET_ALIASES[market]
+
+            conditions = []
+            params = []
+            for city in cities:
+                if len(city) == 2 and city.isupper():
+                    conditions.append('state = ?')
+                    params.append(city)
+                else:
+                    conditions.append('city LIKE ?')
+                    params.append(f'%{city}%')
+
+            where_clause = ' OR '.join(conditions)
+
+            # Get comprehensive stats
+            c.execute(f"""
+                SELECT
+                    COUNT(*) as facility_count,
+                    COALESCE(SUM(power_mw), 0) as total_power,
+                    COALESCE(AVG(power_mw), 0) as avg_power,
+                    COALESCE(MAX(power_mw), 0) as max_power,
+                    COUNT(DISTINCT provider) as provider_count,
+                    SUM(CASE WHEN status = 'operational' THEN 1 ELSE 0 END) as operational,
+                    SUM(CASE WHEN status = 'planned' OR status = 'under_construction' THEN 1 ELSE 0 END) as pipeline
+                FROM facilities
+                WHERE ({where_clause})
+                {RAILWAY_EXCLUSION}
+            """, params)
+
+            stats = dict(c.fetchone())
+
+            # Top 5 providers
+            c.execute(f"""
+                SELECT provider, COUNT(*) as count
+                FROM facilities
+                WHERE ({where_clause}) AND provider != ''
+                {RAILWAY_EXCLUSION}
+                GROUP BY provider
+                ORDER BY count DESC
+                LIMIT 5
+            """, params)
+
+            top_providers = [r[0] for r in c.fetchall()]
+
+            comparison.append({
+                'market': market,
+                'display_name': market.replace('_', ' ').title(),
+                'metrics': {
+                    'facilities': stats['facility_count'],
+                    'total_power_mw': round(stats['total_power'], 1),
+                    'avg_power_mw': round(stats['avg_power'], 1),
+                    'max_power_mw': round(stats['max_power'], 1),
+                    'providers': stats['provider_count'],
+                    'operational': stats['operational'] or 0,
+                    'pipeline': stats['pipeline'] or 0
+                },
+                'top_providers': top_providers
+            })
+
+    finally:
+        conn.close()
     
     return jsonify({
         'success': True,
@@ -1464,19 +1506,21 @@ def generate_report():
     if email:
         try:
             conn = get_db()
-            c = conn.cursor()
-            c.execute("SELECT id FROM leads WHERE email = ?", (email,))
-            if not c.fetchone():
-                lead_id = secrets.token_hex(8)
-                c.execute("""
-                    INSERT INTO leads (id, email, source, source_detail, lead_score, created_at, last_activity)
-                    VALUES (?, ?, 'pdf_report', ?, 25, ?, ?)
-                """, (lead_id, email, json.dumps(markets), datetime.utcnow().isoformat(), datetime.utcnow().isoformat()))
-            else:
-                c.execute("UPDATE leads SET lead_score = lead_score + 25, last_activity = ? WHERE email = ?",
-                         (datetime.utcnow().isoformat(), email))
-            conn.commit()
-            conn.close()
+            try:
+                c = conn.cursor()
+                c.execute("SELECT id FROM leads WHERE email = %s", (email,))
+                if not c.fetchone():
+                    lead_id = secrets.token_hex(8)
+                    c.execute("""
+                        INSERT INTO leads (id, email, source, source_detail, lead_score, created_at, last_activity)
+                        VALUES (%s, %s, 'pdf_report', %s, 25, %s, %s)
+                    """, (lead_id, email, json.dumps(markets), datetime.utcnow().isoformat(), datetime.utcnow().isoformat()))
+                else:
+                    c.execute("UPDATE leads SET lead_score = lead_score + 25, last_activity = %s WHERE email = %s",
+                             (datetime.utcnow().isoformat(), email))
+                conn.commit()
+            finally:
+                conn.close()
         except:
             pass
     
@@ -1491,7 +1535,7 @@ def generate_report():
         c = conn.cursor()
         c.execute("""
             INSERT INTO reports (id, user_id, email, report_type, markets, status, created_at, completed_at)
-            VALUES (?, ?, ?, ?, ?, 'completed', ?, ?)
+            VALUES (%s, %s, %s, %s, %s, 'completed', %s, %s)
         """, (
             report_id,
             request.user['user_id'] if request.user else None,
@@ -1558,105 +1602,107 @@ def generate_market_pdf(markets, report_type):
     elements.append(Spacer(1, 20))
     
     conn = get_db()
-    c = conn.cursor()
-    
-    for market in markets:
-        market_lower = market.lower().replace('-', ' ')
-        if market_lower not in MARKET_ALIASES:
-            continue
-            
-        cities = MARKET_ALIASES[market_lower]
-        
-        elements.append(Paragraph(f"📍 {market.title()} Market", heading_style))
-        
-        # Build query
-        conditions = []
-        params = []
-        for city in cities:
-            if len(city) == 2 and city.isupper():
-                conditions.append('state = ?')
-                params.append(city)
-            else:
-                conditions.append('city LIKE ?')
-                params.append(f'%{city}%')
-        
-        where_clause = ' OR '.join(conditions)
-        
-        # Get stats
-        c.execute(f"""
-            SELECT 
-                COUNT(*) as facility_count,
-                COALESCE(SUM(power_mw), 0) as total_power,
-                COALESCE(AVG(power_mw), 0) as avg_power,
-                COUNT(DISTINCT provider) as provider_count
-            FROM facilities 
-            WHERE ({where_clause})
-            {RAILWAY_EXCLUSION}
-        """, params)
-        
-        stats = c.fetchone()
-        
-        # Stats table
-        stats_data = [
-            ['Metric', 'Value'],
-            ['Total Facilities', str(stats[0])],
-            ['Total Power Capacity', f"{stats[1]:,.1f} MW"],
-            ['Average Facility Size', f"{stats[2]:,.1f} MW"],
-            ['Active Providers', str(stats[3])]
-        ]
-        
-        stats_table = Table(stats_data, colWidths=[2.5*inch, 2*inch])
-        stats_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#6366f1')),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, -1), 10),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#f8fafc')),
-            ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#e2e8f0'))
-        ]))
-        
-        elements.append(stats_table)
-        elements.append(Spacer(1, 15))
-        
-        # Top providers
-        c.execute(f"""
-            SELECT provider, COUNT(*) as count, COALESCE(SUM(power_mw), 0) as power
-            FROM facilities 
-            WHERE ({where_clause}) AND provider != ''
-            {RAILWAY_EXCLUSION}
-            GROUP BY provider
-            ORDER BY count DESC
-            LIMIT 5
-        """, params)
-        
-        providers = c.fetchall()
-        if providers:
-            elements.append(Paragraph("Top Providers", heading_style))
-            
-            provider_data = [['Provider', 'Facilities', 'Total Power']]
-            for p in providers:
-                provider_data.append([p[0][:30], str(p[1]), f"{p[2]:,.1f} MW"])
-            
-            provider_table = Table(provider_data, colWidths=[2.5*inch, 1*inch, 1.5*inch])
-            provider_table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#10b981')),
+    try:
+        c = conn.cursor()
+
+        for market in markets:
+            market_lower = market.lower().replace('-', ' ')
+            if market_lower not in MARKET_ALIASES:
+                continue
+
+            cities = MARKET_ALIASES[market_lower]
+
+            elements.append(Paragraph(f"📍 {market.title()} Market", heading_style))
+
+            # Build query
+            conditions = []
+            params = []
+            for city in cities:
+                if len(city) == 2 and city.isupper():
+                    conditions.append('state = ?')
+                    params.append(city)
+                else:
+                    conditions.append('city LIKE ?')
+                    params.append(f'%{city}%')
+
+            where_clause = ' OR '.join(conditions)
+
+            # Get stats
+            c.execute(f"""
+                SELECT
+                    COUNT(*) as facility_count,
+                    COALESCE(SUM(power_mw), 0) as total_power,
+                    COALESCE(AVG(power_mw), 0) as avg_power,
+                    COUNT(DISTINCT provider) as provider_count
+                FROM facilities
+                WHERE ({where_clause})
+                {RAILWAY_EXCLUSION}
+            """, params)
+
+            stats = c.fetchone()
+
+            # Stats table
+            stats_data = [
+                ['Metric', 'Value'],
+                ['Total Facilities', str(stats[0])],
+                ['Total Power Capacity', f"{stats[1]:,.1f} MW"],
+                ['Average Facility Size', f"{stats[2]:,.1f} MW"],
+                ['Active Providers', str(stats[3])]
+            ]
+
+            stats_table = Table(stats_data, colWidths=[2.5*inch, 2*inch])
+            stats_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#6366f1')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
                 ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                ('ALIGN', (1, 0), (2, -1), 'RIGHT'),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, -1), 9),
-                ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
-                ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+                ('FONTSIZE', (0, 0), (-1, -1), 10),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#f8fafc')),
                 ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#e2e8f0'))
             ]))
-            
-            elements.append(provider_table)
-        
-        elements.append(Spacer(1, 30))
-    
-    conn.close()
+
+            elements.append(stats_table)
+            elements.append(Spacer(1, 15))
+
+            # Top providers
+            c.execute(f"""
+                SELECT provider, COUNT(*) as count, COALESCE(SUM(power_mw), 0) as power
+                FROM facilities
+                WHERE ({where_clause}) AND provider != ''
+                {RAILWAY_EXCLUSION}
+                GROUP BY provider
+                ORDER BY count DESC
+                LIMIT 5
+            """, params)
+
+            providers = c.fetchall()
+            if providers:
+                elements.append(Paragraph("Top Providers", heading_style))
+
+                provider_data = [['Provider', 'Facilities', 'Total Power']]
+                for p in providers:
+                    provider_data.append([p[0][:30], str(p[1]), f"{p[2]:,.1f} MW"])
+
+                provider_table = Table(provider_data, colWidths=[2.5*inch, 1*inch, 1.5*inch])
+                provider_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#10b981')),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                    ('ALIGN', (1, 0), (2, -1), 'RIGHT'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, -1), 9),
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
+                    ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#e2e8f0'))
+                ]))
+
+                elements.append(provider_table)
+
+            elements.append(Spacer(1, 30))
+
+    finally:
+        conn.close()
     
     # Footer
     elements.append(Spacer(1, 20))
@@ -1675,47 +1721,49 @@ def generate_market_pdf(markets, report_type):
 def get_stats():
     """Get aggregate statistics"""
     conn = get_db()
-    c = conn.cursor()
-    
-    stats = {}
-    
-    c.execute("SELECT COUNT(*) FROM facilities")
-    stats['total_facilities'] = c.fetchone()[0]
-    
-    c.execute("SELECT COALESCE(SUM(power_mw), 0) FROM facilities")
-    stats['total_power_mw'] = round(c.fetchone()[0], 1)
-    
-    c.execute("SELECT COUNT(*) FROM announcements")
-    stats['total_announcements'] = c.fetchone()[0]
-    
-    c.execute("SELECT source, COUNT(*) FROM facilities GROUP BY source ORDER BY COUNT(*) DESC")
-    stats['by_source'] = dict(c.fetchall())
-    
-    c.execute("SELECT country, COUNT(*) FROM facilities WHERE country != '' GROUP BY country ORDER BY COUNT(*) DESC LIMIT 10")
-    stats['top_countries'] = dict(c.fetchall())
-    
-    c.execute(f"""
-        SELECT provider, COUNT(*) FROM facilities 
-        WHERE provider != '' 
-        {RAILWAY_EXCLUSION}
-        GROUP BY provider ORDER BY COUNT(*) DESC LIMIT 10
-    """)
-    stats['top_providers'] = dict(c.fetchall())
-    
-    c.execute("SELECT status, COUNT(*) FROM facilities GROUP BY status")
-    stats['by_status'] = dict(c.fetchall())
-    
-    c.execute("SELECT COUNT(*) FROM facilities WHERE first_seen > datetime('now', '-7 days')")
-    stats['new_last_7_days'] = c.fetchone()[0]
-    
-    # New: Lead stats
-    c.execute("SELECT COUNT(*) FROM leads")
-    stats['total_leads'] = c.fetchone()[0]
-    
-    c.execute("SELECT COUNT(*) FROM users")
-    stats['total_users'] = c.fetchone()[0]
-    
-    conn.close()
+    try:
+        c = conn.cursor()
+
+        stats = {}
+
+        c.execute("SELECT COUNT(*) FROM facilities")
+        stats['total_facilities'] = c.fetchone()[0]
+
+        c.execute("SELECT COALESCE(SUM(power_mw), 0) FROM facilities")
+        stats['total_power_mw'] = round(c.fetchone()[0], 1)
+
+        c.execute("SELECT COUNT(*) FROM announcements")
+        stats['total_announcements'] = c.fetchone()[0]
+
+        c.execute("SELECT source, COUNT(*) FROM facilities GROUP BY source ORDER BY COUNT(*) DESC")
+        stats['by_source'] = dict(c.fetchall())
+
+        c.execute("SELECT country, COUNT(*) FROM facilities WHERE country != '' GROUP BY country ORDER BY COUNT(*) DESC LIMIT 10")
+        stats['top_countries'] = dict(c.fetchall())
+
+        c.execute(f"""
+            SELECT provider, COUNT(*) FROM facilities
+            WHERE provider != ''
+            {RAILWAY_EXCLUSION}
+            GROUP BY provider ORDER BY COUNT(*) DESC LIMIT 10
+        """)
+        stats['top_providers'] = dict(c.fetchall())
+
+        c.execute("SELECT status, COUNT(*) FROM facilities GROUP BY status")
+        stats['by_status'] = dict(c.fetchall())
+
+        c.execute("SELECT COUNT(*) FROM facilities WHERE first_seen > datetime('now', '-7 days')")
+        stats['new_last_7_days'] = c.fetchone()[0]
+
+        # New: Lead stats
+        c.execute("SELECT COUNT(*) FROM leads")
+        stats['total_leads'] = c.fetchone()[0]
+
+        c.execute("SELECT COUNT(*) FROM users")
+        stats['total_users'] = c.fetchone()[0]
+
+    finally:
+        conn.close()
     
     return jsonify({
         'success': True,
@@ -1757,49 +1805,51 @@ def list_facilities():
                     params.append(f'%{city}%')
             search_clause = f" AND ({' OR '.join(conditions)})"
         else:
-            search_clause = " AND (city LIKE ? OR state LIKE ? OR name LIKE ? OR provider LIKE ?)"
+            search_clause = " AND (city LIKE %s OR state LIKE %s OR name LIKE %s OR provider LIKE %s)"
             params.extend([f'%{q}%', f'%{q}%', f'%{q}%', f'%{q}%'])
         
         sql += search_clause
         count_sql += search_clause
     
     if country:
-        sql += " AND country = ?"
-        count_sql += " AND country = ?"
+        sql += " AND country = %s"
+        count_sql += " AND country = %s"
         params.append(country)
     if provider:
-        sql += " AND provider LIKE ?"
-        count_sql += " AND provider LIKE ?"
+        sql += " AND provider LIKE %s"
+        count_sql += " AND provider LIKE %s"
         params.append(f"%{provider}%")
     if status:
-        sql += " AND status = ?"
-        count_sql += " AND status = ?"
+        sql += " AND status = %s"
+        count_sql += " AND status = %s"
         params.append(status)
     if region:
-        sql += " AND region = ?"
-        count_sql += " AND region = ?"
+        sql += " AND region = %s"
+        count_sql += " AND region = %s"
         params.append(region)
     if min_power:
-        sql += " AND power_mw >= ?"
-        count_sql += " AND power_mw >= ?"
+        sql += " AND power_mw >= %s"
+        count_sql += " AND power_mw >= %s"
         params.append(min_power)
     if source:
-        sql += " AND source = ?"
-        count_sql += " AND source = ?"
+        sql += " AND source = %s"
+        count_sql += " AND source = %s"
         params.append(source)
     
     sql += f" ORDER BY confidence DESC, power_mw DESC LIMIT {limit} OFFSET {offset}"
     
     conn = get_db()
-    c = conn.cursor()
-    
-    c.execute(count_sql, params)
-    total = c.fetchone()[0]
-    
-    c.execute(sql, params)
-    facilities = [dict_from_row(row) for row in c.fetchall()]
-    
-    conn.close()
+    try:
+        c = conn.cursor()
+
+        c.execute(count_sql, params)
+        total = c.fetchone()[0]
+
+        c.execute(sql, params)
+        facilities = [dict_from_row(row) for row in c.fetchall()]
+
+    finally:
+        conn.close()
     
     return jsonify({
         'success': True,
@@ -1822,43 +1872,45 @@ def search_facilities():
         return jsonify({'error': 'Query must be at least 2 characters'}), 400
     
     conn = get_db()
-    c = conn.cursor()
-    
-    query_lower = query.lower()
-    
-    if query_lower in MARKET_ALIASES:
-        cities = MARKET_ALIASES[query_lower]
-        conditions = []
-        params = []
-        for city in cities:
-            if len(city) == 2 and city.isupper():
-                conditions.append('state = ?')
-                params.append(city)
-            else:
-                conditions.append('city LIKE ?')
-                params.append(f'%{city}%')
-        
-        sql = f"""
-            SELECT * FROM facilities 
-            WHERE ({' OR '.join(conditions)})
-            {RAILWAY_EXCLUSION}
-            ORDER BY confidence DESC, power_mw DESC
-            LIMIT ?
-        """
-        params.append(limit)
-        c.execute(sql, params)
-    else:
-        q = f"%{query}%"
-        c.execute(f"""
-            SELECT * FROM facilities 
-            WHERE (city LIKE ? OR state LIKE ? OR name LIKE ? OR provider LIKE ?)
-            {RAILWAY_EXCLUSION}
-            ORDER BY confidence DESC, power_mw DESC
-            LIMIT ?
-        """, (q, q, q, q, limit))
-    
-    facilities = [dict_from_row(row) for row in c.fetchall()]
-    conn.close()
+    try:
+        c = conn.cursor()
+
+        query_lower = query.lower()
+
+        if query_lower in MARKET_ALIASES:
+            cities = MARKET_ALIASES[query_lower]
+            conditions = []
+            params = []
+            for city in cities:
+                if len(city) == 2 and city.isupper():
+                    conditions.append('state = %s')
+                    params.append(city)
+                else:
+                    conditions.append('city LIKE %s')
+                    params.append(f'%{city}%')
+
+            sql = f"""
+                SELECT * FROM facilities
+                WHERE ({' OR '.join(conditions)})
+                {RAILWAY_EXCLUSION}
+                ORDER BY confidence DESC, power_mw DESC
+                LIMIT %s
+            """
+            params.append(limit)
+            c.execute(sql, params)
+        else:
+            q = f"%{query}%"
+            c.execute(f"""
+                SELECT * FROM facilities
+                WHERE (city LIKE %s OR state LIKE %s OR name LIKE %s OR provider LIKE %s)
+                {RAILWAY_EXCLUSION}
+                ORDER BY confidence DESC, power_mw DESC
+                LIMIT %s
+            """, (q, q, q, q, limit))
+
+        facilities = [dict_from_row(row) for row in c.fetchall()]
+    finally:
+        conn.close()
     
     return jsonify({
         'success': True,
@@ -1893,8 +1945,8 @@ def social_generate():
         region = data.get('region', 'global')
         
         posts = {
-            'market-trends': f"📊 Data Center Market Update | {region.title()}\n\nKey trends we're tracking:\n• AI/ML driving unprecedented demand\n• Power availability constraining growth\n• Sustainability as competitive advantage\n\nWhat trends are you seeing? #DataCenter #Infrastructure",
-            'ai-demand': f"🤖 AI Infrastructure Demand | {region.title()}\n\nGPU clusters requiring 10-50x power density. Liquid cooling becoming standard. New markets emerging around low-cost power.\n\nHow is AI affecting your strategy? #AI #DataCenter",
+            'market-trends': f"📊 Data Center Market Update | {region.title()}\n\nKey trends we're tracking:\n• AI/ML driving unprecedented demand\n• Power availability constraining growth\n• Sustainability as competitive advantage\n\nWhat trends are you seeing%s #DataCenter #Infrastructure",
+            'ai-demand': f"🤖 AI Infrastructure Demand | {region.title()}\n\nGPU clusters requiring 10-50x power density. Liquid cooling becoming standard. New markets emerging around low-cost power.\n\nHow is AI affecting your strategy%s #AI #DataCenter",
             'sustainability': f"🌱 Sustainable Data Centers | {region.title()}\n\nProgress on environmental goals:\n• PUE improvements through innovation\n• Renewable energy commitments\n• Water conservation priorities\n\n#Sustainability #GreenDataCenter"
         }
         
@@ -1913,16 +1965,18 @@ def enrichment_submit():
     
     # Store submission
     conn = get_db()
-    c = conn.cursor()
-    
-    submission_id = secrets.token_hex(8)
-    c.execute("""
-        INSERT OR IGNORE INTO submissions (id, api_key, submission_type, data, status, submitted_at)
-        VALUES (?, 'crowdsource', 'enrichment', ?, 'pending', ?)
-    """, (submission_id, json.dumps(data), datetime.utcnow().isoformat()))
-    
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+
+        submission_id = secrets.token_hex(8)
+        c.execute("""
+            INSERT INTO submissions (id, api_key, submission_type, data, status, submitted_at)
+            VALUES (%s, 'crowdsource', 'enrichment', %s, 'pending', %s)
+        """, (submission_id, json.dumps(data), datetime.utcnow().isoformat()))
+
+        conn.commit()
+    finally:
+        conn.close()
     
     return jsonify({
         'success': True,
@@ -1938,7 +1992,7 @@ def sales_chat():
         return sc()
     except Exception as e:
         return jsonify({
-            'response': "Thanks for reaching out! I'd be happy to help you explore DC Hub's capabilities. What specific data center markets or features are you interested in?"
+            'response': "Thanks for reaching out! I'd be happy to help you explore DC Hub's capabilities. What specific data center markets or features are you interested in%s"
         })
 
 # =============================================================================
@@ -1957,10 +2011,12 @@ def index():
 @app.route('/health', methods=['GET'])
 def health():
     conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM facilities")
-    count = c.fetchone()[0]
-    conn.close()
+    try:
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM facilities")
+        count = c.fetchone()[0]
+    finally:
+        conn.close()
     
     return jsonify({
         'status': 'healthy',
@@ -2057,68 +2113,70 @@ OPERATOR_WEBSITES = {
 def init_discovery_tables():
     """Initialize discovery tracking tables"""
     conn = get_db()
-    c = conn.cursor()
-    
-    # Discovery runs tracking
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS discovery_runs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source TEXT NOT NULL,
-            started_at TEXT NOT NULL,
-            completed_at TEXT,
-            facilities_found INTEGER DEFAULT 0,
-            facilities_added INTEGER DEFAULT 0,
-            facilities_updated INTEGER DEFAULT 0,
-            facilities_duplicate INTEGER DEFAULT 0,
-            status TEXT DEFAULT 'running',
-            error TEXT,
-            details TEXT
-        )
-    ''')
-    
-    # Discovered facilities (staging before merge)
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS discovered_facilities (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source TEXT NOT NULL,
-            source_id TEXT,
-            name TEXT NOT NULL,
-            provider TEXT,
-            market TEXT,
-            city TEXT,
-            state TEXT,
-            country TEXT,
-            address TEXT,
-            latitude REAL,
-            longitude REAL,
-            power_mw REAL,
-            sqft INTEGER,
-            status TEXT,
-            facility_type TEXT,
-            source_url TEXT,
-            raw_data TEXT,
-            discovered_at TEXT NOT NULL,
-            merged_at TEXT,
-            merged_facility_id INTEGER,
-            is_duplicate INTEGER DEFAULT 0,
-            confidence_score REAL DEFAULT 0.5
-        )
-    ''')
-    
-    # Discovery schedule
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS discovery_schedule (
-            source TEXT PRIMARY KEY,
-            last_run TEXT,
-            next_run TEXT,
-            run_count INTEGER DEFAULT 0,
-            total_found INTEGER DEFAULT 0,
-            total_added INTEGER DEFAULT 0
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+
+        # Discovery runs tracking
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS discovery_runs (
+                id SERIAL PRIMARY KEY,
+                source TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
+                facilities_found INTEGER DEFAULT 0,
+                facilities_added INTEGER DEFAULT 0,
+                facilities_updated INTEGER DEFAULT 0,
+                facilities_duplicate INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'running',
+                error TEXT,
+                details TEXT
+            )
+        ''')
+
+        # Discovered facilities (staging before merge)
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS discovered_facilities (
+                id SERIAL PRIMARY KEY,
+                source TEXT NOT NULL,
+                source_id TEXT,
+                name TEXT NOT NULL,
+                provider TEXT,
+                market TEXT,
+                city TEXT,
+                state TEXT,
+                country TEXT,
+                address TEXT,
+                latitude REAL,
+                longitude REAL,
+                power_mw REAL,
+                sqft INTEGER,
+                status TEXT,
+                facility_type TEXT,
+                source_url TEXT,
+                raw_data TEXT,
+                discovered_at TEXT NOT NULL,
+                merged_at TEXT,
+                merged_facility_id INTEGER,
+                is_duplicate INTEGER DEFAULT 0,
+                confidence_score REAL DEFAULT 0.5
+            )
+        ''')
+
+        # Discovery schedule
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS discovery_schedule (
+                source TEXT PRIMARY KEY,
+                last_run TEXT,
+                next_run TEXT,
+                run_count INTEGER DEFAULT 0,
+                total_found INTEGER DEFAULT 0,
+                total_added INTEGER DEFAULT 0
+            )
+        ''')
+
+        conn.commit()
+    finally:
+        conn.close()
 
 # Initialize tables on module load
 try:
@@ -2151,7 +2209,7 @@ def is_duplicate_facility(conn, name, provider, lat, lon, city):
     c.execute("""
         SELECT id, name, provider, latitude, longitude 
         FROM facilities 
-        WHERE LOWER(name) = LOWER(?) AND LOWER(provider) = LOWER(?)
+        WHERE LOWER(name) = LOWER(%s) AND LOWER(provider) = LOWER(%s)
     """, (name, provider))
     if c.fetchone():
         return True, 'exact_match'
@@ -2161,8 +2219,8 @@ def is_duplicate_facility(conn, name, provider, lat, lon, city):
         c.execute("""
             SELECT id, name, provider, latitude, longitude 
             FROM facilities 
-            WHERE ABS(latitude - ?) < 0.01 AND ABS(longitude - ?) < 0.01
-            AND LOWER(provider) = LOWER(?)
+            WHERE ABS(latitude - %s) < 0.01 AND ABS(longitude - %s) < 0.01
+            AND LOWER(provider) = LOWER(%s)
         """, (lat, lon, provider))
         match = c.fetchone()
         if match:
@@ -2172,7 +2230,7 @@ def is_duplicate_facility(conn, name, provider, lat, lon, city):
     if city:
         c.execute("""
             SELECT id, name, provider FROM facilities 
-            WHERE LOWER(city) = LOWER(?) AND LOWER(provider) = LOWER(?)
+            WHERE LOWER(city) = LOWER(%s) AND LOWER(provider) = LOWER(%s)
         """, (city, provider))
         for row in c.fetchall():
             if calculate_similarity(name, row[1]) > 0.7:
@@ -2613,37 +2671,39 @@ def run_operator_discovery():
         result['found'] = len(discoveries)
         
         conn = get_db()
-        c = conn.cursor()
-        
-        for disc in discoveries:
-            try:
-                # Check if already discovered
-                c.execute("""
-                    SELECT id FROM discovered_facilities 
-                    WHERE source_id = ?
-                """, (disc.get('source_id'),))
-                
-                if c.fetchone():
-                    result['duplicate'] += 1
-                else:
+        try:
+            c = conn.cursor()
+
+            for disc in discoveries:
+                try:
+                    # Check if already discovered
                     c.execute("""
-                        INSERT INTO discovered_facilities 
-                        (source, source_id, name, provider, market, city, state, country, 
-                         power_mw, status, facility_type, discovered_at, is_duplicate)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-                    """, (
-                        disc.get('source'), disc.get('source_id'), disc['name'],
-                        disc.get('provider'), disc.get('market'), disc.get('city'),
-                        disc.get('state'), disc.get('country', 'US'), disc.get('power_mw'),
-                        disc.get('status'), disc.get('facility_type'),
-                        datetime.utcnow().isoformat()
-                    ))
-                    result['added'] += 1
-            except Exception as e:
-                result['errors'].append(str(e))
-        
-        conn.commit()
-        conn.close()
+                        SELECT id FROM discovered_facilities
+                        WHERE source_id = %s
+                    """, (disc.get('source_id'),))
+
+                    if c.fetchone():
+                        result['duplicate'] += 1
+                    else:
+                        c.execute("""
+                            INSERT INTO discovered_facilities
+                            (source, source_id, name, provider, market, city, state, country,
+                             power_mw, status, facility_type, discovered_at, is_duplicate)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0)
+                        """, (
+                            disc.get('source'), disc.get('source_id'), disc['name'],
+                            disc.get('provider'), disc.get('market'), disc.get('city'),
+                            disc.get('state'), disc.get('country', 'US'), disc.get('power_mw'),
+                            disc.get('status'), disc.get('facility_type'),
+                            datetime.utcnow().isoformat()
+                        ))
+                        result['added'] += 1
+                except Exception as e:
+                    result['errors'].append(str(e))
+
+            conn.commit()
+        finally:
+            conn.close()
         
     except Exception as e:
         result['errors'].append(str(e))
@@ -2660,37 +2720,39 @@ def run_peeringdb_discovery():
         
         # Only process first 100 to avoid timeout
         conn = get_db()
-        c = conn.cursor()
-        
-        for disc in discoveries[:100]:
-            try:
-                c.execute("""
-                    SELECT id FROM discovered_facilities 
-                    WHERE source_id = ?
-                """, (disc.get('source_id'),))
-                
-                if c.fetchone():
-                    result['duplicate'] += 1
-                else:
+        try:
+            c = conn.cursor()
+
+            for disc in discoveries[:100]:
+                try:
                     c.execute("""
-                        INSERT INTO discovered_facilities 
-                        (source, source_id, name, provider, market, city, state, country,
-                         latitude, longitude, status, facility_type, discovered_at, is_duplicate)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-                    """, (
-                        disc.get('source'), disc.get('source_id'), disc['name'],
-                        disc.get('provider'), disc.get('market'), disc.get('city'),
-                        disc.get('state'), disc.get('country', 'US'),
-                        disc.get('latitude'), disc.get('longitude'),
-                        disc.get('status'), disc.get('facility_type'),
-                        datetime.utcnow().isoformat()
-                    ))
-                    result['added'] += 1
-            except Exception as e:
-                result['errors'].append(str(e))
-        
-        conn.commit()
-        conn.close()
+                        SELECT id FROM discovered_facilities
+                        WHERE source_id = %s
+                    """, (disc.get('source_id'),))
+
+                    if c.fetchone():
+                        result['duplicate'] += 1
+                    else:
+                        c.execute("""
+                            INSERT INTO discovered_facilities
+                            (source, source_id, name, provider, market, city, state, country,
+                             latitude, longitude, status, facility_type, discovered_at, is_duplicate)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0)
+                        """, (
+                            disc.get('source'), disc.get('source_id'), disc['name'],
+                            disc.get('provider'), disc.get('market'), disc.get('city'),
+                            disc.get('state'), disc.get('country', 'US'),
+                            disc.get('latitude'), disc.get('longitude'),
+                            disc.get('status'), disc.get('facility_type'),
+                            datetime.utcnow().isoformat()
+                        ))
+                        result['added'] += 1
+                except Exception as e:
+                    result['errors'].append(str(e))
+
+            conn.commit()
+        finally:
+            conn.close()
         
     except Exception as e:
         result['errors'].append(str(e))
@@ -2705,7 +2767,7 @@ def process_discovery_source(source_name, discovery_func, conn):
     try:
         c.execute("""
             INSERT INTO discovery_runs (source, started_at, status)
-            VALUES (?, ?, 'running')
+            VALUES (%s, %s, 'running')
         """, (source_name, datetime.utcnow().isoformat()))
         run_id = c.lastrowid
         conn.commit()
@@ -2730,7 +2792,7 @@ def process_discovery_source(source_name, discovery_func, conn):
                 # Check for duplicate in discovered_facilities
                 c.execute("""
                     SELECT id FROM discovered_facilities 
-                    WHERE source = ? AND source_id = ?
+                    WHERE source = %s AND source_id = %s
                 """, (disc.get('source'), disc.get('source_id')))
                 
                 existing = c.fetchone()
@@ -2744,7 +2806,7 @@ def process_discovery_source(source_name, discovery_func, conn):
                         (source, source_id, name, provider, market, city, state, country, 
                          latitude, longitude, power_mw, status, facility_type, source_url, 
                          raw_data, discovered_at, is_duplicate)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0)
                     """, (
                         disc.get('source'), disc.get('source_id'), disc['name'],
                         disc.get('provider'), disc.get('market'), disc.get('city'),
@@ -2765,10 +2827,10 @@ def process_discovery_source(source_name, discovery_func, conn):
             try:
                 c.execute("""
                     UPDATE discovery_runs 
-                    SET completed_at = ?, status = 'completed',
-                        facilities_found = ?, facilities_added = ?, 
-                        facilities_duplicate = ?
-                    WHERE id = ?
+                    SET completed_at = %s, status = 'completed',
+                        facilities_found = %s, facilities_added = %s, 
+                        facilities_duplicate = %s
+                    WHERE id = %s
                 """, (
                     datetime.utcnow().isoformat(), result['found'], 
                     result['added'], result['duplicate'], run_id
@@ -2782,7 +2844,7 @@ def process_discovery_source(source_name, discovery_func, conn):
         if run_id:
             try:
                 c.execute("""
-                    UPDATE discovery_runs SET status = 'error', error = ? WHERE id = ?
+                    UPDATE discovery_runs SET status = 'error', error = %s WHERE id = %s
                 """, (str(e), run_id))
                 conn.commit()
             except:
@@ -2798,48 +2860,50 @@ def discovery_status():
         init_discovery_tables()
         
         conn = get_db()
-        c = conn.cursor()
-        
-        # Get recent runs (with error handling for missing table)
         try:
-            c.execute("""
-                SELECT source, started_at, completed_at, facilities_found, 
-                       facilities_added, facilities_duplicate, status
-                FROM discovery_runs 
-                ORDER BY started_at DESC 
-                LIMIT 20
-            """)
-            recent_runs = [{
-                'source': r[0], 'started_at': r[1], 'completed_at': r[2],
-                'found': r[3], 'added': r[4], 'duplicate': r[5], 'status': r[6]
-            } for r in c.fetchall()]
-        except:
-            recent_runs = []
-        
-        # Get totals
-        c.execute("SELECT COUNT(*) FROM facilities")
-        total_facilities = c.fetchone()[0]
-        
-        try:
-            c.execute("SELECT SUM(facilities_added) FROM discovery_runs WHERE status = 'completed'")
-            total_discovered = c.fetchone()[0] or 0
-        except:
-            total_discovered = 0
-        
-        try:
-            c.execute("""
-                SELECT source, COUNT(*), SUM(facilities_added) 
-                FROM discovery_runs 
-                WHERE status = 'completed'
-                GROUP BY source
-            """)
-            by_source = [{
-                'source': r[0], 'runs': r[1], 'added': r[2]
-            } for r in c.fetchall()]
-        except:
-            by_source = []
-        
-        conn.close()
+            c = conn.cursor()
+
+            # Get recent runs (with error handling for missing table)
+            try:
+                c.execute("""
+                    SELECT source, started_at, completed_at, facilities_found,
+                           facilities_added, facilities_duplicate, status
+                    FROM discovery_runs
+                    ORDER BY started_at DESC
+                    LIMIT 20
+                """)
+                recent_runs = [{
+                    'source': r[0], 'started_at': r[1], 'completed_at': r[2],
+                    'found': r[3], 'added': r[4], 'duplicate': r[5], 'status': r[6]
+                } for r in c.fetchall()]
+            except:
+                recent_runs = []
+
+            # Get totals
+            c.execute("SELECT COUNT(*) FROM facilities")
+            total_facilities = c.fetchone()[0]
+
+            try:
+                c.execute("SELECT SUM(facilities_added) FROM discovery_runs WHERE status = 'completed'")
+                total_discovered = c.fetchone()[0] or 0
+            except:
+                total_discovered = 0
+
+            try:
+                c.execute("""
+                    SELECT source, COUNT(*), SUM(facilities_added)
+                    FROM discovery_runs
+                    WHERE status = 'completed'
+                    GROUP BY source
+                """)
+                by_source = [{
+                    'source': r[0], 'runs': r[1], 'added': r[2]
+                } for r in c.fetchall()]
+            except:
+                by_source = []
+
+        finally:
+            conn.close()
         
         return jsonify({
             'success': True,
@@ -2874,35 +2938,37 @@ def get_discovered_facilities():
     include_duplicates = request.args.get('duplicates', 'false').lower() == 'true'
     
     conn = get_db()
-    c = conn.cursor()
-    
-    query = """
-        SELECT id, source, name, provider, market, city, state, 
-               power_mw, status, discovered_at, is_duplicate, merged_facility_id
-        FROM discovered_facilities
-        WHERE 1=1
-    """
-    params = []
-    
-    if not include_duplicates:
-        query += " AND is_duplicate = 0"
-    
-    if source:
-        query += " AND source = ?"
-        params.append(source)
-    
-    query += " ORDER BY discovered_at DESC LIMIT ?"
-    params.append(limit)
-    
-    c.execute(query, params)
-    facilities = [{
-        'id': r[0], 'source': r[1], 'name': r[2], 'provider': r[3],
-        'market': r[4], 'city': r[5], 'state': r[6], 'power_mw': r[7],
-        'status': r[8], 'discovered_at': r[9], 'is_duplicate': bool(r[10]),
-        'merged_id': r[11]
-    } for r in c.fetchall()]
-    
-    conn.close()
+    try:
+        c = conn.cursor()
+
+        query = """
+            SELECT id, source, name, provider, market, city, state,
+                   power_mw, status, discovered_at, is_duplicate, merged_facility_id
+            FROM discovered_facilities
+            WHERE 1=1
+        """
+        params = []
+
+        if not include_duplicates:
+            query += " AND is_duplicate = 0"
+
+        if source:
+            query += " AND source = %s"
+            params.append(source)
+
+        query += " ORDER BY discovered_at DESC LIMIT %s"
+        params.append(limit)
+
+        c.execute(query, params)
+        facilities = [{
+            'id': r[0], 'source': r[1], 'name': r[2], 'provider': r[3],
+            'market': r[4], 'city': r[5], 'state': r[6], 'power_mw': r[7],
+            'status': r[8], 'discovered_at': r[9], 'is_duplicate': bool(r[10]),
+            'merged_id': r[11]
+        } for r in c.fetchall()]
+
+    finally:
+        conn.close()
     
     return jsonify({
         'success': True,
@@ -2968,14 +3034,16 @@ def email_unsubscribe():
     
     # Also update leads table
     conn = get_db()
-    c = conn.cursor()
-    c.execute("""
-        UPDATE leads SET subscribed = 0 WHERE email IN (
-            SELECT DISTINCT email FROM email_queue WHERE body_html LIKE ?
-        )
-    """, (f'%{token}%',))
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+        c.execute("""
+            UPDATE leads SET subscribed = 0 WHERE email IN (
+                SELECT DISTINCT email FROM email_queue WHERE body_html LIKE %s
+            )
+        """, (f'%{token}%',))
+        conn.commit()
+    finally:
+        conn.close()
     
     return """
     <!DOCTYPE html>

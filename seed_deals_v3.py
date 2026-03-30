@@ -269,7 +269,7 @@ def seed_database():
     c = conn.cursor()
     
     # Check existing columns
-    c.execute("PRAGMA table_info(deals)")
+    # PRAGMA removed - not needed for PostgreSQL
     columns = [col[1] for col in c.fetchall()]
     print(f"📋 Existing columns: {columns}")
     
@@ -307,8 +307,8 @@ def seed_database():
         try:
             # Insert without status column
             c.execute("""
-                INSERT OR IGNORE INTO deals (id, date, year, buyer, seller, value, mw, type, region, market, notes, created_at, verified)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                INSERT INTO deals (id, date, year, buyer, seller, value, mw, type, region, market, notes, created_at, verified)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1)
             """, (
                 deal_id, date, year, buyer, seller, value, mw, dtype, region, market, notes, datetime.now().isoformat()
             ))

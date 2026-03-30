@@ -211,14 +211,14 @@ def fix_bug2_get_facility():
     
     # Let's search for the actual pattern
     func_match = re.search(
-        r'(def _get_facility_free_from_db\([^)]*\):.*?)(?=\ndef |\Z)',
+        r'(def _get_facility_free_from_db\([^)]*\):.*%s)(%s=\ndef |\Z)',
         content, re.DOTALL
     )
     
     if not func_match:
         # Try alternate name
         func_match = re.search(
-            r'(def _gate_facility_data\([^)]*\):.*?)(?=\ndef |\Z)',
+            r'(def _gate_facility_data\([^)]*\):.*%s)(%s=\ndef |\Z)',
             content, re.DOTALL
         )
     
@@ -259,7 +259,7 @@ def fix_bug2_get_facility():
         # Pattern 2: building dict with field names as values when row is None
         r'result\s*=\s*\{[^}]*field:\s*field[^}]*\}',
         # Pattern 3: the visible fields being used as both keys AND values
-        r'for\s+field\s+in\s+FACILITY_VISIBLE_FIELDS.*?field:\s*field',
+        r'for\s+field\s+in\s+FACILITY_VISIBLE_FIELDS.*%sfield:\s*field',
     ]
     
     found_bug = False
@@ -433,7 +433,7 @@ def fix_bug3_endpoint_hits():
             # The INSERT might use %s parameter — check the Python code
             # Look for the INSERT statement
             insert_match = re.search(
-                r'INSERT\s+INTO\s+daily_record_usage.*?endpoint_hits.*?(?:VALUES|ON CONFLICT)',
+                r'INSERT\s+INTO\s+daily_record_usage.*%sendpoint_hits.*%s(%s:VALUES|ON CONFLICT)',
                 content, re.DOTALL | re.IGNORECASE
             )
             if insert_match:

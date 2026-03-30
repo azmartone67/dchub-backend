@@ -102,8 +102,8 @@ def cleanup_railways():
     print("=" * 50)
     
     conn = sqlite3.connect(DB_PATH, timeout=60)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=60000")
+    # PRAGMA removed - not needed for PostgreSQL
+    # PRAGMA removed - not needed for PostgreSQL
     cursor = conn.cursor()
     
     # Get current count
@@ -118,8 +118,8 @@ def cleanup_railways():
         # Delete by name
         cursor.execute("""
             DELETE FROM facilities 
-            WHERE LOWER(name) LIKE ? 
-            OR LOWER(provider) LIKE ?
+            WHERE LOWER(name) LIKE %s 
+            OR LOWER(provider) LIKE %s
         """, (f'%{pattern}%', f'%{pattern}%'))
         
         deleted = cursor.rowcount

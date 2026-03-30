@@ -128,7 +128,7 @@ class EnhancedPromotionEngine:
         # Directory submissions tracking
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS directory_submissions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 directory_name TEXT NOT NULL,
                 directory_url TEXT,
                 category TEXT,
@@ -143,7 +143,7 @@ class EnhancedPromotionEngine:
         # AI platform integrations
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS ai_platform_integrations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 platform_name TEXT NOT NULL,
                 platform_type TEXT,
                 integration_status TEXT DEFAULT 'not_started',
@@ -156,7 +156,7 @@ class EnhancedPromotionEngine:
         # Social media posts
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS social_media_posts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 platform TEXT NOT NULL,
                 content TEXT,
                 post_type TEXT,
@@ -171,7 +171,7 @@ class EnhancedPromotionEngine:
         # Backlink tracking
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS backlink_tracking (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 source_url TEXT NOT NULL,
                 source_domain TEXT,
                 anchor_text TEXT,
@@ -190,7 +190,7 @@ class EnhancedPromotionEngine:
         # Promotion stats
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS promotion_stats (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 date DATE NOT NULL,
                 directories_submitted INTEGER DEFAULT 0,
                 social_posts INTEGER DEFAULT 0,
@@ -258,7 +258,7 @@ class EnhancedPromotionEngine:
         for directory in self.directories:
             # Check if already submitted
             cursor.execute(
-                "SELECT status FROM directory_submissions WHERE directory_name = ?",
+                "SELECT status FROM directory_submissions WHERE directory_name = %s",
                 (directory['name'],)
             )
             existing = cursor.fetchone()
@@ -276,9 +276,9 @@ class EnhancedPromotionEngine:
             
             # Record the directory for submission
             cursor.execute('''
-                INSERT OR REPLACE INTO directory_submissions 
+                INSERT INTO directory_submissions  
                 (directory_name, directory_url, category, status, submitted_at, notes)
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s)
             ''', (
                 directory['name'],
                 directory['submit_url'],
@@ -322,9 +322,9 @@ class EnhancedPromotionEngine:
         for domain in known_sources:
             # Record as potential backlink source
             cursor.execute('''
-                INSERT OR IGNORE INTO backlink_tracking 
+                INSERT INTO backlink_tracking 
                 (source_url, source_domain, anchor_text, target_page, status)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s)
             ''', (
                 f"https://{domain}",
                 domain,
@@ -383,9 +383,9 @@ class EnhancedPromotionEngine:
         for platform in self.ai_platforms:
             # Record registration attempt
             cursor.execute('''
-                INSERT OR REPLACE INTO ai_platform_integrations
+                INSERT INTO ai_platform_integrations 
                 (platform_name, platform_type, integration_status, integration_date, details)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s)
             ''', (
                 platform['name'],
                 platform['type'],
@@ -419,7 +419,7 @@ class EnhancedPromotionEngine:
             SELECT title, summary, source, published_date 
             FROM announcements 
             ORDER BY published_date DESC 
-            LIMIT ?
+            LIMIT %s
         ''', (count,))
         
         news = cursor.fetchall()
@@ -437,7 +437,7 @@ class EnhancedPromotionEngine:
             cursor.execute('''
                 INSERT INTO social_media_posts 
                 (platform, content, post_type, status, scheduled_at)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s)
             ''', (
                 'linkedin',
                 linkedin_content,
@@ -457,7 +457,7 @@ class EnhancedPromotionEngine:
             cursor.execute('''
                 INSERT INTO social_media_posts 
                 (platform, content, post_type, status, scheduled_at)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s)
             ''', (
                 'twitter',
                 twitter_content,
@@ -542,7 +542,7 @@ API Documentation: {self.site_url}/api/v1
         # Save to database (using existing schema)
         cursor.execute('''
             INSERT INTO press_releases (title, content, status)
-            VALUES (?, ?, ?)
+            VALUES (%s, %s, %s)
         ''', (
             press_release['title'],
             press_release['body'],
@@ -634,7 +634,7 @@ API Documentation: {self.site_url}/api/v1
         # Ping Google (for Gemini)
         try:
             sitemap_url = f"{self.site_url}/sitemap.xml"
-            google_ping = f"https://www.google.com/ping?sitemap={quote(sitemap_url, safe='')}"
+            google_ping = f"https://www.google.com/ping%ssitemap={quote(sitemap_url, safe='')}"
             response = requests.get(google_ping, timeout=10)
             results['google_gemini'] = {'status': 'success' if response.status_code == 200 else 'failed', 'code': response.status_code}
         except Exception as e:
@@ -642,7 +642,7 @@ API Documentation: {self.site_url}/api/v1
         
         # Ping Bing (for Copilot)
         try:
-            bing_ping = f"https://www.bing.com/ping?sitemap={quote(sitemap_url, safe='')}"
+            bing_ping = f"https://www.bing.com/ping%ssitemap={quote(sitemap_url, safe='')}"
             response = requests.get(bing_ping, timeout=10)
             results['bing_copilot'] = {'status': 'success' if response.status_code == 200 else 'failed', 'code': response.status_code}
         except Exception as e:
@@ -719,10 +719,10 @@ API Documentation: {self.site_url}/api/v1
         today = datetime.now().strftime('%Y-%m-%d')
         
         cursor.execute('''
-            INSERT OR REPLACE INTO promotion_stats 
+            INSERT INTO promotion_stats  
             (date, directories_submitted, social_posts, backlinks_gained, 
              ai_platforms_integrated, press_releases, total_reach_estimate)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
         ''', (
             today,
             len(results.get('directories', {}).get('pending_manual', [])),
@@ -768,8 +768,8 @@ API Documentation: {self.site_url}/api/v1
         
         cursor.execute('''
             UPDATE directory_submissions 
-            SET status = ?, submitted_at = ?
-            WHERE directory_name = ?
+            SET status = %s, submitted_at = %s
+            WHERE directory_name = %s
         ''', (status, datetime.now().isoformat(), directory_name))
         
         success = cursor.rowcount > 0

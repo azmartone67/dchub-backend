@@ -17,8 +17,8 @@ DB_PATH = 'dc_nexus.db'
 
 def fix_capacity_data():
     conn = sqlite3.connect(DB_PATH, timeout=5)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
+    # PRAGMA removed - not needed for PostgreSQL
+    # PRAGMA removed - not needed for PostgreSQL
     c = conn.cursor()
     
     print("=" * 60)
@@ -57,7 +57,7 @@ def fix_capacity_data():
     ]
     
     for pattern in non_dc_patterns:
-        c.execute(f"DELETE FROM capacity_tracking WHERE LOWER(notes) LIKE LOWER(?)", (pattern,))
+        c.execute(f"DELETE FROM capacity_tracking WHERE LOWER(notes) LIKE LOWER(%s)", (pattern,))
     
     # Also remove by source
     c.execute("DELETE FROM capacity_tracking WHERE source = 'PV Magazine' AND notes NOT LIKE '%data center%' AND notes NOT LIKE '%data centre%'")
@@ -122,8 +122,8 @@ def fix_capacity_data():
     for pattern, operator in operator_fixes:
         c.execute('''
             UPDATE capacity_tracking 
-            SET operator = ? 
-            WHERE LOWER(notes) LIKE LOWER(?) 
+            SET operator = %s 
+            WHERE LOWER(notes) LIKE LOWER(%s) 
             AND (operator IS NULL OR operator = 'Unknown' OR operator NOT IN 
                 ('Applied Digital', 'DayOne', 'Nebius', 'Google', 'Microsoft', 'Digital Realty', 
                  'CyrusOne', 'Equinix', 'QTS', 'Switch', 'Goodman', 'xAI', 'G42', 'CleanSpark',
@@ -140,7 +140,7 @@ def fix_capacity_data():
                      'Tokyo Century', 'Rondo Energy', 'Masdar']
     
     for bad_op in bad_operators:
-        c.execute("UPDATE capacity_tracking SET operator = NULL WHERE operator = ?", (bad_op,))
+        c.execute("UPDATE capacity_tracking SET operator = NULL WHERE operator = %s", (bad_op,))
     
     conn.commit()
     
@@ -187,8 +187,8 @@ def fix_capacity_data():
     for pattern, market, region in market_fixes:
         c.execute('''
             UPDATE capacity_tracking 
-            SET market = ?, region = ?
-            WHERE LOWER(notes) LIKE LOWER(?)
+            SET market = %s, region = %s
+            WHERE LOWER(notes) LIKE LOWER(%s)
             AND (market IS NULL OR market = 'Unknown' OR market LIKE '%MW%' OR market LIKE '%Eyes%' OR market LIKE '%months%')
         ''', (market, region, pattern))
     

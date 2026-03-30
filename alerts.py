@@ -21,7 +21,6 @@ Endpoints:
 
 from flask import Blueprint, request, jsonify, g
 from functools import wraps
-import sqlite3
 import json
 import os
 import re
@@ -53,7 +52,7 @@ def init_alerts_db():
     # Alerts table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS alerts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id TEXT NOT NULL,
             user_email TEXT NOT NULL,
             alert_type TEXT NOT NULL CHECK(alert_type IN ('operator_watch', 'market_watch', 'capacity_threshold', 'keyword_watch')),
@@ -71,7 +70,7 @@ def init_alerts_db():
     # Alert history table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS alert_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             alert_id INTEGER NOT NULL,
             triggered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             trigger_reason TEXT NOT NULL,
@@ -85,7 +84,7 @@ def init_alerts_db():
     # Email verification tokens
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS email_verifications (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id TEXT NOT NULL,
             email TEXT NOT NULL,
             token TEXT NOT NULL UNIQUE,
@@ -199,7 +198,7 @@ def generate_alert_email(alert: dict, trigger_data: dict) -> tuple:
             </div>
             <div class="footer">
                 <p>DC Hub - Data Center Intelligence Platform</p>
-                <p><a href="https://dchub.cloud/alerts/unsubscribe?id={alert['id']}" style="color: #888;">Unsubscribe from this alert</a></p>
+                <p><a href="https://dchub.cloud/alerts/unsubscribe%sid={alert['id']}" style="color: #888;">Unsubscribe from this alert</a></p>
             </div>
         </div>
     </body>
@@ -217,7 +216,7 @@ Trigger Reason: {trigger_data.get('reason', 'Alert condition met')}
 
 ---
 Manage your alerts: https://dchub.cloud/alerts
-Unsubscribe: https://dchub.cloud/alerts/unsubscribe?id={alert['id']}
+Unsubscribe: https://dchub.cloud/alerts/unsubscribe%sid={alert['id']}
     '''
     
     return html, text
@@ -233,7 +232,8 @@ def get_user_from_request():
     if api_key:
         # Validate API key and return user_id
         db = get_alerts_db()
-        user = db.execute('SELECT user_id, email FROM api_keys WHERE key = ? AND is_active = 1', (api_key,)).fetchone()
+        c = db.cursor()
+        user = c.execute('SELECT user_id, email FROM api_keys WHERE key = %s AND is_active = 1', (api_key,)).fetchone()
         if user:
             return {'user_id': user['user_id'], 'email': user['email']}
     
@@ -244,7 +244,8 @@ def get_user_from_request():
         # In production, validate with Google OAuth
         # For now, decode from token or session
         db = get_alerts_db()
-        session = db.execute('SELECT user_id, email FROM sessions WHERE token = ? AND expires_at > ?', 
+        c = db.cursor()
+        session = c.execute('SELECT user_id, email FROM sessions WHERE token = %s AND expires_at > %s', 
                             (token, datetime.utcnow())).fetchone()
         if session:
             return {'user_id': session['user_id'], 'email': session['email']}
@@ -338,7 +339,7 @@ def create_alert():
     
     cursor.execute('''
         INSERT INTO alerts (user_id, user_email, alert_type, name, config, frequency, is_active)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
     ''', (
         g.user['user_id'],
         g.user['email'],
@@ -353,7 +354,7 @@ def create_alert():
     alert_id = cursor.lastrowid
     
     # Fetch the created alert
-    alert = db.execute('SELECT * FROM alerts WHERE id = ?', (alert_id,)).fetchone()
+    alert = cursor.execute('SELECT * FROM alerts WHERE id = %s', (alert_id,)).fetchone()
     
     return jsonify({
         'success': True,
@@ -371,20 +372,21 @@ def list_alerts():
     alert_type = request.args.get('type')
     is_active = request.args.get('active')
     
-    query = 'SELECT * FROM alerts WHERE user_id = ?'
+    query = 'SELECT * FROM alerts WHERE user_id = %s'
     params = [g.user['user_id']]
     
     if alert_type:
-        query += ' AND alert_type = ?'
+        query += ' AND alert_type = %s'
         params.append(alert_type)
     
     if is_active is not None:
-        query += ' AND is_active = ?'
+        query += ' AND is_active = %s'
         params.append(1 if is_active.lower() == 'true' else 0)
     
     query += ' ORDER BY created_at DESC'
     
-    alerts = db.execute(query, params).fetchall()
+    c = db.cursor()
+    alerts = c.execute(query, params).fetchall()
     
     return jsonify({
         'alerts': [dict(a) for a in alerts],
@@ -396,8 +398,9 @@ def list_alerts():
 def get_alert(alert_id):
     """Get a specific alert."""
     db = get_alerts_db()
-    alert = db.execute(
-        'SELECT * FROM alerts WHERE id = ? AND user_id = ?',
+    c = db.cursor()
+    alert = c.execute(
+        'SELECT * FROM alerts WHERE id = %s AND user_id = %s',
         (alert_id, g.user['user_id'])
     ).fetchone()
     
@@ -405,8 +408,9 @@ def get_alert(alert_id):
         return jsonify({'error': 'Alert not found'}), 404
     
     # Get recent history
-    history = db.execute(
-        'SELECT * FROM alert_history WHERE alert_id = ? ORDER BY triggered_at DESC LIMIT 10',
+    c = db.cursor()
+    history = c.execute(
+        'SELECT * FROM alert_history WHERE alert_id = %s ORDER BY triggered_at DESC LIMIT 10',
         (alert_id,)
     ).fetchall()
     
@@ -423,8 +427,9 @@ def update_alert(alert_id):
     db = get_alerts_db()
     
     # Check ownership
-    alert = db.execute(
-        'SELECT * FROM alerts WHERE id = ? AND user_id = ?',
+    c = db.cursor()
+    alert = c.execute(
+        'SELECT * FROM alerts WHERE id = %s AND user_id = %s',
         (alert_id, g.user['user_id'])
     ).fetchone()
     
@@ -437,7 +442,7 @@ def update_alert(alert_id):
     
     # Validate and apply updates
     if 'name' in data:
-        updates.append('name = ?')
+        updates.append('name = %s')
         params.append(data['name'])
     
     if 'config' in data:
@@ -445,17 +450,17 @@ def update_alert(alert_id):
         valid, errors = validate_alert_config(alert_type, data['config'])
         if not valid:
             return jsonify({'error': 'Invalid configuration', 'details': errors}), 400
-        updates.append('config = ?')
+        updates.append('config = %s')
         params.append(json.dumps(data['config']))
     
     if 'frequency' in data:
         if data['frequency'] not in ('immediate', 'daily', 'weekly'):
             return jsonify({'error': 'Invalid frequency'}), 400
-        updates.append('frequency = ?')
+        updates.append('frequency = %s')
         params.append(data['frequency'])
     
     if 'is_active' in data:
-        updates.append('is_active = ?')
+        updates.append('is_active = %s')
         params.append(1 if data['is_active'] else 0)
     
     if not updates:
@@ -464,14 +469,16 @@ def update_alert(alert_id):
     updates.append('updated_at = CURRENT_TIMESTAMP')
     params.extend([alert_id, g.user['user_id']])
     
-    db.execute(
-        f'UPDATE alerts SET {", ".join(updates)} WHERE id = ? AND user_id = ?',
+    c = db.cursor()
+    c.execute(
+        f'UPDATE alerts SET {", ".join(updates)} WHERE id = %s AND user_id = %s',
         params
     )
     db.commit()
     
     # Return updated alert
-    updated = db.execute('SELECT * FROM alerts WHERE id = ?', (alert_id,)).fetchone()
+    c = db.cursor()
+    updated = c.execute('SELECT * FROM alerts WHERE id = %s', (alert_id,)).fetchone()
     
     return jsonify({
         'success': True,
@@ -485,8 +492,9 @@ def delete_alert(alert_id):
     """Delete an alert."""
     db = get_alerts_db()
     
-    result = db.execute(
-        'DELETE FROM alerts WHERE id = ? AND user_id = ?',
+    c = db.cursor()
+    result = c.execute(
+        'DELETE FROM alerts WHERE id = %s AND user_id = %s',
         (alert_id, g.user['user_id'])
     )
     db.commit()
@@ -505,8 +513,9 @@ def test_alert(alert_id):
     """Send a test notification for an alert."""
     db = get_alerts_db()
     
-    alert = db.execute(
-        'SELECT * FROM alerts WHERE id = ? AND user_id = ?',
+    c = db.cursor()
+    alert = c.execute(
+        'SELECT * FROM alerts WHERE id = %s AND user_id = %s',
         (alert_id, g.user['user_id'])
     ).fetchone()
     
@@ -544,8 +553,9 @@ def get_alert_history():
     db = get_alerts_db()
     
     # Get all user's alert IDs
-    alert_ids = db.execute(
-        'SELECT id FROM alerts WHERE user_id = ?',
+    c = db.cursor()
+    alert_ids = c.execute(
+        'SELECT id FROM alerts WHERE user_id = %s',
         (g.user['user_id'],)
     ).fetchall()
     
@@ -553,18 +563,19 @@ def get_alert_history():
         return jsonify({'history': [], 'count': 0})
     
     ids = [a['id'] for a in alert_ids]
-    placeholders = ','.join('?' * len(ids))
+    placeholders = ','.join('%s' * len(ids))
     
     limit = min(int(request.args.get('limit', 50)), 100)
     offset = int(request.args.get('offset', 0))
     
-    history = db.execute(f'''
+    c = db.cursor()
+    history = c.execute(f'''
         SELECT h.*, a.name as alert_name, a.alert_type
         FROM alert_history h
         JOIN alerts a ON h.alert_id = a.id
         WHERE h.alert_id IN ({placeholders})
         ORDER BY h.triggered_at DESC
-        LIMIT ? OFFSET ?
+        LIMIT %s OFFSET %s
     ''', ids + [limit, offset]).fetchall()
     
     return jsonify({
@@ -582,7 +593,8 @@ def check_alerts_against_news(news_items: list):
     """Check all active alerts against new news items."""
     db = get_db('dchub.db')
     
-    alerts = db.execute('SELECT * FROM alerts WHERE is_active = 1').fetchall()
+    c = db.cursor()
+    alerts = c.execute('SELECT * FROM alerts WHERE is_active = 1').fetchall()
     
     for alert in alerts:
         config = json.loads(alert['config'])
@@ -617,7 +629,7 @@ def check_alerts_against_news(news_items: list):
             
             elif alert['alert_type'] == 'capacity_threshold':
                 # Extract MW from news
-                mw_match = re.search(r'(\d+(?:\.\d+)?)\s*MW', news.get('title', '') + ' ' + news.get('content', ''), re.I)
+                mw_match = re.search(r'(\d+(%s:\.\d+)%s)\s*MW', news.get('title', '') + ' ' + news.get('content', ''), re.I)
                 if mw_match:
                     mw = float(mw_match.group(1))
                     min_mw = config.get('min_mw', 0)
@@ -628,15 +640,17 @@ def check_alerts_against_news(news_items: list):
             
             if triggered:
                 # Record trigger
-                db.execute('''
+                c = db.cursor()
+                c.execute('''
                     INSERT INTO alert_history (alert_id, trigger_reason, matched_data)
-                    VALUES (?, ?, ?)
+                    VALUES (%s, %s, %s)
                 ''', (alert['id'], trigger_reason, json.dumps(news)))
                 
                 # Update alert stats
-                db.execute('''
+                c = db.cursor()
+                c.execute('''
                     UPDATE alerts SET last_triggered = CURRENT_TIMESTAMP, trigger_count = trigger_count + 1
-                    WHERE id = ?
+                    WHERE id = %s
                 ''', (alert['id'],))
                 
                 # Send notification if immediate
@@ -660,11 +674,12 @@ def check_alerts_against_news(news_items: list):
                     )
                     
                     # Update history with notification status
-                    db.execute('''
+                    c = db.cursor()
+                    c.execute('''
                         UPDATE alert_history 
-                        SET notification_sent = ?, notification_error = ?
-                        WHERE alert_id = ? AND triggered_at = (
-                            SELECT MAX(triggered_at) FROM alert_history WHERE alert_id = ?
+                        SET notification_sent = %s, notification_error = %s
+                        WHERE alert_id = %s AND triggered_at = (
+                            SELECT MAX(triggered_at) FROM alert_history WHERE alert_id = %s
                         )
                     ''', (1 if result['success'] else 0, result.get('error'), alert['id'], alert['id']))
     
@@ -682,20 +697,22 @@ def send_digest_emails(frequency: str):
         since = datetime.utcnow() - timedelta(weeks=1)
     
     # Group by user
-    users = db.execute('''
+    c = db.cursor()
+    users = c.execute('''
         SELECT DISTINCT a.user_id, a.user_email
         FROM alerts a
         JOIN alert_history h ON a.id = h.alert_id
-        WHERE a.frequency = ? AND a.is_active = 1 AND h.triggered_at > ? AND h.notification_sent = 0
+        WHERE a.frequency = %s AND a.is_active = 1 AND h.triggered_at > %s AND h.notification_sent = 0
     ''', (frequency, since)).fetchall()
     
     for user in users:
         # Get all pending notifications for this user
-        notifications = db.execute('''
+        c = db.cursor()
+        notifications = c.execute('''
             SELECT h.*, a.name as alert_name, a.alert_type
             FROM alert_history h
             JOIN alerts a ON h.alert_id = a.id
-            WHERE a.user_id = ? AND a.frequency = ? AND h.triggered_at > ? AND h.notification_sent = 0
+            WHERE a.user_id = %s AND a.frequency = %s AND h.triggered_at > %s AND h.notification_sent = 0
             ORDER BY h.triggered_at DESC
         ''', (user['user_id'], frequency, since)).fetchall()
         
@@ -711,8 +728,9 @@ def send_digest_emails(frequency: str):
             if result['success']:
                 # Mark as sent
                 ids = [n['id'] for n in notifications]
-                placeholders = ','.join('?' * len(ids))
-                db.execute(f'UPDATE alert_history SET notification_sent = 1 WHERE id IN ({placeholders})', ids)
+                placeholders = ','.join('%s' * len(ids))
+                c = db.cursor()
+                c.execute(f'UPDATE alert_history SET notification_sent = 1 WHERE id IN ({placeholders})', ids)
     
     db.commit()
     db.close()

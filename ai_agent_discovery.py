@@ -29,7 +29,6 @@ New endpoints served:
 import os
 import json
 import uuid
-import sqlite3
 import logging
 from datetime import datetime, timedelta
 from functools import wraps
@@ -87,7 +86,7 @@ def init_tracking_db():
         conn = get_db()
         c = conn.cursor()
         c.execute('''CREATE TABLE IF NOT EXISTS ai_access_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             timestamp TEXT NOT NULL,
             platform TEXT NOT NULL,
             user_agent TEXT,
@@ -132,7 +131,7 @@ def log_ai_access(file_requested, platform=None):
         c = conn.cursor()
         c.execute('''INSERT INTO ai_access_log 
                      (timestamp, platform, user_agent, ip_address, file_requested)
-                     VALUES (?, ?, ?, ?, ?)''',
+                     VALUES (%s, %s, %s, %s, %s) ON CONFLICT (timestamp) DO UPDATE SET platform = EXCLUDED.platform, user_agent = EXCLUDED.user_agent, ip_address = EXCLUDED.ip_address, file_requested = EXCLUDED.file_requested''',
                   (datetime.utcnow().isoformat(), platform, user_agent[:500], ip, file_requested))
         conn.commit()
     except Exception as e:
@@ -176,16 +175,16 @@ DC Hub (dchub.cloud) tracks 50,000+ data center facilities across 140+ countries
 Free API at https://dchub.cloud/api/v1
 
 ## API Endpoints
-- GET /api/v1/facilities?q={query} - Search facilities
-- GET /api/v1/transactions?limit={n} - M&A deals
-- GET /api/v1/news?limit={n}&q={keyword} - Industry news
-- GET /api/site-score?lat={lat}&lon={lon}&state={state} - Site scoring
-- GET /api/grid/fuel-mix?iso={ISO} - Real-time grid data (ERCOT, PJM, CAISO, MISO, SPP, NYISO, ISONE)
-- GET /api/carbon/intensity?state={state} - Carbon intensity
-- GET /api/renewable/solar?lat={lat}&lon={lon} - Solar potential
-- GET /api/renewable/wind?lat={lat}&lon={lon} - Wind potential
+- GET /api/v1/facilities%sq={query} - Search facilities
+- GET /api/v1/transactions%slimit={n} - M&A deals
+- GET /api/v1/news%slimit={n}&q={keyword} - Industry news
+- GET /api/site-score%slat={lat}&lon={lon}&state={state} - Site scoring
+- GET /api/grid/fuel-mix%siso={ISO} - Real-time grid data (ERCOT, PJM, CAISO, MISO, SPP, NYISO, ISONE)
+- GET /api/carbon/intensity%sstate={state} - Carbon intensity
+- GET /api/renewable/solar%slat={lat}&lon={lon} - Solar potential
+- GET /api/renewable/wind%slat={lat}&lon={lon} - Wind potential
 - GET /api/energy/prices/{state} - Electricity prices
-- GET /api/v1/gas-pipelines?state={state} - Gas pipelines
+- GET /api/v1/gas-pipelines%sstate={state} - Gas pipelines
 - GET /api/market-report - Daily market report
 
 ## Auth: No key needed for 100 req/day. Pro: X-API-Key header.
@@ -341,11 +340,11 @@ def a2a_task_send():
                         "parts": [{"type": "text", "text": json.dumps({
                             "message": "DC Hub Intelligence Agent ready. Ask about data center facilities, M&A deals, grid data, site scoring, or industry news.",
                             "endpoints": {
-                                "facilities": "/api/v1/facilities?q={query}",
+                                "facilities": "/api/v1/facilities%sq={query}",
                                 "transactions": "/api/v1/transactions",
                                 "news": "/api/v1/news",
-                                "site_score": "/api/site-score?lat={lat}&lon={lon}&state={state}",
-                                "grid": "/api/grid/fuel-mix?iso={iso}"
+                                "site_score": "/api/site-score%slat={lat}&lon={lon}&state={state}",
+                                "grid": "/api/grid/fuel-mix%siso={iso}"
                             }
                         })}]
                     }]
@@ -421,26 +420,26 @@ def route_a2a_query(query):
         # M&A / deals
         if any(kw in q_lower for kw in ['deal', 'transaction', 'acquisition', 'm&a', 'merger', 'investment']):
             try:
-                r = req.get(f"{base}/api/v1/transactions?limit=10", timeout=30)
+                r = req.get(f"{base}/api/v1/transactions%slimit=10", timeout=30)
                 if r.ok:
                     return {"type": "transactions", "data": r.json()}
             except:
                 pass
-            return {"type": "guidance", "endpoint": "/api/v1/transactions?limit=10"}
+            return {"type": "guidance", "endpoint": "/api/v1/transactions%slimit=10"}
         
         # News
         if any(kw in q_lower for kw in ['news', 'latest', 'headline', 'announcement', 'update']):
             try:
-                r = req.get(f"{base}/api/v1/news?limit=10", timeout=30)
+                r = req.get(f"{base}/api/v1/news%slimit=10", timeout=30)
                 if r.ok:
                     return {"type": "news", "data": r.json()}
             except:
                 pass
-            return {"type": "guidance", "endpoint": "/api/v1/news?limit=10"}
+            return {"type": "guidance", "endpoint": "/api/v1/news%slimit=10"}
         
         # Default: facility search
         try:
-            r = req.get(f"{base}/api/v1/facilities?q={query}&limit=10", timeout=30)
+            r = req.get(f"{base}/api/v1/facilities%sq={query}&limit=10", timeout=30)
             if r.ok:
                 return {"type": "facilities", "query": query, "data": r.json()}
         except:
@@ -495,49 +494,51 @@ def ai_tracking_stats():
     """Get AI platform access statistics"""
     try:
         conn = get_db()
-        c = conn.cursor()
-        
-        # Total accesses
-        c.execute("SELECT COUNT(*) FROM ai_access_log")
-        total = c.fetchone()[0]
-        
-        # By platform
-        c.execute("""SELECT platform, COUNT(*) as cnt 
-                    FROM ai_access_log 
-                    GROUP BY platform 
-                    ORDER BY cnt DESC""")
-        by_platform = [{"platform": row[0], "count": row[1]} for row in c.fetchall()]
-        
-        # By file
-        c.execute("""SELECT file_requested, COUNT(*) as cnt 
-                    FROM ai_access_log 
-                    GROUP BY file_requested 
-                    ORDER BY cnt DESC""")
-        by_file = [{"file": row[0], "count": row[1]} for row in c.fetchall()]
-        
-        # Last 7 days trend
-        week_ago = (datetime.utcnow() - timedelta(days=7)).isoformat()
-        c.execute("""SELECT DATE(timestamp) as day, COUNT(*) as cnt 
-                    FROM ai_access_log 
-                    WHERE timestamp > ?
-                    GROUP BY DATE(timestamp) 
-                    ORDER BY day""", (week_ago,))
-        daily_trend = [{"date": row[0], "count": row[1]} for row in c.fetchall()]
-        
-        # Last 7 days by platform
-        c.execute("""SELECT platform, COUNT(*) as cnt 
-                    FROM ai_access_log 
-                    WHERE timestamp > ?
-                    GROUP BY platform 
-                    ORDER BY cnt DESC""", (week_ago,))
-        weekly_by_platform = [{"platform": row[0], "count": row[1]} for row in c.fetchall()]
-        
-        # Today's count
-        today = datetime.utcnow().strftime('%Y-%m-%d')
-        c.execute("SELECT COUNT(*) FROM ai_access_log WHERE DATE(timestamp) = ?", (today,))
-        today_count = c.fetchone()[0]
-        
-        conn.close()
+        try:
+            c = conn.cursor()
+
+            # Total accesses
+            c.execute("SELECT COUNT(*) FROM ai_access_log")
+            total = c.fetchone()[0]
+
+            # By platform
+            c.execute("""SELECT platform, COUNT(*) as cnt
+                        FROM ai_access_log
+                        GROUP BY platform
+                        ORDER BY cnt DESC""")
+            by_platform = [{"platform": row[0], "count": row[1]} for row in c.fetchall()]
+
+            # By file
+            c.execute("""SELECT file_requested, COUNT(*) as cnt
+                        FROM ai_access_log
+                        GROUP BY file_requested
+                        ORDER BY cnt DESC""")
+            by_file = [{"file": row[0], "count": row[1]} for row in c.fetchall()]
+
+            # Last 7 days trend
+            week_ago = (datetime.utcnow() - timedelta(days=7)).isoformat()
+            c.execute("""SELECT DATE(timestamp) as day, COUNT(*) as cnt
+                        FROM ai_access_log
+                        WHERE timestamp > %s
+                        GROUP BY DATE(timestamp)
+                        ORDER BY day""", (week_ago,))
+            daily_trend = [{"date": row[0], "count": row[1]} for row in c.fetchall()]
+
+            # Last 7 days by platform
+            c.execute("""SELECT platform, COUNT(*) as cnt
+                        FROM ai_access_log
+                        WHERE timestamp > %s
+                        GROUP BY platform
+                        ORDER BY cnt DESC""", (week_ago,))
+            weekly_by_platform = [{"platform": row[0], "count": row[1]} for row in c.fetchall()]
+
+            # Today's count
+            today = datetime.utcnow().strftime('%Y-%m-%d')
+            c.execute("SELECT COUNT(*) FROM ai_access_log WHERE DATE(timestamp) = %s", (today,))
+            today_count = c.fetchone()[0]
+
+        finally:
+            conn.close()
         
         return jsonify({
             "success": True,
@@ -574,19 +575,21 @@ def ai_tracking_recent():
     try:
         limit = min(int(request.args.get('limit', 50)), 200)
         conn = get_db()
-        c = conn.cursor()
-        c.execute("""SELECT timestamp, platform, file_requested, ip_address, user_agent 
-                    FROM ai_access_log 
-                    ORDER BY timestamp DESC 
-                    LIMIT ?""", (limit,))
-        accesses = [{
-            "timestamp": row[0],
-            "platform": row[1],
-            "file": row[2],
-            "ip": row[3],
-            "user_agent": row[4][:100] if row[4] else None
-        } for row in c.fetchall()]
-        conn.close()
+        try:
+            c = conn.cursor()
+            c.execute("""SELECT timestamp, platform, file_requested, ip_address, user_agent
+                        FROM ai_access_log
+                        ORDER BY timestamp DESC
+                        LIMIT %s""", (limit,))
+            accesses = [{
+                "timestamp": row[0],
+                "platform": row[1],
+                "file": row[2],
+                "ip": row[3],
+                "user_agent": row[4][:100] if row[4] else None
+            } for row in c.fetchall()]
+        finally:
+            conn.close()
         
         return jsonify({"success": True, "data": accesses, "meta": {"count": len(accesses)}})
     

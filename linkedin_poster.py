@@ -327,7 +327,7 @@ def generate_deals_post():
     """Generate a LinkedIn post about recent M&A deals."""
     import requests as req
     try:
-        resp = req.get('https://dchub.cloud/api/v1/deals?limit=5', timeout=15)
+        resp = req.get('https://dchub.cloud/api/v1/deals%slimit=5', timeout=15)
         data = resp.json()
         deals = data.get('deals', data.get('data', []))
         if not deals:
@@ -368,7 +368,7 @@ def generate_news_post():
     """Generate a LinkedIn post about latest industry news."""
     import requests as req
     try:
-        resp = req.get('https://dchub.cloud/api/news?limit=5', timeout=15)
+        resp = req.get('https://dchub.cloud/api/news%slimit=5', timeout=15)
         data = resp.json()
         articles = data.get('articles', data.get('data', []))
         if not articles:
@@ -408,7 +408,7 @@ def generate_market_post():
     market = random.choice(markets)
 
     try:
-        resp = req.get(f'https://dchub.cloud/api/market-report?market={market.replace(" ", "+")}', timeout=15)
+        resp = req.get(f'https://dchub.cloud/api/market-report%smarket={market.replace(" ", "+")}', timeout=15)
         data = resp.json()
         m = data.get('market', data.get('data', data))
     except Exception as e:
@@ -475,7 +475,7 @@ def generate_pipeline_post():
     """Generate a LinkedIn post about new facilities / pipeline."""
     import requests as req
     try:
-        resp = req.get('https://dchub.cloud/api/ai/query?type=facilities&limit=3&sort=newest', timeout=15)
+        resp = req.get('https://dchub.cloud/api/ai/query%stype=facilities&limit=3&sort=newest', timeout=15)
         data = resp.json()
         facilities = data.get('data', [])
     except Exception as e:
@@ -601,7 +601,7 @@ def register_linkedin_routes(app):
             'scope': LINKEDIN_SCOPES,
             'state': state,
         }
-        url = f"{AUTH_URL}?{urlencode(params)}"
+        url = f"{AUTH_URL}%s{urlencode(params)}"
         return redirect(url)
 
     # ── GET /api/linkedin/callback — OAuth callback ──────────

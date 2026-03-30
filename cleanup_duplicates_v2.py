@@ -44,8 +44,8 @@ def normalize_name(name):
 
 def cleanup_duplicates():
     conn = sqlite3.connect(DB_PATH, timeout=60)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=60000")
+    # PRAGMA removed - not needed for PostgreSQL
+    # PRAGMA removed - not needed for PostgreSQL
     c = conn.cursor()
     
     print("=" * 60)
@@ -109,7 +109,7 @@ def cleanup_duplicates():
         
         for d in delete:
             print(f"      ❌ DELETE: {d['id']} ({d['buyer']} → {d['seller']})")
-            c.execute("DELETE FROM deals WHERE id = ?", (d['id'],))
+            c.execute("DELETE FROM deals WHERE id = %s", (d['id'],))
             deleted += 1
     
     conn.commit()

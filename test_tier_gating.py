@@ -27,8 +27,8 @@ def db_execute_with_retry(sql, params=None, max_retries=5, fetch=False):
         conn = None
         try:
             conn = sqlite3.connect(DB_PATH, timeout=60, isolation_level='DEFERRED')
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA busy_timeout=60000")
+            # PRAGMA removed - not needed for PostgreSQL
+            # PRAGMA removed - not needed for PostgreSQL
             c = conn.cursor()
             if params:
                 c.execute(sql, params)
@@ -72,7 +72,7 @@ def create_pro_key():
     key_id = db_execute_with_retry("""
         INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions, 
                               rate_limit_tier, is_active, plan, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
     """, (
         'tier-gating-test',
         key_hash,
@@ -90,7 +90,7 @@ def create_pro_key():
 
 def cleanup_test_key(key_id):
     """Remove the test API key from the database."""
-    db_execute_with_retry("DELETE FROM api_keys WHERE id = ?", (key_id,))
+    db_execute_with_retry("DELETE FROM api_keys WHERE id = %s", (key_id,))
     print(f"🧹 Cleaned up test key (ID: {key_id})")
 
 def test_pro_endpoint_with_pro_key(api_key):
@@ -189,7 +189,7 @@ def test_pro_endpoint_with_free_key():
     key_id = db_execute_with_retry("""
         INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions, 
                               rate_limit_tier, is_active, plan, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
     """, (
         'tier-gating-test-free',
         key_hash,
@@ -212,7 +212,7 @@ def test_pro_endpoint_with_free_key():
     status = resp.status_code
     data = resp.json()
     
-    db_execute_with_retry("DELETE FROM api_keys WHERE id = ?", (key_id,))
+    db_execute_with_retry("DELETE FROM api_keys WHERE id = %s", (key_id,))
     
     if status == 403 and 'upgrade' in str(data).lower():
         print(f"   ✅ PASS: Status {status}, correctly rejected Free key")
