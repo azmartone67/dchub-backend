@@ -44,7 +44,7 @@ def init_gsc_tables():
     conn = get_db()
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS gsc_index_requests (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         url TEXT NOT NULL,
         status TEXT DEFAULT 'pending',
         requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -52,7 +52,7 @@ def init_gsc_tables():
         error TEXT
     )''')
     c.execute('''CREATE TABLE IF NOT EXISTS gsc_crawl_errors (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         url TEXT NOT NULL,
         error_type TEXT,
         first_detected TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -60,7 +60,7 @@ def init_gsc_tables():
         resolved BOOLEAN DEFAULT FALSE
     )''')
     c.execute('''CREATE TABLE IF NOT EXISTS gsc_sitemap_submissions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id SERIAL PRIMARY KEY,
         sitemap_url TEXT NOT NULL,
         submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         status TEXT DEFAULT 'pending',
@@ -258,7 +258,7 @@ def submit_sitemap(token):
         
         conn = get_db()
         c = conn.cursor()
-        c.execute('''INSERT INTO gsc_sitemap_submissions (sitemap_url, status) VALUES (?, ?)''',
+        c.execute('''INSERT INTO gsc_sitemap_submissions (sitemap_url, status) VALUES (%s, %s)''',
                   (sitemap_url, 'submitted' if response.status_code in [200, 204] else 'failed'))
         conn.commit()
         conn.close()
@@ -401,7 +401,7 @@ def request_indexing(token):
         c = conn.cursor()
         
         if response.status_code == 200:
-            c.execute('''INSERT INTO gsc_index_requests (url, status) VALUES (?, 'submitted')''', (url,))
+            c.execute('''INSERT INTO gsc_index_requests (url, status) VALUES (%s, 'submitted')''', (url,))
             conn.commit()
             conn.close()
             
@@ -413,7 +413,7 @@ def request_indexing(token):
             })
         else:
             error_msg = response.text
-            c.execute('''INSERT INTO gsc_index_requests (url, status, error) VALUES (?, 'failed', ?)''', 
+            c.execute('''INSERT INTO gsc_index_requests (url, status, error) VALUES (%s, 'failed', %s)''', 
                       (url, error_msg))
             conn.commit()
             conn.close()

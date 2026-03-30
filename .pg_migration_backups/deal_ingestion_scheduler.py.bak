@@ -35,7 +35,7 @@ RSS_FEEDS = [
 DEAL_TYPE_PATTERNS = {
     'acquisition':   r'\b(acquire[ds]?|acquisition|acquiring|bought|purchase[ds]?)\b',
     'merger':        r'\b(merge[drs]?|merger|combining)\b',
-    'joint_venture': r'\b(joint.%sventure|jv|partnership|teaming)\b',
+    'joint_venture': r'\b(joint.?venture|jv|partnership|teaming)\b',
     'investment':    r'\b(invest(?:s|ed|ing|ment)?|fund(?:s|ed|ing)?|stake|raise[ds]?)\b',
     'land_acquisition': r'\b(land|site|campus|acre|parcel|property)\b',
     'divestiture':   r'\b(divest(?:s|ed|ing|iture)?|spin.?off|sell(?:s|ing)?|sold)\b',

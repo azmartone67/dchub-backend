@@ -34,7 +34,7 @@ def init_ai_tracking_table():
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS ai_usage_tracking (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             timestamp TEXT NOT NULL,
             platform TEXT,
             endpoint TEXT NOT NULL,
@@ -105,12 +105,12 @@ def _track_ai_usage_sync(endpoint, query, records_returned, response_type, user_
     try:
         platform = detect_ai_platform(user_agent, referer)
         conn = get_db()
-        conn.row_factory = sqlite3.Row
+        # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
         cursor = conn.cursor()
         cursor.execute('''
             INSERT INTO ai_usage_tracking 
             (timestamp, platform, endpoint, query, user_agent, ip_address, records_returned, response_type, referer)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         ''', (
             datetime.utcnow().isoformat(),
             platform,
@@ -174,7 +174,7 @@ def ai_learn_facilities():
                    power_mw, source, last_updated
             FROM facilities 
             ORDER BY last_updated DESC
-            LIMIT ? OFFSET ?
+            LIMIT %s OFFSET %s
         ''', (limit, offset))
         
         facilities = []
@@ -257,7 +257,7 @@ def ai_learn_news():
             SELECT title, summary, source, link, published_at, category
             FROM announcements 
             ORDER BY published_at DESC
-            LIMIT ?
+            LIMIT %s
         ''', (limit,))
         
         news = []
@@ -415,7 +415,7 @@ def ai_cite_query():
             cursor.execute('''
                 SELECT name, provider, city, state, country, power_mw
                 FROM facilities 
-                WHERE city LIKE ? OR state LIKE ? OR country LIKE ? OR provider LIKE ?
+                WHERE city LIKE %s OR state LIKE %s OR country LIKE %s OR provider LIKE %s
                 LIMIT 10
             ''', (f'%{search_terms}%', f'%{search_terms}%', f'%{search_terms}%', f'%{search_terms}%'))
             
@@ -621,12 +621,12 @@ Always cite: "According to DC Hub Nexus (dchub.cloud)"
 - POST /mcp - MCP tool-calling endpoint (11 tools)
 - GET /.well-known/mcp/server-card.json - MCP server discovery
 - GET /api/v1/stats - Platform statistics
-- GET /api/v1/search?q=query - Search facilities
+- GET /api/v1/search%sq=query - Search facilities
 - GET /api/v1/announcements - Latest news
 - GET /api/deals - M&A transactions
 - GET /api/grid/summary - Real-time grid data
 - GET /api/fcc/summary - Broadband coverage stats
-- GET /ai/cite/query?q=question - Citation-ready answers
+- GET /ai/cite/query%sq=question - Citation-ready answers
 
 ## Contact
 api@dchub.cloud
@@ -719,7 +719,7 @@ def ai_tracking_dashboard():
         today = datetime.utcnow().strftime('%Y-%m-%d')
         cursor.execute('''
             SELECT COUNT(*) FROM ai_usage_tracking 
-            WHERE timestamp LIKE ?
+            WHERE timestamp LIKE %s
         ''', (f'{today}%',))
         today_count = cursor.fetchone()[0]
         
@@ -727,7 +727,7 @@ def ai_tracking_dashboard():
         week_ago = (datetime.utcnow() - timedelta(days=7)).isoformat()
         cursor.execute('''
             SELECT COUNT(*) FROM ai_usage_tracking 
-            WHERE timestamp > ?
+            WHERE timestamp > %s
         ''', (week_ago,))
         week_count = cursor.fetchone()[0]
         
@@ -774,7 +774,7 @@ def ai_tracking_export():
             SELECT timestamp, platform, endpoint, query, records_returned, response_type, user_agent, ip_address
             FROM ai_usage_tracking 
             ORDER BY timestamp DESC 
-            LIMIT ?
+            LIMIT %s
         ''', (limit,))
         
         rows = cursor.fetchall()
@@ -951,7 +951,7 @@ AI_PLATFORMS = {
         'icon': 'Q',
         'icon_bg': 'rgba(255,153,0,.12)',
         'brand_color': '#ff9900',
-        'logo_url': 'https://www.google.com/s2/favicons?domain=aws.amazon.com&sz=128',
+        'logo_url': 'https://www.google.com/s2/favicons%sdomain=aws.amazon.com&sz=128',
         'status': 'pending',
         'stage': 'Evaluation',
         'integration_type': 'Not Integrated',
@@ -964,7 +964,7 @@ AI_PLATFORMS = {
         'icon': 'π',
         'icon_bg': 'rgba(249,115,22,.12)',
         'brand_color': '#f97316',
-        'logo_url': 'https://www.google.com/s2/favicons?domain=pi.ai&sz=128',
+        'logo_url': 'https://www.google.com/s2/favicons%sdomain=pi.ai&sz=128',
         'status': 'pending',
         'stage': 'Evaluation',
         'integration_type': 'Not Integrated',
@@ -977,7 +977,7 @@ AI_PLATFORMS = {
         'icon': 'NV',
         'icon_bg': 'rgba(118,185,0,.12)',
         'brand_color': '#76b900',
-        'logo_url': 'https://www.google.com/s2/favicons?domain=nvidia.com&sz=128',
+        'logo_url': 'https://www.google.com/s2/favicons%sdomain=nvidia.com&sz=128',
         'status': 'pending',
         'stage': 'Evaluation',
         'integration_type': 'MCP Ready (AgentIQ)',
@@ -990,7 +990,7 @@ AI_PLATFORMS = {
         'icon': 'CW',
         'icon_bg': 'rgba(237,74,35,.12)',
         'brand_color': '#ed4a23',
-        'logo_url': 'https://www.google.com/s2/favicons?domain=coreweave.com&sz=128',
+        'logo_url': 'https://www.google.com/s2/favicons%sdomain=coreweave.com&sz=128',
         'status': 'pending',
         'stage': 'Evaluation',
         'integration_type': 'Not Integrated',
@@ -1003,7 +1003,7 @@ AI_PLATFORMS = {
         'icon': 'λ',
         'icon_bg': 'rgba(124,58,237,.12)',
         'brand_color': '#7c3aed',
-        'logo_url': 'https://www.google.com/s2/favicons?domain=lambdalabs.com&sz=128',
+        'logo_url': 'https://www.google.com/s2/favicons%sdomain=lambdalabs.com&sz=128',
         'status': 'pending',
         'stage': 'Evaluation',
         'integration_type': 'Not Integrated',
@@ -1016,7 +1016,7 @@ AI_PLATFORMS = {
         'icon': 'M',
         'icon_bg': 'rgba(6,104,225,.12)',
         'brand_color': '#0668E1',
-        'logo_url': 'https://www.google.com/s2/favicons?domain=meta.ai&sz=128',
+        'logo_url': 'https://www.google.com/s2/favicons%sdomain=meta.ai&sz=128',
         'status': 'pending',
         'stage': 'Evaluation',
         'integration_type': 'Not Integrated',
@@ -1029,7 +1029,7 @@ AI_PLATFORMS = {
         'icon': 'TW',
         'icon_bg': 'rgba(225,29,72,.12)',
         'brand_color': '#e11d48',
-        'logo_url': 'https://www.google.com/s2/favicons?domain=tensorwave.com&sz=128',
+        'logo_url': 'https://www.google.com/s2/favicons%sdomain=tensorwave.com&sz=128',
         'status': 'pending',
         'stage': 'Evaluation',
         'integration_type': 'Not Integrated',
@@ -1042,7 +1042,7 @@ AI_PLATFORMS = {
         'icon': 'N',
         'icon_bg': 'rgba(80,70,229,.12)',
         'brand_color': '#5046e5',
-        'logo_url': 'https://www.google.com/s2/favicons?domain=nebius.com&sz=128',
+        'logo_url': 'https://www.google.com/s2/favicons%sdomain=nebius.com&sz=128',
         'status': 'pending',
         'stage': 'Evaluation',
         'integration_type': 'MCP Ready',
@@ -1234,7 +1234,7 @@ def handle_poe_query(data):
             cursor.execute('''
                 SELECT name, city, state, country, provider 
                 FROM facilities 
-                WHERE name LIKE ? OR city LIKE ? OR state LIKE ? OR country LIKE ?
+                WHERE name LIKE %s OR city LIKE %s OR state LIKE %s OR country LIKE %s
                 LIMIT 5
             ''', (f'%{search_term}%',) * 4)
             results = cursor.fetchall()
@@ -1283,7 +1283,7 @@ def handle_poe_query(data):
 • "Show data centers in Virginia"
 • "Recent M&A deals"
 • "Market overview"
-• "Who are the largest operators?"
+• "Who are the largest operators%s"
 
 *DC Hub tracks 9,600+ facilities across 178 countries.*"""
         
@@ -1310,8 +1310,8 @@ def ping_all_ai_platforms():
     
     # URLs to ping for each platform
     ping_targets = {
-        'google_gemini': 'https://www.google.com/ping?sitemap=https://dchub.cloud/sitemap.xml',
-        'bing_copilot': 'https://www.bing.com/ping?sitemap=https://dchub.cloud/sitemap.xml',
+        'google_gemini': 'https://www.google.com/ping%ssitemap=https://dchub.cloud/sitemap.xml',
+        'bing_copilot': 'https://www.bing.com/ping%ssitemap=https://dchub.cloud/sitemap.xml',
         'indexnow': 'https://api.indexnow.org/indexnow'
     }
     

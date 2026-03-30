@@ -139,7 +139,7 @@ def get_email_base_template():
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{subject}</title>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        @import url('https://fonts.googleapis.com/css2%sfamily=Inter:wght@400;500;600;700&display=swap');
         
         * {{
             margin: 0;
@@ -333,7 +333,7 @@ def get_email_base_template():
             </div>
             <p class="footer-text">
                 © 2025 DC Hub. All rights reserved.<br>
-                <a href="{app_url}/api/email/unsubscribe?token={unsubscribe_token}" class="unsubscribe">Unsubscribe</a>
+                <a href="{app_url}/api/email/unsubscribe%stoken={unsubscribe_token}" class="unsubscribe">Unsubscribe</a>
             </p>
             {tracking_pixel}
         </div>
@@ -389,7 +389,7 @@ WELCOME_SERIES_TEMPLATES = {
                 <a href="{app_url}/dashboard.html" class="cta-button">Explore Your Dashboard →</a>
             </p>
             
-            <p>Questions? Just reply to this email – I personally read every response.</p>
+            <p>Questions%s Just reply to this email – I personally read every response.</p>
             
             <p>— Jonathan<br><span style="color: #6a6a7a;">Founder, DC Hub</span></p>
         """
@@ -469,7 +469,7 @@ WELCOME_SERIES_TEMPLATES = {
         "subject": "Unlock the full power of DC Hub",
         "delay_hours": 240,  # 10 days
         "content": """
-            <h1>Ready to go Pro?</h1>
+            <h1>Ready to go Pro%s</h1>
             <p>Hi {name},</p>
             <p>You've been using DC Hub for over a week now. Here's what Pro members get that free users don't:</p>
             
@@ -512,7 +512,7 @@ WELCOME_SERIES_TEMPLATES = {
                 <a href="{app_url}/pricing.html" class="cta-button" style="background: #00d4ff;">Upgrade to Pro →</a>
             </p>
             
-            <p style="margin-top: 24px;">Have questions about which plan is right for you? Hit reply and let's chat.</p>
+            <p style="margin-top: 24px;">Have questions about which plan is right for you%s Hit reply and let's chat.</p>
         """
     },
     
@@ -544,7 +544,7 @@ WELCOME_SERIES_TEMPLATES = {
                 <a href="{app_url}/pricing.html" class="cta-button">View Pricing Options →</a>
             </p>
             
-            <p>Either way, I'd love to hear your feedback. What would make DC Hub more valuable for your work?</p>
+            <p>Either way, I'd love to hear your feedback. What would make DC Hub more valuable for your work%s</p>
             
             <p>Thanks again,</p>
             <p>— Jonathan<br><span style="color: #6a6a7a;">Founder, DC Hub</span></p>
@@ -643,7 +643,7 @@ def start_welcome_series(user_id: str, email: str, name: str = "there"):
     c = conn.cursor()
     
     # Check if already in welcome series
-    c.execute("SELECT id FROM welcome_series WHERE email = ?", (email,))
+    c.execute("SELECT id FROM welcome_series WHERE email = %s", (email,))
     if c.fetchone():
         conn.close()
         return {'success': False, 'error': 'Already in welcome series'}
@@ -654,7 +654,7 @@ def start_welcome_series(user_id: str, email: str, name: str = "there"):
     
     c.execute("""
         INSERT INTO welcome_series (id, user_id, email, current_step, started_at, status)
-        VALUES (?, ?, ?, 0, ?, 'active')
+        VALUES (%s, %s, %s, 0, %s, 'active')
     """, (series_id, user_id, email, datetime.utcnow().isoformat()))
     
     # Schedule all emails in the series
@@ -679,7 +679,7 @@ def start_welcome_series(user_id: str, email: str, name: str = "there"):
         c.execute("""
             INSERT INTO email_queue 
             (id, user_id, email, template_name, subject, body_html, scheduled_at, status, sequence_id, sequence_step, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'scheduled', %s, %s, %s)
         """, (
             email_id,
             user_id,
@@ -709,14 +709,14 @@ def stop_welcome_series(email: str):
     
     # Mark series as completed/stopped
     c.execute("""
-        UPDATE welcome_series SET status = 'stopped', completed_at = ?
-        WHERE email = ? AND status = 'active'
+        UPDATE welcome_series SET status = 'stopped', completed_at = %s
+        WHERE email = %s AND status = 'active'
     """, (datetime.utcnow().isoformat(), email))
     
     # Cancel pending emails
     c.execute("""
         UPDATE email_queue SET status = 'cancelled'
-        WHERE email = ? AND status = 'scheduled' AND sequence_id IS NOT NULL
+        WHERE email = %s AND status = 'scheduled' AND sequence_id IS NOT NULL
     """, (email,))
     
     conn.commit()
@@ -740,7 +740,7 @@ def process_email_queue():
     c.execute("""
         SELECT id, email, subject, body_html, body_text, retry_count, sequence_step
         FROM email_queue
-        WHERE status = 'scheduled' AND scheduled_at <= ?
+        WHERE status = 'scheduled' AND scheduled_at <= %s
         ORDER BY scheduled_at ASC
         LIMIT 10
     """, (now,))
@@ -752,10 +752,10 @@ def process_email_queue():
         email_id, to_email, subject, html_content, text_content, retry_count, step = email_row
         
         # Check if user has unsubscribed
-        c.execute("SELECT subscribed FROM leads WHERE email = ?", (to_email,))
+        c.execute("SELECT subscribed FROM leads WHERE email = %s", (to_email,))
         lead = c.fetchone()
         if lead and not lead[0]:
-            c.execute("UPDATE email_queue SET status = 'cancelled', error = 'User unsubscribed' WHERE id = ?", (email_id,))
+            c.execute("UPDATE email_queue SET status = 'cancelled', error = 'User unsubscribed' WHERE id = %s", (email_id,))
             conn.commit()
             continue
         
@@ -764,15 +764,15 @@ def process_email_queue():
         
         if result['success']:
             c.execute("""
-                UPDATE email_queue SET status = 'sent', sent_at = ? WHERE id = ?
+                UPDATE email_queue SET status = 'sent', sent_at = %s WHERE id = %s
             """, (datetime.utcnow().isoformat(), email_id))
             
             # Update welcome series progress
             if step:
                 c.execute("""
                     UPDATE welcome_series 
-                    SET current_step = ?, last_email_sent = ?
-                    WHERE email = ?
+                    SET current_step = %s, last_email_sent = %s
+                    WHERE email = %s
                 """, (step, datetime.utcnow().isoformat(), to_email))
             
             results.append({'email_id': email_id, 'success': True})
@@ -783,8 +783,8 @@ def process_email_queue():
                     UPDATE email_queue 
                     SET retry_count = retry_count + 1, 
                         scheduled_at = ?,
-                        error = ?
-                    WHERE id = ?
+                        error = %s
+                    WHERE id = %s
                 """, (
                     (datetime.utcnow() + timedelta(hours=1)).isoformat(),
                     result['error'],
@@ -792,7 +792,7 @@ def process_email_queue():
                 ))
             else:
                 c.execute("""
-                    UPDATE email_queue SET status = 'failed', error = ? WHERE id = ?
+                    UPDATE email_queue SET status = 'failed', error = %s WHERE id = %s
                 """, (result['error'], email_id))
             
             results.append({'email_id': email_id, 'success': False, 'error': result['error']})
@@ -825,14 +825,14 @@ def get_email_stats():
     # Recent sends (last 24h)
     yesterday = (datetime.utcnow() - timedelta(hours=24)).isoformat()
     c.execute("""
-        SELECT COUNT(*) FROM email_queue WHERE sent_at >= ?
+        SELECT COUNT(*) FROM email_queue WHERE sent_at >= %s
     """, (yesterday,))
     stats['sent_24h'] = c.fetchone()[0]
     
     # Open tracking (if implemented)
     c.execute("""
         SELECT event_type, COUNT(*) FROM email_tracking 
-        WHERE created_at >= ? GROUP BY event_type
+        WHERE created_at >= %s GROUP BY event_type
     """, (yesterday,))
     stats['tracking_24h'] = {row[0]: row[1] for row in c.fetchall()}
     
@@ -913,13 +913,13 @@ def handle_unsubscribe(token: str) -> dict:
     # In production, you'd want a separate unsubscribe_tokens table
     c.execute("""
         UPDATE leads SET subscribed = 0 WHERE email IN (
-            SELECT DISTINCT email FROM email_queue WHERE body_html LIKE ?
+            SELECT DISTINCT email FROM email_queue WHERE body_html LIKE %s
         )
     """, (f'%{token}%',))
     
     # Stop welcome series
     c.execute("""
-        SELECT DISTINCT email FROM email_queue WHERE body_html LIKE ?
+        SELECT DISTINCT email FROM email_queue WHERE body_html LIKE %s
     """, (f'%{token}%',))
     
     result = c.fetchone()
@@ -938,13 +938,13 @@ def record_email_event(email_id: str, event_type: str, ip: str = None, user_agen
     c = conn.cursor()
     
     # Get email info
-    c.execute("SELECT email FROM email_queue WHERE id = ?", (email_id,))
+    c.execute("SELECT email FROM email_queue WHERE id = %s", (email_id,))
     row = c.fetchone()
     email = row[0] if row else None
     
     c.execute("""
         INSERT INTO email_tracking (id, email_id, email, event_type, ip_address, user_agent, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
     """, (
         secrets.token_hex(8),
         email_id,

@@ -162,7 +162,7 @@ def init_monetization_tables():
     # API Usage table (for tracking)
     c.execute("""
         CREATE TABLE IF NOT EXISTS api_usage (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id TEXT,
             api_key_id INTEGER,
             endpoint TEXT,
@@ -180,7 +180,7 @@ def init_monetization_tables():
     # Daily usage aggregates (for fast queries)
     c.execute("""
         CREATE TABLE IF NOT EXISTS api_usage_daily (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id TEXT NOT NULL,
             api_key_id INTEGER,
             date TEXT NOT NULL,
@@ -253,7 +253,7 @@ def validate_api_key(key):
         SELECT ak.*, up.plan
         FROM api_keys ak
         LEFT JOIN user_plans up ON ak.user_id = up.user_id
-        WHERE ak.key_hash = ? AND ak.is_active = 1
+        WHERE ak.key_hash = %s AND ak.is_active = 1
     """, (key_hash,))
     
     row = c.fetchone()
@@ -276,8 +276,8 @@ def update_key_usage(key_id):
     
     c.execute("""
         UPDATE api_keys 
-        SET last_used_at = ?, usage_count = usage_count + 1
-        WHERE id = ?
+        SET last_used_at = %s, usage_count = usage_count + 1
+        WHERE id = %s
     """, (datetime.utcnow().isoformat(), key_id))
     
     conn.commit()
@@ -411,18 +411,18 @@ def track_api_usage(user_id, api_key_id, endpoint, method, status_code, response
             c.execute("""
                 INSERT INTO api_usage (user_id, api_key_id, endpoint, method, status_code, 
                                        response_time_ms, ip_address, user_agent, timestamp, date)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (user_id, api_key_id, endpoint, method, status_code, 
                   response_time_ms, ip_address, user_agent, now.isoformat(), date))
             
             # Update daily aggregate
             c.execute("""
                 INSERT INTO api_usage_daily (user_id, api_key_id, date, request_count, error_count, avg_response_time_ms)
-                VALUES (?, ?, ?, 1, ?, ?)
+                VALUES (%s, %s, %s, 1, %s, %s)
                 ON CONFLICT(user_id, api_key_id, date) DO UPDATE SET
                     request_count = request_count + 1,
-                    error_count = error_count + ?,
-                    avg_response_time_ms = (avg_response_time_ms * request_count + ?) / (request_count + 1)
+                    error_count = error_count + %s,
+                    avg_response_time_ms = (avg_response_time_ms * request_count + %s) / (request_count + 1)
             """, (
                 user_id, api_key_id, date, 
                 1 if status_code >= 400 else 0, 
@@ -434,8 +434,8 @@ def track_api_usage(user_id, api_key_id, endpoint, method, status_code, response
             # Update user plan usage
             c.execute("""
                 UPDATE user_plans 
-                SET usage_this_cycle = usage_this_cycle + 1, updated_at = ?
-                WHERE user_id = ?
+                SET usage_this_cycle = usage_this_cycle + 1, updated_at = %s
+                WHERE user_id = %s
             """, (now.isoformat(), user_id))
             
             conn.commit()
@@ -634,19 +634,19 @@ def get_current_plan():
     c = conn.cursor()
     
     # Get user plan
-    c.execute("SELECT * FROM user_plans WHERE user_id = ?", (user_id,))
+    c.execute("SELECT * FROM user_plans WHERE user_id = %s", (user_id,))
     plan_row = c.fetchone()
     
     # Get from users table if not in user_plans
     if not plan_row:
-        c.execute("SELECT plan FROM users WHERE id = ?", (user_id,))
+        c.execute("SELECT plan FROM users WHERE id = %s", (user_id,))
         user_row = c.fetchone()
         plan = user_row['plan'] if user_row else 'free'
         
         # Create user_plans entry
         c.execute("""
             INSERT INTO user_plans (user_id, plan, updated_at)
-            VALUES (?, ?, ?)
+            VALUES (%s, %s, %s)
         """, (user_id, plan, datetime.utcnow().isoformat()))
         conn.commit()
         
@@ -706,7 +706,7 @@ def list_api_keys():
     c.execute("""
         SELECT id, key_prefix, name, is_active, created_at, last_used_at, usage_count
         FROM api_keys
-        WHERE user_id = ?
+        WHERE user_id = %s
         ORDER BY created_at DESC
     """, (user_id,))
     
@@ -754,13 +754,13 @@ def create_api_key():
     c = conn.cursor()
     
     # Check user's plan and key limit
-    c.execute("SELECT plan FROM users WHERE id = ?", (user_id,))
+    c.execute("SELECT plan FROM users WHERE id = %s", (user_id,))
     user_row = c.fetchone()
     plan = user_row['plan'] if user_row else 'free'
     
     max_keys = RATE_LIMITS.get(plan, RATE_LIMITS['free'])['max_keys']
     
-    c.execute("SELECT COUNT(*) as count FROM api_keys WHERE user_id = ? AND is_active = 1", (user_id,))
+    c.execute("SELECT COUNT(*) as count FROM api_keys WHERE user_id = %s AND is_active = 1", (user_id,))
     current_count = c.fetchone()['count']
     
     if current_count >= max_keys:
@@ -781,7 +781,7 @@ def create_api_key():
     
     c.execute("""
         INSERT INTO api_keys (user_id, key_hash, key_prefix, name, rate_limit_tier, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s)
     """, (user_id, key_hash, key_prefix, name, plan, now))
     
     key_id = c.lastrowid
@@ -821,13 +821,13 @@ def revoke_api_key(key_id):
     c = conn.cursor()
     
     # Verify ownership
-    c.execute("SELECT id FROM api_keys WHERE id = ? AND user_id = ?", (key_id, user_id))
+    c.execute("SELECT id FROM api_keys WHERE id = %s AND user_id = %s", (key_id, user_id))
     if not c.fetchone():
         conn.close()
         return jsonify({'error': 'API key not found'}), 404
     
     # Soft delete (mark inactive)
-    c.execute("UPDATE api_keys SET is_active = 0 WHERE id = ?", (key_id,))
+    c.execute("UPDATE api_keys SET is_active = 0 WHERE id = %s", (key_id,))
     conn.commit()
     conn.close()
     
@@ -857,7 +857,7 @@ def regenerate_api_key(key_id):
     c = conn.cursor()
     
     # Verify ownership and get old key info
-    c.execute("SELECT * FROM api_keys WHERE id = ? AND user_id = ?", (key_id, user_id))
+    c.execute("SELECT * FROM api_keys WHERE id = %s AND user_id = %s", (key_id, user_id))
     old_key = c.fetchone()
     
     if not old_key:
@@ -873,8 +873,8 @@ def regenerate_api_key(key_id):
     # Update with new key
     c.execute("""
         UPDATE api_keys 
-        SET key_hash = ?, key_prefix = ?, created_at = ?, last_used_at = NULL, usage_count = 0
-        WHERE id = ?
+        SET key_hash = %s, key_prefix = %s, created_at = %s, last_used_at = NULL, usage_count = 0
+        WHERE id = %s
     """, (key_hash, key_prefix, now, key_id))
     
     conn.commit()
@@ -915,7 +915,7 @@ def get_usage_stats():
     c = conn.cursor()
     
     # Get user's plan
-    c.execute("SELECT plan FROM users WHERE id = ?", (user_id,))
+    c.execute("SELECT plan FROM users WHERE id = %s", (user_id,))
     user_row = c.fetchone()
     plan = user_row['plan'] if user_row else 'free'
     
@@ -928,7 +928,7 @@ def get_usage_stats():
     c.execute("""
         SELECT date, SUM(request_count) as requests, SUM(error_count) as errors
         FROM api_usage_daily
-        WHERE user_id = ? AND date >= ?
+        WHERE user_id = %s AND date >= %s
         GROUP BY date
         ORDER BY date DESC
     """, (user_id, thirty_days_ago))
@@ -942,7 +942,7 @@ def get_usage_stats():
             SUM(error_count) as total_errors,
             AVG(avg_response_time_ms) as avg_response_time
         FROM api_usage_daily
-        WHERE user_id = ?
+        WHERE user_id = %s
     """, (user_id,))
     
     totals = c.fetchone()
@@ -951,7 +951,7 @@ def get_usage_stats():
     c.execute("""
         SELECT endpoint, COUNT(*) as count
         FROM api_usage
-        WHERE user_id = ? AND date >= ?
+        WHERE user_id = %s AND date >= %s
         GROUP BY endpoint
         ORDER BY count DESC
         LIMIT 10
@@ -1009,7 +1009,7 @@ def get_usage_history():
     c.execute("""
         SELECT endpoint, method, status_code, response_time_ms, timestamp
         FROM api_usage
-        WHERE user_id = ? AND date >= ?
+        WHERE user_id = %s AND date >= %s
         ORDER BY timestamp DESC
         LIMIT 1000
     """, (user_id, since))

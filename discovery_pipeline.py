@@ -159,7 +159,7 @@ def init_pipeline_tables():
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS pending_facilities (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             operator TEXT,
             operator_known BOOLEAN DEFAULT false,
             location_text TEXT,
@@ -193,7 +193,7 @@ def init_pipeline_tables():
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS facility_sources (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             facility_id TEXT,
             pending_facility_id INTEGER,
             article_url TEXT,
@@ -207,7 +207,7 @@ def init_pipeline_tables():
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS pipeline_metrics (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             metric_date TEXT,
             articles_processed INTEGER DEFAULT 0,
             articles_classified INTEGER DEFAULT 0,
@@ -340,7 +340,7 @@ def extract_facility_data(article):
 
     if not operator:
         op_patterns = [
-            r'(?:by|from|operator|developer|built by|owned by|managed by)\s+([A-Z][A-Za-z\s&]+?)(?:\s+(?:is|has|will|plans|broke|announced|data center|facility))',
+            r'(%s:by|from|operator|developer|built by|owned by|managed by)\s+([A-Z][A-Za-z\s&]+%s)(%s:\s+(%s:is|has|will|plans|broke|announced|data center|facility))',
             r'([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,3})\s+(?:breaks ground|broke ground|announces|plans|will build|to build|developing)',
         ]
         for pat in op_patterns:
@@ -582,8 +582,8 @@ def find_matching_facility(extracted):
             c.execute("""
                 SELECT id, name, provider, city, state, country, power_mw, status
                 FROM facilities
-                WHERE (provider LIKE ? OR name LIKE ?)
-                AND city = ?
+                WHERE (provider LIKE %s OR name LIKE %s)
+                AND city = %s
                 LIMIT 1
             """, (f"%{op}%", f"%{op}%", city))
             match = c.fetchone()
@@ -597,8 +597,8 @@ def find_matching_facility(extracted):
             c.execute("""
                 SELECT id, name, provider, city, state, country, power_mw, status
                 FROM facilities
-                WHERE (provider LIKE ? OR name LIKE ?)
-                AND state = ?
+                WHERE (provider LIKE %s OR name LIKE %s)
+                AND state = %s
                 LIMIT 5
             """, (f"%{op}%", f"%{op}%", state))
             matches = c.fetchall()
@@ -609,7 +609,7 @@ def find_matching_facility(extracted):
         c.execute("""
             SELECT id, operator, operator AS provider, city, state, source_article_title
             FROM pending_facilities
-            WHERE operator = ? AND city = ?
+            WHERE operator = %s AND city = %s
             AND reviewed = false
             LIMIT 1
         """, (extracted.get('operator'), extracted.get('city')))
@@ -637,7 +637,7 @@ def add_to_pending(extracted, match_result):
                 investment_usd, confidence_score, confidence_tier, classification,
                 source_url, source_name, source_article_title, source_published_date,
                 extracted_at, matched_facility_id, match_type
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             extracted.get('operator'),
             True if extracted.get('operator_known') else False,
@@ -669,7 +669,7 @@ def add_to_pending(extracted, match_result):
             INSERT INTO facility_sources (
                 pending_facility_id, article_url, article_title,
                 source_name, published_date, extracted_data
-            ) VALUES (?, ?, ?, ?, ?, ?)
+            ) VALUES (%s, %s, %s, %s, %s, %s)
         """, (
             pending_id,
             extracted.get('source_url'),
@@ -695,7 +695,7 @@ def auto_create_facility(extracted):
     try:
         fac_id = f"news_{hashlib.md5((extracted.get('operator', '') + (extracted.get('city', '') or '') + str(extracted.get('capacity_mw', ''))).encode()).hexdigest()[:12]}"
 
-        c.execute("SELECT id FROM facilities WHERE id = ?", (fac_id,))
+        c.execute("SELECT id FROM facilities WHERE id = %s", (fac_id,))
         if c.fetchone():
             conn.close()
             return fac_id
@@ -706,7 +706,7 @@ def auto_create_facility(extracted):
                 latitude, longitude, power_mw, status,
                 source, source_url, source_id,
                 first_seen, last_updated
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             fac_id,
             f"{extracted.get('operator', 'Unknown')} - {extracted.get('city', 'Unknown')}",
@@ -729,7 +729,7 @@ def auto_create_facility(extracted):
             INSERT INTO facility_sources (
                 facility_id, article_url, article_title,
                 source_name, published_date, extracted_data
-            ) VALUES (?, ?, ?, ?, ?, ?)
+            ) VALUES (%s, %s, %s, %s, %s, %s)
         """, (
             fac_id,
             extracted.get('source_url'),
@@ -758,7 +758,7 @@ def run_pipeline(limit=50):
         WHERE (facility_processed IS NULL OR facility_processed = false)
         AND title IS NOT NULL
         ORDER BY discovered_at DESC
-        LIMIT ?
+        LIMIT %s
     """, (limit,))
     articles = [dict(row) for row in c.fetchall()]
     conn.close()
@@ -838,9 +838,9 @@ def mark_processed(article_id, facility_id=None):
         conn = get_db()
         c = conn.cursor()
         if facility_id:
-            c.execute("UPDATE announcements SET facility_processed = true, facility_extracted_id = ? WHERE id = ?", (facility_id, article_id))
+            c.execute("UPDATE announcements SET facility_processed = true, facility_extracted_id = %s WHERE id = %s", (facility_id, article_id))
         else:
-            c.execute("UPDATE announcements SET facility_processed = true WHERE id = ?", (article_id,))
+            c.execute("UPDATE announcements SET facility_processed = true WHERE id = %s", (article_id,))
         conn.commit()
         conn.close()
     except:
@@ -851,11 +851,11 @@ def get_pending_facilities(tier=None, reviewed=False, sort='confidence_desc', li
     conn = get_db()
     c = conn.cursor()
 
-    query = "SELECT * FROM pending_facilities WHERE reviewed = ?"
+    query = "SELECT * FROM pending_facilities WHERE reviewed = %s"
     params = [1 if reviewed else 0]
 
     if tier:
-        query += " AND confidence_tier = ?"
+        query += " AND confidence_tier = %s"
         params.append(tier)
 
     if sort == 'confidence_desc':
@@ -865,7 +865,7 @@ def get_pending_facilities(tier=None, reviewed=False, sort='confidence_desc', li
     else:
         query += " ORDER BY confidence_score DESC"
 
-    query += " LIMIT ? OFFSET ?"
+    query += " LIMIT %s OFFSET %s"
     params.extend([limit, offset])
 
     c.execute(query, params)
@@ -928,7 +928,7 @@ def approve_pending(pending_id):
     conn = get_db()
     c = conn.cursor()
 
-    c.execute("SELECT * FROM pending_facilities WHERE id = ?", (pending_id,))
+    c.execute("SELECT * FROM pending_facilities WHERE id = %s", (pending_id,))
     pending = c.fetchone()
     if not pending:
         conn.close()
@@ -944,7 +944,7 @@ def approve_pending(pending_id):
                 latitude, longitude, power_mw, status,
                 source, source_url, source_id,
                 first_seen, last_updated
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             fac_id,
             f"{pending.get('operator', 'Unknown')} - {pending.get('city', 'Unknown')}",
@@ -965,14 +965,14 @@ def approve_pending(pending_id):
 
         c.execute("""
             UPDATE pending_facilities
-            SET reviewed = true, review_action = 'approved', reviewed_at = ?,
-                matched_facility_id = ?
-            WHERE id = ?
+            SET reviewed = true, review_action = 'approved', reviewed_at = %s,
+                matched_facility_id = %s
+            WHERE id = %s
         """, (datetime.utcnow().isoformat(), fac_id, pending_id))
 
         c.execute("""
-            UPDATE facility_sources SET facility_id = ?
-            WHERE pending_facility_id = ?
+            UPDATE facility_sources SET facility_id = %s
+            WHERE pending_facility_id = %s
         """, (fac_id, pending_id))
 
         conn.commit()
@@ -988,8 +988,8 @@ def reject_pending(pending_id, notes=None):
     c = conn.cursor()
     c.execute("""
         UPDATE pending_facilities
-        SET reviewed = true, review_action = 'rejected', reviewed_at = ?, notes = ?
-        WHERE id = ?
+        SET reviewed = true, review_action = 'rejected', reviewed_at = %s, notes = %s
+        WHERE id = %s
     """, (datetime.utcnow().isoformat(), notes, pending_id))
     conn.commit()
     conn.close()
@@ -1000,7 +1000,7 @@ def merge_pending(pending_id, facility_id):
     conn = get_db()
     c = conn.cursor()
 
-    c.execute("SELECT * FROM pending_facilities WHERE id = ?", (pending_id,))
+    c.execute("SELECT * FROM pending_facilities WHERE id = %s", (pending_id,))
     pending = c.fetchone()
     if not pending:
         conn.close()
@@ -1008,7 +1008,7 @@ def merge_pending(pending_id, facility_id):
 
     pending = dict(pending)
 
-    c.execute("SELECT * FROM facilities WHERE id = ?", (facility_id,))
+    c.execute("SELECT * FROM facilities WHERE id = %s", (facility_id,))
     facility = c.fetchone()
     if not facility:
         conn.close()
@@ -1019,7 +1019,7 @@ def merge_pending(pending_id, facility_id):
     updates = []
     params = []
     if pending.get('capacity_mw') and (not facility.get('power_mw') or pending['capacity_mw'] > facility['power_mw']):
-        updates.append("power_mw = ?")
+        updates.append("power_mw = %s")
         params.append(pending['capacity_mw'])
 
     if pending.get('status') and pending['status'] != facility.get('status'):
@@ -1027,25 +1027,25 @@ def merge_pending(pending_id, facility_id):
         old_idx = status_order.index(facility.get('status', 'announced')) if facility.get('status') in status_order else -1
         new_idx = status_order.index(pending['status']) if pending['status'] in status_order else -1
         if new_idx > old_idx:
-            updates.append("status = ?")
+            updates.append("status = %s")
             params.append(pending['status'])
 
     if updates:
-        updates.append("last_updated = ?")
+        updates.append("last_updated = %s")
         params.append(datetime.utcnow().isoformat())
         params.append(facility_id)
-        c.execute(f"UPDATE facilities SET {', '.join(updates)} WHERE id = ?", params)
+        c.execute(f"UPDATE facilities SET {', '.join(updates)} WHERE id = %s", params)
 
     c.execute("""
         UPDATE pending_facilities
-        SET reviewed = true, review_action = 'merged', reviewed_at = ?,
-            matched_facility_id = ?
-        WHERE id = ?
+        SET reviewed = true, review_action = 'merged', reviewed_at = %s,
+            matched_facility_id = %s
+        WHERE id = %s
     """, (datetime.utcnow().isoformat(), facility_id, pending_id))
 
     c.execute("""
-        UPDATE facility_sources SET facility_id = ?
-        WHERE pending_facility_id = ?
+        UPDATE facility_sources SET facility_id = %s
+        WHERE pending_facility_id = %s
     """, (facility_id, pending_id))
 
     conn.commit()
@@ -1062,12 +1062,12 @@ def edit_and_approve_pending(pending_id, edits):
     params = []
     for field, value in edits.items():
         if field in allowed_fields:
-            updates.append(f"{field} = ?")
+            updates.append(f"{field} = %s")
             params.append(value)
 
     if updates:
         params.append(pending_id)
-        c.execute(f"UPDATE pending_facilities SET {', '.join(updates)} WHERE id = ?", params)
+        c.execute(f"UPDATE pending_facilities SET {', '.join(updates)} WHERE id = %s", params)
         conn.commit()
 
     conn.close()

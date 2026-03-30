@@ -66,7 +66,7 @@ def get_facilities():
     status = request.args.get('status', '')
     
     conn = get_db()
-    conn.row_factory = sqlite3.Row
+    # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
     cursor = conn.cursor()
     
     # Build query
@@ -90,17 +90,17 @@ def get_facilities():
         # Build OR conditions for all aliases
         alias_conditions = []
         for term in search_terms:
-            alias_conditions.append("(city LIKE ? OR state LIKE ? OR name LIKE ? OR provider LIKE ? OR address LIKE ?)")
+            alias_conditions.append("(city LIKE %s OR state LIKE %s OR name LIKE %s OR provider LIKE %s OR address LIKE %s)")
             params.extend([f'%{term}%'] * 5)
         
         conditions.append(f"({' OR '.join(alias_conditions)})")
     
     if region:
-        conditions.append("region = ?")
+        conditions.append("region = %s")
         params.append(region)
     
     if status:
-        conditions.append("status = ?")
+        conditions.append("status = %s")
         params.append(status)
     
     where_clause = " AND ".join(conditions) if conditions else "1=1"
@@ -118,7 +118,7 @@ def get_facilities():
             CASE WHEN city LIKE ? THEN 0 ELSE 1 END,
             power_mw DESC,
             name ASC
-        LIMIT ? OFFSET ?
+        LIMIT %s OFFSET %s
     """
     
     # Add the search term for sorting priority
@@ -157,7 +157,7 @@ def get_news():
     source = request.args.get('source', '')
     
     conn = get_db()
-    conn.row_factory = sqlite3.Row
+    # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
     cursor = conn.cursor()
     
     # Check if news_articles table exists
@@ -177,11 +177,11 @@ def get_news():
     params = []
     
     if category:
-        conditions.append("categories LIKE ?")
+        conditions.append("categories LIKE %s")
         params.append(f'%{category}%')
     
     if source:
-        conditions.append("source LIKE ?")
+        conditions.append("source LIKE %s")
         params.append(f'%{source}%')
     
     where_clause = " AND ".join(conditions) if conditions else "1=1"
@@ -195,7 +195,7 @@ def get_news():
         SELECT * FROM news_articles 
         WHERE {where_clause}
         ORDER BY published_date DESC, id DESC
-        LIMIT ? OFFSET ?
+        LIMIT %s OFFSET %s
     """
     cursor.execute(query, params + [limit, offset])
     

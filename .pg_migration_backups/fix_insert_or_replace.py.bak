@@ -6,7 +6,7 @@ Run in Replit Shell:  python fix_insert_or_replace.py
 Dry run first:       python fix_insert_or_replace.py --dry-run
 
 The previous bulk fixer converted:
-  INSERT INTO table  → INSERT INTO table
+  INSERT OR REPLACE INTO table → INSERT INTO table
 
 But didn't add the ON CONFLICT DO UPDATE SET clause because it needs
 to know the conflict column and the update columns.
