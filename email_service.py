@@ -21,7 +21,6 @@ from email.mime.base import MIMEBase
 from email import encoders
 import os
 import secrets
-import sqlite3
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List
 import json

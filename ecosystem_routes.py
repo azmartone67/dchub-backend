@@ -3,7 +3,6 @@ DC Hub Ecosystem - Dynamic Partner Directory with AI Enrichment
 Companies can self-register and get AI-enhanced profiles
 """
 
-import sqlite3
 import json
 import os
 import re
