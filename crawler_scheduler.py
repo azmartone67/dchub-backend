@@ -352,10 +352,10 @@ def register_crawler_admin(app):
         return jsonify(get_scheduler_status())
     
     @app.route('/api/admin/crawler-run/<name>', methods=['POST'])
-    def crawler_run(n):
+    def crawler_run(name):
         from flask import jsonify
         # TODO: Add admin auth check here
-        success, message = run_crawler_now(n)
+        success, message = run_crawler_now(name)
         return jsonify({"success": success, "message": message}), 200 if success else 409
     
     logger.info("📅 Crawler admin endpoints registered: /api/admin/crawler-status, /api/admin/crawler-run/<name>")
