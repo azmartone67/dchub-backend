@@ -14087,22 +14087,29 @@ def api_v1_ecosystem_redirect():
 @app.route('/api/rankings/states', methods=['GET'])
 def api_rankings_states():
     """Facility counts grouped by state."""
+    conn = None
     try:
         conn = get_db()
         c = conn.cursor()
         c.execute("SELECT state, COUNT(*) as facility_count FROM facilities WHERE state IS NOT NULL AND state != '' GROUP BY state ORDER BY facility_count DESC")
         rows = c.fetchall()
-        conn.close()
         states = [{"state": r[0], "facility_count": r[1]} for r in rows]
         return jsonify({"success": True, "data": states, "total": len(states)})
     except Exception as e:
         logger.warning(f"rankings/states error: {e}")
-        return jsonify({"success": True, "data": [], "total": 0, "note": "temporary fallback"})
+        return jsonify({"success": True, "data": [], "total": 0, "note": "temporarily unavailable"})
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 @app.route('/api/v1/infrastructure', methods=['GET'])
 def api_v1_infrastructure():
     """Infrastructure asset counts."""
-    counts = {}
+    counts = {"substations": 0, "transmission_lines": 0, "gas_pipelines": 0, "power_plants": 0}
+    conn = None
     try:
         conn = get_db()
         c = conn.cursor()
@@ -14112,16 +14119,21 @@ def api_v1_infrastructure():
                 counts[table] = c.fetchone()[0]
             except Exception:
                 conn.rollback()
-                counts[table] = 0
-        conn.close()
     except Exception as e:
         logger.warning(f"infrastructure count error: {e}")
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
     return jsonify({"success": True, "data": counts})
 
 @app.route('/api/v1/energy/summary', methods=['GET'])
 def api_v1_energy_summary():
     """Energy infrastructure summary from power_plants and gas_pipelines."""
-    summary = {"power_plants": {}, "gas_pipelines": {}}
+    summary = {"power_plants": {"total": 0, "by_fuel": []}, "gas_pipelines": {"total": 0}}
+    conn = None
     try:
         conn = get_db()
         c = conn.cursor()
@@ -14132,16 +14144,19 @@ def api_v1_energy_summary():
             summary["power_plants"]["by_fuel"] = [{"fuel": r[0], "count": r[1]} for r in c.fetchall()]
         except Exception:
             conn.rollback()
-            summary["power_plants"] = {"total": 0, "by_fuel": []}
         try:
             c.execute("SELECT COUNT(*) FROM gas_pipelines")
             summary["gas_pipelines"]["total"] = c.fetchone()[0]
         except Exception:
             conn.rollback()
-            summary["gas_pipelines"] = {"total": 0}
-        conn.close()
     except Exception as e:
         logger.warning(f"energy summary error: {e}")
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
     return jsonify({"success": True, "data": summary})
 
 @app.route('/api/v1/gdci', methods=['GET'])
@@ -14165,6 +14180,7 @@ def api_v1_gdci():
 def api_energy_discovery_overview():
     """Energy discovery overview — power plant and substation counts."""
     overview = {"power_plants": 0, "substations": 0}
+    conn = None
     try:
         conn = get_db()
         c = conn.cursor()
@@ -14174,9 +14190,14 @@ def api_energy_discovery_overview():
                 overview[table] = c.fetchone()[0]
             except Exception:
                 conn.rollback()
-        conn.close()
     except Exception as e:
         logger.warning(f"energy-discovery overview error: {e}")
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
     return jsonify({"success": True, "data": overview})
 
 
