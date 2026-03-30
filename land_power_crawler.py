@@ -241,6 +241,20 @@ def init_land_power_tables(get_db):
             except Exception:
                 pass
 
+        # Spatial indexes for fast bounding-box queries (prevents full table scans)
+        for idx_sql in [
+            "CREATE INDEX IF NOT EXISTS idx_gas_pipelines_lat_lon ON gas_pipelines (lat, lon)",
+            "CREATE INDEX IF NOT EXISTS idx_gas_pipelines_state ON gas_pipelines (state)",
+            "CREATE INDEX IF NOT EXISTS idx_power_plants_lat_lon ON power_plants (lat, lon)",
+            "CREATE INDEX IF NOT EXISTS idx_power_plants_state ON power_plants (state)",
+            "CREATE INDEX IF NOT EXISTS idx_substations_lat_lon ON substations (latitude, longitude)",
+            "CREATE INDEX IF NOT EXISTS idx_substations_state ON substations (state)",
+        ]:
+            try:
+                c.execute(idx_sql)
+            except Exception:
+                pass
+
         # Sync log — tracks each crawler run
         c.execute("""
             CREATE TABLE IF NOT EXISTS land_power_sync_log (
