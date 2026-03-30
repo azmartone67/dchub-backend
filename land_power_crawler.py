@@ -50,8 +50,9 @@ EIA_860_PLANTS_URL = "https://api.eia.gov/v2/electricity/operating-generator-cap
 HIFLD_SUBSTATIONS_URL = "https://opendata.arcgis.com/api/v3/datasets/8cb9ba99d67a45e2a5bc0d3d7c2e5d16_0/downloads/data?format=geojson&spatialRefId=4326"
 HIFLD_TRANSMISSION_URL = "https://opendata.arcgis.com/api/v3/datasets/70512b03fe994c6393107cc9946e5c22_0/downloads/data?format=geojson&spatialRefId=4326"
 
-# EIA Natural Gas: Interstate pipeline data
-EIA_NG_PIPELINES_URL = "https://api.eia.gov/v2/natural-gas/trans/ann/data/"
+# EIA Natural Gas: Interstate pipeline movement data (by state)
+# Note: /natural-gas/trans/ was removed from EIA API; pipeline data is under /move/ist/
+EIA_NG_PIPELINES_URL = "https://api.eia.gov/v2/natural-gas/move/ist/data/"
 
 # Rate limiting
 REQUEST_DELAY_SECONDS = 1.0
@@ -713,7 +714,7 @@ def crawl_gas_pipelines(get_db, full_refresh=False):
                 'api_key': EIA_API_KEY,
                 'frequency': 'annual',
                 'data[0]': 'value',
-                'facets[process][]': 'FPR',  # Pipeline receipts
+                'facets[process][]': 'MIR',  # Interstate Movements: Receipts
                 'sort[0][column]': 'period',
                 'sort[0][direction]': 'desc',
                 'offset': offset,
@@ -754,6 +755,9 @@ def crawl_gas_pipelines(get_db, full_refresh=False):
             if not name:
                 continue
             try:
+                # Extract state from duoarea (e.g., 'SAL-SMS' → 'AL', 'NUS-Z0S' → 'US')
+                duo = _safe_str(rec.get('duoarea', ''))
+                state_code = duo[1:3] if len(duo) >= 3 and duo[0] == 'S' else _safe_str(rec.get('stateid', ''))
                 cur.execute("""
                     INSERT INTO gas_pipelines (name, operator, state, commodity, source, last_updated)
                     VALUES (%s, %s, %s, %s, 'eia-ng', NOW())
@@ -764,7 +768,7 @@ def crawl_gas_pipelines(get_db, full_refresh=False):
                 """, (
                     name[:500],
                     _safe_str(rec.get('area-name', ''))[:500],
-                    _safe_str(rec.get('stateid', ''))[:10],
+                    state_code[:10],
                     'natural_gas',
                 ))
                 upserted += 1
