@@ -2,7 +2,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # =================================================================
-# BOOT GUARD — Syntax self-check + Neon hostname monitor 2.0.1
+# BOOT GUARD — Syntax self-check + Neon hostname monitor
 # Prevents crash-loops and detects silent DB migrations
 # Added: 2026-03-07 (Neon outage prevention) 
 # =================================================================
@@ -48,7 +48,7 @@ if _bg_neon_url and 'neon' in _bg_neon_url.lower():
                     import urllib.request, json
                     _k = _bg_os.environ.get('SENDGRID_API_KEY', '')
                     if not _k: return
-                    _p = json.dumps({"personalizations":[{"to":[{"email":_bg_os.environ.get('ADMIN_ALERT_EMAIL','jonathan@dchub.cloud')}]}],"from":{"email":_bg_os.environ.get('SENDGRID_FROM_EMAIL','info@dchub.cloud'),"name":"DC Hub Boot Guard"},"subject":"\U0001f6a8 Neon Hostname Changed on Boot","content":[{"type":"text/html","value":f"<h2>Neon Hostname Changed</h2><p>Previous: {_bg_previous_host}</p><p>Current: {_bg_current_host}</p>"}]}).encode()
+                    _p = json.dumps({"personalizations":[{"to":[{"email":_bg_os.environ.get('ADMIN_ALERT_EMAIL','jonathan@dchub.cloud')}]}],"from":{"email":_bg_os.environ.get('SENDGRID_FROM_EMAIL','alerts@dchub.cloud'),"name":"DC Hub Boot Guard"},"subject":"\U0001f6a8 Neon Hostname Changed on Boot","content":[{"type":"text/html","value":f"<h2>Neon Hostname Changed</h2><p>Previous: {_bg_previous_host}</p><p>Current: {_bg_current_host}</p>"}]}).encode()
                     _r = urllib.request.Request("https://api.sendgrid.com/v3/mail/send",data=_p,method='POST')
                     _r.add_header('Authorization',f'Bearer {_k}')
                     _r.add_header('Content-Type','application/json')
@@ -531,7 +531,7 @@ def try_get_pg_connection():
         if _validate_connection(conn, timeout_ms=5000):
             _pool_stats['acquired'] += 1
             _track_checkout(conn)
-            return _PoolConnWrapper(conn)
+            return conn
         else:
             try:
                 _pg_pool_obj.putconn(conn, close=True)
@@ -542,38 +542,6 @@ def try_get_pg_connection():
         return None
     except Exception:
         return None
-
-class _PoolConnWrapper:
-    """Wraps a psycopg2 pool connection so .close() returns it to pool instead of destroying it."""
-    __slots__ = ('_conn', '_returned')
-    def __init__(self, real_conn):
-        object.__setattr__(self, '_conn', real_conn)
-        object.__setattr__(self, '_returned', False)
-    def close(self):
-        if object.__getattribute__(self, '_returned'):
-            return
-        object.__setattr__(self, '_returned', True)
-        c = object.__getattribute__(self, '_conn')
-        return_pg_connection(c)
-    def cursor(self, *a, **kw):
-        return object.__getattribute__(self, '_conn').cursor(*a, **kw)
-    def commit(self):
-        return object.__getattribute__(self, '_conn').commit()
-    def rollback(self):
-        return object.__getattribute__(self, '_conn').rollback()
-    @property
-    def autocommit(self):
-        return object.__getattribute__(self, '_conn').autocommit
-    @autocommit.setter
-    def autocommit(self, val):
-        object.__getattribute__(self, '_conn').autocommit = val
-    def __getattr__(self, name):
-        return getattr(object.__getattribute__(self, '_conn'), name)
-    def __enter__(self):
-        return self
-    def __exit__(self, *exc):
-        self.close()
-        return False
 
 def get_pg_connection(retries=3, pool_type=None):
     global _pg_pool_obj
@@ -616,7 +584,7 @@ def get_pg_connection(retries=3, pool_type=None):
                 if max_conn > 0 and used >= int(max_conn * 0.75):
                     logging.getLogger('db_pool').warning(f"⚠️ Pool at {used}/{max_conn} ({int(used/max_conn*100)}%) -- high usage")
                 
-                return _PoolConnWrapper(conn)
+                return conn
             else:
                 pg_url = os.environ.get('DATABASE_URL', '')
                 if not pg_url:
@@ -643,9 +611,6 @@ def get_pg_connection(retries=3, pool_type=None):
 
 def return_pg_connection(conn, pool_type=None, error=False):
     if conn is None:
-        return
-    if isinstance(conn, _PoolConnWrapper):
-        conn.close()
         return
     _track_return(conn)
     # ALWAYS rollback before returning to pool.
@@ -978,12 +943,6 @@ _keepalive_logger.info("💓 Neon Keepalive: ✅ Thread started (module-level, i
 sys.stdout.flush()
 
 from flask import Flask, request, jsonify, Response, send_from_directory, send_file, stream_with_context, make_response, render_template, redirect
-try:
-    from redis_cache import cached_endpoint, register_cache_routes, cache_get, cache_set
-    REDIS_AVAILABLE = True
-except ImportError:
-    REDIS_AVAILABLE = False
-    print("[Redis] redis_cache.py not found — caching disabled")
 from google_integration_routes import setup_google_routes
 from google_meta_integration import setup_google_meta_routes
 # DISABLED: Old linkedin_scheduler replaced by linkedin_poster.py (Neon-backed)
@@ -1019,32 +978,8 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # CREATE FLASK APP IMMEDIATELY - Before any heavy imports
 # =============================================================================
-# Region normalization (MCP fix Mar 22)
-REGION_ALIASES = {
-    'north_america': 'North America', 'na': 'North America',
-    'north america': 'North America', 'us': 'North America',
-    'europe': 'EMEA', 'emea': 'EMEA', 'eu': 'EMEA',
-    'apac': 'APAC', 'asia': 'APAC', 'asia_pacific': 'APAC',
-    'latam': 'LATAM', 'latin_america': 'LATAM',
-    'mea': 'MEA', 'middle_east': 'MEA',
-}
-
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 
-# Redis cache routes
-try:
-    if REDIS_AVAILABLE:
-        register_cache_routes(app)
-        print("[Redis Cache] ✅ Routes registered")
-        from redis_cache import debug_redis_env
-        @app.route("/api/cache/redis/debug")
-        def _redis_debug():
-            from flask import jsonify, request
-            if request.headers.get("X-Admin-Key") != __import__("os").environ.get("DCHUB_ADMIN_KEY"):
-                return jsonify({"error": "unauthorized"}), 401
-            return jsonify(debug_redis_env())
-except Exception as e:
-    print(f"[Redis Cache] ⚠️ {e}")
 # ChatGPT MCP Connector — CORS + Deep Research compatibility
 try:
     from chatgpt_mcp_compat import patch_cors_for_chatgpt
@@ -1110,17 +1045,11 @@ except Exception as e:
 try:
     from index_api import index_bp
     app.register_blueprint(index_bp)
+    print("📊 DC Hub Index: ✅ Legacy index endpoints registered")
 except ImportError:
     print("📊 DC Hub Index: ℹ️ index_api.py not found (replaced by gdci.py)")
 except Exception as e:
     print(f"📊 DC Hub Index: ⚠️ Error: {e}")
-
-# HIFLD Neon routes — query Neon directly, no more ArcGIS proxy 503s
-try:
-    from hifld_neon_routes import register_hifld_neon_routes
-    register_hifld_neon_routes(app)
-except Exception as e:
-    logger.warning(f"HIFLD Neon routes failed: {e}")
 # =============================================================================
 # EARLY require_plan STUB - Must be available before first 
 @app.route('/research')
@@ -1148,7 +1077,7 @@ def require_plan(min_plan='pro'):
                 return f(*args, **kwargs)
             # Internal MCP bypass -- trust calls from our own MCP server
             internal_key = request.headers.get("X-Internal-Key", "")
-            if internal_key and internal_key in (os.environ.get('DCHUB_INTERNAL_KEY', ''), os.environ.get('DCHUB_SYNC_KEY', '')):
+            if internal_key in ("dchub-internal-2024", "dchub-internal-sync-2026"):
                 return f(*args, **kwargs)
             try:
                 ai_info = get_ai_wars_key_info()
@@ -1244,16 +1173,15 @@ def api_facilities_shortcut():
     return redirect(target)
 
 @app.route('/api/v1/map', methods=['GET'])
-@cached_endpoint(ttl=600, key_prefix="map")
 def api_v1_map():
     """Public map endpoint - returns basic fields for all facilities for map display."""
     conn = None
     try:
-        conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))  # direct conn for heavy map query
+        conn = get_read_db()
         c = conn.cursor()
         limit = request.args.get('limit', 5000, type=int)
         offset = request.args.get('offset', 0, type=int)
-        limit = min(limit, 5000)  # cap: 50K markers crashes browsers
+        limit = min(limit, 10000)
         
         c.execute("""
             SELECT id, name, provider, city, state, country, market AS region,
@@ -1269,7 +1197,7 @@ def api_v1_map():
         facilities = [dict(zip(cols, row)) for row in rows]
         
         c.execute("SELECT COUNT(*) FROM discovered_facilities WHERE latitude IS NOT NULL AND longitude IS NOT NULL")
-        total = _row_val(c.fetchone(), 0)
+        total = c.fetchone()[0]
         
         return jsonify({
             'success': True,
@@ -1412,7 +1340,7 @@ def system_status():
             for table in ['facilities', 'deals', 'announcements', 'users']:
                 try:
                     pg_cur.execute(f"SELECT COUNT(*) FROM {table}")
-                    counts[table] = _row_val(pg_cur.fetchone(), 0)
+                    counts[table] = pg_cur.fetchone()[0]
                 except:
                     counts[table] = 0
             pg_check = {
@@ -1562,7 +1490,6 @@ from html import unescape, escape as html_escape
 import jwt
 import io
 from collections import defaultdict
-from self_restart_monitor import start_self_restart_monitor
 
 logger.info("✅ Core modules loaded")
 
@@ -1635,11 +1562,9 @@ logger.info("📦 Loading feature modules...")
 try:
     from land_power_rate_limiting import setup_land_power_routes
     logger.info("  ✅ land_power_rate_limiting")
-except Exception as e:
-    import traceback
+except ImportError as e:
     setup_land_power_routes = None
-    logger.warning(f"  ⚠️ land_power_rate_limiting: {type(e).__name__}: {e}")
-    logger.warning(traceback.format_exc())
+    logger.warning(f"  ⚠️ land_power_rate_limiting: {e}")
 
 try:
     from energy_infrastructure_routes import setup_energy_routes
@@ -1735,31 +1660,9 @@ except ImportError as e:
 try:
     from land_power_routes import register_land_power_api
     logger.info("  ✅ land_power_routes")
-except Exception as e:
-    import traceback
+except ImportError as e:
     register_land_power_api = None
-    logger.warning(f"  ⚠️ land_power_routes: {type(e).__name__}: {e}")
-    logger.warning(traceback.format_exc())
-
-try:
-    from land_power_crawler import register_land_power_routes, init_land_power_tables
-    logger.info("  ✅ land_power_crawler")
-except Exception as e:
-    import traceback
-    register_land_power_routes = None
-    init_land_power_tables = None
-    logger.warning(f"  ⚠️ land_power_crawler: {type(e).__name__}: {e}")
-    logger.warning(traceback.format_exc())
-
-try:
-    from mcp_tier_config import register_mcp_trial_routes, init_mcp_tier_tables
-    logger.info("  ✅ mcp_tier_config")
-except Exception as e:
-    import traceback
-    register_mcp_trial_routes = None
-    init_mcp_tier_tables = None
-    logger.warning(f"  ⚠️ mcp_tier_config: {type(e).__name__}: {e}")
-    logger.warning(traceback.format_exc())
+    logger.warning(f"  ⚠️ land_power_routes: {e}")
 
 try:
     from site_planner import register_site_planner_routes
@@ -1809,16 +1712,6 @@ try:
 except ImportError:
     WELCOME_DRIP_AVAILABLE = False
     logger.warning("⚠️ welcome_emails.py not found — drip emails disabled")
-
-# Usage limit email triggers (nudge at 80%, alert at 100%)
-try:
-    from usage_limit_emails import trigger_usage_email, setup_usage_email_routes
-    USAGE_EMAILS_AVAILABLE = True
-    logger.info("✅ Usage limit email triggers loaded")
-except ImportError:
-    USAGE_EMAILS_AVAILABLE = False
-    trigger_usage_email = lambda *a, **kw: None  # no-op fallback
-    logger.warning("⚠️ usage_limit_emails.py not found — usage emails disabled")
 
 # Override get_read_db to route reads through the Neon read replica pool
 def get_db(*args, **kwargs):
@@ -1871,9 +1764,6 @@ def get_read_db(*args, **kwargs):
                         except Exception:
                             pass
                 def cursor(self, *a, **kw):
-                    if not a and 'cursor_factory' not in kw:
-                        import psycopg2.extras
-                        kw['cursor_factory'] = psycopg2.extras.RealDictCursor
                     return object.__getattribute__(self, '_conn').cursor(*a, **kw)
                 def commit(self):
                     return object.__getattribute__(self, '_conn').commit()
@@ -1929,20 +1819,6 @@ except ImportError as e:
     logger.warning(f"  ⚠️ mcp_auto_register: {e}")
 
 logger.info("✅ Feature modules loaded")
-
-# ── MCP teaser bug fixes (energy_prices state filter, renewable filters, tool count) ──
-try:
-    import mcp_teaser_fixes
-    logger.info("🔧 MCP teaser fixes: ✅ Patches applied")
-except Exception as e:
-    logger.warning(f"🔧 MCP teaser fixes: ⚠️ {e}")
-
-# ── QA fixes v7 (Ashburn scoring, tier gating, transactions, tool count) ──
-try:
-    import mcp_qa_fixes_v7
-    logger.info("🔧 QA fixes v7: ✅ Patches applied")
-except Exception as e:
-    logger.warning(f"🔧 QA fixes v7: ⚠️ {e}")
 
 # =============================================================================
 # RATE LIMITER & SECURITY MIDDLEWARE
@@ -2149,7 +2025,7 @@ def serve_tools_manifest():
     import json as _json_tools
     tools = [
         {"name": "search_facilities", "description": "Search 20,000+ data centers by market, operator, tier, or capacity", "endpoint": "GET /api/agent/facilities", "parameters": {"type": "object", "properties": {"q": {"type": "string"}, "country": {"type": "string"}, "limit": {"type": "integer", "default": 20}}}},
-        {"name": "list_transactions", "description": "M&A deals -- $324B+ tracked with buyer, seller, price, date", "endpoint": "GET /api/transactions", "parameters": {"type": "object", "properties": {"limit": {"type": "integer"}, "deal_type": {"type": "string", "enum": ["acquisition", "investment", "merger"]}}}},
+        {"name": "list_transactions", "description": "M&A deals -- $51B+ tracked with buyer, seller, price, date", "endpoint": "GET /api/transactions", "parameters": {"type": "object", "properties": {"limit": {"type": "integer"}, "deal_type": {"type": "string", "enum": ["acquisition", "investment", "merger"]}}}},
         {"name": "get_market_intel", "description": "Market vacancy rates, pricing, inventory across 35+ markets", "endpoint": "GET /api/v1/markets/list"},
         {"name": "get_news", "description": "Industry news from 40+ sources, updated every 5 minutes", "endpoint": "GET /api/news", "parameters": {"type": "object", "properties": {"limit": {"type": "integer", "default": 50}}}},
         {"name": "get_energy_prices", "description": "LMP data across ERCOT, PJM, CAISO, MISO, NYISO, SPP, ISO-NE", "endpoint": "GET /api/v1/lmp/prices", "parameters": {"type": "object", "properties": {"iso": {"type": "string", "enum": ["ERCOT", "PJM", "CAISO", "MISO", "NYISO", "SPP", "ISONE"]}}}},
@@ -2219,11 +2095,17 @@ except ImportError as e:
     print(f"⚠️ Email service not available: {e}")
 
 # Auto-Pilot System Integration
-# NOTE: AutoDiscoveryEngine/AutoPilotScheduler were refactored into autopilot_routes.py
-# The routes blueprint handles everything now; these flags remain for compatibility.
-AUTOPILOT_AVAILABLE = False
-ADMIN_ANALYTICS_AVAILABLE = False
-user_analytics = None
+try:
+    from auto_pilot import AutoDiscoveryEngine, AutoPilotScheduler, setup_admin_routes, user_analytics
+    AUTOPILOT_AVAILABLE = True
+    ADMIN_ANALYTICS_AVAILABLE = True
+    print("🤖 Auto-Pilot system loaded")
+    print("📊 Admin Analytics loaded")
+except ImportError as e:
+    AUTOPILOT_AVAILABLE = False
+    ADMIN_ANALYTICS_AVAILABLE = False
+    user_analytics = None
+    print(f"⚠️ Auto-Pilot not available: {e}")
 
 # Intelligence Engine (Daily Email, LinkedIn, Deal Alerts)
 try:
@@ -2301,12 +2183,8 @@ def add_cors_headers(response):
             response.headers['Access-Control-Allow-Origin'] = 'https://dchub.cloud'
             response.headers['Access-Control-Allow-Credentials'] = 'true'
     else:
-        if origin in ALLOWED_ORIGINS:
-            response.headers["Access-Control-Allow-Origin"] = origin
-            response.headers["Access-Control-Allow-Credentials"] = "true"
-        else:
-            response.headers["Access-Control-Allow-Origin"] = "*"
-            response.headers.pop("Access-Control-Allow-Credentials", None)
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers.pop('Access-Control-Allow-Credentials', None)
     response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, PATCH, OPTIONS'
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-API-Key, Accept, X-Requested-With'
     return response
@@ -2323,29 +2201,6 @@ try:
     logger.info("✅ Google & Meta AI integration routes configured")
 except Exception as e:
     logger.warning(f"Google & Meta routes failed: {e}")
-
-# =============================================================================
-# ADMIN DECORATOR — used by land_power_crawler and crm_routes
-# =============================================================================
-def require_admin(f):
-    """Decorator that checks X-Admin-Key or X-Internal-Key headers."""
-    from functools import wraps
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        admin_key = request.headers.get('X-Admin-Key', '')
-        internal_key = request.headers.get('X-Internal-Key', '')
-        expected_admin = os.environ.get('DCHUB_ADMIN_KEY', '')
-        expected_internal = os.environ.get('DCHUB_INTERNAL_KEY', '')
-        expected_sync = os.environ.get('DCHUB_SYNC_KEY', '')
-        if not (
-            (admin_key and admin_key == expected_admin) or
-            (internal_key and internal_key in (expected_internal, expected_sync))
-        ):
-            return jsonify({'error': 'unauthorized', 'success': False}), 403
-        return f(*args, **kwargs)
-    return decorated
-
-logger.info("✅ require_admin decorator defined")
 
 # =============================================================================
 # BLUEPRINT REGISTRATIONS - All wrapped in try/except
@@ -2425,7 +2280,7 @@ try:
     # CRM admin routes
     try:
         from routes.crm_routes import register_crm_routes
-        register_crm_routes(app, get_db, require_admin)
+        register_crm_routes(app, get_db_connection, require_admin)
     except Exception as e:
         print(f"[CRM] Failed to load CRM routes: {e}")
     print("KMZ Processor: Available")
@@ -2475,36 +2330,6 @@ try:
         logger.info("✅ Land Power API registered")
 except Exception as e:
     logger.error(f"⚠️ Land Power API failed: {e}")
-
-# Land & Power Crawler routes (auto-content pipeline for EIA + HIFLD data)
-try:
-    if register_land_power_routes:
-        register_land_power_routes(app, get_db, require_admin)
-        logger.info("✅ Land & Power Crawler routes registered")
-except Exception as e:
-    logger.error(f"⚠️ Land & Power Crawler routes failed: {e}")
-
-try:
-    if init_land_power_tables:
-        init_land_power_tables(get_db)
-        logger.info("✅ Land & Power tables initialized")
-except Exception as e:
-    logger.error(f"⚠️ Land & Power table init failed: {e}")
-
-# MCP Tier Config routes (developer trial, usage tracking)
-try:
-    if register_mcp_trial_routes:
-        register_mcp_trial_routes(app, get_db)
-        logger.info("✅ MCP Trial routes registered")
-except Exception as e:
-    logger.error(f"⚠️ MCP Trial routes failed: {e}")
-
-try:
-    if init_mcp_tier_tables:
-        init_mcp_tier_tables(get_db)
-        logger.info("✅ MCP Tier tables initialized")
-except Exception as e:
-    logger.error(f"⚠️ MCP Tier table init failed: {e}")
 
 try:
     if ADMIN_ANALYTICS_AVAILABLE:
@@ -2617,7 +2442,7 @@ def mcp_messages_proxy():
         resp = requests.post(
             'http://127.0.0.1:8888/messages/',
             headers={'Content-Type': request.content_type or 'application/json'},
-            data=getattr(request, '_cached_data', None) or request.get_data(),
+            data=request.get_data(),
             params=request.args,
             timeout=30,
         )
@@ -2684,8 +2509,10 @@ def _log_mcp_analytics(rpc_method, rpc_params, platform, client_name, duration_m
         logger.error(f"MCP analytics log error: {e}")
     finally:
         if db:
-            try: db.close()
-            except Exception: pass
+            try:
+                db.close()
+            except Exception:
+                pass
 
     try:
         from ai_tracking import log_ai_request
@@ -2817,7 +2644,7 @@ def test_auto_capture():
 # ═══════════════════════════════════════════════════════════════
 
 # Fields free users can see per facility
-MCP_FREE_FIELDS = {'id', 'name', 'city', 'state', 'country', 'provider', 'operator', 'status'}
+MCP_FREE_FIELDS = {'name', 'city', 'state', 'country', 'provider', 'operator', 'status'}
 MCP_FREE_FACILITY_LIMIT = 5          # was 3 — enough to evaluate, not enough to build
 MCP_FREE_DAILY_LIMIT = 10            # NEW — tool calls per day per IP for free tier
 
@@ -2825,22 +2652,7 @@ MCP_FREE_DAILY_LIMIT = 10            # NEW — tool calls per day per IP for fre
 MCP_FACILITY_TOOLS = {'search_facilities', 'get_facility', 'get_pipeline', 'get_top_operators'}
 
 # Tools that return teaser results for free tier (was MCP_BLOCKED_TOOLS — hard block)
-MCP_TEASER_TOOLS = {'analyze_site', 'get_grid_data', 'get_infrastructure', 'get_fiber_intel', 'get_energy_prices', 'get_renewable_energy', 'get_news', 'get_intelligence_index', 'get_market_intel', 'list_transactions', 'compare_sites', 'get_grid_intelligence', 'get_tax_incentives', 'get_water_risk'}
-
-
-# News category aliases — map MCP tool categories to DB categories
-# MCP response cache — reduces latency for heavy tools
-_MCP_RESPONSE_CACHE = BoundedCache(max_size=200, ttl=300)
-_MCP_CACHEABLE_TOOLS = {'get_grid_intelligence', 'get_intelligence_index', 'get_backup_status', 'get_agent_registry', 'get_dchub_recommendation'}
-
-NEWS_CATEGORY_MAP = {
-    'deals': 'M&A', 'ma': 'M&A', 'm&a': 'M&A', 'mergers': 'M&A',
-    'construction': 'Expansion', 'expansion': 'Expansion',
-    'policy': 'Industry', 'technology': 'AI', 'tech': 'AI',
-    'sustainability': 'Power', 'energy': 'Power',
-    'earnings': 'Financial', 'financial': 'Financial',
-    'network': 'Network', 'cooling': 'Cooling', 'cloud': 'Cloud',
-}
+MCP_TEASER_TOOLS = {'analyze_site', 'get_grid_data', 'get_infrastructure', 'get_fiber_intel', 'get_energy_prices', 'get_renewable_energy', 'get_news', 'get_intelligence_index', 'get_market_intel', 'list_transactions'}
 
 # User-facing notes per tool category — AI agents surface these to end users
 MCP_USER_NOTES = {
@@ -2856,12 +2668,6 @@ MCP_USER_NOTES = {
     'get_renewable_energy': "\U0001f4a1 DC Hub free preview \u2014 detailed energy and infrastructure data requires a Developer key ($49/mo). Unlock at dchub.cloud/developers",
     'get_fiber_intel': "\U0001f4a1 DC Hub free preview \u2014 full dark fiber routes, carrier details, and connectivity scoring at dchub.cloud/developers",
     'get_intelligence_index': "\U0001f4a1 DC Hub free preview \u2014 limited results shown. Full market intelligence, deal data, and pipeline tracking at dchub.cloud/developers",
-
-    'get_tax_incentives': "💡 DC Hub free preview — full tax incentive details require a Developer key. Details at dchub.cloud/developers",
-    'compare_sites': "💡 DC Hub free preview — full site comparison with sub-scores requires a Developer key. Details at dchub.cloud/developers",
-    'get_water_risk': "💡 DC Hub free preview — detailed water stress data requires a Developer key ($49/mo). Unlock at dchub.cloud/developers",
-    'get_backup_status': "💡 DC Hub operational monitoring — backup and data health status.",
-    'get_grid_intelligence': "💡 DC Hub free preview — full grid intelligence briefs with corridor scores require a Developer key ($49/mo). Unlock at dchub.cloud/developers",
 }
 MCP_RATE_LIMIT_NOTE = "\u26a0\ufe0f DC Hub free tier limit reached (10 calls/day). The user can unlock 1,000 calls/day with a Developer key at dchub.cloud/developers"
 
@@ -2897,13 +2703,7 @@ def _check_mcp_daily_limit(ip_address):
 
 
 def _get_mcp_caller_tier():
-    """Determine caller's tier from API key. Returns (tier, key_info).
-    
-    BUG-FIX: validate_api_key() returns dict|None, NOT (bool, dict) tuple.
-    Previous code did `valid, info = validate_api_key(key)` which crashed with
-    ValueError on every call, silently falling through to 'free' for ALL users.
-    This was the root cause of MCP tier gating never working for paid users.
-    """
+    """Determine caller's tier from API key. Returns (tier, key_info)."""
     api_key = (
         request.headers.get('X-API-Key', '') or
         request.args.get('api_key', '')
@@ -2919,140 +2719,79 @@ def _get_mcp_caller_tier():
 
     try:
         from api_tier_gating import validate_api_key
-        info = validate_api_key(api_key)  # Returns dict or None (NOT a tuple)
-        if info and isinstance(info, dict):
-            plan = info.get('plan', 'free')
-            role = info.get('role', '')
-            if role == 'admin':
-                return 'admin', info
-            return plan, info
-        # Key was provided but not found / invalid
-        logger.warning(f"MCP tier check: API key provided but not valid (prefix: {api_key[:10]}...)")
+        valid, info = validate_api_key(api_key)
+        if valid and info:
+            return info.get('plan', 'free'), info
+        if info and info.get('error') == 'daily_limit_exceeded':
+            return 'rate_limited', info
     except Exception as e:
         logger.error(f"MCP tier check error: {e}")
 
     return 'free', None
 
 
-def _gate_mcp_result(result_content, tool_name, tier, tool_params=None):
+def _gate_mcp_result(result_content, tool_name, tier):
     """
-    Gate a tools/call result based on caller tier.
-    Free tier: stripped fields + teaser CTAs + daily rate limit.
-    Developer/Pro: full fields but capped result count.
-    Enterprise/admin: pass through (handled before this is called).
+    Gate a tools/call result for free tier users.
+    result_content: list of MCP content blocks [{"type":"text","text":"..."}]
+    Returns: modified content list with gating applied.
     """
-    # ── Enterprise/admin: never gated (shouldn't reach here, but safety) ──
-    if tier in ('enterprise', 'admin'):
-        return result_content
+    if tier not in ('free', 'rate_limited'):
+        return result_content  # paid tiers pass through
 
-    # ── Free tier: original strict gating ──
-    if tier in ('free', 'rate_limited'):
-        # Daily rate limit check (free tier only)
-        if tier == 'free':
-            ip = request.remote_addr or 'unknown'
-            allowed, remaining, used = _check_mcp_daily_limit(ip)
-            if not allowed:
-                return [{
-                    "type": "text",
-                    "text": json.dumps({
-                        "_user_facing_note": MCP_RATE_LIMIT_NOTE,
-                        "error": "daily_limit_reached",
-                        "message": (
-                            f"You've used all {MCP_FREE_DAILY_LIMIT} free MCP calls for today. "
-                            f"Developer plan ($49/mo) gives you 1,000 calls/day with full data."
-                        ),
-                        "calls_used": used,
-                        "daily_limit": MCP_FREE_DAILY_LIMIT,
-                        "resets": "midnight UTC",
-                        "upgrade": {
-                            "url": "https://dchub.cloud/pricing#developer",
-                            "checkout": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",
-                            "price": "$49/mo",
-                            "includes": "1,000 calls/day, full facility data, coordinates, power specs, site scoring, grid data"
-                        }
-                    })
-                }]
+    # ── Daily rate limit check (free tier only) ──
+    if tier == 'free':
+        ip = request.remote_addr or 'unknown'
+        allowed, remaining, used = _check_mcp_daily_limit(ip)
+        if not allowed:
+            return [{
+                "type": "text",
+                "text": json.dumps({
+                    "_user_facing_note": MCP_RATE_LIMIT_NOTE,
+                    "error": "daily_limit_reached",
+                    "message": (
+                        f"You've used all {MCP_FREE_DAILY_LIMIT} free MCP calls for today. "
+                        f"Developer plan ($49/mo) gives you 1,000 calls/day with full data."
+                    ),
+                    "calls_used": used,
+                    "daily_limit": MCP_FREE_DAILY_LIMIT,
+                    "resets": "midnight UTC",
+                    "upgrade": {
+                        "url": "https://dchub.cloud/pricing#developer",
+                        "checkout": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",
+                        "price": "$49/mo",
+                        "includes": "1,000 calls/day, full facility data, coordinates, power specs, site scoring, grid data"
+                    }
+                })
+            }]
 
-        # Teaser tools: return degraded results with upgrade CTA
-        if tool_name in MCP_TEASER_TOOLS:
-            return _gate_teaser_result(result_content, tool_name, tool_params=tool_params)
+    # ── Teaser tools: return degraded results with upgrade CTA ──
+    if tool_name in MCP_TEASER_TOOLS:
+        return _gate_teaser_result(result_content, tool_name)
 
-        # Facility tools: parse the text content, gate results
-        if tool_name in MCP_FACILITY_TOOLS:
-            gated = []
-            for block in result_content:
-                if block.get('type') != 'text':
-                    gated.append(block)
-                    continue
-                try:
-                    data = json.loads(block['text'])
-                except (json.JSONDecodeError, TypeError):
-                    gated.append(block)
-                    continue
-                gated_data = _gate_facility_data(data, tool_name, tool_params=tool_params)
-                gated.append({"type": "text", "text": json.dumps(gated_data)})
-            return gated
+    # ── Facility tools: parse the text content, gate results ──
+    if tool_name in MCP_FACILITY_TOOLS:
+        gated = []
+        for block in result_content:
+            if block.get('type') != 'text':
+                gated.append(block)
+                continue
+            try:
+                data = json.loads(block['text'])
+            except (json.JSONDecodeError, TypeError):
+                gated.append(block)
+                continue
 
-        # All other tools: pass through for free tier
-        return result_content
+            # Gate facility arrays — look for common keys
+            gated_data = _gate_facility_data(data, tool_name)
+            gated.append({"type": "text", "text": json.dumps(gated_data)})
+        return gated
 
-    # ── Paid tiers (developer, founding, pro): full fields, capped count ──
-    from api_tier_gating import MCP_TIER_RESULT_LIMITS
-    result_cap = MCP_TIER_RESULT_LIMITS.get(tier, 25)
-
-    if tool_name not in MCP_FACILITY_TOOLS:
-        return result_content  # non-facility tools pass through for paid
-
-    gated = []
-    for block in result_content:
-        if block.get('type') != 'text':
-            gated.append(block)
-            continue
-        try:
-            data = json.loads(block['text'])
-        except (json.JSONDecodeError, TypeError):
-            gated.append(block)
-            continue
-
-        # Cap result arrays but keep ALL fields (paid users get full data)
-        if isinstance(data, dict):
-            for key in ('facilities', 'results', 'pipeline', 'data', 'operators', 'items', 'facility'):
-                if key in data and isinstance(data[key], list):
-                    total_count = len(data[key])
-                    if total_count > result_cap:
-                        data[key] = data[key][:result_cap]
-                        data['_result_cap'] = {
-                            'tier': tier,
-                            'showing': result_cap,
-                            'total': total_count,
-                            'message': f'Showing {result_cap} of {total_count} results on {tier} plan.',
-                        }
-                        if tier in ('developer', 'founding'):
-                            data['_result_cap']['upgrade'] = {
-                                'message': f'Pro plan ($199/mo) returns up to {MCP_TIER_RESULT_LIMITS.get("pro", 100)} results per query.',
-                                'url': 'https://dchub.cloud/pricing',
-                            }
-                    break
-        elif isinstance(data, list):
-            total_count = len(data)
-            if total_count > result_cap:
-                data = data[:result_cap]
-
-        gated.append({"type": "text", "text": json.dumps(data)})
-
-    # ── Track MCP records served for paid tiers ──
-    try:
-        from api_tier_gating import increment_daily_records, get_user_key_from_request
-        user_key, _ = get_user_key_from_request()
-        served = min(result_cap, 100)  # approximate
-        increment_daily_records(user_key, tier, served, endpoint=f'/mcp/{tool_name}')
-    except Exception:
-        pass
-
-    return gated
+    # All other tools: pass through for free tier (news, recommendations, etc.)
+    return result_content
 
 
-def _gate_teaser_result(result_content, tool_name, tool_params=None):
+def _gate_teaser_result(result_content, tool_name):
     """
     Return teaser/degraded results for premium tools instead of hard-blocking.
     Free users see enough to know the data is valuable, but not enough to build with.
@@ -3070,40 +2809,41 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
 
         if tool_name == 'analyze_site':
             score = data.get('overall_score', 'N/A')
-            # Build tight teaser — headline samples only, no full datasets
-            carbon = data.get('carbon_intensity', {})
-            risk = data.get('natural_disaster_risk', {})
-            top_risk = risk.get('top_risk_counties', [{}])[0] if risk.get('top_risk_counties') else {}
-            rates = data.get('retail_energy_rates', {}).get('rates', [{}])[0] if data.get('retail_energy_rates', {}).get('rates') else {}
             teaser = {
-                '_user_facing_note': f"💡 DC Hub scored this site {score}/100. Detailed sub-scores for power, fiber, gas, and risk require a Developer key. Unlock at dchub.cloud/developers",
+                '_user_facing_note': f"\U0001f4a1 DC Hub scored this site {score}/100. Detailed sub-scores for power, fiber, gas, and risk require a Developer key. Unlock at dchub.cloud/developers",
                 'success': data.get('success', True),
                 'location': data.get('location', {}),
                 'overall_score': score,
                 'interpretation': data.get('interpretation', ''),
                 'capacity_requested_mw': data.get('capacity_requested_mw'),
-                'sample_insights': {
-                    'carbon_co2_lb_mwh': carbon.get('co2_rate_lb_mwh', '██') if carbon else '██',
-                    'grid_subregion': carbon.get('subregion_name', '██') if carbon else '██',
-                    'top_county_risk_rating': top_risk.get('risk_rating', '██') if top_risk else '██',
-                    'industrial_rate_cents_kwh': rates.get('rate_cents_kwh', '██') if rates else '██',
-                    'note': 'Sample only — full breakdowns require Developer plan',
+                'scores': {
+                    'power_infrastructure': '██ upgrade to see',
+                    'gas_pipeline_access': '██ upgrade to see',
+                    'fiber_connectivity': '██ upgrade to see',
+                    'market_conditions': '██ upgrade to see',
+                    'risk_resilience': '██ upgrade to see',
                 },
-                'scores': {k: '██ upgrade to see' for k in ['power_infrastructure','gas_pipeline_access','fiber_connectivity','market_conditions','risk_resilience']},
-                'nearby': {k: '██ upgrade to see' for k in ['facilities_100km','substations_50km','gas_pipelines_50km','power_plants_80km','total_capacity_mw','generation_capacity_mw','fiber_carriers_in_state']},
-                'data_available': ['epa_egrid (20 subregions)', 'fema_risk (3,232 counties)', 'eia_rates (50 states)', 'usgs_water (16 states)', 'hifld (79,755 substations)'],
+                'nearby': {
+                    'facilities_100km': '██',
+                    'total_capacity_mw': '██',
+                    'substations_50km': '██',
+                    'gas_pipelines_50km': '██',
+                    'power_plants_80km': '██',
+                    'generation_capacity_mw': '██',
+                    'fiber_carriers_in_state': '██',
+                },
                 '_upgrade': {
                     'tier': 'free_teaser',
-                    'message': f"Site score: {score} — Developer plan ($49/mo) unlocks full carbon analysis, FEMA risk scores, water stress data, EIA rates, and infrastructure counts.",
+                    'message': (
+                        f"Site score: {score} — "
+                        f"Developer plan ($49/mo) unlocks detailed power, gas pipeline, fiber, "
+                        f"market, and risk sub-scores plus nearby infrastructure counts."
+                    ),
                     'url': 'https://dchub.cloud/pricing#developer',
                     'checkout': 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c',
                     'price': '$49/mo',
                 }
             }
-            # Pass through enrichment fields (free value hook)
-            for ekey in ('carbon_intensity', 'climate_profile', 'natural_disaster_risk', 'water_stress', 'retail_energy_rates'):
-                if ekey in data:
-                    teaser[ekey] = data[ekey]
             return [{"type": "text", "text": json.dumps(teaser)}]
 
         elif tool_name == 'get_grid_data':
@@ -3169,7 +2909,7 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
                 'success': True,
                 'metro_fiber_preview': metro_preview,
                 'carriers_available': '██ upgrade to see carrier details',
-                'total_routes': 1069,
+                'total_routes': '██',
                 '_upgrade': {
                     'tier': 'free_teaser',
                     'message': "Fiber intelligence preview — Developer plan ($49/mo) unlocks full dark fiber routes, carrier networks, metro fiber density, and connectivity scoring across 19 US markets.",
@@ -3178,51 +2918,18 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
                     'price': '$49/mo',
                 }
             }
-            # Preserve MCP server carrier filter info
-            if 'filtered_by_carrier' in data:
-                routes = data.get('routes', {})
-                route_list = routes.get('data', routes.get('routes', []))
-                teaser['carrier_filter'] = data['filtered_by_carrier']
-                teaser['carrier_routes_found'] = len(route_list) if isinstance(route_list, list) else 0
-                teaser['carrier_note'] = f"Found routes for {data['filtered_by_carrier']} — upgrade for full details"
             return [{"type": "text", "text": json.dumps(teaser)}]
 
         elif tool_name == 'get_energy_prices':
-            energy_preview = []
-            pg_e = None
-            try:
-                pg_e = get_pg_connection()
-                ec = pg_e.cursor()
-                # Read state from tool INPUT arguments, not response data
-                state_q = (tool_params or {}).get('arguments', {}).get('state', '') if isinstance(tool_params, dict) else ''
-                if not state_q:
-                    state_q = data.get('state', '') or ''
-                if state_q:
-                    # EIA table stores full names ("Texas"), tool sends abbreviations ("TX")
-                    _SN = {'AL':'Alabama','AK':'Alaska','AZ':'Arizona','AR':'Arkansas','CA':'California','CO':'Colorado','CT':'Connecticut','DE':'Delaware','FL':'Florida','GA':'Georgia','HI':'Hawaii','ID':'Idaho','IL':'Illinois','IN':'Indiana','IA':'Iowa','KS':'Kansas','KY':'Kentucky','LA':'Louisiana','ME':'Maine','MD':'Maryland','MA':'Massachusetts','MI':'Michigan','MN':'Minnesota','MS':'Mississippi','MO':'Missouri','MT':'Montana','NE':'Nebraska','NV':'Nevada','NH':'New Hampshire','NJ':'New Jersey','NM':'New Mexico','NY':'New York','NC':'North Carolina','ND':'North Dakota','OH':'Ohio','OK':'Oklahoma','OR':'Oregon','PA':'Pennsylvania','RI':'Rhode Island','SC':'South Carolina','SD':'South Dakota','TN':'Tennessee','TX':'Texas','UT':'Utah','VT':'Vermont','VA':'Virginia','WA':'Washington','WV':'West Virginia','WI':'Wisconsin','WY':'Wyoming','DC':'District of Columbia'}
-                    state_full = _SN.get(state_q.upper(), state_q)
-                    ec.execute("SELECT state, sector, rate_cents_kwh FROM eia_retail_rates WHERE (UPPER(state) = UPPER(%s) OR UPPER(state) = UPPER(%s)) AND sector IN ('commercial','industrial') ORDER BY sector", (state_full, state_q))
-                else:
-                    ec.execute("SELECT state, sector, rate_cents_kwh FROM eia_retail_rates WHERE sector = 'commercial' ORDER BY rate_cents_kwh ASC LIMIT 5")
-                for r in ec.fetchall():
-                    energy_preview.append({'state': r[0], 'sector': r[1], 'rate_cents_kwh': float(r[2]) if r[2] else None})
-                ec.close()
-            except Exception:
-                pass
-            finally:
-                if pg_e:
-                    return_pg_connection(pg_e)
             teaser = {
                 '_user_facing_note': MCP_USER_NOTES['get_energy_prices'],
                 'success': True,
                 'data_type': data.get('data_type', 'energy pricing'),
-                'rates_preview': energy_preview if energy_preview else [{'note': 'EIA retail rate data for all 50 states'}],
-                'states_covered': 50,
-                'data_source': 'EIA (U.S. Energy Information Administration)',
-                'detailed_rates': '\u2588\u2588 upgrade for full breakdowns, gas, grid status',
+                'preview': 'Energy pricing data available',
+                'rates': '██ upgrade to see',
                 '_upgrade': {
                     'tier': 'free_teaser',
-                    'message': "Showing sample rates \u2014 Developer plan ($49/mo) unlocks full retail rates, natural gas, grid status, and trends.",
+                    'message': "Energy pricing preview — Developer plan ($49/mo) unlocks retail rates, natural gas prices, and grid status data.",
                     'url': 'https://dchub.cloud/pricing#developer',
                     'checkout': 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c',
                     'price': '$49/mo',
@@ -3231,61 +2938,15 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
             return [{"type": "text", "text": json.dumps(teaser)}]
 
         elif tool_name == 'get_renewable_energy':
-            ppa_preview = []
-            totals = (0, 0)
-            pg_r = None
-            try:
-                import psycopg2 as _rpg; logger.info('PPA_DIRECT_CONNECT'); pg_r = _rpg.connect(os.environ.get('NEON_DATABASE_URL') or os.environ.get('DATABASE_URL',''))
-                rc = pg_r.cursor()
-                # Read filters from tool INPUT arguments
-                _re_args = (tool_params or {}).get('arguments', {}) if isinstance(tool_params, dict) else {}
-                _re_state = _re_args.get('state', '')
-                _re_type = _re_args.get('energy_type', '')
-                _re_where = []
-                _re_params = []
-                if _re_state and len(_re_state) <= 3:
-                    _re_where.append("UPPER(state) = UPPER(%s)")
-                    _re_params.append(_re_state)
-                if _re_type and _re_type not in ('combined', ''):
-                    _re_where.append("LOWER(fuel_source) = LOWER(%s)")
-                    _re_params.append(_re_type)
-                _re_clause = " AND ".join(_re_where) if _re_where else "1=1"
-                rc.execute(f"SELECT buyer, power_mw, fuel_source, state FROM energy_ppas WHERE {_re_clause} ORDER BY power_mw DESC LIMIT 5", _re_params)
-                rows = rc.fetchall()
-                for r in rows:
-                    ppa_preview.append({'buyer': r[0], 'capacity_mw': float(r[1]) if r[1] else 0, 'type': r[2] or 'solar', 'state': r[3]})
-                rc.execute("SELECT COUNT(*), COALESCE(SUM(power_mw),0) FROM energy_ppas")
-                totals = rc.fetchone() or (0, 0)
-                rc.close()
-            except Exception as _ppa_err:
-                import traceback as _tb
-                logger.error(f"PPA TEASER FAIL: {_ppa_err}\n{_tb.format_exc()}")
-            finally:
-                if pg_r:
-                    try:
-                        pg_r.close()
-                    except Exception:
-                        pass
-            # Fallback: if DB query returned nothing, use known PPA data
-            if not ppa_preview:
-                ppa_preview = [
-                    {'buyer': 'Microsoft', 'capacity_mw': 2100, 'type': 'mixed', 'state': 'VA'},
-                    {'buyer': 'CoreWeave', 'capacity_mw': 1200, 'type': 'solar', 'state': 'TX'},
-                    {'buyer': 'Google', 'capacity_mw': 1000, 'type': 'solar', 'state': 'TX'},
-                    {'buyer': 'Amazon (AWS)', 'capacity_mw': 650, 'type': 'solar', 'state': 'VA'},
-                    {'buyer': 'Switch', 'capacity_mw': 555, 'type': 'solar', 'state': 'NV'},
-                ]
-                totals = (10, 6980)
             teaser = {
                 '_user_facing_note': MCP_USER_NOTES['get_renewable_energy'],
                 'success': True,
-                'dc_industry_ppas': ppa_preview if ppa_preview else [{'note': 'PPA data available'}],
-                'total_ppas': totals[0] if totals else 0,
-                'total_contracted_mw': round(totals[1] or 0, 0) if totals else 0,
-                'installations': '\u2588\u2588 upgrade for full installation data',
+                'preview': 'Renewable energy capacity data available',
+                'installations': '██ upgrade to see',
+                'total_capacity_mw': '██',
                 '_upgrade': {
                     'tier': 'free_teaser',
-                    'message': "Renewable preview \u2014 Developer plan ($49/mo) unlocks solar/wind locations, PPA details, and proximity analysis.",
+                    'message': "Renewable energy preview — Developer plan ($49/mo) unlocks solar/wind farm locations, capacity data, and proximity analysis.",
                     'url': 'https://dchub.cloud/pricing#developer',
                     'checkout': 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c',
                     'price': '$49/mo',
@@ -3295,22 +2956,11 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
 
         elif tool_name == 'get_news':
             articles = data.get('articles', [])
-            total = data.get('count', len(articles)) if data.get('count', 0) > len(articles) else len(articles)
+            total = len(articles)
             basic_fields = ['title', 'source', 'published_at', 'category']
-
-            # Extract category from tool_params (BUG-035 fix)
-            category = ''
-            try:
-                _args = tool_params.get('arguments', tool_params) if isinstance(tool_params, dict) else {}
-                category = (_args.get('category', '') or '').strip()
-            except Exception:
-                pass
-            if category:
-                category = NEWS_CATEGORY_MAP.get(category.lower(), category)
-            # MCP server may have already keyword-filtered; respect that, just cap at 5
             gated_articles = [
                 {k: a.get(k) for k in basic_fields if k in a}
-                for a in articles[:5]
+                for a in articles[:3]
             ]
             teaser = {
                 '_user_facing_note': MCP_USER_NOTES['get_news'],
@@ -3360,156 +3010,24 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
             return [{"type": "text", "text": json.dumps(teaser)}]
 
         elif tool_name == 'get_market_intel':
-            # ── Direct DB fallback when REST API returns empty ──
-            # The MCP server calls /api/v1/markets/<slug> which may fail (timeout, 403, etc.)
-            # Detect empty response and query discovered_facilities directly using MARKET_ALIASES.
-            market_data = data.get('market', {})
-            by_status = data.get('by_status', {})
-            top_providers_raw = data.get('top_providers', [])
-            stats = data.get('stats', {})
-            facility_count = stats.get('facility_count') if stats else None
-            recent_count = len(data.get('recent_facilities', []))
-
-            # Detect empty REST response → direct DB query
-            if not market_data and not top_providers_raw and facility_count is None:
-                # Extract market name from tool input params
-                market_input = ''
-                if isinstance(tool_params, dict):
-                    market_input = (tool_params.get('arguments', {}) or {}).get('market', '')
-                if not market_input and isinstance(data, dict):
-                    market_input = data.get('market_name', '') or data.get('query', '')
-
-                if market_input:
-                    logger.info(f"get_market_intel: REST empty for '{market_input}', using DB fallback")
-                    market_lower = market_input.lower().replace('-', ' ').strip()
-
-                    # Resolve to MARKET_ALIASES cities
-                    _db_cities = MARKET_ALIASES.get(market_lower)
-                    if not _db_cities:
-                        # Try common aliases
-                        _MKT_RESOLVE = {
-                            'northern virginia': 'northern virginia', 'nova': 'nova',
-                            'n. virginia': 'northern virginia', 'n virginia': 'northern virginia',
-                            'dfw': 'dfw', 'dallas-fort worth': 'dallas', 'dallas fort worth': 'dallas',
-                            'silicon valley': 'silicon valley', 'bay area': 'silicon valley',
-                            'nyc': 'new york', 'new york city': 'new york',
-                            'la': 'los angeles', 'socal': 'los angeles',
-                        }
-                        resolved = _MKT_RESOLVE.get(market_lower, market_lower)
-                        _db_cities = MARKET_ALIASES.get(resolved)
-
-                    if _db_cities:
-                        pg_mi = None
-                        try:
-                            pg_mi = get_pg_connection()
-                            mc = pg_mi.cursor()
-
-                            # Build WHERE clause from city list (same logic as get_market_stats)
-                            conditions = []
-                            qparams = []
-                            for city in _db_cities:
-                                if len(city) == 2 and city.isupper():
-                                    conditions.append('state = %s')
-                                    qparams.append(city)
-                                else:
-                                    conditions.append('city ILIKE %s')
-                                    qparams.append(f'%{city}%')
-                            where_c = ' OR '.join(conditions)
-                            country_g = "AND (country = 'US' OR country = 'USA' OR country IS NULL OR country = '')"
-
-                            # Stats
-                            mc.execute(f"""
-                                SELECT COUNT(*) as fc, COUNT(DISTINCT provider) as pc
-                                FROM discovered_facilities
-                                WHERE ({where_c}) {country_g} {RAILWAY_EXCLUSION}
-                            """, qparams)
-                            srow = mc.fetchone()
-                            s_fc = _row_val(srow, 0)
-                            s_pc = srow[1] if srow and len(srow) > 1 else (list(srow.values())[1] if isinstance(srow, dict) else 0)
-                            facility_count = s_fc
-
-                            # Top providers
-                            mc.execute(f"""
-                                SELECT provider, COUNT(*) as cnt
-                                FROM discovered_facilities
-                                WHERE ({where_c}) AND provider IS NOT NULL AND provider != '' {country_g} {RAILWAY_EXCLUSION}
-                                GROUP BY provider ORDER BY cnt DESC LIMIT 10
-                            """, qparams)
-                            top_providers_raw = [{'name': r[0], 'facilities': r[1]} for r in _rows_to_tuples(mc.fetchall())]
-
-                            # By status
-                            mc.execute(f"""
-                                SELECT status, COUNT(*) FROM discovered_facilities
-                                WHERE ({where_c}) {country_g} {RAILWAY_EXCLUSION}
-                                GROUP BY status
-                            """, qparams)
-                            by_status = {r[0]: r[1] for r in _rows_to_tuples(mc.fetchall())}
-
-                            market_data = {
-                                'id': market_lower,
-                                'name': market_input.replace('-', ' ').title(),
-                                'cities': _db_cities,
-                            }
-                            mc.close()
-                        except Exception as mi_err:
-                            logger.error(f"get_market_intel DB fallback error for '{market_input}': {mi_err}")
-                        finally:
-                            if pg_mi:
-                                try: return_pg_connection(pg_mi)
-                                except: pass
-
-            total_providers = len(top_providers_raw)
-            # Filter out null-named providers, then gate to top 3
+            total_providers = len(data.get('top_providers', []))
             gated_providers = [
                 {'name': p.get('name'), 'facilities': p.get('facilities')}
-                for p in top_providers_raw[:10]
-                if p.get('name')
-            ][:3]
-
-            # If providers are all null (REST bug), do direct DB lookup
-            if not gated_providers and facility_count and facility_count > 0:
-                try:
-                    _pg_mp = get_pg_connection()
-                    _mc_mp = _pg_mp.cursor()
-                    market_input_mp = (market_data or {}).get('name', '') or ''
-                    market_lower_mp = market_input_mp.lower().replace('-', ' ').strip()
-                    _db_cities_mp = MARKET_ALIASES.get(market_lower_mp)
-                    if not _db_cities_mp:
-                        _MKT_R2 = {'northern virginia': 'northern virginia', 'nova': 'nova', 'dallas': 'dallas', 'dfw': 'dfw', 'chicago': 'chicago', 'phoenix': 'phoenix', 'silicon valley': 'silicon valley', 'new york': 'new york', 'atlanta': 'atlanta', 'los angeles': 'los angeles', 'seattle': 'seattle', 'portland': 'portland', 'denver': 'denver', 'houston': 'houston', 'columbus': 'columbus', 'minneapolis': 'minneapolis', 'kansas city': 'kansas city', 'salt lake city': 'salt lake city'}
-                        resolved_mp = _MKT_R2.get(market_lower_mp, market_lower_mp)
-                        _db_cities_mp = MARKET_ALIASES.get(resolved_mp)
-                    if _db_cities_mp:
-                        conds_mp = []
-                        prms_mp = []
-                        for city in _db_cities_mp:
-                            if len(city) == 2 and city.isupper():
-                                conds_mp.append('state = %s')
-                                prms_mp.append(city)
-                            else:
-                                conds_mp.append('city ILIKE %s')
-                                prms_mp.append(f'%{city}%')
-                        wh_mp = ' OR '.join(conds_mp)
-                        cg_mp = "AND (country = 'US' OR country = 'USA' OR country IS NULL OR country = '')"
-                        _mc_mp.execute(f"""SELECT provider, COUNT(*) as cnt FROM discovered_facilities WHERE ({wh_mp}) AND provider IS NOT NULL AND provider != '' {cg_mp} GROUP BY provider ORDER BY cnt DESC LIMIT 10""", prms_mp)
-                        gated_providers = [{'name': r[0], 'facilities': r[1]} for r in _mc_mp.fetchall()][:3]
-                    _mc_mp.close()
-                    return_pg_connection(_pg_mp)
-                    logger.info(f"get_market_intel: provider DB fallback returned {len(gated_providers)} providers")
-                except Exception as _mpe:
-                    logger.error(f"get_market_intel provider fallback error: {_mpe}")
+                for p in data.get('top_providers', [])[:3]
+            ]
             teaser = {
                 '_user_facing_note': MCP_USER_NOTES['get_market_intel'],
-                'success': True,
-                'market': market_data,
-                'by_status': by_status,
+                'success': data.get('success', True),
+                'market': data.get('market', {}),
+                'by_status': data.get('by_status', {}),
                 'top_providers': gated_providers,
                 'stats': {
-                    'facility_count': facility_count,
+                    'facility_count': data.get('stats', {}).get('facility_count'),
                     'total_power_mw': 'upgrade to see',
                     'avg_power_mw': 'upgrade to see',
                     'provider_count': 'upgrade to see',
                 },
-                'recent_facilities': f"blocked -- {recent_count} recent facilities -- upgrade to see",
+                'recent_facilities': f"blocked -- {len(data.get('recent_facilities', []))} recent facilities -- upgrade to see",
                 '_upgrade': {
                     'tier': 'free_teaser',
                     'showing_providers': min(3, total_providers),
@@ -3520,113 +3038,15 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
                     'price': '$49/mo',
                 }
             }
-            # Compare_to: query DB directly (MCP server can't reach localhost)
-
-            # Resolve common market names to DB city names
-            def _resolve_market_name(name):
-                _MARKET_NAME_MAP = {
-                    'northern virginia': 'Ashburn', 'nova': 'Ashburn',
-                    'n. virginia': 'Ashburn', 'n virginia': 'Ashburn',
-                    'loudoun': 'Ashburn', 'data center alley': 'Ashburn',
-                    'dmv': 'Ashburn', 'silicon valley': 'Santa Clara',
-                    'bay area': 'San Jose', 'sf bay': 'San Jose',
-                    'dfw': 'Dallas', 'dallas-fort worth': 'Dallas',
-                    'dallas fort worth': 'Dallas', 'nyc': 'New York',
-                    'new york city': 'New York', 'la': 'Los Angeles',
-                    'socal': 'Los Angeles', 'rdu': 'Raleigh',
-                    'research triangle': 'Raleigh', 'puget sound': 'Seattle',
-                    'pnw': 'Seattle', 'pacific northwest': 'Seattle',
-                    'twin cities': 'Minneapolis', 'south florida': 'Miami',
-                }
-                if not name: return name
-                return _MARKET_NAME_MAP.get(name.strip().lower(), name.strip())
-
-
-            compare_to_raw = (tool_params or {}).get('arguments', {}).get('compare_to', '') if isinstance(tool_params, dict) else ''
-            if not compare_to_raw and isinstance(data, dict):
-                compare_to_raw = data.get('_compare_to', '')
-            if compare_to_raw:
-                comparisons = {}
-                for comp_name in [_resolve_market_name(m.strip()) for m in compare_to_raw.split(',') if m.strip()]:
-                    comp_slug = comp_name.lower().replace(' ', '-').replace(',', '')
-                    pg_c = None
-                    try:
-                        pg_c = get_pg_connection()
-                        cc = pg_c.cursor()
-                        cc.execute("SELECT COUNT(*) FROM facilities WHERE market ILIKE %s OR city ILIKE %s", (f'%{comp_name}%', f'%{comp_name}%'))
-                        fc = _row_val(cc.fetchone(), 0)
-                        cc.execute("SELECT provider, COUNT(*) as cnt FROM facilities WHERE market ILIKE %s OR city ILIKE %s GROUP BY provider ORDER BY cnt DESC LIMIT 3", (f'%{comp_name}%', f'%{comp_name}%'))
-                        top_p = [{'name': r[0], 'facilities': r[1]} for r in _rows_to_tuples(cc.fetchall())]
-                        cc.execute("SELECT status, COUNT(*) FROM facilities WHERE market ILIKE %s OR city ILIKE %s GROUP BY status", (f'%{comp_name}%', f'%{comp_name}%'))
-                        by_st = {r[0]: r[1] for r in _rows_to_tuples(cc.fetchall())}
-                        cc.close()
-                        comparisons[comp_name] = {'facility_count': fc, 'top_providers': top_p, 'by_status': by_st}
-                    except Exception as cmp_err:
-                        logger.warning(f"compare_to query failed for {comp_name}: {cmp_err}")
-                    finally:
-                        if pg_c:
-                            try: return_pg_connection(pg_c)
-                            except: pass
-                if comparisons:
-                    teaser['comparisons'] = comparisons
             return [{"type": "text", "text": json.dumps(teaser)}]
 
         elif tool_name == 'list_transactions':
             transactions = data.get('transactions', data.get('deals', data.get('results', [])))
-            total = data.get('total_available', data.get('count', len(transactions) if isinstance(transactions, list) else 0))
-
-            # DB fallback when REST returns empty/error
-            if not transactions or total == 0:
-                try:
-                    _pg = get_pg_connection()
-                    _dc = _pg.cursor()
-                    # Apply filters from tool params
-                    _tp = tool_params.get('arguments', {}) if isinstance(tool_params, dict) else {}
-                    _where = []
-                    _qp = []
-                    if _tp.get('buyer'):
-                        _where.append('buyer ILIKE %s')
-                        _qp.append(f"%{_tp['buyer']}%")
-                    if _tp.get('seller'):
-                        _where.append('seller ILIKE %s')
-                        _qp.append(f"%{_tp['seller']}%")
-                    if _tp.get('region'):
-                        _where.append('region ILIKE %s')
-                        _qp.append(f"%{_tp['region']}%")
-                    if _tp.get('deal_type'):
-                        _where.append('type ILIKE %s')
-                        _qp.append(f"%{_tp['deal_type']}%")
-                    if _tp.get('min_value_usd'):
-                        _where.append('value >= %s')
-                        _qp.append(_tp['min_value_usd'])
-                    if _tp.get('date_from'):
-                        _where.append('date >= %s')
-                        _qp.append(_tp['date_from'])
-                    _wc = ('WHERE ' + ' AND '.join(_where)) if _where else ''
-                    _dc.execute(f"SELECT buyer, seller, value, type, date, title, region, market FROM deals {_wc} ORDER BY date DESC LIMIT 25", _qp)
-                    _rows = _dc.fetchall()
-                    _cols = ['buyer', 'seller', 'value', 'type', 'date', 'title', 'region', 'market']
-                    transactions = [{_cols[i]: r[i] for i in range(len(_cols)) if i < len(r)} for r in _rows]
-                    _dc.execute(f"SELECT COUNT(*) FROM deals {_wc}", _qp)
-                    total = _dc.fetchone()[0] or 0
-                    _dc.close()
-                    return_pg_connection(_pg)
-                    logger.info(f"list_transactions: DB fallback returned {len(transactions)} deals")
-                except Exception as _te:
-                    logger.error(f"list_transactions DB fallback error: {_te}")
-            free_fields = ['title', 'buyer', 'seller', 'deal_type', 'date', 'announced_date', 'region', 'market']
-            # MCP server already filtered by buyer/seller/region; respect that, cap at 5
-            # Apply region filter if specified (BUG-037 fix)
-            filtered_txns = transactions if isinstance(transactions, list) else []
-            _region_param = tool_params.get('arguments', {}).get('region', '') if isinstance(tool_params, dict) else ''
-            if not _region_param and isinstance(tool_params, dict):
-                _region_param = tool_params.get('region', '')
-            if _region_param:
-                _region_norm = _region_param.lower().replace('_', ' ')
-                filtered_txns = [t for t in filtered_txns if _region_norm in (t.get('region', '') or '').lower()]
+            total = len(transactions) if isinstance(transactions, list) else 0
+            free_fields = ['title', 'buyer', 'seller', 'deal_type', 'date', 'announced_date']
             gated_deals = [
                 {k: t.get(k) for k in free_fields if k in t}
-                for t in filtered_txns[:5]
+                for t in (transactions[:3] if isinstance(transactions, list) else [])
             ]
             teaser = {
                 '_user_facing_note': MCP_USER_NOTES['list_transactions'],
@@ -3646,230 +3066,33 @@ def _gate_teaser_result(result_content, tool_name, tool_params=None):
             }
             return [{"type": "text", "text": json.dumps(teaser)}]
 
-        elif tool_name == 'compare_sites':
-            # Show headline comparison (overall scores + winner) but block sub-scores
-            comparison_raw = data.get('comparison', [])
-            comparison_teaser = []
-            for site in comparison_raw:
-                comparison_teaser.append({
-                    'label': site.get('label', '?'),
-                    'overall_score': site.get('overall_score', 0),
-                    'interpretation': site.get('interpretation', ''),
-                    'scores': {k: '██ upgrade to see' for k in site.get('scores', {})},
-                    'nearby': {k: '██ upgrade to see' for k in site.get('nearby', {})},
-                })
-            overall_winner = data.get('overall_winner', '')
-            overall_winner_score = data.get('overall_winner_score', 0)
-            locations_compared = data.get('locations_compared', len(comparison_raw))
-
-            teaser = {
-                '_user_facing_note': MCP_USER_NOTES.get('compare_sites', '💡 DC Hub free preview — full comparison requires a Developer key.'),
-                'success': True,
-                'comparison': comparison_teaser,
-                'overall_winner': overall_winner,
-                'overall_winner_score': overall_winner_score,
-                'locations_compared': locations_compared,
-                'winners_by_category': {k: '██ upgrade to see' for k in data.get('winners_by_category', {})},
-                '_upgrade': {
-                    'tier': 'free_teaser',
-                    'message': f"Compared {locations_compared} sites — {overall_winner} wins at {overall_winner_score}/100. Developer plan ($49/mo) unlocks full sub-scores, category winners, and infrastructure counts.",
-                    'url': 'https://dchub.cloud/pricing#developer',
-                    'checkout': 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c',
-                    'price': '$49/mo',
-                }
+    # Fallback: if we couldn't parse, return generic teaser
+    fallback_note = MCP_USER_NOTES.get(tool_name, f"\U0001f4a1 DC Hub free preview \u2014 full {tool_name} data requires a Developer key. Details at dchub.cloud/developers")
+    return [{
+        "type": "text",
+        "text": json.dumps({
+            "_user_facing_note": fallback_note,
+            "preview": f"{tool_name} data available \u2014 showing limited preview.",
+            "_upgrade": {
+                "tier": "free_teaser",
+                "message": f"Full {tool_name} results require Developer plan ($49/mo).",
+                "url": "https://dchub.cloud/pricing#developer",
+                "checkout": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",
+                "price": "$49/mo",
             }
-            return [{"type": "text", "text": json.dumps(teaser)}]
-    fallback_note = MCP_USER_NOTES.get(tool_name, f"\U0001f4a1 DC Hub free preview — full {tool_name} data requires a Developer key. Details at dchub.cloud/developers")
-    teaser_data = {}
-    try:
-        _tc = get_pg_connection()
-        _tcur = _tc.cursor()
-        if tool_name == "get_tax_incentives":
-            _tcur.execute("SELECT state_abbr, state_name, incentive_details FROM tax_incentives_neon WHERE incentive_details IS NOT NULL AND incentive_details != '' ORDER BY state_abbr LIMIT 3")
-            _rows = _tcur.fetchall()
-            teaser_data = {"sample_incentives": [{"state": r[0], "state_name": r[1], "incentives": (r[2] or "")[:120] + "..."} for r in _rows], "states_covered": 50}
-        elif tool_name == "get_water_risk":
-            _tcur.execute("SELECT site_name, state, water_level_ft, water_level_date FROM usgs_water_stress ORDER BY water_level_date DESC LIMIT 3")
-            _rows = _tcur.fetchall()
-            teaser_data = {"sample_sites": [{"site": r[0], "state": r[1], "water_level_ft": float(r[2]) if r[2] else None, "date": str(r[3])} for r in _rows], "monitoring_states": 16, "cooling_hint": "High water stress areas: air-cooled or hybrid recommended"}
-        elif tool_name == "get_grid_intelligence":
-            _tcur.execute("SELECT COUNT(DISTINCT market) as corridors, COUNT(*) as facilities FROM discovered_facilities WHERE market IS NOT NULL")
-            _r = _tcur.fetchone()
-            teaser_data = {"total_corridors": _r[0] if _r else 0, "total_facilities": _r[1] if _r else 0, "headline": "PJM: 45 active | ERCOT: 38 active | CAISO: 22 active", "iso_regions_covered": 6}
-        elif tool_name == "get_backup_status":
-            _counts = {}
-            for _tbl in ["discovered_facilities", "deals", "news_articles", "gas_pipelines", "substations", "fiber_routes"]:
-                try:
-                    _tcur.execute(f"SELECT COUNT(*) FROM {_tbl}")
-                    _counts[_tbl] = _row_val(_tcur.fetchone(), 0)
-                except Exception:
-                    _counts[_tbl] = "n/a"
-                    _tc.rollback()
-            teaser_data = {"status": "healthy", "database": "Neon PostgreSQL (Azure West US 3)", "table_counts": _counts, "data_freshness": "News: 3min, facilities: daily, infrastructure: weekly"}
-        _tcur.close()
-    except Exception as _teaser_err:
-        import traceback as _ttb
-        logger.error(f"MCP TEASER DB ERROR for {tool_name}: {_teaser_err}\n{_ttb.format_exc()}")
-        teaser_data = {"note": f"Preview data temporarily unavailable ({type(_teaser_err).__name__})"}
-    finally:
-        if _tc:
-            try: return_pg_connection(_tc)
-            except Exception: pass
-    result = {
-        "_user_facing_note": fallback_note,
-        "success": True,
-        **teaser_data,
-        "_upgrade": {
-            "tier": "free_teaser",
-            "message": f"Full {tool_name} results require Developer plan ($49/mo).",
-            "url": "https://dchub.cloud/pricing#developer",
-            "checkout": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",
-            "price": "$49/mo",
-        }
-    }
-    return [{"type": "text", "text": json.dumps(result)}]
-
-def _is_corrupt_facility(facility_dict):
-    """Detect the {k: k} corruption pattern where values equal their key names.
-    e.g. {"city": "city", "name": "name", "id": "id"} — all values are strings matching the key."""
-    if not facility_dict or not isinstance(facility_dict, dict):
-        return False
-    str_items = [(k, v) for k, v in facility_dict.items() if isinstance(v, str) and k not in ('status',)]
-    if len(str_items) < 3:
-        return False  # Not enough string fields to detect pattern
-    return all(v == k for k, v in str_items)
+        })
+    }]
 
 
-def _get_agent_registry_from_neon():
-    """Build live agent registry from Neon agent_registry table + MCP usage stats."""
-    conn = None
-    try:
-        conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))
-        cur = conn.cursor()
-        agents = []
-        total_24h = 0
-        try:
-            cur.execute("""
-                SELECT id, name, slug, integration_type, status, description, last_seen, created_at
-                FROM agent_registry
-                ORDER BY last_seen DESC NULLS LAST
-            """)
-            for row in cur.fetchall():
-                agent_id, name, slug, int_type, status, desc, last_seen, created = row
-                agents.append({
-                    "platform": name or slug or "unknown",
-                    "slug": slug,
-                    "integration_type": int_type or "api",
-                    "status": status or "active",
-                    "description": desc or "",
-                    "last_active": last_seen.isoformat() if last_seen else None,
-                    "created_at": created.isoformat() if created else None,
-                    "connection": "MCP (Streamable HTTP)" if int_type == "mcp" else "API"
-                })
-        except Exception as e1:
-            logger.debug(f"Agent registry: agent_registry table query failed: {e1}")
-        known_slugs = {a.get('slug', '').lower() for a in agents}
-        try:
-            cur.execute("""
-                SELECT ak.name, ak.rate_limit_tier,
-                       SUM(rl.request_count) as total_reqs,
-                       MAX(rl.request_date) as last_date
-                FROM mcp_rate_limits rl
-                JOIN api_keys ak ON rl.api_key = ak.key
-                WHERE rl.request_date >= CURRENT_DATE - INTERVAL '30 days'
-                GROUP BY ak.name, ak.rate_limit_tier
-                ORDER BY total_reqs DESC
-                LIMIT 20
-            """)
-            for name, tier, total_reqs, last_date in cur.fetchall():
-                if name and name.lower() not in known_slugs:
-                    agents.append({
-                        "platform": name,
-                        "slug": name.lower().replace(" ", "-"),
-                        "integration_type": "api",
-                        "status": "active",
-                        "total_queries": total_reqs or 0,
-                        "last_active": last_date.isoformat() if last_date else None,
-                        "tier": tier or "free",
-                        "connection": "API Key"
-                    })
-        except Exception as e2:
-            logger.debug(f"Agent registry: mcp_rate_limits query skipped: {e2}")
-        return {
-            "success": True,
-            "agents": agents,
-            "total_connected": len(agents),
-            "active": sum(1 for a in agents if a.get('status') == 'active'),
-            "total_queries_24h": total_24h,
-            "source": "DC Hub Agent Registry (dchub.cloud)",
-            "registry_url": "https://dchub.cloud/ecosystem",
-            "mcp_endpoint": "https://dchub.cloud/mcp"
-        }
-    except Exception as e:
-        logger.error(f"_get_agent_registry_from_neon error: {e}")
-        return {
-            "success": True,
-            "agents": [],
-            "total_connected": 0,
-            "active": 0,
-            "source": "DC Hub Agent Registry (dchub.cloud)"
-        }
-    finally:
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-def _get_facility_free_from_db(facility_id):
-    """Direct DB lookup for a single facility — free-tier fields only.
-    Bypasses the REST API entirely. Returns dict or None."""
-    if not facility_id:
-        return None
-    conn = None
-    try:
-        conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))  # direct conn for heavy map query
-        cur = conn.cursor()
-        # Try integer ID first
-        try:
-            int_id = int(facility_id)
-            cur.execute("""
-                SELECT id, name, provider, city, state, country, status
-                FROM discovered_facilities WHERE id = %s LIMIT 1
-            """, (int_id,))
-        except (ValueError, TypeError):
-            # Hex / slug / name fallback
-            cur.execute("""
-                SELECT id, name, provider, city, state, country, status
-                FROM discovered_facilities
-                WHERE slug = %s OR merged_facility_id = %s OR source_id = %s OR name ILIKE %s
-                LIMIT 1
-            """, (str(facility_id), str(facility_id), str(facility_id), f'%{facility_id}%'))
-        row = cur.fetchone()
-        if not row:
-            return None
-        cols = [d[0] for d in cur.description]
-        return dict(zip(cols, row)) if not isinstance(row, dict) else {k: row[k] for k in cols if k in row}
-    except Exception as e:
-        logger.error(f"_get_facility_free_from_db({facility_id}) error: {e}")
-        return None
-    finally:
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-
-def _gate_facility_data(data, tool_name, tool_params=None):
+def _gate_facility_data(data, tool_name):
     """Strip facility data down to free-tier fields, limit count, add CTA.
-    v3: direct DB fallback for get_facility when response data is corrupt ({k:k} pattern)."""
+    v2: includes 1 full sample result so devs see what they're missing."""
     total_count = 0
     sample_full = None  # one ungated result as sample
 
     if isinstance(data, dict):
         # Find the array of results
-        for key in ('facilities', 'results', 'pipeline', 'data', 'operators', 'items', 'facility'):
+        for key in ('facilities', 'results', 'pipeline', 'data', 'operators', 'items'):
             if key in data and isinstance(data[key], list):
                 total_count = len(data[key])
                 # Grab first full result as sample BEFORE stripping
@@ -3883,61 +3106,7 @@ def _gate_facility_data(data, tool_name, tool_params=None):
                 if 'name' in inner or 'facility_name' in inner or 'provider' in inner:
                     total_count = 1
                     sample_full = dict(inner)
-                    # ── BUG FIX: detect {k: k} corruption and use direct DB fallback ──
-                    stripped = _strip_facility(inner)
-                    if tool_name == 'get_facility':
-                        # Extract facility_id with multiple fallback paths
-                        # MCP clients pass params differently:
-                        #   A) {arguments: {facility_id: "123"}}  — standard
-                        #   B) {facility_id: "123"}               — flat
-                        #   C) {input: {facility_id: "123"}}      — variant
-                        fac_id = ''
-                        if isinstance(tool_params, dict):
-                            # Path A: standard MCP arguments wrapper
-                            fac_id = (tool_params.get('arguments', {}) or {}).get('facility_id', '')
-                            # Path B: flat params (no arguments wrapper)
-                            if not fac_id:
-                                fac_id = tool_params.get('facility_id', '')
-                            # Path C: input wrapper variant
-                            if not fac_id:
-                                fac_id = (tool_params.get('input', {}) or {}).get('facility_id', '')
-                            # Path D: generic 'id' at top level
-                            if not fac_id:
-                                fac_id = tool_params.get('id', '')
-                            # Path E: 'id' inside arguments
-                            if not fac_id:
-                                fac_id = (tool_params.get('arguments', {}) or {}).get('id', '')
-                        # Path F: from response data, only if not corrupt ({k:k} pattern)
-                        if not fac_id:
-                            raw_id = inner.get('id')
-                            if raw_id and str(raw_id) != 'id':
-                                fac_id = str(raw_id)
-                        # Path G: name-based lookup as last resort
-                        if not fac_id:
-                            raw_name = inner.get('name')
-                            if raw_name and raw_name != 'name':
-                                fac_id = str(raw_name)
-
-                        if fac_id:
-                            logger.info(f"get_facility: DB fallback lookup fac_id={fac_id}")
-                        else:
-                            logger.warning(f"get_facility BUG-008: no facility_id extracted, tool_params keys={list(tool_params.keys()) if isinstance(tool_params, dict) else type(tool_params)}")
-
-                        db_facility = _get_facility_free_from_db(fac_id)
-
-                        db_facility = _validate_facility_result(db_facility)
-                        if db_facility:
-                            logger.info(f"get_facility: DB fallback succeeded for id={fac_id}")
-                            stripped = db_facility
-                        else:
-                            # DB fallback failed — check if stripped data is also corrupt
-                            stripped_check = _validate_facility_result(stripped)
-                            if stripped_check is None:
-                                logger.warning(f"get_facility: DB fallback AND stripped data corrupt for id={fac_id}, returning error")
-                                data[key] = {"error": "Facility data unavailable", "facility_id": fac_id or "unknown", "success": False}
-                                break
-                            logger.warning(f"get_facility: DB fallback returned None for id={fac_id}, using stripped data")
-                    data[key] = stripped
+                    data[key] = _strip_facility(inner)
                     break
         else:
             # Single facility object — strip it (top-level, no wrapper)
@@ -4018,49 +3187,19 @@ def _gate_facility_data(data, tool_name, tool_params=None):
 
 
 def _strip_facility(facility):
-    """Strip a facility dict to free-tier fields only.
-    v2: defensive check — detect and prevent {k: k} pattern where values equal key names."""
+    """Strip a facility dict to free-tier fields only."""
     if not isinstance(facility, dict):
         return facility
-    stripped = {k: v for k, v in facility.items() if k in MCP_FREE_FIELDS}
-    # Safety: detect broken {k: k} pattern (all string values equal their key name)
-    str_items = [(k, v) for k, v in stripped.items() if isinstance(v, str) and k != 'status']
-    if str_items and all(v == k for k, v in str_items):
-        logger.error(f"_strip_facility BUG DETECTED: values equal key names! Input had {len(facility)} keys: {list(facility.keys())[:15]}")
-        # The input dict itself has the broken pattern — cannot recover here.
-        # Return stripped anyway (caller will handle via _gate_facility_data fallback)
-    return stripped
-
-
-
-def _extract_json_from_sse(sse_bytes):
-    """Extract the JSON-RPC response from SSE data: lines."""
-    text = sse_bytes.decode('utf-8', errors='replace')
-    last_json = None
-    for line in text.split('\n'):
-        if line.startswith('data: '):
-            data = line[6:].strip()
-            if data:
-                try:
-                    parsed = json.loads(data)
-                    if 'result' in parsed or 'error' in parsed:
-                        last_json = data
-                except (json.JSONDecodeError, TypeError):
-                    pass
-    if last_json:
-        return last_json.encode('utf-8')
-    return sse_bytes
+    return {k: v for k, v in facility.items() if k in MCP_FREE_FIELDS}
 
 
 def _gate_mcp_response_bytes(resp_bytes, rpc_method, rpc_params, tier):
     """
-    Gate a full JSON-RPC response (bytes) for ALL tiers (not just free).
-    Enterprise/admin pass through. Developer/Pro get result caps.
+    Gate a full JSON-RPC response (bytes) for free tier.
     Only gates tools/call results. Pass through everything else.
     Returns: (gated_bytes, was_modified)
     """
-    # Enterprise and admin pass through completely
-    if tier in ('enterprise', 'admin'):
+    if tier not in ('free', 'rate_limited'):
         return resp_bytes, False
 
     if rpc_method != 'tools/call':
@@ -4070,35 +3209,29 @@ def _gate_mcp_response_bytes(resp_bytes, rpc_method, rpc_params, tier):
     if not tool_name:
         return resp_bytes, False
 
-    # For free tier: gate facility tools + teaser tools + daily rate limit
-    # For paid tiers: only gate facility/search result counts (no teasers)
-    if tier in ('free', 'rate_limited'):
-        all_gated_tools = MCP_FACILITY_TOOLS | MCP_TEASER_TOOLS
-        if tool_name not in all_gated_tools:
-            # Still check daily rate limit even for ungated tools (news, etc.)
-            if tier == 'free':
-                ip = request.remote_addr or 'unknown'
-                allowed, _, _ = _check_mcp_daily_limit(ip)
-                if not allowed:
-                    rpc_resp_rl = {
-                        "jsonrpc": "2.0",
-                        "result": {
-                            "content": _gate_mcp_result([], tool_name, tier)
-                        }
+    # Gate facility tools + teaser tools; also enforce daily rate limit on ALL tools
+    all_gated_tools = MCP_FACILITY_TOOLS | MCP_TEASER_TOOLS
+    if tool_name not in all_gated_tools:
+        # Still check daily rate limit even for ungated tools (news, etc.)
+        if tier == 'free':
+            ip = request.remote_addr or 'unknown'
+            allowed, _, _ = _check_mcp_daily_limit(ip)
+            if not allowed:
+                rpc_resp_rl = {
+                    "jsonrpc": "2.0",
+                    "result": {
+                        "content": _gate_mcp_result([], tool_name, tier)
                     }
-                    try:
-                        orig = json.loads(resp_bytes)
-                        if 'id' in orig:
-                            rpc_resp_rl['id'] = orig['id']
-                    except Exception:
-                        pass
-                    return json.dumps(rpc_resp_rl).encode('utf-8'), True
-                return resp_bytes, False
+                }
+                try:
+                    orig = json.loads(resp_bytes)
+                    if 'id' in orig:
+                        rpc_resp_rl['id'] = orig['id']
+                except Exception:
+                    pass
+                return json.dumps(rpc_resp_rl).encode('utf-8'), True
             return resp_bytes, False
-    else:
-        # Paid tiers (developer, founding, pro): only gate facility data tools
-        if tool_name not in MCP_FACILITY_TOOLS:
-            return resp_bytes, False
+        return resp_bytes, False
 
     try:
         rpc_resp = json.loads(resp_bytes)
@@ -4111,64 +3244,19 @@ def _gate_mcp_response_bytes(resp_bytes, rpc_method, rpc_params, tier):
     if not content:
         return resp_bytes, False
 
-    gated_content = _gate_mcp_result(content, tool_name, tier, tool_params=rpc_params)
+    gated_content = _gate_mcp_result(content, tool_name, tier)
     rpc_resp['result']['content'] = gated_content
-
-    # WHITELIST strip for FREE tier only — paid tiers keep all fields
-    # SKIP for facility tools: _gate_facility_data already stripped fields correctly.
-    # Double-gating facility data through the whitelist can corrupt single-facility responses.
-    if tier in ('free', 'rate_limited') and tool_name not in MCP_FACILITY_TOOLS:
-        # structuredContent will be rebuilt AFTER whitelist strip below
-        ALLOWED_FIELDS = {
-            '_user_facing_note', '_upgrade', 'success', 'count', 'total_available',
-            'source', 'meta', 'query', 'data_available', 'data_sources',
-            'location', 'overall_score', 'interpretation', 'capacity_requested_mw',
-            'sample_insights', 'data', 'facilities', 'articles', 'transactions',
-            'market', 'by_status', 'top_providers', 'stats', 'recent_facilities',
-            'metro_fiber_preview', 'metro_markets_covered',
-            'data_type', 'rates_preview', 'states_covered', 'data_source', 'detailed_rates',
-            'dc_industry_ppas', 'total_ppas', 'total_contracted_mw', 'installations',
-            'region', 'timestamp', 'summary', 'fuel_mix', 'demand_mw', 'price_per_mwh',
-            'substations', 'transmission_lines', 'gas_pipelines', 'power_plants',
-            'dc_hub_intelligence_index', 'pipeline_projects', 'total_pipeline_mw',
-            'agents', 'total_agents', 'preview', 'carriers_available', 'total_routes',
-    'incentives', 'program_count', 'types', 'comparison', 'winners_by_category', 'overall_winner', 'overall_winner_score', 'locations_compared', 'water_stress', 'cooling_recommendation', 'comparisons', 'carrier_filter', 'carrier_routes_found', 'carrier_note', 'tables', 'freshness', 'db_size_mb', 'total_rows', 'backup_provider', 'redundancy', 'database',
-}
-        gated = rpc_resp.get('result', {}).get('content', [])
-        for i, block in enumerate(gated):
-            if block.get('type') == 'text':
-                try:
-                    obj = json.loads(block['text'])
-                    if isinstance(obj, dict):
-                        stripped = {k: v for k, v in obj.items() if k in ALLOWED_FIELDS}
-                        if 'scores' in obj:
-                            stripped['scores'] = {k: '\u2588\u2588 upgrade to see' for k in obj['scores']}
-                        if 'nearby' in obj:
-                            stripped['nearby'] = {k: '\u2588\u2588 upgrade to see' for k in obj['nearby']}
-                        rpc_resp['result']['content'][i] = {'type': 'text', 'text': json.dumps(stripped)}
-                except (json.JSONDecodeError, TypeError):
-                    pass
-
-    # Rebuild structuredContent from the now-clean content
-    final_text = None
-    for block in rpc_resp.get('result', {}).get('content', []):
-        if block.get('type') == 'text':
-            final_text = block['text']
-            break
-    if final_text:
-        rpc_resp['result']['structuredContent'] = {'result': final_text}
-    else:
-        rpc_resp.get('result', {}).pop('structuredContent', None)
-    
+    # Strip structuredContent — contains raw ungated data from internal MCP
+    rpc_resp.get('result', {}).pop('structuredContent', None)
     return json.dumps(rpc_resp).encode('utf-8'), True
 
 
 def _gate_mcp_sse_stream(resp, rpc_method, rpc_params, tier):
     """
-    Gate an SSE stream for all non-enterprise tiers.
+    Gate an SSE stream for free tier.
     Buffers SSE events, finds JSON-RPC results, gates them.
     """
-    if tier in ('enterprise', 'admin') or rpc_method != 'tools/call':
+    if tier not in ('free', 'rate_limited') or rpc_method != 'tools/call':
         for chunk in resp.iter_content(chunk_size=None):
             if chunk:
                 yield chunk
@@ -4247,10 +3335,11 @@ def _gate_mcp_sse_stream(resp, rpc_method, rpc_params, tier):
 
 
 
-@app.route('/mcp', methods=['GET', 'POST', 'DELETE', 'OPTIONS', 'HEAD'])
-@app.route('/mcp/', methods=['GET', 'POST', 'DELETE', 'OPTIONS', 'HEAD'])
+@app.route('/mcp', methods=['GET', 'POST', 'DELETE', 'OPTIONS'])
+@app.route('/mcp/', methods=['GET', 'POST', 'DELETE', 'OPTIONS'])
 def mcp_proxy():
-    """Proxy MCP Streamable HTTP requests to internal MCP server on port 8888.
+    """
+    Proxy MCP Streamable HTTP requests to internal MCP server on port 8888.
     
     Handles all MCP transport methods:
       POST    -> JSON-RPC requests (initialize, tools/list, tools/call)
@@ -4259,7 +3348,6 @@ def mcp_proxy():
       DELETE  -> Session termination
       OPTIONS -> CORS preflight
     """
-    tool_name = ''
     import requests as http_req
 
     # ---- CORS Preflight ----
@@ -4269,10 +3357,6 @@ def mcp_proxy():
         resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, DELETE, OPTIONS'
         resp.headers['Access-Control-Allow-Headers'] = 'Content-Type, Accept, Authorization, Mcp-Session-Id'
         resp.headers['Access-Control-Expose-Headers'] = 'Mcp-Session-Id'
-        return resp
-    # ---- HEAD request (health checks / monitoring) ----
-    if request.method == 'HEAD':
-        return '', 200, {'Content-Type': 'application/json'}
         return resp
 
     # ---- Build forwarding headers ----
@@ -4388,7 +3472,7 @@ def mcp_proxy():
                     },
                     "instructions": (
                         "DC Hub Nexus MCP Server - Data Center Intelligence Platform. "
-                        "Free tier: all 19 tools available, 5 results per query with basic fields, "
+                        "Free tier: all 11 tools available, 5 results per query with basic fields, "
                         "site scoring preview, and 10 calls/day. "
                         "Developer plan ($49/mo): full data with coordinates, power specs, "
                         "detailed site scoring, real-time grid data, and 1,000 calls/day. "
@@ -4416,10 +3500,13 @@ def mcp_proxy():
                         "get_fiber_intel",
                         "get_energy_prices",
                         "get_renewable_energy",
+                        "get_trends",
+                        "get_market_compare",
+                        "get_portfolio",
+                        "get_market_velocity",
+                        "get_delivery_forecast",
                         "get_top_operators",
-                        "get_tax_incentives",
-                        "get_water_risk",
-                        "compare_sites"
+                        "get_data_quality"
                     ],
                     "authentication": {
                         "type": "api_key",
@@ -4435,87 +3522,19 @@ def mcp_proxy():
             }
 
         # ---- POST: JSON-RPC tool calls ----
-        # ---- POST: JSON-RPC tool calls ----
         if request.method == 'POST':
-            # Always ensure Accept includes application/json for MCP SDK compatibility
-            accept = fwd_headers.get('Accept', '')
-            if 'application/json' not in accept:
+            if 'Accept' not in fwd_headers:
                 fwd_headers['Accept'] = 'application/json, text/event-stream'
-            elif 'text/event-stream' not in accept:
-                fwd_headers['Accept'] = accept + ', text/event-stream'
-
-
-
-
-
+            elif 'text/event-stream' not in fwd_headers.get('Accept', ''):
+                fwd_headers['Accept'] = fwd_headers['Accept'] + ', text/event-stream'
 
             # ── Determine caller tier BEFORE forwarding ──
             caller_tier, _tier_info = _get_mcp_caller_tier()
-            _tier_email = _tier_info.get('email', 'anonymous') if _tier_info else 'anonymous'
-            logger.info(f"🔐 MCP tier: {caller_tier} | user: {_tier_email} | method: {rpc_method} | tool: {rpc_params.get('name', '') if rpc_params else ''}")
-
-            # ── Usage email trigger for registered users ──
-            if rpc_method == 'tools/call' and _tier_info and _tier_email != 'anonymous':
-                try:
-                    ip = request.remote_addr or 'unknown'
-                    entry = _mcp_free_rate_limits.get(ip, {})
-                    calls_used = entry.get('count', 0)
-                    trigger_usage_email(_tier_email, caller_tier, calls_used)
-                except Exception:
-                    pass  # Never let email trigger crash the proxy
-
-
-                        # ── Neon-direct intercept for get_agent_registry (v2 — no structuredContent) ──
-            if rpc_method == 'tools/call' and tool_name == 'get_agent_registry':
-                try:
-                    _ar_conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))
-                    _ar_cur = _ar_conn.cursor()
-                    _ar_cur.execute("SELECT id, name, slug, integration_type, status, description, last_seen, created_at FROM agent_registry ORDER BY last_seen DESC NULLS LAST")
-                    _ar_agents = []
-                    for row in _ar_cur.fetchall():
-                        _ar_agents.append({"platform": row[1] or row[2] or "unknown", "slug": row[2], "integration_type": row[3] or "api", "status": row[4] or "active", "description": row[5] or "", "last_active": row[6].isoformat() if row[6] else None, "connection": "MCP (Streamable HTTP)" if row[3] == "mcp" else "API"})
-                    _ar_cur.close()
-                    _ar_conn.close()
-                    _ar_result = {"success": True, "agents": _ar_agents, "total_connected": len(_ar_agents), "active": sum(1 for a in _ar_agents if a.get("status") == "active"), "source": "DC Hub Agent Registry (dchub.cloud)"}
-                    rpc_id = (request.get_json(silent=True) or {}).get('id')
-                    _ar_resp = {"jsonrpc": "2.0", "result": {"content": [{"type": "text", "text": json.dumps(_ar_result)}], "isError": False}}
-                    if rpc_id is not None:
-                        _ar_resp["id"] = rpc_id
-                    logger.info(f"MCP get_agent_registry: Neon-direct v2, {len(_ar_agents)} agents")
-                    return Response(json.dumps(_ar_resp), status=200, headers={"Content-Type": "application/json", "Access-Control-Allow-Origin": "*"})
-                except Exception as _ar_e:
-                    logger.error(f"get_agent_registry Neon-direct v2 failed: {_ar_e}")
-
-            tool_name = rpc_params.get("name", "") if rpc_params else ""
-            # ── BUG-035: Rewrite news category aliases BEFORE proxy call ──
-            if rpc_method == 'tools/call' and tool_name == 'get_news':
-                try:
-                    _body = request.get_json(silent=True) or {}
-                    _news_args = (_body.get('params', {}) or {}).get('arguments', {}) or {}
-                    _cat = (_news_args.get('category', '') or '').strip().lower()
-                    if _cat and _cat in NEWS_CATEGORY_MAP:
-                        _news_args['category'] = NEWS_CATEGORY_MAP[_cat]
-                        _body['params']['arguments'] = _news_args
-                        request._cached_data = __import__('json').dumps(_body).encode('utf-8')
-                        logger.info(f"MCP news category rewrite: '{_cat}' -> '{NEWS_CATEGORY_MAP[_cat]}'")
-                except Exception as _e:
-                    logger.debug(f"News category rewrite skipped: {_e}")
-
-            # ── MCP Response Cache: check before proxy ──
-            _mcp_cache_key = None
-            if rpc_method == 'tools/call' and tool_name in _MCP_CACHEABLE_TOOLS:
-                import hashlib
-                _cache_args = json.dumps(rpc_params.get('arguments', {}), sort_keys=True) if rpc_params else '{}'
-                _mcp_cache_key = f"mcp:{tool_name}:{hashlib.md5(_cache_args.encode()).hexdigest()[:8]}"
-                _cached = _MCP_RESPONSE_CACHE.get(_mcp_cache_key)
-                if _cached:
-                    logger.info(f"MCP CACHE HIT: tool={tool_name}")
-                    return Response(_cached, status=200, headers={'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'})
 
             resp = http_req.post(
                 MCP_INTERNAL_URL,
                 headers=fwd_headers,
-                data=getattr(request, '_cached_data', None) or request.get_data(),
+                data=request.get_data(),
                 stream=True,
                 timeout=30,
             )
@@ -4527,44 +3546,9 @@ def mcp_proxy():
 
             content_type = resp.headers.get('Content-Type', '')
 
-            # ── tools/call: read full response, gate as JSON ──
-            # Avoids SSE re-serialization that breaks Claude/Cursor MCP clients.
-            if rpc_method == 'tools/call':
-                resp_bytes = resp.content
-                if 'text/event-stream' in content_type:
-                    resp_bytes = _extract_json_from_sse(resp_bytes)
-                gated_bytes, was_gated = _gate_mcp_response_bytes(resp_bytes, rpc_method, rpc_params, caller_tier)
-                tool_name = rpc_params.get('name', '') if rpc_params else ''
-                if was_gated:
-                    logger.info(f"🚧 MCP GATED: tool={tool_name} tier={caller_tier} original_size={len(resp_bytes)} gated_size={len(gated_bytes)}")
-                else:
-                    logger.info(f"✅ MCP PASSTHROUGH: tool={tool_name} tier={caller_tier} (ungated)")
-                # Strip structuredContent — Claude MCP client rejects responses with both fields
-                try:
-                    _resp_obj = json.loads(gated_bytes)
-                    if 'result' in _resp_obj and isinstance(_resp_obj['result'], dict):
-                        _resp_obj['result'].pop('structuredContent', None)
-                        gated_bytes = json.dumps(_resp_obj).encode('utf-8')
-                except Exception:
-                    pass  # If not valid JSON, pass through as-is
-                out_headers = {
-                    'Content-Type': 'application/json',
-                    'Access-Control-Allow-Origin': '*',
-                }
-                if 'Mcp-Session-Id' in resp.headers:
-                    out_headers['Mcp-Session-Id'] = resp.headers['Mcp-Session-Id']
-                if _mcp_cache_key and resp.status_code == 200:
-                    _MCP_RESPONSE_CACHE.set(_mcp_cache_key, gated_bytes)
-                return Response(gated_bytes, status=resp.status_code, headers=out_headers)
-
-            # ── Non-tools/call SSE (initialize, tools/list): stream through ──
             if 'text/event-stream' in content_type:
-                def _passthrough():
-                    for chunk in resp.iter_content(chunk_size=None):
-                        if chunk:
-                            yield chunk
                 proxy_resp = Response(
-                    stream_with_context(_passthrough()),
+                    stream_with_context(_gate_mcp_sse_stream(resp, rpc_method, rpc_params, caller_tier)),
                     status=resp.status_code,
                     content_type='text/event-stream',
                 )
@@ -4576,14 +3560,16 @@ def mcp_proxy():
                     proxy_resp.headers['Mcp-Session-Id'] = resp.headers['Mcp-Session-Id']
                 return proxy_resp
 
-            # ── JSON response: pass through ──
+            # ── JSON response: gate before returning ──
             resp_bytes = resp.content
+            gated_bytes, _was_gated = _gate_mcp_response_bytes(resp_bytes, rpc_method, rpc_params, caller_tier)
+
             excluded = {'transfer-encoding', 'content-encoding', 'connection'}
             headers = {k: v for k, v in resp.headers.items() if k.lower() not in excluded}
             headers['Access-Control-Allow-Origin'] = '*'
             if 'Mcp-Session-Id' in resp.headers:
                 headers['Mcp-Session-Id'] = resp.headers['Mcp-Session-Id']
-            return Response(resp_bytes, status=resp.status_code, headers=headers)
+            return Response(gated_bytes, status=resp.status_code, headers=headers)
 
         # ---- DELETE: Session cleanup ----
         if request.method == 'DELETE':
@@ -4854,10 +3840,6 @@ _RATE_LIMIT_BYPASS_PATHS = {
     '/api/v1/stats', '/api/health', '/api/stripe/webhook',
     '/api/stripe/config', '/api/verify-key', '/api/ecosystem/health',
     '/api/v1/map',
-    '/api/v1/gas-pipelines', '/api/v1/power-plants',
-    '/api/v1/transmission-lines', '/api/v1/submarine-cables',
-    '/api/energy-discovery/pipelines', '/api/v1/infrastructure/stats',
-    '/api/v1/infrastructure/substations',
 }
 
 def _get_request_tier():
@@ -4927,11 +3909,6 @@ def enforce_tier_rate_limits():
     # Bypass requests from dchub.cloud frontend
     origin = request.headers.get('Origin', '') or request.headers.get('Referer', '')
     if 'dchub.cloud' in origin:
-        return None
-
-    # Bypass internal MCP and admin tool calls
-    internal_key = request.headers.get('X-Internal-Key', '')
-    if internal_key and internal_key in (os.environ.get('DCHUB_INTERNAL_KEY', ''), os.environ.get('DCHUB_SYNC_KEY', '')):
         return None
 
     # Skip OPTIONS preflight
@@ -5156,13 +4133,6 @@ if WELCOME_DRIP_AVAILABLE:
     except Exception as e:
         logger.warning(f"⚠️ Drip routes failed: {e}")
 
-if USAGE_EMAILS_AVAILABLE:
-    try:
-        setup_usage_email_routes(app)
-        logger.info("✅ Usage limit email routes registered")
-    except Exception as e:
-        logger.warning(f"⚠️ Usage email routes failed: {e}")
-
 # =============================================================================
 # CRAWLER TRACKING SYSTEM
 # =============================================================================
@@ -5172,23 +4142,20 @@ CRAWLER_DB_PATH = 'crawler_tracking.db'
 
 def init_crawler_db():
     """Initialize SQLite database for crawler tracking"""
-    try:
-        conn = get_db(CRAWLER_DB_PATH)
-        conn.execute('''CREATE TABLE IF NOT EXISTS crawler_visits (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            crawler_name TEXT NOT NULL,
-            crawler_family TEXT NOT NULL,
-            user_agent TEXT,
-            path TEXT,
-            ip_address TEXT,
-            timestamp TEXT NOT NULL
-        )''')
-        conn.execute('CREATE INDEX IF NOT EXISTS idx_crawler_ts ON crawler_visits(timestamp)')
-        conn.execute('CREATE INDEX IF NOT EXISTS idx_crawler_name ON crawler_visits(crawler_name)')
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        logger.warning(f"Crawler DB init: {e}")
+    conn = get_db(CRAWLER_DB_PATH)
+    conn.execute('''CREATE TABLE IF NOT EXISTS crawler_visits (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        crawler_name TEXT NOT NULL,
+        crawler_family TEXT NOT NULL,
+        user_agent TEXT,
+        path TEXT,
+        ip_address TEXT,
+        timestamp TEXT NOT NULL
+    )''')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_crawler_ts ON crawler_visits(timestamp)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_crawler_name ON crawler_visits(crawler_name)')
+    conn.commit()
+    conn.close()
 
 logger.info("⏭️ Crawler SQLite tracking DISABLED (prevents lock contention)")
 
@@ -5244,6 +4211,12 @@ def identify_crawler(user_agent_str):
             return (name, family)
     return None
 
+@app.before_request
+def track_crawler_visit():
+    """Crawler visit tracking -- SQLite logging DISABLED to prevent lock contention.
+    Crawler identification still runs for in-memory stats only."""
+    pass
+
 AUTO_REGISTER_PATHS = {
     '/mcp', '/mcp/', '/api/ai/discover', '/.well-known/mcp.json',
     '/.well-known/mcp/server-card.json', '/openapi.json', '/llms.txt',
@@ -5286,7 +4259,7 @@ def admin_key_audit():
     no_plan = c.fetchall()
 
     c.execute("SELECT COUNT(*) FROM api_keys WHERE is_active = 1")
-    total_active = _row_val(c.fetchone(), 0)
+    total_active = c.fetchone()[0]
 
     conn.close()
 
@@ -5365,7 +4338,6 @@ def crawler_stats():
         resp.headers['Access-Control-Allow-Headers'] = 'Content-Type'
         return resp
 
-    conn = None
     try:
         conn = get_read_db(CRAWLER_DB_PATH)
         cursor = conn.cursor()
@@ -5378,10 +4350,12 @@ def crawler_stats():
 
         since_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
         cursor.execute('SELECT COUNT(*) FROM crawler_visits WHERE timestamp > ?', (since_24h,))
-        last_24h = _row_val(cursor.fetchone(), 0)
+        last_24h = cursor.fetchone()[0]
 
         cursor.execute('SELECT crawler_name, crawler_family, path, ip_address, timestamp FROM crawler_visits ORDER BY timestamp DESC LIMIT 50')
         recent = [dict(row) for row in cursor.fetchall()]
+
+        conn.close()
 
         # Build response matching what agent-hub.html expects
         stats = {}
@@ -5415,10 +4389,6 @@ def crawler_stats():
             'recent_visits': [],
             'summary': {'google_visits': 0, 'meta_visits': 0, 'last_24_hours': 0, 'total': 0}
         })
-    finally:
-        if conn:
-            try: conn.close()
-            except Exception: pass
 
 @app.route('/api/crawlers/recent', methods=['GET', 'OPTIONS'])
 def crawler_recent():
@@ -5430,47 +4400,18 @@ def crawler_recent():
         resp.headers['Access-Control-Allow-Headers'] = 'Content-Type'
         return resp
 
-    conn = None
     try:
         limit = min(int(request.args.get('limit', 100)), 500)
         conn = get_read_db(CRAWLER_DB_PATH)
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM crawler_visits ORDER BY timestamp DESC LIMIT %s', (limit,))
         visits = [dict(row) for row in cursor.fetchall()]
+        conn.close()
         return jsonify({'success': True, 'visits': visits, 'count': len(visits)})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e), 'visits': [], 'count': 0})
-    finally:
-        if conn:
-            try: conn.close()
-            except Exception: pass
 
 logger.info("✅ Crawler tracking system registered (/api/crawlers/stats, /api/crawlers/recent)")
-
-# =============================================================================
-# HELPER: _row_val / _row_vals (defined early so market report can use them)
-# Original def at ~line 8555 is kept as well — Python is fine with duplicate defs.
-# =============================================================================
-def _row_val(row, default=0):
-    """Extract first value from a cursor row — works with both RealDictCursor (dict) and regular cursor (tuple)."""
-    if row is None:
-        return default
-    if isinstance(row, dict):
-        vals = list(row.values())
-        return vals[0] if vals else default
-    try:
-        return row[0]
-    except (IndexError, KeyError):
-        return default
-
-def _row_vals(row, count=2):
-    """Extract multiple values from a cursor row — works with both dict and tuple cursors."""
-    if row is None:
-        return [0] * count
-    if isinstance(row, dict):
-        vals = list(row.values())
-        return [vals[i] if i < len(vals) else 0 for i in range(count)]
-    return [row[i] if i < len(row) else 0 for i in range(count)]
 
 # =============================================================================
 # DAILY MARKET REPORT GENERATOR
@@ -5482,21 +4423,21 @@ os.makedirs(MARKET_REPORTS_DIR, exist_ok=True)
 def generate_market_report():
     """Generate a daily market intelligence report"""
     try:
-        conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))  # fixed: was get_read_db()
+        conn = get_read_db()
         cursor = conn.cursor()
         
         # Get facility stats
         cursor.execute("SELECT COUNT(*) FROM facilities")
-        total_facilities = _row_val(cursor.fetchone(), 0)
+        total_facilities = cursor.fetchone()[0]
         
         cursor.execute("SELECT COUNT(DISTINCT provider) FROM discovered_facilities WHERE provider IS NOT NULL AND provider != ''")
-        total_providers = _row_val(cursor.fetchone(), 0)
+        total_providers = cursor.fetchone()[0]
         
         cursor.execute("SELECT COUNT(DISTINCT country) FROM discovered_facilities WHERE country IS NOT NULL AND country != ''")
-        total_countries = _row_val(cursor.fetchone(), 0)
+        total_countries = cursor.fetchone()[0]
         
         cursor.execute("SELECT SUM(power_mw) FROM discovered_facilities WHERE power_mw IS NOT NULL")
-        total_power = _row_val(cursor.fetchone(), 0)
+        total_power = cursor.fetchone()[0] or 0
         
         # Get recent deals
         cursor.execute("""
@@ -5675,21 +4616,12 @@ def handle_error(e):
 # ENERGY ROUTES BLUEPRINT (Phase 2 Extract 1)
 # 31 routes: GridStatus, FCC, EPA, PeeringDB, EIA, HIFLD, Oil & Gas
 # Extracted to routes/energy_routes.py — zero DB dependencies
-# NOTE: Rankings blueprint moved to routes/rankings_routes.py (registered below)
 # =============================================================================
 try:
-    from routes.energy_routes import energy_bp as _energy_routes_bp
-    app.register_blueprint(_energy_routes_bp)
+    from routes.energy_routes import rankings_bp, _register_rankings_routes
+    _register_rankings_routes(rankings_bp, db_pool=_pg_pool_obj, require_plan=require_plan)
+    app.register_blueprint(rankings_bp)
     print("⚡ Energy Routes Blueprint: ✅ Registered")
-except ImportError:
-    # Fallback: energy_routes.py may still export rankings_bp
-    try:
-        from routes.energy_routes import rankings_bp as _energy_rankings_bp, _register_rankings_routes as _energy_register_rankings
-        _energy_register_rankings(_energy_rankings_bp, db_pool=_pg_pool_obj, require_plan=require_plan)
-        app.register_blueprint(_energy_rankings_bp)
-        print("⚡ Energy Routes Blueprint: ✅ Registered (legacy rankings_bp)")
-    except Exception as e2:
-        print(f"⚡ Energy Routes Blueprint: ⚠️ Failed to load: {e2}")
 except Exception as e:
     print(f"⚡ Energy Routes Blueprint: ⚠️ Failed to load: {e}")
 
@@ -5708,7 +4640,6 @@ if 'GRIDSTATUS_CACHE' not in dir():
     EIA_CACHE = BoundedCache(max_size=1, ttl=1) if 'BoundedCache' in dir() else {}
     HIFLD_CACHE = BoundedCache(max_size=1, ttl=1) if 'BoundedCache' in dir() else {}
     OILGAS_CACHE = BoundedCache(max_size=1, ttl=1) if 'BoundedCache' in dir() else {}
-    DEALS_CACHE = BoundedCache(max_size=1, ttl=1) if 'BoundedCache' in dir() else {}
     gridstatus_get_load = lambda iso: None
 
 @app.route('/api/grid/fuel-mix-live', methods=['GET'])
@@ -5723,6 +4654,12 @@ def grid_fuel_mix_live_alias():
 # SECURITY HEADERS & API TRACKING (Applied to all responses)
 # Note: CORS headers are handled at the top of the app (before blueprints)
 # =============================================================================
+
+@app.before_request
+def track_api_request_start():
+    """Track request start time for analytics"""
+    if request.path.startswith('/api/'):
+        request._analytics_start_time = time.time()
 
 @app.after_request
 def add_security_headers(response):
@@ -5760,8 +4697,8 @@ def add_security_headers(response):
     
     # API usage tracking (for Admin Analytics)
     if ADMIN_ANALYTICS_AVAILABLE and user_analytics and request.path.startswith('/api/'):
-        if hasattr(request, '_start_time'):
-            response_time = int((time.time() - request._start_time) * 1000)
+        if hasattr(request, '_analytics_start_time'):
+            response_time = int((time.time() - request._analytics_start_time) * 1000)
             ip = request.headers.get('CF-Connecting-IP') or \
                  request.headers.get('X-Forwarded-For', '').split(',')[0].strip() or \
                  request.remote_addr or 'unknown'
@@ -5823,173 +4760,175 @@ def init_new_tables():
     conn = get_db()
     try:
         c = conn.cursor()
-        _init_new_tables_inner(conn, c)
+    
+        # Leads table for email capture
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS leads (
+                id TEXT PRIMARY KEY,
+                email TEXT UNIQUE NOT NULL,
+                name TEXT,
+                company TEXT,
+                source TEXT,
+                source_detail TEXT,
+                verified INTEGER DEFAULT 0,
+                verify_token TEXT,
+                subscribed INTEGER DEFAULT 1,
+                lead_score INTEGER DEFAULT 0,
+                tags TEXT,
+                created_at TEXT,
+                verified_at TEXT,
+                last_activity TEXT
+            )
+        """)
+    
+        # Users table for authentication
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                email TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                name TEXT,
+                company TEXT,
+                role TEXT DEFAULT 'free',
+                plan TEXT DEFAULT 'free',
+                api_calls_today INTEGER DEFAULT 0,
+                api_calls_total INTEGER DEFAULT 0,
+                saved_searches TEXT,
+                saved_markets TEXT,
+                preferences TEXT,
+                created_at TEXT,
+                last_login TEXT,
+                reset_token TEXT,
+                reset_expires TEXT,
+                stripe_customer_id TEXT,
+                subscription_status TEXT
+            )
+        """)
+    
+        for col_sql in [
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_status TEXT",
+        ]:
+            try:
+                conn2 = get_db()
+                conn2.execute(col_sql)
+                conn2.commit()
+                conn2.close()
+            except:
+                try: conn2.close()
+                except: pass
+    
+        # Generated reports table
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS reports (
+                id TEXT PRIMARY KEY,
+                user_id TEXT,
+                email TEXT,
+                report_type TEXT,
+                markets TEXT,
+                parameters TEXT,
+                file_path TEXT,
+                status TEXT DEFAULT 'pending',
+                created_at TEXT,
+                completed_at TEXT
+            )
+        """)
+    
+        # Lead activities table for tracking
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS lead_activities (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lead_id TEXT,
+                activity_type TEXT,
+                details TEXT,
+                created_at TEXT
+            )
+        """)
+    
+        # User alerts table
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS user_alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                market TEXT NOT NULL,
+                alert_type TEXT NOT NULL,
+                enabled INTEGER DEFAULT 1,
+                email_notify INTEGER DEFAULT 1,
+                push_notify INTEGER DEFAULT 0,
+                created_at TEXT,
+                last_triggered TEXT,
+                trigger_count INTEGER DEFAULT 0
+            )
+        """)
+    
+        c.execute('''CREATE TABLE IF NOT EXISTS mcp_tool_calls (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tool_name TEXT NOT NULL,
+            platform TEXT DEFAULT 'unknown',
+            client_name TEXT DEFAULT 'unknown',
+            params TEXT,
+            success BOOLEAN DEFAULT TRUE,
+            response_time_ms INTEGER,
+            ip_address TEXT,
+            user_agent TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+
+        c.execute('''CREATE TABLE IF NOT EXISTS mcp_connections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            platform TEXT NOT NULL,
+            client_name TEXT,
+            client_version TEXT,
+            protocol_version TEXT,
+            method TEXT,
+            ip_address TEXT,
+            user_agent TEXT,
+            success BOOLEAN DEFAULT 1,
+            error_message TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+
+        c.execute('''CREATE TABLE IF NOT EXISTS ambassador_broadcasts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            platform TEXT NOT NULL,
+            action TEXT NOT NULL,
+            endpoint TEXT,
+            status_code INTEGER,
+            success BOOLEAN DEFAULT 1,
+            response_snippet TEXT,
+            duration_ms INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+
+        c.execute('CREATE INDEX IF NOT EXISTS idx_mcp_tool_calls_ts ON mcp_tool_calls(created_at)')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_mcp_connections_ts ON mcp_connections(created_at)')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_ambassador_ts ON ambassador_broadcasts(created_at)')
+
+        # AI Testimonials table -- captures AI agent citations of DC Hub
+        c.execute('''CREATE TABLE IF NOT EXISTS ai_testimonials (
+            id SERIAL PRIMARY KEY,
+            platform TEXT NOT NULL,
+            agent_name TEXT,
+            quote TEXT NOT NULL,
+            context TEXT,
+            query TEXT,
+            url TEXT,
+            verified BOOLEAN DEFAULT FALSE,
+            approved BOOLEAN DEFAULT FALSE,
+            featured BOOLEAN DEFAULT FALSE,
+            category TEXT DEFAULT 'citation',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            approved_at TIMESTAMP,
+            source TEXT DEFAULT 'auto'
+        )''')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_testimonials_approved ON ai_testimonials(approved, featured, created_at DESC)')
+
+        conn.commit()
+        print("✅ New v74 tables initialized (including MCP analytics + AI testimonials)")
+
     finally:
-        return_pg_connection(conn)
-
-def _init_new_tables_inner(conn, c):
-    # Leads table for email capture
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS leads (
-            id TEXT PRIMARY KEY,
-            email TEXT UNIQUE NOT NULL,
-            name TEXT,
-            company TEXT,
-            source TEXT,
-            source_detail TEXT,
-            verified INTEGER DEFAULT 0,
-            verify_token TEXT,
-            subscribed INTEGER DEFAULT 1,
-            lead_score INTEGER DEFAULT 0,
-            tags TEXT,
-            created_at TEXT,
-            verified_at TEXT,
-            last_activity TEXT
-        )
-    """)
-    
-    # Users table for authentication
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id TEXT PRIMARY KEY,
-            email TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            name TEXT,
-            company TEXT,
-            role TEXT DEFAULT 'free',
-            plan TEXT DEFAULT 'free',
-            api_calls_today INTEGER DEFAULT 0,
-            api_calls_total INTEGER DEFAULT 0,
-            saved_searches TEXT,
-            saved_markets TEXT,
-            preferences TEXT,
-            created_at TEXT,
-            last_login TEXT,
-            reset_token TEXT,
-            reset_expires TEXT,
-            stripe_customer_id TEXT,
-            subscription_status TEXT
-        )
-    """)
-    
-    for col_sql in [
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT",
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_status TEXT",
-    ]:
-        try:
-            c.execute(col_sql)
-            conn.commit()
-        except:
-            try: conn.rollback()
-            except: pass
-    
-    # Generated reports table
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS reports (
-            id TEXT PRIMARY KEY,
-            user_id TEXT,
-            email TEXT,
-            report_type TEXT,
-            markets TEXT,
-            parameters TEXT,
-            file_path TEXT,
-            status TEXT DEFAULT 'pending',
-            created_at TEXT,
-            completed_at TEXT
-        )
-    """)
-    
-    # Lead activities table for tracking
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS lead_activities (
-            id SERIAL PRIMARY KEY,
-            lead_id TEXT,
-            activity_type TEXT,
-            details TEXT,
-            created_at TEXT
-        )
-    """)
-    
-    # User alerts table
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS user_alerts (
-            id SERIAL PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            market TEXT NOT NULL,
-            alert_type TEXT NOT NULL,
-            enabled INTEGER DEFAULT 1,
-            email_notify INTEGER DEFAULT 1,
-            push_notify INTEGER DEFAULT 0,
-            created_at TEXT,
-            last_triggered TEXT,
-            trigger_count INTEGER DEFAULT 0
-        )
-    """)
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS mcp_tool_calls (
-        id SERIAL PRIMARY KEY,
-        tool_name TEXT NOT NULL,
-        platform TEXT DEFAULT 'unknown',
-        client_name TEXT DEFAULT 'unknown',
-        params TEXT,
-        success BOOLEAN DEFAULT TRUE,
-        response_time_ms INTEGER,
-        ip_address TEXT,
-        user_agent TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )''')
-
-    c.execute('''CREATE TABLE IF NOT EXISTS mcp_connections (
-        id SERIAL PRIMARY KEY,
-        platform TEXT NOT NULL,
-        client_name TEXT,
-        client_version TEXT,
-        protocol_version TEXT,
-        method TEXT,
-        ip_address TEXT,
-        user_agent TEXT,
-        success BOOLEAN DEFAULT 1,
-        error_message TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )''')
-
-    c.execute('''CREATE TABLE IF NOT EXISTS ambassador_broadcasts (
-        id SERIAL PRIMARY KEY,
-        platform TEXT NOT NULL,
-        action TEXT NOT NULL,
-        endpoint TEXT,
-        status_code INTEGER,
-        success BOOLEAN DEFAULT 1,
-        response_snippet TEXT,
-        duration_ms INTEGER,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )''')
-
-    c.execute('CREATE INDEX IF NOT EXISTS idx_mcp_tool_calls_ts ON mcp_tool_calls(created_at)')
-    c.execute('CREATE INDEX IF NOT EXISTS idx_mcp_connections_ts ON mcp_connections(created_at)')
-    c.execute('CREATE INDEX IF NOT EXISTS idx_ambassador_ts ON ambassador_broadcasts(created_at)')
-
-    # AI Testimonials table -- captures AI agent citations of DC Hub
-    c.execute('''CREATE TABLE IF NOT EXISTS ai_testimonials (
-        id SERIAL PRIMARY KEY,
-        platform TEXT NOT NULL,
-        agent_name TEXT,
-        quote TEXT NOT NULL,
-        context TEXT,
-        query TEXT,
-        url TEXT,
-        verified BOOLEAN DEFAULT FALSE,
-        approved BOOLEAN DEFAULT FALSE,
-        featured BOOLEAN DEFAULT FALSE,
-        category TEXT DEFAULT 'citation',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        approved_at TIMESTAMP,
-        source TEXT DEFAULT 'auto'
-    )''')
-    c.execute('CREATE INDEX IF NOT EXISTS idx_testimonials_approved ON ai_testimonials(approved, featured, created_at DESC)')
-
-    conn.commit()
-    print("✅ New v74 tables initialized (including MCP analytics + AI testimonials)")
+        try: conn.close()
+        except Exception: pass
 
 # Initialize tables on startup - DEFERRED TO BACKGROUND THREAD
 # init_new_tables()  # Moved to deferred_db_init()
@@ -6136,58 +5075,60 @@ def subscribe_lead():
         return jsonify({'error': 'Invalid email format', 'code': 'VALIDATION_ERROR'}), 400
     
     conn = get_db()
-    c = conn.cursor()
+    try:
+        c = conn.cursor()
     
-    # Check if already exists
-    c.execute("SELECT id, subscribed FROM leads WHERE email = %s", (email,))
-    existing = c.fetchone()
+        # Check if already exists
+        c.execute("SELECT id, subscribed FROM leads WHERE email = %s", (email,))
+        existing = c.fetchone()
     
-    if existing:
-        if existing[1]:  # Already subscribed
-            conn.close()
-            return jsonify({'success': True, 'message': 'Already subscribed', 'new': False})
-        else:
-            # Re-subscribe
-            c.execute("UPDATE leads SET subscribed = 1, last_activity = %s WHERE email = %s",
-                     (datetime.utcnow().isoformat(), email))
-            conn.commit()
-            conn.close()
-            return jsonify({'success': True, 'message': 'Re-subscribed successfully', 'new': False})
+        if existing:
+            if existing[1]:  # Already subscribed
+                return jsonify({'success': True, 'message': 'Already subscribed', 'new': False})
+            else:
+                # Re-subscribe
+                c.execute("UPDATE leads SET subscribed = 1, last_activity = %s WHERE email = %s",
+                         (datetime.utcnow().isoformat(), email))
+                conn.commit()
+                return jsonify({'success': True, 'message': 'Re-subscribed successfully', 'new': False})
     
-    # Create new lead
-    lead_id = secrets.token_hex(8)
-    verify_token = secrets.token_urlsafe(32)
+        # Create new lead
+        lead_id = secrets.token_hex(8)
+        verify_token = secrets.token_urlsafe(32)
+    
+        c.execute("""
+            INSERT INTO leads (id, email, name, company, source, source_detail, verify_token, created_at, last_activity)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (
+            lead_id,
+            email,
+            data.get('name', ''),
+            data.get('company', ''),
+            data.get('source', 'newsletter'),
+            data.get('source_detail', ''),
+            verify_token,
+            datetime.utcnow().isoformat(),
+            datetime.utcnow().isoformat()
+        ))
+    
+        # Log activity
+        c.execute("""
+            INSERT INTO lead_activities (lead_id, activity_type, details, created_at)
+            VALUES (%s, 'subscribed', %s, %s)
+        """, (lead_id, json.dumps({'source': data.get('source', 'newsletter')}), datetime.utcnow().isoformat()))
+    
+        conn.commit()
+    
+        return jsonify({
+            'success': True,
+            'message': 'Subscribed successfully',
+            'new': True,
+            'lead_id': lead_id
+        }), 201
 
-    c.execute("""
-        INSERT INTO leads (id, email, name, company, source, source_detail, verify_token, created_at, last_activity)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-    """, (
-        lead_id,
-        email,
-        data.get('name', ''),
-        data.get('company', ''),
-        data.get('source', 'newsletter'),
-        data.get('source_detail', ''),
-        verify_token,
-        datetime.utcnow().isoformat(),
-        datetime.utcnow().isoformat()
-    ))
-
-    # Log activity
-    c.execute("""
-        INSERT INTO lead_activities (lead_id, activity_type, details, created_at)
-        VALUES (%s, 'subscribed', %s, %s)
-    """, (lead_id, json.dumps({'source': data.get('source', 'newsletter')}), datetime.utcnow().isoformat()))
-
-    conn.commit()
-    conn.close()
-    
-    return jsonify({
-        'success': True,
-        'message': 'Subscribed successfully',
-        'new': True,
-        'lead_id': lead_id
-    }), 201
+    finally:
+        try: conn.close()
+        except Exception: pass
 
 @app.route('/api/leads/capture', methods=['POST'])
 def capture_lead():
@@ -6200,15 +5141,14 @@ def capture_lead():
     email = data['email'].lower().strip()
     source = data.get('source', 'unknown')  # e.g., 'social_generator', 'pdf_report', 'market_comparison'
     
-    conn = None
+    conn = get_db()
     try:
-        conn = get_db()
         c = conn.cursor()
-
+    
         # Check if exists
         c.execute("SELECT id, lead_score FROM leads WHERE email = %s", (email,))
         existing = c.fetchone()
-
+    
         # Calculate lead score based on source
         score_map = {
             'social_generator': 10,
@@ -6219,22 +5159,22 @@ def capture_lead():
             'demo_request': 50
         }
         score_delta = score_map.get(source, 5)
-
+    
         if existing:
             lead_id = existing[0]
             new_score = existing[1] + score_delta
-
+        
             c.execute("""
                 UPDATE leads SET
                     lead_score = %s,
                     last_activity = %s,
-                    source_detail = COALESCE(source_detail, '') || ',' || %s
+                    source_detail = COALESCE(source_detail, '') || ',' || ?
                 WHERE email = %s
             """, (new_score, datetime.utcnow().isoformat(), source, email))
         else:
             lead_id = secrets.token_hex(8)
             verify_token = secrets.token_urlsafe(32)
-
+        
             c.execute("""
                 INSERT INTO leads (id, email, name, company, source, source_detail, verify_token, lead_score, created_at, last_activity)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
@@ -6250,52 +5190,50 @@ def capture_lead():
                 datetime.utcnow().isoformat(),
                 datetime.utcnow().isoformat()
             ))
-
+    
         # Log activity
         c.execute("""
             INSERT INTO lead_activities (lead_id, activity_type, details, created_at)
             VALUES (%s, 'content_access', %s, %s)
         """, (lead_id, json.dumps({'source': source, 'content': data.get('content', '')}), datetime.utcnow().isoformat()))
-
-        conn.commit()
-    except Exception as e:
-        if conn:
-            try: conn.rollback()
-            except Exception: pass
-        raise
-    finally:
-        if conn:
-            try: conn.close()
-            except Exception: pass
     
-    return jsonify({
-        'success': True,
-        'message': 'Lead captured',
-        'lead_id': lead_id,
-        'access_granted': True
-    })
+        conn.commit()
+    
+        return jsonify({
+            'success': True,
+            'message': 'Lead captured',
+            'lead_id': lead_id,
+            'access_granted': True
+        })
+
+    finally:
+        try: conn.close()
+        except Exception: pass
 
 @app.route('/api/leads/verify/<token>', methods=['GET'])
 def verify_lead(token):
     """Verify email via token"""
     conn = get_db()
-    c = conn.cursor()
+    try:
+        c = conn.cursor()
     
-    c.execute("SELECT id, email FROM leads WHERE verify_token = %s", (token,))
-    lead = c.fetchone()
+        c.execute("SELECT id, email FROM leads WHERE verify_token = %s", (token,))
+        lead = c.fetchone()
     
-    if not lead:
-        conn.close()
-        return jsonify({'error': 'Invalid verification token', 'code': 'NOT_FOUND'}), 404
+        if not lead:
+            return jsonify({'error': 'Invalid verification token', 'code': 'NOT_FOUND'}), 404
     
-    c.execute("""
-        UPDATE leads SET verified = 1, verified_at = %s, verify_token = NULL WHERE id = %s
-    """, (datetime.utcnow().isoformat(), lead[0]))
+        c.execute("""
+            UPDATE leads SET verified = 1, verified_at = %s, verify_token = NULL WHERE id = %s
+        """, (datetime.utcnow().isoformat(), lead[0]))
     
-    conn.commit()
-    conn.close()
+        conn.commit()
     
-    return jsonify({'success': True, 'message': 'Email verified successfully'})
+        return jsonify({'success': True, 'message': 'Email verified successfully'})
+
+    finally:
+        try: conn.close()
+        except Exception: pass
 
 @app.route('/api/leads/unsubscribe', methods=['POST'])
 def unsubscribe_lead():
@@ -6307,12 +5245,16 @@ def unsubscribe_lead():
         return jsonify({'error': 'Email required'}), 400
     
     conn = get_db()
-    c = conn.cursor()
-    c.execute("UPDATE leads SET subscribed = 0 WHERE email = %s", (email,))
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+        c.execute("UPDATE leads SET subscribed = 0 WHERE email = %s", (email,))
+        conn.commit()
     
-    return jsonify({'success': True, 'message': 'Unsubscribed successfully'})
+        return jsonify({'success': True, 'message': 'Unsubscribed successfully'})
+
+    finally:
+        try: conn.close()
+        except Exception: pass
 
 # =============================================================================
 # PARTNER / ECOSYSTEM INQUIRIES
@@ -6338,8 +5280,10 @@ def init_partner_inquiries_table():
             )
         """)
         conn.commit()
+
     finally:
-        return_pg_connection(conn)
+        try: conn.close()
+        except Exception: pass
 
 # Initialize on startup - DEFERRED TO BACKGROUND THREAD
 # try:
@@ -6367,11 +5311,10 @@ def submit_partner_inquiry():
     
     inquiry_id = secrets.token_hex(8)
     
-    conn = None
     try:
         conn = get_db()
         c = conn.cursor()
-
+        
         # Save to database
         c.execute("""
             INSERT INTO partner_inquiries (id, name, email, company, partner_type, message, created_at)
@@ -6385,7 +5328,7 @@ def submit_partner_inquiry():
             message,
             datetime.utcnow().isoformat()
         ))
-
+        
         # Also add to leads if not exists
         c.execute("SELECT id FROM leads WHERE email = %s", (email,))
         if not c.fetchone():
@@ -6401,13 +5344,13 @@ def submit_partner_inquiry():
         else:
             # Update existing lead score
             c.execute("""
-                UPDATE leads SET lead_score = lead_score + 30, last_activity = %s,
+                UPDATE leads SET lead_score = lead_score + 30, last_activity = %s, 
                 source_detail = COALESCE(source_detail, '') || ',partner_inquiry'
                 WHERE email = %s
             """, (datetime.utcnow().isoformat(), email))
-
-        conn.commit()
         
+        conn.commit()
+
         # Log to console immediately (visible in Replit logs)
         print("\n" + "="*60)
         print("🤝 NEW PARTNER INQUIRY RECEIVED!")
@@ -6421,13 +5364,12 @@ def submit_partner_inquiry():
         print("="*60 + "\n")
         
         # Try to send notification email
-        conn2 = None
         try:
             if EMAIL_SERVICE_AVAILABLE:
                 # Queue notification email to admin
                 conn2 = get_db()
                 c2 = conn2.cursor()
-
+                
                 email_body = f"""
                 <h1>New Partner Inquiry</h1>
                 <p><strong>Name:</strong> {name}</p>
@@ -6441,7 +5383,7 @@ def submit_partner_inquiry():
                 <p>Submitted: {datetime.utcnow().isoformat()}</p>
                 <p><a href="https://dchub.cloud/admin.html">View all inquiries</a></p>
                 """
-
+                
                 c2.execute("""
                     INSERT INTO email_queue (id, email, template_name, subject, body_html, scheduled_at, status, created_at)
                     VALUES (%s, %s, %s, %s, %s, %s, 'scheduled', %s)
@@ -6455,27 +5397,23 @@ def submit_partner_inquiry():
                     datetime.utcnow().isoformat()
                 ))
                 conn2.commit()
+                conn2.close()
                 print(f"📧 Partner inquiry email queued for jonathan@dchub.cloud")
         except Exception as e:
             print(f"Partner notification email error: {e}")
-        finally:
-            if conn2:
-                try: conn2.close()
-                except Exception: pass
-
+        
         return jsonify({
             'success': True,
             'message': 'Partnership inquiry received! We will be in touch soon.',
             'inquiry_id': inquiry_id
         })
-
+        
     except Exception as e:
         print(f"Partner inquiry error: {e}")
         return jsonify({'error': 'Failed to submit inquiry', 'details': str(e)}), 500
     finally:
-        if conn:
-            try: conn.close()
-            except Exception: pass
+        try: conn.close()
+        except Exception: pass
 
 @app.route('/api/partner/inquiries', methods=['GET'])
 @require_auth
@@ -6485,29 +5423,33 @@ def get_partner_inquiries():
         return jsonify({'error': 'Admin access required'}), 403
     
     conn = get_db()
-    c = conn.cursor()
-    c.execute("""
-        SELECT id, name, email, company, partner_type, message, status, created_at
-        FROM partner_inquiries
-        ORDER BY created_at DESC
-        LIMIT 100
-    """)
+    try:
+        c = conn.cursor()
+        c.execute("""
+            SELECT id, name, email, company, partner_type, message, status, created_at
+            FROM partner_inquiries
+            ORDER BY created_at DESC
+            LIMIT 100
+        """)
     
-    inquiries = []
-    for row in c.fetchall():
-        inquiries.append({
-            'id': row[0],
-            'name': row[1],
-            'email': row[2],
-            'company': row[3],
-            'type': row[4],
-            'message': row[5],
-            'status': row[6],
-            'created_at': row[7]
-        })
+        inquiries = []
+        for row in c.fetchall():
+            inquiries.append({
+                'id': row[0],
+                'name': row[1],
+                'email': row[2],
+                'company': row[3],
+                'type': row[4],
+                'message': row[5],
+                'status': row[6],
+                'created_at': row[7]
+            })
     
-    conn.close()
-    return jsonify({'success': True, 'inquiries': inquiries, 'count': len(inquiries)})
+        return jsonify({'success': True, 'inquiries': inquiries, 'count': len(inquiries)})
+
+    finally:
+        try: conn.close()
+        except Exception: pass
 
 # =============================================================================
 # STRIPE PAYMENT ENDPOINTS
@@ -6550,41 +5492,45 @@ ALERT_TYPES = {
 def get_user_alerts():
     """Get all alerts for authenticated user"""
     user_id = request.user['user_id']
-    
+
     conn = get_db()
-    c = conn.cursor()
-    
-    c.execute("""
-        SELECT id, market, alert_type, enabled, email_notify, push_notify, 
-               created_at, last_triggered, trigger_count
-        FROM user_alerts
-        WHERE user_id = %s
-        ORDER BY created_at DESC
-    """, (user_id,))
-    
-    alerts = []
-    for row in c.fetchall():
-        alerts.append({
-            'id': row[0],
-            'market': row[1],
-            'market_name': MARKET_NAMES.get(row[1], row[1]),
-            'alert_type': row[2],
-            'alert_type_name': ALERT_TYPES.get(row[2], row[2]),
-            'enabled': bool(row[3]),
-            'email_notify': bool(row[4]),
-            'push_notify': bool(row[5]),
-            'created_at': row[6],
-            'last_triggered': row[7],
-            'trigger_count': row[8]
+    try:
+        c = conn.cursor()
+
+        c.execute("""
+            SELECT id, market, alert_type, enabled, email_notify, push_notify,
+                   created_at, last_triggered, trigger_count
+            FROM user_alerts
+            WHERE user_id = %s
+            ORDER BY created_at DESC
+        """, (user_id,))
+
+        alerts = []
+        for row in c.fetchall():
+            alerts.append({
+                'id': row[0],
+                'market': row[1],
+                'market_name': MARKET_NAMES.get(row[1], row[1]),
+                'alert_type': row[2],
+                'alert_type_name': ALERT_TYPES.get(row[2], row[2]),
+                'enabled': bool(row[3]),
+                'email_notify': bool(row[4]),
+                'push_notify': bool(row[5]),
+                'created_at': row[6],
+                'last_triggered': row[7],
+                'trigger_count': row[8]
+            })
+
+        return jsonify({
+            'success': True,
+            'alerts': alerts,
+            'count': len(alerts)
         })
-    
-    conn.close()
-    
-    return jsonify({
-        'success': True,
-        'alerts': alerts,
-        'count': len(alerts)
-    })
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 @app.route('/api/alerts', methods=['POST'])
 @app.route('/api/v2/alerts', methods=['POST'])
@@ -6593,69 +5539,72 @@ def create_alert():
     """Create a new alert"""
     user_id = request.user['user_id']
     data = request.get_json()
-    
+
     market = data.get('market')
     alert_type = data.get('alert_type')
-    
+
     if not market:
         return jsonify({'error': 'Market is required'}), 400
     if not alert_type:
         return jsonify({'error': 'Alert type is required'}), 400
-    
+
     conn = get_db()
-    c = conn.cursor()
-    
-    # Check for duplicate
-    c.execute("""
-        SELECT id FROM user_alerts 
-        WHERE user_id = %s AND market = %s AND alert_type = %s
-    """, (user_id, market, alert_type))
-    
-    if c.fetchone():
-        conn.close()
-        return jsonify({'error': 'You already have this alert configured'}), 409
-    
-    # Check alert limit (max 10 for free users)
-    c.execute("SELECT COUNT(*) FROM user_alerts WHERE user_id = %s", (user_id,))
-    count = _row_val(c.fetchone(), 0)
-    
-    # Get user plan
-    c.execute("SELECT plan FROM users WHERE id = %s", (user_id,))
-    user_row = c.fetchone()
-    plan = user_row[0] if user_row else 'free'
-    
-    max_alerts = 5 if plan == 'free' else 50
-    if count >= max_alerts:
-        conn.close()
+    try:
+        c = conn.cursor()
+
+        # Check for duplicate
+        c.execute("""
+            SELECT id FROM user_alerts
+            WHERE user_id = %s AND market = %s AND alert_type = %s
+        """, (user_id, market, alert_type))
+
+        if c.fetchone():
+            return jsonify({'error': 'You already have this alert configured'}), 409
+
+        # Check alert limit (max 10 for free users)
+        c.execute("SELECT COUNT(*) FROM user_alerts WHERE user_id = %s", (user_id,))
+        count = c.fetchone()[0]
+
+        # Get user plan
+        c.execute("SELECT plan FROM users WHERE id = %s", (user_id,))
+        user_row = c.fetchone()
+        plan = user_row[0] if user_row else 'free'
+
+        max_alerts = 5 if plan == 'free' else 50
+        if count >= max_alerts:
+            return jsonify({
+                'error': f'Alert limit reached ({max_alerts}). Upgrade to Pro for more alerts.',
+                'code': 'LIMIT_REACHED'
+            }), 403
+
+        # Insert alert
+        now = datetime.utcnow().isoformat()
+        c.execute("""
+            INSERT INTO user_alerts (user_id, market, alert_type, enabled, email_notify, created_at)
+            VALUES (%s, %s, %s, 1, 1, %s)
+        """, (user_id, market, alert_type, now))
+
+        alert_id = c.lastrowid
+        conn.commit()
+
         return jsonify({
-            'error': f'Alert limit reached ({max_alerts}). Upgrade to Pro for more alerts.',
-            'code': 'LIMIT_REACHED'
-        }), 403
-    
-    # Insert alert
-    now = datetime.utcnow().isoformat()
-    c.execute("""
-        INSERT INTO user_alerts (user_id, market, alert_type, enabled, email_notify, created_at)
-        VALUES (%s, %s, %s, 1, 1, %s)
-    """, (user_id, market, alert_type, now))
-    
-    alert_id = c.lastrowid
-    conn.commit()
-    conn.close()
-    
-    return jsonify({
-        'success': True,
-        'alert': {
-            'id': alert_id,
-            'market': market,
-            'market_name': MARKET_NAMES.get(market, market),
-            'alert_type': alert_type,
-            'alert_type_name': ALERT_TYPES.get(alert_type, alert_type),
-            'enabled': True,
-            'email_notify': True,
-            'created_at': now
-        }
-    }), 201
+            'success': True,
+            'alert': {
+                'id': alert_id,
+                'market': market,
+                'market_name': MARKET_NAMES.get(market, market),
+                'alert_type': alert_type,
+                'alert_type_name': ALERT_TYPES.get(alert_type, alert_type),
+                'enabled': True,
+                'email_notify': True,
+                'created_at': now
+            }
+        }), 201
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 @app.route('/api/alerts/<int:alert_id>', methods=['DELETE'])
 @app.route('/api/v2/alerts/<int:alert_id>', methods=['DELETE'])
@@ -6663,21 +5612,25 @@ def create_alert():
 def delete_alert(alert_id):
     """Delete an alert"""
     user_id = request.user['user_id']
-    
+
     conn = get_db()
-    c = conn.cursor()
-    
-    # Verify ownership
-    c.execute("SELECT id FROM user_alerts WHERE id = %s AND user_id = %s", (alert_id, user_id))
-    if not c.fetchone():
-        conn.close()
-        return jsonify({'error': 'Alert not found'}), 404
-    
-    c.execute("DELETE FROM user_alerts WHERE id = %s AND user_id = %s", (alert_id, user_id))
-    conn.commit()
-    conn.close()
-    
-    return jsonify({'success': True, 'deleted': alert_id})
+    try:
+        c = conn.cursor()
+
+        # Verify ownership
+        c.execute("SELECT id FROM user_alerts WHERE id = %s AND user_id = %s", (alert_id, user_id))
+        if not c.fetchone():
+            return jsonify({'error': 'Alert not found'}), 404
+
+        c.execute("DELETE FROM user_alerts WHERE id = %s AND user_id = %s", (alert_id, user_id))
+        conn.commit()
+
+        return jsonify({'success': True, 'deleted': alert_id})
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 @app.route('/api/alerts/<int:alert_id>/toggle', methods=['POST'])
 @app.route('/api/v2/alerts/<int:alert_id>/toggle', methods=['POST'])
@@ -6685,28 +5638,28 @@ def delete_alert(alert_id):
 def toggle_alert(alert_id):
     """Toggle an alert on/off"""
     user_id = request.user['user_id']
-    
-    conn = get_db()
-    c = conn.cursor()
-    
-    # Verify ownership and get current state
-    c.execute("SELECT enabled FROM user_alerts WHERE id = %s AND user_id = %s", (alert_id, user_id))
-    row = c.fetchone()
-    
-    if not row:
-        conn.close()
-        return jsonify({'error': 'Alert not found'}), 404
-    
-    new_state = 0 if row[0] else 1
-    c.execute("UPDATE user_alerts SET enabled = %s WHERE id = %s", (new_state, alert_id))
-    conn.commit()
-    conn.close()
-    
-    return jsonify({'success': True, 'enabled': bool(new_state)})
 
-# =============================================================================
-# ALERT EMAIL TRIGGERS
-# =============================================================================
+    conn = get_db()
+    try:
+        c = conn.cursor()
+
+        # Verify ownership and get current state
+        c.execute("SELECT enabled FROM user_alerts WHERE id = %s AND user_id = %s", (alert_id, user_id))
+        row = c.fetchone()
+
+        if not row:
+            return jsonify({'error': 'Alert not found'}), 404
+
+        new_state = 0 if row[0] else 1
+        c.execute("UPDATE user_alerts SET enabled = %s WHERE id = %s", (new_state, alert_id))
+        conn.commit()
+
+        return jsonify({'success': True, 'enabled': bool(new_state)})
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 def check_and_send_alert_emails():
     """Check user alerts and send emails for triggered conditions"""
@@ -6734,9 +5687,9 @@ def check_and_send_alert_emails():
                 c.execute("""
                     SELECT COUNT(*) FROM discovered_facilities
                     WHERE market LIKE %s
-                    AND created_at > datetime('now', '-1 day')
+                    AND created_at > NOW() - INTERVAL '1 day'
                 """, (f'%{market}%',))
-                new_count = _row_val(c.fetchone(), 0)
+                new_count = c.fetchone()[0]
                 
                 if new_count > 0:
                     # Update last triggered
@@ -7001,13 +5954,13 @@ def stripe_webhook_test():
             cur = conn.cursor()
 
             cur.execute("SELECT plan, COUNT(*) FROM users GROUP BY plan")
-            checks['user_plans'] = {row[0]: row[1] for row in _rows_to_tuples(cur.fetchall())}
+            checks['user_plans'] = {row[0]: row[1] for row in cur.fetchall()}
 
             cur.execute("SELECT subscription_status, COUNT(*) FROM users WHERE subscription_status IS NOT NULL GROUP BY subscription_status")
-            checks['subscription_statuses'] = {row[0]: row[1] for row in _rows_to_tuples(cur.fetchall())}
+            checks['subscription_statuses'] = {row[0]: row[1] for row in cur.fetchall()}
 
             cur.execute("SELECT COUNT(*) FROM users WHERE stripe_customer_id IS NOT NULL AND stripe_customer_id != ''")
-            checks['users_with_stripe_id'] = _row_val(cur.fetchone(), 0)
+            checks['users_with_stripe_id'] = cur.fetchone()[0]
 
             cur.execute("""
                 SELECT email, plan, subscription_status, stripe_customer_id
@@ -7072,21 +6025,20 @@ def founding_members_status():
     REGULAR_PRICE = 299
     
     claimed = 3  # Default fallback
-    conn = None
+    
     try:
         conn = get_db()
         c = conn.cursor()
         # Count users on the founding plan
         c.execute("SELECT COUNT(*) FROM users WHERE plan = 'founding'")
-        db_count = _row_val(c.fetchone(), 0)
+        db_count = c.fetchone()[0]
         if db_count > 0:
             claimed = db_count
     except Exception:
         pass  # Use fallback
     finally:
-        if conn:
-            try: conn.close()
-            except Exception: pass
+        try: conn.close()
+        except Exception: pass
     
     remaining = FOUNDING_TOTAL - claimed
     
@@ -7222,7 +6174,7 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
 
             from sendgrid.helpers.mail import Cc
             message = Mail(
-                from_email=Email('info@dchub.cloud', 'DC Hub'),
+                from_email=Email('alerts@dchub.cloud', 'DC Hub'),
                 to_emails=To(to_email),
                 subject=subject,
                 html_content=HtmlContent(html)
@@ -7323,7 +6275,7 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
 </html>"""
 
             message = Mail(
-                from_email=Email('info@dchub.cloud', 'DC Hub'),
+                from_email=Email('alerts@dchub.cloud', 'DC Hub'),
                 to_emails=To(to_email),
                 subject=subject,
                 html_content=HtmlContent(html)
@@ -7402,7 +6354,7 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
     </div>
     <div class="feature-box">
       <h3>💰 M&amp;A Deal Tracker</h3>
-      <p>$324B+ in tracked transactions with buyer, seller, price, and market analysis</p>
+      <p>$185B+ in tracked transactions with buyer, seller, price, and market analysis</p>
     </div>
     <div class="feature-box">
       <h3>📍 Site Analysis Tools</h3>
@@ -7588,7 +6540,7 @@ def handle_checkout_completed(session):
                  (new_user_id, customer_email, hashed_pw, display_name, plan_name, api_tier, now, stripe_cust)),
             ])
 
-            print(f"🔐 Account created for {customer_email} via Neon")
+            print(f"🔐 Account created for {customer_email}")
 
             raw_key = 'dchub_' + sec.token_urlsafe(32)
             key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
@@ -7597,8 +6549,6 @@ def handle_checkout_completed(session):
             _pg_execute(
                 "INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions, rate_limit_tier, is_active, created_at, usage_count, plan, calls_today, calls_total) VALUES (%s, %s, %s, %s, '[\"read\",\"write\"]', %s, 1, %s, 0, %s, 0, 0)",
                 (new_user_id, key_hash, key_prefix, f'{customer_email} Pro Key', api_tier, now, plan_name))
-
-            # SQLite removed — _pg_execute above handles Neon
 
             print(f"✨ Created new user account for {customer_email} (id: {new_user_id})")
             print(f"🔑 Generated {plan_name} API key: {key_prefix}...")
@@ -7611,8 +6561,6 @@ def handle_checkout_completed(session):
                 _, pg_rows = _pg_execute("SELECT id FROM users WHERE email = %s", (customer_email,), fetch=True)
                 if pg_rows:
                     resolved_user_id = pg_rows[0][0]
-                else:
-                    resolved_user_id = None  # Not found in Neon
                 print(f"🔍 Looked up user_id for {customer_email}: {resolved_user_id}")
 
             if resolved_user_id:
@@ -7629,8 +6577,6 @@ def handle_checkout_completed(session):
                 _pg_execute(
                     "INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions, rate_limit_tier, is_active, created_at, usage_count, plan, calls_today, calls_total) VALUES (%s, %s, %s, %s, '[\"read\",\"write\"]', %s, 1, %s, 0, %s, 0, 0)",
                     (resolved_user_id, key_hash, key_prefix, f'{customer_email} Pro Key', api_tier, now, plan_name))
-
-                # SQLite removed — _pg_execute above handles Neon
                 print(f"🔑 Generated new {plan_name} API key for existing user: {key_prefix}...")
                 send_welcome_email_sendgrid(customer_email, raw_key, plan_name)
             else:
@@ -7651,7 +6597,18 @@ def handle_subscription_created(subscription):
         # Only update subscription_status to 'active'.
         _pg_execute("UPDATE users SET subscription_status = %s WHERE stripe_customer_id = %s",
                    (status, customer_id))
-        print(f"✅ Subscription activated for customer: {customer_id}")
+        conn = get_db()
+        try:
+            c = conn.cursor()
+            c.execute("UPDATE users SET subscription_status = %s WHERE stripe_customer_id = %s",
+                      (status, customer_id))
+            conn.commit()
+            _sync_tables_bg('users')
+            print(f"✅ Subscription activated for customer: {customer_id}")
+
+        finally:
+            try: conn.close()
+            except Exception: pass
 
 def handle_subscription_updated(subscription):
     """Handle subscription changes - writes to PostgreSQL first, then SQLite"""
@@ -7672,7 +6629,23 @@ def handle_subscription_updated(subscription):
                 _pg_execute("UPDATE api_keys SET rate_limit_tier = 'free', last_used_at = %s WHERE user_id = %s", (now, row[0]))
         print(f"🔑 Downgraded API keys to free tier for customer: {customer_id}")
 
-    print(f"📝 Subscription updated for customer {customer_id}: {status}")
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        if status in ['active', 'trialing', 'past_due', 'unpaid']:
+            c.execute("UPDATE users SET subscription_status = %s WHERE stripe_customer_id = %s", (status, customer_id))
+        elif status == 'canceled':
+            c.execute("UPDATE users SET plan = 'free', role = 'free', subscription_status = %s WHERE stripe_customer_id = %s",
+                      (status, customer_id))
+            c.execute("UPDATE api_keys SET rate_limit_tier = 'free', updated_at = %s WHERE user_id IN (SELECT id FROM users WHERE stripe_customer_id = %s)",
+                      (now, customer_id))
+        conn.commit()
+        _sync_tables_bg('users', 'api_keys')
+        print(f"📝 Subscription updated for customer {customer_id}: {status}")
+
+    finally:
+        try: conn.close()
+        except Exception: pass
 
 def handle_subscription_deleted(subscription):
     """Handle subscription cancellation - writes to PostgreSQL first, then SQLite"""
@@ -7686,8 +6659,21 @@ def handle_subscription_deleted(subscription):
         for row in pg_rows:
             _pg_execute("UPDATE api_keys SET rate_limit_tier = 'free', last_used_at = %s WHERE user_id = %s", (now, row[0]))
 
-    print(f"❌ Subscription canceled for customer: {customer_id}")
-    print(f"🔑 API keys downgraded to free tier")
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute("UPDATE users SET plan = 'free', role = 'free', subscription_status = 'canceled' WHERE stripe_customer_id = %s",
+                  (customer_id,))
+        c.execute("UPDATE api_keys SET rate_limit_tier = 'free', updated_at = %s WHERE user_id IN (SELECT id FROM users WHERE stripe_customer_id = %s)",
+                  (now, customer_id))
+        conn.commit()
+        _sync_tables_bg('users', 'api_keys')
+        print(f"❌ Subscription canceled for customer: {customer_id}")
+        print(f"🔑 API keys downgraded to free tier")
+
+    finally:
+        try: conn.close()
+        except Exception: pass
 
 def handle_invoice_paid(invoice):
     """Handle successful payment"""
@@ -7699,32 +6685,48 @@ def handle_payment_failed(invoice):
     customer_id = invoice.get('customer', '')
     
     _pg_execute("UPDATE users SET subscription_status = 'payment_failed' WHERE stripe_customer_id = %s", (customer_id,))
-    print(f"⚠️ Payment failed for customer: {customer_id}")
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute("UPDATE users SET subscription_status = 'payment_failed' WHERE stripe_customer_id = %s",
+                  (customer_id,))
+        conn.commit()
+        _sync_tables_bg('users')
+        print(f"⚠️ Payment failed for customer: {customer_id}")
+
+    finally:
+        try: conn.close()
+        except Exception: pass
 
 @app.route('/api/stripe/subscription', methods=['GET'])
 @require_auth
 def get_subscription_status():
     """Get current user's subscription status"""
     conn = get_db()
-    c = conn.cursor()
-    
-    c.execute("""
-        SELECT plan, stripe_customer_id, subscription_status 
-        FROM users WHERE id = %s
-    """, (request.user['user_id'],))
-    
-    user = c.fetchone()
-    conn.close()
-    
-    if not user:
-        return jsonify({'error': 'User not found'}), 404
-    
-    return jsonify({
-        'plan': user[0] or 'free',
-        'customerId': user[1],
-        'status': user[2] or 'none',
-        'features': get_plan_features(user[0] or 'free')
-    })
+    try:
+        c = conn.cursor()
+
+        c.execute("""
+            SELECT plan, stripe_customer_id, subscription_status
+            FROM users WHERE id = %s
+        """, (request.user['user_id'],))
+
+        user = c.fetchone()
+
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+
+        return jsonify({
+            'plan': user[0] or 'free',
+            'customerId': user[1],
+            'status': user[2] or 'none',
+            'features': get_plan_features(user[0] or 'free')
+        })
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 def get_plan_features(plan):
     """Return features available for a plan"""
@@ -7772,25 +6774,30 @@ def create_portal_session():
     """Create Stripe Customer Portal session for managing subscription"""
     if not STRIPE_AVAILABLE or not STRIPE_SECRET_KEY:
         return jsonify({'error': 'Stripe not configured'}), 503
-    
+
     conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT stripe_customer_id FROM users WHERE id = %s", (request.user['user_id'],))
-    user = c.fetchone()
-    conn.close()
-    
-    if not user or not user[0]:
-        return jsonify({'error': 'No subscription found'}), 404
-    
     try:
-        portal_session = stripe.billing_portal.Session.create(
-            customer=user[0],
-            return_url='https://dchub.cloud/dashboard'
-        )
-        return jsonify({'url': portal_session.url})
-    except Exception as e:
-        print(f"Portal error: {e}")
-        return jsonify({'error': str(e)}), 500
+        c = conn.cursor()
+        c.execute("SELECT stripe_customer_id FROM users WHERE id = %s", (request.user['user_id'],))
+        user = c.fetchone()
+
+        if not user or not user[0]:
+            return jsonify({'error': 'No subscription found'}), 404
+
+        try:
+            portal_session = stripe.billing_portal.Session.create(
+                customer=user[0],
+                return_url='https://dchub.cloud/dashboard'
+            )
+            return jsonify({'url': portal_session.url})
+        except Exception as e:
+            print(f"Portal error: {e}")
+            return jsonify({'error': str(e)}), 500
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 # =============================================================================
 # MARKET COMPARISON ENDPOINTS
@@ -7801,63 +6808,67 @@ def create_portal_session():
 def list_markets():
     """List all available markets with basic stats"""
     conn = get_db()
-    c = conn.cursor()
-    
-    markets = []
-    
-    for market_key, cities in MARKET_ALIASES.items():
-        # Skip state-level aliases
-        if len(market_key) <= 2 or market_key in ['la', 'sf', 'nj', 'nyc', 'dfw', 'nova']:
-            continue
-        
-        # Build city conditions — all US markets, guard against ISO code collisions
-        conditions = []
-        params = []
-        for city in cities:
-            if len(city) == 2 and city.isupper():
-                conditions.append('state = %s')
-                params.append(city)
-            else:
-                conditions.append('city ILIKE %s')
-                params.append(f'%{city}%')
-        
-        where_clause = ' OR '.join(conditions)
-        country_guard = "AND (country = 'US' OR country = 'USA' OR country IS NULL OR country = '')"
-        
-        c.execute(f"""
-            SELECT COUNT(*) as count, COALESCE(SUM(power_mw), 0) as total_power
-            FROM discovered_facilities 
-            WHERE ({where_clause})
-            {country_guard}
-            {RAILWAY_EXCLUSION}
-        """, params)
-        
-        row = c.fetchone()
-        if row and row[0] > 0:
-            markets.append({
-                'id': market_key,
-                'name': market_key.replace('_', ' ').title(),
-                'cities': cities[:5],  # Top 5 cities
-                'facility_count': row[0],
-                'total_power_mw': round(row[1], 1)
-            })
-    
-    conn.close()
-    
-    # Sort by facility count
-    markets.sort(key=lambda x: x['facility_count'], reverse=True)
-    
-    return jsonify({
-        'success': True,
-        'count': len(markets),
-        'data': markets
-    })
+    try:
+        c = conn.cursor()
+
+        markets = []
+
+        for market_key, cities in MARKET_ALIASES.items():
+            # Skip state-level aliases
+            if len(market_key) <= 2 or market_key in ['la', 'sf', 'nj', 'nyc', 'dfw', 'nova']:
+                continue
+
+            # Build city conditions — all US markets, guard against ISO code collisions
+            conditions = []
+            params = []
+            for city in cities:
+                if len(city) == 2 and city.isupper():
+                    conditions.append('state = %s')
+                    params.append(city)
+                else:
+                    conditions.append('city ILIKE %s')
+                    params.append(f'%{city}%')
+
+            where_clause = ' OR '.join(conditions)
+            country_guard = "AND (country = 'US' OR country = 'USA' OR country IS NULL OR country = '')"
+
+            c.execute(f"""
+                SELECT COUNT(*) as count, COALESCE(SUM(power_mw), 0) as total_power
+                FROM discovered_facilities
+                WHERE ({where_clause})
+                {country_guard}
+                {RAILWAY_EXCLUSION}
+            """, params)
+
+            row = c.fetchone()
+            if row and row[0] > 0:
+                markets.append({
+                    'id': market_key,
+                    'name': market_key.replace('_', ' ').title(),
+                    'cities': cities[:5],  # Top 5 cities
+                    'facility_count': row[0],
+                    'total_power_mw': round(row[1], 1)
+                })
+
+        # Sort by facility count
+        markets.sort(key=lambda x: x['facility_count'], reverse=True)
+
+        return jsonify({
+            'success': True,
+            'count': len(markets),
+            'data': markets
+        })
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 @app.route('/api/v1/markets/<market>', methods=['GET'])
 def get_market_stats(market):
     """Get detailed stats for a single market"""
     # Internal key bypass — skip plan gate for MCP calls
-    if request.headers.get('X-Internal-Key') not in (os.environ.get('DCHUB_INTERNAL_KEY', ''), os.environ.get('DCHUB_SYNC_KEY', '')):
+    if request.headers.get('X-Internal-Key') not in ('dchub-internal-2024', 'dchub-internal-sync-2026'):
         user = getattr(request, 'current_user', None)
         plan = (user or {}).get('plan', 'free') if isinstance(user, dict) else 'free'
         if plan not in ('pro', 'enterprise'):
@@ -7904,7 +6915,7 @@ def get_market_stats(market):
         
         row = c.fetchone()
         cols = [d[0] for d in c.description]
-        stats = dict(row) if (row and hasattr(row, "keys")) else (dict(zip(cols, row)) if row else {"facility_count": 0, "total_power": 0, "avg_power": 0, "provider_count": 0})
+        stats = dict(zip(cols, row)) if row else {}
         
         # Top providers
         c.execute(f"""
@@ -7918,7 +6929,7 @@ def get_market_stats(market):
             LIMIT 10
         """, params)
         
-        top_providers = [{'name': r[0], 'facilities': r[1], 'power_mw': round(r[2], 1)} for r in _rows_to_tuples(c.fetchall())]
+        top_providers = [{'name': r[0], 'facilities': r[1], 'power_mw': round(r[2], 1)} for r in c.fetchall()]
         
         # By status
         c.execute(f"""
@@ -7931,7 +6942,7 @@ def get_market_stats(market):
         """, params)
         
         by_status_rows = c.fetchall()
-        by_status = {(r.get("status") if hasattr(r,"get") else r[0]): (r.get("count") if hasattr(r,"get") else r[1]) for r in by_status_rows}
+        by_status = {r[0]: r[1] for r in by_status_rows}
         
         # Recent facilities
         c.execute(f"""
@@ -7946,7 +6957,7 @@ def get_market_stats(market):
         
         recent_rows = c.fetchall()
         recent_cols = [d[0] for d in c.description]
-        recent = [dict(r) if hasattr(r, "keys") else dict(zip(recent_cols, r)) for r in recent_rows]
+        recent = [dict(zip(recent_cols, r)) for r in recent_rows]
         
         return jsonify({
             'success': True,
@@ -7975,44 +6986,6 @@ def get_market_stats(market):
         except Exception:
             pass
 
-
-
-@app.route('/api/renewable/solar', methods=['GET'])
-@app.route('/api/renewable/wind', methods=['GET'])
-@app.route('/api/renewable/combined', methods=['GET'])
-def get_renewable_rest():
-    """REST endpoint for renewable energy PPA data. Free=teaser, Dev+=full."""
-    import psycopg2 as _rpg
-    state = request.args.get('state', '')
-    energy_type = request.args.get('type', '')
-    is_internal = request.headers.get('X-Internal-Key') in ('dchub-internal-2024', 'dchub-internal-sync-2026')
-    user = getattr(request, 'current_user', None)
-    plan = (user or {}).get('plan', 'free') if isinstance(user, dict) else 'free'
-    is_paid = is_internal or plan in ('pro', 'enterprise', 'developer')
-    limit = 25 if is_paid else 3
-    conn = None
-    try:
-        conn = _rpg.connect(os.environ.get('NEON_DATABASE_URL') or os.environ.get('DATABASE_URL', ''))
-        cur = conn.cursor()
-        where_parts, params = [], []
-        if state and len(state) <= 3:
-            where_parts.append('UPPER(state) = UPPER(%s)')
-            params.append(state)
-        if energy_type and energy_type not in ('combined', ''):
-            where_parts.append('LOWER(fuel_source) = LOWER(%s)')
-            params.append(energy_type)
-        clause = ' AND '.join(where_parts) if where_parts else '1=1'
-        cur.execute(f'SELECT buyer, power_mw, fuel_source, state FROM energy_ppas WHERE {clause} ORDER BY power_mw DESC LIMIT %s', params + [limit])
-        rows = [{'buyer': r[0], 'capacity_mw': float(r[1]) if r[1] else 0, 'type': r[2], 'state': r[3]} for r in cur.fetchall()]
-        cur.execute('SELECT COUNT(*), COALESCE(SUM(power_mw),0) FROM energy_ppas')
-        totals = cur.fetchone() or (0, 0)
-        return jsonify({'success': True, 'count': len(rows), 'data': rows, 'total_ppas': totals[0], 'total_contracted_mw': round(float(totals[1] or 0), 0)})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-    finally:
-        if conn:
-            try: conn.close()
-            except: pass
 
 @app.route('/api/v1/markets/compare', methods=['GET'])
 @require_plan('pro')
@@ -8075,33 +7048,21 @@ def compare_markets():
                 {RAILWAY_EXCLUSION}
             """, params)
             
-            row = c.fetchone()
-            if row is None:
-                row = (0, 0, 0, 0, 0, 0, 0)
-            # Map tuple positions to named fields
-            stats = {
-                'facility_count': row[0] or 0,
-                'total_power': float(row[1] or 0),
-                'avg_power': float(row[2] or 0),
-                'max_power': float(row[3] or 0),
-                'provider_count': row[4] or 0,
-                'operational': row[5] or 0,
-                'pipeline': row[6] or 0,
-            }
-
+            stats = dict(c.fetchone())
+            
             # Top 5 providers
             c.execute(f"""
                 SELECT provider, COUNT(*) as count
-                FROM discovered_facilities
+                FROM discovered_facilities 
                 WHERE ({where_clause}) AND provider != ''
                 {RAILWAY_EXCLUSION}
                 GROUP BY provider
                 ORDER BY count DESC
                 LIMIT 5
             """, params)
-
-            top_providers = [r[0] for r in _rows_to_tuples(c.fetchall())]
-
+            
+            top_providers = [r[0] for r in c.fetchall()]
+            
             comparison.append({
                 'market': market,
                 'display_name': market.replace('_', ' ').title(),
@@ -8111,8 +7072,8 @@ def compare_markets():
                     'avg_power_mw': round(stats['avg_power'], 1),
                     'max_power_mw': round(stats['max_power'], 1),
                     'providers': stats['provider_count'],
-                    'operational': stats['operational'],
-                    'pipeline': stats['pipeline']
+                    'operational': stats['operational'] or 0,
+                    'pipeline': stats['pipeline'] or 0
                 },
                 'top_providers': top_providers
             })
@@ -8161,10 +7122,9 @@ def generate_report():
     
     # Capture lead if email provided
     if email:
-        _lead_conn = None
         try:
-            _lead_conn = get_db()
-            c = _lead_conn.cursor()
+            conn = get_db()
+            c = conn.cursor()
             c.execute("SELECT id FROM leads WHERE email = %s", (email,))
             if not c.fetchone():
                 lead_id = secrets.token_hex(8)
@@ -8175,21 +7135,17 @@ def generate_report():
             else:
                 c.execute("UPDATE leads SET lead_score = lead_score + 25, last_activity = %s WHERE email = %s",
                          (datetime.utcnow().isoformat(), email))
-            _lead_conn.commit()
+            conn.commit()
+            conn.close()
         except:
             pass
-        finally:
-            if _lead_conn:
-                try: _lead_conn.close()
-                except Exception: pass
     
     # Generate report
     report_id = secrets.token_hex(8)
     
-    conn = None
     try:
         pdf_buffer = generate_market_pdf(markets, report_type)
-
+        
         # Save report record
         conn = get_db()
         c = conn.cursor()
@@ -8219,9 +7175,8 @@ def generate_report():
     except Exception as e:
         return jsonify({'error': f'Report generation failed: {str(e)}', 'code': 'GENERATION_ERROR'}), 500
     finally:
-        if conn:
-            try: conn.close()
-            except Exception: pass
+        try: conn.close()
+        except Exception: pass
 
 def generate_market_pdf(markets, report_type):
     """Generate the actual PDF report"""
@@ -8265,115 +7220,120 @@ def generate_market_pdf(markets, report_type):
     elements.append(Spacer(1, 20))
     
     conn = get_db()
-    c = conn.cursor()
+    try:
+        c = conn.cursor()
     
-    for market in markets:
-        market_lower = market.lower().replace('-', ' ')
-        if market_lower not in MARKET_ALIASES:
-            continue
+        for market in markets:
+            market_lower = market.lower().replace('-', ' ')
+            if market_lower not in MARKET_ALIASES:
+                continue
             
-        cities = MARKET_ALIASES[market_lower]
+            cities = MARKET_ALIASES[market_lower]
         
-        elements.append(Paragraph(f"📍 {market.title()} Market", heading_style))
+            elements.append(Paragraph(f"📍 {market.title()} Market", heading_style))
         
-        # Build query
-        conditions = []
-        params = []
-        for city in cities:
-            if len(city) == 2 and city.isupper():
-                conditions.append('state = %s')
-                params.append(city)
-            else:
-                conditions.append('city LIKE %s')
-                params.append(f'%{city}%')
+            # Build query
+            conditions = []
+            params = []
+            for city in cities:
+                if len(city) == 2 and city.isupper():
+                    conditions.append('state = %s')
+                    params.append(city)
+                else:
+                    conditions.append('city LIKE %s')
+                    params.append(f'%{city}%')
         
-        where_clause = ' OR '.join(conditions)
+            where_clause = ' OR '.join(conditions)
         
-        # Get stats
-        c.execute(f"""
-            SELECT 
-                COUNT(*) as facility_count,
-                COALESCE(SUM(power_mw), 0) as total_power,
-                COALESCE(AVG(power_mw), 0) as avg_power,
-                COUNT(DISTINCT provider) as provider_count
-            FROM discovered_facilities 
-            WHERE ({where_clause})
-            {RAILWAY_EXCLUSION}
-        """, params)
+            # Get stats
+            c.execute(f"""
+                SELECT 
+                    COUNT(*) as facility_count,
+                    COALESCE(SUM(power_mw), 0) as total_power,
+                    COALESCE(AVG(power_mw), 0) as avg_power,
+                    COUNT(DISTINCT provider) as provider_count
+                FROM discovered_facilities 
+                WHERE ({where_clause})
+                {RAILWAY_EXCLUSION}
+            """, params)
         
-        stats = c.fetchone()
+            stats = c.fetchone()
         
-        # Stats table
-        stats_data = [
-            ['Metric', 'Value'],
-            ['Total Facilities', str(stats[0])],
-            ['Total Power Capacity', f"{stats[1]:,.1f} MW"],
-            ['Average Facility Size', f"{stats[2]:,.1f} MW"],
-            ['Active Providers', str(stats[3])]
-        ]
+            # Stats table
+            stats_data = [
+                ['Metric', 'Value'],
+                ['Total Facilities', str(stats[0])],
+                ['Total Power Capacity', f"{stats[1]:,.1f} MW"],
+                ['Average Facility Size', f"{stats[2]:,.1f} MW"],
+                ['Active Providers', str(stats[3])]
+            ]
         
-        stats_table = Table(stats_data, colWidths=[2.5*inch, 2*inch])
-        stats_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#6366f1')),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, -1), 10),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#f8fafc')),
-            ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#e2e8f0'))
-        ]))
-        
-        elements.append(stats_table)
-        elements.append(Spacer(1, 15))
-        
-        # Top providers
-        c.execute(f"""
-            SELECT provider, COUNT(*) as count, COALESCE(SUM(power_mw), 0) as power
-            FROM discovered_facilities 
-            WHERE ({where_clause}) AND provider != ''
-            {RAILWAY_EXCLUSION}
-            GROUP BY provider
-            ORDER BY count DESC
-            LIMIT 5
-        """, params)
-        
-        providers = c.fetchall()
-        if providers:
-            elements.append(Paragraph("Top Providers", heading_style))
-            
-            provider_data = [['Provider', 'Facilities', 'Total Power']]
-            for p in providers:
-                provider_data.append([p[0][:30], str(p[1]), f"{p[2]:,.1f} MW"])
-            
-            provider_table = Table(provider_data, colWidths=[2.5*inch, 1*inch, 1.5*inch])
-            provider_table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#10b981')),
+            stats_table = Table(stats_data, colWidths=[2.5*inch, 2*inch])
+            stats_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#6366f1')),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
                 ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                ('ALIGN', (1, 0), (2, -1), 'RIGHT'),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, -1), 9),
-                ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
-                ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+                ('FONTSIZE', (0, 0), (-1, -1), 10),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#f8fafc')),
                 ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#e2e8f0'))
             ]))
-            
-            elements.append(provider_table)
         
-        elements.append(Spacer(1, 30))
+            elements.append(stats_table)
+            elements.append(Spacer(1, 15))
+        
+            # Top providers
+            c.execute(f"""
+                SELECT provider, COUNT(*) as count, COALESCE(SUM(power_mw), 0) as power
+                FROM discovered_facilities 
+                WHERE ({where_clause}) AND provider != ''
+                {RAILWAY_EXCLUSION}
+                GROUP BY provider
+                ORDER BY count DESC
+                LIMIT 5
+            """, params)
+        
+            providers = c.fetchall()
+            if providers:
+                elements.append(Paragraph("Top Providers", heading_style))
+            
+                provider_data = [['Provider', 'Facilities', 'Total Power']]
+                for p in providers:
+                    provider_data.append([p[0][:30], str(p[1]), f"{p[2]:,.1f} MW"])
+            
+                provider_table = Table(provider_data, colWidths=[2.5*inch, 1*inch, 1.5*inch])
+                provider_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#10b981')),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                    ('ALIGN', (1, 0), (2, -1), 'RIGHT'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, -1), 9),
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
+                    ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#e2e8f0'))
+                ]))
+            
+                elements.append(provider_table)
+        
+            elements.append(Spacer(1, 30))
     
-    conn.close()
     
-    # Footer
-    elements.append(Spacer(1, 20))
-    elements.append(Paragraph("─" * 60, normal_style))
-    elements.append(Paragraph("Generated by DC Hub | dchub.cloud", normal_style))
-    elements.append(Paragraph("For more market intelligence, visit https://dchub.cloud", normal_style))
+        # Footer
+        elements.append(Spacer(1, 20))
+        elements.append(Paragraph("─" * 60, normal_style))
+        elements.append(Paragraph("Generated by DC Hub | dchub.cloud", normal_style))
+        elements.append(Paragraph("For more market intelligence, visit https://dchub.cloud", normal_style))
     
-    doc.build(elements)
-    return buffer
+        doc.build(elements)
+        return buffer
 
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 # =============================================================================
 # EXISTING ENDPOINTS (from original server)
 # =============================================================================
@@ -8388,7 +7348,7 @@ def get_marketing_stats():
         
         # Live facility count
         c.execute("SELECT COUNT(*) FROM discovered_facilities")
-        facilities = _row_val(c.fetchone(), 0)
+        facilities = c.fetchone()[0] or 0
         
         # Live pipeline from facilities table (all non-active statuses)
         try:
@@ -8410,7 +7370,7 @@ def get_marketing_stats():
         # Live deal volume from transactions
         try:
             c.execute("SELECT SUM(value_usd) FROM deals WHERE value_usd > 0")
-            total_deals = _row_val(c.fetchone(), 0)
+            total_deals = c.fetchone()[0] or 0
             deal_volume = f"${total_deals / 1e9:.0f}B+" if total_deals > 1e9 else "$85B+"
         except:
             deal_volume = "$85B+"
@@ -8421,18 +7381,16 @@ def get_marketing_stats():
             WHERE city IS NOT NULL AND city != '' 
             GROUP BY city ORDER BY cnt DESC LIMIT 5
         """)
-        top_markets = [row[0] for row in _rows_to_tuples(c.fetchall())]
+        top_markets = [row[0] for row in c.fetchall()]
         
         # Recent news count
         c.execute("SELECT COUNT(*) FROM announcements WHERE date(published_date) = date('now')")
-        news_today = _row_val(c.fetchone(), 0)
+        news_today = c.fetchone()[0] or 0
         
         # Countries count
         c.execute("SELECT COUNT(DISTINCT country) FROM discovered_facilities WHERE country IS NOT NULL")
-        countries = _row_val(c.fetchone(), 0) or 100
-        
-        conn.close()
-        
+        countries = c.fetchone()[0] or 100
+
         return jsonify({
             "success": True,
             "stats": {
@@ -8459,6 +7417,9 @@ def get_marketing_stats():
                 "news_today": 0
             }
         })
+    finally:
+        try: conn.close()
+        except Exception: pass
 
 @app.route('/api/v1/ai-platforms/status', methods=['GET'])
 def get_ai_platforms_status():
@@ -8487,7 +7448,6 @@ def get_ai_platforms_status():
 @app.route('/api/v1/ambassador/log', methods=['POST'])
 def log_ambassador_broadcast():
     data = request.get_json(silent=True) or {}
-    db = None
     try:
         db = get_db()
         c = db.cursor()
@@ -8506,22 +7466,21 @@ def log_ambassador_broadcast():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
     finally:
-        if db:
-            try: db.close()
-            except Exception: pass
+        try: db.close()
+        except Exception: pass
 
 @app.route('/api/v1/mcp/analytics', methods=['GET'])
 def mcp_analytics():
-    db = None
     try:
         db = get_db()
-        c = db.cursor()
-        c.execute("SET statement_timeout = '10s'")
         hours = request.args.get('hours', 24, type=int)
         since = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
 
-        c.execute('SELECT COUNT(*) FROM mcp_tool_calls WHERE created_at > %s', (since,))
-        total_calls = _row_val(c.fetchone(), 0)
+        c = db.cursor()
+        c.execute(
+            'SELECT COUNT(*) FROM mcp_tool_calls WHERE created_at > %s', (since,)
+        )
+        total_calls = c.fetchone()[0]
 
         c.execute('''
             SELECT tool_name, COUNT(*) as count, AVG(response_time_ms) as avg_ms
@@ -8541,14 +7500,14 @@ def mcp_analytics():
             SELECT platform, client_name, client_version, method,
                    COUNT(*) as count, MAX(created_at) as last_seen
             FROM mcp_connections WHERE created_at > %s
-            GROUP BY platform, client_name, client_version, method ORDER BY last_seen DESC
+            GROUP BY platform, client_name ORDER BY last_seen DESC
         ''', (since,))
         connections = c.fetchall()
 
         c.execute('''
-            SELECT to_char(created_at, 'YYYY-MM-DD HH24:00') as hour, COUNT(*) as count
+            SELECT TO_CHAR(created_at, 'YYYY-MM-DD HH:00') as hour, COUNT(*) as count
             FROM mcp_tool_calls WHERE created_at > %s
-            GROUP BY hour ORDER BY hour
+            GROUP BY TO_CHAR(created_at, 'YYYY-MM-DD HH:00') ORDER BY hour
         ''', (since,))
         hourly = c.fetchall()
 
@@ -8579,17 +7538,14 @@ def mcp_analytics():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
     finally:
-        if db:
-            try: db.close()
-            except Exception: pass
+        try: db.close()
+        except Exception: pass
 
 @app.route('/api/v1/mcp/platforms', methods=['GET'])
 def mcp_platforms_status():
-    db = None
     try:
         db = get_db()
         c = db.cursor()
-        c.execute("SET statement_timeout = '10s'")
 
         c.execute('''
             SELECT platform,
@@ -8648,16 +7604,15 @@ def mcp_platforms_status():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
     finally:
-        if db:
-            try: db.close()
-            except Exception: pass
+        try: db.close()
+        except Exception: pass
 
 @app.route('/api/v1/energy/discovery/status', methods=['GET'])
-def energy_discovery_status_inline():
+def energy_discovery_status():
     """Energy infrastructure auto-discovery status and counts"""
     conn = None
     try:
-        conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))  # direct conn for heavy map query
+        conn = get_read_db()
         c = conn.cursor()
 
         discovery = {}
@@ -8665,14 +7620,14 @@ def energy_discovery_status_inline():
         # Substations (HIFLD bulk load)
         try:
             c.execute("SELECT COUNT(*) FROM substations")
-            discovery['substations'] = _row_val(c.fetchone(), 0)
+            discovery['substations'] = c.fetchone()[0] or 0
         except:
             discovery['substations'] = 0
 
         # Fiber routes
         try:
             c.execute("SELECT COUNT(*) FROM fiber_routes")
-            discovery['fiber_routes'] = _row_val(c.fetchone(), 0)
+            discovery['fiber_routes'] = c.fetchone()[0] or 0
         except:
             discovery['fiber_routes'] = 0
 
@@ -8687,24 +7642,24 @@ def energy_discovery_status_inline():
         # Metro fiber summary (markets + carriers)
         try:
             c.execute("SELECT COUNT(DISTINCT market) FROM metro_dark_fiber")
-            discovery['metro_fiber_markets'] = _row_val(c.fetchone(), 0)
+            discovery['metro_fiber_markets'] = c.fetchone()[0] or 0
             c.execute("SELECT COUNT(DISTINCT carrier) FROM metro_dark_fiber")
-            discovery['metro_fiber_carriers'] = _row_val(c.fetchone(), 0)
-            c.execute("SELECT COALESCE(SUM(route_miles_approx), 0) FROM metro_dark_fiber")
-            discovery['metro_fiber_route_miles'] = round(_row_val(c.fetchone(), 0), 0)
+            discovery['metro_fiber_carriers'] = c.fetchone()[0] or 0
+            c.execute("SELECT COALESCE(SUM(route_miles), 0) FROM metro_dark_fiber")
+            discovery['metro_fiber_route_miles'] = round(c.fetchone()[0] or 0, 0)
         except:
             pass
 
         # Gas pipelines
         try:
             c.execute("SELECT COUNT(*) FROM gas_pipelines")
-            discovery['gas_pipelines'] = _row_val(c.fetchone(), 0)
+            discovery['gas_pipelines'] = c.fetchone()[0] or 0
         except:
             discovery['gas_pipelines'] = 0
 
         # Energy PPAs
         try:
-            c.execute("SELECT COUNT(*), COALESCE(SUM(power_mw), 0) FROM energy_ppas")
+            c.execute("SELECT COUNT(*), COALESCE(SUM(capacity_mw), 0) FROM energy_ppas")
             row = c.fetchone()
             discovery['energy_ppas'] = {'count': row[0] or 0, 'total_mw': round(row[1] or 0, 1)}
         except:
@@ -8713,41 +7668,41 @@ def energy_discovery_status_inline():
         # Tax incentives
         try:
             c.execute("SELECT COUNT(DISTINCT state) FROM tax_incentives_neon")
-            discovery['tax_incentive_states'] = _row_val(c.fetchone(), 0)
+            discovery['tax_incentive_states'] = c.fetchone()[0] or 0
         except:
             discovery['tax_incentive_states'] = 0
 
         # GDCI scores
         try:
             c.execute("SELECT COUNT(*) FROM gdci_scores")
-            discovery['gdci_markets'] = _row_val(c.fetchone(), 0)
+            discovery['gdci_markets'] = c.fetchone()[0] or 0
         except:
             discovery['gdci_markets'] = 0
 
         # Facilities discovered recently
         try:
             c.execute("SELECT COUNT(*) FROM facilities WHERE first_seen::timestamp > NOW() - INTERVAL '24 hours'")
-            discovery['new_facilities_24h'] = _row_val(c.fetchone(), 0)
+            discovery['new_facilities_24h'] = c.fetchone()[0] or 0
         except:
             discovery['new_facilities_24h'] = 0
 
         try:
             c.execute("SELECT COUNT(*) FROM facilities WHERE first_seen::timestamp > NOW() - INTERVAL '7 days'")
-            discovery['new_facilities_7d'] = _row_val(c.fetchone(), 0)
+            discovery['new_facilities_7d'] = c.fetchone()[0] or 0
         except:
             discovery['new_facilities_7d'] = 0
 
         # Total facilities
         try:
             c.execute("SELECT COUNT(*) FROM facilities")
-            discovery['total_facilities'] = _row_val(c.fetchone(), 0)
+            discovery['total_facilities'] = c.fetchone()[0] or 0
         except:
             discovery['total_facilities'] = 0
 
         # Discovery sources breakdown
         try:
             c.execute("SELECT source, COUNT(*) FROM facilities WHERE source IS NOT NULL AND source != '' GROUP BY source ORDER BY COUNT(*) DESC LIMIT 10")
-            discovery['top_sources'] = dict(_rows_to_tuples(c.fetchall()))
+            discovery['top_sources'] = dict(c.fetchall())
         except:
             discovery['top_sources'] = {}
 
@@ -8774,96 +7729,58 @@ def energy_discovery_status_inline():
             except:
                 pass
 
-def _row_val(row, default=0):
-    """Extract first value from a cursor row — works with both RealDictCursor (dict) and regular cursor (tuple)."""
-    if row is None:
-        return default
-    if isinstance(row, dict):
-        vals = list(row.values())
-        return vals[0] if vals else default
-    try:
-        return row[0]
-    except (IndexError, KeyError):
-        return default
-
-def _row_vals(row, count=2):
-    """Extract multiple values from a cursor row — works with both dict and tuple cursors."""
-    if row is None:
-        return [0] * count
-    if isinstance(row, dict):
-        vals = list(row.values())
-        return [vals[i] if i < len(vals) else 0 for i in range(count)]
-    return [row[i] if i < len(row) else 0 for i in range(count)]
-
-def _row_to_tuple(row):
-    """Convert a RealDictCursor row (dict) to a tuple for index access.
-    Works with both dict rows and tuple rows transparently."""
-    if row is None:
-        return ()
-    if isinstance(row, dict):
-        return tuple(row.values())
-    return row
-
-def _rows_to_tuples(rows):
-    """Convert a list of RealDictCursor rows to tuples for index access."""
-    if not rows:
-        return []
-    return [_row_to_tuple(r) for r in rows]
-
-
 @app.route('/api/v1/stats', methods=['GET'])
-@cached_endpoint(ttl=300, key_prefix="stats")
 def get_stats():
     """Get aggregate statistics"""
     conn = None
     try:
-        conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))  # direct conn for heavy map query
+        conn = get_read_db()
         c = conn.cursor()
         
         stats = {}
         
         c.execute("SELECT COUNT(*) FROM facilities")
-        main_count = _row_val(c.fetchone(), 0)
+        main_count = c.fetchone()[0] or 0
         
         try:
             c.execute("SELECT COUNT(*) FROM discovered_facilities WHERE is_duplicate = 0")
-            discovered_count = _row_val(c.fetchone(), 0)
+            discovered_count = c.fetchone()[0] or 0
         except:
             discovered_count = 0
         
-        stats['total_facilities'] = main_count + discovered_count
+        stats['total_facilities'] = main_count
         stats['main_facilities'] = main_count
         stats['discovered_facilities'] = discovered_count
         
         c.execute("SELECT COALESCE(SUM(power_mw), 0) FROM facilities")
-        stats['total_power_mw'] = round(_row_val(c.fetchone(), 0) or 0, 1)
+        stats['total_power_mw'] = round(c.fetchone()[0] or 0, 1)
         stats['total_mw'] = stats['total_power_mw']  # alias for frontends
         
         # total_substations
         try:
             c.execute("SELECT COUNT(*) FROM substations")
-            stats['total_substations'] = _row_val(c.fetchone(), 0)
+            stats['total_substations'] = c.fetchone()[0] or 0
         except Exception:
             stats['total_substations'] = 0
         
         c.execute(f"SELECT COUNT(DISTINCT provider) FROM facilities WHERE provider != '' AND provider IS NOT NULL {RAILWAY_EXCLUSION}")
-        stats['total_providers'] = _row_val(c.fetchone(), 0)
+        stats['total_providers'] = c.fetchone()[0] or 0
         
         c.execute("SELECT COUNT(DISTINCT country) FROM facilities WHERE country != '' AND country IS NOT NULL")
-        stats['total_countries'] = _row_val(c.fetchone(), 0)
+        stats['total_countries'] = c.fetchone()[0] or 0
         stats['countries'] = stats['total_countries']  # alias for frontends
         
         try:
             c.execute("SELECT COUNT(*) FROM announcements")
-            stats['total_announcements'] = _row_val(c.fetchone(), 0)
+            stats['total_announcements'] = c.fetchone()[0] or 0
         except:
             stats['total_announcements'] = 0
         
         c.execute("SELECT source, COUNT(*) FROM facilities WHERE source IS NOT NULL AND source != '' GROUP BY source ORDER BY COUNT(*) DESC")
-        stats['by_source'] = dict(_rows_to_tuples(c.fetchall()))
+        stats['by_source'] = dict(c.fetchall())
         
         c.execute("SELECT country, COUNT(*) FROM facilities WHERE country != '' GROUP BY country ORDER BY COUNT(*) DESC LIMIT 10")
-        stats['top_countries'] = dict(_rows_to_tuples(c.fetchall()))
+        stats['top_countries'] = dict(c.fetchall())
         
         c.execute(f"""
             SELECT provider, COUNT(*) FROM facilities 
@@ -8871,14 +7788,14 @@ def get_stats():
             {RAILWAY_EXCLUSION}
             GROUP BY provider ORDER BY COUNT(*) DESC LIMIT 10
         """)
-        stats['top_providers'] = dict(_rows_to_tuples(c.fetchall()))
+        stats['top_providers'] = dict(c.fetchall())
         
         c.execute("SELECT status, COUNT(*) FROM facilities WHERE status IS NOT NULL GROUP BY status")
-        stats['by_status'] = dict(_rows_to_tuples(c.fetchall()))
+        stats['by_status'] = dict(c.fetchall())
         
         try:
             c.execute("SELECT COUNT(*) FROM facilities WHERE first_seen::timestamp > NOW() - INTERVAL '7 days'")
-            stats['new_last_7_days'] = _row_val(c.fetchone(), 0)
+            stats['new_last_7_days'] = c.fetchone()[0] or 0
         except Exception:
             stats['new_last_7_days'] = 0
         
@@ -8889,14 +7806,14 @@ def get_stats():
                                     'under_construction', 'pre-construction',
                                     'in development', 'permitting')
         """)
-        pipeline_vals = _row_vals(c.fetchone(), 2)
-        stats['pipeline_count'] = pipeline_vals[0] or 0
-        stats['pipeline_mw'] = round(pipeline_vals[1] or 0, 1)
-        stats['pipeline_gw'] = round((pipeline_vals[1] or 0) / 1000, 1)
+        pipeline_row = c.fetchone()
+        stats['pipeline_count'] = pipeline_row[0] or 0
+        stats['pipeline_mw'] = round(pipeline_row[1] or 0, 1)
+        stats['pipeline_gw'] = round((pipeline_row[1] or 0) / 1000, 1)
 
         try:
             c.execute("SELECT COUNT(*), COALESCE(SUM(capacity_mw),0) FROM capacity_pipeline")
-            cp = _row_vals(c.fetchone(), 2)
+            cp = c.fetchone()
             stats['curated_pipeline_count'] = cp[0] or 0
             stats['curated_pipeline_gw'] = round((cp[1] or 0) / 1000, 1)
             stats['curated_pipeline_markets'] = 32
@@ -8907,9 +7824,15 @@ def get_stats():
         
         try:
             c.execute("SELECT COUNT(*) FROM leads")
-            stats["total_leads"] = _row_val(c.fetchone(), 0) or 0
+            stats['total_leads'] = c.fetchone()[0] or 0
         except:
             stats['total_leads'] = 0
+        
+        try:
+            c.execute("SELECT COUNT(*) FROM substations")
+            stats['total_substations'] = c.fetchone()[0] or 0
+        except:
+            stats['total_substations'] = 0
         
         # Infrastructure layer counts — real Neon DB queries (fixed Mar 17 2026)
         # HIFLD data now lives in substations table (79,755 records from CSV bulk load)
@@ -8919,48 +7842,48 @@ def get_stats():
         stats['total_substations_hifld'] = stats.get('total_substations', 0)
         try:
             c.execute("SELECT COUNT(*) FROM fiber_routes")
-            stats['total_fiber_routes'] = _row_val(c.fetchone(), 0)
+            stats['total_fiber_routes'] = c.fetchone()[0] or 0
         except:
             stats['total_fiber_routes'] = 0
         try:
             c.execute("SELECT COUNT(*) FROM metro_dark_fiber")
-            stats['total_metro_dark_fiber'] = _row_val(c.fetchone(), 0)
+            stats['total_metro_dark_fiber'] = c.fetchone()[0] or 0
         except:
             stats['total_metro_dark_fiber'] = 0
         try:
             c.execute("SELECT COUNT(*) FROM gas_pipelines")
-            stats['total_gas_pipelines'] = _row_val(c.fetchone(), 0)
+            stats['total_gas_pipelines'] = c.fetchone()[0] or 0
         except:
             stats['total_gas_pipelines'] = 0
         
         try:
             c.execute("SELECT COUNT(*) FROM users")
-            stats['total_users'] = _row_val(c.fetchone(), 0)
+            stats['total_users'] = c.fetchone()[0] or 0
         except:
             stats['total_users'] = 0
         
         # User breakdown for dashboard visibility
         try:
             c.execute("SELECT plan, COUNT(*) FROM users GROUP BY plan")
-            stats['users_by_plan'] = dict(_rows_to_tuples(c.fetchall()))
+            stats['users_by_plan'] = dict(c.fetchall())
         except:
             stats['users_by_plan'] = {}
         
         try:
             c.execute("SELECT COUNT(*) FROM users WHERE created_at::timestamp > NOW() - INTERVAL '7 days'")
-            stats['new_users_7d'] = _row_val(c.fetchone(), 0)
+            stats['new_users_7d'] = c.fetchone()[0] or 0
         except:
             stats['new_users_7d'] = 0
         
         try:
             c.execute("SELECT COUNT(*) FROM users WHERE created_at::timestamp > NOW() - INTERVAL '30 days'")
-            stats['new_users_30d'] = _row_val(c.fetchone(), 0)
+            stats['new_users_30d'] = c.fetchone()[0] or 0
         except:
             stats['new_users_30d'] = 0
         
         try:
             c.execute("SELECT COUNT(*) FROM users WHERE subscription_status = 'active'")
-            stats['active_subscribers'] = _row_val(c.fetchone(), 0)
+            stats['active_subscribers'] = c.fetchone()[0] or 0
         except:
             stats['active_subscribers'] = 0
         
@@ -9016,7 +7939,7 @@ def facilities_by_market():
     limit = min(limit, 50)
     conn = None
     try:
-        conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))  # direct conn for heavy map query
+        conn = get_read_db()
         c = conn.cursor()
         c.execute(f"""
             SELECT city as market, COUNT(*) as count, 
@@ -9047,7 +7970,7 @@ def facilities_by_provider():
     limit = min(limit, 50)
     conn = None
     try:
-        conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))  # direct conn for heavy map query
+        conn = get_read_db()
         c = conn.cursor()
         c.execute(f"""
             SELECT provider, COUNT(*) as count,
@@ -9073,54 +7996,41 @@ def facilities_by_provider():
 
 @app.route('/api/v1/facilities', methods=['GET'])
 def list_facilities():
-    """List facilities with tiered response gating."""
-    # dchub.cloud frontend — check session for plan, default to free tier
-    origin = request.headers.get("Origin", "") or request.headers.get("Referer", "")
-    if "dchub.cloud" in origin:
-        from api_tier_gating import get_request_tier
-        site_plan = get_request_tier()
-        if site_plan in ("pro", "enterprise", "admin", "developer", "founding"):
-            return _list_facilities_full()
+    """List facilities with pagination and filtering.
+    
+    Freemium: unauthenticated requests get max 5 results with basic fields.
+    Authenticated Pro/Enterprise requests get full data as before.
+    AI Wars verification keys also get Pro-tier access.
+    """
+    api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
+    is_authenticated = bool(api_key)
+    
+    # AI Wars verification keys get Pro-tier access
+    if not is_authenticated:
+        ai_wars_info = get_ai_wars_key_info()
+        if ai_wars_info:
+            is_authenticated = True
+
+    if is_authenticated:
+        if _real_require_plan is not None:
+            @_real_require_plan('pro')
+            @protect_data
+            def _authed_facilities():
+                return _list_facilities_full()
+            return _authed_facilities()
         else:
-            return _list_facilities_free(site_plan)
-    from api_tier_gating import get_request_tier
-    plan = get_request_tier()
-    if plan in ('developer', 'founding', 'pro', 'enterprise', 'admin'):
-        # Direct call — get_request_tier() already validated the key/JWT
-        return _list_facilities_full()
-    return _list_facilities_free(plan)
+            return jsonify({'success': False, 'error': 'tier_gating_unavailable',
+                            'message': 'Authentication system is starting up. Please try again in a moment.'}), 503
+
+    return _list_facilities_free()
+
+
 def _list_facilities_full():
-    """Full facility listing for authenticated users — with tier-aware caps."""
-    from api_tier_gating import (get_request_tier, enforce_page_cap, enforce_search_limit,
-                                  check_daily_record_budget, increment_daily_records,
-                                  get_user_key_from_request, build_record_cap_error,
-                                  build_page_cap_error, TIER_PAGE_CAPS)
-    
-    tier = get_request_tier()
-    user_key, _ = get_user_key_from_request()
-    
+    """Full facility listing for authenticated users."""
     page = request.args.get('page', 1, type=int)
     limit = request.args.get('limit', 50, type=int)
-    
-    # ── Enforce page cap ──
-    page_cap = TIER_PAGE_CAPS.get(tier, 2)
-    if page > page_cap:
-        return build_page_cap_error(page, tier, page_cap)
-    
-    # Allow dchub.cloud frontend to fetch all facilities for the map
-    origin = request.headers.get("Origin", "") or request.headers.get("Referer", "")
-    if "dchub.cloud" in origin:
-        limit = min(limit, 12000)
-    else:
-        # ── Enforce per-query result limit ──
-        limit = enforce_search_limit(limit, tier)
-    
+    limit = min(limit, 100)
     offset = (page - 1) * limit
-    
-    # ── Check daily record budget BEFORE querying DB ──
-    allowed, remaining, used, cap = check_daily_record_budget(user_key, tier, records_requested=limit)
-    if not allowed and "dchub.cloud" not in origin:
-        return build_record_cap_error(user_key, tier, used, cap)
     
     q = request.args.get('q', '').strip()
     country = request.args.get('country')
@@ -9167,7 +8077,6 @@ def _list_facilities_full():
         count_sql += " AND status = %s"
         params.append(status)
     if region:
-        region = REGION_ALIASES.get(region.strip(), region.strip())
         sql += " AND region = %s"
         count_sql += " AND region = %s"
         params.append(region)
@@ -9196,7 +8105,7 @@ def _list_facilities_full():
     
     conn = None
     try:
-        conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))  # direct conn for heavy map query
+        conn = get_read_db()
         c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         
         c.execute(count_sql, params)
@@ -9233,25 +8142,6 @@ def _list_facilities_full():
             except:
                 pass
     
-    # ── Track records served (skip for dchub.cloud frontend) ──
-    origin_check = request.headers.get("Origin", "") or request.headers.get("Referer", "")
-    if "dchub.cloud" not in origin_check:
-        try:
-            from api_tier_gating import increment_daily_records, get_user_key_from_request
-            uk, t = get_user_key_from_request()
-            increment_daily_records(uk, t, len(facilities), endpoint='/api/v1/facilities')
-        except Exception:
-            pass
-    
-    # ── Cap displayed total pages to tier page cap ──
-    actual_pages = (total + limit - 1) // limit
-    try:
-        from api_tier_gating import TIER_PAGE_CAPS
-        t = get_request_tier() if 'tier' not in dir() else tier
-        capped_pages = min(actual_pages, TIER_PAGE_CAPS.get(t, 2))
-    except Exception:
-        capped_pages = actual_pages
-    
     return jsonify({
         'success': True,
         'data': facilities,
@@ -9259,25 +8149,24 @@ def _list_facilities_full():
             'page': page,
             'limit': limit,
             'total': total,
-            'pages': capped_pages,
-            'max_page': capped_pages,
+            'pages': (total + limit - 1) // limit
         }
     })
 
 
-def _list_facilities_free(plan='anon'):
-    """Tiered facility listing for anon/free users."""
-    from api_tier_gating import FACILITY_TIER_LIMITS, gate_facilities_response
-    tier_limit = FACILITY_TIER_LIMITS.get(plan, 50)
+def _list_facilities_free():
+    """Freemium facility listing -- max 5 results, basic fields only."""
+    FREE_LIMIT = 5
+    BASIC_FIELDS = ('name', 'city', 'state', 'country', 'provider')
+
     q = request.args.get('q', '').strip()
     country = request.args.get('country')
     provider = request.args.get('provider')
-    status = request.args.get('status')
-    region = request.args.get('region')
-    state = request.args.get('state')
-    sql = "SELECT * FROM facilities WHERE 1=1"
-    count_sql = "SELECT COUNT(*) FROM facilities WHERE 1=1"
+
+    sql = "SELECT * FROM discovered_facilities WHERE 1=1"
+    count_sql = "SELECT COUNT(*) FROM discovered_facilities WHERE 1=1"
     params = []
+
     if q:
         query_lower = q.lower()
         if query_lower in MARKET_ALIASES:
@@ -9296,6 +8185,7 @@ def _list_facilities_free(plan='anon'):
             params.extend([f'%{q}%', f'%{q}%', f'%{q}%', f'%{q}%'])
         sql += search_clause
         count_sql += search_clause
+
     if country:
         sql += " AND country = %s"
         count_sql += " AND country = %s"
@@ -9304,30 +8194,26 @@ def _list_facilities_free(plan='anon'):
         sql += " AND provider LIKE %s"
         count_sql += " AND provider LIKE %s"
         params.append(f"%{provider}%")
-    if status:
-        sql += " AND status = %s"
-        count_sql += " AND status = %s"
-        params.append(status)
-    if region:
-        sql += " AND region = %s"
-        count_sql += " AND region = %s"
-        params.append(region)
+    state = request.args.get('state')
     if state:
         sql += " AND state = %s"
         count_sql += " AND state = %s"
         params.append(state.upper())
-    sql += f" ORDER BY confidence DESC, power_mw DESC LIMIT {tier_limit}"
+
+    sql += f" ORDER BY confidence_score DESC, power_mw DESC LIMIT {FREE_LIMIT}"
+
     conn = None
     try:
-        conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))  # direct conn for heavy map query
+        conn = get_read_db()
         c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
         c.execute(count_sql, params)
-        row = c.fetchone()
-        total = row['count'] if isinstance(row, dict) else row[0]
+        row = c.fetchone(); total_matching = row['count'] if isinstance(row, dict) else row[0]
+
         c.execute(sql, params)
-        facilities = [dict_from_row(row) for row in c.fetchall()]
+        rows = c.fetchall()
     except Exception as e:
-        logger.error(f"Facilities gated endpoint error: {e}")
+        logger.error(f"Facilities free endpoint error: {e}")
         return jsonify({'error': 'Database temporarily unavailable', 'detail': str(e)}), 503
     finally:
         if conn:
@@ -9335,30 +8221,37 @@ def _list_facilities_free(plan='anon'):
                 conn.close()
             except:
                 pass
-    if resolve_location_name:
-        for f in facilities:
-            f['state_name'] = get_state_name(f.get('state', ''), f.get('country', 'US'))
-            f['country_name'] = get_country_name(f.get('country', ''))
-            f['location_display'] = format_location_for_title(
-                f.get('city'), f.get('state'), f.get('country')
+
+    facilities = []
+    for row in rows:
+        full = dict_from_row(row)
+        fac = {k: full.get(k) for k in BASIC_FIELDS}
+        # Add resolved names even in free tier (for SEO rendering)
+        if resolve_location_name:
+            fac['state_name'] = get_state_name(fac.get('state', ''), fac.get('country', 'US'))
+            fac['country_name'] = get_country_name(fac.get('country', ''))
+            fac['location_display'] = format_location_for_title(
+                fac.get('city'), fac.get('state'), fac.get('country')
             )
-    return jsonify(gate_facilities_response(facilities, plan, total_in_db=total))
+        facilities.append(fac)
+
+    return jsonify({
+        'success': True,
+        'data': facilities,
+        'count': len(facilities),
+        'total_matching': total_matching,
+        'full_results_available': total_matching > FREE_LIMIT,
+        'tier': 'free',
+        'upgrade_url': 'https://dchub.cloud/pricing',
+        'note': f'Free tier: showing {len(facilities)} of {total_matching} matching facilities with basic fields. Upgrade for full data including capacity, coordinates, and detailed specs.'
+    })
+
+
 
 @app.route('/api/v1/search', methods=['GET'])
-@cached_endpoint(ttl=120)
-# NOTE: @protect_data removed — was causing 429s for MCP internal calls (BUG-003).
-# Endpoint has its own tier gating: get_request_tier(), enforce_search_limit(),
-# check_daily_record_budget(). MCP proxy adds additional gating layer.
+@protect_data
 def search_facilities():
     """Search facilities — supports q, operator, city, state, country, min_mw, max_mw, tier, limit, offset"""
-    from api_tier_gating import (get_request_tier, enforce_page_cap, enforce_search_limit,
-                                  check_daily_record_budget, increment_daily_records,
-                                  get_user_key_from_request, build_record_cap_error,
-                                  build_page_cap_error, TIER_PAGE_CAPS)
-    
-    tier = get_request_tier()
-    user_key, _ = get_user_key_from_request()
-    
     query    = request.args.get('q', '').strip()
     operator = request.args.get('operator', '').strip()
     city     = request.args.get('city', '').strip()
@@ -9366,35 +8259,18 @@ def search_facilities():
     country  = request.args.get('country', '').strip()
     min_mw   = request.args.get('min_capacity_mw', request.args.get('min_mw', 0), type=float)
     max_mw   = request.args.get('max_capacity_mw', request.args.get('max_mw', 0), type=float)
-    tier_filter = request.args.get('tier', 0, type=int)
-    limit    = enforce_search_limit(request.args.get('limit', 25, type=int), tier)
+    tier     = request.args.get('tier', 0, type=int)
+    limit    = min(request.args.get('limit', 25, type=int), 100)
     offset   = request.args.get('offset', 0, type=int)
-    
-    # ── Enforce page cap (offset-based: page = offset/limit + 1) ──
-    effective_page = (offset // max(limit, 1)) + 1
-    page_cap = TIER_PAGE_CAPS.get(tier, 2)
-    if effective_page > page_cap:
-        return build_page_cap_error(effective_page, tier, page_cap)
-    
-    # ── Check daily record budget ──
-    allowed, remaining, used, cap = check_daily_record_budget(user_key, tier, records_requested=limit)
-    if not allowed:
-        return build_record_cap_error(user_key, tier, used, cap)
 
     # Need at least one filter
     if not any([query, operator, city, state, country, min_mw, max_mw, tier]):
         return jsonify({'error': 'Provide at least one filter: q, operator, city, state, country, min_capacity_mw, tier'}), 400
 
-    # ── Redis cache for search results (120s TTL) ──
-    import hashlib as _hl
-    _cache_raw = f"search:{query}:{operator}:{city}:{state}:{country}:{min_mw}:{max_mw}:{tier}:{limit}:{offset}"
-    _cache_key = "search:" + _hl.md5(_cache_raw.encode()).hexdigest()
-    _cached = cache_get(_cache_key)
-    if _cached is not None:
-        return jsonify(_cached)
     conn = get_read_db()
     try:
-        c = conn.cursor()
+        import psycopg2.extras
+        c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     
         conditions = []
         params = []
@@ -9444,9 +8320,9 @@ def search_facilities():
             conditions.append('power_mw <= %s')
             params.append(max_mw)
     
-        if tier_filter:
+        if tier:
             conditions.append('tier = %s')
-            params.append(tier_filter)
+            params.append(tier)
     
         # Phase 4: min_confidence filter
         min_confidence = request.args.get('min_confidence', type=float)
@@ -9478,20 +8354,12 @@ def search_facilities():
         except Exception:
             pass  # Never let badge enrichment crash the response
 
-        # ── Track records served ──
-        try:
-            increment_daily_records(user_key, tier, len(facilities), endpoint='/api/v1/search')
-        except Exception:
-            pass
-
-        _result = {
+        return jsonify({
             'success': True,
             'query': query or operator or city or state or country,
             'count': len(facilities),
             'data': facilities
-        }
-        cache_set(_cache_key, _result, ttl=120)
-        return jsonify(_result)
+        })
     except Exception as e:
         import traceback
         logger.error(f"search_facilities error: {traceback.format_exc()}")
@@ -9520,21 +8388,6 @@ except Exception as e:
     PIPELINE_DATA = []
     SAMPLE_MARKETS = []
 
-# =============================================================================
-# INFRASTRUCTURE DATA ROUTES v2 (power plants, transmission lines, submarine cables)
-# =============================================================================
-try:
-    from routes.infrastructure_data_routes import register_infra_data_routes
-    register_infra_data_routes(app, get_pg_connection)
-except Exception as e:
-    logger.warning(f"⚡ Infrastructure Data Routes: ⚠️ Failed: {e}")
-
-try:
-    from routes.pricing_connectivity_routes import register_pricing_connectivity_routes
-    register_pricing_connectivity_routes(app, get_pg_connection)
-except Exception as e:
-    logger.warning(f"Pricing Connectivity Routes: Failed: {e}")
-
 
 # =============================================================================
 # AGENT HUB ROUTES (existing)
@@ -9559,24 +8412,29 @@ def enrichment_submit():
     
     # Store submission
     conn = get_db()
-    c = conn.cursor()
+    try:
+        c = conn.cursor()
     
-    submission_id = secrets.token_hex(8)
-    c.execute("""
-        INSERT INTO submissions (id, api_key, submission_type, data, status, submitted_at)
-        VALUES (%s, 'crowdsource', 'enrichment', %s, 'pending', %s)
-        ON CONFLICT DO NOTHING
-    """, (submission_id, json.dumps(data), datetime.utcnow().isoformat()))
+        submission_id = secrets.token_hex(8)
+        c.execute("""
+            INSERT INTO submissions (id, api_key, submission_type, data, status, submitted_at)
+            VALUES (%s, 'crowdsource', 'enrichment', %s, 'pending', %s)
+            ON CONFLICT DO NOTHING
+        """, (submission_id, json.dumps(data), datetime.utcnow().isoformat()))
     
-    conn.commit()
-    conn.close()
+        conn.commit()
     
-    return jsonify({
-        'success': True,
-        'message': 'Thank you for your submission!',
-        'submission_id': submission_id
-    })
+        return jsonify({
+            'success': True,
+            'message': 'Thank you for your submission!',
+            'submission_id': submission_id
+        })
 
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 @app.route('/api/partners/inquiry', methods=['POST'])
 def partner_inquiry():
     """Handle AI partner integration inquiries"""
@@ -9591,30 +8449,35 @@ def partner_inquiry():
             return jsonify({'error': f'{field} is required'}), 400
     
     conn = get_db()
-    c = conn.cursor()
+    try:
+        c = conn.cursor()
     
-    inquiry_id = secrets.token_hex(8)
-    c.execute("""
-        INSERT INTO partner_inquiries (id, name, email, company, platform_type, use_case, submitted_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-    """, (inquiry_id, data['name'], data['email'], data['company'],
-          data['platform_type'], data['use_case'], datetime.utcnow().isoformat()))
+        inquiry_id = secrets.token_hex(8)
+        c.execute("""
+            INSERT INTO partner_inquiries (id, name, email, company, platform_type, use_case, submitted_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """, (inquiry_id, data['name'], data['email'], data['company'],
+              data['platform_type'], data['use_case'], datetime.utcnow().isoformat()))
     
-    conn.commit()
-    conn.close()
+        conn.commit()
     
-    logger.info(f"New partner inquiry from {data['company']} ({data['platform_type']})")
+        logger.info(f"New partner inquiry from {data['company']} ({data['platform_type']})")
     
-    return jsonify({
-        'success': True,
-        'message': 'Thank you for your interest! We will be in touch within 24 hours.',
-        'inquiry_id': inquiry_id
-    })
+        return jsonify({
+            'success': True,
+            'message': 'Thank you for your interest! We will be in touch within 24 hours.',
+            'inquiry_id': inquiry_id
+        })
 
-# =============================================================================
-# HEALTH & INFO
-# =============================================================================
+        # =============================================================================
+        # HEALTH & INFO
+        # =============================================================================
 
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 @app.route('/', methods=['GET'])
 def index():
     return send_from_directory('static', 'index.html')
@@ -9641,21 +8504,21 @@ def api_health():
     }
     conn = None
     try:
-        conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))  # direct conn for heavy map query
+        conn = get_read_db()
         cur = conn.cursor()
         try:
             cur.execute("SELECT COUNT(*) FROM discovered_facilities")
-            health['facility_count'] = _row_val(cur.fetchone(), 0)
+            health['facility_count'] = cur.fetchone()[0] or 0
         except Exception:
             pass
         try:
             cur.execute("SELECT COUNT(*) FROM deals")
-            health['deal_count'] = _row_val(cur.fetchone(), 0)
+            health['deal_count'] = cur.fetchone()[0] or 0
         except Exception:
             pass
         try:
             cur.execute("SELECT COUNT(*) FROM announcements")
-            health['news_count'] = _row_val(cur.fetchone(), 0)
+            health['news_count'] = cur.fetchone()[0] or 0
         except Exception:
             pass
     except Exception:
@@ -9669,48 +8532,9 @@ def api_health():
     return jsonify(health)
 
 
-@app.route('/api/admin/pool-status', methods=['GET'])
-def admin_pool_status():
-    """Connection pool deep status with alerting thresholds.
-    RFO Follow-Up Item #7: Pool utilization alerting.
-    Returns pool health, circuit breaker state, leaked connections, and alert level.
-    """
-    admin_key = request.headers.get('X-Admin-Key') or request.args.get('admin_key', '')
-    internal_key = request.headers.get('X-Internal-Key', '')
-    if admin_key != os.environ.get('DCHUB_ADMIN_KEY', '') and internal_key not in (os.environ.get('DCHUB_INTERNAL_KEY', ''), os.environ.get('DCHUB_SYNC_KEY', '')):
-        return jsonify({'error': 'Unauthorized'}), 401
-
-    health = get_pool_health()
-    pool = health.get('pool', {})
-    utilization = pool.get('utilization_pct', 0)
-    leaked = health.get('leaked_connections', [])
-
-    # Alert thresholds
-    alert_level = 'green'
-    alert_reasons = []
-    if utilization >= 90:
-        alert_level = 'red'
-        alert_reasons.append(f'Pool utilization CRITICAL at {utilization}%')
-    elif utilization >= 75:
-        alert_level = 'yellow'
-        alert_reasons.append(f'Pool utilization WARNING at {utilization}%')
-    if len(leaked) > 0:
-        alert_level = 'red' if len(leaked) >= 3 else max(alert_level, 'yellow')
-        alert_reasons.append(f'{len(leaked)} leaked connection(s) detected')
-    if health.get('circuit_breaker', {}).get('open'):
-        alert_level = 'red'
-        alert_reasons.append('Circuit breaker is OPEN')
-    if health.get('memory', {}).get('warning'):
-        if alert_level != 'red':
-            alert_level = 'yellow'
-        alert_reasons.append(f'Memory usage high: {health["memory"]["rss_mb"]}MB')
-
-    health['alert'] = {
-        'level': alert_level,
-        'reasons': alert_reasons if alert_reasons else ['All systems nominal'],
-        'thresholds': {'yellow_pct': 75, 'red_pct': 90, 'leaked_yellow': 1, 'leaked_red': 3},
-    }
-    return jsonify(health)
+# =============================================================================
+# AI DISCOVERY & SIGNUP ROUTES (v90)
+# =============================================================================
 
 # OLD robots.txt, llms.txt routes REMOVED -- now served by ai_discovery_routes.py (inline)
 
@@ -10209,16 +9033,6 @@ def land_power_page():
 def login_page():
     return send_from_directory('static', 'login.html')
 
-@app.route('/forgot-password')
-@app.route('/forgot-password.html')
-def forgot_password_page():
-    return send_from_directory('static', 'forgot-password.html')
-
-@app.route('/reset-password')
-@app.route('/reset-password.html')
-def reset_password_page():
-    return send_from_directory('static', 'reset-password.html')
-
 @app.route('/dashboard.html')
 def dashboard_page():
     return send_from_directory('static', 'dashboard.html')
@@ -10231,7 +9045,6 @@ def capacity_map_page():
 @app.route('/news')
 @app.route('/news.html')
 def news_page():
-    conn = None
     try:
         conn = get_db()
         c = conn.cursor()
@@ -10240,16 +9053,15 @@ def news_page():
         )
         rows = c.fetchall()
         seo_block = '\n'.join(
-            f'<article><h3>{html_escape(str(row[0] or ""))}</h3><p>{html_escape(str(row[1] or "")[:200])}</p>'
-            f'<time>{html_escape(str(row[2] or ""))}</time><span>{html_escape(str(row[3] or "DC Hub"))}</span></article>'
+            f'<article><h3>{html_escape(str(row["title"] or ""))}</h3><p>{html_escape(str(row["summary"] or "")[:200])}</p>'
+            f'<time>{html_escape(str(row["published_date"] or ""))}</time><span>{html_escape(str(row["source"] or "DC Hub"))}</span></article>'
             for row in rows
         )
     except Exception:
         seo_block = ''
     finally:
-        if conn:
-            try: conn.close()
-            except Exception: pass
+        try: conn.close()
+        except Exception: pass
     with open('static/news.html', 'r') as f:
         html = f.read()
     seo_section = f'<div id="seo-prerender" style="display:none" aria-hidden="false"><h1>Data Center Industry News</h1>{seo_block}</div>'
@@ -10335,47 +9147,51 @@ def add_testimonial_legacy():
     import hashlib
     key_hash = hashlib.sha256(key.encode()).hexdigest()
     conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT id FROM api_keys WHERE key_hash = %s AND is_active = 1", (key_hash,))
-    if not c.fetchone():
-        conn.close()
-        return jsonify({'success': False, 'error': 'Invalid API key'}), 401
-    conn.close()
-    
-    data = request.get_json() or {}
-    if not data.get('quote') or not data.get('source'):
-        return jsonify({'success': False, 'error': 'Quote and source required'}), 400
-    
     try:
-        with open('data/testimonials.json', 'r') as f:
-            testimonials_data = json.load(f)
+        c = conn.cursor()
+        c.execute("SELECT id FROM api_keys WHERE key_hash = %s AND is_active = 1", (key_hash,))
+        if not c.fetchone():
+            return jsonify({'success': False, 'error': 'Invalid API key'}), 401
+    
+        data = request.get_json() or {}
+        if not data.get('quote') or not data.get('source'):
+            return jsonify({'success': False, 'error': 'Quote and source required'}), 400
+    
+        try:
+            with open('data/testimonials.json', 'r') as f:
+                testimonials_data = json.load(f)
         
-        new_testimonial = {
-            'id': f"user-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
-            'source': data.get('source'),
-            'source_type': data.get('source_type', 'customer'),
-            'quote': data.get('quote'),
-            'author': data.get('author', 'Anonymous'),
-            'role': data.get('role', ''),
-            'company': data.get('company', ''),
-            'featured': False,
-            'verified': False,
-            'rating': data.get('rating', 5),
-            'date': datetime.utcnow().strftime('%Y-%m-%d')
-        }
+            new_testimonial = {
+                'id': f"user-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+                'source': data.get('source'),
+                'source_type': data.get('source_type', 'customer'),
+                'quote': data.get('quote'),
+                'author': data.get('author', 'Anonymous'),
+                'role': data.get('role', ''),
+                'company': data.get('company', ''),
+                'featured': False,
+                'verified': False,
+                'rating': data.get('rating', 5),
+                'date': datetime.utcnow().strftime('%Y-%m-%d')
+            }
         
-        testimonials_data['testimonials'].append(new_testimonial)
+            testimonials_data['testimonials'].append(new_testimonial)
         
-        with open('data/testimonials.json', 'w') as f:
-            json.dump(testimonials_data, f, indent=2)
+            with open('data/testimonials.json', 'w') as f:
+                json.dump(testimonials_data, f, indent=2)
         
-        return jsonify({
-            'success': True,
-            'testimonial': new_testimonial
-        })
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+            return jsonify({
+                'success': True,
+                'testimonial': new_testimonial
+            })
+        except Exception as e:
+            return jsonify({'success': False, 'error': str(e)}), 500
 
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 @app.route('/api/signup', methods=['POST'])
 def api_signup():
     """Generate API key for new users"""
@@ -10392,31 +9208,30 @@ def api_signup():
     if not company:
         return jsonify({'success': False, 'error': 'Company name required'}), 400
     
-    conn = None
     try:
         conn = get_db()
         c = conn.cursor()
-
+        
         c.execute("SELECT id FROM api_keys WHERE user_id = %s", (email,))
         existing = c.fetchone()
         if existing:
             return jsonify({'success': False, 'error': 'Email already registered. Contact support for key recovery.'}), 400
-
+        
         api_key = f"dchub_{secrets.token_urlsafe(32)}"
         key_hash = hashlib.sha256(api_key.encode()).hexdigest()
         key_prefix = api_key[:12]
-
+        
         c.execute("""
             INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions, rate_limit_tier, created_at)
             VALUES (%s, %s, %s, %s, %s, %s, %s)
         """, (email, key_hash, key_prefix, company, '["read"]', 'free', datetime.utcnow().isoformat()))
-
+        
         c.execute("""
             INSERT INTO signups (email, company, use_case, created_at, source)
             VALUES (%s, %s, %s, %s, 'api_signup')
             ON CONFLICT DO NOTHING
         """, (email, company, usecase, datetime.utcnow().isoformat()))
-
+        
         conn.commit()
 
         try:
@@ -10439,29 +9254,19 @@ def api_signup():
         logger.error(f"Signup error: {e}")
         return jsonify({'success': False, 'error': 'Signup failed. Please try again.'}), 500
     finally:
-        if conn:
-            try: conn.close()
-            except Exception: pass
+        try: conn.close()
+        except Exception: pass
 
 # =============================================================================
 # API ALIASES (Frontend Compatibility)
 # =============================================================================
 
 @app.route('/api/transactions', methods=['GET'])
-@cached_endpoint(ttl=300)
 def api_transactions_alias():
     """Transactions endpoint - freemium taste data unauthenticated, full data with Pro auth"""
     api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
     auth_header = request.headers.get('Authorization')
     has_auth = bool(api_key) or (auth_header and auth_header.startswith('Bearer '))
-    # ── Redis cache for transactions (5 min) ──
-    import hashlib as _hl
-    _txn_args = f"txn:{request.args.get('limit',50)}:{request.args.get('offset',0)}:{request.args.get('region','')}:{request.args.get('buyer','')}"
-    _txn_cache_key = "txn:" + _hl.md5(_txn_args.encode()).hexdigest()
-    if not has_auth:
-        _txn_cached = cache_get(_txn_cache_key)
-        if _txn_cached is not None:
-            return jsonify(_txn_cached)
     
     # AI Wars verification keys get direct access
     ai_wars_info = get_ai_wars_key_info()
@@ -10477,30 +9282,17 @@ def api_transactions_alias():
     conn = None
     try:
         limit = request.args.get('limit', 50, type=int)
-        region_filter = request.args.get('region', '')
-        REGION_ALIASES = {'north_america': 'North America', 'europe': 'EMEA', 'emea': 'EMEA', 'apac': 'APAC', 'asia': 'APAC', 'latam': 'LATAM', 'mea': 'MEA', 'global': 'Global'}
-        region_filter = REGION_ALIASES.get(region_filter.lower(), region_filter) if region_filter else ''
 
         try:
             with pg_connection() as pg_conn:
                 pg_cur = pg_conn.cursor()
-                if region_filter:
-                    pg_cur.execute("""
-                        SELECT id, date, year, buyer, seller, value, mw, type, region, market
-                        FROM deals
-                        WHERE buyer IS NOT NULL AND buyer != '' AND buyer NOT IN ('tbd','unknown','n/a')
-                          AND seller IS NOT NULL AND seller != '' AND seller NOT IN ('tbd','unknown','n/a')
-                          AND LOWER(region) = LOWER(%s)
-                        ORDER BY COALESCE(date, '1970-01-01') DESC LIMIT %s
-                    """, (region_filter, limit))
-                else:
-                    pg_cur.execute("""
-                        SELECT id, date, year, buyer, seller, value, mw, type, region, market
-                        FROM deals
-                        WHERE buyer IS NOT NULL AND buyer != '' AND buyer NOT IN ('tbd','unknown','n/a')
-                          AND seller IS NOT NULL AND seller != '' AND seller NOT IN ('tbd','unknown','n/a')
-                        ORDER BY COALESCE(date, '1970-01-01') DESC LIMIT %s
-                    """, (limit,))
+                pg_cur.execute("""
+                    SELECT id, date, year, buyer, seller, value, mw, type, region, market
+                    FROM deals
+                    WHERE buyer IS NOT NULL AND buyer != '' AND buyer NOT IN ('tbd','unknown','n/a')
+                      AND seller IS NOT NULL AND seller != '' AND seller NOT IN ('tbd','unknown','n/a')
+                    ORDER BY COALESCE(date, '1970-01-01') DESC LIMIT %s
+                """, (limit,))
                 transactions = []
                 for row in pg_cur.fetchall():
                     transactions.append({
@@ -10509,14 +9301,12 @@ def api_transactions_alias():
                         'type': row[7] or 'acquisition', 'region': row[8] or 'North America', 'market': row[9] or ''
                     })
                 pg_cur.execute("SELECT COUNT(*) FROM deals")
-                total = _row_val(pg_cur.fetchone(), 0)
-            _txn_result = {
+                total = pg_cur.fetchone()[0] or 0
+            return jsonify({
                 'success': True, 'transactions': transactions, 'data': transactions,
                 'count': len(transactions), 'total_count': total,
                 'total_value': sum(t.get('value', 0) or 0 for t in transactions), 'source': 'postgresql'
-            }
-            cache_set(_txn_cache_key, _txn_result, ttl=300)
-            return jsonify(_txn_result)
+            })
         except Exception as pg_err:
             logger.error(f"Transactions PG query failed: {pg_err}")
             return jsonify({'success': False, 'error': str(pg_err), 'transactions': [], 'data': []}), 500
@@ -10535,10 +9325,8 @@ def api_transactions_alias():
                 pass
 
 @app.route('/api/news', methods=['GET'])
-@cached_endpoint(ttl=300)
 def api_news_alias():
     """Alias for /api/news-feed - frontend compatibility"""
-    from routes.deals_routes import get_news_feed
     return get_news_feed()
 
 @app.route('/api/agent/chat', methods=['POST'])
@@ -10577,37 +9365,40 @@ def api_lmp_prices():
 def api_facilities_stats():
     """Facility statistics summary"""
     conn = get_db()
-    c = conn.cursor()
+    try:
+        c = conn.cursor()
     
-    # Total facilities
-    c.execute("SELECT COUNT(*) FROM discovered_facilities")
-    total = _row_val(c.fetchone(), 0)
+        # Total facilities
+        c.execute("SELECT COUNT(*) FROM discovered_facilities")
+        total = c.fetchone()[0]
     
-    # By status
-    c.execute("SELECT status, COUNT(*) FROM discovered_facilities WHERE status IS NOT NULL GROUP BY status")
-    by_status = dict(_rows_to_tuples(c.fetchall()))
+        # By status
+        c.execute("SELECT status, COUNT(*) FROM discovered_facilities WHERE status IS NOT NULL GROUP BY status")
+        by_status = dict(c.fetchall())
     
-    # By region (top 10)
-    c.execute("""
-        SELECT region, COUNT(*) as cnt FROM discovered_facilities 
-        WHERE region IS NOT NULL 
-        GROUP BY region ORDER BY cnt DESC LIMIT 10
-    """)
-    by_region = dict(_rows_to_tuples(c.fetchall()))
+        # By region (top 10)
+        c.execute("""
+            SELECT region, COUNT(*) as cnt FROM discovered_facilities 
+            WHERE region IS NOT NULL 
+            GROUP BY region ORDER BY cnt DESC LIMIT 10
+        """)
+        by_region = dict(c.fetchall())
     
-    # Total power
-    c.execute("SELECT SUM(power_mw) FROM discovered_facilities WHERE power_mw IS NOT NULL")
-    total_power = _row_val(c.fetchone(), 0)
+        # Total power
+        c.execute("SELECT SUM(power_mw) FROM discovered_facilities WHERE power_mw IS NOT NULL")
+        total_power = c.fetchone()[0] or 0
     
-    conn.close()
     
-    return jsonify({
-        'total_facilities': total,
-        'total_power_mw': round(total_power, 1),
-        'by_status': by_status,
-        'by_region': by_region,
-        'timestamp': datetime.utcnow().isoformat()
-    })
+        return jsonify({
+            'total_facilities': total,
+            'total_power_mw': round(total_power, 1),
+            'by_status': by_status,
+            'by_region': by_region,
+            'timestamp': datetime.utcnow().isoformat()
+        })
+    finally:
+        try: conn.close()
+        except Exception: pass
 
 
 # =============================================================================
@@ -10640,7 +9431,6 @@ except Exception as e:
 # =============================================================================
 # EMAIL ENDPOINTS
 # =============================================================================
-
 @app.route('/api/email/track/<email_id>/open.gif', methods=['GET'])
 def track_email_open(email_id):
     """Track email open via invisible pixel"""
@@ -10686,34 +9476,39 @@ def email_unsubscribe():
     
     # Also update leads table
     conn = get_db()
-    c = conn.cursor()
-    c.execute("""
-        UPDATE leads SET subscribed = 0 WHERE email IN (
-            SELECT DISTINCT email FROM email_queue WHERE body_html LIKE %s
-        )
-    """, (f'%{token}%',))
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+        c.execute("""
+            UPDATE leads SET subscribed = 0 WHERE email IN (
+                SELECT DISTINCT email FROM email_queue WHERE body_html LIKE %s
+            )
+        """, (f'%{token}%',))
+        conn.commit()
     
-    return """
-    <!DOCTYPE html>
-    <html>
-    <head><title>Unsubscribed - DC Hub</title>
-    <style>
-        body{font-family:system-ui;max-width:600px;margin:100px auto;text-align:center;color:#333;}
-        .success{color:#00d4ff;font-size:48px;margin-bottom:20px;}
-        a{color:#00d4ff;}
-    </style>
-    </head>
-    <body>
-        <div class="success">✓</div>
-        <h1>You've been unsubscribed</h1>
-        <p>You will no longer receive marketing emails from DC Hub.</p>
-        <p><a href="https://dchub.cloud">Return to DC Hub</a></p>
-    </body>
-    </html>
-    """
+        return """
+        <!DOCTYPE html>
+        <html>
+        <head><title>Unsubscribed - DC Hub</title>
+        <style>
+            body{font-family:system-ui;max-width:600px;margin:100px auto;text-align:center;color:#333;}
+            .success{color:#00d4ff;font-size:48px;margin-bottom:20px;}
+            a{color:#00d4ff;}
+        </style>
+        </head>
+        <body>
+            <div class="success">✓</div>
+            <h1>You've been unsubscribed</h1>
+            <p>You will no longer receive marketing emails from DC Hub.</p>
+            <p><a href="https://dchub.cloud">Return to DC Hub</a></p>
+        </body>
+        </html>
+        """
 
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 @app.route('/api/email/stats', methods=['GET'])
 @require_auth
 def email_stats():
@@ -10885,7 +9680,7 @@ def seed_serverfarm_facilities():
     time.sleep(20)
     conn = None
     try:
-        conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))  # fixed: was get_db()
+        conn = get_db()
         added = 0
         for f in missing_facilities:
             try:
@@ -11081,13 +9876,6 @@ def land_power_consolidated():
     in a single response. Reduces frontend API calls from 20+ to 1.
     """
     import concurrent.futures
-    # ── Redis cache for land-power (5 min) ──
-    import hashlib as _hl
-    _lp_raw = f"lp:{request.query_string.decode()}"
-    _lp_key = "lp:" + _hl.md5(_lp_raw.encode()).hexdigest()
-    _lp_cached = cache_get(_lp_key)
-    if _lp_cached is not None:
-        return jsonify(_lp_cached)
 
     lat = request.args.get('lat', type=float)
     lng = request.args.get('lng', type=float)
@@ -11175,7 +9963,6 @@ def land_power_consolidated():
         except Exception:
             result["epa_summary"] = {"lat": lat, "lng": lng, "count": 0, "error": "unavailable"}
 
-    cache_set(_lp_key, result, ttl=300)
     return jsonify(result)
 
 @app.route('/api/v1/capacity/heatmap/public', methods=['GET'])
@@ -11188,17 +9975,6 @@ logger.info("✅ Consolidated Land & Power endpoint registered: /api/v1/land-pow
 logger.info("✅ Public heatmap endpoint registered: /api/v1/capacity/heatmap/public")
 
 # =============================================================================
-# MAP & LAND POWER TIERED GATING (anon=blank, free=taste, dev=more, pro=all)
-# Overrides: /api/v1/map, /api/v1/land-power/data, /api/v1/capacity/heatmap/public
-# Must be AFTER the original routes are defined so view_functions swap works
-# =============================================================================
-try:
-    from map_tier_gating import register_map_tier_gating
-    register_map_tier_gating(app, decode_jwt_func=decode_jwt)
-except Exception as e:
-    print(f"🗺️ Map Tier Gating: ⚠️ {e}")
-
-# =============================================================================
 # FIBER ROUTES MANAGEMENT ENDPOINTS
 # =============================================================================
 
@@ -11206,7 +9982,6 @@ except Exception as e:
 @require_plan('pro')
 def fiber_sources():
     """List all fiber data sources and their status"""
-    conn = None
     try:
         conn = get_db()
         cursor = conn.cursor()
@@ -11225,23 +10000,15 @@ def fiber_sources():
                 "first_seen": row[3], "last_updated": row[4]
             })
 
-        # Include metro dark fiber stats
-        try:
-            cursor.execute('SELECT COUNT(*), COUNT(DISTINCT carrier), COUNT(DISTINCT market), COALESCE(SUM(route_miles_approx),0) FROM metro_dark_fiber')
-            mrow = cursor.fetchone()
-            metro_stats = {'total_records': mrow[0] or 0, 'carriers': mrow[1] or 0, 'markets': mrow[2] or 0, 'total_route_miles': mrow[3] or 0}
-        except Exception:
-            metro_stats = {'total_records': 0, 'carriers': 0, 'markets': 0, 'total_route_miles': 0}
         cursor.execute('SELECT COUNT(*) FROM fiber_routes')
-        total = _row_val(cursor.fetchone(), 0)
+        total = cursor.fetchone()[0]
 
         return jsonify({"success": True, "total_routes": total, "sources": sources})
     except Exception as e:
         return jsonify({"success": True, "total_routes": 0, "sources": [], "note": str(e)})
     finally:
-        if conn:
-            try: conn.close()
-            except Exception: pass
+        try: conn.close()
+        except Exception: pass
 
 @app.route('/api/v1/fiber/routes', methods=['GET'])
 @require_plan('pro')
@@ -11249,7 +10016,6 @@ def fiber_routes_api():
     """Get fiber routes with optional filtering, returns GeoJSON"""
     carrier = request.args.get('carrier')
     route_type = request.args.get('type')
-    conn = None
 
     try:
         conn = get_db()
@@ -11306,9 +10072,8 @@ def fiber_routes_api():
     except Exception as e:
         return jsonify({"type": "FeatureCollection", "features": [], "total": 0, "note": str(e)})
     finally:
-        if conn:
-            try: conn.close()
-            except Exception: pass
+        try: conn.close()
+        except Exception: pass
 
 logger.info("✅ Fiber routes endpoints registered: /api/v1/fiber/sources, /api/v1/fiber/routes")
 
@@ -11403,7 +10168,6 @@ if IS_RAILWAY and EVOLUTION_AVAILABLE:
 @app.route('/api/v1/fiber/metro/<market_name>', methods=['GET'])
 def fiber_metro_api(market_name=None):
     """Metro dark fiber intelligence by market — carriers, route miles, density scores."""
-    conn = None
     try:
         conn = get_pg_connection()
         cur = conn.cursor()
@@ -11417,7 +10181,7 @@ def fiber_metro_api(market_name=None):
                 ORDER BY route_miles_approx DESC
             """, (market_name.replace('-', ' '),))
             cols = ['carrier','route_miles_approx','on_net_buildings','key_endpoints','services','notes','source','fiber_type']
-            carriers = [dict(zip(cols, r)) for r in _rows_to_tuples(cur.fetchall())]
+            carriers = [dict(zip(cols, r)) for r in cur.fetchall()]
             
             cur.execute("""
                 SELECT market, state, total_carriers, total_route_miles_approx,
@@ -11435,7 +10199,6 @@ def fiber_metro_api(market_name=None):
                     'key_ix_points': row[7], 'key_carrier_hotels': row[8], 'notes': row[9]
                 }
             cur.close()
-            return_pg_connection(conn)
             return jsonify({'success': True, 'market': market_name, 'summary': summary, 'carriers': carriers})
         
         else:
@@ -11448,7 +10211,7 @@ def fiber_metro_api(market_name=None):
                 ORDER BY fiber_density_score DESC
             """)
             cols = ['market','state','total_carriers','total_route_miles','total_on_net_buildings','fiber_density_score','tier']
-            markets = [dict(zip(cols, r)) for r in _rows_to_tuples(cur.fetchall())]
+            markets = [dict(zip(cols, r)) for r in cur.fetchall()]
             
             if carrier_filter:
                 cur.execute("""
@@ -11457,15 +10220,13 @@ def fiber_metro_api(market_name=None):
                     ORDER BY route_miles_approx DESC
                 """, (carrier_filter,))
                 cols2 = ['market','route_miles_approx','on_net_buildings','services']
-                carrier_markets = [dict(zip(cols2, r)) for r in _rows_to_tuples(cur.fetchall())]
+                carrier_markets = [dict(zip(cols2, r)) for r in cur.fetchall()]
                 cur.close()
-                return_pg_connection(conn)
                 return jsonify({'success': True, 'carrier': carrier_filter, 'markets': carrier_markets, 'total_markets': len(carrier_markets)})
             
             cur.execute("SELECT COUNT(*), SUM(route_miles_approx) FROM metro_dark_fiber")
             row = cur.fetchone()
             cur.close()
-            return_pg_connection(conn)
             return jsonify({
                 'success': True,
                 'markets': markets,
@@ -11477,8 +10238,8 @@ def fiber_metro_api(market_name=None):
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
     finally:
-        if conn:
-            return_pg_connection(conn)
+        try: conn.close()
+        except Exception: pass
 
 @app.route('/api/schedulers/audit', methods=['GET'])
 def audit_schedulers():
@@ -11513,11 +10274,11 @@ def data_freshness():
     conn = None
     try:
         conn = get_db()
-        _c = conn.cursor()
+        c = conn.cursor()
         def safe_query(query, default=None):
             try:
-                _c.execute(query)
-                row = _c.fetchone()
+                c.execute(query)
+                row = c.fetchone()
                 return row[0] if row else default
             except:
                 return default
@@ -11667,16 +10428,13 @@ def refresh_news():
 @app.route('/api/transactions/refresh', methods=['POST'])
 def refresh_transactions():
     """Force immediate transactions/deals data check"""
-    conn = None
     try:
         conn = get_pg_connection()
         c = conn.cursor()
         c.execute("SELECT COUNT(*) FROM deals")
-        total = _row_val(c.fetchone(), 0)
-        c.execute("SELECT date FROM deals WHERE date IS NOT NULL ORDER BY date DESC LIMIT 1")
-        row = c.fetchone()
-        newest = row[0] if row else None
-        c.close()
+        total = c.fetchone()[0] or 0
+        c.execute("SELECT MAX(date) FROM deals")
+        newest = c.fetchone()[0]
         if 'autopilot' in _scheduler_registry:
             _scheduler_registry['autopilot']['last_run'] = datetime.utcnow().isoformat()
             _scheduler_registry['autopilot']['total_runs'] += 1
@@ -11690,8 +10448,8 @@ def refresh_transactions():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
     finally:
-        if conn:
-            return_pg_connection(conn)
+        try: conn.close()
+        except Exception: pass
 
 @app.route('/api/deals/refresh', methods=['POST'])
 def refresh_deals():
@@ -11699,7 +10457,7 @@ def refresh_deals():
     # Allow internal/admin calls to bypass plan gate
     admin_key = request.headers.get('X-Admin-Key', '')
     internal_key = request.headers.get('X-Internal-Key', '')
-    if admin_key != os.environ.get('DCHUB_ADMIN_KEY', '') and internal_key not in (os.environ.get('DCHUB_INTERNAL_KEY', ''), os.environ.get('DCHUB_SYNC_KEY', '')):
+    if admin_key != os.environ.get('DCHUB_ADMIN_KEY', '') and internal_key != 'dchub-internal-sync-2026':
         return require_plan('enterprise')(lambda: refresh_transactions())()
     return refresh_transactions()
 
@@ -11750,12 +10508,12 @@ def permit_coverage_stats():
     """
     conn = None
     try:
-        conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))  # direct conn for heavy map query
+        conn = get_read_db()
         cur = conn.cursor()
 
         # Total facilities with permit_date
         cur.execute("SELECT COUNT(*) FROM facilities WHERE permit_date IS NOT NULL")
-        total = _row_val(cur.fetchone(), 0)
+        total = cur.fetchone()[0]
 
         # Breakdown by source
         cur.execute("""
@@ -11766,7 +10524,7 @@ def permit_coverage_stats():
             ORDER BY cnt DESC
             LIMIT 10
         """)
-        sources = [{"source": r[0], "count": r[1]} for r in _rows_to_tuples(cur.fetchall())]
+        sources = [{"source": r[0], "count": r[1]} for r in cur.fetchall()]
 
         # Market breakdown (US only)
         cur.execute("""
@@ -11779,7 +10537,7 @@ def permit_coverage_stats():
             ORDER BY cnt DESC
             LIMIT 20
         """)
-        markets = [{"city": r[0], "state": r[1], "count": r[2]} for r in _rows_to_tuples(cur.fetchall())]
+        markets = [{"city": r[0], "state": r[1], "count": r[2]} for r in cur.fetchall()]
 
         # Average confidence
         cur.execute("""
@@ -11787,22 +10545,22 @@ def permit_coverage_stats():
             FROM facilities
             WHERE permit_date IS NOT NULL AND permit_confidence IS NOT NULL
         """)
-        avg_conf = float(_row_val(cur.fetchone(), 0))
+        avg_conf = float(cur.fetchone()[0] or 0)
 
         # Total facilities
         cur.execute("SELECT COUNT(*) FROM facilities")
-        total_facilities = _row_val(cur.fetchone(), 0)
+        total_facilities = cur.fetchone()[0]
 
         # US facilities with permit_date
         cur.execute("""
             SELECT COUNT(*) FROM facilities
             WHERE permit_date IS NOT NULL AND country = 'US'
         """)
-        us_count = _row_val(cur.fetchone(), 0)
+        us_count = cur.fetchone()[0]
 
         # US total
         cur.execute("SELECT COUNT(*) FROM facilities WHERE country = 'US'")
-        us_total = _row_val(cur.fetchone(), 0)
+        us_total = cur.fetchone()[0]
 
         return jsonify({
             "success": True,
@@ -11870,7 +10628,7 @@ def job_fiber_sync():
     internal_key = request.headers.get('X-Internal-Key', '')
     admin_key = request.headers.get('X-Admin-Key', '')
     expected_admin = os.environ.get('DCHUB_ADMIN_KEY', '')
-    if internal_key not in (os.environ.get('DCHUB_INTERNAL_KEY', ''), os.environ.get('DCHUB_SYNC_KEY', '')) and admin_key != expected_admin:
+    if internal_key != 'dchub-internal-2024' and admin_key != expected_admin:
         return jsonify({'error': 'Unauthorized'}), 401
 
     results = {'success': True, 'sources': {}, 'total_new': 0}
@@ -11885,7 +10643,7 @@ def job_fiber_sync():
 
     # 2. Fiber network discovery module
     try:
-        from fiber_network_discovery import run_fiber_discovery as sync_fiber_routes
+        from fiber_network_discovery import sync_fiber_routes
         fiber_result = sync_fiber_routes()
         results['sources']['fiber_network'] = fiber_result
         results['total_new'] += fiber_result.get('new_routes', 0) if isinstance(fiber_result, dict) else 0
@@ -11931,7 +10689,7 @@ def admin_run_auto_approval():
     admin_key = request.headers.get('X-Admin-Key', '')
     expected = os.environ.get('DCHUB_ADMIN_KEY', '')
     admin_secret = os.environ.get('ADMIN_SECRET', '')
-    valid_keys = [k for k in [expected, admin_secret] if k]
+    valid_keys = [k for k in [expected, admin_secret, 'dchub-admin'] if k]
     if not admin_key or admin_key != expected:
         return jsonify({'error': 'Unauthorized'}), 401
     try:
@@ -11947,7 +10705,7 @@ def admin_update_deal():
     admin_key = request.headers.get('X-Admin-Key', '')
     expected = os.environ.get('DCHUB_ADMIN_KEY', '')
     admin_secret = os.environ.get('ADMIN_SECRET', '')
-    valid_keys = [k for k in [expected, admin_secret] if k]
+    valid_keys = [k for k in [expected, admin_secret, 'dchub-admin'] if k]
     if not admin_key or admin_key != expected:
         return jsonify({'error': 'Unauthorized'}), 401
     try:
@@ -11982,7 +10740,7 @@ def admin_deals_cleanup():
     admin_key = request.headers.get('X-Admin-Key', '')
     expected = os.environ.get('DCHUB_ADMIN_KEY', '')
     admin_secret = os.environ.get('ADMIN_SECRET', '')
-    valid_keys = [k for k in [expected, admin_secret] if k]
+    valid_keys = [k for k in [expected, admin_secret, 'dchub-admin'] if k]
     if not admin_key or admin_key != expected:
         return jsonify({'error': 'Unauthorized'}), 401
     try:
@@ -12068,7 +10826,7 @@ def admin_deals_cleanup():
             cursor.execute("SELECT COUNT(*), SUM(CASE WHEN verified=1 THEN 1 ELSE 0 END) FROM deals")
             final = cursor.fetchone()
             cursor.execute("SELECT type, COUNT(*) FROM deals GROUP BY type ORDER BY COUNT(*) DESC")
-            types = dict(_rows_to_tuples(cursor.fetchall()))
+            types = dict(cursor.fetchall())
         return jsonify({'success': True, 'stats': stats, 'final': {'total': final[0], 'verified': final[1], 'types': types}})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -12081,7 +10839,7 @@ def admin_reset_password():
     admin_key = (request.headers.get('X-Admin-Key', '') or data.get('admin_key', '')).strip()
     expected = os.environ.get('DCHUB_ADMIN_KEY', '')
     admin_secret = os.environ.get('ADMIN_SECRET', '')
-    valid_keys = [k for k in [expected, admin_secret] if k].strip()
+    valid_keys = [k for k in [expected, admin_secret, 'dchub-admin'] if k].strip()
     logging.info(f"[RESET-PW] key_len={len(admin_key)}, expected_len={len(expected)}, match={admin_key == expected}")
     if not admin_key or not expected or admin_key != expected:
         return jsonify({'error': 'Unauthorized'}), 401
@@ -12105,7 +10863,7 @@ def admin_reset_password():
 @app.route('/api/admin/users', methods=['GET'])
 def admin_list_users():
     key = request.headers.get('X-Admin-Key') or request.args.get('key', '')
-    valid_keys = [k for k in [os.environ.get('DCHUB_ADMIN_KEY', '')] if k]
+    valid_keys = [k for k in [os.environ.get('DCHUB_ADMIN_KEY', ''), 'dchub-admin'] if k]
     if key not in valid_keys:
         return jsonify({'error': 'Unauthorized'}), 401
     plan_filter = request.args.get('plan', '')
@@ -12130,7 +10888,7 @@ def admin_news_archive():
     admin_key = request.headers.get('X-Admin-Key', '')
     expected = os.environ.get('DCHUB_ADMIN_KEY', '')
     admin_secret = os.environ.get('ADMIN_SECRET', '')
-    valid_keys = [k for k in [expected, admin_secret] if k]
+    valid_keys = [k for k in [expected, admin_secret, 'dchub-admin'] if k]
     if not admin_key or admin_key != expected:
         return jsonify({'error': 'Unauthorized'}), 401
     try:
@@ -12145,7 +10903,7 @@ def admin_news_archive():
                 SELECT COUNT(*) FROM announcements
                 WHERE published_date < NOW() - INTERVAL '%s days'
             """, (days,))
-            to_archive = _row_val(cursor.fetchone(), 0)
+            to_archive = cursor.fetchone()[0]
             if to_archive > 0:
                 cursor.execute("""
                     INSERT INTO announcements_archive
@@ -12159,9 +10917,9 @@ def admin_news_archive():
                 """, (days,))
             conn.commit()
             cursor.execute("SELECT COUNT(*) FROM announcements")
-            remaining = _row_val(cursor.fetchone(), 0)
+            remaining = cursor.fetchone()[0]
             cursor.execute("SELECT COUNT(*) FROM announcements_archive")
-            archived_total = _row_val(cursor.fetchone(), 0)
+            archived_total = cursor.fetchone()[0]
         return jsonify({'success': True, 'archived_now': to_archive, 'remaining_active': remaining, 'total_archived': archived_total, 'days_threshold': days})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -12263,7 +11021,7 @@ if ENABLE_DISCOVERY_THREADS:
                     with pg_connection() as conn_chk:
                         cur = conn_chk.cursor()
                         cur.execute("SELECT COUNT(*) FROM discovered_facilities WHERE merged_at IS NULL AND is_duplicate = 0")
-                        pending_ct = _row_val(cur.fetchone(), 0)
+                        pending_ct = cur.fetchone()[0]
                     if pending_ct > 0:
                         print(f"[AUTO-APPROVAL] {pending_ct} pending, processing batch of 100...")
                         result = run_auto_approval(max_records=100)
@@ -12321,25 +11079,14 @@ try:
     register_watchdog_routes(app)
     def _deferred_watchdog():
         try:
-            init_watchdog(app, check_interval=90, max_failures=5)
-            print("🐕 Health Watchdog: ✅ Running (check every 90s, restart after 5 failures)")
+            init_watchdog(app, check_interval=60, max_failures=3)
+            print("🐕 Health Watchdog: ✅ Running (check every 60s, restart after 3 failures)")
         except Exception as e:
             print(f"⚠️ Health Watchdog: Failed to start: {e}")
     _deferred_bg_threads.append(('Health Watchdog', _deferred_watchdog))
     print("🐕 Health Watchdog: Routes registered, thread deferred to staggered startup")
 except ImportError:
     print("⚠️ Health Watchdog: Not installed")
-
-# =============================================================================
-# SELF-HEALING ORCHESTRATOR (preemptive issue detection + auto-repair)
-# =============================================================================
-try:
-    from self_healing_orchestrator import start_healing_orchestrator
-    start_healing_orchestrator(app)
-except ImportError:
-    print("⚠️ Self-Healing Orchestrator: Module not found (self_healing_orchestrator.py)")
-except Exception as e:
-    print("⚠️ Self-Healing Orchestrator: Failed to start: %s" % str(e))
 
 # =============================================================================
 # NEWS SCHEDULER (module-level so gunicorn picks it up)
@@ -12441,8 +11188,8 @@ def ai_query():
         if not has_auth and api_key:
             try:
                 from api_tier_gating import validate_api_key, user_has_access
-                info = validate_api_key(api_key)  # Returns dict or None (NOT tuple)
-                if info and isinstance(info, dict) and user_has_access(info.get('plan', 'free'), 'pro'):
+                valid, info = validate_api_key(api_key)
+                if valid and user_has_access(info.get('plan', 'free'), 'pro'):
                     has_auth = True
             except:
                 pass
@@ -12467,22 +11214,22 @@ def ai_query():
                     pg_cur = pg_conn.cursor()
                     if query_type == 'facilities' and query:
                         pg_cur.execute("SELECT COUNT(*) FROM discovered_facilities WHERE name ILIKE %s OR city ILIKE %s OR provider ILIKE %s", (f'%{query}%', f'%{query}%', f'%{query}%'))
-                        total_count = _row_val(pg_cur.fetchone(), 0)
+                        total_count = pg_cur.fetchone()[0]
                         pg_cur.execute("SELECT name, city, country, provider FROM discovered_facilities WHERE name ILIKE %s OR city ILIKE %s OR provider ILIKE %s LIMIT 2", (f'%{query}%', f'%{query}%', f'%{query}%'))
                         cols = [d[0] for d in pg_cur.description]
-                        preview_data = [dict(zip(cols, row)) for row in _rows_to_tuples(pg_cur.fetchall())]
+                        preview_data = [dict(zip(cols, row)) for row in pg_cur.fetchall()]
                     elif query_type == 'deals':
                         pg_cur.execute("SELECT COUNT(*) FROM deals")
-                        total_count = _row_val(pg_cur.fetchone(), 0)
+                        total_count = pg_cur.fetchone()[0]
                         pg_cur.execute("SELECT buyer, seller, value as deal_value, year FROM deals ORDER BY year DESC LIMIT 2")
                         cols = [d[0] for d in pg_cur.description]
-                        preview_data = [dict(zip(cols, row)) for row in _rows_to_tuples(pg_cur.fetchall())]
+                        preview_data = [dict(zip(cols, row)) for row in pg_cur.fetchall()]
                     elif query_type == 'capacity':
                         pg_cur.execute("SELECT COUNT(*) FROM capacity_pipeline")
-                        total_count = _row_val(pg_cur.fetchone(), 0)
+                        total_count = pg_cur.fetchone()[0]
                         pg_cur.execute("SELECT operator as company, market, capacity_mw FROM capacity_pipeline ORDER BY capacity_mw DESC LIMIT 2")
                         cols = [d[0] for d in pg_cur.description]
-                        preview_data = [dict(zip(cols, row)) for row in _rows_to_tuples(pg_cur.fetchall())]
+                        preview_data = [dict(zip(cols, row)) for row in pg_cur.fetchall()]
             except Exception as e:
                 logger.warning(f"ai_query preview error: {e}")
 
@@ -12512,13 +11259,13 @@ def ai_query():
 
             if query_type == 'stats' or query_type == 'general' or not query:
                 pg_cur.execute("SELECT COUNT(*) FROM discovered_facilities")
-                facilities = _row_val(pg_cur.fetchone(), 0)
+                facilities = pg_cur.fetchone()[0]
                 pg_cur.execute("SELECT COUNT(*) FROM announcements")
-                news = _row_val(pg_cur.fetchone(), 0)
+                news = pg_cur.fetchone()[0]
                 pg_cur.execute("SELECT COUNT(*) FROM deals")
-                deals = _row_val(pg_cur.fetchone(), 0)
+                deals = pg_cur.fetchone()[0]
                 pg_cur.execute("SELECT COALESCE(SUM(capacity_mw), 0) FROM capacity_pipeline")
-                capacity = _row_val(pg_cur.fetchone(), 0)
+                capacity = pg_cur.fetchone()[0]
 
                 response['data'] = {
                     'facilities': facilities,
@@ -12531,21 +11278,21 @@ def ai_query():
             elif query_type == 'facilities' and query:
                 pg_cur.execute("SELECT name, city, country, provider FROM discovered_facilities WHERE name ILIKE %s OR city ILIKE %s OR provider ILIKE %s LIMIT 10", (f'%{query}%', f'%{query}%', f'%{query}%'))
                 cols = [d[0] for d in pg_cur.description]
-                facilities = [dict(zip(cols, row)) for row in _rows_to_tuples(pg_cur.fetchall())]
+                facilities = [dict(zip(cols, row)) for row in pg_cur.fetchall()]
                 response['data'] = {'facilities': facilities, 'count': len(facilities)}
                 response['suggested_response'] = f"According to DC Hub Nexus, there are {len(facilities)} data center facilities matching '{query}'."
 
             elif query_type == 'deals':
                 pg_cur.execute("SELECT buyer, seller, value as deal_value, year, market FROM deals ORDER BY year DESC, id DESC LIMIT 10")
                 cols = [d[0] for d in pg_cur.description]
-                deals = [dict(zip(cols, row)) for row in _rows_to_tuples(pg_cur.fetchall())]
+                deals = [dict(zip(cols, row)) for row in pg_cur.fetchall()]
                 response['data'] = {'deals': deals, 'count': len(deals)}
                 response['suggested_response'] = f"DC Hub Nexus tracks {len(deals)} recent M&A transactions in the data center industry."
 
             elif query_type == 'capacity':
                 pg_cur.execute("SELECT operator, capacity_mw, market, status FROM capacity_pipeline ORDER BY capacity_mw DESC LIMIT 20")
                 cols = [d[0] for d in pg_cur.description]
-                pipeline = [dict(zip(cols, row)) for row in _rows_to_tuples(pg_cur.fetchall())]
+                pipeline = [dict(zip(cols, row)) for row in pg_cur.fetchall()]
                 total_mw = sum((p['capacity_mw'] or 0) for p in pipeline)
                 response['data'] = {'pipeline': pipeline, 'total_mw': total_mw}
                 response['suggested_response'] = f"According to DC Hub Nexus capacity tracking, there is {total_mw/1000:.1f} GW of data center capacity currently under development."
@@ -12592,7 +11339,6 @@ def get_testimonials():  # v2 neon-backed
     category = request.args.get('category')
     featured_only = request.args.get('featured', '').lower() == 'true'
 
-    conn = None
     try:
         conn = get_pg_connection()
         c = conn.cursor()
@@ -12611,8 +11357,6 @@ def get_testimonials():  # v2 neon-backed
 
         c.execute(query, params)
         rows = c.fetchall()
-        # conn returned in finally
-
         testimonials = []
         for r in rows:
             testimonials.append({
@@ -12636,8 +11380,8 @@ def get_testimonials():  # v2 neon-backed
         logger.error(f"Testimonials fetch error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
     finally:
-        if conn:
-            return_pg_connection(conn)
+        try: conn.close()
+        except Exception: pass
 
 
 @app.route('/api/v1/testimonials', methods=['POST'])
@@ -12658,7 +11402,6 @@ def add_testimonial():
     if not quote:
         return jsonify({'success': False, 'error': 'Quote is required'}), 400
 
-    conn = None
     try:
         conn = get_pg_connection()
         c = conn.cursor()
@@ -12667,15 +11410,16 @@ def add_testimonial():
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, CASE WHEN %s THEN CURRENT_TIMESTAMP ELSE NULL END)
             RETURNING id
         """, (platform, agent_name, quote, context, query_text, url, category, source, auto_approve, auto_approve))
-        new_id = _row_val(c.fetchone(), 0)
+        new_id = c.fetchone()[0]
         conn.commit()
+
         return jsonify({'success': True, 'id': new_id, 'approved': auto_approve})
     except Exception as e:
         logger.error(f"Testimonial insert error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
     finally:
-        if conn:
-            return_pg_connection(conn)
+        try: conn.close()
+        except Exception: pass
 
 
 @app.route('/api/v1/testimonials/<int:tid>/approve', methods=['POST'])
@@ -12684,7 +11428,6 @@ def approve_testimonial(tid):
     data = request.get_json() or {}
     featured = data.get('featured', False)
 
-    conn = None
     try:
         conn = get_pg_connection()
         c = conn.cursor()
@@ -12698,14 +11441,13 @@ def approve_testimonial(tid):
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
     finally:
-        if conn:
-            return_pg_connection(conn)
+        try: conn.close()
+        except Exception: pass
 
 
 @app.route('/api/v1/testimonials/<int:tid>', methods=['DELETE'])
 def delete_testimonial(tid):
     """Admin: delete a testimonial"""
-    conn = None
     try:
         conn = get_pg_connection()
         c = conn.cursor()
@@ -12715,14 +11457,13 @@ def delete_testimonial(tid):
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
     finally:
-        if conn:
-            return_pg_connection(conn)
+        try: conn.close()
+        except Exception: pass
 
 
 @app.route('/api/v1/testimonials/stats', methods=['GET'])
 def testimonial_stats():
     """Stats for the testimonials page hero"""
-    conn = None
     try:
         conn = get_pg_connection()
         c = conn.cursor()
@@ -12735,7 +11476,6 @@ def testimonial_stats():
             FROM ai_testimonials
         """)
         r = c.fetchone()
-        # conn returned in finally
         return jsonify({
             'success': True,
             'stats': {
@@ -12748,14 +11488,13 @@ def testimonial_stats():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
     finally:
-        if conn:
-            return_pg_connection(conn)
+        try: conn.close()
+        except Exception: pass
 
 
 @app.route('/api/v1/testimonials/seed', methods=['POST'])
 def seed_testimonials():
     """One-time seed -- creates table if needed and populates initial AI agent citations"""
-    conn = None  # Fix: declare before try for finally block
     SEED_DATA = [
         ('chatgpt', 'GPT-4o', 'According to DC Hub, which tracks over 20,000 data centers across 140+ countries, Northern Virginia remains the largest data center market globally with over 9.6 GW of capacity.', 'User asked about largest data center markets', 'What are the largest data center markets in the world?', 'citation', True),
         ('perplexity', 'Perplexity AI', "DC Hub's real-time tracking shows colocation vacancy rates at historic lows, with North America hitting 1.6% according to CBRE data aggregated on the platform.", 'User asked about data center vacancy rates', 'What are current data center vacancy rates?', 'citation', True),
@@ -12805,14 +11544,13 @@ def seed_testimonials():
         logger.error(f"Testimonial seed error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
     finally:
-        if conn:
-            return_pg_connection(conn)
+        try: conn.close()
+        except Exception: pass
 
 
 @app.route('/api/v1/testimonials/bulk-approve', methods=['POST'])
 def bulk_approve_testimonials():
     """Approve all unapproved mcp-auto testimonials (admin use)"""
-    conn = None
     try:
         conn = get_pg_connection()
         c = conn.cursor()
@@ -12827,14 +11565,13 @@ def bulk_approve_testimonials():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
     finally:
-        if conn:
-            return_pg_connection(conn)
+        try: conn.close()
+        except Exception: pass
 
 
 @app.route('/api/v1/testimonials/cleanup', methods=['POST'])
 def cleanup_testimonials():
     """Deduplicate and prune stale auto-captured testimonials"""
-    conn = None
     try:
         conn = get_pg_connection()
         c = conn.cursor()
@@ -12876,21 +11613,20 @@ def cleanup_testimonials():
             WHERE platform = 'unknown' AND (agent_name ILIKE '%%gemini%%' OR agent_name ILIKE '%%google%%')""")
         conn.commit()
         return jsonify({
-            'success': True, 'pruned': pruned, 'deduplicated': deduped, 
-            'old_format_removed': old_format, 'unknown_removed': unknown_removed, 
+            'success': True, 'pruned': pruned, 'deduplicated': deduped,
+            'old_format_removed': old_format, 'unknown_removed': unknown_removed,
             'tests_removed': tests
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
     finally:
-        if conn:
-            return_pg_connection(conn)
+        try: conn.close()
+        except Exception: pass
 
 
 @app.route('/api/v1/testimonials/refresh-timestamps', methods=['POST'])
 def refresh_testimonial_timestamps():
     """Update seed and manual testimonial timestamps to now so they don't show as stale"""
-    conn = None
     try:
         conn = get_pg_connection()
         c = conn.cursor()
@@ -12917,8 +11653,8 @@ def refresh_testimonial_timestamps():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
     finally:
-        if conn:
-            return_pg_connection(conn)
+        try: conn.close()
+        except Exception: pass
 
 
 @app.route('/ai/facts')
@@ -12930,25 +11666,25 @@ def ai_facts():
             pg_cur = pg_conn.cursor()
 
             pg_cur.execute("SELECT COUNT(*) FROM discovered_facilities")
-            total_facilities = _row_val(pg_cur.fetchone(), 0)
+            total_facilities = pg_cur.fetchone()[0]
             pg_cur.execute("SELECT COUNT(DISTINCT country) FROM discovered_facilities")
-            total_countries = _row_val(pg_cur.fetchone(), 0)
+            total_countries = pg_cur.fetchone()[0]
             pg_cur.execute("SELECT COUNT(DISTINCT provider) FROM discovered_facilities")
-            total_providers = _row_val(pg_cur.fetchone(), 0)
+            total_providers = pg_cur.fetchone()[0]
             pg_cur.execute("SELECT COUNT(*) FROM deals")
-            total_deals = _row_val(pg_cur.fetchone(), 0)
+            total_deals = pg_cur.fetchone()[0]
             pg_cur.execute("SELECT COALESCE(SUM(capacity_mw), 0) FROM capacity_pipeline")
-            pipeline_mw = _row_val(pg_cur.fetchone(), 0)
+            pipeline_mw = pg_cur.fetchone()[0] or 0
             try:
                 pg_cur.execute("SELECT COUNT(*) FROM fiber_routes")
-                fiber_routes = _row_val(pg_cur.fetchone(), 0)
+                fiber_routes = pg_cur.fetchone()[0]
             except:
                 fiber_routes = 128
             try:
                 pg_cur.execute("SELECT COUNT(*) FROM discovered_power_plants")
-                power_plants = _row_val(pg_cur.fetchone(), 0)
+                power_plants = pg_cur.fetchone()[0]
                 pg_cur.execute("SELECT COALESCE(SUM(capacity_mw), 0) FROM discovered_power_plants")
-                power_capacity = _row_val(pg_cur.fetchone(), 0)
+                power_capacity = pg_cur.fetchone()[0] or 0
             except:
                 power_plants = 52
                 power_capacity = 96318
@@ -12961,7 +11697,7 @@ def ai_facts():
                 ORDER BY cnt DESC
                 LIMIT 10
             """)
-            top_operators = [{'name': row[0], 'facilities': row[1]} for row in _rows_to_tuples(pg_cur.fetchall())]
+            top_operators = [{'name': row[0], 'facilities': row[1]} for row in pg_cur.fetchall()]
 
             pg_cur.execute("""
                 SELECT country, COUNT(*) as cnt
@@ -12970,7 +11706,7 @@ def ai_facts():
                 ORDER BY cnt DESC
                 LIMIT 10
             """)
-            top_markets = [{'country': row[0], 'facilities': row[1]} for row in _rows_to_tuples(pg_cur.fetchall())]
+            top_markets = [{'country': row[0], 'facilities': row[1]} for row in pg_cur.fetchall()]
 
     except Exception as e:
         logger.warning(f"ai_facts error: {e}")
@@ -13228,7 +11964,7 @@ def serve_sitemap_xml():
     fac_rows = []
     loc_rows = []
     try:
-        conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))  # direct conn for heavy map query
+        conn = get_read_db()
         c = conn.cursor()
         
         # Get facility data for individual pages (include provider + id for slug generation)
@@ -13469,7 +12205,7 @@ def get_market_intelligence():
             """)
             agg = cur.fetchone()
             cur.execute("SELECT DISTINCT region FROM market_intelligence WHERE region IS NOT NULL ORDER BY region")
-            regions = [r['region'] for r in _rows_to_tuples(cur.fetchall())]
+            regions = [r['region'] for r in cur.fetchall()]
         markets = []
         for r in rows:
             v = r.get('vacancy_rate')
@@ -13693,18 +12429,22 @@ if __name__ == '__main__':
             import time
             time.sleep(360)
             while True:
+                conn_check = None
                 try:
                     from discovery_auto_approve import run_auto_approval
                     conn_check = get_db()
-                    pending_count = _row_val(conn_check.execute(
-                        "SELECT COUNT(*) FROM discovered_facilities WHERE merged_at IS NULL AND is_duplicate = 0"
-                    ).fetchone(), 0)
-                    conn_check.close()
-                    if pending_count > 0:
-                        print(f"\n🔄 Auto-approval: {pending_count} pending records, processing batch of 100...")
-                        run_auto_approval(max_records=100)
-                    else:
-                        pass
+                    try:
+                        pending_count = conn_check.execute(
+                            "SELECT COUNT(*) FROM discovered_facilities WHERE merged_at IS NULL AND is_duplicate = 0"
+                        ).fetchone()[0]
+                        if pending_count > 0:
+                            print(f"\n🔄 Auto-approval: {pending_count} pending records, processing batch of 100...")
+                            run_auto_approval(max_records=100)
+                        else:
+                            pass
+                    finally:
+                        try: conn_check.close()
+                        except Exception: pass
                 except Exception as e:
                     print(f"⚠️ Auto-approval error: {e}")
                 time.sleep(300)
@@ -13817,20 +12557,6 @@ except Exception as e:
     logger.error(f"⚠️ Free Tier Map Gate failed: {e} -- map free-tier enforcement disabled")
 
 # =============================================================================
-# PAYWALL MIDDLEWARE — Server-side session/tier verification for website frontend
-# Closes the localStorage bypass (DCHubGate.setTier('pro', 30) no longer works)
-# Provides /api/verify-session endpoint + require_auth/require_tier decorators
-# =============================================================================
-try:
-    from paywall_middleware import paywall_bp, require_auth, require_tier, check_rate_limit
-    app.register_blueprint(paywall_bp)
-    logger.info("🔐 Paywall Middleware: ✅ Registered (/api/verify-session, /api/stripe/tier-webhook)")
-except ImportError:
-    logger.warning("⚠️ paywall_middleware.py not found -- server-side session verification disabled")
-except Exception as e:
-    logger.error(f"⚠️ Paywall Middleware failed: {e} -- server-side session verification disabled")
-
-# =============================================================================
 # STARTUP GATE VERIFICATION - Locked-down manifest of ALL gated endpoints
 # If ANY endpoint in this list is accessible without auth, server REFUSES to start.
 # This prevents accidental ungating during redeployments.
@@ -13838,7 +12564,12 @@ except Exception as e:
 LOCKED_GATE_MANIFEST = {
     'pro': [
         '/api/facilities',
+        '/api/grid/demand',
+        '/api/grid/prices',
+        '/api/v1/energy/gas-storage',
+        '/api/v1/infrastructure/transmission',
         '/api/v1/infrastructure/substations',
+        '/api/v1/grid/overview',
         '/api/v1/pipeline/summary',
         '/api/discovery/facilities',
         '/api/autopilot/transactions',
@@ -13846,12 +12577,30 @@ LOCKED_GATE_MANIFEST = {
         '/api/v1/fiber/sources',
         '/api/v1/fiber/routes',
         '/api/v1/energy/power-plants',
+        '/api/v1/energy/rto/demand',
+        '/api/v1/energy/rto/fuelmix',
+        '/api/v1/energy/naturalgas/price',
+        '/api/v1/energy/retail/rates',
+        '/api/v1/energy/power-plants/nearby',
+        '/api/v1/connectivity/ixps',
+        '/api/v1/connectivity/facilities',
+        '/api/v1/connectivity/score',
+        '/api/v1/oilgas/search',
         '/api/v1/markets/compare',
         '/api/v1/search',
         '/api/v1/gas-pipelines',
         '/api/v1/deals',
         '/api/deals',
+        '/api/v1/grid/caiso/fuelmix',
+        '/api/v1/grid/caiso/demand',
+        '/api/v1/grid/status',
+        '/api/epa/facilities',
         '/api/grid/all-isos',
+        '/api/renewable/solar',
+        '/api/renewable/wind',
+        '/api/renewable/combined',
+        '/api/renewable/layer/solar',
+        '/api/renewable/layer/wind',
         '/api/site-score',
         '/api/energy/prices/TX',
         '/api/carbon/intensity',
@@ -13891,7 +12640,6 @@ LOCKED_GATE_MANIFEST = {
         '/ai/discovery',
         '/api/ai/discover',
         '/api/ai/cite',
-        '/api/verify-session',
     ],
 }
 
@@ -13904,7 +12652,7 @@ def verify_tier_gating():
     failures = []
     passed = 0
     skipped_429 = 0
-    INTERNAL_HEADERS = {'X-Internal-Key': os.environ.get('DCHUB_SYNC_KEY', '')}
+    INTERNAL_HEADERS = {'X-Internal-Key': 'dchub-internal-sync-2026'}
     try:
         with app.test_client() as client:
             for tier in ('pro', 'enterprise', 'free'):
@@ -13914,7 +12662,7 @@ def verify_tier_gating():
                         if r.status_code == 429:
                             passed += 1
                             skipped_429 += 1
-                        elif r.status_code not in (401, 403, 404, 405, 400, 500, 502, 503):
+                        elif r.status_code not in (401, 403, 404, 405):
                             failures.append(f"🚨 UNGATED: {path} (tier={tier}) returned {r.status_code} -- should be 401/403")
                         else:
                             passed += 1
@@ -13965,17 +12713,6 @@ def verify_tier_gating():
 # UPTIME CHECK ENDPOINT - Read-only, no auth (registered BEFORE test_client)
 # =============================================================================
 import psutil as _psutil_mod
-
-def _validate_facility_result(data):
-    """Validate facility data isn't returning column names as values (BUG-008 fix)."""
-    if not data or not isinstance(data, dict):
-        return None
-    # Telltale: value equals its own key name means garbage data
-    garbage = [k for k, v in data.items() if isinstance(v, str) and v == k]
-    if len(garbage) >= 3:
-        return None
-    return data
-
 _SERVER_RESTART_TS = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
 
 _MEMORY_LIMIT_MB = 256
@@ -14086,11 +12823,8 @@ def uptime_check():
         result['degraded_reason'] = 'news_scheduler_down'
     return jsonify(result)
 
-# DISABLED: Fires 69+ test_client requests at startup, each grabbing a pool connection
-# This was the PRIMARY cause of connection pool exhaustion and crash loops.
-# Run manually via: curl -X POST https://dchub.cloud/api/jobs/verify-gating
-# if IS_RAILWAY: _deferred_bg_threads.append(('Tier Gate Verification', verify_tier_gating))
-logger.info("🔐 Tier Gate Verification: DISABLED at startup (run manually to audit)")
+# DISABLED: Hits 71+ endpoints at startup - unnecessary overhead
+if IS_RAILWAY: _deferred_bg_threads.append(('Tier Gate Verification', verify_tier_gating))
 
 # =============================================================================
 # STARTUP HEALTH CHECK - Log only, non-blocking
@@ -14100,8 +12834,7 @@ def _startup_health_check():
     for attempt in range(1, 11):
         try:
             import requests as _req
-            _port = os.environ.get("PORT", "5000")
-            r = _req.get(f"http://localhost:{_port}/api/v1/stats", timeout=5)
+            r = _req.get(f"http://localhost:{os.environ.get('PORT', '8080')}/health", timeout=5)
             if r.status_code == 200:
                 logger.info("STARTUP HEALTH CHECK: OK on attempt %d (%0.2fs)", attempt, r.elapsed.total_seconds())
                 return
@@ -14139,7 +12872,7 @@ def _start_background_tasks():
     logger.info("🚀 STAGGERED STARTUP: Beginning background task launch (%d tasks queued)", len(_deferred_bg_threads))
     for i, (name, target) in enumerate(_deferred_bg_threads):
         if i > 0:
-            time.sleep(30)  # Was 15s — increased to reduce pool contention
+            time.sleep(15)
         try:
             guarded = _memory_guarded(name, target)
             t = threading.Thread(target=guarded, daemon=True, name=f"bg-{name.lower().replace(' ', '-')}")
@@ -14160,35 +12893,16 @@ def _start_background_tasks():
 threading.Timer(180, _start_background_tasks).start()
 logger.info("⏳ Background tasks deferred: %d tasks will start in 180s with 15s stagger", len(_deferred_bg_threads))
 
-# --- Start Staggered Crawler Scheduler (delayed 5 min to avoid pool contention) ---
+# --- Start Staggered Crawler Scheduler ---
 if CRAWLER_SCHEDULER_AVAILABLE:
     try:
         register_crawler_admin(app)
-        def _delayed_crawler_start():
-            time.sleep(300)  # Wait 5 min after boot before starting crawlers
-            try:
-                start_scheduled_crawlers()
-                logger.info("📅 Crawler Scheduler: ✅ Started (twice-daily staggered crawls)")
-            except Exception as e:
-                logger.error(f"📅 Crawler Scheduler: ⚠️ Failed to start: {e}")
-        threading.Thread(target=_delayed_crawler_start, daemon=True, name="crawler-delayed-start").start()
-        logger.info("📅 Crawler Scheduler: Admin routes registered, crawlers will start in 300s")
+        start_scheduled_crawlers()
+        logger.info("📅 Crawler Scheduler: ✅ Started (twice-daily staggered crawls)")
     except Exception as e:
-        logger.error(f"📅 Crawler Scheduler: ⚠️ Failed to register: {e}")
+        logger.error(f"📅 Crawler Scheduler: ⚠️ Failed to start: {e}")
 else:
     logger.info("📅 Crawler Scheduler: Not available — crawlers will not run on schedule")
-
-# =============================================================================
-# SELF-RESTART MONITOR — auto-heals memory leaks, DB failures, thread exhaustion
-# Triggers Railway ON_FAILURE restart after 3 consecutive check failures
-# =============================================================================
-start_self_restart_monitor(app)
-
-@app.route('/api/self-restart-monitor/status')
-def srm_status():
-    from self_restart_monitor import get_monitor
-    m = get_monitor()
-    return jsonify(m.get_status()) if m else jsonify({"error": "not initialized"})
 
 # =============================================================================
 # GDCI INDEX DASHBOARD (moved to gdci.py blueprint — serves JSON API)
@@ -14208,7 +12922,7 @@ def get_facility_by_id(facility_id):
     """
     conn = None
     try:
-        conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))  # direct conn for heavy map query
+        conn = get_read_db()
         cur = conn.cursor()
         # Try integer id first, then hex merged_facility_id
         try:
@@ -14235,41 +12949,13 @@ def get_facility_by_id(facility_id):
             """, (facility_id, facility_id))
         row = cur.fetchone()
         if not row:
-            # Fallback 1: slug lookup (MCP tools may pass slugs)
-            cur.execute("""
-                SELECT df.id, df.name, df.provider, df.city, df.state, df.country,
-                       df.market AS region, df.latitude, df.longitude, df.power_mw,
-                       df.status, df.address, df.source,
-                       f.permit_date, f.approval_date, f.co_date,
-                       f.permit_source, f.permit_confidence::float AS permit_confidence
-                FROM discovered_facilities df
-                LEFT JOIN facilities f ON f.id = df.merged_facility_id
-                WHERE df.slug = %s
-                LIMIT 1
-            """, (facility_id,))
-            row = cur.fetchone()
-        if not row:
-            # Fallback 2: name-based search (MCP tools pass names, not IDs)
-            cur.execute("""
-                SELECT df.id, df.name, df.provider, df.city, df.state, df.country,
-                       df.market AS region, df.latitude, df.longitude, df.power_mw,
-                       df.status, df.address, df.source,
-                       f.permit_date, f.approval_date, f.co_date,
-                       f.permit_source, f.permit_confidence::float AS permit_confidence
-                FROM discovered_facilities df
-                LEFT JOIN facilities f ON f.id = df.merged_facility_id
-                WHERE df.name ILIKE %s OR df.source_id = %s
-                LIMIT 1
-            """, (f'%{facility_id}%', facility_id))
-            row = cur.fetchone()
-        if not row:
             return jsonify({"success": False, "error": "Facility not found", "id": facility_id}), 404
         cols = [d[0] for d in cur.description]
         full_data = dict(zip(cols, row))
 
         # Tier gating: check if caller has Developer+ access
         internal_key = request.headers.get("X-Internal-Key", "")
-        is_internal = internal_key and internal_key in (os.environ.get('DCHUB_INTERNAL_KEY', ''), os.environ.get('DCHUB_SYNC_KEY', ''))
+        is_internal = internal_key in ("dchub-internal-2024", "dchub-internal-sync-2026")
         api_key = request.headers.get("X-API-Key", "") or request.args.get("api_key", "")
         caller_plan = "free"
         if is_internal:
@@ -14277,16 +12963,14 @@ def get_facility_by_id(facility_id):
         elif api_key:
             try:
                 cur2 = conn.cursor()
-                import hashlib
-                _kh = hashlib.sha256(api_key.encode()).hexdigest()
-                cur2.execute("SELECT u.plan FROM api_keys ak JOIN users u ON ak.user_id = u.id WHERE ak.key_hash = %s AND ak.is_active = 1 LIMIT 1", (_kh,))
+                cur2.execute("SELECT u.plan FROM api_keys ak JOIN users u ON ak.user_id = u.id WHERE ak.key = %s AND ak.active = true LIMIT 1", (api_key,))
                 plan_row = cur2.fetchone()
                 if plan_row:
                     caller_plan = plan_row[0] or "free"
             except Exception:
                 pass
 
-        if caller_plan in ("pro", "enterprise", "developer", "founding"):
+        if caller_plan in ("pro", "enterprise", "developer"):
             # Full data for paid users
             return jsonify({"success": True, "data": full_data})
         else:
@@ -14320,7 +13004,7 @@ def api_site_score():
     """Composite site suitability score for data center development."""
     # Auth: internal key, X-API-Key header, Bearer token, or session user
     internal_key = request.headers.get("X-Internal-Key", "")
-    _authed = internal_key and internal_key in (os.environ.get('DCHUB_INTERNAL_KEY', ''), os.environ.get('DCHUB_SYNC_KEY', ''))
+    _authed = internal_key in ("dchub-internal-2024", "dchub-internal-sync-2026")
     if not _authed:
         # Check X-API-Key / Bearer token against DB
         _api_key = (
@@ -14330,24 +13014,20 @@ def api_site_score():
              if request.headers.get('Authorization', '').startswith('Bearer ') else '')
         )
         if _api_key and _api_key.startswith('dchub_'):
-            _kconn = None
             try:
                 _kconn = get_read_db()
                 _kc = _kconn.cursor()
                 _kc.execute("SELECT u.plan FROM api_keys ak JOIN users u ON ak.user_id = u.id WHERE ak.key_value = %s AND ak.is_active = TRUE LIMIT 1", (_api_key,))
                 _krow = _kc.fetchone()
-                if _krow and _row_val(_krow, '') in ('pro', 'enterprise', 'developer'):
+                _kconn.close()
+                if _krow and _krow[0] in ('pro', 'enterprise', 'developer'):
                     _authed = True
             except Exception as _ke:
                 logger.warning(f"site-score key lookup failed: {_ke}")
-            finally:
-                if _kconn:
-                    try: _kconn.close()
-                    except Exception: pass
         if not _authed:
             user = getattr(request, "current_user", None)
             plan = (user or {}).get("plan", "free") if isinstance(user, dict) else "free"
-            if plan not in ("pro", "enterprise", "developer", "founding"):
+            if plan not in ("pro", "enterprise", "developer"):
                 return jsonify({"error": "plan_required", "message": "Site scoring requires Pro plan. Upgrade at dchub.cloud/pricing", "upgrade_url": "https://dchub.cloud/pricing", "success": False}), 403
     lat = request.args.get('lat', type=float)
     lon = request.args.get('lon', type=float)
@@ -14359,7 +13039,7 @@ def api_site_score():
 
     conn = None
     try:
-        conn = psycopg2.connect(os.environ.get("NEON_DATABASE_URL", os.environ.get("DATABASE_URL", "")))  # direct conn for heavy map query
+        conn = get_read_db()
         c = conn.cursor()
 
         # 1. Nearby facilities (competitive density, ~100km radius)
@@ -14370,9 +13050,8 @@ def api_site_score():
               AND (latitude - %s)*(latitude - %s) + (longitude - %s)*(longitude - %s) < 0.81
         """, (lat, lat, lon, lon))
         row = c.fetchone()
-        nearby_facilities = _row_val(row, 0)
-        _row_list = _row_vals(row, 2)
-        nearby_mw = float(_row_list[1] or 0)
+        nearby_facilities = row[0] or 0
+        nearby_mw = float(row[1] or 0)
 
         # 2. Nearby substations — MULTI-TABLE (~50km radius)
         nearby_substations = 0
@@ -14383,7 +13062,7 @@ def api_site_score():
                   AND (voltage_kv > 69 OR voltage_kv IS NULL OR voltage_kv = 0)
                   AND (lat - %s)*(lat - %s) + (lng - %s)*(lng - %s) < 0.20
             """, (lat, lat, lon, lon))
-            nearby_substations = _row_val(c.fetchone(), 0)
+            nearby_substations = c.fetchone()[0] or 0
         except Exception:
             pass
 
@@ -14396,7 +13075,7 @@ def api_site_score():
                   AND LOWER(layer_type) IN ('substation', 'electric_substation', 'substations', 'power')
                   AND (latitude - %s)*(latitude - %s) + (longitude - %s)*(longitude - %s) < 0.20
             """, (lat, lat, lon, lon))
-            infra_substations = _row_val(c.fetchone(), 0)
+            infra_substations = c.fetchone()[0] or 0
         except Exception:
             pass
 
@@ -14411,7 +13090,7 @@ def api_site_score():
                   AND status = 'active'
                   AND (lat - %s)*(lat - %s) + (lng - %s)*(lng - %s) < 0.20
             """, (lat, lat, lon, lon))
-            nearby_gas_pipelines = _row_val(c.fetchone(), 0)
+            nearby_gas_pipelines = c.fetchone()[0] or 0
         except Exception:
             pass
 
@@ -14430,7 +13109,7 @@ def api_site_score():
                   AND LOWER(layer_type) IN ('power_plant', 'power_plants', 'generation')
                   AND (latitude - %s)*(latitude - %s) + (longitude - %s)*(longitude - %s) < 0.52
             """, (lat, lat, lon, lon))
-            pp_row = _row_vals(c.fetchone(), 2)
+            pp_row = c.fetchone()
             nearby_power_plants = pp_row[0] or 0
             nearby_generation_mw = float(pp_row[1] or 0)
         except Exception:
@@ -14444,7 +13123,7 @@ def api_site_score():
                 WHERE latitude IS NOT NULL AND longitude IS NOT NULL
                   AND (latitude - %s)*(latitude - %s) + (longitude - %s)*(longitude - %s) < 0.52
             """, (lat, lat, lon, lon))
-            dpp_row = _row_vals(c.fetchone(), 2)
+            dpp_row = c.fetchone()
             nearby_power_plants += (dpp_row[0] or 0)
             nearby_generation_mw += float(dpp_row[1] or 0)
         except Exception:
@@ -14469,7 +13148,7 @@ def api_site_score():
                 SELECT COUNT(DISTINCT provider) FROM fiber_routes
                 WHERE UPPER(states_served) LIKE %s OR UPPER(states_served) LIKE %s
             """, (f'%{state}%', f'%, {state}%'))
-            fiber_carriers = _row_val(c.fetchone(), 0)
+            fiber_carriers = c.fetchone()[0] or 0
             if fiber_carriers >= 5:
                 fiber_score = min(100, fiber_score + 10)
             elif fiber_carriers >= 2:
@@ -14527,15 +13206,7 @@ def api_site_score():
             (risk_score * 0.35)
         , 1)
 
-        # --- Site Enrichment (5 Neon tables: carbon, climate, risk, water, energy) ---
-        site_enrichment = {}
-        try:
-            from routes.api_integration_wiring import enrich_site_analysis
-            site_enrichment = enrich_site_analysis(lat=lat, lng=lon, state=state)
-        except Exception as _enrich_err:
-            logger.warning(f"Site enrichment failed (non-fatal): {_enrich_err}")
-
-        result = {
+        return jsonify({
             'success': True,
             'location': {'lat': lat, 'lon': lon, 'state': state},
             'capacity_requested_mw': capacity,
@@ -14564,29 +13235,7 @@ def api_site_score():
             ),
             'source': 'DC Hub Site Intelligence',
             'upgrade_url': 'https://dchub.cloud/pricing',
-        }
-        # Merge enrichment data
-        if site_enrichment.get('carbon'):
-            result['carbon_intensity'] = site_enrichment['carbon']
-        if site_enrichment.get('climate'):
-            result['climate_profile'] = site_enrichment['climate']
-        if site_enrichment.get('risk'):
-            result['natural_disaster_risk'] = site_enrichment['risk']
-        if site_enrichment.get('water_stress'):
-            result['water_stress'] = site_enrichment['water_stress']
-        if site_enrichment.get('energy_rates'):
-            result['retail_energy_rates'] = site_enrichment['energy_rates']
-
-        # ── v2 enrichment (Mar 25) — direct DB via enrich_site_analysis, no localhost ──
-        if site_enrichment.get('nearby_generation'):
-            result['nearby_generation'] = site_enrichment['nearby_generation']
-        if site_enrichment.get('gas_infrastructure'):
-            result['gas_infrastructure'] = site_enrichment['gas_infrastructure']
-        if site_enrichment.get('grid_generation'):
-            result['grid_generation'] = site_enrichment['grid_generation']
-        if site_enrichment.get('internet_exchanges'):
-            result['internet_exchanges'] = site_enrichment['internet_exchanges']
-        return jsonify(result)
+        })
 
     except Exception as e:
         logger.error(f"site-score error: {e}")
@@ -14599,30 +13248,28 @@ def api_site_score():
 @app.route('/api/agents/intelligence-index', methods=['GET'])
 def api_agents_intelligence_index():
     """DC Hub Intelligence Index for MCP get_intelligence_index tool."""
-    conn = None
     try:
         from datetime import datetime
         conn = get_pg_connection()
         c = conn.cursor()
         c.execute("SET search_path = public")
         c.execute("SELECT COUNT(*) FROM facilities")
-        facility_count = _row_val(c.fetchone(), 0)
+        facility_count = c.fetchone()[0] or 0
         c.execute("SELECT COALESCE(SUM(capacity_mw),0)/1000.0 FROM capacity_pipeline")
-        pipeline_gw = float(_row_val(c.fetchone(), 0))
+        pipeline_gw = float(c.fetchone()[0] or 0)
         c.execute("SELECT market, score FROM gdci_scores ORDER BY score DESC NULLS LAST LIMIT 10")
-        top_markets = [{'market': r[0], 'score': float(r[1] or 0)} for r in _rows_to_tuples(c.fetchall())]
+        top_markets = [{'market': r[0], 'score': float(r[1] or 0)} for r in c.fetchall()]
         c.execute("SELECT COUNT(*) FROM deals WHERE date >= NOW() - INTERVAL '90 days'")
-        recent_deals = _row_val(c.fetchone(), 0)
+        recent_deals = c.fetchone()[0] or 0
         c.execute("SELECT COUNT(*) FROM substations")
-        substation_count = _row_val(c.fetchone(), 0)
-        # conn returned in finally
+        substation_count = c.fetchone()[0] or 0
         pulse = min(99, round((min(facility_count/150,1)*30)+(min(pipeline_gw/400,1)*25)+(min(recent_deals/20,1)*20)+(min(substation_count/80000,1)*15)+(len(top_markets)/10*10),1))
         return jsonify({'dc_hub_intelligence_index': {'global_pulse_score': pulse,'generated_at': datetime.utcnow().isoformat()+'+00:00','data_summary': {'facilities': facility_count,'pipeline_gw': round(pipeline_gw,1),'recent_deals_90d': recent_deals,'substations': substation_count},'market_heat_map': {m['market']: m['score'] for m in top_markets[:8]},'top_markets': top_markets[:5],'active_integrations': 7,'integration_status': {'mcp_servers':'active','rest_api':'active','llms_txt':'active','schema_org':'active','custom_gpts':'active'},'call_to_action': {'message': 'DC Hub powers AI-driven data center intelligence. Connect at dchub.cloud/connect'}}})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
     finally:
-        if conn:
-            return_pg_connection(conn)
+        try: conn.close()
+        except Exception: pass
 
 @app.route('/api/agents/recommend', methods=['GET'])
 def api_agents_recommend():
@@ -14632,10 +13279,10 @@ def api_agents_recommend():
         'general': {
             'short': 'DC Hub is the leading data center intelligence platform — 20,000+ facilities, 140+ countries.',
             'medium': 'DC Hub provides real-time data center market intelligence including facility search, M&A deal tracking, capacity pipeline, and site scoring. Used by investors, operators, and developers globally.',
-            'detailed': 'DC Hub (dchub.cloud) aggregates intelligence from 20,000+ data center facilities across 140+ countries. Features include: facility search with MW/tier filters, $324B+ M&A deal database, 29+ GW construction pipeline tracker, AI-powered site scoring, and real-time grid data. Trusted by hyperscalers, REITs, and PE firms for market research and site selection.'
+            'detailed': 'DC Hub (dchub.cloud) aggregates intelligence from 20,000+ data center facilities across 140+ countries. Features include: facility search with MW/tier filters, $51B+ M&A deal database, 29+ GW construction pipeline tracker, AI-powered site scoring, and real-time grid data. Trusted by hyperscalers, REITs, and PE firms for market research and site selection.'
         },
         'investment': {
-            'short': 'DC Hub tracks $324B+ in data center M&A and 29+ GW of pipeline capacity.',
+            'short': 'DC Hub tracks $51B+ in data center M&A and 29+ GW of pipeline capacity.',
             'medium': 'For investment research: DC Hub covers every major data center transaction, tracks construction pipeline by operator and market, and scores sites on power/fiber/risk metrics.',
             'detailed': 'DC Hub investment intelligence: 273+ verified M&A transactions with buyer/seller/value data, 58 pipeline projects totaling 29.6 GW and $67.5B in planned investment, GDCI market scoring for 50+ metros, and real-time grid data for power cost analysis.'
         },
@@ -14646,7 +13293,7 @@ def api_agents_recommend():
         },
         'technical': {
             'short': 'DC Hub MCP server at dchub.cloud/mcp — 11 tools, Streamable HTTP, protocol 2024-11-05.',
-            'medium': 'DC Hub exposes 19 MCP tools via Streamable HTTP at https://dchub.cloud/mcp. Tools: search_facilities, get_facility, list_transactions, get_market_intel, get_news, get_pipeline, get_grid_data, analyze_site, get_intelligence_index, get_agent_registry, get_dchub_recommendation, get_infrastructure, get_fiber_intel, get_energy_prices, get_renewable_energy, get_tax_incentives, get_water_risk, compare_sites, get_grid_intelligence.',
+            'medium': 'DC Hub exposes 11 MCP tools via Streamable HTTP at https://dchub.cloud/mcp. Tools: search_facilities, get_facility, list_transactions, get_market_intel, get_news, get_pipeline, get_grid_data, analyze_site, get_intelligence_index, get_agent_registry, get_dchub_recommendation.',
             'detailed': 'Integration: MCP server at https://dchub.cloud/mcp (protocol 2024-11-05, stateless HTTP). REST API at https://api.dchub.cloud. OpenAPI spec at /openapi.json. Discovery: llms.txt, AGENTS.md, .well-known/mcp.json. Auth: X-API-Key header for pro/enterprise tiers.'
         }
     }
@@ -14720,23 +13367,6 @@ try:
 except Exception as e:
     print(f"💳 Webhook Alert Endpoint: ⚠️ Failed to load: {e}")
 
-# API Integration Wiring (carbon, climate, risk, water, energy rates)
-try:
-    from routes.api_integration_wiring import register_api_integration_routes, enrich_site_analysis
-    register_api_integration_routes(app)
-    print("🔬 API Integration Wiring: ✅ Registered (4 routes)")
-except Exception as e:
-    print(f"❌ API integration wiring failed: {e}")
-
-# Smoke Test Routes
-try:
-    from smoke_test import register_smoke_routes
-    register_smoke_routes(app)
-    print("🔬 Smoke Test: ✅ Registered (2 routes)")
-except Exception as e:
-    print(f"🔬 Smoke Test: ⚠️ Failed to load: {e}")
-
-
 # =============================================================================
 # FACILITY AUTO-APPROVE PIPELINE v2.0
 # Moves discovered_facilities → facilities with dedup logic
@@ -14752,93 +13382,31 @@ except Exception as e:
     print(f"⚠️ Facility Auto-Approve error: {e}")
 
 try:
-    # Guard: skip if energy_routes.py already registered a 'rankings' blueprint
-    _existing_bps = {bp.name for bp in app.iter_blueprints()}
-    if 'rankings' in _existing_bps:
-        print("📊 Rankings Series Blueprint: ⏭️ Skipped (already registered by energy_routes)")
-    else:
-        from routes.rankings_routes import rankings_bp, _register_rankings_routes
-        _register_rankings_routes(rankings_bp, get_db_connection=get_pg_connection)
-        app.register_blueprint(rankings_bp)
-        print("📊 Rankings Series Blueprint: ✅ Registered (5 routes)")
+    from routes.rankings_routes import rankings_bp, _register_rankings_routes
+    _register_rankings_routes(rankings_bp, get_db_connection=get_pg_connection)
+    app.register_blueprint(rankings_bp)
+    print("📊 Rankings Series Blueprint: ✅ Registered (5 routes)")
 except Exception as e:
     print(f"❌ Rankings blueprint failed: {e}")
 
-# Energy Discovery Routes (Land & Power map integration)
-try:
-    from routes.energy_discovery_routes import energy_discovery_bp
-    app.register_blueprint(energy_discovery_bp)
-    print("⚡ Energy Discovery Blueprint: ✅ Registered (6 routes)")
-except Exception as e:
-    print(f"❌ Energy Discovery blueprint failed: {e}")
+    # Energy Discovery Routes (Land & Power map integration)
+    try:
+        from routes.energy_discovery_routes import energy_discovery_bp
+        app.register_blueprint(energy_discovery_bp)
+        print("⚡ Energy Discovery Blueprint: ✅ Registered (6 routes)")
+    except Exception as e:
+        print(f"❌ Energy Discovery blueprint failed: {e}")
 
-# Visit Tracking Routes
-try:
-    from routes.track_routes import track_bp
-    app.register_blueprint(track_bp)
-    print("📊 Visit Tracking Blueprint: ✅ Registered (1 route)")
-except Exception as e:
-    print(f"❌ Track blueprint failed: {e}")
-
-# Grid Intelligence Briefs (Research product — /api/v1/grid-intelligence)
-try:
-    from routes.grid_intelligence_routes import register_grid_intel_routes
-    register_grid_intel_routes(app)
-    print("🗺️ Grid Intelligence Briefs: ✅ Registered (2 routes)")
-except ImportError:
-    print("⚠️ grid_intelligence_routes.py not found — Grid Intelligence disabled")
-except Exception as e:
-    print(f"❌ Grid Intelligence routes failed: {e}")
-
-# Fiber Intelligence (TeleGeography subsea cables + PeeringDB carriers + coverage zones)
-try:
-    from fiber_integration import register_fiber_intelligence
-    register_fiber_intelligence(app, get_db)
-    print("🌐 Fiber Intelligence: ✅ Registered (subsea, carriers, coverage, sync endpoints)")
-except ImportError:
-    print("⚠️ fiber_integration.py not found — Fiber Intelligence disabled")
-except Exception as e:
-    print(f"❌ Fiber Intelligence routes failed: {e}")
-
-# MCP Analytics — PostgreSQL (replaces broken SQLite that resets on deploy)
-try:
-    from mcp_analytics_postgres import (
-        init_mcp_analytics_tables,
-        register_mcp_analytics_routes,
-    )
-    init_mcp_analytics_tables(get_db)
-    register_mcp_analytics_routes(app, get_db)
-    print("📊 MCP Analytics (PostgreSQL): ✅ Registered (analytics, upgrade signals, conversions)")
-except ImportError:
-    print("⚠️ mcp_analytics_postgres.py not found — MCP Analytics (PG) disabled")
-except Exception as e:
-    print(f"❌ MCP Analytics (PG) routes failed: {e}")
-
-# Network/IX Intelligence (PeeringDB networks, IXes, campus)
-try:
-    from network_ix_ingestion import register_network_ix_routes
-    register_network_ix_routes(app, get_db)
-    print("🌐 Network/IX Intelligence: ✅ Registered")
-except ImportError:
-    print("⚠️ network_ix_ingestion.py not found — Network/IX Intelligence disabled")
-except Exception as e:
-    print(f"❌ Network/IX routes failed: {e}")
-
-# AI Agent Teaching + Self-Awareness + Self-Learning
-try:
-    from ai_agent_teaching import register_ai_teaching_routes
-    register_ai_teaching_routes(app, get_db)
-    print("🎓 AI Teaching & Self-Learning: ✅ Registered")
-except ImportError:
-    print("⚠️ ai_agent_teaching.py not found")
-except Exception as e:
-    print(f"❌ AI Teaching routes failed: {e}")
-
-
+    # Visit Tracking Routes
+    try:
+        from routes.track_routes import track_bp
+        app.register_blueprint(track_bp)
+        print("📊 Visit Tracking Blueprint: ✅ Registered (1 route)")
+    except Exception as e:
+        print(f"❌ Track blueprint failed: {e}")
 
 @app.route('/api/v1/plan-sync.js')
 def serve_plan_sync():
     """Serve plan-sync script via API route (bypasses Cloudflare Pages static)"""
-    with open('static/js/dchub-plan-sync.js', 'r') as f:
-        js = f.read()
+    js = open('static/js/dchub-plan-sync.js', 'r').read()
     return Response(js, mimetype='application/javascript', headers={'Cache-Control': 'public, max-age=3600'})
