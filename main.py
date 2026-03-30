@@ -2647,16 +2647,18 @@ MCP_PLATFORM_MAP = {
 _mcp_session_platforms = {}  # {session_id: (platform, client_name, timestamp)}
 
 def _log_mcp_analytics(rpc_method, rpc_params, platform, client_name, duration_ms, success=True):
+    db = None
     try:
         from db_utils import try_get_db
         db = try_get_db()
         if db is None:
             db = None  # continue — don't return, auto-capture below uses PostgreSQL
         if db and rpc_method in ('initialize', 'tools/list', 'resources/list', 'prompts/list'):
-            db.execute('''INSERT INTO mcp_connections 
-                (platform, client_name, client_version, protocol_version, method, 
+            c = db.cursor()
+            c.execute('''INSERT INTO mcp_connections
+                (platform, client_name, client_version, protocol_version, method,
                  ip_address, user_agent, success)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)''',
                 (platform, client_name,
                  rpc_params.get('clientInfo', {}).get('version', '') if rpc_params else '',
                  rpc_params.get('protocolVersion', '') if rpc_params else '',
@@ -2666,10 +2668,11 @@ def _log_mcp_analytics(rpc_method, rpc_params, platform, client_name, duration_m
                  True if success else False))
         if db and rpc_method == 'tools/call':
             tool_name = rpc_params.get('name', 'unknown') if rpc_params else 'unknown'
-            db.execute('''INSERT INTO mcp_tool_calls
-                (tool_name, platform, client_name, params, success, 
+            c = db.cursor()
+            c.execute('''INSERT INTO mcp_tool_calls
+                (tool_name, platform, client_name, params, success,
                  response_time_ms, ip_address, user_agent)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)''',
                 (tool_name, platform, client_name,
                  json.dumps(rpc_params.get('arguments', {})) if rpc_params else '{}',
                  True if success else False, duration_ms,
@@ -2677,9 +2680,12 @@ def _log_mcp_analytics(rpc_method, rpc_params, platform, client_name, duration_m
                  request.headers.get('User-Agent', '')))
         if db:
             db.commit()
-            db.close()
     except Exception as e:
         logger.error(f"MCP analytics log error: {e}")
+    finally:
+        if db:
+            try: db.close()
+            except Exception: pass
 
     try:
         from ai_tracking import log_ai_request
@@ -5166,20 +5172,23 @@ CRAWLER_DB_PATH = 'crawler_tracking.db'
 
 def init_crawler_db():
     """Initialize SQLite database for crawler tracking"""
-    conn = get_db(CRAWLER_DB_PATH)
-    conn.execute('''CREATE TABLE IF NOT EXISTS crawler_visits (
-        id SERIAL PRIMARY KEY,
-        crawler_name TEXT NOT NULL,
-        crawler_family TEXT NOT NULL,
-        user_agent TEXT,
-        path TEXT,
-        ip_address TEXT,
-        timestamp TEXT NOT NULL
-    )''')
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_crawler_ts ON crawler_visits(timestamp)')
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_crawler_name ON crawler_visits(crawler_name)')
-    conn.commit()
-    conn.close()
+    try:
+        conn = get_db(CRAWLER_DB_PATH)
+        conn.execute('''CREATE TABLE IF NOT EXISTS crawler_visits (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            crawler_name TEXT NOT NULL,
+            crawler_family TEXT NOT NULL,
+            user_agent TEXT,
+            path TEXT,
+            ip_address TEXT,
+            timestamp TEXT NOT NULL
+        )''')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_crawler_ts ON crawler_visits(timestamp)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_crawler_name ON crawler_visits(crawler_name)')
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.warning(f"Crawler DB init: {e}")
 
 logger.info("⏭️ Crawler SQLite tracking DISABLED (prevents lock contention)")
 
@@ -6148,10 +6157,10 @@ def subscribe_lead():
     # Create new lead
     lead_id = secrets.token_hex(8)
     verify_token = secrets.token_urlsafe(32)
-    
+
     c.execute("""
         INSERT INTO leads (id, email, name, company, source, source_detail, verify_token, created_at, last_activity)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
     """, (
         lead_id,
         email,
@@ -6163,13 +6172,13 @@ def subscribe_lead():
         datetime.utcnow().isoformat(),
         datetime.utcnow().isoformat()
     ))
-    
+
     # Log activity
     c.execute("""
         INSERT INTO lead_activities (lead_id, activity_type, details, created_at)
-        VALUES (?, 'subscribed', ?, ?)
+        VALUES (%s, 'subscribed', %s, %s)
     """, (lead_id, json.dumps({'source': data.get('source', 'newsletter')}), datetime.utcnow().isoformat()))
-    
+
     conn.commit()
     conn.close()
     
@@ -6191,63 +6200,73 @@ def capture_lead():
     email = data['email'].lower().strip()
     source = data.get('source', 'unknown')  # e.g., 'social_generator', 'pdf_report', 'market_comparison'
     
-    conn = get_db()
-    c = conn.cursor()
-    
-    # Check if exists
-    c.execute("SELECT id, lead_score FROM leads WHERE email = %s", (email,))
-    existing = c.fetchone()
-    
-    # Calculate lead score based on source
-    score_map = {
-        'social_generator': 10,
-        'pdf_report': 25,
-        'market_comparison': 20,
-        'newsletter': 5,
-        'chat_widget': 15,
-        'demo_request': 50
-    }
-    score_delta = score_map.get(source, 5)
-    
-    if existing:
-        lead_id = existing[0]
-        new_score = existing[1] + score_delta
-        
+    conn = None
+    try:
+        conn = get_db()
+        c = conn.cursor()
+
+        # Check if exists
+        c.execute("SELECT id, lead_score FROM leads WHERE email = %s", (email,))
+        existing = c.fetchone()
+
+        # Calculate lead score based on source
+        score_map = {
+            'social_generator': 10,
+            'pdf_report': 25,
+            'market_comparison': 20,
+            'newsletter': 5,
+            'chat_widget': 15,
+            'demo_request': 50
+        }
+        score_delta = score_map.get(source, 5)
+
+        if existing:
+            lead_id = existing[0]
+            new_score = existing[1] + score_delta
+
+            c.execute("""
+                UPDATE leads SET
+                    lead_score = %s,
+                    last_activity = %s,
+                    source_detail = COALESCE(source_detail, '') || ',' || %s
+                WHERE email = %s
+            """, (new_score, datetime.utcnow().isoformat(), source, email))
+        else:
+            lead_id = secrets.token_hex(8)
+            verify_token = secrets.token_urlsafe(32)
+
+            c.execute("""
+                INSERT INTO leads (id, email, name, company, source, source_detail, verify_token, lead_score, created_at, last_activity)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                lead_id,
+                email,
+                data.get('name', ''),
+                data.get('company', ''),
+                source,
+                source,
+                verify_token,
+                score_delta,
+                datetime.utcnow().isoformat(),
+                datetime.utcnow().isoformat()
+            ))
+
+        # Log activity
         c.execute("""
-            UPDATE leads SET 
-                lead_score = %s,
-                last_activity = %s,
-                source_detail = COALESCE(source_detail, '') || ',' || ?
-            WHERE email = %s
-        """, (new_score, datetime.utcnow().isoformat(), source, email))
-    else:
-        lead_id = secrets.token_hex(8)
-        verify_token = secrets.token_urlsafe(32)
-        
-        c.execute("""
-            INSERT INTO leads (id, email, name, company, source, source_detail, verify_token, lead_score, created_at, last_activity)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            lead_id,
-            email,
-            data.get('name', ''),
-            data.get('company', ''),
-            source,
-            source,
-            verify_token,
-            score_delta,
-            datetime.utcnow().isoformat(),
-            datetime.utcnow().isoformat()
-        ))
-    
-    # Log activity
-    c.execute("""
-        INSERT INTO lead_activities (lead_id, activity_type, details, created_at)
-        VALUES (?, 'content_access', ?, ?)
-    """, (lead_id, json.dumps({'source': source, 'content': data.get('content', '')}), datetime.utcnow().isoformat()))
-    
-    conn.commit()
-    conn.close()
+            INSERT INTO lead_activities (lead_id, activity_type, details, created_at)
+            VALUES (%s, 'content_access', %s, %s)
+        """, (lead_id, json.dumps({'source': source, 'content': data.get('content', '')}), datetime.utcnow().isoformat()))
+
+        conn.commit()
+    except Exception as e:
+        if conn:
+            try: conn.rollback()
+            except Exception: pass
+        raise
+    finally:
+        if conn:
+            try: conn.close()
+            except Exception: pass
     
     return jsonify({
         'success': True,
@@ -6356,7 +6375,7 @@ def submit_partner_inquiry():
         # Save to database
         c.execute("""
             INSERT INTO partner_inquiries (id, name, email, company, partner_type, message, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
         """, (
             inquiry_id,
             name,
@@ -6374,7 +6393,7 @@ def submit_partner_inquiry():
             verify_token = secrets.token_urlsafe(32)
             c.execute("""
                 INSERT INTO leads (id, email, name, company, source, source_detail, verify_token, lead_score, created_at, last_activity)
-                VALUES (?, ?, ?, ?, 'partner_inquiry', ?, ?, 30, ?, ?)
+                VALUES (%s, %s, %s, %s, 'partner_inquiry', %s, %s, 30, %s, %s)
             """, (
                 lead_id, email, name, company, partner_type, verify_token,
                 datetime.utcnow().isoformat(), datetime.utcnow().isoformat()
@@ -6425,7 +6444,7 @@ def submit_partner_inquiry():
 
                 c2.execute("""
                     INSERT INTO email_queue (id, email, template_name, subject, body_html, scheduled_at, status, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, 'scheduled', ?)
+                    VALUES (%s, %s, %s, %s, %s, %s, 'scheduled', %s)
                 """, (
                     secrets.token_hex(8),
                     'jonathan@dchub.cloud',
@@ -6617,7 +6636,7 @@ def create_alert():
     now = datetime.utcnow().isoformat()
     c.execute("""
         INSERT INTO user_alerts (user_id, market, alert_type, enabled, email_notify, created_at)
-        VALUES (?, ?, ?, 1, 1, ?)
+        VALUES (%s, %s, %s, 1, 1, %s)
     """, (user_id, market, alert_type, now))
     
     alert_id = c.lastrowid
@@ -6723,7 +6742,7 @@ def check_and_send_alert_emails():
                     # Update last triggered
                     c.execute("""
                         UPDATE user_alerts
-                        SET last_triggered = datetime('now'),
+                        SET last_triggered = NOW(),
                             trigger_count = trigger_count + 1
                         WHERE id = %s
                     """, (alert_id,))
@@ -8151,7 +8170,7 @@ def generate_report():
                 lead_id = secrets.token_hex(8)
                 c.execute("""
                     INSERT INTO leads (id, email, source, source_detail, lead_score, created_at, last_activity)
-                    VALUES (?, ?, 'pdf_report', ?, 25, ?, ?)
+                    VALUES (%s, %s, 'pdf_report', %s, 25, %s, %s)
                 """, (lead_id, email, json.dumps(markets), datetime.utcnow().isoformat(), datetime.utcnow().isoformat()))
             else:
                 c.execute("UPDATE leads SET lead_score = lead_score + 25, last_activity = %s WHERE email = %s",
@@ -8176,7 +8195,7 @@ def generate_report():
         c = conn.cursor()
         c.execute("""
             INSERT INTO reports (id, user_id, email, report_type, markets, status, created_at, completed_at)
-            VALUES (?, ?, ?, ?, ?, 'completed', ?, ?)
+            VALUES (%s, %s, %s, %s, %s, 'completed', %s, %s)
         """, (
             report_id,
             request.user['user_id'] if request.user else None,
@@ -9544,8 +9563,9 @@ def enrichment_submit():
     
     submission_id = secrets.token_hex(8)
     c.execute("""
-        INSERT OR IGNORE INTO submissions (id, api_key, submission_type, data, status, submitted_at)
-        VALUES (?, 'crowdsource', 'enrichment', ?, 'pending', ?)
+        INSERT INTO submissions (id, api_key, submission_type, data, status, submitted_at)
+        VALUES (%s, 'crowdsource', 'enrichment', %s, 'pending', %s)
+        ON CONFLICT DO NOTHING
     """, (submission_id, json.dumps(data), datetime.utcnow().isoformat()))
     
     conn.commit()
@@ -9576,8 +9596,8 @@ def partner_inquiry():
     inquiry_id = secrets.token_hex(8)
     c.execute("""
         INSERT INTO partner_inquiries (id, name, email, company, platform_type, use_case, submitted_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (inquiry_id, data['name'], data['email'], data['company'], 
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+    """, (inquiry_id, data['name'], data['email'], data['company'],
           data['platform_type'], data['use_case'], datetime.utcnow().isoformat()))
     
     conn.commit()
@@ -10214,12 +10234,14 @@ def news_page():
     conn = None
     try:
         conn = get_db()
-        rows = conn.execute(
+        c = conn.cursor()
+        c.execute(
             "SELECT title, summary, published_date, source FROM announcements ORDER BY published_date DESC LIMIT 20"
-        ).fetchall()
+        )
+        rows = c.fetchall()
         seo_block = '\n'.join(
-            f'<article><h3>{html_escape(str(row["title"] or ""))}</h3><p>{html_escape(str(row["summary"] or "")[:200])}</p>'
-            f'<time>{html_escape(str(row["published_date"] or ""))}</time><span>{html_escape(str(row["source"] or "DC Hub"))}</span></article>'
+            f'<article><h3>{html_escape(str(row[0] or ""))}</h3><p>{html_escape(str(row[1] or "")[:200])}</p>'
+            f'<time>{html_escape(str(row[2] or ""))}</time><span>{html_escape(str(row[3] or "DC Hub"))}</span></article>'
             for row in rows
         )
     except Exception:
@@ -10386,12 +10408,13 @@ def api_signup():
 
         c.execute("""
             INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions, rate_limit_tier, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
         """, (email, key_hash, key_prefix, company, '["read"]', 'free', datetime.utcnow().isoformat()))
 
         c.execute("""
-            INSERT OR IGNORE INTO signups (email, company, use_case, created_at, source)
-            VALUES (?, ?, ?, ?, 'api_signup')
+            INSERT INTO signups (email, company, use_case, created_at, source)
+            VALUES (%s, %s, %s, %s, 'api_signup')
+            ON CONFLICT DO NOTHING
         """, (email, company, usecase, datetime.utcnow().isoformat()))
 
         conn.commit()
@@ -10869,8 +10892,9 @@ def seed_serverfarm_facilities():
                 source_id = 'sf_' + hashlib.sha256(f['name'].encode()).hexdigest()[:12]
                 c = conn.cursor()
                 c.execute("""
-                    INSERT OR IGNORE INTO facilities (id, name, provider, city, state, country, power_mw, status, address, source, source_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?)
+                    INSERT INTO facilities (id, name, provider, city, state, country, power_mw, status, address, source, source_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'manual', %s)
+                    ON CONFLICT DO NOTHING
                 """, (source_id, f['name'], f['provider'], f['city'], f.get('state',''), f['country'], f.get('power_mw',0), f['status'], f.get('address',''), source_id))
                 if c.rowcount > 0:
                     added += 1
@@ -11489,9 +11513,11 @@ def data_freshness():
     conn = None
     try:
         conn = get_db()
+        _c = conn.cursor()
         def safe_query(query, default=None):
             try:
-                row = conn.execute(query).fetchone()
+                _c.execute(query)
+                row = _c.fetchone()
                 return row[0] if row else default
             except:
                 return default
