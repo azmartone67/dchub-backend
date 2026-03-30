@@ -996,6 +996,7 @@ def get_public_pipeline():
     try:
         conn = _get_db()
         c = conn.cursor()
+        c.execute("SET statement_timeout = '15s'")
         c.execute("""
             SELECT id, name, provider, city, state, country, status, power_mw
             FROM discovered_facilities
