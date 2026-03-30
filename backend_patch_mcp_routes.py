@@ -28,7 +28,6 @@ SERVER_CARD = {
 
 
 def register_mcp_v1_routes(app):
-
     @app.route("/api/v1/mcp/analytics", methods=["GET"])
     def mcp_v1_analytics():
         try:
