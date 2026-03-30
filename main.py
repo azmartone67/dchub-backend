@@ -5316,108 +5316,109 @@ def submit_partner_inquiry():
     
     try:
         conn = get_db()
-        c = conn.cursor()
-        
-        # Save to database
-        c.execute("""
-            INSERT INTO partner_inquiries (id, name, email, company, partner_type, message, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-        """, (
-            inquiry_id,
-            name,
-            email,
-            company,
-            partner_type,
-            message,
-            datetime.utcnow().isoformat()
-        ))
-        
-        # Also add to leads if not exists
-        c.execute("SELECT id FROM leads WHERE email = %s", (email,))
-        if not c.fetchone():
-            lead_id = secrets.token_hex(8)
-            verify_token = secrets.token_urlsafe(32)
+    try:
+            c = conn.cursor()
+
+            # Save to database
             c.execute("""
-                INSERT INTO leads (id, email, name, company, source, source_detail, verify_token, lead_score, created_at, last_activity)
-                VALUES (%s, %s, %s, %s, 'partner_inquiry', %s, %s, 30, %s, %s)
+                INSERT INTO partner_inquiries (id, name, email, company, partner_type, message, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
             """, (
-                lead_id, email, name, company, partner_type, verify_token,
-                datetime.utcnow().isoformat(), datetime.utcnow().isoformat()
+                inquiry_id,
+                name,
+                email,
+                company,
+                partner_type,
+                message,
+                datetime.utcnow().isoformat()
             ))
-        else:
-            # Update existing lead score
-            c.execute("""
-                UPDATE leads SET lead_score = lead_score + 30, last_activity = %s, 
-                source_detail = COALESCE(source_detail, '') || ',partner_inquiry'
-                WHERE email = %s
-            """, (datetime.utcnow().isoformat(), email))
-        
-        conn.commit()
 
-        # Log to console immediately (visible in Replit logs)
-        print("\n" + "="*60)
-        print("🤝 NEW PARTNER INQUIRY RECEIVED!")
-        print("="*60)
-        print(f"   Name:    {name}")
-        print(f"   Email:   {email}")
-        print(f"   Company: {company}")
-        print(f"   Type:    {partner_type}")
-        print(f"   Message: {message[:100]}{'...' if len(message) > 100 else ''}")
-        print(f"   ID:      {inquiry_id}")
-        print("="*60 + "\n")
-        
-        # Try to send notification email
-        try:
-            if EMAIL_SERVICE_AVAILABLE:
-                # Queue notification email to admin
-                conn2 = get_db()
-                c2 = conn2.cursor()
-                
-                email_body = f"""
-                <h1>New Partner Inquiry</h1>
-                <p><strong>Name:</strong> {name}</p>
-                <p><strong>Email:</strong> {email}</p>
-                <p><strong>Company:</strong> {company}</p>
-                <p><strong>Type:</strong> {partner_type}</p>
-                <p><strong>Message:</strong></p>
-                <p>{message}</p>
-                <hr>
-                <p>Inquiry ID: {inquiry_id}</p>
-                <p>Submitted: {datetime.utcnow().isoformat()}</p>
-                <p><a href="https://dchub.cloud/admin.html">View all inquiries</a></p>
-                """
-                
-                c2.execute("""
-                    INSERT INTO email_queue (id, email, template_name, subject, body_html, scheduled_at, status, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, 'scheduled', %s)
+            # Also add to leads if not exists
+            c.execute("SELECT id FROM leads WHERE email = %s", (email,))
+            if not c.fetchone():
+                lead_id = secrets.token_hex(8)
+                verify_token = secrets.token_urlsafe(32)
+                c.execute("""
+                    INSERT INTO leads (id, email, name, company, source, source_detail, verify_token, lead_score, created_at, last_activity)
+                    VALUES (%s, %s, %s, %s, 'partner_inquiry', %s, %s, 30, %s, %s)
                 """, (
-                    secrets.token_hex(8),
-                    'jonathan@dchub.cloud',
-                    'partner_inquiry',
-                    f'🤝 New Partner Inquiry: {company or name} ({partner_type})',
-                    email_body,
-                    datetime.utcnow().isoformat(),
-                    datetime.utcnow().isoformat()
+                    lead_id, email, name, company, partner_type, verify_token,
+                    datetime.utcnow().isoformat(), datetime.utcnow().isoformat()
                 ))
-                conn2.commit()
-                conn2.close()
-                print(f"📧 Partner inquiry email queued for jonathan@dchub.cloud")
-        except Exception as e:
-            print(f"Partner notification email error: {e}")
-        
-        return jsonify({
-            'success': True,
-            'message': 'Partnership inquiry received! We will be in touch soon.',
-            'inquiry_id': inquiry_id
-        })
-        
-    except Exception as e:
-        print(f"Partner inquiry error: {e}")
-        return jsonify({'error': 'Failed to submit inquiry', 'details': str(e)}), 500
-    finally:
-        try: conn.close()
-        except Exception: pass
+            else:
+                # Update existing lead score
+                c.execute("""
+                    UPDATE leads SET lead_score = lead_score + 30, last_activity = %s, 
+                    source_detail = COALESCE(source_detail, '') || ',partner_inquiry'
+                    WHERE email = %s
+                """, (datetime.utcnow().isoformat(), email))
 
+            conn.commit()
+
+            # Log to console immediately (visible in Replit logs)
+            print("\n" + "="*60)
+            print("🤝 NEW PARTNER INQUIRY RECEIVED!")
+            print("="*60)
+            print(f"   Name:    {name}")
+            print(f"   Email:   {email}")
+            print(f"   Company: {company}")
+            print(f"   Type:    {partner_type}")
+            print(f"   Message: {message[:100]}{'...' if len(message) > 100 else ''}")
+            print(f"   ID:      {inquiry_id}")
+            print("="*60 + "\n")
+
+            # Try to send notification email
+            try:
+                if EMAIL_SERVICE_AVAILABLE:
+                    # Queue notification email to admin
+                    conn2 = get_db()
+                    c2 = conn2.cursor()
+
+                    email_body = f"""
+                    <h1>New Partner Inquiry</h1>
+                    <p><strong>Name:</strong> {name}</p>
+                    <p><strong>Email:</strong> {email}</p>
+                    <p><strong>Company:</strong> {company}</p>
+                    <p><strong>Type:</strong> {partner_type}</p>
+                    <p><strong>Message:</strong></p>
+                    <p>{message}</p>
+                    <hr>
+                    <p>Inquiry ID: {inquiry_id}</p>
+                    <p>Submitted: {datetime.utcnow().isoformat()}</p>
+                    <p><a href="https://dchub.cloud/admin.html">View all inquiries</a></p>
+                    """
+
+                    c2.execute("""
+                        INSERT INTO email_queue (id, email, template_name, subject, body_html, scheduled_at, status, created_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, 'scheduled', %s)
+                    """, (
+                        secrets.token_hex(8),
+                        'jonathan@dchub.cloud',
+                        'partner_inquiry',
+                        f'🤝 New Partner Inquiry: {company or name} ({partner_type})',
+                        email_body,
+                        datetime.utcnow().isoformat(),
+                        datetime.utcnow().isoformat()
+                    ))
+                    conn2.commit()
+                    conn2.close()
+                    print(f"📧 Partner inquiry email queued for jonathan@dchub.cloud")
+            except Exception as e:
+                print(f"Partner notification email error: {e}")
+
+            return jsonify({
+                'success': True,
+                'message': 'Partnership inquiry received! We will be in touch soon.',
+                'inquiry_id': inquiry_id
+            })
+
+        except Exception as e:
+            print(f"Partner inquiry error: {e}")
+            return jsonify({'error': 'Failed to submit inquiry', 'details': str(e)}), 500
+        finally:
+
+    finally:
+        conn.close()
 @app.route('/api/partner/inquiries', methods=['GET'])
 @require_auth
 def get_partner_inquiries():
@@ -6031,33 +6032,34 @@ def founding_members_status():
     
     try:
         conn = get_db()
-        c = conn.cursor()
-        # Count users on the founding plan
-        c.execute("SELECT COUNT(*) FROM users WHERE plan = 'founding'")
-        db_count = c.fetchone()[0]
-        if db_count > 0:
-            claimed = db_count
-    except Exception:
-        pass  # Use fallback
-    finally:
-        try: conn.close()
-        except Exception: pass
-    
-    remaining = FOUNDING_TOTAL - claimed
-    
-    return jsonify({
-        'success': True,
-        'total': FOUNDING_TOTAL,
-        'claimed': claimed,
-        'remaining': remaining,
-        'percent_claimed': round((claimed / FOUNDING_TOTAL) * 100, 1),
-        'price': FOUNDING_PRICE,
-        'regular_price': REGULAR_PRICE,
-        'savings_percent': round((1 - FOUNDING_PRICE / REGULAR_PRICE) * 100),
-        'active': remaining > 0,
-        'checkout_url': 'https://buy.stripe.com/9B6fZi1cCdjT3ml8i6aZi00'
-    })
+    try:
+            c = conn.cursor()
+            # Count users on the founding plan
+            c.execute("SELECT COUNT(*) FROM users WHERE plan = 'founding'")
+            db_count = c.fetchone()[0]
+            if db_count > 0:
+                claimed = db_count
+        except Exception:
+            pass  # Use fallback
+        finally:
 
+        remaining = FOUNDING_TOTAL - claimed
+
+        return jsonify({
+            'success': True,
+            'total': FOUNDING_TOTAL,
+            'claimed': claimed,
+            'remaining': remaining,
+            'percent_claimed': round((claimed / FOUNDING_TOTAL) * 100, 1),
+            'price': FOUNDING_PRICE,
+            'regular_price': REGULAR_PRICE,
+            'savings_percent': round((1 - FOUNDING_PRICE / REGULAR_PRICE) * 100),
+            'active': remaining > 0,
+            'checkout_url': 'https://buy.stripe.com/9B6fZi1cCdjT3ml8i6aZi00'
+        })
+
+    finally:
+        conn.close()
 logger.info("✅ Founding Members endpoint registered: /api/founding-members")
 
 def send_welcome_email_sendgrid(to_email, raw_api_key, plan_name='pro', temp_password=None):
@@ -7017,89 +7019,89 @@ def compare_markets():
     conn = None
     try:
         conn = get_db()
-        c = conn.cursor()
-        
-        comparison = []
-        
-        for market in market_list:
-            cities = MARKET_ALIASES[market]
-            
-            conditions = []
-            params = []
-            for city in cities:
-                if len(city) == 2 and city.isupper():
-                    conditions.append('state = %s')
-                    params.append(city)
-                else:
-                    conditions.append('city LIKE %s')
-                    params.append(f'%{city}%')
-            
-            where_clause = ' OR '.join(conditions)
-            
-            # Get comprehensive stats
-            c.execute(f"""
-                SELECT 
-                    COUNT(*) as facility_count,
-                    COALESCE(SUM(power_mw), 0) as total_power,
-                    COALESCE(AVG(power_mw), 0) as avg_power,
-                    COALESCE(MAX(power_mw), 0) as max_power,
-                    COUNT(DISTINCT provider) as provider_count,
-                    SUM(CASE WHEN status = 'operational' THEN 1 ELSE 0 END) as operational,
-                    SUM(CASE WHEN status = 'planned' OR status = 'under_construction' THEN 1 ELSE 0 END) as pipeline
-                FROM discovered_facilities 
-                WHERE ({where_clause})
-                {RAILWAY_EXCLUSION}
-            """, params)
-            
-            stats = dict(c.fetchone())
-            
-            # Top 5 providers
-            c.execute(f"""
-                SELECT provider, COUNT(*) as count
-                FROM discovered_facilities 
-                WHERE ({where_clause}) AND provider != ''
-                {RAILWAY_EXCLUSION}
-                GROUP BY provider
-                ORDER BY count DESC
-                LIMIT 5
-            """, params)
-            
-            top_providers = [r[0] for r in c.fetchall()]
-            
-            comparison.append({
-                'market': market,
-                'display_name': market.replace('_', ' ').title(),
-                'metrics': {
-                    'facilities': stats['facility_count'],
-                    'total_power_mw': round(stats['total_power'], 1),
-                    'avg_power_mw': round(stats['avg_power'], 1),
-                    'max_power_mw': round(stats['max_power'], 1),
-                    'providers': stats['provider_count'],
-                    'operational': stats['operational'] or 0,
-                    'pipeline': stats['pipeline'] or 0
-                },
-                'top_providers': top_providers
+    try:
+            c = conn.cursor()
+
+            comparison = []
+
+            for market in market_list:
+                cities = MARKET_ALIASES[market]
+
+                conditions = []
+                params = []
+                for city in cities:
+                    if len(city) == 2 and city.isupper():
+                        conditions.append('state = %s')
+                        params.append(city)
+                    else:
+                        conditions.append('city LIKE %s')
+                        params.append(f'%{city}%')
+
+                where_clause = ' OR '.join(conditions)
+
+                # Get comprehensive stats
+                c.execute(f"""
+                    SELECT 
+                        COUNT(*) as facility_count,
+                        COALESCE(SUM(power_mw), 0) as total_power,
+                        COALESCE(AVG(power_mw), 0) as avg_power,
+                        COALESCE(MAX(power_mw), 0) as max_power,
+                        COUNT(DISTINCT provider) as provider_count,
+                        SUM(CASE WHEN status = 'operational' THEN 1 ELSE 0 END) as operational,
+                        SUM(CASE WHEN status = 'planned' OR status = 'under_construction' THEN 1 ELSE 0 END) as pipeline
+                    FROM discovered_facilities 
+                    WHERE ({where_clause})
+                    {RAILWAY_EXCLUSION}
+                """, params)
+
+                stats = dict(c.fetchone())
+
+                # Top 5 providers
+                c.execute(f"""
+                    SELECT provider, COUNT(*) as count
+                    FROM discovered_facilities 
+                    WHERE ({where_clause}) AND provider != ''
+                    {RAILWAY_EXCLUSION}
+                    GROUP BY provider
+                    ORDER BY count DESC
+                    LIMIT 5
+                """, params)
+
+                top_providers = [r[0] for r in c.fetchall()]
+
+                comparison.append({
+                    'market': market,
+                    'display_name': market.replace('_', ' ').title(),
+                    'metrics': {
+                        'facilities': stats['facility_count'],
+                        'total_power_mw': round(stats['total_power'], 1),
+                        'avg_power_mw': round(stats['avg_power'], 1),
+                        'max_power_mw': round(stats['max_power'], 1),
+                        'providers': stats['provider_count'],
+                        'operational': stats['operational'] or 0,
+                        'pipeline': stats['pipeline'] or 0
+                    },
+                    'top_providers': top_providers
+                })
+
+            return jsonify({
+                'success': True,
+                'comparison': comparison,
+                'generated_at': datetime.utcnow().isoformat()
             })
-        
-        return jsonify({
-            'success': True,
-            'comparison': comparison,
-            'generated_at': datetime.utcnow().isoformat()
-        })
-    except Exception as e:
-        logger.error(f"Markets compare error: {e}")
-        return jsonify({'error': 'Database temporarily unavailable', 'detail': str(e)}), 503
+        except Exception as e:
+            logger.error(f"Markets compare error: {e}")
+            return jsonify({'error': 'Database temporarily unavailable', 'detail': str(e)}), 503
+        finally:
+            if conn:
+                try:
+
+        # =============================================================================
+        # PDF REPORT GENERATOR
+        # =============================================================================
+
     finally:
-        if conn:
-            try:
-                conn.close()
-            except:
-                pass
-
-# =============================================================================
-# PDF REPORT GENERATOR
-# =============================================================================
-
+        conn.close()
 @app.route('/api/reports/generate', methods=['POST'])
 @require_plan('pro')
 @protect_data
@@ -7127,60 +7129,60 @@ def generate_report():
     if email:
         try:
             conn = get_db()
-            c = conn.cursor()
-            c.execute("SELECT id FROM leads WHERE email = %s", (email,))
-            if not c.fetchone():
-                lead_id = secrets.token_hex(8)
-                c.execute("""
-                    INSERT INTO leads (id, email, source, source_detail, lead_score, created_at, last_activity)
-                    VALUES (%s, %s, 'pdf_report', %s, 25, %s, %s)
-                """, (lead_id, email, json.dumps(markets), datetime.utcnow().isoformat(), datetime.utcnow().isoformat()))
-            else:
-                c.execute("UPDATE leads SET lead_score = lead_score + 25, last_activity = %s WHERE email = %s",
-                         (datetime.utcnow().isoformat(), email))
-            conn.commit()
-            conn.close()
-        except:
-            pass
-    
-    # Generate report
-    report_id = secrets.token_hex(8)
-    
     try:
-        pdf_buffer = generate_market_pdf(markets, report_type)
-        
-        # Save report record
-        conn = get_db()
-        c = conn.cursor()
-        c.execute("""
-            INSERT INTO reports (id, user_id, email, report_type, markets, status, created_at, completed_at)
-            VALUES (%s, %s, %s, %s, %s, 'completed', %s, %s)
-        """, (
-            report_id,
-            request.user['user_id'] if request.user else None,
-            email or (request.user['email'] if request.user else None),
-            report_type,
-            json.dumps(markets),
-            datetime.utcnow().isoformat(),
-            datetime.utcnow().isoformat()
-        ))
-        conn.commit()
+                c = conn.cursor()
+                c.execute("SELECT id FROM leads WHERE email = %s", (email,))
+                if not c.fetchone():
+                    lead_id = secrets.token_hex(8)
+                    c.execute("""
+                        INSERT INTO leads (id, email, source, source_detail, lead_score, created_at, last_activity)
+                        VALUES (%s, %s, 'pdf_report', %s, 25, %s, %s)
+                    """, (lead_id, email, json.dumps(markets), datetime.utcnow().isoformat(), datetime.utcnow().isoformat()))
+                else:
+                    c.execute("UPDATE leads SET lead_score = lead_score + 25, last_activity = %s WHERE email = %s",
+                             (datetime.utcnow().isoformat(), email))
+                conn.commit()
 
-        # Return PDF
-        pdf_buffer.seek(0)
-        return send_file(
-            pdf_buffer,
-            mimetype='application/pdf',
-            as_attachment=True,
-            download_name=f'dc-hub-{"-".join(markets)}-report.pdf'
-        )
+        # Generate report
+        report_id = secrets.token_hex(8)
 
-    except Exception as e:
-        return jsonify({'error': f'Report generation failed: {str(e)}', 'code': 'GENERATION_ERROR'}), 500
+        try:
+            pdf_buffer = generate_market_pdf(markets, report_type)
+
+            # Save report record
+            conn = get_db()
+            c = conn.cursor()
+            c.execute("""
+                INSERT INTO reports (id, user_id, email, report_type, markets, status, created_at, completed_at)
+                VALUES (%s, %s, %s, %s, %s, 'completed', %s, %s)
+            """, (
+                report_id,
+                request.user['user_id'] if request.user else None,
+                email or (request.user['email'] if request.user else None),
+                report_type,
+                json.dumps(markets),
+                datetime.utcnow().isoformat(),
+                datetime.utcnow().isoformat()
+            ))
+            conn.commit()
+
+            # Return PDF
+            pdf_buffer.seek(0)
+            return send_file(
+                pdf_buffer,
+                mimetype='application/pdf',
+                as_attachment=True,
+                download_name=f'dc-hub-{"-".join(markets)}-report.pdf'
+            )
+
+        except Exception as e:
+            return jsonify({'error': f'Report generation failed: {str(e)}', 'code': 'GENERATION_ERROR'}), 500
+        finally:
+            try: conn.close()
+            except Exception: pass
+
     finally:
-        try: conn.close()
-        except Exception: pass
-
+        conn.close()
 def generate_market_pdf(markets, report_type):
     """Generate the actual PDF report"""
     buffer = io.BytesIO()
@@ -7347,83 +7349,84 @@ def get_marketing_stats():
     """Get live stats for marketing agent - pulls from actual database"""
     try:
         conn = get_db()
-        c = conn.cursor()
-        
-        # Live facility count
-        c.execute("SELECT COUNT(*) FROM discovered_facilities")
-        facilities = c.fetchone()[0] or 0
-        
-        # Live pipeline from facilities table (all non-active statuses)
-        try:
+    try:
+            c = conn.cursor()
+
+            # Live facility count
+            c.execute("SELECT COUNT(*) FROM discovered_facilities")
+            facilities = c.fetchone()[0] or 0
+
+            # Live pipeline from facilities table (all non-active statuses)
+            try:
+                c.execute("""
+                    SELECT COALESCE(SUM(power_mw), 0), COUNT(*) FROM discovered_facilities
+                    WHERE LOWER(status) IN ('under construction', 'construction', 'planning',
+                                            'planned', 'announced', 'approved',
+                                            'under_construction', 'pre-construction',
+                                            'in development', 'proposed', 'permitted')
+                """)
+                row = c.fetchone()
+                pipeline_mw = row[0] or 0
+                pipeline_projects = row[1] or 0
+                pipeline_gw = round(pipeline_mw / 1000, 1) if pipeline_mw else 0
+            except:
+                pipeline_gw = 0
+                pipeline_projects = 0
+
+            # Live deal volume from transactions
+            try:
+                c.execute("SELECT SUM(value_usd) FROM deals WHERE value_usd > 0")
+                total_deals = c.fetchone()[0] or 0
+                deal_volume = f"${total_deals / 1e9:.0f}B+" if total_deals > 1e9 else "$85B+"
+            except:
+                deal_volume = "$85B+"
+
+            # Live top markets
             c.execute("""
-                SELECT COALESCE(SUM(power_mw), 0), COUNT(*) FROM discovered_facilities
-                WHERE LOWER(status) IN ('under construction', 'construction', 'planning',
-                                        'planned', 'announced', 'approved',
-                                        'under_construction', 'pre-construction',
-                                        'in development', 'proposed', 'permitted')
+                SELECT city, COUNT(*) as cnt FROM discovered_facilities 
+                WHERE city IS NOT NULL AND city != '' 
+                GROUP BY city ORDER BY cnt DESC LIMIT 5
             """)
-            row = c.fetchone()
-            pipeline_mw = row[0] or 0
-            pipeline_projects = row[1] or 0
-            pipeline_gw = round(pipeline_mw / 1000, 1) if pipeline_mw else 0
-        except:
-            pipeline_gw = 0
-            pipeline_projects = 0
-        
-        # Live deal volume from transactions
-        try:
-            c.execute("SELECT SUM(value_usd) FROM deals WHERE value_usd > 0")
-            total_deals = c.fetchone()[0] or 0
-            deal_volume = f"${total_deals / 1e9:.0f}B+" if total_deals > 1e9 else "$85B+"
-        except:
-            deal_volume = "$85B+"
-        
-        # Live top markets
-        c.execute("""
-            SELECT city, COUNT(*) as cnt FROM discovered_facilities 
-            WHERE city IS NOT NULL AND city != '' 
-            GROUP BY city ORDER BY cnt DESC LIMIT 5
-        """)
-        top_markets = [row[0] for row in c.fetchall()]
-        
-        # Recent news count
-        c.execute("SELECT COUNT(*) FROM announcements WHERE date(published_date) = date('now')")
-        news_today = c.fetchone()[0] or 0
-        
-        # Countries count
-        c.execute("SELECT COUNT(DISTINCT country) FROM discovered_facilities WHERE country IS NOT NULL")
-        countries = c.fetchone()[0] or 100
+            top_markets = [row[0] for row in c.fetchall()]
 
-        return jsonify({
-            "success": True,
-            "stats": {
-                "facilities": facilities,
-                "countries": countries,
-                "pipeline_gw": pipeline_gw,
-                "pipeline_projects": pipeline_projects,
-                "deal_volume": deal_volume,
-                "top_markets": ", ".join(top_markets[:3]) if top_markets else "Ashburn, Dallas, Phoenix",
-                "news_today": news_today
-            }
-        })
-    except Exception as e:
-        return jsonify({
-            "success": False,
-            "error": str(e),
-            "stats": {
-                "facilities": 10000,
-                "countries": 100,
-                "pipeline_gw": 0,
-                "pipeline_projects": 0,
-                "deal_volume": "$85B+",
-                "top_markets": "Ashburn, Dallas, Phoenix",
-                "news_today": 0
-            }
-        })
+            # Recent news count
+            c.execute("SELECT COUNT(*) FROM announcements WHERE date(published_date) = date('now')")
+            news_today = c.fetchone()[0] or 0
+
+            # Countries count
+            c.execute("SELECT COUNT(DISTINCT country) FROM discovered_facilities WHERE country IS NOT NULL")
+            countries = c.fetchone()[0] or 100
+
+            return jsonify({
+                "success": True,
+                "stats": {
+                    "facilities": facilities,
+                    "countries": countries,
+                    "pipeline_gw": pipeline_gw,
+                    "pipeline_projects": pipeline_projects,
+                    "deal_volume": deal_volume,
+                    "top_markets": ", ".join(top_markets[:3]) if top_markets else "Ashburn, Dallas, Phoenix",
+                    "news_today": news_today
+                }
+            })
+        except Exception as e:
+            return jsonify({
+                "success": False,
+                "error": str(e),
+                "stats": {
+                    "facilities": 10000,
+                    "countries": 100,
+                    "pipeline_gw": 0,
+                    "pipeline_projects": 0,
+                    "deal_volume": "$85B+",
+                    "top_markets": "Ashburn, Dallas, Phoenix",
+                    "news_today": 0
+                }
+            })
+        finally:
+
     finally:
-        try: conn.close()
-        except Exception: pass
-
+        conn.close()
 @app.route('/api/v1/ai-platforms/status', methods=['GET'])
 def get_ai_platforms_status():
     """Get AI platform integration status - dynamically configurable"""
@@ -7453,163 +7456,166 @@ def log_ambassador_broadcast():
     data = request.get_json(silent=True) or {}
     try:
         db = get_db()
-        c = db.cursor()
-        c.execute('''INSERT INTO ambassador_broadcasts
-            (platform, action, endpoint, status_code, success, response_snippet, duration_ms)
-            VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (platform) DO UPDATE SET action = EXCLUDED.action, endpoint = EXCLUDED.endpoint, status_code = EXCLUDED.status_code, success = EXCLUDED.success, response_snippet = EXCLUDED.response_snippet, duration_ms = EXCLUDED.duration_ms''',
-            (data.get('platform', 'unknown'),
-             data.get('action', 'ping'),
-             data.get('endpoint', ''),
-             data.get('status_code', 0),
-             data.get('success', True),
-             str(data.get('response', ''))[:500],
-             data.get('duration_ms', 0)))
-        db.commit()
-        return jsonify({"success": True})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-    finally:
-        try: db.close()
-        except Exception: pass
+    try:
+            c = db.cursor()
+            c.execute('''INSERT INTO ambassador_broadcasts
+                (platform, action, endpoint, status_code, success, response_snippet, duration_ms)
+                VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (platform) DO UPDATE SET action = EXCLUDED.action, endpoint = EXCLUDED.endpoint, status_code = EXCLUDED.status_code, success = EXCLUDED.success, response_snippet = EXCLUDED.response_snippet, duration_ms = EXCLUDED.duration_ms''',
+                (data.get('platform', 'unknown'),
+                 data.get('action', 'ping'),
+                 data.get('endpoint', ''),
+                 data.get('status_code', 0),
+                 data.get('success', True),
+                 str(data.get('response', ''))[:500],
+                 data.get('duration_ms', 0)))
+            db.commit()
+            return jsonify({"success": True})
+        except Exception as e:
+            return jsonify({"success": False, "error": str(e)}), 500
+        finally:
 
+    finally:
+        db.close()
 @app.route('/api/v1/mcp/analytics', methods=['GET'])
 def mcp_analytics():
     try:
         db = get_db()
-        hours = request.args.get('hours', 24, type=int)
-        since = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
+    try:
+            hours = request.args.get('hours', 24, type=int)
+            since = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
 
-        c = db.cursor()
-        c.execute(
-            'SELECT COUNT(*) FROM mcp_tool_calls WHERE created_at > %s', (since,)
-        )
-        total_calls = c.fetchone()[0]
+            c = db.cursor()
+            c.execute(
+                'SELECT COUNT(*) FROM mcp_tool_calls WHERE created_at > %s', (since,)
+            )
+            total_calls = c.fetchone()[0]
 
-        c.execute('''
-            SELECT tool_name, COUNT(*) as count, AVG(response_time_ms) as avg_ms
-            FROM mcp_tool_calls WHERE created_at > %s
-            GROUP BY tool_name ORDER BY count DESC
-        ''', (since,))
-        tool_breakdown = c.fetchall()
+            c.execute('''
+                SELECT tool_name, COUNT(*) as count, AVG(response_time_ms) as avg_ms
+                FROM mcp_tool_calls WHERE created_at > %s
+                GROUP BY tool_name ORDER BY count DESC
+            ''', (since,))
+            tool_breakdown = c.fetchall()
 
-        c.execute('''
-            SELECT platform, COUNT(*) as count
-            FROM mcp_tool_calls WHERE created_at > %s
-            GROUP BY platform ORDER BY count DESC
-        ''', (since,))
-        platform_breakdown = c.fetchall()
+            c.execute('''
+                SELECT platform, COUNT(*) as count
+                FROM mcp_tool_calls WHERE created_at > %s
+                GROUP BY platform ORDER BY count DESC
+            ''', (since,))
+            platform_breakdown = c.fetchall()
 
-        c.execute('''
-            SELECT platform, client_name, client_version, method,
-                   COUNT(*) as count, MAX(created_at) as last_seen
-            FROM mcp_connections WHERE created_at > %s
-            GROUP BY platform, client_name ORDER BY last_seen DESC
-        ''', (since,))
-        connections = c.fetchall()
+            c.execute('''
+                SELECT platform, client_name, client_version, method,
+                       COUNT(*) as count, MAX(created_at) as last_seen
+                FROM mcp_connections WHERE created_at > %s
+                GROUP BY platform, client_name ORDER BY last_seen DESC
+            ''', (since,))
+            connections = c.fetchall()
 
-        c.execute('''
-            SELECT TO_CHAR(created_at, 'YYYY-MM-DD HH:00') as hour, COUNT(*) as count
-            FROM mcp_tool_calls WHERE created_at > %s
-            GROUP BY TO_CHAR(created_at, 'YYYY-MM-DD HH:00') ORDER BY hour
-        ''', (since,))
-        hourly = c.fetchall()
+            c.execute('''
+                SELECT TO_CHAR(created_at, 'YYYY-MM-DD HH:00') as hour, COUNT(*) as count
+                FROM mcp_tool_calls WHERE created_at > %s
+                GROUP BY TO_CHAR(created_at, 'YYYY-MM-DD HH:00') ORDER BY hour
+            ''', (since,))
+            hourly = c.fetchall()
 
-        c.execute('''
-            SELECT tool_name, platform, client_name, params,
-                   response_time_ms, created_at
-            FROM mcp_tool_calls ORDER BY created_at DESC LIMIT 20
-        ''')
-        recent = c.fetchall()
+            c.execute('''
+                SELECT tool_name, platform, client_name, params,
+                       response_time_ms, created_at
+                FROM mcp_tool_calls ORDER BY created_at DESC LIMIT 20
+            ''')
+            recent = c.fetchall()
 
-        return jsonify({
-            "success": True,
-            "period_hours": hours,
-            "summary": {
-                "total_tool_calls": total_calls,
-                "unique_platforms": len(set(r[0] for r in platform_breakdown)),
-                "unique_tools_used": len(tool_breakdown),
-                "avg_response_ms": round(sum(r[2] or 0 for r in tool_breakdown) / max(len(tool_breakdown), 1))
-            },
-            "by_tool": [{"tool": r[0], "count": r[1], "avg_ms": round(r[2] or 0)} for r in tool_breakdown],
-            "by_platform": [{"platform": r[0], "count": r[1]} for r in platform_breakdown],
-            "connections": [{"platform": r[0], "client": r[1], "version": r[2],
-                           "method": r[3], "count": r[4], "last_seen": r[5]} for r in connections],
-            "hourly_trend": [{"hour": r[0], "count": r[1]} for r in hourly],
-            "recent_calls": [{"tool": r[0], "platform": r[1], "client": r[2],
-                            "params": r[3], "response_ms": r[4], "time": r[5]} for r in recent]
-        })
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+            return jsonify({
+                "success": True,
+                "period_hours": hours,
+                "summary": {
+                    "total_tool_calls": total_calls,
+                    "unique_platforms": len(set(r[0] for r in platform_breakdown)),
+                    "unique_tools_used": len(tool_breakdown),
+                    "avg_response_ms": round(sum(r[2] or 0 for r in tool_breakdown) / max(len(tool_breakdown), 1))
+                },
+                "by_tool": [{"tool": r[0], "count": r[1], "avg_ms": round(r[2] or 0)} for r in tool_breakdown],
+                "by_platform": [{"platform": r[0], "count": r[1]} for r in platform_breakdown],
+                "connections": [{"platform": r[0], "client": r[1], "version": r[2],
+                               "method": r[3], "count": r[4], "last_seen": r[5]} for r in connections],
+                "hourly_trend": [{"hour": r[0], "count": r[1]} for r in hourly],
+                "recent_calls": [{"tool": r[0], "platform": r[1], "client": r[2],
+                                "params": r[3], "response_ms": r[4], "time": r[5]} for r in recent]
+            })
+        except Exception as e:
+            return jsonify({"success": False, "error": str(e)}), 500
+        finally:
+
     finally:
-        try: db.close()
-        except Exception: pass
-
+        db.close()
 @app.route('/api/v1/mcp/platforms', methods=['GET'])
 def mcp_platforms_status():
     try:
         db = get_db()
-        c = db.cursor()
+    try:
+            c = db.cursor()
 
-        c.execute('''
-            SELECT platform,
-                   COUNT(*) as total_calls,
-                   MAX(created_at) as last_seen,
-                   MIN(created_at) as first_seen
-            FROM mcp_connections
-            GROUP BY platform ORDER BY last_seen DESC
-        ''')
-        platforms = c.fetchall()
+            c.execute('''
+                SELECT platform,
+                       COUNT(*) as total_calls,
+                       MAX(created_at) as last_seen,
+                       MIN(created_at) as first_seen
+                FROM mcp_connections
+                GROUP BY platform ORDER BY last_seen DESC
+            ''')
+            platforms = c.fetchall()
 
-        c.execute('''
-            SELECT platform, action, success, status_code,
-                   created_at, duration_ms
-            FROM ambassador_broadcasts
-            ORDER BY created_at DESC LIMIT 50
-        ''')
-        broadcasts = c.fetchall()
+            c.execute('''
+                SELECT platform, action, success, status_code,
+                       created_at, duration_ms
+                FROM ambassador_broadcasts
+                ORDER BY created_at DESC LIMIT 50
+            ''')
+            broadcasts = c.fetchall()
 
-        platform_list = []
-        for p in platforms:
-            last_seen = datetime.fromisoformat(p[2]) if p[2] else None
-            hours_ago = (datetime.utcnow() - last_seen).total_seconds() / 3600 if last_seen else 999
-            status = 'active' if hours_ago < 24 else 'idle' if hours_ago < 168 else 'inactive'
-            platform_list.append({
-                "platform": p[0],
-                "total_connections": p[1],
-                "last_seen": p[2],
-                "first_seen": p[3],
-                "status": status
-            })
-
-        known = ['Claude', 'ChatGPT', 'Grok', 'Gemini', 'Perplexity',
-                 'Cursor', 'Copilot', 'Windsurf', 'Groq', 'DeepSeek', 'Poe', 'You.com']
-        seen = {p['platform'] for p in platform_list}
-        for k in known:
-            if k not in seen:
+            platform_list = []
+            for p in platforms:
+                last_seen = datetime.fromisoformat(p[2]) if p[2] else None
+                hours_ago = (datetime.utcnow() - last_seen).total_seconds() / 3600 if last_seen else 999
+                status = 'active' if hours_ago < 24 else 'idle' if hours_ago < 168 else 'inactive'
                 platform_list.append({
-                    "platform": k, "total_connections": 0,
-                    "last_seen": None, "first_seen": None, "status": "pending"
+                    "platform": p[0],
+                    "total_connections": p[1],
+                    "last_seen": p[2],
+                    "first_seen": p[3],
+                    "status": status
                 })
 
-        return jsonify({
-            "success": True,
-            "platforms": platform_list,
-            "recent_broadcasts": [
-                {"platform": b[0], "action": b[1], "success": b[2],
-                 "status_code": b[3], "time": b[4], "duration_ms": b[5]}
-                for b in broadcasts
-            ],
-            "mcp_endpoint": "https://dchub.cloud/mcp",
-            "server_card": "https://dchub.cloud/.well-known/mcp/server-card.json",
-            "tools_count": 11,
-            "server_version": "2.0.0"
-        })
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-    finally:
-        try: db.close()
-        except Exception: pass
+            known = ['Claude', 'ChatGPT', 'Grok', 'Gemini', 'Perplexity',
+                     'Cursor', 'Copilot', 'Windsurf', 'Groq', 'DeepSeek', 'Poe', 'You.com']
+            seen = {p['platform'] for p in platform_list}
+            for k in known:
+                if k not in seen:
+                    platform_list.append({
+                        "platform": k, "total_connections": 0,
+                        "last_seen": None, "first_seen": None, "status": "pending"
+                    })
 
+            return jsonify({
+                "success": True,
+                "platforms": platform_list,
+                "recent_broadcasts": [
+                    {"platform": b[0], "action": b[1], "success": b[2],
+                     "status_code": b[3], "time": b[4], "duration_ms": b[5]}
+                    for b in broadcasts
+                ],
+                "mcp_endpoint": "https://dchub.cloud/mcp",
+                "server_card": "https://dchub.cloud/.well-known/mcp/server-card.json",
+                "tools_count": 11,
+                "server_version": "2.0.0"
+            })
+        except Exception as e:
+            return jsonify({"success": False, "error": str(e)}), 500
+        finally:
+
+    finally:
+        db.close()
 @app.route('/api/v1/energy/discovery/status', methods=['GET'])
 def energy_discovery_status():
     """Energy infrastructure auto-discovery status and counts"""
@@ -9050,30 +9056,31 @@ def capacity_map_page():
 def news_page():
     try:
         conn = get_db()
-        c = conn.cursor()
-        c.execute(
-            "SELECT title, summary, published_date, source FROM announcements ORDER BY published_date DESC LIMIT 20"
-        )
-        rows = c.fetchall()
-        seo_block = '\n'.join(
-            f'<article><h3>{html_escape(str(row["title"] or ""))}</h3><p>{html_escape(str(row["summary"] or "")[:200])}</p>'
-            f'<time>{html_escape(str(row["published_date"] or ""))}</time><span>{html_escape(str(row["source"] or "DC Hub"))}</span></article>'
-            for row in rows
-        )
-    except Exception:
-        seo_block = ''
-    finally:
-        try: conn.close()
-        except Exception: pass
-    with open('static/news.html', 'r') as f:
-        html = f.read()
-    seo_section = f'<div id="seo-prerender" style="display:none" aria-hidden="false"><h1>Data Center Industry News</h1>{seo_block}</div>'
-    html = html.replace('</body>', seo_section + '\n</body>')
-    resp = make_response(html)
-    resp.headers['Content-Type'] = 'text/html'
-    resp.headers['Cache-Control'] = 'no-cache'
-    return resp
+    try:
+            c = conn.cursor()
+            c.execute(
+                "SELECT title, summary, published_date, source FROM announcements ORDER BY published_date DESC LIMIT 20"
+            )
+            rows = c.fetchall()
+            seo_block = '\n'.join(
+                f'<article><h3>{html_escape(str(row["title"] or ""))}</h3><p>{html_escape(str(row["summary"] or "")[:200])}</p>'
+                f'<time>{html_escape(str(row["published_date"] or ""))}</time><span>{html_escape(str(row["source"] or "DC Hub"))}</span></article>'
+                for row in rows
+            )
+        except Exception:
+            seo_block = ''
+        finally:
+        with open('static/news.html', 'r') as f:
+            html = f.read()
+        seo_section = f'<div id="seo-prerender" style="display:none" aria-hidden="false"><h1>Data Center Industry News</h1>{seo_block}</div>'
+        html = html.replace('</body>', seo_section + '\n</body>')
+        resp = make_response(html)
+        resp.headers['Content-Type'] = 'text/html'
+        resp.headers['Cache-Control'] = 'no-cache'
+        return resp
 
+    finally:
+        conn.close()
 @app.route('/market-intelligence')
 @app.route('/market-intelligence.html')
 @app.route('/markets')
@@ -9213,57 +9220,58 @@ def api_signup():
     
     try:
         conn = get_db()
-        c = conn.cursor()
-        
-        c.execute("SELECT id FROM api_keys WHERE user_id = %s", (email,))
-        existing = c.fetchone()
-        if existing:
-            return jsonify({'success': False, 'error': 'Email already registered. Contact support for key recovery.'}), 400
-        
-        api_key = f"dchub_{secrets.token_urlsafe(32)}"
-        key_hash = hashlib.sha256(api_key.encode()).hexdigest()
-        key_prefix = api_key[:12]
-        
-        c.execute("""
-            INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions, rate_limit_tier, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-        """, (email, key_hash, key_prefix, company, '["read"]', 'free', datetime.utcnow().isoformat()))
-        
-        c.execute("""
-            INSERT INTO signups (email, company, use_case, created_at, source)
-            VALUES (%s, %s, %s, %s, 'api_signup')
-            ON CONFLICT DO NOTHING
-        """, (email, company, usecase, datetime.utcnow().isoformat()))
-        
-        conn.commit()
+    try:
+            c = conn.cursor()
 
-        try:
-            from db_persistence import sync_on_write
-            sync_on_write('api_keys')
-        except Exception:
-            pass
+            c.execute("SELECT id FROM api_keys WHERE user_id = %s", (email,))
+            existing = c.fetchone()
+            if existing:
+                return jsonify({'success': False, 'error': 'Email already registered. Contact support for key recovery.'}), 400
 
-        logger.info(f"New API signup: {email} ({company})")
+            api_key = f"dchub_{secrets.token_urlsafe(32)}"
+            key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+            key_prefix = api_key[:12]
 
-        return jsonify({
-            'success': True,
-            'api_key': api_key,
-            'tier': 'free',
-            'rate_limit': '100 requests/month',
-            'docs': '/api-docs'
-        })
+            c.execute("""
+                INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions, rate_limit_tier, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """, (email, key_hash, key_prefix, company, '["read"]', 'free', datetime.utcnow().isoformat()))
 
-    except Exception as e:
-        logger.error(f"Signup error: {e}")
-        return jsonify({'success': False, 'error': 'Signup failed. Please try again.'}), 500
+            c.execute("""
+                INSERT INTO signups (email, company, use_case, created_at, source)
+                VALUES (%s, %s, %s, %s, 'api_signup')
+                ON CONFLICT DO NOTHING
+            """, (email, company, usecase, datetime.utcnow().isoformat()))
+
+            conn.commit()
+
+            try:
+                from db_persistence import sync_on_write
+                sync_on_write('api_keys')
+            except Exception:
+                pass
+
+            logger.info(f"New API signup: {email} ({company})")
+
+            return jsonify({
+                'success': True,
+                'api_key': api_key,
+                'tier': 'free',
+                'rate_limit': '100 requests/month',
+                'docs': '/api-docs'
+            })
+
+        except Exception as e:
+            logger.error(f"Signup error: {e}")
+            return jsonify({'success': False, 'error': 'Signup failed. Please try again.'}), 500
+        finally:
+
+        # =============================================================================
+        # API ALIASES (Frontend Compatibility)
+        # =============================================================================
+
     finally:
-        try: conn.close()
-        except Exception: pass
-
-# =============================================================================
-# API ALIASES (Frontend Compatibility)
-# =============================================================================
-
+        conn.close()
 @app.route('/api/transactions', methods=['GET'])
 def api_transactions_alias():
     """Transactions endpoint - freemium taste data unauthenticated, full data with Pro auth"""
@@ -9987,32 +9995,33 @@ def fiber_sources():
     """List all fiber data sources and their status"""
     try:
         conn = get_db()
-        cursor = conn.cursor()
+    try:
+            cursor = conn.cursor()
 
-        cursor.execute('''
-            SELECT provider, route_type, COUNT(*) as route_count,
-                   MIN(created_at) as first_seen, MAX(created_at) as last_updated
-            FROM fiber_routes
-            GROUP BY provider, route_type
-            ORDER BY route_count DESC
-        ''')
-        sources = []
-        for row in cursor.fetchall():
-            sources.append({
-                "carrier": row[0], "route_type": row[1], "route_count": row[2],
-                "first_seen": row[3], "last_updated": row[4]
-            })
+            cursor.execute('''
+                SELECT provider, route_type, COUNT(*) as route_count,
+                       MIN(created_at) as first_seen, MAX(created_at) as last_updated
+                FROM fiber_routes
+                GROUP BY provider, route_type
+                ORDER BY route_count DESC
+            ''')
+            sources = []
+            for row in cursor.fetchall():
+                sources.append({
+                    "carrier": row[0], "route_type": row[1], "route_count": row[2],
+                    "first_seen": row[3], "last_updated": row[4]
+                })
 
-        cursor.execute('SELECT COUNT(*) FROM fiber_routes')
-        total = cursor.fetchone()[0]
+            cursor.execute('SELECT COUNT(*) FROM fiber_routes')
+            total = cursor.fetchone()[0]
 
-        return jsonify({"success": True, "total_routes": total, "sources": sources})
-    except Exception as e:
-        return jsonify({"success": True, "total_routes": 0, "sources": [], "note": str(e)})
+            return jsonify({"success": True, "total_routes": total, "sources": sources})
+        except Exception as e:
+            return jsonify({"success": True, "total_routes": 0, "sources": [], "note": str(e)})
+        finally:
+
     finally:
-        try: conn.close()
-        except Exception: pass
-
+        conn.close()
 @app.route('/api/v1/fiber/routes', methods=['GET'])
 @require_plan('pro')
 def fiber_routes_api():
@@ -10022,62 +10031,63 @@ def fiber_routes_api():
 
     try:
         conn = get_db()
-        cursor = conn.cursor()
+    try:
+            cursor = conn.cursor()
 
-        query = 'SELECT * FROM fiber_routes WHERE start_lat IS NOT NULL'
-        params = []
-        if carrier:
-            query += ' AND provider = %s'
-            params.append(carrier)
-        if route_type:
-            query += ' AND route_type = %s'
-            params.append(route_type)
-        query += ' LIMIT 500'
+            query = 'SELECT * FROM fiber_routes WHERE start_lat IS NOT NULL'
+            params = []
+            if carrier:
+                query += ' AND provider = %s'
+                params.append(carrier)
+            if route_type:
+                query += ' AND route_type = %s'
+                params.append(route_type)
+            query += ' LIMIT 500'
 
-        cursor.execute(query, params)
-        columns = [desc[0] for desc in cursor.description]
-        rows = cursor.fetchall()
+            cursor.execute(query, params)
+            columns = [desc[0] for desc in cursor.description]
+            rows = cursor.fetchall()
 
-        features = []
-        for row in rows:
-            row_dict = dict(zip(columns, row))
-            # fiber_routes stores start/end lat/lng, build 2-point LineString
-            try:
-                slat = float(row_dict.get('start_lat') or 0)
-                slng = float(row_dict.get('start_lng') or 0)
-                elat = float(row_dict.get('end_lat') or 0)
-                elng = float(row_dict.get('end_lng') or 0)
-                coords = [[slng, slat], [elng, elat]] if slat and slng and elat and elng else []
-            except Exception:
-                coords = []
+            features = []
+            for row in rows:
+                row_dict = dict(zip(columns, row))
+                # fiber_routes stores start/end lat/lng, build 2-point LineString
+                try:
+                    slat = float(row_dict.get('start_lat') or 0)
+                    slng = float(row_dict.get('start_lng') or 0)
+                    elat = float(row_dict.get('end_lat') or 0)
+                    elng = float(row_dict.get('end_lng') or 0)
+                    coords = [[slng, slat], [elng, elat]] if slat and slng and elat and elng else []
+                except Exception:
+                    coords = []
 
-            features.append({
-                "type": "Feature",
-                "properties": {
-                    "name": row_dict.get('name', ''),
-                    "carrier": row_dict.get('provider', ''),
-                    "route_type": row_dict.get('route_type', ''),
-                    "start_point": row_dict.get('start_location', ''),
-                    "end_point": row_dict.get('end_location', ''),
-                    "distance_km": row_dict.get('distance_miles'),
-                },
-                "geometry": {
-                    "type": "LineString",
-                    "coordinates": coords
-                }
+                features.append({
+                    "type": "Feature",
+                    "properties": {
+                        "name": row_dict.get('name', ''),
+                        "carrier": row_dict.get('provider', ''),
+                        "route_type": row_dict.get('route_type', ''),
+                        "start_point": row_dict.get('start_location', ''),
+                        "end_point": row_dict.get('end_location', ''),
+                        "distance_km": row_dict.get('distance_miles'),
+                    },
+                    "geometry": {
+                        "type": "LineString",
+                        "coordinates": coords
+                    }
+                })
+
+            return jsonify({
+                "type": "FeatureCollection",
+                "features": features,
+                "total": len(features)
             })
+        except Exception as e:
+            return jsonify({"type": "FeatureCollection", "features": [], "total": 0, "note": str(e)})
+        finally:
 
-        return jsonify({
-            "type": "FeatureCollection",
-            "features": features,
-            "total": len(features)
-        })
-    except Exception as e:
-        return jsonify({"type": "FeatureCollection", "features": [], "total": 0, "note": str(e)})
     finally:
-        try: conn.close()
-        except Exception: pass
-
+        conn.close()
 logger.info("✅ Fiber routes endpoints registered: /api/v1/fiber/sources, /api/v1/fiber/routes")
 
 # =============================================================================

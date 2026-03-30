@@ -246,16 +246,19 @@ def _run_query(sql, params=()):
     # fallback
     try:
         conn = get_db()
-        cur  = conn.cursor()
-        cur.execute(sql, params)
-        rows = cur.fetchall()
-        cur.close()
-        return rows
-    except Exception as e:
-        logger.error("GDCI fallback query failed: %s | %s", e, sql[:80])
-        return []
+    try:
+            cur  = conn.cursor()
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+            cur.close()
+            return rows
+        except Exception as e:
+            logger.error("GDCI fallback query failed: %s | %s", e, sql[:80])
+            return []
 
 
+    finally:
+        conn.close()
 def _load_bulk(cfg, _conn=None):
     fac  = cfg.get('fac_table', 'facilities')
     txn  = cfg.get('txn_table', 'deals')

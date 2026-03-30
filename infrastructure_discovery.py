@@ -29,33 +29,33 @@ def _safe_write(sql, params=None, retries=3):
         conn = None
         try:
             conn = get_db()
-            cursor = conn.cursor()
-            if params:
-                cursor.execute(sql, params)
-            else:
-                cursor.execute(sql)
-            conn.commit()
-            return cursor.rowcount
-        except Exception as e:
-            if conn:
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-            if attempt < retries - 1:
-                time.sleep(1.0 * (attempt + 1))
-            else:
-                logger.warning(f"Infrastructure write failed after {retries} attempts: {e}")
-                return 0
-        finally:
-            if conn:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-    return 0
+    try:
+                cursor = conn.cursor()
+                if params:
+                    cursor.execute(sql, params)
+                else:
+                    cursor.execute(sql)
+                conn.commit()
+                return cursor.rowcount
+            except Exception as e:
+                if conn:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                if attempt < retries - 1:
+                    time.sleep(1.0 * (attempt + 1))
+                else:
+                    logger.warning(f"Infrastructure write failed after {retries} attempts: {e}")
+                    return 0
+            finally:
+                if conn:
+                    try:
+        return 0
 
 
+    finally:
+        conn.close()
 def init_infrastructure_tables():
     """Initialize tables for infrastructure data — PostgreSQL compatible"""
     conn = get_db()

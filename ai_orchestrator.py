@@ -19,7 +19,6 @@ COORDINATION:
 
 import os
 import json
-import sqlite3
 import threading
 import time
 import re
@@ -446,7 +445,7 @@ JSON only, no markdown."""
                 conn.commit()
                 conn.close()
                 return
-            except sqlite3.OperationalError as e:
+            except Exception as e:
                 if 'locked' in str(e) and attempt < 4:
                     try: conn.close()
                     except: pass

@@ -29,7 +29,6 @@ Sources:
 import os
 import json
 import hashlib
-import sqlite3
 import requests
 import logging
 import time
@@ -383,7 +382,7 @@ class NexusDatabase:
                 conn.commit()
                 conn.close()
                 return (facility.id, True)
-            except sqlite3.IntegrityError:
+            except Exception:
                 conn.close()
                 return (facility.id, False)
     

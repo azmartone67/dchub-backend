@@ -567,149 +567,150 @@ PATCH4_NEW = """class SubstationDiscovery:
     def _sync_from_learned_apis(self):
         try:
             conn = get_db()
-            cursor = conn.cursor()
-            cursor.execute(\"\"\"
-                SELECT name, location, metadata FROM learned_infrastructure
-                WHERE category = 'power'
-                ORDER BY id DESC LIMIT 200
-            \"\"\")
-            rows = cursor.fetchall()
-            for row in rows:
-                try:
-                    if isinstance(row, dict):
-                        name_val, location_val, meta_raw = row.get('name'), row.get('location'), row.get('metadata')
-                    else:
-                        name_val, location_val, meta_raw = row[0], row[1], row[2]
-                    meta = json.loads(meta_raw) if meta_raw else {}
-                    voltage = meta.get('MAX_VOLT', meta.get('VOLTAGE', meta.get('KV', 0))) or 0
-                    if voltage and voltage > 1000:
-                        voltage = voltage / 1000
-                    sub = {
-                        "name": str(name_val)[:200] if name_val else 'Unknown',
-                        "operator": str(meta.get('OWNER', meta.get('OPERATOR', 'Discovered')))[:100],
-                        "voltage_kv": voltage,
-                        "capacity_mva": meta.get('CAPACITY', 0) or 0,
-                        "city": location_val.split(',')[0].strip() if location_val else '',
-                        "state": location_val.split(',')[-1].strip() if location_val and ',' in location_val else '',
-                        "lat": meta.get('LATITUDE', meta.get('LAT', meta.get('Y'))),
-                        "lng": meta.get('LONGITUDE', meta.get('LON', meta.get('X'))),
-                        "source_id": f"learned_sub_{hash(str(name_val)) % 10**8}"
-                    }
-                    self._save_substation(sub, source='auto_discovery')
-                except Exception:
-                    pass
-            conn.close()
-        except Exception as e:
-            logger.warning(f"   ⚠️ Learned API substation sync failed: {e}")
-
-    def _sync_infrastructure_layers_substations(self):
-        \"\"\"Cross-populate substations table from infrastructure_layers KMZ records.\"\"\"
         try:
-            conn = get_db()
-            cursor = conn.cursor()
-            cursor.execute(\"\"\"
-                SELECT il.name, il.latitude, il.longitude, il.source, il.metadata,
-                       COALESCE(il.state, '') as state, COALESCE(il.city, '') as city
-                FROM infrastructure_layers il
-                WHERE LOWER(il.layer_type) IN ('substation', 'electric_substation', 'substations', 'power')
-                  AND il.latitude IS NOT NULL AND il.longitude IS NOT NULL
-                  AND NOT EXISTS (
-                    SELECT 1 FROM substations s 
-                    WHERE s.source_id = 'infra_layer_' || CAST(il.id AS TEXT)
-                  )
-                LIMIT 2000
-            \"\"\")
-            rows = cursor.fetchall()
-            conn.close()
-
-            for row in rows:
-                if isinstance(row, dict):
-                    name_val = row.get('name', 'Substation')
-                    lat_val = row.get('latitude')
-                    lng_val = row.get('longitude')
-                    source_val = row.get('source', 'kmz')
-                    meta_raw = row.get('metadata')
-                    state_val = row.get('state', '')
-                    city_val = row.get('city', '')
-                else:
-                    name_val, lat_val, lng_val, source_val, meta_raw, state_val, city_val = row[0], row[1], row[2], row[3], row[4], row[5], row[6]
-
-                if not lat_val or not lng_val:
-                    continue
-
-                meta = {}
-                if meta_raw:
+                cursor = conn.cursor()
+                cursor.execute(\"\"\"
+                    SELECT name, location, metadata FROM learned_infrastructure
+                    WHERE category = 'power'
+                    ORDER BY id DESC LIMIT 200
+                \"\"\")
+                rows = cursor.fetchall()
+                for row in rows:
                     try:
-                        meta = json.loads(meta_raw) if isinstance(meta_raw, str) else meta_raw
+                        if isinstance(row, dict):
+                            name_val, location_val, meta_raw = row.get('name'), row.get('location'), row.get('metadata')
+                        else:
+                            name_val, location_val, meta_raw = row[0], row[1], row[2]
+                        meta = json.loads(meta_raw) if meta_raw else {}
+                        voltage = meta.get('MAX_VOLT', meta.get('VOLTAGE', meta.get('KV', 0))) or 0
+                        if voltage and voltage > 1000:
+                            voltage = voltage / 1000
+                        sub = {
+                            "name": str(name_val)[:200] if name_val else 'Unknown',
+                            "operator": str(meta.get('OWNER', meta.get('OPERATOR', 'Discovered')))[:100],
+                            "voltage_kv": voltage,
+                            "capacity_mva": meta.get('CAPACITY', 0) or 0,
+                            "city": location_val.split(',')[0].strip() if location_val else '',
+                            "state": location_val.split(',')[-1].strip() if location_val and ',' in location_val else '',
+                            "lat": meta.get('LATITUDE', meta.get('LAT', meta.get('Y'))),
+                            "lng": meta.get('LONGITUDE', meta.get('LON', meta.get('X'))),
+                            "source_id": f"learned_sub_{hash(str(name_val)) % 10**8}"
+                        }
+                        self._save_substation(sub, source='auto_discovery')
                     except Exception:
                         pass
+                logger.warning(f"   ⚠️ Learned API substation sync failed: {e}")
 
-                voltage = meta.get('MAX_VOLT', meta.get('VOLTAGE', meta.get('voltage_kv', 0))) or 0
-                if voltage and voltage > 1000:
+            def _sync_infrastructure_layers_substations(self):
+            \"\"\"Cross-populate substations table from infrastructure_layers KMZ records.\"\"\"
+            try:
+                conn = get_db()
+                cursor = conn.cursor()
+                cursor.execute(\"\"\"
+                    SELECT il.name, il.latitude, il.longitude, il.source, il.metadata,
+                           COALESCE(il.state, '') as state, COALESCE(il.city, '') as city
+                    FROM infrastructure_layers il
+                    WHERE LOWER(il.layer_type) IN ('substation', 'electric_substation', 'substations', 'power')
+                      AND il.latitude IS NOT NULL AND il.longitude IS NOT NULL
+                      AND NOT EXISTS (
+                        SELECT 1 FROM substations s 
+                        WHERE s.source_id = 'infra_layer_' || CAST(il.id AS TEXT)
+                      )
+                    LIMIT 2000
+                \"\"\")
+                rows = cursor.fetchall()
+                conn.close()
+
+                for row in rows:
+                    if isinstance(row, dict):
+                        name_val = row.get('name', 'Substation')
+                        lat_val = row.get('latitude')
+                        lng_val = row.get('longitude')
+                        source_val = row.get('source', 'kmz')
+                        meta_raw = row.get('metadata')
+                        state_val = row.get('state', '')
+                        city_val = row.get('city', '')
+                    else:
+                        name_val, lat_val, lng_val, source_val, meta_raw, state_val, city_val = row[0], row[1], row[2], row[3], row[4], row[5], row[6]
+
+                    if not lat_val or not lng_val:
+                        continue
+
+                    meta = {}
+                    if meta_raw:
+                        try:
+                            meta = json.loads(meta_raw) if isinstance(meta_raw, str) else meta_raw
+                        except Exception:
+                            pass
+
+                    voltage = meta.get('MAX_VOLT', meta.get('VOLTAGE', meta.get('voltage_kv', 0))) or 0
+                    if voltage and voltage > 1000:
+                        voltage = voltage / 1000
+
+                    sub = {
+                        "name": str(name_val)[:200] if name_val else 'Substation',
+                        "operator": str(meta.get('OWNER', meta.get('operator', 'Unknown')))[:100],
+                        "voltage_kv": voltage,
+                        "capacity_mva": meta.get('CAPACITY', meta.get('capacity_mva', 0)) or 0,
+                        "city": str(city_val)[:100],
+                        "state": str(state_val)[:10],
+                        "lat": lat_val,
+                        "lng": lng_val,
+                        "source_id": f"infra_layer_{hash(f'{name_val}_{lat_val}_{lng_val}') % 10**10}"
+                    }
+                    self._save_substation(sub, source='infrastructure_layers')
+
+                if rows:
+                    logger.info(f"   ⚡ Cross-populated {len(rows)} substations from infrastructure_layers")
+
+            except Exception as e:
+                logger.warning(f"   ⚠️ Infrastructure layers substation sync failed: {e}")
+
+            def _parse_voltage(self, voltage_str):
+            try:
+                if not voltage_str:
+                    return 0
+                voltage_str = str(voltage_str).replace('kV', '').replace('V', '').strip()
+                if ';' in voltage_str:
+                    voltage_str = voltage_str.split(';')[0]
+                voltage = float(voltage_str)
+                if voltage > 1000:
                     voltage = voltage / 1000
-
-                sub = {
-                    "name": str(name_val)[:200] if name_val else 'Substation',
-                    "operator": str(meta.get('OWNER', meta.get('operator', 'Unknown')))[:100],
-                    "voltage_kv": voltage,
-                    "capacity_mva": meta.get('CAPACITY', meta.get('capacity_mva', 0)) or 0,
-                    "city": str(city_val)[:100],
-                    "state": str(state_val)[:10],
-                    "lat": lat_val,
-                    "lng": lng_val,
-                    "source_id": f"infra_layer_{hash(f'{name_val}_{lat_val}_{lng_val}') % 10**10}"
-                }
-                self._save_substation(sub, source='infrastructure_layers')
-
-            if rows:
-                logger.info(f"   ⚡ Cross-populated {len(rows)} substations from infrastructure_layers")
-
-        except Exception as e:
-            logger.warning(f"   ⚠️ Infrastructure layers substation sync failed: {e}")
-
-    def _parse_voltage(self, voltage_str):
-        try:
-            if not voltage_str:
+                return voltage
+            except:
                 return 0
-            voltage_str = str(voltage_str).replace('kV', '').replace('V', '').strip()
-            if ';' in voltage_str:
-                voltage_str = voltage_str.split(';')[0]
-            voltage = float(voltage_str)
-            if voltage > 1000:
-                voltage = voltage / 1000
-            return voltage
-        except:
-            return 0
 
-    def _save_substation(self, sub, source='discovery'):
-        try:
-            voltage = sub.get('voltage_kv', 0) or 0
-            if 0 < voltage <= 69:
-                return
-            source_id = sub.get('source_id', f"{sub['name']}_{sub.get('lat', 0):.4f}_{sub.get('lng', 0):.4f}".replace(" ", "_").lower()[:100])
-            rowcount = _safe_write('''
-                INSERT INTO substations
-                (name, operator, voltage_kv, capacity_mva, city, state, lat, lng, source, source_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT(source_id) DO NOTHING
-            ''', (
-                sub['name'][:200],
-                sub.get('operator', '')[:100],
-                sub.get('voltage_kv', 0),
-                sub.get('capacity_mva', 0),
-                sub.get('city', '')[:100],
-                sub.get('state', ''),
-                sub.get('lat'),
-                sub.get('lng'),
-                source,
-                source_id[:100]
-            ))
-            if rowcount and rowcount > 0:
-                self.new_substations += 1
-        except Exception as e:
-            logger.warning(f"Error saving substation: {e}")
+            def _save_substation(self, sub, source='discovery'):
+            try:
+                voltage = sub.get('voltage_kv', 0) or 0
+                if 0 < voltage <= 69:
+                    return
+                source_id = sub.get('source_id', f"{sub['name']}_{sub.get('lat', 0):.4f}_{sub.get('lng', 0):.4f}".replace(" ", "_").lower()[:100])
+                rowcount = _safe_write('''
+                    INSERT INTO substations
+                    (name, operator, voltage_kv, capacity_mva, city, state, lat, lng, source, source_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT(source_id) DO NOTHING
+                ''', (
+                    sub['name'][:200],
+                    sub.get('operator', '')[:100],
+                    sub.get('voltage_kv', 0),
+                    sub.get('capacity_mva', 0),
+                    sub.get('city', '')[:100],
+                    sub.get('state', ''),
+                    sub.get('lat'),
+                    sub.get('lng'),
+                    source,
+                    source_id[:100]
+                ))
+                if rowcount and rowcount > 0:
+                    self.new_substations += 1
+            except Exception as e:
+                logger.warning(f"Error saving substation: {e}")
 
 
+        finally:
+            conn.close()
 class GasPipelineDiscovery:"""
 
 

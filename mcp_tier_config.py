@@ -493,78 +493,82 @@ def get_tier(api_key: Optional[str], get_db=None) -> str:
         conn = None
         try:
             conn = get_db()
-            cur = conn.cursor()
-            cur.execute("""
-                SELECT rate_limit_tier, trial_expires_at
-                FROM api_keys
-                WHERE key = %s AND is_active = true
-            """, (api_key,))
-            row = cur.fetchone()
-            if row:
-                tier = row[0] or 'developer'
-                trial_expires = row[1]
+    try:
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT rate_limit_tier, trial_expires_at
+                    FROM api_keys
+                    WHERE key = %s AND is_active = true
+                """, (api_key,))
+                row = cur.fetchone()
+                if row:
+                    tier = row[0] or 'developer'
+                    trial_expires = row[1]
 
-                # Check if trial has expired
-                if tier == 'trial' and trial_expires:
-                    if datetime.now(timezone.utc) > trial_expires:
-                        return 'free'  # Trial expired, downgrade
+                    # Check if trial has expired
+                    if tier == 'trial' and trial_expires:
+                        if datetime.now(timezone.utc) > trial_expires:
+                            return 'free'  # Trial expired, downgrade
 
-                return tier
-        except Exception as e:
-            logger.debug(f"Tier lookup error: {e}")
-        finally:
-            if conn:
-                conn.close()
+                    return tier
+            except Exception as e:
+                logger.debug(f"Tier lookup error: {e}")
+            finally:
+                if conn:
 
-    return 'free'
+        return 'free'
 
 
-# ─────────────────────────────────────────────────────────────
-# DB SETUP (call once on startup)
-# ─────────────────────────────────────────────────────────────
+        # ─────────────────────────────────────────────────────────────
+        # DB SETUP (call once on startup)
+        # ─────────────────────────────────────────────────────────────
 
+    finally:
+        conn.close()
 def init_mcp_tier_tables(get_db):
     """Create usage tracking table. Call from main.py startup."""
     conn = None
     try:
         conn = get_db()
-        cur = conn.cursor()
+    try:
+            cur = conn.cursor()
 
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS mcp_usage_tracking (
-                id SERIAL PRIMARY KEY,
-                identifier VARCHAR(200),
-                date DATE,
-                call_count INTEGER DEFAULT 0,
-                last_tool VARCHAR(100),
-                created_at TIMESTAMP DEFAULT NOW(),
-                UNIQUE(identifier, date)
-            )
-        """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS mcp_usage_tracking (
+                    id SERIAL PRIMARY KEY,
+                    identifier VARCHAR(200),
+                    date DATE,
+                    call_count INTEGER DEFAULT 0,
+                    last_tool VARCHAR(100),
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    UNIQUE(identifier, date)
+                )
+            """)
 
-        # Add trial_expires_at to api_keys if not present
-        cur.execute("""
-            DO $$ BEGIN
-                ALTER TABLE api_keys ADD COLUMN trial_expires_at TIMESTAMP;
-            EXCEPTION WHEN duplicate_column THEN NULL;
-            END $$
-        """)
+            # Add trial_expires_at to api_keys if not present
+            cur.execute("""
+                DO $$ BEGIN
+                    ALTER TABLE api_keys ADD COLUMN trial_expires_at TIMESTAMP;
+                EXCEPTION WHEN duplicate_column THEN NULL;
+                END $$
+            """)
 
-        conn.commit()
-        logger.info("✅ MCP tier tables initialized")
-    except Exception as e:
-        logger.warning(f"⚠️  MCP tier table init: {e}")
-        if conn:
-            conn.rollback()
+            conn.commit()
+            logger.info("✅ MCP tier tables initialized")
+        except Exception as e:
+            logger.warning(f"⚠️  MCP tier table init: {e}")
+            if conn:
+                conn.rollback()
+        finally:
+            if conn:
+
+
+        # ─────────────────────────────────────────────────────────────
+        # DEVELOPER TRIAL MANAGEMENT
+        # ─────────────────────────────────────────────────────────────
+
     finally:
-        if conn:
-            conn.close()
-
-
-# ─────────────────────────────────────────────────────────────
-# DEVELOPER TRIAL MANAGEMENT
-# ─────────────────────────────────────────────────────────────
-
+        conn.close()
 def create_developer_trial(email: str, platform: str, get_db=None) -> Dict[str, Any]:
     """
     Create a 14-day Developer trial for an MCP user.
@@ -587,66 +591,68 @@ def create_developer_trial(email: str, platform: str, get_db=None) -> Dict[str, 
         conn = None
         try:
             conn = get_db()
-            cur = conn.cursor()
+    try:
+                cur = conn.cursor()
 
-            # Check if email already has a trial
-            cur.execute("SELECT key FROM api_keys WHERE email = %s AND rate_limit_tier = 'trial'", (email,))
-            existing = cur.fetchone()
-            if existing:
-                return {
-                    'success': False,
-                    'error': 'trial_already_exists',
-                    'message': f'A trial already exists for {email}. Check your email for the API key.',
-                    'existing_key': existing[0][:8] + '...',
-                }
+                # Check if email already has a trial
+                cur.execute("SELECT key FROM api_keys WHERE email = %s AND rate_limit_tier = 'trial'", (email,))
+                existing = cur.fetchone()
+                if existing:
+                    return {
+                        'success': False,
+                        'error': 'trial_already_exists',
+                        'message': f'A trial already exists for {email}. Check your email for the API key.',
+                        'existing_key': existing[0][:8] + '...',
+                    }
 
-            cur.execute("""
-                INSERT INTO api_keys (key, email, rate_limit_tier, daily_limit, is_active, trial_expires_at, created_at)
-                VALUES (%s, %s, 'trial', 1000, true, %s, NOW())
-            """, (api_key, email, expires_at))
+                cur.execute("""
+                    INSERT INTO api_keys (key, email, rate_limit_tier, daily_limit, is_active, trial_expires_at, created_at)
+                    VALUES (%s, %s, 'trial', 1000, true, %s, NOW())
+                """, (api_key, email, expires_at))
 
-            # Log the registration
-            cur.execute("""
-                INSERT INTO platform_health_metrics (metric_category, metric_name, metric_value)
-                VALUES ('mcp_trial', %s, %s)
-            """, (platform, email))
+                # Log the registration
+                cur.execute("""
+                    INSERT INTO platform_health_metrics (metric_category, metric_name, metric_value)
+                    VALUES ('mcp_trial', %s, %s)
+                """, (platform, email))
 
-            conn.commit()
+                conn.commit()
 
-        except Exception as e:
-            logger.error(f"Trial creation error: {e}")
-            if conn:
-                conn.rollback()
-            return {'success': False, 'error': str(e)}
-        finally:
-            if conn:
-                conn.close()
+            except Exception as e:
+                logger.error(f"Trial creation error: {e}")
+                if conn:
+                    conn.rollback()
+                return {'success': False, 'error': str(e)}
+            finally:
+                if conn:
 
-    return {
-        'success': True,
-        'api_key': api_key,
-        'tier': 'trial',
-        'daily_limit': 1000,
-        'expires_at': expires_at.isoformat(),
-        'days_remaining': 14,
-        'setup': {
-            'claude_desktop': f'Add to claude_desktop_config.json: "env": {{"DCHUB_API_KEY": "{api_key}"}}',
-            'cursor': f'Add to .cursor/mcp.json: "env": {{"DCHUB_API_KEY": "{api_key}"}}',
-            'generic': f'Set environment variable: DCHUB_API_KEY={api_key}',
-        },
-        'message': (
-            f"Your 14-day DC Hub Developer trial is active! "
-            f"1,000 API calls/day with full facility data, coordinates, "
-            f"power capacity, and M&A details. "
-            f"Trial expires {expires_at.strftime('%B %d, %Y')}."
-        ),
-    }
+        return {
+            'success': True,
+            'api_key': api_key,
+            'tier': 'trial',
+            'daily_limit': 1000,
+            'expires_at': expires_at.isoformat(),
+            'days_remaining': 14,
+            'setup': {
+                'claude_desktop': f'Add to claude_desktop_config.json: "env": {{"DCHUB_API_KEY": "{api_key}"}}',
+                'cursor': f'Add to .cursor/mcp.json: "env": {{"DCHUB_API_KEY": "{api_key}"}}',
+                'generic': f'Set environment variable: DCHUB_API_KEY={api_key}',
+            },
+            'message': (
+                f"Your 14-day DC Hub Developer trial is active! "
+                f"1,000 API calls/day with full facility data, coordinates, "
+                f"power capacity, and M&A details. "
+                f"Trial expires {expires_at.strftime('%B %d, %Y')}."
+            ),
+        }
 
 
-# ─────────────────────────────────────────────────────────────
-# FLASK ROUTES FOR TRIAL/REGISTRATION
-# ─────────────────────────────────────────────────────────────
+        # ─────────────────────────────────────────────────────────────
+        # FLASK ROUTES FOR TRIAL/REGISTRATION
+        # ─────────────────────────────────────────────────────────────
 
+    finally:
+        conn.close()
 def register_mcp_trial_routes(app, get_db):
     """
     Register trial signup and developer registration routes.
@@ -681,77 +687,79 @@ def register_mcp_trial_routes(app, get_db):
         conn = None
         try:
             conn = get_db()
-            cur = conn.cursor()
-            cur.execute("""
-                INSERT INTO mcp_registrations (email, platform, registered_at)
-                VALUES (%s, %s, NOW())
-                ON CONFLICT (email) DO UPDATE SET
-                    platform = EXCLUDED.platform,
-                    last_seen = NOW()
-            """, (email, platform))
+    try:
+                cur = conn.cursor()
+                cur.execute("""
+                    INSERT INTO mcp_registrations (email, platform, registered_at)
+                    VALUES (%s, %s, NOW())
+                    ON CONFLICT (email) DO UPDATE SET
+                        platform = EXCLUDED.platform,
+                        last_seen = NOW()
+                """, (email, platform))
 
-            # Create registrations table if needed
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS mcp_registrations (
-                    id SERIAL PRIMARY KEY,
-                    email VARCHAR(500) UNIQUE,
-                    platform VARCHAR(100),
-                    registered_at TIMESTAMP DEFAULT NOW(),
-                    last_seen TIMESTAMP DEFAULT NOW(),
-                    trial_offered BOOLEAN DEFAULT false,
-                    converted BOOLEAN DEFAULT false
-                )
-            """)
+                # Create registrations table if needed
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS mcp_registrations (
+                        id SERIAL PRIMARY KEY,
+                        email VARCHAR(500) UNIQUE,
+                        platform VARCHAR(100),
+                        registered_at TIMESTAMP DEFAULT NOW(),
+                        last_seen TIMESTAMP DEFAULT NOW(),
+                        trial_offered BOOLEAN DEFAULT false,
+                        converted BOOLEAN DEFAULT false
+                    )
+                """)
 
-            conn.commit()
+                conn.commit()
 
-            return jsonify({
-                'success': True,
-                'message': 'Registration successful! You now get 50 premium calls free.',
-                'premium_calls': 50,
-                'trial_available': True,
-                'trial_url': TRIAL_SIGNUP_URL,
-            })
-        except Exception as e:
-            return jsonify({'error': str(e)}), 500
-        finally:
-            if conn:
-                conn.close()
+                return jsonify({
+                    'success': True,
+                    'message': 'Registration successful! You now get 50 premium calls free.',
+                    'premium_calls': 50,
+                    'trial_available': True,
+                    'trial_url': TRIAL_SIGNUP_URL,
+                })
+            except Exception as e:
+                return jsonify({'error': str(e)}), 500
+            finally:
+                if conn:
 
-    @app.route('/api/developer/usage')
-    def developer_usage():
-        """Get usage stats for an API key."""
-        api_key = request.headers.get('X-API-Key', '')
-        if not api_key:
-            return jsonify({'error': 'X-API-Key header required'}), 401
+        @app.route('/api/developer/usage')
+        def developer_usage():
+            """Get usage stats for an API key."""
+            api_key = request.headers.get('X-API-Key', '')
+            if not api_key:
+                return jsonify({'error': 'X-API-Key header required'}), 401
 
-        tier = get_tier(api_key, get_db)
-        today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+            tier = get_tier(api_key, get_db)
+            today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
 
-        conn = None
-        try:
-            conn = get_db()
-            cur = conn.cursor()
-            cur.execute("""
-                SELECT call_count FROM mcp_usage_tracking
-                WHERE identifier = %s AND date = %s
-            """, (api_key, today))
-            row = cur.fetchone()
-            count = row[0] if row else 0
+            conn = None
+            try:
+                conn = get_db()
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT call_count FROM mcp_usage_tracking
+                    WHERE identifier = %s AND date = %s
+                """, (api_key, today))
+                row = cur.fetchone()
+                count = row[0] if row else 0
 
-            limit = TIERS.get(tier, {}).get('daily_limit', 10)
+                limit = TIERS.get(tier, {}).get('daily_limit', 10)
 
-            return jsonify({
-                'tier': tier,
-                'today': today,
-                'calls_today': count,
-                'daily_limit': limit,
-                'calls_remaining': max(0, limit - count),
-            })
-        except Exception as e:
-            return jsonify({'error': str(e)}), 500
-        finally:
-            if conn:
-                conn.close()
+                return jsonify({
+                    'tier': tier,
+                    'today': today,
+                    'calls_today': count,
+                    'daily_limit': limit,
+                    'calls_remaining': max(0, limit - count),
+                })
+            except Exception as e:
+                return jsonify({'error': str(e)}), 500
+            finally:
+                if conn:
+                    conn.close()
 
-    logger.info("✅ MCP trial routes registered")
+        logger.info("✅ MCP trial routes registered")
+    finally:
+        conn.close()

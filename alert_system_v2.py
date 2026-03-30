@@ -356,49 +356,51 @@ def check_operator_watch_alert(criteria, last_checked):
         return None
     
     conn = get_db()
-    c = conn.cursor()
-    results = {}
-    
     try:
-        check_time = last_checked or (datetime.utcnow() - timedelta(days=1)).isoformat()
-        
-        # Check facilities
-        c.execute("""
-            SELECT COUNT(*) as count
-            FROM facilities
-            WHERE provider LIKE %s
-            AND created_at > %s
-        """, (f'%{operator}%', check_time))
-        fac_row = c.fetchone()
-        
-        if fac_row and fac_row['count'] > 0:
-            results['new_facilities'] = fac_row['count']
-        
-        # Check news if enabled
-        if include_news:
+        c = conn.cursor()
+        results = {}
+
+        try:
+            check_time = last_checked or (datetime.utcnow() - timedelta(days=1)).isoformat()
+
+            # Check facilities
             c.execute("""
                 SELECT COUNT(*) as count
-                FROM news
-                WHERE (title LIKE %s OR content LIKE %s)
-                AND published_at > %s
-            """, (f'%{operator}%', f'%{operator}%', check_time))
-            news_row = c.fetchone()
-            
-            if news_row and news_row['count'] > 0:
-                results['news_mentions'] = news_row['count']
-        
-        if results:
-            results['operator'] = operator
-            results['since'] = check_time
-            return results
-            
-    except Exception as e:
-        print(f"Operator watch check error: {e}")
+                FROM facilities
+                WHERE provider LIKE %s
+                AND created_at > %s
+            """, (f'%{operator}%', check_time))
+            fac_row = c.fetchone()
+
+            if fac_row and fac_row['count'] > 0:
+                results['new_facilities'] = fac_row['count']
+
+            # Check news if enabled
+            if include_news:
+                c.execute("""
+                    SELECT COUNT(*) as count
+                    FROM news
+                    WHERE (title LIKE %s OR content LIKE %s)
+                    AND published_at > %s
+                """, (f'%{operator}%', f'%{operator}%', check_time))
+                news_row = c.fetchone()
+
+                if news_row and news_row['count'] > 0:
+                    results['news_mentions'] = news_row['count']
+
+            if results:
+                results['operator'] = operator
+                results['since'] = check_time
+                return results
+
+        except Exception as e:
+            print(f"Operator watch check error: {e}")
+        finally:
+
+        return None
+
     finally:
         conn.close()
-    
-    return None
-
 def check_capacity_threshold_alert(criteria, last_checked):
     """Check if market capacity crossed threshold"""
     market = criteria.get('market', '')
@@ -586,103 +588,105 @@ def check_single_alert(alert):
 def process_all_alerts():
     """Process all enabled alerts and send notifications"""
     conn = get_db()
-    c = conn.cursor()
-    
-    results = {
-        'alerts_checked': 0,
-        'alerts_triggered': 0,
-        'emails_sent': 0,
-        'errors': []
-    }
-    
     try:
-        # Get all enabled alerts with user email
-        c.execute("""
-            SELECT a.*, u.email as user_email
-            FROM alerts_v2 a
-            LEFT JOIN users u ON a.user_id = u.id
-            WHERE a.enabled = 1
-        """)
-        alerts = c.fetchall()
-        
-        now = datetime.utcnow().isoformat()
-        
-        for alert in alerts:
-            alert_dict = dict(alert)
-            results['alerts_checked'] += 1
-            
-            try:
-                trigger_data = check_single_alert(alert_dict)
-                
-                # Update last_checked regardless
-                c.execute("UPDATE alerts_v2 SET last_checked = %s WHERE id = %s", 
-                         (now, alert_dict['id']))
-                
-                if trigger_data:
-                    results['alerts_triggered'] += 1
-                    
-                    # Update alert stats
-                    c.execute("""
-                        UPDATE alerts_v2 
-                        SET last_triggered = %s, trigger_count = trigger_count + 1
-                        WHERE id = %s
-                    """, (now, alert_dict['id']))
-                    
-                    # Record in history
-                    c.execute("""
-                        INSERT INTO alert_history (alert_id, user_id, triggered_at, trigger_reason, data_snapshot)
-                        VALUES (%s, %s, %s, %s, %s)
-                    """, (
-                        alert_dict['id'],
-                        alert_dict['user_id'],
-                        now,
-                        alert_dict['alert_type'],
-                        json.dumps(trigger_data)
-                    ))
-                    
-                    # Send email if enabled
-                    if alert_dict.get('email_notify') and alert_dict.get('user_email'):
-                        alert_name = alert_dict.get('name') or ALERT_TYPES.get(alert_dict['alert_type'], {}).get('name', 'Alert')
-                        html, text = build_alert_email(
+        c = conn.cursor()
+
+        results = {
+            'alerts_checked': 0,
+            'alerts_triggered': 0,
+            'emails_sent': 0,
+            'errors': []
+        }
+
+        try:
+            # Get all enabled alerts with user email
+            c.execute("""
+                SELECT a.*, u.email as user_email
+                FROM alerts_v2 a
+                LEFT JOIN users u ON a.user_id = u.id
+                WHERE a.enabled = 1
+            """)
+            alerts = c.fetchall()
+
+            now = datetime.utcnow().isoformat()
+
+            for alert in alerts:
+                alert_dict = dict(alert)
+                results['alerts_checked'] += 1
+
+                try:
+                    trigger_data = check_single_alert(alert_dict)
+
+                    # Update last_checked regardless
+                    c.execute("UPDATE alerts_v2 SET last_checked = %s WHERE id = %s", 
+                             (now, alert_dict['id']))
+
+                    if trigger_data:
+                        results['alerts_triggered'] += 1
+
+                        # Update alert stats
+                        c.execute("""
+                            UPDATE alerts_v2 
+                            SET last_triggered = %s, trigger_count = trigger_count + 1
+                            WHERE id = %s
+                        """, (now, alert_dict['id']))
+
+                        # Record in history
+                        c.execute("""
+                            INSERT INTO alert_history (alert_id, user_id, triggered_at, trigger_reason, data_snapshot)
+                            VALUES (%s, %s, %s, %s, %s)
+                        """, (
+                            alert_dict['id'],
+                            alert_dict['user_id'],
+                            now,
                             alert_dict['alert_type'],
-                            alert_name,
-                            trigger_data
-                        )
-                        
-                        subject = f"🔔 DC Hub Alert: {alert_name}"
-                        email_result = send_alert_email(
-                            alert_dict['user_email'],
-                            subject,
-                            html,
-                            text
-                        )
-                        
-                        if email_result.get('success'):
-                            results['emails_sent'] += 1
-                            c.execute("""
-                                UPDATE alert_history 
-                                SET email_sent = 1, email_sent_at = %s
-                                WHERE alert_id = %s AND triggered_at = %s
-                            """, (now, alert_dict['id'], now))
-                            
-            except Exception as e:
-                results['errors'].append(f"Alert {alert_dict['id']}: {str(e)}")
-                print(f"Error processing alert {alert_dict['id']}: {e}")
-        
-        conn.commit()
-        
-    except Exception as e:
-        results['errors'].append(f"General error: {str(e)}")
-        print(f"Alert processing error: {e}")
+                            json.dumps(trigger_data)
+                        ))
+
+                        # Send email if enabled
+                        if alert_dict.get('email_notify') and alert_dict.get('user_email'):
+                            alert_name = alert_dict.get('name') or ALERT_TYPES.get(alert_dict['alert_type'], {}).get('name', 'Alert')
+                            html, text = build_alert_email(
+                                alert_dict['alert_type'],
+                                alert_name,
+                                trigger_data
+                            )
+
+                            subject = f"🔔 DC Hub Alert: {alert_name}"
+                            email_result = send_alert_email(
+                                alert_dict['user_email'],
+                                subject,
+                                html,
+                                text
+                            )
+
+                            if email_result.get('success'):
+                                results['emails_sent'] += 1
+                                c.execute("""
+                                    UPDATE alert_history 
+                                    SET email_sent = 1, email_sent_at = %s
+                                    WHERE alert_id = %s AND triggered_at = %s
+                                """, (now, alert_dict['id'], now))
+
+                except Exception as e:
+                    results['errors'].append(f"Alert {alert_dict['id']}: {str(e)}")
+                    print(f"Error processing alert {alert_dict['id']}: {e}")
+
+            conn.commit()
+
+        except Exception as e:
+            results['errors'].append(f"General error: {str(e)}")
+            print(f"Alert processing error: {e}")
+        finally:
+
+        return results
+
+        # =============================================================================
+        # FLASK ROUTES
+        # =============================================================================
+
     finally:
         conn.close()
-    
-    return results
-
-# =============================================================================
-# FLASK ROUTES
-# =============================================================================
-
 alerts_v2_bp = Blueprint('alerts_v2', __name__)
 
 def require_auth(f):

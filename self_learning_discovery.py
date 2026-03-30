@@ -13,7 +13,6 @@ Features:
 """
 
 import requests
-import sqlite3
 import re
 import hashlib
 import time
@@ -271,7 +270,7 @@ class SelfLearningDiscovery:
                 conn.close()
                 return False
                 
-            except sqlite3.OperationalError as e:
+            except Exception as e:
                 if 'locked' in str(e) and attempt < 4:
                     _time.sleep(1.0 * (attempt + 1))
                     continue

@@ -84,128 +84,128 @@ def score_hex_cell(hex_id, conn=None):
     close_conn = False
     if conn is None:
         conn = get_db()
-        close_conn = True
-    
-    if not conn:
-        return {'hex': hex_id, 'score': 0, 'breakdown': scores, 'error': 'No DB connection'}
-    
     try:
-        c = conn.cursor()
-        
-        # Power score: substations within radius
+            close_conn = True
+
+        if not conn:
+            return {'hex': hex_id, 'score': 0, 'breakdown': scores, 'error': 'No DB connection'}
+
         try:
-            c.execute("""
-                SELECT COUNT(*), COALESCE(MAX(voltage_kv), 0)
-                FROM substations 
-                WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s
-            """, (lat - radius, lat + radius, lng - radius, lng + radius))
-            row = c.fetchone()
-            sub_count = row[0] if row else 0
-            max_voltage = row[1] if row else 0
-            
-            # More substations = better, high voltage = bonus
-            scores['power'] = min(15, sub_count * 2)
-            if max_voltage >= 345:
-                scores['power'] = min(30, scores['power'] + 15)
-            elif max_voltage >= 230:
-                scores['power'] = min(30, scores['power'] + 10)
-            elif max_voltage >= 115:
-                scores['power'] = min(30, scores['power'] + 5)
-        except Exception as e:
-            logger.debug(f"Power scoring error: {e}")
-            try: conn.rollback()
-            except: pass
-        
-        # Fiber score: use fiber density from discovered_facilities as proxy
-        # (fiber_routes and fiber_kmz_routes lack coordinate columns)
-        try:
-            c.execute("""
-                SELECT COUNT(*) FROM discovered_facilities 
-                WHERE latitude BETWEEN %s AND %s AND longitude BETWEEN %s AND %s
-                AND (facility_type ILIKE '%%carrier%%' OR facility_type ILIKE '%%network%%' OR name ILIKE '%%fiber%%' OR name ILIKE '%%equinix%%' OR name ILIKE '%%coresite%%' OR name ILIKE '%%digital%%')
-            """, (lat - radius, lat + radius, lng - radius, lng + radius))
-            row = c.fetchone()
-            fiber_count = row[0] if row else 0
-            scores['fiber'] = min(25, fiber_count * 5)
-        except Exception as e:
-            logger.debug(f"Fiber scoring error: {e}")
-            try: conn.rollback()
-            except: pass
-        
-        # Gas score: pipelines within radius
-        try:
-            c.execute("""
-                SELECT COUNT(*), COALESCE(MAX(diameter_inches), 0)
-                FROM gas_pipelines 
-                WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s
-            """, (lat - radius, lat + radius, lng - radius, lng + radius))
-            row = c.fetchone()
-            gas_count = row[0] if row else 0
-            max_diameter = row[1] if row else 0
-            scores['gas'] = min(10, gas_count * 2)
-            if max_diameter >= 30:
-                scores['gas'] = min(15, scores['gas'] + 5)
-        except Exception as e:
-            logger.debug(f"Gas scoring error: {e}")
-            try: conn.rollback()
-            except: pass
-        
-        # Connectivity score: discovered facilities
-        try:
-            c.execute("""
-                SELECT COUNT(*) FROM discovered_facilities 
-                WHERE latitude BETWEEN %s AND %s AND longitude BETWEEN %s AND %s
-            """, (lat - radius, lat + radius, lng - radius, lng + radius))
-            row = c.fetchone()
-            fac_count = row[0] if row else 0
-            scores['connectivity'] = min(15, fac_count * 3)
-        except Exception as e:
-            try: conn.rollback()
-            except: pass
-            # Try alternate column names
+            c = conn.cursor()
+
+            # Power score: substations within radius
+            try:
+                c.execute("""
+                    SELECT COUNT(*), COALESCE(MAX(voltage_kv), 0)
+                    FROM substations 
+                    WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s
+                """, (lat - radius, lat + radius, lng - radius, lng + radius))
+                row = c.fetchone()
+                sub_count = row[0] if row else 0
+                max_voltage = row[1] if row else 0
+
+                # More substations = better, high voltage = bonus
+                scores['power'] = min(15, sub_count * 2)
+                if max_voltage >= 345:
+                    scores['power'] = min(30, scores['power'] + 15)
+                elif max_voltage >= 230:
+                    scores['power'] = min(30, scores['power'] + 10)
+                elif max_voltage >= 115:
+                    scores['power'] = min(30, scores['power'] + 5)
+            except Exception as e:
+                logger.debug(f"Power scoring error: {e}")
+                try: conn.rollback()
+                except: pass
+
+            # Fiber score: use fiber density from discovered_facilities as proxy
+            # (fiber_routes and fiber_kmz_routes lack coordinate columns)
             try:
                 c.execute("""
                     SELECT COUNT(*) FROM discovered_facilities 
+                    WHERE latitude BETWEEN %s AND %s AND longitude BETWEEN %s AND %s
+                    AND (facility_type ILIKE '%%carrier%%' OR facility_type ILIKE '%%network%%' OR name ILIKE '%%fiber%%' OR name ILIKE '%%equinix%%' OR name ILIKE '%%coresite%%' OR name ILIKE '%%digital%%')
+                """, (lat - radius, lat + radius, lng - radius, lng + radius))
+                row = c.fetchone()
+                fiber_count = row[0] if row else 0
+                scores['fiber'] = min(25, fiber_count * 5)
+            except Exception as e:
+                logger.debug(f"Fiber scoring error: {e}")
+                try: conn.rollback()
+                except: pass
+
+            # Gas score: pipelines within radius
+            try:
+                c.execute("""
+                    SELECT COUNT(*), COALESCE(MAX(diameter_inches), 0)
+                    FROM gas_pipelines 
                     WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s
+                """, (lat - radius, lat + radius, lng - radius, lng + radius))
+                row = c.fetchone()
+                gas_count = row[0] if row else 0
+                max_diameter = row[1] if row else 0
+                scores['gas'] = min(10, gas_count * 2)
+                if max_diameter >= 30:
+                    scores['gas'] = min(15, scores['gas'] + 5)
+            except Exception as e:
+                logger.debug(f"Gas scoring error: {e}")
+                try: conn.rollback()
+                except: pass
+
+            # Connectivity score: discovered facilities
+            try:
+                c.execute("""
+                    SELECT COUNT(*) FROM discovered_facilities 
+                    WHERE latitude BETWEEN %s AND %s AND longitude BETWEEN %s AND %s
                 """, (lat - radius, lat + radius, lng - radius, lng + radius))
                 row = c.fetchone()
                 fac_count = row[0] if row else 0
                 scores['connectivity'] = min(15, fac_count * 3)
-            except Exception:
-                logger.debug(f"Connectivity scoring error: {e}")
-        
-    except Exception as e:
-        logger.error(f"H3 scoring error for {hex_id}: {e}")
+            except Exception as e:
+                try: conn.rollback()
+                except: pass
+                # Try alternate column names
+                try:
+                    c.execute("""
+                        SELECT COUNT(*) FROM discovered_facilities 
+                        WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s
+                    """, (lat - radius, lat + radius, lng - radius, lng + radius))
+                    row = c.fetchone()
+                    fac_count = row[0] if row else 0
+                    scores['connectivity'] = min(15, fac_count * 3)
+                except Exception:
+                    logger.debug(f"Connectivity scoring error: {e}")
+
+        except Exception as e:
+            logger.error(f"H3 scoring error for {hex_id}: {e}")
+        finally:
+            if close_conn and conn:
+                try:
+
+        total = sum(scores.values())
+
+        # Grade
+        if total >= 80:
+            grade = 'A'
+        elif total >= 60:
+            grade = 'B'
+        elif total >= 40:
+            grade = 'C'
+        elif total >= 20:
+            grade = 'D'
+        else:
+            grade = 'F'
+
+        return {
+            'hex': hex_id,
+            'score': total,
+            'grade': grade,
+            'breakdown': scores,
+            'center': {'lat': lat, 'lng': lng}
+        }
+
+
     finally:
-        if close_conn and conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
-    
-    total = sum(scores.values())
-    
-    # Grade
-    if total >= 80:
-        grade = 'A'
-    elif total >= 60:
-        grade = 'B'
-    elif total >= 40:
-        grade = 'C'
-    elif total >= 20:
-        grade = 'D'
-    else:
-        grade = 'F'
-    
-    return {
-        'hex': hex_id,
-        'score': total,
-        'grade': grade,
-        'breakdown': scores,
-        'center': {'lat': lat, 'lng': lng}
-    }
-
-
+        conn.close()
 @h3_bp.route('/api/v2/scoring/h3-heatmap', methods=['GET'])
 def get_h3_heatmap():
     """

@@ -16,7 +16,6 @@ Email Providers Supported:
 """
 
 from flask import Blueprint, request, jsonify
-import sqlite3
 import json
 import os
 import re
@@ -215,7 +214,7 @@ def get_recent_news(hours=24):
         if news:
             db.close()
             return [dict(n) for n in news]
-    except sqlite3.OperationalError:
+    except Exception:
         pass
     
     # Fallback: try news table (alternate schema)
@@ -231,7 +230,7 @@ def get_recent_news(hours=24):
         
         db.close()
         return [dict(n) for n in news]
-    except sqlite3.OperationalError:
+    except Exception:
         db.close()
         return []
 
@@ -252,7 +251,7 @@ def get_recent_facilities(hours=24):
         
         db.close()
         return [dict(f) for f in facilities]
-    except sqlite3.OperationalError:
+    except Exception:
         db.close()
         return []
 
@@ -273,7 +272,7 @@ def get_recent_pipeline(hours=24):
         
         db.close()
         return [dict(p) for p in projects]
-    except sqlite3.OperationalError:
+    except Exception:
         db.close()
         return []
 

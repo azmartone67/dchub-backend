@@ -84,33 +84,33 @@ def init_tracking_db():
     conn = None
     try:
         conn = get_db()
-        c = conn.cursor()
-        c.execute('''CREATE TABLE IF NOT EXISTS ai_access_log (
-            id SERIAL PRIMARY KEY,
-            timestamp TEXT NOT NULL,
-            platform TEXT NOT NULL,
-            user_agent TEXT,
-            ip_address TEXT,
-            file_requested TEXT NOT NULL,
-            method TEXT DEFAULT 'GET',
-            response_code INTEGER DEFAULT 200
-        )''')
-        c.execute('''CREATE INDEX IF NOT EXISTS idx_ai_access_timestamp 
-                     ON ai_access_log(timestamp)''')
-        c.execute('''CREATE INDEX IF NOT EXISTS idx_ai_access_platform 
-                     ON ai_access_log(platform)''')
-        conn.commit()
-        logger.info("AI tracking database initialized")
-    except Exception as e:
-        logger.error(f"Failed to init tracking DB: {e}")
+    try:
+            c = conn.cursor()
+            c.execute('''CREATE TABLE IF NOT EXISTS ai_access_log (
+                id SERIAL PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                platform TEXT NOT NULL,
+                user_agent TEXT,
+                ip_address TEXT,
+                file_requested TEXT NOT NULL,
+                method TEXT DEFAULT 'GET',
+                response_code INTEGER DEFAULT 200
+            )''')
+            c.execute('''CREATE INDEX IF NOT EXISTS idx_ai_access_timestamp 
+                         ON ai_access_log(timestamp)''')
+            c.execute('''CREATE INDEX IF NOT EXISTS idx_ai_access_platform 
+                         ON ai_access_log(platform)''')
+            conn.commit()
+            logger.info("AI tracking database initialized")
+        except Exception as e:
+            logger.error(f"Failed to init tracking DB: {e}")
+        finally:
+            if conn:
+                try:
+
+
     finally:
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-
+        conn.close()
 def log_ai_access(file_requested, platform=None):
     """Log an AI platform access to a discovery file. Non-blocking — skips if DB busy."""
     conn = None

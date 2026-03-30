@@ -26,7 +26,6 @@ SOURCES:
 
 import os
 import json
-import sqlite3
 import requests
 import hashlib
 import time
@@ -866,7 +865,7 @@ class APIAutoDiscovery:
                               new_count, schema_hash, 1 if is_healthy else 0,
                               test_result.get('error', '')))
                         break
-                    except sqlite3.OperationalError:
+                    except Exception:
                         time.sleep(0.5)
 
                 time.sleep(0.5)
@@ -931,7 +930,7 @@ class APIAutoDiscovery:
 
                         results['registered'] += 1
                         break
-                    except sqlite3.OperationalError:
+                    except Exception:
                         time.sleep(0.5)
 
             except Exception as e:
@@ -978,7 +977,7 @@ class APIAutoDiscovery:
                             UPDATE discovered_apis SET status = 'deprecated', updated_at = %s WHERE id = %s
                         ''', (datetime.now().isoformat(), api_id))
                         break
-                    except sqlite3.OperationalError:
+                    except Exception:
                         time.sleep(0.5)
 
                 self._log_change_event(cursor, api_id, 'deprecated', current_status, 'deprecated',
@@ -993,7 +992,7 @@ class APIAutoDiscovery:
                             UPDATE discovered_apis SET status = 'working', updated_at = %s WHERE id = %s
                         ''', (datetime.now().isoformat(), api_id))
                         break
-                    except sqlite3.OperationalError:
+                    except Exception:
                         time.sleep(0.5)
 
                 self._log_change_event(cursor, api_id, 'recovered', current_status, 'working',
@@ -1040,7 +1039,7 @@ class APIAutoDiscovery:
                           str(test_result.get('record_count', 0)),
                           datetime.now().isoformat(), api_id))
                     break
-                except sqlite3.OperationalError:
+                except Exception:
                     time.sleep(0.5)
 
             time.sleep(0.5)

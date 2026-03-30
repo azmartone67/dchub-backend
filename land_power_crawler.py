@@ -76,145 +76,147 @@ def init_land_power_tables(get_db):
     conn = None
     try:
         conn = get_db()
-        c = conn.cursor()
+    try:
+            c = conn.cursor()
 
-        # Power plants (EIA-860)
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS power_plants (
-                id SERIAL PRIMARY KEY,
-                eia_plant_id VARCHAR(20),
-                name VARCHAR(500),
-                operator VARCHAR(500),
-                state VARCHAR(10),
-                county VARCHAR(200),
-                city VARCHAR(200),
-                lat DOUBLE PRECISION,
-                lon DOUBLE PRECISION,
-                capacity_mw DOUBLE PRECISION DEFAULT 0,
-                fuel_type VARCHAR(100),
-                fuel_category VARCHAR(100),
-                prime_mover VARCHAR(50),
-                status VARCHAR(50),
-                operating_year INTEGER,
-                sector VARCHAR(100),
-                source VARCHAR(50) DEFAULT 'eia-860',
-                last_updated TIMESTAMP DEFAULT NOW(),
-                created_at TIMESTAMP DEFAULT NOW()
-            )
-        """)
-        c.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS power_plants_eia_id_uniq
-            ON power_plants (eia_plant_id)
-        """)
+            # Power plants (EIA-860)
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS power_plants (
+                    id SERIAL PRIMARY KEY,
+                    eia_plant_id VARCHAR(20),
+                    name VARCHAR(500),
+                    operator VARCHAR(500),
+                    state VARCHAR(10),
+                    county VARCHAR(200),
+                    city VARCHAR(200),
+                    lat DOUBLE PRECISION,
+                    lon DOUBLE PRECISION,
+                    capacity_mw DOUBLE PRECISION DEFAULT 0,
+                    fuel_type VARCHAR(100),
+                    fuel_category VARCHAR(100),
+                    prime_mover VARCHAR(50),
+                    status VARCHAR(50),
+                    operating_year INTEGER,
+                    sector VARCHAR(100),
+                    source VARCHAR(50) DEFAULT 'eia-860',
+                    last_updated TIMESTAMP DEFAULT NOW(),
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            c.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS power_plants_eia_id_uniq
+                ON power_plants (eia_plant_id)
+            """)
 
-        # Substations (HIFLD)
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS substations (
-                id SERIAL PRIMARY KEY,
-                hifld_id VARCHAR(50),
-                name VARCHAR(500),
-                operator VARCHAR(500),
-                state VARCHAR(10),
-                county VARCHAR(200),
-                city VARCHAR(200),
-                lat DOUBLE PRECISION,
-                lon DOUBLE PRECISION,
-                voltage_kv DOUBLE PRECISION DEFAULT 0,
-                max_voltage_kv DOUBLE PRECISION DEFAULT 0,
-                min_voltage_kv DOUBLE PRECISION DEFAULT 0,
-                sub_type VARCHAR(100),
-                status VARCHAR(50) DEFAULT 'operational',
-                lines_count INTEGER DEFAULT 0,
-                source VARCHAR(50) DEFAULT 'hifld',
-                last_updated TIMESTAMP DEFAULT NOW(),
-                created_at TIMESTAMP DEFAULT NOW()
-            )
-        """)
-        c.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS substations_hifld_id_uniq
-            ON substations (hifld_id)
-        """)
+            # Substations (HIFLD)
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS substations (
+                    id SERIAL PRIMARY KEY,
+                    hifld_id VARCHAR(50),
+                    name VARCHAR(500),
+                    operator VARCHAR(500),
+                    state VARCHAR(10),
+                    county VARCHAR(200),
+                    city VARCHAR(200),
+                    lat DOUBLE PRECISION,
+                    lon DOUBLE PRECISION,
+                    voltage_kv DOUBLE PRECISION DEFAULT 0,
+                    max_voltage_kv DOUBLE PRECISION DEFAULT 0,
+                    min_voltage_kv DOUBLE PRECISION DEFAULT 0,
+                    sub_type VARCHAR(100),
+                    status VARCHAR(50) DEFAULT 'operational',
+                    lines_count INTEGER DEFAULT 0,
+                    source VARCHAR(50) DEFAULT 'hifld',
+                    last_updated TIMESTAMP DEFAULT NOW(),
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            c.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS substations_hifld_id_uniq
+                ON substations (hifld_id)
+            """)
 
-        # Transmission lines (HIFLD)
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS transmission_lines (
-                id SERIAL PRIMARY KEY,
-                hifld_id VARCHAR(50),
-                name VARCHAR(500),
-                operator VARCHAR(500),
-                voltage_kv DOUBLE PRECISION DEFAULT 0,
-                from_sub VARCHAR(500),
-                to_sub VARCHAR(500),
-                length_miles DOUBLE PRECISION DEFAULT 0,
-                state VARCHAR(10),
-                status VARCHAR(50) DEFAULT 'operational',
-                line_type VARCHAR(100),
-                source VARCHAR(50) DEFAULT 'hifld',
-                last_updated TIMESTAMP DEFAULT NOW(),
-                created_at TIMESTAMP DEFAULT NOW()
-            )
-        """)
-        c.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS transmission_lines_hifld_id_uniq
-            ON transmission_lines (hifld_id)
-        """)
+            # Transmission lines (HIFLD)
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS transmission_lines (
+                    id SERIAL PRIMARY KEY,
+                    hifld_id VARCHAR(50),
+                    name VARCHAR(500),
+                    operator VARCHAR(500),
+                    voltage_kv DOUBLE PRECISION DEFAULT 0,
+                    from_sub VARCHAR(500),
+                    to_sub VARCHAR(500),
+                    length_miles DOUBLE PRECISION DEFAULT 0,
+                    state VARCHAR(10),
+                    status VARCHAR(50) DEFAULT 'operational',
+                    line_type VARCHAR(100),
+                    source VARCHAR(50) DEFAULT 'hifld',
+                    last_updated TIMESTAMP DEFAULT NOW(),
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            c.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS transmission_lines_hifld_id_uniq
+                ON transmission_lines (hifld_id)
+            """)
 
-        # Gas pipelines — table may already exist from autonomous_brain.py
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS gas_pipelines (
-                id SERIAL PRIMARY KEY,
-                name VARCHAR(500),
-                operator VARCHAR(500),
-                diameter_in DOUBLE PRECISION DEFAULT 0,
-                length_miles DOUBLE PRECISION DEFAULT 0,
-                state VARCHAR(10),
-                commodity VARCHAR(100) DEFAULT 'natural_gas',
-                status VARCHAR(50) DEFAULT 'operational',
-                lat DOUBLE PRECISION,
-                lon DOUBLE PRECISION,
-                source VARCHAR(50) DEFAULT 'eia-ng',
-                last_updated TIMESTAMP DEFAULT NOW(),
-                created_at TIMESTAMP DEFAULT NOW()
-            )
-        """)
-        # Use existing unique index if present
-        c.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS gas_pipelines_name_operator_uniq
-            ON gas_pipelines (name, operator)
-        """)
+            # Gas pipelines — table may already exist from autonomous_brain.py
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS gas_pipelines (
+                    id SERIAL PRIMARY KEY,
+                    name VARCHAR(500),
+                    operator VARCHAR(500),
+                    diameter_in DOUBLE PRECISION DEFAULT 0,
+                    length_miles DOUBLE PRECISION DEFAULT 0,
+                    state VARCHAR(10),
+                    commodity VARCHAR(100) DEFAULT 'natural_gas',
+                    status VARCHAR(50) DEFAULT 'operational',
+                    lat DOUBLE PRECISION,
+                    lon DOUBLE PRECISION,
+                    source VARCHAR(50) DEFAULT 'eia-ng',
+                    last_updated TIMESTAMP DEFAULT NOW(),
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            # Use existing unique index if present
+            c.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS gas_pipelines_name_operator_uniq
+                ON gas_pipelines (name, operator)
+            """)
 
-        # Sync log — tracks each crawler run
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS land_power_sync_log (
-                id SERIAL PRIMARY KEY,
-                source VARCHAR(100),
-                records_fetched INTEGER DEFAULT 0,
-                records_upserted INTEGER DEFAULT 0,
-                records_skipped INTEGER DEFAULT 0,
-                errors INTEGER DEFAULT 0,
-                error_detail TEXT,
-                duration_seconds DOUBLE PRECISION DEFAULT 0,
-                run_type VARCHAR(20) DEFAULT 'incremental',
-                created_at TIMESTAMP DEFAULT NOW()
-            )
-        """)
+            # Sync log — tracks each crawler run
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS land_power_sync_log (
+                    id SERIAL PRIMARY KEY,
+                    source VARCHAR(100),
+                    records_fetched INTEGER DEFAULT 0,
+                    records_upserted INTEGER DEFAULT 0,
+                    records_skipped INTEGER DEFAULT 0,
+                    errors INTEGER DEFAULT 0,
+                    error_detail TEXT,
+                    duration_seconds DOUBLE PRECISION DEFAULT 0,
+                    run_type VARCHAR(20) DEFAULT 'incremental',
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
 
-        conn.commit()
-        logger.info("✅ Land & Power tables initialized")
-    except Exception as e:
-        logger.error(f"❌ Error initializing land_power tables: {e}")
-        if conn:
-            conn.rollback()
-        raise
+            conn.commit()
+            logger.info("✅ Land & Power tables initialized")
+        except Exception as e:
+            logger.error(f"❌ Error initializing land_power tables: {e}")
+            if conn:
+                conn.rollback()
+            raise
+        finally:
+            if conn:
+
+
+        # ─────────────────────────────────────────────────────────────
+        # HTTP HELPERS
+        # ─────────────────────────────────────────────────────────────
+
     finally:
-        if conn:
-            conn.close()
-
-
-# ─────────────────────────────────────────────────────────────
-# HTTP HELPERS
-# ─────────────────────────────────────────────────────────────
-
+        conn.close()
 def _fetch_json(url, params=None, retries=MAX_RETRIES):
     """Fetch JSON with retry + rate limiting."""
     for attempt in range(retries):
@@ -364,70 +366,72 @@ def crawl_power_plants(get_db, full_refresh=False):
 
         # Upsert into database
         conn = get_db()
-        cur = conn.cursor()
+    try:
+            cur = conn.cursor()
 
-        for pid, rec in plant_map.items():
-            try:
-                cur.execute("""
-                    INSERT INTO power_plants (
-                        eia_plant_id, name, operator, state, county, city,
-                        lat, lon, capacity_mw, fuel_type, fuel_category,
-                        prime_mover, status, sector, source, last_updated
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                    ON CONFLICT (eia_plant_id)
-                    DO UPDATE SET
-                        name = EXCLUDED.name,
-                        operator = EXCLUDED.operator,
-                        capacity_mw = EXCLUDED.capacity_mw,
-                        fuel_type = EXCLUDED.fuel_type,
-                        fuel_category = EXCLUDED.fuel_category,
-                        status = EXCLUDED.status,
-                        last_updated = NOW()
-                """, (
-                    pid,
-                    _safe_str(rec.get('plantName', '')),
-                    _safe_str(rec.get('operator', '')),
-                    _safe_str(rec.get('stateid', '')),
-                    _safe_str(rec.get('county', '')),
-                    _safe_str(rec.get('city', '')),
-                    _safe_float(rec.get('latitude')),
-                    _safe_float(rec.get('longitude')),
-                    _safe_float(rec.get('nameplate-capacity-mw', 0)),
-                    _safe_str(rec.get('fuel2002', '')),
-                    classify_fuel(rec.get('fuel2002', '')),
-                    _safe_str(rec.get('reported-prime-mover', '')),
-                    _safe_str(rec.get('status', 'OP')),
-                    _safe_str(rec.get('sectorName', '')),
-                    'eia-860',
-                ))
-                upserted += 1
-            except Exception as e:
-                errors += 1
-                if len(error_detail) < 10:
-                    error_detail.append(f"Plant {pid}: {str(e)[:100]}")
+            for pid, rec in plant_map.items():
+                try:
+                    cur.execute("""
+                        INSERT INTO power_plants (
+                            eia_plant_id, name, operator, state, county, city,
+                            lat, lon, capacity_mw, fuel_type, fuel_category,
+                            prime_mover, status, sector, source, last_updated
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                        ON CONFLICT (eia_plant_id)
+                        DO UPDATE SET
+                            name = EXCLUDED.name,
+                            operator = EXCLUDED.operator,
+                            capacity_mw = EXCLUDED.capacity_mw,
+                            fuel_type = EXCLUDED.fuel_type,
+                            fuel_category = EXCLUDED.fuel_category,
+                            status = EXCLUDED.status,
+                            last_updated = NOW()
+                    """, (
+                        pid,
+                        _safe_str(rec.get('plantName', '')),
+                        _safe_str(rec.get('operator', '')),
+                        _safe_str(rec.get('stateid', '')),
+                        _safe_str(rec.get('county', '')),
+                        _safe_str(rec.get('city', '')),
+                        _safe_float(rec.get('latitude')),
+                        _safe_float(rec.get('longitude')),
+                        _safe_float(rec.get('nameplate-capacity-mw', 0)),
+                        _safe_str(rec.get('fuel2002', '')),
+                        classify_fuel(rec.get('fuel2002', '')),
+                        _safe_str(rec.get('reported-prime-mover', '')),
+                        _safe_str(rec.get('status', 'OP')),
+                        _safe_str(rec.get('sectorName', '')),
+                        'eia-860',
+                    ))
+                    upserted += 1
+                except Exception as e:
+                    errors += 1
+                    if len(error_detail) < 10:
+                        error_detail.append(f"Plant {pid}: {str(e)[:100]}")
 
-        conn.commit()
-        logger.info(f"✅ Power plants: {upserted} upserted, {errors} errors")
+            conn.commit()
+            logger.info(f"✅ Power plants: {upserted} upserted, {errors} errors")
 
-    except Exception as e:
-        errors += 1
-        error_detail.append(f"Fatal: {str(e)[:200]}")
-        logger.error(f"❌ Power plant crawl failed: {e}")
-        if conn:
-            conn.rollback()
+        except Exception as e:
+            errors += 1
+            error_detail.append(f"Fatal: {str(e)[:200]}")
+            logger.error(f"❌ Power plant crawl failed: {e}")
+            if conn:
+                conn.rollback()
+        finally:
+            if conn:
+
+        duration = time.time() - started
+        _log_sync(get_db, 'eia-860-plants', fetched, upserted, fetched - upserted, errors,
+                  '; '.join(error_detail) if error_detail else None, duration)
+
+
+        # ─────────────────────────────────────────────────────────────
+        # CRAWLER 2: SUBSTATIONS (HIFLD Open Data)
+        # ─────────────────────────────────────────────────────────────
+
     finally:
-        if conn:
-            conn.close()
-
-    duration = time.time() - started
-    _log_sync(get_db, 'eia-860-plants', fetched, upserted, fetched - upserted, errors,
-              '; '.join(error_detail) if error_detail else None, duration)
-
-
-# ─────────────────────────────────────────────────────────────
-# CRAWLER 2: SUBSTATIONS (HIFLD Open Data)
-# ─────────────────────────────────────────────────────────────
-
+        conn.close()
 def crawl_substations(get_db, full_refresh=False):
     """
     Fetch substation data from HIFLD (Homeland Infrastructure Foundation).
@@ -453,66 +457,68 @@ def crawl_substations(get_db, full_refresh=False):
         logger.info(f"  ⚡ Fetched {fetched} substations")
 
         conn = get_db()
-        cur = conn.cursor()
-        batch = []
+    try:
+            cur = conn.cursor()
+            batch = []
 
-        for feat in features:
-            props = feat.get('properties', {})
-            geom = feat.get('geometry', {})
-            coords = geom.get('coordinates', [None, None]) if geom else [None, None]
+            for feat in features:
+                props = feat.get('properties', {})
+                geom = feat.get('geometry', {})
+                coords = geom.get('coordinates', [None, None]) if geom else [None, None]
 
-            hifld_id = str(props.get('ID', props.get('OBJECTID', '')))
-            if not hifld_id:
-                continue
+                hifld_id = str(props.get('ID', props.get('OBJECTID', '')))
+                if not hifld_id:
+                    continue
 
-            batch.append((
-                hifld_id,
-                _safe_str(props.get('NAME', '')),
-                _safe_str(props.get('OWNER', props.get('OPERATOR', ''))),
-                _safe_str(props.get('STATE', '')),
-                _safe_str(props.get('COUNTY', '')),
-                _safe_str(props.get('CITY', '')),
-                _safe_float(coords[1]) if len(coords) > 1 else None,  # lat
-                _safe_float(coords[0]) if len(coords) > 0 else None,  # lon
-                _safe_float(props.get('MAX_VOLT', props.get('VOLTAGE', 0))),
-                _safe_float(props.get('MAX_VOLT', 0)),
-                _safe_float(props.get('MIN_VOLT', 0)),
-                _safe_str(props.get('TYPE', '')),
-                _safe_str(props.get('STATUS', 'operational')),
-                _safe_int(props.get('LINES', 0)),
-            ))
+                batch.append((
+                    hifld_id,
+                    _safe_str(props.get('NAME', '')),
+                    _safe_str(props.get('OWNER', props.get('OPERATOR', ''))),
+                    _safe_str(props.get('STATE', '')),
+                    _safe_str(props.get('COUNTY', '')),
+                    _safe_str(props.get('CITY', '')),
+                    _safe_float(coords[1]) if len(coords) > 1 else None,  # lat
+                    _safe_float(coords[0]) if len(coords) > 0 else None,  # lon
+                    _safe_float(props.get('MAX_VOLT', props.get('VOLTAGE', 0))),
+                    _safe_float(props.get('MAX_VOLT', 0)),
+                    _safe_float(props.get('MIN_VOLT', 0)),
+                    _safe_str(props.get('TYPE', '')),
+                    _safe_str(props.get('STATUS', 'operational')),
+                    _safe_int(props.get('LINES', 0)),
+                ))
 
-            # Batch insert every 1000
-            if len(batch) >= 1000:
+                # Batch insert every 1000
+                if len(batch) >= 1000:
+                    u, e = _upsert_substations(cur, batch)
+                    upserted += u
+                    errors += e
+                    batch = []
+
+            # Final batch
+            if batch:
                 u, e = _upsert_substations(cur, batch)
                 upserted += u
                 errors += e
-                batch = []
 
-        # Final batch
-        if batch:
-            u, e = _upsert_substations(cur, batch)
-            upserted += u
-            errors += e
+            conn.commit()
+            logger.info(f"✅ Substations: {upserted} upserted, {errors} errors")
 
-        conn.commit()
-        logger.info(f"✅ Substations: {upserted} upserted, {errors} errors")
+        except Exception as e:
+            errors += 1
+            error_detail.append(f"Fatal: {str(e)[:200]}")
+            logger.error(f"❌ Substation crawl failed: {e}")
+            if conn:
+                conn.rollback()
+        finally:
+            if conn:
 
-    except Exception as e:
-        errors += 1
-        error_detail.append(f"Fatal: {str(e)[:200]}")
-        logger.error(f"❌ Substation crawl failed: {e}")
-        if conn:
-            conn.rollback()
+        duration = time.time() - started
+        _log_sync(get_db, 'hifld-substations', fetched, upserted, fetched - upserted, errors,
+                  '; '.join(error_detail) if error_detail else None, duration)
+
+
     finally:
-        if conn:
-            conn.close()
-
-    duration = time.time() - started
-    _log_sync(get_db, 'hifld-substations', fetched, upserted, fetched - upserted, errors,
-              '; '.join(error_detail) if error_detail else None, duration)
-
-
+        conn.close()
 def _upsert_substations(cur, batch):
     """Batch upsert substations. Returns (upserted_count, error_count)."""
     upserted = 0
@@ -570,64 +576,66 @@ def crawl_transmission_lines(get_db, full_refresh=False):
         logger.info(f"  🔗 Fetched {fetched} transmission lines")
 
         conn = get_db()
-        cur = conn.cursor()
-        batch = []
+    try:
+            cur = conn.cursor()
+            batch = []
 
-        for feat in features:
-            props = feat.get('properties', {})
+            for feat in features:
+                props = feat.get('properties', {})
 
-            hifld_id = str(props.get('ID', props.get('OBJECTID', '')))
-            if not hifld_id:
-                continue
+                hifld_id = str(props.get('ID', props.get('OBJECTID', '')))
+                if not hifld_id:
+                    continue
 
-            # Calculate length from geometry if available
-            length_miles = _safe_float(props.get('SHAPE_Length', props.get('LENGTH', 0)))
-            # HIFLD sometimes gives length in meters, convert
-            if length_miles and length_miles > 10000:
-                length_miles = length_miles * 0.000621371  # meters to miles
+                # Calculate length from geometry if available
+                length_miles = _safe_float(props.get('SHAPE_Length', props.get('LENGTH', 0)))
+                # HIFLD sometimes gives length in meters, convert
+                if length_miles and length_miles > 10000:
+                    length_miles = length_miles * 0.000621371  # meters to miles
 
-            batch.append((
-                hifld_id,
-                _safe_str(props.get('ID', '')),
-                _safe_str(props.get('OWNER', props.get('OPERATOR', ''))),
-                _safe_float(props.get('VOLTAGE', 0)),
-                _safe_str(props.get('SUB_1', '')),
-                _safe_str(props.get('SUB_2', '')),
-                length_miles,
-                _safe_str(props.get('STATE', '')),
-                _safe_str(props.get('STATUS', 'operational')),
-                _safe_str(props.get('TYPE', '')),
-            ))
+                batch.append((
+                    hifld_id,
+                    _safe_str(props.get('ID', '')),
+                    _safe_str(props.get('OWNER', props.get('OPERATOR', ''))),
+                    _safe_float(props.get('VOLTAGE', 0)),
+                    _safe_str(props.get('SUB_1', '')),
+                    _safe_str(props.get('SUB_2', '')),
+                    length_miles,
+                    _safe_str(props.get('STATE', '')),
+                    _safe_str(props.get('STATUS', 'operational')),
+                    _safe_str(props.get('TYPE', '')),
+                ))
 
-            if len(batch) >= 1000:
+                if len(batch) >= 1000:
+                    u, e = _upsert_transmission(cur, batch)
+                    upserted += u
+                    errors += e
+                    batch = []
+
+            if batch:
                 u, e = _upsert_transmission(cur, batch)
                 upserted += u
                 errors += e
-                batch = []
 
-        if batch:
-            u, e = _upsert_transmission(cur, batch)
-            upserted += u
-            errors += e
+            conn.commit()
+            logger.info(f"✅ Transmission lines: {upserted} upserted, {errors} errors")
 
-        conn.commit()
-        logger.info(f"✅ Transmission lines: {upserted} upserted, {errors} errors")
+        except Exception as e:
+            errors += 1
+            error_detail.append(f"Fatal: {str(e)[:200]}")
+            logger.error(f"❌ Transmission line crawl failed: {e}")
+            if conn:
+                conn.rollback()
+        finally:
+            if conn:
 
-    except Exception as e:
-        errors += 1
-        error_detail.append(f"Fatal: {str(e)[:200]}")
-        logger.error(f"❌ Transmission line crawl failed: {e}")
-        if conn:
-            conn.rollback()
+        duration = time.time() - started
+        _log_sync(get_db, 'hifld-transmission', fetched, upserted, fetched - upserted, errors,
+                  '; '.join(error_detail) if error_detail else None, duration)
+
+
     finally:
-        if conn:
-            conn.close()
-
-    duration = time.time() - started
-    _log_sync(get_db, 'hifld-transmission', fetched, upserted, fetched - upserted, errors,
-              '; '.join(error_detail) if error_detail else None, duration)
-
-
+        conn.close()
 def _upsert_transmission(cur, batch):
     """Batch upsert transmission lines."""
     upserted = 0
@@ -724,53 +732,55 @@ def crawl_gas_pipelines(get_db, full_refresh=False):
                 pipe_map[key] = rec
 
         conn = get_db()
-        cur = conn.cursor()
+    try:
+            cur = conn.cursor()
 
-        for (name, area), rec in pipe_map.items():
-            if not name:
-                continue
-            try:
-                cur.execute("""
-                    INSERT INTO gas_pipelines (name, operator, state, commodity, source, last_updated)
-                    VALUES (%s, %s, %s, %s, 'eia-ng', NOW())
-                    ON CONFLICT (name, operator)
-                    DO UPDATE SET
-                        state = COALESCE(EXCLUDED.state, gas_pipelines.state),
-                        last_updated = NOW()
-                """, (
-                    name[:500],
-                    _safe_str(rec.get('area-name', ''))[:500],
-                    _safe_str(rec.get('stateid', ''))[:10],
-                    'natural_gas',
-                ))
-                upserted += 1
-            except Exception as e:
-                errors += 1
-                if len(error_detail) < 10:
-                    error_detail.append(f"Pipeline {name[:50]}: {str(e)[:100]}")
+            for (name, area), rec in pipe_map.items():
+                if not name:
+                    continue
+                try:
+                    cur.execute("""
+                        INSERT INTO gas_pipelines (name, operator, state, commodity, source, last_updated)
+                        VALUES (%s, %s, %s, %s, 'eia-ng', NOW())
+                        ON CONFLICT (name, operator)
+                        DO UPDATE SET
+                            state = COALESCE(EXCLUDED.state, gas_pipelines.state),
+                            last_updated = NOW()
+                    """, (
+                        name[:500],
+                        _safe_str(rec.get('area-name', ''))[:500],
+                        _safe_str(rec.get('stateid', ''))[:10],
+                        'natural_gas',
+                    ))
+                    upserted += 1
+                except Exception as e:
+                    errors += 1
+                    if len(error_detail) < 10:
+                        error_detail.append(f"Pipeline {name[:50]}: {str(e)[:100]}")
 
-        conn.commit()
-        logger.info(f"✅ Gas pipelines: {upserted} upserted, {errors} errors")
+            conn.commit()
+            logger.info(f"✅ Gas pipelines: {upserted} upserted, {errors} errors")
 
-    except Exception as e:
-        errors += 1
-        error_detail.append(f"Fatal: {str(e)[:200]}")
-        logger.error(f"❌ Gas pipeline crawl failed: {e}")
-        if conn:
-            conn.rollback()
+        except Exception as e:
+            errors += 1
+            error_detail.append(f"Fatal: {str(e)[:200]}")
+            logger.error(f"❌ Gas pipeline crawl failed: {e}")
+            if conn:
+                conn.rollback()
+        finally:
+            if conn:
+
+        duration = time.time() - started
+        _log_sync(get_db, 'eia-ng-pipelines', fetched, upserted, fetched - upserted, errors,
+                  '; '.join(error_detail) if error_detail else None, duration)
+
+
+        # ─────────────────────────────────────────────────────────────
+        # MARKET POWER PROFILES (auto-generated per market)
+        # ─────────────────────────────────────────────────────────────
+
     finally:
-        if conn:
-            conn.close()
-
-    duration = time.time() - started
-    _log_sync(get_db, 'eia-ng-pipelines', fetched, upserted, fetched - upserted, errors,
-              '; '.join(error_detail) if error_detail else None, duration)
-
-
-# ─────────────────────────────────────────────────────────────
-# MARKET POWER PROFILES (auto-generated per market)
-# ─────────────────────────────────────────────────────────────
-
+        conn.close()
 def generate_market_power_profiles(get_db):
     """
     Auto-generate power infrastructure summaries for each DC Hub market.
@@ -781,153 +791,155 @@ def generate_market_power_profiles(get_db):
     conn = None
     try:
         conn = get_db()
-        cur = conn.cursor()
+    try:
+            cur = conn.cursor()
 
-        # Create profiles table
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS market_power_profiles (
-                id SERIAL PRIMARY KEY,
-                market VARCHAR(200) UNIQUE,
-                state VARCHAR(10),
-                substation_count INTEGER DEFAULT 0,
-                avg_voltage_kv DOUBLE PRECISION DEFAULT 0,
-                max_voltage_kv DOUBLE PRECISION DEFAULT 0,
-                transmission_line_count INTEGER DEFAULT 0,
-                total_transmission_miles DOUBLE PRECISION DEFAULT 0,
-                gas_pipeline_count INTEGER DEFAULT 0,
-                power_plant_count INTEGER DEFAULT 0,
-                total_generation_mw DOUBLE PRECISION DEFAULT 0,
-                solar_mw DOUBLE PRECISION DEFAULT 0,
-                wind_mw DOUBLE PRECISION DEFAULT 0,
-                natural_gas_mw DOUBLE PRECISION DEFAULT 0,
-                nuclear_mw DOUBLE PRECISION DEFAULT 0,
-                coal_mw DOUBLE PRECISION DEFAULT 0,
-                battery_storage_mw DOUBLE PRECISION DEFAULT 0,
-                renewable_pct DOUBLE PRECISION DEFAULT 0,
-                power_readiness_score INTEGER DEFAULT 0,
-                last_updated TIMESTAMP DEFAULT NOW()
-            )
-        """)
-
-        # DC Hub market → state mapping
-        MARKET_STATES = {
-            'Northern Virginia': 'VA', 'Dallas-Fort Worth': 'TX', 'Phoenix': 'AZ',
-            'Chicago': 'IL', 'Atlanta': 'GA', 'Portland': 'OR', 'Salt Lake City': 'UT',
-            'Columbus': 'OH', 'Northern California': 'CA', 'Southern California': 'CA',
-            'New York Metro': 'NJ', 'Seattle': 'WA', 'Denver': 'CO', 'Houston': 'TX',
-            'Minneapolis': 'MN', 'Las Vegas': 'NV', 'Kansas City': 'MO',
-            'Sacramento': 'CA', 'San Antonio': 'TX', 'Austin': 'TX',
-            'Nashville': 'TN', 'Charlotte': 'NC', 'Raleigh-Durham': 'NC',
-            'Tampa Bay': 'FL', 'Miami': 'FL', 'Pittsburgh': 'PA',
-            'St. Louis': 'MO', 'Indianapolis': 'IN', 'Omaha': 'NE',
-            'Des Moines': 'IA', 'Reno': 'NV', 'Boise': 'ID',
-            'Albuquerque': 'NM', 'Hillsboro': 'OR', 'Quincy': 'WA',
-            'Papillion': 'NE', 'Council Bluffs': 'IA', 'Elk Grove': 'CA',
-            'Prineville': 'OR', 'The Dalles': 'OR', 'Moses Lake': 'WA',
-            'Cheyenne': 'WY',
-        }
-
-        profiles_updated = 0
-
-        for market, state in MARKET_STATES.items():
-            try:
-                # Substation stats
-                cur.execute("""
-                    SELECT COUNT(*), COALESCE(AVG(voltage_kv), 0), COALESCE(MAX(max_voltage_kv), 0)
-                    FROM substations WHERE state = %s
-                """, (state,))
-                sub_count, avg_volt, max_volt = cur.fetchone()
-
-                # Transmission stats
-                cur.execute("""
-                    SELECT COUNT(*), COALESCE(SUM(length_miles), 0)
-                    FROM transmission_lines WHERE state = %s
-                """, (state,))
-                tx_count, tx_miles = cur.fetchone()
-
-                # Gas pipeline stats
-                cur.execute("""
-                    SELECT COUNT(*) FROM gas_pipelines WHERE state = %s
-                """, (state,))
-                gas_count = cur.fetchone()[0]
-
-                # Power plant stats by fuel category
-                cur.execute("""
-                    SELECT
-                        COUNT(*),
-                        COALESCE(SUM(capacity_mw), 0),
-                        COALESCE(SUM(CASE WHEN fuel_category = 'solar' THEN capacity_mw ELSE 0 END), 0),
-                        COALESCE(SUM(CASE WHEN fuel_category = 'wind' THEN capacity_mw ELSE 0 END), 0),
-                        COALESCE(SUM(CASE WHEN fuel_category = 'natural_gas' THEN capacity_mw ELSE 0 END), 0),
-                        COALESCE(SUM(CASE WHEN fuel_category = 'nuclear' THEN capacity_mw ELSE 0 END), 0),
-                        COALESCE(SUM(CASE WHEN fuel_category = 'coal' THEN capacity_mw ELSE 0 END), 0),
-                        COALESCE(SUM(CASE WHEN fuel_category = 'battery_storage' THEN capacity_mw ELSE 0 END), 0)
-                    FROM power_plants WHERE state = %s
-                """, (state,))
-                pp_count, total_mw, solar, wind, ng, nuc, coal, batt = cur.fetchone()
-
-                # Calculate renewable percentage
-                renewable_mw = (solar or 0) + (wind or 0)
-                renewable_pct = (renewable_mw / total_mw * 100) if total_mw > 0 else 0
-
-                # Power readiness score (0-100)
-                score = _calculate_power_score(
-                    sub_count, avg_volt, tx_count, tx_miles,
-                    gas_count, total_mw, renewable_pct
+            # Create profiles table
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS market_power_profiles (
+                    id SERIAL PRIMARY KEY,
+                    market VARCHAR(200) UNIQUE,
+                    state VARCHAR(10),
+                    substation_count INTEGER DEFAULT 0,
+                    avg_voltage_kv DOUBLE PRECISION DEFAULT 0,
+                    max_voltage_kv DOUBLE PRECISION DEFAULT 0,
+                    transmission_line_count INTEGER DEFAULT 0,
+                    total_transmission_miles DOUBLE PRECISION DEFAULT 0,
+                    gas_pipeline_count INTEGER DEFAULT 0,
+                    power_plant_count INTEGER DEFAULT 0,
+                    total_generation_mw DOUBLE PRECISION DEFAULT 0,
+                    solar_mw DOUBLE PRECISION DEFAULT 0,
+                    wind_mw DOUBLE PRECISION DEFAULT 0,
+                    natural_gas_mw DOUBLE PRECISION DEFAULT 0,
+                    nuclear_mw DOUBLE PRECISION DEFAULT 0,
+                    coal_mw DOUBLE PRECISION DEFAULT 0,
+                    battery_storage_mw DOUBLE PRECISION DEFAULT 0,
+                    renewable_pct DOUBLE PRECISION DEFAULT 0,
+                    power_readiness_score INTEGER DEFAULT 0,
+                    last_updated TIMESTAMP DEFAULT NOW()
                 )
+            """)
 
-                # Upsert profile
-                cur.execute("""
-                    INSERT INTO market_power_profiles (
-                        market, state, substation_count, avg_voltage_kv, max_voltage_kv,
-                        transmission_line_count, total_transmission_miles, gas_pipeline_count,
-                        power_plant_count, total_generation_mw, solar_mw, wind_mw,
-                        natural_gas_mw, nuclear_mw, coal_mw, battery_storage_mw,
-                        renewable_pct, power_readiness_score, last_updated
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                    ON CONFLICT (market)
-                    DO UPDATE SET
-                        substation_count = EXCLUDED.substation_count,
-                        avg_voltage_kv = EXCLUDED.avg_voltage_kv,
-                        max_voltage_kv = EXCLUDED.max_voltage_kv,
-                        transmission_line_count = EXCLUDED.transmission_line_count,
-                        total_transmission_miles = EXCLUDED.total_transmission_miles,
-                        gas_pipeline_count = EXCLUDED.gas_pipeline_count,
-                        power_plant_count = EXCLUDED.power_plant_count,
-                        total_generation_mw = EXCLUDED.total_generation_mw,
-                        solar_mw = EXCLUDED.solar_mw,
-                        wind_mw = EXCLUDED.wind_mw,
-                        natural_gas_mw = EXCLUDED.natural_gas_mw,
-                        nuclear_mw = EXCLUDED.nuclear_mw,
-                        coal_mw = EXCLUDED.coal_mw,
-                        battery_storage_mw = EXCLUDED.battery_storage_mw,
-                        renewable_pct = EXCLUDED.renewable_pct,
-                        power_readiness_score = EXCLUDED.power_readiness_score,
-                        last_updated = NOW()
-                """, (
-                    market, state, sub_count, avg_volt, max_volt,
-                    tx_count, tx_miles, gas_count,
-                    pp_count, total_mw, solar, wind,
-                    ng, nuc, coal, batt,
-                    renewable_pct, score,
-                ))
-                profiles_updated += 1
+            # DC Hub market → state mapping
+            MARKET_STATES = {
+                'Northern Virginia': 'VA', 'Dallas-Fort Worth': 'TX', 'Phoenix': 'AZ',
+                'Chicago': 'IL', 'Atlanta': 'GA', 'Portland': 'OR', 'Salt Lake City': 'UT',
+                'Columbus': 'OH', 'Northern California': 'CA', 'Southern California': 'CA',
+                'New York Metro': 'NJ', 'Seattle': 'WA', 'Denver': 'CO', 'Houston': 'TX',
+                'Minneapolis': 'MN', 'Las Vegas': 'NV', 'Kansas City': 'MO',
+                'Sacramento': 'CA', 'San Antonio': 'TX', 'Austin': 'TX',
+                'Nashville': 'TN', 'Charlotte': 'NC', 'Raleigh-Durham': 'NC',
+                'Tampa Bay': 'FL', 'Miami': 'FL', 'Pittsburgh': 'PA',
+                'St. Louis': 'MO', 'Indianapolis': 'IN', 'Omaha': 'NE',
+                'Des Moines': 'IA', 'Reno': 'NV', 'Boise': 'ID',
+                'Albuquerque': 'NM', 'Hillsboro': 'OR', 'Quincy': 'WA',
+                'Papillion': 'NE', 'Council Bluffs': 'IA', 'Elk Grove': 'CA',
+                'Prineville': 'OR', 'The Dalles': 'OR', 'Moses Lake': 'WA',
+                'Cheyenne': 'WY',
+            }
 
-            except Exception as e:
-                logger.warning(f"⚠️  Error generating profile for {market}: {e}")
+            profiles_updated = 0
 
-        conn.commit()
-        logger.info(f"✅ Market power profiles: {profiles_updated} markets updated")
+            for market, state in MARKET_STATES.items():
+                try:
+                    # Substation stats
+                    cur.execute("""
+                        SELECT COUNT(*), COALESCE(AVG(voltage_kv), 0), COALESCE(MAX(max_voltage_kv), 0)
+                        FROM substations WHERE state = %s
+                    """, (state,))
+                    sub_count, avg_volt, max_volt = cur.fetchone()
 
-    except Exception as e:
-        logger.error(f"❌ Market power profiles failed: {e}")
-        if conn:
-            conn.rollback()
+                    # Transmission stats
+                    cur.execute("""
+                        SELECT COUNT(*), COALESCE(SUM(length_miles), 0)
+                        FROM transmission_lines WHERE state = %s
+                    """, (state,))
+                    tx_count, tx_miles = cur.fetchone()
+
+                    # Gas pipeline stats
+                    cur.execute("""
+                        SELECT COUNT(*) FROM gas_pipelines WHERE state = %s
+                    """, (state,))
+                    gas_count = cur.fetchone()[0]
+
+                    # Power plant stats by fuel category
+                    cur.execute("""
+                        SELECT
+                            COUNT(*),
+                            COALESCE(SUM(capacity_mw), 0),
+                            COALESCE(SUM(CASE WHEN fuel_category = 'solar' THEN capacity_mw ELSE 0 END), 0),
+                            COALESCE(SUM(CASE WHEN fuel_category = 'wind' THEN capacity_mw ELSE 0 END), 0),
+                            COALESCE(SUM(CASE WHEN fuel_category = 'natural_gas' THEN capacity_mw ELSE 0 END), 0),
+                            COALESCE(SUM(CASE WHEN fuel_category = 'nuclear' THEN capacity_mw ELSE 0 END), 0),
+                            COALESCE(SUM(CASE WHEN fuel_category = 'coal' THEN capacity_mw ELSE 0 END), 0),
+                            COALESCE(SUM(CASE WHEN fuel_category = 'battery_storage' THEN capacity_mw ELSE 0 END), 0)
+                        FROM power_plants WHERE state = %s
+                    """, (state,))
+                    pp_count, total_mw, solar, wind, ng, nuc, coal, batt = cur.fetchone()
+
+                    # Calculate renewable percentage
+                    renewable_mw = (solar or 0) + (wind or 0)
+                    renewable_pct = (renewable_mw / total_mw * 100) if total_mw > 0 else 0
+
+                    # Power readiness score (0-100)
+                    score = _calculate_power_score(
+                        sub_count, avg_volt, tx_count, tx_miles,
+                        gas_count, total_mw, renewable_pct
+                    )
+
+                    # Upsert profile
+                    cur.execute("""
+                        INSERT INTO market_power_profiles (
+                            market, state, substation_count, avg_voltage_kv, max_voltage_kv,
+                            transmission_line_count, total_transmission_miles, gas_pipeline_count,
+                            power_plant_count, total_generation_mw, solar_mw, wind_mw,
+                            natural_gas_mw, nuclear_mw, coal_mw, battery_storage_mw,
+                            renewable_pct, power_readiness_score, last_updated
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                        ON CONFLICT (market)
+                        DO UPDATE SET
+                            substation_count = EXCLUDED.substation_count,
+                            avg_voltage_kv = EXCLUDED.avg_voltage_kv,
+                            max_voltage_kv = EXCLUDED.max_voltage_kv,
+                            transmission_line_count = EXCLUDED.transmission_line_count,
+                            total_transmission_miles = EXCLUDED.total_transmission_miles,
+                            gas_pipeline_count = EXCLUDED.gas_pipeline_count,
+                            power_plant_count = EXCLUDED.power_plant_count,
+                            total_generation_mw = EXCLUDED.total_generation_mw,
+                            solar_mw = EXCLUDED.solar_mw,
+                            wind_mw = EXCLUDED.wind_mw,
+                            natural_gas_mw = EXCLUDED.natural_gas_mw,
+                            nuclear_mw = EXCLUDED.nuclear_mw,
+                            coal_mw = EXCLUDED.coal_mw,
+                            battery_storage_mw = EXCLUDED.battery_storage_mw,
+                            renewable_pct = EXCLUDED.renewable_pct,
+                            power_readiness_score = EXCLUDED.power_readiness_score,
+                            last_updated = NOW()
+                    """, (
+                        market, state, sub_count, avg_volt, max_volt,
+                        tx_count, tx_miles, gas_count,
+                        pp_count, total_mw, solar, wind,
+                        ng, nuc, coal, batt,
+                        renewable_pct, score,
+                    ))
+                    profiles_updated += 1
+
+                except Exception as e:
+                    logger.warning(f"⚠️  Error generating profile for {market}: {e}")
+
+            conn.commit()
+            logger.info(f"✅ Market power profiles: {profiles_updated} markets updated")
+
+        except Exception as e:
+            logger.error(f"❌ Market power profiles failed: {e}")
+            if conn:
+                conn.rollback()
+        finally:
+            if conn:
+
+
     finally:
-        if conn:
-            conn.close()
-
-
+        conn.close()
 def _calculate_power_score(sub_count, avg_volt, tx_count, tx_miles,
                            gas_count, total_mw, renewable_pct):
     """
@@ -1002,24 +1014,26 @@ def _log_sync(get_db, source, fetched, upserted, skipped, errors, detail, durati
     conn = None
     try:
         conn = get_db()
-        cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO land_power_sync_log
-            (source, records_fetched, records_upserted, records_skipped, errors, error_detail, duration_seconds)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-        """, (source, fetched, upserted, skipped, errors, detail, round(duration, 2)))
-        conn.commit()
-    except Exception as e:
-        logger.warning(f"⚠️  Could not log sync: {e}")
+    try:
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO land_power_sync_log
+                (source, records_fetched, records_upserted, records_skipped, errors, error_detail, duration_seconds)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """, (source, fetched, upserted, skipped, errors, detail, round(duration, 2)))
+            conn.commit()
+        except Exception as e:
+            logger.warning(f"⚠️  Could not log sync: {e}")
+        finally:
+            if conn:
+
+
+        # ─────────────────────────────────────────────────────────────
+        # MASTER RUNNER (called by crawler_scheduler.py or manual trigger)
+        # ─────────────────────────────────────────────────────────────
+
     finally:
-        if conn:
-            conn.close()
-
-
-# ─────────────────────────────────────────────────────────────
-# MASTER RUNNER (called by crawler_scheduler.py or manual trigger)
-# ─────────────────────────────────────────────────────────────
-
+        conn.close()
 def run_land_power_sync(get_db, full_refresh=False):
     """
     Master function to run all land & power crawlers sequentially.
@@ -1108,123 +1122,125 @@ def register_land_power_routes(app, get_db, require_admin):
         conn = None
         try:
             conn = get_db()
-            cur = conn.cursor()
+    try:
+                cur = conn.cursor()
 
-            # Latest sync per source
-            cur.execute("""
-                SELECT DISTINCT ON (source)
-                    source, records_fetched, records_upserted, errors,
-                    duration_seconds, created_at
-                FROM land_power_sync_log
-                ORDER BY source, created_at DESC
-            """)
-            syncs = [
-                {"source": r[0], "fetched": r[1], "upserted": r[2],
-                 "errors": r[3], "duration_s": r[4], "last_run": str(r[5])}
-                for r in cur.fetchall()
-            ]
+                # Latest sync per source
+                cur.execute("""
+                    SELECT DISTINCT ON (source)
+                        source, records_fetched, records_upserted, errors,
+                        duration_seconds, created_at
+                    FROM land_power_sync_log
+                    ORDER BY source, created_at DESC
+                """)
+                syncs = [
+                    {"source": r[0], "fetched": r[1], "upserted": r[2],
+                     "errors": r[3], "duration_s": r[4], "last_run": str(r[5])}
+                    for r in cur.fetchall()
+                ]
 
-            # Table counts
-            counts = {}
-            for table in ['power_plants', 'substations', 'transmission_lines', 'gas_pipelines']:
-                cur.execute(f"SELECT COUNT(*) FROM {table}")
-                counts[table] = cur.fetchone()[0]
+                # Table counts
+                counts = {}
+                for table in ['power_plants', 'substations', 'transmission_lines', 'gas_pipelines']:
+                    cur.execute(f"SELECT COUNT(*) FROM {table}")
+                    counts[table] = cur.fetchone()[0]
 
-            return jsonify({
-                "status": "healthy",
-                "tables": counts,
-                "latest_syncs": syncs,
-            })
-        except Exception as e:
-            return jsonify({"status": "error", "error": str(e)}), 500
-        finally:
-            if conn:
-                conn.close()
-
-    @app.route('/api/land-power/market-profiles')
-    def market_profiles():
-        """Get all market power profiles."""
-        conn = None
-        try:
-            conn = get_db()
-            cur = conn.cursor()
-            cur.execute("""
-                SELECT market, state, substation_count, avg_voltage_kv,
-                       transmission_line_count, total_transmission_miles,
-                       gas_pipeline_count, power_plant_count, total_generation_mw,
-                       solar_mw, wind_mw, natural_gas_mw, nuclear_mw,
-                       renewable_pct, power_readiness_score, last_updated
-                FROM market_power_profiles
-                ORDER BY power_readiness_score DESC
-            """)
-            profiles = []
-            for r in cur.fetchall():
-                profiles.append({
-                    "market": r[0], "state": r[1],
-                    "substations": r[2], "avg_voltage_kv": round(r[3], 1),
-                    "transmission_lines": r[4], "transmission_miles": round(r[5], 1),
-                    "gas_pipelines": r[6], "power_plants": r[7],
-                    "total_mw": round(r[8], 1),
-                    "solar_mw": round(r[9], 1), "wind_mw": round(r[10], 1),
-                    "natural_gas_mw": round(r[11], 1), "nuclear_mw": round(r[12], 1),
-                    "renewable_pct": round(r[13], 1),
-                    "power_readiness_score": r[14],
-                    "last_updated": str(r[15]),
+                return jsonify({
+                    "status": "healthy",
+                    "tables": counts,
+                    "latest_syncs": syncs,
                 })
-            return jsonify({"markets": profiles, "count": len(profiles)})
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
-        finally:
-            if conn:
-                conn.close()
+            except Exception as e:
+                return jsonify({"status": "error", "error": str(e)}), 500
+            finally:
+                if conn:
 
-    @app.route('/api/land-power/market-profile/<market>')
-    def market_profile_detail(market):
-        """Get detailed power profile for one market."""
-        conn = None
-        try:
-            conn = get_db()
-            cur = conn.cursor()
-            cur.execute("SELECT * FROM market_power_profiles WHERE market = %s", (market,))
-            row = cur.fetchone()
-            if not row:
-                return jsonify({"error": "Market not found"}), 404
+        @app.route('/api/land-power/market-profiles')
+        def market_profiles():
+            """Get all market power profiles."""
+            conn = None
+            try:
+                conn = get_db()
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT market, state, substation_count, avg_voltage_kv,
+                           transmission_line_count, total_transmission_miles,
+                           gas_pipeline_count, power_plant_count, total_generation_mw,
+                           solar_mw, wind_mw, natural_gas_mw, nuclear_mw,
+                           renewable_pct, power_readiness_score, last_updated
+                    FROM market_power_profiles
+                    ORDER BY power_readiness_score DESC
+                """)
+                profiles = []
+                for r in cur.fetchall():
+                    profiles.append({
+                        "market": r[0], "state": r[1],
+                        "substations": r[2], "avg_voltage_kv": round(r[3], 1),
+                        "transmission_lines": r[4], "transmission_miles": round(r[5], 1),
+                        "gas_pipelines": r[6], "power_plants": r[7],
+                        "total_mw": round(r[8], 1),
+                        "solar_mw": round(r[9], 1), "wind_mw": round(r[10], 1),
+                        "natural_gas_mw": round(r[11], 1), "nuclear_mw": round(r[12], 1),
+                        "renewable_pct": round(r[13], 1),
+                        "power_readiness_score": r[14],
+                        "last_updated": str(r[15]),
+                    })
+                return jsonify({"markets": profiles, "count": len(profiles)})
+            except Exception as e:
+                return jsonify({"error": str(e)}), 500
+            finally:
+                if conn:
+                    conn.close()
 
-            # Also get nearby power plants
-            state = row[2]
-            cur.execute("""
-                SELECT name, operator, capacity_mw, fuel_category, lat, lon
-                FROM power_plants
-                WHERE state = %s AND capacity_mw > 100
-                ORDER BY capacity_mw DESC
-                LIMIT 20
-            """, (state,))
-            large_plants = [
-                {"name": r[0], "operator": r[1], "mw": r[2], "fuel": r[3], "lat": r[4], "lon": r[5]}
-                for r in cur.fetchall()
-            ]
+        @app.route('/api/land-power/market-profile/<market>')
+        def market_profile_detail(market):
+            """Get detailed power profile for one market."""
+            conn = None
+            try:
+                conn = get_db()
+                cur = conn.cursor()
+                cur.execute("SELECT * FROM market_power_profiles WHERE market = %s", (market,))
+                row = cur.fetchone()
+                if not row:
+                    return jsonify({"error": "Market not found"}), 404
 
-            cur.execute("""
-                SELECT name, voltage_kv, max_voltage_kv, lat, lon
-                FROM substations
-                WHERE state = %s AND voltage_kv >= 230
-                ORDER BY voltage_kv DESC
-                LIMIT 20
-            """, (state,))
-            high_voltage_subs = [
-                {"name": r[0], "voltage_kv": r[1], "max_voltage_kv": r[2], "lat": r[3], "lon": r[4]}
-                for r in cur.fetchall()
-            ]
+                # Also get nearby power plants
+                state = row[2]
+                cur.execute("""
+                    SELECT name, operator, capacity_mw, fuel_category, lat, lon
+                    FROM power_plants
+                    WHERE state = %s AND capacity_mw > 100
+                    ORDER BY capacity_mw DESC
+                    LIMIT 20
+                """, (state,))
+                large_plants = [
+                    {"name": r[0], "operator": r[1], "mw": r[2], "fuel": r[3], "lat": r[4], "lon": r[5]}
+                    for r in cur.fetchall()
+                ]
 
-            return jsonify({
-                "market": market,
-                "large_power_plants": large_plants,
-                "high_voltage_substations": high_voltage_subs,
-            })
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
-        finally:
-            if conn:
-                conn.close()
+                cur.execute("""
+                    SELECT name, voltage_kv, max_voltage_kv, lat, lon
+                    FROM substations
+                    WHERE state = %s AND voltage_kv >= 230
+                    ORDER BY voltage_kv DESC
+                    LIMIT 20
+                """, (state,))
+                high_voltage_subs = [
+                    {"name": r[0], "voltage_kv": r[1], "max_voltage_kv": r[2], "lat": r[3], "lon": r[4]}
+                    for r in cur.fetchall()
+                ]
 
-    logger.info("✅ Land & Power routes registered")
+                return jsonify({
+                    "market": market,
+                    "large_power_plants": large_plants,
+                    "high_voltage_substations": high_voltage_subs,
+                })
+            except Exception as e:
+                return jsonify({"error": str(e)}), 500
+            finally:
+                if conn:
+                    conn.close()
+
+        logger.info("✅ Land & Power routes registered")
+    finally:
+        conn.close()

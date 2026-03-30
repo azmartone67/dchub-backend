@@ -121,83 +121,83 @@ def register_fiber_intelligence(app, get_db):
         conn = None
         try:
             conn = get_db()
-            c = conn.cursor()
+    try:
+                c = conn.cursor()
 
-            stats = {}
+                stats = {}
 
-            # Subsea cables
-            try:
-                c.execute("SELECT COUNT(*) FROM subsea_cables")
-                stats['subsea_cables'] = c.fetchone()[0]
-                c.execute("SELECT COUNT(*) FROM subsea_cables WHERE is_planned = TRUE")
-                stats['subsea_planned'] = c.fetchone()[0]
-                c.execute("SELECT COUNT(*) FROM subsea_landing_points")
-                stats['landing_points'] = c.fetchone()[0]
-                c.execute("SELECT COUNT(*) FROM subsea_landing_points WHERE is_major_hub = TRUE")
-                stats['major_hubs'] = c.fetchone()[0]
-            except Exception:
-                stats['subsea_cables'] = 0
-                stats['landing_points'] = 0
-
-            # Carriers
-            try:
-                c.execute("SELECT COUNT(*) FROM carrier_profiles")
-                stats['carriers'] = c.fetchone()[0]
-                c.execute("SELECT COUNT(*) FROM carrier_facility_presence")
-                stats['carrier_facility_links'] = c.fetchone()[0]
-                c.execute("SELECT COUNT(DISTINCT dchub_facility_id) FROM carrier_facility_presence WHERE dchub_facility_id IS NOT NULL")
-                stats['dchub_facilities_with_carriers'] = c.fetchone()[0]
-            except Exception:
-                stats['carriers'] = 0
-                stats['carrier_facility_links'] = 0
-
-            # Fiber routes
-            try:
-                c.execute("SELECT COUNT(*) FROM fiber_route_geometry")
-                stats['fiber_routes'] = c.fetchone()[0]
-            except Exception:
-                stats['fiber_routes'] = 0
-
-            # Coverage zones
-            try:
-                c.execute("SELECT COUNT(*) FROM fiber_coverage_zones")
-                stats['coverage_zones'] = c.fetchone()[0]
-                c.execute("SELECT COUNT(*) FROM fiber_coverage_zones WHERE dark_fiber_available = TRUE")
-                stats['dark_fiber_zones'] = c.fetchone()[0]
-            except Exception:
-                stats['coverage_zones'] = 0
-
-            # Existing fiber data (from main tables)
-            try:
-                c.execute("SELECT COUNT(*) FROM long_haul_fiber_routes")
-                stats['legacy_fiber_routes'] = c.fetchone()[0]
-            except Exception:
-                stats['legacy_fiber_routes'] = 0
-
-            try:
-                c.execute("SELECT COUNT(*) FROM metro_dark_fiber")
-                stats['legacy_metro_dark_fiber'] = c.fetchone()[0]
-            except Exception:
-                stats['legacy_metro_dark_fiber'] = 0
-
-            return jsonify({
-                'success': True,
-                'stats': stats,
-                'data_sources': [
-                    'TeleGeography Submarine Cable Map',
-                    'PeeringDB Carrier Database',
-                    'FCC Broadband Data Collection',
-                    'DC Hub Internal Data',
-                ],
-                'last_sync': stats.get('last_sync'),
-            })
-        except Exception as e:
-            return jsonify({'success': False, 'error': str(e)})
-        finally:
-            if conn:
+                # Subsea cables
                 try:
-                    conn.close()
+                    c.execute("SELECT COUNT(*) FROM subsea_cables")
+                    stats['subsea_cables'] = c.fetchone()[0]
+                    c.execute("SELECT COUNT(*) FROM subsea_cables WHERE is_planned = TRUE")
+                    stats['subsea_planned'] = c.fetchone()[0]
+                    c.execute("SELECT COUNT(*) FROM subsea_landing_points")
+                    stats['landing_points'] = c.fetchone()[0]
+                    c.execute("SELECT COUNT(*) FROM subsea_landing_points WHERE is_major_hub = TRUE")
+                    stats['major_hubs'] = c.fetchone()[0]
                 except Exception:
-                    pass
+                    stats['subsea_cables'] = 0
+                    stats['landing_points'] = 0
 
-    logger.info("🌐 Fiber Intelligence fully registered — subsea, carriers, coverage, sync endpoints")
+                # Carriers
+                try:
+                    c.execute("SELECT COUNT(*) FROM carrier_profiles")
+                    stats['carriers'] = c.fetchone()[0]
+                    c.execute("SELECT COUNT(*) FROM carrier_facility_presence")
+                    stats['carrier_facility_links'] = c.fetchone()[0]
+                    c.execute("SELECT COUNT(DISTINCT dchub_facility_id) FROM carrier_facility_presence WHERE dchub_facility_id IS NOT NULL")
+                    stats['dchub_facilities_with_carriers'] = c.fetchone()[0]
+                except Exception:
+                    stats['carriers'] = 0
+                    stats['carrier_facility_links'] = 0
+
+                # Fiber routes
+                try:
+                    c.execute("SELECT COUNT(*) FROM fiber_route_geometry")
+                    stats['fiber_routes'] = c.fetchone()[0]
+                except Exception:
+                    stats['fiber_routes'] = 0
+
+                # Coverage zones
+                try:
+                    c.execute("SELECT COUNT(*) FROM fiber_coverage_zones")
+                    stats['coverage_zones'] = c.fetchone()[0]
+                    c.execute("SELECT COUNT(*) FROM fiber_coverage_zones WHERE dark_fiber_available = TRUE")
+                    stats['dark_fiber_zones'] = c.fetchone()[0]
+                except Exception:
+                    stats['coverage_zones'] = 0
+
+                # Existing fiber data (from main tables)
+                try:
+                    c.execute("SELECT COUNT(*) FROM long_haul_fiber_routes")
+                    stats['legacy_fiber_routes'] = c.fetchone()[0]
+                except Exception:
+                    stats['legacy_fiber_routes'] = 0
+
+                try:
+                    c.execute("SELECT COUNT(*) FROM metro_dark_fiber")
+                    stats['legacy_metro_dark_fiber'] = c.fetchone()[0]
+                except Exception:
+                    stats['legacy_metro_dark_fiber'] = 0
+
+                return jsonify({
+                    'success': True,
+                    'stats': stats,
+                    'data_sources': [
+                        'TeleGeography Submarine Cable Map',
+                        'PeeringDB Carrier Database',
+                        'FCC Broadband Data Collection',
+                        'DC Hub Internal Data',
+                    ],
+                    'last_sync': stats.get('last_sync'),
+                })
+            except Exception as e:
+                return jsonify({'success': False, 'error': str(e)})
+            finally:
+                if conn:
+                    try:
+
+        logger.info("🌐 Fiber Intelligence fully registered — subsea, carriers, coverage, sync endpoints")
+    finally:
+        conn.close()

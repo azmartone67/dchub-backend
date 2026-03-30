@@ -11,7 +11,6 @@ Features:
 6. Search Console Integration - Fix Google/Bing submissions
 """
 
-import sqlite3
 import json
 import hashlib
 import requests
@@ -800,7 +799,7 @@ def start_promotion_scheduler(engine: EnhancedPromotionEngine, interval_hours: i
             try:
                 print(f"\n⏰ Scheduled promotion run at {datetime.now()}")
                 engine.run_full_promotion()
-            except sqlite3.OperationalError as e:
+            except Exception as e:
                 if 'locked' in str(e):
                     time.sleep(10)
                     continue

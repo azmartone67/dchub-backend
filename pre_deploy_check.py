@@ -282,6 +282,8 @@ def main():
         'fix_connection_leaks_bulk.py',     # Connection leak fixer
         'fix_remove_sqlite3_imports.py',    # sqlite3 import cleaner
         'fix_insert_or_replace.py',         # INSERT OR REPLACE fixer
+        'fix_warnings_leaks.py',           # Connection leak fixer v2
+        'fix_warnings_sqlite3.py',         # sqlite3 import fixer v2
     }
 
     all_findings = []

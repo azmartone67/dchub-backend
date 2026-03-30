@@ -19,7 +19,6 @@ All endpoints gated to Pro tier.
 import os
 import json
 import time
-import sqlite3
 import requests
 import threading
 import logging
@@ -478,7 +477,7 @@ def save_snapshot(result):
             finally:
                 conn.close()
             return
-        except sqlite3.OperationalError as e:
+        except Exception as e:
             if 'locked' in str(e) and attempt < 4:
                 _time.sleep(5.0 * (attempt + 1))
                 continue
