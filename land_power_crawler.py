@@ -134,6 +134,17 @@ def init_land_power_tables(get_db):
             CREATE UNIQUE INDEX IF NOT EXISTS substations_hifld_objectid_uniq
             ON substations (hifld_objectid)
         """)
+        # Ensure columns exist (pre-created tables may be missing some)
+        for col, typedef in [
+            ('max_voltage_kv', 'DOUBLE PRECISION DEFAULT 0'),
+            ('min_voltage_kv', 'DOUBLE PRECISION DEFAULT 0'),
+            ('sub_type', 'VARCHAR(100)'),
+            ('lines_count', 'INTEGER DEFAULT 0'),
+        ]:
+            try:
+                c.execute(f"ALTER TABLE substations ADD COLUMN IF NOT EXISTS {col} {typedef}")
+            except Exception:
+                pass
 
         # Transmission lines (HIFLD)
         c.execute("""
@@ -158,6 +169,18 @@ def init_land_power_tables(get_db):
             CREATE UNIQUE INDEX IF NOT EXISTS transmission_lines_hifld_id_uniq
             ON transmission_lines (hifld_id)
         """)
+        # Ensure columns exist (CREATE TABLE IF NOT EXISTS won't add missing cols)
+        for col, typedef in [
+            ('operator', 'VARCHAR(500)'),
+            ('length_miles', 'DOUBLE PRECISION DEFAULT 0'),
+            ('from_sub', 'VARCHAR(500)'),
+            ('to_sub', 'VARCHAR(500)'),
+            ('line_type', 'VARCHAR(100)'),
+        ]:
+            try:
+                c.execute(f"ALTER TABLE transmission_lines ADD COLUMN IF NOT EXISTS {col} {typedef}")
+            except Exception:
+                pass
 
         # Gas pipelines — table may already exist from autonomous_brain.py
         c.execute("""
@@ -317,10 +340,12 @@ def crawl_power_plants(get_db, full_refresh=False):
         while True:
             params = {
                 'api_key': EIA_API_KEY,
-                'frequency': 'annual',
+                'frequency': 'monthly',
                 'data[0]': 'nameplate-capacity-mw',
-                'sort[0][column]': 'period',
-                'sort[0][direction]': 'desc',
+                'data[1]': 'latitude',
+                'data[2]': 'longitude',
+                'sort[0][column]': 'plantid',
+                'sort[0][direction]': 'asc',
                 'offset': offset,
                 'length': page_size,
             }
@@ -839,12 +864,16 @@ def generate_market_power_profiles(get_db):
                 """, (state,))
                 sub_count, avg_volt, max_volt = cur.fetchone()
 
-                # Transmission stats
-                cur.execute("""
-                    SELECT COUNT(*), COALESCE(SUM(length_miles), 0)
-                    FROM transmission_lines WHERE state = %s
-                """, (state,))
-                tx_count, tx_miles = cur.fetchone()
+                # Transmission stats (resilient — table may have different schema)
+                try:
+                    cur.execute("""
+                        SELECT COUNT(*), COALESCE(SUM(length_miles), 0)
+                        FROM transmission_lines WHERE state = %s
+                    """, (state,))
+                    tx_count, tx_miles = cur.fetchone()
+                except Exception:
+                    conn.rollback()
+                    tx_count, tx_miles = 0, 0
 
                 # Gas pipeline stats
                 cur.execute("""
