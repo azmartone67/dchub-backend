@@ -223,6 +223,20 @@ def init_land_power_tables(get_db):
             except Exception:
                 pass
 
+        # Ensure gas_pipelines columns exist (table may have been pre-created without some)
+        for col, typedef in [
+            ('commodity', "VARCHAR(100) DEFAULT 'natural_gas'"),
+            ('diameter_in', 'DOUBLE PRECISION DEFAULT 0'),
+            ('length_miles', 'DOUBLE PRECISION DEFAULT 0'),
+            ('lat', 'DOUBLE PRECISION'),
+            ('lon', 'DOUBLE PRECISION'),
+            ('status', "VARCHAR(50) DEFAULT 'operational'"),
+        ]:
+            try:
+                c.execute(f"ALTER TABLE gas_pipelines ADD COLUMN IF NOT EXISTS {col} {typedef}")
+            except Exception:
+                pass
+
         # Sync log — tracks each crawler run
         c.execute("""
             CREATE TABLE IF NOT EXISTS land_power_sync_log (
