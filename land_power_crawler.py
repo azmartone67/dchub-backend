@@ -201,11 +201,27 @@ def init_land_power_tables(get_db):
                 created_at TIMESTAMP DEFAULT NOW()
             )
         """)
-        # Use existing unique index if present
-        c.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS gas_pipelines_name_operator_uniq
-            ON gas_pipelines (name, operator)
-        """)
+        # Use existing unique index if present; dedup first if needed
+        try:
+            c.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS gas_pipelines_name_operator_uniq
+                ON gas_pipelines (name, operator)
+            """)
+        except Exception:
+            # Duplicates exist — remove them then retry
+            conn.rollback()
+            c.execute("""
+                DELETE FROM gas_pipelines a USING gas_pipelines b
+                WHERE a.id < b.id AND a.name = b.name AND a.operator = b.operator
+            """)
+            conn.commit()
+            try:
+                c.execute("""
+                    CREATE UNIQUE INDEX IF NOT EXISTS gas_pipelines_name_operator_uniq
+                    ON gas_pipelines (name, operator)
+                """)
+            except Exception:
+                pass
 
         # Sync log — tracks each crawler run
         c.execute("""
@@ -758,6 +774,7 @@ def crawl_gas_pipelines(get_db, full_refresh=False):
                 # Extract state from duoarea (e.g., 'SAL-SMS' → 'AL', 'NUS-Z0S' → 'US')
                 duo = _safe_str(rec.get('duoarea', ''))
                 state_code = duo[1:3] if len(duo) >= 3 and duo[0] == 'S' else _safe_str(rec.get('stateid', ''))
+                cur.execute("SAVEPOINT gas_sp")
                 cur.execute("""
                     INSERT INTO gas_pipelines (name, operator, state, commodity, source, last_updated)
                     VALUES (%s, %s, %s, %s, 'eia-ng', NOW())
@@ -771,14 +788,23 @@ def crawl_gas_pipelines(get_db, full_refresh=False):
                     state_code[:10],
                     'natural_gas',
                 ))
+                cur.execute("RELEASE SAVEPOINT gas_sp")
                 upserted += 1
             except Exception as e:
                 errors += 1
                 if len(error_detail) < 10:
                     error_detail.append(f"Pipeline {name[:50]}: {str(e)[:100]}")
+                if errors <= 3:
+                    logger.warning(f"  ⚠️  Gas pipeline upsert error: {str(e)[:200]}")
+                try:
+                    cur.execute("ROLLBACK TO SAVEPOINT gas_sp")
+                except Exception:
+                    pass
 
         conn.commit()
         logger.info(f"✅ Gas pipelines: {upserted} upserted, {errors} errors")
+        if error_detail:
+            logger.warning(f"  ⚠️  First errors: {'; '.join(error_detail[:5])}")
 
     except Exception as e:
         errors += 1
