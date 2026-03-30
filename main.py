@@ -4837,7 +4837,7 @@ def init_new_tables():
         # Lead activities table for tracking
         c.execute("""
             CREATE TABLE IF NOT EXISTS lead_activities (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 lead_id TEXT,
                 activity_type TEXT,
                 details TEXT,
@@ -4848,7 +4848,7 @@ def init_new_tables():
         # User alerts table
         c.execute("""
             CREATE TABLE IF NOT EXISTS user_alerts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 user_id TEXT NOT NULL,
                 market TEXT NOT NULL,
                 alert_type TEXT NOT NULL,
@@ -4862,7 +4862,7 @@ def init_new_tables():
         """)
     
         c.execute('''CREATE TABLE IF NOT EXISTS mcp_tool_calls (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             tool_name TEXT NOT NULL,
             platform TEXT DEFAULT 'unknown',
             client_name TEXT DEFAULT 'unknown',
@@ -4875,7 +4875,7 @@ def init_new_tables():
         )''')
 
         c.execute('''CREATE TABLE IF NOT EXISTS mcp_connections (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             platform TEXT NOT NULL,
             client_name TEXT,
             client_version TEXT,
@@ -4889,7 +4889,7 @@ def init_new_tables():
         )''')
 
         c.execute('''CREATE TABLE IF NOT EXISTS ambassador_broadcasts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             platform TEXT NOT NULL,
             action TEXT NOT NULL,
             endpoint TEXT,
