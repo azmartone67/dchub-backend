@@ -519,6 +519,39 @@ def _validate_connection(conn, timeout_ms=30000):
     except Exception:
         return False
 
+class _PoolConnWrapper:
+    """Wraps a raw psycopg2 connection so that .close() returns it to the pool
+    instead of destroying the TCP socket."""
+    __slots__ = ('_raw', '_returned')
+
+    def __init__(self, raw_conn):
+        object.__setattr__(self, '_raw', raw_conn)
+        object.__setattr__(self, '_returned', False)
+
+    def close(self):
+        if not self._returned:
+            object.__setattr__(self, '_returned', True)
+            return_pg_connection(self)
+
+    def __getattr__(self, name):
+        return getattr(self._raw, name)
+
+    def __setattr__(self, name, value):
+        if name in ('_raw', '_returned'):
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._raw, name, value)
+
+    @property
+    def raw(self):
+        return self._raw
+
+def _unwrap_conn(conn):
+    """Return the raw psycopg2 connection from a wrapper (or the conn itself)."""
+    if isinstance(conn, _PoolConnWrapper):
+        return conn._raw
+    return conn
+
 def try_get_pg_connection():
     """Non-blocking: try to get a connection instantly, return None if pool is busy."""
     global _pg_pool_obj
@@ -531,7 +564,7 @@ def try_get_pg_connection():
         if _validate_connection(conn, timeout_ms=5000):
             _pool_stats['acquired'] += 1
             _track_checkout(conn)
-            return conn
+            return _PoolConnWrapper(conn)
         else:
             try:
                 _pg_pool_obj.putconn(conn, close=True)
@@ -584,7 +617,7 @@ def get_pg_connection(retries=3, pool_type=None):
                 if max_conn > 0 and used >= int(max_conn * 0.75):
                     logging.getLogger('db_pool').warning(f"⚠️ Pool at {used}/{max_conn} ({int(used/max_conn*100)}%) -- high usage")
                 
-                return conn
+                return _PoolConnWrapper(conn)
             else:
                 pg_url = os.environ.get('DATABASE_URL', '')
                 if not pg_url:
@@ -612,41 +645,38 @@ def get_pg_connection(retries=3, pool_type=None):
 def return_pg_connection(conn, pool_type=None, error=False):
     if conn is None:
         return
-    _track_return(conn)
-    # ALWAYS rollback before returning to pool.
-    # This fixes "current transaction is aborted" cascade where a failed query
-    # poisons the connection and every subsequent user of that connection fails.
+    raw = _unwrap_conn(conn)
+    _track_return(raw)
     try:
-        conn.rollback()
+        raw.rollback()
     except Exception:
-        # Connection is truly broken — close it instead of returning to pool
         if _pg_pool_obj:
             try:
-                _pg_pool_obj.putconn(conn, close=True)
+                _pg_pool_obj.putconn(raw, close=True)
                 _pool_stats['returned'] += 1
             except Exception:
                 try:
-                    conn.close()
+                    raw.close()
                 except Exception:
                     pass
         else:
             try:
-                conn.close()
+                raw.close()
             except Exception:
                 pass
         return
     if _pg_pool_obj:
         try:
-            _pg_pool_obj.putconn(conn)
+            _pg_pool_obj.putconn(raw)
             _pool_stats['returned'] += 1
         except Exception:
             try:
-                conn.close()
+                raw.close()
             except Exception:
                 pass
     else:
         try:
-            conn.close()
+            raw.close()
         except Exception:
             pass
 
@@ -4813,13 +4843,11 @@ def init_new_tables():
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_status TEXT",
         ]:
             try:
-                conn2 = get_db()
-                conn2.execute(col_sql)
-                conn2.commit()
-                conn2.close()
-            except:
-                try: conn2.close()
-                except: pass
+                c.execute(col_sql)
+                conn.commit()
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
     
         # Generated reports table
         c.execute("""
