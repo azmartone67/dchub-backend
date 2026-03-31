@@ -368,8 +368,8 @@ _pool_stats = {
     'forced_reclaims': 0,
 }
 
-_POOL_ACQUIRE_TIMEOUT = 10
-_CONN_MAX_HOLD_SECONDS = 60
+_POOL_ACQUIRE_TIMEOUT = 5       # fail fast
+_CONN_MAX_HOLD_SECONDS = 30      # reclaim faster
 
 _active_checkouts = {}
 _checkout_lock = threading.Lock()
@@ -575,6 +575,58 @@ def try_get_pg_connection():
         return None
     except Exception:
         return None
+
+
+class PooledConnection:
+    """Wrapper that returns connection to pool on close() instead of destroying it."""
+    def __init__(self, conn, pool):
+        self._conn = conn
+        self._pool = pool
+        self._closed = False
+        self._checkout_time = time.time()
+
+    def cursor(self, *args, **kwargs):
+        return self._conn.cursor(*args, **kwargs)
+
+    def commit(self):
+        return self._conn.commit()
+
+    def rollback(self):
+        return self._conn.rollback()
+
+    def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._conn.rollback()
+        except Exception:
+            pass
+        try:
+            if self._pool:
+                self._pool.putconn(self._conn)
+                _pool_stats['returned'] = _pool_stats.get('returned', 0) + 1
+            else:
+                self._conn.close()
+        except Exception:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def __del__(self):
+        if not self._closed:
+            self.close()
 
 def get_pg_connection(retries=3, pool_type=None):
     global _pg_pool_obj
@@ -2513,7 +2565,8 @@ def _log_mcp_analytics(rpc_method, rpc_params, platform, client_name, duration_m
             c.execute('''INSERT INTO mcp_connections
                 (platform, client_name, client_version, protocol_version, method,
                  ip_address, user_agent, success)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (platform) DO UPDATE SET client_name = EXCLUDED.client_name, client_version = EXCLUDED.client_version, protocol_version = EXCLUDED.protocol_version, method = EXCLUDED.method, ip_address = EXCLUDED.ip_address, user_agent = EXCLUDED.user_agent, success = EXCLUDED.success''',
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT DO NOTHING ON CONFLICT (platform) DO UPDATE SET client_name = EXCLUDED.client_name, client_version = EXCLUDED.client_version, protocol_version = EXCLUDED.protocol_version, method = EXCLUDED.method, ip_address = EXCLUDED.ip_address, user_agent = EXCLUDED.user_agent, success = EXCLUDED.success''',
                 (platform, client_name,
                  rpc_params.get('clientInfo', {}).get('version', '') if rpc_params else '',
                  rpc_params.get('protocolVersion', '') if rpc_params else '',
