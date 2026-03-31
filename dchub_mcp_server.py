@@ -2901,4 +2901,20 @@ if __name__ == "__main__":
     else:
         import uvicorn
         app = mcp.streamable_http_app()
+
+        # v2.2.1 FIX: Allow Origin headers from Cloudflare Worker proxy
+        # Without this, the MCP SDK rejects requests with Origin: https://dchub.cloud
+        try:
+            from starlette.middleware.cors import CORSMiddleware
+            app.add_middleware(
+                CORSMiddleware,
+                allow_origins=["*"],
+                allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+                allow_headers=["*"],
+                expose_headers=["Mcp-Session-Id"],
+            )
+            logger.info("  CORS: ✅ All origins allowed (proxy-safe)")
+        except ImportError:
+            logger.warning("  CORS: starlette not available, origin validation may reject proxy requests")
+
         uvicorn.run(app, host="0.0.0.0", port=port)
