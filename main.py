@@ -368,8 +368,8 @@ _pool_stats = {
     'forced_reclaims': 0,
 }
 
-_POOL_ACQUIRE_TIMEOUT = 5       # fail fast
-_CONN_MAX_HOLD_SECONDS = 30      # reclaim faster
+_POOL_ACQUIRE_TIMEOUT = 10
+_CONN_MAX_HOLD_SECONDS = 60
 
 _active_checkouts = {}
 _checkout_lock = threading.Lock()
@@ -519,39 +519,6 @@ def _validate_connection(conn, timeout_ms=30000):
     except Exception:
         return False
 
-class _PoolConnWrapper:
-    """Wraps a raw psycopg2 connection so that .close() returns it to the pool
-    instead of destroying the TCP socket."""
-    __slots__ = ('_raw', '_returned')
-
-    def __init__(self, raw_conn):
-        object.__setattr__(self, '_raw', raw_conn)
-        object.__setattr__(self, '_returned', False)
-
-    def close(self):
-        if not self._returned:
-            object.__setattr__(self, '_returned', True)
-            return_pg_connection(self)
-
-    def __getattr__(self, name):
-        return getattr(self._raw, name)
-
-    def __setattr__(self, name, value):
-        if name in ('_raw', '_returned'):
-            object.__setattr__(self, name, value)
-        else:
-            setattr(self._raw, name, value)
-
-    @property
-    def raw(self):
-        return self._raw
-
-def _unwrap_conn(conn):
-    """Return the raw psycopg2 connection from a wrapper (or the conn itself)."""
-    if isinstance(conn, _PoolConnWrapper):
-        return conn._raw
-    return conn
-
 def try_get_pg_connection():
     """Non-blocking: try to get a connection instantly, return None if pool is busy."""
     global _pg_pool_obj
@@ -564,7 +531,7 @@ def try_get_pg_connection():
         if _validate_connection(conn, timeout_ms=5000):
             _pool_stats['acquired'] += 1
             _track_checkout(conn)
-            return _PoolConnWrapper(conn)
+            return conn
         else:
             try:
                 _pg_pool_obj.putconn(conn, close=True)
@@ -575,58 +542,6 @@ def try_get_pg_connection():
         return None
     except Exception:
         return None
-
-
-class PooledConnection:
-    """Wrapper that returns connection to pool on close() instead of destroying it."""
-    def __init__(self, conn, pool):
-        self._conn = conn
-        self._pool = pool
-        self._closed = False
-        self._checkout_time = time.time()
-
-    def cursor(self, *args, **kwargs):
-        return self._conn.cursor(*args, **kwargs)
-
-    def commit(self):
-        return self._conn.commit()
-
-    def rollback(self):
-        return self._conn.rollback()
-
-    def close(self):
-        if self._closed:
-            return
-        self._closed = True
-        try:
-            self._conn.rollback()
-        except Exception:
-            pass
-        try:
-            if self._pool:
-                self._pool.putconn(self._conn)
-                _pool_stats['returned'] = _pool_stats.get('returned', 0) + 1
-            else:
-                self._conn.close()
-        except Exception:
-            try:
-                self._conn.close()
-            except Exception:
-                pass
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
-        return False
-
-    def __getattr__(self, name):
-        return getattr(self._conn, name)
-
-    def __del__(self):
-        if not self._closed:
-            self.close()
 
 def get_pg_connection(retries=3, pool_type=None):
     global _pg_pool_obj
@@ -669,7 +584,7 @@ def get_pg_connection(retries=3, pool_type=None):
                 if max_conn > 0 and used >= int(max_conn * 0.75):
                     logging.getLogger('db_pool').warning(f"⚠️ Pool at {used}/{max_conn} ({int(used/max_conn*100)}%) -- high usage")
                 
-                return _PoolConnWrapper(conn)
+                return conn
             else:
                 pg_url = os.environ.get('DATABASE_URL', '')
                 if not pg_url:
@@ -697,38 +612,41 @@ def get_pg_connection(retries=3, pool_type=None):
 def return_pg_connection(conn, pool_type=None, error=False):
     if conn is None:
         return
-    raw = _unwrap_conn(conn)
-    _track_return(raw)
+    _track_return(conn)
+    # ALWAYS rollback before returning to pool.
+    # This fixes "current transaction is aborted" cascade where a failed query
+    # poisons the connection and every subsequent user of that connection fails.
     try:
-        raw.rollback()
+        conn.rollback()
     except Exception:
+        # Connection is truly broken — close it instead of returning to pool
         if _pg_pool_obj:
             try:
-                _pg_pool_obj.putconn(raw, close=True)
+                _pg_pool_obj.putconn(conn, close=True)
                 _pool_stats['returned'] += 1
             except Exception:
                 try:
-                    raw.close()
+                    conn.close()
                 except Exception:
                     pass
         else:
             try:
-                raw.close()
+                conn.close()
             except Exception:
                 pass
         return
     if _pg_pool_obj:
         try:
-            _pg_pool_obj.putconn(raw)
+            _pg_pool_obj.putconn(conn)
             _pool_stats['returned'] += 1
         except Exception:
             try:
-                raw.close()
+                conn.close()
             except Exception:
                 pass
     else:
         try:
-            raw.close()
+            conn.close()
         except Exception:
             pass
 
@@ -2565,8 +2483,7 @@ def _log_mcp_analytics(rpc_method, rpc_params, platform, client_name, duration_m
             c.execute('''INSERT INTO mcp_connections
                 (platform, client_name, client_version, protocol_version, method,
                  ip_address, user_agent, success)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT DO NOTHING ON CONFLICT (platform) DO UPDATE SET client_name = EXCLUDED.client_name, client_version = EXCLUDED.client_version, protocol_version = EXCLUDED.protocol_version, method = EXCLUDED.method, ip_address = EXCLUDED.ip_address, user_agent = EXCLUDED.user_agent, success = EXCLUDED.success''',
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (platform) DO UPDATE SET client_name = EXCLUDED.client_name, client_version = EXCLUDED.client_version, protocol_version = EXCLUDED.protocol_version, method = EXCLUDED.method, ip_address = EXCLUDED.ip_address, user_agent = EXCLUDED.user_agent, success = EXCLUDED.success''',
                 (platform, client_name,
                  rpc_params.get('clientInfo', {}).get('version', '') if rpc_params else '',
                  rpc_params.get('protocolVersion', '') if rpc_params else '',
@@ -3446,7 +3363,7 @@ def mcp_proxy():
     fwd_headers = {}
     for key, value in request.headers:
         lower = key.lower()
-        if lower not in ('host', 'transfer-encoding', 'content-length'):
+        if lower not in ('host', 'transfer-encoding', 'content-length', 'origin'):
             fwd_headers[key] = value
 
     start_time = time.time()
@@ -4896,11 +4813,13 @@ def init_new_tables():
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_status TEXT",
         ]:
             try:
-                c.execute(col_sql)
-                conn.commit()
-            except Exception:
-                try: conn.rollback()
-                except Exception: pass
+                conn2 = get_db()
+                conn2.execute(col_sql)
+                conn2.commit()
+                conn2.close()
+            except:
+                try: conn2.close()
+                except: pass
     
         # Generated reports table
         c.execute("""
