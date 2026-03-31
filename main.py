@@ -7611,8 +7611,8 @@ def mcp_platforms_status():
         except Exception: pass
 
 @app.route('/api/v1/energy/discovery/status', methods=['GET'])
-def energy_discovery_status():
-    """Energy infrastructure auto-discovery status and counts"""
+def energy_discovery_status_inline():
+    """Energy infrastructure auto-discovery status and counts (inline v1)"""
     conn = None
     try:
         conn = get_read_db()
