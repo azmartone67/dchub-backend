@@ -2527,7 +2527,7 @@ def _log_mcp_analytics(rpc_method, rpc_params, platform, client_name, duration_m
             c.execute('''INSERT INTO mcp_tool_calls
                 (tool_name, platform, client_name, params, success,
                  response_time_ms, ip_address, user_agent)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (tool_name) DO UPDATE SET platform = EXCLUDED.platform, client_name = EXCLUDED.client_name, params = EXCLUDED.params, success = EXCLUDED.success, response_time_ms = EXCLUDED.response_time_ms, ip_address = EXCLUDED.ip_address, user_agent = EXCLUDED.user_agent''',
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)''',
                 (tool_name, platform, client_name,
                  json.dumps(rpc_params.get('arguments', {})) if rpc_params else '{}',
                  True if success else False, duration_ms,
