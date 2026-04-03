@@ -4726,7 +4726,7 @@ def add_security_headers(response):
         response.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
     elif path.startswith('/api/v1/stats') or path.startswith('/api/v1/facilities'):
         response.headers['Cache-Control'] = 'public, max-age=60, stale-while-revalidate=300'
-    elif path.startswith('/api/'):
+    elif path.startswith('/api/') or path.startswith('/mcp'):
         response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
     else:
         response.headers['Cache-Control'] = 'public, max-age=300, stale-while-revalidate=3600'
