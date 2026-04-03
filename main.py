@@ -1101,9 +1101,9 @@ def require_plan(min_plan='pro'):
     def decorator(f):
         @_early_wraps(f)
         def wrapper(*args, **kwargs):
-            # Origin bypass -- dchub.cloud frontend skips plan check
+            # Origin bypass -- dchub.cloud frontend skips plan check (API/MCP excluded)
             origin = request.headers.get("Origin", "") or request.headers.get("Referer", "")
-            if "dchub.cloud" in origin:
+            if "dchub.cloud" in origin and not request.path.startswith("/api/") and request.path not in ("/mcp", "/mcp/"):
                 return f(*args, **kwargs)
             # Internal MCP bypass -- trust calls from our own MCP server
             internal_key = request.headers.get("X-Internal-Key", "")
@@ -2629,7 +2629,7 @@ def _log_mcp_analytics(rpc_method, rpc_params, platform, client_name, duration_m
                 if not pgc.fetchone():
                     pgc.execute("""INSERT INTO ai_testimonials 
                         (platform, agent_name, quote, context, query, category, source, approved, featured)
-                        VALUES (%s, %s, %s, %s, %s, %s, 'mcp-auto', true, false) ON CONFLICT (platform) DO UPDATE SET agent_name = EXCLUDED.agent_name, quote = EXCLUDED.quote, context = EXCLUDED.context, query = EXCLUDED.query, category = EXCLUDED.category, source = EXCLUDED.source, approved = EXCLUDED.approved, featured = EXCLUDED.featured""",
+                        VALUES (%s, %s, %s, %s, %s, %s, 'mcp-auto', true, false) ON CONFLICT DO NOTHING""",
                         (plat, agent, quote, dedup, tool_args[:500], category))
                     pgconn.commit()
                     logger.info(f"AUTO-CAPTURE: testimonial logged for {plat}/{tool_name}")
@@ -2645,7 +2645,7 @@ def test_auto_capture():
             pgc = pgconn.cursor()
             pgc.execute("""INSERT INTO ai_testimonials 
                 (platform, agent_name, quote, context, query, category, source, approved, featured)
-                VALUES (%s, %s, %s, %s, %s, 'integration', 'auto', false, false) ON CONFLICT (platform) DO UPDATE SET agent_name = EXCLUDED.agent_name, quote = EXCLUDED.quote, context = EXCLUDED.context, query = EXCLUDED.query, category = EXCLUDED.category, source = EXCLUDED.source, approved = EXCLUDED.approved, featured = EXCLUDED.featured""",
+                VALUES (%s, %s, %s, %s, %s, 'integration', 'auto', false, false) ON CONFLICT DO NOTHING""",
                 ('test', 'Test Agent', 'Test auto-capture quote', 'MCP tool: test', '{}'))
             pgconn.commit()
         return jsonify({'success': True, 'message': 'Test capture inserted'})
@@ -7487,7 +7487,7 @@ def log_ambassador_broadcast():
         c = db.cursor()
         c.execute('''INSERT INTO ambassador_broadcasts
             (platform, action, endpoint, status_code, success, response_snippet, duration_ms)
-            VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (platform) DO UPDATE SET action = EXCLUDED.action, endpoint = EXCLUDED.endpoint, status_code = EXCLUDED.status_code, success = EXCLUDED.success, response_snippet = EXCLUDED.response_snippet, duration_ms = EXCLUDED.duration_ms''',
+            VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING''',
             (data.get('platform', 'unknown'),
              data.get('action', 'ping'),
              data.get('endpoint', ''),
