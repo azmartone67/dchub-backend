@@ -3365,8 +3365,8 @@ def _gate_mcp_sse_stream(resp, rpc_method, rpc_params, tier):
 
 
 
-@app.route('/mcp', methods=['GET', 'POST', 'DELETE', 'OPTIONS'])
-@app.route('/mcp/', methods=['GET', 'POST', 'DELETE', 'OPTIONS'])
+@app.route('/mcp', methods=['GET', 'POST', 'DELETE', 'HEAD', 'OPTIONS'])
+@app.route('/mcp/', methods=['GET', 'POST', 'DELETE', 'HEAD', 'OPTIONS'])
 def mcp_proxy():
     """
     Proxy MCP Streamable HTTP requests to internal MCP server on port 8888.
@@ -3378,6 +3378,9 @@ def mcp_proxy():
       DELETE  -> Session termination
       OPTIONS -> CORS preflight
     """
+    # v4.7.3 FIX: HEAD requests return empty 200 (health checkers)
+    if request.method == "HEAD":
+        return "", 200, {"Content-Type": "application/json", "Access-Control-Allow-Origin": "*"}
     import requests as http_req
 
     # ---- CORS Preflight ----
