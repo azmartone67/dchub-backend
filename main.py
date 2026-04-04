@@ -3276,8 +3276,8 @@ def _gate_mcp_response_bytes(resp_bytes, rpc_method, rpc_params, tier):
 
     gated_content = _gate_mcp_result(content, tool_name, tier)
     rpc_resp['result']['content'] = gated_content
-    # Strip structuredContent — contains raw ungated data from internal MCP
-    rpc_resp.get('result', {}).pop('structuredContent', None)
+    # v4.7.3 FIX: Keep structuredContent — Claude connector requires it
+    # rpc_resp.get('result', {}).pop('structuredContent', None)  # DISABLED: was breaking Claude connector
     return json.dumps(rpc_resp).encode('utf-8'), True
 
 
