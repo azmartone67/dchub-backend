@@ -448,19 +448,12 @@ def log_outreach(platform, action, endpoint=None, status='success', response_cod
             INSERT INTO ai_outreach_stats (platform, total_pings, successful_pings, last_ping, last_success)
             VALUES (%s, 1, %s, %s, %s)
             ON CONFLICT DO NOTHING --
-                total_pings = ai_outreach_stats.total_pings + 1,
-                successful_pings = ai_outreach_stats.successful_pings + CASE WHEN %s = 'success' THEN 1 ELSE 0 END,
-                last_ping = EXCLUDED.last_ping,
-                last_success = CASE WHEN %s = 'success' THEN EXCLUDED.last_success ELSE ai_outreach_stats.last_success END
         ''', (
             platform,
             1 if status == 'success' else 0,
             datetime.now(timezone.utc).isoformat(),
-            datetime.now(timezone.utc).isoformat() if status == 'success' else None,
-            status,
-            status
+            datetime.now(timezone.utc).isoformat() if status == "success" else None
         ))
-        
         conn.commit()
     except Exception as e:
         logger.error(f"Error logging outreach: {e}")
@@ -523,10 +516,7 @@ def _update_channel_scores():
                 INSERT INTO outreach_channel_scores (channel, success_rate, total_attempts, total_successes, organic_signals, score, trend, last_updated)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT DO NOTHING --
-                    success_rate = ?, total_attempts = ?, total_successes = ?,
-                    organic_signals = %s, score = %s, trend = %s, last_updated = %s
-            ''', (platform, success_rate, total, successes, organic_signals, score, trend, now,
-                  success_rate, total, successes, organic_signals, score, trend, now))
+            ''', (platform, success_rate, total, successes, organic_signals, score, trend, now))
         
         conn.commit()
     except Exception as e:
