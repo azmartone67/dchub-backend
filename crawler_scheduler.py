@@ -30,7 +30,7 @@ logger = logging.getLogger("crawler_scheduler")
 # Configuration
 # ---------------------------------------------------------------------------
 MAX_CONNECTIONS_PER_CRAWLER = 2       # Leave 6 of 8 for API traffic
-HARD_TIMEOUT_SECONDS = 15 * 60       # 15 min max per crawler run
+HARD_TIMEOUT_SECONDS = 30 * 60       # 15 min max per crawler run
 OVERLAP_GUARD_SECONDS = 30           # Wait after each crawler finishes
 
 # Schedule: (hour_utc_run1, hour_utc_run2, crawler_name, runner_func_name)

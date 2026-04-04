@@ -324,6 +324,13 @@ def _get_pg_connection():
     try:
         from main import get_pg_connection, return_pg_connection
         conn = get_pg_connection(retries=2)
+        try:
+            c = conn.cursor()
+            c.execute("SET statement_timeout = 15000")
+            conn.commit()
+            c.close()
+        except Exception:
+            pass
         return PGConnectionWrapper(conn, return_func=lambda c: return_pg_connection(c))
     except Exception as e:
         logger.error(f"PG connection failed: {e}")
