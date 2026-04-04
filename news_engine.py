@@ -149,6 +149,7 @@ def init_news_db(db_path=NEWS_DB_PATH):
         except Exception as idx_err:
             try:
                 conn.rollback()
+                conn.commit()  # Start fresh transaction for next article
             except Exception:
                 pass
             logger.warning(f"Index creation skipped (likely exists or timeout): {idx_err}")
@@ -460,6 +461,7 @@ def save_articles(articles, db_path=NEWS_DB_PATH):
         try:
             pub = a.get('published_at')
             if isinstance(pub, datetime): pub = pub.isoformat()
+            c.execute("SAVEPOINT sp_article")
             c.execute('''INSERT INTO news_articles
                 (id,title,url,source,category,summary,author,published_at,
                  relevance_score,keywords,image_url,fetched_at)
@@ -473,6 +475,7 @@ def save_articles(articles, db_path=NEWS_DB_PATH):
         except Exception:
             try:
                 conn.rollback()
+                conn.commit()  # Start fresh transaction for next article
             except Exception:
                 pass
     try:
