@@ -131,7 +131,7 @@ def log_ai_access(file_requested, platform=None):
         c = conn.cursor()
         c.execute('''INSERT INTO ai_access_log 
                      (timestamp, platform, user_agent, ip_address, file_requested)
-                     VALUES (%s, %s, %s, %s, %s) ON CONFLICT (timestamp) DO UPDATE SET platform = EXCLUDED.platform, user_agent = EXCLUDED.user_agent, ip_address = EXCLUDED.ip_address, file_requested = EXCLUDED.file_requested''',
+                     VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING''',
                   (datetime.utcnow().isoformat(), platform, user_agent[:500], ip, file_requested))
         conn.commit()
     except Exception as e:

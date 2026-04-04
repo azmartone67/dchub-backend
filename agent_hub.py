@@ -207,7 +207,7 @@ class AgentBus:
             conn = self._get_conn()
             c = conn.cursor()
             c.execute("DELETE FROM agent_bus_activity WHERE agent = %s", (agent,))
-            c.execute("INSERT INTO agent_bus_activity (agent, last_active) VALUES (%s, %s) ON CONFLICT (agent) DO UPDATE SET last_active = EXCLUDED.last_active", (agent, now))
+            c.execute("INSERT INTO agent_bus_activity (agent, last_active) VALUES (%s, %s) ON CONFLICT DO NOTHING", (agent, now))
             conn.commit()
         except:
             pass
@@ -272,7 +272,7 @@ class AgentBus:
             conn = self._get_conn()
             c = conn.cursor()
             c.execute("""INSERT INTO agent_bus_messages (timestamp, from_agent, to_agent, message_type, payload, read)
-                         VALUES (%s, %s, %s, %s, %s, 0) ON CONFLICT (timestamp) DO UPDATE SET from_agent = EXCLUDED.from_agent, to_agent = EXCLUDED.to_agent, message_type = EXCLUDED.message_type, payload = EXCLUDED.payload, read = EXCLUDED.read""",
+                         VALUES (%s, %s, %s, %s, %s, 0) ON CONFLICT DO NOTHING""",
                       (now, from_agent, to_agent, message_type, json.dumps(payload)))
             msg_id = c.lastrowid
             conn.commit()
@@ -351,7 +351,7 @@ class AgentBus:
             conn = self._get_conn()
             c = conn.cursor()
             c.execute("""INSERT INTO agent_bus_handoffs (timestamp, from_agent, to_agent, context, status)
-                         VALUES (%s, %s, %s, %s, 'pending') ON CONFLICT (timestamp) DO UPDATE SET from_agent = EXCLUDED.from_agent, to_agent = EXCLUDED.to_agent, context = EXCLUDED.context, status = EXCLUDED.status""",
+                         VALUES (%s, %s, %s, %s, 'pending') ON CONFLICT DO NOTHING""",
                       (msg['timestamp'], msg['from'], msg['to'], json.dumps(msg.get('payload', {}))))
             handoff_id = c.lastrowid
             conn.commit()
@@ -379,7 +379,7 @@ class AgentBus:
             conn = self._get_conn()
             c = conn.cursor()
             c.execute("""INSERT INTO agent_bus_chains (chain_type, started, data, steps, status)
-                         VALUES (%s, %s, %s, '[]', 'active') ON CONFLICT (chain_type) DO UPDATE SET started = EXCLUDED.started, data = EXCLUDED.data, steps = EXCLUDED.steps, status = EXCLUDED.status""",
+                         VALUES (%s, %s, %s, '[]', 'active') ON CONFLICT DO NOTHING""",
                       (chain_type, now, json.dumps(initial_data)))
             chain_id = c.lastrowid
             conn.commit()

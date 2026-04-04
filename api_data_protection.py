@@ -349,7 +349,7 @@ def _persist_anomalies(key_hash, anomalies):
             for anomaly_type, severity, details in anomalies:
                 c = conn.cursor()
                 c.execute(
-                    "INSERT INTO api_anomaly_log (api_key_hash, anomaly_type, details, severity) VALUES (%s, %s, %s, %s) ON CONFLICT (api_key_hash) DO UPDATE SET anomaly_type = EXCLUDED.anomaly_type, details = EXCLUDED.details, severity = EXCLUDED.severity",
+                    "INSERT INTO api_anomaly_log (api_key_hash, anomaly_type, details, severity) VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
                     (key_hash, anomaly_type, details, severity)
                 )
             conn.commit()
