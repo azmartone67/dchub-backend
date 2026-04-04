@@ -815,6 +815,7 @@ def get_gas_pipelines():
     try:
         conn = _get_db()
         c = conn.cursor()
+        c.execute("SET statement_timeout = 10000")  # 10s max - prevents 70s connection hold
 
         query = """SELECT id, name, operator, pipeline_type, diameter_inches, 
                    capacity_mcf, status, lat, lng, city, state, country, source 
