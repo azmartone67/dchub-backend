@@ -8548,6 +8548,7 @@ def api_health():
         return jsonify(health), 200
     try:
         conn = get_read_db()
+        cur.execute("SET statement_timeout = 3000")  # 3s max for health counts
         cur = conn.cursor()
         try:
             cur.execute("SELECT COUNT(*) FROM discovered_facilities")
