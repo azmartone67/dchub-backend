@@ -13444,6 +13444,14 @@ except Exception as e:
 try:
     from routes.track_routes import track_bp
     app.register_blueprint(track_bp)
+
+# Grid Intelligence
+try:
+    from routes.grid_intelligence_routes import grid_intel_bp
+    app.register_blueprint(grid_intel_bp)
+    logger.info("✅ Grid Intelligence routes registered")
+except Exception as e:
+    logger.warning(f"⚠️ Grid Intelligence: {e}")
     print("📊 Visit Tracking Blueprint: ✅ Registered (1 route)")
 except Exception as e:
     print(f"❌ Track blueprint failed: {e}")
