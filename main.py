@@ -8545,6 +8545,13 @@ def api_health():
             health["note"] = "Pool busy - counts unavailable"
             return jsonify(health), 200
     try:
+        from db_utils import try_get_db
+        conn = try_get_db()
+        if conn is None:
+            health["status"] = "healthy"
+            health["note"] = "Pool busy - counts unavailable"
+            return jsonify(health), 200
+    try:
         conn = get_read_db()
         cur = conn.cursor()
         try:
@@ -13451,6 +13458,15 @@ def serve_plan_sync():
     """Serve plan-sync script via API route (bypasses Cloudflare Pages static)"""
     js = open('static/js/dchub-plan-sync.js', 'r').read()
     return Response(js, mimetype='application/javascript', headers={'Cache-Control': 'public, max-age=3600'})
+# Grid Intelligence
+try:
+    from routes.grid_intelligence_routes import grid_intel_bp
+    app.register_blueprint(grid_intel_bp)
+    logger.info('✅ Grid Intelligence routes registered')
+except Exception as e:
+    logger.warning(f'⚠️ Grid Intelligence: {e}')
+
+
 # Grid Intelligence
 try:
     from routes.grid_intelligence_routes import grid_intel_bp
