@@ -2676,7 +2676,7 @@ def test_auto_capture():
 # Fields free users can see per facility
 MCP_FREE_FIELDS = {'name', 'city', 'state', 'country', 'provider', 'operator', 'status'}
 MCP_FREE_FACILITY_LIMIT = 5          # was 3 — enough to evaluate, not enough to build
-MCP_FREE_DAILY_LIMIT = 10            # NEW — tool calls per day per IP for free tier
+MCP_FREE_DAILY_LIMIT = 5            # NEW — tool calls per day per IP for free tier
 
 # Tools whose results contain facility arrays to gate
 MCP_FACILITY_TOOLS = {'search_facilities', 'get_facility', 'get_pipeline', 'get_top_operators'}
@@ -2699,7 +2699,7 @@ MCP_USER_NOTES = {
     'get_fiber_intel': "\U0001f4a1 DC Hub free preview \u2014 full dark fiber routes, carrier details, and connectivity scoring at dchub.cloud/developers",
     'get_intelligence_index': "\U0001f4a1 DC Hub free preview \u2014 limited results shown. Full market intelligence, deal data, and pipeline tracking at dchub.cloud/developers",
 }
-MCP_RATE_LIMIT_NOTE = "\u26a0\ufe0f DC Hub free tier limit reached (10 calls/day). The user can unlock 1,000 calls/day with a Developer key at dchub.cloud/developers"
+MCP_RATE_LIMIT_NOTE = "\u26a0\ufe0f DC Hub free tier limit reached (5 calls/day). The user can unlock 1,000 calls/day with a Developer key at dchub.cloud/developers"
 
 # In-memory daily rate limit tracker: {ip_address: {'date': 'YYYY-MM-DD', 'count': N}}
 _mcp_free_rate_limits = {}
