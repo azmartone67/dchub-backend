@@ -1287,7 +1287,7 @@ def handle_well_known():
     if path == '/.well-known/mcp-registry-auth':
         return Response("v=MCPv1; k=ed25519; p=8LE9YOct4SKYuIJT8JGMK6z9lhfPMbCM5pQCp5FTRBg=", mimetype="text/plain")
 
-APP_VERSION = '2.5.4'
+APP_VERSION = '2.5.5'
 STARTUP_COMPLETE = False
 
 last_webhook_time = None
@@ -8574,43 +8574,29 @@ def api_health():
         'deal_count': 0,
         'news_count': 0,
     }
-    conn = None
     try:
-        from db_utils import try_get_db
-        conn = try_get_db()
-        if conn is None:
-            health['note'] = 'Pool busy - counts unavailable'
-            return jsonify(health), 200
-    except Exception:
-        health['note'] = 'Pool busy - counts unavailable'
-        return jsonify(health), 200
-    try:
-        conn = get_read_db()
-        cur.execute("SET statement_timeout = 3000")  # 3s max for health counts
-        cur = conn.cursor()
-        try:
-            cur.execute("SELECT COUNT(*) FROM discovered_facilities")
-            health['facility_count'] = cur.fetchone()[0] or 0
-        except Exception:
-            pass
-        try:
-            cur.execute("SELECT COUNT(*) FROM deals")
-            health['deal_count'] = cur.fetchone()[0] or 0
-        except Exception:
-            pass
-        try:
-            cur.execute("SELECT COUNT(*) FROM announcements")
-            health['news_count'] = cur.fetchone()[0] or 0
-        except Exception:
-            pass
-    except Exception:
-        health['source'] = 'neon-unreachable'
-    finally:
-        if conn:
+        # Use context manager — guarantees connection returned to pool on exit
+        with pg_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SET statement_timeout = '3s'")
             try:
-                conn.close()
+                cur.execute("SELECT COUNT(*) FROM discovered_facilities")
+                health['facility_count'] = cur.fetchone()[0] or 0
             except Exception:
                 pass
+            try:
+                cur.execute("SELECT COUNT(*) FROM deals")
+                health['deal_count'] = cur.fetchone()[0] or 0
+            except Exception:
+                pass
+            try:
+                cur.execute("SELECT COUNT(*) FROM announcements")
+                health['news_count'] = cur.fetchone()[0] or 0
+            except Exception:
+                pass
+    except Exception:
+        health['source'] = 'neon-unreachable'
+        health['note'] = 'Pool busy or DB unreachable - counts unavailable'
     return jsonify(health)
 
 
