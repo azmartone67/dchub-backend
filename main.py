@@ -13456,6 +13456,20 @@ try:
 except Exception as e:
     logger.warning(f"⚠️ Grid Intelligence: {e}")
 
+# .well-known/mcp.json fallback (Worker inline handler returns 500)
+@app.route('/.well-known/mcp.json')
+def well_known_mcp_json():
+    return jsonify({
+        'name': 'DC Hub MCP Server',
+        'description': 'Data center intelligence via MCP — 20,000+ facilities, 140+ countries.',
+        'url': 'https://dchub.cloud/mcp',
+        'transport': 'streamable-http',
+        'version': '2.0.0',
+        'authentication': {'type': 'api_key', 'header': 'X-API-Key'},
+        'contact': 'api@dchub.cloud'
+    }), 200, {'Cache-Control': 'public, max-age=3600', 'Access-Control-Allow-Origin': '*'}
+
+
 @app.route('/api/v1/plan-sync.js')
 def serve_plan_sync():
     """Serve plan-sync script via API route (bypasses Cloudflare Pages static)"""
