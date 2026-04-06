@@ -8541,16 +8541,11 @@ def api_health():
         from db_utils import try_get_db
         conn = try_get_db()
         if conn is None:
-            health["status"] = "healthy"
-            health["note"] = "Pool busy - counts unavailable"
+            health['note'] = 'Pool busy - counts unavailable'
             return jsonify(health), 200
-    try:
-        from db_utils import try_get_db
-        conn = try_get_db()
-        if conn is None:
-            health["status"] = "healthy"
-            health["note"] = "Pool busy - counts unavailable"
-            return jsonify(health), 200
+    except Exception:
+        health['note'] = 'Pool busy - counts unavailable'
+        return jsonify(health), 200
     try:
         conn = get_read_db()
         cur = conn.cursor()
