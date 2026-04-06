@@ -13467,11 +13467,3 @@ except Exception as e:
     logger.warning(f'⚠️ Grid Intelligence: {e}')
 
 
-# Grid Intelligence
-try:
-    from routes.grid_intelligence_routes import grid_intel_bp
-    app.register_blueprint(grid_intel_bp)
-    logger.info('✅ Grid Intelligence routes registered')
-except Exception as e:
-    logger.warning(f'⚠️ Grid Intelligence: {e}')
-
