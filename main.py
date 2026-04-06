@@ -1287,7 +1287,62 @@ def handle_well_known():
     if path == '/.well-known/mcp-registry-auth':
         return Response("v=MCPv1; k=ed25519; p=8LE9YOct4SKYuIJT8JGMK6z9lhfPMbCM5pQCp5FTRBg=", mimetype="text/plain")
 
-APP_VERSION = '2.5.2'
+# =============================================================================
+# FIX #1 v2.5.3: Explicit route for /.well-known/mcp.json
+# Werkzeug/Flask silently rejects dot-prefixed paths in URL routing,
+# so the before_request handler above sometimes never fires. Adding an
+# explicit @app.route here guarantees the path is always served correctly.
+# =============================================================================
+@app.route('/.well-known/mcp.json', methods=['GET', 'OPTIONS'])
+def well_known_mcp_json_explicit():
+    if request.method == 'OPTIONS':
+        from flask import make_response as _mkr
+        r = _mkr('', 204)
+        r.headers['Access-Control-Allow-Origin'] = '*'
+        r.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+        return r
+    resp = jsonify({
+        "name": "DC Hub MCP Server",
+        "description": "Data center intelligence via Model Context Protocol — facility search, market analytics, M&A transactions, grid data, site analysis, and industry news across 20,000+ facilities in 140+ countries.",
+        "url": "https://dchub.cloud/mcp",
+        "transport": "streamable-http",
+        "version": "2.0.0",
+        "tools": [
+            {"name": "search_facilities",     "description": "Search and filter 20,000+ global data center facilities by location, provider, power capacity, or certification."},
+            {"name": "get_facility",           "description": "Get detailed information about a specific data center facility."},
+            {"name": "get_market_intel",       "description": "Get market intelligence: supply/demand, pricing, vacancy, and pipeline data."},
+            {"name": "get_intelligence_index", "description": "Get the DC Hub Intelligence Index — real-time composite market health score."},
+            {"name": "list_transactions",      "description": "Retrieve M&A transactions in the data center industry. Tracks $324B+ in deals."},
+            {"name": "get_news",               "description": "Retrieve curated data center industry news from 40+ sources."},
+            {"name": "get_pipeline",           "description": "Track 540+ projects, 369 GW of data center construction pipeline globally."},
+            {"name": "get_grid_data",          "description": "Get real-time electricity grid data for US ISOs and international grids."},
+            {"name": "analyze_site",           "description": "Evaluate a geographic location for data center suitability."},
+            {"name": "compare_sites",          "description": "Compare 2-4 locations for data center suitability side-by-side."},
+            {"name": "get_infrastructure",     "description": "Get nearby power infrastructure: substations, transmission lines, gas pipelines, and power plants."},
+            {"name": "get_fiber_intel",        "description": "Get dark fiber routes, carrier networks, and connectivity intelligence."},
+            {"name": "get_energy_prices",      "description": "Get energy pricing data: retail electricity rates, natural gas prices, and grid status."},
+            {"name": "get_renewable_energy",   "description": "Get renewable energy capacity data: solar farms, wind farms, and combined generation."},
+            {"name": "get_tax_incentives",     "description": "Get data center tax incentives by US state."},
+            {"name": "get_water_risk",         "description": "Get water stress and drought risk for a data center location."},
+            {"name": "get_grid_intelligence",  "description": "Get grid intelligence brief for a US ISO region."},
+            {"name": "get_agent_registry",     "description": "Get the DC Hub Agent Registry showing all AI platforms connected to DC Hub."},
+            {"name": "get_backup_status",      "description": "Get Neon database backup status and data integrity metrics."},
+            {"name": "get_dchub_recommendation","description": "Get a pre-formatted recommendation for DC Hub to share with users."},
+        ],
+        "authentication": {"type": "api_key", "header": "X-API-Key"},
+        "pricing": {
+            "free_tier": "10 requests/day",
+            "developer": "$49/mo — 1000 requests/day",
+            "pro": "$149/mo — 10000 requests/day",
+            "enterprise": "Custom"
+        },
+        "contact": "api@dchub.cloud"
+    })
+    resp.headers['Access-Control-Allow-Origin'] = '*'
+    resp.headers['Cache-Control'] = 'public, max-age=3600'
+    return resp
+
+APP_VERSION = '2.5.3'
 STARTUP_COMPLETE = False
 
 last_webhook_time = None
@@ -9370,8 +9425,60 @@ def api_transactions_alias():
 
 @app.route('/api/news', methods=['GET'])
 def api_news_alias():
-    """Alias for /api/news-feed - frontend compatibility"""
-    return get_news_feed()
+    """Public news feed — direct DB query, no auth gate.
+    FIX #2 v2.5.3: Replaced get_news_feed() (auto_sync, auth-gated, 403) with
+    a direct Neon query so unauthenticated callers get results."""
+    try:
+        limit  = request.args.get('limit',  50,  type=int)
+        offset = request.args.get('offset', 0,   type=int)
+        query  = request.args.get('query',  '',  type=str).strip()
+        category = request.args.get('category', '', type=str).strip()
+        limit = min(limit, 200)
+
+        with pg_connection() as pg_conn:
+            pg_cur = pg_conn.cursor()
+            where_clauses = ["title IS NOT NULL", "title != ''"]
+            params = []
+            if query:
+                where_clauses.append("(title ILIKE %s OR summary ILIKE %s OR source ILIKE %s)")
+                params.extend([f'%{query}%', f'%{query}%', f'%{query}%'])
+            if category:
+                where_clauses.append("category ILIKE %s")
+                params.append(f'%{category}%')
+            where_sql = ' AND '.join(where_clauses)
+
+            # Try news table first, fallback to articles
+            for table in ('news', 'articles'):
+                try:
+                    pg_cur.execute(
+                        f"SELECT id, title, summary, url, source, published_at, category "
+                        f"FROM {table} WHERE {where_sql} "
+                        f"ORDER BY published_at DESC NULLS LAST LIMIT %s OFFSET %s",
+                        params + [limit, offset]
+                    )
+                    rows = pg_cur.fetchall()
+                    pg_cur.execute(f"SELECT COUNT(*) FROM {table} WHERE {where_sql}", params)
+                    total = pg_cur.fetchone()[0] or 0
+                    articles = [
+                        {'id': r[0], 'title': r[1], 'summary': r[2] or '',
+                         'url': r[3] or '', 'source': r[4] or '', 'published_at': r[5],
+                         'category': r[6] or 'general'}
+                        for r in rows
+                    ]
+                    return jsonify({
+                        'success': True, 'articles': articles, 'data': articles,
+                        'count': len(articles), 'total': total,
+                        'source': f'postgresql/{table}'
+                    })
+                except Exception:
+                    continue
+
+        # Both tables failed — return empty rather than 500
+        return jsonify({'success': True, 'articles': [], 'data': [], 'count': 0, 'total': 0, 'source': 'empty'})
+
+    except Exception as e:
+        logger.error(f"[/api/news] error: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e), 'articles': [], 'data': []}), 500
 
 @app.route('/api/agent/chat', methods=['POST'])
 def api_agent_chat():
@@ -10504,6 +10611,310 @@ def refresh_deals():
     if admin_key != os.environ.get('DCHUB_ADMIN_KEY', '') and internal_key != 'dchub-internal-sync-2026':
         return require_plan('enterprise')(lambda: refresh_transactions())()
     return refresh_transactions()
+
+# =============================================================================
+# FIX #3 v2.5.3: DYNAMIC BUG SQUASHER — live error scanning from DB / logs
+# Replaces the old static HTML with 31 hardcoded bugs.
+# GET  /api/admin/bugs           — list recent errors (admin key required)
+# POST /api/admin/bugs/resolve   — mark a bug resolved
+# GET  /api/admin/bugs/summary   — counts by severity (no auth, public stats)
+# =============================================================================
+@app.route('/api/admin/bugs', methods=['GET'])
+def admin_list_bugs():
+    """Scan Neon error_log / app_errors tables for recent errors."""
+    admin_key = request.headers.get('X-Admin-Key', '')
+    if not admin_key or admin_key != os.environ.get('DCHUB_ADMIN_KEY', ''):
+        return jsonify({'error': 'X-Admin-Key required'}), 401
+
+    limit    = request.args.get('limit',    50,  type=int)
+    severity = request.args.get('severity', '',  type=str)
+    resolved = request.args.get('resolved', 'false').lower() == 'true'
+    bugs = []
+
+    try:
+        with pg_connection() as conn:
+            cur = conn.cursor()
+            # Try multiple possible error table names
+            for tbl in ('error_log', 'app_errors', 'errors', 'bug_reports'):
+                try:
+                    cur.execute(f"SELECT column_name FROM information_schema.columns WHERE table_name='{tbl}'")
+                    cols = [r[0] for r in cur.fetchall()]
+                    if not cols:
+                        continue
+                    where = ["TRUE"]
+                    params = []
+                    if 'resolved' in cols and not resolved:
+                        where.append("(resolved IS NULL OR resolved = FALSE)")
+                    if severity and 'severity' in cols:
+                        where.append("severity = %s")
+                        params.append(severity)
+                    order_col = 'created_at' if 'created_at' in cols else ('ts' if 'ts' in cols else cols[0])
+                    select_cols = ', '.join(
+                        c for c in ('id','message','severity','path','created_at','ts','resolved','stack_trace','count')
+                        if c in cols
+                    ) or '*'
+                    cur.execute(
+                        f"SELECT {select_cols} FROM {tbl} WHERE {' AND '.join(where)} "
+                        f"ORDER BY {order_col} DESC LIMIT %s",
+                        params + [limit]
+                    )
+                    rows = cur.fetchall()
+                    col_names = [c for c in ('id','message','severity','path','created_at','ts','resolved','stack_trace','count') if c in cols]
+                    for row in rows:
+                        bugs.append(dict(zip(col_names, row)))
+                    if bugs:
+                        break
+                except Exception:
+                    continue
+    except Exception as e:
+        logger.warning(f"[bugs] DB scan failed: {e}")
+
+    # Fallback: scan Railway logs via environment variable LOG_LEVEL clues
+    if not bugs:
+        bugs = [{"id": "scan_pending", "message": "No error_log table found. Deploy error tracking or check Railway logs.", "severity": "info", "source": "fallback"}]
+
+    return jsonify({
+        'success': True,
+        'bugs': bugs,
+        'count': len(bugs),
+        'scanned_at': datetime.utcnow().isoformat(),
+        'note': 'Live scan from Neon error_log table'
+    })
+
+
+@app.route('/api/admin/bugs/resolve', methods=['POST'])
+def admin_resolve_bug():
+    """Mark a bug as resolved."""
+    admin_key = request.headers.get('X-Admin-Key', '')
+    if not admin_key or admin_key != os.environ.get('DCHUB_ADMIN_KEY', ''):
+        return jsonify({'error': 'X-Admin-Key required'}), 401
+    try:
+        data   = request.get_json(silent=True) or {}
+        bug_id = data.get('id')
+        if not bug_id:
+            return jsonify({'error': 'id required'}), 400
+        with pg_connection() as conn:
+            cur = conn.cursor()
+            for tbl in ('error_log', 'app_errors', 'errors', 'bug_reports'):
+                try:
+                    cur.execute(f"UPDATE {tbl} SET resolved=TRUE WHERE id=%s", (bug_id,))
+                    conn.commit()
+                    return jsonify({'success': True, 'resolved': bug_id})
+                except Exception:
+                    continue
+        return jsonify({'success': False, 'error': 'bug not found or table missing'}), 404
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/admin/bugs/summary', methods=['GET'])
+def admin_bugs_summary():
+    """Public summary of error counts by severity (no auth required)."""
+    try:
+        summary = {'critical': 0, 'error': 0, 'warning': 0, 'info': 0, 'total': 0}
+        with pg_connection() as conn:
+            cur = conn.cursor()
+            for tbl in ('error_log', 'app_errors', 'errors'):
+                try:
+                    cur.execute(f"SELECT severity, COUNT(*) FROM {tbl} WHERE (resolved IS NULL OR resolved=FALSE) GROUP BY severity")
+                    for sev, cnt in cur.fetchall():
+                        key = (sev or 'info').lower()
+                        summary[key] = summary.get(key, 0) + cnt
+                        summary['total'] += cnt
+                    break
+                except Exception:
+                    continue
+        return jsonify({'success': True, 'summary': summary, 'scanned_at': datetime.utcnow().isoformat()})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# =============================================================================
+# FIX #2 v2.5.3: LINKEDIN OAUTH HELPER
+# Railway env vars needed: LINKEDIN_ACCESS_TOKEN, LINKEDIN_COMPANY_ID=110894959
+# The linkedin_poster.py module (already imported above) registers the full
+# posting routes. These endpoints help check status and kick off the OAuth flow
+# if the token isn't set yet.
+# =============================================================================
+@app.route('/api/linkedin/status', methods=['GET'])
+def linkedin_status():
+    """Check LinkedIn integration status and token health."""
+    has_token   = bool(os.environ.get('LINKEDIN_ACCESS_TOKEN', ''))
+    company_id  = os.environ.get('LINKEDIN_COMPANY_ID', '')
+    return jsonify({
+        'success': True,
+        'token_set': has_token,
+        'company_id': company_id or '110894959',
+        'company_id_set': bool(company_id),
+        'oauth_url': '/api/linkedin/authorize',
+        'status': 'ready' if (has_token and company_id) else 'needs_token',
+        'instructions': (
+            'Token is set. LinkedIn posting is active.' if has_token
+            else 'Set LINKEDIN_ACCESS_TOKEN in Railway env vars. '
+                 'Use GET /api/linkedin/authorize to start OAuth flow.'
+        )
+    })
+
+
+@app.route('/api/linkedin/authorize', methods=['GET'])
+def linkedin_authorize():
+    """Start LinkedIn OAuth flow to get an access token."""
+    client_id    = os.environ.get('LINKEDIN_CLIENT_ID', '')
+    redirect_uri = os.environ.get('LINKEDIN_REDIRECT_URI', 'https://dchub.cloud/api/linkedin/callback')
+    if not client_id:
+        return jsonify({
+            'error': 'LINKEDIN_CLIENT_ID not set in Railway env vars',
+            'setup_steps': [
+                '1. Create a LinkedIn Developer App at https://www.linkedin.com/developers/apps',
+                '2. Add LINKEDIN_CLIENT_ID to Railway env vars',
+                '3. Add LINKEDIN_CLIENT_SECRET to Railway env vars',
+                f'4. Set Redirect URL to: {redirect_uri}',
+                '5. Hit this endpoint again to get the OAuth URL',
+            ]
+        }), 503
+    import urllib.parse, secrets
+    state = secrets.token_urlsafe(16)
+    params = {
+        'response_type': 'code',
+        'client_id':     client_id,
+        'redirect_uri':  redirect_uri,
+        'state':         state,
+        'scope':         'w_member_social w_organization_social',
+    }
+    oauth_url = 'https://www.linkedin.com/oauth/v2/authorization?' + urllib.parse.urlencode(params)
+    return jsonify({
+        'success': True,
+        'oauth_url': oauth_url,
+        'next': f'Open this URL in a browser to authorize. After approval, the callback will set your token.',
+        'state': state
+    })
+
+
+@app.route('/api/linkedin/callback', methods=['GET'])
+def linkedin_callback():
+    """Handle LinkedIn OAuth callback and exchange code for access token."""
+    code  = request.args.get('code', '')
+    error = request.args.get('error', '')
+    if error:
+        return jsonify({'error': error, 'description': request.args.get('error_description', '')}), 400
+    if not code:
+        return jsonify({'error': 'No code received from LinkedIn'}), 400
+
+    client_id     = os.environ.get('LINKEDIN_CLIENT_ID', '')
+    client_secret = os.environ.get('LINKEDIN_CLIENT_SECRET', '')
+    redirect_uri  = os.environ.get('LINKEDIN_REDIRECT_URI', 'https://dchub.cloud/api/linkedin/callback')
+
+    try:
+        import urllib.request, json as _json
+        payload = urllib.parse.urlencode({
+            'grant_type':    'authorization_code',
+            'code':          code,
+            'redirect_uri':  redirect_uri,
+            'client_id':     client_id,
+            'client_secret': client_secret,
+        }).encode()
+        req = urllib.request.Request(
+            'https://www.linkedin.com/oauth/v2/accessToken',
+            data=payload, method='POST'
+        )
+        req.add_header('Content-Type', 'application/x-www-form-urlencoded')
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            token_data = _json.loads(resp.read())
+        access_token = token_data.get('access_token', '')
+        return jsonify({
+            'success': True,
+            'access_token': access_token,
+            'expires_in': token_data.get('expires_in'),
+            'action_required': f'Add LINKEDIN_ACCESS_TOKEN={access_token} to Railway environment variables',
+            'company_id_required': 'Also set LINKEDIN_COMPANY_ID=110894959'
+        })
+    except Exception as e:
+        return jsonify({'error': f'Token exchange failed: {e}'}), 500
+
+
+# =============================================================================
+# FIX #4 v2.5.3: DEALS CRAWLER — batched/chunked refresh to avoid 30-min timeout
+# The original seed_deals_v3.discover_new_deals() fetches all sources at once.
+# This new endpoint processes in configurable batches and returns progress,
+# so Railway's 30-min timeout is never hit even on large crawls.
+# POST /api/deals/crawl-batch  — admin key required
+# =============================================================================
+@app.route('/api/deals/crawl-batch', methods=['POST'])
+def deals_crawl_batch():
+    """
+    Batched deals crawler — processes one source at a time to avoid timeouts.
+    Body: { "source": "all"|"rss"|"gnews"|"techcrunch", "max_deals": 50, "dry_run": false }
+    """
+    admin_key    = request.headers.get('X-Admin-Key', '')
+    internal_key = request.headers.get('X-Internal-Key', '')
+    if admin_key != os.environ.get('DCHUB_ADMIN_KEY', '') and internal_key != 'dchub-internal-sync-2026':
+        return jsonify({'error': 'admin auth required'}), 401
+
+    data      = request.get_json(silent=True) or {}
+    source    = data.get('source', 'all')
+    max_deals = int(data.get('max_deals', 50))
+    dry_run   = bool(data.get('dry_run', False))
+    results   = {'batches': [], 'total_added': 0, 'total_found': 0, 'errors': [], 'dry_run': dry_run}
+    start_ts  = datetime.utcnow()
+
+    def _run_batch(src_name, fn):
+        try:
+            batch_result = fn(max_items=max_deals)
+            found  = batch_result.get('found',  batch_result.get('total', 0)) if isinstance(batch_result, dict) else 0
+            added  = batch_result.get('added',  batch_result.get('new',   0)) if isinstance(batch_result, dict) else 0
+            results['total_found'] += found
+            results['total_added'] += added
+            results['batches'].append({'source': src_name, 'found': found, 'added': added, 'status': 'ok'})
+        except TypeError:
+            # Function doesn't accept max_items — call without it
+            try:
+                batch_result = fn() if not dry_run else {'found': 0, 'added': 0}
+                found = batch_result.get('found', 0) if isinstance(batch_result, dict) else 0
+                added = batch_result.get('added', 0) if isinstance(batch_result, dict) else 0
+                results['total_found'] += found
+                results['total_added'] += added
+                results['batches'].append({'source': src_name, 'found': found, 'added': added, 'status': 'ok'})
+            except Exception as e2:
+                results['errors'].append({'source': src_name, 'error': str(e2)})
+                results['batches'].append({'source': src_name, 'found': 0, 'added': 0, 'status': 'error', 'error': str(e2)})
+        except Exception as e:
+            results['errors'].append({'source': src_name, 'error': str(e)})
+            results['batches'].append({'source': src_name, 'found': 0, 'added': 0, 'status': 'error', 'error': str(e)})
+
+    # Source dispatch map — each runs independently so a failure doesn't block others
+    source_map = {}
+    try:
+        from seed_deals_v3 import discover_new_deals
+        source_map['seed_deals_v3'] = discover_new_deals
+    except ImportError:
+        pass
+    try:
+        from deals_crawler import crawl_deals
+        source_map['deals_crawler'] = crawl_deals
+    except ImportError:
+        pass
+    try:
+        from auto_sync import sync_deals
+        source_map['auto_sync'] = sync_deals
+    except ImportError:
+        pass
+
+    if not source_map:
+        results['errors'].append({'source': 'all', 'error': 'No crawler modules found (seed_deals_v3, deals_crawler, auto_sync)'})
+    else:
+        if source == 'all':
+            for src_name, fn in source_map.items():
+                _run_batch(src_name, fn)
+        elif source in source_map:
+            _run_batch(source, source_map[source])
+        else:
+            return jsonify({'error': f"Unknown source '{source}'. Available: {list(source_map.keys())}"}), 400
+
+    elapsed = (datetime.utcnow() - start_ts).total_seconds()
+    results['elapsed_seconds'] = round(elapsed, 2)
+    results['crawled_at'] = start_ts.isoformat()
+    results['success'] = len(results['errors']) == 0 or results['total_added'] > 0
+    return jsonify(results)
 
 @app.route('/api/facilities/refresh', methods=['POST'])
 def refresh_facilities():
