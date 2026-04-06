@@ -1287,7 +1287,7 @@ def handle_well_known():
     if path == '/.well-known/mcp-registry-auth':
         return Response("v=MCPv1; k=ed25519; p=8LE9YOct4SKYuIJT8JGMK6z9lhfPMbCM5pQCp5FTRBg=", mimetype="text/plain")
 
-APP_VERSION = '2.5.5'
+APP_VERSION = '2.5.6'
 STARTUP_COMPLETE = False
 
 last_webhook_time = None
@@ -11331,8 +11331,8 @@ if ENABLE_DISCOVERY_THREADS:
             except Exception as e:
                 print(f"[DISCOVERY] Cache warm failed: {e}")
 
-        # DISABLED: Heavy task - run as separate cron job
-        if IS_RAILWAY: _deferred_bg_threads.append(('Discovery Cache Warm', _deferred_cache_warm))
+        # DISABLED: Heavy task + leaks DB connection on failure — run as separate cron job only
+        # if IS_RAILWAY: _deferred_bg_threads.append(('Discovery Cache Warm', _deferred_cache_warm))
 
         def _auto_approval_loop():
             import time as _time
@@ -12949,7 +12949,7 @@ LOCKED_GATE_MANIFEST = {
         '/api/v1/facilities',
         '/api/v1/transactions',
         '/api/transactions',
-        '/api/v1/search',    # uses @protect_data (masked results), not @require_plan
+        '/api/v1/search?q=Ashburn',    # uses @protect_data (masked results), not @require_plan
     ],
     'public': [
         '/api/v1/stats',
