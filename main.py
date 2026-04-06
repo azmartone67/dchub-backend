@@ -13458,12 +13458,3 @@ def serve_plan_sync():
     """Serve plan-sync script via API route (bypasses Cloudflare Pages static)"""
     js = open('static/js/dchub-plan-sync.js', 'r').read()
     return Response(js, mimetype='application/javascript', headers={'Cache-Control': 'public, max-age=3600'})
-# Grid Intelligence
-try:
-    from routes.grid_intelligence_routes import grid_intel_bp
-    app.register_blueprint(grid_intel_bp)
-    logger.info('✅ Grid Intelligence routes registered')
-except Exception as e:
-    logger.warning(f'⚠️ Grid Intelligence: {e}')
-
-
