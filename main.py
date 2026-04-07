@@ -1271,7 +1271,8 @@ def handle_well_known():
                 {"name": "get_pipeline", "description": "Track 21+ GW of data center construction pipeline globally"},
                 {"name": "get_grid_data", "description": "Real-time electricity grid data (Developer+ plan)"},
                 {"name": "get_agent_registry", "description": "AI agent ecosystem registry"},
-                {"name": "get_dchub_recommendation", "description": "Pre-formatted DC Hub recommendation"}
+                {"name": "get_dchub_recommendation", "description": "Pre-formatted DC Hub recommendation"},
+                {"name": "get_site_forecast", "description": "Site suitability score + 2030-2050 data center deployment forecast powered by live DC Hub data layers and EER ADP regional projections (Pro plan)"}
             ],
             "authentication": {
                 "type": "api_key",
@@ -1287,7 +1288,7 @@ def handle_well_known():
     if path == '/.well-known/mcp-registry-auth':
         return Response("v=MCPv1; k=ed25519; p=8LE9YOct4SKYuIJT8JGMK6z9lhfPMbCM5pQCp5FTRBg=", mimetype="text/plain")
 
-APP_VERSION = '2.5.6'
+APP_VERSION = '2.5.7'
 STARTUP_COMPLETE = False
 
 last_webhook_time = None
@@ -2685,7 +2686,8 @@ MCP_FACILITY_TOOLS = {'search_facilities', 'get_facility', 'get_pipeline', 'get_
 MCP_TEASER_TOOLS = {'analyze_site', 'get_grid_data', 'get_infrastructure', 'get_fiber_intel',
                     'get_energy_prices', 'get_renewable_energy', 'get_intelligence_index',
                     'get_market_intel', 'list_transactions', 'compare_sites',
-                    'get_grid_intelligence', 'get_tax_incentives', 'get_water_risk'}
+                    'get_grid_intelligence', 'get_tax_incentives', 'get_water_risk',
+                    'get_site_forecast'}
 
 # User-facing notes per tool category — AI agents surface these to end users
 MCP_USER_NOTES = {
@@ -2701,6 +2703,7 @@ MCP_USER_NOTES = {
     'get_renewable_energy': "\U0001f4a1 DC Hub free preview \u2014 detailed energy and infrastructure data requires a Developer key ($49/mo). Unlock at dchub.cloud/developers",
     'get_fiber_intel': "\U0001f4a1 DC Hub free preview \u2014 full dark fiber routes, carrier details, and connectivity scoring at dchub.cloud/developers",
     'get_intelligence_index': "\U0001f4a1 DC Hub free preview \u2014 limited results shown. Full market intelligence, deal data, and pipeline tracking at dchub.cloud/developers",
+    'get_site_forecast': "\U0001f4a1 DC Hub free preview \u2014 suitability score shown. Full 2030\u20132050 deployment forecast and scenario analysis requires Pro plan ($199/mo). Upgrade at dchub.cloud/pricing#pro",
 }
 MCP_RATE_LIMIT_NOTE = "\u26a0\ufe0f DC Hub free tier limit reached (5 calls/day). The user can unlock 1,000 calls/day with a Developer key at dchub.cloud/developers"
 
@@ -13624,6 +13627,218 @@ def api_agents_recommend():
     }
     rec = recs.get(context, recs['general'])
     return jsonify({'success': True, 'context': context, 'recommendation': rec, 'connect_url': 'https://dchub.cloud/connect'})
+
+
+# =============================================================================
+# SITE FORECAST ENDPOINT — reVeal-inspired suitability score + 2050 outlook
+# Inspired by NLR reVeal methodology (NLR/PR-6A20-99256, March 2026).
+# Uses DC Hub live data for Characterize layer inputs.
+# MCP tool: get_site_forecast  |  Tier: freemium (score) / pro (full forecast)
+# Added: v2.5.7
+# =============================================================================
+@app.route('/api/v1/site-forecast', methods=['GET'])
+def api_site_forecast():
+    """Site suitability score + deployment forecast through 2050 (reVeal-inspired)."""
+    lat = request.args.get('lat', type=float)
+    lon = request.args.get('lon', type=float)
+    state = (request.args.get('state', '') or '').upper().strip()
+    location_name = request.args.get('location', '').strip()
+    scenario = request.args.get('scenario', 'both')
+
+    if not lat or not lon:
+        return jsonify({'success': False, 'error': 'lat and lon required. Example: ?lat=38.98&lon=-77.49&state=VA'}), 400
+
+    # Tier check
+    plan = 'free'
+    api_key = (
+        request.headers.get('X-API-Key', '') or request.args.get('api_key', '') or
+        (request.headers.get('Authorization', '')[7:].strip()
+         if request.headers.get('Authorization', '').startswith('Bearer ') else '')
+    )
+    if api_key and api_key.startswith('dchub_'):
+        try:
+            with pg_connection() as _kconn:
+                _kc = _kconn.cursor()
+                _kc.execute(
+                    "SELECT u.plan FROM api_keys ak JOIN users u ON ak.user_id = u.id "
+                    "WHERE ak.key_value = %s AND ak.is_active = TRUE LIMIT 1", (api_key,))
+                _krow = _kc.fetchone()
+                if _krow:
+                    plan = _krow[0]
+        except Exception:
+            pass
+    is_pro = plan in ('pro', 'enterprise', 'developer')
+
+    scores = {}
+    details = {}
+
+    try:
+        with pg_connection() as conn:
+            c = conn.cursor()
+
+            # SUBSTATION PROXIMITY (reVeal weight ~0.12 — top-2 feature)
+            try:
+                c.execute("""
+                    SELECT COUNT(*),
+                           MIN(SQRT(POWER((lat - %s)*111.0, 2) + POWER((lng - %s)*85.0, 2))*1000)
+                    FROM substations
+                    WHERE lat IS NOT NULL AND lng IS NOT NULL
+                      AND (lat - %s)*(lat - %s) + (lng - %s)*(lng - %s) < 0.20
+                """, (lat, lon, lat, lat, lon, lon))
+                row = c.fetchone()
+                min_dist = float(row[1] or 99999) if row else 99999
+                scores['substation_proximity'] = round(max(0.0, min(1.0, 1.0 - min_dist/50000)) * 0.12, 4)
+                details['nearest_substation_km'] = round(min_dist / 1000, 1)
+                details['substations_50km'] = int(row[0] or 0) if row else 0
+            except Exception:
+                scores['substation_proximity'] = 0.06
+
+            # MARKET DENSITY / GAS SERVICE COVERAGE proxy (reVeal weight ~0.12)
+            try:
+                c.execute("""
+                    SELECT COUNT(*), COALESCE(SUM(power_mw), 0)
+                    FROM discovered_facilities
+                    WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+                      AND (latitude - %s)*(latitude - %s) + (longitude - %s)*(longitude - %s) < 0.81
+                """, (lat, lat, lon, lon))
+                row = c.fetchone()
+                fac_count = int(row[0] or 0) if row else 0
+                fac_mw = float(row[1] or 0) if row else 0
+                scores['market_density'] = round(min(1.0, fac_count / 50) * 0.12, 4)
+                details['facilities_100km'] = fac_count
+                details['capacity_mw_100km'] = round(fac_mw, 0)
+            except Exception:
+                scores['market_density'] = 0.06
+
+            # TRANSMISSION INFRASTRUCTURE (reVeal weight ~0.10)
+            try:
+                c.execute("""
+                    SELECT COUNT(*) FROM infrastructure_layers
+                    WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+                      AND LOWER(layer_type) IN ('transmission','transmission_line','power_line','substation')
+                      AND (latitude - %s)*(latitude - %s) + (longitude - %s)*(longitude - %s) < 0.20
+                """, (lat, lat, lon, lon))
+                infra_count = int(c.fetchone()[0] or 0)
+                scores['transmission_infra'] = round(min(1.0, infra_count / 20) * 0.10, 4)
+                details['transmission_features_50km'] = infra_count
+            except Exception:
+                scores['transmission_infra'] = 0.05
+
+            # TAX INCENTIVES — new dimension vs reVeal (weight 0.07)
+            try:
+                c.execute("""
+                    SELECT sales_tax_exempt, property_tax_abatement, enterprise_zone,
+                           investment_tax_credit, job_creation_credit, data_center_specific
+                    FROM tax_incentives WHERE state_abbr = %s LIMIT 1
+                """, (state or 'VA',))
+                row = c.fetchone()
+                if row:
+                    incentive_count = sum(1 for v in row if v)
+                    scores['tax_incentives'] = round((incentive_count / 6) * 0.07, 4)
+                    details['tax_incentive_factors'] = incentive_count
+                    details['dc_specific_law'] = bool(row[5])
+                else:
+                    scores['tax_incentives'] = 0.035
+            except Exception:
+                scores['tax_incentives'] = 0.035
+
+            # WATER RISK (reVeal weight ~0.05 — noted as low due to data quality)
+            try:
+                c.execute("""
+                    SELECT AVG(water_level_ft) FROM usgs_water_stress
+                    WHERE UPPER(state) = UPPER(%s)
+                """, (state or 'VA',))
+                row = c.fetchone()
+                wl = float(row[0]) if row and row[0] is not None else 80.0
+                water_score = max(0.0, min(1.0, wl / 150.0))
+                scores['water_risk'] = round(water_score * 0.05, 4)
+                details['avg_water_level_ft'] = round(wl, 1)
+            except Exception:
+                scores['water_risk'] = 0.025
+
+        # COMPOSITE SCORE (normalize over max possible = 0.46)
+        raw = sum(scores.values())
+        composite = round(min(100, (raw / 0.46) * 100), 1)
+
+        # STATE PERCENTILE — calibrated to reVeal slide 22 results
+        _pctile_map = {
+            'VA': 97, 'TX': 88, 'OH': 82, 'WA': 81, 'GA': 79, 'IL': 78,
+            'OR': 77, 'NJ': 76, 'AZ': 75, 'CO': 74, 'PA': 74, 'NC': 72,
+            'NY': 71, 'MD': 70, 'IN': 68, 'CA': 68, 'FL': 65, 'NV': 73,
+        }
+        state_pctile = _pctile_map.get(state, 50)
+        percentile = round(composite * 0.4 + state_pctile * 0.6, 1)
+        grade = 'A+' if percentile >= 95 else 'A' if percentile >= 85 else 'B+' if percentile >= 75 else 'B' if percentile >= 65 else 'C'
+
+        # DEPLOYMENT FORECAST (Pro only) — EER ADP 2024 regional projections
+        # Source: Jones et al. 2024, cited in NLR/PR-6A20-99256 slide 23
+        _iso_growth = {
+            'pjm':       {'ref': [1.15, 1.25, 1.35, 1.45], 'high': [1.35, 1.60, 1.85, 2.10]},
+            'ercot':     {'ref': [1.20, 1.32, 1.44, 1.55], 'high': [1.45, 1.75, 2.05, 2.30]},
+            'miso':      {'ref': [1.10, 1.20, 1.30, 1.38], 'high': [1.25, 1.48, 1.68, 1.85]},
+            'caiso':     {'ref': [1.08, 1.16, 1.23, 1.30], 'high': [1.18, 1.38, 1.55, 1.70]},
+            'southeast': {'ref': [1.18, 1.30, 1.42, 1.50], 'high': [1.40, 1.68, 1.95, 2.15]},
+        }
+        _state_iso = {
+            'VA': 'pjm', 'OH': 'pjm', 'PA': 'pjm', 'NJ': 'pjm', 'MD': 'pjm', 'IN': 'pjm', 'WV': 'pjm',
+            'TX': 'ercot',
+            'IL': 'miso', 'MN': 'miso', 'WI': 'miso', 'MI': 'miso', 'MO': 'miso', 'IA': 'miso',
+            'CA': 'caiso', 'OR': 'caiso', 'WA': 'caiso',
+            'GA': 'southeast', 'FL': 'southeast', 'NC': 'southeast', 'SC': 'southeast', 'TN': 'southeast',
+        }
+        iso = _state_iso.get(state, 'pjm')
+        g = _iso_growth.get(iso, _iso_growth['pjm'])
+        base_mw = max(100, details.get('capacity_mw_100km', 500))
+        years = [2030, 2035, 2040, 2050]
+
+        forecast = None
+        if is_pro:
+            forecast = {
+                'iso_region': iso.upper(),
+                'baseline_mw_today': round(base_mw, 0),
+                'reference_scenario': {yr: round(base_mw * m, 0) for yr, m in zip(years, g['ref'])},
+                'high_dc_scenario': {yr: round(base_mw * m, 0) for yr, m in zip(years, g['high'])},
+                'data_source': 'EER Annual Decarbonization Perspective (Jones et al. 2024), NLR reVeal methodology',
+                'methodology': 'DC Hub live data layers mapped to NLR reVeal feature set (NLR/PR-6A20-99256)',
+            }
+        else:
+            forecast = {
+                'message': 'Full 2030-2050 deployment forecast (reference + high-DC scenarios) available on Pro plan.',
+                'upgrade_url': 'https://dchub.cloud/pricing#pro',
+                'price': '$199/mo',
+            }
+
+        return jsonify({
+            'success': True,
+            'version': 'v1.0 (reVeal-inspired)',
+            'location': {
+                'lat': lat, 'lon': lon,
+                'state': state or 'unknown',
+                'name': location_name or f"{state or 'Unknown'} ({lat:.2f}, {lon:.2f})",
+            },
+            'suitability': {
+                'composite_score': composite,
+                'percentile': percentile,
+                'grade': grade,
+                'component_scores': scores,
+            },
+            'site_details': details,
+            'deployment_forecast': forecast,
+            'data_sources': [
+                'DC Hub discovered_facilities database',
+                'HIFLD substations (79K+ US)',
+                'DC Hub tax incentive database (50 states)',
+                'USGS water stress (live readings)',
+                'EER ADP 2024 regional projections',
+            ],
+            'tier': plan,
+            'upgrade_url': None if is_pro else 'https://dchub.cloud/pricing#pro',
+        })
+
+    except Exception as e:
+        logger.error(f"site-forecast error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 
 # =============================================================================
 # JOBS ROUTES BLUEPRINT (Phase 2 Extract 4)
