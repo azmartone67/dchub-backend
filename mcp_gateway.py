@@ -468,6 +468,7 @@ class GatewayDB:
                         INSERT INTO platform_connections
                         (platform_id, platform_name, protocol, status, config_json)
                         VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (platform_id) DO NOTHING
                     """, (
                         pid,
                         pinfo["name"],
