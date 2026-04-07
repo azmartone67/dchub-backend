@@ -2841,47 +2841,145 @@ async def get_grid_intelligence(region_id: str = "") -> str:
 
 
 # ═══════════════════════════════════════════════════════════
-# NLR INTELLIGENCE LAYER — Geothermal, Co-location, Grid Headroom, Microgrid
-# Purpose-built to be the ideal data partner for NLR/reVeal siting platform
+# NLR INTELLIGENCE — Geothermal, Co-location, Grid, Microgrid
 # ═══════════════════════════════════════════════════════════
 
 @mcp.tool(
     name="get_geothermal_potential",
-    description="Score geothermal resource potential for a site location. Returns USGS EGS zone proximity, hydrothermal classification, nearby geothermal plants, and NLR/ARIES research alignment flags. Key differentiator vs Baxtel — geothermal intelligence purpose-built for NLR partnership."
+    annotations={"title": "NLR Geothermal Potential", "readOnlyHint": True, "openWorldHint": True},
 )
-async def get_geothermal_potential(lat: float = 0, lon: float = 0, state: str = "") -> str:
+async def get_geothermal_potential(
+    lat: float,
+    lon: float,
+    state: str,
+    radius_km: float = 500,
+) -> str:
+    """Get NLR/NREL geothermal potential score for a data center site.
+
+    Returns geothermal score (0-100), nearby geothermal resource zones,
+    nearby operating plants, NLR ARIES compatibility flag, and whether
+    the site qualifies as a research or commercial geothermal zone.
+
+    Args:
+        lat: Latitude of the site (e.g. 39.74)
+        lon: Longitude of the site (e.g. -105.17)
+        state: US state abbreviation (e.g. "CO")
+        radius_km: Search radius for geothermal zones in km (default 500)
+
+    Returns:
+        JSON with geothermal score, nearby zones, NLR relevance flags.
+    """
     _track("get_geothermal_potential", {"lat": lat, "lon": lon, "state": state})
-    result = _api_get("/api/v1/geothermal-potential", {"lat": lat, "lon": lon, "state": state})
+    result = _api_get(
+        "/api/v1/geothermal-potential",
+        params={"lat": lat, "lon": lon, "state": state, "radius_km": radius_km},
+        retries=1,
+    )
     return json.dumps(result, indent=2)
 
 
 @mcp.tool(
     name="get_colocation_score",
-    description="Composite co-location opportunity score for data center + renewable energy at a given lat/lon. Combines grid access, solar/wind/geothermal potential, IRA/CHIPS Act incentives, and estimated PPA discount into a single 0-100 score. Ideal for NLR/reVeal siting pipeline integration."
+    annotations={"title": "NLR Renewable Co-location Score", "readOnlyHint": True, "openWorldHint": True},
 )
-async def get_colocation_score(lat: float = 0, lon: float = 0, state: str = "", capacity_mw: float = 100) -> str:
+async def get_colocation_score(
+    lat: float,
+    lon: float,
+    state: str,
+    capacity_mw: float = 100,
+    radius_km: float = 100,
+) -> str:
+    """Calculate NLR renewable energy co-location score for a data center site.
+
+    Scores the site (0-100) across renewable potential (solar, wind, geothermal),
+    grid access (nearby substations + voltage class), state tax incentives, and
+    geothermal bonus. Includes estimated PPA discount and carbon reduction potential.
+
+    Args:
+        lat: Latitude (e.g. 39.74)
+        lon: Longitude (e.g. -105.17)
+        state: US state abbreviation (e.g. "CO")
+        capacity_mw: Data center load in MW to analyze (default 100)
+        radius_km: Radius to search for substations in km (default 100)
+
+    Returns:
+        JSON with composite score, component scores, substation count, economics.
+    """
     _track("get_colocation_score", {"lat": lat, "lon": lon, "state": state, "capacity_mw": capacity_mw})
-    result = _api_get("/api/v1/colocation-score", {"lat": lat, "lon": lon, "state": state, "capacity_mw": capacity_mw})
+    result = _api_get(
+        "/api/v1/colocation-score",
+        params={"lat": lat, "lon": lon, "state": state, "capacity_mw": capacity_mw, "radius_km": radius_km},
+        retries=1,
+    )
     return json.dumps(result, indent=2)
 
 
 @mcp.tool(
     name="get_grid_headroom",
-    description="Estimate available power capacity (MW headroom) at substations near a site. Goes beyond simple 'substation nearby' to show voltage class, estimated available MW, and a headroom rating. Supports hyperscale vs edge facility sizing decisions."
+    annotations={"title": "NLR Grid Headroom", "readOnlyHint": True, "openWorldHint": True},
 )
-async def get_grid_headroom(lat: float = 0, lon: float = 0, state: str = "", radius_km: float = 80) -> str:
+async def get_grid_headroom(
+    lat: float,
+    lon: float,
+    state: str,
+    radius_km: float = 80,
+) -> str:
+    """Estimate available grid capacity (headroom) near a data center site.
+
+    Queries the HIFLD substation database for nearby high-voltage substations
+    and estimates available MW based on voltage class. Returns top substations
+    by distance, total estimated available MW, and a plain-English capacity rating.
+
+    Args:
+        lat: Latitude (e.g. 39.74)
+        lon: Longitude (e.g. -105.17)
+        state: US state abbreviation (e.g. "CO")
+        radius_km: Search radius in km (default 80)
+
+    Returns:
+        JSON with substation list, total estimated MW, capacity rating.
+    """
     _track("get_grid_headroom", {"lat": lat, "lon": lon, "state": state, "radius_km": radius_km})
-    result = _api_get("/api/v1/grid-headroom", {"lat": lat, "lon": lon, "state": state, "radius_km": radius_km})
+    result = _api_get(
+        "/api/v1/grid-headroom",
+        params={"lat": lat, "lon": lon, "state": state, "radius_km": radius_km},
+        retries=1,
+    )
     return json.dumps(result, indent=2)
 
 
 @mcp.tool(
     name="get_microgrid_viability",
-    description="Score a site for on-site microgrid and distributed generation viability. Returns solar/wind/geothermal/storage component scores, recommended configuration (MW sizing), and NLR ARIES platform alignment flags including the 'data center inside a power plant inside a microgrid' concept."
+    annotations={"title": "NLR Microgrid Viability", "readOnlyHint": True, "openWorldHint": True},
 )
-async def get_microgrid_viability(lat: float = 0, lon: float = 0, state: str = "", capacity_mw: float = 10) -> str:
+async def get_microgrid_viability(
+    lat: float,
+    lon: float,
+    state: str,
+    capacity_mw: float = 50,
+) -> str:
+    """Assess microgrid viability for a data center site using NLR ARIES framework.
+
+    Scores solar, wind, geothermal, and battery storage suitability for an
+    islanded or grid-tied microgrid. Returns ARIES platform flags (islanding,
+    DC-in-powerplant concept, storage integration) and a recommended
+    generation mix configuration.
+
+    Args:
+        lat: Latitude (e.g. 39.74)
+        lon: Longitude (e.g. -105.17)
+        state: US state abbreviation (e.g. "CO")
+        capacity_mw: Data center load to power in MW (default 50)
+
+    Returns:
+        JSON with microgrid score, ARIES flags, recommended configuration.
+    """
     _track("get_microgrid_viability", {"lat": lat, "lon": lon, "state": state, "capacity_mw": capacity_mw})
-    result = _api_get("/api/v1/microgrid-viability", {"lat": lat, "lon": lon, "state": state, "capacity_mw": capacity_mw})
+    result = _api_get(
+        "/api/v1/microgrid-viability",
+        params={"lat": lat, "lon": lon, "state": state, "capacity_mw": capacity_mw},
+        retries=1,
+    )
     return json.dumps(result, indent=2)
 
 
@@ -2934,8 +3032,8 @@ if __name__ == "__main__":
     logger.info(f"  Transport: {transport}")
     logger.info(f"  Port: {port}")
     logger.info(f"  API backend: {DCHUB_API_BASE}")
-    logger.info(f"  Tools: 20 | Resources: 6 | Prompts: 4")
-    logger.info(f"  Neon-direct: 14/20 tools | REST: 6/20 tools")
+    logger.info(f"  Tools: 24 | Resources: 6 | Prompts: 4")
+    logger.info(f"  Neon-direct: 14/24 tools | REST: 10/24 tools")
     logger.info(f"  Pool: {'warmed' if _POOL_AVAILABLE else 'disabled'}")
     logger.info(f"  Localhost: {'active' if _localhost_active else 'upgrading (bg thread)'}")
     logger.info(f"  Keepalive: active (120s)")
