@@ -264,13 +264,13 @@ def generate_transmission_kml(market=None, min_voltage=None):
     try:
         c = conn.cursor()
 
-        query = "SELECT * FROM discovered_transmission_lines WHERE 1=1 ORDER BY voltage_kv DESC LIMIT 1000"
+        query = "SELECT * FROM discovered_transmission_lines WHERE 1=1"
         params = []
         if market:
             query += " AND market = %s"; params.append(market)
         if min_voltage:
             query += " AND voltage_kv >= %s"; params.append(float(min_voltage))
-        query += " ORDER BY voltage_kv DESC"
+        query += " ORDER BY voltage_kv DESC LIMIT 1000"
 
         c.execute(query, params)
         lines = _dict_rows(c)
