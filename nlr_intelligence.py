@@ -16,6 +16,11 @@ logger = logging.getLogger(__name__)
 
 nlr_bp = Blueprint("nlr_intelligence", __name__)
 
+@nlr_bp.after_request
+def _no_cache(resp):
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    return resp
+
 
 # ---------------------------------------------------------------------------
 # DB helper — pulls the live Neon connection from main.py
