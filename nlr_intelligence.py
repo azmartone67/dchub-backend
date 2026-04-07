@@ -23,12 +23,23 @@ nlr_bp = Blueprint("nlr_intelligence", __name__)
 
 def _get_db_safe():
     """Return a live PostgreSQL connection or None (never raises)."""
+    # Try __main__.get_pg_connection first
     try:
         import __main__
         if hasattr(__main__, "get_pg_connection"):
-            return __main__.get_pg_connection()
+            conn = __main__.get_pg_connection()
+            if conn:
+                return conn
     except Exception as exc:
-        logger.debug("NLR _get_db_safe: %s", exc)
+        logger.debug("NLR _get_db_safe via __main__: %s", exc)
+    # Fallback: direct psycopg2 via DATABASE_URL
+    try:
+        import os, psycopg2
+        url = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
+        if url:
+            return psycopg2.connect(url, connect_timeout=5)
+    except Exception as exc:
+        logger.warning("NLR _get_db_safe via DATABASE_URL: %s", exc)
     return None
 
 
