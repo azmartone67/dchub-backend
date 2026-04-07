@@ -1,579 +1,546 @@
 """
-nlr_intelligence.py  —  DC Hub NLR/reVeal Partner Intelligence Layer
-New endpoints purpose-built to be the ideal data partner for NLR (formerly NREL)
-and any reVeal-style renewable + data center co-location siting platform.
+NLR Intelligence Layer — DC Hub
+Routes: geothermal-potential, colocation-score, grid-headroom, microgrid-viability
 
-Endpoints:
-  GET /api/v1/geothermal-potential       — geothermal resource score by lat/lon
-  GET /api/v1/colocation-score           — DC + renewable co-location composite
-  GET /api/v1/grid-headroom              — estimated available MW at nearby substations
-  GET /api/v1/microgrid-viability        — on-site generation & microgrid opportunity
+Fix history:
+  v2  - use get_pg_connection from __main__ (not db_utils)
+      - query `substations` table with lat/lng/state columns
+        (was hifld_electric_substations with latitude/longitude)
 """
 
-import logging
 import math
-from flask import Blueprint, request, jsonify
+import logging
+from flask import Blueprint, jsonify, request
 
-logger = logging.getLogger("nlr-intelligence")
+logger = logging.getLogger(__name__)
 
 nlr_bp = Blueprint("nlr_intelligence", __name__)
 
+
 # ---------------------------------------------------------------------------
-# Helpers
+# DB helper — pulls the live Neon connection from main.py
+# ---------------------------------------------------------------------------
+
+def _get_db_safe():
+    """Return a live PostgreSQL connection or None (never raises)."""
+    try:
+        import __main__
+        if hasattr(__main__, "get_pg_connection"):
+            return __main__.get_pg_connection()
+    except Exception as exc:
+        logger.debug("NLR _get_db_safe: %s", exc)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Static lookup data
+# ---------------------------------------------------------------------------
+
+# NLR / NREL geothermal resource zones (lat, lon, name, type, base_score, notes)
+GEOTHERMAL_ZONES = [
+    (39.74, -105.17, "Colorado Front Range",        "egs",         62, "Moderate EGS, NLR/NREL research zone"),
+    (44.50, -110.50, "Yellowstone / Snake River",   "hydrothermal",95, "High-enthalpy hydrothermal corridor"),
+    (38.80, -117.00, "Great Basin Nevada",           "hydrothermal",88, "Largest US geothermal district"),
+    (40.50, -122.50, "Northern California Geysers",  "hydrothermal",91, "Active commercial production"),
+    (35.00, -106.50, "New Mexico Rio Grande Rift",   "egs",         70, "EGS research zone — NLR FORGE adjacent"),
+    (36.50, -117.50, "Salton Sea / Imperial Valley", "hydrothermal",93, "Critical minerals + geothermal hub"),
+    (46.00, -122.00, "Cascades Washington / Oregon", "hydrothermal",78, "Volcanic hydrothermal potential"),
+    (39.50, -119.00, "Reno / Fallon Nevada",         "hydrothermal",84, "Ormat operating plants nearby"),
+    (37.00, -114.00, "Utah Basin and Range",         "egs",         72, "FORGE EGS demonstration site"),
+    (64.00, -153.00, "Alaska Interior",              "hydrothermal",80, "In-powerplant DC concept — NLR ARIES"),
+]
+
+# State solar / wind lookup (approximate resource quality)
+SOLAR_GHI = {   # kWh/m²/day
+    "AZ": 6.5, "NM": 6.3, "NV": 6.2, "CO": 5.5, "TX": 5.8, "CA": 5.9,
+    "UT": 5.6, "WY": 5.2, "MT": 4.9, "ID": 4.8, "OR": 4.2, "WA": 3.8,
+    "FL": 5.6, "GA": 5.2, "SC": 5.1, "NC": 5.0, "VA": 4.8, "MD": 4.6,
+    "PA": 4.3, "NY": 4.1, "MA": 4.2, "CT": 4.1, "NJ": 4.4, "DE": 4.4,
+    "OH": 4.0, "IN": 4.2, "IL": 4.4, "MI": 3.9, "WI": 4.1, "MN": 4.4,
+    "IA": 4.6, "MO": 4.7, "KS": 5.2, "NE": 5.1, "SD": 4.9, "ND": 4.7,
+    "OK": 5.4, "AR": 5.0, "LA": 5.3, "MS": 5.2, "AL": 5.1, "TN": 4.8,
+    "KY": 4.5, "WV": 4.2, "AK": 3.2, "HI": 5.8,
+}
+WIND_CLASS = {  # NREL wind class 1-7
+    "TX": 7, "KS": 7, "OK": 7, "NE": 6, "SD": 7, "ND": 7, "WY": 6,
+    "CO": 6, "MN": 6, "IA": 6, "MT": 5, "NM": 5, "ID": 4, "OR": 5,
+    "WA": 5, "CA": 4, "NV": 3, "AZ": 3, "UT": 4, "AK": 6,
+    "FL": 3, "GA": 2, "VA": 3, "NC": 3, "SC": 2, "NY": 4, "MA": 4,
+    "ME": 5, "NH": 4, "VT": 4, "PA": 3, "OH": 3, "MI": 4, "WI": 4,
+    "IL": 4, "IN": 3, "MO": 4, "AR": 3, "LA": 3, "MS": 2, "AL": 2,
+    "TN": 2, "KY": 2, "WV": 2, "MD": 3, "NJ": 4, "DE": 3, "CT": 3,
+    "RI": 4, "HI": 5,
+}
+
+# IRA / state tax incentive proxy scores (0-100)
+TAX_INCENTIVE_SCORES = {
+    "TX": 90, "WY": 88, "NV": 82, "UT": 85, "CO": 80, "NM": 83,
+    "ID": 78, "MT": 77, "KS": 86, "OK": 87, "ND": 84, "SD": 83,
+    "NE": 81, "IA": 80, "MN": 79, "IN": 75, "OH": 73, "PA": 72,
+    "VA": 74, "NC": 76, "GA": 78, "FL": 77, "SC": 75, "AL": 73,
+    "TN": 74, "KY": 72, "WV": 71, "CA": 65, "OR": 68, "WA": 67,
+    "AZ": 76, "MI": 70, "WI": 71, "IL": 69, "MO": 74, "AR": 75,
+    "LA": 76, "MS": 74, "NY": 64, "MA": 66, "CT": 65, "NJ": 64,
+    "MD": 67, "DE": 68, "HI": 70, "AK": 72,
+}
+
+
+# ---------------------------------------------------------------------------
+# Helper math
 # ---------------------------------------------------------------------------
 
 def _haversine_km(lat1, lon1, lat2, lon2):
-    R = 6371
+    R = 6371.0
     dlat = math.radians(lat2 - lat1)
     dlon = math.radians(lon2 - lon1)
-    a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
-    return R * 2 * math.asin(math.sqrt(a))
+    a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
-def _get_db_safe():
-    """Try to get DB connection, return None if unavailable."""
-    try:
-        from db_utils import get_db
-        return get_db()
-    except Exception:
-        return None
 
-def _query_safe(conn, sql, params=()):
-    """Run a query and return rows, or [] on failure."""
+def _nearest_geothermal(lat, lon, radius_km=500):
+    results = []
+    for zlat, zlon, name, ztype, score, notes in GEOTHERMAL_ZONES:
+        d = _haversine_km(lat, lon, zlat, zlon)
+        if d <= radius_km:
+            decay = max(0.0, 1.0 - d / radius_km * 0.5)
+            results.append({
+                "name": name,
+                "type": ztype,
+                "distance_km": round(d, 1),
+                "base_potential": score,
+                "effective_score": round(score * decay),
+                "notes": notes,
+            })
+    results.sort(key=lambda x: x["distance_km"])
+    return results
+
+
+def _solar_score(ghi):
+    if ghi >= 6.0: return 95
+    if ghi >= 5.5: return 85
+    if ghi >= 5.0: return 75
+    if ghi >= 4.5: return 65
+    if ghi >= 4.0: return 52
+    return 40
+
+
+def _wind_score(wind_class):
+    return min(95, max(10, wind_class * 13))
+
+
+def _geo_classification(score):
+    if score >= 85: return "Very High — commercial geothermal viable"
+    if score >= 70: return "High — EGS or hydrothermal development feasible"
+    if score >= 50: return "Moderate — EGS research / exploration warranted"
+    if score >= 30: return "Low — marginal resource, deep EGS only"
+    return "Minimal — not recommended for geothermal"
+
+
+def _colocation_rating(score):
+    if score >= 80: return "Excellent — strong NLR co-location candidate"
+    if score >= 65: return "Good — viable co-location with standard PPA"
+    if score >= 50: return "Moderate — viable with right PPA structure"
+    if score >= 35: return "Fair — marginal; consider alternative markets"
+    return "Poor — low renewable density, high grid dependency"
+
+
+def _microgrid_viability(score):
+    if score >= 80: return "High — standalone microgrid viable"
+    if score >= 65: return "Moderate-High — grid-tied microgrid with storage viable"
+    if score >= 50: return "Moderate — grid-tied microgrid with renewables viable"
+    if score >= 35: return "Low-Moderate — supplemental renewables only"
+    return "Low — grid-dependent; limited microgrid potential"
+
+
+# ---------------------------------------------------------------------------
+# Substation DB query (uses correct `substations` table)
+# ---------------------------------------------------------------------------
+
+def _query_substations(lat, lon, state, radius_km=80):
+    """
+    Query the `substations` table (Neon PG) for nearby substations.
+    Columns used: name, voltage_kv, capacity_mva, lat, lng, state
+    Returns list of dicts sorted by distance.
+    """
+    conn = _get_db_safe()
+    if conn is None:
+        return []
+
+    lat_range  = radius_km / 111.0
+    lon_range  = radius_km / (111.0 * abs(math.cos(math.radians(lat))) + 0.001)
+
+    sql = """
+        SELECT
+            name,
+            voltage_kv,
+            capacity_mva,
+            lat,
+            lng,
+            state
+        FROM substations
+        WHERE lat  BETWEEN %(lat_min)s  AND %(lat_max)s
+          AND lng  BETWEEN %(lon_min)s  AND %(lon_max)s
+        ORDER BY ABS(lat - %(lat)s) + ABS(lng - %(lon)s)
+        LIMIT 50
+    """
+    params = {
+        "lat": lat, "lon": lon,
+        "lat_min": lat - lat_range, "lat_max": lat + lat_range,
+        "lon_min": lon - lon_range, "lon_max": lon + lon_range,
+    }
+
+    results = []
+    cur = None
     try:
         cur = conn.cursor()
         cur.execute(sql, params)
-        return cur.fetchall()
-    except Exception as e:
-        logger.warning(f"Query failed: {e}")
+        rows = cur.fetchall()
+        for row in rows:
+            name, voltage_kv, capacity_mva, slat, slon, sstate = row
+            dist = _haversine_km(lat, lon, float(slat or 0), float(slon or 0))
+            if dist <= radius_km:
+                results.append({
+                    "name": name,
+                    "voltage_kv": float(voltage_kv or 0),
+                    "capacity_mva": float(capacity_mva or 0),
+                    "distance_km": round(dist, 1),
+                    "state": sstate,
+                })
+        results.sort(key=lambda x: x["distance_km"])
+    except Exception as exc:
+        logger.warning("NLR substations query error: %s", exc)
         try:
             conn.rollback()
         except Exception:
             pass
-        return []
+    finally:
+        if cur:
+            try:
+                cur.close()
+            except Exception:
+                pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    return results
+
 
 # ---------------------------------------------------------------------------
-# Geothermal zones (USGS EGS potential + known hydrothermal regions)
-# Covers high-value zones relevant to NLR/NREL research areas
+# Route 1 — /api/v1/geothermal-potential
 # ---------------------------------------------------------------------------
-GEOTHERMAL_ZONES = [
-    # (lat, lon, name, type, potential_score, notes)
-    (43.7, -110.5,  "Yellowstone Caldera",         "hydrothermal",  95, "World-class hydrothermal; NPS restricted"),
-    (38.8, -122.8,  "The Geysers CA",               "hydrothermal",  98, "Largest geothermal complex in world, ~750 MW"),
-    (38.2, -118.5,  "Long Valley Caldera CA",        "hydrothermal",  88, "Active caldera, significant EGS potential"),
-    (44.5, -114.0,  "Snake River Plain ID",          "egs",           82, "High heat flow, EGS target zone"),
-    (40.7, -112.1,  "Great Salt Lake Basin UT",      "hydrothermal",  78, "Roosevelt Hot Springs + Cove Fort area"),
-    (38.5, -112.5,  "Milford UT",                    "hydrothermal",  85, "Blundell geothermal plant, active"),
-    (35.2, -106.6,  "Valles Caldera NM",             "hydrothermal",  80, "High temp gradient, NM Tech research"),
-    (39.7, -105.2,  "Colorado Front Range",          "egs",           62, "Moderate EGS, NLR/NREL research zone"),
-    (36.1, -115.2,  "Nevada Basin & Range",          "hydrothermal",  88, "Brady, Beowawe, Dixie Valley plants"),
-    (42.5, -117.0,  "Nevada-Oregon Border",          "hydrothermal",  84, "Neal Hot Springs + Raft River area"),
-    (32.5, -106.5,  "Southern NM Rio Grande Rift",   "egs",           72, "High heat flow rift zone"),
-    (46.8, -121.7,  "Cascade Volcanic Arc WA",       "hydrothermal",  70, "Mount Rainier zone, exploration stage"),
-    (37.8, -121.2,  "SF Bay Area CA",                "egs",           58, "EGS research, proximity to grid"),
-    (34.0, -118.2,  "Los Angeles Basin CA",          "egs",           45, "Shallow EGS potential, urban constraints"),
-    (47.6, -122.3,  "Pacific NW Seattle",            "egs",           40, "Low gradient, limited potential"),
-    (41.8, -87.6,   "Chicago IL",                    "egs",           25, "Very low geothermal gradient"),
-    (40.7, -74.0,   "New York NY",                   "egs",           22, "Low gradient, high cost urban"),
-    (30.3, -97.7,   "Austin TX",                     "egs",           55, "ERCOT grid, moderate gradient"),
-    (29.8, -95.4,   "Houston TX",                    "hydrothermal",  60, "Gulf Coast geopressured zones"),
-    (61.2, -149.9,  "Anchorage AK",                  "hydrothermal",  85, "Chena Hot Springs area, active plants"),
-    (20.8, -156.3,  "Hawaii Maui",                   "hydrothermal",  90, "Puna Geothermal Venture, Big Island"),
-]
 
-def _geothermal_score(lat, lon):
-    """Score geothermal potential 0-100 for a given lat/lon."""
-    best_score = 0
-    best_zone = None
-    best_dist_km = None
-    nearby_zones = []
+@nlr_bp.route("/api/v1/geothermal-potential")
+def geothermal_potential():
+    try:
+        lat   = float(request.args.get("lat",   39.7405))
+        lon   = float(request.args.get("lon",  -105.1686))
+        state = request.args.get("state", "CO").upper()
+        radius_km = float(request.args.get("radius_km", 500))
+    except (TypeError, ValueError) as e:
+        return jsonify({"success": False, "error": str(e)}), 400
 
-    for z_lat, z_lon, name, gtype, base_score, notes in GEOTHERMAL_ZONES:
-        dist = _haversine_km(lat, lon, z_lat, z_lon)
-        # Score decays with distance: full score within 50km, zero at 400km
-        if dist <= 50:
-            decay = 1.0
-        elif dist <= 400:
-            decay = 1.0 - (dist - 50) / 350
-        else:
-            decay = 0.0
+    zones = _nearest_geothermal(lat, lon, radius_km)
+    geo_score = zones[0]["effective_score"] if zones else 0
+    nearest_name = zones[0]["name"]  if zones else "None"
+    nearest_km   = zones[0]["distance_km"] if zones else None
 
-        effective = round(base_score * decay)
-        if decay > 0:
-            nearby_zones.append({
-                "name": name,
-                "type": gtype,
-                "distance_km": round(dist, 1),
-                "base_potential": base_score,
-                "effective_score": effective,
-                "notes": notes,
-            })
-        if effective > best_score:
-            best_score = effective
-            best_zone = name
-            best_dist_km = round(dist, 1)
+    # Pull nearby geothermal plants from DB (power_plants table)
+    nearby_plants = []
+    conn = _get_db_safe()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT name, capacity_mw, lat, lng
+                FROM power_plants
+                WHERE fuel_type ILIKE '%geothermal%'
+                  AND lat  BETWEEN %s AND %s
+                  AND lng  BETWEEN %s AND %s
+                LIMIT 10
+            """, (lat - 3, lat + 3, lon - 3, lon + 3))
+            for row in cur.fetchall():
+                pname, cap, plat, plon = row
+                d = _haversine_km(lat, lon, float(plat or 0), float(plon or 0))
+                nearby_plants.append({"name": pname, "capacity_mw": float(cap or 0), "distance_km": round(d, 1)})
+            nearby_plants.sort(key=lambda x: x["distance_km"])
+            cur.close()
+            conn.close()
+        except Exception as exc:
+            logger.debug("NLR geothermal plants query: %s", exc)
+            try: conn.rollback()
+            except Exception: pass
+            try: conn.close()
+            except Exception: pass
 
-    nearby_zones.sort(key=lambda z: z["distance_km"])
+    aries_compat = geo_score >= 50
+    return jsonify({
+        "success": True,
+        "location": {"lat": lat, "lon": lon, "state": state},
+        "geothermal_potential": {
+            "geothermal_score": geo_score,
+            "classification": _geo_classification(geo_score),
+            "nearest_zone": nearest_name,
+            "nearest_zone_km": nearest_km,
+            "nearby_zones": zones,
+        },
+        "nearby_geothermal_plants": nearby_plants,
+        "nlr_relevance": {
+            "research_zone": geo_score >= 40,
+            "aries_compatible": aries_compat,
+            "commercial_viable": geo_score >= 75,
+            "note": "NLR/NREL EGS research zones mapped. See nlr.gov/geothermal for full dataset.",
+        },
+        "source": "DC Hub + USGS EGS Atlas + EIA-860",
+    })
 
-    if best_score >= 80:
-        classification = "Exceptional — commercial geothermal viable"
-    elif best_score >= 60:
-        classification = "High — EGS or hydrothermal development feasible"
-    elif best_score >= 40:
-        classification = "Moderate — research-grade EGS potential"
-    elif best_score >= 20:
-        classification = "Low — deep EGS only, high cost"
+
+# ---------------------------------------------------------------------------
+# Route 2 — /api/v1/colocation-score
+# ---------------------------------------------------------------------------
+
+@nlr_bp.route("/api/v1/colocation-score")
+def colocation_score():
+    try:
+        lat         = float(request.args.get("lat",   39.7405))
+        lon         = float(request.args.get("lon",  -105.1686))
+        state       = request.args.get("state", "CO").upper()
+        capacity_mw = float(request.args.get("capacity_mw", 100))
+        radius_km   = float(request.args.get("radius_km", 100))
+    except (TypeError, ValueError) as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+
+    # Renewable scores
+    ghi        = SOLAR_GHI.get(state, 4.5)
+    wind_cls   = WIND_CLASS.get(state, 3)
+    solar_sc   = _solar_score(ghi)
+    wind_sc    = _wind_score(wind_cls)
+    geo_zones  = _nearest_geothermal(lat, lon, 500)
+    geo_sc     = geo_zones[0]["effective_score"] if geo_zones else 0
+    renew_sc   = round((solar_sc * 0.4 + wind_sc * 0.35 + min(geo_sc, 30) * 0.25))
+    tax_sc     = TAX_INCENTIVE_SCORES.get(state, 70)
+
+    # Substations
+    subs = _query_substations(lat, lon, state, radius_km)
+    sub_count  = len(subs)
+    max_kv     = max((s["voltage_kv"] for s in subs), default=0)
+
+    # Grid access score (0-100) based on substation count + voltage
+    if sub_count == 0:
+        grid_sc = 15
+    elif sub_count < 3:
+        grid_sc = 35 + min(max_kv / 10, 25)
+    elif sub_count < 10:
+        grid_sc = 55 + min(max_kv / 10, 20)
     else:
-        classification = "Minimal — not economically viable"
+        grid_sc = 75 + min(max_kv / 20, 20)
+    grid_sc = round(min(grid_sc, 100))
 
-    return {
-        "geothermal_score": best_score,
-        "classification": classification,
-        "nearest_zone": best_zone,
-        "nearest_zone_km": best_dist_km,
-        "nearby_zones": nearby_zones[:5],
+    # Composite (weighted)
+    score = round(renew_sc * 0.40 + grid_sc * 0.25 + tax_sc * 0.20 + geo_sc * 0.15)
+
+    # NLR flag: high renewable + good grid + geo research zone
+    nlr_flag = (score >= 70 and geo_sc >= 40 and grid_sc >= 50)
+
+    carbon_reduction = round((solar_sc + wind_sc) / 2 * 0.9, 1)
+    ppa_discount = round((renew_sc - 50) * 0.8, 1) if renew_sc > 50 else 0
+
+    return jsonify({
+        "success": True,
+        "location": {"lat": lat, "lon": lon, "state": state},
+        "colocation_score": score,
+        "rating": _colocation_rating(score),
+        "component_scores": {
+            "renewable_potential": renew_sc,
+            "grid_access": grid_sc,
+            "tax_incentives": tax_sc,
+            "geothermal_bonus": geo_sc,
+        },
+        "renewable_breakdown": {
+            "solar_ghi_kwh_m2_day": ghi,
+            "solar_score": solar_sc,
+            "wind_class": wind_cls,
+            "wind_score": wind_sc,
+            "geothermal_score": geo_sc,
+        },
+        "infrastructure": {
+            "substations_within_100km": sub_count,
+            "max_voltage_kv": max_kv,
+        },
+        "economics": {
+            "capacity_mw_analyzed": capacity_mw,
+            "estimated_ppa_discount_pct": ppa_discount,
+            "carbon_reduction_potential_pct": carbon_reduction,
+        },
+        "nlr_colocation_flag": nlr_flag,
+        "source": "DC Hub NLR Intelligence Layer",
+    })
+
+
+# ---------------------------------------------------------------------------
+# Route 3 — /api/v1/grid-headroom
+# ---------------------------------------------------------------------------
+
+def _estimate_headroom_mw(voltage_kv):
+    """Rough available headroom estimate based on voltage class."""
+    if voltage_kv >= 500: return 800
+    if voltage_kv >= 345: return 500
+    if voltage_kv >= 230: return 300
+    if voltage_kv >= 138: return 150
+    if voltage_kv >= 115: return 100
+    if voltage_kv >= 69:  return 50
+    return 20
+
+
+@nlr_bp.route("/api/v1/grid-headroom")
+def grid_headroom():
+    try:
+        lat       = float(request.args.get("lat",   39.7405))
+        lon       = float(request.args.get("lon",  -105.1686))
+        state     = request.args.get("state", "CO").upper()
+        radius_km = float(request.args.get("radius_km", 80))
+    except (TypeError, ValueError) as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+
+    subs = _query_substations(lat, lon, state, radius_km)
+
+    top_subs = []
+    total_mw = 0
+    nearest  = None
+
+    for s in subs[:10]:
+        headroom = _estimate_headroom_mw(s["voltage_kv"])
+        total_mw += headroom
+        entry = {
+            "name":        s["name"],
+            "voltage_kv":  s["voltage_kv"],
+            "distance_km": s["distance_km"],
+            "estimated_available_mw": headroom,
+        }
+        top_subs.append(entry)
+        if nearest is None:
+            nearest = entry
+
+    if total_mw == 0:
+        rating = "Unknown — no substations found in radius"
+    elif total_mw >= 2000:
+        rating = "Abundant — >2 GW estimated available"
+    elif total_mw >= 1000:
+        rating = "Strong — 1–2 GW estimated available"
+    elif total_mw >= 500:
+        rating = "Adequate — 500 MW–1 GW estimated available"
+    elif total_mw >= 200:
+        rating = "Moderate — 200–500 MW estimated available"
+    else:
+        rating = "Constrained — <200 MW estimated available"
+
+    return jsonify({
+        "success": True,
+        "location": {"lat": lat, "lon": lon, "state": state},
+        "grid_headroom": {
+            "substations_analyzed": len(subs),
+            "radius_km": radius_km,
+            "total_estimated_available_mw": total_mw,
+            "rating": rating,
+        },
+        "nearest_substation": nearest,
+        "top_substations": top_subs,
+        "source": "DC Hub + HIFLD Substation Database",
+        "caveat": (
+            "Capacity estimates based on voltage class. "
+            "Actual interconnection queue and utility availability "
+            "require direct utility confirmation."
+        ),
+    })
+
+
+# ---------------------------------------------------------------------------
+# Route 4 — /api/v1/microgrid-viability
+# ---------------------------------------------------------------------------
+
+@nlr_bp.route("/api/v1/microgrid-viability")
+def microgrid_viability():
+    try:
+        lat         = float(request.args.get("lat",   39.7405))
+        lon         = float(request.args.get("lon",  -105.1686))
+        state       = request.args.get("state", "CO").upper()
+        capacity_mw = float(request.args.get("capacity_mw", 50))
+    except (TypeError, ValueError) as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+
+    ghi       = SOLAR_GHI.get(state, 4.5)
+    wind_cls  = WIND_CLASS.get(state, 3)
+    solar_sc  = _solar_score(ghi)
+    wind_sc   = _wind_score(wind_cls)
+    geo_zones = _nearest_geothermal(lat, lon, 500)
+    geo_sc    = geo_zones[0]["effective_score"] if geo_zones else 0
+
+    # Storage suitability: temperature extremes help or hurt battery cycles
+    # Proxy: higher solar = warmer climate = better storage
+    storage_sc = min(95, 45 + round(ghi * 8))
+
+    # Composite microgrid score
+    mg_score = round(solar_sc * 0.30 + wind_sc * 0.25 + geo_sc * 0.20 + storage_sc * 0.25)
+
+    # Recommended configuration
+    config = [
+        f"Solar PV: {round(capacity_mw * 1.5)} MW (1.5× DC load ratio)",
+        f"Wind: {round(capacity_mw * 0.8)} MW",
+    ]
+    if geo_sc >= 50:
+        config.append(f"Geothermal baseload: {round(capacity_mw * 0.4)} MW (24/7 firm)")
+    config.append(f"Battery storage: {round(capacity_mw * 2)} MWh (2-hour buffer)")
+
+    # ARIES alignment flags
+    aries_flags = {
+        "islanding_candidate":   mg_score >= 65,
+        "high_renewable_fraction": (solar_sc + wind_sc) / 2 >= 65,
+        "geothermal_baseload":   geo_sc >= 50,
+        "storage_integration":   storage_sc >= 60,
+        "dc_powerplant_concept": geo_sc >= 80 and mg_score >= 75,
     }
 
-# ---------------------------------------------------------------------------
-# Solar irradiance lookup (simplified GHI zones by lat band + state)
-# ---------------------------------------------------------------------------
-SOLAR_GHI_BY_STATE = {
-    "AZ": 6.5, "NM": 6.3, "NV": 6.1, "CA": 5.8, "TX": 5.6, "CO": 5.5,
-    "UT": 5.4, "KS": 5.2, "OK": 5.1, "FL": 5.0, "HI": 5.9, "GA": 4.9,
-    "SC": 4.9, "NC": 4.8, "TN": 4.6, "AR": 4.7, "AL": 4.8, "MS": 4.8,
-    "LA": 4.8, "MO": 4.6, "IL": 4.4, "IN": 4.3, "OH": 4.2, "KY": 4.4,
-    "VA": 4.6, "MD": 4.5, "DE": 4.4, "NJ": 4.4, "PA": 4.3, "NY": 4.2,
-    "CT": 4.3, "RI": 4.3, "MA": 4.2, "VT": 4.0, "NH": 4.0, "ME": 4.0,
-    "WV": 4.2, "MI": 4.1, "WI": 4.2, "MN": 4.3, "IA": 4.5, "NE": 5.0,
-    "SD": 4.8, "ND": 4.6, "MT": 4.6, "WY": 5.2, "ID": 4.8, "OR": 4.1,
-    "WA": 3.7, "AK": 2.5,
-}
-
-WIND_CLASS_BY_STATE = {
-    "TX": 8, "KS": 8, "ND": 8, "SD": 7, "NE": 7, "WY": 7, "MT": 7,
-    "IA": 7, "MN": 6, "OK": 8, "CO": 6, "NM": 6, "NV": 5, "ID": 6,
-    "OR": 6, "WA": 6, "CA": 5, "AZ": 4, "UT": 5, "IL": 5, "IN": 5,
-    "MI": 5, "OH": 4, "PA": 4, "NY": 5, "ME": 7, "NH": 5, "VT": 5,
-    "MA": 6, "FL": 3, "GA": 3, "SC": 3, "NC": 4, "VA": 4, "WV": 4,
-    "TN": 3, "AL": 3, "MS": 3, "LA": 4, "AR": 4, "MO": 5, "WI": 5,
-    "AK": 7, "HI": 6,
-}
-
-
-# ---------------------------------------------------------------------------
-# 1. Geothermal Potential
-# ---------------------------------------------------------------------------
-@nlr_bp.route("/api/v1/geothermal-potential", methods=["GET"])
-def geothermal_potential():
-    """
-    Score geothermal resource potential for a given location.
-    Key differentiator vs Baxtel — purpose-built for NLR research alignment.
-
-    Query params: lat, lon, state
-    """
-    try:
-        lat = float(request.args.get("lat", 0))
-        lon = float(request.args.get("lon", 0))
-        state = request.args.get("state", "").upper()
-
-        if not lat or not lon:
-            return jsonify({"error": "lat and lon required"}), 400
-
-        geo = _geothermal_score(lat, lon)
-
-        # Try to enrich with nearby geothermal plants from DB
-        conn = _get_db_safe()
-        nearby_plants = []
-        if conn:
-            rows = _query_safe(conn, """
-                SELECT name, capacity_mw, latitude, longitude, state_name
-                FROM power_plants
-                WHERE energy_source_code IN ('GEO', 'geothermal')
-                AND latitude IS NOT NULL AND longitude IS NOT NULL
-                LIMIT 200
-            """)
-            for r in rows:
-                if r[2] and r[3]:
-                    dist = _haversine_km(lat, lon, float(r[2]), float(r[3]))
-                    if dist <= 300:
-                        nearby_plants.append({
-                            "name": r[0],
-                            "capacity_mw": r[1],
-                            "distance_km": round(dist, 1),
-                            "state": r[4],
-                        })
-            nearby_plants.sort(key=lambda x: x["distance_km"])
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-        return jsonify({
-            "success": True,
-            "location": {"lat": lat, "lon": lon, "state": state},
-            "geothermal_potential": geo,
-            "nearby_geothermal_plants": nearby_plants[:5],
-            "nlr_relevance": {
-                "aries_compatible": True,
-                "research_zone": geo["geothermal_score"] >= 50,
-                "commercial_viable": geo["geothermal_score"] >= 70,
-                "note": "NLR/NREL EGS research zones mapped. See nlr.gov/geothermal for full dataset."
-            },
-            "source": "DC Hub + USGS EGS Atlas + EIA-860"
-        })
-    except Exception as e:
-        logger.error(f"geothermal_potential error: {e}")
-        return jsonify({"error": str(e)}), 500
+    return jsonify({
+        "success": True,
+        "location": {"lat": lat, "lon": lon, "state": state},
+        "capacity_mw_analyzed": capacity_mw,
+        "microgrid_score": mg_score,
+        "viability": _microgrid_viability(mg_score),
+        "component_scores": {
+            "solar":             solar_sc,
+            "wind":              wind_sc,
+            "geothermal":        geo_sc,
+            "storage_suitability": storage_sc,
+        },
+        "recommended_configuration": config,
+        "aries_platform_flags": aries_flags,
+        "nlr_research_alignment": {
+            "relevant_programs": [
+                "ARIES (Advanced Research on Integrated Energy Systems)",
+                "Geothermal Technologies Office",
+                "Solar Energy Research Institute",
+            ],
+            "dc_powerplant_in_microgrid": aries_flags["dc_powerplant_concept"],
+            "reference": "nlr.gov/news — In Alaska, a Data Center Inside a Power Plant, Inside a Microgrid",
+        },
+        "source": "DC Hub NLR Intelligence Layer + EIA + USGS",
+    })
 
 
 # ---------------------------------------------------------------------------
-# 2. Co-location Score
+# Registration helper
 # ---------------------------------------------------------------------------
-@nlr_bp.route("/api/v1/colocation-score", methods=["GET"])
-def colocation_score():
-    """
-    Composite score for data center + renewable energy co-location opportunity.
-    Combines grid access, renewable proximity, incentives, and risk into one
-    NLR-friendly siting score.
 
-    Query params: lat, lon, state, capacity_mw (default 100)
-    """
-    try:
-        lat = float(request.args.get("lat", 0))
-        lon = float(request.args.get("lon", 0))
-        state = request.args.get("state", "").upper()
-        capacity_mw = float(request.args.get("capacity_mw", 100))
-
-        if not lat or not lon:
-            return jsonify({"error": "lat and lon required"}), 400
-
-        # --- Solar score (0-100)
-        ghi = SOLAR_GHI_BY_STATE.get(state, 4.2)
-        solar_score = min(100, round((ghi / 7.0) * 100))
-
-        # --- Wind score (0-100)
-        wind_class = WIND_CLASS_BY_STATE.get(state, 4)
-        wind_score = min(100, round((wind_class / 8.0) * 100))
-
-        # --- Geothermal score
-        geo = _geothermal_score(lat, lon)
-        geo_score = geo["geothermal_score"]
-
-        # --- Best renewable score (weighted: solar 40%, wind 40%, geo 20%)
-        renewable_score = round(solar_score * 0.4 + wind_score * 0.4 + geo_score * 0.2)
-
-        # --- Grid score from DB substations
-        conn = _get_db_safe()
-        substation_count = 0
-        max_voltage = 0
-        if conn:
-            rows = _query_safe(conn, """
-                SELECT COUNT(*), MAX(voltage_kv)
-                FROM substations
-                WHERE latitude BETWEEN %s AND %s
-                AND longitude BETWEEN %s AND %s
-            """, (lat - 1.0, lat + 1.0, lon - 1.0, lon + 1.0))
-            if rows and rows[0][0]:
-                substation_count = rows[0][0]
-                max_voltage = float(rows[0][1] or 0)
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-        if substation_count >= 10:
-            grid_score = 90
-        elif substation_count >= 5:
-            grid_score = 75
-        elif substation_count >= 2:
-            grid_score = 55
-        elif substation_count >= 1:
-            grid_score = 35
-        else:
-            grid_score = 15
-
-        if max_voltage >= 345:
-            grid_score = min(100, grid_score + 10)
-        elif max_voltage >= 138:
-            grid_score = min(100, grid_score + 5)
-
-        # --- Incentive score (IRA/CHIPS Act zones)
-        IRA_BONUS_STATES = {"TX", "NM", "CO", "WY", "MT", "ND", "SD", "NE",
-                            "KS", "OK", "IA", "MN", "ID", "NV", "AZ", "UT",
-                            "OR", "WA", "ME", "MI", "OH", "PA", "IN", "GA"}
-        incentive_score = 80 if state in IRA_BONUS_STATES else 50
-
-        # --- Composite (grid 30%, renewable 35%, incentive 20%, geo 15%)
-        composite = round(
-            grid_score    * 0.30 +
-            renewable_score * 0.35 +
-            incentive_score * 0.20 +
-            geo_score     * 0.15
-        )
-
-        if composite >= 80:
-            rating = "Exceptional co-location opportunity"
-        elif composite >= 65:
-            rating = "Strong co-location opportunity"
-        elif composite >= 50:
-            rating = "Moderate — viable with right PPA structure"
-        elif composite >= 35:
-            rating = "Limited — grid or renewable constraints"
-        else:
-            rating = "Poor — not recommended for co-location"
-
-        # --- Estimated PPA savings
-        ppa_discount_pct = round(max(5, min(35, (renewable_score - 40) * 0.5 + 15)), 1)
-        carbon_reduction_pct = round(min(95, renewable_score * 0.9), 1)
-
-        return jsonify({
-            "success": True,
-            "location": {"lat": lat, "lon": lon, "state": state},
-            "colocation_score": composite,
-            "rating": rating,
-            "component_scores": {
-                "grid_access": grid_score,
-                "renewable_potential": renewable_score,
-                "tax_incentives": incentive_score,
-                "geothermal_bonus": geo_score,
-            },
-            "renewable_breakdown": {
-                "solar_score": solar_score,
-                "solar_ghi_kwh_m2_day": ghi,
-                "wind_score": wind_score,
-                "wind_class": wind_class,
-                "geothermal_score": geo_score,
-            },
-            "economics": {
-                "estimated_ppa_discount_pct": ppa_discount_pct,
-                "carbon_reduction_potential_pct": carbon_reduction_pct,
-                "capacity_mw_analyzed": capacity_mw,
-            },
-            "infrastructure": {
-                "substations_within_100km": substation_count,
-                "max_voltage_kv": max_voltage,
-            },
-            "nlr_colocation_flag": composite >= 60,
-            "source": "DC Hub NLR Intelligence Layer"
-        })
-    except Exception as e:
-        logger.error(f"colocation_score error: {e}")
-        return jsonify({"error": str(e)}), 500
-
-
-# ---------------------------------------------------------------------------
-# 3. Grid Headroom (estimated available MW at nearby substations)
-# ---------------------------------------------------------------------------
-@nlr_bp.route("/api/v1/grid-headroom", methods=["GET"])
-def grid_headroom():
-    """
-    Estimate available power capacity (MW headroom) at substations near a site.
-    Goes beyond Baxtel's simple 'substation nearby' flag to show actual
-    usable capacity for a data center build.
-
-    Query params: lat, lon, state, radius_km (default 80)
-    """
-    try:
-        lat = float(request.args.get("lat", 0))
-        lon = float(request.args.get("lon", 0))
-        state = request.args.get("state", "").upper()
-        radius_km = float(request.args.get("radius_km", 80))
-
-        if not lat or not lon:
-            return jsonify({"error": "lat and lon required"}), 400
-
-        conn = _get_db_safe()
-        substations = []
-        if conn:
-            deg_margin = radius_km / 111.0
-            rows = _query_safe(conn, """
-                SELECT name, voltage_kv, latitude, longitude, state_name
-                FROM substations
-                WHERE latitude BETWEEN %s AND %s
-                AND longitude BETWEEN %s AND %s
-                AND voltage_kv IS NOT NULL
-                ORDER BY voltage_kv DESC
-                LIMIT 50
-            """, (lat - deg_margin, lat + deg_margin,
-                  lon - deg_margin, lon + deg_margin))
-            for r in rows:
-                if r[2] and r[3]:
-                    dist = _haversine_km(lat, lon, float(r[2]), float(r[3]))
-                    if dist <= radius_km:
-                        vkv = float(r[1] or 0)
-                        # Estimate headroom by voltage class
-                        # (Higher voltage = larger transformer capacity)
-                        if vkv >= 500:
-                            est_capacity_mw = 800
-                            confidence = "medium"
-                        elif vkv >= 345:
-                            est_capacity_mw = 400
-                            confidence = "medium"
-                        elif vkv >= 230:
-                            est_capacity_mw = 200
-                            confidence = "medium"
-                        elif vkv >= 138:
-                            est_capacity_mw = 80
-                            confidence = "low"
-                        else:
-                            est_capacity_mw = 20
-                            confidence = "low"
-
-                        substations.append({
-                            "name": r[0],
-                            "voltage_kv": vkv,
-                            "distance_km": round(dist, 1),
-                            "state": r[4],
-                            "estimated_capacity_mw": est_capacity_mw,
-                            "confidence": confidence,
-                        })
-            substations.sort(key=lambda x: x["distance_km"])
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-        total_estimated_mw = sum(s["estimated_capacity_mw"] for s in substations[:5])
-        nearest = substations[0] if substations else None
-
-        if total_estimated_mw >= 500:
-            headroom_rating = "Abundant — supports hyperscale build"
-        elif total_estimated_mw >= 200:
-            headroom_rating = "Strong — supports 50-200 MW campus"
-        elif total_estimated_mw >= 80:
-            headroom_rating = "Moderate — supports 10-50 MW facility"
-        elif total_estimated_mw > 0:
-            headroom_rating = "Limited — edge/small facility only"
-        else:
-            headroom_rating = "Unknown — no substations found in radius"
-
-        return jsonify({
-            "success": True,
-            "location": {"lat": lat, "lon": lon, "state": state},
-            "grid_headroom": {
-                "total_estimated_available_mw": total_estimated_mw,
-                "rating": headroom_rating,
-                "substations_analyzed": len(substations),
-                "radius_km": radius_km,
-            },
-            "nearest_substation": nearest,
-            "top_substations": substations[:8],
-            "caveat": "Capacity estimates based on voltage class. Actual interconnection queue and utility availability require direct utility confirmation.",
-            "source": "DC Hub + HIFLD Substation Database"
-        })
-    except Exception as e:
-        logger.error(f"grid_headroom error: {e}")
-        return jsonify({"error": str(e)}), 500
-
-
-# ---------------------------------------------------------------------------
-# 4. Microgrid Viability
-# ---------------------------------------------------------------------------
-@nlr_bp.route("/api/v1/microgrid-viability", methods=["GET"])
-def microgrid_viability():
-    """
-    Score a site's viability for on-site microgrid / distributed generation.
-    Directly aligned with NLR's ARIES platform and microgrid research program.
-    (See: nlr.gov — 'Data Center Inside a Power Plant, Inside a Microgrid')
-
-    Query params: lat, lon, state, capacity_mw (default 10)
-    """
-    try:
-        lat = float(request.args.get("lat", 0))
-        lon = float(request.args.get("lon", 0))
-        state = request.args.get("state", "").upper()
-        capacity_mw = float(request.args.get("capacity_mw", 10))
-
-        if not lat or not lon:
-            return jsonify({"error": "lat and lon required"}), 400
-
-        # Solar
-        ghi = SOLAR_GHI_BY_STATE.get(state, 4.2)
-        solar_score = min(100, round((ghi / 7.0) * 100))
-
-        # Wind
-        wind_class = WIND_CLASS_BY_STATE.get(state, 4)
-        wind_score = min(100, round((wind_class / 8.0) * 100))
-
-        # Geothermal
-        geo = _geothermal_score(lat, lon)
-        geo_score = geo["geothermal_score"]
-
-        # Battery storage suitability (based on solar+wind variability)
-        storage_score = min(100, round((solar_score + wind_score) / 2 * 0.85))
-
-        # Overall microgrid score
-        mg_score = round(solar_score * 0.35 + wind_score * 0.30 + geo_score * 0.15 + storage_score * 0.20)
-
-        # Recommended configuration
-        configs = []
-        if solar_score >= 60:
-            solar_mw = round(capacity_mw * 1.5, 1)
-            configs.append(f"Solar PV: {solar_mw} MW (1.5× DC load ratio)")
-        if wind_score >= 60:
-            wind_mw = round(capacity_mw * 0.8, 1)
-            configs.append(f"Wind: {wind_mw} MW")
-        if geo_score >= 50:
-            geo_mw = round(min(capacity_mw * 0.5, 20), 1)
-            configs.append(f"Geothermal baseload: {geo_mw} MW (24/7 firm)")
-        if storage_score >= 50:
-            batt_mwh = round(capacity_mw * 2, 1)
-            configs.append(f"Battery storage: {batt_mwh} MWh (2-hour buffer)")
-
-        if mg_score >= 75:
-            viability = "High — strong candidate for islanded microgrid"
-        elif mg_score >= 55:
-            viability = "Moderate — grid-tied microgrid with renewables viable"
-        elif mg_score >= 35:
-            viability = "Limited — supplement grid power with on-site solar only"
-        else:
-            viability = "Low — traditional grid connection recommended"
-
-        # ARIES alignment flags (NLR's Advanced Research on Integrated Energy Systems)
-        aries_flags = {
-            "geothermal_baseload": geo_score >= 50,
-            "high_renewable_fraction": (solar_score + wind_score) / 2 >= 60,
-            "islanding_candidate": mg_score >= 70,
-            "storage_integration": storage_score >= 60,
-            "dc_powerplant_concept": mg_score >= 75 and geo_score >= 50,
-        }
-
-        return jsonify({
-            "success": True,
-            "location": {"lat": lat, "lon": lon, "state": state},
-            "microgrid_score": mg_score,
-            "viability": viability,
-            "component_scores": {
-                "solar": solar_score,
-                "wind": wind_score,
-                "geothermal": geo_score,
-                "storage_suitability": storage_score,
-            },
-            "recommended_configuration": configs,
-            "capacity_mw_analyzed": capacity_mw,
-            "aries_platform_flags": aries_flags,
-            "nlr_research_alignment": {
-                "relevant_programs": [
-                    "ARIES (Advanced Research on Integrated Energy Systems)",
-                    "Geothermal Technologies Office",
-                    "Solar Energy Research Institute",
-                ],
-                "dc_powerplant_in_microgrid": aries_flags["dc_powerplant_concept"],
-                "reference": "nlr.gov/news — In Alaska, a Data Center Inside a Power Plant, Inside a Microgrid"
-            },
-            "source": "DC Hub NLR Intelligence Layer + EIA + USGS"
-        })
-    except Exception as e:
-        logger.error(f"microgrid_viability error: {e}")
-        return jsonify({"error": str(e)}), 500
-
-
-# ---------------------------------------------------------------------------
-# Registration helper (called from main.py)
-# ---------------------------------------------------------------------------
 def register_nlr_routes(app):
     app.register_blueprint(nlr_bp)
     logger.info("🌋 NLR Intelligence routes registered:")
-    logger.info("   GET /api/v1/geothermal-potential")
-    logger.info("   GET /api/v1/colocation-score")
-    logger.info("   GET /api/v1/grid-headroom")
-    logger.info("   GET /api/v1/microgrid-viability")
+    logger.info("  GET /api/v1/geothermal-potential")
+    logger.info("  GET /api/v1/colocation-score")
+    logger.info("  GET /api/v1/grid-headroom")
+    logger.info("  GET /api/v1/microgrid-viability")
+    print("🌋 NLR Intelligence: ✅ Registered (4 routes)")
+    print("  GET /api/v1/geothermal-potential")
+    print("  GET /api/v1/colocation-score")
+    print("  GET /api/v1/grid-headroom")
+    print("  GET /api/v1/microgrid-viability")
