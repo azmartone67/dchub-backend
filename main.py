@@ -13953,6 +13953,18 @@ try:
 except Exception as e:
     logger.warning(f"⚠️ Grid Intelligence: {e}")
 
+# NLR Intelligence Layer (geothermal, co-location, grid headroom, microgrid)
+try:
+    from nlr_intelligence import register_nlr_routes
+    register_nlr_routes(app)
+    print("🌋 NLR Intelligence: ✅ Registered (4 routes)")
+    print("   GET /api/v1/geothermal-potential")
+    print("   GET /api/v1/colocation-score")
+    print("   GET /api/v1/grid-headroom")
+    print("   GET /api/v1/microgrid-viability")
+except Exception as e:
+    logger.warning(f"⚠️ NLR Intelligence: {e}")
+
 # .well-known/mcp.json fallback (Worker inline handler returns 500)
 @app.route('/.well-known/mcp.json')
 def well_known_mcp_json():
