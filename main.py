@@ -13069,7 +13069,7 @@ def _periodic_gc_loop():
             if rss_mb > _MEMORY_LIMIT_MB:
                 logger.warning(f"⚠️ Memory high: {rss_mb:.0f}MB > {_MEMORY_LIMIT_MB}MB limit, clearing caches")
                 for cache_obj in [GRIDSTATUS_CACHE, FCC_BROADBAND_CACHE, EPA_CACHE, 
-                                  PEERINGDB_CACHE, EIA_CACHE, HIFLD_CACHE, OILGAS_CACHE, DEALS_CACHE]:
+                                  PEERINGDB_CACHE, EIA_CACHE, HIFLD_CACHE, OILGAS_CACHE] + ([DEALS_CACHE] if 'DEALS_CACHE' in dir() else []):
                     try:
                         cache_obj.clear()
                     except Exception:

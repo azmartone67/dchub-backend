@@ -264,7 +264,7 @@ def generate_transmission_kml(market=None, min_voltage=None):
     try:
         c = conn.cursor()
 
-        query = "SELECT * FROM discovered_transmission_lines WHERE 1=1"
+        query = "SELECT * FROM discovered_transmission_lines WHERE 1=1 ORDER BY voltage_kv DESC LIMIT 25000"
         params = []
         if market:
             query += " AND market = %s"; params.append(market)
@@ -340,7 +340,7 @@ def generate_all_kml(market=None):
         pipelines = _dict_rows(c)
 
         # Get transmission lines
-        tx_query = "SELECT * FROM discovered_transmission_lines WHERE 1=1"
+        tx_query = "SELECT * FROM discovered_transmission_lines WHERE 1=1 ORDER BY voltage_kv DESC LIMIT 25000"
         tx_params = []
         if market:
             tx_query += " AND market = %s"; tx_params.append(market)
