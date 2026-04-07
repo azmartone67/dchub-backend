@@ -2841,6 +2841,51 @@ async def get_grid_intelligence(region_id: str = "") -> str:
 
 
 # ═══════════════════════════════════════════════════════════
+# NLR INTELLIGENCE LAYER — Geothermal, Co-location, Grid Headroom, Microgrid
+# Purpose-built to be the ideal data partner for NLR/reVeal siting platform
+# ═══════════════════════════════════════════════════════════
+
+@mcp.tool(
+    name="get_geothermal_potential",
+    description="Score geothermal resource potential for a site location. Returns USGS EGS zone proximity, hydrothermal classification, nearby geothermal plants, and NLR/ARIES research alignment flags. Key differentiator vs Baxtel — geothermal intelligence purpose-built for NLR partnership."
+)
+async def get_geothermal_potential(lat: float = 0, lon: float = 0, state: str = "") -> str:
+    _track("get_geothermal_potential", {"lat": lat, "lon": lon, "state": state})
+    result = _api_get("/api/v1/geothermal-potential", {"lat": lat, "lon": lon, "state": state})
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool(
+    name="get_colocation_score",
+    description="Composite co-location opportunity score for data center + renewable energy at a given lat/lon. Combines grid access, solar/wind/geothermal potential, IRA/CHIPS Act incentives, and estimated PPA discount into a single 0-100 score. Ideal for NLR/reVeal siting pipeline integration."
+)
+async def get_colocation_score(lat: float = 0, lon: float = 0, state: str = "", capacity_mw: float = 100) -> str:
+    _track("get_colocation_score", {"lat": lat, "lon": lon, "state": state, "capacity_mw": capacity_mw})
+    result = _api_get("/api/v1/colocation-score", {"lat": lat, "lon": lon, "state": state, "capacity_mw": capacity_mw})
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool(
+    name="get_grid_headroom",
+    description="Estimate available power capacity (MW headroom) at substations near a site. Goes beyond simple 'substation nearby' to show voltage class, estimated available MW, and a headroom rating. Supports hyperscale vs edge facility sizing decisions."
+)
+async def get_grid_headroom(lat: float = 0, lon: float = 0, state: str = "", radius_km: float = 80) -> str:
+    _track("get_grid_headroom", {"lat": lat, "lon": lon, "state": state, "radius_km": radius_km})
+    result = _api_get("/api/v1/grid-headroom", {"lat": lat, "lon": lon, "state": state, "radius_km": radius_km})
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool(
+    name="get_microgrid_viability",
+    description="Score a site for on-site microgrid and distributed generation viability. Returns solar/wind/geothermal/storage component scores, recommended configuration (MW sizing), and NLR ARIES platform alignment flags including the 'data center inside a power plant inside a microgrid' concept."
+)
+async def get_microgrid_viability(lat: float = 0, lon: float = 0, state: str = "", capacity_mw: float = 10) -> str:
+    _track("get_microgrid_viability", {"lat": lat, "lon": lon, "state": state, "capacity_mw": capacity_mw})
+    result = _api_get("/api/v1/microgrid-viability", {"lat": lat, "lon": lon, "state": state, "capacity_mw": capacity_mw})
+    return json.dumps(result, indent=2)
+
+
+# ═══════════════════════════════════════════════════════════
 # KEEPALIVE — Prevent Railway idle shutdown
 # ═══════════════════════════════════════════════════════════
 def _mcp_keepalive():
