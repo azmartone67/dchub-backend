@@ -38,17 +38,19 @@ from urllib.parse import urlencode
 logger = logging.getLogger('linkedin')
 
 # ── Config ───────────────────────────────────────────────────
-LINKEDIN_CLIENT_ID = os.environ.get('LINKEDIN_CLIENT_ID', '')
+LINKEDIN_CLIENT_ID     = os.environ.get('LINKEDIN_CLIENT_ID', '')
 LINKEDIN_CLIENT_SECRET = os.environ.get('LINKEDIN_CLIENT_SECRET', '')
-LINKEDIN_COMPANY_ID = os.environ.get('LINKEDIN_COMPANY_ID', '')  # Numeric ID from company page URL
-LINKEDIN_REDIRECT_URI = os.environ.get('LINKEDIN_REDIRECT_URI', 'https://dchub.cloud/api/linkedin/callback')
-LINKEDIN_SCOPES = 'openid profile w_member_social w_organization_social'
+LINKEDIN_COMPANY_ID    = os.environ.get('LINKEDIN_COMPANY_ID', '')
+LINKEDIN_REDIRECT_URI  = os.environ.get('LINKEDIN_REDIRECT_URI', 'https://dchub.cloud/api/linkedin/callback')
+LINKEDIN_SCOPES        = 'openid profile w_member_social w_organization_social'
+# Direct token from Railway env — used as fallback if DB has no token yet
+LINKEDIN_ACCESS_TOKEN_ENV = os.environ.get('LINKEDIN_ACCESS_TOKEN', '')
 
 # LinkedIn API endpoints
-AUTH_URL = 'https://www.linkedin.com/oauth/v2/authorization'
-TOKEN_URL = 'https://www.linkedin.com/oauth/v2/accessToken'
-POSTS_URL = 'https://api.linkedin.com/rest/posts'
-USERINFO_URL = 'https://api.linkedin.com/v2/userinfo'
+AUTH_URL      = 'https://www.linkedin.com/oauth/v2/authorization'
+TOKEN_URL     = 'https://www.linkedin.com/oauth/v2/accessToken'
+POSTS_URL     = 'https://api.linkedin.com/rest/posts'
+USERINFO_URL  = 'https://api.linkedin.com/v2/userinfo'
 
 # Admin key for protected endpoints (set in Railway env)
 ADMIN_KEY = os.environ.get('DCHUB_ADMIN_KEY', '')
@@ -158,11 +160,21 @@ def _save_token(access_token, refresh_token=None, expires_in=5184000, member_urn
 
 
 def _get_valid_token():
-    """Get a valid access token, refreshing if needed."""
+    """Get a valid access token, refreshing if needed.
+    Falls back to LINKEDIN_ACCESS_TOKEN env var if DB has no token yet.
+    """
     import requests as req
 
     token = _get_token()
     if not token or not token.get('access_token'):
+        # Fallback: use token from Railway env var (seed it into DB for next time)
+        if LINKEDIN_ACCESS_TOKEN_ENV:
+            logger.info("[LinkedIn] No DB token found — using LINKEDIN_ACCESS_TOKEN env var")
+            try:
+                _save_token(LINKEDIN_ACCESS_TOKEN_ENV, expires_in=5184000)
+            except Exception as e:
+                logger.warning(f"[LinkedIn] Could not seed env token to DB: {e}")
+            return LINKEDIN_ACCESS_TOKEN_ENV
         return None
 
     # Check expiry (refresh if within 24h of expiring)
@@ -680,10 +692,11 @@ def register_linkedin_routes(app):
             return _cors_json({'error': 'Unauthorized'}, 401)
 
         data = request.get_json() or {}
-        text = data.get('text', '').strip()
+        # Accept both "text" and "content" for convenience
+        text = (data.get('text') or data.get('content') or '').strip()
 
         if not text:
-            return _cors_json({'error': 'Missing "text" field'}, 400)
+            return _cors_json({'error': 'Missing "text" or "content" field'}, 400)
 
         link_url = data.get('link_url')
         link_title = data.get('link_title')
@@ -838,16 +851,66 @@ def register_linkedin_routes(app):
                 logger.error(f"[LinkedIn] Scheduler error: {e}")
                 _time.sleep(600)
 
+    # ── POST /api/linkedin/seed-token — Bootstrap token from env ─
+    @app.route('/api/linkedin/seed-token', methods=['POST', 'OPTIONS'])
+    def linkedin_seed_token():
+        """
+        Seed the LINKEDIN_ACCESS_TOKEN env var into the Neon DB so the
+        poster can use it. Call this once after setting the env var in Railway.
+        Requires admin key.
+
+        Body (optional):
+          { "access_token": "...", "expires_in": 5184000 }
+        If body is empty, uses LINKEDIN_ACCESS_TOKEN env var automatically.
+        """
+        if request.method == 'OPTIONS':
+            return _cors_json({})
+
+        if not _check_admin(request):
+            return _cors_json({'error': 'Unauthorized'}, 401)
+
+        data = request.get_json() or {}
+        token_to_save = data.get('access_token') or LINKEDIN_ACCESS_TOKEN_ENV
+        expires_in   = int(data.get('expires_in', 5184000))  # default 60 days
+
+        if not token_to_save:
+            return _cors_json({
+                'error': 'No token provided and LINKEDIN_ACCESS_TOKEN env var is not set',
+                'hint': 'Set LINKEDIN_ACCESS_TOKEN in Railway env vars and redeploy, then call this endpoint again'
+            }, 400)
+
+        try:
+            _save_token(token_to_save, expires_in=expires_in)
+            expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+            return _cors_json({
+                'success': True,
+                'message': 'Token seeded into Neon DB — LinkedIn posting is now active',
+                'expires_at': expires_at.isoformat(),
+                'expires_in_days': expires_in // 86400,
+                'source': 'env_var' if not data.get('access_token') else 'request_body',
+            })
+        except Exception as e:
+            return _cors_json({'error': str(e)}, 500)
+
     # Start scheduler thread
     t = threading.Thread(target=_scheduled_poster, daemon=True, name='linkedin-scheduler')
     t.start()
 
-    DAYS = {0: 'Mon', 2: 'Wed', 4: 'Fri'}
+    # Auto-seed token from env if DB has no token yet
+    try:
+        existing = _get_token()
+        if (not existing or not existing.get('access_token')) and LINKEDIN_ACCESS_TOKEN_ENV:
+            _save_token(LINKEDIN_ACCESS_TOKEN_ENV, expires_in=5184000)
+            logger.info("[LinkedIn] ✅ Auto-seeded LINKEDIN_ACCESS_TOKEN from env into Neon DB")
+    except Exception as e:
+        logger.warning(f"[LinkedIn] Could not auto-seed token: {e}")
+
     logger.info("[LinkedIn] ✅ Routes registered:")
     logger.info("  GET  /api/linkedin/auth")
     logger.info("  GET  /api/linkedin/callback")
-    logger.info("  POST /api/linkedin/post")
+    logger.info("  POST /api/linkedin/post       (accepts 'text' or 'content' field)")
     logger.info("  POST /api/linkedin/auto-post")
+    logger.info("  POST /api/linkedin/seed-token (bootstrap token from env)")
     logger.info("  GET  /api/linkedin/status")
     logger.info(f"  Company: {LINKEDIN_COMPANY_ID or 'NOT SET'}")
     logger.info(f"  Schedule: Mon/Wed/Fri 14:00 UTC")
