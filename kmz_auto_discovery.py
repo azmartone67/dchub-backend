@@ -171,153 +171,120 @@ PUBLIC_KMZ_SOURCES = [
         'provider': 'HIFLD',
         'category': 'fiber'
     },
-    # ── CARRIER / DARK FIBER NETWORKS (Public GIS) ───────────────
+    # ── CARRIER / DARK FIBER NETWORKS ────────────────────────────
+    # NOTE: Major carriers don't publish public ArcGIS FeatureServer endpoints.
+    # All carrier sources use api_discover (ArcGIS search) which returns real results.
     {
         'name': 'Zayo Fiber Network',
-        'url': 'https://services.arcgis.com/njFNhDsUCentVYJW/arcgis/rest/services/Zayo_Network/FeatureServer/0',
-        'type': 'arcgis_kml',
+        'url': 'https://www.arcgis.com/sharing/rest/search?q=Zayo+fiber+network+routes+broadband&sortField=modified&sortOrder=desc&num=20&f=json',
+        'type': 'api_discover',
         'provider': 'Zayo',
         'category': 'fiber'
     },
     {
         'name': 'Crown Castle Fiber',
-        'url': 'https://services.arcgis.com/njFNhDsUCentVYJW/arcgis/rest/services/Crown_Castle_Fiber/FeatureServer/0',
-        'type': 'arcgis_kml',
+        'url': 'https://www.arcgis.com/sharing/rest/search?q=Crown+Castle+fiber+small+cell+network&sortField=modified&sortOrder=desc&num=20&f=json',
+        'type': 'api_discover',
         'provider': 'Crown Castle',
         'category': 'fiber'
     },
     {
         'name': 'Lumen Long Haul Fiber',
-        'url': 'https://services.arcgis.com/njFNhDsUCentVYJW/arcgis/rest/services/Lumen_Fiber/FeatureServer/0',
-        'type': 'arcgis_kml',
+        'url': 'https://www.arcgis.com/sharing/rest/search?q=Lumen+CenturyLink+fiber+long+haul+network&sortField=modified&sortOrder=desc&num=20&f=json',
+        'type': 'api_discover',
         'provider': 'Lumen',
         'category': 'fiber'
     },
     {
         'name': 'Windstream Fiber Network',
-        'url': 'https://services.arcgis.com/njFNhDsUCentVYJW/arcgis/rest/services/Windstream_Fiber/FeatureServer/0',
-        'type': 'arcgis_kml',
+        'url': 'https://www.arcgis.com/sharing/rest/search?q=Windstream+fiber+broadband+network+route&sortField=modified&sortOrder=desc&num=20&f=json',
+        'type': 'api_discover',
         'provider': 'Windstream',
         'category': 'fiber'
     },
-    # ── MAJOR ISP FIBER NETWORKS (v4.0) ──────────────────────────
+    # ── MAJOR ISP FIBER NETWORKS (v4.0 — api_discover) ───────────
     {
-        'name': 'AT&T Fiber BEAD Expansion Zones',
-        'url': 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/ATT_BEAD_Fiber_Expansion/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'AT&T',
-        'category': 'fiber'
-    },
-    {
-        'name': 'AT&T Broadband Infrastructure GIS',
-        'url': 'https://www.arcgis.com/sharing/rest/search?q=AT%26T+fiber+broadband+infrastructure&sortField=modified&sortOrder=desc&num=10&f=json',
+        'name': 'AT&T Fiber Network',
+        'url': 'https://www.arcgis.com/sharing/rest/search?q=AT%26T+fiber+broadband+BEAD+expansion&sortField=modified&sortOrder=desc&num=20&f=json',
         'type': 'api_discover',
         'provider': 'AT&T',
         'category': 'fiber'
     },
     {
-        'name': 'Comcast Xfinity Fiber Footprint',
-        'url': 'https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/Comcast_Fiber_Footprint/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'Comcast',
-        'category': 'fiber'
-    },
-    {
-        'name': 'Comcast BEAD Partnership Zones',
-        'url': 'https://www.arcgis.com/sharing/rest/search?q=Comcast+Xfinity+fiber+broadband+expansion&sortField=modified&sortOrder=desc&num=10&f=json',
+        'name': 'Comcast Xfinity Fiber',
+        'url': 'https://www.arcgis.com/sharing/rest/search?q=Comcast+Xfinity+fiber+broadband+expansion&sortField=modified&sortOrder=desc&num=20&f=json',
         'type': 'api_discover',
         'provider': 'Comcast',
         'category': 'fiber'
     },
     {
-        'name': 'Verizon Fios / Fiber Network',
-        'url': 'https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/Verizon_Fiber_Network/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'Verizon',
-        'category': 'fiber'
-    },
-    {
-        'name': 'Verizon BEAD Fiber Expansion',
-        'url': 'https://www.arcgis.com/sharing/rest/search?q=Verizon+FiOS+fiber+broadband+BEAD&sortField=modified&sortOrder=desc&num=10&f=json',
+        'name': 'Verizon Fiber / FiOS',
+        'url': 'https://www.arcgis.com/sharing/rest/search?q=Verizon+FiOS+fiber+broadband+network&sortField=modified&sortOrder=desc&num=20&f=json',
         'type': 'api_discover',
         'provider': 'Verizon',
         'category': 'fiber'
     },
     {
-        'name': 'Frontier Fiber Expansion Network',
-        'url': 'https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/Frontier_Fiber_Expansion/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'Frontier',
-        'category': 'fiber'
-    },
-    {
-        'name': 'Frontier BEAD State Plans',
-        'url': 'https://www.arcgis.com/sharing/rest/search?q=Frontier+fiber+broadband+expansion+BEAD&sortField=modified&sortOrder=desc&num=10&f=json',
+        'name': 'Frontier Fiber Expansion',
+        'url': 'https://www.arcgis.com/sharing/rest/search?q=Frontier+fiber+broadband+expansion+BEAD&sortField=modified&sortOrder=desc&num=20&f=json',
         'type': 'api_discover',
         'provider': 'Frontier',
         'category': 'fiber'
     },
     {
-        'name': 'Brightspeed Fiber Network (ex-CenturyLink)',
-        'url': 'https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/Brightspeed_Fiber_Network/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'Brightspeed',
-        'category': 'fiber'
-    },
-    {
-        'name': 'Brightspeed BEAD Expansion Zones',
-        'url': 'https://www.arcgis.com/sharing/rest/search?q=Brightspeed+fiber+broadband+BEAD+expansion&sortField=modified&sortOrder=desc&num=10&f=json',
+        'name': 'Brightspeed Fiber Network',
+        'url': 'https://www.arcgis.com/sharing/rest/search?q=Brightspeed+fiber+broadband+BEAD&sortField=modified&sortOrder=desc&num=20&f=json',
         'type': 'api_discover',
         'provider': 'Brightspeed',
         'category': 'fiber'
     },
     {
         'name': 'Consolidated Communications Fiber',
-        'url': 'https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/Consolidated_Fiber/FeatureServer/0',
-        'type': 'arcgis_kml',
+        'url': 'https://www.arcgis.com/sharing/rest/search?q=Consolidated+Communications+fiber+broadband&sortField=modified&sortOrder=desc&num=15&f=json',
+        'type': 'api_discover',
         'provider': 'Consolidated Communications',
         'category': 'fiber'
     },
     {
         'name': 'Cogent Communications Network',
-        'url': 'https://services.arcgis.com/njFNhDsUCentVYJW/arcgis/rest/services/Cogent_Fiber_Network/FeatureServer/0',
-        'type': 'arcgis_kml',
+        'url': 'https://www.arcgis.com/sharing/rest/search?q=Cogent+fiber+network+route+backbone&sortField=modified&sortOrder=desc&num=15&f=json',
+        'type': 'api_discover',
         'provider': 'Cogent',
         'category': 'fiber'
     },
     {
         'name': 'Uniti Fiber Wholesale Network',
-        'url': 'https://services.arcgis.com/njFNhDsUCentVYJW/arcgis/rest/services/Uniti_Fiber/FeatureServer/0',
-        'type': 'arcgis_kml',
+        'url': 'https://www.arcgis.com/sharing/rest/search?q=Uniti+fiber+wholesale+network+broadband&sortField=modified&sortOrder=desc&num=15&f=json',
+        'type': 'api_discover',
         'provider': 'Uniti',
         'category': 'fiber'
     },
     {
-        'name': 'Google Fiber Cities GIS',
-        'url': 'https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/Google_Fiber_Cities/FeatureServer/0',
-        'type': 'arcgis_kml',
+        'name': 'Google Fiber Cities',
+        'url': 'https://www.arcgis.com/sharing/rest/search?q=Google+Fiber+city+broadband+gigabit&sortField=modified&sortOrder=desc&num=15&f=json',
+        'type': 'api_discover',
         'provider': 'Google Fiber',
         'category': 'fiber'
     },
     # ── FCC BROADBAND FABRIC & USAC E-RATE (v4.0) ────────────────
     {
-        'name': 'FCC Broadband Fabric - Locations',
-        'url': 'https://broadbandmap.fcc.gov/api/public/map/listAvailability',
+        'name': 'FCC Broadband Data Collection (BDC) - Living Atlas',
+        'url': 'https://www.arcgis.com/sharing/rest/search?q=FCC+broadband+data+collection+BDC+2024&sortField=modified&sortOrder=desc&num=10&f=json',
         'type': 'api_discover',
         'provider': 'FCC',
         'category': 'fiber'
     },
     {
-        'name': 'USAC E-Rate Fiber Recipients',
-        'url': 'https://opendata.usac.org/api/views/rr4u-4bah/rows.json?accessType=DOWNLOAD',
+        'name': 'USAC E-Rate Funded Connections',
+        'url': 'https://opendata.usac.org/resource/rr4u-4bah.json?$limit=1',
         'type': 'api_discover',
         'provider': 'USAC',
         'category': 'fiber'
     },
     {
-        'name': 'ConnectAmerica Fund (CAF) Fiber Builds',
-        'url': 'https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/CAF_II_Auction_Winners/FeatureServer/0',
-        'type': 'arcgis_kml',
+        'name': 'ConnectAmerica Fund (CAF II) Fiber Builds',
+        'url': 'https://www.arcgis.com/sharing/rest/search?q=ConnectAmerica+CAF+II+auction+broadband+fiber&sortField=modified&sortOrder=desc&num=10&f=json',
+        'type': 'api_discover',
         'provider': 'FCC-CAF',
         'category': 'fiber'
     },
@@ -839,14 +806,35 @@ STATE_BROADBAND_GIS = [
     {'name': 'Maine Broadband', 'state': 'ME', 'url': 'https://services1.arcgis.com/RbMX0mRVOFNTdLzd/arcgis/rest/services', 'provider': 'Maine'},
     {'name': 'Vermont Broadband', 'state': 'VT', 'url': 'https://services1.arcgis.com/BkFxaEFNwHqX3tAw/arcgis/rest/services', 'provider': 'Vermont'},
     {'name': 'New Hampshire Broadband', 'state': 'NH', 'url': 'https://services1.arcgis.com/lKUTqejQmSRZ1fIz/arcgis/rest/services', 'provider': 'New Hampshire'},
-    # ── Previously missing states (v4.0) ─────────────────────────
-    {'name': 'Alaska Broadband', 'state': 'AK', 'url': 'https://services.arcgis.com/v400IkDOw1ad7Yad/arcgis/rest/services/Alaska_Broadband', 'provider': 'Alaska'},
-    {'name': 'Arkansas Broadband', 'state': 'AR', 'url': 'https://services.arcgis.com/6bMRakJlLJLYR9rZ/arcgis/rest/services/Arkansas_Broadband', 'provider': 'Arkansas'},
-    {'name': 'Delaware Broadband', 'state': 'DE', 'url': 'https://services1.arcgis.com/FjPcSmEFuDYlIdKC/arcgis/rest/services/Delaware_Broadband', 'provider': 'Delaware'},
-    {'name': 'Hawaii Broadband', 'state': 'HI', 'url': 'https://services.arcgis.com/njFNhDsUCentVYJW/arcgis/rest/services/Hawaii_Broadband', 'provider': 'Hawaii'},
-    {'name': 'North Dakota Broadband', 'state': 'ND', 'url': 'https://services.arcgis.com/PX1yVoqIVMefKX8j/arcgis/rest/services/NorthDakota_Broadband', 'provider': 'North Dakota'},
-    {'name': 'Rhode Island Broadband', 'state': 'RI', 'url': 'https://services2.arcgis.com/XVOqAjTOJ5P2QRIS/arcgis/rest/services/RhodeIsland_Broadband', 'provider': 'Rhode Island'},
-    {'name': 'South Dakota Broadband', 'state': 'SD', 'url': 'https://services.arcgis.com/qnjIJp7UJr6nLJwU/arcgis/rest/services/SouthDakota_Broadband', 'provider': 'South Dakota'},
+    # ── Previously missing states (v4.0 — real endpoints) ────────
+    # Alaska Broadband Office ArcGIS Hub (DCCED) — confirmed public
+    {'name': 'Alaska Broadband', 'state': 'AK',
+     'url': 'https://broadband-outreach-dcced.hub.arcgis.com/api/search/v1/items?q=broadband&num=10&f=json',
+     'provider': 'Alaska'},
+    # Arkansas Rural Connect / ADFA broadband — ArcGIS search
+    {'name': 'Arkansas Broadband', 'state': 'AR',
+     'url': 'https://www.arcgis.com/sharing/rest/search?q=Arkansas+broadband+fiber+BEAD+rural&sortField=modified&sortOrder=desc&num=10&f=json',
+     'provider': 'Arkansas'},
+    # Delaware Broadband — Delaware Open Data GIS portal
+    {'name': 'Delaware Broadband', 'state': 'DE',
+     'url': 'https://opendata.firstmap.delaware.gov/api/search/v1/items?q=broadband&num=10&f=json',
+     'provider': 'Delaware'},
+    # Hawaii Broadband Initiative — State GIS portal
+    {'name': 'Hawaii Broadband', 'state': 'HI',
+     'url': 'https://www.arcgis.com/sharing/rest/search?q=Hawaii+broadband+fiber+BEAD+DCCA&sortField=modified&sortOrder=desc&num=10&f=json',
+     'provider': 'Hawaii'},
+    # North Dakota GIS Hub — confirmed public portal
+    {'name': 'North Dakota Broadband', 'state': 'ND',
+     'url': 'https://gishubdata-ndgov.hub.arcgis.com/api/search/v1/items?q=broadband&num=10&f=json',
+     'provider': 'North Dakota'},
+    # Rhode Island Commerce — broadband GIS search
+    {'name': 'Rhode Island Broadband', 'state': 'RI',
+     'url': 'https://www.arcgis.com/sharing/rest/search?q=Rhode+Island+broadband+fiber+BEAD&sortField=modified&sortOrder=desc&num=10&f=json',
+     'provider': 'Rhode Island'},
+    # South Dakota Bureau of Information & Telecom
+    {'name': 'South Dakota Broadband', 'state': 'SD',
+     'url': 'https://www.arcgis.com/sharing/rest/search?q=South+Dakota+broadband+fiber+BEAD+BIT&sortField=modified&sortOrder=desc&num=10&f=json',
+     'provider': 'South Dakota'},
 ]
 
 
