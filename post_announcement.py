@@ -154,17 +154,23 @@ def post_to_dchub(release: dict) -> bool:
 # ── LinkedIn Company Page Poster ─────────────────────────────────────────────
 
 def post_to_linkedin(text: str, article_url: str = None) -> bool:
-    """
-    POST a text update (with optional article link) to the DC Hub LinkedIn company page.
-
-    Requires a LinkedIn access token with w_organization_social scope.
-    Generate one at: https://www.linkedin.com/developers/apps
-    """
-    if not LINKEDIN_TOKEN:
-        print("❌  LINKEDIN_ACCESS_TOKEN not set in .env")
+    endpoint = "https://dchub-backend-production.up.railway.app/api/linkedin/post"
+    headers  = {"Content-Type": "application/json", "X-Admin-Key": os.getenv("DCHUB_ADMIN_KEY", "")}
+    payload  = {"content": text}
+    if article_url:
+        payload["link_url"] = article_url
+    try:
+        resp = requests.post(endpoint, headers=headers, json=payload, timeout=15)
+        if resp.status_code in (200, 201):
+            print(f"✅  LinkedIn posted → {resp.json().get('post_urn','ok')}")
+            return True
+        print(f"❌  LinkedIn error {resp.status_code}: {resp.text}")
+        return False
+    except Exception as e:
+        print(f"❌  LinkedIn failed: {e}")
         return False
 
-    endpoint = "https://api.linkedin.com/v2/ugcPosts"
+    endpoint = "https://dchub-backend-production.up.railway.app/api/linkedin/post"
     headers  = {
         "Authorization":   f"Bearer {LINKEDIN_TOKEN}",
         "Content-Type":    "application/json",
