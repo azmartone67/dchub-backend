@@ -113,7 +113,7 @@ async function loadAITracking() {
 // ========================================
 
 async function loadFacilities() {
-    const result = await fetchAPI('/api/v1/map?all=true&limit=2000');
+    const result = await fetchAPI('/api/v1/geo');
 
     if (result && (result.data || result.facilities)) {
         facilities = result.data || result.facilities;
@@ -138,7 +138,7 @@ async function loadRemainingFacilities(offset, total) {
     let currentOffset = offset;
     while (currentOffset < total) {
         try {
-            const batch = await fetchAPI(`/api/v1/map?all=true&limit=${BATCH}&offset=${currentOffset}`);
+            const batch = await fetchAPI(`/api/v1/geo`);
             if (!batch || !(batch.data || batch.facilities)) break;
             const newFacilities = batch.data || batch.facilities;
             if (newFacilities.length === 0) break;
