@@ -14013,6 +14013,33 @@ def get_press_release(slug):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route("/api/press-releases", methods=["GET"])
+def list_press_releases():
+    try:
+        import psycopg2
+        conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+        cur = conn.cursor()
+        cur.execute("SELECT id,title,slug,category,date,subheadline,meta_description FROM press_releases WHERE published=TRUE ORDER BY date DESC")
+        rows = [{"id":r[0],"title":r[1],"slug":r[2],"category":r[3],"date":r[4],"subheadline":r[5],"meta_description":r[6],"url":f"/press/{r[2]}"} for r in cur.fetchall()]
+        cur.close(); conn.close()
+        return jsonify(rows)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/press-releases/<slug>", methods=["GET"])
+def get_press_release(slug):
+    try:
+        import psycopg2
+        conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+        cur = conn.cursor()
+        cur.execute("SELECT id,title,slug,category,date,subheadline,body,meta_description FROM press_releases WHERE slug=%s AND published=TRUE", (slug,))
+        r = cur.fetchone()
+        cur.close(); conn.close()
+        if not r: return jsonify({"error":"Not found"}), 404
+        return jsonify({"id":r[0],"title":r[1],"slug":r[2],"category":r[3],"date":r[4],"subheadline":r[5],"body":r[6],"meta_description":r[7]})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/api/admin/press-releases", methods=["POST"])
 def create_press_release():
     auth = request.headers.get("Authorization", "")
@@ -14020,6 +14047,16 @@ def create_press_release():
         return jsonify({"error": "Unauthorized"}), 401
     data = request.get_json()
     try:
+        import psycopg2
+        conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+        cur = conn.cursor()
+        cur.execute("INSERT INTO press_releases (title,slug,category,date,subheadline,body,meta_description,published) VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (slug) DO UPDATE SET title=EXCLUDED.title,body=EXCLUDED.body,published=EXCLUDED.published RETURNING id",
+            (data.get("title"),data.get("slug"),data.get("category","Press Release"),data.get("date"),data.get("subheadline"),data.get("body"),data.get("meta_description"),data.get("published",True)))
+        row = cur.fetchone()
+        conn.commit(); cur.close(); conn.close()
+        return jsonify({"id":row[0],"slug":data.get("slug")}), 201
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
         conn = db.engine.raw_connection()
         cur = conn.cursor()
         cur.execute("INSERT INTO press_releases (title,slug,category,date,subheadline,body,meta_description,published) VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (slug) DO UPDATE SET title=EXCLUDED.title,body=EXCLUDED.body,published=EXCLUDED.published RETURNING id",
