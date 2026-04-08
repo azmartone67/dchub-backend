@@ -1227,9 +1227,9 @@ def api_v1_map():
         limit = min(limit, 10000)
         
         c.execute("""
-            SELECT id, name, provider, city, state, country, market AS region,
+            SELECT id, name, provider, city, state, country, region,
                    latitude, longitude, power_mw, status
-            FROM discovered_facilities
+            FROM facilities
             WHERE latitude IS NOT NULL AND longitude IS NOT NULL
             ORDER BY power_mw DESC NULLS LAST
             LIMIT %s OFFSET %s
@@ -1239,7 +1239,7 @@ def api_v1_map():
         cols = [desc[0] for desc in c.description]
         facilities = [dict(zip(cols, row)) for row in rows]
         
-        c.execute("SELECT COUNT(*) FROM discovered_facilities WHERE latitude IS NOT NULL AND longitude IS NOT NULL")
+        c.execute("SELECT COUNT(*) FROM facilities WHERE latitude IS NOT NULL AND longitude IS NOT NULL")
         total = c.fetchone()[0]
         
         return jsonify({
