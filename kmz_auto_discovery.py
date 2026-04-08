@@ -1587,6 +1587,56 @@ def register_kmz_discovery_routes(app, get_pg_fn, return_pg_fn, start_scheduler=
         finally:
             _release(conn)
 
+    @kmz_bp.route('/api/kmz/health')
+    def kmz_health():
+        """
+        v4.0 Health-check: returns all registered source lists, category
+        breakdowns, v4.0 additions, and live discovery engine status.
+        """
+        from collections import Counter
+
+        # ── Registered source breakdown ──────────────────────────
+        cat_counts   = Counter(s.get('category', 'other') for s in PUBLIC_KMZ_SOURCES)
+        prov_counts  = Counter(s.get('provider', 'unknown') for s in PUBLIC_KMZ_SOURCES)
+
+        v4_providers = {
+            'AT&T', 'Comcast', 'Verizon', 'Frontier', 'Brightspeed',
+            'Consolidated Communications', 'Cogent', 'Uniti', 'Google Fiber',
+            'FCC-CAF', 'USAC', 'Microsoft', 'Ookla',
+        }
+        new_in_v4 = [s['name'] for s in PUBLIC_KMZ_SOURCES if s.get('provider') in v4_providers]
+
+        state_list = [s['state'] for s in STATE_BROADBAND_GIS]
+        new_states  = ['AK', 'AR', 'DE', 'HI', 'ND', 'RI', 'SD']
+
+        return jsonify({
+            'success': True,
+            'engine': 'KMZ Auto-Discovery v4.0 (Neon PostgreSQL)',
+            'version': '4.0',
+            'public_sources': {
+                'total': len(PUBLIC_KMZ_SOURCES),
+                'by_category': dict(cat_counts),
+                'by_provider_top10': dict(prov_counts.most_common(10)),
+            },
+            'state_broadband_sources': {
+                'total': len(STATE_BROADBAND_GIS),
+                'states_covered': sorted(state_list),
+                'new_in_v4': new_states,
+            },
+            'arcgis_search_queries': {
+                'fiber_searches': len(ARCGIS_FIBER_SEARCH_URLS),
+                'gas_searches':   len(ARCGIS_GAS_SEARCH_URLS),
+            },
+            'v4_additions': {
+                'new_provider_sources': len(new_in_v4),
+                'new_providers': sorted(v4_providers),
+                'new_source_names': new_in_v4,
+                'new_states_added': new_states,
+                'new_arcgis_queries_added': 24,
+            },
+            'live_status': _kmz_instance.get_status(),
+        })
+
     @kmz_bp.route('/api/kmz-discovery/sources')
     def get_kmz_sources():
         conn = None
@@ -1629,10 +1679,11 @@ def register_kmz_discovery_routes(app, get_pg_fn, return_pg_fn, start_scheduler=
 
     if start_scheduler:
         start_kmz_scheduler()
-        logger.info("🗺️  KMZ Auto-Discovery v3.0: ✅ Registered (Neon, 12-hour auto-cycle)")
+        logger.info("🗺️  KMZ Auto-Discovery v4.0: ✅ Registered (Neon, 12-hour auto-cycle)")
     else:
-        logger.info("🗺️  KMZ Auto-Discovery v3.0: ✅ Registered (Neon, scheduler PAUSED)")
+        logger.info("🗺️  KMZ Auto-Discovery v4.0: ✅ Registered (Neon, scheduler PAUSED)")
     logger.info("   GET  /api/kmz-discovery/status  - Discovery status")
     logger.info("   POST /api/kmz-discovery/run     - Trigger discovery cycle")
     logger.info("   GET  /api/kmz-discovery/routes  - Browse discovered routes")
     logger.info("   GET  /api/kmz-discovery/sources - View discovered sources")
+    logger.info("   GET  /api/kmz/health            - v4.0 full health + source registry")
