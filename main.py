@@ -13994,7 +13994,7 @@ def list_press_releases():
         import psycopg2
         conn = psycopg2.connect(os.getenv("DATABASE_URL"))
         cur = conn.cursor()
-        cur.execute("SELECT id,title,slug,category,COALESCE(date, TO_CHAR(published_date, 'YYYY-MM-DD')) as date,subheadline,meta_description FROM press_releases WHERE published=TRUE ORDER BY COALESCE(NULLIF(date,'')::date, published_date) DESC NULLS LAST")
+        cur.execute("SELECT id,title,slug,category,COALESCE(date, TO_CHAR(published_date, 'YYYY-MM-DD')) as date,subheadline,meta_description FROM press_releases WHERE published=TRUE ORDER BY id DESC")
         rows = [{"id":r[0],"title":r[1],"slug":r[2],"category":r[3],"date":r[4],"subheadline":r[5],"meta_description":r[6],"url":f"/news/{r[2]}"} for r in cur.fetchall()]
         cur.close(); conn.close()
         from flask import make_response
