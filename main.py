@@ -1082,6 +1082,19 @@ except Exception as e:
     print(f"📊 DC Hub Index: ⚠️ Error: {e}")
 # =============================================================================
 # EARLY require_plan STUB - Must be available before first 
+
+# ── CORS preflight handler (added by QA patch) ──────────────────────────────
+@app.before_request
+def handle_cors_preflight():
+    if request.method == "OPTIONS":
+        from flask import make_response
+        resp = make_response("", 204)
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        resp.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+        resp.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Admin-Key'
+        resp.headers['Access-Control-Max-Age'] = '86400'
+        return resp
+# ─────────────────────────────────────────────────────────────────────────────
 @app.route('/research')
 def research_page():
     try:
