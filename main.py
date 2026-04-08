@@ -14007,12 +14007,15 @@ def list_press_releases():
         import psycopg2
         conn = psycopg2.connect(os.getenv("DATABASE_URL"))
         cur = conn.cursor()
-        cur.execute("SELECT id,title,slug,category,COALESCE(date, TO_CHAR(published_date, 'YYYY-MM-DD')) as date,subheadline,meta_description FROM press_releases WHERE published=TRUE ORDER BY id DESC")
-        rows = [{"id":r[0],"title":r[1],"slug":r[2],"category":r[3],"date":r[4],"subheadline":r[5],"meta_description":r[6],"url":f"/news/{r[2]}"} for r in cur.fetchall()]
+        cur.execute("SELECT id,title,slug,category,COALESCE(date::text, TO_CHAR(published_date, 'YYYY-MM-DD')) as date,subheadline,meta_description FROM press_releases WHERE published=TRUE ORDER BY id DESC")
+        rows = []
+        for r in cur.fetchall():
+            rows.append({"id":r[0],"title":r[1],"slug":r[2],"category":r[3],"date":str(r[4]) if r[4] else None,"subheadline":r[5],"meta_description":r[6],"url":f"/news/{r[2]}"})
         cur.close(); conn.close()
         from flask import make_response
         resp = make_response(jsonify(rows))
         resp.headers['Access-Control-Allow-Origin'] = '*'
+        resp.headers['Access-Control-Allow-Headers'] = 'Content-Type'
         return resp
     except Exception as e:
         return jsonify({"error": str(e)}), 500
