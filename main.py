@@ -2299,9 +2299,12 @@ except Exception as e:
 try:
     from kmz_auto_discovery import register_kmz_discovery_routes
     register_kmz_discovery_routes(app, get_pg_connection, return_pg_connection, start_scheduler=ENABLE_DISCOVERY_SCHEDULERS)
-    logger.info("✅ KMZ Auto-Discovery v3.0 registered (Neon)" + (" (scheduler active)" if ENABLE_DISCOVERY_SCHEDULERS else " (manual POST only)"))
+    logger.info("✅ KMZ Auto-Discovery v4.0 registered (Neon)" + (" (scheduler active)" if ENABLE_DISCOVERY_SCHEDULERS else " (manual POST only)"))
+    logger.info("   GET  /api/kmz/health            — v4.0 source registry + live status")
+    logger.info("   GET  /api/kmz-discovery/status  — engine status")
+    logger.info("   POST /api/kmz-discovery/run     — trigger manual cycle")
 except Exception as e:
-    logger.error(f"⚠️ KMZ Auto-Discovery failed: {e}")
+    logger.error(f"⚠️ KMZ Auto-Discovery v4.0 failed to register: {e}", exc_info=True)
 
 try:
     from kmz_processor import register_kmz_routes
@@ -13984,11 +13987,3 @@ def serve_plan_sync():
     """Serve plan-sync script via API route (bypasses Cloudflare Pages static)"""
     js = open('static/js/dchub-plan-sync.js', 'r').read()
     return Response(js, mimetype='application/javascript', headers={'Cache-Control': 'public, max-age=3600'})
-
-@app.route("/api/admin/press-releases", methods=["POST"])
-def create_press_release():
-    auth = request.headers.get("Authorization", "")
-    if auth.replace("Bearer ", "").strip() != os.getenv("DCHUB_ADMIN_API_KEY"):
-        return jsonify({"error": "Unauthorized"}), 401
-    data = request.get_json()
-    return jsonify({"id": 1, "slug": data.get("slug")}), 201
