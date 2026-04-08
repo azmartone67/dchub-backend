@@ -613,7 +613,7 @@ def register_linkedin_routes(app):
             'scope': LINKEDIN_SCOPES,
             'state': state,
         }
-        url = f"{AUTH_URL}%s{urlencode(params)}"
+        url = f"{AUTH_URL}?{urlencode(params)}"
         return redirect(url)
 
     # ── GET /api/linkedin/callback — OAuth callback ──────────
