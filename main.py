@@ -13991,31 +13991,6 @@ def serve_plan_sync():
 @app.route("/api/press-releases", methods=["GET"])
 def list_press_releases():
     try:
-        conn = db.engine.raw_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT id,title,slug,category,date,subheadline,meta_description FROM press_releases WHERE published=TRUE ORDER BY date DESC")
-        rows = [{"id":r[0],"title":r[1],"slug":r[2],"category":r[3],"date":r[4],"subheadline":r[5],"meta_description":r[6],"url":f"/press/{r[2]}"} for r in cur.fetchall()]
-        cur.close(); conn.close()
-        return jsonify(rows)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/api/press-releases/<slug>", methods=["GET"])
-def get_press_release(slug):
-    try:
-        conn = db.engine.raw_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT id,title,slug,category,date,subheadline,body,meta_description FROM press_releases WHERE slug=%s AND published=TRUE", (slug,))
-        r = cur.fetchone()
-        cur.close(); conn.close()
-        if not r: return jsonify({"error":"Not found"}), 404
-        return jsonify({"id":r[0],"title":r[1],"slug":r[2],"category":r[3],"date":r[4],"subheadline":r[5],"body":r[6],"meta_description":r[7]})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/api/press-releases", methods=["GET"])
-def list_press_releases():
-    try:
         import psycopg2
         conn = psycopg2.connect(os.getenv("DATABASE_URL"))
         cur = conn.cursor()
