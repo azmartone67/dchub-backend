@@ -14007,7 +14007,7 @@ def list_press_releases():
         import psycopg2
         conn = psycopg2.connect(os.getenv("DATABASE_URL"))
         cur = conn.cursor()
-        cur.execute("SELECT id,title,slug,category,COALESCE(date::text, TO_CHAR(published_date, 'YYYY-MM-DD')) as date,subheadline,meta_description FROM press_releases WHERE published=TRUE ORDER BY id DESC")
+        cur.execute("SELECT id,title,slug,category,COALESCE(date, published_date) as date,subheadline,meta_description FROM press_releases WHERE published=TRUE ORDER BY id DESC")
         rows = []
         for r in cur.fetchall():
             rows.append({"id":r[0],"title":r[1],"slug":r[2],"category":r[3],"date":str(r[4]) if r[4] else None,"subheadline":r[5],"meta_description":r[6],"url":f"/news/{r[2]}"})
