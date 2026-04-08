@@ -44,6 +44,7 @@ SCHEDULE = [
     ( 9, 21, "market_refresh",      "_run_market_refresh"),
     ( 7, 19, "facility_discovery",  "_run_facility_discovery"),
     (12,  0, "infrastructure_sync", "_run_infrastructure_sync"),
+    ( 3, 15, "kmz_discovery",       "_run_kmz_discovery"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -729,6 +730,26 @@ def _run_infrastructure_sync():
     logger.info(f"   Infrastructure sync totals: {total_new} new records")
 
 
+def _run_kmz_discovery():
+    """
+    KMZ Auto-Discovery v4.0 — discovers fiber routes, state broadband layers,
+    and ArcGIS sources. Runs twice daily at 03:00 and 15:00 UTC.
+    """
+    try:
+        from kmz_auto_discovery import _kmz_instance
+        if _kmz_instance is None:
+            logger.warning("KMZ Discovery: _kmz_instance not initialized — skipping")
+            return
+        logger.info("📡 KMZ Discovery: starting scheduled cycle (v4.0)")
+        results = _kmz_instance.run_discovery_cycle()
+        new_routes = results.get('total_new_routes', 0)
+        new_km     = round(results.get('total_new_km', 0), 1)
+        duration   = results.get('cycle_duration_seconds', 0)
+        logger.info(f"📡 KMZ Discovery: ✅ complete — {new_routes} new routes, {new_km} km, {duration}s")
+    except Exception as e:
+        logger.error(f"📡 KMZ Discovery: ❌ error — {e}", exc_info=True)
+
+
 _RUNNERS = {
     "market_refresh":      _run_market_refresh,
     "news":                _run_news_crawler,
@@ -738,6 +759,7 @@ _RUNNERS = {
     "deals":               _run_deals_crawler,
     "facility_discovery":  _run_facility_discovery,
     "infrastructure_sync": _run_infrastructure_sync,
+    "kmz_discovery":       _run_kmz_discovery,
 }
 
 
