@@ -14018,7 +14018,12 @@ def list_press_releases():
         resp.headers['Access-Control-Allow-Headers'] = 'Content-Type'
         return resp
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        import traceback, logging
+        logging.error("[press-releases-list] " + traceback.format_exc())
+        from flask import make_response as _mr
+        er = _mr(jsonify({"error": str(e)}), 500)
+        er.headers["Access-Control-Allow-Origin"] = "*"
+        return er
 
 @app.route("/api/press-releases/<slug>", methods=["GET"])
 def get_press_release(slug):
@@ -14037,7 +14042,12 @@ def get_press_release(slug):
         resp.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
         return resp
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        import traceback, logging
+        logging.error("[press-releases-list] " + traceback.format_exc())
+        from flask import make_response as _mr
+        er = _mr(jsonify({"error": str(e)}), 500)
+        er.headers["Access-Control-Allow-Origin"] = "*"
+        return er
 
 @app.route("/api/admin/press-releases", methods=["POST"])
 def create_press_release():
