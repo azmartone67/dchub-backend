@@ -14075,3 +14075,27 @@ def create_press_release():
         return jsonify({"id":row[0],"slug":data.get("slug")}), 201
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route('/api/v1/geo', methods=['GET'])
+def map_geo_pins():
+    """Public map pins — all facilities with coordinates, no auth required."""
+    conn = None
+    try:
+        conn = get_read_db()
+        c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        c.execute("""
+            SELECT id, name, provider, city, state, country,
+                   latitude, longitude, status, power_mw, slug
+            FROM facilities
+            WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+            ORDER BY power_mw DESC NULLS LAST
+        """)
+        pins = [dict_from_row(r) for r in c.fetchall()]
+        return jsonify({'success': True, 'facilities': pins, 'count': len(pins)})
+    except Exception as e:
+        logger.error(f'map_geo_pins error: {e}')
+        return jsonify({'error': str(e)}), 503
+    finally:
+        if conn:
+            try: conn.close()
+            except: pass
