@@ -14031,11 +14031,11 @@ def get_press_release(slug):
         import psycopg2
         conn = psycopg2.connect(os.getenv("DATABASE_URL"))
         cur = conn.cursor()
-        cur.execute("SELECT id,title,slug,category,date,subheadline,body,meta_description FROM press_releases WHERE slug=%s AND published=TRUE", (slug,))
+        cur.execute("SELECT id,title,slug,category,date,subheadline,body,meta_description,summary FROM press_releases WHERE slug=%s AND published=TRUE", (slug,))
         r = cur.fetchone()
         cur.close(); conn.close()
         if not r: return jsonify({"error":"Not found"}), 404
-        resp_data = {"id":r[0],"title":r[1],"slug":r[2],"category":r[3],"date":str(r[4]) if r[4] else None,"subheadline":r[5],"body":r[6],"meta_description":r[7]}
+        resp_data = {"id":r[0],"title":r[1],"slug":r[2],"category":r[3],"date":str(r[4]) if r[4] else None,"subheadline":r[5],"body":r[6],"meta_description":r[7],"summary":r[8]}
         from flask import make_response
         resp = make_response(jsonify(resp_data))
         resp.headers['Access-Control-Allow-Origin'] = '*'
