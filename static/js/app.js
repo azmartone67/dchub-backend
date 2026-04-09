@@ -119,7 +119,7 @@ async function loadFacilities() {
         facilities = result.data || result.facilities;
         filteredFacilities = [...facilities];
 
-        console.log('🏢 Initial load:', facilities.length, 'facilities for map'); window._dbg = {facilities, filteredFacilities};
+        console.log('🏢 Initial load:', facilities.length, 'facilities for map'); window._dbg = {facilities, filteredFacilities}; window._dbg = {facilities, filteredFacilities};
 
         updateMapMarkers();
         renderFacilities();
