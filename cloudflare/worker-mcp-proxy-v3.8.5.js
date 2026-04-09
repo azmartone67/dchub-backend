@@ -421,7 +421,7 @@ const BACKEND_ONLY_PATHS = [
   '/api/admin/', '/api/subscribe', '/api/webhook', '/api/ai/query', '/api/mcp',
 ];
 
-const BACKEND_HTML_PATHS = ['/dashboard'];
+const BACKEND_HTML_PATHS = ['/dashboard', '/map'];
 
 function isDiscoveryPath(pathname) {
   return DISCOVERY_PATHS.some(p => pathname === p || pathname.startsWith(p));

@@ -8573,6 +8573,7 @@ def partner_inquiry():
 def index():
     return send_from_directory('static', 'index.html')
 
+@app.route('/map', methods=['GET'])
 @app.route('/app', methods=['GET'])
 @app.route('/ui', methods=['GET'])
 def serve_frontend():
