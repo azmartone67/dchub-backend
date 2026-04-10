@@ -14126,6 +14126,10 @@ def create_press_release():
 
 @app.route('/api/v1/geo', methods=['GET'])
 def map_geo_pins():
+    from flask import request as _req
+    token = _req.headers.get('Authorization','') or _req.cookies.get('dchub_token','')
+    if not token:
+        return jsonify({'error':'Login required','redirect':'/login'}), 401
     """Public map pins — all facilities with coordinates, no auth required."""
     conn = None
     try:
