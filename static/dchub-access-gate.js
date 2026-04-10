@@ -219,7 +219,7 @@
       '<div class="gate-cta"><button type="button" class="gate-google-btn" id="gate-google-signup">' + GOOGLE_SVG + ' Continue with Google</button></div>' +
       '<div class="gate-divider"><span>or</span></div>' +
       '<div class="gate-cta"><a href="' + LOGIN_URL + '?redirect=' + redir + '" class="gate-btn-primary" style="background:#6366f1;color:#fff">Sign up with email \u2192</a><a href="' + PRICING_URL + '" class="gate-btn-secondary">View Pro plans instead</a></div>' +
-      '<div class="gate-dismiss"><a id="gate-close">Continue browsing with limited access</a></div></div>';
+      '</div>';
     document.body.appendChild(overlay);
 
     var gb = document.getElementById('gate-google-signup');
@@ -250,7 +250,7 @@
       '<div class="gate-price"><div class="gate-price-row"><span class="gate-price-old">' + cfg.regularPrice + '</span><span class="gate-price-new" style="color:' + cfg.color + '">' + cfg.foundingPrice + '<span>' + cfg.period + '</span></span></div></div>' +
       buildScarcityHTML() +
       '<div class="gate-features">' + featHTML + '</div>' +
-      '<div class="gate-cta"><a href="' + PRICING_URL + '#' + tier + '" class="gate-btn-primary" style="background:' + cfg.color + ';color:#000">Claim Founding Member Spot \u2192</a><a href="' + PRICING_URL + '" class="gate-btn-secondary">Compare All Plans</a></div>' +
+      '<div style="display:flex;gap:8px;margin-bottom:8px"><div style="flex:1;border:1px solid #1a2d44;border-radius:10px;padding:12px;text-align:center"><div style="font-size:11px;color:#5d7590;margin-bottom:4px">DEVELOPER</div><div style="font-size:20px;font-weight:700;color:#fff">$49<span style="font-size:11px;color:#5d7590">/mo</span></div><div style="font-size:11px;color:#5d7590;margin:4px 0 8px">1,000 calls/day · All layers</div><a href="' + PRICING_URL + '#developer" style="display:block;padding:7px;border-radius:7px;background:#1d4ed8;color:#fff;font-size:12px;font-weight:600;text-decoration:none">Start Developer →</a></div><div style="flex:1;border:2px solid ' + cfg.color + ';border-radius:10px;padding:12px;text-align:center"><div style="font-size:11px;color:' + cfg.color + ';margin-bottom:4px">PRO ⭐</div><div style="font-size:20px;font-weight:700;color:#fff">' + cfg.foundingPrice + '<span style="font-size:11px;color:#5d7590">' + cfg.period + '</span></div><div style="font-size:11px;color:#5d7590;margin:4px 0 8px">10,000 calls/day · Export</div><a href="' + PRICING_URL + '#' + tier + '" style="display:block;padding:7px;border-radius:7px;background:' + cfg.color + ';color:#000;font-size:12px;font-weight:700;text-decoration:none">Claim Founding Spot →</a></div></div><a href="' + PRICING_URL + '" class="gate-btn-secondary">Compare All Plans</a></div>' +
       '<div class="gate-dismiss"><a id="gate-close">Maybe later</a></div></div>';
     document.body.appendChild(overlay);
     wireClose(overlay);
