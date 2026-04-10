@@ -8041,6 +8041,35 @@ def get_stats():
 
 # ─── Aggregate endpoints for dashboard charts ────────────────────────────
 
+
+@app.route('/api/v1/facilities/<path:slug>', methods=['GET'])
+def facility_by_slug(slug):
+    """Look up a facility by its slug hash for facility detail pages."""
+    parts = slug.rsplit('-', 1)
+    if len(parts) != 2 or len(parts[1]) != 8:
+        return jsonify({'success': False, 'error': 'Invalid slug'}), 404
+    hash8 = parts[1]
+    conn = None
+    try:
+        conn = get_read_db()
+        c = conn.cursor()
+        c.execute("""
+            SELECT id, name, provider, city, state, country, market AS region,
+                   latitude, longitude, power_mw, status, address
+            FROM discovered_facilities
+            WHERE LEFT(MD5(id::text), 8) = %s
+            LIMIT 1
+        """, (hash8,))
+        row = c.fetchone()
+        if not row:
+            return jsonify({'success': False, 'error': 'Not found'}), 404
+        cols = [desc[0] for desc in c.description]
+        return jsonify({'success': True, 'data': dict(zip(cols, row))})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        if conn: conn.close()
+
 @app.route('/api/v1/facilities/by-market', methods=['GET'])
 def facilities_by_market():
     """Aggregate facility counts by market/city for dashboard charts."""
