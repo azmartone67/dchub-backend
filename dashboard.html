@@ -1373,7 +1373,21 @@
             modal.innerHTML = `
                 <div style="background:var(--bg2);border-radius:16px;padding:32px;max-width:800px;width:90%;max-height:90vh;overflow-y:auto;">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;">
-                        <h2 style="margin:0;font-size:24px;">🚀 Upgrade to Pro</h2>
+                        <h2 style="margin:0;font-size:24px;"><div id="founding-urgency" style="
+  background:linear-gradient(135deg,#1a0a3e,#2d1b6e);
+  border:1px solid #7c3aed;border-radius:8px;
+  padding:10px 16px;margin-bottom:12px;text-align:center;font-size:13px;color:#c4b5fd;">
+  ⚡ <strong style="color:#a78bfa;">Founding member pricing</strong> —
+  <span id="founding-count" style="color:#fbbf24;font-weight:700;">47</span> of 50 spots remaining.
+  Price locks in at $99/mo forever.
+</div>
+<script>
+// Fetch live founding count
+fetch('/api/v1/founding-spots').then(r=>r.json()).then(d=>{
+  var el=document.getElementById('founding-count');
+  if(el&&d.remaining!==undefined) el.textContent=d.remaining;
+}).catch(()=>{});
+</script>🚀 Upgrade to Pro</h2>
                         <button onclick="closeUpgradeModal()" style="background:none;border:none;font-size:24px;cursor:pointer;color:var(--text2);">×</button>
                     </div>
                     

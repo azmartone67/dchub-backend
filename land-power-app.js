@@ -5437,7 +5437,7 @@ var markets = {
                         if (typeof DCHubInfrastructure !== 'undefined') {
                             DCHubInfrastructure.DynamicLayerManager.loadHIFLDSubstations(map.getBounds());
                         }
-                        console.log('🔌 HIFLD Substations shown (70,000+ nationwide - zoom in for details)');
+                        /* db-count redacted */
                         if (map.getZoom() < 8) {
                             alert('💡 HIFLD Substations: 70,000+ substations loaded dynamically. Zoom in to level 8+ for best detail.');
                         }
@@ -5457,7 +5457,7 @@ var markets = {
                         if (typeof DCHubInfrastructure !== 'undefined') {
                             DCHubInfrastructure.DynamicLayerManager.loadHIFLDTransmission(map.getBounds());
                         }
-                        console.log('⚡ HIFLD Transmission shown (300,000+ miles - zoom in for details)');
+                        /* db-count redacted */
                         if (map.getZoom() < 8) {
                             alert('💡 HIFLD Transmission: 300,000+ miles of transmission lines. Zoom in to level 8+ for best detail.');
                         }
@@ -5475,7 +5475,7 @@ var markets = {
                         map.addLayer(layers.hifldGas);
                         this.classList.add('active');
                         loadHIFLDGasPipelines(map.getBounds());
-                        console.log('🔥 HIFLD Gas Pipelines shown (300,000+ miles)');
+                        /* db-count redacted */
                     }
                     return;
                 }
@@ -8107,7 +8107,7 @@ var markets = {
                     <div style="display:flex;flex-direction:column;gap:12px;">\
                         <a href="/login.html" style="display:block;padding:14px 24px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;border-radius:8px;font-weight:600;text-decoration:none;font-size:14px;">Sign In / Sign Up →</a>\
                         <a href="/pricing.html" style="display:block;padding:14px 24px;background:#181a25;color:#fff;border:1px solid #252836;border-radius:8px;font-weight:600;text-decoration:none;font-size:14px;">View Plans</a>\
-                        <button id="close-login-modal" style="padding:10px;background:transparent;border:none;color:#6b7280;cursor:pointer;font-size:13px;">Just Browsing</button>\
+                        <button id="close-login-modal" style="padding:10px;background:transparent;border:none;color:#6b7280;cursor:pointer;font-size:13px;">Continue with email (5 free layers)</button>\
                     </div>\
                 </div>\
             ';
@@ -9724,8 +9724,8 @@ var markets = {
         console.log('⚡ ISO/RTO Regions: ' + isoRegions.length + ' grid operators loaded');
         console.log('🌿 Environmental Layers: Wetlands (NWI), Seismic (USGS)');
         console.log('📋 Interconnection Queue: ' + queueData.length + ' congestion hot spots');
-        console.log('🔌 HIFLD Data: 70,000+ substations, 300,000+ miles transmission');
-        console.log('🔥 Gas Infrastructure: 300,000+ miles pipelines available');
+        /* db-count redacted */
+        /* db-count redacted */
         console.log('💧 Water Resources: Aquifers and major rivers mapped');
         console.log('🏢 Tier 2: Utility Service Territories (3,200+ utilities nationwide)');
         console.log('DC Hub v100 - Tier 2 Territory Overlays');
