@@ -1227,12 +1227,15 @@ def api_v1_map():
         limit = min(limit, 10000)
         
         c.execute("""
-            SELECT id, name, provider, city, state, country, market AS region,
-                   latitude, longitude, power_mw, status, address
-            FROM discovered_facilities
-            WHERE latitude IS NOT NULL AND longitude IS NOT NULL
-              AND (is_duplicate IS NULL OR is_duplicate = 0)
-            ORDER BY power_mw DESC NULLS LAST
+            SELECT df.id, df.name, df.provider, df.city, df.state, df.country,
+                   df.market AS region, df.latitude, df.longitude,
+                   COALESCE(df.power_mw, f.power_mw) AS power_mw,
+                   df.status, df.address
+            FROM discovered_facilities df
+            LEFT JOIN facilities f ON f.id = df.merged_facility_id
+            WHERE df.latitude IS NOT NULL AND df.longitude IS NOT NULL
+              AND (df.is_duplicate IS NULL OR df.is_duplicate = 0)
+            ORDER BY COALESCE(df.power_mw, f.power_mw) DESC NULLS LAST
             LIMIT %s OFFSET %s
         """, (limit, offset))
         
@@ -13305,6 +13308,41 @@ else:
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', '8080')), debug=False, use_reloader=False)
 
+
+
+@app.route('/api/v1/facilities/slug/<path:slug>', methods=['GET'])
+def get_facility_by_slug(slug):
+    """Public facility lookup by slug for profile pages.
+    Slug: {provider}-{name}-{hash8} where hash8 = LEFT(MD5(id::text), 8)
+    """
+    parts = slug.rsplit('-', 1)
+    if len(parts) != 2 or len(parts[1]) != 8:
+        return jsonify({'success': False, 'error': 'Invalid slug format'}), 400
+    hash8 = parts[1]
+    conn = None
+    try:
+        conn = get_read_db()
+        c = conn.cursor()
+        c.execute("""
+            SELECT df.id, df.name, df.provider, df.city, df.state, df.country,
+                   df.market AS region, df.latitude, df.longitude,
+                   COALESCE(df.power_mw, f.power_mw) AS power_mw,
+                   df.status, df.address
+            FROM discovered_facilities df
+            LEFT JOIN facilities f ON f.id = df.merged_facility_id
+            WHERE LEFT(MD5(df.id::text), 8) = %s
+            LIMIT 1
+        """, (hash8,))
+        row = c.fetchone()
+        if not row:
+            return jsonify({'success': False, 'error': 'Facility not found'}), 404
+        cols = [desc[0] for desc in c.description]
+        return jsonify({'success': True, 'data': dict(zip(cols, row))})
+    except Exception as e:
+        import traceback
+        return jsonify({'success': False, 'error': str(e), 'trace': traceback.format_exc()[-300:]}), 500
+    finally:
+        if conn: conn.close()
 
 @app.route('/api/v1/facilities/<facility_id>', methods=['GET'])
 def get_facility_by_id(facility_id):
