@@ -1243,8 +1243,8 @@ def api_v1_map():
         def _slugify(text):
             if not text: return ''
             s = text.lower().strip()
-            s = _re.sub(r'[^a-z0-9\\s-]', '', s)
-            s = _re.sub(r'[\\s-]+', '-', s)
+            s = re.sub('[^a-z0-9 -]', '', s)
+            s = re.sub('[- ]+', '-', s)
             return s.strip('-')
         for f in facilities:
             provider_slug = _slugify(f.get('provider') or '')
