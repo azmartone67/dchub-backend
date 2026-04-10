@@ -1228,7 +1228,7 @@ def api_v1_map():
         
         c.execute("""
             SELECT id, name, provider, city, state, country, region,
-                   latitude, longitude, power_mw, status
+                   latitude, longitude, power_mw, status, address
             FROM facilities
             WHERE latitude IS NOT NULL AND longitude IS NOT NULL
             ORDER BY power_mw DESC NULLS LAST
@@ -1238,7 +1238,24 @@ def api_v1_map():
         rows = c.fetchall()
         cols = [desc[0] for desc in c.description]
         facilities = [dict(zip(cols, row)) for row in rows]
-        
+
+        import re as _re
+        def _slugify(text):
+            if not text: return ''
+            s = text.lower().strip()
+            s = _re.sub(r'[^a-z0-9\\s-]', '', s)
+            s = _re.sub(r'[\\s-]+', '-', s)
+            return s.strip('-')
+        for f in facilities:
+            provider_slug = _slugify(f.get('provider') or '')
+            name_slug = _slugify(f.get('name') or '')
+            if name_slug and len(name_slug) >= 3:
+                hash_src = str(f['id']) if f.get('id') else (str(f.get('provider','')) + str(f.get('name','')))
+                short_hash = __import__('hashlib').md5(hash_src.encode()).hexdigest()[:8]
+                f['slug'] = f"{provider_slug}-{name_slug}-{short_hash}" if provider_slug else f"{name_slug}-{short_hash}"
+            else:
+                f['slug'] = ''
+
         c.execute("SELECT COUNT(*) FROM facilities WHERE latitude IS NOT NULL AND longitude IS NOT NULL")
         total = c.fetchone()[0]
         
