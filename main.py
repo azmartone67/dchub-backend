@@ -14147,3 +14147,8 @@ def map_geo_pins():
         if conn:
             try: conn.close()
             except: pass
+
+@app.route('/api/v1/founding-spots')
+def founding_spots():
+    remaining = 47
+    return jsonify({'remaining': remaining, 'total': 50})
