@@ -445,10 +445,15 @@ def get_grid_region(region_id):
     """
     conn = None
     try:
-        # Determine tier
-        api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
-        tier = _determine_tier(api_key)
-        tier_config = GRID_INTEL_TIER_CONFIG.get(tier, GRID_INTEL_TIER_CONFIG['free'])
+        # Determine tier — internal key from MCP server bypasses all gating
+        _VALID_INTERNAL_KEYS = {'dchub-internal-sync-2026', 'dchub-internal-2024'}
+        if request.headers.get('X-Internal-Key', '') in _VALID_INTERNAL_KEYS:
+            tier = 'pro'
+            tier_config = GRID_INTEL_TIER_CONFIG.get('pro', GRID_INTEL_TIER_CONFIG['developer'])
+        else:
+            api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
+            tier = _determine_tier(api_key)
+            tier_config = GRID_INTEL_TIER_CONFIG.get(tier, GRID_INTEL_TIER_CONFIG['free'])
 
         conn = _get_conn()
         cur = conn.cursor()
