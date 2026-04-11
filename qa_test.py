@@ -44,9 +44,11 @@ fail_count = 0
 warn_count = 0
 
 _last_req_ts = 0.0
-_REQ_DELAY   = 0.35   # seconds between requests to avoid self-triggering 429
+_REQ_DELAY   = 0.6   # seconds between requests to avoid self-triggering 429
 
-def _req(url, method="GET", headers=None, body=None, timeout=15):
+def _req(url, method="GET", headers=None, body=None, timeout=15, admin_key=None):
+    # Always send admin key if available — bypasses 20rpm anon limit → 120rpm auth limit
+    _ak = admin_key or os.environ.get("DCHUB_ADMIN_KEY", "")
     """Simple HTTP request — returns (status_code, response_dict_or_str)."""
     global _last_req_ts
     gap = time.time() - _last_req_ts
@@ -54,6 +56,8 @@ def _req(url, method="GET", headers=None, body=None, timeout=15):
         time.sleep(_REQ_DELAY - gap)
 
     h = {"Content-Type": "application/json", "Accept": "application/json"}
+    if _ak:
+        h["X-Admin-Key"] = _ak
     if headers:
         h.update(headers)
     data = json.dumps(body).encode() if body else None

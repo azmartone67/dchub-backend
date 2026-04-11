@@ -31,33 +31,37 @@ CYAN   = "\033[96m"; RESET = "\033[0m"; BOLD = "\033[1m"
 
 pass_count = fail_count = warn_count = 0
 
-# ── All 19 known job endpoints ────────────────────────────────────────────────
-# Format: (path, description, safe_to_trigger, expected_key_header)
+# ── All 27 verified job endpoints ─────────────────────────────────────────────
+# Source: routes/jobs_routes.py (24 routes) + main.py (3 routes)  — verified Apr 2026
+# Format: (path, description, safe_to_trigger, key_header)
 ALL_JOBS = [
-    # Safe — no external writes, quick
-    ("/api/jobs/fiber-sync",          "Fiber route sync (PeeringDB/OSM)",     True,  "X-Admin-Key"),
+    # ── From main.py (inline routes) ──────────────────────────────────────────
     ("/api/jobs/permit-scraper",      "Phase 1 permit scraper",               True,  "X-Admin-Key"),
     ("/api/jobs/sec-parser",          "SEC/EDGAR permit parser",              True,  "X-Admin-Key"),
-    ("/api/jobs/db-backup",           "Database backup (18 tables → JSON)",   True,  "X-Admin-Key"),
-    ("/api/jobs/gc",                  "Garbage collection + memory trim",     True,  "X-Admin-Key"),
-    ("/api/jobs/pool-reclaim",        "Force connection pool reclaim",        True,  "X-Admin-Key"),
-
-    # Moderate — reads/writes internal DB only
+    ("/api/jobs/fiber-sync",          "Fiber route sync (PeeringDB/OSM)",     True,  "X-Internal-Key"),
+    # ── From routes/jobs_routes.py — safe ─────────────────────────────────────
     ("/api/jobs/auto-approve",        "Auto-approve staged discoveries",      True,  "X-Admin-Key"),
-    ("/api/jobs/infrastructure-sync", "Infra sync (substations, lines)",      True,  "X-Admin-Key"),
-    ("/api/jobs/ai-outreach",         "AI platform outreach pings",           True,  "X-Admin-Key"),
-    ("/api/jobs/alert-checker",       "Alert email notification checker",     True,  "X-Admin-Key"),
-    ("/api/jobs/alerts-processor",    "Simple alerts processing loop",        True,  "X-Admin-Key"),
+    ("/api/jobs/alert-emails",        "Alert email notification checker",     True,  "X-Admin-Key"),
+    ("/api/jobs/simple-alerts",       "Simple alerts processing loop",        True,  "X-Admin-Key"),
     ("/api/jobs/market-report",       "Daily market report generation",       True,  "X-Admin-Key"),
-
-    # Heavier — hit external APIs or insert many rows (trigger manually in prod)
-    ("/api/jobs/news-sync",           "RSS feed aggregation (60+ sources)",   False, "X-Admin-Key"),
-    ("/api/jobs/autopilot",           "Auto-Pilot facility/deal discovery",   False, "X-Admin-Key"),
-    ("/api/jobs/facility-discovery",  "PeeringDB/OSM/datacentermap scan",     False, "X-Admin-Key"),
+    ("/api/jobs/infrastructure-sync", "Infra sync (substations, lines)",      True,  "X-Admin-Key"),
+    ("/api/jobs/capacity-headroom",   "Capacity headroom calculation",        True,  "X-Admin-Key"),
+    ("/api/jobs/mcp-rate-cleanup",    "MCP rate limit table cleanup",         True,  "X-Admin-Key"),
+    ("/api/jobs/db-backup",           "DB backup (all tables to JSON)",       True,  "X-Admin-Key"),
+    ("/api/jobs/keep-alive",          "Keepalive ping",                       True,  "X-Admin-Key"),
+    ("/api/jobs/backup",              "Full backup job",                      True,  "X-Admin-Key"),
+    ("/api/jobs/global-intelligence", "Global intelligence index refresh",    True,  "X-Admin-Key"),
+    ("/api/jobs/content-publish",     "Content publishing pipeline",          True,  "X-Admin-Key"),
+    ("/api/jobs/ambassador",          "Ambassador outreach job",              True,  "X-Admin-Key"),
+    # ── From routes/jobs_routes.py — heavy ────────────────────────────────────
+    ("/api/jobs/news-refresh",        "RSS feed aggregation (60+ sources)",   False, "X-Admin-Key"),
+    ("/api/jobs/discovery",           "PeeringDB/OSM/datacentermap scan",     False, "X-Admin-Key"),
+    ("/api/jobs/evolution",           "Evolution/ML pattern detection",       False, "X-Admin-Key"),
     ("/api/jobs/ai-ecosystem",        "AI ecosystem agent enrichment",        False, "X-Admin-Key"),
+    ("/api/jobs/ai-outreach",         "AI platform outreach pings",           False, "X-Admin-Key"),
+    ("/api/jobs/autopilot",           "Auto-Pilot facility/deal discovery",   False, "X-Admin-Key"),
     ("/api/jobs/autonomous-brain",    "Autonomous learning & pattern detect", False, "X-Admin-Key"),
     ("/api/jobs/energy-discovery",    "Energy discovery data refresh",        False, "X-Admin-Key"),
-    ("/api/jobs/linkedin-post",       "LinkedIn auto-post scheduler",         False, "X-Admin-Key"),
 ]
 
 def _req(url, method="POST", headers=None, timeout=30):
