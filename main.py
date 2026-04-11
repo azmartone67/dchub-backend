@@ -2812,6 +2812,13 @@ def _check_mcp_daily_limit(ip_address):
 
 def _get_mcp_caller_tier():
     """Determine caller's tier from API key. Returns (tier, key_info)."""
+    # ── Internal-key bypass (mcpServers config / internal callers) ──────────
+    _incoming_internal = request.headers.get('X-Internal-Key', '')
+    _valid_internal = {'dchub-internal-sync-2026', 'dchub-internal-2024'}
+    if _incoming_internal in _valid_internal:
+        return 'enterprise', {'plan': 'enterprise', 'user_id': 'internal',
+                               'daily_limit': 100000, 'results_limit': 10000}
+
     api_key = (
         request.headers.get('X-API-Key', '') or
         request.args.get('api_key', '')
