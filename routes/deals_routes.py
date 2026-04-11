@@ -707,6 +707,10 @@ def get_pipeline():
                 'preleased': False,
                 'type': 'wholesale'
             })
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         conn.close()
     except Exception as e:
         logger.debug(f"capacity_pipeline query: {e}")
@@ -959,6 +963,10 @@ def get_markets():
             live_count = c.fetchone()[0]
             if live_count > 0:
                 m['facilities_live'] = live_count
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         conn.close()
     except:
         pass
@@ -1030,6 +1038,10 @@ def get_public_pipeline():
                 'type': 'wholesale',
                 'preleased': False,
             })
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         conn.close()
     except Exception as e:
         logger.debug(f"Pipeline facilities query: {e}")
@@ -1114,6 +1126,10 @@ def get_pipeline_summary():
                 construction += 1
             else:
                 announced += 1
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         conn.close()
     except Exception as e:
         logger.debug(f"Pipeline summary DB query: {e}")
