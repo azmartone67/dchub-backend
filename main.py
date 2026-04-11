@@ -14251,47 +14251,59 @@ def cf_stub_infrastructure():
 
 @app.route('/api/v1/energy/summary', methods=['GET'])
 def cf_stub_energy_summary():
-    """Cloudflare Worker failover: energy overview."""
+    """Cloudflare Worker failover: energy overview (source: eia_retail_rates)."""
     try:
         conn = get_pg_connection()
         cur = conn.cursor()
-        cur.execute("SELECT AVG(rate_cents_kwh), MIN(rate_cents_kwh), MAX(rate_cents_kwh) FROM energy_retail_rates WHERE rate_cents_kwh > 0")
+        cur.execute("""
+            SELECT AVG(rate_cents_kwh), MIN(rate_cents_kwh), MAX(rate_cents_kwh),
+                   COUNT(DISTINCT state), MAX(period)
+            FROM eia_retail_rates WHERE rate_cents_kwh > 0
+        """)
         row = cur.fetchone()
         return_pg_connection(conn)
         return jsonify({"success": True, "retail_rates": {
-            "avg_cents_kwh": round(float(row[0] or 0), 2),
-            "min_cents_kwh": round(float(row[1] or 0), 2),
-            "max_cents_kwh": round(float(row[2] or 0), 2)
+            "avg_cents_kwh":  round(float(row[0] or 0), 2),
+            "min_cents_kwh":  round(float(row[1] or 0), 2),
+            "max_cents_kwh":  round(float(row[2] or 0), 2),
+            "states_covered": int(row[3] or 0),
+            "latest_period":  row[4] or ""
         }})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/v1/gdci', methods=['GET'])
 def cf_stub_gdci():
-    """Cloudflare Worker failover: global data center index scores."""
+    """Cloudflare Worker failover: market index proxy (gdci_scores table pending)."""
     try:
         conn = get_pg_connection()
         cur = conn.cursor()
-        cur.execute("SELECT market, score, tier, updated_at FROM gdci_scores ORDER BY score DESC LIMIT 50")
+        cur.execute("""
+            SELECT market, COUNT(*) as facility_count,
+                   COALESCE(SUM(power_mw), 0) as total_mw
+            FROM discovered_facilities
+            WHERE market IS NOT NULL
+            GROUP BY market ORDER BY facility_count DESC LIMIT 50
+        """)
         rows = cur.fetchall()
         return_pg_connection(conn)
-        return jsonify({"success": True, "count": len(rows), "data": [
-            {"market": r[0], "score": float(r[1] or 0), "tier": r[2], "updated_at": str(r[3] or "")} for r in rows
-        ]})
+        return jsonify({"success": True, "count": len(rows),
+                        "note": "market proxy — dedicated gdci_scores table coming soon",
+                        "data": [{"market": r[0], "facility_count": int(r[1]),
+                                  "total_mw": round(float(r[2]), 1)} for r in rows]})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/energy-discovery/overview', methods=['GET'])
 def cf_stub_energy_discovery():
-    """Cloudflare Worker failover: energy discovery stats."""
+    """Cloudflare Worker failover: energy discovery stats (source: energy_ppas)."""
     try:
         conn = get_pg_connection()
         cur = conn.cursor()
         cur.execute("SELECT COUNT(*) FROM energy_ppas")
-        ppas = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM renewable_projects WHERE status = 'operational'")
-        operational = cur.fetchone()[0]
+        total_ppas = cur.fetchone()[0]
         return_pg_connection(conn)
-        return jsonify({"success": True, "ppas": ppas, "operational_projects": operational})
+        return jsonify({"success": True, "ppas": total_ppas,
+                        "note": "renewable_projects table pending"})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
