@@ -12525,7 +12525,7 @@ logger.info("🗺️ SEO: /sitemap.xml route registered")
 # ============================================================
 # AI Agent Discovery Files (served from backend)
 # ============================================================
-@app.route(methods=['GET'])
+@app.route('/.well-known/mcp.json', methods=['GET'])
 def well_known_mcp():
     return jsonify({
         "name": "DC Hub Intelligence",
