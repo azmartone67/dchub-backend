@@ -558,6 +558,9 @@ def setup_energy_routes(app):
                         }
                     })
         except Exception as e:
+            if _neon_conn:
+                try: _neon_conn.rollback()
+                except: pass
             print(f"Neon transmission query error: {e}")
         
         # Power plants from Neon (discovered_power_plants — 6,900+ records)
