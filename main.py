@@ -14190,3 +14190,108 @@ def map_geo_pins():
 def founding_spots():
     remaining = 47
     return jsonify({'remaining': remaining, 'total': 50})
+# =============================================================================
+# CLOUDFLARE WORKER FAILOVER STUBS (v1.0)
+# These mirror the endpoints served by the Cloudflare Worker at the edge.
+# When Railway is primary, Cloudflare reads Neon directly for these.
+# When Replit is failover, Cloudflare routes here instead.
+# =============================================================================
+
+@app.route('/api/v1/ecosystem', methods=['GET'])
+def cf_stub_ecosystem():
+    """Cloudflare Worker failover: ecosystem companies."""
+    try:
+        conn = get_pg_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT id, name, category, website, description FROM ecosystem_companies ORDER BY name LIMIT 500")
+        rows = cur.fetchall()
+        return_pg_connection(conn)
+        return jsonify({"success": True, "count": len(rows), "data": [
+            {"id": r[0], "name": r[1], "category": r[2], "website": r[3], "description": r[4]} for r in rows
+        ]})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/rankings/states', methods=['GET'])
+def cf_stub_state_rankings():
+    """Cloudflare Worker failover: state rankings."""
+    try:
+        conn = get_pg_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT state, COUNT(*) as facility_count, SUM(power_mw) as total_mw
+            FROM discovered_facilities WHERE state IS NOT NULL
+            GROUP BY state ORDER BY facility_count DESC
+        """)
+        rows = cur.fetchall()
+        return_pg_connection(conn)
+        return jsonify({"success": True, "data": [
+            {"state": r[0], "facility_count": r[1], "total_mw": float(r[2] or 0)} for r in rows
+        ]})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/v1/infrastructure', methods=['GET'])
+def cf_stub_infrastructure():
+    """Cloudflare Worker failover: infrastructure asset counts."""
+    try:
+        conn = get_pg_connection()
+        cur = conn.cursor()
+        counts = {}
+        for table in ['substations', 'transmission_lines_eia', 'gas_pipelines', 'discovered_power_plants']:
+            try:
+                cur.execute(f"SELECT COUNT(*) FROM {table}")
+                counts[table] = cur.fetchone()[0]
+            except Exception:
+                counts[table] = 0
+        return_pg_connection(conn)
+        return jsonify({"success": True, "counts": counts})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/v1/energy/summary', methods=['GET'])
+def cf_stub_energy_summary():
+    """Cloudflare Worker failover: energy overview."""
+    try:
+        conn = get_pg_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT AVG(rate_cents_kwh), MIN(rate_cents_kwh), MAX(rate_cents_kwh) FROM energy_retail_rates WHERE rate_cents_kwh > 0")
+        row = cur.fetchone()
+        return_pg_connection(conn)
+        return jsonify({"success": True, "retail_rates": {
+            "avg_cents_kwh": round(float(row[0] or 0), 2),
+            "min_cents_kwh": round(float(row[1] or 0), 2),
+            "max_cents_kwh": round(float(row[2] or 0), 2)
+        }})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/v1/gdci', methods=['GET'])
+def cf_stub_gdci():
+    """Cloudflare Worker failover: global data center index scores."""
+    try:
+        conn = get_pg_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT market, score, tier, updated_at FROM gdci_scores ORDER BY score DESC LIMIT 50")
+        rows = cur.fetchall()
+        return_pg_connection(conn)
+        return jsonify({"success": True, "count": len(rows), "data": [
+            {"market": r[0], "score": float(r[1] or 0), "tier": r[2], "updated_at": str(r[3] or "")} for r in rows
+        ]})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/energy-discovery/overview', methods=['GET'])
+def cf_stub_energy_discovery():
+    """Cloudflare Worker failover: energy discovery stats."""
+    try:
+        conn = get_pg_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM energy_ppas")
+        ppas = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM renewable_projects WHERE status = 'operational'")
+        operational = cur.fetchone()[0]
+        return_pg_connection(conn)
+        return jsonify({"success": True, "ppas": ppas, "operational_projects": operational})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
