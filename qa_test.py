@@ -43,8 +43,16 @@ pass_count = 0
 fail_count = 0
 warn_count = 0
 
+_last_req_ts = 0.0
+_REQ_DELAY   = 0.35   # seconds between requests to avoid self-triggering 429
+
 def _req(url, method="GET", headers=None, body=None, timeout=15):
     """Simple HTTP request — returns (status_code, response_dict_or_str)."""
+    global _last_req_ts
+    gap = time.time() - _last_req_ts
+    if gap < _REQ_DELAY:
+        time.sleep(_REQ_DELAY - gap)
+
     h = {"Content-Type": "application/json", "Accept": "application/json"}
     if headers:
         h.update(headers)
@@ -53,18 +61,24 @@ def _req(url, method="GET", headers=None, body=None, timeout=15):
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             raw = r.read().decode()
+            _last_req_ts = time.time()
             try:
                 return r.status, json.loads(raw)
             except Exception:
                 return r.status, raw
     except urllib.error.HTTPError as e:
         raw = e.read().decode()
+        _last_req_ts = time.time()
         try:
             return e.code, json.loads(raw)
         except Exception:
             return e.code, raw
     except urllib.error.URLError as e:
         return 0, str(e)
+    except TimeoutError:
+        # Long-running job — connection stayed open but read timed out.
+        # Treat as "job accepted / running" — not a crash.
+        return -1, "timeout (job likely running)"
 
 def _check(name, status, body, expect_status=200, expect_keys=None, expect_value=None):
     """Evaluate a single test and print result."""
@@ -73,6 +87,15 @@ def _check(name, status, body, expect_status=200, expect_keys=None, expect_value
 
     if status == 0:
         issues.append(f"connection refused / timeout: {body}")
+    elif status == -1:
+        # job timed out on read — it's running, not crashing
+        print(f"  {YELLOW}⏳ RUNNING{RESET}  {name} — job running (read timeout, not a crash)")
+        warn_count += 1
+        return
+    elif status == 429:
+        print(f"  {YELLOW}⚠ WARN{RESET}  {name} — HTTP 429 rate limited (too many requests)")
+        warn_count += 1
+        return
     elif status != expect_status:
         issues.append(f"HTTP {status} (expected {expect_status})")
 

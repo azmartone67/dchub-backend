@@ -63,30 +63,49 @@ def _rpc(url, method, params=None, timeout=25):
             return e.code, raw, elapsed
     except urllib.error.URLError as e:
         return 0, str(e), 0
+    except TimeoutError as e:
+        return 0, f"timeout: {e}", 0
+
+_last_req_time = 0.0
+_REQ_DELAY = 0.4  # seconds between requests to avoid 429
+
+def _rate_limited_rpc(url, method, params=None, timeout=25):
+    global _last_req_time
+    gap = time.time() - _last_req_time
+    if gap < _REQ_DELAY:
+        time.sleep(_REQ_DELAY - gap)
+    result = _rpc(url, method, params, timeout)
+    _last_req_time = time.time()
+    return result
 
 def _tool_call(url, tool_name, arguments=None):
     """Call a tool via tools/call JSON-RPC method."""
-    return _rpc(url, "tools/call", {
+    return _rate_limited_rpc(url, "tools/call", {
         "name": tool_name,
         "arguments": arguments or {}
     })
 
-def _check(name, status, body, elapsed_ms, timeout_warn_ms=8000):
+def _check(name, status, body, elapsed_ms, timeout_warn_ms=8000, require_content=True):
     global pass_count, fail_count, warn_count
     issues = []
 
     if status == 0:
         issues.append(f"connection error: {body}")
+    elif status == 429:
+        issues.append("HTTP 429 — rate limited (add delay or use X-Admin-Key header)")
     elif status != 200:
         issues.append(f"HTTP {status}")
 
-    # Check for JSON-RPC error
+    # Check for JSON-RPC error (rpc_err can be dict OR string)
     if isinstance(body, dict) and "error" in body:
         rpc_err = body["error"]
-        issues.append(f"RPC error {rpc_err.get('code')}: {rpc_err.get('message','')}")
+        if isinstance(rpc_err, dict):
+            issues.append(f"RPC error {rpc_err.get('code')}: {rpc_err.get('message','')}")
+        else:
+            issues.append(f"RPC error: {rpc_err}")
 
-    # Check result has content
-    if isinstance(body, dict) and "result" in body:
+    # Only check for content array on tool calls, not on initialize/tools/list
+    if require_content and isinstance(body, dict) and "result" in body:
         result = body["result"]
         if isinstance(result, dict):
             content = result.get("content", [])
@@ -124,7 +143,8 @@ def test_initialize(url):
         "capabilities": {},
         "clientInfo": {"name": "qa-mcp-test", "version": "1.0"}
     })
-    _check("initialize", s, b, ms)
+    # initialize returns result.serverInfo — no content array expected
+    _check("initialize", s, b, ms, require_content=False)
     if isinstance(b, dict):
         r = b.get("result", {})
         sv = r.get("serverInfo", {})
@@ -133,7 +153,8 @@ def test_initialize(url):
 def test_tools_list(url):
     _section("Tool Discovery")
     s, b, ms = _rpc(url, "tools/list")
-    _check("tools/list", s, b, ms)
+    # tools/list returns result.tools array — no content array expected
+    _check("tools/list", s, b, ms, require_content=False)
     if isinstance(b, dict) and "result" in b:
         tools = b["result"].get("tools", [])
         names = [t["name"] for t in tools]

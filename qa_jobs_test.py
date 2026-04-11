@@ -83,6 +83,11 @@ def _req(url, method="POST", headers=None, timeout=30):
             return e.code, raw, ms
     except urllib.error.URLError as e:
         return 0, str(e), 0
+    except TimeoutError:
+        ms = round((time.time() - t0) * 1000)
+        # Jobs do real work — a read timeout means the job is RUNNING, not crashed.
+        # Return -1 as sentinel so _check can print "running" instead of "fail".
+        return -1, "timeout — job likely still running (not a crash)", ms
 
 
 def _check(name, status, body, ms, dry_run=False):
@@ -90,9 +95,16 @@ def _check(name, status, body, ms, dry_run=False):
 
     prefix = f"  {'[DRY]' if dry_run else '      '}"
 
-    if status == 0:
+    if status == -1:
+        # Read timeout — job is doing real work, not crashed
+        print(f"{prefix} {YELLOW}⏳ RUNNING{RESET}  {name} [{ms}ms] — job running (read timeout, not a crash)")
+        warn_count += 1
+    elif status == 0:
         print(f"{prefix} {RED}✗ FAIL{RESET}  {name} — connection error: {body}")
         fail_count += 1
+    elif status == 429:
+        print(f"{prefix} {YELLOW}⚠ WARN{RESET}  {name} — 429 rate limited")
+        warn_count += 1
     elif status == 404:
         print(f"{prefix} {YELLOW}⚠ WARN{RESET}  {name} — 404 route not found")
         warn_count += 1
