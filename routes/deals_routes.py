@@ -1307,7 +1307,6 @@ def get_news_feed():
     return get_agent_news()
 
 @deals_bp.route('/api/news/live', methods=['GET'])
-@_lazy_require_plan('free')
 def get_live_news():
     """Return cached news from DB (fast) -- requires at least a free account"""
     try:
