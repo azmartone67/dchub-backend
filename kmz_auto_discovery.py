@@ -1,5 +1,5 @@
 """
-DC Hub Nexus - Automatic KMZ/KML Infrastructure Discovery v4.0
+DC Hub Nexus - Automatic KMZ/KML Infrastructure Discovery v3.0
 ================================================================
 Autonomous system that discovers, downloads, and parses KMZ/KML
 infrastructure files from public government and industry sources.
@@ -7,27 +7,16 @@ infrastructure files from public government and industry sources.
 v3.0 CHANGES (Mar 2026):
   - Migrated from SQLite to Neon PostgreSQL (data persists across Railway deploys)
   - Uses late-binding DB connection pattern (injected from main.py)
-  - PostgreSQL parameterized queries (%s instead of %s)
+  - PostgreSQL parameterized queries (%s instead of ?)
   - ON CONFLICT instead of INSERT OR IGNORE
   - datetime('now', '-7 days') → NOW() - INTERVAL '7 days'
 
-v4.0 CHANGES (Apr 2026):
-  - Added major ISP/carrier fiber sources: AT&T, Comcast, Verizon, Frontier,
-    Brightspeed, Consolidated, Cogent, Uniti, Google Fiber, Microsoft Airband
-  - Added FCC Broadband Fabric, USAC E-Rate, ConnectAmerica Fund sources
-  - Filled missing states in STATE_BROADBAND_GIS: AK, AR, DE, HI, ND, RI, SD
-  - Expanded ARCGIS_FIBER_SEARCH_URLS with carrier-specific and BEAD/E-Rate queries
-
 FIBER SOURCES:
 - NTIA Broadband Infrastructure maps
-- State broadband offices (BroadbandUSA) — all 50 states
-- FCC broadband deployment GIS data + Broadband Fabric
+- State broadband offices (BroadbandUSA)
+- FCC broadband deployment GIS data
 - USGS/HIFLD infrastructure GIS layers
-- Public carrier fiber route maps (AT&T, Comcast, Verizon, Frontier, Brightspeed,
-  Consolidated, Cogent, Uniti, Google Fiber, Zayo, Crown Castle, Lumen, Windstream)
-- USAC E-Rate funded fiber connections
-- ConnectAmerica Fund (CAF) fiber builds
-- Microsoft Airband broadband data
+- Public carrier fiber route maps
 - State DOT fiber route data
 
 GAS PIPELINE SOURCES:
@@ -171,135 +160,33 @@ PUBLIC_KMZ_SOURCES = [
         'provider': 'HIFLD',
         'category': 'fiber'
     },
-    # ── CARRIER / DARK FIBER NETWORKS ────────────────────────────
-    # NOTE: Major carriers don't publish public ArcGIS FeatureServer endpoints.
-    # All carrier sources use api_discover (ArcGIS search) which returns real results.
+    # ── CARRIER / DARK FIBER NETWORKS (Public GIS) ───────────────
     {
         'name': 'Zayo Fiber Network',
-        'url': 'https://www.arcgis.com/sharing/rest/search?q=Zayo+fiber+network+routes+broadband&sortField=modified&sortOrder=desc&num=20&f=json',
-        'type': 'api_discover',
+        'url': 'https://services.arcgis.com/njFNhDsUCentVYJW/arcgis/rest/services/Zayo_Network/FeatureServer/0',
+        'type': 'arcgis_kml',
         'provider': 'Zayo',
         'category': 'fiber'
     },
     {
         'name': 'Crown Castle Fiber',
-        'url': 'https://www.arcgis.com/sharing/rest/search?q=Crown+Castle+fiber+small+cell+network&sortField=modified&sortOrder=desc&num=20&f=json',
-        'type': 'api_discover',
+        'url': 'https://services.arcgis.com/njFNhDsUCentVYJW/arcgis/rest/services/Crown_Castle_Fiber/FeatureServer/0',
+        'type': 'arcgis_kml',
         'provider': 'Crown Castle',
         'category': 'fiber'
     },
     {
         'name': 'Lumen Long Haul Fiber',
-        'url': 'https://www.arcgis.com/sharing/rest/search?q=Lumen+CenturyLink+fiber+long+haul+network&sortField=modified&sortOrder=desc&num=20&f=json',
-        'type': 'api_discover',
+        'url': 'https://services.arcgis.com/njFNhDsUCentVYJW/arcgis/rest/services/Lumen_Fiber/FeatureServer/0',
+        'type': 'arcgis_kml',
         'provider': 'Lumen',
         'category': 'fiber'
     },
     {
         'name': 'Windstream Fiber Network',
-        'url': 'https://www.arcgis.com/sharing/rest/search?q=Windstream+fiber+broadband+network+route&sortField=modified&sortOrder=desc&num=20&f=json',
-        'type': 'api_discover',
+        'url': 'https://services.arcgis.com/njFNhDsUCentVYJW/arcgis/rest/services/Windstream_Fiber/FeatureServer/0',
+        'type': 'arcgis_kml',
         'provider': 'Windstream',
-        'category': 'fiber'
-    },
-    # ── MAJOR ISP FIBER NETWORKS (v4.0 — api_discover) ───────────
-    {
-        'name': 'AT&T Fiber Network',
-        'url': 'https://www.arcgis.com/sharing/rest/search?q=AT%26T+fiber+broadband+BEAD+expansion&sortField=modified&sortOrder=desc&num=20&f=json',
-        'type': 'api_discover',
-        'provider': 'AT&T',
-        'category': 'fiber'
-    },
-    {
-        'name': 'Comcast Xfinity Fiber',
-        'url': 'https://www.arcgis.com/sharing/rest/search?q=Comcast+Xfinity+fiber+broadband+expansion&sortField=modified&sortOrder=desc&num=20&f=json',
-        'type': 'api_discover',
-        'provider': 'Comcast',
-        'category': 'fiber'
-    },
-    {
-        'name': 'Verizon Fiber / FiOS',
-        'url': 'https://www.arcgis.com/sharing/rest/search?q=Verizon+FiOS+fiber+broadband+network&sortField=modified&sortOrder=desc&num=20&f=json',
-        'type': 'api_discover',
-        'provider': 'Verizon',
-        'category': 'fiber'
-    },
-    {
-        'name': 'Frontier Fiber Expansion',
-        'url': 'https://www.arcgis.com/sharing/rest/search?q=Frontier+fiber+broadband+expansion+BEAD&sortField=modified&sortOrder=desc&num=20&f=json',
-        'type': 'api_discover',
-        'provider': 'Frontier',
-        'category': 'fiber'
-    },
-    {
-        'name': 'Brightspeed Fiber Network',
-        'url': 'https://www.arcgis.com/sharing/rest/search?q=Brightspeed+fiber+broadband+BEAD&sortField=modified&sortOrder=desc&num=20&f=json',
-        'type': 'api_discover',
-        'provider': 'Brightspeed',
-        'category': 'fiber'
-    },
-    {
-        'name': 'Consolidated Communications Fiber',
-        'url': 'https://www.arcgis.com/sharing/rest/search?q=Consolidated+Communications+fiber+broadband&sortField=modified&sortOrder=desc&num=15&f=json',
-        'type': 'api_discover',
-        'provider': 'Consolidated Communications',
-        'category': 'fiber'
-    },
-    {
-        'name': 'Cogent Communications Network',
-        'url': 'https://www.arcgis.com/sharing/rest/search?q=Cogent+fiber+network+route+backbone&sortField=modified&sortOrder=desc&num=15&f=json',
-        'type': 'api_discover',
-        'provider': 'Cogent',
-        'category': 'fiber'
-    },
-    {
-        'name': 'Uniti Fiber Wholesale Network',
-        'url': 'https://www.arcgis.com/sharing/rest/search?q=Uniti+fiber+wholesale+network+broadband&sortField=modified&sortOrder=desc&num=15&f=json',
-        'type': 'api_discover',
-        'provider': 'Uniti',
-        'category': 'fiber'
-    },
-    {
-        'name': 'Google Fiber Cities',
-        'url': 'https://www.arcgis.com/sharing/rest/search?q=Google+Fiber+city+broadband+gigabit&sortField=modified&sortOrder=desc&num=15&f=json',
-        'type': 'api_discover',
-        'provider': 'Google Fiber',
-        'category': 'fiber'
-    },
-    # ── FCC BROADBAND FABRIC & USAC E-RATE (v4.0) ────────────────
-    {
-        'name': 'FCC Broadband Data Collection (BDC) - Living Atlas',
-        'url': 'https://www.arcgis.com/sharing/rest/search?q=FCC+broadband+data+collection+BDC+2024&sortField=modified&sortOrder=desc&num=10&f=json',
-        'type': 'api_discover',
-        'provider': 'FCC',
-        'category': 'fiber'
-    },
-    {
-        'name': 'USAC E-Rate Funded Connections',
-        'url': 'https://opendata.usac.org/resource/rr4u-4bah.json?$limit=1',
-        'type': 'api_discover',
-        'provider': 'USAC',
-        'category': 'fiber'
-    },
-    {
-        'name': 'ConnectAmerica Fund (CAF II) Fiber Builds',
-        'url': 'https://www.arcgis.com/sharing/rest/search?q=ConnectAmerica+CAF+II+auction+broadband+fiber&sortField=modified&sortOrder=desc&num=10&f=json',
-        'type': 'api_discover',
-        'provider': 'FCC-CAF',
-        'category': 'fiber'
-    },
-    {
-        'name': 'Microsoft Airband Broadband Coverage',
-        'url': 'https://www.arcgis.com/sharing/rest/search?q=Microsoft+Airband+broadband+rural+coverage&sortField=modified&sortOrder=desc&num=10&f=json',
-        'type': 'api_discover',
-        'provider': 'Microsoft',
-        'category': 'fiber'
-    },
-    {
-        'name': 'Ookla Fixed Broadband Performance GIS',
-        'url': 'https://www.arcgis.com/sharing/rest/search?q=Ookla+Speedtest+fixed+broadband+performance&sortField=modified&sortOrder=desc&num=10&f=json',
-        'type': 'api_discover',
-        'provider': 'Ookla',
         'category': 'fiber'
     },
     # ── POWER INFRASTRUCTURE ─────────────────────────────────────
@@ -346,20 +233,22 @@ PUBLIC_KMZ_SOURCES = [
         'provider': 'EIA',
         'category': 'gas'
     },
-    {
-        'name': 'HIFLD Natural Gas Compressor Stations',
-        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Natural_Gas_Compressor_Stations/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'HIFLD',
-        'category': 'gas'
-    },
-    {
-        'name': 'HIFLD Natural Gas Processing Plants',
-        'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Natural_Gas_Processing_Plants/FeatureServer/0',
-        'type': 'arcgis_kml',
-        'provider': 'HIFLD',
-        'category': 'gas'
-    },
+    # DEAD (2024): HIFLD Natural Gas Compressor Stations — URL returns 400/499 (moved to hash-based names)
+    # {
+    #     'name': 'HIFLD Natural Gas Compressor Stations',
+    #     'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Natural_Gas_Compressor_Stations/FeatureServer/0',
+    #     'type': 'arcgis_kml',
+    #     'provider': 'HIFLD',
+    #     'category': 'gas'
+    # },
+    # DEAD (2024): HIFLD Natural Gas Processing Plants — URL returns 400/499 (moved to hash-based names)
+    # {
+    #     'name': 'HIFLD Natural Gas Processing Plants',
+    #     'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Natural_Gas_Processing_Plants/FeatureServer/0',
+    #     'type': 'arcgis_kml',
+    #     'provider': 'HIFLD',
+    #     'category': 'gas'
+    # },
     {
         'name': 'HIFLD LNG Import/Export Terminals',
         'url': 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Liquefied_Natural_Gas_Import_Export_Terminals/FeatureServer/0',
@@ -720,34 +609,6 @@ ARCGIS_FIBER_SEARCH_URLS = [
     'https://www.arcgis.com/sharing/rest/search?q=seismic%20hazard%20earthquake%20fault%20zone&sortField=modified&sortOrder=desc&num=10&f=json',
     'https://www.arcgis.com/sharing/rest/search?q=brownfield%20superfund%20EPA%20contaminated%20site&sortField=modified&sortOrder=desc&num=10&f=json',
     'https://www.arcgis.com/sharing/rest/search?q=opportunity%20zone%20enterprise%20tax%20incentive&sortField=modified&sortOrder=desc&num=15&f=json',
-    # ── Major ISP / carrier searches (v4.0) ──────────────────────
-    'https://www.arcgis.com/sharing/rest/search?q=AT%26T%20fiber%20broadband%20network%20route&sortField=modified&sortOrder=desc&num=15&f=json',
-    'https://www.arcgis.com/sharing/rest/search?q=AT%26T%20BEAD%20fiber%20expansion%20unserved&sortField=modified&sortOrder=desc&num=10&f=json',
-    'https://www.arcgis.com/sharing/rest/search?q=Comcast%20Xfinity%20fiber%20broadband%20footprint&sortField=modified&sortOrder=desc&num=15&f=json',
-    'https://www.arcgis.com/sharing/rest/search?q=Comcast%20BEAD%20partnership%20fiber%20rural&sortField=modified&sortOrder=desc&num=10&f=json',
-    'https://www.arcgis.com/sharing/rest/search?q=Verizon%20FiOS%20fiber%20network%20route&sortField=modified&sortOrder=desc&num=15&f=json',
-    'https://www.arcgis.com/sharing/rest/search?q=Verizon%20BEAD%20fiber%20broadband%20expansion&sortField=modified&sortOrder=desc&num=10&f=json',
-    'https://www.arcgis.com/sharing/rest/search?q=Frontier%20fiber%20network%20build%20out&sortField=modified&sortOrder=desc&num=15&f=json',
-    'https://www.arcgis.com/sharing/rest/search?q=Frontier%20BEAD%20fiber%20unserved%20locations&sortField=modified&sortOrder=desc&num=10&f=json',
-    'https://www.arcgis.com/sharing/rest/search?q=Brightspeed%20fiber%20network%20broadband&sortField=modified&sortOrder=desc&num=15&f=json',
-    'https://www.arcgis.com/sharing/rest/search?q=Consolidated%20Communications%20fiber%20network&sortField=modified&sortOrder=desc&num=10&f=json',
-    'https://www.arcgis.com/sharing/rest/search?q=Google%20Fiber%20city%20network%20route&sortField=modified&sortOrder=desc&num=10&f=json',
-    'https://www.arcgis.com/sharing/rest/search?q=Ookla%20Speedtest%20fixed%20broadband%20performance&sortField=modified&sortOrder=desc&num=10&f=json',
-    'https://www.arcgis.com/sharing/rest/search?q=Microsoft%20Airband%20rural%20broadband%20coverage&sortField=modified&sortOrder=desc&num=10&f=json',
-    # ── BEAD program & E-Rate searches (v4.0) ────────────────────
-    'https://www.arcgis.com/sharing/rest/search?q=BEAD%20initial%20proposal%20fiber%20state%20plan&sortField=modified&sortOrder=desc&num=20&f=json',
-    'https://www.arcgis.com/sharing/rest/search?q=BEAD%20subgrantee%20fiber%20award%20locations&sortField=modified&sortOrder=desc&num=20&f=json',
-    'https://www.arcgis.com/sharing/rest/search?q=E-Rate%20fiber%20school%20library%20broadband%20USAC&sortField=modified&sortOrder=desc&num=15&f=json',
-    'https://www.arcgis.com/sharing/rest/search?q=ConnectAmerica%20CAF%20II%20fiber%20build%20locations&sortField=modified&sortOrder=desc&num=15&f=json',
-    'https://www.arcgis.com/sharing/rest/search?q=RDOF%20rural%20digital%20opportunity%20fund%20fiber&sortField=modified&sortOrder=desc&num=15&f=json',
-    'https://www.arcgis.com/sharing/rest/search?q=FCC%20broadband%20fabric%20unserved%20underserved&sortField=modified&sortOrder=desc&num=15&f=json',
-    'https://www.arcgis.com/sharing/rest/search?q=state%20BEAD%20five%20year%20action%20plan%20fiber%20map&sortField=modified&sortOrder=desc&num=15&f=json',
-    'https://www.arcgis.com/sharing/rest/search?q=electric%20cooperative%20BEAD%20fiber%20rural%20broadband&sortField=modified&sortOrder=desc&num=15&f=json',
-    # ── Internet exchange & colocation fiber (v4.0) ───────────────
-    'https://www.arcgis.com/sharing/rest/search?q=internet%20exchange%20point%20IXP%20meet%20me%20room&sortField=modified&sortOrder=desc&num=10&f=json',
-    'https://www.arcgis.com/sharing/rest/search?q=carrier%20hotel%20colocation%20fiber%20cross%20connect&sortField=modified&sortOrder=desc&num=10&f=json',
-    'https://www.arcgis.com/sharing/rest/search?q=data%20center%20campus%20fiber%20ring%20dark%20fiber&sortField=modified&sortOrder=desc&num=10&f=json',
-    'https://www.arcgis.com/sharing/rest/search?q=hyperscale%20campus%20fiber%20connectivity%20route&sortField=modified&sortOrder=desc&num=10&f=json',
 ]
 
 ARCGIS_GAS_SEARCH_URLS = [
@@ -806,35 +667,6 @@ STATE_BROADBAND_GIS = [
     {'name': 'Maine Broadband', 'state': 'ME', 'url': 'https://services1.arcgis.com/RbMX0mRVOFNTdLzd/arcgis/rest/services', 'provider': 'Maine'},
     {'name': 'Vermont Broadband', 'state': 'VT', 'url': 'https://services1.arcgis.com/BkFxaEFNwHqX3tAw/arcgis/rest/services', 'provider': 'Vermont'},
     {'name': 'New Hampshire Broadband', 'state': 'NH', 'url': 'https://services1.arcgis.com/lKUTqejQmSRZ1fIz/arcgis/rest/services', 'provider': 'New Hampshire'},
-    # ── Previously missing states (v4.0 — real endpoints) ────────
-    # Alaska Broadband Office ArcGIS Hub (DCCED) — confirmed public
-    {'name': 'Alaska Broadband', 'state': 'AK',
-     'url': 'https://broadband-outreach-dcced.hub.arcgis.com/api/search/v1/items?q=broadband&num=10&f=json',
-     'provider': 'Alaska'},
-    # Arkansas Rural Connect / ADFA broadband — ArcGIS search
-    {'name': 'Arkansas Broadband', 'state': 'AR',
-     'url': 'https://www.arcgis.com/sharing/rest/search?q=Arkansas+broadband+fiber+BEAD+rural&sortField=modified&sortOrder=desc&num=10&f=json',
-     'provider': 'Arkansas'},
-    # Delaware Broadband — Delaware Open Data GIS portal
-    {'name': 'Delaware Broadband', 'state': 'DE',
-     'url': 'https://opendata.firstmap.delaware.gov/api/search/v1/items?q=broadband&num=10&f=json',
-     'provider': 'Delaware'},
-    # Hawaii Broadband Initiative — State GIS portal
-    {'name': 'Hawaii Broadband', 'state': 'HI',
-     'url': 'https://www.arcgis.com/sharing/rest/search?q=Hawaii+broadband+fiber+BEAD+DCCA&sortField=modified&sortOrder=desc&num=10&f=json',
-     'provider': 'Hawaii'},
-    # North Dakota GIS Hub — confirmed public portal
-    {'name': 'North Dakota Broadband', 'state': 'ND',
-     'url': 'https://gishubdata-ndgov.hub.arcgis.com/api/search/v1/items?q=broadband&num=10&f=json',
-     'provider': 'North Dakota'},
-    # Rhode Island Commerce — broadband GIS search
-    {'name': 'Rhode Island Broadband', 'state': 'RI',
-     'url': 'https://www.arcgis.com/sharing/rest/search?q=Rhode+Island+broadband+fiber+BEAD&sortField=modified&sortOrder=desc&num=10&f=json',
-     'provider': 'Rhode Island'},
-    # South Dakota Bureau of Information & Telecom
-    {'name': 'South Dakota Broadband', 'state': 'SD',
-     'url': 'https://www.arcgis.com/sharing/rest/search?q=South+Dakota+broadband+fiber+BEAD+BIT&sortField=modified&sortOrder=desc&num=10&f=json',
-     'provider': 'South Dakota'},
 ]
 
 
@@ -1096,7 +928,7 @@ class KMZAutoDiscovery:
 
             while total_fetched < MAX_FEATURES:
                 query_url = (
-                    f"{url}/query%swhere=1%3D1&outFields=*"
+                    f"{url}/query?where=1%3D1&outFields=*"
                     f"&resultRecordCount={BATCH_SIZE}&resultOffset={offset}"
                     f"&returnGeometry=true&f=json"
                 )
@@ -1220,7 +1052,7 @@ class KMZAutoDiscovery:
             try:
                 results['checked'] += 1
 
-                catalog_url = f"{state['url']}%sf=json"
+                catalog_url = f"{state['url']}?f=json"
                 response = self.session.get(catalog_url, timeout=15)
 
                 if response.status_code == 200:
@@ -1575,56 +1407,6 @@ def register_kmz_discovery_routes(app, get_pg_fn, return_pg_fn, start_scheduler=
         finally:
             _release(conn)
 
-    @kmz_bp.route('/api/kmz/health')
-    def kmz_health():
-        """
-        v4.0 Health-check: returns all registered source lists, category
-        breakdowns, v4.0 additions, and live discovery engine status.
-        """
-        from collections import Counter
-
-        # ── Registered source breakdown ──────────────────────────
-        cat_counts   = Counter(s.get('category', 'other') for s in PUBLIC_KMZ_SOURCES)
-        prov_counts  = Counter(s.get('provider', 'unknown') for s in PUBLIC_KMZ_SOURCES)
-
-        v4_providers = {
-            'AT&T', 'Comcast', 'Verizon', 'Frontier', 'Brightspeed',
-            'Consolidated Communications', 'Cogent', 'Uniti', 'Google Fiber',
-            'FCC-CAF', 'USAC', 'Microsoft', 'Ookla',
-        }
-        new_in_v4 = [s['name'] for s in PUBLIC_KMZ_SOURCES if s.get('provider') in v4_providers]
-
-        state_list = [s['state'] for s in STATE_BROADBAND_GIS]
-        new_states  = ['AK', 'AR', 'DE', 'HI', 'ND', 'RI', 'SD']
-
-        return jsonify({
-            'success': True,
-            'engine': 'KMZ Auto-Discovery v4.0 (Neon PostgreSQL)',
-            'version': '4.0',
-            'public_sources': {
-                'total': len(PUBLIC_KMZ_SOURCES),
-                'by_category': dict(cat_counts),
-                'by_provider_top10': dict(prov_counts.most_common(10)),
-            },
-            'state_broadband_sources': {
-                'total': len(STATE_BROADBAND_GIS),
-                'states_covered': sorted(state_list),
-                'new_in_v4': new_states,
-            },
-            'arcgis_search_queries': {
-                'fiber_searches': len(ARCGIS_FIBER_SEARCH_URLS),
-                'gas_searches':   len(ARCGIS_GAS_SEARCH_URLS),
-            },
-            'v4_additions': {
-                'new_provider_sources': len(new_in_v4),
-                'new_providers': sorted(v4_providers),
-                'new_source_names': new_in_v4,
-                'new_states_added': new_states,
-                'new_arcgis_queries_added': 24,
-            },
-            'live_status': _kmz_instance.get_status(),
-        })
-
     @kmz_bp.route('/api/kmz-discovery/sources')
     def get_kmz_sources():
         conn = None
@@ -1667,11 +1449,10 @@ def register_kmz_discovery_routes(app, get_pg_fn, return_pg_fn, start_scheduler=
 
     if start_scheduler:
         start_kmz_scheduler()
-        logger.info("🗺️  KMZ Auto-Discovery v4.0: ✅ Registered (Neon, 12-hour auto-cycle)")
+        logger.info("🗺️  KMZ Auto-Discovery v3.0: ✅ Registered (Neon, 12-hour auto-cycle)")
     else:
-        logger.info("🗺️  KMZ Auto-Discovery v4.0: ✅ Registered (Neon, scheduler PAUSED)")
+        logger.info("🗺️  KMZ Auto-Discovery v3.0: ✅ Registered (Neon, scheduler PAUSED)")
     logger.info("   GET  /api/kmz-discovery/status  - Discovery status")
     logger.info("   POST /api/kmz-discovery/run     - Trigger discovery cycle")
     logger.info("   GET  /api/kmz-discovery/routes  - Browse discovered routes")
     logger.info("   GET  /api/kmz-discovery/sources - View discovered sources")
-    logger.info("   GET  /api/kmz/health            - v4.0 full health + source registry")

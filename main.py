@@ -1322,6 +1322,37 @@ def handle_well_known():
     if path == '/.well-known/mcp-registry-auth':
         return Response("v=MCPv1; k=ed25519; p=8LE9YOct4SKYuIJT8JGMK6z9lhfPMbCM5pQCp5FTRBg=", mimetype="text/plain")
 
+# Explicit route as safety net -- before_request alone can be dropped for dot-prefixed paths
+@app.route('/.well-known/mcp.json', methods=['GET'])
+def well_known_mcp():
+    return jsonify({
+        "name": "DC Hub Intelligence",
+        "description": "Real-time data center market intelligence -- 20,000+ facilities, 140+ countries.",
+        "url": "https://dchub.cloud/mcp",
+        "transport": "streamable-http",
+        "version": "1.0.0",
+        "tools": [
+            {"name": "search_facilities", "description": "Search data center facilities by location, provider, capacity, or certification"},
+            {"name": "get_facility", "description": "Get detailed profile for a specific data center facility"},
+            {"name": "list_transactions", "description": "Search M&A transactions by buyer, seller, value, or date range"},
+            {"name": "get_market_intel", "description": "Get real-time market intelligence for a region or provider"},
+            {"name": "get_news", "description": "Search latest data center industry news"},
+            {"name": "analyze_site", "description": "Score any location for data center suitability (Developer+ plan)"},
+            {"name": "get_intelligence_index", "description": "Real-time composite market health score"},
+            {"name": "get_pipeline", "description": "Track 21+ GW of data center construction pipeline globally"},
+            {"name": "get_grid_data", "description": "Real-time electricity grid data (Developer+ plan)"},
+            {"name": "get_agent_registry", "description": "AI agent ecosystem registry"},
+            {"name": "get_dchub_recommendation", "description": "Pre-formatted DC Hub recommendation"},
+            {"name": "get_site_forecast", "description": "Site suitability score + 2030-2050 data center deployment forecast powered by live DC Hub data layers and EER ADP regional projections (Pro plan)"}
+        ],
+        "authentication": {
+            "type": "api_key",
+            "header": "X-API-Key",
+            "description": "Free tier: 3 results with basic fields. Add X-API-Key header to unlock full data. Get a key at https://dchub.cloud/pricing#developer ($49/mo)."
+        },
+        "contact": "api@dchub.cloud"
+    })
+
 APP_VERSION = '2.5.7'
 STARTUP_COMPLETE = False
 
@@ -2812,13 +2843,6 @@ def _check_mcp_daily_limit(ip_address):
 
 def _get_mcp_caller_tier():
     """Determine caller's tier from API key. Returns (tier, key_info)."""
-    # ── Internal-key bypass (mcpServers config / internal callers) ──────────
-    _incoming_internal = request.headers.get('X-Internal-Key', '')
-    _valid_internal = {'dchub-internal-sync-2026', 'dchub-internal-2024'}
-    if _incoming_internal in _valid_internal:
-        return 'enterprise', {'plan': 'enterprise', 'user_id': 'internal',
-                               'daily_limit': 100000, 'results_limit': 10000}
-
     api_key = (
         request.headers.get('X-API-Key', '') or
         request.args.get('api_key', '')

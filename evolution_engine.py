@@ -5,6 +5,7 @@ DC Hub Nexus - Autonomous Evolution Engine v1.0
 
 import os
 import json
+import sqlite3
 import requests
 import hashlib
 import re
@@ -38,26 +39,26 @@ class EvolutionEngine:
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (compatible; DCHubEvolution/1.0; +https://dchub.cloud)'
         })
-        
+
         self.claude = None
         if CLAUDE_AVAILABLE and os.environ.get('ANTHROPIC_API_KEY'):
             self.claude = anthropic.Anthropic()
-        
+
         self.knowledge_base = {
             'operators': {}, 'markets': {}, 'technologies': {},
             'trends': {}, 'terminology': {}, 'relationships': {}
         }
-        
+
         self.learning_stats = {
             'total_runs': 0, 'items_learned': 0, 'improvements_made': 0,
             'apis_discovered': 0, 'quality_fixes': 0, 'last_run': None
         }
-        
+
         self.api_sources = self._get_known_apis()
         self.pending_improvements = []
         self._init_db()
         self._load_state()
-    
+
     def _get_known_apis(self) -> List[Dict]:
         return [
             {'name': 'PeeringDB', 'url': 'https://peeringdb.com/api', 'type': 'facility_directory',
@@ -71,48 +72,48 @@ class EvolutionEngine:
             {'name': 'GitHub', 'url': 'https://api.github.com', 'type': 'code_search',
              'search_terms': ['data center', 'datacenter api', 'colocation'], 'enabled': True}
         ]
-    
+
     def _init_db(self):
         conn = get_db(self.db_path)
         cursor = conn.cursor()
-        
+
         cursor.execute('''CREATE TABLE IF NOT EXISTS evolution_log (
             id SERIAL PRIMARY KEY, timestamp TIMESTAMPTZ DEFAULT NOW(),
             action_type TEXT NOT NULL, action_category TEXT, description TEXT,
             details TEXT, impact_score REAL DEFAULT 0, success BOOLEAN DEFAULT TRUE)''')
-        
+
         cursor.execute('''CREATE TABLE IF NOT EXISTS knowledge_items (
             id SERIAL PRIMARY KEY, category TEXT NOT NULL, key TEXT NOT NULL,
             value TEXT, confidence REAL DEFAULT 0.5, source TEXT,
             learned_at TIMESTAMPTZ DEFAULT NOW(), last_updated TIMESTAMPTZ,
             usage_count INTEGER DEFAULT 0, UNIQUE(category, key))''')
-        
+
         cursor.execute('''CREATE TABLE IF NOT EXISTS api_registry (
             id SERIAL PRIMARY KEY, name TEXT UNIQUE NOT NULL, url TEXT NOT NULL,
             api_type TEXT, documentation_url TEXT, auth_type TEXT DEFAULT 'none',
             rate_limit INTEGER, last_success TIMESTAMPTZ, error_count INTEGER DEFAULT 0,
             items_fetched INTEGER DEFAULT 0, enabled BOOLEAN DEFAULT TRUE,
             discovered_at TIMESTAMPTZ DEFAULT NOW())''')
-        
+
         cursor.execute('''CREATE TABLE IF NOT EXISTS quality_issues (
             id SERIAL PRIMARY KEY, issue_type TEXT NOT NULL, severity TEXT DEFAULT 'low',
             entity_type TEXT, entity_id TEXT, description TEXT, suggested_fix TEXT,
             auto_fixable BOOLEAN DEFAULT FALSE, fixed BOOLEAN DEFAULT FALSE,
             discovered_at TIMESTAMPTZ DEFAULT NOW(), fixed_at TIMESTAMPTZ)''')
-        
+
         cursor.execute('''CREATE TABLE IF NOT EXISTS feature_ideas (
             id SERIAL PRIMARY KEY, title TEXT NOT NULL, description TEXT, category TEXT,
             priority INTEGER DEFAULT 5, complexity TEXT DEFAULT 'medium',
             status TEXT DEFAULT 'proposed', source TEXT,
             created_at TIMESTAMPTZ DEFAULT NOW(), implemented_at TIMESTAMPTZ)''')
-        
+
         cursor.execute('''CREATE TABLE IF NOT EXISTS industry_glossary (
             id SERIAL PRIMARY KEY, term TEXT UNIQUE NOT NULL, definition TEXT,
             category TEXT, related_terms TEXT, source TEXT, confidence REAL DEFAULT 0.5)''')
-        
+
         conn.commit()
         conn.close()
-    
+
     def _load_state(self):
         try:
             if os.path.exists(LEARNING_STATE_PATH):
@@ -122,7 +123,7 @@ class EvolutionEngine:
                     self.knowledge_base = state.get('knowledge', self.knowledge_base)
         except Exception as e:
             print(f"⚠️ Could not load learning state: {e}")
-    
+
     def _save_state(self):
         try:
             os.makedirs('data', exist_ok=True)
@@ -132,30 +133,42 @@ class EvolutionEngine:
                 json.dump(state, f, indent=2, default=str)
         except Exception as e:
             print(f"⚠️ Could not save learning state: {e}")
-    
+
     def _log_action(self, action_type, category, description, details=None, impact=0, success=True):
         try:
             for attempt in range(5):
+                conn = None
                 try:
                     conn = get_db(self.db_path)
                     cursor = conn.cursor()
-                    cursor.execute('''INSERT INTO evolution_log 
+                    cursor.execute('''INSERT INTO evolution_log
                         (action_type, action_category, description, details, impact_score, success)
-                        VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (action_type) DO UPDATE SET action_category = EXCLUDED.action_category, description = EXCLUDED.description, details = EXCLUDED.details, impact_score = EXCLUDED.impact_score, success = EXCLUDED.success''',
+                        VALUES (%s, %s, %s, %s, %s, %s)''',
                         (action_type, category, description,
                          json.dumps(details) if details else None, impact, success))
                     conn.commit()
-                    conn.close()
                     return
                 except Exception as e:
+                    try:
+                        if conn:
+                            conn.rollback()
+                    except Exception:
+                        pass
                     if attempt < 4:
                         time.sleep(1.0 * (attempt + 1))
                         continue
                     print(f"⚠️ Could not log action: {e}")
                     return
+                finally:
+                    # Always release the connection back to the pool regardless of success/failure
+                    try:
+                        if conn:
+                            conn.close()
+                    except Exception:
+                        pass
         except Exception as e:
             print(f"⚠️ Could not log action: {e}")
-    
+
     def run_evolution_cycle(self) -> Dict:
         start_time = time.time()
         results = {
@@ -180,7 +193,7 @@ class EvolutionEngine:
             results, impact=results['total_improvements'] / 10.0)
         print(f"✅ Evolution cycle complete: {results['total_improvements']} improvements in {results['duration_seconds']:.1f}s")
         return results
-    
+
     def _phase_observe(self) -> Dict:
         results = {'items_gathered': 0, 'sources_checked': 0, 'new_sources': 0}
         print("  📡 Phase 1: Observing data sources...")
@@ -191,7 +204,7 @@ class EvolutionEngine:
         results['decisions'] = self._observe_decisions()
         results['sources_checked'] = len(self.api_sources)
         return results
-    
+
     def _observe_decisions(self) -> Dict:
         try:
             decisions_file = 'data/decisions.json'
@@ -207,7 +220,7 @@ class EvolutionEngine:
             return {'total': len(decisions), 'completed': len(completed), 'new_completed': len(new_completed)}
         except Exception as e:
             return {'total': 0, 'completed': 0, 'new_completed': 0, 'error': str(e)}
-    
+
     def _phase_learn(self) -> Dict:
         results = {'patterns_learned': 0, 'entities_added': 0, 'relationships': 0}
         print("  🎓 Phase 2: Learning from data...")
@@ -222,7 +235,7 @@ class EvolutionEngine:
             results['terminology'].get('new', 0) + results['decision_patterns'].get('patterns_learned', 0))
         self.learning_stats['items_learned'] += results['patterns_learned']
         return results
-    
+
     def _learn_from_decisions(self) -> Dict:
         results = {'patterns_learned': 0, 'categories_analyzed': 0, 'insights': []}
         try:
@@ -309,7 +322,7 @@ class EvolutionEngine:
             print(f"  ⚠️ Could not learn from decisions: {e}")
             results['error'] = str(e)
         return results
-    
+
     def _calculate_duration(self, start: str, end: str) -> float:
         try:
             start_dt = datetime.fromisoformat(start.replace('Z', '+00:00'))
@@ -317,7 +330,7 @@ class EvolutionEngine:
             return (end_dt - start_dt).total_seconds()
         except:
             return 0
-    
+
     def _phase_analyze(self) -> Dict:
         results = {'insights': [], 'recommendations': [], 'ai_used': False}
         print("  🔍 Phase 3: Analyzing with AI...")
@@ -330,7 +343,7 @@ class EvolutionEngine:
         else:
             results['insights'] = self._generate_rule_based_insights()
         return results
-    
+
     def _analyze_decisions_with_ai(self) -> List[Dict]:
         insights = []
         if not self.claude:
@@ -352,7 +365,7 @@ Success Rates by Technology: {json.dumps(tech_stats, indent=2)}
 Effort Estimation Accuracy: {json.dumps(effort_acc, indent=2)}
 Format as JSON: [{{"insight": "...", "category": "...", "action": "..."}}]"""
             response = self.claude.messages.create(
-                model="claude-haiku-4-5-20251001", max_tokens=600,
+                model="claude-sonnet-4-20250514", max_tokens=600,
                 messages=[{"role": "user", "content": prompt}])
             content = response.content[0].text
             json_match = re.search(r'\[.*\]', content, re.DOTALL)
@@ -368,7 +381,7 @@ Format as JSON: [{{"insight": "...", "category": "...", "action": "..."}}]"""
             print(f"    ⚠️ Could not analyze decisions with AI: {e}")
             insights = [{'insight': f'Analysis pending: {str(e)[:50]}', 'category': 'system', 'action': 'retry'}]
         return insights
-    
+
     def _phase_improve(self) -> Dict:
         results = {'improvements': 0, 'fixes': 0, 'enhancements': 0}
         print("  🔧 Phase 4: Making improvements...")
@@ -385,7 +398,7 @@ Format as JSON: [{{"insight": "...", "category": "...", "action": "..."}}]"""
         self.learning_stats['improvements_made'] += results['improvements']
         self.learning_stats['quality_fixes'] += results['fixes']
         return results
-    
+
     def _phase_validate(self) -> Dict:
         results = {'health_score': 0, 'issues': [], 'validations': 0}
         print("  ✓ Phase 5: Validating system health...")
@@ -396,7 +409,7 @@ Format as JSON: [{{"insight": "...", "category": "...", "action": "..."}}]"""
                   results['coverage'].get('score', 0)]
         results['health_score'] = sum(scores) / len(scores) if scores else 0
         return results
-    
+
     def _gather_facility_stats(self) -> Dict:
         try:
             conn = get_db(self.db_path)
@@ -416,7 +429,7 @@ Format as JSON: [{{"insight": "...", "category": "...", "action": "..."}}]"""
                     'countries': countries, 'updated_last_week': recent}
         except Exception as e:
             return {'error': str(e)}
-    
+
     def _gather_news_stats(self) -> Dict:
         try:
             conn = get_db(self.db_path)
@@ -433,7 +446,7 @@ Format as JSON: [{{"insight": "...", "category": "...", "action": "..."}}]"""
             return {'total_articles': total, 'today': today, 'unique_sources': sources}
         except Exception as e:
             return {'error': str(e)}
-    
+
     def _check_api_health(self) -> List[Dict]:
         health_results = []
         for api in self.api_sources[:5]:
@@ -446,7 +459,7 @@ Format as JSON: [{{"insight": "...", "category": "...", "action": "..."}}]"""
             except:
                 health_results.append({'name': api['name'], 'status': 'unreachable', 'response_time': None})
         return health_results
-    
+
     def _gather_market_signals(self) -> Dict:
         signals = {'deal_mentions': 0, 'expansion_mentions': 0, 'hot_markets': []}
         try:
@@ -470,7 +483,7 @@ Format as JSON: [{{"insight": "...", "category": "...", "action": "..."}}]"""
         except Exception as e:
             signals['error'] = str(e)
         return signals
-    
+
     def _learn_operators(self) -> Dict:
         results = {'total': 0, 'new': 0}
         try:
@@ -503,7 +516,7 @@ Format as JSON: [{{"insight": "...", "category": "...", "action": "..."}}]"""
         except Exception as e:
             results['error'] = str(e)
         return results
-    
+
     def _learn_markets(self) -> Dict:
         results = {'total': 0, 'new': 0}
         try:
@@ -536,7 +549,7 @@ Format as JSON: [{{"insight": "...", "category": "...", "action": "..."}}]"""
         except Exception as e:
             results['error'] = str(e)
         return results
-    
+
     def _learn_industry_terms(self) -> Dict:
         results = {'total': 0, 'new': 0}
         industry_terms = {
@@ -591,7 +604,7 @@ Format as JSON: [{{"insight": "...", "category": "...", "action": "..."}}]"""
         except Exception as e:
             results['error'] = str(e)
         return results
-    
+
     def _learn_deal_patterns(self) -> Dict:
         results = {'patterns': 0}
         deal_keywords = ['acquire', 'acquisition', 'merger', 'buy', 'purchase', 'invest',
@@ -602,7 +615,7 @@ Format as JSON: [{{"insight": "...", "category": "...", "action": "..."}}]"""
             self._learn_entity('deal_keywords', keyword, 'predefined', 0.9)
             results['patterns'] += 1
         return results
-    
+
     def _learn_capacity_patterns(self) -> Dict:
         results = {'patterns': 0}
         try:
@@ -620,7 +633,7 @@ Format as JSON: [{{"insight": "...", "category": "...", "action": "..."}}]"""
         except Exception as e:
             results['error'] = str(e)
         return results
-    
+
     def _learn_entity(self, entity_type: str, value: str, source: str, confidence: float = 0.5) -> bool:
         try:
             conn = get_db(self.db_path)
@@ -638,7 +651,7 @@ Format as JSON: [{{"insight": "...", "category": "...", "action": "..."}}]"""
             return True
         except Exception as e:
             return False
-    
+
     def _generate_ai_insights(self) -> List[Dict]:
         insights = []
         if not self.claude:
@@ -655,7 +668,7 @@ Format as JSON: [{{"insight": "...", "category": "...", "action": "..."}}]"""
 Recent Headlines: {chr(10).join(recent_news[:15])}
 Top Operators: {', '.join(top_operators[:5])}
 Format as JSON: [{{"insight": "...", "category": "..."}}]"""
-            response = self.claude.messages.create(model="claude-haiku-4-5-20251001", max_tokens=500,
+            response = self.claude.messages.create(model="claude-sonnet-4-20250514", max_tokens=500,
                 messages=[{"role": "user", "content": prompt}])
             content = response.content[0].text
             json_match = re.search(r'\[.*\]', content, re.DOTALL)
@@ -664,7 +677,7 @@ Format as JSON: [{{"insight": "...", "category": "..."}}]"""
         except Exception as e:
             insights = [{'insight': f'Analysis pending: {str(e)[:50]}', 'category': 'system'}]
         return insights
-    
+
     def _generate_ai_recommendations(self) -> List[str]:
         if not self.claude:
             return []
@@ -675,7 +688,7 @@ Format as JSON: [{{"insight": "...", "category": "..."}}]"""
 Current Stats: {stats.get('total_facilities', 0)} facilities, {stats.get('operators', 0)} operators,
 {news_stats.get('total_articles', 0)} news articles, {news_stats.get('unique_sources', 0)} sources.
 Return as JSON: [{{"improvement": "...", "priority": "high/medium/low"}}]"""
-            response = self.claude.messages.create(model="claude-haiku-4-5-20251001", max_tokens=500,
+            response = self.claude.messages.create(model="claude-sonnet-4-20250514", max_tokens=500,
                 messages=[{"role": "user", "content": prompt}])
             content = response.content[0].text
             json_match = re.search(r'\[.*\]', content, re.DOTALL)
@@ -685,7 +698,7 @@ Return as JSON: [{{"improvement": "...", "priority": "high/medium/low"}}]"""
         except:
             pass
         return []
-    
+
     def _generate_content_ideas(self) -> List[Dict]:
         ideas = []
         try:
@@ -700,7 +713,7 @@ Return as JSON: [{{"improvement": "...", "priority": "high/medium/low"}}]"""
         except:
             pass
         return ideas
-    
+
     def _generate_rule_based_insights(self) -> List[Dict]:
         insights = []
         stats = self._gather_facility_stats()
@@ -712,7 +725,7 @@ Return as JSON: [{{"improvement": "...", "priority": "high/medium/low"}}]"""
         if signals.get('hot_markets'):
             insights.append({'insight': f"Hot markets this month: {', '.join(signals['hot_markets'][:3])}", 'category': 'markets'})
         return insights
-    
+
     def _run_quality_assurance(self) -> Dict:
         results = {'issues_found': 0, 'auto_fixed': 0, 'pending_review': 0}
         try:
@@ -735,21 +748,21 @@ Return as JSON: [{{"improvement": "...", "priority": "high/medium/low"}}]"""
         except Exception as e:
             results['error'] = str(e)
         return results
-    
+
     def _log_quality_issue(self, issue_type, entity_type, entity_id, description, auto_fixable=False):
         try:
             conn = get_db(self.db_path)
             cursor = conn.cursor()
-            cursor.execute('INSERT INTO quality_issues (issue_type, entity_type, entity_id, description, auto_fixable) VALUES (%s, %s, %s, %s, %s) ON CONFLICT (issue_type) DO UPDATE SET entity_type = EXCLUDED.entity_type, entity_id = EXCLUDED.entity_id, description = EXCLUDED.description, auto_fixable = EXCLUDED.auto_fixable',
+            cursor.execute('INSERT INTO quality_issues (issue_type, entity_type, entity_id, description, auto_fixable) VALUES (%s, %s, %s, %s, %s)',
                 (issue_type, entity_type, entity_id, description, auto_fixable))
             conn.commit()
             conn.close()
         except:
             pass
-    
+
     def _enrich_facility_data(self) -> Dict:
         return {'enhanced': 0, 'checked': 0}
-    
+
     def _discover_new_sources(self) -> Dict:
         results = {'checked': 0, 'added': 0}
         potential_apis = [
@@ -766,7 +779,7 @@ Return as JSON: [{{"improvement": "...", "priority": "high/medium/low"}}]"""
             except:
                 pass
         return results
-    
+
     def _register_api_source(self, name, url, api_type):
         try:
             conn = get_db(self.db_path)
@@ -777,7 +790,7 @@ Return as JSON: [{{"improvement": "...", "priority": "high/medium/low"}}]"""
             conn.close()
         except:
             pass
-    
+
     def _validate_data_quality(self) -> Dict:
         try:
             conn = get_db(self.db_path)
@@ -792,12 +805,12 @@ Return as JSON: [{{"improvement": "...", "priority": "high/medium/low"}}]"""
                     'completeness': round(completeness, 1), 'score': completeness / 100}
         except Exception as e:
             return {'score': 0, 'error': str(e)}
-    
+
     def _validate_api_health(self) -> Dict:
         healthy = sum(1 for api in self.api_sources if api.get('enabled', False))
         total = len(self.api_sources)
         return {'healthy_apis': healthy, 'total_apis': total, 'score': healthy / total if total > 0 else 0}
-    
+
     def _validate_coverage(self) -> Dict:
         try:
             conn = get_db(self.db_path)
@@ -811,7 +824,7 @@ Return as JSON: [{{"improvement": "...", "priority": "high/medium/low"}}]"""
             return {'countries': countries, 'cities': cities, 'score': coverage_score}
         except Exception as e:
             return {'score': 0, 'error': str(e)}
-    
+
     def teach_industry_knowledge(self, topic: str) -> Dict:
         if not self.claude:
             return {'error': 'Claude AI not available', 'topic': topic}
@@ -819,7 +832,7 @@ Return as JSON: [{{"improvement": "...", "priority": "high/medium/low"}}]"""
             prompt = f"""You are a data center industry expert. Teach me about: "{topic}"
 Provide: definition, key players, market trends, important metrics, related technologies.
 Format as JSON: {{"topic": "{topic}", "definition": "...", "key_players": [], "trends": [], "metrics": {{}}, "related_topics": []}}"""
-            response = self.claude.messages.create(model="claude-haiku-4-5-20251001", max_tokens=1000,
+            response = self.claude.messages.create(model="claude-sonnet-4-20250514", max_tokens=1000,
                 messages=[{"role": "user", "content": prompt}])
             content = response.content[0].text
             json_match = re.search(r'\{.*\}', content, re.DOTALL)
@@ -833,7 +846,7 @@ Format as JSON: {{"topic": "{topic}", "definition": "...", "key_players": [], "t
         except Exception as e:
             return {'error': str(e), 'topic': topic}
         return {'topic': topic, 'status': 'learning_failed'}
-    
+
     def get_learning_status(self) -> Dict:
         try:
             conn = get_db(self.db_path)
@@ -859,7 +872,7 @@ Format as JSON: {{"topic": "{topic}", "definition": "...", "key_players": [], "t
             }
         except Exception as e:
             return {'error': str(e), 'stats': self.learning_stats}
-    
+
     def suggest_next_improvements(self) -> List[Dict]:
         suggestions = []
         status = self.get_learning_status()

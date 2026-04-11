@@ -82,249 +82,249 @@ SAMPLE_DEALS = [
     # =========================================================================
     # 2025 - RECORD YEAR
     # =========================================================================
-    
+
     # === MEGA AI INFRASTRUCTURE DEALS ===
-    
+
     # Stargate Project
     {"id": "2025-AI-001", "date": "2025-01-21", "year": 2025, "buyer": "Stargate (OpenAI/SoftBank/Oracle/MGX)", "seller": "US AI Infrastructure", "value": 500000, "mw": 10000, "type": "ai_infra", "region": "North America", "market": "Multiple US", "status": "Announced", "notes": "4-year commitment, 10GW"},
-    
+
     # OpenAI + Oracle $300B
     {"id": "2025-AI-002", "date": "2025-07-15", "year": 2025, "buyer": "OpenAI", "seller": "Oracle Cloud", "value": 300000, "mw": 4500, "type": "ai_contract", "region": "North America", "market": "Multiple US", "status": "Signed", "notes": "5-year cloud contract"},
-    
+
     # Nvidia investment in OpenAI
     {"id": "2025-AI-003", "date": "2025-09-01", "year": 2025, "buyer": "Nvidia", "seller": "OpenAI", "value": 100000, "mw": 0, "type": "ai_infra", "region": "North America", "market": "Multiple", "status": "Announced", "notes": "Investment for 10GW Nvidia DCs"},
-    
+
     # OpenAI + AWS
     {"id": "2025-AI-004", "date": "2025-11-03", "year": 2025, "buyer": "OpenAI", "seller": "Amazon AWS", "value": 38000, "mw": 0, "type": "ai_contract", "region": "North America", "market": "Multiple", "status": "Signed", "notes": "7-year cloud contract"},
-    
+
     # OpenAI + CoreWeave (total)
     {"id": "2025-AI-005", "date": "2025-09-25", "year": 2025, "buyer": "OpenAI", "seller": "CoreWeave", "value": 22400, "mw": 0, "type": "ai_contract", "region": "North America", "market": "Multiple", "status": "Signed", "notes": "$11.9B + $4B + $6.5B expansions"},
-    
+
     # CoreWeave + Meta
     {"id": "2025-AI-006", "date": "2025-10-01", "year": 2025, "buyer": "Meta", "seller": "CoreWeave", "value": 14200, "mw": 0, "type": "ai_contract", "region": "North America", "market": "Multiple", "status": "Signed", "notes": "Through 2031"},
-    
+
     # === HYPERSCALER CAPEX 2025 ===
-    
+
     {"id": "2025-CAP-001", "date": "2025-01-01", "year": 2025, "buyer": "Amazon AWS", "seller": "Self-Build CapEx", "value": 100000, "mw": 5000, "type": "capex", "region": "Global", "market": "Multiple", "status": "Committed", "notes": "FY2025 AI infrastructure"},
     {"id": "2025-CAP-002", "date": "2025-01-01", "year": 2025, "buyer": "Microsoft Azure", "seller": "Self-Build CapEx", "value": 80000, "mw": 4000, "type": "capex", "region": "Global", "market": "Multiple", "status": "Committed", "notes": "FY2025 ending June 30"},
     {"id": "2025-CAP-003", "date": "2025-01-01", "year": 2025, "buyer": "Google Cloud", "seller": "Self-Build CapEx", "value": 75000, "mw": 3500, "type": "capex", "region": "Global", "market": "Multiple", "status": "Committed", "notes": "2025 infrastructure"},
     {"id": "2025-CAP-004", "date": "2025-01-01", "year": 2025, "buyer": "Meta", "seller": "Self-Build CapEx", "value": 65000, "mw": 3000, "type": "capex", "region": "Global", "market": "Multiple", "status": "Committed", "notes": "Raised from $60-64B to $64-72B"},
     {"id": "2025-CAP-005", "date": "2025-01-01", "year": 2025, "buyer": "Oracle", "seller": "Self-Build CapEx", "value": 25000, "mw": 1500, "type": "capex", "region": "Global", "market": "Multiple", "status": "Committed", "notes": "Stargate infrastructure"},
-    
+
     # === TRADITIONAL M&A 2025 ===
-    
+
     # Aligned - Largest DC deal ever
     {"id": "2025-MA-001", "date": "2025-10-16", "year": 2025, "buyer": "BlackRock GIP/MGX/Microsoft/Nvidia", "seller": "Aligned Data Centers", "value": 40000, "mw": 5000, "type": "ma", "region": "North America", "market": "Multiple US/LATAM", "status": "Pending", "notes": "Closes H1 2026"},
-    
+
     # SoftBank acquires DigitalBridge
     {"id": "2025-MA-002", "date": "2025-12-29", "year": 2025, "buyer": "SoftBank Group", "seller": "DigitalBridge Group", "value": 4000, "mw": 0, "type": "ma", "region": "Global", "market": "Multiple", "status": "Pending"},
-    
+
     # CoreWeave/Core Scientific (rejected)
     {"id": "2025-MA-003", "date": "2025-07-15", "year": 2025, "buyer": "CoreWeave", "seller": "Core Scientific", "value": 9000, "mw": 500, "type": "ma", "region": "North America", "market": "Multiple US", "status": "Rejected"},
-    
+
     # Centersquare acquisitions
     {"id": "2025-MA-004", "date": "2025-10-03", "year": 2025, "buyer": "Centersquare", "seller": "10 Data Centers", "value": 1000, "mw": 150, "type": "ma", "region": "North America", "market": "US/Canada", "status": "Closed"},
-    
+
     # Aligned equity raise
     {"id": "2025-EQ-001", "date": "2025-01-15", "year": 2025, "buyer": "Macquarie Funds", "seller": "Aligned Data Centers", "value": 5000, "mw": 0, "type": "equity", "region": "North America", "market": "Multiple", "status": "Closed"},
-    
+
     # Vantage APAC investment
     {"id": "2025-EQ-002", "date": "2025-06-01", "year": 2025, "buyer": "GIC/ADIA", "seller": "Vantage Data Centers APAC", "value": 1600, "mw": 300, "type": "equity", "region": "APAC", "market": "Malaysia/Japan", "status": "Closed"},
-    
+
     # Meta Louisiana financing
     {"id": "2025-DEBT-001", "date": "2025-06-01", "year": 2025, "buyer": "Meta/Blue Owl", "seller": "Louisiana DC Financing", "value": 27000, "mw": 2000, "type": "debt", "region": "North America", "market": "Louisiana", "status": "Closed"},
-    
+
     # Oracle debt for Stargate
     {"id": "2025-DEBT-002", "date": "2025-09-01", "year": 2025, "buyer": "Oracle", "seller": "Stargate Debt Financing", "value": 18000, "mw": 0, "type": "debt", "region": "North America", "market": "Multiple", "status": "Closed"},
-    
+
     # =========================================================================
     # 2024 - RECORD BREAKING M&A YEAR ($73B closed)
     # =========================================================================
-    
+
     # === HYPERSCALER CAPEX 2024 ===
-    
+
     {"id": "2024-CAP-001", "date": "2024-01-01", "year": 2024, "buyer": "Amazon AWS", "seller": "Self-Build CapEx", "value": 75000, "mw": 3500, "type": "capex", "region": "Global", "market": "Multiple", "status": "Spent"},
     {"id": "2024-CAP-002", "date": "2024-01-01", "year": 2024, "buyer": "Microsoft Azure", "seller": "Self-Build CapEx", "value": 55000, "mw": 2800, "type": "capex", "region": "Global", "market": "Multiple", "status": "Spent"},
     {"id": "2024-CAP-003", "date": "2024-01-01", "year": 2024, "buyer": "Google Cloud", "seller": "Self-Build CapEx", "value": 52000, "mw": 2500, "type": "capex", "region": "Global", "market": "Multiple", "status": "Spent"},
     {"id": "2024-CAP-004", "date": "2024-01-01", "year": 2024, "buyer": "Meta", "seller": "Self-Build CapEx", "value": 38000, "mw": 1800, "type": "capex", "region": "Global", "market": "Multiple", "status": "Spent"},
-    
+
     # === TRADITIONAL M&A 2024 ===
-    
+
     # AirTrunk - Second largest ever
     {"id": "2024-MA-001", "date": "2024-09-25", "year": 2024, "buyer": "Blackstone/CPPIB", "seller": "AirTrunk", "value": 16000, "mw": 1800, "type": "ma", "region": "APAC", "market": "Australia/Japan/Singapore", "status": "Closed"},
-    
+
     # Vantage mega equity round
     {"id": "2024-EQ-001", "date": "2024-06-13", "year": 2024, "buyer": "DigitalBridge/Silver Lake", "seller": "Vantage Data Centers", "value": 9200, "mw": 3000, "type": "equity", "region": "Global", "market": "North America/EMEA", "status": "Closed"},
-    
+
     # Blackstone/QTS Spain
     {"id": "2024-LAND-001", "date": "2024-10-15", "year": 2024, "buyer": "Blackstone/QTS", "seller": "Spain Development", "value": 8200, "mw": 1000, "type": "land", "region": "EMEA", "market": "Spain (Aragon)", "status": "Announced"},
-    
+
     # Digital Realty + Blackstone JV
     {"id": "2024-JV-001", "date": "2024-08-08", "year": 2024, "buyer": "Blackstone/Digital Realty JV", "seller": "Hyperscale Development", "value": 7000, "mw": 1000, "type": "jv", "region": "Global", "market": "Multiple", "status": "Closed"},
-    
+
     # ESR going private
     {"id": "2024-MA-002", "date": "2024-12-15", "year": 2024, "buyer": "Starwood/Sixth Street/QIA/Warburg", "seller": "ESR Group", "value": 7100, "mw": 575, "type": "ma", "region": "APAC", "market": "Multiple APAC", "status": "Pending"},
-    
+
     # Ares acquires Ada Infrastructure
     {"id": "2024-MA-003", "date": "2024-10-20", "year": 2024, "buyer": "Ares Management", "seller": "GLP Capital/Ada Infrastructure", "value": 3700, "mw": 1000, "type": "ma", "region": "Global", "market": "London/Tokyo/São Paulo", "status": "Closed"},
-    
+
     # Vantage EMEA additional
     {"id": "2024-EQ-002", "date": "2024-03-01", "year": 2024, "buyer": "Various Investors", "seller": "Vantage EMEA", "value": 3100, "mw": 400, "type": "equity", "region": "EMEA", "market": "Multiple EU", "status": "Closed"},
-    
+
     # BlackRock acquires GIP
     {"id": "2024-MA-004", "date": "2024-10-01", "year": 2024, "buyer": "BlackRock", "seller": "Global Infrastructure Partners", "value": 3000, "mw": 0, "type": "ma", "region": "Global", "market": "Multiple", "status": "Closed"},
-    
+
     # DigitalBridge acquires Yondr
     {"id": "2024-MA-005", "date": "2024-10-15", "year": 2024, "buyer": "DigitalBridge", "seller": "Yondr Group", "value": 2000, "mw": 878, "type": "ma", "region": "Global", "market": "Virginia/UK/Malaysia/Japan", "status": "Closed"},
-    
+
     # EdgeCore debt financing
     {"id": "2024-DEBT-001", "date": "2024-01-04", "year": 2024, "buyer": "EdgeCore Digital", "seller": "Debt Financing", "value": 1900, "mw": 500, "type": "debt", "region": "North America", "market": "Mesa, Arizona", "status": "Closed"},
-    
+
     # Vantage EMEA (AustralianSuper)
     {"id": "2024-EQ-003", "date": "2024-01-15", "year": 2024, "buyer": "AustralianSuper", "seller": "Vantage EMEA", "value": 1600, "mw": 500, "type": "equity", "region": "EMEA", "market": "Multiple EU", "status": "Closed"},
-    
+
     # HMC Capital/Global Switch Australia
     {"id": "2024-MA-006", "date": "2024-06-01", "year": 2024, "buyer": "HMC Capital", "seller": "Global Switch Australia", "value": 1400, "mw": 200, "type": "ma", "region": "APAC", "market": "Sydney", "status": "Closed"},
-    
+
     # KKR/Singtel STT GDC
     {"id": "2024-EQ-004", "date": "2024-04-15", "year": 2024, "buyer": "KKR/Singtel", "seller": "STT GDC", "value": 1300, "mw": 300, "type": "equity", "region": "APAC", "market": "Singapore/APAC", "status": "Closed"},
-    
+
     # Blue Owl acquires IPI
     {"id": "2024-MA-007", "date": "2024-10-01", "year": 2024, "buyer": "Blue Owl Capital", "seller": "IPI Partners", "value": 1000, "mw": 2200, "type": "ma", "region": "Global", "market": "Multiple", "status": "Closed"},
-    
+
     # Crusoe/Blue Owl JV
     {"id": "2024-JV-002", "date": "2024-08-01", "year": 2024, "buyer": "Blue Owl/Crusoe", "seller": "AI Data Center JV", "value": 3400, "mw": 400, "type": "jv", "region": "North America", "market": "Texas", "status": "Closed"},
-    
+
     # CoreWeave debt facility
     {"id": "2024-DEBT-002", "date": "2024-05-01", "year": 2024, "buyer": "Magnetar/Blackstone", "seller": "CoreWeave", "value": 2300, "mw": 0, "type": "debt", "region": "North America", "market": "Multiple", "status": "Closed"},
-    
+
     # =========================================================================
     # 2023 - Slower Year ($26B traditional M&A)
     # =========================================================================
-    
+
     # === HYPERSCALER CAPEX 2023 ===
-    
+
     {"id": "2023-CAP-001", "date": "2023-01-01", "year": 2023, "buyer": "Amazon AWS", "seller": "Self-Build CapEx", "value": 50000, "mw": 2000, "type": "capex", "region": "Global", "market": "Multiple", "status": "Spent"},
     {"id": "2023-CAP-002", "date": "2023-01-01", "year": 2023, "buyer": "Microsoft Azure", "seller": "Self-Build CapEx", "value": 32000, "mw": 1500, "type": "capex", "region": "Global", "market": "Multiple", "status": "Spent"},
     {"id": "2023-CAP-003", "date": "2023-01-01", "year": 2023, "buyer": "Google Cloud", "seller": "Self-Build CapEx", "value": 32000, "mw": 1400, "type": "capex", "region": "Global", "market": "Multiple", "status": "Spent"},
     {"id": "2023-CAP-004", "date": "2023-01-01", "year": 2023, "buyer": "Meta", "seller": "Self-Build CapEx", "value": 28000, "mw": 1200, "type": "capex", "region": "Global", "market": "Multiple", "status": "Spent"},
-    
+
     # === TRADITIONAL M&A 2023 ===
-    
+
     # ChinData taken private
     {"id": "2023-MA-001", "date": "2023-09-15", "year": 2023, "buyer": "Bain Capital", "seller": "ChinData Group", "value": 3160, "mw": 500, "type": "ma", "region": "APAC", "market": "China", "status": "Closed"},
-    
+
     # Brookfield acquires Data4
     {"id": "2023-MA-002", "date": "2023-04-20", "year": 2023, "buyer": "Brookfield", "seller": "Data4", "value": 2000, "mw": 350, "type": "ma", "region": "EMEA", "market": "France/Italy/Spain", "status": "Closed"},
-    
+
     # Vantage EMEA - AustralianSuper initial
     {"id": "2023-EQ-001", "date": "2023-09-15", "year": 2023, "buyer": "AustralianSuper", "seller": "Vantage EMEA Stake", "value": 1600, "mw": 300, "type": "equity", "region": "EMEA", "market": "Multiple EU", "status": "Closed"},
-    
+
     # DataBank recapitalization
     {"id": "2023-EQ-002", "date": "2023-03-01", "year": 2023, "buyer": "Swiss Life/EDF/Northleaf/Ardian", "seller": "DataBank (35% stake)", "value": 1500, "mw": 165, "type": "equity", "region": "North America", "market": "Multiple US", "status": "Closed"},
-    
+
     # GIC/Digital Realty JV
     {"id": "2023-JV-001", "date": "2023-05-01", "year": 2023, "buyer": "GIC", "seller": "Digital Realty JV Stake", "value": 1400, "mw": 200, "type": "jv", "region": "APAC", "market": "Japan/Korea", "status": "Closed"},
-    
+
     # NTT Global expansion
     {"id": "2023-MA-003", "date": "2023-06-15", "year": 2023, "buyer": "NTT Ltd", "seller": "Various DC Assets", "value": 1200, "mw": 200, "type": "ma", "region": "Global", "market": "Multiple", "status": "Closed"},
-    
+
     # Cyxtera bankruptcy/Brookfield
     {"id": "2023-MA-004", "date": "2023-11-15", "year": 2023, "buyer": "Brookfield", "seller": "Cyxtera Technologies", "value": 775, "mw": 180, "type": "ma", "region": "North America", "market": "Multiple", "status": "Closed"},
-    
+
     # Equinix Chile
     {"id": "2023-MA-005", "date": "2023-08-01", "year": 2023, "buyer": "Equinix", "seller": "Entel Data Centers", "value": 735, "mw": 85, "type": "ma", "region": "LATAM", "market": "Chile", "status": "Closed"},
-    
+
     # =========================================================================
     # 2022 - Peak M&A Year ($48-52B)
     # =========================================================================
-    
+
     # === HYPERSCALER CAPEX 2022 ===
-    
+
     {"id": "2022-CAP-001", "date": "2022-01-01", "year": 2022, "buyer": "Amazon AWS", "seller": "Self-Build CapEx", "value": 40000, "mw": 1800, "type": "capex", "region": "Global", "market": "Multiple", "status": "Spent"},
     {"id": "2022-CAP-002", "date": "2022-01-01", "year": 2022, "buyer": "Microsoft Azure", "seller": "Self-Build CapEx", "value": 25000, "mw": 1200, "type": "capex", "region": "Global", "market": "Multiple", "status": "Spent"},
     {"id": "2022-CAP-003", "date": "2022-01-01", "year": 2022, "buyer": "Google Cloud", "seller": "Self-Build CapEx", "value": 32000, "mw": 1400, "type": "capex", "region": "Global", "market": "Multiple", "status": "Spent"},
     {"id": "2022-CAP-004", "date": "2022-01-01", "year": 2022, "buyer": "Meta", "seller": "Self-Build CapEx", "value": 32000, "mw": 1400, "type": "capex", "region": "Global", "market": "Multiple", "status": "Spent"},
-    
+
     # === TRADITIONAL M&A 2022 ===
-    
+
     # CyrusOne - Closed
     {"id": "2022-MA-001", "date": "2022-03-25", "year": 2022, "buyer": "KKR/Global Infrastructure Partners", "seller": "CyrusOne", "value": 15000, "mw": 1400, "type": "ma", "region": "North America", "market": "Multiple US/EMEA", "status": "Closed"},
-    
+
     # Switch
     {"id": "2022-MA-002", "date": "2022-05-11", "year": 2022, "buyer": "DigitalBridge/IFM Investors", "seller": "Switch Inc", "value": 11000, "mw": 1200, "type": "ma", "region": "North America", "market": "Las Vegas/Multiple", "status": "Closed"},
-    
+
     # Stonepeak/American Tower DC
     {"id": "2022-EQ-001", "date": "2022-07-15", "year": 2022, "buyer": "Stonepeak", "seller": "American Tower DC Business (29%)", "value": 2500, "mw": 200, "type": "equity", "region": "North America", "market": "Multiple US", "status": "Closed"},
-    
+
     # Lumen EMEA to Colt
     {"id": "2022-MA-003", "date": "2022-11-01", "year": 2022, "buyer": "Colt Technology Services", "seller": "Lumen EMEA", "value": 1800, "mw": 150, "type": "ma", "region": "EMEA", "market": "Multiple EU", "status": "Closed"},
-    
+
     # DataBank recap
     {"id": "2022-EQ-002", "date": "2022-06-01", "year": 2022, "buyer": "DigitalBridge Recapitalization", "seller": "DataBank", "value": 1500, "mw": 155, "type": "equity", "region": "North America", "market": "Multiple US", "status": "Closed"},
-    
+
     # =========================================================================
     # 2021 - Mega Deal Year ($50B)
     # =========================================================================
-    
+
     # === HYPERSCALER CAPEX 2021 ===
-    
+
     {"id": "2021-CAP-001", "date": "2021-01-01", "year": 2021, "buyer": "Amazon AWS", "seller": "Self-Build CapEx", "value": 35000, "mw": 1500, "type": "capex", "region": "Global", "market": "Multiple", "status": "Spent"},
     {"id": "2021-CAP-002", "date": "2021-01-01", "year": 2021, "buyer": "Microsoft Azure", "seller": "Self-Build CapEx", "value": 20000, "mw": 900, "type": "capex", "region": "Global", "market": "Multiple", "status": "Spent"},
     {"id": "2021-CAP-003", "date": "2021-01-01", "year": 2021, "buyer": "Google Cloud", "seller": "Self-Build CapEx", "value": 25000, "mw": 1100, "type": "capex", "region": "Global", "market": "Multiple", "status": "Spent"},
     {"id": "2021-CAP-004", "date": "2021-01-01", "year": 2021, "buyer": "Meta", "seller": "Self-Build CapEx", "value": 19000, "mw": 850, "type": "capex", "region": "Global", "market": "Multiple", "status": "Spent"},
-    
+
     # === TRADITIONAL M&A 2021 ===
-    
+
     # CyrusOne - Announced
     {"id": "2021-MA-001", "date": "2021-11-15", "year": 2021, "buyer": "KKR/Global Infrastructure Partners", "seller": "CyrusOne", "value": 15000, "mw": 1400, "type": "ma", "region": "North America", "market": "Multiple US/EMEA", "status": "Announced"},
-    
+
     # CoreSite
     {"id": "2021-MA-002", "date": "2021-11-15", "year": 2021, "buyer": "American Tower Corporation", "seller": "CoreSite Realty", "value": 10100, "mw": 450, "type": "ma", "region": "North America", "market": "Silicon Valley/Multiple", "status": "Closed"},
-    
+
     # QTS Realty Trust
     {"id": "2021-MA-003", "date": "2021-10-18", "year": 2021, "buyer": "Blackstone Infrastructure", "seller": "QTS Realty Trust", "value": 10000, "mw": 850, "type": "ma", "region": "North America", "market": "Multiple US", "status": "Closed"},
-    
+
     # Stonepeak/Cologix
     {"id": "2021-MA-004", "date": "2021-07-01", "year": 2021, "buyer": "Stonepeak", "seller": "Cologix", "value": 3000, "mw": 280, "type": "ma", "region": "North America", "market": "US/Canada", "status": "Closed"},
-    
+
     # DigitalBridge/Vantage SDC
     {"id": "2021-MA-005", "date": "2021-05-15", "year": 2021, "buyer": "DigitalBridge", "seller": "Vantage SDC", "value": 3500, "mw": 420, "type": "ma", "region": "North America", "market": "Multiple US", "status": "Closed"},
-    
+
     # GIC/Digital Edge JV
     {"id": "2021-JV-001", "date": "2021-06-01", "year": 2021, "buyer": "GIC", "seller": "Digital Edge JV", "value": 1200, "mw": 150, "type": "jv", "region": "APAC", "market": "Multiple Asia", "status": "Closed"},
-    
+
     # Equinix/Bell Canada
     {"id": "2021-MA-006", "date": "2021-10-01", "year": 2021, "buyer": "Equinix", "seller": "Bell Canada DC Portfolio", "value": 750, "mw": 65, "type": "ma", "region": "North America", "market": "Canada", "status": "Closed"},
-    
+
     # =========================================================================
     # 2020 - Pre-AI Boom ($31B traditional)
     # =========================================================================
-    
+
     # === HYPERSCALER CAPEX 2020 ===
-    
+
     {"id": "2020-CAP-001", "date": "2020-01-01", "year": 2020, "buyer": "Amazon AWS", "seller": "Self-Build CapEx", "value": 28000, "mw": 1200, "type": "capex", "region": "Global", "market": "Multiple", "status": "Spent"},
     {"id": "2020-CAP-002", "date": "2020-01-01", "year": 2020, "buyer": "Microsoft Azure", "seller": "Self-Build CapEx", "value": 18000, "mw": 800, "type": "capex", "region": "Global", "market": "Multiple", "status": "Spent"},
     {"id": "2020-CAP-003", "date": "2020-01-01", "year": 2020, "buyer": "Google Cloud", "seller": "Self-Build CapEx", "value": 22000, "mw": 950, "type": "capex", "region": "Global", "market": "Multiple", "status": "Spent"},
     {"id": "2020-CAP-004", "date": "2020-01-01", "year": 2020, "buyer": "Meta", "seller": "Self-Build CapEx", "value": 15000, "mw": 650, "type": "capex", "region": "Global", "market": "Multiple", "status": "Spent"},
-    
+
     # === TRADITIONAL M&A 2020 ===
-    
+
     # Interxion - Closed
     {"id": "2020-MA-001", "date": "2020-03-04", "year": 2020, "buyer": "Digital Realty", "seller": "Interxion", "value": 8400, "mw": 520, "type": "ma", "region": "EMEA", "market": "Multiple EU", "status": "Closed"},
-    
+
     # Vertiv SPAC
     {"id": "2020-MA-002", "date": "2020-02-07", "year": 2020, "buyer": "GS Acquisition Holdings (SPAC)", "seller": "Vertiv Holdings", "value": 5300, "mw": 0, "type": "ma", "region": "Global", "market": "Equipment", "status": "Closed"},
-    
+
     # GIC/Equinix Asia JV
     {"id": "2020-JV-001", "date": "2020-10-15", "year": 2020, "buyer": "GIC", "seller": "Equinix Asia JV", "value": 3000, "mw": 350, "type": "jv", "region": "APAC", "market": "Multiple Asia", "status": "Closed"},
-    
+
     # DigitalBridge/Vantage NA
     {"id": "2020-MA-003", "date": "2020-08-01", "year": 2020, "buyer": "DigitalBridge", "seller": "Vantage NA", "value": 2800, "mw": 350, "type": "ma", "region": "North America", "market": "Multiple US", "status": "Closed"},
-    
+
     # Stonepeak/Cologix equity
     {"id": "2020-EQ-001", "date": "2020-09-15", "year": 2020, "buyer": "Stonepeak", "seller": "Cologix", "value": 2500, "mw": 240, "type": "equity", "region": "North America", "market": "Multiple", "status": "Closed"},
-    
+
     # Macquarie/AirTrunk initial
     {"id": "2020-EQ-002", "date": "2020-06-01", "year": 2020, "buyer": "Macquarie Asset Management", "seller": "AirTrunk (Majority)", "value": 2000, "mw": 500, "type": "equity", "region": "APAC", "market": "Australia/Asia", "status": "Closed"},
 ]
@@ -389,7 +389,7 @@ DEALS_CACHE_DURATION = 300  # 5 minutes cache
 def get_deals():
     """Get data center deals/transactions - comprehensive database"""
     import time
-    
+
     limit = request.args.get('limit', 200, type=int)
     year = request.args.get('year')
     region = request.args.get('region')
@@ -401,7 +401,7 @@ def get_deals():
     max_value = request.args.get('max_value', 0, type=float)
     date_from = request.args.get('from', '').strip()
     date_to = request.args.get('to', '').strip()
-    
+
     cache_key = f"deals_{year}_{region}_{deal_type}_{category}_{buyer_filter}_{seller_filter}_{min_value}_{max_value}_{date_from}_{date_to}"
     cached_data = DEALS_CACHE.get(cache_key)
     if cached_data is not None:
@@ -415,10 +415,10 @@ def get_deals():
             'total_value': sum((d.get('value') or 0) for d in cached_data),
             'cached': True
         })
-    
+
     # Start with sample deals
     deals = SAMPLE_DEALS.copy()
-    
+
     pg_url = os.environ.get('DATABASE_URL', '')
     if pg_url:
         try:
@@ -454,7 +454,7 @@ def get_deals():
             logger.warning(f"Deals PG query failed, trying SQLite: {e}")
     # SQLite fallback removed — Neon PG is source of truth
 
-    
+
     # Filter by category (group deal types)
     if category:
         if category == 'traditional':
@@ -466,29 +466,29 @@ def get_deals():
         elif category == 'ai':
             # AI infrastructure contracts
             deals = [d for d in deals if d.get('type') in ['ai_contract', 'ai_infra']]
-    
+
     # Filter by year
     if year:
         deals = [d for d in deals if str(d.get('year', '')) == str(year) or d.get('date', '').startswith(str(year))]
-    
+
     # Filter by region
     if region and region != 'All Regions':
         deals = [d for d in deals if d.get('region') == region]
-    
+
     # Filter by type
     if deal_type and deal_type != 'All Types':
         deals = [d for d in deals if d.get('type') == deal_type]
-    
+
     # Filter by buyer (case-insensitive partial match)
     if buyer_filter:
         buyer_lower = buyer_filter.lower()
         deals = [d for d in deals if buyer_lower in (d.get('buyer') or '').lower()]
-    
+
     # Filter by seller (case-insensitive partial match)
     if seller_filter:
         seller_lower = seller_filter.lower()
         deals = [d for d in deals if seller_lower in (d.get('seller') or '').lower()]
-    
+
     # Filter by value range (values stored in millions)
     if min_value:
         # MCP sends USD, DB stores millions — normalize: if min_value > 1M assume raw USD
@@ -497,16 +497,16 @@ def get_deals():
     if max_value:
         max_m = max_value / 1_000_000 if max_value > 1_000_000 else max_value
         deals = [d for d in deals if (d.get('value') or 0) <= max_m]
-    
+
     # Filter by date range
     if date_from:
         deals = [d for d in deals if (d.get('date') or '') >= date_from]
     if date_to:
         deals = [d for d in deals if (d.get('date') or '') <= date_to]
-    
+
     # Sort by date descending
     deals.sort(key=lambda x: x.get('date') or '', reverse=True)
-    
+
     # Calculate stats by type
     stats_by_type = {}
     for d in deals:
@@ -515,7 +515,7 @@ def get_deals():
             stats_by_type[dtype] = {'count': 0, 'value': 0}
         stats_by_type[dtype]['count'] += 1
         stats_by_type[dtype]['value'] += (d.get('value') or 0)
-    
+
     # Calculate stats by year
     stats_by_year = {}
     for d in deals:
@@ -524,12 +524,12 @@ def get_deals():
             stats_by_year[yr] = {'count': 0, 'value': 0}
         stats_by_year[yr]['count'] += 1
         stats_by_year[yr]['value'] += (d.get('value') or 0)
-    
+
     DEALS_CACHE.set(cache_key, deals)
-    
+
     # Apply limit
     limited_deals = deals[:limit]
-    
+
     return jsonify({
         'success': True,
         'transactions': limited_deals,
@@ -554,14 +554,14 @@ def get_deals():
 @deals_bp.route('/api/v1/transactions', methods=['GET'])
 def get_transactions():
     """Transactions with freemium tier.
-    
+
     Unauthenticated: 3 most recent deals, basic fields only (buyer, seller, market).
     Authenticated Pro/Enterprise: full deal data as before.
     AI Wars verification keys also get Pro-tier access.
     """
     api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
     is_authenticated = bool(api_key)
-    
+
     # AI Wars verification keys get Pro-tier access
     if not is_authenticated:
         ai_wars_info = _get_ai_wars_key_info()
@@ -652,15 +652,14 @@ def get_pipeline():
     company_filter = request.args.get('company')
     quarter_filter = request.args.get('quarter')  # e.g. '2026-Q1'
     limit = request.args.get('limit', 200, type=int)
-    
+
     pipeline = PIPELINE_DATA.copy()
 
-    conn = None
     try:
         conn = _get_db()
         c = conn.cursor()
         c.execute("""
-            SELECT operator, market, capacity_mw, phase, status, announcement_date,
+            SELECT operator, market, capacity_mw, phase, status, announcement_date, 
                    completion_date, notes, confidence_label
             FROM capacity_pipeline
             WHERE operator != 'Unknown' AND capacity_mw > 0 AND confidence_label IN ('high', 'medium')
@@ -691,31 +690,26 @@ def get_pipeline():
                 'preleased': False,
                 'type': 'wholesale'
             })
+        conn.close()
     except Exception as e:
         logger.debug(f"capacity_pipeline query: {e}")
-    finally:
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
-    
+
     # Apply filters
     if status_filter and status_filter != 'all':
         pipeline = [p for p in pipeline if p.get('status') == status_filter]
-    
+
     if market_filter:
         pipeline = [p for p in pipeline if market_filter.lower() in p.get('market', '').lower()]
-    
+
     if company_filter:
         pipeline = [p for p in pipeline if company_filter.lower() in p.get('company', '').lower()]
-    
+
     if quarter_filter:
         pipeline = [p for p in pipeline if p.get('delivery') == quarter_filter]
-    
+
     # Sort by delivery date
     pipeline.sort(key=lambda x: x.get('delivery', 'Z'))
-    
+
     # Calculate stats
     total_mw = sum((p.get('capacity') or 0) for p in pipeline)
     total_investment = sum((p.get('investment') or 0) for p in pipeline)
@@ -723,7 +717,7 @@ def get_pipeline():
     preleased_pct = round((preleased_count / len(pipeline) * 100)) if pipeline else 0
     construction_count = len([p for p in pipeline if p.get('status') == 'construction'])
     announced_count = len([p for p in pipeline if p.get('status') == 'announced'])
-    
+
     # Group by quarter for summary
     quarters = {}
     for p in pipeline:
@@ -734,10 +728,10 @@ def get_pipeline():
         quarters[q]['projects'] += 1
         if p.get('preleased'):
             quarters[q]['preleased'] += 1
-    
+
     # Limit results
     limited_pipeline = pipeline[:limit]
-    
+
     return jsonify({
         'success': True,
         'data': limited_pipeline,
@@ -760,79 +754,34 @@ def get_pipeline():
 
 
 @deals_bp.route('/api/v1/gas-pipelines', methods=['GET'])
-@_lazy_require_plan("free")
+@_lazy_require_plan('enterprise')
+@_lazy_protect_data
 def get_gas_pipelines():
-    """Get natural gas pipeline infrastructure data - spatial fix v3
-    
-    Queries gas_pipelines table (32K+ rows) with spatial bounding box.
-    Sources: EIA, HIFLD, DOT NPMS.
-    
-    Query params:
-        lat, lng, radius (miles) - spatial bounding box filter
-        state - filter by state abbreviation
-        operator - partial match on operator name
-        type - pipeline_type (interstate, intrastate, gathering, etc.)
-        limit - max results (default 100, cap 500)
-    """
-    import math
-
+    """Get natural gas pipeline infrastructure data"""
     state_filter = request.args.get('state', '').upper()
     operator_filter = request.args.get('operator', '')
-    pipeline_type = request.args.get('type', '')
+    pipeline_type = request.args.get('type', '')  # Transmission, Distribution, Gathering
     limit = request.args.get('limit', 100, type=int)
 
-    # ── BULLETPROOF lat/lng parsing ──
-    # Do NOT use type=float — it silently returns None on some Flask/Werkzeug versions
-    lat = request.args.get('lat', None)
-    lng = request.args.get('lng', None)
-    radius = request.args.get('radius', 50)
-
-    try:
-        lat = float(lat) if lat is not None else None
-    except (ValueError, TypeError):
-        lat = None
-    try:
-        lng = float(lng) if lng is not None else None
-    except (ValueError, TypeError):
-        lng = None
-    try:
-        radius = int(float(radius)) if radius else 50
-    except (ValueError, TypeError):
-        radius = 50
-
-    conn = None
     try:
         conn = _get_db()
         c = conn.cursor()
 
-        # Prevent long-running queries from starving the connection pool
-        c.execute("SET statement_timeout = '15s'")
-
-        query = """SELECT id, name, operator, pipeline_type, diameter_inches,
-                   capacity_mcf, status, lat, lng, city, state, country, source
-                   FROM gas_pipelines
-                   WHERE lat IS NOT NULL AND lng IS NOT NULL"""
+        query = "SELECT * FROM discovered_pipelines WHERE commodity = 'Natural Gas'"
         params = []
 
-        # Spatial bounding box filter
-        if lat is not None and lng is not None:
-            lat_d = radius / 69.0
-            lng_d = radius / (69.0 * max(math.cos(math.radians(lat)), 0.1))
-            query += " AND lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s"
-            params.extend([lat - lat_d, lat + lat_d, lng - lng_d, lng + lng_d])
-
         if state_filter:
-            query += " AND UPPER(state) = %s"
+            query += " AND state = %s"
             params.append(state_filter)
         if operator_filter:
-            query += " AND operator ILIKE %s"
+            query += " AND operator LIKE %s"
             params.append(f"%{operator_filter}%")
         if pipeline_type:
-            query += " AND LOWER(pipeline_type) = LOWER(%s)"
+            query += " AND pipeline_type = %s"
             params.append(pipeline_type)
 
-        query += " ORDER BY diameter_inches DESC NULLS LAST LIMIT %s"
-        params.append(min(limit, 500))
+        query += " ORDER BY diameter_inches DESC LIMIT %s"
+        params.append(limit)
 
         c.execute(query, params)
         rows = c.fetchall()
@@ -840,23 +789,30 @@ def get_gas_pipelines():
         pipelines = []
         for r in rows:
             pipelines.append({
-                'id': r[0], 'name': r[1], 'operator': r[2],
-                'pipeline_type': r[3],
-                'diameter_inches': float(r[4]) if r[4] else None,
-                'capacity_mcf': float(r[5]) if r[5] else None,
-                'status': r[6],
-                'lat': float(r[7]), 'lng': float(r[8]),
-                'city': r[9], 'state': r[10], 'country': r[11],
-                'source': r[12]
+                'id': r[0],
+                'operator': r[1],
+                'pipeline_type': r[2],
+                'status': r[3],
+                'diameter_inches': r[4],
+                'commodity': r[5],
+                'state': r[6],
+                'market': r[7],
+                'discovered_at': r[8],
+                'source': r[10]
             })
 
-        # Stats query (safe — can't kill the main response)
-        stats = (0, 0, 0)
+        # Enhance with geographic coordinates
         try:
-            c.execute("SELECT COUNT(*), COUNT(DISTINCT operator), COUNT(DISTINCT state) FROM discovered_pipelines WHERE commodity = 'Natural Gas'")
-            stats = c.fetchone()
-        except Exception:
+            from pipeline_coordinates import enhance_pipeline_coordinates
+            pipelines = enhance_pipeline_coordinates(pipelines)
+        except ImportError:
             pass
+
+        # Get summary stats
+        c.execute("SELECT COUNT(*), COUNT(DISTINCT operator), COUNT(DISTINCT state) FROM discovered_pipelines WHERE commodity = 'Natural Gas'")
+        stats = c.fetchone()
+
+        conn.close()
 
         return jsonify({
             'success': True,
@@ -871,22 +827,10 @@ def get_gas_pipelines():
                 'state': state_filter or 'all',
                 'operator': operator_filter or 'all',
                 'type': pipeline_type or 'all'
-            },
-            '_debug': {
-                'lat_received': lat,
-                'lng_received': lng,
-                'radius': radius,
-                'spatial_filter_applied': lat is not None and lng is not None
             }
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
-    finally:
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
 
 
 @deals_bp.route('/api/v1/deals', methods=['GET'])
@@ -924,12 +868,12 @@ SAMPLE_MARKETS = [
 def get_dc_markets():
     """Get data center market data for analytics"""
     region = request.args.get('region')
-    
+
     markets = SAMPLE_MARKETS.copy()
-    
+
     if region and region != 'All':
         markets = [m for m in markets if m['region'] == region]
-    
+
     return jsonify({
         'success': True,
         'markets': markets,
@@ -944,7 +888,6 @@ def get_markets():
     markets = SAMPLE_MARKETS.copy()
     if region and region != 'All':
         markets = [m for m in markets if m['region'] == region]
-    conn = None
     try:
         conn = _get_db()
         c = conn.cursor()
@@ -955,14 +898,9 @@ def get_markets():
             live_count = c.fetchone()[0]
             if live_count > 0:
                 m['facilities_live'] = live_count
+        conn.close()
     except:
         pass
-    finally:
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
     return jsonify({
         'success': True,
         'markets': markets,
@@ -992,11 +930,9 @@ def get_public_pipeline():
             'preleased': p.get('preleased', False),
         })
 
-    conn = None
     try:
         conn = _get_db()
         c = conn.cursor()
-        c.execute("SET statement_timeout = '15s'")
         c.execute("""
             SELECT id, name, provider, city, state, country, status, power_mw
             FROM discovered_facilities
@@ -1033,14 +969,9 @@ def get_public_pipeline():
                 'type': 'wholesale',
                 'preleased': False,
             })
+        conn.close()
     except Exception as e:
         logger.debug(f"Pipeline facilities query: {e}")
-    finally:
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
 
     projects.sort(key=lambda x: x.get('capacity_mw', 0), reverse=True)
 
@@ -1101,7 +1032,6 @@ def get_pipeline_summary():
             else:
                 announced += 1
 
-    conn = None
     try:
         conn = _get_db()
         c = conn.cursor()
@@ -1123,14 +1053,9 @@ def get_pipeline_summary():
                 construction += 1
             else:
                 announced += 1
+        conn.close()
     except Exception as e:
         logger.debug(f"Pipeline summary DB query: {e}")
-    finally:
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
 
     try:
         conn2 = _get_db()
@@ -1305,9 +1230,8 @@ def get_news_feed():
     return get_agent_news()
 
 @deals_bp.route('/api/news/live', methods=['GET'])
-@_lazy_require_plan('enterprise')
 def get_live_news():
-    """Return cached news from DB (fast) -- requires at least a free account"""
+    """Return cached news from DB (fast) -- public endpoint, no auth required"""
     try:
         limit = request.args.get('limit', 200, type=int)
         category = request.args.get('category', '')
@@ -1380,7 +1304,6 @@ def get_v1_news():
 @deals_bp.route('/api/v1/announcements', methods=['GET'])
 def get_announcements():
     """Get pipeline facilities - under construction, planning, announced, or approved"""
-    conn = None
     try:
         conn = _get_db()
         c = conn.cursor()
@@ -1433,6 +1356,7 @@ def get_announcements():
             del item['raw_data']
             announcements.append(item)
 
+        conn.close()
         return jsonify({
             'success': True,
             'data': announcements,
@@ -1445,9 +1369,3 @@ def get_announcements():
             'data': [],
             'count': 0
         })
-    finally:
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass

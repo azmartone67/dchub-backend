@@ -7,11 +7,6 @@ All reads/writes go to PostgreSQL via db_utils.
 import requests
 import json
 import logging
-try:
-    from redis_cache import cache_get, cache_set
-except ImportError:
-    cache_get = lambda k: None
-    cache_set = lambda k, v, ttl=300: None
 from datetime import datetime, timedelta
 from threading import Thread
 import time
@@ -59,149 +54,147 @@ def _safe_write(sql, params=None, retries=3):
 def init_infrastructure_tables():
     """Initialize tables for infrastructure data — PostgreSQL compatible"""
     conn = get_db()
-    try:
-        cursor = conn.cursor()
+    cursor = conn.cursor()
 
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS fiber_routes (
-                id SERIAL PRIMARY KEY,
-                name TEXT,
-                provider TEXT,
-                route_type TEXT,
-                start_location TEXT,
-                end_location TEXT,
-                start_lat REAL,
-                start_lng REAL,
-                end_lat REAL,
-                end_lng REAL,
-                distance_miles REAL,
-                fiber_count INTEGER,
-                lit_capacity_gbps REAL,
-                status TEXT DEFAULT 'active',
-                source TEXT,
-                source_id TEXT UNIQUE,
-                created_at TIMESTAMPTZ DEFAULT NOW(),
-                updated_at TIMESTAMPTZ DEFAULT NOW()
-            )
-        ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS fiber_routes (
+            id SERIAL PRIMARY KEY,
+            name TEXT,
+            provider TEXT,
+            route_type TEXT,
+            start_location TEXT,
+            end_location TEXT,
+            start_lat REAL,
+            start_lng REAL,
+            end_lat REAL,
+            end_lng REAL,
+            distance_miles REAL,
+            fiber_count INTEGER,
+            lit_capacity_gbps REAL,
+            status TEXT DEFAULT 'active',
+            source TEXT,
+            source_id TEXT UNIQUE,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        )
+    ''')
 
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS dc_properties (
-                id SERIAL PRIMARY KEY,
-                name TEXT,
-                address TEXT,
-                city TEXT,
-                state TEXT,
-                country TEXT DEFAULT 'US',
-                lat REAL,
-                lng REAL,
-                property_type TEXT,
-                square_feet INTEGER,
-                power_capacity_mw REAL,
-                asking_price REAL,
-                price_per_sqft REAL,
-                cap_rate REAL,
-                zoning TEXT,
-                utility_provider TEXT,
-                fiber_providers TEXT,
-                listing_url TEXT,
-                broker TEXT,
-                status TEXT DEFAULT 'available',
-                source TEXT,
-                source_id TEXT UNIQUE,
-                created_at TIMESTAMPTZ DEFAULT NOW(),
-                updated_at TIMESTAMPTZ DEFAULT NOW()
-            )
-        ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS dc_properties (
+            id SERIAL PRIMARY KEY,
+            name TEXT,
+            address TEXT,
+            city TEXT,
+            state TEXT,
+            country TEXT DEFAULT 'US',
+            lat REAL,
+            lng REAL,
+            property_type TEXT,
+            square_feet INTEGER,
+            power_capacity_mw REAL,
+            asking_price REAL,
+            price_per_sqft REAL,
+            cap_rate REAL,
+            zoning TEXT,
+            utility_provider TEXT,
+            fiber_providers TEXT,
+            listing_url TEXT,
+            broker TEXT,
+            status TEXT DEFAULT 'available',
+            source TEXT,
+            source_id TEXT UNIQUE,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        )
+    ''')
 
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS construction_permits (
-                id SERIAL PRIMARY KEY,
-                permit_number TEXT,
-                project_name TEXT,
-                address TEXT,
-                city TEXT,
-                state TEXT,
-                country TEXT DEFAULT 'US',
-                lat REAL,
-                lng REAL,
-                permit_type TEXT,
-                project_type TEXT,
-                square_feet INTEGER,
-                estimated_power_mw REAL,
-                estimated_cost REAL,
-                contractor TEXT,
-                owner TEXT,
-                issue_date DATE,
-                expiration_date DATE,
-                status TEXT DEFAULT 'active',
-                source TEXT,
-                source_id TEXT UNIQUE,
-                created_at TIMESTAMPTZ DEFAULT NOW(),
-                updated_at TIMESTAMPTZ DEFAULT NOW()
-            )
-        ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS construction_permits (
+            id SERIAL PRIMARY KEY,
+            permit_number TEXT,
+            project_name TEXT,
+            address TEXT,
+            city TEXT,
+            state TEXT,
+            country TEXT DEFAULT 'US',
+            lat REAL,
+            lng REAL,
+            permit_type TEXT,
+            project_type TEXT,
+            square_feet INTEGER,
+            estimated_power_mw REAL,
+            estimated_cost REAL,
+            contractor TEXT,
+            owner TEXT,
+            issue_date DATE,
+            expiration_date DATE,
+            status TEXT DEFAULT 'active',
+            source TEXT,
+            source_id TEXT UNIQUE,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        )
+    ''')
 
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS substations (
-                id SERIAL PRIMARY KEY,
-                name TEXT,
-                operator TEXT,
-                substation_type TEXT,
-                voltage_kv REAL,
-                capacity_mva REAL,
-                lat REAL,
-                lng REAL,
-                city TEXT,
-                state TEXT,
-                country TEXT DEFAULT 'US',
-                connected_transmission TEXT,
-                status TEXT DEFAULT 'active',
-                source TEXT,
-                source_id TEXT UNIQUE,
-                created_at TIMESTAMPTZ DEFAULT NOW(),
-                updated_at TIMESTAMPTZ DEFAULT NOW()
-            )
-        ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS substations (
+            id SERIAL PRIMARY KEY,
+            name TEXT,
+            operator TEXT,
+            substation_type TEXT,
+            voltage_kv REAL,
+            capacity_mva REAL,
+            lat REAL,
+            lng REAL,
+            city TEXT,
+            state TEXT,
+            country TEXT DEFAULT 'US',
+            connected_transmission TEXT,
+            status TEXT DEFAULT 'active',
+            source TEXT,
+            source_id TEXT UNIQUE,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        )
+    ''')
 
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS gas_pipelines (
-                id SERIAL PRIMARY KEY,
-                name TEXT,
-                operator TEXT,
-                pipeline_type TEXT,
-                diameter_inches REAL,
-                capacity_mcf REAL,
-                status TEXT DEFAULT 'active',
-                lat REAL,
-                lng REAL,
-                city TEXT,
-                state TEXT,
-                country TEXT DEFAULT 'US',
-                source TEXT,
-                source_id TEXT UNIQUE,
-                created_at TIMESTAMPTZ DEFAULT NOW(),
-                updated_at TIMESTAMPTZ DEFAULT NOW()
-            )
-        ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS gas_pipelines (
+            id SERIAL PRIMARY KEY,
+            name TEXT,
+            operator TEXT,
+            pipeline_type TEXT,
+            diameter_inches REAL,
+            capacity_mcf REAL,
+            status TEXT DEFAULT 'active',
+            lat REAL,
+            lng REAL,
+            city TEXT,
+            state TEXT,
+            country TEXT DEFAULT 'US',
+            source TEXT,
+            source_id TEXT UNIQUE,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        )
+    ''')
 
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS linkedin_weekly_posts (
-                id SERIAL PRIMARY KEY,
-                week_start DATE,
-                week_end DATE,
-                content TEXT,
-                stats_snapshot TEXT,
-                posted_at TIMESTAMPTZ,
-                post_id TEXT,
-                engagement TEXT,
-                created_at TIMESTAMPTZ DEFAULT NOW()
-            )
-        ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS linkedin_weekly_posts (
+            id SERIAL PRIMARY KEY,
+            week_start DATE,
+            week_end DATE,
+            content TEXT,
+            stats_snapshot TEXT,
+            posted_at TIMESTAMPTZ,
+            post_id TEXT,
+            engagement TEXT,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        )
+    ''')
 
-        conn.commit()
-    finally:
-        conn.close()
+    conn.commit()
+    conn.close()
     logger.info("✅ Infrastructure tables initialized")
 
 
@@ -229,9 +222,11 @@ DC_MARKETS = [
 ]
 
 HIFLD_APIS = {
-    "substations": "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Substations/FeatureServer/0",
+    # Electric_Substations: DEAD as of 2024 — HIFLD moved to hash-based service names
+    # "substations": "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Substations/FeatureServer/0",
     "transmission_lines": "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Power_Transmission_Lines/FeatureServer/0",
-    "power_plants": "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Power_Plants/FeatureServer/0",
+    # Power_Plants: DEAD as of 2024 — HIFLD moved to hash-based service names; use EIA + market coords instead
+    # "power_plants": "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Power_Plants/FeatureServer/0",
 }
 
 EIA_PIPELINE_APIS = {
@@ -356,7 +351,7 @@ class FiberRouteDiscovery:
 
     def _sync_peeringdb_exchanges(self):
         try:
-            response = requests.get(f"{self.PEERINGDB_API}/ix%slimit=100", timeout=15)
+            response = requests.get(f"{self.PEERINGDB_API}/ix?limit=100", timeout=15)
             if response.ok:
                 data = response.json().get('data', [])
                 for ix in data[:100]:
@@ -405,29 +400,27 @@ class FiberRouteDiscovery:
     def _sync_from_learned_apis(self):
         try:
             conn = get_db()
-            try:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT name, location, metadata FROM learned_infrastructure
-                    WHERE category = 'fiber'
-                    ORDER BY id DESC LIMIT 200
-                """)
-                for row in cursor.fetchall():
-                    try:
-                        meta = json.loads(row['metadata']) if row['metadata'] else {}
-                        route = {
-                            "name": row['name'][:200] if row['name'] else 'Unknown',
-                            "provider": meta.get('OWNER', meta.get('OPERATOR', 'Discovered')),
-                            "type": meta.get('TYPE', 'fiber'),
-                            "start": row['location'][:100] if row['location'] else '',
-                            "end": '',
-                            "source_id": f"learned_fiber_{hash(row['name']) % 10**8}"
-                        }
-                        self._save_route(route, source='auto_discovery')
-                    except Exception:
-                        pass
-            finally:
-                conn.close()
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT name, location, metadata FROM learned_infrastructure
+                WHERE category = 'fiber'
+                ORDER BY id DESC LIMIT 200
+            """)
+            for row in cursor.fetchall():
+                try:
+                    meta = json.loads(row['metadata']) if row['metadata'] else {}
+                    route = {
+                        "name": row['name'][:200] if row['name'] else 'Unknown',
+                        "provider": meta.get('OWNER', meta.get('OPERATOR', 'Discovered')),
+                        "type": meta.get('TYPE', 'fiber'),
+                        "start": row['location'][:100] if row['location'] else '',
+                        "end": '',
+                        "source_id": f"learned_fiber_{hash(row['name']) % 10**8}"
+                    }
+                    self._save_route(route, source='auto_discovery')
+                except Exception:
+                    pass
+            conn.close()
         except Exception as e:
             logger.warning(f"   ⚠️ Learned API fiber sync failed: {e}")
 
@@ -437,7 +430,7 @@ class FiberRouteDiscovery:
             INSERT INTO fiber_routes
             (name, provider, route_type, start_location, source, source_id)
             VALUES (%s, %s, %s, %s, %s, %s)
-            ON CONFLICT(source, source_id) DO NOTHING
+            ON CONFLICT(source_id) DO NOTHING
         ''', (
             ix.get('name', 'Unknown IX'),
             'Internet Exchange', 'IX',
@@ -457,7 +450,7 @@ class FiberRouteDiscovery:
                 (name, provider, route_type, start_location, end_location,
                  start_lat, start_lng, end_lat, end_lng, source, source_id)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT(source, source_id) DO NOTHING
+                ON CONFLICT(source_id) DO NOTHING
             ''', (
                 route['name'][:200],
                 route.get('provider', 'Unknown')[:100],
@@ -538,64 +531,60 @@ class DCPropertyDiscovery:
 
     def _sync_from_news(self):
         conn = get_db()
-        try:
-            cursor = conn.cursor()
-            keywords = ['for sale', 'listing', 'available', 'seeking buyer', 'on the market',
-                        'acquisition', 'campus', 'new facility', 'expansion']
-            for keyword in keywords:
-                try:
-                    # FIX: NOW() → NOW() - INTERVAL, ? → %s
-                    cursor.execute('''
-                        SELECT title, summary, companies, locations FROM announcements
-                        WHERE (title ILIKE %s OR summary ILIKE %s)
-                        AND discovered_at::timestamptz > NOW() - INTERVAL '30 days'
-                        LIMIT 20
-                    ''', (f'%{keyword}%', f'%{keyword}%'))
+        cursor = conn.cursor()
+        keywords = ['for sale', 'listing', 'available', 'seeking buyer', 'on the market',
+                    'acquisition', 'campus', 'new facility', 'expansion']
+        for keyword in keywords:
+            try:
+                # FIX: datetime('now') → NOW() - INTERVAL, ? → %s
+                cursor.execute('''
+                    SELECT title, summary, companies, locations FROM announcements
+                    WHERE (title ILIKE %s OR summary ILIKE %s)
+                    AND discovered_at::timestamptz > NOW() - INTERVAL '30 days'
+                    LIMIT 20
+                ''', (f'%{keyword}%', f'%{keyword}%'))
 
-                    for row in cursor.fetchall():
-                        title = (row['title'] or '').lower()
-                        summary = (row['summary'] or '').lower()
-                        if 'data center' in title or 'data center' in summary or 'datacenter' in title:
-                            prop = {
-                                "name": row['title'][:200] if row['title'] else 'Unknown',
-                                "city": row['locations'].split(',')[0].strip() if row['locations'] else 'Unknown',
-                                "state": "",
-                                "type": "listing",
-                                "status": "available"
-                            }
-                            self._save_property(prop, source='news')
-                except Exception:
-                    pass
-        finally:
-            conn.close()
+                for row in cursor.fetchall():
+                    title = (row['title'] or '').lower()
+                    summary = (row['summary'] or '').lower()
+                    if 'data center' in title or 'data center' in summary or 'datacenter' in title:
+                        prop = {
+                            "name": row['title'][:200] if row['title'] else 'Unknown',
+                            "city": row['locations'].split(',')[0].strip() if row['locations'] else 'Unknown',
+                            "state": "",
+                            "type": "listing",
+                            "status": "available"
+                        }
+                        self._save_property(prop, source='news')
+            except Exception:
+                pass
+        conn.close()
 
     def _sync_from_learned_apis(self):
         try:
             conn = get_db()
-            try:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT name, location, metadata FROM learned_infrastructure
-                    WHERE category IN ('other', 'environmental')
-                    AND (name ILIKE '%data center%' OR name ILIKE '%datacenter%' OR name ILIKE '%colocation%')
-                    ORDER BY id DESC LIMIT 100
-                """)
-                for row in cursor.fetchall():
-                    try:
-                        meta = json.loads(row['metadata']) if row['metadata'] else {}
-                        prop = {
-                            "name": row['name'][:200] if row['name'] else 'Unknown',
-                            "city": row['location'].split(',')[0].strip() if row['location'] else '',
-                            "state": row['location'].split(',')[-1].strip() if row['location'] else '',
-                            "type": "discovered",
-                            "status": "active",
-                            "source_id": f"learned_prop_{hash(row['name']) % 10**8}"
-                        }
-                        self._save_property(prop, source='auto_discovery')
-                    except Exception:
-                        pass
-            finally:
-                conn.close()
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT name, location, metadata FROM learned_infrastructure
+                WHERE category IN ('other', 'environmental')
+                AND (name ILIKE '%data center%' OR name ILIKE '%datacenter%' OR name ILIKE '%colocation%')
+                ORDER BY id DESC LIMIT 100
+            """)
+            for row in cursor.fetchall():
+                try:
+                    meta = json.loads(row['metadata']) if row['metadata'] else {}
+                    prop = {
+                        "name": row['name'][:200] if row['name'] else 'Unknown',
+                        "city": row['location'].split(',')[0].strip() if row['location'] else '',
+                        "state": row['location'].split(',')[-1].strip() if row['location'] else '',
+                        "type": "discovered",
+                        "status": "active",
+                        "source_id": f"learned_prop_{hash(row['name']) % 10**8}"
+                    }
+                    self._save_property(prop, source='auto_discovery')
+                except Exception:
+                    pass
+            conn.close()
         except Exception as e:
             logger.warning(f"   ⚠️ Learned API property sync failed: {e}")
 
@@ -607,7 +596,7 @@ class DCPropertyDiscovery:
                 INSERT INTO dc_properties
                 (name, city, state, lat, lng, property_type, square_feet, power_capacity_mw, status, source, source_id)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT(source, source_id) DO NOTHING
+                ON CONFLICT(source_id) DO NOTHING
             ''', (
                 prop['name'][:200],
                 prop.get('city', '')[:100],
@@ -646,42 +635,10 @@ class ConstructionPermitDiscovery:
         return self.new_permits
 
     def _sync_hifld_power_plants(self):
-        markets = DC_MARKETS[self._market_index:self._market_index + 4]
+        # HIFLD Power_Plants FeatureServer URL is dead (moved to hash-based names 2024).
+        # Skip network call to avoid ArcGIS 400/499 errors and downstream DB transaction aborts.
+        logger.info("   ℹ️ HIFLD Power Plants URL deprecated — skipping (avoids ArcGIS 400 errors)")
         self._market_index = (self._market_index + 4) % len(DC_MARKETS)
-
-        for market in markets:
-            try:
-                features = _query_hifld_nearby(
-                    HIFLD_APIS['power_plants'],
-                    market['lat'], market['lng'],
-                    radius_m=80000, max_records=100
-                )
-                for feat in features:
-                    attrs = feat.get('attributes', {})
-                    geom = feat.get('geometry', {})
-                    name = attrs.get('NAME', attrs.get('PLANT_NAME', 'Unknown'))
-                    capacity = attrs.get('TOTAL_MW', attrs.get('NAMEPCAP', 0)) or 0
-                    status = attrs.get('STATUS', attrs.get('OPERATING', 'unknown'))
-                    operator = attrs.get('OPERATOR', attrs.get('UTILITY_NAME', ''))
-                    plant_id = attrs.get('OBJECTID', attrs.get('ID', ''))
-
-                    permit = {
-                        "name": f"{name} ({capacity:.0f}MW)" if capacity else name,
-                        "city": market['name'],
-                        "state": market['state'],
-                        "power_mw": capacity,
-                        "owner": operator or 'Unknown',
-                        "status": "active" if str(status).lower() in ('op', 'operating', 'active') else 'planned',
-                        "lat": geom.get('y', geom.get('lat', 0)),
-                        "lng": geom.get('x', geom.get('lon', 0)),
-                        "source_id": f"hifld_pp_{plant_id}"
-                    }
-                    self._save_permit(permit, source='hifld')
-
-                logger.info(f"   🏗️ HIFLD power plants {market['name']}: {len(features)} found")
-                time.sleep(1)
-            except Exception as e:
-                logger.warning(f"   ⚠️ HIFLD power plants failed for {market['name']}: {e}")
 
     def _sync_osm_construction(self):
         markets = DC_MARKETS[self._market_index:self._market_index + 3]
@@ -722,37 +679,35 @@ class ConstructionPermitDiscovery:
 
     def _sync_from_news(self):
         conn = get_db()
-        try:
-            cursor = conn.cursor()
-            keywords = ['construction', 'groundbreaking', 'breaking ground', 'new campus',
-                        'expansion', 'building permit', 'megawatt', 'hyperscale',
-                        'development', 'approved', 'planning commission', 'zoning']
-            for keyword in keywords:
-                try:
-                    # FIX: NOW() → NOW() - INTERVAL, LIKE → ILIKE, ? → %s
-                    cursor.execute('''
-                        SELECT title, summary, companies, locations FROM announcements
-                        WHERE (title ILIKE %s OR summary ILIKE %s)
-                        AND discovered_at::timestamptz > NOW() - INTERVAL '30 days'
-                        LIMIT 20
-                    ''', (f'%{keyword}%', f'%{keyword}%'))
+        cursor = conn.cursor()
+        keywords = ['construction', 'groundbreaking', 'breaking ground', 'new campus',
+                    'expansion', 'building permit', 'megawatt', 'hyperscale',
+                    'development', 'approved', 'planning commission', 'zoning']
+        for keyword in keywords:
+            try:
+                # FIX: datetime('now') → NOW() - INTERVAL, LIKE → ILIKE, ? → %s
+                cursor.execute('''
+                    SELECT title, summary, companies, locations FROM announcements
+                    WHERE (title ILIKE %s OR summary ILIKE %s)
+                    AND discovered_at::timestamptz > NOW() - INTERVAL '30 days'
+                    LIMIT 20
+                ''', (f'%{keyword}%', f'%{keyword}%'))
 
-                    for row in cursor.fetchall():
-                        title = (row['title'] or '').lower()
-                        summary = (row['summary'] or '').lower()
-                        if 'data center' in title or 'data center' in summary or 'datacenter' in title or 'hyperscale' in title:
-                            permit = {
-                                "name": row['title'][:200] if row['title'] else 'Unknown Project',
-                                "city": row['locations'].split(',')[0].strip() if row['locations'] else 'Unknown',
-                                "state": "",
-                                "owner": row['companies'].split(',')[0].strip() if row['companies'] else 'Unknown',
-                                "status": "announced"
-                            }
-                            self._save_permit(permit, source='news')
-                except Exception:
-                    pass
-        finally:
-            conn.close()
+                for row in cursor.fetchall():
+                    title = (row['title'] or '').lower()
+                    summary = (row['summary'] or '').lower()
+                    if 'data center' in title or 'data center' in summary or 'datacenter' in title or 'hyperscale' in title:
+                        permit = {
+                            "name": row['title'][:200] if row['title'] else 'Unknown Project',
+                            "city": row['locations'].split(',')[0].strip() if row['locations'] else 'Unknown',
+                            "state": "",
+                            "owner": row['companies'].split(',')[0].strip() if row['companies'] else 'Unknown',
+                            "status": "announced"
+                        }
+                        self._save_permit(permit, source='news')
+            except Exception:
+                pass
+        conn.close()
 
     def _save_permit(self, permit, source='discovery'):
         try:
@@ -762,7 +717,7 @@ class ConstructionPermitDiscovery:
                 INSERT INTO construction_permits
                 (project_name, city, state, square_feet, estimated_power_mw, owner, status, lat, lng, source, source_id)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT(source, source_id) DO NOTHING
+                ON CONFLICT(source_id) DO NOTHING
             ''', (
                 permit['name'][:200],
                 permit.get('city', '')[:100],
@@ -783,50 +738,41 @@ class ConstructionPermitDiscovery:
 
 
 class SubstationDiscovery:
-    """Discover substations from HIFLD (bulk), OSM, learned APIs, and infrastructure_layers"""
+    """Discover substations from HIFLD, OSM, and learned APIs"""
 
     OVERPASS_API = "https://overpass-api.de/api/interpreter"
 
     def __init__(self):
         self.new_substations = 0
         self._market_index = 0
-        if not hasattr(SubstationDiscovery, '_hifld_fid_offset'):
-            SubstationDiscovery._hifld_fid_offset = 0
 
     def sync(self):
         logger.info("⚡ Syncing substations...")
         self.new_substations = 0
-        self._sync_hifld_substations_bulk()
+        self._sync_hifld_substations()
         self._sync_osm_substations()
         self._sync_from_learned_apis()
-        self._sync_infrastructure_layers_substations()
         logger.info(f"   ✅ Substations: {self.new_substations} new")
         return self.new_substations
 
-    def _sync_hifld_substations_bulk(self):
-        """Bulk nationwide HIFLD substation pull with FID pagination.
-        Pulls 5,000 per cycle. Full ~70K coverage in ~14 cycles."""
-        batch_size = 5000
-        fid_start = SubstationDiscovery._hifld_fid_offset
-        fid_end = fid_start + batch_size
+    def _sync_hifld_substations(self):
+        # HIFLD Electric_Substations FeatureServer URL is dead (moved to hash-based names 2024).
+        # Fall through to OSM-based substation sync only.
+        logger.info("   ℹ️ HIFLD Electric Substations URL deprecated — using OSM only")
+        self._market_index = (self._market_index + 3) % len(DC_MARKETS)
+        return
 
-        logger.info(f"   ⚡ HIFLD substations BULK: FID {fid_start}-{fid_end}...")
-        before = self.new_substations
+    def _sync_hifld_substations_DISABLED(self):
+        markets = DC_MARKETS[self._market_index:self._market_index + 3]
+        self._market_index = (self._market_index + 3) % len(DC_MARKETS)
 
-        try:
-            features = _query_hifld_paginated(
-                HIFLD_APIS['substations'],
-                where=f'OBJECTID>{fid_start} AND OBJECTID<={fid_end}',
-                max_total=batch_size,
-                batch_size=1000
-            )
-
-            if not features:
-                logger.info(f"   ⚡ HIFLD substations: reached end at FID {fid_start}, resetting to 0")
-                SubstationDiscovery._hifld_fid_offset = 0
-            else:
-                SubstationDiscovery._hifld_fid_offset = fid_end
-
+        for market in markets:
+            try:
+                features = _query_hifld_nearby(
+                    HIFLD_APIS.get('substations', ''),
+                    market['lat'], market['lng'],
+                    radius_m=50000, max_records=200
+                )
                 for feat in features:
                     attrs = feat.get('attributes', {})
                     geom = feat.get('geometry', {})
@@ -836,43 +782,31 @@ class SubstationDiscovery:
                     if voltage and voltage > 1000:
                         voltage = voltage / 1000
                     capacity = attrs.get('MAX_LOAD', attrs.get('CAPACITY', 0)) or 0
-                    obj_id = attrs.get('OBJECTID', attrs.get('ID', ''))
-                    state_val = attrs.get('STATE', attrs.get('STUSPS', ''))
-                    city_val = attrs.get('CITY', attrs.get('COUNTY', ''))
-
-                    lat_val = geom.get('y', geom.get('lat', 0))
-                    lng_val = geom.get('x', geom.get('lon', 0))
-                    if not lat_val or not lng_val:
-                        continue
+                    sub_id = attrs.get('OBJECTID', attrs.get('ID', ''))
+                    state = attrs.get('STATE', attrs.get('STUSPS', market['state']))
+                    city = attrs.get('CITY', attrs.get('COUNTY', market['name']))
 
                     sub = {
                         "name": str(name)[:200],
                         "operator": str(operator)[:100] if operator else 'Unknown',
                         "voltage_kv": voltage,
                         "capacity_mva": capacity,
-                        "city": str(city_val)[:100] if city_val else '',
-                        "state": str(state_val)[:10] if state_val else '',
-                        "lat": lat_val,
-                        "lng": lng_val,
-                        "source_id": f"hifld_sub_{obj_id}"
+                        "city": str(city)[:100] if city else market['name'],
+                        "state": str(state)[:10] if state else market['state'],
+                        "lat": geom.get('y', geom.get('lat', 0)),
+                        "lng": geom.get('x', geom.get('lon', 0)),
+                        "source_id": f"hifld_sub_{sub_id}"
                     }
                     self._save_substation(sub, source='hifld')
 
-            logger.info(
-                f"   ⚡ HIFLD substations BULK: {len(features)} fetched "
-                f"(FID {fid_start}-{fid_end}), {self.new_substations - before} new"
-            )
-        except Exception as e:
-            logger.warning(f"   ⚠️ HIFLD bulk substations failed: {e}")
+                logger.info(f"   ⚡ HIFLD substations {market['name']}: {len(features)} found")
+                time.sleep(1)
+            except Exception as e:
+                logger.warning(f"   ⚠️ HIFLD substations failed for {market['name']}: {e}")
 
     def _sync_osm_substations(self):
-        """OSM substation discovery — 6 markets per cycle"""
-        start = self._market_index % len(DC_MARKETS)
-        markets = []
-        for i in range(6):
-            idx = (start + i) % len(DC_MARKETS)
-            markets.append(DC_MARKETS[idx])
-        self._market_index = (start + 6) % len(DC_MARKETS)
+        start = self._market_index
+        markets = DC_MARKETS[start:start + 4]
 
         for market in markets:
             try:
@@ -912,109 +846,35 @@ class SubstationDiscovery:
     def _sync_from_learned_apis(self):
         try:
             conn = get_db()
-            try:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT name, location, metadata FROM learned_infrastructure
-                    WHERE category = 'power'
-                    ORDER BY id DESC LIMIT 200
-                """)
-                rows = cursor.fetchall()
-                for row in rows:
-                    try:
-                        if isinstance(row, dict):
-                            name_val, location_val, meta_raw = row.get('name'), row.get('location'), row.get('metadata')
-                        else:
-                            name_val, location_val, meta_raw = row[0], row[1], row[2]
-                        meta = json.loads(meta_raw) if meta_raw else {}
-                        voltage = meta.get('MAX_VOLT', meta.get('VOLTAGE', meta.get('KV', 0))) or 0
-                        if voltage and voltage > 1000:
-                            voltage = voltage / 1000
-                        sub = {
-                            "name": str(name_val)[:200] if name_val else 'Unknown',
-                            "operator": str(meta.get('OWNER', meta.get('OPERATOR', 'Discovered')))[:100],
-                            "voltage_kv": voltage,
-                            "capacity_mva": meta.get('CAPACITY', 0) or 0,
-                            "city": location_val.split(',')[0].strip() if location_val else '',
-                            "state": location_val.split(',')[-1].strip() if location_val and ',' in location_val else '',
-                            "lat": meta.get('LATITUDE', meta.get('LAT', meta.get('Y'))),
-                            "lng": meta.get('LONGITUDE', meta.get('LON', meta.get('X'))),
-                            "source_id": f"learned_sub_{hash(str(name_val)) % 10**8}"
-                        }
-                        self._save_substation(sub, source='auto_discovery')
-                    except Exception:
-                        pass
-            finally:
-                conn.close()
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT name, location, metadata FROM learned_infrastructure
+                WHERE category = 'power'
+                ORDER BY id DESC LIMIT 200
+            """)
+            for row in cursor.fetchall():
+                try:
+                    meta = json.loads(row['metadata']) if row['metadata'] else {}
+                    voltage = meta.get('MAX_VOLT', meta.get('VOLTAGE', meta.get('KV', 0))) or 0
+                    if voltage and voltage > 1000:
+                        voltage = voltage / 1000
+                    sub = {
+                        "name": str(row['name'])[:200] if row['name'] else 'Unknown',
+                        "operator": str(meta.get('OWNER', meta.get('OPERATOR', 'Discovered')))[:100],
+                        "voltage_kv": voltage,
+                        "capacity_mva": meta.get('CAPACITY', 0) or 0,
+                        "city": row['location'].split(',')[0].strip() if row['location'] else '',
+                        "state": row['location'].split(',')[-1].strip() if row['location'] and ',' in row['location'] else '',
+                        "lat": meta.get('LATITUDE', meta.get('LAT', meta.get('Y'))),
+                        "lng": meta.get('LONGITUDE', meta.get('LON', meta.get('X'))),
+                        "source_id": f"learned_sub_{hash(str(row['name'])) % 10**8}"
+                    }
+                    self._save_substation(sub, source='auto_discovery')
+                except Exception:
+                    pass
+            conn.close()
         except Exception as e:
             logger.warning(f"   ⚠️ Learned API substation sync failed: {e}")
-
-    def _sync_infrastructure_layers_substations(self):
-        """Cross-populate substations table from infrastructure_layers KMZ records."""
-        try:
-            conn = get_db()
-            try:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT il.name, il.latitude, il.longitude, il.source, il.metadata,
-                           COALESCE(il.state, '') as state, COALESCE(il.city, '') as city
-                    FROM infrastructure_layers il
-                    WHERE LOWER(il.layer_type) IN ('substation', 'electric_substation', 'substations', 'power')
-                      AND il.latitude IS NOT NULL AND il.longitude IS NOT NULL
-                      AND NOT EXISTS (
-                        SELECT 1 FROM substations s
-                        WHERE s.source_id = 'infra_layer_' || CAST(il.id AS TEXT)
-                      )
-                    LIMIT 2000
-                """)
-                rows = cursor.fetchall()
-            finally:
-                conn.close()
-
-            for row in rows:
-                if isinstance(row, dict):
-                    name_val = row.get('name', 'Substation')
-                    lat_val = row.get('latitude')
-                    lng_val = row.get('longitude')
-                    source_val = row.get('source', 'kmz')
-                    meta_raw = row.get('metadata')
-                    state_val = row.get('state', '')
-                    city_val = row.get('city', '')
-                else:
-                    name_val, lat_val, lng_val, source_val, meta_raw, state_val, city_val = row[0], row[1], row[2], row[3], row[4], row[5], row[6]
-
-                if not lat_val or not lng_val:
-                    continue
-
-                meta = {}
-                if meta_raw:
-                    try:
-                        meta = json.loads(meta_raw) if isinstance(meta_raw, str) else meta_raw
-                    except Exception:
-                        pass
-
-                voltage = meta.get('MAX_VOLT', meta.get('VOLTAGE', meta.get('voltage_kv', 0))) or 0
-                if voltage and voltage > 1000:
-                    voltage = voltage / 1000
-
-                sub = {
-                    "name": str(name_val)[:200] if name_val else 'Substation',
-                    "operator": str(meta.get('OWNER', meta.get('operator', 'Unknown')))[:100],
-                    "voltage_kv": voltage,
-                    "capacity_mva": meta.get('CAPACITY', meta.get('capacity_mva', 0)) or 0,
-                    "city": str(city_val)[:100],
-                    "state": str(state_val)[:10],
-                    "lat": lat_val,
-                    "lng": lng_val,
-                    "source_id": f"infra_layer_{hash(f'{name_val}_{lat_val}_{lng_val}') % 10**10}"
-                }
-                self._save_substation(sub, source='infrastructure_layers')
-
-            if rows:
-                logger.info(f"   ⚡ Cross-populated {len(rows)} substations from infrastructure_layers")
-
-        except Exception as e:
-            logger.warning(f"   ⚠️ Infrastructure layers substation sync failed: {e}")
 
     def _parse_voltage(self, voltage_str):
         try:
@@ -1032,15 +892,19 @@ class SubstationDiscovery:
 
     def _save_substation(self, sub, source='discovery'):
         try:
+            # Filter out telecom/distribution substations at ingestion
+            # Only save utility-grade substations (>69kV) or unknown voltage (0/None)
             voltage = sub.get('voltage_kv', 0) or 0
             if 0 < voltage <= 69:
-                return
+                return  # Skip telecom/distribution-grade substations
+
             source_id = sub.get('source_id', f"{sub['name']}_{sub.get('lat', 0):.4f}_{sub.get('lng', 0):.4f}".replace(" ", "_").lower()[:100])
+            # FIX: INSERT OR IGNORE → ON CONFLICT DO NOTHING, ? → %s
             rowcount = _safe_write('''
                 INSERT INTO substations
                 (name, operator, voltage_kv, capacity_mva, city, state, lat, lng, source, source_id)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT(source, source_id) DO NOTHING
+                ON CONFLICT(source_id) DO NOTHING
             ''', (
                 sub['name'][:200],
                 sub.get('operator', '')[:100],
@@ -1222,32 +1086,30 @@ class GasPipelineDiscovery:
     def _sync_from_learned_apis(self):
         try:
             conn = get_db()
-            try:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT name, location, metadata FROM learned_infrastructure
-                    WHERE category = 'gas'
-                    ORDER BY id DESC LIMIT 200
-                """)
-                for row in cursor.fetchall():
-                    try:
-                        meta = json.loads(row['metadata']) if row['metadata'] else {}
-                        pipeline = {
-                            "name": str(row['name'])[:200] if row['name'] else 'Unknown',
-                            "operator": str(meta.get('Operator', meta.get('OPERATOR', 'Discovered')))[:100],
-                            "pipeline_type": meta.get('Typepipe', meta.get('TYPE', 'discovered')),
-                            "diameter_inches": meta.get('Diameter', 0) or 0,
-                            "city": row['location'].split(',')[0].strip() if row['location'] else '',
-                            "state": row['location'].split(',')[-1].strip() if row['location'] and ',' in row['location'] else '',
-                            "lat": meta.get('LATITUDE', meta.get('LAT', meta.get('Y'))),
-                            "lng": meta.get('LONGITUDE', meta.get('LON', meta.get('X'))),
-                            "source_id": f"learned_gas_{hash(str(row['name'])) % 10**8}"
-                        }
-                        self._save_pipeline(pipeline, source='auto_discovery')
-                    except Exception:
-                        pass
-            finally:
-                conn.close()
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT name, location, metadata FROM learned_infrastructure
+                WHERE category = 'gas'
+                ORDER BY id DESC LIMIT 200
+            """)
+            for row in cursor.fetchall():
+                try:
+                    meta = json.loads(row['metadata']) if row['metadata'] else {}
+                    pipeline = {
+                        "name": str(row['name'])[:200] if row['name'] else 'Unknown',
+                        "operator": str(meta.get('Operator', meta.get('OPERATOR', 'Discovered')))[:100],
+                        "pipeline_type": meta.get('Typepipe', meta.get('TYPE', 'discovered')),
+                        "diameter_inches": meta.get('Diameter', 0) or 0,
+                        "city": row['location'].split(',')[0].strip() if row['location'] else '',
+                        "state": row['location'].split(',')[-1].strip() if row['location'] and ',' in row['location'] else '',
+                        "lat": meta.get('LATITUDE', meta.get('LAT', meta.get('Y'))),
+                        "lng": meta.get('LONGITUDE', meta.get('LON', meta.get('X'))),
+                        "source_id": f"learned_gas_{hash(str(row['name'])) % 10**8}"
+                    }
+                    self._save_pipeline(pipeline, source='auto_discovery')
+                except Exception:
+                    pass
+            conn.close()
         except Exception as e:
             logger.warning(f"   ⚠️ Learned API gas sync failed: {e}")
 
@@ -1260,7 +1122,7 @@ class GasPipelineDiscovery:
                 (name, operator, pipeline_type, diameter_inches, capacity_mcf, status,
                  lat, lng, city, state, source, source_id)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT(source, source_id) DO NOTHING
+                ON CONFLICT(source_id) DO NOTHING
             ''', (
                 pipeline['name'][:200],
                 pipeline.get('operator', '')[:100],
@@ -1289,32 +1151,30 @@ class WeeklyLinkedInSummary:
 
     def generate_weekly_digest(self):
         conn = get_db()
-        try:
-            cursor = conn.cursor()
+        cursor = conn.cursor()
 
-            cursor.execute("SELECT COUNT(*) as cnt FROM facilities")
-            new_facilities = cursor.fetchone()['cnt']
+        cursor.execute("SELECT COUNT(*) as cnt FROM facilities")
+        new_facilities = cursor.fetchone()['cnt']
 
-            # FIX: NOW() → NOW() - INTERVAL, ? → %s
-            cursor.execute("SELECT COUNT(*) as cnt FROM announcements WHERE discovered_at::timestamptz > NOW() - INTERVAL '7 days'")
-            new_news = cursor.fetchone()['cnt']
+        # FIX: datetime('now') → NOW() - INTERVAL, ? → %s
+        cursor.execute("SELECT COUNT(*) as cnt FROM announcements WHERE discovered_at::timestamptz > NOW() - INTERVAL '7 days'")
+        new_news = cursor.fetchone()['cnt']
 
-            cursor.execute("SELECT COUNT(*) as cnt FROM construction_permits")
-            new_permits = cursor.fetchone()['cnt']
+        cursor.execute("SELECT COUNT(*) as cnt FROM construction_permits")
+        new_permits = cursor.fetchone()['cnt']
 
-            cursor.execute("SELECT SUM(estimated_power_mw) as total FROM construction_permits WHERE status IN ('approved', 'under_construction')")
-            pipeline_mw = cursor.fetchone()['total'] or 0
+        cursor.execute("SELECT SUM(estimated_power_mw) as total FROM construction_permits WHERE status IN ('approved', 'under_construction')")
+        pipeline_mw = cursor.fetchone()['total'] or 0
 
-            # FIX: NOW() → NOW() - INTERVAL
-            cursor.execute('''
-                SELECT title, companies FROM announcements
-                WHERE discovered_at::timestamptz > NOW() - INTERVAL '7 days'
-                ORDER BY discovered_at DESC LIMIT 5
-            ''')
-            top_news = cursor.fetchall()
+        # FIX: datetime('now') → NOW() - INTERVAL
+        cursor.execute('''
+            SELECT title, companies FROM announcements
+            WHERE discovered_at::timestamptz > NOW() - INTERVAL '7 days'
+            ORDER BY discovered_at DESC LIMIT 5
+        ''')
+        top_news = cursor.fetchall()
 
-        finally:
-            conn.close()
+        conn.close()
 
         digest = f"""📊 DC Hub Weekly Market Intelligence
 
@@ -1397,22 +1257,20 @@ This week in data center infrastructure:
 
     def save_weekly_post(self, content, post_id=None):
         conn = get_db()
-        try:
-            cursor = conn.cursor()
+        cursor = conn.cursor()
 
-            today = datetime.now()
-            week_start = today - timedelta(days=today.weekday())
-            week_end = week_start + timedelta(days=6)
+        today = datetime.now()
+        week_start = today - timedelta(days=today.weekday())
+        week_end = week_start + timedelta(days=6)
 
-            # FIX: ? → %s
-            cursor.execute('''
-                INSERT INTO linkedin_weekly_posts (week_start, week_end, content, posted_at, post_id)
-                VALUES (%s, %s, %s, %s, %s)
-            ''', (week_start.date(), week_end.date(), content, datetime.now(), post_id))
+        # FIX: ? → %s
+        cursor.execute('''
+            INSERT INTO linkedin_weekly_posts (week_start, week_end, content, posted_at, post_id)
+            VALUES (%s, %s, %s, %s, %s)
+        ''', (week_start.date(), week_end.date(), content, datetime.now(), post_id))
 
-            conn.commit()
-        finally:
-            conn.close()
+        conn.commit()
+        conn.close()
 
     def run_weekly_post(self):
         content = self.generate_weekly_digest()
@@ -1472,32 +1330,30 @@ class InfrastructureDiscoveryEngine:
 
     def get_status(self):
         conn = get_db()
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT COUNT(*) as cnt FROM fiber_routes")
+        fiber_count = cursor.fetchone()['cnt']
+
+        cursor.execute("SELECT COUNT(*) as cnt FROM dc_properties")
+        properties_count = cursor.fetchone()['cnt']
+
+        cursor.execute("SELECT COUNT(*) as cnt FROM construction_permits")
+        permits_count = cursor.fetchone()['cnt']
+
+        cursor.execute("SELECT COUNT(*) as cnt FROM substations")
+        substations_count = cursor.fetchone()['cnt']
+
         try:
-            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) as cnt FROM gas_pipelines")
+            gas_count = cursor.fetchone()['cnt']
+        except:
+            gas_count = 0
 
-            cursor.execute("SELECT COUNT(*) as cnt FROM fiber_routes")
-            fiber_count = cursor.fetchone()['cnt']
+        cursor.execute("SELECT COUNT(*) as cnt FROM linkedin_weekly_posts")
+        weekly_posts = cursor.fetchone()['cnt']
 
-            cursor.execute("SELECT COUNT(*) as cnt FROM dc_properties")
-            properties_count = cursor.fetchone()['cnt']
-
-            cursor.execute("SELECT COUNT(*) as cnt FROM construction_permits")
-            permits_count = cursor.fetchone()['cnt']
-
-            cursor.execute("SELECT COUNT(*) as cnt FROM substations")
-            substations_count = cursor.fetchone()['cnt']
-
-            try:
-                cursor.execute("SELECT COUNT(*) as cnt FROM gas_pipelines")
-                gas_count = cursor.fetchone()['cnt']
-            except:
-                gas_count = 0
-
-            cursor.execute("SELECT COUNT(*) as cnt FROM linkedin_weekly_posts")
-            weekly_posts = cursor.fetchone()['cnt']
-
-        finally:
-            conn.close()
+        conn.close()
 
         return {
             "fiber_routes": fiber_count,
@@ -1551,72 +1407,52 @@ def register_infrastructure_routes(app, start_scheduler=True):
     @bp.route('/api/infrastructure/fiber-routes')
     def get_fiber_routes():
         conn = get_db()
-        try:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM fiber_routes ORDER BY created_at DESC LIMIT 100")
-            routes = [dict(row) for row in cursor.fetchall()]
-        finally:
-            conn.close()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM fiber_routes ORDER BY created_at DESC LIMIT 100")
+        routes = [dict(row) for row in cursor.fetchall()]
+        conn.close()
         return jsonify({"success": True, "data": routes, "count": len(routes)})
 
     @bp.route('/api/infrastructure/properties')
     def get_properties():
         conn = get_db()
-        try:
-            cursor = conn.cursor()
-            status = request.args.get('status', 'available')
-            # FIX: ? → %s
-            cursor.execute("SELECT * FROM dc_properties WHERE status = %s ORDER BY created_at DESC LIMIT 100", (status,))
-            properties = [dict(row) for row in cursor.fetchall()]
-        finally:
-            conn.close()
+        cursor = conn.cursor()
+        status = request.args.get('status', 'available')
+        # FIX: ? → %s
+        cursor.execute("SELECT * FROM dc_properties WHERE status = %s ORDER BY created_at DESC LIMIT 100", (status,))
+        properties = [dict(row) for row in cursor.fetchall()]
+        conn.close()
         return jsonify({"success": True, "data": properties, "count": len(properties)})
 
     @bp.route('/api/infrastructure/permits')
     def get_permits():
         conn = get_db()
-        try:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM construction_permits ORDER BY created_at DESC LIMIT 100")
-            permits = [dict(row) for row in cursor.fetchall()]
-        finally:
-            conn.close()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM construction_permits ORDER BY created_at DESC LIMIT 100")
+        permits = [dict(row) for row in cursor.fetchall()]
+        conn.close()
         return jsonify({"success": True, "data": permits, "count": len(permits)})
 
     @bp.route('/api/infrastructure/substations')
     def get_substations():
-        _cached = cache_get("infra:substations")
-        if _cached is not None:
-            return jsonify(_cached)
         conn = get_db()
-        try:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM substations WHERE voltage_kv > 69 OR voltage_kv IS NULL OR voltage_kv = 0 ORDER BY voltage_kv DESC LIMIT 100")
-            substations = [dict(row) for row in cursor.fetchall()]
-        finally:
-            conn.close()
-        _result = {"success": True, "data": substations, "count": len(substations)}
-        cache_set("infra:substations", _result, ttl=600)
-        return jsonify(_result)
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM substations WHERE voltage_kv > 69 OR voltage_kv IS NULL OR voltage_kv = 0 ORDER BY voltage_kv DESC LIMIT 100")
+        substations = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return jsonify({"success": True, "data": substations, "count": len(substations)})
 
     @bp.route('/api/infrastructure/gas-pipelines')
     def get_gas_pipelines():
-        _cached = cache_get("infra:gas_pipelines")
-        if _cached is not None:
-            return jsonify(_cached)
         conn = get_db()
+        cursor = conn.cursor()
         try:
-            cursor = conn.cursor()
-            try:
-                cursor.execute("SELECT * FROM gas_pipelines ORDER BY created_at DESC LIMIT 200")
-                pipelines = [dict(row) for row in cursor.fetchall()]
-            except:
-                pipelines = []
-        finally:
-            conn.close()
-        _result = {"success": True, "data": pipelines, "count": len(pipelines)}
-        cache_set("infra:gas_pipelines", _result, ttl=600)
-        return jsonify(_result)
+            cursor.execute("SELECT * FROM gas_pipelines ORDER BY created_at DESC LIMIT 200")
+            pipelines = [dict(row) for row in cursor.fetchall()]
+        except:
+            pipelines = []
+        conn.close()
+        return jsonify({"success": True, "data": pipelines, "count": len(pipelines)})
 
     @bp.route('/api/infrastructure/weekly-digest')
     def get_weekly_digest():
