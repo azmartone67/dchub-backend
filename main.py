@@ -1287,7 +1287,7 @@ register_nav_config_route(app)
 def handle_well_known():
     from flask import request as req
     path = req.path
-    if path == :
+    if path == '/.well-known/mcp.json':
         return jsonify({
             "name": "DC Hub Intelligence",
             "description": "Real-time data center market intelligence -- 20,000+ facilities, 140+ countries.",
