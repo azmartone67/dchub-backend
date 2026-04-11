@@ -7595,6 +7595,10 @@ def log_ambassador_broadcast():
         db.commit()
         return jsonify({"success": True})
     except Exception as e:
+        try:
+            if conn: return_pg_connection(conn)
+        except Exception:
+            pass
         return jsonify({"success": False, "error": str(e)}), 500
     finally:
         try: db.close()
@@ -7667,6 +7671,10 @@ def mcp_analytics():
                             "params": r[3], "response_ms": r[4], "time": r[5]} for r in recent]
         })
     except Exception as e:
+        try:
+            if conn: return_pg_connection(conn)
+        except Exception:
+            pass
         return jsonify({"success": False, "error": str(e)}), 500
     finally:
         try: db.close()
@@ -7733,6 +7741,10 @@ def mcp_platforms_status():
             "server_version": "2.0.0"
         })
     except Exception as e:
+        try:
+            if conn: return_pg_connection(conn)
+        except Exception:
+            pass
         return jsonify({"success": False, "error": str(e)}), 500
     finally:
         try: db.close()
@@ -9869,6 +9881,10 @@ def admin_load_substations():
         count = load()
         return jsonify({"success": True, "loaded": count})
     except Exception as e:
+        try:
+            if conn: return_pg_connection(conn)
+        except Exception:
+            pass
         return jsonify({"success": False, "error": str(e)}), 500
 def seed_serverfarm_facilities():
     """Seed missing ServerFarm facilities with retry logic for database locks."""
@@ -10985,6 +11001,10 @@ def permit_coverage_stats():
             "updated_at": __import__('datetime').datetime.utcnow().isoformat() + "Z"
         })
     except Exception as e:
+        try:
+            if conn: return_pg_connection(conn)
+        except Exception:
+            pass
         return jsonify({"success": False, "error": str(e)}), 500
     finally:
         if conn:
@@ -14222,6 +14242,10 @@ def cf_stub_ecosystem():
             {"id": r[0], "name": r[1], "category": r[2], "website": r[3], "description": r[4]} for r in rows
         ]})
     except Exception as e:
+        try:
+            if conn: return_pg_connection(conn)
+        except Exception:
+            pass
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/rankings/states', methods=['GET'])
@@ -14241,6 +14265,10 @@ def cf_stub_state_rankings():
             {"state": r[0], "facility_count": r[1], "total_mw": float(r[2] or 0)} for r in rows
         ]})
     except Exception as e:
+        try:
+            if conn: return_pg_connection(conn)
+        except Exception:
+            pass
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/v1/infrastructure', methods=['GET'])
@@ -14259,6 +14287,10 @@ def cf_stub_infrastructure():
         return_pg_connection(conn)
         return jsonify({"success": True, "counts": counts})
     except Exception as e:
+        try:
+            if conn: return_pg_connection(conn)
+        except Exception:
+            pass
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/v1/energy/summary', methods=['GET'])
