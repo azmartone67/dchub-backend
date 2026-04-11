@@ -301,7 +301,7 @@ def test_public_apis(base, key):
         ("/api/v1/facilities",        "facilities list"),
         ("/api/v1/stats",             "platform stats"),
         ("/api/v1/discovery",         "AI discovery index"),
-        ("/api/v1/map",               "map data"),
+        # auth-required: ("/api/v1/map",         "map data"),
     ]
 
     for path, desc in endpoints:
