@@ -1287,7 +1287,7 @@ register_nav_config_route(app)
 def handle_well_known():
     from flask import request as req
     path = req.path
-    if path == '/.well-known/mcp.json':
+    if path == :
         return jsonify({
             "name": "DC Hub Intelligence",
             "description": "Real-time data center market intelligence -- 20,000+ facilities, 140+ countries.",
@@ -4339,8 +4339,7 @@ def track_crawler_visit():
     pass
 
 AUTO_REGISTER_PATHS = {
-    '/mcp', '/mcp/', '/api/ai/discover', '/.well-known/mcp.json',
-    '/.well-known/mcp/server-card.json', '/openapi.json', '/llms.txt',
+    '/mcp', '/mcp/', '/api/ai/discover', '/.well-known/mcp/server-card.json', '/openapi.json', '/llms.txt',
     '/llms-full.txt', '/AGENTS.md', '/skill.json', '/ai/discover',
     '/ai/learn', '/ai/cite', '/mcp/manifest',
 }
@@ -12513,7 +12512,7 @@ logger.info("🗺️ SEO: /sitemap.xml route registered")
 # ============================================================
 # AI Agent Discovery Files (served from backend)
 # ============================================================
-@app.route('/.well-known/mcp.json', methods=['GET'])
+@app.route(methods=['GET'])
 def well_known_mcp():
     return jsonify({
         "name": "DC Hub Intelligence",
@@ -14270,6 +14269,9 @@ def cf_stub_energy_summary():
             "latest_period":  row[4] or ""
         }})
     except Exception as e:
+        try:
+            if conn: return_pg_connection(conn)
+        except Exception: pass
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/v1/gdci', methods=['GET'])
@@ -14292,6 +14294,9 @@ def cf_stub_gdci():
                         "data": [{"market": r[0], "facility_count": int(r[1]),
                                   "total_mw": round(float(r[2]), 1)} for r in rows]})
     except Exception as e:
+        try:
+            if conn: return_pg_connection(conn)
+        except Exception: pass
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/energy-discovery/overview', methods=['GET'])
@@ -14306,4 +14311,7 @@ def cf_stub_energy_discovery():
         return jsonify({"success": True, "ppas": total_ppas,
                         "note": "renewable_projects table pending"})
     except Exception as e:
+        try:
+            if conn: return_pg_connection(conn)
+        except Exception: pass
         return jsonify({"success": False, "error": str(e)}), 500
