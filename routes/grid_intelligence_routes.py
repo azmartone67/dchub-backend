@@ -455,6 +455,9 @@ def get_grid_region(region_id):
             tier = _determine_tier(api_key)
             tier_config = GRID_INTEL_TIER_CONFIG.get(tier, GRID_INTEL_TIER_CONFIG['free'])
 
+        # Normalize: DB stores lowercase keys (ercot, pjm, caiso, miso-spp, southeast)
+        region_id = region_id.strip().lower()
+
         conn = _get_conn()
         cur = conn.cursor()
 
