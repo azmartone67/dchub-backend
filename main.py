@@ -1234,7 +1234,6 @@ def api_v1_map():
             FROM discovered_facilities df
             LEFT JOIN facilities f ON f.id = df.merged_facility_id
             WHERE df.latitude IS NOT NULL AND df.longitude IS NOT NULL
-              AND (df.is_duplicate IS NULL OR df.is_duplicate = 0)
             ORDER BY COALESCE(df.power_mw, f.power_mw) DESC NULLS LAST
             LIMIT %s OFFSET %s
         """, (limit, offset))
@@ -1260,7 +1259,7 @@ def api_v1_map():
             else:
                 f['slug'] = ''
 
-        c.execute("SELECT COUNT(*) FROM discovered_facilities WHERE latitude IS NOT NULL AND longitude IS NOT NULL AND (is_duplicate IS NULL OR is_duplicate = 0)")
+        c.execute("SELECT COUNT(*) FROM discovered_facilities WHERE latitude IS NOT NULL AND longitude IS NOT NULL")
         total = c.fetchone()[0]
 
         return jsonify({
