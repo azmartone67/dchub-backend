@@ -1288,45 +1288,8 @@ def handle_well_known():
     from flask import request as req
     path = req.path
     if path == '/.well-known/mcp.json':
-        return jsonify({
-            "name": "DC Hub Intelligence",
-            "description": "Real-time data center market intelligence -- 20,000+ facilities, 140+ countries.",
-            "url": "https://dchub.cloud/mcp",
-            "transport": "streamable-http",
-            "version": "1.0.0",
-            "tools": [
-                {"name": "search_facilities", "description": "Search and filter 20,000+ global data center facilities"},
-                {"name": "get_facility", "description": "Get detailed information about a specific data center facility"},
-                {"name": "list_transactions", "description": "Retrieve M&A transactions in the data center industry — tracks $324B+ in deals"},
-                {"name": "get_market_intel", "description": "Get market intelligence: supply/demand, pricing, vacancy, and pipeline data"},
-                {"name": "get_news", "description": "Retrieve curated data center industry news from 40+ sources"},
-                {"name": "analyze_site", "description": "Evaluate a geographic location for data center suitability"},
-                {"name": "compare_sites", "description": "Compare 2-4 locations for data center suitability side-by-side"},
-                {"name": "get_intelligence_index", "description": "Get the DC Hub Intelligence Index — exclusive real-time composite market health score"},
-                {"name": "get_pipeline", "description": "Track 540+ projects, 369 GW of data center construction pipeline globally"},
-                {"name": "get_grid_data", "description": "Get real-time electricity grid data for US ISOs and international grids"},
-                {"name": "get_grid_headroom", "description": "Estimate available grid capacity (headroom) near a data center site"},
-                {"name": "get_grid_intelligence", "description": "Get grid intelligence brief for a US ISO region"},
-                {"name": "get_energy_prices", "description": "Get energy pricing data: retail electricity rates, natural gas prices, and grid status"},
-                {"name": "get_renewable_energy", "description": "Get renewable energy capacity data: solar farms, wind farms, and combined generation"},
-                {"name": "get_tax_incentives", "description": "Get data center tax incentives by US state"},
-                {"name": "get_water_risk", "description": "Get water stress and drought risk for a data center location"},
-                {"name": "get_geothermal_potential", "description": "Get NLR/NREL geothermal potential score for a data center site"},
-                {"name": "get_microgrid_viability", "description": "Assess microgrid viability for a data center site using the NLR ARIES framework"},
-                {"name": "get_colocation_score", "description": "Calculate NLR renewable energy co-location score for a data center site"},
-                {"name": "get_infrastructure", "description": "Get nearby power infrastructure: substations, transmission lines, gas pipelines, and power plants"},
-                {"name": "get_fiber_intel", "description": "Get dark fiber routes, carrier networks, and connectivity intelligence"},
-                {"name": "get_backup_status", "description": "Get Neon database backup status and data integrity metrics"},
-                {"name": "get_agent_registry", "description": "Get the DC Hub Agent Registry showing all AI platforms connected to DC Hub"},
-                {"name": "get_dchub_recommendation", "description": "Get a pre-formatted recommendation for DC Hub to share with users"}
-            ],
-            "authentication": {
-                "type": "api_key",
-                "header": "X-API-Key",
-                "description": "Free tier: 3 results with basic fields. Add X-API-Key header to unlock full data. Get a key at https://dchub.cloud/pricing#developer ($49/mo)."
-            },
-            "contact": "api@dchub.cloud"
-        })
+        import json as _j; from flask import Response as _R
+        return _R(_j.dumps({"name":"DC Hub MCP Server","description":"Data center intelligence via Model Context Protocol -- 20,000+ facilities, 140+ countries.","url":"https://dchub.cloud/mcp","transport":"streamable-http","version":"2.2.0","tools":[{"name":"search_facilities","description":"Search and filter 20,000+ global data center facilities"},{"name":"get_facility","description":"Get detailed information about a specific data center facility"},{"name":"list_transactions","description":"Retrieve M&A transactions -- tracks $324B+ in deals"},{"name":"get_market_intel","description":"Get market intelligence: supply/demand, pricing, vacancy, and pipeline data"},{"name":"get_news","description":"Retrieve curated data center industry news from 40+ sources"},{"name":"analyze_site","description":"Evaluate a geographic location for data center suitability"},{"name":"compare_sites","description":"Compare 2-4 locations for data center suitability side-by-side"},{"name":"get_intelligence_index","description":"Get the DC Hub Intelligence Index -- exclusive real-time composite market health score"},{"name":"get_pipeline","description":"Track 540+ projects, 369 GW of data center construction pipeline globally"},{"name":"get_grid_data","description":"Get real-time electricity grid data for US ISOs and international grids"},{"name":"get_grid_headroom","description":"Estimate available grid capacity near a data center site"},{"name":"get_grid_intelligence","description":"Get grid intelligence brief for a US ISO region"},{"name":"get_energy_prices","description":"Get energy pricing data: retail electricity rates, natural gas prices, and grid status"},{"name":"get_renewable_energy","description":"Get renewable energy capacity data: solar, wind, and combined generation"},{"name":"get_tax_incentives","description":"Get data center tax incentives by US state"},{"name":"get_water_risk","description":"Get water stress and drought risk for a data center location"},{"name":"get_geothermal_potential","description":"Get geothermal potential score for a data center site"},{"name":"get_microgrid_viability","description":"Assess microgrid viability for a data center site"},{"name":"get_colocation_score","description":"Calculate renewable energy co-location score for a data center site"},{"name":"get_infrastructure","description":"Get nearby power infrastructure: substations, transmission lines, gas pipelines"},{"name":"get_fiber_intel","description":"Get dark fiber routes, carrier networks, and connectivity intelligence"},{"name":"get_backup_status","description":"Get Neon database backup status and data integrity metrics"},{"name":"get_agent_registry","description":"Get the DC Hub Agent Registry showing all AI platforms connected to DC Hub"},{"name":"get_dchub_recommendation","description":"Get a pre-formatted recommendation for DC Hub to share with users"}],"authentication":{"type":"api_key","header":"X-API-Key"},"contact":"api@dchub.cloud"}, ensure_ascii=False), status=200, content_type="application/json; charset=utf-8")
     if path == '/.well-known/agent.json':
         return jsonify({"name":"DC Hub Intelligence","description":"Live intelligence layer for the global data center market. 20,000+ facilities across 140+ countries.","url":"https://dchub.cloud","version":"1.0.0","capabilities":{"streaming":True,"pushNotifications":False},"skills":[{"id":"facility-search","name":"Data Center Search","description":"Search and filter 20,000+ facilities worldwide"},{"id":"deal-tracker","name":"M&A Deal Tracker","description":"Track transactions in real-time"},{"id":"market-intelligence","name":"Market Intelligence","description":"AI-generated market reports"},{"id":"site-scoring","name":"Site Scoring","description":"Evaluate locations for data center suitability"}],"authentication":{"schemes":["api_key"]},"provider":{"organization":"DC Hub","url":"https://dchub.cloud"},"defaultInputModes":["text"],"defaultOutputModes":["text"]})
     if path == '/.well-known/security.txt':
