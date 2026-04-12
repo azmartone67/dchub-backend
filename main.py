@@ -12670,6 +12670,30 @@ try:
 except Exception as e:
     print(f"Water/drought intel not loaded: {e}")
 
+
+@app.route('/api/v1/interconnect-queue', methods=['GET', 'OPTIONS'])
+def interconnect_queue():
+    import requests as req
+    status = request.args.get('status', 'active')
+    limit = request.args.get('limit', 3000)
+    try:
+        r = req.get(f'https://interconnection.fyi/api/queue?status={status}&limit={limit}', timeout=10)
+        return jsonify(r.json())
+    except Exception as e:
+        return jsonify({"projects": [], "total": 0, "error": str(e)}), 200
+
+@app.route('/api/v1/gas-processing-plants', methods=['GET', 'OPTIONS'])
+def gas_processing_plants():
+    return jsonify({"features": [], "total": 0, "source": "stub"})
+
+@app.route('/api/v1/gas-compressor-stations', methods=['GET', 'OPTIONS'])
+def gas_compressor_stations():
+    return jsonify({"features": [], "total": 0, "source": "stub"})
+
+@app.route('/api/v2/risk/active-fires', methods=['GET', 'OPTIONS'])
+def active_fires():
+    return jsonify({"fires": [], "source": "NASA FIRMS", "status": "ok"})
+
 if __name__ == '__main__':
     print("🚀 DC Hub API v86 Starting...")
     print(f"📊 PDF Generation: {'✅ Available' if PDF_AVAILABLE else '❌ Disabled'}")
@@ -13317,6 +13341,7 @@ else:
 # GDCI INDEX DASHBOARD (moved to gdci.py blueprint — serves JSON API)
 # Frontend dashboard at dchub.cloud/gdci (Cloudflare Pages)
 # =============================================================================
+
 
 
 if __name__ == '__main__':
