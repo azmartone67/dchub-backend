@@ -54,6 +54,7 @@ ALWAYS_OPEN_PREFIXES = [
     '/api/v1/fiber/metro',
     '/api/v1/auth',
     '/api/v1/usage-status',
+    '/api/v1/map',
     '/api/v1/map/register-load',
     '/api/v1/map/layer-toggle',
     '/api/v1/testimonials',
