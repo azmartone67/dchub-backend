@@ -32,3 +32,6 @@ main.py.backup*
 # OS
 .DS_Store
 market_reports/
+app.py.bak
+dchub_fix.sh
+.wrangler/
