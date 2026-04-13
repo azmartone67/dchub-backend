@@ -1215,21 +1215,21 @@ def get_facilities():
         cur  = conn.cursor()
         cur.execute('''
             SELECT name, latitude, longitude,
-                   operator_name AS provider, total_power_mw,
-                   city, state_name AS state, country,
-                   facility_type, status, location_display
+                   provider, power_mw,
+                   city, state, country,
+                   facility_type, status
             FROM discovered_facilities
             WHERE latitude IS NOT NULL AND longitude IS NOT NULL
               AND latitude != 0 AND longitude != 0
-            ORDER BY total_power_mw DESC NULLS LAST
+            ORDER BY power_mw DESC NULLS LAST
             LIMIT %s OFFSET %s
         ''', (limit, offset))
         rows = cur.fetchall()
         cols = [d[0] for d in cur.description]
         data = [dict(zip(cols, row)) for row in rows]
-        cur.execute('''SELECT COUNT(*) FROM discovered_facilities
+        cur.execute("""SELECT COUNT(*) FROM discovered_facilities
             WHERE latitude IS NOT NULL AND longitude IS NOT NULL
-              AND latitude != 0 AND longitude != 0''')
+              AND latitude != 0 AND longitude != 0""")
         total = cur.fetchone()[0]
         cur.close(); conn.close()
         return jsonify({"count": total, "data": data})
