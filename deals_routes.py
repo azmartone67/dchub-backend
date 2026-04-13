@@ -1281,13 +1281,25 @@
 
         @deals_bp.route('/api/news/sync', methods=['POST'])
         def trigger_news_sync():
-            """Manually trigger news sync"""
+            """Manually trigger news sync — writes to SQLite AND Neon announcements"""
             try:
                 from auto_sync import sync_news
+                from news_engine import get_latest_news, sync_to_announcements, NEWS_DB_PATH
                 saved = sync_news()
+                # Also sync to Neon announcements table
+                neon_saved = 0
+                try:
+                    result = get_latest_news(limit=500, hours=48, db_path=NEWS_DB_PATH)
+                    articles = result.get('articles', [])
+                    if articles:
+                        neon_saved = sync_to_announcements(articles)
+                        logger.info(f"[news/sync] Neon announcements: {neon_saved} saved")
+                except Exception as ne:
+                    logger.warning(f"[news/sync] Neon sync failed: {ne}")
                 return jsonify({
                     'success': True,
                     'message': f'News sync complete: {saved} new articles saved',
+                    'neon_saved': neon_saved,
                     'synced_at': datetime.utcnow().isoformat()
                 })
             except Exception as e:
