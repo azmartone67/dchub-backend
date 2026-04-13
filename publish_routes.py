@@ -138,7 +138,7 @@ def _publish_to_linkedin(text, article_url="", article_title=""):
     headers = {
         "Authorization": f"Bearer {LINKEDIN_ACCESS_TOKEN}",
         "Content-Type": "application/json",
-        "LinkedIn-Version": "202401",
+        "LinkedIn-Version": "202501",
         "X-Restli-Protocol-Version": "2.0.0",
     }
 
