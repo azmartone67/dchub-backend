@@ -9624,6 +9624,31 @@ def get_news_digest(date_slug=None):
 
 
 
+
+@app.route('/api/press-releases/archive', methods=['GET'])
+def get_press_release_archive():
+    """Return last 30 days of digest dates with article counts."""
+    from datetime import date, timedelta
+    dates = []
+    try:
+        with pg_connection() as pg:
+            cur = pg.cursor()
+            cur.execute(
+                "SELECT DATE(published_date)::text, COUNT(*) "
+                "FROM announcements "
+                "WHERE published_date >= NOW() - INTERVAL '30 days' "
+                "GROUP BY DATE(published_date) "
+                "ORDER BY DATE(published_date) DESC"
+            )
+            dates = [{'date': r[0], 'count': r[1]} for r in cur.fetchall()]
+    except Exception as e:
+        logger.warning(f'[archive] {e}')
+    # If no dates from DB, generate last 30 days
+    if not dates:
+        today = date.today()
+        dates = [{'date': (today - timedelta(days=i)).strftime('%Y-%m-%d'), 'count': 0} for i in range(30)]
+    return jsonify({'success': True, 'dates': dates, 'total': len(dates)})
+
 @app.route('/api/press-releases/digest-<date_slug>', methods=['GET'])
 @app.route('/api/press-releases/<date_slug>', methods=['GET'])
 def get_press_release_digest(date_slug=None):
