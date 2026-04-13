@@ -9599,9 +9599,7 @@ def get_news_digest(date_slug=None):
                 pg_cur = pg_conn.cursor()
                 pg_cur.execute(
                     "SELECT id,title,description,url,source,category,published_date::text,image_url,author "
-                    "FROM news WHERE published_date >= %s AND published_date <= %s "
-                    "ORDER BY published_date DESC LIMIT 200",
-                    (date_start, date_end)
+                    "FROM news ORDER BY published_date DESC LIMIT 200"
                 )
                 articles = [{'id':r[0],'title':r[1],'summary':r[2] or '','url':r[3] or '',
                              'source':r[4] or '','category':r[5] or 'General',
