@@ -9632,22 +9632,26 @@ def sync_news_to_neon():
     import sqlite3, traceback
     saved = 0; skipped = 0; errors = 0
     try:
-        # Read from SQLite
-        sq = sqlite3.connect('dchub.db')
-        sq.row_factory = sqlite3.Row
-        cur = sq.cursor()
-        cur.execute("""
-            SELECT title, summary, url, source_name, category, published_at, fetched_at, image_url
-            FROM news_articles
-            WHERE fetched_at >= datetime('now', '-2 days')
-            ORDER BY fetched_at DESC LIMIT 500
-        """)
-        articles = [dict(r) for r in cur.fetchall()]
-        sq.close()
-        logger.info(f"[neon_sync] Found {len(articles)} recent articles in SQLite")
-
+        # Read from /api/news/sync first to get fresh articles
+        import requests as _req
+        sync_resp = _req.post('http://localhost:5000/api/news/sync', timeout=60)
+        logger.info(f"[neon_sync] news/sync: {sync_resp.status_code}")
+        articles = []
+        # Now read from the news table in Neon
+        with pg_connection() as pg:
+            cur = pg.cursor()
+            for tbl, date_col in [('news', 'published_date'), ('announcements', 'published_date')]:
+                try:
+                    cur.execute(f"SELECT title, description, url, source, category, {date_col}::text, null, image_url FROM {tbl} ORDER BY {date_col} DESC LIMIT 500")
+                    rows = cur.fetchall()
+                    if rows:
+                        articles = [{'title':r[0],'summary':r[1],'url':r[2],'source_name':r[3],'category':r[4],'published_at':r[5],'image_url':r[7]} for r in rows]
+                        logger.info(f"[neon_sync] {len(articles)} articles from {tbl}")
+                        break
+                except Exception as te:
+                    logger.warning(f"[neon_sync] {tbl}: {te}")
         if not articles:
-            return jsonify({'success': True, 'message': 'No recent articles in SQLite', 'saved': 0})
+            return jsonify({'success': True, 'message': 'No articles found', 'saved': 0})
 
         # Write to Neon announcements table
         with pg_connection() as pg:
@@ -9712,7 +9716,7 @@ def daily_cron():
             cur.execute("""
                 SELECT title, summary, url, source
                 FROM announcements
-                WHERE published_date >= NOW() - INTERVAL '1 day'
+                WHERE published_date::timestamp >= NOW() - INTERVAL '1 day'
                 ORDER BY published_date DESC LIMIT 5
             """)
             articles = [{'title': r[0], 'summary': r[1], 'url': r[2], 'source': r[3]} for r in cur.fetchall()]
