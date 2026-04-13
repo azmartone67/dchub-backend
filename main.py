@@ -9573,35 +9573,43 @@ def get_news_digest(date_slug=None):
     date_start = f"{clean_date} 00:00:00"
     date_end   = f"{clean_date} 23:59:59"
     articles = []
-    backend_used = 'empty'
+    # Try SQLite dchub.db first (news_engine writes here with fresh fetched_at)
     try:
-        with pg_connection() as pg_conn:
-            pg_cur = pg_conn.cursor()
-            for table in ('news_articles', 'news', 'articles'):
-                try:
-                    pg_cur.execute(
-                        f"SELECT id, title, summary, url, source, category, "
-                        f"published_at::text, fetched_at::text, image_url, is_breaking, author "
-                        f"FROM {table} WHERE published_at >= %s AND published_at <= %s "
-                        f"ORDER BY published_at DESC LIMIT 200",
-                        (date_start, date_end)
-                    )
-                    rows = pg_cur.fetchall()
-                    articles = [
-                        {'id': r[0], 'title': r[1], 'summary': r[2] or '',
-                         'url': r[3] or '', 'source': r[4] or '', 'category': r[5] or 'General',
-                         'published_at': str(r[6] or ''), 'fetched_at': str(r[7] or ''),
-                         'image_url': r[8] or '', 'is_breaking': r[9] or False, 'author': r[10] or ''}
-                        for r in rows
-                    ]
-                    backend_used = f'neon/{table}'
-                    break
-                except Exception:
-                    continue
+        import sqlite3
+        sq = sqlite3.connect('dchub.db')
+        sq.row_factory = sqlite3.Row
+        sqc = sq.cursor()
+        sqc.execute(
+            "SELECT id,title,summary,url,source_name,category,published_at,image_url,author "
+            "FROM news_articles WHERE DATE(fetched_at)=? OR DATE(published_at)=? "
+            "ORDER BY fetched_at DESC LIMIT 200", (clean_date, clean_date)
+        )
+        articles = [{'id':r[0],'title':r[1],'summary':r[2] or '','url':r[3] or '',
+                     'source':r[4] or '','category':r[5] or 'General',
+                     'published_at':str(r[6] or ''),'image_url':r[7] or '','author':r[8] or ''}
+                    for r in sqc.fetchall()]
+        sq.close()
+        backend_used = 'sqlite'
     except Exception as e:
-        pass
-    categories = {}
-    sources = {}
+        logger.warning(f'[digest] sqlite failed: {e}')
+    # Fallback: Neon news table (published_date col)
+    if not articles:
+        try:
+            with pg_connection() as pg_conn:
+                pg_cur = pg_conn.cursor()
+                pg_cur.execute(
+                    "SELECT id,title,description,url,source,category,published_date::text,image_url,author "
+                    "FROM news WHERE published_date >= %s AND published_date <= %s "
+                    "ORDER BY published_date DESC LIMIT 200",
+                    (date_start, date_end)
+                )
+                articles = [{'id':r[0],'title':r[1],'summary':r[2] or '','url':r[3] or '',
+                             'source':r[4] or '','category':r[5] or 'General',
+                             'published_at':str(r[6] or ''),'image_url':r[7] or '','author':r[8] or ''}
+                            for r in pg_cur.fetchall()]
+                backend_used = 'neon/news'
+        except Exception as e:
+            logger.warning(f'[digest] neon failed: {e}')
     for a in articles:
         categories[a.get('category') or 'General'] = categories.get(a.get('category') or 'General', 0) + 1
         sources[a.get('source') or 'Unknown'] = sources.get(a.get('source') or 'Unknown', 0) + 1
