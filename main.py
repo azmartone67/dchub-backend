@@ -1080,6 +1080,19 @@ except ImportError:
     print("📊 DC Hub Index: ℹ️ index_api.py not found (replaced by gdci.py)")
 except Exception as e:
     print(f"📊 DC Hub Index: ⚠️ Error: {e}")
+    
+# =============================================================================
+# NEWS DIGEST PUBLISHER - Site (KV) + LinkedIn auto-posting
+# =============================================================================
+try:
+    from publish_routes import register_publish_routes
+    register_publish_routes(app)
+    print("📰 News Publisher: ✅ /publish routes registered")
+except ImportError:
+    print("📰 News Publisher: ℹ️ publish_routes.py not found")
+except Exception as e:
+    print(f"📰 News Publisher: ⚠️ Error: {e}")
+
 # =============================================================================
 # EARLY require_plan STUB - Must be available before first 
 
