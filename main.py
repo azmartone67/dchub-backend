@@ -1080,19 +1080,6 @@ except ImportError:
     print("📊 DC Hub Index: ℹ️ index_api.py not found (replaced by gdci.py)")
 except Exception as e:
     print(f"📊 DC Hub Index: ⚠️ Error: {e}")
-    
-# =============================================================================
-# NEWS DIGEST PUBLISHER - Site (KV) + LinkedIn auto-posting
-# =============================================================================
-try:
-    from publish_routes import register_publish_routes
-    register_publish_routes(app)
-    print("📰 News Publisher: ✅ /publish routes registered")
-except ImportError:
-    print("📰 News Publisher: ℹ️ publish_routes.py not found")
-except Exception as e:
-    print(f"📰 News Publisher: ⚠️ Error: {e}")
-
 # =============================================================================
 # EARLY require_plan STUB - Must be available before first 
 
@@ -9565,46 +9552,37 @@ def api_news_alias():
         logger.error(f"[/api/news] error: {e}", exc_info=True)
         return jsonify({'success': False, 'error': str(e), 'articles': [], 'data': []}), 500
 
+
+
 @app.route('/news/digest-<date_slug>', methods=['GET'])
 @app.route('/api/news/digest/<date_slug>', methods=['GET'])
 @app.route('/api/news/digest', methods=['GET'])
 def get_news_digest(date_slug=None):
-    """Daily news digest — serves /news/digest-YYYY-MM-DD and /api/news/digest/YYYY-MM-DD.
-    The Worker's handleNewsRoute generates an HTML shell for /news/digest-* and
-    the page JS fetches data from Railway at this endpoint."""
+    """Daily news digest for /news/digest-YYYY-MM-DD"""
     import re
     from datetime import datetime, timedelta, date as date_cls
-
     if date_slug is None:
         date_slug = request.args.get('date', date_cls.today().strftime('%Y-%m-%d'))
-
     clean_date = date_slug[len('digest-'):] if date_slug.startswith('digest-') else date_slug
-
     if not re.match(r'^\d{4}-\d{2}-\d{2}$', clean_date):
-        return jsonify({'success': False, 'error': f'Invalid date: {clean_date}', 'slug': date_slug}), 400
-
+        return jsonify({'success': False, 'error': f'Invalid date: {clean_date}'}), 400
     try:
         target_date = datetime.strptime(clean_date, '%Y-%m-%d').date()
     except ValueError:
         return jsonify({'success': False, 'error': 'Invalid date'}), 400
-
     date_start = f"{clean_date} 00:00:00"
     date_end   = f"{clean_date} 23:59:59"
-    display_date = target_date.strftime('%B %d, %Y')
     articles = []
     backend_used = 'empty'
-
     try:
         with pg_connection() as pg_conn:
             pg_cur = pg_conn.cursor()
-            # Try news_articles first, then fallback to news/articles tables
             for table in ('news_articles', 'news', 'articles'):
                 try:
                     pg_cur.execute(
                         f"SELECT id, title, summary, url, source, category, "
                         f"published_at::text, fetched_at::text, image_url, is_breaking, author "
-                        f"FROM {table} "
-                        f"WHERE published_at >= %s AND published_at <= %s "
+                        f"FROM {table} WHERE published_at >= %s AND published_at <= %s "
                         f"ORDER BY published_at DESC LIMIT 200",
                         (date_start, date_end)
                     )
@@ -9617,39 +9595,26 @@ def get_news_digest(date_slug=None):
                         for r in rows
                     ]
                     backend_used = f'neon/{table}'
-                    logger.info(f"[digest] {clean_date}: {len(articles)} articles from {table}")
                     break
                 except Exception:
                     continue
     except Exception as e:
-        logger.warning(f"[digest] Neon query failed: {e}")
-
+        pass
     categories = {}
     sources = {}
     for a in articles:
-        cat = a.get('category') or 'General'
-        src = a.get('source') or 'Unknown'
-        categories[cat] = categories.get(cat, 0) + 1
-        sources[src]    = sources.get(src, 0) + 1
-
+        categories[a.get('category') or 'General'] = categories.get(a.get('category') or 'General', 0) + 1
+        sources[a.get('source') or 'Unknown'] = sources.get(a.get('source') or 'Unknown', 0) + 1
     prev_date = (target_date - timedelta(days=1)).strftime('%Y-%m-%d')
     next_date = (target_date + timedelta(days=1)).strftime('%Y-%m-%d')
+    return jsonify({'success': True, 'slug': f'digest-{clean_date}', 'date': clean_date,
+        'display_date': target_date.strftime('%B %d, %Y'), 'total': len(articles),
+        'articles': articles, 'categories': categories, 'sources': sources,
+        'nav': {'prev': f'/news/digest-{prev_date}', 'next': f'/news/digest-{next_date}'},
+        'backend': backend_used})
 
-    return jsonify({
-        'success':      True,
-        'slug':         f'digest-{clean_date}',
-        'date':         clean_date,
-        'display_date': display_date,
-        'total':        len(articles),
-        'articles':     articles,
-        'categories':   categories,
-        'sources':      sources,
-        'nav': {
-            'prev': f'/news/digest-{prev_date}',
-            'next': f'/news/digest-{next_date}',
-        },
-        'backend': backend_used
-    })
+
+
 
 
 @app.route('/api/agent/chat', methods=['POST'])
