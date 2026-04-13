@@ -9847,7 +9847,7 @@ def get_press_release_digest(date_slug=None):
             cur = pg.cursor()
             # Try announcements (12k+ articles) then news table
             for tbl, q in [
-                ('announcements', "SELECT id,title,summary,source_url,source,category,published_date::text,image_url,'' FROM announcements ORDER BY published_date DESC LIMIT 200"),
+                ('announcements', f"SELECT id,title,summary,source_url,source,category,published_date::text,image_url,'' FROM announcements WHERE LEFT(published_date,10) = '{d}' ORDER BY published_date DESC LIMIT 200"),
                 ('news', "SELECT id,title,description,url,source,category,published_date::text,image_url,author FROM news ORDER BY published_date DESC LIMIT 200"),
             ]:
                 try:
