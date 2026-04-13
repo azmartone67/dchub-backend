@@ -6592,7 +6592,7 @@ def handle_checkout_completed(session):
             if payment_link_id:
                 print(f"⚠️ Unknown payment_link ID: '{payment_link_id}' — add to payment_link_plan_map! Falling back to amount detection.")
             if amount_dollars == 49 or (45 <= amount_dollars <= 55):
-                plan_name, api_tier = 'developer', 'developer'
+                plan_name, api_tier = 'developer', 'pro'
             elif amount_dollars == 99 or (95 <= amount_dollars <= 105):
                 plan_name, api_tier = 'founding', 'pro'
             elif amount_dollars == 199 or (195 <= amount_dollars <= 205):
@@ -6647,15 +6647,9 @@ def handle_checkout_completed(session):
 
             print(f"🔐 Account created for {customer_email}")
 
-            # Generate tier-prefixed key for MCP gatekeeper compatibility
-            _tier_prefix_map = {
-                'developer': 'dchub_dev_', 'pro': 'dchub_pro_',
-                'enterprise': 'dchub_ent_', 'founding': 'dchub_pro_',
-            }
-            _key_prefix_str = _tier_prefix_map.get(plan_name, 'dchub_dev_')
-            raw_key = _key_prefix_str + sec.token_urlsafe(32)
+            raw_key = 'dchub_' + sec.token_urlsafe(32)
             key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
-            key_prefix = raw_key[:raw_key.rindex('_') + 1]  # e.g. 'dchub_dev_'
+            key_prefix = raw_key[:12]
 
             _pg_execute(
                 "INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions, rate_limit_tier, is_active, created_at, usage_count, plan, calls_today, calls_total) VALUES (%s, %s, %s, %s, '[\"read\",\"write\"]', %s, 1, %s, 0, %s, 0, 0) ON CONFLICT (key) DO UPDATE SET user_id = EXCLUDED.user_id, key_hash = EXCLUDED.key_hash, key_prefix = EXCLUDED.key_prefix, name = EXCLUDED.name, permissions = EXCLUDED.permissions, rate_limit_tier = EXCLUDED.rate_limit_tier, is_active = EXCLUDED.is_active, created_at = EXCLUDED.created_at, usage_count = EXCLUDED.usage_count, plan = EXCLUDED.plan, calls_today = EXCLUDED.calls_today, calls_total = EXCLUDED.calls_total",
@@ -6676,7 +6670,8 @@ def handle_checkout_completed(session):
 
             if resolved_user_id:
                 now = datetime.utcnow().isoformat()
-                _pg_execute("UPDATE api_keys SET rate_limit_tier = %s, plan = %s, last_used_at = %s WHERE user_id = %s", (api_tier, api_tier, now, resolved_user_id))
+                _pg_execute("UPDATE api_keys SET rate_limit_tier = %s, last_used_at = %s WHERE user_id = %s",
+                           (api_tier, now, resolved_user_id))
                 print(f"🔑 Updated API key(s) to tier: {api_tier}")
 
                 import secrets as sec

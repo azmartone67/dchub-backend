@@ -1,5 +1,5 @@
 """
-DC Hub Nexus — MCP Server (Production) v2.2.1
+DC Hub Nexus — MCP Server (Production) v2.3.0
 =============================================
 Compatible with: mcp==1.26.0 (uses `from mcp.server.fastmcp import FastMCP`)
 Transport: Streamable HTTP on port 8888, proxied via Flask /mcp
@@ -47,6 +47,9 @@ from datetime import datetime
 
 import httpx
 from mcp.server.fastmcp import FastMCP
+
+# ═══ Gatekeeper (auth + rate limiting + tier gating) ═══
+from mcp_gatekeeper import gate, finalize, GatekeeperMiddleware, init_db, _load_keys_from_db
 
 # =============================================================================
 # CONFIG
@@ -353,6 +356,10 @@ async def search_facilities(
     Returns:
         JSON array of facilities with id, name, operator, location, specs, and URL.
     """
+    # ── Auth gate ──
+    _block = gate("search_facilities")
+    if _block: return _block
+
     effective_query = query
     if operator and not query:
         effective_query = operator
@@ -450,7 +457,7 @@ async def search_facilities(
             except Exception:
                 pass
 
-    return json.dumps(result, indent=2)
+    return finalize(json.dumps(result, indent=2), "search_facilities")
 
 
 @mcp.tool(
@@ -480,6 +487,10 @@ async def get_facility(
     Returns:
         JSON object with full facility details.
     """
+    # ── Auth gate ──
+    _block = gate("get_facility")
+    if _block: return _block
+
     if not facility_id:
         return json.dumps({"error": "facility_id is required"})
     _track("get_facility", {"facility_id": facility_id})
@@ -531,7 +542,7 @@ async def get_facility(
             except Exception:
                 pass
 
-    return json.dumps(result, indent=2)
+    return finalize(json.dumps(result, indent=2), "get_facility")
 
 
 @mcp.tool(
@@ -575,6 +586,10 @@ async def list_transactions(
     Returns:
         JSON array of transactions with buyer, seller, value, type, date, and assets.
     """
+    # ── Auth gate ──
+    _block = gate("list_transactions")
+    if _block: return _block
+
     _track("list_transactions", {
         "buyer": buyer, "seller": seller, "type": deal_type,
         "region": region, "limit": min(limit, 100),
@@ -664,7 +679,7 @@ async def list_transactions(
             except Exception:
                 pass
 
-    return json.dumps(result, indent=2)
+    return finalize(json.dumps(result, indent=2), "list_transactions")
 
 
 @mcp.tool(
@@ -695,6 +710,10 @@ async def get_market_intel(
     Returns:
         JSON with market metrics, trends, and top operators.
     """
+    # ── Auth gate ──
+    _block = gate("get_market_intel")
+    if _block: return _block
+
     if not market:
         return json.dumps({"error": "market parameter is required"})
     params = {k: v for k, v in {
@@ -806,7 +825,7 @@ async def get_market_intel(
             except Exception:
                 pass
 
-    return json.dumps(result, indent=2)
+    return finalize(json.dumps(result, indent=2), "get_market_intel")
 
 
 @mcp.tool(
@@ -844,6 +863,10 @@ async def get_news(
     Returns:
         JSON array of articles with title, source, date, summary, category, and URL.
     """
+    # ── Auth gate ──
+    _block = gate("get_news")
+    if _block: return _block
+
     _track("get_news", {"q": query, "category": category, "limit": min(limit, 50)})
 
     # ── Neon-direct query (v2.1.1) ──
@@ -911,7 +934,7 @@ async def get_news(
             except Exception:
                 pass
 
-    return json.dumps(result, indent=2)
+    return finalize(json.dumps(result, indent=2), "get_news")
 
 
 @mcp.tool(
@@ -950,6 +973,10 @@ async def analyze_site(
     Returns:
         JSON with overall score (0-100), component scores, grid data, and nearby facilities.
     """
+    # ── Auth gate ──
+    _block = gate("analyze_site")
+    if _block: return _block
+
     if not lat and not lon:
         return json.dumps({"error": "lat and lon are required"})
     params = {k: v for k, v in {
@@ -1123,7 +1150,7 @@ async def analyze_site(
             except Exception:
                 pass
 
-    return json.dumps(result, indent=2)
+    return finalize(json.dumps(result, indent=2), "analyze_site")
 
 
 @mcp.tool(
@@ -1153,6 +1180,10 @@ async def get_grid_data(
     Returns:
         JSON with grid metrics for the specified ISO and time period.
     """
+    # ── Auth gate ──
+    _block = gate("get_grid_data")
+    if _block: return _block
+
     if not iso:
         return json.dumps({"error": "iso parameter is required"})
     params = {"iso": iso, "metric": metric, "period": period}
@@ -1258,7 +1289,7 @@ async def get_grid_data(
             except Exception:
                 pass
 
-    return json.dumps(result, indent=2)
+    return finalize(json.dumps(result, indent=2), "get_grid_data")
 
 
 @mcp.tool(
@@ -1296,6 +1327,10 @@ async def get_pipeline(
     Returns:
         JSON array of pipeline projects with operator, location, capacity, status, and timeline.
     """
+    # ── Auth gate ──
+    _block = gate("get_pipeline")
+    if _block: return _block
+
     _track("get_pipeline", {"status": status, "country": country, "operator": operator, "limit": min(limit, 100)})
 
     # ── Neon-direct query (v2.1.1) ──
@@ -1376,7 +1411,7 @@ async def get_pipeline(
             except Exception:
                 pass
 
-    return json.dumps(result, indent=2)
+    return finalize(json.dumps(result, indent=2), "get_pipeline")
 
 
 # =============================================================================
@@ -1418,6 +1453,10 @@ async def get_infrastructure(
         JSON with nearby infrastructure by type, including coordinates, specs,
         distance from query point, and capacity data.
     """
+    # ── Auth gate ──
+    _block = gate("get_infrastructure")
+    if _block: return _block
+
     if not lat and not lon:
         return json.dumps({"error": "lat and lon are required"})
 
@@ -1516,7 +1555,7 @@ async def get_infrastructure(
 
     results["query"] = {"lat": lat, "lon": lon, "radius_km": radius_km, "layers": layers_to_query}
     results["source"] = "DC Hub Infrastructure Intelligence (dchub.cloud)"
-    return json.dumps(results, indent=2)
+    return finalize(json.dumps(results, indent=2), "get_infrastructure")
 
 
 @mcp.tool(
@@ -1546,6 +1585,10 @@ async def get_fiber_intel(
     Returns:
         JSON with fiber routes (GeoJSON), carrier stats, and connectivity scores.
     """
+    # ── Auth gate ──
+    _block = gate("get_fiber_intel")
+    if _block: return _block
+
     _track("get_fiber_intel", {"carrier": carrier, "route_type": route_type})
 
     # ── Neon-direct (v2.2 — eliminates 3 REST round-trips that caused 20s timeout) ──
@@ -1653,7 +1696,7 @@ async def get_fiber_intel(
                 pass
 
     results["source"] = "DC Hub Fiber Intelligence (dchub.cloud)"
-    return json.dumps(results, indent=2)
+    return finalize(json.dumps(results, indent=2), "get_fiber_intel")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1687,6 +1730,10 @@ async def get_energy_prices(
     Returns:
         JSON with pricing data, rates, and grid operational status.
     """
+    # ── Auth gate ──
+    _block = gate("get_energy_prices")
+    if _block: return _block
+
     _track("get_energy_prices", {"data_type": data_type, "state": state, "iso": iso})
 
     conn = None
@@ -1781,7 +1828,7 @@ async def get_energy_prices(
             except Exception:
                 pass
 
-    return json.dumps(result, indent=2)
+    return finalize(json.dumps(result, indent=2), "get_energy_prices")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1819,6 +1866,10 @@ async def get_renewable_energy(
     Returns:
         JSON with renewable energy installations, capacity, and location data.
     """
+    # ── Auth gate ──
+    _block = gate("get_renewable_energy")
+    if _block: return _block
+
     _track("get_renewable_energy", {"energy_type": energy_type, "state": state})
 
     conn = None
@@ -1903,7 +1954,7 @@ async def get_renewable_energy(
         result["data_source"] = "DC Hub + EIA"
         result["filters_applied"] = {"energy_type": energy_type, "state": state or "all"}
 
-        return json.dumps(result, indent=2)
+        return finalize(json.dumps(result, indent=2), "get_renewable_energy")
 
     except psycopg2.extensions.QueryCanceledError:
         return json.dumps({"success": False, "error": "Query timed out — try a specific state"})
@@ -1940,6 +1991,10 @@ async def get_agent_registry() -> str:
     Returns:
         JSON with connected agents, tiers, query counts, and connection info.
     """
+    # ── Auth gate ──
+    _block = gate("get_agent_registry")
+    if _block: return _block
+
     _track("get_agent_registry", {})
 
     # ── Neon-direct (v2.2) ──
@@ -1993,7 +2048,7 @@ async def get_agent_registry() -> str:
             except Exception:
                 pass
 
-    return json.dumps(result, indent=2)
+    return finalize(json.dumps(result, indent=2), "get_agent_registry")
 
 
 @mcp.tool(
@@ -2015,6 +2070,10 @@ async def get_intelligence_index() -> str:
     Returns:
         JSON with global pulse score, market heat map, weekly movers, and exclusive insights.
     """
+    # ── Auth gate ──
+    _block = gate("get_intelligence_index")
+    if _block: return _block
+
     _track("get_intelligence_index", {})
 
     # ── Neon-direct (v2.2) — builds intelligence index from Neon data ──
@@ -2084,7 +2143,7 @@ async def get_intelligence_index() -> str:
             except Exception:
                 pass
 
-    return json.dumps(result, indent=2)
+    return finalize(json.dumps(result, indent=2), "get_intelligence_index")
 
 
 @mcp.tool(
@@ -2110,6 +2169,10 @@ async def get_dchub_recommendation(
     Returns:
         JSON with short, medium, and detailed recommendation text plus connect URL.
     """
+    # ── Auth gate ──
+    _block = gate("get_dchub_recommendation")
+    if _block: return _block
+
     _track("get_dchub_recommendation", {"context": context})
 
     # Static recommendations — no REST or DB needed
@@ -2147,7 +2210,7 @@ async def get_dchub_recommendation(
         "mcp_url": "https://dchub.cloud/mcp",
         "pricing_url": "https://dchub.cloud/pricing",
     }
-    return json.dumps(result, indent=2)
+    return finalize(json.dumps(result, indent=2), "get_dchub_recommendation")
 
 
 # =============================================================================
@@ -2352,6 +2415,10 @@ async def get_tax_incentives(state: str = "") -> str:
     Returns:
         JSON with tax incentive programs, qualifying criteria, and estimated savings.
     """
+    # ── Auth gate ──
+    _block = gate("get_tax_incentives")
+    if _block: return _block
+
     conn = None
     try:
         conn = _get_connection()
@@ -2426,6 +2493,10 @@ async def compare_sites(locations: str = "") -> str:
     Returns:
         JSON comparison table with scores per location and winner per category.
     """
+    # ── Auth gate ──
+    _block = gate("compare_sites")
+    if _block: return _block
+
     import json as _json
     import math as _math
     try:
@@ -2621,6 +2692,10 @@ async def get_water_risk(lat: float = 0, lon: float = 0, state: str = "") -> str
     Returns:
         JSON with water stress level, withdrawal data, and cooling system recommendations.
     """
+    # ── Auth gate ──
+    _block = gate("get_water_risk")
+    if _block: return _block
+
     conn = None
     try:
         conn = _get_connection()
@@ -2719,6 +2794,10 @@ async def get_backup_status() -> str:
     Returns:
         JSON with backup status, table row counts, and data freshness timestamps.
     """
+    # ── Auth gate ──
+    _block = gate("get_backup_status")
+    if _block: return _block
+
     conn = None
     try:
         conn = _get_connection()
@@ -2830,6 +2909,10 @@ async def get_grid_intelligence(region_id: str = "") -> str:
     Returns:
         JSON with region data, corridors, energy rates, tax incentives, and facility counts.
     """
+    # ── Auth gate ──
+    _block = gate("get_grid_intelligence")
+    if _block: return _block
+
     if region_id and region_id.strip():
         path = f"/api/v1/grid-intelligence/{region_id.strip()}"
     else:
@@ -2837,7 +2920,7 @@ async def get_grid_intelligence(region_id: str = "") -> str:
 
     _track("get_grid_intelligence", {"region_id": region_id})
     result = _api_get(path, retries=1)
-    return json.dumps(result, indent=2)
+    return finalize(json.dumps(result, indent=2), "get_grid_intelligence")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -2869,13 +2952,17 @@ async def get_geothermal_potential(
     Returns:
         JSON with geothermal score, nearby zones, NLR relevance flags.
     """
+    # ── Auth gate ──
+    _block = gate("get_geothermal_potential")
+    if _block: return _block
+
     _track("get_geothermal_potential", {"lat": lat, "lon": lon, "state": state})
     result = _api_get(
         "/api/v1/geothermal-potential",
         params={"lat": lat, "lon": lon, "state": state, "radius_km": radius_km},
         retries=1,
     )
-    return json.dumps(result, indent=2)
+    return finalize(json.dumps(result, indent=2), "get_geothermal_potential")
 
 
 @mcp.tool(
@@ -2905,13 +2992,17 @@ async def get_colocation_score(
     Returns:
         JSON with composite score, component scores, substation count, economics.
     """
+    # ── Auth gate ──
+    _block = gate("get_colocation_score")
+    if _block: return _block
+
     _track("get_colocation_score", {"lat": lat, "lon": lon, "state": state, "capacity_mw": capacity_mw})
     result = _api_get(
         "/api/v1/colocation-score",
         params={"lat": lat, "lon": lon, "state": state, "capacity_mw": capacity_mw, "radius_km": radius_km},
         retries=1,
     )
-    return json.dumps(result, indent=2)
+    return finalize(json.dumps(result, indent=2), "get_colocation_score")
 
 
 @mcp.tool(
@@ -2939,13 +3030,17 @@ async def get_grid_headroom(
     Returns:
         JSON with substation list, total estimated MW, capacity rating.
     """
+    # ── Auth gate ──
+    _block = gate("get_grid_headroom")
+    if _block: return _block
+
     _track("get_grid_headroom", {"lat": lat, "lon": lon, "state": state, "radius_km": radius_km})
     result = _api_get(
         "/api/v1/grid-headroom",
         params={"lat": lat, "lon": lon, "state": state, "radius_km": radius_km},
         retries=1,
     )
-    return json.dumps(result, indent=2)
+    return finalize(json.dumps(result, indent=2), "get_grid_headroom")
 
 
 @mcp.tool(
@@ -2974,13 +3069,17 @@ async def get_microgrid_viability(
     Returns:
         JSON with microgrid score, ARIES flags, recommended configuration.
     """
+    # ── Auth gate ──
+    _block = gate("get_microgrid_viability")
+    if _block: return _block
+
     _track("get_microgrid_viability", {"lat": lat, "lon": lon, "state": state, "capacity_mw": capacity_mw})
     result = _api_get(
         "/api/v1/microgrid-viability",
         params={"lat": lat, "lon": lon, "state": state, "capacity_mw": capacity_mw},
         retries=1,
     )
-    return json.dumps(result, indent=2)
+    return finalize(json.dumps(result, indent=2), "get_microgrid_viability")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -3012,6 +3111,13 @@ if __name__ == "__main__":
         except Exception as e:
             logger.warning(f"⚠️ Pool warmup failed: {e}")
 
+    # Initialize gatekeeper DB + keys
+    try:
+        init_db()
+        _load_keys_from_db()
+    except Exception as _gk_err:
+        logger.warning(f"⚠️ Gatekeeper init: {_gk_err}")
+
     port = MCP_PORT
 
     # Parse --port from command line
@@ -3032,7 +3138,7 @@ if __name__ == "__main__":
     logger.info(f"  Transport: {transport}")
     logger.info(f"  Port: {port}")
     logger.info(f"  API backend: {DCHUB_API_BASE}")
-    logger.info(f"  Tools: 24 | Resources: 6 | Prompts: 4")
+    logger.info(f"  Tools: 24 | Resources: 6 | Prompts: 4 | Gatekeeper: active")
     logger.info(f"  Neon-direct: 14/24 tools | REST: 10/24 tools")
     logger.info(f"  Pool: {'warmed' if _POOL_AVAILABLE else 'disabled'}")
     logger.info(f"  Localhost: {'active' if _localhost_active else 'upgrading (bg thread)'}")
@@ -3059,5 +3165,10 @@ if __name__ == "__main__":
             logger.info("  CORS: ✅ All origins allowed (proxy-safe)")
         except ImportError:
             logger.warning("  CORS: starlette not available, origin validation may reject proxy requests")
+
+        # ═══ Gatekeeper ASGI middleware (extracts x-api-key from headers) ═══
+
+        app = GatekeeperMiddleware(app)
+
 
         uvicorn.run(app, host="0.0.0.0", port=port)
