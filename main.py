@@ -9625,6 +9625,133 @@ def get_news_digest(date_slug=None):
 
 
 
+
+@app.route('/api/news/sync/neon', methods=['POST'])
+def sync_news_to_neon():
+    """Sync latest news from news_engine into Neon announcements table."""
+    import sqlite3, traceback
+    saved = 0; skipped = 0; errors = 0
+    try:
+        # Read from SQLite
+        sq = sqlite3.connect('dchub.db')
+        sq.row_factory = sqlite3.Row
+        cur = sq.cursor()
+        cur.execute("""
+            SELECT title, summary, url, source_name, category, published_at, fetched_at, image_url
+            FROM news_articles
+            WHERE fetched_at >= datetime('now', '-2 days')
+            ORDER BY fetched_at DESC LIMIT 500
+        """)
+        articles = [dict(r) for r in cur.fetchall()]
+        sq.close()
+        logger.info(f"[neon_sync] Found {len(articles)} recent articles in SQLite")
+
+        if not articles:
+            return jsonify({'success': True, 'message': 'No recent articles in SQLite', 'saved': 0})
+
+        # Write to Neon announcements table
+        with pg_connection() as pg:
+            pg_cur = pg.cursor()
+            for a in articles:
+                try:
+                    pg_cur.execute("""
+                        INSERT INTO announcements
+                            (title, summary, url, source, category, published_date, image_url, announcement_type, confidence)
+                        VALUES (%s, %s, %s, %s, %s, %s::timestamp, %s, 'news', 0.9)
+                        ON CONFLICT (url) DO NOTHING
+                    """, (
+                        a.get('title','')[:500],
+                        a.get('summary','')[:2000],
+                        a.get('url','')[:1000],
+                        a.get('source_name','')[:200],
+                        a.get('category','Industry')[:100],
+                        a.get('published_at') or a.get('fetched_at'),
+                        a.get('image_url','')[:500] if a.get('image_url') else None,
+                    ))
+                    if pg_cur.rowcount > 0:
+                        saved += 1
+                    else:
+                        skipped += 1
+                except Exception as e:
+                    errors += 1
+                    logger.warning(f"[neon_sync] row error: {e}")
+
+        logger.info(f"[neon_sync] saved={saved} skipped={skipped} errors={errors}")
+        return jsonify({'success': True, 'saved': saved, 'skipped': skipped, 'errors': errors, 'total_processed': len(articles)})
+
+    except Exception as e:
+        logger.error(f"[neon_sync] failed: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+
+@app.route('/api/cron/daily', methods=['POST', 'GET'])
+def daily_cron():
+    """Daily cron job: sync news to Neon + post to LinkedIn."""
+    import requests as _req, traceback
+    from datetime import date
+    results = {'news_sync': None, 'linkedin': None, 'date': date.today().isoformat()}
+
+    # Step 1: Sync SQLite news → Neon
+    try:
+        r = sync_news_to_neon()
+        results['news_sync'] = r.get_json() if hasattr(r, 'get_json') else {'done': True}
+    except Exception as e:
+        results['news_sync'] = {'error': str(e)}
+        logger.error(f"[daily_cron] news sync failed: {e}")
+
+    # Step 2: Post to LinkedIn
+    try:
+        from linkedin_autopost import create_text_post, get_valid_token
+        from datetime import datetime
+
+        # Get today's top articles from Neon
+        articles = []
+        with pg_connection() as pg:
+            cur = pg.cursor()
+            cur.execute("""
+                SELECT title, summary, url, source
+                FROM announcements
+                WHERE published_date >= NOW() - INTERVAL '1 day'
+                ORDER BY published_date DESC LIMIT 5
+            """)
+            articles = [{'title': r[0], 'summary': r[1], 'url': r[2], 'source': r[3]} for r in cur.fetchall()]
+
+        if not articles:
+            # Fallback to latest 5 if no articles today
+            with pg_connection() as pg:
+                cur = pg.cursor()
+                cur.execute("""
+                    SELECT title, summary, url, source
+                    FROM announcements
+                    ORDER BY published_date DESC LIMIT 5
+                """)
+                articles = [{'title': r[0], 'summary': r[1], 'url': r[2], 'source': r[3]} for r in cur.fetchall()]
+
+        today_str = datetime.now().strftime('%B %d, %Y')
+        post_lines = [f"📊 DC Hub Daily Intelligence — {today_str}\n"]
+        for i, a in enumerate(articles[:5], 1):
+            post_lines.append(f"{i}. {a['title']}")
+            if a.get('summary'):
+                post_lines.append(f"   {a['summary'][:120]}...")
+        post_lines.append("\n🔗 Full digest: https://dchub.cloud/news/digest-" + date.today().isoformat())
+        post_lines.append("\n#DataCenter #Infrastructure #CloudComputing #AI #DigitalInfrastructure")
+        post_text = "\n".join(post_lines)
+
+        token = get_valid_token()
+        if token:
+            result = create_text_post(post_text, token)
+            results['linkedin'] = {'success': True, 'post_id': str(result)[:100] if result else None, 'articles_used': len(articles)}
+        else:
+            results['linkedin'] = {'success': False, 'error': 'No valid LinkedIn token'}
+
+    except Exception as e:
+        results['linkedin'] = {'error': str(e)}
+        logger.error(f"[daily_cron] linkedin failed: {traceback.format_exc()}")
+
+    return jsonify({'success': True, 'results': results})
+
+
 @app.route('/api/press-releases/archive', methods=['GET'])
 def get_press_release_archive():
     """Return last 30 days of digest dates with article counts."""
