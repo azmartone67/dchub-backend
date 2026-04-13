@@ -9632,10 +9632,6 @@ def sync_news_to_neon():
     import sqlite3, traceback
     saved = 0; skipped = 0; errors = 0
     try:
-        # Read from /api/news/sync first to get fresh articles
-        import requests as _req
-        sync_resp = _req.post('http://localhost:5000/api/news/sync', timeout=60)
-        logger.info(f"[neon_sync] news/sync: {sync_resp.status_code}")
         articles = []
         # Now read from the news table in Neon
         with pg_connection() as pg:
