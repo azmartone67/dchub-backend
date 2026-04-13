@@ -1205,15 +1205,38 @@ def api_stats_shortcut():
     return redirect(target)
 
 @app.route('/api/facilities')
-@require_plan('pro')
-def api_facilities_shortcut():
-    """Redirect /api/facilities → /api/v1/facilities"""
-    from flask import make_response, request
-    qs = request.query_string.decode()
-    target = '/api/v1/facilities'
-    if qs:
-        target += '?' + qs
-    return redirect(target)
+@app.route('/api/v1/facilities')
+def get_facilities():
+    limit = min(int(request.args.get('limit', 2000)), 5000)
+    page  = int(request.args.get('page', 1))
+    offset = (page - 1) * limit
+    try:
+        conn = get_db_connection()
+        cur  = conn.cursor()
+        cur.execute('''
+            SELECT name, latitude, longitude,
+                   operator_name AS provider, total_power_mw,
+                   city, state_name AS state, country,
+                   facility_type, status, location_display
+            FROM discovered_facilities
+            WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+              AND latitude != 0 AND longitude != 0
+            ORDER BY total_power_mw DESC NULLS LAST
+            LIMIT %s OFFSET %s
+        ''', (limit, offset))
+        rows = cur.fetchall()
+        cols = [d[0] for d in cur.description]
+        data = [dict(zip(cols, row)) for row in rows]
+        cur.execute('''SELECT COUNT(*) FROM discovered_facilities
+            WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+              AND latitude != 0 AND longitude != 0''')
+        total = cur.fetchone()[0]
+        cur.close(); conn.close()
+        return jsonify({"count": total, "data": data})
+    except Exception as e:
+        print(f"[/api/facilities] error: {e}")
+        return jsonify({"count": 0, "data": [], "error": str(e)}), 500
+
 
 @app.route('/api/v1/map', methods=['GET'])
 def api_v1_map():
