@@ -9638,11 +9638,23 @@ def get_press_release_digest(date_slug=None):
     try:
         with pg_connection() as pg:
             cur = pg.cursor()
-            cur.execute(
-                "SELECT id,title,description,url,source,category,published_date::text,image_url,author "
-                "FROM news ORDER BY published_date DESC LIMIT 200"
-            )
-            articles = [{'id':r[0],'title':r[1],'summary':r[2] or '','url':r[3] or '',
+            # Try announcements (12k+ articles) then news table
+            for tbl, q in [
+                ('announcements', "SELECT id,title,summary,url,source,category,published_at::text,image_url,author FROM announcements ORDER BY published_at DESC LIMIT 200"),
+                ('news', "SELECT id,title,description,url,source,category,published_date::text,image_url,author FROM news ORDER BY published_date DESC LIMIT 200"),
+            ]:
+                try:
+                    cur.execute(q)
+                    rows = cur.fetchall()
+                    if rows:
+                        articles = [{'id':r[0],'title':r[1],'summary':r[2] or '','url':r[3] or '',
+                                     'source':r[4] or '','category':r[5] or 'General',
+                                     'published_at':str(r[6] or ''),'image_url':r[7] or '','author':r[8] or ''}
+                                    for r in rows]
+                        bu = f'neon/{tbl}'; break
+                except Exception as te:
+                    logger.warning(f'[digest] {tbl}: {te}')
+            articles_placeholder = [{'id':r[0],'title':r[1],'summary':r[2] or '','url':r[3] or '',
                          'source':r[4] or '','category':r[5] or 'General',
                          'published_at':str(r[6] or ''),'image_url':r[7] or '','author':r[8] or ''}
                         for r in cur.fetchall()]
