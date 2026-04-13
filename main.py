@@ -9623,6 +9623,44 @@ def get_news_digest(date_slug=None):
 
 
 
+
+@app.route('/api/press-releases/digest-<date_slug>', methods=['GET'])
+@app.route('/api/press-releases/<date_slug>', methods=['GET'])
+def get_press_release_digest(date_slug=None):
+    from datetime import datetime, timedelta, date as dc
+    import re
+    ds = date_slug or request.args.get('date', dc.today().strftime('%Y-%m-%d'))
+    d = ds[7:] if ds.startswith('digest-') else ds
+    if not re.match(r'^\d{4}-\d{2}-\d{2}$', d):
+        return jsonify({'success': False, 'error': 'bad date'}), 400
+    dt = datetime.strptime(d, '%Y-%m-%d').date()
+    articles = []; bu = 'empty'
+    try:
+        with pg_connection() as pg:
+            cur = pg.cursor()
+            cur.execute(
+                "SELECT id,title,description,url,source,category,published_date::text,image_url,author "
+                "FROM news ORDER BY published_date DESC LIMIT 200"
+            )
+            articles = [{'id':r[0],'title':r[1],'summary':r[2] or '','url':r[3] or '',
+                         'source':r[4] or '','category':r[5] or 'General',
+                         'published_at':str(r[6] or ''),'image_url':r[7] or '','author':r[8] or ''}
+                        for r in cur.fetchall()]
+            bu = 'neon/news'
+    except Exception as e:
+        logger.warning(f'[press-release digest] {e}')
+    cats={}; srcs={}
+    for a in articles:
+        cats[a['category']] = cats.get(a['category'],0)+1
+        srcs[a['source']] = srcs.get(a['source'],0)+1
+    p=(dt-timedelta(days=1)).strftime('%Y-%m-%d')
+    n=(dt+timedelta(days=1)).strftime('%Y-%m-%d')
+    return jsonify({'success':True,'slug':f'digest-{d}','date':d,
+        'display_date':dt.strftime('%B %d, %Y'),'total':len(articles),
+        'articles':articles,'categories':cats,'sources':srcs,
+        'nav':{'prev':f'/news/digest-{p}','next':f'/news/digest-{n}'},
+        'backend':bu})
+
 @app.route('/api/agent/chat', methods=['POST'])
 def api_agent_chat():
     """Chat endpoint for DC Hub AI assistant"""
