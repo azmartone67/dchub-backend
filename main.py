@@ -9816,13 +9816,13 @@ def get_press_release_archive():
         with pg_connection() as pg:
             cur = pg.cursor()
             cur.execute(
-                "SELECT DATE(published_date)::text, COUNT(*) "
+                "SELECT LEFT(published_date, 10), COUNT(*) "
                 "FROM announcements "
-                "WHERE published_date >= NOW() - INTERVAL '30 days' "
-                "GROUP BY DATE(published_date) "
-                "ORDER BY DATE(published_date) DESC"
+                "WHERE LEFT(published_date, 10) >= TO_CHAR(NOW() - INTERVAL '30 days', 'YYYY-MM-DD') "
+                "GROUP BY LEFT(published_date, 10) "
+                "ORDER BY LEFT(published_date, 10) DESC"
             )
-            dates = [{'date': r[0], 'count': r[1]} for r in cur.fetchall()]
+            dates = [{'date': str(r[0]), 'count': r[1]} for r in cur.fetchall()]
     except Exception as e:
         logger.warning(f'[archive] {e}')
     # If no dates from DB, generate last 30 days
