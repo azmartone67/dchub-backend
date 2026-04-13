@@ -9764,36 +9764,43 @@ def push_news_to_neon():
         if not articles:
             return jsonify({'success': False, 'error': 'No articles fetched'})
         saved = 0; skipped = 0
-        with pg_connection() as pg:
-            cur = pg.cursor()
-            for a in articles:
-                try:
-                    pub = a.get('published_at') or datetime.now(timezone.utc).isoformat()
-                    if hasattr(pub, 'isoformat'): pub = pub.isoformat()
-                    art_id = a.get('id') or hashlib.md5(a.get('url','').encode()).hexdigest()[:16]
-                    cur.execute("""
-                        INSERT INTO announcements
-                            (id, title, summary, url, source, source_url, published_date, discovered_at, category, announcement_type, confidence)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s::timestamp,NOW(),%s,'news',0.9)
-                        ON CONFLICT(id) DO UPDATE SET
-                            title=EXCLUDED.title,
-                            summary=EXCLUDED.summary,
-                            discovered_at=NOW()
-                    """, (
-                        art_id,
-                        (a.get('title') or '')[:500],
-                        (a.get('summary') or '')[:2000],
-                        (a.get('url') or '')[:1000],
-                        (a.get('source') or '')[:200],
-                        (a.get('url') or '')[:1000],
-                        pub,
-                        (a.get('category') or 'Industry')[:100],
-                    ))
-                    if cur.rowcount > 0: saved += 1
-                    else: skipped += 1
-                except Exception as re:
-                    logger.warning(f"[push-neon] row error: {re}")
-                    skipped += 1
+        import psycopg2 as _psyco
+        db_url = os.environ.get('DATABASE_URL') or os.environ.get('NEON_DATABASE_URL','')
+        pg = _psyco.connect(db_url, connect_timeout=15)
+        pg.autocommit = False
+        cur = pg.cursor()
+        for a in articles:
+            try:
+                pub = a.get('published_at') or datetime.now(timezone.utc).isoformat()
+                if hasattr(pub, 'isoformat'): pub = pub.isoformat()
+                art_id = a.get('id') or hashlib.md5(a.get('url','').encode()).hexdigest()[:16]
+                cur.execute("""
+                    INSERT INTO announcements
+                        (id, title, summary, url, source, source_url, published_date, discovered_at, category, announcement_type, confidence)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s::timestamp,NOW(),%s,'news',0.9)
+                    ON CONFLICT(id) DO UPDATE SET
+                        title=EXCLUDED.title,
+                        summary=EXCLUDED.summary,
+                        discovered_at=NOW()
+                """, (
+                    art_id,
+                    (a.get('title') or '')[:500],
+                    (a.get('summary') or '')[:2000],
+                    (a.get('url') or '')[:1000],
+                    (a.get('source') or '')[:200],
+                    (a.get('url') or '')[:1000],
+                    pub,
+                    (a.get('category') or 'Industry')[:100],
+                ))
+                if cur.rowcount > 0: saved += 1
+                else: skipped += 1
+            except Exception as re:
+                logger.warning(f"[push-neon] row error: {re}")
+                pg.rollback()
+                skipped += 1
+        pg.commit()
+        cur.close()
+        pg.close()
         logger.info(f"[push-neon] saved={saved} skipped={skipped}")
         return jsonify({'success': True, 'fetched': len(articles), 'saved': saved, 'skipped': skipped})
     except Exception as e:
