@@ -9744,40 +9744,16 @@ def daily_cron():
                 articles = [{'title': r[0], 'summary': r[1], 'url': r[2], 'source': r[3], 'category': r[4]} for r in cur.fetchall()]
 
         today_str = datetime.now().strftime('%B %d, %Y')
-        digest_url = "https://dchub.cloud/news/digest-" + date.today().isoformat()
-
-        # Group articles by category for variety
-        cat_icons = {
-            'AI': '🤖', 'M&A': '💰', 'Power': '⚡', 'Expansion': '🏗️',
-            'Network': '🌐', 'Cloud': '☁️', 'Sustainability': '🌱',
-            'Financial': '📈', 'Industry': '🏢', 'Policy': '🏛️',
-            'Tech': '💻', 'General': '📰'
-        }
-        seen_cats = {}
-        highlights = []
-        for a in articles[:50]:
-            cat = a.get('category') or 'General'
-            if cat not in seen_cats and len(highlights) < 5:
-                seen_cats[cat] = True
-                icon = cat_icons.get(cat, '📌')
-                title = a['title'][:80]
-                summary = (a.get('summary') or '')[:100].strip()
-                if summary and not summary.endswith('.'): summary += '...'
-                highlights.append(f"{icon} {cat.upper()}\n{title}\n{summary}" if summary else f"{icon} {cat.upper()}\n{title}")
-
-        total = len(articles)
-        post_text = f"""🏗️ DC Hub Daily Intelligence
-📅 {today_str} | {total} articles analyzed
-
-━━━━━━━━━━━━━━━━━━━━━━
-
-""" + "\n\n".join(highlights) + f"""
-
-━━━━━━━━━━━━━━━━━━━━━━
-
-📖 Full digest → {digest_url}
-
-#DataCenter #AI #Infrastructure #CloudComputing #DigitalInfrastructure"""
+        digest_date = sorted(set(a.get('published_at','')[:10] for a in articles if a.get('published_at')), reverse=True)[0] if articles else date.today().isoformat()
+        digest_url = 'https://dchub.cloud/news/digest-' + digest_date
+        post_lines = [f'📊 DC Hub Daily Intelligence — {today_str}\n']
+        for i, a in enumerate(articles[:5], 1):
+            post_lines.append(f"{i}. {a['title']}")
+            if a.get('summary'):
+                post_lines.append(f"   {a['summary'][:120]}...")
+        post_lines.append(f'\n🔗 Full digest: {digest_url}')
+        post_lines.append('\n#DataCenter #Infrastructure #CloudComputing #AI #DigitalInfrastructure')
+        post_text = '\n'.join(post_lines)
 
         token = get_valid_token()
         if token:
