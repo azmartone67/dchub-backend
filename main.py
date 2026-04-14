@@ -9725,28 +9725,23 @@ def daily_cron():
         from linkedin_autopost import create_text_post, get_valid_token
         from datetime import datetime
 
-        # Get today's top articles from Neon
+        # Get latest articles - last 2 days to handle UTC offset
         articles = []
         with pg_connection() as pg:
             cur = pg.cursor()
             cur.execute("""
-                SELECT title, summary, url, source
+                SELECT title, summary, url, source, category
                 FROM announcements
-                WHERE published_date::timestamp >= NOW() - INTERVAL '1 day'
-                ORDER BY published_date DESC LIMIT 5
+                WHERE LEFT(published_date, 10) >= TO_CHAR(NOW() - INTERVAL '2 days', 'YYYY-MM-DD')
+                ORDER BY published_date DESC LIMIT 50
             """)
-            articles = [{'title': r[0], 'summary': r[1], 'url': r[2], 'source': r[3]} for r in cur.fetchall()]
+            articles = [{'title': r[0], 'summary': r[1], 'url': r[2], 'source': r[3], 'category': r[4]} for r in cur.fetchall()]
 
         if not articles:
-            # Fallback to latest 5 if no articles today
             with pg_connection() as pg:
                 cur = pg.cursor()
-                cur.execute("""
-                    SELECT title, summary, url, source
-                    FROM announcements
-                    ORDER BY published_date DESC LIMIT 5
-                """)
-                articles = [{'title': r[0], 'summary': r[1], 'url': r[2], 'source': r[3]} for r in cur.fetchall()]
+                cur.execute("SELECT title, summary, url, source, category FROM announcements ORDER BY published_date DESC LIMIT 50")
+                articles = [{'title': r[0], 'summary': r[1], 'url': r[2], 'source': r[3], 'category': r[4]} for r in cur.fetchall()]
 
         today_str = datetime.now().strftime('%B %d, %Y')
         digest_url = "https://dchub.cloud/news/digest-" + date.today().isoformat()
