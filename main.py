@@ -9692,10 +9692,30 @@ def daily_cron():
     from datetime import date
     results = {'news_sync': None, 'linkedin': None, 'date': date.today().isoformat()}
 
-    # Step 1: Sync SQLite news → Neon
+    # Step 1: Push fresh RSS articles to Neon
     try:
-        r = sync_news_to_neon()
-        results['news_sync'] = r.get_json() if hasattr(r, 'get_json') else {'done': True}
+        from news_engine import fetch_all_rss_feeds
+        import psycopg2 as _psyco, hashlib as _hl
+        from datetime import timezone as _tz
+        articles_rss = fetch_all_rss_feeds()
+        db_url = os.environ.get('DATABASE_URL') or os.environ.get('NEON_DATABASE_URL','')
+        pg2 = _psyco.connect(db_url, connect_timeout=15)
+        pg2.autocommit = False
+        cur2 = pg2.cursor()
+        pushed = 0
+        for a in articles_rss:
+            try:
+                pub = a.get('published_at') or datetime.now(_tz.utc).isoformat()
+                if hasattr(pub, 'isoformat'): pub = pub.isoformat()
+                aid = a.get('id') or _hl.md5(a.get('url','').encode()).hexdigest()[:16]
+                cur2.execute("INSERT INTO announcements (id,title,summary,url,source,source_url,published_date,discovered_at,category,announcement_type,confidence) VALUES (%s,%s,%s,%s,%s,%s,%s::timestamp,NOW(),%s,'news',0.9) ON CONFLICT(id) DO UPDATE SET title=EXCLUDED.title,summary=EXCLUDED.summary,discovered_at=NOW()",
+                    (aid,(a.get('title') or '')[:500],(a.get('summary') or '')[:2000],(a.get('url') or '')[:1000],(a.get('source') or '')[:200],(a.get('url') or '')[:1000],pub,(a.get('category') or 'Industry')[:100]))
+                if cur2.rowcount > 0: pushed += 1
+            except Exception as re:
+                pg2.rollback()
+        pg2.commit(); cur2.close(); pg2.close()
+        results['news_sync'] = {'success': True, 'pushed': pushed, 'fetched': len(articles_rss)}
+        logger.info(f"[daily_cron] pushed {pushed} articles to Neon")
     except Exception as e:
         results['news_sync'] = {'error': str(e)}
         logger.error(f"[daily_cron] news sync failed: {e}")
