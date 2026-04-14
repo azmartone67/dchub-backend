@@ -9746,6 +9746,9 @@ def daily_cron():
         today_str = datetime.now().strftime('%B %d, %Y')
         dates_found = sorted(set(a.get('published_at','')[:10] for a in articles if a.get('published_at')), reverse=True)
         digest_date = dates_found[0] if dates_found else date.today().isoformat()
+        # Use the most recent date that has articles, not today's UTC date
+        from datetime import timedelta
+        digest_date = dates_found[0] if dates_found else (date.today() - timedelta(days=1)).isoformat()
         digest_url = 'https://dchub.cloud/news/digest-' + digest_date
         post_lines = [f'📊 DC Hub Daily Intelligence — {today_str}\n']
         for i, a in enumerate(articles[:5], 1):
