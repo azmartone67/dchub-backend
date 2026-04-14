@@ -1,5 +1,5 @@
 """
-dchub_cors_patch.py — v2
+dchub_cors_patch.py — v3
 ========================
 Drop next to main.py. Add at the very bottom of main.py:
 
@@ -13,7 +13,17 @@ import logging
 import requests as _req
 
 log = logging.getLogger('dchub_cors_patch')
-log.info('dchub_cors_patch v2 loading...')
+log.info('dchub_cors_patch v3 loading...')
+
+def _remove_acao(response):
+    """Remove all Access-Control-* headers safely (Flask Headers has no .discard)."""
+    to_remove = [h for h in response.headers.keys()
+                 if h.lower().startswith('access-control-')]
+    for h in to_remove:
+        try:
+            del response.headers[h]
+        except Exception:
+            pass
 
 # =============================================================================
 # Find the Flask app — safe under gunicorn where __main__ is gunicorn itself
@@ -56,9 +66,7 @@ else:
                 response = fn(response)
             except Exception:
                 pass
-            for h in list(response.headers.keys()):
-                if h.lower().startswith('access-control-'):
-                    response.headers.discard(h)
+            _remove_acao(response)
             return response
         _wrapper.__name__ = fn.__name__
         return _wrapper
@@ -73,46 +81,46 @@ else:
     # SECTION 2 — Static fallback data
     # =========================================================================
     _GAS_PLANTS = [
-        {"name": "Lone Star NGL Fractionator",   "lat": 29.72, "lng": -95.40, "state": "TX", "capacity_mmcfd": 800,  "operator": "Enterprise Products", "status": "active"},
-        {"name": "Midcoast Energy Plant",        "lat": 30.10, "lng": -93.71, "state": "TX", "capacity_mmcfd": 650,  "operator": "Midcoast Energy",     "status": "active"},
-        {"name": "Keystone Gas Plant",           "lat": 31.88, "lng": -102.54,"state": "TX", "capacity_mmcfd": 500,  "operator": "Permian Basin Royalty","status": "active"},
-        {"name": "Panhandle Processing",         "lat": 35.52, "lng": -101.10,"state": "TX", "capacity_mmcfd": 420,  "operator": "DCP Midstream",        "status": "active"},
-        {"name": "Opal Processing Plant",        "lat": 41.77, "lng": -110.05,"state": "WY", "capacity_mmcfd": 900,  "operator": "Williams Companies",   "status": "active"},
-        {"name": "Sherwood Midstream",           "lat": 39.20, "lng": -81.30, "state": "WV", "capacity_mmcfd": 1200, "operator": "EQT Midstream",        "status": "active"},
-        {"name": "Permian Basin Processing Hub", "lat": 31.50, "lng": -103.80,"state": "TX", "capacity_mmcfd": 1500, "operator": "Targa Resources",      "status": "active"},
-        {"name": "Eagle Ford Gas Plant",         "lat": 28.80, "lng": -98.25, "state": "TX", "capacity_mmcfd": 830,  "operator": "Penn Virginia",        "status": "active"},
-        {"name": "Marcellus Shale Plant",        "lat": 41.20, "lng": -76.90, "state": "PA", "capacity_mmcfd": 950,  "operator": "Range Resources",      "status": "active"},
-        {"name": "Haynesville Processing",       "lat": 32.55, "lng": -93.70, "state": "LA", "capacity_mmcfd": 670,  "operator": "Kinder Morgan",        "status": "active"},
-        {"name": "DJ Basin Processing",          "lat": 40.10, "lng": -104.50,"state": "CO", "capacity_mmcfd": 610,  "operator": "DCP Midstream",        "status": "active"},
-        {"name": "Kern River Processing",        "lat": 35.37, "lng": -119.01,"state": "CA", "capacity_mmcfd": 180,  "operator": "Berkshire Hathaway",   "status": "active"},
+        {"name": "Lone Star NGL Fractionator",   "lat": 29.72, "lng": -95.40, "state": "TX", "capacity_mmcfd": 800,  "operator": "Enterprise Products",  "status": "active"},
+        {"name": "Midcoast Energy Plant",        "lat": 30.10, "lng": -93.71, "state": "TX", "capacity_mmcfd": 650,  "operator": "Midcoast Energy",       "status": "active"},
+        {"name": "Keystone Gas Plant",           "lat": 31.88, "lng": -102.54,"state": "TX", "capacity_mmcfd": 500,  "operator": "Permian Basin Royalty",  "status": "active"},
+        {"name": "Panhandle Processing",         "lat": 35.52, "lng": -101.10,"state": "TX", "capacity_mmcfd": 420,  "operator": "DCP Midstream",          "status": "active"},
+        {"name": "Opal Processing Plant",        "lat": 41.77, "lng": -110.05,"state": "WY", "capacity_mmcfd": 900,  "operator": "Williams Companies",     "status": "active"},
+        {"name": "Sherwood Midstream",           "lat": 39.20, "lng": -81.30, "state": "WV", "capacity_mmcfd": 1200, "operator": "EQT Midstream",          "status": "active"},
+        {"name": "Permian Basin Processing Hub", "lat": 31.50, "lng": -103.80,"state": "TX", "capacity_mmcfd": 1500, "operator": "Targa Resources",        "status": "active"},
+        {"name": "Eagle Ford Gas Plant",         "lat": 28.80, "lng": -98.25, "state": "TX", "capacity_mmcfd": 830,  "operator": "Penn Virginia",          "status": "active"},
+        {"name": "Marcellus Shale Plant",        "lat": 41.20, "lng": -76.90, "state": "PA", "capacity_mmcfd": 950,  "operator": "Range Resources",        "status": "active"},
+        {"name": "Haynesville Processing",       "lat": 32.55, "lng": -93.70, "state": "LA", "capacity_mmcfd": 670,  "operator": "Kinder Morgan",          "status": "active"},
+        {"name": "DJ Basin Processing",          "lat": 40.10, "lng": -104.50,"state": "CO", "capacity_mmcfd": 610,  "operator": "DCP Midstream",          "status": "active"},
+        {"name": "Kern River Processing",        "lat": 35.37, "lng": -119.01,"state": "CA", "capacity_mmcfd": 180,  "operator": "Berkshire Hathaway",     "status": "active"},
     ]
 
     _GAS_COMPRESSORS = [
-        {"name": "Katy Hub Compressor",         "lat": 29.79, "lng": -95.82, "state": "TX", "horsepower": 45000, "operator": "Boardwalk Pipeline",  "status": "active"},
-        {"name": "Waha Compressor Station",     "lat": 31.17, "lng": -103.97,"state": "TX", "horsepower": 60000, "operator": "Enterprise Products", "status": "active"},
-        {"name": "Opal Compressor Station",     "lat": 41.80, "lng": -110.02,"state": "WY", "horsepower": 52000, "operator": "Williams Companies",  "status": "active"},
-        {"name": "Transco Station 195",         "lat": 36.60, "lng": -79.40, "state": "VA", "horsepower": 38000, "operator": "Williams Companies",  "status": "active"},
-        {"name": "Columbia Gas Compressor",     "lat": 40.12, "lng": -82.94, "state": "OH", "horsepower": 29000, "operator": "TC Energy",           "status": "active"},
-        {"name": "ANR Pipeline Station",        "lat": 44.73, "lng": -85.56, "state": "MI", "horsepower": 41000, "operator": "TC Energy",           "status": "active"},
-        {"name": "Texas Eastern Compressor",    "lat": 33.18, "lng": -97.09, "state": "TX", "horsepower": 35000, "operator": "Enbridge",            "status": "active"},
-        {"name": "Dominion Transmission",       "lat": 39.45, "lng": -80.17, "state": "WV", "horsepower": 31000, "operator": "Dominion Energy",     "status": "active"},
-        {"name": "Panhandle Eastern Station",   "lat": 38.93, "lng": -98.60, "state": "KS", "horsepower": 48000, "operator": "Southern Union",      "status": "active"},
-        {"name": "Rockies Express Station",     "lat": 41.05, "lng": -104.82,"state": "WY", "horsepower": 55000, "operator": "Tallgrass Energy",    "status": "active"},
-        {"name": "Kern River Compressor",       "lat": 37.33, "lng": -118.45,"state": "CA", "horsepower": 26000, "operator": "Berkshire Hathaway",  "status": "active"},
-        {"name": "Gulf South Compressor",       "lat": 30.45, "lng": -90.10, "state": "LA", "horsepower": 33000, "operator": "Boardwalk Pipeline",  "status": "active"},
+        {"name": "Katy Hub Compressor",         "lat": 29.79, "lng": -95.82, "state": "TX", "horsepower": 45000, "operator": "Boardwalk Pipeline",   "status": "active"},
+        {"name": "Waha Compressor Station",     "lat": 31.17, "lng": -103.97,"state": "TX", "horsepower": 60000, "operator": "Enterprise Products",  "status": "active"},
+        {"name": "Opal Compressor Station",     "lat": 41.80, "lng": -110.02,"state": "WY", "horsepower": 52000, "operator": "Williams Companies",   "status": "active"},
+        {"name": "Transco Station 195",         "lat": 36.60, "lng": -79.40, "state": "VA", "horsepower": 38000, "operator": "Williams Companies",   "status": "active"},
+        {"name": "Columbia Gas Compressor",     "lat": 40.12, "lng": -82.94, "state": "OH", "horsepower": 29000, "operator": "TC Energy",            "status": "active"},
+        {"name": "ANR Pipeline Station",        "lat": 44.73, "lng": -85.56, "state": "MI", "horsepower": 41000, "operator": "TC Energy",            "status": "active"},
+        {"name": "Texas Eastern Compressor",    "lat": 33.18, "lng": -97.09, "state": "TX", "horsepower": 35000, "operator": "Enbridge",             "status": "active"},
+        {"name": "Dominion Transmission",       "lat": 39.45, "lng": -80.17, "state": "WV", "horsepower": 31000, "operator": "Dominion Energy",      "status": "active"},
+        {"name": "Panhandle Eastern Station",   "lat": 38.93, "lng": -98.60, "state": "KS", "horsepower": 48000, "operator": "Southern Union",       "status": "active"},
+        {"name": "Rockies Express Station",     "lat": 41.05, "lng": -104.82,"state": "WY", "horsepower": 55000, "operator": "Tallgrass Energy",     "status": "active"},
+        {"name": "Kern River Compressor",       "lat": 37.33, "lng": -118.45,"state": "CA", "horsepower": 26000, "operator": "Berkshire Hathaway",   "status": "active"},
+        {"name": "Gulf South Compressor",       "lat": 30.45, "lng": -90.10, "state": "LA", "horsepower": 33000, "operator": "Boardwalk Pipeline",   "status": "active"},
     ]
 
     _INTERCONNECT_FALLBACK = {
         "success": True, "source": "fallback",
         "note": "Live upstream unavailable — static RTO queue summary (LBNL 2024)",
         "projects": [
-            {"rto": "PJM",   "queued_mw": 280000, "active_projects": 1200},
-            {"rto": "MISO",  "queued_mw": 320000, "active_projects": 1450},
-            {"rto": "CAISO", "queued_mw": 120000, "active_projects": 620},
-            {"rto": "ERCOT", "queued_mw": 330000, "active_projects": 1100},
-            {"rto": "SPP",   "queued_mw":  98000, "active_projects": 480},
-            {"rto": "NYISO", "queued_mw":  45000, "active_projects": 210},
-            {"rto": "ISO-NE","queued_mw":  30000, "active_projects": 140},
+            {"rto": "PJM",    "queued_mw": 280000, "active_projects": 1200},
+            {"rto": "MISO",   "queued_mw": 320000, "active_projects": 1450},
+            {"rto": "CAISO",  "queued_mw": 120000, "active_projects": 620},
+            {"rto": "ERCOT",  "queued_mw": 330000, "active_projects": 1100},
+            {"rto": "SPP",    "queued_mw":  98000, "active_projects": 480},
+            {"rto": "NYISO",  "queued_mw":  45000, "active_projects": 210},
+            {"rto": "ISO-NE", "queued_mw":  30000, "active_projects": 140},
         ],
         "total_queued_mw": 1223000, "total_projects": 5200,
     }
@@ -271,7 +279,11 @@ else:
             response.headers['Access-Control-Allow-Credentials'] = 'true'
         else:
             response.headers['Access-Control-Allow-Origin'] = '*'
-            response.headers.discard('Access-Control-Allow-Credentials')
+            # Safely remove credentials header — Flask Headers uses del not discard
+            try:
+                del response.headers['Access-Control-Allow-Credentials']
+            except Exception:
+                pass
         response.headers['Access-Control-Allow-Methods'] = \
             'GET, POST, PUT, DELETE, PATCH, OPTIONS'
         response.headers['Access-Control-Allow-Headers'] = \
@@ -280,4 +292,4 @@ else:
         return response
 
     log.info('  _cors_final registered')
-    log.info('dchub_cors_patch v2 fully applied — CORS fixed, 3 endpoints replaced')
+    log.info('dchub_cors_patch v3 fully applied — CORS fixed, 3 endpoints replaced')
