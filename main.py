@@ -14736,3 +14736,4 @@ def cf_stub_energy_discovery():
             if conn: return_pg_connection(conn)
         except Exception: pass
         return jsonify({"success": False, "error": str(e)}), 500
+import dchub_cors_patch
