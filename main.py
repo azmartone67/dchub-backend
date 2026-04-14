@@ -9744,7 +9744,8 @@ def daily_cron():
                 articles = [{'title': r[0], 'summary': r[1], 'url': r[2], 'source': r[3], 'category': r[4]} for r in cur.fetchall()]
 
         today_str = datetime.now().strftime('%B %d, %Y')
-        digest_date = sorted(set(a.get('published_at','')[:10] for a in articles if a.get('published_at')), reverse=True)[0] if articles else date.today().isoformat()
+        dates_found = sorted(set(a.get('published_at','')[:10] for a in articles if a.get('published_at')), reverse=True)
+        digest_date = dates_found[0] if dates_found else date.today().isoformat()
         digest_url = 'https://dchub.cloud/news/digest-' + digest_date
         post_lines = [f'📊 DC Hub Daily Intelligence — {today_str}\n']
         for i, a in enumerate(articles[:5], 1):
