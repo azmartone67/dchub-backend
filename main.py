@@ -15130,3 +15130,8 @@ def ap_health():
 
 
 import dchub_cors_patch
+
+# ─── /news/<slug> renderer (added 2026-04-15) ─────────────────────────
+import news_slug_route as _news_slug
+_news_slug.register(app, get_pg_connection, return_pg_connection)
+
