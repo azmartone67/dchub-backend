@@ -14761,6 +14761,7 @@ from air_permitting_data import (
 from air_permitting_extras import (
     STATE_CONTEXT as _AP_STATE_CONTEXT,
     NEI_SOURCES  as _AP_NEI,
+    STATE_BOXES  as _AP_STATE_BOXES,
 )
 
 # ------------------------------------------------------------------
@@ -14791,17 +14792,6 @@ _AP_SAMPLE_SITES = [
     {"id":"ia1","name":"Altoona, IA","lat":41.64,"lon":-93.45,"capacity":100},
     {"id":"oh1","name":"New Albany, OH","lat":40.08,"lon":-82.81,"capacity":200},
 ]
-
-_AP_STATE_BOXES = {
-    "AZ":[[31.3,-115.0],[37.0,-109.0]], "TX":[[25.8,-106.7],[36.5,-93.5]],
-    "VA":[[36.5,-83.7],[39.5,-75.2]],   "IA":[[40.3,-96.7],[43.5,-90.1]],
-    "OH":[[38.4,-84.8],[41.9,-80.5]],   "CA":[[32.5,-124.5],[42.0,-114.0]],
-    "NV":[[35.0,-120.0],[42.0,-114.0]], "IL":[[36.9,-91.5],[42.5,-87.0]],
-    "PA":[[39.7,-80.5],[42.3,-74.7]],   "NY":[[40.4,-79.8],[45.0,-71.8]],
-    "GA":[[30.3,-85.6],[35.0,-80.7]],   "NC":[[33.8,-84.4],[36.6,-75.4]],
-    "WA":[[45.5,-124.8],[49.0,-116.9]], "OR":[[42.0,-124.6],[46.3,-116.5]],
-    "CO":[[36.9,-109.1],[41.1,-102.0]], "UT":[[36.9,-114.1],[42.0,-109.0]],
-}
 
 _AP_OZONE_CLASS_PENALTY = {"Marginal":70,"Moderate":40,"Serious":20,"Severe":10,"Extreme":0,"Maintenance":65}
 _AP_PM_CLASS_PENALTY    = {"Moderate":40,"Serious":15,"Maintenance":60}
