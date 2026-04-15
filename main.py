@@ -9853,7 +9853,10 @@ def get_press_release_archive():
     return jsonify({'success': True, 'dates': dates, 'total': len(dates)})
 
 @app.route('/api/press-releases/digest-<date_slug>', methods=['GET'])
-@app.route('/api/press-releases/<date_slug>', methods=['GET'])
+# REMOVED conflicting decorator: was @app.route('/api/press-releases/<date_slug>', ...)
+# It caught slug-based requests (e.g. dc-hub-global-...) before they reached the
+# proper slug handler at line ~14518, causing 'bad date' errors.
+# Date-based access still works via the digest- prefix above.
 def get_press_release_digest(date_slug=None):
     from datetime import datetime, timedelta, date as dc
     import re
