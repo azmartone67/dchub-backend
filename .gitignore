@@ -35,3 +35,5 @@ market_reports/
 app.py.bak
 dchub_fix.sh
 .wrangler/
+*.bak
+*.bak.*
