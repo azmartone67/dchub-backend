@@ -15129,9 +15129,181 @@ def ap_health():
 # =================================================================
 
 
+# =================================================================
+# PUBLISH ROUTES — daily news digest archive (added Apr 15 2026)
+# Called by Cloudflare Worker at dchub.cloud/api/publish which forwards
+# server-to-server to this Railway endpoint. Writes the digest to the
+# Neon news_digests table and (optionally) posts to LinkedIn.
+#
+# Bearer auth: RAILWAY_PUBLISH_SECRET must match the Worker's value.
+# =================================================================
+import json as _pub_json
+import os as _pub_os
+from datetime import datetime as _pub_dt
+from flask import request as _pub_request, jsonify as _pub_jsonify
+
+
+def _pub_require_auth():
+    secret = _pub_os.environ.get('RAILWAY_PUBLISH_SECRET', '')
+    if not secret:
+        return (_pub_jsonify({"success": False, "error": "publish_secret_not_configured"}), 500)
+    auth = _pub_request.headers.get('Authorization', '')
+    token = auth[7:] if auth.startswith('Bearer ') else ''
+    if token != secret:
+        return (_pub_jsonify({"success": False, "error": "unauthorized"}), 401)
+    return None
+
+
+def _pub_post_linkedin(text):
+    """Returns (ok: bool, urn: str|None, err: str|None). Skips if env not set."""
+    token = _pub_os.environ.get('LINKEDIN_ACCESS_TOKEN')
+    actor = _pub_os.environ.get('LINKEDIN_ACTOR_URN')  # e.g. urn:li:organization:12345
+    if not (token and actor and text):
+        return (False, None, "linkedin_not_configured")
+    try:
+        import urllib.request
+        body = _pub_json.dumps({
+            "author": actor,
+            "commentary": text,
+            "visibility": "PUBLIC",
+            "distribution": {"feedDistribution": "MAIN_FEED"},
+            "lifecycleState": "PUBLISHED",
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            "https://api.linkedin.com/rest/posts",
+            data=body,
+            method='POST',
+        )
+        req.add_header('Authorization', f'Bearer {token}')
+        req.add_header('Content-Type', 'application/json')
+        req.add_header('LinkedIn-Version', _pub_dt.utcnow().strftime('%Y%m'))
+        req.add_header('X-Restli-Protocol-Version', '2.0.0')
+        resp = urllib.request.urlopen(req, timeout=20)
+        urn = resp.headers.get('x-restli-id') or ''
+        return (True, urn, None)
+    except Exception as e:  # noqa: BLE001
+        return (False, None, f"linkedin_exception: {str(e)[:180]}")
+
+
+def _pub_upsert_digest(payload, publish_linkedin, linkedin_urn, error_notes):
+    sql = """
+    INSERT INTO news_digests (
+      slug, digest_date, title, html, markdown, linkedin_text,
+      story_count, categories, sources, run_source, get_news_ok,
+      publish_railway, publish_linkedin, linkedin_post_id, error_notes
+    ) VALUES (
+      %(slug)s, %(digest_date)s, %(title)s, %(html)s, %(markdown)s, %(linkedin_text)s,
+      %(story_count)s, %(categories)s, %(sources)s, %(run_source)s, %(get_news_ok)s,
+      TRUE, %(publish_linkedin)s, %(linkedin_post_id)s, %(error_notes)s
+    )
+    ON CONFLICT (slug) DO UPDATE SET
+      title            = EXCLUDED.title,
+      html             = EXCLUDED.html,
+      markdown         = EXCLUDED.markdown,
+      linkedin_text    = EXCLUDED.linkedin_text,
+      story_count      = EXCLUDED.story_count,
+      categories       = EXCLUDED.categories,
+      sources          = EXCLUDED.sources,
+      get_news_ok      = EXCLUDED.get_news_ok,
+      publish_railway  = TRUE,
+      publish_linkedin = news_digests.publish_linkedin OR EXCLUDED.publish_linkedin,
+      linkedin_post_id = COALESCE(EXCLUDED.linkedin_post_id, news_digests.linkedin_post_id),
+      error_notes      = EXCLUDED.error_notes
+    ;
+    """
+    conn = get_pg_connection()  # existing helper in main.py
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, {
+                "slug": payload.get("slug"),
+                "digest_date": payload.get("digest_date"),
+                "title": payload.get("title"),
+                "html": payload.get("html"),
+                "markdown": payload.get("markdown"),
+                "linkedin_text": payload.get("linkedin_text"),
+                "story_count": payload.get("story_count"),
+                "categories": _pub_json.dumps(payload["categories"]) if payload.get("categories") else None,
+                "sources": _pub_json.dumps(payload["sources"]) if payload.get("sources") else None,
+                "run_source": payload.get("run_source", "cron"),
+                "get_news_ok": bool(payload.get("get_news_ok", False)),
+                "publish_linkedin": bool(publish_linkedin),
+                "linkedin_post_id": linkedin_urn,
+                "error_notes": error_notes,
+            })
+        conn.commit()
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@app.route('/publish/all', methods=['POST'])
+def publish_all():
+    """Receives daily digest from Worker proxy. Archives to Neon + posts LinkedIn."""
+    err = _pub_require_auth()
+    if err:
+        return err
+
+    payload = _pub_request.get_json(silent=True) or {}
+    slug = (payload.get("slug") or "").strip()
+    if not slug:
+        return _pub_jsonify({"success": False, "error": "missing_slug"}), 400
+
+    # 1) LinkedIn (optional — skipped if env not set)
+    li_ok, li_urn, li_err = _pub_post_linkedin(payload.get("linkedin_text") or "")
+
+    # 2) Neon archive (source of truth)
+    try:
+        _pub_upsert_digest(
+            payload,
+            publish_linkedin=li_ok,
+            linkedin_urn=li_urn,
+            error_notes=li_err,
+        )
+        neon_ok = True
+    except Exception as e:  # noqa: BLE001
+        import logging, traceback
+        logging.error("[publish/all] neon upsert failed: " + traceback.format_exc())
+        neon_ok = False
+        li_err = (li_err + " | " if li_err else "") + f"neon_error: {str(e)[:200]}"
+
+    return _pub_jsonify({
+        "success": neon_ok,
+        "slug": slug,
+        "neon_ok": neon_ok,
+        "linkedin_ok": li_ok,
+        "linkedin_urn": li_urn,
+        "error_notes": li_err,
+        "ts": _pub_dt.utcnow().isoformat() + "Z",
+    }), (200 if neon_ok else 500)
+
+
+@app.route('/publish/health', methods=['GET'])
+def publish_health():
+    """Quick SELECT to verify Neon connectivity + digest count."""
+    try:
+        conn = get_pg_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*), MAX(digest_date) FROM news_digests")
+                count, latest = cur.fetchone()
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        return _pub_jsonify({
+            "ok": True,
+            "digest_count": count,
+            "latest_digest_date": str(latest) if latest else None,
+        })
+    except Exception as e:  # noqa: BLE001
+        return _pub_jsonify({"ok": False, "error": f"neon_unreachable: {str(e)[:200]}"}), 500
+
+# =================================================================
+# END PUBLISH ROUTES
+# =================================================================
+
+
 import dchub_cors_patch
-
-# ─── /news/<slug> renderer (added 2026-04-15) ─────────────────────────
-import news_slug_route as _news_slug
-_news_slug.register(app, get_pg_connection, return_pg_connection)
-
