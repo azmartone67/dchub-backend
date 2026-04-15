@@ -14870,12 +14870,17 @@ def _ap_nei_factor(lat, lon, radius_km=16):
 
 
 def _ap_resolve_state(lat, lon):
+    # smallest-bbox-wins tie-breaker — prevents MI/WI Lake Michigan overlap
+    matches = []
     for state, box in _AP_STATE_BOXES.items():
         if _ap_in_bounds(lat, lon, box):
-            return state
-    return None
-
-
+            (mn_lat, mn_lon), (mx_lat, mx_lon) = box
+            area = (mx_lat - mn_lat) * (mx_lon - mn_lon)
+            matches.append((area, state))
+    if not matches:
+        return None
+    matches.sort()
+    return matches[0][1]
 def _ap_pathway(ozone_na, pm25_na, pm10_na, capacity_mw, genset_mw):
     est_nox_tpy = genset_mw * 0.35
     est_ghg_tpy = capacity_mw * 900
