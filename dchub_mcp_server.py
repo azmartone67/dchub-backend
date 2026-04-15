@@ -3102,6 +3102,38 @@ _keepalive_thread.start()
 logger.info("🫀 MCP keepalive thread started (120s interval)")
 
 
+
+@mcp.tool()
+def get_air_permitting(lat: float, lon: float, capacity_mw: float = 100) -> dict:
+    """Return air-permitting profile for a US data-center parcel.
+
+    Composite 0-100 score weighted across EPA Green Book nonattainment
+    (ozone/PM2.5/PM10), AQS monitor design values, Class I proximity,
+    NEI source density, and state agency posture. Returns expected
+    permit pathway (Minor / Synthetic Minor / NNSR / PSD), per-pollutant
+    status chips (red/yellow/green), FLM consultation flags, and NNSR
+    offset cost estimate.
+
+    Args:
+        lat: Latitude (WGS84)
+        lon: Longitude (WGS84)
+        capacity_mw: Data-center load in MW (default 100)
+
+    Returns:
+        dict with score, verdict_short, pathway, offset_estimate_usd,
+        pollutants, class1, nei, state, state_context, factors
+    """
+    import urllib.request
+    import urllib.parse
+    import json as _json
+    url = ("https://dchub.cloud/api/infrastructure/air-permitting/score?"
+           + urllib.parse.urlencode({
+               "lat": lat, "lon": lon, "capacity_mw": capacity_mw
+           }))
+    with urllib.request.urlopen(url, timeout=15) as r:
+        payload = _json.loads(r.read())
+    return payload.get("data", payload)
+
 if __name__ == "__main__":
     # Warm connection pool on startup
     if _POOL_AVAILABLE:
