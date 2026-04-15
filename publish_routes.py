@@ -1,272 +1,201 @@
 """
-News Digest Publisher Routes — Add to main.py
-==============================================
-Adds /publish/site, /publish/linkedin, and /publish/all endpoints
-to the existing Flask backend. Writes digest HTML to Cloudflare KV
-(DCHUB_CACHE) and posts to LinkedIn.
+Railway FastAPI publish routes — updated to:
+  1. Require a shared Bearer secret (set RAILWAY_PUBLISH_SECRET)
+  2. Write every digest to Neon `news_digests` (archive + audit trail)
+  3. Post to LinkedIn (versioned header auto-generated from current month)
+  4. Return a structured result the Worker proxy can forward back to the cron
 
-SETUP:
-  Add these env vars to Railway:
-    - CLOUDFLARE_API_TOKEN     : Token with "Workers KV Storage: Edit" permission
-    - CLOUDFLARE_ACCOUNT_ID    : Your Cloudflare account ID
-    - CLOUDFLARE_KV_NAMESPACE  : DCHUB_CACHE namespace ID (from Worker bindings)
-    - PUBLISH_API_SECRET       : A secret key to protect these endpoints
-    (LinkedIn token + URN should already be set from linkedin_poster.py)
+Drop-in replacement for the existing publish_routes.py. Keeps the
+`/publish/all` path the same so the Worker proxy doesn't need to change.
 
-HOW TO ADD:
-  1. Copy this entire file into your Railway project as publish_routes.py
-  2. Add these two lines to main.py (near the other blueprint/route registrations):
-
-     from publish_routes import register_publish_routes
-     register_publish_routes(app)
-
-  3. Deploy to Railway. Done!
+Requires:
+  pip install fastapi psycopg[binary] httpx pydantic
+  env: DATABASE_URL, RAILWAY_PUBLISH_SECRET, LINKEDIN_ACCESS_TOKEN, LINKEDIN_ACTOR_URN
 """
+
+from __future__ import annotations
 
 import os
 import json
-import hmac
 import logging
-import requests as http_requests  # renamed to avoid Flask's request collision
-from datetime import datetime, timezone
-from flask import Blueprint, request, jsonify
+from datetime import date, datetime
+from typing import Optional
 
-log = logging.getLogger("publish_routes")
+import httpx
+import psycopg
+from fastapi import APIRouter, Header, HTTPException, Request
+from pydantic import BaseModel, Field
 
-publish_bp = Blueprint('publish', __name__)
+log = logging.getLogger("dc-hub.publish")
+router = APIRouter(prefix="/publish", tags=["publish"])
 
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-CLOUDFLARE_API_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN", "")
-CLOUDFLARE_ACCOUNT_ID = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
-CLOUDFLARE_KV_NAMESPACE = os.environ.get("CLOUDFLARE_KV_NAMESPACE", "")
-PUBLISH_API_SECRET = os.environ.get("PUBLISH_API_SECRET", "")
-LINKEDIN_ACCESS_TOKEN = os.environ.get("LINKEDIN_ACCESS_TOKEN", "")
-LINKEDIN_PERSON_URN = os.environ.get("LINKEDIN_PERSON_URN", "")
-SITE_DOMAIN = "https://dchub.cloud"
+DATABASE_URL = os.environ["DATABASE_URL"]
+PUBLISH_SECRET = os.environ.get("RAILWAY_PUBLISH_SECRET", "")
+LINKEDIN_TOKEN = os.environ.get("LINKEDIN_ACCESS_TOKEN")
+LINKEDIN_ACTOR = os.environ.get("LINKEDIN_ACTOR_URN")  # e.g. "urn:li:organization:12345"
 
 
-# ---------------------------------------------------------------------------
-# Auth
-# ---------------------------------------------------------------------------
-def _verify_secret():
-    if not PUBLISH_API_SECRET:
-        return False
-    auth = request.headers.get("Authorization", "")
-    token = auth.replace("Bearer ", "").strip()
-    if not token:
-        return False
-    return hmac.compare_digest(token, PUBLISH_API_SECRET)
+class DigestPayload(BaseModel):
+    slug: str = Field(..., pattern=r"^[a-z0-9-]+$")
+    digest_date: date
+    title: str
+    html: str
+    markdown: Optional[str] = None
+    linkedin_text: Optional[str] = None
+    story_count: Optional[int] = None
+    categories: Optional[dict] = None
+    sources: Optional[list] = None
+    run_source: str = "cron"
+    get_news_ok: bool = False
+    error_notes: Optional[str] = None
 
 
-# ---------------------------------------------------------------------------
-# Cloudflare KV — Write
-# ---------------------------------------------------------------------------
-def _kv_put(key, value, metadata=None):
-    """Write a key to Cloudflare KV (DCHUB_CACHE)."""
-    if not all([CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_KV_NAMESPACE]):
-        return False
-
-    url = (
-        f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}"
-        f"/storage/kv/namespaces/{CLOUDFLARE_KV_NAMESPACE}/values/{key}"
-    )
-    headers = {"Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}"}
-
-    if metadata:
-        resp = http_requests.put(
-            url, headers=headers,
-            files={
-                "value": (None, value, "text/html"),
-                "metadata": (None, json.dumps(metadata), "application/json"),
-            },
-            timeout=30,
-        )
-    else:
-        headers["Content-Type"] = "text/html"
-        resp = http_requests.put(url, headers=headers, data=value.encode("utf-8"), timeout=30)
-
-    if resp.status_code == 200:
-        return resp.json().get("success", False)
-    else:
-        log.error(f"KV put failed for {key}: {resp.status_code} {resp.text}")
-        return False
+def _require_auth(authorization: str) -> None:
+    if not PUBLISH_SECRET:
+        raise HTTPException(500, "publish_secret_not_configured")
+    token = authorization[7:] if authorization.startswith("Bearer ") else ""
+    if token != PUBLISH_SECRET:
+        raise HTTPException(401, "unauthorized")
 
 
-def _publish_to_site(html_content, slug):
-    """Write digest HTML to KV + update latest pointer."""
-    if not all([CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_KV_NAMESPACE]):
-        return {"ok": False, "error": "Cloudflare KV env vars not configured"}
+def _linkedin_version_header() -> str:
+    # LinkedIn Marketing API requires YYYYMM of the current month
+    return datetime.utcnow().strftime("%Y%m")
 
-    metadata = {
-        "slug": slug,
-        "published_at": datetime.now(timezone.utc).isoformat(),
-        "content_type": "text/html",
+
+async def _post_to_linkedin(text: str) -> tuple[bool, Optional[str], Optional[str]]:
+    if not (LINKEDIN_TOKEN and LINKEDIN_ACTOR and text):
+        return (False, None, "linkedin_not_configured")
+    body = {
+        "author": LINKEDIN_ACTOR,
+        "commentary": text,
+        "visibility": "PUBLIC",
+        "distribution": {"feedDistribution": "MAIN_FEED"},
+        "lifecycleState": "PUBLISHED",
     }
-
-    ok = _kv_put(f"news:{slug}", html_content, metadata=metadata)
-    if not ok:
-        return {"ok": False, "error": f"Failed to write news:{slug} to KV"}
-
-    # Update latest pointer
-    latest = json.dumps({
-        "slug": slug,
-        "url": f"{SITE_DOMAIN}/news/{slug}",
-        "published_at": datetime.now(timezone.utc).isoformat(),
-    })
-    _kv_put("news:latest", latest)
-
-    # Date index
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    _kv_put(f"news:date:{today}", json.dumps({"slug": slug}))
-
-    page_url = f"{SITE_DOMAIN}/news/{slug}"
-    log.info(f"Published digest to KV: {page_url}")
-    return {"ok": True, "url": page_url, "slug": slug}
-
-
-# ---------------------------------------------------------------------------
-# LinkedIn — Post
-# ---------------------------------------------------------------------------
-def _publish_to_linkedin(text, article_url="", article_title=""):
-    """Post to LinkedIn."""
-    if not all([LINKEDIN_ACCESS_TOKEN, LINKEDIN_PERSON_URN]):
-        return {"ok": False, "error": "LinkedIn env vars not configured"}
-
-    url = "https://api.linkedin.com/rest/posts"
     headers = {
-        "Authorization": f"Bearer {LINKEDIN_ACCESS_TOKEN}",
+        "Authorization": f"Bearer {LINKEDIN_TOKEN}",
         "Content-Type": "application/json",
-        "LinkedIn-Version": "202501",
+        "LinkedIn-Version": _linkedin_version_header(),
         "X-Restli-Protocol-Version": "2.0.0",
     }
-
-    payload = {
-        "author": LINKEDIN_PERSON_URN,
-        "lifecycleState": "PUBLISHED",
-        "visibility": "PUBLIC",
-        "distribution": {
-            "feedDistribution": "MAIN_FEED",
-            "targetEntities": [],
-            "thirdPartyDistributionChannels": [],
-        },
-        "commentary": text,
-    }
-
-    if article_url:
-        payload["content"] = {
-            "article": {
-                "source": article_url,
-                "title": article_title or "DC Industry News Digest",
-                "description": "Daily data center industry intelligence — market moves, deals, regulatory shifts, and community sentiment.",
-            }
-        }
-
-    resp = http_requests.post(url, headers=headers, json=payload, timeout=30)
-
-    if resp.status_code in (200, 201):
-        post_id = resp.headers.get("x-restli-id", "unknown")
-        log.info(f"LinkedIn post created: {post_id}")
-        return {"ok": True, "post_id": post_id}
-    else:
-        log.error(f"LinkedIn post failed: {resp.status_code} {resp.text}")
-        return {"ok": False, "error": resp.text, "status": resp.status_code}
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.post(
+                "https://api.linkedin.com/rest/posts",
+                headers=headers,
+                json=body,
+            )
+        if r.status_code in (200, 201):
+            urn = r.headers.get("x-restli-id") or ""
+            return (True, urn, None)
+        return (False, None, f"linkedin_{r.status_code}: {r.text[:200]}")
+    except Exception as e:  # noqa: BLE001
+        return (False, None, f"linkedin_exception: {e}")
 
 
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
-@publish_bp.route('/publish/site', methods=['POST'])
-def route_publish_site():
-    if not _verify_secret():
-        return jsonify({"error": "unauthorized"}), 401
-
-    data = request.get_json(force=True)
-    html = data.get("html", "")
-    slug = data.get("slug", datetime.now(timezone.utc).strftime("digest-%Y-%m-%d"))
-
-    if not html:
-        return jsonify({"error": "html field is required"}), 400
-
-    result = _publish_to_site(html, slug)
-    return jsonify(result), 200 if result["ok"] else 502
-
-
-@publish_bp.route('/publish/linkedin', methods=['POST'])
-def route_publish_linkedin():
-    if not _verify_secret():
-        return jsonify({"error": "unauthorized"}), 401
-
-    data = request.get_json(force=True)
-    text = data.get("text", "")
-    article_url = data.get("article_url", "")
-    article_title = data.get("article_title", "")
-
-    if not text:
-        return jsonify({"error": "text field is required"}), 400
-
-    result = _publish_to_linkedin(text, article_url, article_title)
-    return jsonify(result), 200 if result["ok"] else 502
-
-
-@publish_bp.route('/publish/all', methods=['POST'])
-def route_publish_all():
+def _upsert_digest(payload: DigestPayload, publish_railway: bool,
+                   publish_linkedin: bool, linkedin_urn: Optional[str],
+                   error_notes: Optional[str]) -> None:
+    sql = """
+    INSERT INTO news_digests (
+      slug, digest_date, title, html, markdown, linkedin_text,
+      story_count, categories, sources, run_source, get_news_ok,
+      publish_railway, publish_linkedin, linkedin_post_id, error_notes
+    ) VALUES (
+      %(slug)s, %(digest_date)s, %(title)s, %(html)s, %(markdown)s, %(linkedin_text)s,
+      %(story_count)s, %(categories)s, %(sources)s, %(run_source)s, %(get_news_ok)s,
+      %(publish_railway)s, %(publish_linkedin)s, %(linkedin_post_id)s, %(error_notes)s
+    )
+    ON CONFLICT (slug) DO UPDATE SET
+      title            = EXCLUDED.title,
+      html             = EXCLUDED.html,
+      markdown         = EXCLUDED.markdown,
+      linkedin_text    = EXCLUDED.linkedin_text,
+      story_count      = EXCLUDED.story_count,
+      categories       = EXCLUDED.categories,
+      sources          = EXCLUDED.sources,
+      get_news_ok      = EXCLUDED.get_news_ok,
+      publish_railway  = news_digests.publish_railway OR EXCLUDED.publish_railway,
+      publish_linkedin = news_digests.publish_linkedin OR EXCLUDED.publish_linkedin,
+      linkedin_post_id = COALESCE(EXCLUDED.linkedin_post_id, news_digests.linkedin_post_id),
+      error_notes      = EXCLUDED.error_notes
+    ;
     """
-    One-shot: publish to site (KV) + LinkedIn.
+    with psycopg.connect(DATABASE_URL) as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, {
+                "slug": payload.slug,
+                "digest_date": payload.digest_date,
+                "title": payload.title,
+                "html": payload.html,
+                "markdown": payload.markdown,
+                "linkedin_text": payload.linkedin_text,
+                "story_count": payload.story_count,
+                "categories": json.dumps(payload.categories) if payload.categories else None,
+                "sources": json.dumps(payload.sources) if payload.sources else None,
+                "run_source": payload.run_source,
+                "get_news_ok": payload.get_news_ok,
+                "publish_railway": publish_railway,
+                "publish_linkedin": publish_linkedin,
+                "linkedin_post_id": linkedin_urn,
+                "error_notes": error_notes,
+            })
+        conn.commit()
 
-    JSON body:
-    {
-      "html": "<full digest HTML>",
-      "slug": "digest-2026-04-13",
-      "linkedin_text": "The LinkedIn post...",
-      "article_url": "https://dchub.cloud/news/digest-2026-04-13",
-      "article_title": "DC Industry News Digest — April 13, 2026"
-    }
-    """
-    if not _verify_secret():
-        return jsonify({"error": "unauthorized"}), 401
 
-    data = request.get_json(force=True)
-    slug = data.get("slug", datetime.now(timezone.utc).strftime("digest-%Y-%m-%d"))
+@router.post("/all")
+async def publish_all(payload: DigestPayload,
+                      request: Request,
+                      authorization: str = Header(default="")):
+    _require_auth(authorization)
 
-    # 1. Publish to site
-    site_result = {"skipped": True}
-    if data.get("html"):
-        site_result = _publish_to_site(data["html"], slug)
+    log.info("publish received slug=%s date=%s source=%s",
+             payload.slug, payload.digest_date, payload.run_source)
 
-    # 2. Publish to LinkedIn
-    li_result = {"skipped": True}
-    if data.get("linkedin_text"):
-        article_url = data.get("article_url", "")
-        if not article_url and site_result.get("ok"):
-            article_url = site_result["url"]
+    # 1) LinkedIn
+    li_ok, li_urn, li_err = await _post_to_linkedin(payload.linkedin_text or "")
 
-        li_result = _publish_to_linkedin(
-            data["linkedin_text"],
-            article_url,
-            data.get("article_title",
-                      f"DC Industry News Digest — {datetime.now(timezone.utc).strftime('%B %d, %Y')}"),
+    # 2) Neon archive (source of truth)
+    try:
+        _upsert_digest(
+            payload,
+            publish_railway=True,
+            publish_linkedin=li_ok,
+            linkedin_urn=li_urn,
+            error_notes=li_err,
         )
+        neon_ok = True
+    except Exception as e:  # noqa: BLE001
+        log.exception("neon upsert failed")
+        neon_ok = False
+        li_err = (li_err + " | " if li_err else "") + f"neon_error: {e}"
 
-    return jsonify({"site": site_result, "linkedin": li_result}), 200
+    return {
+        "success": neon_ok,
+        "slug": payload.slug,
+        "neon_ok": neon_ok,
+        "linkedin_ok": li_ok,
+        "linkedin_urn": li_urn,
+        "error_notes": li_err,
+        "ts": datetime.utcnow().isoformat() + "Z",
+    }
 
 
-@publish_bp.route('/publish/health', methods=['GET'])
-def route_publish_health():
-    """Health check for publish routes."""
-    return jsonify({
-        "status": "ok",
-        "kv_configured": bool(CLOUDFLARE_KV_NAMESPACE),
-        "linkedin_configured": bool(LINKEDIN_ACCESS_TOKEN and LINKEDIN_PERSON_URN),
-        "secret_configured": bool(PUBLISH_API_SECRET),
-    })
-
-
-# ---------------------------------------------------------------------------
-# Registration helper
-# ---------------------------------------------------------------------------
-def register_publish_routes(app):
-    """Call this from main.py to register the publish routes."""
-    app.register_blueprint(publish_bp)
-    log.info("Publish routes registered: /publish/site, /publish/linkedin, /publish/all")
+@router.get("/health")
+async def publish_health():
+    """Quick SELECT to verify Neon connectivity + row count."""
+    try:
+        with psycopg.connect(DATABASE_URL) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*), MAX(digest_date) FROM news_digests"
+                )
+                count, latest = cur.fetchone()
+        return {
+            "ok": True,
+            "digest_count": count,
+            "latest_digest_date": str(latest) if latest else None,
+        }
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(500, f"neon_unreachable: {e}")
