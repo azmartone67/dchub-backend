@@ -38,3 +38,8 @@ dchub_fix.sh
 *.bak
 *.bak.*
 patch_*.py
+
+# Backend zip exports (local only)
+dchub-backend.zip
+main.py.prev-*.bak
+main.py.bak
