@@ -1335,13 +1335,12 @@ try:
 except Exception as e:
     logger.warning(f"Gateway not loaded: {e}")
 
-# ChatGPT Deep Research — register search & fetch tools
-try:
-    from chatgpt_mcp_compat import register_chatgpt_compat
-    register_chatgpt_compat(gateway if 'gateway' in dir() else app)
-    logger.info("🔍 ChatGPT search/fetch tools registered for Deep Research")
-except Exception as e:
-    logger.warning(f"ChatGPT compat not loaded: {e}")
+# ChatGPT Deep Research — search & fetch tools are registered on the FastMCP
+# instance in dchub_mcp_server.py (separate process on port 8888).
+# The Flask app (gateway/app) has no MCP tool registry to attach them to, so
+# calling register_chatgpt_compat(app) here was a no-op that logged a misleading
+# "registered" line. To enable Deep Research, add `register_chatgpt_compat(mcp)`
+# near the FastMCP init in dchub_mcp_server.py.
 
 # =============================================================================
 # INSTANT HEALTH CHECK - Must respond within 1 second
