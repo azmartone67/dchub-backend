@@ -815,83 +815,82 @@ def get_gas_pipelines():
     except (ValueError, TypeError):
         radius = 50
 
-    conn = None
     try:
-        conn = _get_db()
-        c = conn.cursor()
-        c.execute("SET statement_timeout = 10000")  # 10s max - prevents 70s connection hold
+        with _pg_connection() as conn:
+            c = conn.cursor()
+            c.execute("SET statement_timeout = 10000")  # 10s max - prevents 70s connection hold
 
-        query = """SELECT id, name, operator, pipeline_type, diameter_inches, 
-                   capacity_mcf, status, lat, lng, city, state, country, source 
-                   FROM gas_pipelines 
-                   WHERE lat IS NOT NULL AND lng IS NOT NULL"""
-        params = []
+            query = """SELECT id, name, operator, pipeline_type, diameter_inches, 
+                       capacity_mcf, status, lat, lng, city, state, country, source 
+                       FROM gas_pipelines 
+                       WHERE lat IS NOT NULL AND lng IS NOT NULL"""
+            params = []
 
-        # Spatial bounding box filter
-        if lat is not None and lng is not None:
-            lat_d = radius / 69.0
-            lng_d = radius / (69.0 * max(math.cos(math.radians(lat)), 0.1))
-            query += " AND lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s"
-            params.extend([lat - lat_d, lat + lat_d, lng - lng_d, lng + lng_d])
+            # Spatial bounding box filter
+            if lat is not None and lng is not None:
+                lat_d = radius / 69.0
+                lng_d = radius / (69.0 * max(math.cos(math.radians(lat)), 0.1))
+                query += " AND lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s"
+                params.extend([lat - lat_d, lat + lat_d, lng - lng_d, lng + lng_d])
 
-        if state_filter:
-            query += " AND UPPER(state) = %s"
-            params.append(state_filter)
-        if operator_filter:
-            query += " AND operator ILIKE %s"
-            params.append(f"%{operator_filter}%")
-        if pipeline_type:
-            query += " AND LOWER(pipeline_type) = LOWER(%s)"
-            params.append(pipeline_type)
+            if state_filter:
+                query += " AND UPPER(state) = %s"
+                params.append(state_filter)
+            if operator_filter:
+                query += " AND operator ILIKE %s"
+                params.append(f"%{operator_filter}%")
+            if pipeline_type:
+                query += " AND LOWER(pipeline_type) = LOWER(%s)"
+                params.append(pipeline_type)
 
-        query += " ORDER BY diameter_inches DESC NULLS LAST LIMIT %s"
-        params.append(min(limit, 500))
+            query += " ORDER BY diameter_inches DESC NULLS LAST LIMIT %s"
+            params.append(min(limit, 500))
 
-        c.execute(query, params)
-        rows = c.fetchall()
+            c.execute(query, params)
+            rows = c.fetchall()
 
-        pipelines = []
-        for r in rows:
-            pipelines.append({
-                'id': r[0], 'name': r[1], 'operator': r[2],
-                'pipeline_type': r[3],
-                'diameter_inches': float(r[4]) if r[4] else None,
-                'capacity_mcf': float(r[5]) if r[5] else None,
-                'status': r[6],
-                'lat': float(r[7]), 'lng': float(r[8]),
-                'city': r[9], 'state': r[10], 'country': r[11],
-                'source': r[12]
+            pipelines = []
+            for r in rows:
+                pipelines.append({
+                    'id': r[0], 'name': r[1], 'operator': r[2],
+                    'pipeline_type': r[3],
+                    'diameter_inches': float(r[4]) if r[4] else None,
+                    'capacity_mcf': float(r[5]) if r[5] else None,
+                    'status': r[6],
+                    'lat': float(r[7]), 'lng': float(r[8]),
+                    'city': r[9], 'state': r[10], 'country': r[11],
+                    'source': r[12]
+                })
+
+            # Stats query (safe — can't kill the main response)
+            stats = (0, 0, 0)
+            try:
+                c.execute("SELECT COUNT(*), COUNT(DISTINCT operator), COUNT(DISTINCT state) FROM discovered_pipelines WHERE commodity = 'Natural Gas'")
+                stats = c.fetchone()
+            except Exception:
+                pass
+
+            return jsonify({
+                'success': True,
+                'pipelines': pipelines,
+                'count': len(pipelines),
+                'stats': {
+                    'total_pipelines': stats[0],
+                    'unique_operators': stats[1],
+                    'states_covered': stats[2]
+                },
+                'filters': {
+                    'state': state_filter or 'all',
+                    'operator': operator_filter or 'all',
+                    'type': pipeline_type or 'all'
+                },
+                '_debug': {
+                    'lat_received': lat,
+                    'lng_received': lng,
+                    'radius': radius,
+                    'spatial_filter_applied': lat is not None and lng is not None
+                }
             })
-
-        # Stats query (safe — can't kill the main response)
-        stats = (0, 0, 0)
-        try:
-            c.execute("SELECT COUNT(*), COUNT(DISTINCT operator), COUNT(DISTINCT state) FROM discovered_pipelines WHERE commodity = 'Natural Gas'")
-            stats = c.fetchone()
-        except Exception:
-            pass
-
-        return jsonify({
-            'success': True,
-            'pipelines': pipelines,
-            'count': len(pipelines),
-            'stats': {
-                'total_pipelines': stats[0],
-                'unique_operators': stats[1],
-                'states_covered': stats[2]
-            },
-            'filters': {
-                'state': state_filter or 'all',
-                'operator': operator_filter or 'all',
-                'type': pipeline_type or 'all'
-            },
-            '_debug': {
-                'lat_received': lat,
-                'lng_received': lng,
-                'radius': radius,
-                'spatial_filter_applied': lat is not None and lng is not None
-            }
-        })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
