@@ -449,13 +449,10 @@ def _run_deals_crawler():
         logger.error("💼 Deals crawler: No Neon DATABASE_URL found — aborting")
         return
 
-    try:
-        # Use auto_pilot deal extractor
-        from auto_pilot import deal_extractor, capacity_extractor, _is_dc_relevant, _is_valid_company_name
-        logger.info("💼 Using auto_pilot extractors")
-    except Exception as e:
-        logger.warning(f"💼 auto_pilot extractors not available: {e}")
-        deal_extractor = None
+    # Legacy auto_pilot extractors retired — deal extraction migrated to
+    # Energy Auto-Discovery v3.0 upstream. Setting deal_extractor=None keeps the
+    # guarded block at line ~516 a no-op without generating log noise every crawl.
+    deal_extractor = None
 
     try:
         import feedparser
