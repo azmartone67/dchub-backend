@@ -49,7 +49,6 @@ def _create_pool():
         POOL_MAX,
         NEON_DATABASE_URL,
         connect_timeout=CONNECT_TIMEOUT,
-        options=f"-c statement_timeout={QUERY_TIMEOUT}"
     )
     _pool_created_at = time.time()
     logger.info(f"Connection pool created: min={POOL_MIN}, max={POOL_MAX}, timeout={QUERY_TIMEOUT}ms")
