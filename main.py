@@ -9686,146 +9686,174 @@ def sync_news_to_neon():
 
 @app.route('/api/cron/daily', methods=['POST', 'GET'])
 def daily_cron():
-    """Daily cron job: sync news to Neon + post to LinkedIn."""
-    import requests as _req, traceback
-    from datetime import date
-    results = {'news_sync': None, 'linkedin': None, 'date': date.today().isoformat()}
+    """Daily cron job: sync news to Neon + post to LinkedIn.
 
-    # Step 1: Push fresh RSS articles to Neon
-    try:
-        from news_engine import fetch_all_rss_feeds
-        import psycopg2 as _psyco, hashlib as _hl
-        from datetime import timezone as _tz
-        articles_rss = fetch_all_rss_feeds()
-        db_url = os.environ.get('DATABASE_URL') or os.environ.get('NEON_DATABASE_URL','')
-        pg2 = _psyco.connect(db_url, connect_timeout=15)
-        pg2.autocommit = False
-        cur2 = pg2.cursor()
-        pushed = 0
-        for a in articles_rss:
-            try:
-                pub = a.get('published_at') or datetime.now(_tz.utc).isoformat()
-                if hasattr(pub, 'isoformat'): pub = pub.isoformat()
-                aid = a.get('id') or _hl.md5(a.get('url','').encode()).hexdigest()[:16]
-                cur2.execute("INSERT INTO announcements (id,title,summary,url,source,source_url,published_date,discovered_at,category,announcement_type,confidence) VALUES (%s,%s,%s,%s,%s,%s,%s::timestamp,NOW(),%s,'news',0.9) ON CONFLICT(id) DO UPDATE SET title=EXCLUDED.title,summary=EXCLUDED.summary,discovered_at=NOW()",
-                    (aid,(a.get('title') or '')[:500],(a.get('summary') or '')[:2000],(a.get('url') or '')[:1000],(a.get('source') or '')[:200],(a.get('url') or '')[:1000],pub,(a.get('category') or 'Industry')[:100]))
-                if cur2.rowcount > 0: pushed += 1
-            except Exception as re:
-                pg2.rollback()
-        pg2.commit(); cur2.close(); pg2.close()
-        results['news_sync'] = {'success': True, 'pushed': pushed, 'fetched': len(articles_rss)}
-        logger.info(f"[daily_cron] pushed {pushed} articles to Neon")
-    except Exception as e:
-        results['news_sync'] = {'error': str(e)}
-        logger.error(f"[daily_cron] news sync failed: {e}")
+    Fire-and-forget: returns 202 Accepted immediately so cron-job.org's
+    30-second HTTP timeout never fires. The actual work (RSS fetch across
+    60+ sources, Neon upserts, LinkedIn post) runs on a daemon thread.
+    Check Railway logs for `[daily_cron] complete` to confirm completion.
+    """
+    from datetime import datetime as _dt
 
-    # Step 2: Post to LinkedIn
-    try:
-        from linkedin_autopost import create_text_post, get_valid_token
-        from datetime import datetime
+    def _run():
+        import requests as _req, traceback
+        from datetime import date, datetime, timezone as _tz, timedelta
+        results = {'news_sync': None, 'linkedin': None, 'date': date.today().isoformat()}
 
-        # Get latest articles - last 2 days to handle UTC offset
-        articles = []
-        with pg_connection() as pg:
-            cur = pg.cursor()
-            cur.execute("""
-                SELECT title, summary, url, source, category
-                FROM announcements
-                WHERE LEFT(published_date, 10) >= TO_CHAR(NOW() - INTERVAL '2 days', 'YYYY-MM-DD')
-                ORDER BY published_date DESC LIMIT 50
-            """)
-            articles = [{'title': r[0], 'summary': r[1], 'url': r[2], 'source': r[3], 'category': r[4]} for r in cur.fetchall()]
+        # Step 1: Push fresh RSS articles to Neon
+        try:
+            from news_engine import fetch_all_rss_feeds
+            import psycopg2 as _psyco, hashlib as _hl
+            articles_rss = fetch_all_rss_feeds()
+            db_url = os.environ.get('DATABASE_URL') or os.environ.get('NEON_DATABASE_URL','')
+            pg2 = _psyco.connect(db_url, connect_timeout=15)
+            pg2.autocommit = False
+            cur2 = pg2.cursor()
+            pushed = 0
+            for a in articles_rss:
+                try:
+                    pub = a.get('published_at') or datetime.now(_tz.utc).isoformat()
+                    if hasattr(pub, 'isoformat'): pub = pub.isoformat()
+                    aid = a.get('id') or _hl.md5(a.get('url','').encode()).hexdigest()[:16]
+                    cur2.execute("INSERT INTO announcements (id,title,summary,url,source,source_url,published_date,discovered_at,category,announcement_type,confidence) VALUES (%s,%s,%s,%s,%s,%s,%s::timestamp,NOW(),%s,'news',0.9) ON CONFLICT(id) DO UPDATE SET title=EXCLUDED.title,summary=EXCLUDED.summary,discovered_at=NOW()",
+                        (aid,(a.get('title') or '')[:500],(a.get('summary') or '')[:2000],(a.get('url') or '')[:1000],(a.get('source') or '')[:200],(a.get('url') or '')[:1000],pub,(a.get('category') or 'Industry')[:100]))
+                    if cur2.rowcount > 0: pushed += 1
+                except Exception as re:
+                    pg2.rollback()
+            pg2.commit(); cur2.close(); pg2.close()
+            results['news_sync'] = {'success': True, 'pushed': pushed, 'fetched': len(articles_rss)}
+            logger.info(f"[daily_cron] pushed {pushed} articles to Neon")
+        except Exception as e:
+            results['news_sync'] = {'error': str(e)}
+            logger.error(f"[daily_cron] news sync failed: {e}")
 
-        if not articles:
+        # Step 2: Post to LinkedIn
+        try:
+            from linkedin_autopost import create_text_post, get_valid_token
+
+            # Get latest articles - last 2 days to handle UTC offset
+            articles = []
             with pg_connection() as pg:
                 cur = pg.cursor()
-                cur.execute("SELECT title, summary, url, source, category FROM announcements ORDER BY published_date DESC LIMIT 50")
+                cur.execute("""
+                    SELECT title, summary, url, source, category
+                    FROM announcements
+                    WHERE LEFT(published_date, 10) >= TO_CHAR(NOW() - INTERVAL '2 days', 'YYYY-MM-DD')
+                    ORDER BY published_date DESC LIMIT 50
+                """)
                 articles = [{'title': r[0], 'summary': r[1], 'url': r[2], 'source': r[3], 'category': r[4]} for r in cur.fetchall()]
 
-        today_str = datetime.now().strftime('%B %d, %Y')
-        dates_found = sorted(set(a.get('published_at','')[:10] for a in articles if a.get('published_at')), reverse=True)
-        digest_date = dates_found[0] if dates_found else date.today().isoformat()
-        # Use the most recent date that has articles, not today's UTC date
-        from datetime import timedelta
-        digest_date = dates_found[0] if dates_found else (date.today() - timedelta(days=1)).isoformat()
-        digest_url = 'https://dchub.cloud/news/digest-' + digest_date
-        post_lines = [f'📊 DC Hub Daily Intelligence — {today_str}\n']
-        for i, a in enumerate(articles[:5], 1):
-            post_lines.append(f"{i}. {a['title']}")
-            if a.get('summary'):
-                post_lines.append(f"   {a['summary'][:120]}...")
-        post_lines.append(f'\n🔗 Full digest: {digest_url}')
-        post_lines.append('\n#DataCenter #Infrastructure #CloudComputing #AI #DigitalInfrastructure')
-        post_text = '\n'.join(post_lines)
+            if not articles:
+                with pg_connection() as pg:
+                    cur = pg.cursor()
+                    cur.execute("SELECT title, summary, url, source, category FROM announcements ORDER BY published_date DESC LIMIT 50")
+                    articles = [{'title': r[0], 'summary': r[1], 'url': r[2], 'source': r[3], 'category': r[4]} for r in cur.fetchall()]
 
-        token = get_valid_token()
-        if token:
-            result = create_text_post(post_text, token)
-            results['linkedin'] = {'success': True, 'post_id': str(result)[:100] if result else None, 'articles_used': len(articles)}
-        else:
-            results['linkedin'] = {'success': False, 'error': 'No valid LinkedIn token'}
+            today_str = datetime.now().strftime('%B %d, %Y')
+            dates_found = sorted(set(a.get('published_at','')[:10] for a in articles if a.get('published_at')), reverse=True)
+            digest_date = dates_found[0] if dates_found else date.today().isoformat()
+            # Use the most recent date that has articles, not today's UTC date
+            digest_date = dates_found[0] if dates_found else (date.today() - timedelta(days=1)).isoformat()
+            digest_url = 'https://dchub.cloud/news/digest-' + digest_date
+            post_lines = [f'📊 DC Hub Daily Intelligence — {today_str}\n']
+            for i, a in enumerate(articles[:5], 1):
+                post_lines.append(f"{i}. {a['title']}")
+                if a.get('summary'):
+                    post_lines.append(f"   {a['summary'][:120]}...")
+            post_lines.append(f'\n🔗 Full digest: {digest_url}')
+            post_lines.append('\n#DataCenter #Infrastructure #CloudComputing #AI #DigitalInfrastructure')
+            post_text = '\n'.join(post_lines)
 
-    except Exception as e:
-        results['linkedin'] = {'error': str(e)}
-        logger.error(f"[daily_cron] linkedin failed: {traceback.format_exc()}")
+            token = get_valid_token()
+            if token:
+                result = create_text_post(post_text, token)
+                results['linkedin'] = {'success': True, 'post_id': str(result)[:100] if result else None, 'articles_used': len(articles)}
+            else:
+                results['linkedin'] = {'success': False, 'error': 'No valid LinkedIn token'}
 
-    return jsonify({'success': True, 'results': results})
+        except Exception as e:
+            results['linkedin'] = {'error': str(e)}
+            logger.error(f"[daily_cron] linkedin failed: {traceback.format_exc()}")
+
+        logger.info(f"[daily_cron] complete: {results}")
+
+    threading.Thread(target=_run, daemon=True, name="daily-cron").start()
+    return jsonify({
+        'status': 'accepted',
+        'message': 'Daily cron started in background — tail Railway logs for [daily_cron] complete',
+        'started_at': _dt.utcnow().isoformat() + 'Z'
+    }), 202
 
 
 
-@app.route('/api/news/push-to-neon', methods=['POST'])
+@app.route('/api/news/push-to-neon', methods=['GET', 'POST'])
 def push_news_to_neon():
-    """Fetch RSS directly and write to Neon announcements — bypasses SQLite entirely."""
-    import hashlib
-    from datetime import datetime, timezone
-    try:
-        from news_engine import fetch_all_rss_feeds
-        articles = fetch_all_rss_feeds()
-        if not articles:
-            return jsonify({'success': False, 'error': 'No articles fetched'})
-        saved = 0; skipped = 0
-        import psycopg2 as _psyco
-        db_url = os.environ.get('DATABASE_URL') or os.environ.get('NEON_DATABASE_URL','')
-        pg = _psyco.connect(db_url, connect_timeout=15)
-        pg.autocommit = False
-        cur = pg.cursor()
-        for a in articles:
-            try:
-                pub = a.get('published_at') or datetime.now(timezone.utc).isoformat()
-                if hasattr(pub, 'isoformat'): pub = pub.isoformat()
-                art_id = a.get('id') or hashlib.md5(a.get('url','').encode()).hexdigest()[:16]
-                cur.execute("""
-                    INSERT INTO announcements
-                        (id, title, summary, url, source, source_url, published_date, discovered_at, category, announcement_type, confidence)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s::timestamp,NOW(),%s,'news',0.9)
-                    ON CONFLICT(id) DO UPDATE SET
-                        title=EXCLUDED.title,
-                        summary=EXCLUDED.summary,
-                        discovered_at=NOW()
-                """, (
-                    art_id,
-                    (a.get('title') or '')[:500],
-                    (a.get('summary') or '')[:2000],
-                    (a.get('url') or '')[:1000],
-                    (a.get('source') or '')[:200],
-                    (a.get('url') or '')[:1000],
-                    pub,
-                    (a.get('category') or 'Industry')[:100],
-                ))
-                if cur.rowcount > 0: saved += 1
-                else: skipped += 1
-            except Exception as re:
-                logger.warning(f"[push-neon] row error: {re}")
-                pg.rollback()
-                skipped += 1
-        pg.commit()
-        cur.close()
-        pg.close()
-        logger.info(f"[push-neon] saved={saved} skipped={skipped}")
-        return jsonify({'success': True, 'fetched': len(articles), 'saved': saved, 'skipped': skipped})
-    except Exception as e:
-        logger.error(f"[push-neon] {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+    """Fetch RSS directly and write to Neon announcements — bypasses SQLite entirely.
+
+    Accepts GET so cron-job.org (default method) can hit it without
+    manually switching to POST. Fire-and-forget: returns 202 immediately;
+    heavy RSS crawl + Neon upsert runs on a daemon thread. Check Railway
+    logs for `[push-neon] saved=... skipped=...` to confirm completion.
+    """
+    from datetime import datetime as _dt
+
+    def _run():
+        import hashlib
+        from datetime import datetime, timezone
+        try:
+            from news_engine import fetch_all_rss_feeds
+            articles = fetch_all_rss_feeds()
+            if not articles:
+                logger.warning("[push-neon] no articles fetched")
+                return
+            saved = 0; skipped = 0
+            import psycopg2 as _psyco
+            db_url = os.environ.get('DATABASE_URL') or os.environ.get('NEON_DATABASE_URL','')
+            pg = _psyco.connect(db_url, connect_timeout=15)
+            pg.autocommit = False
+            cur = pg.cursor()
+            for a in articles:
+                try:
+                    pub = a.get('published_at') or datetime.now(timezone.utc).isoformat()
+                    if hasattr(pub, 'isoformat'): pub = pub.isoformat()
+                    art_id = a.get('id') or hashlib.md5(a.get('url','').encode()).hexdigest()[:16]
+                    cur.execute("""
+                        INSERT INTO announcements
+                            (id, title, summary, url, source, source_url, published_date, discovered_at, category, announcement_type, confidence)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s::timestamp,NOW(),%s,'news',0.9)
+                        ON CONFLICT(id) DO UPDATE SET
+                            title=EXCLUDED.title,
+                            summary=EXCLUDED.summary,
+                            discovered_at=NOW()
+                    """, (
+                        art_id,
+                        (a.get('title') or '')[:500],
+                        (a.get('summary') or '')[:2000],
+                        (a.get('url') or '')[:1000],
+                        (a.get('source') or '')[:200],
+                        (a.get('url') or '')[:1000],
+                        pub,
+                        (a.get('category') or 'Industry')[:100],
+                    ))
+                    if cur.rowcount > 0: saved += 1
+                    else: skipped += 1
+                except Exception as re:
+                    logger.warning(f"[push-neon] row error: {re}")
+                    pg.rollback()
+                    skipped += 1
+            pg.commit()
+            cur.close()
+            pg.close()
+            logger.info(f"[push-neon] saved={saved} skipped={skipped} fetched={len(articles)}")
+        except Exception as e:
+            logger.error(f"[push-neon] {e}")
+
+    threading.Thread(target=_run, daemon=True, name="push-news-to-neon").start()
+    return jsonify({
+        'status': 'accepted',
+        'message': 'RSS push started in background — tail Railway logs for [push-neon] saved=...',
+        'started_at': _dt.utcnow().isoformat() + 'Z'
+    }), 202
 
 @app.route('/api/press-releases/archive', methods=['GET'])
 def get_press_release_archive():
