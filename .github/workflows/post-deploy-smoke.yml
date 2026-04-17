@@ -1,0 +1,49 @@
+name: Post-Deploy Smoke Test
+
+# Runs after every push to main (once Railway finishes rebuilding),
+# and every 30 min as a safety net. Fails the build — and pings you —
+# on any gated-endpoint regression (e.g. a broken @require_plan path).
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: pip install psycopg2-binary
+
+      - name: Wait for Railway rebuild to settle
+        if: github.event_name == 'push'
+        run: sleep 90  # give Railway time to swap traffic to new container
+
+      - name: Run smoke test
+        env:
+          DCHUB_API_BASE:  https://dchub-backend-production.up.railway.app
+          DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          DCHUB_API_KEY:   ${{ secrets.DCHUB_API_KEY }}
+          NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+        run: python smoke_test.py
+
+      - name: Notify on failure
+        if: failure()
+        uses: slackapi/slack-github-action@v1
+        with:
+          channel-id: ${{ secrets.SLACK_ALERT_CHANNEL }}
+          slack-message: |
+            :red_circle: DC Hub smoke test FAILED on commit ${{ github.sha }}
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
