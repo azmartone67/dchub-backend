@@ -42,20 +42,38 @@ logger = logging.getLogger("dchub.smoke")
 
 API_BASE = os.environ.get('DCHUB_API_BASE', 'https://dchub-backend-production.up.railway.app')
 ADMIN_KEY = os.environ.get('DCHUB_ADMIN_KEY', '')
+API_KEY   = os.environ.get('DCHUB_API_KEY', '')  # for gated endpoints (Pro/Enterprise)
 
 # Endpoints to check: (name, path, method, needs_auth, timeout_s, expected_status)
 SMOKE_CHECKS = [
     ("health",          "/health",                              "GET",  False, 10, 200),
     ("stats",           "/api/v1/stats",                        "GET",  False, 15, 200),
-    ("search",          "/api/v1/search%sq=equinix&limit=2",     "GET",  False, 15, 200),
-    ("news",            "/api/news/live%slimit=2",               "GET",  False, 15, 200),
-    ("transactions",    "/api/transactions%slimit=2",            "GET",  False, 15, 200),
-    ("map",             "/api/v1/map%slimit=2",                  "GET",  False, 15, 200),
+    ("search",          "/api/v1/search?q=equinix&limit=2",     "GET",  False, 15, 200),
+    ("news",            "/api/news/live?limit=2",               "GET",  False, 15, 200),
+    ("transactions",    "/api/transactions?limit=2",            "GET",  False, 15, 200),
+    ("map",             "/api/v1/map?limit=2",                  "GET",  False, 15, 200),
     ("watchdog",        "/api/health/watchdog",                 "GET",  False, 10, 200),
     ("pool_status",     "/api/admin/pool-status",               "GET",  True,  10, 200),
     ("grid_intel",      "/api/v1/grid-intelligence",            "GET",  False, 15, 200),
-    ("fiber",           "/api/fiber/routes%slimit=2",            "GET",  False, 15, 200),
-    ("substations",     "/api/infrastructure/substations%slat=33.45&lon=-112.07&limit=2", "GET", False, 15, 200),
+    ("fiber",           "/api/fiber/routes?limit=2",            "GET",  False, 15, 200),
+    ("substations",     "/api/infrastructure/substations?lat=33.45&lon=-112.07&limit=2", "GET", False, 15, 200),
+]
+
+# ═══════════════════════════════════════════════════════════
+# GATED ENDPOINT CHECKS — exercise @require_plan paths using a real API key.
+# These would have caught the 2026-04-17 `current_user` regression where
+# /api/v1/markets/<market> silently returned 403 for all authenticated callers.
+# Requires DCHUB_API_KEY env var pointing to a Pro or Enterprise-tier key.
+# Failures here MUST block deploys — a broken auth path is a P0.
+# ═══════════════════════════════════════════════════════════
+GATED_CHECKS = [
+    # (name, path, min_plan, timeout, expected_status)
+    ("markets_detail_phoenix", "/api/v1/markets/phoenix",          "pro",        15, 200),  # ← regression guard
+    ("markets_detail_ashburn", "/api/v1/markets/ashburn",          "pro",        15, 200),
+    ("markets_list",           "/api/v1/markets/list",             "enterprise", 15, 200),
+    ("markets_compare",        "/api/v1/markets/compare?markets=phoenix,ashburn", "pro", 15, 200),
+    ("facilities",             "/api/v1/facilities?limit=2",       "pro",        15, 200),
+    ("ai_query",               "/api/ai/query?type=stats&q=phoenix", "enterprise", 15, 200),
 ]
 
 # Thresholds
@@ -67,8 +85,12 @@ LATENCY_FAIL_MS = 15000
 # HTTP HELPER
 # ═══════════════════════════════════════════════════════════
 
-def _http_check(path, method="GET", needs_auth=False, timeout=15):
-    """Make an HTTP request and return (status_code, latency_ms, body_preview)."""
+def _http_check(path, method="GET", needs_auth=False, timeout=15, api_key=None):
+    """Make an HTTP request and return (status_code, latency_ms, body_preview).
+
+    If api_key is provided, it's sent as Bearer + X-API-Key to exercise the
+    @require_plan decorator path (Neon lookup via validate_api_key).
+    """
     from urllib.request import Request, urlopen
     from urllib.error import URLError, HTTPError
 
@@ -77,7 +99,10 @@ def _http_check(path, method="GET", needs_auth=False, timeout=15):
         'User-Agent': 'DCHub-SmokeTest/1.0',
         'Content-Type': 'application/json',
     }
-    if needs_auth and ADMIN_KEY:
+    if api_key:
+        headers['Authorization'] = 'Bearer ' + api_key
+        headers['X-API-Key'] = api_key
+    elif needs_auth and ADMIN_KEY:
         headers['X-Admin-Key'] = ADMIN_KEY
         headers['X-Internal-Key'] = 'dchub-internal-sync-2026'
 
@@ -176,6 +201,44 @@ def run_smoke_test():
 
         results.append(check_result)
 
+    # ── Gated endpoint checks (real API key → @require_plan path) ──
+    gated_failures = []  # track these separately to escalate severity
+    if API_KEY:
+        for name, path, min_plan, timeout, expected_status in GATED_CHECKS:
+            status_code, latency_ms, body = _http_check(
+                path, method="GET", timeout=timeout, api_key=API_KEY
+            )
+            latencies.append(latency_ms)
+            check_result = {
+                "name": f"gated_{name}",
+                "path": path,
+                "min_plan": min_plan,
+                "status_code": status_code,
+                "latency_ms": latency_ms,
+            }
+            if status_code == expected_status:
+                check_result["verdict"] = "pass"
+                passed += 1
+            else:
+                check_result["verdict"] = "fail"
+                check_result["issue"] = (
+                    f"Gated endpoint returned {status_code} (expected {expected_status}). "
+                    f"Likely causes: (1) @require_plan decorator missing, "
+                    f"(2) API key not registered in Neon users/api_keys, "
+                    f"(3) Replit vs Railway NEON_DATABASE_URL mismatch."
+                )
+                check_result["body_preview"] = body[:200] if body else None
+                failed += 1
+                gated_failures.append(name)
+            results.append(check_result)
+    else:
+        results.append({
+            "name": "gated_endpoints",
+            "verdict": "skip",
+            "reason": "DCHUB_API_KEY env var not set — gated endpoints not exercised",
+        })
+        warnings += 1
+
     # Direct DB check
     db_result = _db_check()
     db_verdict = db_result.get("status", "fail")
@@ -197,8 +260,10 @@ def run_smoke_test():
     avg_latency = round(sum(latencies) / len(latencies)) if latencies else 0
     p95_latency = sorted(latencies)[int(len(latencies) * 0.95)] if latencies else 0
 
-    # Overall verdict
-    if failed >= 3:
+    # Overall verdict — gated-endpoint failures are ALWAYS critical (auth bugs are P0)
+    if gated_failures:
+        overall = "critical"
+    elif failed >= 3:
         overall = "critical"
     elif failed > 0:
         overall = "degraded"
@@ -208,7 +273,7 @@ def run_smoke_test():
         overall = "healthy"
 
     report = {
-        "smoke_test": "DC Hub Production Smoke Test v1.0",
+        "smoke_test": "DC Hub Production Smoke Test v1.1 (with gated-endpoint coverage)",
         "started_at": started_at,
         "completed_at": datetime.now(timezone.utc).isoformat(),
         "overall": overall,
@@ -217,6 +282,7 @@ def run_smoke_test():
             "passed": passed,
             "failed": failed,
             "warnings": warnings,
+            "gated_failures": gated_failures,
             "avg_latency_ms": avg_latency,
             "p95_latency_ms": p95_latency,
         },
@@ -324,11 +390,13 @@ def register_smoke_routes(app):
 # ═══════════════════════════════════════════════════════════
 
 if __name__ == '__main__':
+    import sys
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
     print("=" * 65)
-    print("  DC Hub Production Smoke Test v1.0")
-    print(f"  Target: {API_BASE}")
-    print(f"  Auth:   {'✅ key set' if ADMIN_KEY else '⚠️ no DCHUB_ADMIN_KEY'}")
+    print("  DC Hub Production Smoke Test v1.1")
+    print(f"  Target:  {API_BASE}")
+    print(f"  Admin:   {'set' if ADMIN_KEY else 'MISSING DCHUB_ADMIN_KEY'}")
+    print(f"  API key: {'set' if API_KEY else 'MISSING DCHUB_API_KEY (gated endpoints will be skipped)'}")
     print("=" * 65)
 
     report = run_smoke_test()
@@ -350,5 +418,8 @@ if __name__ == '__main__':
         latency = check.get('latency_ms', '')
         latency_str = f"{latency}ms" if latency else ''
         issue = check.get('issue', '')
-        print(f"  {icon} {check['name']:<25} {check.get('status_code', ''):<5} {latency_str:<10} {issue}")
+        print(f"  {icon} {check['name']:<28} {check.get('status_code', ''):<5} {latency_str:<10} {issue}")
     print(f"{'─' * 65}\n")
+
+    # Exit non-zero on critical so CI / post-deploy hooks can block on failure
+    sys.exit(0 if overall in ('healthy', 'slow') else 1)
