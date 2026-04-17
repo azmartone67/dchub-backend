@@ -4773,11 +4773,19 @@ if 'GRIDSTATUS_CACHE' not in dir():
 
 @app.route('/api/grid/fuel-mix-live', methods=['GET'])
 def grid_fuel_mix_live_alias():
-    from flask import make_response
-    # Forward directly instead of redirect (preserves X-Internal-Key header)
-    from werkzeug.test import EnvironBuilder
-    with app.test_request_context(f'/api/grid/fuel-mix%s{request.query_string.decode()}', headers=dict(request.headers)):
-        return app.full_dispatch_request()
+    # [fix-railway-p2] stub body — no real handler exists
+    # Previous body forwarded to '/api/grid/fuel-mix%s{qs}' — the `%s` was a
+    # printf placeholder orphaned inside an f-string. The target route
+    # '/api/grid/fuel-mix' is in the plan-gating manifest but has no
+    # @app.route handler, so the forward always resolved to 404.
+    # Returning a 200 stub silences log spam and tells callers where to go.
+    return jsonify({
+        "success": True,
+        "deprecated": True,
+        "message": "Live fuel-mix REST endpoint not implemented. Use the MCP tool `get_fuel_mix` at https://dchub.cloud/mcp for live generation-source data.",
+        "mcp_tool": "get_fuel_mix",
+        "fuel_mix": []
+    }), 200
 
 # =============================================================================
 # v1-path route aliases — silence 404 log spam from older callers (fix-railway-p1)
@@ -4785,11 +4793,16 @@ def grid_fuel_mix_live_alias():
 
 @app.route('/api/v1/grid/fuel-mix-live', methods=['GET'])
 def grid_fuel_mix_live_v1_alias():
-    '''/api/v1/grid/fuel-mix-live -> /api/grid/fuel-mix-live'''
-    qs = request.query_string.decode()
-    sep = '?' if qs else ''
-    with app.test_request_context(f'/api/grid/fuel-mix-live{sep}{qs}', headers=dict(request.headers)):
-        return app.full_dispatch_request()
+    # [fix-railway-p2] stub body — no real handler exists
+    # p1 version forwarded to the broken /api/grid/fuel-mix-live alias;
+    # no real handler exists. Return same 200 stub to silence log spam.
+    return jsonify({
+        "success": True,
+        "deprecated": True,
+        "message": "Live fuel-mix REST endpoint not implemented. Use the MCP tool `get_fuel_mix` at https://dchub.cloud/mcp for live generation-source data.",
+        "mcp_tool": "get_fuel_mix",
+        "fuel_mix": []
+    }), 200
 
 @app.route('/api/v1/grid/<iso>', methods=['GET'])
 def grid_iso_alias(iso):
@@ -4809,10 +4822,12 @@ def grid_headroom_region_alias(region):
 
 @app.route('/api/v1/energy/retail', methods=['GET'])
 def energy_retail_alias():
-    '''/api/v1/energy/retail -> /api/v1/energy/retail/rates'''
+    '''/api/v1/energy/retail -> /api/v1/energy/summary (returns eia_retail_rates data)'''
+    # [fix-railway-p2] redirected from ghost /api/v1/energy/retail/rates
+    # to real handler cf_stub_energy_discovery at /api/v1/energy/summary.
     qs = request.query_string.decode()
     sep = '?' if qs else ''
-    with app.test_request_context(f'/api/v1/energy/retail/rates{sep}{qs}', headers=dict(request.headers)):
+    with app.test_request_context(f'/api/v1/energy/summary{sep}{qs}', headers=dict(request.headers)):
         return app.full_dispatch_request()
 
 # =============================================================================
