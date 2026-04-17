@@ -4780,6 +4780,42 @@ def grid_fuel_mix_live_alias():
         return app.full_dispatch_request()
 
 # =============================================================================
+# v1-path route aliases — silence 404 log spam from older callers (fix-railway-p1)
+# =============================================================================
+
+@app.route('/api/v1/grid/fuel-mix-live', methods=['GET'])
+def grid_fuel_mix_live_v1_alias():
+    '''/api/v1/grid/fuel-mix-live -> /api/grid/fuel-mix-live'''
+    qs = request.query_string.decode()
+    sep = '?' if qs else ''
+    with app.test_request_context(f'/api/grid/fuel-mix-live{sep}{qs}', headers=dict(request.headers)):
+        return app.full_dispatch_request()
+
+@app.route('/api/v1/grid/<iso>', methods=['GET'])
+def grid_iso_alias(iso):
+    '''/api/v1/grid/<iso> -> /api/v1/grid-headroom?iso=<iso>'''
+    qs = request.query_string.decode()
+    extra = f'&{qs}' if qs else ''
+    with app.test_request_context(f'/api/v1/grid-headroom?iso={iso}{extra}', headers=dict(request.headers)):
+        return app.full_dispatch_request()
+
+@app.route('/api/v1/grid-headroom/<region>', methods=['GET'])
+def grid_headroom_region_alias(region):
+    '''/api/v1/grid-headroom/<region> -> /api/v1/grid-headroom?iso=<region>'''
+    qs = request.query_string.decode()
+    extra = f'&{qs}' if qs else ''
+    with app.test_request_context(f'/api/v1/grid-headroom?iso={region}{extra}', headers=dict(request.headers)):
+        return app.full_dispatch_request()
+
+@app.route('/api/v1/energy/retail', methods=['GET'])
+def energy_retail_alias():
+    '''/api/v1/energy/retail -> /api/v1/energy/retail/rates'''
+    qs = request.query_string.decode()
+    sep = '?' if qs else ''
+    with app.test_request_context(f'/api/v1/energy/retail/rates{sep}{qs}', headers=dict(request.headers)):
+        return app.full_dispatch_request()
+
+# =============================================================================
 # SECURITY HEADERS & API TRACKING (Applied to all responses)
 # Note: CORS headers are handled at the top of the app (before blueprints)
 # =============================================================================
@@ -7590,14 +7626,19 @@ def log_ambassador_broadcast():
         db.commit()
         return jsonify({"success": True})
     except Exception as e:
+        # [fix-railway-p1] defensive except handler
+        import traceback
         try:
-            if conn: return_pg_connection(conn)
+            logger.error("MCP endpoint error: %s\n%s", e, traceback.format_exc())
         except Exception:
             pass
         return jsonify({"success": False, "error": str(e)}), 500
     finally:
-        try: db.close()
-        except Exception: pass
+        try:
+            if 'db' in locals() and db:
+                db.close()
+        except Exception:
+            pass
 
 @app.route('/api/v1/mcp/analytics', methods=['GET'])
 def mcp_analytics():
@@ -7627,10 +7668,11 @@ def mcp_analytics():
         platform_breakdown = c.fetchall()
 
         c.execute('''
+            -- [fix-railway-p1] GROUP BY must include all non-aggregate columns
             SELECT platform, client_name, client_version, method,
                    COUNT(*) as count, MAX(created_at) as last_seen
             FROM mcp_connections WHERE created_at > %s
-            GROUP BY platform, client_name ORDER BY last_seen DESC
+            GROUP BY platform, client_name, client_version, method ORDER BY last_seen DESC
         ''', (since,))
         connections = c.fetchall()
 
@@ -7666,14 +7708,19 @@ def mcp_analytics():
                             "params": r[3], "response_ms": r[4], "time": r[5]} for r in recent]
         })
     except Exception as e:
+        # [fix-railway-p1] defensive except handler
+        import traceback
         try:
-            if conn: return_pg_connection(conn)
+            logger.error("MCP endpoint error: %s\n%s", e, traceback.format_exc())
         except Exception:
             pass
         return jsonify({"success": False, "error": str(e)}), 500
     finally:
-        try: db.close()
-        except Exception: pass
+        try:
+            if 'db' in locals() and db:
+                db.close()
+        except Exception:
+            pass
 
 @app.route('/api/v1/mcp/platforms', methods=['GET'])
 def mcp_platforms_status():
@@ -7701,7 +7748,17 @@ def mcp_platforms_status():
 
         platform_list = []
         for p in platforms:
-            last_seen = datetime.fromisoformat(p[2]) if p[2] else None
+            # [fix-railway-p1] psycopg2 returns datetime objs; guard against fromisoformat TypeError
+            _raw = p[2]
+            if _raw is None:
+                last_seen = None
+            elif isinstance(_raw, str):
+                try:
+                    last_seen = datetime.fromisoformat(_raw)
+                except (ValueError, TypeError):
+                    last_seen = None
+            else:
+                last_seen = _raw  # already a datetime from psycopg2
             hours_ago = (datetime.utcnow() - last_seen).total_seconds() / 3600 if last_seen else 999
             status = 'active' if hours_ago < 24 else 'idle' if hours_ago < 168 else 'inactive'
             platform_list.append({
@@ -7736,14 +7793,19 @@ def mcp_platforms_status():
             "server_version": "2.0.0"
         })
     except Exception as e:
+        # [fix-railway-p1] defensive except handler
+        import traceback
         try:
-            if conn: return_pg_connection(conn)
+            logger.error("MCP endpoint error: %s\n%s", e, traceback.format_exc())
         except Exception:
             pass
         return jsonify({"success": False, "error": str(e)}), 500
     finally:
-        try: db.close()
-        except Exception: pass
+        try:
+            if 'db' in locals() and db:
+                db.close()
+        except Exception:
+            pass
 
 @app.route('/api/v1/energy/discovery/status', methods=['GET'])
 def energy_discovery_status_inline():

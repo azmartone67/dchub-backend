@@ -50,6 +50,82 @@ _get_pg = None
 _return_pg = None
 
 
+
+
+# =============================================================================
+# [fix-railway-p1] savepoint-wrapped insert
+# Installed 2026-04-17 by fix-railway-p1.py.
+#
+# Problem: fiber_routes has TWO unique constraints — (source, source_id) and
+# (name, provider). INSERT statements in this file use ON CONFLICT (source,
+# source_id) DO UPDATE, which handles conflicts on that key but NOT on the
+# (name, provider) constraint. When a new row's (name, provider) pair matches
+# an existing row's but (source, source_id) differs, psycopg2 raises
+# UniqueViolation, the PG transaction aborts, and subsequent writes in the
+# same tx also fail. Previously this manifested as 3-retry loops and 62s
+# connection holds in Deploy Logs.
+#
+# Fix: wrap every cur.execute() that touches fiber_routes in a per-row
+# SAVEPOINT. If the INSERT hits a UniqueViolation we ROLLBACK only that
+# savepoint and continue. No code-site edits needed.
+# =============================================================================
+def _install_fiber_insert_guard():
+    try:
+        import psycopg2
+        from psycopg2 import errors as _pg_errors
+    except Exception:
+        return  # psycopg2 not importable here; nothing to install
+
+    _UniqueViolation = getattr(_pg_errors, 'UniqueViolation', None)
+    _IntegrityError  = getattr(psycopg2, 'IntegrityError', None)
+    if _UniqueViolation is None and _IntegrityError is None:
+        return
+
+    try:
+        _cursor_cls = psycopg2.extensions.cursor
+    except Exception:
+        return
+
+    if getattr(_cursor_cls, '_fiber_guard_installed', False):
+        return
+
+    _orig_execute = _cursor_cls.execute
+
+    def _guarded_execute(self, query, vars=None):
+        q = query if isinstance(query, str) else (query.decode('utf-8', errors='ignore') if isinstance(query, (bytes, bytearray)) else str(query))
+        is_fiber_write = 'fiber_routes' in q and ('INSERT' in q.upper() or 'UPDATE' in q.upper())
+        if not is_fiber_write:
+            return _orig_execute(self, query, vars)
+        sp = '_fiber_sp'
+        try:
+            _orig_execute(self, f'SAVEPOINT {sp}')
+        except Exception:
+            return _orig_execute(self, query, vars)
+        try:
+            result = _orig_execute(self, query, vars)
+            try:
+                _orig_execute(self, f'RELEASE SAVEPOINT {sp}')
+            except Exception:
+                pass
+            return result
+        except Exception as e:
+            cls = type(e)
+            is_dup = (_UniqueViolation and isinstance(e, _UniqueViolation)) or                      (_IntegrityError  and isinstance(e, _IntegrityError))
+            try:
+                _orig_execute(self, f'ROLLBACK TO SAVEPOINT {sp}')
+            except Exception:
+                pass
+            if is_dup:
+                # Duplicate on one of the fiber_routes unique constraints.
+                # Silently skip. Original code continues to next row.
+                return None
+            raise
+
+    _cursor_cls.execute = _guarded_execute
+    _cursor_cls._fiber_guard_installed = True
+
+_install_fiber_insert_guard()
+
 def _conn():
     if _get_pg is None:
         raise RuntimeError("kmz_auto_discovery not initialized — call init first")
