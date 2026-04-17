@@ -6997,15 +6997,9 @@ def list_markets():
             pass
 
 @app.route('/api/v1/markets/<market>', methods=['GET'])
+@require_plan('pro')
 def get_market_stats(market):
     """Get detailed stats for a single market"""
-    # Internal key bypass — skip plan gate for MCP calls
-    if request.headers.get('X-Internal-Key') not in ('dchub-internal-2024', 'dchub-internal-sync-2026'):
-        user = getattr(request, 'current_user', None)
-        plan = (user or {}).get('plan', 'free') if isinstance(user, dict) else 'free'
-        if plan not in ('pro', 'enterprise'):
-            return jsonify({'error': 'plan_required', 'message': 'This endpoint requires a Pro plan or higher.', 'pricing_url': 'https://dchub.cloud/pricing', 'success': False}), 403
-
     market_lower = market.lower().replace('-', ' ')
 
     if market_lower not in MARKET_ALIASES:
