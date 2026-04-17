@@ -497,6 +497,12 @@ def require_plan(min_plan='pro'):
                 # ── STEP 3: Check API Key ──────────────────────────────
                 if not auth_method:
                     api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
+                    # Also accept Authorization: Bearer dchub_... (JWT decode in STEP 2
+                    # failed because dchub_ keys are not JWTs — treat as API key here).
+                    if not api_key:
+                        _auth_h = request.headers.get('Authorization', '')
+                        if _auth_h.startswith('Bearer ') and _auth_h[7:].startswith('dchub_'):
+                            api_key = _auth_h[7:].strip()
                     if api_key:
                         info = validate_api_key(api_key)  # Returns dict or None (NOT tuple)
                         if not info or not isinstance(info, dict):
@@ -632,6 +638,11 @@ def get_request_tier():
                     uid = payload.get('user_id') or payload.get('sub') or payload.get('email')
                     return get_user_plan(user_id=uid, email=payload.get('email')) or 'free'
         api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
+        # Also accept Authorization: Bearer dchub_... (JWT decode already failed above)
+        if not api_key:
+            _auth_h2 = request.headers.get('Authorization', '')
+            if _auth_h2.startswith('Bearer ') and _auth_h2[7:].startswith('dchub_'):
+                api_key = _auth_h2[7:].strip()
         if api_key:
             info = validate_api_key(api_key)  # Returns dict or None (NOT tuple)
             if info and isinstance(info, dict):
