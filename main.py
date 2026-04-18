@@ -2535,42 +2535,90 @@ MCP_PLATFORM_MAP = {
 # Session-to-platform cache: maps MCP session IDs to detected platforms
 _mcp_session_platforms = {}  # {session_id: (platform, client_name, timestamp)}
 
-def _log_mcp_analytics(rpc_method, rpc_params, platform, client_name, duration_ms, success=True):
+def _log_mcp_analytics(rpc_method, rpc_params, platform, client_name, duration_ms, success=True, status_code=None):
+    """
+    Log MCP traffic to telemetry tables.
+
+    v4.1 fix — root causes:
+      1. Old code used `ON CONFLICT (platform) DO UPDATE` with no matching unique
+         constraint on platform. Postgres silently errored, the try/except swallowed
+         it, and mcp_connections INSERTs for handshakes were failing for weeks.
+      2. tools/call rows were never written to mcp_connections at all — the old
+         code only INSERTed for initialize/tools/list/resources/list/prompts/list.
+         That's why mcp_connections.tool_name was always NULL and verified-tool-call
+         counts read as zero.
+
+    New behavior:
+      - EVERY rpc_method hits mcp_connections (via ai_tracking.log_mcp_connection).
+      - tool_name is extracted for tools/call and stored as a first-class column.
+      - status_code + response_ms ride along so the /api/ai/mcp-stats endpoint
+        can segment verified calls vs errored calls vs non-2xx handshakes.
+      - mcp_tool_calls still gets the detailed per-call audit row (args, etc.).
+      - Dual-write: we DO NOT re-INSERT into mcp_connections from here; that
+        responsibility moved to ai_tracking.log_mcp_connection which owns the
+        canonical schema and has idempotent migrations.
+    """
+    # Extract tool name for tools/call — None for everything else.
+    tool_name = None
+    params_json = None
+    if rpc_method == 'tools/call' and isinstance(rpc_params, dict):
+        _name = rpc_params.get('name')
+        if _name:
+            tool_name = str(_name)
+        args = rpc_params.get('arguments', {})
+        try:
+            params_json = json.dumps(args) if args else None
+        except Exception:
+            params_json = None
+
+    # Derive status_code if caller didn't provide it (back-compat).
+    if status_code is None:
+        status_code = 200 if success else 500
+
+    # ── Canonical MCP telemetry row via ai_tracking ──
+    # This is the row the /api/ai/mcp-stats dashboard and the verified-call
+    # metric read from. Schema matches ai_tracking.py v4.1.0+.
+    try:
+        from ai_tracking import log_mcp_connection
+        log_mcp_connection(
+            platform=platform,
+            method=rpc_method,
+            user_agent=request.headers.get('User-Agent', ''),
+            ip_address=request.remote_addr or '',
+            tool_name=tool_name,
+            params=params_json,
+            status_code=status_code,
+            response_ms=duration_ms or 0,
+            client_name=client_name,
+            client_version=(rpc_params or {}).get('clientInfo', {}).get('version', '') if isinstance(rpc_params, dict) else '',
+            protocol_version=(rpc_params or {}).get('protocolVersion', '') if isinstance(rpc_params, dict) else '',
+            success=bool(success),
+            error_message=None,
+        )
+    except Exception as e:
+        logger.error(f"log_mcp_connection failed: {e}")
+
+    # ── Detailed per-tool audit log (mcp_tool_calls) ──
+    # Kept separate from mcp_connections so analytics queries on the "every-request"
+    # table don't have to filter by method.
     db = None
     try:
         from db_utils import try_get_db
         db = try_get_db()
-        if db is None:
-            db = None  # continue — don't return, auto-capture below uses PostgreSQL
-        if db and rpc_method in ('initialize', 'tools/list', 'resources/list', 'prompts/list'):
-            c = db.cursor()
-            c.execute('''INSERT INTO mcp_connections
-                (platform, client_name, client_version, protocol_version, method,
-                 ip_address, user_agent, success)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (platform) DO UPDATE SET client_name = EXCLUDED.client_name, client_version = EXCLUDED.client_version, protocol_version = EXCLUDED.protocol_version, method = EXCLUDED.method, ip_address = EXCLUDED.ip_address, user_agent = EXCLUDED.user_agent, success = EXCLUDED.success''',
-                (platform, client_name,
-                 rpc_params.get('clientInfo', {}).get('version', '') if rpc_params else '',
-                 rpc_params.get('protocolVersion', '') if rpc_params else '',
-                 rpc_method,
-                 request.remote_addr,
-                 request.headers.get('User-Agent', ''),
-                 True if success else False))
         if db and rpc_method == 'tools/call':
-            tool_name = rpc_params.get('name', 'unknown') if rpc_params else 'unknown'
             c = db.cursor()
             c.execute('''INSERT INTO mcp_tool_calls
                 (tool_name, platform, client_name, params, success,
                  response_time_ms, ip_address, user_agent)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)''',
-                (tool_name, platform, client_name,
-                 json.dumps(rpc_params.get('arguments', {})) if rpc_params else '{}',
-                 True if success else False, duration_ms,
+                (tool_name or 'unknown', platform, client_name,
+                 params_json or '{}',
+                 bool(success), duration_ms,
                  request.remote_addr,
                  request.headers.get('User-Agent', '')))
-        if db:
             db.commit()
     except Exception as e:
-        logger.error(f"MCP analytics log error: {e}")
+        logger.error(f"mcp_tool_calls log error: {e}")
     finally:
         if db:
             try:
@@ -2578,6 +2626,7 @@ def _log_mcp_analytics(rpc_method, rpc_params, platform, client_name, duration_m
             except Exception:
                 pass
 
+    # ── ai_request_logs (existing, unchanged behavior) ──
     try:
         from ai_tracking import log_ai_request
         plat_key = platform.lower().replace(' ', '').replace('.', '')
@@ -2586,7 +2635,7 @@ def _log_mcp_analytics(rpc_method, rpc_params, platform, client_name, duration_m
             endpoint=f'/mcp ({rpc_method})',
             user_agent=request.headers.get('User-Agent', ''),
             ip_address=request.remote_addr,
-            status_code=200 if success else 500,
+            status_code=status_code,
             response_ms=duration_ms
         )
     except Exception:
@@ -3656,7 +3705,10 @@ def mcp_proxy():
             duration_ms = int((time.time() - start_time) * 1000)
             resp_success = resp.status_code < 400
             if rpc_method:
-                _log_mcp_analytics(rpc_method, rpc_params, platform, client_name, duration_ms, success=resp_success)
+                _log_mcp_analytics(
+                    rpc_method, rpc_params, platform, client_name,
+                    duration_ms, success=resp_success, status_code=resp.status_code,
+                )
 
             content_type = resp.headers.get('Content-Type', '')
 
@@ -5052,6 +5104,9 @@ def init_new_tables():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )''')
 
+        # v4.1 schema — tool_name/params/status_code/response_ms added so tools/call
+        # rows are distinguishable from handshakes in a single query. ai_tracking.py
+        # runs idempotent ALTER TABLE migrations at startup for existing deployments.
         c.execute('''CREATE TABLE IF NOT EXISTS mcp_connections (
             id SERIAL PRIMARY KEY,
             platform TEXT NOT NULL,
@@ -5059,12 +5114,25 @@ def init_new_tables():
             client_version TEXT,
             protocol_version TEXT,
             method TEXT,
+            tool_name TEXT,
+            params TEXT,
+            status_code INTEGER,
+            response_ms INTEGER,
             ip_address TEXT,
             user_agent TEXT,
-            success BOOLEAN DEFAULT 1,
+            success BOOLEAN DEFAULT TRUE,
             error_message TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )''')
+        # Index tool_name for the per-tool call-count queries.
+        try:
+            c.execute('CREATE INDEX IF NOT EXISTS idx_mcp_connections_tool ON mcp_connections(tool_name) WHERE tool_name IS NOT NULL')
+        except Exception:
+            pass
+        try:
+            c.execute('CREATE INDEX IF NOT EXISTS idx_mcp_connections_method ON mcp_connections(method)')
+        except Exception:
+            pass
 
         c.execute('''CREATE TABLE IF NOT EXISTS ambassador_broadcasts (
             id SERIAL PRIMARY KEY,
