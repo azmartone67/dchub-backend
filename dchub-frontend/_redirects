@@ -1,0 +1,57 @@
+# DC Hub — Cloudflare Pages Redirects
+# Updated Apr 7, 2026
+
+# ── /ai: Pages serves ai.html automatically via pretty URLs ──
+# DO NOT add "/ai /ai.html 200" — it causes an infinite redirect loop
+# (Pages strips .html → 301 to /ai → rewrite to /ai.html → loop)
+
+# ── Broken nav links → working pages ──
+/intelligence          /gdci                 301
+/deals                 /transactions         301
+# /transaction-comps: Pages serves automatically — no rewrite needed
+/deal-flow             /transactions         301
+
+# ── Common variations ──
+/land-power-map.html   /land-power-map       301
+/login.html            /login                301
+/pricing.html          /pricing              301
+/dashboard.html        /dashboard            301
+/analytics.html        /analytics            301
+
+# ── Landing page swap (Mar 2026) ──
+/landing-page          /                     301
+/developersignup       /developers/signup    301
+
+# ── AI agent discovery (fixed path: well-known/ not .well-known/) ──
+/.well-known/ai-plugin.json    /ai-agents.json                    200
+# /.well-known/mcp.json  handled inline by _worker.js
+
+# ── Common URL patterns agents try ──
+/api                           /api-docs                301
+/docs                          /api-docs                301
+/developer                     /developers/signup       301
+/developer-signup              /developers/signup       301
+/dev                           /developers/signup       301
+/mcp-server                    /connect                 301
+
+# ── SEO friendly aliases ──
+/facilities                    /                        200
+# v7.9.10: Removed `/markets /market-intelligence 301` — it hijacked
+# the /markets/ static directory (markets/index.html + 59 city pages)
+# so the section appeared "disappeared" in v7.9.9.
+/market-intel                  /market-intelligence     301
+/pipeline                      /construction-pipeline   301
+/grid                          /research/grid-intelligence/pjm/ 301
+/fiber                         /land-power-map          301
+/subsea                        /land-power-map          301
+
+# ── AI page aliases (all point to /ai now) ──
+/ai-hub                        /ai                      301
+/for-ai                        /ai                      301
+/for-agents                    /ai                      301
+# /ai-integrations: Pages serves ai-integrations.html automatically
+# DO NOT rewrite to .html — causes redirect loop
+
+# ── Press release detail pages ──
+# /news/<slug> → press-release (NO .html — Pages pretty-URL strips it causing 404)
+/news/*                        /press-release           200

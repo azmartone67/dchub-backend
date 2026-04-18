@@ -1,0 +1,1194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Facility Map — DC Hub Intelligence</title>
+<meta name="description" content="Explore 20,000+ data center facilities worldwide. Interactive map with power, fiber, and infrastructure data.">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<script src="/js/dchub-nav.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#09090b;--bg2:#0d1219;--bg3:#141a24;--bg4:#1a2230;
+  --text:#e2e8f0;--text2:#8a8a95;--text3:#55555e;
+  --accent:#818cf8;--accent2:#3478f6;--accent-dim:rgba(99,102,241,.12);
+  --green:#10b981;--orange:#f59e0b;--red:#ef4444;--purple:#a78bfa;
+  --border:rgba(255,255,255,.07);--border2:rgba(255,255,255,.12);
+  --nav-h:48px;
+  --font:'IBM Plex Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  --mono:'IBM Plex Mono',monospace;
+}
+body{font-family:var(--font);background:var(--bg);color:var(--text);overflow:hidden;height:100vh;padding-top:var(--nav-h)}
+
+/* ── STATS BAR ────────────────────────────── */
+.stats-bar{
+  display:flex;align-items:center;height:40px;padding:0 16px;gap:0;
+  background:var(--bg2);border-bottom:1px solid var(--border);
+  overflow-x:auto;white-space:nowrap;flex-shrink:0;
+}
+.stat-pill{
+  display:flex;align-items:center;gap:6px;padding:0 14px;height:28px;
+  font-size:12px;color:var(--text2);border-right:1px solid var(--border);
+}
+.stat-pill:last-child{border-right:none}
+.stat-val{font-family:var(--mono);font-weight:600;color:var(--accent);font-size:13px}
+.stat-label{font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.5px}
+.stat-dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.stats-right{margin-left:auto;display:flex;align-items:center;gap:8px;padding-left:12px}
+.lp-tease{
+  display:flex;align-items:center;gap:6px;padding:4px 12px;
+  background:linear-gradient(135deg,rgba(0,200,240,.12),rgba(167,139,250,.15));
+  border:1px solid rgba(129,140,248,.2);border-radius:6px;
+  font-size:11px;font-weight:600;color:var(--accent);cursor:pointer;
+  text-decoration:none;transition:all .2s;white-space:nowrap;
+}
+.lp-tease:hover{background:rgba(129,140,248,.2);border-color:var(--accent)}
+.lp-tease svg{flex-shrink:0}
+
+/* ── FILTER BAR ───────────────────────────── */
+.filter-bar{
+  display:flex;align-items:center;gap:8px;padding:8px 16px;
+  background:var(--bg2);border-bottom:1px solid var(--border);
+  overflow-x:auto;flex-shrink:0;
+}
+.filter-chip{
+  display:flex;align-items:center;gap:4px;padding:5px 12px;
+  background:var(--bg3);border:1px solid var(--border2);border-radius:6px;
+  font-size:12px;color:var(--text2);cursor:pointer;white-space:nowrap;
+  font-family:var(--font);transition:all .15s;
+}
+.filter-chip:hover{border-color:var(--accent);color:var(--text)}
+.filter-chip.active{background:var(--accent-dim);border-color:var(--accent);color:var(--accent)}
+.filter-chip select{
+  background:transparent;border:none;color:inherit;font:inherit;
+  cursor:pointer;outline:none;padding-right:4px;
+  -webkit-appearance:none;appearance:none;
+}
+.filter-chip select option{background:var(--bg3);color:var(--text)}
+.filter-sep{width:1px;height:20px;background:var(--border);flex-shrink:0}
+.filter-reset{
+  padding:5px 10px;background:transparent;border:1px solid var(--border);
+  border-radius:6px;font-size:11px;color:var(--text3);cursor:pointer;
+  font-family:var(--font);transition:all .15s;
+}
+.filter-reset:hover{border-color:var(--red);color:var(--red)}
+.filter-count-badge{
+  font-family:var(--mono);font-size:10px;font-weight:700;
+  background:var(--accent);color:#000;padding:1px 5px;border-radius:3px;
+}
+.filter-disabled{opacity:.4;pointer-events:none}
+
+/* ── SEARCH BOX ──────────────────────────── */
+.search-wrapper{
+  position:relative;display:flex;align-items:center;flex:0 1 220px;min-width:140px;
+}
+.search-input{
+  width:100%;padding:5px 10px 5px 30px;background:var(--bg3);
+  border:1px solid var(--border2);border-radius:6px;color:var(--text);
+  font-family:var(--font);font-size:12px;outline:none;transition:border-color .15s;
+}
+.search-input::placeholder{color:var(--text3)}
+.search-input:focus{border-color:var(--accent)}
+.search-icon{
+  position:absolute;left:9px;top:50%;transform:translateY(-50%);
+  color:var(--text3);pointer-events:none;
+}
+.search-results{
+  position:absolute;top:100%;left:0;right:0;margin-top:4px;
+  background:var(--bg3);border:1px solid var(--border2);border-radius:8px;
+  box-shadow:0 8px 32px rgba(0,0,0,.5);z-index:1000;max-height:260px;overflow-y:auto;
+  display:none;
+}
+.search-results.open{display:block}
+.search-result-item{
+  padding:8px 12px;cursor:pointer;font-size:12px;border-bottom:1px solid var(--border);
+  transition:background .1s;
+}
+.search-result-item:last-child{border-bottom:none}
+.search-result-item:hover{background:var(--bg4)}
+.search-result-name{font-weight:600;color:var(--text)}
+.search-result-loc{font-size:11px;color:var(--text3);margin-top:1px}
+
+/* ── BASEMAP SWITCHER ────────────────────── */
+.basemap-bar{
+  position:absolute;top:12px;left:12px;z-index:800;
+  display:flex;gap:4px;padding:4px;background:rgba(13,18,25,.85);
+  border:1px solid var(--border2);border-radius:8px;
+  backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+}
+.bm-btn{
+  padding:5px 10px;border:none;border-radius:5px;font-size:11px;
+  font-family:var(--font);font-weight:500;color:var(--text2);
+  background:transparent;cursor:pointer;transition:all .15s;white-space:nowrap;
+}
+.bm-btn:hover{color:var(--text);background:rgba(255,255,255,.06)}
+.bm-btn.active{color:var(--accent);background:var(--accent-dim);font-weight:600}
+
+/* ── MAIN LAYOUT ──────────────────────────── */
+.map-layout{
+  display:flex;height:calc(100vh - var(--nav-h) - 40px - 44px);
+  position:relative;
+}
+#map{flex:1;background:#1a2230}
+
+/* ── SIDE PANEL ───────────────────────────── */
+.side-panel{
+  width:360px;background:var(--bg2);border-left:1px solid var(--border);
+  display:flex;flex-direction:column;flex-shrink:0;
+  transition:transform .3s ease;
+}
+.side-header{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:12px 16px;border-bottom:1px solid var(--border);flex-shrink:0;
+}
+.side-title{font-size:14px;font-weight:600;display:flex;align-items:center;gap:8px}
+.side-count{font-family:var(--mono);font-size:12px;color:var(--accent)}
+.side-toggle{
+  background:none;border:none;color:var(--text3);cursor:pointer;
+  padding:4px;transition:color .15s;
+}
+.side-toggle:hover{color:var(--text)}
+.side-list{flex:1;overflow-y:auto;padding:8px}
+.side-list::-webkit-scrollbar{width:5px}
+.side-list::-webkit-scrollbar-track{background:transparent}
+.side-list::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
+
+/* Facility cards */
+.fac-card{
+  background:var(--bg3);border:1px solid var(--border);border-radius:10px;
+  padding:14px;margin-bottom:8px;cursor:pointer;transition:all .2s;
+  position:relative;
+}
+.fac-card:hover{border-color:var(--accent);transform:translateY(-1px);
+  box-shadow:0 4px 20px rgba(0,200,240,.08)}
+.fac-card-top{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px}
+.fac-provider{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--accent)}
+.fac-badges{display:flex;gap:4px}
+.fac-badge{
+  font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;
+  text-transform:uppercase;letter-spacing:.3px;
+}
+.fac-badge.active{background:rgba(16,185,129,.15);color:var(--green);border:1px solid rgba(16,185,129,.25)}
+.fac-badge.construction{background:rgba(245,158,11,.15);color:var(--orange);border:1px solid rgba(245,158,11,.25)}
+.fac-badge.planned{background:rgba(6,182,212,.15);color:#06b6d4;border:1px solid rgba(6,182,212,.25)}
+.fac-badge.tier{background:rgba(167,139,250,.15);color:var(--purple);border:1px solid rgba(167,139,250,.2)}
+.fac-name{font-size:14px;font-weight:600;margin-bottom:4px;line-height:1.3}
+.fac-name a{color:inherit;text-decoration:none;transition:color .15s}
+.fac-name a:hover{color:var(--accent)}
+.fac-location{font-size:12px;color:var(--text3);margin-bottom:10px}
+.fac-specs{display:flex;gap:16px}
+.fac-spec{display:flex;flex-direction:column;gap:1px}
+.fac-spec-val{font-family:var(--mono);font-size:13px;font-weight:600;color:var(--text)}
+.fac-spec-label{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.4px}
+
+/* Blurred gate for anonymous */
+.fac-card.gated{filter:blur(4px);pointer-events:none;user-select:none}
+
+/* ── GATE OVERLAYS ────────────────────────── */
+.gate-overlay{
+  position:absolute;bottom:0;left:0;right:0;
+  background:linear-gradient(to top,var(--bg2) 60%,transparent);
+  padding:32px 20px 20px;display:flex;flex-direction:column;align-items:center;
+  text-align:center;z-index:10;
+}
+.gate-icon{font-size:28px;margin-bottom:8px}
+.gate-title{font-size:15px;font-weight:600;margin-bottom:4px}
+.gate-desc{font-size:12px;color:var(--text2);margin-bottom:12px;max-width:280px;line-height:1.5}
+.gate-btn{
+  padding:10px 24px;border-radius:8px;font-size:13px;font-weight:700;
+  cursor:pointer;border:none;font-family:var(--font);transition:all .2s;
+  text-decoration:none;display:inline-flex;align-items:center;gap:6px;
+}
+.gate-btn-primary{background:var(--accent);color:#000}
+.gate-btn-primary:hover{filter:brightness(1.1);transform:translateY(-1px)}
+.gate-btn-secondary{
+  background:transparent;border:1px solid var(--border2);color:var(--text2);
+  margin-top:8px;padding:8px 16px;font-size:12px;
+}
+.gate-btn-secondary:hover{border-color:var(--accent);color:var(--accent)}
+
+/* ── LAND & POWER UPSELL BANNER ───────────── */
+.lp-banner{
+  padding:12px 16px;background:linear-gradient(135deg,rgba(0,200,240,.06),rgba(167,139,250,.06));
+  border-top:1px solid var(--border);display:flex;align-items:center;gap:12px;
+  flex-shrink:0;
+}
+.lp-banner-icon{
+  width:36px;height:36px;border-radius:8px;
+  background:linear-gradient(135deg,rgba(99,102,241,.15),rgba(167,139,250,.15));
+  border:1px solid rgba(129,140,248,.2);
+  display:flex;align-items:center;justify-content:center;flex-shrink:0;
+}
+.lp-banner-text{flex:1;min-width:0}
+.lp-banner-title{font-size:12px;font-weight:600;color:var(--text);margin-bottom:2px}
+.lp-banner-desc{font-size:11px;color:var(--text3);line-height:1.4}
+.lp-banner-btn{
+  padding:6px 14px;background:var(--accent);color:#000;border:none;
+  border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;
+  font-family:var(--font);white-space:nowrap;transition:all .15s;
+  text-decoration:none;
+}
+.lp-banner-btn:hover{filter:brightness(1.1)}
+
+/* ── LEAFLET OVERRIDES ────────────────────── */
+.leaflet-container{background:#1a2230 !important;font-family:var(--font)}
+.leaflet-control-zoom{border:none !important;border-radius:8px !important;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,.4) !important}
+.leaflet-control-zoom a{background:var(--bg3) !important;color:var(--text) !important;border:none !important;border-bottom:1px solid var(--border) !important;width:32px !important;height:32px !important;line-height:32px !important;font-size:16px !important}
+.leaflet-control-zoom a:last-child{border-bottom:none !important}
+.leaflet-control-zoom a:hover{background:var(--bg4) !important}
+/* Cluster heat colors — green=low, amber=medium, red=high density */
+.marker-cluster-small{background:rgba(16,185,129,.25) !important}
+.marker-cluster-small div{background:rgba(16,185,129,.75) !important;color:#fff !important;font-family:var(--mono);font-weight:700;font-size:12px}
+.marker-cluster-medium{background:rgba(245,158,11,.25) !important}
+.marker-cluster-medium div{background:rgba(245,158,11,.8) !important;color:#fff !important;font-family:var(--mono);font-weight:700;font-size:12px}
+.marker-cluster-large{background:rgba(239,68,68,.3) !important}
+.marker-cluster-large div{background:rgba(239,68,68,.85) !important;color:#fff !important;font-family:var(--mono);font-weight:700;font-size:13px}
+.leaflet-popup-content-wrapper{background:var(--bg3) !important;border:1px solid var(--border2);border-radius:10px !important;box-shadow:0 8px 32px rgba(0,0,0,.5) !important;color:var(--text) !important}
+.leaflet-popup-tip{background:var(--bg3) !important}
+.leaflet-popup-content{margin:12px 14px !important;font-size:13px;line-height:1.5}
+.popup-provider{font-size:10px;color:var(--accent);text-transform:uppercase;font-weight:700;letter-spacing:.4px}
+.popup-name{font-size:14px;font-weight:600;margin:2px 0 4px}
+.popup-name a{color:inherit;text-decoration:none}
+.popup-name a:hover{color:var(--accent)}
+.popup-loc{font-size:12px;color:var(--text3);margin-bottom:8px}
+.popup-specs{display:flex;gap:14px}
+.popup-spec-val{font-family:var(--mono);font-weight:600;font-size:13px;color:var(--accent)}
+.popup-spec-lbl{font-size:10px;color:var(--text3);text-transform:uppercase}
+
+/* ── LOADING OVERLAY ──────────────────────── */
+.load-progress{
+  position:absolute;bottom:24px;left:50%;transform:translateX(-50%);z-index:800;
+  background:rgba(13,18,25,.9);border:1px solid var(--border2);border-radius:8px;
+  padding:8px 16px;display:none;align-items:center;gap:10px;
+  backdrop-filter:blur(8px);font-size:12px;color:var(--text2);
+}
+.load-progress.show{display:flex}
+.load-bar{width:120px;height:4px;background:var(--bg4);border-radius:2px;overflow:hidden}
+.load-fill{height:100%;background:var(--accent);border-radius:2px;transition:width .3s;width:0%}
+
+/* ── RESPONSIVE ───────────────────────────── */
+@media(max-width:900px){
+  .side-panel{position:absolute;right:0;top:0;bottom:0;z-index:20;
+    transform:translateX(100%)}
+  .side-panel.open{transform:translateX(0)}
+  .mobile-panel-btn{display:flex !important;align-items:center;gap:6px}
+  .basemap-bar{top:auto;bottom:12px;left:12px}
+  .search-wrapper{flex:0 1 160px;min-width:100px}
+}
+@media(max-width:600px){
+  .stats-bar{padding:0 8px}
+  .stat-pill{padding:0 8px;font-size:11px}
+  .filter-bar{padding:6px 8px;gap:6px}
+  .side-panel{width:100%}
+}
+
+.mobile-panel-btn{
+  display:none;position:absolute;top:12px;right:12px;z-index:15;
+  background:var(--bg3);border:1px solid var(--border2);border-radius:8px;
+  padding:8px 12px;color:var(--text);cursor:pointer;font-family:var(--font);
+  font-size:12px;font-weight:500;
+  box-shadow:0 4px 16px rgba(0,0,0,.3);
+}
+.mobile-panel-btn:hover{border-color:var(--accent)}
+</style>
+</head>
+<body>
+
+<!-- STATS BAR -->
+<div class="stats-bar">
+  <div class="stat-pill"><span class="stat-dot"></span><span class="stat-label">Live</span></div>
+  <div class="stat-pill"><span class="stat-val" id="stat-facilities">—</span><span class="stat-label">Facilities</span></div>
+  <div class="stat-pill"><span class="stat-val" id="stat-countries">140+</span><span class="stat-label">Countries</span></div>
+  <div class="stat-pill"><span class="stat-val" id="stat-markets">44</span><span class="stat-label">Markets</span></div>
+  <div class="stat-pill"><span class="stat-val" id="stat-pipeline">369 GW</span><span class="stat-label">Pipeline</span></div>
+  <div class="stats-right">
+    <a href="/land-power-map" class="lp-tease">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+      Land &amp; Power Map
+      <span style="font-size:9px;padding:1px 5px;background:rgba(129,140,248,.2);border-radius:3px;font-weight:700">PRO</span>
+    </a>
+  </div>
+</div>
+
+<!-- FILTER BAR -->
+<div class="filter-bar" id="filter-bar">
+  <!-- SEARCH -->
+  <div class="search-wrapper" id="search-wrapper">
+    <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+    <input type="text" class="search-input" id="search-input" placeholder="Search city, provider..." autocomplete="off">
+    <div class="search-results" id="search-results"></div>
+  </div>
+  <div class="filter-sep"></div>
+  <div class="filter-chip active" data-filter="all" onclick="setFilter('all',this)">All <span class="filter-count-badge" id="total-badge">—</span></div>
+  <div class="filter-sep"></div>
+  <div class="filter-chip" data-filter="status" data-value="active" onclick="toggleChip(this,'status','active')">Active</div>
+  <div class="filter-chip" data-filter="status" data-value="construction" onclick="toggleChip(this,'status','construction')">Construction</div>
+  <div class="filter-chip" data-filter="status" data-value="planned" onclick="toggleChip(this,'status','planned')">Planned</div>
+  <div class="filter-sep"></div>
+  <div class="filter-chip">
+    <select id="filter-tier" onchange="applyFilters()">
+      <option value="">All Tiers</option>
+      <option value="IV">Tier IV</option>
+      <option value="III">Tier III</option>
+      <option value="II">Tier II</option>
+    </select>
+  </div>
+  <div class="filter-chip">
+    <select id="filter-power" onchange="applyFilters()">
+      <option value="">All Power</option>
+      <option value="100">100+ MW</option>
+      <option value="50">50-100 MW</option>
+      <option value="10">10-50 MW</option>
+      <option value="0">&lt; 10 MW</option>
+    </select>
+  </div>
+  <div class="filter-chip">
+    <select id="filter-region" onchange="applyFilters()">
+      <option value="">All Regions</option>
+      <option value="north-america">North America</option>
+      <option value="emea">EMEA</option>
+      <option value="apac">APAC</option>
+      <option value="latam">LATAM</option>
+    </select>
+  </div>
+  <div class="filter-sep"></div>
+  <button class="filter-reset" onclick="resetFilters()">Reset</button>
+</div>
+
+<!-- MAIN LAYOUT -->
+<div class="map-layout">
+  <div id="map">
+    <!-- Basemap switcher -->
+    <div class="basemap-bar" id="basemap-bar">
+      <button class="bm-btn active" data-bm="hybrid" onclick="switchBasemap('hybrid')">🛰️ Satellite</button>
+      <button class="bm-btn" data-bm="roads" onclick="switchBasemap('roads')">🛣️ Roads</button>
+      <button class="bm-btn" data-bm="dark" onclick="switchBasemap('dark')">🌙 Dark</button>
+      <button class="bm-btn" data-bm="terrain" onclick="switchBasemap('terrain')">⛰️ Terrain</button>
+    </div>
+    <!-- Loading progress -->
+    <div class="load-progress" id="load-progress">
+      <div class="load-bar"><div class="load-fill" id="load-fill"></div></div>
+      <span id="load-text">Loading facilities...</span>
+    </div>
+  </div>
+
+  <button class="mobile-panel-btn" id="mobile-panel-btn" onclick="togglePanel()">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+    Facilities
+  </button>
+
+  <div class="side-panel" id="side-panel">
+    <div class="side-header">
+      <div class="side-title">
+        Facilities
+        <span class="side-count" id="panel-count">0 shown</span>
+      </div>
+      <button class="side-toggle" onclick="togglePanel()" title="Close panel">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="side-list" id="side-list">
+      <!-- Cards injected by JS -->
+    </div>
+
+    <!-- GATE: shown based on user tier -->
+    <div class="gate-overlay" id="gate-anon" style="display:none">
+      <div class="gate-title">Sign up to explore facilities</div>
+      <div class="gate-desc">Create a free account to browse facility details, filter by provider, and save searches.</div>
+      <a href="/login.html" class="gate-btn gate-btn-primary">Create free account</a>
+      <a href="/login.html" class="gate-btn gate-btn-secondary">Already have an account? Sign in</a>
+    </div>
+    <div class="gate-overlay" id="gate-free" style="display:none">
+      <div class="gate-title">Upgrade for full access</div>
+      <div class="gate-desc">Get detailed power specs, energy data, and infrastructure intel on all facilities.</div>
+      <a href="/pricing" class="gate-btn gate-btn-primary">Upgrade to Pro — $99/mo</a>
+      <a href="/land-power-map" class="gate-btn gate-btn-secondary">Preview Land &amp; Power Map</a>
+    </div>
+    <div class="gate-overlay" id="gate-dev" style="display:none">
+      <div class="gate-title">Upgrade for unlimited access</div>
+      <div class="gate-desc">You've reached your Developer tier limit. Upgrade to Pro for all facilities, export tools, and API access.</div>
+      <a href="/pricing" class="gate-btn gate-btn-primary">Upgrade to Pro — $99/mo</a>
+    </div>
+
+    <!-- Land & Power upsell -->
+    <div class="lp-banner">
+      <div class="lp-banner-icon">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#818cf8" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+      </div>
+      <div class="lp-banner-text">
+        <div class="lp-banner-title">Need substations, gas &amp; fiber?</div>
+        <div class="lp-banner-desc">79,755 substations · 1,069 fiber routes · energy data updated daily</div>
+      </div>
+      <a href="/land-power-map" class="lp-banner-btn">Open L&amp;P Map</a>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  'use strict';
+
+  // ── CONFIG (v7.9.10): same-origin only; the CF Worker proxies /api/*
+  //     to Railway with proper CORS headers. The legacy URL
+  //     'https://' + 'web-production-e6382' + '.up.railway.app' is dead
+  //     since Mar 2026 and was tripping CORS on the map page.
+  var API_BACKENDS = [''];
+  var API_BASE = API_BACKENDS[0];
+
+  // ── BASEMAPS ──
+  var BASEMAPS = {
+    hybrid:  { url: 'https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', opts: { subdomains: '0123', maxZoom: 20 } },
+    roads:   { url: 'https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', opts: { subdomains: '0123', maxZoom: 20 } },
+    dark:    { url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', opts: { subdomains: 'abcd', maxZoom: 19 } },
+    terrain: { url: 'https://mt{s}.google.com/vt/lyrs=p&x={x}&y={y}&z={z}', opts: { subdomains: '0123', maxZoom: 20 } }
+  };
+  var _currentBaseLayer = null;
+
+  // ── TIER GATING — card + marker limits ──
+  // anon=10, free=50, developer=1000, pro/enterprise/founding=all
+  var TIER_LIMITS = { anon: 10, free: 50, developer: 1000, pro: 99999, enterprise: 99999, founding: 99999 };
+
+  // ── AUTH / TIER — server-verified ──
+  // Read token from localStorage, cookies, or sessionStorage (Edge Tracking Prevention may block localStorage)
+  var _token = (function() {
+    var t = '';
+    // 1. Try localStorage
+    try { t = localStorage.getItem('dchub_token') || ''; } catch(e) {}
+    if (t) return t;
+    // 2. Try sessionStorage
+    try { t = sessionStorage.getItem('dchub_token') || ''; } catch(e) {}
+    if (t) return t;
+    // 3. Try cookies (look for dchub_token or auth_token cookie)
+    try {
+      var m = document.cookie.match(/(?:^|;\s*)(?:dchub_token|auth_token|token)=([^;]+)/);
+      if (m) t = decodeURIComponent(m[1]);
+    } catch(e) {}
+    return t;
+  })();
+  var _userTier = 'anon';
+  var _cardLimit = TIER_LIMITS.anon;
+  var _markerLimit = TIER_LIMITS.anon;
+  var _serverVerified = false;
+
+  function _setLimits(tier) {
+    _userTier = tier;
+    var limit = TIER_LIMITS[tier] || TIER_LIMITS.anon;
+    _cardLimit = limit;
+    _markerLimit = limit;
+  }
+
+  function _getSession() {
+    var raw = '{}';
+    try { raw = localStorage.getItem('dchub_session') || '{}'; } catch(e) {}
+    if (raw === '{}') { try { raw = sessionStorage.getItem('dchub_session') || '{}'; } catch(e) {} }
+    try { return JSON.parse(raw); } catch(e) { return {}; }
+  }
+
+  function _initTierFromLocal() {
+    try {
+      if (!_token) return;
+      var s = _getSession();
+      var plan = (s.plan || s.tier || 'free').toLowerCase();
+      if (TIER_LIMITS[plan] !== undefined) _setLimits(plan);
+    } catch(e) {}
+  }
+  _initTierFromLocal();
+
+  function _verifyTierFromServer(callback) {
+    // If no token at all, skip auth and proceed as anon
+    if (!_token) { _serverVerified = true; return callback(); }
+
+    // Try each backend in order — the token may have been issued by either one
+    // (two-backend architecture: Replit DB backend vs Railway DB backend)
+    function tryAuthOn(bidx) {
+      if (bidx >= API_BACKENDS.length) {
+        // None of the backends recognised the token.
+        // DON'T delete the token — it will still be sent with map requests
+        // and the backend will decide. Default to 'free' tier locally.
+        console.warn('[DCHub Auth] Token not verified by any backend — defaulting to free tier');
+        _setLimits('free');
+        _serverVerified = true;
+        callback();
+        return;
+      }
+      var authBase = API_BACKENDS[bidx];
+      fetch(authBase + '/api/auth/me', {
+        headers: { 'Authorization': 'Bearer ' + _token, 'Accept': 'application/json' }
+      })
+      .then(function(r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .then(function(data) {
+        var user = data.user || data;
+        var plan = (user.plan || 'free').toLowerCase();
+        if (TIER_LIMITS[plan] === undefined) plan = 'free';
+        _setLimits(plan);
+        API_BASE = authBase; // stick to the backend that knows our token
+        _serverVerified = true;
+        console.log('[DCHub Auth] Verified on backend', bidx, '— tier:', plan);
+        try {
+          var sess = _getSession();
+          sess.plan = plan;
+          var sessStr = JSON.stringify(sess);
+          try { localStorage.setItem('dchub_session', sessStr); } catch(e) {}
+          try { sessionStorage.setItem('dchub_session', sessStr); } catch(e) {}
+        } catch(e) {}
+        callback();
+      })
+      .catch(function(err) {
+        console.warn('[DCHub Auth] Backend', bidx, 'rejected token:', err.message, '— trying next');
+        tryAuthOn(bidx + 1);
+      });
+    }
+
+    tryAuthOn(0);
+  }
+
+  // ── INIT MAP ──
+  var map = L.map('map', {
+    center: [30, -20],
+    zoom: 3,
+    minZoom: 2,
+    maxZoom: 18,
+    zoomControl: true,
+    attributionControl: false
+  });
+
+  // Default basemap: satellite hybrid
+  _currentBaseLayer = L.tileLayer(BASEMAPS.hybrid.url, BASEMAPS.hybrid.opts).addTo(map);
+  L.control.attribution({ prefix: false, position: 'bottomleft' })
+    .addAttribution('&copy; Google Maps').addTo(map);
+
+  // ── BASEMAP SWITCHER ──
+  window.switchBasemap = function(key) {
+    if (!BASEMAPS[key]) return;
+    if (_currentBaseLayer) map.removeLayer(_currentBaseLayer);
+    _currentBaseLayer = L.tileLayer(BASEMAPS[key].url, BASEMAPS[key].opts).addTo(map);
+    document.querySelectorAll('.bm-btn').forEach(function(b) {
+      b.classList.toggle('active', b.getAttribute('data-bm') === key);
+    });
+  };
+
+  // ── MARKER CLUSTER — heat coloring ──
+  var markers = L.markerClusterGroup({
+    maxClusterRadius: 50,
+    spiderfyOnMaxZoom: true,
+    showCoverageOnHover: false,
+    animate: true,
+    animateAddingMarkers: true,
+    iconCreateFunction: function(cluster) {
+      var count = cluster.getChildCount();
+      var size = count < 20 ? 'small' : count < 100 ? 'medium' : 'large';
+      return L.divIcon({
+        html: '<div>' + count + '</div>',
+        className: 'marker-cluster marker-cluster-' + size,
+        iconSize: L.point(40, 40)
+      });
+    }
+  });
+
+  var _allFacilities = [];
+  var _filteredFacilities = [];
+  var _activeStatusFilter = null;
+
+  // ── CUSTOM MARKER ──
+  function makeDot(status) {
+    var color = status === 'construction' ? '#f59e0b' : status === 'planned' ? '#06b6d4' : '#818cf8';
+    return L.divIcon({
+      className: '',
+      html: '<div style="width:10px;height:10px;border-radius:50%;background:' + color +
+        ';border:2px solid rgba(255,255,255,.3);box-shadow:0 0 6px ' + color + '44"></div>',
+      iconSize: [10, 10],
+      iconAnchor: [5, 5]
+    });
+  }
+
+  // ── SLUG / LINK HELPERS ──
+  // The map API returns an "id" field in mixed formats:
+  //   Valid slug:  "galaxy-helios-west-tx"  → links to /facilities/<slug> (works on dchub.cloud)
+  //   Hex ID:      "98d8ab84536cdc65"       → no reliable link, skip
+  //   Project ID:  "proj_2a163169f629"      → no reliable link, skip
+  // Name-constructed slugs ("equinix-mu1-mu3-munich") do NOT reliably match DB slugs — removed.
+  // Detail endpoint (/api/v1/facilities/<slug>) returns 404 on both backends — removed.
+  function isValidSlug(s) {
+    return typeof s === 'string' &&
+           /^[a-z][a-z0-9-]+[a-z0-9]$/.test(s) &&
+           s.indexOf('-') !== -1;
+  }
+
+  function facilitySlug(f) {
+    // Only use slug if the API explicitly returns a 'slug' field.
+    // The 'id' field does NOT reliably map to dchub.cloud page URLs — confirmed 404.
+    // When backend adds slug to /api/v1/map, links will work automatically.
+    if (f.slug && isValidSlug(f.slug)) return f.slug;
+    return '';
+  }
+
+  function facilityLink(f) {
+    var s = facilitySlug(f);
+    return s ? '/facilities/' + s : null;
+  }
+
+  // ── POPUP — tiered content with facility links ──
+  function makePopup(f) {
+    var link = facilityLink(f);
+    if (_userTier === 'anon') {
+      return '<div class="popup-name">' + f.name + '</div>' +
+        '<div class="popup-loc">' + (f.city || '') + (f.country ? ', ' + f.country : '') + '</div>' +
+        '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:11px;color:var(--text3)">' +
+          '<a href="/login.html" style="color:var(--accent);font-weight:600;text-decoration:none">Sign up free</a> to see provider, power &amp; tier details' +
+        '</div>';
+    }
+    // Name — linked if slug available, plain text if not
+    var nameHtml = link
+      ? '<div class="popup-name"><a href="' + link + '">' + f.name + '</a></div>'
+      : '<div class="popup-name">' + f.name + '</div>';
+    if (_userTier === 'free') {
+      return '<div class="popup-provider">' + (f.provider || 'Unknown') + '</div>' +
+        nameHtml +
+        '<div class="popup-loc">' + (f.city || '') + (f.country ? ', ' + f.country : '') + '</div>' +
+        '<div class="popup-specs">' +
+          (f.status ? '<div><div class="popup-spec-val" style="color:' + (f.status === 'construction' ? 'var(--orange)' : 'var(--green)') + '">' +
+            f.status.charAt(0).toUpperCase() + f.status.slice(1) + '</div><div class="popup-spec-lbl">Status</div></div>' : '') +
+        '</div>' +
+        '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:11px;color:var(--text3)">' +
+          '<a href="/pricing" style="color:var(--accent);font-weight:600;text-decoration:none">Upgrade to Pro</a> for power, tier &amp; infrastructure data' +
+        '</div>';
+    }
+    // Developer/Pro/Enterprise: full details + link
+    var tierBadge = f.tier ? '<span style="font-family:var(--mono);font-size:11px;color:var(--purple)">Tier ' + f.tier + '</span>' : '';
+    var statusColor = f.status === 'construction' ? 'var(--orange)' : f.status === 'planned' ? '#06b6d4' : 'var(--green)';
+    var locParts = [f.city||f.market||'', f.state, f.country].filter(Boolean).join(', ');
+    return '<div class="popup-provider">' + (f.provider || 'Unknown') + '</div>' +
+      nameHtml +
+      (f.address ? '<div class="popup-loc" style="font-size:11px;line-height:1.5">' + f.address + '<br>' + locParts + ' ' + tierBadge + '</div>'
+                 : '<div class="popup-loc">' + locParts + ' ' + tierBadge + '</div>') +
+      '<div class="popup-specs" style="flex-wrap:wrap;gap:10px">' +
+        '<div><div class="popup-spec-val">' + (f.power_mw ? f.power_mw + ' MW' : '<span style="color:var(--text3)">—</span>') + '</div><div class="popup-spec-lbl">Power</div></div>' +
+        '<div><div class="popup-spec-val">' + (f.sqft ? Number(f.sqft).toLocaleString() : '<span style="color:var(--text3)">—</span>') + '</div><div class="popup-spec-lbl">Sq Ft</div></div>' +
+        (f.type ? '<div><div class="popup-spec-val" style="font-size:11px;text-transform:capitalize">' + f.type + '</div><div class="popup-spec-lbl">Type</div></div>' : '') +
+        (f.status ? '<div><div class="popup-spec-val" style="color:' + statusColor + '">' + f.status.charAt(0).toUpperCase() + f.status.slice(1) + '</div><div class="popup-spec-lbl">Status</div></div>' : '') +
+      '</div>' +
+      (link ? '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)"><a href="' + link + '" style="color:var(--accent);font-size:11px;font-weight:600;text-decoration:none">View full profile →</a></div>' : '');
+  }
+
+  // ── RENDER MARKERS (gated) ──
+  // ── RENDER MARKERS — chunked async to prevent UI freeze ──
+  var MAP_MARKER_CAP = 20000; // max markers on map regardless of tier (clusters handle density)
+  var _markerRenderTimer = null;
+
+  function renderMarkers(facilities) {
+    // Cancel any in-progress render
+    if (_markerRenderTimer) { clearTimeout(_markerRenderTimer); _markerRenderTimer = null; }
+    markers.clearLayers();
+    if (facilities.length === 0) return;
+
+    var limit = Math.min(facilities.length, _markerLimit, MAP_MARKER_CAP);
+    var CHUNK = 500;
+    var idx = 0;
+
+    function addChunk() {
+      var batch = [];
+      var end = Math.min(idx + CHUNK, limit);
+      for (; idx < end; idx++) {
+        var f = facilities[idx];
+        if (!f.latitude || !f.longitude) continue;
+        var m = L.marker([f.latitude, f.longitude], { icon: makeDot(f.status) });
+        m.bindPopup(makePopup(f), { maxWidth: 280 });
+        (function(fac, marker) {
+          // Note: fetchFacilityDetail disabled — Railway /api/v1/facilities/<slug> returns 404
+          // Address/sqft need to be added to the /api/v1/map endpoint server-side
+        })(f, m);
+        batch.push(m);
+      }
+      if (batch.length) markers.addLayers(batch);
+      if (idx < limit) {
+        _markerRenderTimer = setTimeout(addChunk, 0); // yield to browser between chunks
+      } else {
+        map.addLayer(markers);
+      }
+    }
+
+    addChunk();
+  }
+
+  // ── RENDER SIDE PANEL CARDS — paginated for performance ──
+  var PLACEHOLDER_CARDS = [
+    { provider: '████████', name: '██████████ Data Center', city: '████████', status: 'active', tier: '███', power_mw: '██' },
+    { provider: '██████', name: '████████ Campus', city: '██████████', status: 'active', tier: '██', power_mw: '███' },
+  ];
+  var CARDS_PER_PAGE = 50;
+  var _currentCardFacilities = [];
+  var _cardsRendered = 0;
+
+  function renderCards(facilities) {
+    var list = document.getElementById('side-list');
+    list.innerHTML = '';
+    _currentCardFacilities = facilities;
+    _cardsRendered = 0;
+
+    var displayLimit = Math.min(facilities.length, _cardLimit);
+    document.getElementById('panel-count').textContent = displayLimit.toLocaleString() + ' of ' + facilities.length.toLocaleString();
+
+    _appendCards(CARDS_PER_PAGE);
+
+    // Show gate overlays
+    document.getElementById('gate-anon').style.display = _userTier === 'anon' && facilities.length > _cardLimit ? 'flex' : 'none';
+    document.getElementById('gate-free').style.display = _userTier === 'free' && facilities.length > _cardLimit ? 'flex' : 'none';
+    document.getElementById('gate-dev').style.display = _userTier === 'developer' && facilities.length > _cardLimit ? 'flex' : 'none';
+  }
+
+  function _appendCards(count) {
+    var list = document.getElementById('side-list');
+    var displayLimit = Math.min(_currentCardFacilities.length, _cardLimit);
+    var end = Math.min(_cardsRendered + count, displayLimit);
+    var frag = document.createDocumentFragment();
+    for (var i = _cardsRendered; i < end; i++) {
+      frag.appendChild(buildCard(_currentCardFacilities[i], false));
+    }
+    _cardsRendered = end;
+
+    // Add placeholder gated cards if at limit
+    if (_cardsRendered >= _cardLimit && _currentCardFacilities.length > _cardLimit) {
+      for (var j = 0; j < PLACEHOLDER_CARDS.length; j++) {
+        frag.appendChild(buildCard(PLACEHOLDER_CARDS[j], true));
+      }
+    }
+    list.appendChild(frag);
+  }
+
+  // Infinite scroll — load more cards as user scrolls down
+  document.getElementById('side-list').addEventListener('scroll', function() {
+    var el = this;
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 120) {
+      if (_cardsRendered < Math.min(_currentCardFacilities.length, _cardLimit)) {
+        _appendCards(CARDS_PER_PAGE);
+      }
+    }
+  });
+
+  function buildCard(f, isGated) {
+    var card = document.createElement('div');
+    card.className = 'fac-card' + (isGated ? ' gated' : '');
+    var statusClass = f.status === 'construction' ? 'construction' : f.status === 'planned' ? 'planned' : 'active';
+    var statusLabel = f.status === 'construction' ? 'Construction' : f.status === 'planned' ? 'Planned' : 'Active';
+    var link = facilityLink(f);
+
+    var providerHtml = _userTier === 'anon' && !isGated
+      ? '<div class="fac-provider" style="color:var(--text3)">Sign up to see provider</div>'
+      : '<div class="fac-provider">' + (f.provider || 'Unknown') + '</div>';
+
+    // Power, sqft always shown — named spans so the detail observer can fill them in
+    var specsHtml = '';
+    if (_userTier !== 'anon' && _userTier !== 'free' && !isGated) {
+      // Pro / developer / enterprise / founding — all spec fields, lazy-filled by observer
+      specsHtml = '<div class="fac-specs">' +
+        '<div class="fac-spec"><span class="fac-spec-val card-detail-pwr">' + (f.power_mw ? f.power_mw + ' MW' : '<span style="color:var(--text3)">—</span>') + '</span><span class="fac-spec-label">Power</span></div>' +
+        '<div class="fac-spec"><span class="fac-spec-val card-detail-sqft">' + (f.sqft ? Number(f.sqft).toLocaleString() + ' ft²' : '<span style="color:var(--text3)">—</span>') + '</span><span class="fac-spec-label">Sq Ft</span></div>' +
+        (f.type ? '<div class="fac-spec"><span class="fac-spec-val" style="font-size:10px;text-transform:capitalize">' + f.type + '</span><span class="fac-spec-label">Type</span></div>' : '') +
+        (f.region ? '<div class="fac-spec"><span class="fac-spec-val">' + f.region + '</span><span class="fac-spec-label">Region</span></div>' : '') +
+      '</div>';
+    } else if (_userTier === 'free' && !isGated) {
+      specsHtml = '<div class="fac-specs">' +
+        '<div class="fac-spec"><span class="fac-spec-val card-detail-pwr">' + (f.power_mw ? f.power_mw + ' MW' : '<span style="color:var(--text3)">—</span>') + '</span><span class="fac-spec-label">Power</span></div>' +
+        '<div class="fac-spec"><span class="fac-spec-val" style="color:var(--text3);font-size:10px">Upgrade →</span><span class="fac-spec-label">Sq Ft</span></div>' +
+        (f.region ? '<div class="fac-spec"><span class="fac-spec-val">' + f.region + '</span><span class="fac-spec-label">Region</span></div>' : '') +
+      '</div>';
+    } else if (isGated) {
+      specsHtml = '<div class="fac-specs">' +
+        '<div class="fac-spec"><span class="fac-spec-val">—</span><span class="fac-spec-label">Power</span></div>' +
+        '<div class="fac-spec"><span class="fac-spec-val">—</span><span class="fac-spec-label">Sq Ft</span></div>' +
+      '</div>';
+    }
+
+    // Name — linked only if facilityLink returns a real slug (requires 'slug' in API response)
+    var nameHtml = (!isGated && link)
+      ? '<div class="fac-name"><a href="' + link + '">' + f.name + '</a></div>'
+      : '<div class="fac-name">' + f.name + '</div>';
+
+    // Bottom bar: location text only. No facility links — API id field does not map to
+    // dchub.cloud page slugs (confirmed 404). When backend adds 'slug' to /api/v1/map,
+    // facilityLink() will return a valid URL and this will auto-show a link.
+    var locText = [f.city||f.market||'', f.state, f.country].filter(Boolean).join(', ');
+    var profileLink = (_userTier !== 'anon' && !isGated)
+      ? '<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:6px">' +
+          '<span style="font-size:10px;color:var(--text3);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + locText + '</span>' +
+          (link ? '<a href="' + link + '" style="font-size:11px;color:var(--accent);font-weight:600;text-decoration:none;white-space:nowrap;flex-shrink:0">Full profile →</a>' : '') +
+        '</div>'
+      : '';
+
+    card.innerHTML =
+      '<div class="fac-card-top">' +
+        providerHtml +
+        '<div class="fac-badges">' +
+          '<span class="fac-badge ' + statusClass + '">' + statusLabel + '</span>' +
+          (f.tier && _userTier !== 'anon' ? '<span class="fac-badge tier">Tier ' + f.tier + '</span>' : '') +
+        '</div>' +
+      '</div>' +
+      nameHtml +
+      '<div class="fac-location">' +
+        [f.city||f.market||'', f.state, f.country].filter(Boolean).join(', ') +
+      '</div>' +
+      specsHtml +
+      profileLink;
+
+    if (!isGated) {
+      (function(facility) {
+        card.addEventListener('click', function(e) {
+          // Don't fly-to if clicking a link
+          if (e.target.tagName === 'A') return;
+          if (facility.latitude && facility.longitude) {
+            map.flyTo([facility.latitude, facility.longitude], 12, { duration: 1.2 });
+          }
+        });
+      })(f);
+    }
+    return card;
+  }
+
+  // ── SEARCH ──
+  var _searchTimeout = null;
+  var _searchQuery = '';
+  var searchInput = document.getElementById('search-input');
+  var searchResults = document.getElementById('search-results');
+
+  function matchesFacility(f, q) {
+    return (f.name && f.name.toLowerCase().indexOf(q) !== -1) ||
+           (f.provider && f.provider.toLowerCase().indexOf(q) !== -1) ||
+           (f.city && f.city.toLowerCase().indexOf(q) !== -1) ||
+           (f.country && f.country.toLowerCase().indexOf(q) !== -1) ||
+           (f.market && f.market.toLowerCase().indexOf(q) !== -1);
+  }
+
+  function flyToResults(facilities) {
+    var geo = facilities.filter(function(f){ return f.latitude && f.longitude; });
+    if (!geo.length) return;
+    var latSum = 0, lngSum = 0;
+    geo.forEach(function(f){ latSum += f.latitude; lngSum += f.longitude; });
+    var lat = latSum / geo.length, lng = lngSum / geo.length;
+    var lats = geo.map(function(f){ return f.latitude; });
+    var lngs = geo.map(function(f){ return f.longitude; });
+    var span = Math.max(Math.max.apply(null,lats) - Math.min.apply(null,lats),
+                        Math.max.apply(null,lngs) - Math.min.apply(null,lngs));
+    var zoom = span < 0.1 ? 12 : span < 0.5 ? 10 : span < 2 ? 8 : span < 8 ? 6 : 4;
+    map.flyTo([lat, lng], zoom, { duration: 1.0 });
+  }
+
+  function applySearchFilter(q) {
+    _searchQuery = q;
+    if (q.length < 2) {
+      // Restore full filtered set (respecting other active filters)
+      _filteredFacilities = _allFacilities.filter(function(f) {
+        if (_activeStatusFilter && f.status !== _activeStatusFilter) return false;
+        var tier = document.getElementById('filter-tier').value;
+        var power = document.getElementById('filter-power').value;
+        var region = document.getElementById('filter-region').value;
+        if (tier && f.tier !== tier) return false;
+        if (region && f.region !== region) return false;
+        if (power) {
+          var mw = parseFloat(f.power_mw) || 0;
+          if (power === '100' && mw < 100) return false;
+          if (power === '50' && (mw < 50 || mw >= 100)) return false;
+          if (power === '10' && (mw < 10 || mw >= 50)) return false;
+          if (power === '0' && mw >= 10) return false;
+        }
+        return true;
+      });
+    } else {
+      // Filter to search matches (within existing filter state)
+      _filteredFacilities = _allFacilities.filter(function(f) {
+        if (!matchesFacility(f, q)) return false;
+        if (_activeStatusFilter && f.status !== _activeStatusFilter) return false;
+        var tier = document.getElementById('filter-tier').value;
+        var power = document.getElementById('filter-power').value;
+        var region = document.getElementById('filter-region').value;
+        if (tier && f.tier !== tier) return false;
+        if (region && f.region !== region) return false;
+        if (power) {
+          var mw = parseFloat(f.power_mw) || 0;
+          if (power === '100' && mw < 100) return false;
+          if (power === '50' && (mw < 50 || mw >= 100)) return false;
+          if (power === '10' && (mw < 10 || mw >= 50)) return false;
+          if (power === '0' && mw >= 10) return false;
+        }
+        return true;
+      });
+    }
+    document.getElementById('total-badge').textContent = _filteredFacilities.length.toLocaleString();
+    renderMarkers(_filteredFacilities);
+    renderCards(_filteredFacilities);
+    // Auto-fly to city center when search is specific enough
+    if (q.length >= 2 && _filteredFacilities.length > 0 && _filteredFacilities.length <= 200) {
+      flyToResults(_filteredFacilities);
+    }
+  }
+
+  searchInput.addEventListener('input', function() {
+    clearTimeout(_searchTimeout);
+    var q = this.value.trim().toLowerCase();
+
+    // Clear dropdown if too short
+    if (q.length < 2) {
+      searchResults.classList.remove('open');
+      applySearchFilter('');
+      return;
+    }
+
+    _searchTimeout = setTimeout(function() {
+      // ── Dropdown: top 8 matches across all facilities ──
+      var matches = _allFacilities.filter(function(f) {
+        return matchesFacility(f, q);
+      }).slice(0, 8);
+
+      searchResults.innerHTML = '';
+      if (matches.length === 0) {
+        searchResults.innerHTML = '<div class="search-result-item" style="color:var(--text3)">No results</div>';
+      } else {
+        matches.forEach(function(f) {
+          var item = document.createElement('div');
+          item.className = 'search-result-item';
+          var count = _allFacilities.filter(function(x) {
+            return (x.city && x.city.toLowerCase() === (f.city || '').toLowerCase()) ||
+                   (x.market && x.market.toLowerCase() === (f.city || '').toLowerCase());
+          }).length;
+          var countStr = count > 1 ? ' <span style="color:var(--accent);font-family:var(--mono);font-size:10px">+' + count + '</span>' : '';
+          item.innerHTML = '<div class="search-result-name">' + f.name + countStr + '</div>' +
+            '<div class="search-result-loc">' + (f.city || f.market || '') + (f.country ? ', ' + f.country : '') + ' · ' + (f.provider || '') + '</div>';
+          item.addEventListener('click', function() {
+            // Fly to facility
+            if (f.latitude && f.longitude) {
+              map.flyTo([f.latitude, f.longitude], 12, { duration: 1.2 });
+            }
+            // Filter side panel + markers to this city
+            var city = (f.city || f.market || '').toLowerCase();
+            var filterQ = city || q;
+            searchInput.value = f.city || f.market || f.name;
+            searchResults.classList.remove('open');
+            applySearchFilter(filterQ);
+          });
+          searchResults.appendChild(item);
+        });
+      }
+      searchResults.classList.add('open');
+
+      // ── Also live-filter panel + markers as you type ──
+      applySearchFilter(q);
+    }, 300);
+  });
+
+  // Clear search → restore full view
+  searchInput.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+      searchInput.value = '';
+      searchResults.classList.remove('open');
+      applySearchFilter('');
+    }
+  });
+
+  // Close search on click outside
+  document.addEventListener('click', function(e) {
+    if (!document.getElementById('search-wrapper').contains(e.target)) {
+      searchResults.classList.remove('open');
+    }
+  });
+
+  // ── FILTERS ──
+  window.toggleChip = function(el, type, value) {
+    if (_userTier === 'anon') { window.location.href = '/login.html'; return; }
+    if (el.classList.contains('active')) {
+      el.classList.remove('active');
+      _activeStatusFilter = null;
+    } else {
+      document.querySelectorAll('.filter-chip[data-filter="status"]').forEach(function(c) { c.classList.remove('active'); });
+      el.classList.add('active');
+      _activeStatusFilter = value;
+    }
+    applyFilters();
+  };
+
+  window.setFilter = function(type, el) {
+    if (type === 'all') {
+      document.querySelectorAll('.filter-chip[data-filter="status"]').forEach(function(c) { c.classList.remove('active'); });
+      el.classList.add('active');
+      _activeStatusFilter = null;
+      document.getElementById('filter-tier').value = '';
+      document.getElementById('filter-power').value = '';
+      document.getElementById('filter-region').value = '';
+      applyFilters();
+    }
+  };
+
+  window.applyFilters = function() {
+    if (_userTier === 'anon') return;
+    var tier = document.getElementById('filter-tier').value;
+    var power = document.getElementById('filter-power').value;
+    var region = document.getElementById('filter-region').value;
+
+    _filteredFacilities = _allFacilities.filter(function(f) {
+      if (_activeStatusFilter && f.status !== _activeStatusFilter) return false;
+      if (tier && f.tier !== tier) return false;
+      if (region && f.region !== region) return false;
+      if (power) {
+        var mw = parseFloat(f.power_mw) || 0;
+        if (power === '100' && mw < 100) return false;
+        if (power === '50' && (mw < 50 || mw >= 100)) return false;
+        if (power === '10' && (mw < 10 || mw >= 50)) return false;
+        if (power === '0' && mw >= 10) return false;
+      }
+      return true;
+    });
+
+    document.getElementById('total-badge').textContent = _filteredFacilities.length.toLocaleString();
+    renderMarkers(_filteredFacilities);
+    renderCards(_filteredFacilities);
+
+    var allChip = document.querySelector('.filter-chip[data-filter="all"]');
+    if (!_activeStatusFilter && !tier && !power && !region) {
+      allChip.classList.add('active');
+    } else {
+      allChip.classList.remove('active');
+    }
+  };
+
+  window.resetFilters = function() {
+    _activeStatusFilter = null;
+    document.querySelectorAll('.filter-chip').forEach(function(c) { c.classList.remove('active'); });
+    document.querySelector('.filter-chip[data-filter="all"]').classList.add('active');
+    document.getElementById('filter-tier').value = '';
+    document.getElementById('filter-power').value = '';
+    document.getElementById('filter-region').value = '';
+    _filteredFacilities = _allFacilities.slice();
+    document.getElementById('total-badge').textContent = _filteredFacilities.length.toLocaleString();
+    renderMarkers(_filteredFacilities);
+    renderCards(_filteredFacilities);
+  };
+
+  window.togglePanel = function() {
+    document.getElementById('side-panel').classList.toggle('open');
+  };
+
+  // ── FACILITY LOADER — single request, API allows 12K for dchub.cloud ──
+  function showProgress(pct, text) {
+    var el = document.getElementById('load-progress');
+    el.classList.add('show');
+    document.getElementById('load-fill').style.width = pct + '%';
+    if (text) document.getElementById('load-text').textContent = text;
+    if (pct >= 100) setTimeout(function() { el.classList.remove('show'); }, 1200);
+  }
+
+  function loadAllFacilities() {
+    var headers = { 'Accept': 'application/json' };
+    if (_token) headers['Authorization'] = 'Bearer ' + _token;
+
+    showProgress(10, 'Loading facilities...');
+
+    var _authFailCount = 0; // track 401s across backends
+
+    function tryBackend(idx) {
+      if (idx >= API_BACKENDS.length) {
+        // If all failures were 401 auth errors, show login prompt
+        var msg = _authFailCount >= API_BACKENDS.length
+          ? '<div style="font-size:24px;margin-bottom:12px">🔒</div>' +
+            '<div style="font-size:14px;font-weight:600;margin-bottom:8px">Sign in to view the map</div>' +
+            '<div style="font-size:12px;color:var(--text3);margin-bottom:16px">Your session may have expired.</div>' +
+            '<a href="/login" style="display:inline-block;padding:8px 20px;background:var(--accent);color:#fff;border-radius:6px;text-decoration:none;font-size:13px;font-weight:600">Sign in</a>'
+          : '<div style="font-size:24px;margin-bottom:8px">🗺️</div>' +
+            '<div style="font-size:13px">Could not load facilities</div>' +
+            '<div style="font-size:11px;margin-top:4px">Check your connection and try refreshing</div>';
+        document.getElementById('side-list').innerHTML =
+          '<div style="padding:40px 20px;text-align:center;color:var(--text3)">' + msg + '</div>';
+        return;
+      }
+      var base = API_BACKENDS[idx];
+      console.log('[DCHub Map] Trying backend', idx, ':', base);
+      fetch(base + '/api/v1/map?all=true&limit=10000', { headers: headers })
+        .then(function(r) {
+          if (r.status === 401) { _authFailCount++; throw new Error('HTTP 401'); }
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        })
+        .then(function(data) {
+          // Handle multiple possible response shapes
+          var facs = null;
+          if (Array.isArray(data)) facs = data;
+          else if (Array.isArray(data.data)) facs = data.data;
+          else if (Array.isArray(data.facilities)) facs = data.facilities;
+          else if (Array.isArray(data.results)) facs = data.results;
+          else if (Array.isArray(data.features)) facs = data.features;
+          else facs = [];
+          console.log('[DCHub Map] Backend', idx, 'returned', facs.length, 'facilities');
+          if (facs.length > 0) console.log('[DCHub Map] Sample raw facility fields:', Object.keys(facs[0]).join(', '));
+
+          // If empty AND there are more backends to try, fall through
+          if (facs.length === 0 && idx < API_BACKENDS.length - 1) {
+            throw new Error('empty — try next');
+          }
+
+          API_BASE = base; // sticky for auth calls too
+          var all = [];
+          facs.forEach(function(f) {
+            var rawStatus = (f.status || 'active').toLowerCase().replace(/_/g,' ');
+            var normStatus = rawStatus === 'operational' ? 'active' : rawStatus === 'announced' ? 'planned' : rawStatus;
+            all.push({
+              id: f.id || f.facility_id || '',
+              name: f.name || f.facility_name || 'Unknown',
+              provider: f.provider || f.operator || 'Unknown',
+              city: f.city || f.market || '',
+              market: f.market || '',
+              country: f.country || '',
+              state: f.state || f.state_province || '',
+              region: f.region || '',
+              address: f.address || f.street_address || f.street || '',
+              latitude: parseFloat(f.latitude || f.lat) || null,
+              longitude: parseFloat(f.longitude || f.lng) || null,
+              power_mw: f.power_mw || f.power || f.capacity_mw || f.total_power_mw || null,
+              sqft: f.sqft || f.sq_ft || f.campus_size || null,
+              tier: f.tier || '',
+              type: f.type || f.facility_type || f.dc_type || '',
+              status: normStatus,
+              slug: f.slug || f.id || f.facility_id || ''
+            });
+          });
+
+          showProgress(100, all.length.toLocaleString() + ' facilities loaded');
+          document.getElementById('stat-facilities').textContent = all.length.toLocaleString();
+
+          _allFacilities = all;
+          _filteredFacilities = all.slice();
+          document.getElementById('total-badge').textContent = all.length.toLocaleString();
+          renderMarkers(_filteredFacilities);
+          renderCards(_filteredFacilities);
+        })
+        .catch(function(err) {
+          console.warn('Backend ' + base + ' failed:', err, '— trying next');
+          tryBackend(idx + 1);
+        });
+    }
+
+    tryBackend(0);
+  }
+
+  // ── INIT — verify tier, then load ──
+  _verifyTierFromServer(function() {
+    _setLimits(_userTier);
+
+    if (_userTier === 'anon') {
+      document.getElementById('filter-bar').classList.add('filter-disabled');
+      document.querySelectorAll('#filter-bar select').forEach(function(s) { s.disabled = true; });
+    }
+
+    loadAllFacilities();
+  });
+
+})();
+</script>
+</body>
+</html>

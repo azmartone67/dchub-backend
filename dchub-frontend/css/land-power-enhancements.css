@@ -1,0 +1,543 @@
+/**
+ * DC Hub Land & Power Map Enhancements - CSS Styles
+ * Version 2.0.0
+ */
+
+/* ============================================================================
+   PRICING DISPLAY
+   ============================================================================ */
+
+.price-display {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 12px;
+    background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+    border-radius: 8px;
+    border: 1px solid #e2e8f0;
+}
+
+.price-value {
+    font-size: 28px;
+    font-weight: 700;
+    color: #0f766e;
+    line-height: 1.2;
+}
+
+.price-mwh {
+    font-size: 14px;
+    color: #64748b;
+    font-weight: 500;
+}
+
+.price-trend {
+    font-size: 13px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.price-trend.up { color: #ef4444; }
+.price-trend.down { color: #22c55e; }
+.price-trend.stable { color: #6b7280; }
+
+.price-region {
+    font-size: 11px;
+    color: #94a3b8;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 500;
+}
+
+/* Pricing comparison table */
+.pricing-comparison {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.pricing-comparison th {
+    background: #0f766e;
+    color: white;
+    padding: 10px 12px;
+    text-align: left;
+    font-weight: 600;
+}
+
+.pricing-comparison td {
+    padding: 8px 12px;
+    border-bottom: 1px solid #e2e8f0;
+}
+
+.pricing-comparison tr:nth-child(even) {
+    background: #f8fafc;
+}
+
+.pricing-comparison tr:hover {
+    background: #ecfdf5;
+}
+
+/* ============================================================================
+   POWER PLANTS SUMMARY
+   ============================================================================ */
+
+.power-plants-summary {
+    background: white;
+    border-radius: 10px;
+    padding: 16px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.summary-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 2px solid #e2e8f0;
+}
+
+.total-plants {
+    font-size: 16px;
+    font-weight: 600;
+    color: #1e293b;
+}
+
+.total-capacity {
+    font-size: 18px;
+    font-weight: 700;
+    color: #0f766e;
+}
+
+/* Fuel type breakdown */
+.fuel-breakdown {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.fuel-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    background: #f8fafc;
+    border-radius: 6px;
+    border-left: 4px solid currentColor;
+    transition: transform 0.15s, box-shadow 0.15s;
+}
+
+.fuel-item:hover {
+    transform: translateX(4px);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.fuel-icon {
+    font-size: 20px;
+    width: 28px;
+    text-align: center;
+}
+
+.fuel-name {
+    flex: 1;
+    font-weight: 500;
+    color: #334155;
+}
+
+.fuel-mw {
+    font-weight: 700;
+    color: #0f766e;
+    min-width: 80px;
+    text-align: right;
+}
+
+.fuel-count {
+    font-size: 12px;
+    color: #94a3b8;
+    min-width: 40px;
+}
+
+/* Nearest plants list */
+.nearest-plants {
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid #e2e8f0;
+}
+
+.nearest-plants h4 {
+    font-size: 14px;
+    font-weight: 600;
+    color: #475569;
+    margin-bottom: 12px;
+}
+
+.plant-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid #f1f5f9;
+}
+
+.plant-item:last-child {
+    border-bottom: none;
+}
+
+.plant-icon {
+    font-size: 24px;
+    width: 36px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #f1f5f9;
+    border-radius: 8px;
+}
+
+.plant-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.plant-name {
+    font-weight: 600;
+    color: #1e293b;
+    display: block;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.plant-details {
+    font-size: 12px;
+    color: #64748b;
+    display: block;
+    margin-top: 2px;
+}
+
+/* ============================================================================
+   PDF EXPORT BUTTON
+   ============================================================================ */
+
+.pdf-export-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: linear-gradient(135deg, #0f766e 0%, #0d9488 100%);
+    color: white;
+    border: none;
+    padding: 12px 20px;
+    border-radius: 8px;
+    font-weight: 600;
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.2s;
+    box-shadow: 0 2px 4px rgba(15, 118, 110, 0.3);
+}
+
+.pdf-export-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(15, 118, 110, 0.4);
+}
+
+.pdf-export-btn:active {
+    transform: translateY(0);
+}
+
+.pdf-export-btn:disabled {
+    background: #94a3b8;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
+}
+
+.pdf-export-btn.success {
+    background: #22c55e;
+}
+
+.pdf-export-btn.error {
+    background: #ef4444;
+}
+
+/* ============================================================================
+   PRICING WIDGET (MAP OVERLAY)
+   ============================================================================ */
+
+.pricing-widget {
+    position: absolute;
+    top: 80px;
+    right: 10px;
+    z-index: 1000;
+    min-width: 160px;
+    background: white;
+    border-radius: 10px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+    overflow: hidden;
+}
+
+.pricing-widget .price-display {
+    border: none;
+    border-radius: 0;
+}
+
+.pricing-widget-header {
+    background: #0f766e;
+    color: white;
+    padding: 8px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* ============================================================================
+   LAYER STATUS PANEL
+   ============================================================================ */
+
+.layer-status {
+    background: white;
+    border-radius: 8px;
+    padding: 12px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.layer-status-header {
+    font-weight: 600;
+    color: #1e293b;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.layer-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 0;
+    border-bottom: 1px solid #f1f5f9;
+}
+
+.layer-item:last-child {
+    border-bottom: none;
+}
+
+.layer-status-indicator {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #22c55e;
+}
+
+.layer-status-indicator.disabled {
+    background: #94a3b8;
+}
+
+.layer-status-indicator.error {
+    background: #ef4444;
+}
+
+.layer-name {
+    flex: 1;
+    font-size: 13px;
+    color: #334155;
+}
+
+.layer-source {
+    font-size: 11px;
+    color: #94a3b8;
+    background: #f1f5f9;
+    padding: 2px 6px;
+    border-radius: 4px;
+}
+
+/* ============================================================================
+   SITE ANALYSIS PANEL
+   ============================================================================ */
+
+.enhanced-analysis-panel {
+    background: white;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+}
+
+.analysis-header {
+    background: linear-gradient(135deg, #0f766e 0%, #0d9488 100%);
+    color: white;
+    padding: 16px 20px;
+}
+
+.analysis-header h3 {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 600;
+}
+
+.analysis-header .coords {
+    font-size: 12px;
+    opacity: 0.8;
+    margin-top: 4px;
+}
+
+.analysis-score {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px;
+    background: #f8fafc;
+    border-bottom: 1px solid #e2e8f0;
+}
+
+.score-label {
+    font-weight: 600;
+    color: #475569;
+}
+
+.score-value {
+    font-size: 32px;
+    font-weight: 700;
+}
+
+.score-value.excellent { color: #22c55e; }
+.score-value.good { color: #84cc16; }
+.score-value.fair { color: #eab308; }
+.score-value.poor { color: #ef4444; }
+
+.analysis-section {
+    padding: 16px 20px;
+    border-bottom: 1px solid #f1f5f9;
+}
+
+.analysis-section:last-child {
+    border-bottom: none;
+}
+
+.analysis-section h4 {
+    font-size: 14px;
+    font-weight: 600;
+    color: #334155;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.analysis-footer {
+    padding: 16px 20px;
+    background: #f8fafc;
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+}
+
+/* ============================================================================
+   NO DATA STATE
+   ============================================================================ */
+
+.no-data {
+    padding: 24px;
+    text-align: center;
+    color: #94a3b8;
+    font-style: italic;
+}
+
+.no-data-icon {
+    font-size: 32px;
+    margin-bottom: 8px;
+    opacity: 0.5;
+}
+
+/* ============================================================================
+   LOADING STATE
+   ============================================================================ */
+
+.loading-indicator {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 24px;
+    color: #64748b;
+}
+
+.loading-spinner {
+    width: 20px;
+    height: 20px;
+    border: 2px solid #e2e8f0;
+    border-top-color: #0f766e;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* ============================================================================
+   RESPONSIVE ADJUSTMENTS
+   ============================================================================ */
+
+@media (max-width: 768px) {
+    .pricing-widget {
+        top: auto;
+        bottom: 80px;
+        right: 10px;
+        left: 10px;
+        min-width: auto;
+    }
+    
+    .summary-header {
+        flex-direction: column;
+        gap: 8px;
+        text-align: center;
+    }
+    
+    .fuel-item {
+        padding: 8px;
+    }
+    
+    .fuel-mw {
+        min-width: 60px;
+    }
+    
+    .plant-name {
+        font-size: 14px;
+    }
+}
+
+/* ============================================================================
+   DARK MODE SUPPORT (optional)
+   ============================================================================ */
+
+@media (prefers-color-scheme: dark) {
+    .power-plants-summary,
+    .enhanced-analysis-panel,
+    .layer-status {
+        background: #1e293b;
+        color: #e2e8f0;
+    }
+    
+    .fuel-item,
+    .plant-item {
+        background: #334155;
+    }
+    
+    .plant-name,
+    .fuel-name {
+        color: #f1f5f9;
+    }
+    
+    .plant-details,
+    .price-mwh,
+    .price-region {
+        color: #94a3b8;
+    }
+    
+    .summary-header,
+    .nearest-plants {
+        border-color: #475569;
+    }
+}

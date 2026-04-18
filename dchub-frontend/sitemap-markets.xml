@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <!-- DC Hub Market Intelligence Pages -->
+  <url><loc>https://dchub.cloud/markets</loc><lastmod>2026-03-02</lastmod><changefreq>weekly</changefreq><priority>0.9</priority></url>
+
+  <!-- North America -->
+  <url><loc>https://dchub.cloud/markets/northern-virginia</loc><lastmod>2026-03-02</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>
+  <url><loc>https://dchub.cloud/markets/dallas</loc><lastmod>2026-03-02</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>
+  <url><loc>https://dchub.cloud/markets/phoenix</loc><lastmod>2026-03-02</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>
+  <url><loc>https://dchub.cloud/markets/atlanta</loc><lastmod>2026-03-02</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>
+  <url><loc>https://dchub.cloud/markets/chicago</loc><lastmod>2026-03-02</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>
+  <url><loc>https://dchub.cloud/markets/silicon-valley</loc><lastmod>2026-03-02</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>
+  <url><loc>https://dchub.cloud/markets/new-york</loc><lastmod>2026-03-02</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>
+  <url><loc>https://dchub.cloud/markets/los-angeles</loc><lastmod>2026-03-02</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>
+  <url><loc>https://dchub.cloud/markets/portland</loc><lastmod>2026-03-02</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>
+  <url><loc>https://dchub.cloud/markets/seattle</loc><lastmod>2026-03-02</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>
+  <url><loc>https://dchub.cloud/markets/salt-lake-city</loc><lastmod>2026-03-02</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>
+  <url><loc>https://dchub.cloud/markets/toronto</loc><lastmod>2026-03-02</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>
+  <url><loc>https://dchub.cloud/markets/columbus</loc><lastmod>2026-03-02</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>
+  <url><loc>https://dchub.cloud/markets/houston</loc><lastmod>2026-03-02</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>
+  <url><loc>https://dchub.cloud/markets/denver</loc><lastmod>2026-03-02</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>
+
+  <!-- Europe -->
+  <url><loc>https://dchub.cloud/markets/london</loc><lastmod>2026-03-02</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>
+  <url><loc>https://dchub.cloud/markets/frankfurt</loc><lastmod>2026-03-02</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>
+  <url><loc>https://dchub.cloud/markets/amsterdam</loc><lastmod>2026-03-02</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>
+  <url><loc>https://dchub.cloud/markets/paris</loc><lastmod>2026-03-02</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>
+  <url><loc>https://dchub.cloud/markets/dublin</loc><lastmod>2026-03-02</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>
+  <url><loc>https://dchub.cloud/markets/stockholm</loc><lastmod>2026-03-02</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>
+
+  <!-- Asia Pacific -->
+  <url><loc>https://dchub.cloud/markets/singapore</loc><lastmod>2026-03-02</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>
+  <url><loc>https://dchub.cloud/markets/tokyo</loc><lastmod>2026-03-02</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>
+  <url><loc>https://dchub.cloud/markets/sydney</loc><lastmod>2026-03-02</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>
+  <url><loc>https://dchub.cloud/markets/hong-kong</loc><lastmod>2026-03-02</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>
+  <url><loc>https://dchub.cloud/markets/mumbai</loc><lastmod>2026-03-02</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>
+  <url><loc>https://dchub.cloud/markets/seoul</loc><lastmod>2026-03-02</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>
+  <url><loc>https://dchub.cloud/markets/jakarta</loc><lastmod>2026-03-02</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>
+</urlset>

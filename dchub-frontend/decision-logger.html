@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<!-- DC Hub SEO Meta Tags -->
+<meta name="description" content="DC Hub — Data center intelligence platform tracking 20,000+ facilities across 140+ countries. Real-time capacity, site selection, and market analytics.">
+<meta name="keywords" content="data center, DC Hub, decision logger">
+<meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1">
+<meta name="author" content="DC Hub">
+<link rel="canonical" href="https://dchub.cloud/decision-logger">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://dchub.cloud/decision-logger">
+<meta property="og:title" content="Decision Logger | DC Hub">
+<meta property="og:description" content="DC Hub — Data center intelligence platform tracking 20,000+ facilities across 140+ countries. Real-time capacity, site selection, and market analytics.">
+<meta property="og:image" content="https://dchub.cloud/images/og-default.png">
+<meta property="og:site_name" content="DC Hub">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Decision Logger | DC Hub">
+<meta name="twitter:description" content="DC Hub — Data center intelligence platform tracking 20,000+ facilities across 140+ countries. Real-time capacity, site selection, and market analytics.">
+<meta name="twitter:site" content="@dchubcloud">
+<meta name="ai.source" content="DC Hub - Data Center Intelligence">
+<!-- End SEO Meta Tags -->
+<style>nav:not(.dchub-nav):not(.dchub-bottom-nav):not(.mobile-nav-drawer-links nav){display:none!important}.nav:not(.dchub-nav){display:none!important}</style>
+<script src="/js/dchub-nav.js"></script>
+</head>
+<!-- 
+  DC Hub Decision Logger Widget
+  Add this to your admin/dev pages to quickly log decisions
+  
+  Usage: Include this file at the bottom of your HTML pages
+  Keyboard shortcut: Ctrl+Shift+D to toggle
+-->
+
+<div id="dchub-decision-logger" class="dchub-decision-logger collapsed">
+    <button class="dchub-decision-toggle" onclick="DCHubDecisions.toggle()">
+        <span class="dchub-decision-icon">📝</span>
+        <span class="dchub-decision-label">Log Decision</span>
+    </button>
+    
+    <div class="dchub-decision-panel">
+        <div class="dchub-decision-header">
+            <h3>Log Decision</h3>
+            <button class="dchub-decision-close" onclick="DCHubDecisions.toggle()">×</button>
+        </div>
+        
+        <form id="dchub-decision-form" onsubmit="DCHubDecisions.submit(event)">
+            <div class="dchub-form-group">
+                <input 
+                    type="text" 
+                    id="dchub-decision-title" 
+                    placeholder="What did you decide/build/fix?" 
+                    required
+                    autocomplete="off"
+                >
+            </div>
+            
+            <div class="dchub-form-row">
+                <select id="dchub-decision-category" required>
+                    <option value="">Category...</option>
+                    <option value="frontend">Frontend</option>
+                    <option value="backend">Backend</option>
+                    <option value="api">API</option>
+                    <option value="database">Database</option>
+                    <option value="map">Map/Geo</option>
+                    <option value="seo">SEO</option>
+                    <option value="ux">UX/Design</option>
+                    <option value="infra">Infrastructure</option>
+                    <option value="mobile">Mobile</option>
+                    <option value="other">Other</option>
+                </select>
+                
+                <select id="dchub-decision-type" required>
+                    <option value="">Type...</option>
+                    <option value="feature">✨ New Feature</option>
+                    <option value="bugfix">🐛 Bug Fix</option>
+                    <option value="refactor">♻️ Refactor</option>
+                    <option value="design">🎨 Design Change</option>
+                    <option value="config">⚙️ Config Change</option>
+                    <option value="reject">❌ Rejected Idea</option>
+                </select>
+            </div>
+            
+            <div class="dchub-form-row">
+                <select id="dchub-decision-priority">
+                    <option value="medium">Medium Priority</option>
+                    <option value="critical">🔴 Critical</option>
+                    <option value="high">🟠 High</option>
+                    <option value="low">🟢 Low</option>
+                </select>
+                
+                <select id="dchub-decision-effort">
+                    <option value="">Effort...</option>
+                    <option value="trivial">⚡ Trivial (&lt;1hr)</option>
+                    <option value="small">🔹 Small (1-4hrs)</option>
+                    <option value="medium">🔸 Medium (1-2 days)</option>
+                    <option value="large">🔶 Large (3-5 days)</option>
+                    <option value="epic">🔷 Epic (1+ week)</option>
+                </select>
+            </div>
+            
+            <div class="dchub-form-group">
+                <textarea 
+                    id="dchub-decision-description" 
+                    placeholder="Details, rationale, notes... (optional)"
+                    rows="3"
+                ></textarea>
+            </div>
+            
+            <div class="dchub-form-group">
+                <input 
+                    type="text" 
+                    id="dchub-decision-technologies" 
+                    placeholder="Technologies: js, python, leaflet... (comma separated)"
+                    autocomplete="off"
+                >
+            </div>
+            
+            <div class="dchub-form-actions">
+                <button type="submit" class="dchub-btn-primary">
+                    <span class="dchub-btn-text">Log Decision</span>
+                    <span class="dchub-btn-loading" style="display:none;">Saving...</span>
+                </button>
+                <button type="button" class="dchub-btn-secondary" onclick="DCHubDecisions.toggle()">
+                    Cancel
+                </button>
+            </div>
+        </form>
+        
+        <div id="dchub-decision-success" class="dchub-decision-success" style="display:none;">
+            <span class="dchub-success-icon">✅</span>
+            <span class="dchub-success-text">Decision logged!</span>
+        </div>
+    </div>
+</div>
+
+<style>
+/* DC Hub Decision Logger Styles */
+.dchub-decision-logger {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    z-index: 99999;
+    font-family: 'Instrument Sans', -apple-system, sans-serif;
+    font-size: 14px;
+}
+
+.dchub-decision-logger * {
+    box-sizing: border-box;
+}
+
+/* Toggle Button */
+.dchub-decision-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    color: #00d4ff;
+    border: 1px solid #00d4ff;
+    padding: 12px 20px;
+    border-radius: 30px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    transition: all 0.3s ease;
+    box-shadow: 0 4px 15px rgba(0, 212, 255, 0.2);
+}
+
+.dchub-decision-toggle:hover {
+    background: #00d4ff;
+    color: #1a1a2e;
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(0, 212, 255, 0.4);
+}
+
+.dchub-decision-icon {
+    font-size: 16px;
+}
+
+/* Collapsed State */
+.dchub-decision-logger.collapsed .dchub-decision-panel {
+    display: none;
+}
+
+.dchub-decision-logger:not(.collapsed) .dchub-decision-toggle {
+    display: none;
+}
+
+/* Panel */
+.dchub-decision-panel {
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    border: 1px solid #333;
+    border-radius: 16px;
+    width: 380px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+    overflow: hidden;
+}
+
+.dchub-decision-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 20px;
+    border-bottom: 1px solid #333;
+}
+
+.dchub-decision-header h3 {
+    margin: 0;
+    color: #fff;
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.dchub-decision-close {
+    background: none;
+    border: none;
+    color: #666;
+    font-size: 24px;
+    cursor: pointer;
+    padding: 0;
+    line-height: 1;
+    transition: color 0.2s;
+}
+
+.dchub-decision-close:hover {
+    color: #ff4444;
+}
+
+/* Form */
+#dchub-decision-form {
+    padding: 20px;
+}
+
+.dchub-form-group {
+    margin-bottom: 12px;
+}
+
+.dchub-form-row {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 12px;
+}
+
+.dchub-form-row select {
+    flex: 1;
+}
+
+#dchub-decision-form input,
+#dchub-decision-form select,
+#dchub-decision-form textarea {
+    width: 100%;
+    padding: 12px 14px;
+    background: #252540;
+    border: 1px solid #444;
+    border-radius: 8px;
+    color: #fff;
+    font-size: 14px;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+#dchub-decision-form input::placeholder,
+#dchub-decision-form textarea::placeholder {
+    color: #666;
+}
+
+#dchub-decision-form input:focus,
+#dchub-decision-form select:focus,
+#dchub-decision-form textarea:focus {
+    outline: none;
+    border-color: #00d4ff;
+    box-shadow: 0 0 0 3px rgba(0, 212, 255, 0.1);
+}
+
+#dchub-decision-form select {
+    cursor: pointer;
+}
+
+#dchub-decision-form select option {
+    background: #1a1a2e;
+    color: #fff;
+}
+
+/* Actions */
+.dchub-form-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 16px;
+}
+
+.dchub-btn-primary {
+    flex: 1;
+    background: linear-gradient(135deg, #00d4ff 0%, #00a8cc 100%);
+    color: #1a1a2e;
+    border: none;
+    padding: 12px 20px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 14px;
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.dchub-btn-primary:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 15px rgba(0, 212, 255, 0.4);
+}
+
+.dchub-btn-primary:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    transform: none;
+}
+
+.dchub-btn-secondary {
+    background: transparent;
+    color: #888;
+    border: 1px solid #444;
+    padding: 12px 20px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: border-color 0.2s, color 0.2s;
+}
+
+.dchub-btn-secondary:hover {
+    border-color: #666;
+    color: #aaa;
+}
+
+/* Success State */
+.dchub-decision-success {
+    padding: 40px 20px;
+    text-align: center;
+}
+
+.dchub-success-icon {
+    font-size: 48px;
+    display: block;
+    margin-bottom: 12px;
+}
+
+.dchub-success-text {
+    color: #00ff88;
+    font-size: 18px;
+    font-weight: 600;
+}
+
+/* Animations */
+@keyframes dchub-fade-in {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.dchub-decision-panel {
+    animation: dchub-fade-in 0.3s ease;
+}
+</style>
+
+<script>
+// DC Hub Decision Logger JavaScript
+const DCHubDecisions = {
+    API_BASE: '/api/v1',
+    
+    toggle() {
+        const logger = document.getElementById('dchub-decision-logger');
+        logger.classList.toggle('collapsed');
+        
+        if (!logger.classList.contains('collapsed')) {
+            // Focus title input when opened
+            setTimeout(() => {
+                document.getElementById('dchub-decision-title').focus();
+            }, 100);
+        }
+    },
+    
+    async submit(event) {
+        event.preventDefault();
+        
+        const btn = event.target.querySelector('.dchub-btn-primary');
+        const btnText = btn.querySelector('.dchub-btn-text');
+        const btnLoading = btn.querySelector('.dchub-btn-loading');
+        
+        // Show loading state
+        btn.disabled = true;
+        btnText.style.display = 'none';
+        btnLoading.style.display = 'inline';
+        
+        const techInput = document.getElementById('dchub-decision-technologies').value;
+        const technologies = techInput 
+            ? techInput.split(',').map(t => t.trim().toLowerCase()).filter(t => t)
+            : [];
+        
+        const decision = {
+            title: document.getElementById('dchub-decision-title').value,
+            category: document.getElementById('dchub-decision-category').value,
+            type: document.getElementById('dchub-decision-type').value,
+            priority: document.getElementById('dchub-decision-priority').value,
+            effort_estimate: document.getElementById('dchub-decision-effort').value || null,
+            description: document.getElementById('dchub-decision-description').value || null,
+            technologies: technologies,
+            source: 'manual'
+        };
+        
+        try {
+            const response = await fetch(`${this.API_BASE}/decisions`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(decision)
+            });
+            
+            if (!response.ok) {
+                const error = await response.json();
+                throw new Error(error.error || 'Failed to log decision');
+            }
+            
+            // Show success
+            document.getElementById('dchub-decision-form').style.display = 'none';
+            document.getElementById('dchub-decision-success').style.display = 'block';
+            
+            // Reset and close after delay
+            setTimeout(() => {
+                this.reset();
+            }, 1500);
+            
+        } catch (error) {
+            console.error('Error logging decision:', error);
+            alert('Failed to log decision: ' + error.message);
+            
+            // Reset button state
+            btn.disabled = false;
+            btnText.style.display = 'inline';
+            btnLoading.style.display = 'none';
+        }
+    },
+    
+    reset() {
+        const form = document.getElementById('dchub-decision-form');
+        const success = document.getElementById('dchub-decision-success');
+        const btn = form.querySelector('.dchub-btn-primary');
+        const btnText = btn.querySelector('.dchub-btn-text');
+        const btnLoading = btn.querySelector('.dchub-btn-loading');
+        
+        // Reset form
+        form.reset();
+        form.style.display = 'block';
+        success.style.display = 'none';
+        btn.disabled = false;
+        btnText.style.display = 'inline';
+        btnLoading.style.display = 'none';
+        
+        // Close panel
+        this.toggle();
+    }
+};
+
+// Keyboard shortcut: Ctrl+Shift+D
+document.addEventListener('keydown', (e) => {
+    if (e.ctrlKey && e.shiftKey && e.key === 'D') {
+        e.preventDefault();
+        DCHubDecisions.toggle();
+    }
+});
+
+// Close on Escape
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        const logger = document.getElementById('dchub-decision-logger');
+        if (!logger.classList.contains('collapsed')) {
+            DCHubDecisions.toggle();
+        }
+    }
+});
+</script>

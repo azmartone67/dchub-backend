@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Agents → AI Hub | DC Hub</title>
+<meta name="description" content="DC Hub AI Agents has moved to AI Hub — 17 AI platforms connected to data center intelligence.">
+<meta name="robots" content="noindex, follow">
+<link rel="canonical" href="https://dchub.cloud/for-ai">
+<meta http-equiv="refresh" content="3;url=/for-ai">
+<link rel="icon" type="image/png" href="/favicon.png">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+:root{--bg-primary:#09090b;--bg-card:#141417;--border:rgba(255,255,255,0.04);--text-primary:#fafafa;--text-secondary:#8a8a95;--cyan:#3478f6;--purple:#8b5cf6;--green:#10b981}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Instrument Sans',-apple-system,sans-serif;background:var(--bg-primary);color:var(--text-primary);min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:2rem}
+.card{background:var(--bg-card);border:1px solid var(--border);border-radius:16px;padding:3rem;max-width:480px;width:100%}
+.icon{font-size:3rem;margin-bottom:1.5rem}
+h1{font-size:1.5rem;font-weight:800;margin-bottom:.75rem;background:linear-gradient(135deg,var(--cyan),var(--purple));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+p{color:var(--text-secondary);font-size:.95rem;line-height:1.6;margin-bottom:1.5rem}
+a.btn{display:inline-block;padding:.75rem 2rem;background:linear-gradient(135deg,var(--cyan),var(--purple));color:#fff;font-weight:600;font-size:.95rem;border-radius:10px;text-decoration:none;transition:transform .2s,box-shadow .2s}
+a.btn:hover{transform:translateY(-2px);box-shadow:0 6px 20px rgba(6,182,212,.3)}
+.countdown{font-size:.8rem;color:var(--text-secondary);margin-top:1rem;opacity:.7}
+.spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--cyan);border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;margin-right:.4rem}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+<style>nav:not(.dchub-nav):not(.dchub-bottom-nav):not(.mobile-nav-drawer-links nav){display:none!important}.nav:not(.dchub-nav){display:none!important}</style>
+<script src="/js/dchub-nav.js"></script>
+</head>
+<body>
+<div class="card">
+  <div class="icon">🚀</div>
+  <h1>We've Upgraded!</h1>
+  <p>AI Agents has evolved into the <strong>AI Ecosystem Hub</strong> — 17 platforms, live integration tracking, MCP connections, and competitive benchmarking all in one place.</p>
+  <a href="/ai" class="btn">Go to AI Hub →</a>
+  <p class="countdown"><span class="spinner"></span>Redirecting automatically in <span id="sec">3</span>s</p>
+</div>
+<script>
+let s=3;const el=document.getElementById('sec');
+const t=setInterval(()=>{s--;el.textContent=s;if(s<=0){clearInterval(t);window.location.href='/for-ai';}},1000);
+</script>
+</body>
+</html>

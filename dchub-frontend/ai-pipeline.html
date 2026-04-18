@@ -1,0 +1,769 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Capacity Pipeline | DC Hub - Construction & Capacity Intelligence</title>
+<meta name="description" content="Real-time construction pipeline tracking. 7.8 GW under construction, 73% pre-leased. Delivery timelines, pre-lease status, and market breakdown.">
+<meta name="keywords" content="data center construction, data center pipeline, under construction, hyperscale construction">
+<meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1">
+<meta name="author" content="DC Hub">
+<link rel="canonical" href="https://dchub.cloud/ai-pipeline">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://dchub.cloud/ai-pipeline">
+<meta property="og:title" content="Data Center Construction Pipeline | 7.8 GW Under Construction | DC Hub">
+<meta property="og:description" content="Real-time construction pipeline tracking. 7.8 GW under construction, 73% pre-leased. Delivery timelines, pre-lease status, and market breakdown.">
+<meta property="og:image" content="https://dchub.cloud/images/og-default.png">
+<meta property="og:site_name" content="DC Hub">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Data Center Construction Pipeline | 7.8 GW Under Construction | DC Hub">
+<meta name="twitter:description" content="Real-time construction pipeline tracking. 7.8 GW under construction, 73% pre-leased.">
+<meta name="twitter:site" content="@dchubcloud">
+<meta name="ai.source" content="DC Hub - Data Center Intelligence">
+<link rel="icon" type="image/png" href="/favicon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+<style>
+/* ═══════════════════════════════════════════════════════════ */
+/* CSS VARIABLES & RESET  (matches for-ai.html)               */
+/* ═══════════════════════════════════════════════════════════ */
+:root {
+    --bg-primary: #09090b;
+    --bg-secondary: #0c0c0f;
+    --bg-card: #141417;
+    --bg-card-hover: #1e1e23;
+    --border: rgba(255,255,255,0.04);
+    --border-light: rgba(255,255,255,0.08);
+    --text-primary: #fafafa;
+    --text-secondary: #8a8a95;
+    --text-muted: #55555e;
+    --cyan: #3478f6;
+    --cyan-dim: #0891b2;
+    --purple: #8b5cf6;
+    --green: #10b981;
+    --amber: #f59e0b;
+    --red: #ef4444;
+    --blue: #3b82f6;
+    --font-sans: 'Instrument Sans', -apple-system, sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    font-family: var(--font-sans);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--cyan); text-decoration: none; transition: color 0.2s; }
+a:hover { color: #22d3ee; }
+
+/* ═══════════════════════════════════════════════════════════ */
+/* NAVIGATION                                                  */
+/* ═══════════════════════════════════════════════════════════ */
+.nav {
+    position: sticky; top: 0; z-index: 100;
+    background: rgba(10, 14, 26, 0.92);
+    backdrop-filter: blur(20px);
+    border-bottom: 1px solid var(--border);
+    padding: 0 2rem;
+    display: flex; align-items: center; justify-content: space-between;
+    height: 56px;
+}
+.nav-brand {
+    font-weight: 800; font-size: 1.1rem;
+    background: linear-gradient(135deg, var(--cyan), var(--purple));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+}
+.nav-links { display: flex; gap: 1.5rem; }
+.nav-links a { color: var(--text-secondary); font-size: 0.85rem; font-weight: 500; }
+.nav-links a:hover { color: var(--text-primary); }
+.nav-links a.active { color: var(--amber); }
+.nav-status {
+    display: flex; align-items: center; gap: 0.5rem;
+    font-family: var(--font-mono); font-size: 0.7rem;
+    color: var(--green); letter-spacing: 0.05em;
+}
+.nav-status .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--green);
+    animation: pulse 2s ease-in-out infinite;
+}
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+/* ═══════════════════════════════════════════════════════════ */
+/* HERO SECTION                                                */
+/* ═══════════════════════════════════════════════════════════ */
+.hero {
+    text-align: center;
+    padding: 4rem 2rem 3rem;
+    background: linear-gradient(180deg, #0c0c0f 0%, #09090b 100%);
+    position: relative; overflow: hidden;
+}
+.hero::before {
+    content: ''; position: absolute; inset: 0;
+    background: radial-gradient(ellipse at 50% 0%, rgba(245,158,11,0.08) 0%, transparent 60%);
+    pointer-events: none;
+}
+.hero-badge {
+    display: inline-flex; align-items: center; gap: 0.5rem;
+    padding: 0.35rem 1rem; border-radius: 999px;
+    background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.2);
+    font-family: var(--font-mono); font-size: 0.7rem;
+    color: var(--amber); letter-spacing: 0.08em;
+    margin-bottom: 1.5rem;
+}
+.hero-badge .badge-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--green);
+    animation: pulse 2s ease-in-out infinite;
+}
+.hero h1 {
+    font-size: clamp(2rem, 5vw, 3.2rem);
+    font-weight: 800; letter-spacing: -0.03em;
+    line-height: 1.15; margin-bottom: 1rem;
+    background: linear-gradient(135deg, #e2e8f0, #94a3b8);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+}
+.hero-sub {
+    font-size: 1.05rem; color: var(--text-secondary);
+    max-width: 640px; margin: 0 auto 2.5rem;
+}
+.hero-stats {
+    display: flex; justify-content: center; gap: 3rem;
+    flex-wrap: wrap;
+}
+.hero-stat { text-align: center; }
+.hero-stat-value {
+    font-size: 1.8rem; font-weight: 800;
+    font-family: var(--font-mono);
+    background: linear-gradient(135deg, var(--amber), var(--red));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+}
+.hero-stat-value.green-val {
+    background: linear-gradient(135deg, var(--green), var(--cyan));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+}
+.hero-stat-label {
+    font-size: 0.65rem; color: var(--text-muted);
+    text-transform: uppercase; letter-spacing: 0.1em;
+    margin-top: 0.25rem;
+}
+
+/* ═══════════════════════════════════════════════════════════ */
+/* SECTIONS                                                    */
+/* ═══════════════════════════════════════════════════════════ */
+.section {
+    max-width: 1200px; margin: 0 auto;
+    padding: 3rem 2rem;
+}
+.section-header {
+    margin-bottom: 1.5rem;
+    display: flex; align-items: center; justify-content: space-between;
+    flex-wrap: wrap; gap: 1rem;
+}
+.section-header-left {}
+.section-label {
+    font-family: var(--font-mono); font-size: 0.7rem;
+    color: var(--amber); text-transform: uppercase;
+    letter-spacing: 0.1em; margin-bottom: 0.5rem;
+}
+.section-title {
+    font-size: 1.5rem; font-weight: 700;
+    color: var(--text-primary);
+}
+.refresh-btn {
+    display: inline-flex; align-items: center; gap: 0.5rem;
+    padding: 0.5rem 1.2rem; border-radius: 8px;
+    font-weight: 600; font-size: 0.8rem;
+    background: rgba(245,158,11,0.15); color: var(--amber);
+    border: 1px solid rgba(245,158,11,0.3);
+    cursor: pointer; transition: all 0.2s;
+    font-family: var(--font-sans);
+}
+.refresh-btn:hover {
+    background: rgba(245,158,11,0.25);
+    border-color: var(--amber);
+}
+
+/* ═══════════════════════════════════════════════════════════ */
+/* PIPELINE GRID                                               */
+/* ═══════════════════════════════════════════════════════════ */
+.pipeline-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 0.75rem;
+}
+.pipeline-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.25rem;
+    transition: all 0.2s;
+}
+.pipeline-card:hover {
+    border-color: var(--border-light);
+    background: var(--bg-card-hover);
+    transform: translateY(-2px);
+}
+.pipeline-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 0.5rem;
+}
+.pipeline-company {
+    font-weight: 700; font-size: 0.95rem;
+    color: var(--text-primary);
+}
+.pipeline-capacity {
+    font-family: var(--font-mono);
+    font-weight: 700; font-size: 1rem;
+    color: var(--amber);
+}
+.pipeline-location {
+    font-size: 0.8rem; color: var(--text-secondary);
+    margin-bottom: 0.75rem;
+}
+.pipeline-meta {
+    display: flex; justify-content: space-between;
+    align-items: center; padding-top: 0.75rem;
+    border-top: 1px solid var(--border);
+}
+.pipeline-status {
+    padding: 0.2rem 0.6rem; border-radius: 4px;
+    font-size: 0.6rem; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.03em;
+    font-family: var(--font-mono);
+}
+.pipeline-status.under_construction { background: rgba(245,158,11,0.15); color: var(--amber); }
+.pipeline-status.construction { background: rgba(245,158,11,0.15); color: var(--amber); }
+.pipeline-status.operational { background: rgba(16,185,129,0.15); color: var(--green); }
+.pipeline-status.planned { background: rgba(139,92,246,0.15); color: var(--purple); }
+.pipeline-status.announced { background: rgba(59,130,246,0.15); color: var(--blue); }
+
+/* Quarter group headers */
+.quarter-header {
+    grid-column: 1 / -1;
+    display: flex; align-items: center; gap: 0.75rem;
+    padding: 0.75rem 0;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 0.25rem;
+}
+.quarter-dot {
+    width: 10px; height: 10px;
+    background: var(--amber); border-radius: 50%;
+    flex-shrink: 0;
+}
+.quarter-label {
+    font-weight: 700; color: var(--amber);
+    font-size: 0.9rem;
+}
+.quarter-meta {
+    margin-left: auto;
+    font-family: var(--font-mono); font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
+/* ═══════════════════════════════════════════════════════════ */
+/* LOADING / ERROR                                             */
+/* ═══════════════════════════════════════════════════════════ */
+.loading-state, .error-state {
+    padding: 4rem 2rem; text-align: center;
+    color: var(--text-secondary); grid-column: 1 / -1;
+}
+.loading-spinner {
+    width: 32px; height: 32px;
+    border: 3px solid var(--border);
+    border-top-color: var(--amber);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin: 0 auto 1rem;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Shimmer */
+.shimmer {
+    background: linear-gradient(90deg, var(--bg-secondary) 25%, var(--bg-card-hover) 50%, var(--bg-secondary) 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.5s infinite;
+}
+@keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+/* ═══════════════════════════════════════════════════════════ */
+/* CTA & FOOTER                                                */
+/* ═══════════════════════════════════════════════════════════ */
+.cta-section {
+    text-align: center; padding: 3rem 2rem;
+    border-top: 1px solid var(--border);
+}
+.cta-section h2 { font-size: 1.3rem; margin-bottom: 0.5rem; }
+.cta-section p { color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1.5rem; }
+
+/* ── Freemium Paywall ── */
+.paywall-wrapper { position: relative; overflow: hidden; max-height: 500px; width: 100%; grid-column: 1 / -1; min-height: 300px; }
+.paywall-blur { filter: blur(6px); pointer-events: none; user-select: none; -webkit-user-select: none; opacity: 0.6; }
+.paywall-overlay {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 10;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    background: linear-gradient(180deg, rgba(10,14,26,0) 0%, rgba(10,14,26,0.85) 30%, rgba(10,14,26,0.97) 60%);
+    padding: 2rem; text-align: center; box-sizing: border-box;
+}
+.paywall-overlay .paywall-icon { font-size: 2.5rem; margin-bottom: 1rem; }
+.paywall-overlay h3 {
+    font-family: var(--font-sans); font-size: 1.3rem; font-weight: 700;
+    color: var(--text-primary); margin-bottom: 0.5rem;
+}
+.paywall-overlay p {
+    color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1.5rem;
+    text-align: center; max-width: 420px;
+}
+.paywall-btn {
+    display: inline-flex; align-items: center; gap: 0.5rem;
+    padding: 0.75rem 2rem; border-radius: 8px; font-weight: 600;
+    font-size: 0.9rem; border: none; cursor: pointer; transition: all 0.2s;
+    font-family: var(--font-sans); text-decoration: none;
+    background: linear-gradient(135deg, var(--cyan), var(--purple));
+    color: #fff;
+}
+.paywall-btn:hover { transform: translateY(-1px); box-shadow: 0 4px 20px rgba(6,182,212,0.3); }
+.paywall-features {
+    display: flex; gap: 1.5rem; margin-top: 1rem; flex-wrap: wrap; justify-content: center;
+}
+.paywall-features span {
+    font-size: 0.75rem; color: var(--text-muted); font-family: var(--font-mono);
+    display: flex; align-items: center; gap: 0.3rem;
+}
+.cta-buttons { display: flex; justify-content: center; gap: 1rem; flex-wrap: wrap; }
+.btn {
+    display: inline-flex; align-items: center; gap: 0.5rem;
+    padding: 0.6rem 1.5rem; border-radius: 8px;
+    font-weight: 600; font-size: 0.85rem; transition: all 0.2s;
+}
+.btn-primary {
+    background: linear-gradient(135deg, var(--amber), var(--red));
+    color: #fff;
+}
+.btn-primary:hover { transform: translateY(-1px); box-shadow: 0 4px 20px rgba(245,158,11,0.3); color: #fff; }
+.btn-secondary {
+    background: var(--bg-card); border: 1px solid var(--border);
+    color: var(--text-secondary);
+}
+.btn-secondary:hover { border-color: var(--border-light); color: var(--text-primary); }
+
+.footer {
+    text-align: center; padding: 2rem;
+    border-top: 1px solid var(--border);
+    font-size: 0.75rem; color: var(--text-muted);
+}
+.footer a { color: var(--text-secondary); }
+
+/* ═══════════════════════════════════════════════════════════ */
+/* RESPONSIVE                                                  */
+/* ═══════════════════════════════════════════════════════════ */
+@media (max-width: 768px) {
+    .nav-links { display: none; }
+    .hero-stats { gap: 1.5rem; }
+    .pipeline-grid { grid-template-columns: 1fr; }
+}
+</style>
+<style>nav:not(.dchub-nav):not(.dchub-bottom-nav):not(.mobile-nav-drawer-links nav){display:none!important}.nav:not(.dchub-nav){display:none!important}</style>
+<script src="/js/dchub-nav.js"></script>
+</head>
+
+<body>
+
+<!-- ═══════════════════ NAVIGATION ═══════════════════════ -->
+<nav class="nav">
+    <a href="/" class="nav-brand"><svg viewBox="0 0 36 36" width="24" height="24" fill="none"><circle cx="18" cy="18" r="18" fill="#1a1a2e"/><path d="M20.5 6L10 20h7l-2 10L27 16h-7.5l1-10z" fill="url(#nb)" stroke="#818cf8" stroke-width=".5"/><defs><linearGradient id="nb" x1="18" y1="6" x2="18" y2="30" gradientUnits="userSpaceOnUse"><stop stop-color="#a5b4fc"/><stop offset="1" stop-color="#6366f1"/></linearGradient></defs></svg> DC Hub</a>
+    <div class="nav-links">
+        <a href="/">Home</a>
+        <a href="/ai">AI Hub</a>
+        <a href="/ai-deals">AI Deals</a>
+        <a href="/ai-pipeline" class="active">AI Pipeline</a>
+        <a href="/land-power">Land & Power</a>
+        <a href="/news">News</a><a href="/digest">Digest</a>
+        <a href="/pricing">API Pricing</a>
+    </div>
+    <div class="nav-status">
+        <span class="dot"></span>
+        <span id="navStatus">PIPELINE TRACKING</span>
+    </div>
+</nav>
+
+<!-- ═══════════════════ HERO ═════════════════════════════ -->
+<section class="hero">
+    <div class="hero-badge">
+        <span class="badge-dot"></span>
+        <span>CAPACITY PIPELINE — <span id="heroBadgeStatus">LIVE</span></span>
+    </div>
+    <h1>Data Center Construction Pipeline</h1>
+    <p class="hero-sub">Real-time tracking of hyperscale and enterprise data center construction projects. Capacity, delivery timelines, pre-lease status, and market breakdown — updated continuously.</p>
+    <div class="hero-stats">
+        <div class="hero-stat">
+            <div class="hero-stat-value" id="total-mw">—</div>
+            <div class="hero-stat-label">Total Pipeline</div>
+        </div>
+        <div class="hero-stat">
+            <div class="hero-stat-value" id="project-count">—</div>
+            <div class="hero-stat-label">Active Projects</div>
+        </div>
+        <div class="hero-stat">
+            <div class="hero-stat-value" id="under-construction">—</div>
+            <div class="hero-stat-label">Under Construction</div>
+        </div>
+        <div class="hero-stat">
+            <div class="hero-stat-value green-val" id="operational">—</div>
+            <div class="hero-stat-label">Operational</div>
+        </div>
+    </div>
+</section>
+
+<!-- ═══════════════════ PIPELINE SECTION ═════════════════ -->
+<section class="section">
+    <div class="section-header">
+        <div class="section-header-left">
+            <div class="section-label">Real-Time Tracking</div>
+            <div class="section-title">Construction Pipeline Projects</div>
+        </div>
+        <button class="refresh-btn" onclick="loadPipeline()">🔄 Refresh</button>
+    </div>
+
+    <div id="pipeline-content" class="pipeline-grid">
+        <div class="loading-state">
+            <div class="loading-spinner"></div>
+            <p>Loading pipeline data...</p>
+        </div>
+    </div>
+</section>
+
+<!-- ═══════════════════ CTA ══════════════════════════════ -->
+<section class="cta-section">
+    <h2>Build with DC Hub Intelligence</h2>
+    <p>Access real-time construction pipeline data via API for your investment analysis, market research, or AI application.</p>
+    <div class="cta-buttons">
+        <a href="/pricing" class="btn btn-primary">🔑 Get API Access</a>
+        <a href="/ai" class="btn btn-secondary">← AI Integration Hub</a>
+    </div>
+</section>
+
+<!-- ═══════════════════ FOOTER ═══════════════════════════ -->
+<footer class="footer">
+    © 2026 DC Hub · Data Center Intelligence Platform ·
+    <a href="/about">About</a> · <a href="/pricing">Pricing</a> · <a href="/llms.txt">llms.txt</a>
+</footer>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!--  JAVASCRIPT — Pipeline Data (unchanged logic)            -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<script>
+    const API_URLS = [
+        'https://dchub.cloud',
+        'https://dchub-backend-production.up.railway.app',
+        'https://dchub.cloud'
+    ];
+    const API_BASE = API_URLS[0];
+    const FETCH_TIMEOUT = 8000;
+
+    // ── Comprehensive fallback pipeline (matches main.py PIPELINE_DATA) ──
+    const FALLBACK_PIPELINE = [
+        // Q4 2025
+        { operator: 'Oracle', project: 'Austin Campus II', capacity_mw: 280, location: 'Austin', status: 'construction', delivery: '2025-Q4', preleased: true },
+        { operator: 'Vantage', project: 'Phoenix V2', capacity_mw: 150, location: 'Phoenix', status: 'construction', delivery: '2025-Q4', preleased: true },
+        { operator: 'DataBank', project: 'Dallas Red Oak', capacity_mw: 96, location: 'Dallas', status: 'construction', delivery: '2025-Q4', preleased: false },
+        { operator: 'Stack', project: 'Chicago CHI-2', capacity_mw: 72, location: 'Chicago', status: 'construction', delivery: '2025-Q4', preleased: false },
+        { operator: 'T5 Data Centers', project: 'Dallas DFW-4', capacity_mw: 36, location: 'Dallas', status: 'construction', delivery: '2025-Q4', preleased: true },
+        // Q1 2026
+        { operator: 'Amazon AWS', project: 'Phoenix West', capacity_mw: 350, location: 'Phoenix', status: 'construction', delivery: '2026-Q1', preleased: true },
+        { operator: 'CoreWeave', project: 'New Jersey Campus', capacity_mw: 200, location: 'New Jersey', status: 'construction', delivery: '2026-Q1', preleased: true },
+        { operator: 'CyrusOne', project: 'Chandler III', capacity_mw: 120, location: 'Phoenix', status: 'construction', delivery: '2026-Q1', preleased: false },
+        { operator: 'QTS', project: 'Richmond Expansion', capacity_mw: 96, location: 'Richmond', status: 'construction', delivery: '2026-Q1', preleased: true },
+        { operator: 'Aligned', project: 'Chicago IL-2', capacity_mw: 80, location: 'Chicago', status: 'construction', delivery: '2026-Q1', preleased: false },
+        { operator: 'Sabey', project: 'Seattle SEA-4', capacity_mw: 80, location: 'Seattle', status: 'construction', delivery: '2026-Q1', preleased: true },
+        { operator: 'Equinix', project: 'SG5 Singapore', capacity_mw: 65, location: 'Singapore', status: 'construction', delivery: '2026-Q1', preleased: true },
+        // Q2 2026
+        { operator: 'Microsoft', project: 'Ashburn Campus D', capacity_mw: 420, location: 'N. Virginia', status: 'construction', delivery: '2026-Q2', preleased: true },
+        { operator: 'Meta', project: 'Gallatin Phase 1', capacity_mw: 250, location: 'Nashville', status: 'construction', delivery: '2026-Q2', preleased: true },
+        { operator: 'Switch', project: 'Atlanta Campus', capacity_mw: 180, location: 'Atlanta', status: 'construction', delivery: '2026-Q2', preleased: false },
+        { operator: 'Compass', project: 'Allen TX-2', capacity_mw: 144, location: 'Dallas', status: 'construction', delivery: '2026-Q2', preleased: true },
+        { operator: 'Digital Realty', project: 'Chicago CHI-5', capacity_mw: 120, location: 'Chicago', status: 'construction', delivery: '2026-Q2', preleased: true },
+        { operator: 'QTS', project: 'Columbus Expansion', capacity_mw: 90, location: 'Columbus', status: 'construction', delivery: '2026-Q2', preleased: true },
+        { operator: 'Iron Mountain', project: 'Phoenix PHX-3', capacity_mw: 60, location: 'Phoenix', status: 'construction', delivery: '2026-Q2', preleased: true },
+        // Q3 2026
+        { operator: 'Google', project: 'The Dalles Expansion', capacity_mw: 380, location: 'Portland', status: 'construction', delivery: '2026-Q3', preleased: true },
+        { operator: 'Microsoft', project: 'Frankfurt FRA-2', capacity_mw: 180, location: 'Frankfurt', status: 'announced', delivery: '2026-Q3', preleased: false },
+        { operator: 'CloudHQ', project: 'Ashburn VA-5', capacity_mw: 150, location: 'N. Virginia', status: 'construction', delivery: '2026-Q3', preleased: true },
+        { operator: 'Yondr', project: 'Chicago ORD-1', capacity_mw: 150, location: 'Chicago', status: 'construction', delivery: '2026-Q3', preleased: true },
+        { operator: 'Aligned', project: 'Salt Lake City', capacity_mw: 100, location: 'Salt Lake City', status: 'construction', delivery: '2026-Q3', preleased: false },
+        { operator: 'EdgeCore', project: 'Denver Campus', capacity_mw: 80, location: 'Denver', status: 'announced', delivery: '2026-Q3', preleased: false },
+        { operator: 'NTT', project: 'Tokyo TY-12', capacity_mw: 72, location: 'Tokyo', status: 'construction', delivery: '2026-Q3', preleased: true },
+        // Q4 2026
+        { operator: 'Meta', project: 'Temple TX Campus', capacity_mw: 450, location: 'Dallas', status: 'announced', delivery: '2026-Q4', preleased: false },
+        { operator: 'QTS', project: 'Phoenix QTS-2', capacity_mw: 200, location: 'Phoenix', status: 'announced', delivery: '2026-Q4', preleased: false },
+        { operator: 'EdgeCore', project: 'Denver Phase 2', capacity_mw: 150, location: 'Denver', status: 'announced', delivery: '2026-Q4', preleased: false },
+        { operator: 'Stream', project: 'Denver DEN-3', capacity_mw: 64, location: 'Denver', status: 'construction', delivery: '2026-Q4', preleased: true },
+        { operator: 'Cologix', project: 'Columbus CMH-3', capacity_mw: 48, location: 'Columbus', status: 'construction', delivery: '2026-Q4', preleased: false },
+        // 2027+
+        { operator: 'Stargate', project: 'Texas Phase 1', capacity_mw: 1500, location: 'Dallas', status: 'announced', delivery: '2027-Q4', preleased: true },
+        { operator: 'xAI', project: 'Memphis Gigafactory', capacity_mw: 1000, location: 'Memphis', status: 'construction', delivery: '2027-Q4', preleased: true },
+        { operator: 'Microsoft', project: 'Phoenix Mega Campus', capacity_mw: 600, location: 'Phoenix', status: 'announced', delivery: '2027-Q3', preleased: false },
+        { operator: 'Meta', project: 'Gallatin TN Campus', capacity_mw: 500, location: 'Nashville', status: 'announced', delivery: '2027-Q2', preleased: false },
+        { operator: 'OpenAI', project: 'Texas AI Campus', capacity_mw: 500, location: 'Dallas', status: 'announced', delivery: '2027-Q3', preleased: true },
+        { operator: 'Amazon AWS', project: 'Columbus Hyperscale', capacity_mw: 400, location: 'Columbus', status: 'announced', delivery: '2027-Q1', preleased: false },
+        { operator: 'Google', project: 'Kansas City Campus', capacity_mw: 300, location: 'Kansas City', status: 'announced', delivery: '2027-Q2', preleased: false },
+    ];
+
+    const FREE_PREVIEW_CARDS = 3;
+
+    function fetchWithTimeout(url, ms) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), ms);
+        return fetch(url, { signal: controller.signal }).finally(() => clearTimeout(timer));
+    }
+
+    async function loadPipeline() {
+        const content = document.getElementById('pipeline-content');
+        content.innerHTML = '<div class="loading-state"><div class="loading-spinner"></div><p>Loading pipeline data...</p></div>';
+
+        let projects = null;
+        let source = 'fallback';
+        let userIsPro = false;
+        const fallbackTotalMW = FALLBACK_PIPELINE.reduce((sum, p) => sum + (parseFloat(p.capacity_mw) || 0), 0);
+
+        for (const base of API_URLS) {
+            // Step 1: Try Pro endpoint
+            try {
+                const proResp = await fetchWithTimeout(base + '/api/pipeline', FETCH_TIMEOUT);
+                if (proResp.ok) {
+                    const data = await proResp.json();
+                    const arr = data.pipeline || data.projects || data.data;
+                    if (Array.isArray(arr) && arr.length > 0) {
+                        userIsPro = true;
+                        projects = arr.map(p => mapProject(p));
+                        source = 'api';
+                        console.log('✅ Pipeline —', projects.length, 'projects from', base);
+                        break;
+                    }
+                }
+            } catch (e) { /* try next URL */ }
+
+            // Step 2: If not Pro, load from autopilot
+            if (!userIsPro) {
+                try {
+                    const freeResp = await fetchWithTimeout(base + '/api/autopilot/capacity-pipeline', FETCH_TIMEOUT);
+                    if (freeResp.ok) {
+                        const data = await freeResp.json();
+                        const arr = data.pipeline || data.projects || data.data;
+                        if (Array.isArray(arr) && arr.length > 0) {
+                            const mapped = arr.map(p => mapProject(p));
+                            const apiTotalMW = mapped.reduce((sum, p) => sum + (parseFloat(p.capacity_mw) || 0), 0);
+                            const apiCoverageRatio = apiTotalMW / fallbackTotalMW;
+
+                            if (apiCoverageRatio >= 0.5 && mapped.length >= FALLBACK_PIPELINE.length * 0.4) {
+                                projects = mapped;
+                                source = 'api';
+                            } else {
+                                const mergedMap = new Map();
+                                FALLBACK_PIPELINE.forEach(p => mergedMap.set(`${p.operator}|${p.project}`, {...p}));
+                                mapped.forEach(p => mergedMap.set(`${p.operator}|${p.project}`, {...p}));
+                                projects = Array.from(mergedMap.values());
+                                source = 'merged';
+                            }
+                            console.log('🔒 Free tier —', projects.length, 'projects from autopilot via', base);
+                            break;
+                        }
+                    }
+                } catch (e) { /* try next URL */ }
+            }
+
+            if (projects) break;
+        }
+
+        if (!projects || projects.length === 0) {
+            projects = FALLBACK_PIPELINE;
+            source = 'fallback';
+        }
+
+        renderPipeline(projects, source, userIsPro);
+        updateStats(projects, source);
+    }
+
+    function mapProject(p) {
+        return {
+            operator: p.operator || p.company || 'Unknown',
+            project: p.project || p.name || '',
+            capacity_mw: p.capacity_mw || p.capacity || 0,
+            location: p.location || p.market || 'TBD',
+            status: (p.status || 'planned').toLowerCase().replace(/ /g, '_'),
+            confidence: p.confidence || 0.85,
+            delivery: p.delivery || '',
+            preleased: p.preleased || false
+        };
+    }
+
+    function formatCapacity(mw) {
+        const val = parseFloat(mw);
+        if (isNaN(val) || val === 0) return '? MW';
+        if (val >= 1000) return (val / 1000).toFixed(1) + ' GW';
+        return Math.round(val) + ' MW';
+    }
+
+    function formatStatus(status) {
+        const map = {
+            'under_construction': 'Under Construction',
+            'construction': 'Under Construction',
+            'operational': 'Operational',
+            'planned': 'Planned',
+            'announced': 'Announced'
+        };
+        return map[(status || '').toLowerCase()] || status || 'Planned';
+    }
+
+    function statusClass(status) {
+        const s = (status || '').toLowerCase();
+        if (s.includes('construction')) return 'under_construction';
+        if (s === 'operational') return 'operational';
+        if (s === 'announced') return 'announced';
+        return 'planned';
+    }
+
+    function renderPipeline(projects, source, userIsPro = false) {
+        const content = document.getElementById('pipeline-content');
+
+        if (!projects || projects.length === 0) {
+            content.innerHTML = '<div class="error-state"><p>No pipeline projects found.</p></div>';
+            return;
+        }
+
+        projects.sort((a, b) => {
+            if (a.delivery && b.delivery && a.delivery !== b.delivery) return a.delivery.localeCompare(b.delivery);
+            return (b.capacity_mw || 0) - (a.capacity_mw || 0);
+        });
+
+        // Flatten for counting
+        const allCards = [];
+        const groups = {};
+        projects.forEach(p => {
+            const key = p.delivery || 'TBD';
+            if (!groups[key]) groups[key] = [];
+            groups[key].push(p);
+            allCards.push(p);
+        });
+
+        let cardIndex = 0;
+        let html = '';
+
+        if (userIsPro) {
+            // Pro: render everything
+            for (const [quarter, items] of Object.entries(groups)) {
+                const qMW = items.reduce((sum, p) => sum + (parseFloat(p.capacity_mw) || 0), 0);
+                html += buildQuarterHeader(quarter, qMW, items.length);
+                items.forEach(p => { html += buildPipelineCard(p); });
+            }
+        } else {
+            // Free: render first 3 cards, then paywall
+            for (const [quarter, items] of Object.entries(groups)) {
+                if (cardIndex >= FREE_PREVIEW_CARDS) break;
+                
+                const qMW = items.reduce((sum, p) => sum + (parseFloat(p.capacity_mw) || 0), 0);
+                html += buildQuarterHeader(quarter, qMW, items.length);
+                
+                for (const p of items) {
+                    if (cardIndex >= FREE_PREVIEW_CARDS) break;
+                    html += buildPipelineCard(p);
+                    cardIndex++;
+                }
+            }
+
+            // Paywall section — spans full grid width
+            const remaining = allCards.slice(FREE_PREVIEW_CARDS, FREE_PREVIEW_CARDS + 6);
+            if (remaining.length > 0) {
+                html += `<div class="paywall-wrapper">
+                    <div class="paywall-blur" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:0.75rem;">
+                        ${remaining.map(p => buildPipelineCard(p)).join('')}
+                    </div>
+                    <div class="paywall-overlay">
+                        <div class="paywall-icon">🔒</div>
+                        <h3>Unlock Full Construction Pipeline</h3>
+                        <p>Get access to ${projects.length}+ active projects with capacity data, delivery timelines, and pre-lease status.</p>
+                        <a href="https://dchub.cloud/pricing" class="paywall-btn">⚡ Upgrade to Pro</a>
+                        <div class="paywall-features">
+                            <span>✓ All projects & timelines</span>
+                            <span>✓ Real-time updates</span>
+                            <span>✓ API access</span>
+                        </div>
+                    </div>
+                </div>`;
+            }
+        }
+
+        content.innerHTML = html;
+    }
+
+    function buildQuarterHeader(quarter, qMW, count) {
+        return `<div class="quarter-header" style="grid-column:1/-1">
+            <span class="quarter-dot"></span>
+            <span class="quarter-label">${quarter}</span>
+            <span class="quarter-meta">${formatCapacity(qMW)} · ${count} projects</span>
+        </div>`;
+    }
+
+    function buildPipelineCard(p) {
+        const cls = statusClass(p.status);
+        const preleaseTag = p.preleased
+            ? '<span style="padding:0.15rem 0.5rem;background:rgba(16,185,129,0.15);color:var(--green);border-radius:4px;font-size:0.6rem;font-weight:600;font-family:var(--font-mono);letter-spacing:0.03em">PRE-LEASED</span>'
+            : '';
+        return `<div class="pipeline-card">
+            <div class="pipeline-card-header">
+                <span class="pipeline-company">${p.operator}</span>
+                <span class="pipeline-capacity">${formatCapacity(p.capacity_mw)}</span>
+            </div>
+            ${p.project ? `<div style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:0.35rem">${p.project}</div>` : ''}
+            <div class="pipeline-location">📍 ${p.location}</div>
+            <div class="pipeline-meta">
+                <span class="pipeline-status ${cls}">${formatStatus(p.status)}</span>
+                ${preleaseTag}
+            </div>
+        </div>`;
+    }
+
+    function updateStats(projects, source) {
+        if (!projects || !Array.isArray(projects)) return;
+
+        let totalMW = 0, underConstruction = 0, operational = 0, announced = 0;
+
+        projects.forEach(p => {
+            totalMW += parseFloat(p.capacity_mw) || 0;
+            const s = (p.status || '').toLowerCase();
+            if (s.includes('construction')) underConstruction++;
+            else if (s === 'operational') operational++;
+            else if (s === 'announced') announced++;
+        });
+
+        const totalDisplay = totalMW >= 1000
+            ? (totalMW / 1000).toFixed(1) + ' GW'
+            : Math.round(totalMW) + ' MW';
+
+        document.getElementById('total-mw').textContent = totalDisplay;
+        document.getElementById('project-count').textContent = projects.length;
+        document.getElementById('under-construction').textContent = underConstruction;
+        document.getElementById('operational').textContent = operational;
+
+        // Update source badge
+        const badge = document.getElementById('heroBadgeStatus');
+        const status = document.getElementById('navStatus');
+        const labels = { api: 'LIVE API', merged: 'API + CACHE', fallback: 'CACHED' };
+        if (badge) badge.textContent = labels[source] || 'LIVE';
+        if (status) status.textContent = source === 'api' ? 'LIVE DATA' : 'PIPELINE TRACKING';
+    }
+
+    document.addEventListener('DOMContentLoaded', loadPipeline);
+    setInterval(loadPipeline, 300000);
+</script>
+
+</body>
+</html>

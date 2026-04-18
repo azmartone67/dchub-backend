@@ -1,0 +1,747 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DC Hub · Why We Lead</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=IBM+Plex+Mono:wght@400;500&family=DM+Sans:opsz,wght@9..40,300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --black: #090c12;
+    --navy: #0d1424;
+    --card: #141417;
+    --card-hover: #161f32;
+    --border: rgba(255,255,255,0.07);
+    --blue: #2563eb;
+    --blue-light: #3b82f6;
+    --cyan: #3478f6;
+    --green: #10b981;
+    --amber: #f59e0b;
+    --red: #ef4444;
+    --white: #f8fafc;
+    --muted: #94a3b8;
+    --mono: 'IBM Plex Mono', monospace;
+    --serif: 'DM Serif Display', serif;
+    --sans: 'DM Sans', sans-serif;
+  }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    background: var(--black);
+    color: var(--white);
+    font-family: var(--sans);
+    font-weight: 300;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+
+  /* ── GRID TEXTURE ─────────────────────────────── */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(37,99,235,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(37,99,235,0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* ── HERO ─────────────────────────────────────── */
+  .hero {
+    position: relative;
+    padding: 72px 48px 60px;
+    max-width: 1100px;
+    margin: 0 auto;
+    z-index: 1;
+  }
+
+  .hero-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--cyan);
+    border: 1px solid rgba(6,182,212,0.3);
+    padding: 5px 12px;
+    border-radius: 2px;
+    margin-bottom: 28px;
+  }
+  .hero-tag::before {
+    content: '';
+    width: 6px; height: 6px;
+    background: var(--cyan);
+    border-radius: 50%;
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.5; transform: scale(0.8); }
+  }
+
+  .hero h1 {
+    font-family: var(--serif);
+    font-size: clamp(38px, 5vw, 64px);
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    margin-bottom: 12px;
+  }
+
+  .hero h1 em {
+    font-style: italic;
+    color: var(--blue-light);
+  }
+
+  .hero-sub {
+    font-size: 17px;
+    color: var(--muted);
+    max-width: 560px;
+    margin-bottom: 48px;
+    font-weight: 300;
+  }
+
+  /* ── STATS BAR ────────────────────────────────── */
+  .stats-bar {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+    margin-bottom: 64px;
+  }
+
+  .stat {
+    background: var(--card);
+    padding: 20px 24px;
+    position: relative;
+  }
+
+  .stat-num {
+    font-family: var(--mono);
+    font-size: 28px;
+    font-weight: 500;
+    color: var(--white);
+    line-height: 1;
+    margin-bottom: 4px;
+    background: linear-gradient(135deg, var(--white), var(--blue-light));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+
+  .stat-label {
+    font-size: 12px;
+    color: var(--muted);
+    font-family: var(--mono);
+    letter-spacing: 0.05em;
+  }
+
+  /* ── SECTION LABEL ────────────────────────────── */
+  .section-label {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--blue-light);
+    margin-bottom: 20px;
+    opacity: 0.8;
+  }
+
+  /* ── COMPARISON TABLE ─────────────────────────── */
+  .wrapper {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 0 48px 80px;
+    position: relative;
+    z-index: 1;
+  }
+
+  .section-title {
+    font-family: var(--serif);
+    font-size: 32px;
+    margin-bottom: 8px;
+    letter-spacing: -0.01em;
+  }
+
+  .section-desc {
+    color: var(--muted);
+    font-size: 15px;
+    margin-bottom: 36px;
+    max-width: 600px;
+  }
+
+  .comp-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13.5px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+
+  .comp-table thead tr {
+    background: #0f1928;
+  }
+
+  .comp-table th {
+    padding: 14px 16px;
+    text-align: left;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 400;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .comp-table th.dchub-col {
+    color: var(--blue-light);
+    background: rgba(37,99,235,0.08);
+  }
+
+  .comp-table td {
+    padding: 13px 16px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+    color: #cbd5e1;
+  }
+
+  .comp-table td.dchub-col {
+    background: rgba(37,99,235,0.05);
+    border-left: 1px solid rgba(37,99,235,0.15);
+    border-right: 1px solid rgba(37,99,235,0.15);
+    color: var(--white);
+    font-weight: 500;
+  }
+
+  .comp-table tr:last-child td { border-bottom: none; }
+
+  .comp-table tbody tr:hover td { background: rgba(255,255,255,0.02); }
+  .comp-table tbody tr:hover td.dchub-col { background: rgba(37,99,235,0.08); }
+
+  .feature-name {
+    color: var(--white);
+    font-weight: 500;
+    font-size: 13px;
+  }
+
+  .check { color: var(--green); font-size: 15px; }
+  .partial { color: var(--amber); font-size: 13px; }
+  .cross { color: rgba(255,255,255,0.08); font-size: 15px; }
+
+  .badge {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 10px;
+    padding: 2px 7px;
+    border-radius: 2px;
+    letter-spacing: 0.05em;
+    margin-left: 6px;
+  }
+  .badge-blue { background: rgba(37,99,235,0.2); color: var(--blue-light); }
+  .badge-green { background: rgba(16,185,129,0.15); color: var(--green); }
+  .badge-amber { background: rgba(245,158,11,0.15); color: var(--amber); }
+
+  /* ── COMPETITOR CARDS ─────────────────────────── */
+  .comp-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin-top: 56px;
+    margin-bottom: 64px;
+  }
+
+  .comp-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 22px;
+    transition: border-color 0.2s;
+  }
+
+  .comp-card:hover { border-color: rgba(255,255,255,0.12); }
+
+  .comp-name {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+
+  .comp-tagline {
+    font-family: var(--serif);
+    font-size: 17px;
+    color: var(--white);
+    margin-bottom: 12px;
+    line-height: 1.3;
+  }
+
+  .comp-desc {
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 14px;
+    line-height: 1.6;
+  }
+
+  .gap-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .gap-list li {
+    font-size: 12px;
+    color: #64748b;
+    padding-left: 14px;
+    position: relative;
+    line-height: 1.4;
+  }
+
+  .gap-list li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: var(--blue-light);
+    font-size: 11px;
+    opacity: 0.6;
+  }
+
+  /* ── VALUE PROPS ──────────────────────────────── */
+  .value-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 16px;
+    margin-top: 56px;
+  }
+
+  .value-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 28px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .value-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, var(--blue), var(--cyan));
+    opacity: 0;
+    transition: opacity 0.3s;
+  }
+
+  .value-card:hover::before { opacity: 1; }
+
+  .value-num {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--blue-light);
+    letter-spacing: 0.15em;
+    margin-bottom: 12px;
+    opacity: 0.7;
+  }
+
+  .value-title {
+    font-family: var(--serif);
+    font-size: 20px;
+    margin-bottom: 10px;
+    line-height: 1.2;
+  }
+
+  .value-body {
+    font-size: 13.5px;
+    color: var(--muted);
+    line-height: 1.65;
+  }
+
+  /* ── FOOTER CTA ───────────────────────────────── */
+  .cta-section {
+    background: linear-gradient(135deg, rgba(37,99,235,0.12), rgba(6,182,212,0.06));
+    border: 1px solid rgba(37,99,235,0.2);
+    border-radius: 6px;
+    padding: 48px;
+    margin-top: 64px;
+    text-align: center;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .cta-section::before {
+    content: '';
+    position: absolute;
+    top: -100px; left: 50%;
+    transform: translateX(-50%);
+    width: 400px; height: 200px;
+    background: radial-gradient(ellipse, rgba(37,99,235,0.15), transparent 70%);
+    pointer-events: none;
+  }
+
+  .cta-section h2 {
+    font-family: var(--serif);
+    font-size: 36px;
+    margin-bottom: 12px;
+    letter-spacing: -0.01em;
+  }
+
+  .cta-section p {
+    color: var(--muted);
+    font-size: 16px;
+    margin-bottom: 28px;
+  }
+
+  .cta-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--blue);
+    color: var(--white);
+    text-decoration: none;
+    padding: 13px 28px;
+    border-radius: 3px;
+    font-weight: 500;
+    font-size: 14px;
+    transition: background 0.2s, transform 0.15s;
+  }
+
+  .cta-btn:hover { background: var(--blue-light); transform: translateY(-1px); }
+
+  .cta-url {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 16px;
+    opacity: 0.6;
+  }
+
+  /* ── DIVIDER ──────────────────────────────────── */
+  .divider {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 56px 0 48px;
+  }
+
+  /* ── PRINT / RESPONSIVE ───────────────────────── */
+  @media (max-width: 768px) {
+    .hero, .wrapper { padding-left: 24px; padding-right: 24px; }
+    .stats-bar { grid-template-columns: repeat(2, 1fr); }
+    .comp-grid { grid-template-columns: 1fr; }
+    .value-grid { grid-template-columns: 1fr; }
+    .comp-table { font-size: 11.5px; }
+    .comp-table th, .comp-table td { padding: 10px 10px; }
+  }
+
+  @media print {
+    body::before { display: none; }
+    .hero { padding: 36px 36px 24px; }
+    .wrapper { padding: 0 36px 40px; }
+    .cta-section { page-break-inside: avoid; }
+  }
+</style>
+<style>nav:not(.dchub-nav):not(.dchub-bottom-nav):not(.mobile-nav-drawer-links nav){display:none!important}.nav:not(.dchub-nav){display:none!important}</style>
+<script src="/js/dchub-nav.js"></script>
+</head>
+<body>
+
+<!-- ════════════════════════════════════════════════
+     HERO
+════════════════════════════════════════════════ -->
+<header class="hero">
+  <div class="hero-tag">Competitive Intelligence Brief · 2025</div>
+  <h1>Why the Market<br>Chooses <em>DC Hub</em></h1>
+  <p class="hero-sub">A straightforward comparison of DC Hub against the leading data center intelligence, directory, and advisory platforms — and why none of them come close to what we do.</p>
+
+  <div class="stats-bar">
+    <div class="stat">
+      <div class="stat-num">20,000+</div>
+      <div class="stat-label">Facilities tracked</div>
+    </div>
+    <div class="stat">
+      <div class="stat-num">140+</div>
+      <div class="stat-label">Countries covered</div>
+    </div>
+    <div class="stat">
+      <div class="stat-num">5 min</div>
+      <div class="stat-label">Energy sync interval</div>
+    </div>
+    <div class="stat">
+      <div class="stat-num">40+</div>
+      <div class="stat-label">Infrastructure layers</div>
+    </div>
+  </div>
+</header>
+
+<!-- ════════════════════════════════════════════════
+     COMPARISON TABLE
+════════════════════════════════════════════════ -->
+<div class="wrapper">
+
+  <p class="section-label">// Feature Matrix</p>
+  <h2 class="section-title">Head-to-Head Capabilities</h2>
+  <p class="section-desc">Eight decision-critical capabilities measured across every major platform. This is what prospects actually need to know.</p>
+
+  <table class="comp-table">
+    <thead>
+      <tr>
+        <th style="width:22%">Capability</th>
+        <th class="dchub-col">DC Hub</th>
+        <th>Baxtel</th>
+        <th>DC Hawk</th>
+        <th>DCD</th>
+        <th>DCF</th>
+        <th>Datacenters.com</th>
+        <th>CBRE / JLL</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><span class="feature-name">Global Facility Database</span><br><span style="font-size:11.5px;color:#475569">Depth &amp; country coverage</span></td>
+        <td class="dchub-col">20,000+ facilities, 140+ countries <span class="badge badge-blue">DEEPEST</span></td>
+        <td>~4,400 US-centric, colo focus</td>
+        <td>105 markets, leasing lens</td>
+        <td>News index, partial data</td>
+        <td>Editorial, not a database</td>
+        <td>Colo marketplace only</td>
+        <td>Advisory engagement req'd</td>
+      </tr>
+      <tr>
+        <td><span class="feature-name">Real-Time Data Refresh</span><br><span style="font-size:11.5px;color:#475569">How current is the intelligence?</span></td>
+        <td class="dchub-col"><span class="check">✓</span> Auto-discovery, every 5 min</td>
+        <td class="cross">✗</td>
+        <td><span class="partial">~</span> Quarterly reports</td>
+        <td><span class="partial">~</span> News-cycle only</td>
+        <td><span class="partial">~</span> News-cycle only</td>
+        <td class="cross">✗</td>
+        <td><span class="partial">~</span> Semi-annual snapshots</td>
+      </tr>
+      <tr>
+        <td><span class="feature-name">Energy Infrastructure Map</span><br><span style="font-size:11.5px;color:#475569">Power plants, transmission, gas</span></td>
+        <td class="dchub-col"><span class="check">✓</span> 40+ layers, live pipeline sync <span class="badge badge-green">UNIQUE</span></td>
+        <td class="cross">✗</td>
+        <td class="cross">✗</td>
+        <td class="cross">✗</td>
+        <td class="cross">✗</td>
+        <td class="cross">✗</td>
+        <td><span class="partial">~</span> Manual, in engagement</td>
+      </tr>
+      <tr>
+        <td><span class="feature-name">M&amp;A Transaction Tracking</span><br><span style="font-size:11.5px;color:#475569">Live deal database, history</span></td>
+        <td class="dchub-col"><span class="check">✓</span> Active pipeline + history</td>
+        <td class="cross">✗</td>
+        <td class="cross">✗</td>
+        <td><span class="partial">~</span> Articles only</td>
+        <td><span class="partial">~</span> Articles only</td>
+        <td class="cross">✗</td>
+        <td><span class="partial">~</span> Client engagements</td>
+      </tr>
+      <tr>
+        <td><span class="feature-name">Capacity Pipeline Analytics</span><br><span style="font-size:11.5px;color:#475569">Under construction, planned</span></td>
+        <td class="dchub-col"><span class="check">✓</span> Market-wide pipeline view</td>
+        <td class="cross">✗</td>
+        <td><span class="check">✓</span> Leasing-focused</td>
+        <td class="cross">✗</td>
+        <td class="cross">✗</td>
+        <td class="cross">✗</td>
+        <td><span class="check">✓</span> Report deliverable</td>
+      </tr>
+      <tr>
+        <td><span class="feature-name">Site Selection Tools</span><br><span style="font-size:11.5px;color:#475569">Integrated power + land + facility</span></td>
+        <td class="dchub-col"><span class="check">✓</span> Power + land + infra in one map</td>
+        <td class="cross">✗</td>
+        <td class="cross">✗</td>
+        <td class="cross">✗</td>
+        <td class="cross">✗</td>
+        <td><span class="partial">~</span> Colo RFP only</td>
+        <td><span class="partial">~</span> Advisory only</td>
+      </tr>
+      <tr>
+        <td><span class="feature-name">API / AI Agent Access</span><br><span style="font-size:11.5px;color:#475569">Programmatic &amp; MCP integration</span></td>
+        <td class="dchub-col"><span class="check">✓</span> REST API + MCP server (Claude, GPT) <span class="badge badge-blue">FIRST</span></td>
+        <td class="cross">✗</td>
+        <td class="cross">✗</td>
+        <td class="cross">✗</td>
+        <td class="cross">✗</td>
+        <td class="cross">✗</td>
+        <td class="cross">✗</td>
+      </tr>
+      <tr>
+        <td><span class="feature-name">Access &amp; Pricing Model</span><br><span style="font-size:11.5px;color:#475569">Accessibility for all users</span></td>
+        <td class="dchub-col">Free tier → Pro → Enterprise <span class="badge badge-green">OPEN</span></td>
+        <td>Free directory, paid leads</td>
+        <td>Enterprise subscription</td>
+        <td>Free news; paid intelligence</td>
+        <td>Free editorial</td>
+        <td>Free; paid managed service</td>
+        <td>Engagement fees only</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <hr class="divider">
+
+  <!-- ════════════════════════════════════════════════
+       COMPETITOR PROFILES
+  ════════════════════════════════════════════════ -->
+  <p class="section-label">// Competitor Profiles</p>
+  <h2 class="section-title">What Each Platform Actually Does</h2>
+  <p class="section-desc">Each competitor serves a narrow slice of what DC Hub delivers end-to-end. Understand the gaps before the conversation.</p>
+
+  <div class="comp-grid">
+
+    <div class="comp-card">
+      <div class="comp-name">Baxtel · Est. 2015</div>
+      <div class="comp-tagline">Colocation Directory with a Map</div>
+      <p class="comp-desc">Founded by a colocation industry veteran, Baxtel is a well-maintained buyer's directory. It lists ~4,400 US facilities with specs and routes procurement inquiries. It does not track energy infrastructure, M&A, capacity pipelines, or development activity.</p>
+      <ul class="gap-list">
+        <li>No energy or power infrastructure data</li>
+        <li>US-centric; global coverage thin</li>
+        <li>No API, no real-time refresh, no M&A layer</li>
+        <li>Buyer-matching model, not market intelligence</li>
+      </ul>
+    </div>
+
+    <div class="comp-card">
+      <div class="comp-name">datacenterHawk · Leasing Intel</div>
+      <div class="comp-tagline">Real Estate Absorption Analytics</div>
+      <p class="comp-desc">datacenterHawk is a solid product for CRE professionals focused on leasing — quarterly absorption reports, vacancy trends, and pricing across ~105 markets. Excellent for brokers and developers; thin for investors, operators, and energy professionals.</p>
+      <ul class="gap-list">
+        <li>No energy or power infrastructure layer</li>
+        <li>No M&A transaction database</li>
+        <li>Leasing-centric; no site selection tooling</li>
+        <li>Enterprise pricing; no API access</li>
+      </ul>
+    </div>
+
+    <div class="comp-card">
+      <div class="comp-name">DatacenterDynamics (DCD)</div>
+      <div class="comp-tagline">Media Brand Entering Intelligence</div>
+      <p class="comp-desc">DCD is the industry's largest publication — conferences, magazine, news, and training. Their DCD&gt;Intelligence platform launched in 2025, built on 25 years of editorial relationships. Behavioral and intent data from readership; not an operational data platform.</p>
+      <ul class="gap-list">
+        <li>Intelligence product newly launched in 2025</li>
+        <li>Content/media model, not data infrastructure</li>
+        <li>No energy mapping or M&A tracking</li>
+        <li>No API; engagement-oriented</li>
+      </ul>
+    </div>
+
+    <div class="comp-card">
+      <div class="comp-name">Data Center Frontier (DCF)</div>
+      <div class="comp-tagline">Editorial &amp; Industry News</div>
+      <p class="comp-desc">DCF is a respected trade publication — strong editorial, news coverage, and event presence. Not a data or analytics platform. Valuable for awareness and market narrative but offers no queryable intelligence, no facility database, and no infrastructure mapping.</p>
+      <ul class="gap-list">
+        <li>Purely editorial — zero structured data product</li>
+        <li>No facility database or coverage tracking</li>
+        <li>No M&A, energy, or pipeline analytics</li>
+        <li>Content platform only</li>
+      </ul>
+    </div>
+
+    <div class="comp-card">
+      <div class="comp-name">Datacenters.com</div>
+      <div class="comp-tagline">Procurement Marketplace &amp; RFP Tool</div>
+      <p class="comp-desc">Datacenters.com connects buyers to colocation providers via an RFP/quoting marketplace. Excellent for enterprises shopping for colo space. Oriented entirely to procurement — not market intelligence, investment analysis, or infrastructure planning.</p>
+      <ul class="gap-list">
+        <li>Demand-side procurement only</li>
+        <li>No developer or investor intelligence layer</li>
+        <li>No energy, M&A, or pipeline data</li>
+        <li>No API or programmatic access</li>
+      </ul>
+    </div>
+
+    <div class="comp-card">
+      <div class="comp-name">CBRE &amp; JLL · Advisory Giants</div>
+      <div class="comp-tagline">CRE Advisory with Periodic Reports</div>
+      <p class="comp-desc">CBRE and JLL are the preeminent commercial real estate advisors. Their semi-annual North American reports are widely cited, authoritative, and useful for macro positioning. But data access requires an advisory engagement — you get a PDF, not a platform.</p>
+      <ul class="gap-list">
+        <li>Semi-annual snapshots, not live intelligence</li>
+        <li>No energy infrastructure or M&A database</li>
+        <li>Advisory fees required; no self-serve access</li>
+        <li>CRE-focused; no developer/operator tooling</li>
+      </ul>
+    </div>
+
+  </div>
+
+  <hr class="divider">
+
+  <!-- ════════════════════════════════════════════════
+       VALUE PROPOSITIONS
+  ════════════════════════════════════════════════ -->
+  <p class="section-label">// Why DC Hub</p>
+  <h2 class="section-title">What Only DC Hub Delivers</h2>
+  <p class="section-desc">Six core advantages that no competitor combination can replicate — and the investment market is paying attention.</p>
+
+  <div class="value-grid">
+
+    <div class="value-card">
+      <div class="value-num">01 / CONVERGENCE</div>
+      <div class="value-title">Data Centers + Energy in One Platform</div>
+      <p class="value-body">Power availability is now the #1 site-selection criterion, outranking fiber, latency, and market prestige. DC Hub is the only platform that maps 20,000+ facilities alongside live power plants, transmission lines, and gas pipelines — letting developers, investors, and site-selection teams see the full picture without stitching together three separate tools.</p>
+    </div>
+
+    <div class="value-card">
+      <div class="value-num">02 / VELOCITY</div>
+      <div class="value-title">Real-Time Intelligence vs. Periodic Snapshots</div>
+      <p class="value-body">CBRE and JLL publish semi-annual reports. datacenterHawk releases quarterly. Baxtel doesn't publish at all. DC Hub's auto-discovery engine syncs power infrastructure every 5 minutes and continuously ingests facility activity. In a market where preleasing windows are measured in weeks, data staleness is a strategic liability.</p>
+    </div>
+
+    <div class="value-card">
+      <div class="value-num">03 / SCALE</div>
+      <div class="value-title">Truly Global, Not US-Centric</div>
+      <p class="value-body">Baxtel lists ~4,400 US facilities. datacenterHawk tracks 105 markets. DC Hub covers 20,000+ facilities across 140+ countries — including emerging markets in Latin America, the Nordics, Asia-Pacific, and MENA where hyperscale investment is accelerating fastest. For investors and developers with global mandates, breadth matters.</p>
+    </div>
+
+    <div class="value-card">
+      <div class="value-num">04 / M&A INTELLIGENCE</div>
+      <div class="value-title">Live Deal Tracking, Not Just Headlines</div>
+      <p class="value-body">With $69B+ in global data center M&A completed in 2025 alone, transaction intelligence is critical. DC Hub maintains an active M&A database with pipeline tracking and historical transactions. Competitors either note deals as news articles or require expensive advisory retainers. DC Hub puts it in the platform, searchable and structured.</p>
+    </div>
+
+    <div class="value-card">
+      <div class="value-num">05 / AI-NATIVE</div>
+      <div class="value-title">The Only Platform with AI Agent Access</div>
+      <p class="value-body">DC Hub is the first data center intelligence platform with MCP (Model Context Protocol) server integration — meaning Claude, ChatGPT, and Gemini can query DC Hub data programmatically. As AI copilots become standard workflow tools for investment analysts and developers, DC Hub is already in the stack. No competitor has this.</p>
+    </div>
+
+    <div class="value-card">
+      <div class="value-num">06 / EXPERTISE</div>
+      <div class="value-title">Built by Operators, Not Analysts</div>
+      <p class="value-body">DC Hub is founded and led by a 25+ year data center infrastructure veteran with hands-on leadership at CenturyLink, Cyxtera, Netrality, and EdgeConneX. The platform reflects what operators, developers, and investors actually need — not what looks good in a quarterly PDF. That practitioner lens is embedded in every feature decision.</p>
+    </div>
+
+  </div>
+
+  <!-- ════════════════════════════════════════════════
+       CTA
+  ════════════════════════════════════════════════ -->
+  <div class="cta-section">
+    <h2>The Intelligence Layer the Industry Has Been Missing</h2>
+    <p>One platform. 20,000 facilities. Live energy infrastructure. M&amp;A tracking. AI-native access. No advisory retainer required.</p>
+    <a href="https://dchub.cloud" class="cta-btn">
+      Explore DC Hub
+      <span>→</span>
+    </a>
+    <div class="cta-url">dchub.cloud · Data Center Intelligence Platform</div>
+  </div>
+
+</div><!-- /wrapper -->
+
+</body>
+</html>

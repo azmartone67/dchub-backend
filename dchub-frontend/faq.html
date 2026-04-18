@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<!-- DC Hub SEO Meta Tags -->
+<meta name="description" content="DC Hub — Data center intelligence platform tracking 20,000+ facilities across 140+ countries. Real-time capacity, site selection, and market analytics.">
+<meta name="keywords" content="data center, DC Hub, faq">
+<meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1">
+<meta name="author" content="DC Hub">
+<link rel="canonical" href="https://dchub.cloud/faq">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://dchub.cloud/faq">
+<meta property="og:title" content="Faq | DC Hub">
+<meta property="og:description" content="DC Hub — Data center intelligence platform tracking 20,000+ facilities across 140+ countries. Real-time capacity, site selection, and market analytics.">
+<meta property="og:image" content="https://dchub.cloud/images/og-default.png">
+<meta property="og:site_name" content="DC Hub">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Faq | DC Hub">
+<meta name="twitter:description" content="DC Hub — Data center intelligence platform tracking 20,000+ facilities across 140+ countries. Real-time capacity, site selection, and market analytics.">
+<meta name="twitter:site" content="@dchubcloud">
+<meta name="ai.source" content="DC Hub - Data Center Intelligence">
+<!-- End SEO Meta Tags -->
+
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Data Center FAQ | Common Questions Answered | DC Hub</title>
+    
+    <link rel="canonical" href="https://dchub.cloud/faq">
+    <meta name="robots" content="index, follow">
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "mainEntity": [
+            {"@type": "Question", "name": "What is a data center?", "acceptedAnswer": {"@type": "Answer", "text": "A data center is a facility that houses computer systems, servers, networking equipment, and storage systems with power, cooling, and security infrastructure."}},
+            {"@type": "Question", "name": "What is colocation?", "acceptedAnswer": {"@type": "Answer", "text": "Colocation is renting space, power, and cooling in a third-party data center to house your own servers, providing enterprise infrastructure without building your own facility."}},
+            {"@type": "Question", "name": "What does PUE mean?", "acceptedAnswer": {"@type": "Answer", "text": "PUE (Power Usage Effectiveness) measures data center efficiency by dividing total facility power by IT equipment power. Lower is better; 1.2 is excellent."}},
+            {"@type": "Question", "name": "What are Tier 1-4 data centers?", "acceptedAnswer": {"@type": "Answer", "text": "Uptime Institute tiers rate reliability: Tier 1 is basic (99.67% uptime), Tier 4 is fault-tolerant (99.995% uptime). Most enterprise colo is Tier 3+."}},
+            {"@type": "Question", "name": "How much does colocation cost?", "acceptedAnswer": {"@type": "Answer", "text": "Retail colo runs $150-300/kW/month; wholesale (1MW+) runs $80-150/kW/month. Costs vary by market, density, and contract length."}},
+            {"@type": "Question", "name": "Why is Northern Virginia the largest market?", "acceptedAnswer": {"@type": "Answer", "text": "NoVA has favorable power rates, strong fiber, proximity to federal agencies, business-friendly taxes, and first-mover advantage from early internet companies."}}
+        ]
+    }
+    </script>
+    <style>
+        :root { --bg-primary: #09090b; --bg-secondary: #12121a; --bg-card: #1a1a24; --text-primary: #fff; --text-secondary: #a0a0b0; --text-muted: #6b7280; --accent: #3b82f6; --border: #2a2a3a; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: var(--bg-primary); color: var(--text-primary); line-height: 1.7; }
+        nav { background: rgba(10,10,15,0.95); padding: 1rem 2rem; display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 100; }
+        .logo { font-size: 1.5rem; font-weight: 700; color: var(--accent); text-decoration: none; }
+        .nav-links { display: flex; gap: 1.5rem; list-style: none; }
+        .nav-links a { color: var(--text-secondary); text-decoration: none; font-size: 14px; }
+        .hero { background: linear-gradient(135deg, rgba(59,130,246,0.1), rgba(139,92,246,0.1)); padding: 4rem 2rem; text-align: center; border-bottom: 1px solid var(--border); }
+        .hero h1 { font-size: 2.5rem; margin-bottom: 1rem; }
+        .hero p { font-size: 1.125rem; color: var(--text-secondary); max-width: 600px; margin: 0 auto; }
+        .container { max-width: 900px; margin: 0 auto; padding: 3rem 2rem; }
+        .faq-section { margin-bottom: 3rem; }
+        .faq-section-title { font-size: 1.5rem; margin-bottom: 1.5rem; padding-bottom: 0.5rem; border-bottom: 2px solid var(--accent); display: inline-block; }
+        .faq-item { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 1rem; overflow: hidden; }
+        .faq-question { padding: 1.25rem 1.5rem; cursor: pointer; display: flex; justify-content: space-between; align-items: center; font-weight: 600; }
+        .faq-question:hover { background: var(--bg-secondary); }
+        .faq-icon { font-size: 1.5rem; color: var(--accent); transition: transform 0.3s; }
+        .faq-item.open .faq-icon { transform: rotate(45deg); }
+        .faq-answer { padding: 0 1.5rem; max-height: 0; overflow: hidden; transition: all 0.3s; color: var(--text-secondary); }
+        .faq-item.open .faq-answer { padding: 0 1.5rem 1.5rem; max-height: 500px; }
+        .cta-section { background: var(--bg-secondary); border-radius: 16px; padding: 3rem; text-align: center; border: 1px solid var(--border); margin-top: 3rem; }
+        .btn { display: inline-block; padding: 12px 24px; border-radius: 8px; font-weight: 600; text-decoration: none; background: var(--accent); color: white; }
+        footer { background: var(--bg-secondary); border-top: 1px solid var(--border); padding: 2rem; text-align: center; color: var(--text-secondary); }
+        footer a { color: var(--accent); text-decoration: none; }
+        @media (max-width: 768px) { .hero h1 { font-size: 2rem; } .nav-links { display: none; } }
+    </style>
+<style>nav:not(.dchub-nav):not(.dchub-bottom-nav):not(.mobile-nav-drawer-links nav){display:none!important}.nav:not(.dchub-nav){display:none!important}</style>
+<script src="/js/dchub-nav.js"></script>
+</head>
+<body>
+    <nav><a href="/" class="logo"><svg viewBox="0 0 36 36" width="22" height="22" fill="none" style="vertical-align:middle;margin-right:4px"><circle cx="18" cy="18" r="18" fill="#1a1a2e"/><path d="M20.5 6L10 20h7l-2 10L27 16h-7.5l1-10z" fill="#818cf8"/></svg> DC Hub</a><ul class="nav-links"><li><a href="/">Map</a></li><li><a href="/land-power">Land & Power</a></li><li><a href="/markets/">Markets</a></li><li><a href="/pricing">Pricing</a></li></ul></nav>
+    <section class="hero"><h1>Data Center FAQ</h1><p>Expert answers to common questions about data centers, colocation, and infrastructure.</p></section>
+    <div class="container">
+        <section class="faq-section">
+            <h2 class="faq-section-title">📚 Data Center Basics</h2>
+            <div class="faq-item"><div class="faq-question"><span>What is a data center?</span><span class="faq-icon">+</span></div><div class="faq-answer"><p>A data center is a facility that houses computer systems, servers, networking equipment, and storage systems. These facilities provide the physical infrastructure—including power, cooling, and security—needed to operate IT equipment reliably. Data centers range from small server rooms to massive hyperscale campuses spanning millions of square feet.</p></div></div>
+            <div class="faq-item"><div class="faq-question"><span>What is colocation?</span><span class="faq-icon">+</span></div><div class="faq-answer"><p>Colocation (colo) is a service where businesses rent space, power, and cooling in a third-party data center to house their own servers. Instead of building their own facility, companies pay monthly fees for rack space, power (measured in kW), and connectivity. This provides enterprise-grade infrastructure without capital expense.</p></div></div>
+            <div class="faq-item"><div class="faq-question"><span>What is a hyperscale data center?</span><span class="faq-icon">+</span></div><div class="faq-answer"><p>Hyperscale data centers are massive facilities typically exceeding 100MW of power capacity, built by cloud providers (AWS, Azure, Google). They're characterized by enormous scale (500,000+ SF), custom infrastructure, advanced automation, and strategic locations near cheap power. Hyperscalers drive most new construction globally.</p></div></div>
+        </section>
+        <section class="faq-section">
+            <h2 class="faq-section-title">⚡ Power & Efficiency</h2>
+            <div class="faq-item"><div class="faq-question"><span>What does PUE mean?</span><span class="faq-icon">+</span></div><div class="faq-answer"><p>PUE (Power Usage Effectiveness) measures data center energy efficiency by dividing total facility power by IT equipment power. A PUE of 1.0 would be perfect efficiency. Average PUE is around 1.58; best-in-class facilities achieve 1.1-1.2. Lower PUE means lower operating costs and better sustainability.</p></div></div>
+            <div class="faq-item"><div class="faq-question"><span>How do data centers stay cool?</span><span class="faq-icon">+</span></div><div class="faq-answer"><p>Data centers use various cooling methods: CRAC/CRAH units circulate chilled air, hot/cold aisle containment separates airflows, free cooling uses outside air, liquid cooling brings coolant to chips for AI workloads, and evaporative cooling uses water in dry climates. Modern facilities combine methods for optimal efficiency.</p></div></div>
+        </section>
+        <section class="faq-section">
+            <h2 class="faq-section-title">🏗️ Reliability & Infrastructure</h2>
+            <div class="faq-item"><div class="faq-question"><span>What are Tier 1, 2, 3, and 4 data centers?</span><span class="faq-icon">+</span></div><div class="faq-answer"><p>The Uptime Institute Tier system rates reliability: Tier 1 is basic (99.671% uptime), Tier 2 adds redundant components (99.741%), Tier 3 is concurrently maintainable (99.982%), Tier 4 is fault-tolerant with 2N redundancy (99.995%). Most enterprise colocation is Tier 3 or higher.</p></div></div>
+            <div class="faq-item"><div class="faq-question"><span>What is N+1 redundancy?</span><span class="faq-icon">+</span></div><div class="faq-answer"><p>N+1 redundancy means having one more component than needed. If 4 generators (N) are required, N+1 means 5 so one can fail without impact. 2N means fully duplicating everything. N+1 is standard for most components; 2N is used for critical systems in high-reliability facilities.</p></div></div>
+        </section>
+        <section class="faq-section">
+            <h2 class="faq-section-title">💰 Pricing & Contracts</h2>
+            <div class="faq-item"><div class="faq-question"><span>How much does colocation cost?</span><span class="faq-icon">+</span></div><div class="faq-answer"><p>Colocation pricing varies by market and requirements. Retail colocation runs $150-300 per kW/month in primary markets. Wholesale (1MW+) runs $80-150 per kW/month. Key factors: location (NoVA cheapest, Silicon Valley most expensive), power density, contract length, and connectivity needs.</p></div></div>
+            <div class="faq-item"><div class="faq-question"><span>What is retail vs wholesale colocation?</span><span class="faq-icon">+</span></div><div class="faq-answer"><p>Retail serves smaller deployments (racks to cages) with shared infrastructure and flexibility but higher per-kW pricing. Wholesale serves large deployments (1MW+) with dedicated space at lower rates but longer commitments (5-15 years). Enterprises typically start retail and scale to wholesale.</p></div></div>
+        </section>
+        <section class="faq-section">
+            <h2 class="faq-section-title">📍 Site Selection & Markets</h2>
+            <div class="faq-item"><div class="faq-question"><span>What factors matter for site selection?</span><span class="faq-icon">+</span></div><div class="faq-answer"><p>Key factors: Power availability and cost (60-70% of opex), fiber connectivity and latency, natural disaster risk, water for cooling, tax incentives, labor market, land costs, and permitting. The best sites balance low power costs with strong connectivity and minimal risk.</p></div></div>
+            <div class="faq-item"><div class="faq-question"><span>Why is Northern Virginia the largest market?</span><span class="faq-icon">+</span></div><div class="faq-answer"><p>Northern Virginia became #1 due to: proximity to internet exchanges and federal agencies, favorable Dominion Energy rates, business-friendly taxes, strong fiber, and first-mover advantage. The market has 3+ GW of capacity and continues growing despite power constraints.</p></div></div>
+            <div class="faq-item"><div class="faq-question"><span>What markets are growing fastest?</span><span class="faq-icon">+</span></div><div class="faq-answer"><p>Fastest-growing US markets: Phoenix (abundant power, low risk), Dallas (ERCOT, low costs), Atlanta (Southeast hub), Columbus (Midwest connectivity). Internationally: Singapore, Tokyo, Frankfurt, and emerging markets in Malaysia, Indonesia, and Middle East. AI demand is driving unprecedented growth.</p></div></div>
+        </section>
+        <section class="cta-section"><h2>Explore Data Center Intelligence</h2><p>Get detailed data on 21,000+ facilities across 140+ countries.</p><a href="/" class="btn">🗺️ Explore the Map</a></section>
+    </div>
+    <footer><p>© 2026 DC Hub. <a href="/about">About</a> | <a href="/glossary">Glossary</a></p></footer>
+    <script>document.querySelectorAll('.faq-question').forEach(q => q.addEventListener('click', () => q.parentElement.classList.toggle('open')));</script>
+</body>
+</html>
