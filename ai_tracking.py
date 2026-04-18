@@ -51,7 +51,18 @@ SQLITE_BUFFER_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "ai_tracking_buffer.db"
 )
 SYNC_INTERVAL_SECONDS = 60  # flush SQLite buffer to Neon every 60s
-GATEWAY_VERSION = "4.1.0"
+GATEWAY_VERSION = "4.2.0"
+
+# Declared shape of mcp_connections. Used by check_mcp_schema() at startup
+# to detect drift between this file's assumptions and the live table.
+# If any column here is missing on the live table, `log_mcp_connection`
+# INSERTs will silently fail — which is the exact bug that masked zero
+# verified tool calls for weeks before v4.1.
+EXPECTED_MCP_CONNECTIONS_COLUMNS = {
+    "id", "platform", "client_name", "client_version", "protocol_version",
+    "method", "user_agent", "ip_address", "success", "error_message",
+    "tool_name", "params", "status_code", "response_ms", "created_at",
+}
 
 # ═══════════════════════════════════════════════════════════════
 #  PLATFORM DETECTION
@@ -819,6 +830,170 @@ def get_verified_call_totals(days=7):
 
 
 # ═══════════════════════════════════════════════════════════════
+#  v4.2 — SCHEMA DRIFT CHECK + PIPELINE CANARY
+# ═══════════════════════════════════════════════════════════════
+#  Two checks that catch the class of bug we hit in v4.0:
+#    (1) check_mcp_schema()          — runs at startup. Compares live
+#        mcp_connections columns against EXPECTED_MCP_CONNECTIONS_COLUMNS.
+#        Logs LOUD warnings if drift is found. The ALTER TABLE IF NOT
+#        EXISTS migrations in init_db() should keep this green, but if
+#        a manual schema change happens upstream we want to know.
+#    (2) canary_tool_name_coverage() — runs on demand. Counts how many
+#        rows have method='tools/call' but tool_name IS NULL. That's
+#        the tell that the logging pipeline is dropping tool names on
+#        the floor even though calls are landing.
+#
+#  Both are exposed via /api/ai/mcp-health for dashboard/cron use.
+# ═══════════════════════════════════════════════════════════════
+
+def check_mcp_schema():
+    """
+    Inspect information_schema.columns for mcp_connections and compare
+    against EXPECTED_MCP_CONNECTIONS_COLUMNS. Returns a dict:
+
+        {
+            "status": "ok" | "drift" | "error",
+            "missing": [str],     # columns we expect but live table lacks
+            "extra":   [str],     # columns live table has but we don't track
+            "actual":  [str],     # the full live column list
+            "message": str,       # human-readable summary
+        }
+
+    A "drift" status means log_mcp_connection will silently fail or
+    write NULLs for whatever columns are missing. Treat it as a page.
+    """
+    if not DATABASE_URL:
+        return {"status": "error", "message": "no DATABASE_URL", "missing": [], "extra": [], "actual": []}
+    try:
+        rows = _execute("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = 'mcp_connections'
+        """, fetchall=True) or []
+        actual = {r["column_name"] if isinstance(r, dict) else r[0] for r in rows}
+        if not actual:
+            return {
+                "status": "error",
+                "missing": sorted(EXPECTED_MCP_CONNECTIONS_COLUMNS),
+                "extra": [],
+                "actual": [],
+                "message": "mcp_connections table not found — init_db probably failed",
+            }
+        missing = sorted(EXPECTED_MCP_CONNECTIONS_COLUMNS - actual)
+        extra = sorted(actual - EXPECTED_MCP_CONNECTIONS_COLUMNS)
+        if missing:
+            return {
+                "status": "drift",
+                "missing": missing,
+                "extra": extra,
+                "actual": sorted(actual),
+                "message": f"mcp_connections is missing columns: {missing}. log_mcp_connection will drop these fields.",
+            }
+        return {
+            "status": "ok",
+            "missing": [],
+            "extra": extra,
+            "actual": sorted(actual),
+            "message": "mcp_connections schema matches expected shape",
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "missing": [],
+            "extra": [],
+            "actual": [],
+            "message": f"schema check failed: {type(e).__name__}: {e}",
+        }
+
+
+def canary_tool_name_coverage(days=7):
+    """
+    Pipeline health canary — answers: "of the tools/call rows landing in
+    mcp_connections, how many actually have a tool_name?" If this goes
+    non-zero for NULLs, the extractor in main.py is broken even though
+    inserts are succeeding.
+
+    Returns:
+        {
+            "status": "ok" | "degraded" | "broken" | "no_data" | "error",
+            "window_days": int,
+            "tool_call_rows": int,           # rows with method='tools/call'
+            "with_tool_name": int,           # rows with non-null tool_name
+            "null_tool_name": int,           # rows with NULL tool_name (BAD)
+            "coverage_pct": float,           # with_tool_name / tool_call_rows
+            "alert": str,                    # human-readable alert
+        }
+    """
+    if not DATABASE_URL:
+        return {"status": "error", "alert": "no DATABASE_URL"}
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        row = _execute("""
+            SELECT
+                COUNT(*) FILTER (WHERE method = 'tools/call')                              AS tool_call_rows,
+                COUNT(*) FILTER (WHERE method = 'tools/call' AND tool_name IS NOT NULL)    AS with_tool_name,
+                COUNT(*) FILTER (WHERE method = 'tools/call' AND tool_name IS NULL)        AS null_tool_name
+            FROM mcp_connections
+            WHERE created_at >= %s
+        """, (cutoff,), fetch=True) or {}
+
+        tool_call_rows = int(row.get("tool_call_rows", 0) or 0)
+        with_name = int(row.get("with_tool_name", 0) or 0)
+        null_name = int(row.get("null_tool_name", 0) or 0)
+
+        if tool_call_rows == 0:
+            return {
+                "status": "no_data",
+                "window_days": days,
+                "tool_call_rows": 0,
+                "with_tool_name": 0,
+                "null_tool_name": 0,
+                "coverage_pct": 0.0,
+                "alert": f"No tools/call rows in last {days}d — the MCP is either unused or tier-gated to 0.",
+            }
+
+        coverage_pct = round(100.0 * with_name / tool_call_rows, 2)
+
+        if null_name == 0:
+            status, alert = "ok", f"{coverage_pct}% coverage — tool_name pipeline healthy"
+        elif coverage_pct >= 95:
+            status, alert = "ok", f"{coverage_pct}% coverage — {null_name} NULL rows, probably a race"
+        elif coverage_pct >= 50:
+            status, alert = "degraded", f"{coverage_pct}% coverage — {null_name} rows have NULL tool_name. Check main.py's extract_tool_name path."
+        else:
+            status, alert = "broken", f"Only {coverage_pct}% of tools/call rows have a tool_name — the logging pipeline is dropping names on the floor."
+
+        return {
+            "status": status,
+            "window_days": days,
+            "tool_call_rows": tool_call_rows,
+            "with_tool_name": with_name,
+            "null_tool_name": null_name,
+            "coverage_pct": coverage_pct,
+            "alert": alert,
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "window_days": days,
+            "alert": f"canary query failed: {type(e).__name__}: {e}",
+        }
+
+
+def get_mcp_health_summary(days=7):
+    """
+    Convenience bundle — one call returns schema + canary + headline totals.
+    Wire this to /api/ai/mcp-health (see init_ai_tracking).
+    """
+    return {
+        "version": GATEWAY_VERSION,
+        "schema": check_mcp_schema(),
+        "canary": canary_tool_name_coverage(days=days),
+        "totals": get_verified_call_totals(days=days),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════
 #  CORS HELPER
 # ═══════════════════════════════════════════════════════════════
 
@@ -863,10 +1038,35 @@ def _time_ago(ts):
 def init_ai_tracking(app: Flask):
     """Initialize AI tracking — call once in main.py after Flask app creation."""
 
-    # Init Neon tables
+    # Init Neon tables (runs idempotent migrations)
     db_ok = init_db()
     if not db_ok:
         logger.warning("AI Tracking running in degraded mode (no Neon)")
+
+    # ── v4.2 startup schema check ──────────────────────────
+    # This fires AFTER init_db() so it sees the post-migration shape.
+    # If it still reports drift, init_db's ALTER TABLE migrations
+    # failed and log_mcp_connection will silently drop fields.
+    try:
+        schema_report = check_mcp_schema()
+        if schema_report["status"] == "ok":
+            logger.info(
+                "AI Tracking v%s: mcp_connections schema OK (%d cols)",
+                GATEWAY_VERSION, len(schema_report["actual"]),
+            )
+        elif schema_report["status"] == "drift":
+            logger.error(
+                "AI Tracking v%s: ⚠ SCHEMA DRIFT on mcp_connections — %s",
+                GATEWAY_VERSION, schema_report["message"],
+            )
+            logger.error("AI Tracking: missing columns = %s", schema_report["missing"])
+        else:
+            logger.error(
+                "AI Tracking v%s: schema check failed — %s",
+                GATEWAY_VERSION, schema_report["message"],
+            )
+    except Exception as e:
+        logger.error(f"AI Tracking: check_mcp_schema crashed: {e}")
 
     # Start buffer sync thread
     _start_sync_thread()
@@ -1111,6 +1311,33 @@ def init_ai_tracking(app: Flask):
             "by_method": get_mcp_method_breakdown(days),
             "by_tool": get_mcp_tool_stats(days),
         })
+
+    @app.route("/api/ai/mcp-health", methods=["GET", "OPTIONS"])
+    def ai_mcp_health():
+        """
+        v4.2 — MCP pipeline health check. Exposes:
+          - schema drift between ai_tracking's expected columns and the live table
+          - canary coverage: are tools/call rows actually getting tool_name filled in?
+          - the honest verified-call totals for the window
+
+        Wire this to a cron/uptime check. Anything other than
+        status == 'ok' on BOTH schema and canary is a real alert.
+        """
+        if request.method == "OPTIONS":
+            return cors_jsonify({})
+        try:
+            days = int(request.args.get("days", 7))
+            days = max(1, min(days, 90))
+        except Exception:
+            days = 7
+
+        health = get_mcp_health_summary(days=days)
+        http_status = 200
+        if health["schema"]["status"] == "drift" or health["canary"]["status"] == "broken":
+            http_status = 503  # pageable
+        elif health["canary"]["status"] == "degraded":
+            http_status = 207  # multi-status / warn
+        return cors_jsonify(health, status=http_status)
 
     @app.route("/api/ai/health", methods=["GET"])
     def ai_tracking_health():
