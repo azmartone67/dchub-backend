@@ -9,10 +9,24 @@ with a background sync thread to flush buffered rows to Neon.
 Works identically on Railway (primary) and Replit (failover).
 
 Usage in main.py:
-    from ai_tracking import init_ai_tracking
+    from ai_tracking import init_ai_tracking, log_mcp_connection, extract_tool_name
     init_ai_tracking(app)
 
 Requires: DATABASE_URL env var → Neon PostgreSQL connection string
+
+Changelog (2026-04-18):
+- `mcp_connections` schema expanded to capture tool_name, status_code,
+  response_ms, params, client_name, client_version, protocol_version,
+  success, error_message. These are the columns needed to measure
+  verified tool-call volume per-tool (blocker for description audit).
+- Idempotent ALTER TABLE migrations added so live tables pick up new
+  columns without downtime.
+- `log_mcp_connection()` signature extended (backward-compatible).
+- New helper `extract_tool_name(body)` pulls tool name from JSON-RPC body.
+- New query helpers: `get_mcp_method_breakdown`, `get_verified_call_totals`.
+- SQLite fallback buffer fixed: correct `?` placeholders, correct
+  `INTEGER PRIMARY KEY AUTOINCREMENT`, idempotent column migrations,
+  proper row factory so `row["x"]` works.
 """
 
 import os
@@ -37,7 +51,7 @@ SQLITE_BUFFER_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "ai_tracking_buffer.db"
 )
 SYNC_INTERVAL_SECONDS = 60  # flush SQLite buffer to Neon every 60s
-GATEWAY_VERSION = "4.0.0"
+GATEWAY_VERSION = "4.1.0"
 
 # ═══════════════════════════════════════════════════════════════
 #  PLATFORM DETECTION
@@ -98,6 +112,29 @@ def detect_platform(user_agent: str) -> str:
 def is_ai_endpoint(path: str) -> bool:
     """Check if path matches AI-relevant endpoint patterns."""
     return any(re.match(p, path) for p in AI_ENDPOINT_PATTERNS)
+
+
+def extract_tool_name(body):
+    """
+    Pull the tool name out of an MCP JSON-RPC request body.
+    Returns None for anything other than a `tools/call` request.
+
+    Use this in main.py's /mcp proxy before calling log_mcp_connection:
+
+        from ai_tracking import extract_tool_name, log_mcp_connection
+        tool_name = extract_tool_name(request_json)
+        log_mcp_connection(..., method=request_json.get("method"),
+                            tool_name=tool_name, ...)
+    """
+    if not isinstance(body, dict):
+        return None
+    if body.get("method") != "tools/call":
+        return None
+    params = body.get("params") or {}
+    if not isinstance(params, dict):
+        return None
+    name = params.get("name")
+    return str(name) if name else None
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -172,11 +209,11 @@ def _execute(sql, params=None, fetch=False, fetchall=False):
 def _get_buffer_db():
     """Get SQLite connection for the local fallback buffer."""
     conn = sqlite3.connect(SQLITE_BUFFER_PATH, timeout=5)
-    # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
+    conn.row_factory = sqlite3.Row  # row["x"] access
     c = conn.cursor()
     c.execute("""
         CREATE TABLE IF NOT EXISTS buffered_requests (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             platform TEXT NOT NULL,
             endpoint TEXT,
             user_agent TEXT,
@@ -187,22 +224,34 @@ def _get_buffer_db():
             synced INTEGER DEFAULT 0
         )
     """)
-    c = conn.cursor()
     c.execute("""
         CREATE TABLE IF NOT EXISTS buffered_mcp (
-            id SERIAL PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             platform TEXT,
             method TEXT,
             user_agent TEXT,
             ip_address TEXT,
             tool_name TEXT,
             params TEXT,
-            status_code INTEGER DEFAULT 200,
+            status_code INTEGER,
             response_ms INTEGER DEFAULT 0,
             created_at TEXT NOT NULL,
             synced INTEGER DEFAULT 0
         )
     """)
+    # Idempotent column additions for existing buffer DBs.
+    for col_ddl in [
+        "client_name TEXT",
+        "client_version TEXT",
+        "protocol_version TEXT",
+        "success INTEGER",
+        "error_message TEXT",
+    ]:
+        col_name = col_ddl.split()[0]
+        try:
+            c.execute(f"ALTER TABLE buffered_mcp ADD COLUMN {col_ddl}")
+        except sqlite3.OperationalError:
+            pass  # column already exists
     conn.commit()
     return conn
 
@@ -212,7 +261,8 @@ def _get_buffer_db():
 # ═══════════════════════════════════════════════════════════════
 
 def init_db():
-    """Create tracking tables in Neon if they don't exist."""
+    """Create tracking tables in Neon if they don't exist, and migrate
+    mcp_connections to the full schema if the live table is older."""
     if not DATABASE_URL:
         logger.warning("AI Tracking: No DATABASE_URL set — tracking disabled")
         return False
@@ -250,25 +300,55 @@ def init_db():
                 company VARCHAR(100)
             )
         """)
+        # Full mcp_connections shape for fresh installs.
         _execute("""
             CREATE TABLE IF NOT EXISTS mcp_connections (
                 id SERIAL PRIMARY KEY,
                 platform VARCHAR(50),
+                client_name TEXT,
+                client_version TEXT,
+                protocol_version TEXT,
                 method VARCHAR(100),
                 user_agent VARCHAR(500),
                 ip_address VARCHAR(50),
-                tool_name VARCHAR(200),
+                success BOOLEAN,
+                error_message TEXT,
+                tool_name TEXT,
                 params TEXT,
-                status_code INTEGER DEFAULT 200,
+                status_code INTEGER,
                 response_ms INTEGER DEFAULT 0,
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )
         """)
+
+        # ── Idempotent migrations for existing deployments ───────
+        # These pick up the columns the current live schema is missing,
+        # so INSERTs from log_mcp_connection() stop silently failing.
+        for migration_sql in [
+            "ALTER TABLE mcp_connections ADD COLUMN IF NOT EXISTS tool_name TEXT",
+            "ALTER TABLE mcp_connections ADD COLUMN IF NOT EXISTS params TEXT",
+            "ALTER TABLE mcp_connections ADD COLUMN IF NOT EXISTS status_code INTEGER",
+            "ALTER TABLE mcp_connections ADD COLUMN IF NOT EXISTS response_ms INTEGER",
+            "ALTER TABLE mcp_connections ADD COLUMN IF NOT EXISTS client_name TEXT",
+            "ALTER TABLE mcp_connections ADD COLUMN IF NOT EXISTS client_version TEXT",
+            "ALTER TABLE mcp_connections ADD COLUMN IF NOT EXISTS protocol_version TEXT",
+            "ALTER TABLE mcp_connections ADD COLUMN IF NOT EXISTS success BOOLEAN",
+            "ALTER TABLE mcp_connections ADD COLUMN IF NOT EXISTS error_message TEXT",
+        ]:
+            try:
+                _execute(migration_sql)
+            except Exception as e:
+                logger.warning(f"mcp_connections migration skipped: {e}")
+
         # Indexes
         _execute("CREATE INDEX IF NOT EXISTS idx_ai_requests_created ON ai_requests(created_at DESC)")
         _execute("CREATE INDEX IF NOT EXISTS idx_ai_requests_platform ON ai_requests(platform)")
         _execute("CREATE INDEX IF NOT EXISTS idx_ai_daily_date ON ai_daily_stats(date)")
         _execute("CREATE INDEX IF NOT EXISTS idx_mcp_connections_created ON mcp_connections(created_at DESC)")
+        _execute("CREATE INDEX IF NOT EXISTS idx_mcp_connections_method ON mcp_connections(method)")
+        _execute("CREATE INDEX IF NOT EXISTS idx_mcp_connections_platform ON mcp_connections(platform)")
+        _execute("""CREATE INDEX IF NOT EXISTS idx_mcp_connections_tool_name
+                    ON mcp_connections(tool_name) WHERE tool_name IS NOT NULL""")
 
         # Seed cumulative rows for known platforms
         for key, info in AI_PLATFORMS.items():
@@ -281,7 +361,7 @@ def init_db():
                     company = EXCLUDED.company
             """, (key, info["name"], info["color"], info["company"]))
 
-        logger.info("AI Tracking DB initialized (Neon PostgreSQL)")
+        logger.info("AI Tracking DB initialized (Neon PostgreSQL) — v%s", GATEWAY_VERSION)
         return True
     except Exception as e:
         logger.error(f"AI Tracking DB init failed: {e}")
@@ -336,7 +416,7 @@ def log_ai_request(platform, endpoint, user_agent="", ip_address="",
             buf = _get_buffer_db()
             buf.execute("""
                 INSERT INTO buffered_requests (platform, endpoint, user_agent, ip_address, status_code, response_ms, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (platform, endpoint[:500] if endpoint else "", user_agent[:500] if user_agent else "",
                   ip_address, status_code, response_ms, now.isoformat()))
             buf.commit()
@@ -345,28 +425,85 @@ def log_ai_request(platform, endpoint, user_agent="", ip_address="",
             logger.error(f"SQLite buffer write also failed: {buf_err}")
 
 
-def log_mcp_connection(platform, method, user_agent="", ip_address="",
-                       tool_name="", params="", status_code=200, response_ms=0):
-    """Record an MCP connection/tool call. Writes to Neon, falls back to SQLite buffer."""
+def log_mcp_connection(
+    platform,
+    method,
+    user_agent="",
+    ip_address="",
+    tool_name=None,
+    params=None,
+    status_code=None,
+    response_ms=0,
+    client_name=None,
+    client_version=None,
+    protocol_version=None,
+    success=None,
+    error_message=None,
+):
+    """
+    Record an MCP connection / tool call. Writes to Neon, falls back to SQLite buffer.
+
+    For verified-tool-call accounting, you MUST pass:
+      - method="tools/call" when it is a tool call (other values: "tools/list",
+        "initialize", "ping", etc.)
+      - tool_name=<name> when method=="tools/call"   (use extract_tool_name())
+      - success=True/False + status_code=<int>
+
+    All new parameters default to None/0 for backward compatibility with older
+    callers that only passed the first four args.
+    """
     if not DATABASE_URL:
         return
+
+    now = datetime.now(timezone.utc)
+    platform = platform or "unknown"
+    method = method or ""
+    ua = (user_agent or "")[:500]
+    ip = ip_address or ""
+    params_str = None
+    if params is not None:
+        if isinstance(params, (dict, list)):
+            try:
+                params_str = json.dumps(params)[:1000]
+            except Exception:
+                params_str = str(params)[:1000]
+        else:
+            params_str = str(params)[:1000]
+
     try:
         _execute("""
-            INSERT INTO mcp_connections (platform, method, user_agent, ip_address, tool_name, params, status_code, response_ms, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """, (platform, method, user_agent[:500] if user_agent else "",
-              ip_address, tool_name, params[:1000] if params else "",
-              status_code, response_ms, datetime.now(timezone.utc)))
+            INSERT INTO mcp_connections (
+                platform, method, user_agent, ip_address,
+                tool_name, params, status_code, response_ms,
+                client_name, client_version, protocol_version,
+                success, error_message, created_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (
+            platform, method, ua, ip,
+            tool_name, params_str, status_code, response_ms or 0,
+            client_name, client_version, protocol_version,
+            success, error_message, now,
+        ))
     except Exception as e:
-        logger.warning(f"MCP connection log failed: {e}")
+        logger.warning(f"MCP connection log failed, buffering locally: {e}")
         try:
             buf = _get_buffer_db()
             buf.execute("""
-                INSERT INTO buffered_mcp (platform, method, user_agent, ip_address, tool_name, params, status_code, response_ms, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (platform, method, user_agent[:500] if user_agent else "",
-                  ip_address, tool_name, params[:1000] if params else "",
-                  status_code, response_ms, datetime.now(timezone.utc).isoformat()))
+                INSERT INTO buffered_mcp (
+                    platform, method, user_agent, ip_address,
+                    tool_name, params, status_code, response_ms,
+                    client_name, client_version, protocol_version,
+                    success, error_message, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                platform, method, ua, ip,
+                tool_name, params_str, status_code, response_ms or 0,
+                client_name, client_version, protocol_version,
+                (1 if success is True else (0 if success is False else None)),
+                error_message, now.isoformat(),
+            ))
             buf.commit()
             buf.close()
         except Exception as buf_err:
@@ -390,11 +527,13 @@ def _sync_buffer_to_neon():
                 continue
 
             buf = _get_buffer_db()
+            cur = buf.cursor()
 
-            # Sync buffered requests
-            rows = buf.execute(
+            # ── Sync buffered_requests ──────────────────────────
+            cur.execute(
                 "SELECT * FROM buffered_requests WHERE synced = 0 ORDER BY id LIMIT 100"
-            ).fetchall()
+            )
+            rows = cur.fetchall()
 
             synced_ids = []
             for row in rows:
@@ -431,38 +570,61 @@ def _sync_buffer_to_neon():
                     break  # Stop on first Neon failure, retry next cycle
 
             if synced_ids:
-                placeholders = ",".join("%s" * len(synced_ids))
-                buf.execute(f"UPDATE buffered_requests SET synced = 1 WHERE id IN ({placeholders})", synced_ids)
+                placeholders = ",".join("?" * len(synced_ids))
+                cur.execute(
+                    f"UPDATE buffered_requests SET synced = 1 WHERE id IN ({placeholders})",
+                    synced_ids,
+                )
                 buf.commit()
                 logger.info(f"Synced {len(synced_ids)} buffered requests to Neon")
 
-            # Sync buffered MCP connections
-            mcp_rows = buf.execute(
+            # ── Sync buffered_mcp ───────────────────────────────
+            cur.execute(
                 "SELECT * FROM buffered_mcp WHERE synced = 0 ORDER BY id LIMIT 100"
-            ).fetchall()
+            )
+            mcp_rows = cur.fetchall()
 
             mcp_synced = []
             for row in mcp_rows:
                 try:
+                    success_val = None
+                    if "success" in row.keys() and row["success"] is not None:
+                        success_val = bool(row["success"])
                     _execute("""
-                        INSERT INTO mcp_connections (platform, method, user_agent, ip_address, tool_name, params, status_code, response_ms, created_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """, (row["platform"], row["method"], row["user_agent"],
-                          row["ip_address"], row["tool_name"], row["params"],
-                          row["status_code"], row["response_ms"], row["created_at"]))
+                        INSERT INTO mcp_connections (
+                            platform, method, user_agent, ip_address,
+                            tool_name, params, status_code, response_ms,
+                            client_name, client_version, protocol_version,
+                            success, error_message, created_at
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """, (
+                        row["platform"], row["method"], row["user_agent"], row["ip_address"],
+                        row["tool_name"], row["params"], row["status_code"], row["response_ms"],
+                        row["client_name"] if "client_name" in row.keys() else None,
+                        row["client_version"] if "client_version" in row.keys() else None,
+                        row["protocol_version"] if "protocol_version" in row.keys() else None,
+                        success_val,
+                        row["error_message"] if "error_message" in row.keys() else None,
+                        row["created_at"],
+                    ))
                     mcp_synced.append(row["id"])
-                except Exception:
+                except Exception as e:
+                    logger.warning(f"MCP buffer sync row failed: {e}")
                     break
 
             if mcp_synced:
-                placeholders = ",".join("%s" * len(mcp_synced))
-                buf.execute(f"UPDATE buffered_mcp SET synced = 1 WHERE id IN ({placeholders})", mcp_synced)
+                placeholders = ",".join("?" * len(mcp_synced))
+                cur.execute(
+                    f"UPDATE buffered_mcp SET synced = 1 WHERE id IN ({placeholders})",
+                    mcp_synced,
+                )
                 buf.commit()
 
             # Clean up old synced rows (keep last 24h for debugging)
             cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
-            buf.execute("DELETE FROM buffered_requests WHERE synced = 1 AND created_at < %s", (cutoff,))
-            buf.execute("DELETE FROM buffered_mcp WHERE synced = 1 AND created_at < %s", (cutoff,))
+            cur.execute("DELETE FROM buffered_requests WHERE synced = 1 AND created_at < ?", (cutoff,))
+            cur.execute("DELETE FROM buffered_mcp WHERE synced = 1 AND created_at < ?", (cutoff,))
             buf.commit()
             buf.close()
 
@@ -575,19 +737,85 @@ def get_all_time_total():
         return 0
 
 
+def _success_predicate():
+    """Shared SQL fragment: row is considered a successful MCP call if
+    success=TRUE, or (success IS NULL AND status_code is 2xx or NULL)."""
+    return (
+        "(success = TRUE OR "
+        "(success IS NULL AND (status_code IS NULL OR status_code BETWEEN 200 AND 299)))"
+    )
+
+
 def get_mcp_tool_stats(days=7):
-    """Get MCP tool usage stats from the last N days."""
+    """Per-tool verified call counts over the last N days.
+
+    Filters to `method = 'tools/call'` so probes, handshakes, and catalog
+    fetches don't pollute the tool-specific numbers.
+    """
     try:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-        return _execute("""
-            SELECT tool_name, COUNT(*) as call_count, AVG(response_ms) as avg_ms,
-                   COUNT(CASE WHEN status_code = 200 THEN 1 END) as success_count
+        return _execute(f"""
+            SELECT
+                tool_name,
+                COUNT(*)                                           AS call_count,
+                COUNT(*) FILTER (WHERE {_success_predicate()})     AS success_count,
+                AVG(NULLIF(response_ms, 0))                        AS avg_ms
             FROM mcp_connections
-            WHERE created_at >= %s AND tool_name IS NOT NULL AND tool_name != ''
-            GROUP BY tool_name ORDER BY call_count DESC
+            WHERE created_at >= %s
+              AND method = 'tools/call'
+              AND tool_name IS NOT NULL
+              AND tool_name <> ''
+            GROUP BY tool_name
+            ORDER BY call_count DESC
         """, (cutoff,), fetchall=True) or []
     except Exception:
         return []
+
+
+def get_mcp_method_breakdown(days=7):
+    """Segment mcp_connections by JSON-RPC method — tools/call vs tools/list
+    vs initialize vs ping etc. Tells you whether the traffic is real usage
+    or just handshake/discovery noise."""
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        return _execute(f"""
+            SELECT
+                method,
+                COUNT(*)                                         AS n,
+                COUNT(*) FILTER (WHERE {_success_predicate()})   AS ok,
+                COUNT(DISTINCT platform)                         AS platforms,
+                COUNT(DISTINCT ip_address)                       AS ips
+            FROM mcp_connections
+            WHERE created_at >= %s
+            GROUP BY method
+            ORDER BY n DESC
+        """, (cutoff,), fetchall=True) or []
+    except Exception:
+        return []
+
+
+def get_verified_call_totals(days=7):
+    """One-row summary distinguishing verified tool calls from noise.
+    This is the headline metric for MCP usage — the number you actually
+    want to report, NOT `SELECT COUNT(*) FROM mcp_connections`."""
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        return _execute(f"""
+            SELECT
+                COUNT(*)                                            AS total_rows,
+                COUNT(*) FILTER (WHERE method = 'tools/call')       AS tool_call_attempts,
+                COUNT(*) FILTER (
+                    WHERE method = 'tools/call' AND {_success_predicate()}
+                )                                                   AS verified_tool_calls,
+                COUNT(*) FILTER (WHERE method = 'tools/list')       AS catalog_fetches,
+                COUNT(*) FILTER (WHERE method = 'initialize')       AS handshakes,
+                COUNT(DISTINCT platform)                            AS distinct_platforms,
+                COUNT(DISTINCT ip_address)                          AS unique_ips
+            FROM mcp_connections
+            WHERE created_at >= %s
+        """, (cutoff,), fetch=True) or {}
+    except Exception:
+        return {}
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -693,6 +921,8 @@ def init_ai_tracking(app: Flask):
         today_count = get_requests_today()
         all_time = get_all_time_total()
         mcp_tools = get_mcp_tool_stats(7)
+        mcp_verified = get_verified_call_totals(7)
+        mcp_methods = get_mcp_method_breakdown(7)
 
         # Build platform list (exclude direct/seo_bot)
         platforms = []
@@ -720,6 +950,11 @@ def init_ai_tracking(app: Flask):
                 "total_platforms": len(platforms),
                 "total_requests_all_time": all_time,
                 "requests_today": today_count,
+                # Honest MCP numbers over the last 7 days.
+                "mcp_7d_tool_call_attempts": (mcp_verified or {}).get("tool_call_attempts", 0),
+                "mcp_7d_verified_tool_calls": (mcp_verified or {}).get("verified_tool_calls", 0),
+                "mcp_7d_handshakes": (mcp_verified or {}).get("handshakes", 0),
+                "mcp_7d_catalog_fetches": (mcp_verified or {}).get("catalog_fetches", 0),
             },
             "platforms": platforms,
             "chart_data": chart,
@@ -728,6 +963,8 @@ def init_ai_tracking(app: Flask):
                 for r in daily
             ],
             "mcp_tools": mcp_tools,
+            "mcp_methods": mcp_methods,
+            "mcp_verified_7d": mcp_verified,
         })
 
     @app.route("/api/ai/track-request", methods=["POST", "OPTIONS"])
@@ -787,22 +1024,58 @@ def init_ai_tracking(app: Flask):
 
     @app.route("/api/ai/track-mcp", methods=["POST", "OPTIONS"])
     def track_mcp_call():
-        """Track MCP tool calls from the gateway or Worker."""
+        """Track MCP tool calls from the gateway or Worker.
+
+        Body fields (all optional except method):
+          platform, method (required), user_agent, ip, tool_name, params,
+          status_code, response_ms, client_name, client_version,
+          protocol_version, success, error_message, body (raw JSON-RPC body —
+          used to auto-extract tool_name when it wasn't passed explicitly)
+        """
         if request.method == "OPTIONS":
             return cors_jsonify({})
         try:
             data = request.get_json(silent=True) or {}
+
+            # Auto-extract tool_name from raw JSON-RPC body if not provided.
+            tool_name = data.get("tool_name")
+            if not tool_name:
+                body = data.get("body") or {
+                    "method": data.get("method"),
+                    "params": data.get("params"),
+                }
+                tool_name = extract_tool_name(body)
+
+            params_field = data.get("params")
+            params_json = None
+            if params_field is not None:
+                try:
+                    params_json = json.dumps(params_field)[:1000]
+                except Exception:
+                    params_json = str(params_field)[:1000]
+
+            success = data.get("success")
+            # Accept strings like "true"/"false"/"1"/"0" too.
+            if isinstance(success, str):
+                s = success.strip().lower()
+                success = True if s in ("true", "1", "yes") else (False if s in ("false", "0", "no") else None)
+
             log_mcp_connection(
                 platform=data.get("platform", "unknown"),
                 method=data.get("method", ""),
                 user_agent=data.get("user_agent", ""),
                 ip_address=data.get("ip", ""),
-                tool_name=data.get("tool_name", ""),
-                params=json.dumps(data.get("params", {}))[:1000],
-                status_code=data.get("status_code", 200),
+                tool_name=tool_name,
+                params=params_json,
+                status_code=data.get("status_code"),
                 response_ms=data.get("response_ms", 0),
+                client_name=data.get("client_name"),
+                client_version=data.get("client_version"),
+                protocol_version=data.get("protocol_version"),
+                success=success,
+                error_message=data.get("error_message"),
             )
-            return cors_jsonify({"status": "tracked"})
+            return cors_jsonify({"status": "tracked", "tool_name": tool_name})
         except Exception as e:
             return cors_jsonify({"status": "error", "msg": str(e)[:100]})
 
@@ -815,6 +1088,28 @@ def init_ai_tracking(app: Flask):
         return cors_jsonify({
             "success": True,
             "activity": get_recent_activity(limit),
+        })
+
+    @app.route("/api/ai/mcp-stats", methods=["GET", "OPTIONS"])
+    def ai_mcp_stats():
+        """Honest MCP usage report — verified tool calls vs handshakes/probes.
+
+        Query param: ?days=7 (default)
+        """
+        if request.method == "OPTIONS":
+            return cors_jsonify({})
+        try:
+            days = int(request.args.get("days", 7))
+            days = max(1, min(days, 90))
+        except Exception:
+            days = 7
+
+        return cors_jsonify({
+            "success": True,
+            "window_days": days,
+            "summary": get_verified_call_totals(days),
+            "by_method": get_mcp_method_breakdown(days),
+            "by_tool": get_mcp_tool_stats(days),
         })
 
     @app.route("/api/ai/health", methods=["GET"])
