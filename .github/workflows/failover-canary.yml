@@ -1,0 +1,39 @@
+# GitHub Actions weekly failover canary for dchub.cloud
+#
+# Place at: .github/workflows/failover-canary.yml  in your repo
+#
+# Prerequisites:
+#   1. dchub-failover-check.sh committed to the repo (path below assumes root).
+#   2. Repo Actions Secret named CANARY_SECRET — same value bound on:
+#      - mcp-proxy Worker (Cloudflare → Settings → Variables and Secrets)
+#      - dchubapiproxy Worker (same place, same value)
+#
+# Behavior:
+#   - Runs every Monday at 09:00 UTC.
+#   - Runs on manual dispatch (Actions tab → Run workflow).
+#   - On drill failure: workflow fails, GitHub emails repo watchers/admins by
+#     default (including azmartone@gmail.com if you're a repo admin).
+
+name: Failover canary
+
+on:
+  schedule:
+    - cron: '0 9 * * 1'  # Mondays 09:00 UTC
+  workflow_dispatch:     # manual "Run workflow" button
+
+jobs:
+  drill:
+    name: dchub.cloud failover drill
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Make script executable
+        run: chmod +x ./dchub-failover-check.sh
+
+      - name: Run failover drill
+        env:
+          CANARY_SECRET: ${{ secrets.CANARY_SECRET }}
+        run: ./dchub-failover-check.sh drill
