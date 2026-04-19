@@ -779,21 +779,25 @@ def create_api_key():
     now = datetime.utcnow().isoformat()
     
     c.execute("""
-        INSERT INTO api_keys (user_id, key_hash, key_prefix, name, rate_limit_tier, created_at)
-        VALUES (%s, %s, %s, %s, %s, %s)
-    """, (user_id, key_hash, key_prefix, name, plan, now))
+        INSERT INTO api_keys (user_id, key_hash, key_prefix, name, rate_limit_tier, plan, is_active, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s, 1, %s) RETURNING id
+    """, (user_id, key_hash, key_prefix, name, plan, plan, now))
     
-    key_id = c.lastrowid
+    row = c.fetchone()
+    key_id = row['id'] if row else None
     conn.commit()
     conn.close()
     
     return jsonify({
         'success': True,
-        'key': {
+        'key': api_key,
+        'api_key': api_key,
+        'key_data': {
             'id': key_id,
-            'api_key': api_key,  # Only shown once!
+            'api_key': api_key,
             'key_prefix': key_prefix,
             'name': name,
+            'plan': plan,
             'created_at': now
         },
         'message': 'Save this API key - it will not be shown again!'
