@@ -11,8 +11,15 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# force headless backend and pre-warm matplotlib font cache so first
+# request doesn't blow past Railway's 30s healthcheck window
+ENV MPLBACKEND=Agg
+ENV PYTHONUNBUFFERED=1
+RUN python -c "import matplotlib.pyplot as plt; fig, ax = plt.subplots(); fig.savefig('/tmp/warmup.png'); print('matplotlib warm')"
+
 COPY . .
 
 ENV PORT=8080
 EXPOSE 8080
-CMD ["sh", "-c", "uvicorn app:app --host 0.0.0.0 --port ${PORT}"]
+# exec form to avoid subshell issues while still expanding $PORT via -c
+CMD ["sh", "-c", "exec uvicorn app:app --host 0.0.0.0 --port ${PORT:-8080} --log-level info"]
