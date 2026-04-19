@@ -45,3 +45,7 @@ main.py.prev-*.bak
 main.py.bak
 fix-dchub-p0.py
 main.py.bak-*
+# MCP description-patch scaffolding
+dchub_mcp_server.py.bak
+patch_mcp_descriptions.py
+tool-descriptions-v2.json
