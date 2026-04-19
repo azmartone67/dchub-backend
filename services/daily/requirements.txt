@@ -1,0 +1,9 @@
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+httpx==0.28.1
+psycopg[binary]==3.2.3
+boto3==1.35.76
+matplotlib==3.10.8
+pillow==11.0.0
+numpy==2.2.1
+tweepy==4.14.0
