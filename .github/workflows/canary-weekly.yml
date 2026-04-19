@@ -1,23 +1,31 @@
-name: Weekly Replit Canary Probe
+name: Weekly Replit canary
+
 on:
   schedule:
-    - cron: '0 14 * * 1'   # Monday 14:00 UTC
+    - cron: '0 14 * * 1'
   workflow_dispatch:
+
 jobs:
-  canary:
+  probe:
     runs-on: ubuntu-latest
     steps:
-      - name: Probe dchubapiproxy with canary header
+      - name: Probe /api/health with canary header
         env:
           CANARY_SECRET: ${{ secrets.CANARY_SECRET }}
         run: |
-          set -e
-          RESP=$(curl -sS -D - -H "X-Dchub-Canary: $CANARY_SECRET" \
-            https://dchubapiproxy.azmartone.workers.dev/api/version)
-          echo "$RESP" | head -30
+          set -euo pipefail
+          RESP=$(curl -sS -D - -o /tmp/body.json \
+            -H "X-Dchub-Canary: $CANARY_SECRET" \
+            https://dchubapiproxy.azmartone.workers.dev/api/health)
+          echo "--- response headers ---"
+          echo "$RESP"
+          echo "--- response body ---"
+          cat /tmp/body.json
+          echo
           BACKEND=$(echo "$RESP" | grep -i '^x-backend-used:' | awk '{print $2}' | tr -d '\r\n')
-          VERSION=$(echo "$RESP" | tail -1 | python3 -c "import json,sys;print(json.load(sys.stdin).get('version'))")
-          echo ""
-          echo "backend=$BACKEND  version=$VERSION"
-          [ "$BACKEND" = "replit" ] || { echo "::error::Expected backend=replit got '$BACKEND' — canary not forcing Replit route"; exit 1; }
-          echo "✓ Replit tail healthy"
+          echo "extracted backend=$BACKEND"
+          if [ "$BACKEND" != "replit" ]; then
+            echo "::error::Expected backend=replit got '$BACKEND' — canary not forcing Replit route"
+            exit 1
+          fi
+          echo "OK: canary correctly routed to replit"
