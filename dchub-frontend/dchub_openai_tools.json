@@ -1,0 +1,288 @@
+{
+  "_comment": "DC Hub Tool Definitions — OpenAI Function Calling Format. Works with: Meta AI (Llama 3.1+), Perplexity Sonar, ChatGPT, Claude, Gemini, any OpenAI-compatible agent. Paste these into your 'tools' array when making chat completion calls.",
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "dchub_search_facilities",
+        "description": "Search 20,000+ data center facilities worldwide by name, provider, city, or country. Returns facility name, operator, location, and coordinates. Use when a user asks about data centers in a location or by a specific operator.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "Search term — matches facility name, provider, city, or region. Example: 'Equinix', 'Ashburn', 'Digital Realty'"
+            },
+            "country": {
+              "type": "string",
+              "description": "ISO 3166-1 alpha-2 country code filter. Example: 'US', 'GB', 'DE', 'JP'"
+            },
+            "limit": {
+              "type": "integer",
+              "description": "Max results (1-100, default 20)"
+            }
+          },
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "dchub_get_transactions",
+        "description": "Get data center M&A transactions, acquisitions, and investments. Tracks $51B+ in total deal value. Use when a user asks about data center deals, acquisitions, mergers, or investment activity.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "limit": {
+              "type": "integer",
+              "description": "Number of transactions to return (default 20)"
+            },
+            "deal_type": {
+              "type": "string",
+              "enum": ["acquisition", "investment", "merger"],
+              "description": "Filter by deal type"
+            }
+          },
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "dchub_get_news",
+        "description": "Get the latest data center industry news from 40+ sources, updated every 5 minutes. Use when a user asks about recent data center news, industry developments, or current events in digital infrastructure.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "limit": {
+              "type": "integer",
+              "description": "Number of articles (default 10)"
+            },
+            "query": {
+              "type": "string",
+              "description": "Keyword filter. Example: 'AI data center', 'sustainability', 'hyperscale'"
+            }
+          },
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "dchub_score_site",
+        "description": "Score a location for data center development suitability (0-100). Evaluates energy cost, carbon intensity, infrastructure proximity, connectivity, natural disaster risk, and cost factors. Use when a user asks if a location is good for a data center or wants to compare sites.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "lat": {
+              "type": "number",
+              "description": "Latitude of the site"
+            },
+            "lon": {
+              "type": "number",
+              "description": "Longitude of the site"
+            },
+            "state": {
+              "type": "string",
+              "description": "Two-letter US state code (for energy/carbon data). Example: 'VA', 'TX', 'AZ'"
+            }
+          },
+          "required": ["lat", "lon", "state"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "dchub_get_grid_fuel_mix",
+        "description": "Get real-time electricity generation fuel mix for a US ISO/RTO region. Returns percentage breakdown by source (gas, wind, solar, nuclear, coal, hydro). Use when a user asks about the power grid, energy sources, or electricity generation in a region.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "iso": {
+              "type": "string",
+              "enum": ["ERCOT", "PJM", "CAISO", "MISO", "SPP", "NYISO", "ISO-NE"],
+              "description": "ISO/RTO name. ERCOT=Texas, PJM=Mid-Atlantic/Virginia, CAISO=California, MISO=Midwest, SPP=Central, NYISO=New York, ISO-NE=New England"
+            }
+          },
+          "required": ["iso"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "dchub_get_energy_prices",
+        "description": "Get electricity prices for a US state. Returns average commercial and industrial rates. Use when a user asks about power costs for data center operations in a state.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "description": "Two-letter US state code. Example: 'TX', 'VA', 'OH'"
+            }
+          },
+          "required": ["state"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "dchub_get_carbon_intensity",
+        "description": "Get grid carbon intensity (gCO2/kWh) for a US state. Use when a user asks about the environmental impact or sustainability of data center power in a region.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "description": "Two-letter US state code"
+            }
+          },
+          "required": ["state"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "dchub_compare_markets",
+        "description": "Compare data center markets side by side. Returns capacity, pricing, growth, and key operators for each market. Use when a user asks to compare locations or markets for data center investment.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "markets": {
+              "type": "string",
+              "description": "Comma-separated market names. Example: 'dallas,phoenix,ashburn'"
+            }
+          },
+          "required": ["markets"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "dchub_get_market_detail",
+        "description": "Get detailed intelligence for a specific data center market, including facility count, capacity, key operators, and growth trends. Use when a user asks about a specific data center market.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "market_name": {
+              "type": "string",
+              "description": "Market identifier. Examples: 'ashburn', 'dallas', 'phoenix', 'chicago', 'atlanta'"
+            }
+          },
+          "required": ["market_name"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "dchub_get_solar_potential",
+        "description": "Get solar PV energy potential for a location using NREL data. Returns capacity factor and annual generation estimates. Use when evaluating renewable energy options for a data center site.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "lat": {"type": "number", "description": "Latitude"},
+            "lon": {"type": "number", "description": "Longitude"}
+          },
+          "required": ["lat", "lon"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "dchub_get_wind_potential",
+        "description": "Get wind energy potential for a location using NREL data. Returns capacity factor and wind speed estimates. Use when evaluating renewable energy options for a data center site.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "lat": {"type": "number", "description": "Latitude"},
+            "lon": {"type": "number", "description": "Longitude"}
+          },
+          "required": ["lat", "lon"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "dchub_get_construction_pipeline",
+        "description": "Get the global data center construction pipeline. Returns facilities under construction, planned, or in development. Tracks 21+ GW of capacity. Use when a user asks about new data center builds or capacity under development.",
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "dchub_get_gas_pipelines",
+        "description": "Get natural gas pipeline infrastructure data by state. Useful for evaluating backup power and on-site generation options near data center sites.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "description": "US state code (optional)"
+            },
+            "limit": {
+              "type": "integer",
+              "description": "Max results (default 50)"
+            }
+          },
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "dchub_get_lmp_prices",
+        "description": "Get real-time locational marginal electricity prices across all US ISO regions. Critical for evaluating actual power costs at specific data center locations.",
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "dchub_ask_question",
+        "description": "Ask DC Hub a natural-language question and get a citable, structured answer with source URL. Use for any general question about data centers, markets, operators, or infrastructure that doesn't fit a specific endpoint.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "question": {
+              "type": "string",
+              "description": "Natural-language question. Example: 'How many data centers are in Northern Virginia?'"
+            }
+          },
+          "required": ["question"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "dchub_get_platform_stats",
+        "description": "Get DC Hub platform statistics: total facilities, countries, providers, news articles, and transactions tracked. Use for high-level overview questions about the platform's coverage.",
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
+      }
+    }
+  ]
+}

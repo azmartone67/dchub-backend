@@ -1,0 +1,669 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Agents | DC Hub - Data Center Intelligence</title>
+    <meta name="description" content="AI-powered data center research agents. Query 20,000+ facilities via ChatGPT, Claude, Perplexity, and more. Connect your AI agent to DC Hub's intelligence layer.">
+    <link rel="canonical" href="https://dchub.cloud/ai-agents">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300..800;1,9..40,300..800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #0a0a14;
+            --bg-secondary: #0f0f1c;
+            --bg-card: #121220;
+            --bg-elevated: #1a1a2e;
+            --border: #1e1e34;
+            --border-glow: #2d2d52;
+            --text-primary: #e8e8f0;
+            --text-secondary: #9898b4;
+            --text-muted: #6b6b88;
+            --accent-blue: #4f7df9;
+            --accent-purple: #8b5cf6;
+            --accent-green: #22c55e;
+            --accent-amber: #f59e0b;
+            --accent-red: #ef4444;
+            --accent-cyan: #06b6d4;
+            --accent-pink: #ec4899;
+            --gpt-green: #10a37f;
+            --claude-orange: #d97706;
+            --moltbook-pink: #ec4899;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        /* NAV */
+        .nav {
+            position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+            background: rgba(10,10,20,0.88);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--border);
+            padding: 0 24px; height: 60px;
+            display: flex; align-items: center; justify-content: space-between;
+        }
+        .nav-brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: var(--text-primary); font-weight: 700; font-size: 1.1rem; }
+        .nav-brand .logo-dot { width: 28px; height: 28px; background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple)); border-radius: 6px; display: grid; place-items: center; font-size: 0.75rem; font-weight: 800; letter-spacing: -0.5px; }
+        .nav-links { display: flex; align-items: center; gap: 6px; }
+        .nav-links a { color: var(--text-secondary); text-decoration: none; font-size: 0.85rem; padding: 6px 14px; border-radius: 6px; transition: all 0.2s; }
+        .nav-links a:hover { color: var(--text-primary); background: rgba(255,255,255,0.04); }
+        .nav-links a.active { color: var(--accent-blue); background: rgba(79,125,249,0.08); }
+        .nav-cta { background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple)) !important; color: #fff !important; font-weight: 600; }
+
+        /* HERO */
+        .hero { padding: 120px 24px 60px; text-align: center; position: relative; overflow: hidden; }
+        .hero::before { content: ''; position: absolute; top: 0; left: 50%; transform: translateX(-50%); width: 800px; height: 600px; background: radial-gradient(ellipse, rgba(79,125,249,0.08) 0%, rgba(139,92,246,0.04) 40%, transparent 70%); pointer-events: none; }
+        .hero-badge { display: inline-flex; align-items: center; gap: 8px; background: rgba(79,125,249,0.08); border: 1px solid rgba(79,125,249,0.2); border-radius: 100px; padding: 6px 16px; font-size: 0.8rem; color: var(--accent-blue); margin-bottom: 24px; font-weight: 500; }
+        .hero-badge .pulse { width: 8px; height: 8px; background: var(--accent-green); border-radius: 50%; animation: pulse 2s infinite; }
+        @keyframes pulse { 0%,100%{opacity:1;transform:scale(1);} 50%{opacity:0.5;transform:scale(1.3);} }
+        .hero h1 { font-size: clamp(2.2rem,5vw,3.6rem); font-weight: 800; line-height: 1.1; margin-bottom: 18px; letter-spacing: -0.03em; }
+        .hero h1 .gradient { background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple), var(--accent-cyan)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+        .hero p { font-size: 1.1rem; color: var(--text-secondary); max-width: 640px; margin: 0 auto 36px; line-height: 1.6; }
+        .hero-stats { display: flex; justify-content: center; gap: 40px; flex-wrap: wrap; }
+        .hero-stat .num { font-size: 1.8rem; font-weight: 800; font-family: 'JetBrains Mono', monospace; }
+        .hero-stat .label { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; margin-top: 4px; }
+
+        /* SHARED */
+        .section { max-width: 1200px; margin: 0 auto; padding: 60px 24px; }
+        .section-header { margin-bottom: 40px; }
+        .section-label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.12em; color: var(--accent-blue); font-weight: 600; margin-bottom: 10px; }
+        .section-title { font-size: 1.8rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 10px; }
+        .section-desc { color: var(--text-secondary); font-size: 0.95rem; max-width: 600px; line-height: 1.5; }
+        .section-divider { border: none; height: 1px; background: var(--border); max-width: 1200px; margin: 0 auto; }
+        .mono { font-family: 'JetBrains Mono', monospace; }
+
+        /* BUTTONS */
+        .btn { display: inline-flex; align-items: center; gap: 8px; padding: 10px 22px; border-radius: 10px; font-size: 0.85rem; font-weight: 600; text-decoration: none; transition: all 0.2s; border: none; cursor: pointer; font-family: inherit; }
+        .btn-gpt { background: var(--gpt-green); color: #fff; }
+        .btn-gpt:hover { background: #0d8b6a; transform: translateY(-1px); }
+        .btn-amber { background: var(--accent-amber); color: #000; }
+        .btn-amber:hover { background: #d97706; transform: translateY(-1px); }
+        .btn-pink { background: var(--moltbook-pink); color: #fff; }
+        .btn-pink:hover { background: #d6366e; transform: translateY(-1px); }
+        .btn-blue { background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple)); color: #fff; }
+        .btn-blue:hover { transform: translateY(-1px); box-shadow: 0 8px 24px rgba(79,125,249,0.3); }
+        .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text-secondary); }
+        .btn-outline:hover { border-color: var(--border-glow); color: var(--text-primary); }
+
+        /* FEATURED GPTs */
+        .featured-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 24px; }
+        .featured-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 16px; padding: 32px; position: relative; overflow: hidden; transition: all 0.3s; }
+        .featured-card:hover { border-color: var(--border-glow); transform: translateY(-2px); box-shadow: 0 12px 40px rgba(0,0,0,0.3); }
+        .featured-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px; }
+        .featured-card.gpt::before { background: linear-gradient(90deg, var(--gpt-green), #34d399); }
+        .featured-card.news-gpt::before { background: linear-gradient(90deg, var(--accent-amber), #fbbf24); }
+        .featured-header { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 20px; }
+        .featured-icon { width: 56px; height: 56px; border-radius: 14px; display: grid; place-items: center; font-size: 1.6rem; flex-shrink: 0; }
+        .featured-card.gpt .featured-icon { background: rgba(16,163,127,0.12); border: 1px solid rgba(16,163,127,0.2); }
+        .featured-card.news-gpt .featured-icon { background: rgba(245,158,11,0.12); border: 1px solid rgba(245,158,11,0.2); }
+        .featured-meta h3 { font-size: 1.2rem; font-weight: 700; margin-bottom: 4px; }
+        .featured-platform { display: inline-flex; align-items: center; gap: 6px; font-size: 0.75rem; color: var(--text-muted); background: rgba(255,255,255,0.04); padding: 3px 10px; border-radius: 4px; }
+        .featured-platform .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--gpt-green); }
+        .featured-badge { position: absolute; top: 16px; right: 16px; background: rgba(34,197,94,0.1); border: 1px solid rgba(34,197,94,0.2); color: var(--accent-green); font-size: 0.7rem; font-weight: 600; padding: 3px 10px; border-radius: 100px; text-transform: uppercase; letter-spacing: 0.06em; }
+        .featured-desc { color: var(--text-secondary); font-size: 0.9rem; line-height: 1.6; margin-bottom: 20px; }
+        .cap-tags { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 24px; }
+        .cap-tag { font-size: 0.75rem; color: var(--text-secondary); background: rgba(255,255,255,0.04); border: 1px solid var(--border); padding: 4px 12px; border-radius: 6px; }
+        .prompt-box { background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin-bottom: 24px; font-family: 'JetBrains Mono', monospace; font-size: 0.78rem; color: var(--text-secondary); line-height: 1.5; }
+        .prompt-box .prompt-label { color: var(--accent-blue); font-weight: 600; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 6px; font-family: 'DM Sans', sans-serif; }
+        .featured-actions { display: flex; gap: 12px; flex-wrap: wrap; }
+
+        /* INTERACTIVE AGENT CARDS (the backend agents) */
+        .agent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; }
+        .agent-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 14px; padding: 24px; transition: all 0.3s; cursor: pointer; position: relative; }
+        .agent-card:hover { border-color: var(--border-glow); transform: translateY(-1px); box-shadow: 0 8px 30px rgba(0,0,0,0.25); }
+        .agent-card-top { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
+        .agent-icon { width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; font-size: 1.3rem; flex-shrink: 0; }
+        .agent-card-top h4 { font-size: 1rem; font-weight: 600; }
+        .agent-card-top .sub { font-size: 0.75rem; color: var(--text-muted); }
+        .agent-status { position: absolute; top: 16px; right: 16px; display: flex; align-items: center; gap: 5px; font-size: 0.7rem; font-weight: 500; }
+        .status-dot { width: 6px; height: 6px; border-radius: 50%; }
+        .s-online .status-dot { background: var(--accent-green); } .s-online { color: var(--accent-green); }
+        .s-standby .status-dot { background: var(--accent-amber); } .s-standby { color: var(--accent-amber); }
+        .agent-card p { font-size: 0.83rem; color: var(--text-secondary); line-height: 1.5; margin-bottom: 14px; }
+        .agent-caps { display: flex; flex-wrap: wrap; gap: 6px; }
+        .agent-cap { font-size: 0.7rem; padding: 3px 9px; border-radius: 5px; background: rgba(255,255,255,0.03); border: 1px solid var(--border); color: var(--text-muted); }
+        .agent-card .agent-try { display: inline-flex; align-items: center; gap: 6px; margin-top: 14px; font-size: 0.8rem; color: var(--accent-blue); font-weight: 500; text-decoration: none; }
+        .agent-card .agent-try:hover { text-decoration: underline; }
+
+        /* MOLTBOOK / AGENT-TO-AGENT ECOSYSTEM */
+        .eco-section { background: var(--bg-secondary); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); padding: 60px 24px; }
+        .eco-inner { max-width: 1200px; margin: 0 auto; }
+        .eco-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 32px; }
+        .eco-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 14px; padding: 28px; position: relative; overflow: hidden; }
+        .eco-card.moltbook::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: linear-gradient(90deg, var(--moltbook-pink), #f472b6); }
+        .eco-card.skill::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: linear-gradient(90deg, var(--accent-cyan), var(--accent-blue)); }
+        .eco-card h3 { font-size: 1.15rem; font-weight: 700; margin-bottom: 8px; display: flex; align-items: center; gap: 10px; }
+        .eco-card p { font-size: 0.88rem; color: var(--text-secondary); line-height: 1.6; margin-bottom: 16px; }
+        .eco-steps { list-style: none; counter-reset: step; }
+        .eco-steps li { counter-increment: step; position: relative; padding-left: 32px; margin-bottom: 12px; font-size: 0.83rem; color: var(--text-secondary); line-height: 1.5; }
+        .eco-steps li::before { content: counter(step); position: absolute; left: 0; top: 0; width: 22px; height: 22px; border-radius: 6px; background: rgba(79,125,249,0.1); border: 1px solid rgba(79,125,249,0.2); color: var(--accent-blue); font-size: 0.7rem; font-weight: 700; display: grid; place-items: center; }
+        .eco-code { background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; color: var(--text-secondary); line-height: 1.5; margin: 12px 0; overflow-x: auto; }
+        .eco-endpoints { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+        .eco-endpoint { font-family: 'JetBrains Mono', monospace; font-size: 0.72rem; padding: 6px 10px; background: rgba(0,0,0,0.25); border: 1px solid var(--border); border-radius: 6px; color: var(--text-muted); }
+        .eco-endpoint .method { color: var(--accent-green); font-weight: 600; }
+
+        /* PLATFORM INTEGRATIONS */
+        .platform-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+        .platform-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 24px; transition: all 0.3s; position: relative; }
+        .platform-card:hover { border-color: var(--border-glow); transform: translateY(-1px); }
+        .platform-card-header { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+        .platform-icon { width: 40px; height: 40px; border-radius: 10px; display: grid; place-items: center; font-size: 1.2rem; }
+        .platform-card h4 { font-size: 0.95rem; font-weight: 600; }
+        .platform-card .sub { font-size: 0.75rem; color: var(--text-muted); }
+        .platform-status { position: absolute; top: 16px; right: 16px; display: flex; align-items: center; gap: 5px; font-size: 0.7rem; font-weight: 500; }
+        .platform-card p { font-size: 0.82rem; color: var(--text-secondary); line-height: 1.5; }
+        .platform-card .protocol { margin-top: 12px; font-family: 'JetBrains Mono', monospace; font-size: 0.72rem; color: var(--text-muted); background: rgba(0,0,0,0.3); padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); }
+
+        /* AUTONOMOUS SYSTEMS */
+        .auto-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+        .auto-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 24px; transition: all 0.3s; }
+        .auto-card:hover { border-color: var(--border-glow); }
+        .auto-card-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; }
+        .auto-card-top h4 { font-size: 0.95rem; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+        .freq { font-size: 0.65rem; font-weight: 600; padding: 3px 8px; border-radius: 4px; text-transform: uppercase; letter-spacing: 0.06em; }
+        .f-1m { background: rgba(239,68,68,0.1); color: var(--accent-red); border: 1px solid rgba(239,68,68,0.2); }
+        .f-5m { background: rgba(245,158,11,0.1); color: var(--accent-amber); border: 1px solid rgba(245,158,11,0.2); }
+        .f-15m { background: rgba(79,125,249,0.1); color: var(--accent-blue); border: 1px solid rgba(79,125,249,0.2); }
+        .f-30m { background: rgba(139,92,246,0.1); color: var(--accent-purple); border: 1px solid rgba(139,92,246,0.2); }
+        .f-6h { background: rgba(6,182,212,0.1); color: var(--accent-cyan); border: 1px solid rgba(6,182,212,0.2); }
+        .auto-card p { font-size: 0.82rem; color: var(--text-secondary); line-height: 1.5; margin-bottom: 14px; }
+        .auto-metrics { display: flex; gap: 16px; flex-wrap: wrap; }
+        .auto-metric .val { font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
+        .auto-metric .key { font-size: 0.65rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; }
+
+        /* DISCOVERY FILES */
+        .disc-section { background: var(--bg-secondary); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); padding: 60px 24px; }
+        .disc-inner { max-width: 1200px; margin: 0 auto; }
+        .disc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+        .disc-file { display: flex; align-items: center; gap: 12px; padding: 14px 16px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; text-decoration: none; color: var(--text-primary); transition: all 0.2s; }
+        .disc-file:hover { border-color: var(--border-glow); background: var(--bg-elevated); }
+        .disc-file .fi { font-size: 1.3rem; flex-shrink: 0; }
+        .disc-file .fn { font-weight: 600; font-family: 'JetBrains Mono', monospace; font-size: 0.78rem; }
+        .disc-file .fd { font-size: 0.7rem; color: var(--text-muted); margin-top: 2px; }
+
+        /* CTA */
+        .cta-section { padding: 80px 24px; text-align: center; }
+        .cta-box { max-width: 760px; margin: 0 auto; background: var(--bg-card); border: 1px solid var(--border); border-radius: 20px; padding: 48px 40px; position: relative; overflow: hidden; }
+        .cta-box::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, var(--accent-blue), var(--accent-purple), var(--accent-cyan), var(--moltbook-pink)); }
+        .cta-box h2 { font-size: 1.6rem; font-weight: 700; margin-bottom: 12px; }
+        .cta-box p { color: var(--text-secondary); margin-bottom: 28px; font-size: 0.95rem; }
+        .cta-buttons { display: flex; justify-content: center; gap: 12px; flex-wrap: wrap; }
+
+        /* FOOTER */
+        .footer { padding: 40px 24px; text-align: center; border-top: 1px solid var(--border); }
+        .footer p { color: var(--text-muted); font-size: 0.8rem; }
+        .footer a { color: var(--text-secondary); text-decoration: none; }
+        .footer a:hover { color: var(--text-primary); }
+
+        /* RESPONSIVE */
+        @media (max-width: 768px) {
+            .nav-links { display: none; }
+            .hero { padding: 100px 16px 40px; }
+            .featured-grid, .eco-grid { grid-template-columns: 1fr; }
+            .agent-grid { grid-template-columns: 1fr; }
+            .platform-grid { grid-template-columns: 1fr; }
+            .auto-grid { grid-template-columns: 1fr; }
+            .disc-grid { grid-template-columns: 1fr 1fr; }
+            .eco-endpoints { grid-template-columns: 1fr; }
+            .section { padding: 40px 16px; }
+            .cta-box { padding: 32px 20px; }
+        }
+
+        /* ANIMATIONS */
+        @keyframes fadeUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+        .anim { opacity: 0; animation: fadeUp 0.6s ease forwards; }
+        .d1 { animation-delay: 0.1s; } .d2 { animation-delay: 0.2s; } .d3 { animation-delay: 0.3s; } .d4 { animation-delay: 0.4s; }
+    </style>
+<script src="/static/js/api-config.js"></script>
+</head>
+<body>
+
+<!-- NAV -->
+<!-- HERO -->
+<section class="hero">
+    <div class="hero-badge anim"><span class="pulse"></span> AI Agent Network Active</div>
+    <h1 class="anim d1">Talk to <span class="gradient">20,000+ Data Centers</span><br>Through AI</h1>
+    <p class="anim d2">Query facilities, track M&A deals, analyze markets, and discover sites — through ChatGPT, Claude, Perplexity, or connect your own agent via our open APIs and skill files.</p>
+    <div class="hero-stats anim d3">
+        <div class="hero-stat"><div class="num">4</div><div class="label">Live Agents</div></div>
+        <div class="hero-stat"><div class="num">9</div><div class="label">AI Platforms</div></div>
+        <div class="hero-stat"><div class="num">20,534</div><div class="label">Facilities</div></div>
+        <div class="hero-stat"><div class="num">673</div><div class="label">M&A Deals</div></div>
+    </div>
+</section>
+
+<!-- ====== SECTION 1: FEATURED ChatGPT GPTs ====== -->
+<section class="section">
+    <div class="section-header">
+        <div class="section-label">⭐ Featured — Try Now Free</div>
+        <div class="section-title">ChatGPT Research Agents</div>
+        <p class="section-desc">Free AI tools in the GPT Store powered by DC Hub's real-time database. No setup needed — just open and ask.</p>
+    </div>
+    <div class="featured-grid">
+        <div class="featured-card gpt anim d1">
+            <span class="featured-badge">🟢 Live</span>
+            <div class="featured-header">
+                <div class="featured-icon">🏢</div>
+                <div class="featured-meta">
+                    <h3>DC Hub Data Center Intelligence</h3>
+                    <span class="featured-platform"><span class="dot"></span> ChatGPT GPT Store</span>
+                </div>
+            </div>
+            <p class="featured-desc">Full-access research agent. Search facilities by location, provider, or capacity. Compare markets, analyze pricing, and explore M&A deal flow through conversation.</p>
+            <div class="cap-tags">
+                <span class="cap-tag">📍 Facility Search</span>
+                <span class="cap-tag">📊 Market Compare</span>
+                <span class="cap-tag">💰 M&A Tracker</span>
+                <span class="cap-tag">⚡ Capacity Data</span>
+                <span class="cap-tag">🗺️ Site Selection</span>
+            </div>
+            <div class="prompt-box">
+                <div class="prompt-label">Try asking</div>
+                "Find data centers near Dallas with 10MW+"<br>
+                "Compare Phoenix vs Northern Virginia"<br>
+                "Show me the largest M&A deals in 2025"
+            </div>
+            <div class="featured-actions">
+                <a href="https://chatgpt.com/g/g-697dda8f65e8819189f9d353725cb6d5-dc-hub-data-center-intelligence" target="_blank" class="btn btn-gpt">Open in ChatGPT →</a>
+                <a href="/api-docs" class="btn btn-outline">API Docs</a>
+            </div>
+        </div>
+        <div class="featured-card news-gpt anim d2">
+            <span class="featured-badge">🟢 Live</span>
+            <div class="featured-header">
+                <div class="featured-icon">📰</div>
+                <div class="featured-meta">
+                    <h3>Data Center News Briefing</h3>
+                    <span class="featured-platform"><span class="dot"></span> ChatGPT GPT Store</span>
+                </div>
+            </div>
+            <p class="featured-desc">AI-curated industry briefings from 40+ sources. Covers expansions, M&A, power deals, AI infrastructure builds, and market trends in real time.</p>
+            <div class="cap-tags">
+                <span class="cap-tag">📰 Breaking News</span>
+                <span class="cap-tag">🏗️ Expansions</span>
+                <span class="cap-tag">💰 Deal Alerts</span>
+                <span class="cap-tag">⚡ Power News</span>
+                <span class="cap-tag">🤖 AI/GPU Builds</span>
+            </div>
+            <div class="prompt-box">
+                <div class="prompt-label">Try asking</div>
+                "What are today's biggest data center announcements?"<br>
+                "Summarize this week's M&A activity"<br>
+                "Any new hyperscale builds announced in EMEA?"
+            </div>
+            <div class="featured-actions">
+                <a href="https://chatgpt.com/g/g-697e43e749a081919cefcef68fbfe983-data-center-news-briefing" target="_blank" class="btn btn-amber">Open in ChatGPT →</a>
+                <a href="/news" class="btn btn-outline">Browse News Feed</a>
+            </div>
+        </div>
+    </div>
+</section>
+
+<hr class="section-divider">
+
+<!-- ====== SECTION 2: INTERACTIVE BACKEND AGENTS ====== -->
+<section class="section">
+    <div class="section-header">
+        <div class="section-label">🤖 Interactive Agents</div>
+        <div class="section-title">DC Hub Agent Hub</div>
+        <p class="section-desc">Specialized AI agents running on the DC Hub backend. Each handles a different aspect of data center intelligence — from sales to deep market research.</p>
+    </div>
+    <div class="agent-grid">
+        <!-- Sales Agent -->
+        <div class="agent-card" onclick="window.location.href='/agent-hub'">
+            <span class="agent-status s-online"><span class="status-dot"></span> Running</span>
+            <div class="agent-card-top">
+                <div class="agent-icon" style="background:rgba(79,125,249,0.12); border:1px solid rgba(79,125,249,0.2);">💼</div>
+                <div><h4>Sales Agent</h4><div class="sub">On-demand</div></div>
+            </div>
+            <p>Answers questions about DC Hub features, qualifies leads by company and use case, handles pricing objections, and books demos. Powered by Claude with full platform context.</p>
+            <div class="agent-caps">
+                <span class="agent-cap">Lead Qualification</span>
+                <span class="agent-cap">Pricing Analysis</span>
+                <span class="agent-cap">Demo Booking</span>
+                <span class="agent-cap">Objection Handling</span>
+            </div>
+            <a href="/agent-hub" class="agent-try">Chat with Sales Agent →</a>
+        </div>
+        <!-- Enrichment Agent -->
+        <div class="agent-card" onclick="window.location.href='/agent-hub'">
+            <span class="agent-status s-online"><span class="status-dot"></span> Running</span>
+            <div class="agent-card-top">
+                <div class="agent-icon" style="background:rgba(16,185,129,0.12); border:1px solid rgba(16,185,129,0.2);">🧠</div>
+                <div><h4>Enrichment Agent</h4><div class="sub">Continuous</div></div>
+            </div>
+            <p>Auto-discovers facilities, validates records, researches specific markets, and enriches facility data. Uses Claude for AI-powered market research and facility spec extraction.</p>
+            <div class="agent-caps">
+                <span class="agent-cap">Market Research</span>
+                <span class="agent-cap">Facility Discovery</span>
+                <span class="agent-cap">Data Validation</span>
+                <span class="agent-cap">Record Enrichment</span>
+            </div>
+            <a href="/agent-hub" class="agent-try">Chat with Enrichment Agent →</a>
+        </div>
+        <!-- Social Agent -->
+        <div class="agent-card" onclick="window.location.href='/agent-hub'">
+            <span class="agent-status s-online"><span class="status-dot"></span> Running</span>
+            <div class="agent-card-top">
+                <div class="agent-icon" style="background:rgba(139,92,246,0.12); border:1px solid rgba(139,92,246,0.2);">📢</div>
+                <div><h4>Social Agent</h4><div class="sub">On-demand</div></div>
+            </div>
+            <p>Generates professional LinkedIn posts from news, market data, and platform milestones. Creates content calendars and manages social promotion of DC Hub insights.</p>
+            <div class="agent-caps">
+                <span class="agent-cap">LinkedIn Posts</span>
+                <span class="agent-cap">News-to-Posts</span>
+                <span class="agent-cap">Content Calendar</span>
+                <span class="agent-cap">Brand Promotion</span>
+            </div>
+            <a href="/agent-hub" class="agent-try">Chat with Social Agent →</a>
+        </div>
+        <!-- AI Discovery & Outreach Agent (ACTIVE) -->
+        <div class="agent-card" onclick="window.location.href='/agent-hub'" style="border-color:rgba(6,182,212,0.25); background:linear-gradient(180deg,rgba(6,182,212,0.04) 0%,var(--bg-card) 50%);">
+            <span class="agent-status s-online"><span class="status-dot" style="animation:pulse 2s infinite;"></span> Running</span>
+            <div style="position:absolute;top:16px;left:16px;display:flex;gap:6px;">
+                <span style="font-size:0.6rem;font-weight:700;padding:2px 8px;border-radius:10px;background:rgba(6,182,212,0.12);color:#06b6d4;letter-spacing:0.4px;">✦ NEW</span>
+            </div>
+            <div class="agent-card-top" style="margin-top:8px;">
+                <div class="agent-icon" style="background:rgba(6,182,212,0.12); border:1px solid rgba(6,182,212,0.2);">📡</div>
+                <div><h4>AI Discovery &amp; Outreach Agent</h4><div class="sub">Every 5 min · 9 platforms · 8 directories · 4 search engines</div></div>
+            </div>
+            <p>Proactively broadcasts DC Hub across 9 AI platforms (ChatGPT, Claude, Gemini, Perplexity, Grok, Copilot, DeepSeek, You.com, Meta AI), 8 tool directories, and 4 search engines every 5 minutes. Generates fresh pitches with live stats, monitors organic AI traffic, and manages discovery endpoints.</p>
+            <div class="agent-caps">
+                <span class="agent-cap" style="border-color:rgba(6,182,212,0.2);color:#06b6d4;">Auto-Discovery</span>
+                <span class="agent-cap" style="border-color:rgba(6,182,212,0.2);color:#06b6d4;">Platform Broadcast</span>
+                <span class="agent-cap" style="border-color:rgba(6,182,212,0.2);color:#06b6d4;">Directory Submission</span>
+                <span class="agent-cap" style="border-color:rgba(6,182,212,0.2);color:#06b6d4;">IndexNow</span>
+                <span class="agent-cap" style="border-color:rgba(6,182,212,0.2);color:#06b6d4;">Organic Detection</span>
+                <span class="agent-cap" style="border-color:rgba(6,182,212,0.2);color:#06b6d4;">Pitch Generation</span>
+            </div>
+            <a href="/agent-hub" class="agent-try" style="color:#06b6d4;">View Live Dashboard →</a>
+        </div>
+    </div>
+</section>
+
+<hr class="section-divider">
+
+<!-- ====== SECTION 3: MOLTBOOK & AGENT-TO-AGENT ECOSYSTEM ====== -->
+<div class="eco-section">
+    <div class="eco-inner">
+        <div class="section-header">
+            <div class="section-label" style="color: var(--moltbook-pink);">🔗 Agent-to-Agent Ecosystem</div>
+            <div class="section-title">Connect Your Agent to DC Hub</div>
+            <p class="section-desc">DC Hub is the intelligence layer other AI agents cite. Any agent can ingest our skill file and gain data center research capabilities — no API key needed for discovery.</p>
+        </div>
+
+        <div class="eco-grid">
+            <!-- Moltbook Integration -->
+            <div class="eco-card moltbook">
+                <h3>📱 Moltbook Integration <span style="font-size:0.7rem; background:rgba(236,72,153,0.1); border:1px solid rgba(236,72,153,0.2); color:var(--moltbook-pink); padding:2px 8px; border-radius:4px; font-weight:600;">LIVE</span></h3>
+                <p>DCHubBot is live on Moltbook — the largest AI agent social network (150K+ agents). We post real-time market intelligence, share skill files, and respond to data center queries from other agents.</p>
+                <ol class="eco-steps">
+                    <li>DCHubBot heartbeat posts market data every 4-6 hours</li>
+                    <li>Agents in <span class="mono" style="color:var(--moltbook-pink);">m/datacenter</span> can query DC Hub endpoints</li>
+                    <li>Skill file shared in <span class="mono" style="color:var(--moltbook-pink);">m/tools</span> for agent ingestion</li>
+                    <li>Broadcast agent coordinates cross-platform outreach</li>
+                </ol>
+                <div style="margin-top:16px;">
+                    <a href="https://www.moltbook.com" target="_blank" class="btn btn-pink" style="padding:8px 18px; font-size:0.82rem;">View on Moltbook →</a>
+                </div>
+            </div>
+
+            <!-- Skill File Integration -->
+            <div class="eco-card skill">
+                <h3>🧠 Skill File Protocol</h3>
+                <p>Any AI agent can gain DC Hub capabilities by reading our skill file. One URL gives your agent access to facility search, M&A data, market reports, and energy pricing across 140+ countries.</p>
+                <div class="eco-code">
+                    <span style="color:var(--accent-green);">GET</span> https://dchub.cloud/skill.md<br><br>
+                    <span style="color:var(--text-muted);"># Your agent reads this and gains:</span><br>
+                    → Facility search (20,534 facilities)<br>
+                    → M&A deal tracking (673 deals)<br>
+                    → Market intelligence (140+ countries)<br>
+                    → Energy pricing (PJM, ERCOT, CAISO)
+                </div>
+                <p style="font-size:0.8rem; color:var(--text-muted); margin-bottom:8px;">Public endpoints agents can call:</p>
+                <div class="eco-endpoints">
+                    <div class="eco-endpoint"><span class="method">GET</span> /api/ai/query?type=stats</div>
+                    <div class="eco-endpoint"><span class="method">GET</span> /api/ai/query?type=facilities</div>
+                    <div class="eco-endpoint"><span class="method">GET</span> /api/v1/deals</div>
+                    <div class="eco-endpoint"><span class="method">GET</span> /api/v1/pipeline</div>
+                    <div class="eco-endpoint"><span class="method">GET</span> /api/v1/energy/lmp</div>
+                    <div class="eco-endpoint"><span class="method">GET</span> /api/news</div>
+                    <div class="eco-endpoint"><span class="method">GET</span> /api/market-report</div>
+                    <div class="eco-endpoint"><span class="method">GET</span> /api/ai/cite</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Broadcast Agent -->
+        <div class="eco-card" style="border: 1px solid var(--border); position: relative; overflow: hidden;">
+            <div style="position:absolute; top:0; left:0; right:0; height:3px; background:linear-gradient(90deg, var(--accent-purple), var(--moltbook-pink), var(--accent-amber));"></div>
+            <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:20px;">
+                <div style="flex:1; min-width:280px;">
+                    <h3>📡 Broadcast Agent <span style="font-size:0.7rem; background:rgba(34,197,94,0.1); border:1px solid rgba(34,197,94,0.2); color:var(--accent-green); padding:2px 8px; border-radius:4px; font-weight:600;">STANDBY</span></h3>
+                    <p>Proactive outreach to AI agent ecosystems. Generates content, posts to Moltbook, sends agent invitations with skill file URLs, and manages discovery endpoint distribution.</p>
+                    <div class="agent-caps" style="margin-top:12px;">
+                        <span class="agent-cap">Moltbook Posts</span>
+                        <span class="agent-cap">Agent Invitations</span>
+                        <span class="agent-cap">Capability Sharing</span>
+                        <span class="agent-cap">Discovery Endpoints</span>
+                    </div>
+                </div>
+                <div style="flex:1; min-width:280px;">
+                    <p style="font-size:0.8rem; color:var(--text-muted); margin-bottom:8px;">Sample Moltbook post:</p>
+                    <div class="eco-code" style="border-left:3px solid var(--moltbook-pink);">
+                        🚀 DC Hub Intelligence Update<br><br>
+                        Our AI agents now track 20,534+ data centers across 140+ countries with real-time grid data, M&A tracking ($51B+), and automated facility discovery.<br><br>
+                        Connect your agent: dchub.cloud/skill.md<br>
+                        #DataCenter #AIAgents
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ====== SECTION 4: PLATFORM INTEGRATIONS ====== -->
+<section class="section">
+    <div class="section-header">
+        <div class="section-label">🌐 Platform Integrations</div>
+        <div class="section-title">The Source AI Agents Cite</div>
+        <p class="section-desc">Connected to every major AI platform through native protocols, manifests, and structured data feeds.</p>
+    </div>
+    <div class="platform-grid">
+        <div class="platform-card">
+            <span class="platform-status s-online"><span class="status-dot"></span> MCP Active</span>
+            <div class="platform-card-header">
+                <div class="platform-icon" style="background:rgba(217,119,6,0.12); border:1px solid rgba(217,119,6,0.2);">🧠</div>
+                <div><h4>Claude (Anthropic)</h4><div class="sub">MCP Protocol</div></div>
+            </div>
+            <p>Native Model Context Protocol integration for direct data access.</p>
+            <div class="protocol">/.well-known/mcp.json</div>
+        </div>
+        <div class="platform-card">
+            <span class="platform-status s-online"><span class="status-dot"></span> 2 GPTs Live</span>
+            <div class="platform-card-header">
+                <div class="platform-icon" style="background:rgba(16,163,127,0.12); border:1px solid rgba(16,163,127,0.2);">💬</div>
+                <div><h4>ChatGPT (OpenAI)</h4><div class="sub">GPT Store + Plugin</div></div>
+            </div>
+            <p>Two custom GPTs plus plugin manifest for Actions API.</p>
+            <div class="protocol">/.well-known/ai-plugin.json</div>
+        </div>
+        <div class="platform-card">
+            <span class="platform-status" style="color:var(--accent-cyan);"><span class="status-dot" style="background:var(--accent-cyan);"></span> Indexed</span>
+            <div class="platform-card-header">
+                <div class="platform-icon" style="background:rgba(32,184,205,0.12); border:1px solid rgba(32,184,205,0.2);">🔍</div>
+                <div><h4>Perplexity</h4><div class="sub">Web Discovery</div></div>
+            </div>
+            <p>Structured data optimized for real-time citation in search.</p>
+            <div class="protocol">/llms.txt · /llms-full.txt</div>
+        </div>
+        <div class="platform-card">
+            <span class="platform-status s-standby"><span class="status-dot"></span> Discoverable</span>
+            <div class="platform-card-header">
+                <div class="platform-icon" style="background:rgba(66,133,244,0.12); border:1px solid rgba(66,133,244,0.2);">✨</div>
+                <div><h4>Google Gemini</h4><div class="sub">A2A Agent Card</div></div>
+            </div>
+            <p>Vertex AI Extensions and Schema.org markup enabled.</p>
+            <div class="protocol">/.well-known/agent.json</div>
+        </div>
+        <div class="platform-card">
+            <span class="platform-status s-standby"><span class="status-dot"></span> Ready</span>
+            <div class="platform-card-header">
+                <div class="platform-icon" style="background:rgba(139,92,246,0.12); border:1px solid rgba(139,92,246,0.2);">🪁</div>
+                <div><h4>GitHub Copilot</h4><div class="sub">Copilot Extensions</div></div>
+            </div>
+            <p>Agent manifest for querying DC data from your IDE.</p>
+            <div class="protocol">/copilot-agent.json</div>
+        </div>
+        <div class="platform-card">
+            <span class="platform-status s-online"><span class="status-dot"></span> Broadcasting</span>
+            <div class="platform-card-header">
+                <div class="platform-icon" style="background:rgba(200,200,200,0.06); border:1px solid rgba(200,200,200,0.12);">𝕏</div>
+                <div><h4>Grok (xAI)</h4><div class="sub">API Stats Endpoint</div></div>
+            </div>
+            <p>Live stats endpoint broadcasting facility counts and platform data to Grok crawlers.</p>
+            <div class="protocol">/api/stats</div>
+        </div>
+        <div class="platform-card">
+            <span class="platform-status s-online"><span class="status-dot"></span> Broadcasting</span>
+            <div class="platform-card-header">
+                <div class="platform-icon" style="background:rgba(69,89,164,0.12); border:1px solid rgba(69,89,164,0.2);">🔮</div>
+                <div><h4>DeepSeek</h4><div class="sub">Query API</div></div>
+            </div>
+            <p>Structured query endpoint for DeepSeek agent integration and data center lookups.</p>
+            <div class="protocol">/api/query</div>
+        </div>
+        <div class="platform-card">
+            <span class="platform-status s-online"><span class="status-dot"></span> Agent Live</span>
+            <div class="platform-card-header">
+                <div class="platform-icon" style="background:rgba(102,51,255,0.12); border:1px solid rgba(102,51,255,0.2);">🔎</div>
+                <div><h4>You.com</h4><div class="sub">Custom Agent</div></div>
+            </div>
+            <p>DC Hub custom agent live on You.com with web search and structured API access.</p>
+            <div class="protocol">/llms-full.txt</div>
+        </div>
+        <div class="platform-card">
+            <span class="platform-status s-standby"><span class="status-dot"></span> Outreach</span>
+            <div class="platform-card-header">
+                <div class="platform-icon" style="background:rgba(6,104,225,0.12); border:1px solid rgba(6,104,225,0.2);">🦙</div>
+                <div><h4>Meta AI</h4><div class="sub">Llama RAG Source</div></div>
+            </div>
+            <p>Structured data source proposed for Llama-powered grounding and RAG integration.</p>
+            <div class="protocol">/llms.txt</div>
+        </div>
+        <div class="platform-card">
+            <span class="platform-status s-online"><span class="status-dot"></span> Live</span>
+            <div class="platform-card-header">
+                <div class="platform-icon" style="background:rgba(236,72,153,0.12); border:1px solid rgba(236,72,153,0.2);">📱</div>
+                <div><h4>Moltbook</h4><div class="sub">Agent Social Network</div></div>
+            </div>
+            <p>DCHubBot registered with heartbeat, skill sharing, and query responses.</p>
+            <div class="protocol">dchub.cloud/skill.md</div>
+        </div>
+    </div>
+</section>
+
+<hr class="section-divider">
+
+<!-- ====== SECTION 5: AUTONOMOUS BACKGROUND SYSTEMS ====== -->
+<section class="section">
+    <div class="section-header">
+        <div class="section-label">⚙️ Autonomous Systems</div>
+        <div class="section-title">Always-On Intelligence</div>
+        <p class="section-desc">Background systems that continuously discover, enrich, and validate DC Hub's data — no manual intervention.</p>
+    </div>
+    <div class="auto-grid">
+        <div class="auto-card">
+            <div class="auto-card-top"><h4>📡 News Aggregation</h4><span class="freq f-1m">Every 1m</span></div>
+            <p>40+ industry sources including DCD, Bloomberg, Reuters, TechCrunch. Auto-categorized by M&A, expansion, power, AI/GPU.</p>
+            <div class="auto-metrics"><div class="auto-metric"><div class="val">40+</div><div class="key">Sources</div></div><div class="auto-metric"><div class="val">3min</div><div class="key">Sync</div></div></div>
+        </div>
+        <div class="auto-card">
+            <div class="auto-card-top"><h4>🏗️ Facility Discovery</h4><span class="freq f-5m">Every 5m</span></div>
+            <p>Crawls directories, operator listings, and construction announcements. Adds new facilities automatically.</p>
+            <div class="auto-metrics"><div class="auto-metric"><div class="val">20,534</div><div class="key">Facilities</div></div><div class="auto-metric"><div class="val">140+</div><div class="key">Countries</div></div></div>
+        </div>
+        <div class="auto-card">
+            <div class="auto-card-top"><h4>🧠 Deep Learning Engine</h4><span class="freq f-15m">Every 15m</span></div>
+            <p>Pattern discovery across 100+ operators. Capacity pipeline tracking, transaction detection from news.</p>
+            <div class="auto-metrics"><div class="auto-metric"><div class="val">19,532</div><div class="key">MW Tracked</div></div><div class="auto-metric"><div class="val">52</div><div class="key">Announcements</div></div></div>
+        </div>
+        <div class="auto-card">
+            <div class="auto-card-top"><h4>🔬 Evolution Engine</h4><span class="freq f-30m">Every 30m</span></div>
+            <p>Claude-powered knowledge building, quality assurance, API aggregation, and feature suggestions.</p>
+            <div class="auto-metrics"><div class="auto-metric"><div class="val">Claude</div><div class="key">Powered</div></div><div class="auto-metric"><div class="val">Auto</div><div class="key">QA</div></div></div>
+        </div>
+        <div class="auto-card">
+            <div class="auto-card-top"><h4>⚡ Infrastructure Discovery</h4><span class="freq f-6h">Every 6h</span></div>
+            <p>Power substations, fiber routes, construction permits, utility data from EIA, HIFLD, OpenStreetMap.</p>
+            <div class="auto-metrics"><div class="auto-metric"><div class="val">128+</div><div class="key">Fiber Routes</div></div><div class="auto-metric"><div class="val">40+</div><div class="key">Substations</div></div></div>
+        </div>
+        <div class="auto-card">
+            <div class="auto-card-top"><h4>📣 SEO & Promotion</h4><span class="freq f-6h">Every 24h</span></div>
+            <p>Sitemap generation, search engine submission, AI crawler optimization for maximum discoverability.</p>
+            <div class="auto-metrics"><div class="auto-metric"><div class="val">Google</div><div class="key">Bing</div></div><div class="auto-metric"><div class="val">Auto</div><div class="key">Sitemaps</div></div></div>
+        </div>
+    </div>
+</section>
+
+<!-- ====== DISCOVERY FILES ====== -->
+<div class="disc-section">
+    <div class="disc-inner">
+        <div class="section-header">
+            <div class="section-label">🔗 Machine-Readable Discovery</div>
+            <div class="section-title">AI Discovery Files</div>
+            <p class="section-desc">Standard files that help AI systems find, understand, and integrate with DC Hub.</p>
+        </div>
+        <div class="disc-grid">
+            <a href="/llms.txt" target="_blank" class="disc-file"><span class="fi">📄</span><div><div class="fn">llms.txt</div><div class="fd">LLM content index</div></div></a>
+            <a href="/llms-full.txt" target="_blank" class="disc-file"><span class="fi">📚</span><div><div class="fn">llms-full.txt</div><div class="fd">Full data + live stats</div></div></a>
+            <a href="/AGENTS.md" target="_blank" class="disc-file"><span class="fi">🤖</span><div><div class="fn">AGENTS.md</div><div class="fd">Agent discovery standard</div></div></a>
+            <a href="/skill.md" target="_blank" class="disc-file"><span class="fi">🧠</span><div><div class="fn">skill.md</div><div class="fd">Agent skill file</div></div></a>
+            <a href="/.well-known/mcp.json" target="_blank" class="disc-file"><span class="fi">🧩</span><div><div class="fn">mcp.json</div><div class="fd">Anthropic MCP manifest</div></div></a>
+            <a href="/.well-known/agent.json" target="_blank" class="disc-file"><span class="fi">🌐</span><div><div class="fn">agent.json</div><div class="fd">Google A2A Card</div></div></a>
+            <a href="/.well-known/ai-plugin.json" target="_blank" class="disc-file"><span class="fi">🔌</span><div><div class="fn">ai-plugin.json</div><div class="fd">ChatGPT plugin</div></div></a>
+            <a href="/copilot-agent.json" target="_blank" class="disc-file"><span class="fi">🪁</span><div><div class="fn">copilot-agent.json</div><div class="fd">GitHub Copilot</div></div></a>
+            <a href="/.well-known/security.txt" target="_blank" class="disc-file"><span class="fi">🔐</span><div><div class="fn">security.txt</div><div class="fd">RFC 9116 security</div></div></a>
+            <a href="/skill.json" target="_blank" class="disc-file"><span class="fi">⚙️</span><div><div class="fn">skill.json</div><div class="fd">Moltbook skill</div></div></a>
+        </div>
+    </div>
+</div>
+
+<!-- CTA -->
+<section class="cta-section">
+    <div class="cta-box">
+        <h2>Stop Googling. Just Ask.</h2>
+        <p>Query 20,534 facilities through ChatGPT, connect your own agent via skill file, or build on our API.</p>
+        <div class="cta-buttons">
+            <a href="https://chatgpt.com/g/g-697dda8f65e8819189f9d353725cb6d5-dc-hub-data-center-intelligence" target="_blank" class="btn btn-gpt">🏢 Intelligence GPT</a>
+            <a href="https://chatgpt.com/g/g-697e43e749a081919cefcef68fbfe983-data-center-news-briefing" target="_blank" class="btn btn-amber">📰 News Briefing GPT</a>
+            <a href="/skill.md" target="_blank" class="btn btn-pink">🧠 Install Skill File</a>
+            <a href="/api-docs" class="btn btn-outline">📚 API Docs</a>
+        </div>
+    </div>
+</section>
+
+<footer class="footer">
+    <p>© 2026 <a href="/">DC Hub</a> · Data Center Intelligence Platform · Built in Phoenix, AZ 🌵</p>
+</footer>
+
+<script>
+const observer = new IntersectionObserver((entries) => {
+    entries.forEach(e => { if (e.isIntersecting) { e.target.style.opacity = '1'; e.target.style.transform = 'translateY(0)'; } });
+}, { threshold: 0.1, rootMargin: '0px 0px -40px 0px' });
+document.querySelectorAll('.platform-card, .auto-card, .disc-file, .agent-card, .eco-card').forEach((el, i) => {
+    el.style.opacity = '0'; el.style.transform = 'translateY(16px)';
+    el.style.transition = `all 0.5s ease ${i % 8 * 0.04}s`;
+    observer.observe(el);
+});
+</script>
+<script src="/js/dchub-nav.js"></script>
+</body>
+</html>

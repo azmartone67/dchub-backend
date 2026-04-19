@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Discovery Pipeline | DC Hub Admin</title>
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0a0e17; color: #e0e0e0; }
+        .header { background: linear-gradient(135deg, #1a1f2e 0%, #0d1117 100%); border-bottom: 1px solid #30363d; padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
+        .header h1 { font-size: 20px; color: #58a6ff; }
+        .header .back-link { color: #8b949e; text-decoration: none; font-size: 14px; }
+        .header .back-link:hover { color: #58a6ff; }
+        .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+        .auth-section { text-align: center; padding: 60px 20px; }
+        .auth-section input { padding: 12px 20px; width: 300px; background: #161b22; border: 1px solid #30363d; border-radius: 8px; color: #e0e0e0; font-size: 14px; margin-right: 10px; }
+        .auth-section button { padding: 12px 24px; background: #238636; border: none; border-radius: 8px; color: white; cursor: pointer; font-size: 14px; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px; }
+        .stat-card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 20px; text-align: center; }
+        .stat-card .value { font-size: 32px; font-weight: 700; color: #58a6ff; margin-bottom: 4px; }
+        .stat-card .label { font-size: 12px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; }
+        .stat-card.high .value { color: #3fb950; }
+        .stat-card.medium .value { color: #d29922; }
+        .stat-card.low .value { color: #f85149; }
+        .controls { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; }
+        .controls button, .controls select { padding: 8px 16px; background: #21262d; border: 1px solid #30363d; border-radius: 6px; color: #e0e0e0; cursor: pointer; font-size: 13px; }
+        .controls button:hover { background: #30363d; }
+        .controls button.active { background: #238636; border-color: #238636; }
+        .controls button.run-btn { background: #1f6feb; border-color: #1f6feb; }
+        .controls button.bulk-btn { background: #238636; border-color: #238636; }
+        .table-wrap { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; background: #161b22; border-radius: 12px; overflow: hidden; }
+        thead th { background: #21262d; padding: 12px 16px; text-align: left; font-size: 12px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #30363d; white-space: nowrap; }
+        tbody td { padding: 12px 16px; border-bottom: 1px solid #21262d; font-size: 13px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        tbody tr:hover { background: #1c2333; }
+        .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+        .badge.high { background: rgba(63,185,80,0.15); color: #3fb950; }
+        .badge.medium { background: rgba(210,153,34,0.15); color: #d29922; }
+        .badge.low { background: rgba(248,81,73,0.15); color: #f85149; }
+        .badge.status { background: rgba(88,166,255,0.15); color: #58a6ff; }
+        .actions { display: flex; gap: 6px; }
+        .actions button { padding: 4px 10px; border-radius: 4px; border: none; cursor: pointer; font-size: 11px; font-weight: 600; }
+        .btn-approve { background: #238636; color: white; }
+        .btn-reject { background: #da3633; color: white; }
+        .btn-merge { background: #1f6feb; color: white; }
+        .empty-state { text-align: center; padding: 60px 20px; color: #8b949e; }
+        .empty-state h3 { font-size: 18px; margin-bottom: 8px; color: #e0e0e0; }
+        .toast { position: fixed; bottom: 20px; right: 20px; padding: 12px 20px; background: #238636; color: white; border-radius: 8px; font-size: 14px; z-index: 1000; display: none; }
+        .toast.error { background: #da3633; }
+        .source-preview { display: none; padding: 12px 16px; background: #0d1117; border-top: 1px solid #21262d; }
+        .source-preview.visible { display: table-row; }
+        .source-preview td { white-space: normal; max-width: none; }
+        .mw-value { color: #f0883e; font-weight: 600; }
+        .score-bar { display: inline-block; width: 60px; height: 6px; background: #21262d; border-radius: 3px; overflow: hidden; vertical-align: middle; margin-left: 6px; }
+        .score-bar .fill { height: 100%; border-radius: 3px; }
+        .pagination { display: flex; gap: 8px; justify-content: center; margin-top: 20px; }
+        .pagination button { padding: 6px 14px; }
+        #main-content { display: none; }
+    </style>
+    <script src="/static/js/api-config.js"></script>
+<script>
+(function() {
+    var b = window.DCHUB_API_BASE || '';
+    window.API_BASE = b;
+    window.DCHUB_CONFIG = { apiBase: b, version: 'v93' };
+    if (!window.dchubFetch) {
+        window.dchubFetch = function(path, opts) {
+            opts = opts || {};
+            if (b) { opts.mode = opts.mode || 'cors'; opts.credentials = opts.credentials || 'include'; }
+            return fetch(b + path, opts);
+        };
+    }
+})();
+</script>
+</head>
+<body>
+    <div class="header">
+        <h1>Discovery Pipeline Admin</h1>
+        <a href="/" class="back-link">Back to DC Hub</a>
+    </div>
+    <div class="container">
+        <div class="auth-section" id="auth-section">
+            <h2 style="margin-bottom: 20px; color: #e0e0e0;">Admin Authentication Required</h2>
+            <div>
+                <input type="password" id="admin-key" placeholder="Enter Admin Key">
+                <button onclick="authenticate()">Login</button>
+            </div>
+        </div>
+
+        <div id="main-content">
+            <div class="stats-grid" id="stats-grid"></div>
+
+            <div class="controls">
+                <button class="active" onclick="filterTier(null, this)">All</button>
+                <button onclick="filterTier('high', this)">High</button>
+                <button onclick="filterTier('medium', this)">Medium</button>
+                <button onclick="filterTier('low', this)">Low</button>
+                <select onchange="sortBy(this.value)">
+                    <option value="confidence_desc">Confidence (High-Low)</option>
+                    <option value="newest">Newest First</option>
+                </select>
+                <button class="run-btn" onclick="runPipeline()">Run Pipeline Now</button>
+                <button class="bulk-btn" onclick="bulkApprove()">Approve All High</button>
+            </div>
+
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Score</th>
+                            <th>Tier</th>
+                            <th>Operator</th>
+                            <th>Location</th>
+                            <th>MW</th>
+                            <th>Status</th>
+                            <th>Type</th>
+                            <th>Source</th>
+                            <th>Match</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="facilities-body"></tbody>
+                </table>
+            </div>
+
+            <div class="pagination" id="pagination"></div>
+
+            <div style="margin-top: 40px; border-top: 1px solid #30363d; padding-top: 24px;">
+                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px;">
+                    <h2 style="font-size: 18px; color: #58a6ff;">Registered Users</h2>
+                    <div style="display: flex; gap: 8px;">
+                        <button onclick="loadUsers('')" class="user-filter active" style="padding:6px 14px;background:#238636;border:1px solid #238636;border-radius:6px;color:white;cursor:pointer;font-size:12px;">All</button>
+                        <button onclick="loadUsers('pro')" class="user-filter" style="padding:6px 14px;background:#21262d;border:1px solid #30363d;border-radius:6px;color:#e0e0e0;cursor:pointer;font-size:12px;">Pro</button>
+                        <button onclick="loadUsers('free')" class="user-filter" style="padding:6px 14px;background:#21262d;border:1px solid #30363d;border-radius:6px;color:#e0e0e0;cursor:pointer;font-size:12px;">Free</button>
+                    </div>
+                </div>
+                <div class="stats-grid" id="user-stats-grid"></div>
+                <div class="table-wrap" style="margin-top: 16px;">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Email</th>
+                                <th>Name</th>
+                                <th>Company</th>
+                                <th>Plan</th>
+                                <th>Last Login</th>
+                                <th>Registered</th>
+                            </tr>
+                        </thead>
+                        <tbody id="users-body">
+                            <tr><td colspan="6" style="text-align:center;padding:40px;color:#8b949e;">Loading users...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script>
+        let adminKey = '';
+        let currentTier = null;
+        let currentSort = 'confidence_desc';
+        let currentOffset = 0;
+        const PAGE_SIZE = 50;
+
+        function authenticate() {
+            adminKey = document.getElementById('admin-key').value;
+            if (!adminKey) return;
+            fetchStats().then(ok => {
+                if (ok) {
+                    document.getElementById('auth-section').style.display = 'none';
+                    document.getElementById('main-content').style.display = 'block';
+                    loadFacilities();
+                    loadUsersDefault();
+                }
+            });
+        }
+
+        function headers() {
+            return { 'X-Admin-Key': adminKey, 'Content-Type': 'application/json' };
+        }
+
+        async function fetchStats() {
+            try {
+                const resp = await dchubFetch('/api/admin/pending-facilities/stats', { headers: headers() });
+                if (resp.status === 403) { showToast('Invalid admin key', true); return false; }
+                const data = await resp.json();
+                if (!data.success) return false;
+                const s = data.stats;
+                document.getElementById('stats-grid').innerHTML = `
+                    <div class="stat-card"><div class="value">${s.total_pending}</div><div class="label">Pending Review</div></div>
+                    <div class="stat-card high"><div class="value">${s.high}</div><div class="label">High Confidence</div></div>
+                    <div class="stat-card medium"><div class="value">${s.medium}</div><div class="label">Medium</div></div>
+                    <div class="stat-card low"><div class="value">${s.low}</div><div class="label">Low</div></div>
+                    <div class="stat-card"><div class="value">${s.auto_verified_today}</div><div class="label">Auto-Verified Today</div></div>
+                    <div class="stat-card"><div class="value">${s.total_auto_verified}</div><div class="label">Total Auto-Verified</div></div>
+                    <div class="stat-card"><div class="value">${s.approved_today}</div><div class="label">Approved Today</div></div>
+                    <div class="stat-card"><div class="value">${s.processed_24h}</div><div class="label">Processed 24h</div></div>
+                `;
+                return true;
+            } catch (e) { showToast('Connection error', true); return false; }
+        }
+
+        async function loadFacilities() {
+            let url = `/api/admin/pending-facilities?sort=${currentSort}&limit=${PAGE_SIZE}&offset=${currentOffset}`;
+            if (currentTier) url += `&tier=${currentTier}`;
+
+            const resp = await fetch(url, { headers: headers() });
+            const data = await resp.json();
+            const tbody = document.getElementById('facilities-body');
+
+            if (!data.facilities || data.facilities.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:40px;color:#8b949e;">No pending facilities found</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = data.facilities.map(f => {
+                const scoreColor = f.confidence_score >= 80 ? '#3fb950' : f.confidence_score >= 50 ? '#d29922' : '#f85149';
+                return `
+                <tr id="row-${f.id}">
+                    <td>
+                        <span style="color:${scoreColor};font-weight:700">${f.confidence_score}</span>
+                        <div class="score-bar"><div class="fill" style="width:${f.confidence_score}%;background:${scoreColor}"></div></div>
+                    </td>
+                    <td><span class="badge ${f.confidence_tier}">${f.confidence_tier}</span></td>
+                    <td title="${f.operator || ''}">${f.operator || '-'} ${f.operator_known ? '✓' : ''}</td>
+                    <td title="${f.location_text || ''}">${f.location_text || (f.city ? f.city + ', ' + (f.state||'') : '-')}</td>
+                    <td class="mw-value">${f.capacity_mw ? f.capacity_mw + ' MW' : '-'}</td>
+                    <td><span class="badge status">${f.status || '-'}</span></td>
+                    <td>${f.classification || '-'}</td>
+                    <td title="${f.source_article_title || ''}">${f.source_name || '-'}</td>
+                    <td>${f.match_type === 'none' ? '<span style="color:#3fb950">New</span>' : '<span style="color:#d29922">' + f.match_type + '</span>'}</td>
+                    <td class="actions">
+                        <button class="btn-approve" onclick="approve(${f.id})">Approve</button>
+                        <button class="btn-reject" onclick="reject(${f.id})">Reject</button>
+                        ${f.matched_facility_id ? '<button class="btn-merge" onclick="merge(' + f.id + ',\'' + f.matched_facility_id + '\')">Merge</button>' : ''}
+                    </td>
+                </tr>`;
+            }).join('');
+
+            document.getElementById('pagination').innerHTML = `
+                ${currentOffset > 0 ? '<button onclick="prevPage()">Previous</button>' : ''}
+                <span style="color:#8b949e;padding:8px;">Showing ${currentOffset + 1}-${currentOffset + data.facilities.length}</span>
+                ${data.facilities.length === PAGE_SIZE ? '<button onclick="nextPage()">Next</button>' : ''}
+            `;
+        }
+
+        function filterTier(tier, btn) {
+            currentTier = tier;
+            currentOffset = 0;
+            document.querySelectorAll('.controls button:not(.run-btn):not(.bulk-btn)').forEach(b => b.classList.remove('active'));
+            if (btn) btn.classList.add('active');
+            loadFacilities();
+        }
+
+        function sortBy(val) { currentSort = val; currentOffset = 0; loadFacilities(); }
+        function nextPage() { currentOffset += PAGE_SIZE; loadFacilities(); }
+        function prevPage() { currentOffset = Math.max(0, currentOffset - PAGE_SIZE); loadFacilities(); }
+
+        async function approve(id) {
+            const resp = await fetch(`${window.DCHUB_API_BASE||''}/api/admin/pending-facilities/${id}/approve`, { method: 'POST', headers: headers() });
+            const data = await resp.json();
+            if (data.success) {
+                showToast('Facility approved');
+                document.getElementById('row-' + id)?.remove();
+                fetchStats();
+            } else { showToast(data.error || 'Error', true); }
+        }
+
+        async function reject(id) {
+            const resp = await fetch(`${window.DCHUB_API_BASE||''}/api/admin/pending-facilities/${id}/reject`, { method: 'POST', headers: headers() });
+            const data = await resp.json();
+            if (data.success) {
+                showToast('Facility rejected');
+                document.getElementById('row-' + id)?.remove();
+                fetchStats();
+            } else { showToast(data.error || 'Error', true); }
+        }
+
+        async function merge(id, facilityId) {
+            const resp = await fetch(`${window.DCHUB_API_BASE||''}/api/admin/pending-facilities/${id}/merge`, {
+                method: 'POST', headers: headers(),
+                body: JSON.stringify({ facility_id: facilityId })
+            });
+            const data = await resp.json();
+            if (data.success) {
+                showToast('Merged with existing facility');
+                document.getElementById('row-' + id)?.remove();
+                fetchStats();
+            } else { showToast(data.error || 'Error', true); }
+        }
+
+        async function bulkApprove() {
+            if (!confirm('Approve all high-confidence facilities?')) return;
+            const resp = await dchubFetch('/api/admin/pending-facilities/bulk-approve?tier=high', { method: 'POST', headers: headers() });
+            const data = await resp.json();
+            if (data.success) {
+                showToast(`Approved ${data.approved} facilities`);
+                fetchStats();
+                loadFacilities();
+            }
+        }
+
+        async function runPipeline() {
+            showToast('Running pipeline...');
+            const resp = await dchubFetch('/api/admin/discovery-pipeline/run', { method: 'POST', headers: headers() });
+            const data = await resp.json();
+            if (data.success) {
+                const s = data.stats;
+                showToast(`Processed: ${s.articles_processed} | Extracted: ${s.facilities_extracted} | Auto: ${s.auto_verified} | Pending: ${s.pending_review}`);
+                fetchStats();
+                loadFacilities();
+            }
+        }
+
+        async function loadUsersDefault() {
+            let url = '/api/admin/users?key=' + encodeURIComponent(adminKey);
+            try {
+                const resp = await dchubFetch(url);
+                const data = await resp.json();
+                if (data.error) return;
+                const bp = data.by_plan || {};
+                renderUsers(data);
+            } catch (e) {}
+        }
+
+        function renderUsers(data) {
+            const bp = data.by_plan || {};
+            const total = data.total_users || data.total || 0;
+            document.getElementById('user-stats-grid').innerHTML = `
+                <div class="stat-card"><div class="value">${total}</div><div class="label">Total Users</div></div>
+                <div class="stat-card high"><div class="value">${bp.pro || 0}</div><div class="label">Pro Users</div></div>
+                <div class="stat-card"><div class="value">${bp.free || 0}</div><div class="label">Free Users</div></div>
+                <div class="stat-card medium"><div class="value">${bp.enterprise || 0}</div><div class="label">Enterprise</div></div>
+            `;
+            const tbody = document.getElementById('users-body');
+            if (!data.users || data.users.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:40px;color:#8b949e;">No users found</td></tr>';
+                return;
+            }
+            tbody.innerHTML = data.users.map(u => {
+                const planColor = u.plan === 'pro' ? '#3fb950' : u.plan === 'enterprise' ? '#d29922' : '#8b949e';
+                const login = u.last_login ? new Date(u.last_login).toLocaleDateString() : 'Never';
+                const created = u.created_at ? new Date(u.created_at).toLocaleDateString() : '-';
+                return `<tr>
+                    <td>${u.email || '-'}</td>
+                    <td>${u.name || '-'}</td>
+                    <td>${u.company || '-'}</td>
+                    <td><span class="badge" style="background:${planColor}22;color:${planColor}">${u.plan || 'free'}</span></td>
+                    <td>${login}</td>
+                    <td>${created}</td>
+                </tr>`;
+            }).join('');
+        }
+
+        async function loadUsers(plan) {
+            document.querySelectorAll('.user-filter').forEach(b => {
+                b.style.background = '#21262d';
+                b.style.borderColor = '#30363d';
+                b.classList.remove('active');
+            });
+            if (event && event.target) {
+                event.target.style.background = '#238636';
+                event.target.style.borderColor = '#238636';
+                event.target.classList.add('active');
+            }
+            let url = '/api/admin/users?key=' + encodeURIComponent(adminKey);
+            if (plan) url += '&plan=' + plan;
+            try {
+                const resp = await dchubFetch(url);
+                const data = await resp.json();
+                if (data.error) { showToast(data.error, true); return; }
+                renderUsers(data);
+            } catch (e) { showToast('Failed to load users', true); }
+        }
+
+        function showToast(msg, isError) {
+            const t = document.getElementById('toast');
+            t.textContent = msg;
+            t.className = 'toast' + (isError ? ' error' : '');
+            t.style.display = 'block';
+            setTimeout(() => t.style.display = 'none', 4000);
+        }
+
+        document.getElementById('admin-key').addEventListener('keypress', e => { if (e.key === 'Enter') authenticate(); });
+    </script>
+</body>
+</html>

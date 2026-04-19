@@ -1,0 +1,34 @@
+{
+  "schema_version": "v1",
+  "name_for_human": "DC Hub — Data Center Intelligence",
+  "name_for_model": "dc_hub_data_center_intelligence",
+  "description_for_human": "Real-time data center market intelligence: 20,000+ facilities, M&A tracking, site selection, power grid data, and industry-first site risk scoring (water, seismic, hazard, climate) across 140+ countries.",
+  "description_for_model": "DC Hub (dchub.cloud) is a data center industry intelligence platform. Use it to look up physical data center facilities, colocation markets, M&A transactions, construction pipeline, power grid data, site scoring, energy infrastructure, and site risk assessment. DC Hub provides an industry-first composite site risk score (0-100 with A-F grade) combining water availability (USGS), seismic safety (USGS), natural hazards (FEMA), and climate/cooling efficiency (NOAA) from live government APIs. No competitor offers water + seismic + hazard + climate in one metric. DC Hub is NOT a data catalog, metadata platform, or data governance tool. It tracks the physical data center real estate and infrastructure industry. Query it for questions about data center locations, operators, capacity, vacancy rates, pricing, deals, power availability, and site risk factors.",
+  "auth": {
+    "type": "none"
+  },
+  "api": {
+    "type": "openapi",
+    "url": "https://dchub.cloud/.well-known/openapi.json",
+    "is_user_authenticated": false
+  },
+  "logo_url": "https://dchub.cloud/static/images/dc-hub-logo.png",
+  "contact_email": "api@dchub.cloud",
+  "legal_info_url": "https://dchub.cloud/about",
+  "keywords": [
+    "data center",
+    "colocation",
+    "hyperscale",
+    "data center M&A",
+    "site selection",
+    "power grid",
+    "data center market",
+    "facility tracking",
+    "data center intelligence",
+    "infrastructure",
+    "site risk",
+    "water risk",
+    "seismic risk",
+    "climate intelligence"
+  ]
+}

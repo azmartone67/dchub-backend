@@ -1,0 +1,65 @@
+# DC Hub Nexus - Deployment Checklist
+# ===================================
+
+## 🚀 STEP 1: Deploy Backend to Replit
+
+□ Go to replit.com and create new Python repl named "dc-hub-nexus"
+□ Upload all files from dc-hub-replit-deploy.zip:
+   - main.py
+   - discovery_nexus.py  
+   - api_server.py
+   - requirements.txt
+   - .replit
+   - replit.nix
+□ Click Run - wait for dependencies to install (~1-2 min)
+□ Note your Replit URL: https://dc-hub-nexus.YOUR-USERNAME.repl.co
+
+## ✅ STEP 2: Verify Backend is Running
+
+Test these endpoints in browser:
+□ https://dc-hub-nexus.YOUR-USERNAME.repl.co/
+  Should return: {"name": "DC Hub Nexus API", ...}
+
+□ https://dc-hub-nexus.YOUR-USERNAME.repl.co/health
+  Should return: {"status": "healthy", ...}
+
+□ https://dc-hub-nexus.YOUR-USERNAME.repl.co/api/v1/stats
+  Should return: {"success": true, "data": {...}}
+
+## 🔗 STEP 3: Connect Frontend
+
+Option A - Update your hosted frontend (tiiny.site):
+1. Edit dc-hub-integrated.html
+2. Find line ~1196: baseUrl: 'https://your-replit-app.replit.app'
+3. Change to: baseUrl: 'https://dc-hub-nexus.YOUR-USERNAME.repl.co'
+4. Re-upload to tiiny.site
+
+Option B - Use included frontend-dchub.html:
+1. Edit frontend-dchub.html
+2. Replace YOUR-USERNAME with your actual Replit username
+3. Upload to tiiny.site
+
+## 📊 STEP 4: Trigger Full Discovery
+
+Once connected, trigger full data pull:
+curl -X POST https://dc-hub-nexus.YOUR-USERNAME.repl.co/api/v1/discovery/run \
+     -H "Content-Type: application/json" \
+     -d '{"mode": "full"}'
+
+## 🔄 STEP 5: Keep Alive (Optional)
+
+To prevent Replit from sleeping:
+□ Sign up at uptimerobot.com
+□ Add HTTP monitor for: https://dc-hub-nexus.YOUR-USERNAME.repl.co/health
+□ Set check interval: 5 minutes
+
+## 🎉 DONE!
+
+Your DC Hub should now show:
+- Live facility data from PeeringDB, OSM, etc.
+- Real-time stats
+- Working search
+- News/announcements
+
+---
+Questions? Issues? The README.md has troubleshooting tips.

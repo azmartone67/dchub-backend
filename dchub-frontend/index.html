@@ -1,0 +1,1173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DC Hub — Data Center Intelligence Platform</title>
+<meta name="description" content="20,000+ data centers. 140+ countries. One platform. The research tool trusted by 15 AI platforms.">
+<link rel="icon" type="image/svg+xml" href="/icons/icon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ══════════════════════════════════════════════════════════
+   DC HUB — GLACIER DESIGN SYSTEM
+   Inspired by Apple: restraint, precision, cinematic space
+   ══════════════════════════════════════════════════════════ */
+
+:root {
+  --black: #09090b;
+  --gray-950: #0c0c0f;
+  --gray-900: #141417;
+  --gray-800: #1e1e23;
+  --gray-700: #2c2c33;
+  --gray-600: #3f3f47;
+  --gray-500: #55555e;
+  --gray-400: #8a8a95;
+  --gray-300: #b0b0ba;
+  --gray-200: #d4d4db;
+  --gray-100: #ececef;
+  --white: #fafafa;
+  --blue: #3478f6;
+  --blue-soft: #5a9aff;
+  --blue-glow: rgba(52, 120, 246, 0.08);
+  --blue-glow-strong: rgba(52, 120, 246, 0.15);
+  --green: #32d583;
+  --green-dim: rgba(50, 213, 131, 0.1);
+  --font: 'Instrument Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  --mono: 'JetBrains Mono', 'SF Mono', monospace;
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-out: cubic-bezier(0, 0, 0.2, 1);
+}
+
+*, *::before, *::after {
+  margin: 0; padding: 0; box-sizing: border-box;
+}
+
+html { scroll-behavior: smooth; }
+
+body {
+  font-family: var(--font);
+  background: var(--black);
+  color: var(--white);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+
+a { color: var(--blue-soft); text-decoration: none; transition: color 0.2s; }
+a:hover { color: var(--blue); }
+
+::selection { background: var(--blue); color: #fff; }
+
+/* ═══ ENTRANCE ANIMATIONS ═══ */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(32px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+
+.reveal {
+  opacity: 0;
+  transform: translateY(32px);
+  transition: opacity 0.8s var(--ease), transform 0.8s var(--ease);
+}
+.reveal.visible {
+  opacity: 1;
+  transform: none;
+}
+
+/* ═══ NAVIGATION ═══ */
+.nav {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 100;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  padding: 0 32px;
+  transition: background 0.4s, border-color 0.4s;
+  border-bottom: 1px solid transparent;
+}
+.nav.scrolled {
+  background: rgba(9, 9, 11, 0.85);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  border-bottom-color: rgba(255,255,255,0.06);
+}
+.nav-inner {
+  max-width: 1180px;
+  margin: 0 auto;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+  font-weight: 700;
+  font-size: 1rem;
+  color: var(--white);
+  letter-spacing: -0.02em;
+}
+.nav-brand svg { width: 28px; height: 28px; }
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: 32px;
+}
+.nav-links a {
+  color: var(--gray-400);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  transition: color 0.2s;
+}
+.nav-links a:hover { color: var(--white); }
+.nav-cta {
+  padding: 7px 18px;
+  background: var(--white);
+  color: var(--black);
+  border-radius: 980px;
+  font-weight: 600;
+  font-size: 13px;
+  transition: all 0.2s;
+  border: none;
+  cursor: pointer;
+  text-decoration: none;
+}
+.nav-cta:hover {
+  background: var(--gray-200);
+  color: var(--black);
+  transform: scale(1.02);
+}
+.nav-hamburger {
+  display: none;
+  background: none;
+  border: none;
+  color: var(--white);
+  cursor: pointer;
+  padding: 8px;
+}
+
+/* ═══ HERO ═══ */
+.hero {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  padding: 140px 32px 80px;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Ambient glow */
+.hero::before {
+  content: '';
+  position: absolute;
+  top: -40%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 800px;
+  height: 800px;
+  background: radial-gradient(circle, var(--blue-glow) 0%, transparent 65%);
+  pointer-events: none;
+}
+
+.hero-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px 6px 12px;
+  background: var(--green-dim);
+  border: 1px solid rgba(50, 213, 131, 0.15);
+  border-radius: 980px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--green);
+  letter-spacing: 0.03em;
+  margin-bottom: 40px;
+  animation: fadeUp 0.7s var(--ease) 0.2s both;
+}
+.hero-eyebrow::before {
+  content: '';
+  width: 6px; height: 6px;
+  background: var(--green);
+  border-radius: 50%;
+  animation: pulse 2.5s ease-in-out infinite;
+}
+
+.hero h1 {
+  font-size: clamp(3rem, 7vw, 5.5rem);
+  font-weight: 700;
+  line-height: 1.04;
+  letter-spacing: -0.04em;
+  max-width: 820px;
+  margin-bottom: 24px;
+  animation: fadeUp 0.8s var(--ease) 0.35s both;
+}
+.hero h1 .gradient {
+  background: linear-gradient(135deg, var(--white) 0%, var(--gray-400) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.hero-sub {
+  font-size: clamp(1rem, 2vw, 1.2rem);
+  color: var(--gray-400);
+  max-width: 500px;
+  line-height: 1.65;
+  margin-bottom: 48px;
+  animation: fadeUp 0.8s var(--ease) 0.5s both;
+}
+
+.hero-actions {
+  display: flex;
+  gap: 12px;
+  animation: fadeUp 0.8s var(--ease) 0.65s both;
+}
+
+/* ═══ HERO AI CAROUSEL ═══ */
+.hero-carousel {
+  width: 100vw;
+  margin-left: calc(-50vw + 50%);
+  margin-top: 64px;
+  animation: fadeUp 1s var(--ease) 0.85s both;
+}
+
+@media (max-width: 768px) {
+  .hero-carousel { margin-top: 48px; }
+}
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 28px;
+  border-radius: 980px;
+  font-weight: 600;
+  font-size: 15px;
+  cursor: pointer;
+  transition: all 0.25s var(--ease);
+  border: none;
+  font-family: var(--font);
+  text-decoration: none;
+}
+.btn-primary {
+  background: var(--blue);
+  color: #fff;
+}
+.btn-primary:hover {
+  background: #4a8af8;
+  color: #fff;
+  transform: translateY(-1px);
+  box-shadow: 0 8px 40px rgba(52, 120, 246, 0.3);
+}
+.btn-ghost {
+  background: transparent;
+  color: var(--gray-300);
+  border: 1px solid var(--gray-700);
+}
+.btn-ghost:hover {
+  color: var(--white);
+  border-color: var(--gray-500);
+}
+
+/* ═══ METRICS ═══ */
+.metrics {
+  display: flex;
+  justify-content: center;
+  gap: 72px;
+  padding: 0 32px 120px;
+  animation: fadeUp 0.8s var(--ease) 0.8s both;
+  flex-wrap: wrap;
+}
+.metric {
+  text-align: center;
+}
+.metric-value {
+  font-family: var(--mono);
+  font-size: clamp(2rem, 4vw, 3rem);
+  font-weight: 500;
+  color: var(--white);
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+.metric-label {
+  font-size: 12px;
+  color: var(--gray-500);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  margin-top: 10px;
+  font-weight: 500;
+}
+
+/* ═══ SECTION UTILITY ═══ */
+.section {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 120px 32px;
+}
+.section-label {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--blue-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  font-weight: 500;
+  margin-bottom: 16px;
+}
+.section-heading {
+  font-size: clamp(2rem, 4vw, 3rem);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  margin-bottom: 20px;
+}
+.section-desc {
+  font-size: 1.05rem;
+  color: var(--gray-400);
+  max-width: 560px;
+  line-height: 1.7;
+}
+
+/* ═══ AI TESTIMONIALS ═══ */
+@keyframes scroll {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+.ai-track-wrapper {
+  width: 100%;
+  overflow: hidden;
+  mask-image: linear-gradient(90deg, transparent 0%, black 6%, black 94%, transparent 100%);
+  -webkit-mask-image: linear-gradient(90deg, transparent 0%, black 6%, black 94%, transparent 100%);
+}
+.ai-track {
+  display: flex;
+  gap: 16px;
+  width: max-content;
+  animation: scroll 40s linear infinite;
+}
+.ai-track:hover {
+  animation-play-state: paused;
+}
+.ai-card {
+  flex-shrink: 0;
+  width: 340px;
+  padding: 28px;
+  background: var(--gray-900);
+  border: 1px solid rgba(255,255,255,0.04);
+  border-radius: 20px;
+  transition: border-color 0.3s, transform 0.3s var(--ease);
+}
+.ai-card:hover {
+  border-color: rgba(255,255,255,0.08);
+  transform: translateY(-3px);
+}
+.ai-card-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.ai-card-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.ai-card-icon img {
+  width: 22px;
+  height: 22px;
+}
+.ai-card-info {
+  flex: 1;
+  min-width: 0;
+}
+.ai-card-name {
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: -0.01em;
+}
+.ai-card-company {
+  font-size: 12px;
+  color: var(--gray-500);
+}
+.ai-card-status {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 3px 8px;
+  border-radius: var(--radius-full);
+  font-weight: 600;
+  color: var(--green);
+  background: rgba(50, 213, 131, 0.1);
+  white-space: nowrap;
+  letter-spacing: 0.03em;
+}
+.ai-card-quote {
+  font-size: 14px;
+  color: var(--gray-300);
+  line-height: 1.7;
+  margin-bottom: 18px;
+  font-style: italic;
+}
+.ai-card-method {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--gray-500);
+  padding-top: 14px;
+  border-top: 1px solid rgba(255,255,255,0.04);
+}
+
+@media (max-width: 768px) {
+  .ai-card { width: 290px; padding: 22px; }
+}
+
+/* ═══ FEATURES SECTION ═══ */
+.features-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+  margin-top: 64px;
+}
+.feature-card {
+  background: var(--gray-900);
+  border: 1px solid rgba(255,255,255,0.04);
+  border-radius: 20px;
+  padding: 40px;
+  transition: border-color 0.3s, transform 0.3s var(--ease);
+  position: relative;
+  overflow: hidden;
+}
+.feature-card:hover {
+  border-color: rgba(255,255,255,0.08);
+  transform: translateY(-2px);
+}
+.feature-card::after {
+  content: '';
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  background: radial-gradient(ellipse at top left, var(--blue-glow) 0%, transparent 50%);
+  opacity: 0;
+  transition: opacity 0.4s;
+  pointer-events: none;
+}
+.feature-card:hover::after { opacity: 1; }
+
+.feature-icon {
+  width: 44px; height: 44px;
+  border-radius: 12px;
+  background: var(--blue-glow-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 24px;
+  color: var(--blue-soft);
+  font-size: 18px;
+}
+.feature-card h3 {
+  font-size: 1.25rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin-bottom: 10px;
+}
+.feature-card p {
+  font-size: 14px;
+  color: var(--gray-400);
+  line-height: 1.7;
+}
+.feature-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 20px;
+  padding: 6px 14px;
+  background: var(--gray-800);
+  border-radius: 980px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--gray-300);
+  font-weight: 500;
+}
+.feature-stat .dot {
+  width: 6px; height: 6px;
+  background: var(--green);
+  border-radius: 50%;
+}
+
+/* Full-width feature */
+.feature-card.wide {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 48px;
+  align-items: center;
+}
+.feature-card.wide .feature-visual {
+  background: var(--gray-800);
+  border-radius: 12px;
+  height: 260px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--gray-500);
+  position: relative;
+  overflow: hidden;
+}
+
+/* Terminal mockup inside wide card */
+.terminal {
+  width: 100%;
+  height: 100%;
+  padding: 20px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--gray-400);
+  line-height: 2;
+}
+.terminal-line { opacity: 0; animation: fadeIn 0.4s var(--ease) forwards; }
+.terminal-line:nth-child(1) { animation-delay: 0.3s; }
+.terminal-line:nth-child(2) { animation-delay: 0.6s; }
+.terminal-line:nth-child(3) { animation-delay: 0.9s; }
+.terminal-line:nth-child(4) { animation-delay: 1.2s; }
+.terminal-line:nth-child(5) { animation-delay: 1.5s; }
+.terminal .prompt { color: var(--blue-soft); }
+.terminal .response { color: var(--gray-300); }
+.terminal .comment { color: var(--gray-600); }
+
+/* ═══ COMPARE SECTION ═══ */
+.compare-section {
+  background: var(--gray-950);
+  border-top: 1px solid rgba(255,255,255,0.04);
+}
+.compare-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 48px;
+}
+.compare-table th {
+  text-align: left;
+  padding: 16px 24px;
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--gray-500);
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  font-weight: 500;
+}
+.compare-table td {
+  padding: 20px 24px;
+  font-size: 14px;
+  color: var(--gray-400);
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+}
+.compare-table tr:hover td {
+  background: rgba(255,255,255,0.015);
+}
+.compare-table td:first-child {
+  color: var(--white);
+  font-weight: 600;
+}
+.compare-table .check {
+  color: var(--green);
+  font-weight: 700;
+}
+.compare-table .dim {
+  color: var(--gray-600);
+}
+.compare-highlight {
+  background: var(--blue-glow);
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 1.5rem;
+  color: var(--white);
+}
+.compare-dim {
+  font-family: var(--mono);
+  font-size: 1.1rem;
+  color: var(--gray-600);
+  text-decoration: line-through;
+}
+
+/* ═══ CTA SECTION ═══ */
+.cta {
+  text-align: center;
+  padding: 160px 32px;
+  position: relative;
+}
+.cta::before {
+  content: '';
+  position: absolute;
+  bottom: 0; left: 50%;
+  transform: translateX(-50%);
+  width: 600px; height: 600px;
+  background: radial-gradient(circle, var(--blue-glow) 0%, transparent 60%);
+  pointer-events: none;
+}
+.cta h2 {
+  font-size: clamp(2.5rem, 5vw, 4rem);
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  line-height: 1.08;
+  margin-bottom: 20px;
+  position: relative;
+}
+.cta p {
+  color: var(--gray-400);
+  font-size: 1.1rem;
+  max-width: 420px;
+  margin: 0 auto 40px;
+  line-height: 1.7;
+  position: relative;
+}
+.cta .btn {
+  position: relative;
+}
+.cta-price {
+  margin-bottom: 40px;
+  position: relative;
+}
+.cta-price .amount {
+  font-family: var(--mono);
+  font-size: 3.5rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+.cta-price .period {
+  color: var(--gray-500);
+  font-size: 1rem;
+  margin-left: 4px;
+}
+.cta-price .was {
+  color: var(--gray-600);
+  font-size: 1rem;
+  text-decoration: line-through;
+  margin-right: 12px;
+}
+.cta-note {
+  font-size: 13px;
+  color: var(--gray-500);
+  margin-top: 20px;
+  position: relative;
+}
+
+/* ═══ FOOTER ═══ */
+.footer {
+  border-top: 1px solid rgba(255,255,255,0.04);
+  padding: 48px 32px;
+}
+.footer-inner {
+  max-width: 1180px;
+  margin: 0 auto;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.footer-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--gray-500);
+}
+.footer-links {
+  display: flex;
+  gap: 24px;
+}
+.footer-links a {
+  color: var(--gray-500);
+  font-size: 13px;
+  font-weight: 500;
+}
+.footer-links a:hover {
+  color: var(--gray-300);
+}
+
+/* ═══ RESPONSIVE ═══ */
+@media (max-width: 768px) {
+  .nav-links { display: none; }
+  .nav-hamburger { display: block; }
+  .nav { padding: 0 20px; }
+
+  .hero { padding: 100px 24px 48px; min-height: auto; }
+  .hero h1 { font-size: 2.6rem; }
+  .hero-sub { font-size: 1rem; }
+  .hero-actions { flex-direction: column; width: 100%; max-width: 320px; }
+  .hero-actions .btn { width: 100%; justify-content: center; }
+
+  .metrics { gap: 32px; padding: 0 24px 80px; }
+  .metric-value { font-size: 2rem; }
+
+  .section { padding: 80px 24px; }
+  .section-heading { font-size: 2rem; }
+
+  .features-grid { grid-template-columns: 1fr; }
+  .feature-card.wide { grid-template-columns: 1fr; }
+  .feature-card.wide .feature-visual { height: 180px; }
+  .feature-card { padding: 28px; }
+
+  .compare-table { font-size: 13px; }
+  .compare-table th, .compare-table td { padding: 14px 16px; }
+
+  .cta { padding: 100px 24px; }
+  .cta h2 { font-size: 2.2rem; }
+  .cta-price .amount { font-size: 2.5rem; }
+
+  .footer-inner { flex-direction: column; gap: 16px; text-align: center; }
+}
+
+@media (max-width: 480px) {
+  .hero h1 { font-size: 2rem; }
+  .metrics { gap: 24px; }
+  .metric-value { font-size: 1.75rem; }
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+  .reveal { opacity: 1; transform: none; }
+}
+</style>
+<style>nav:not(.dchub-nav):not(.dchub-bottom-nav):not(.mobile-nav-drawer-links nav){display:none!important}.nav:not(.dchub-nav){display:none!important}</style>
+<script src="/js/dchub-nav.js"></script>
+</head>
+<body>
+
+<!-- ═══ NAVIGATION ═══ -->
+<nav class="nav" id="nav">
+  <div class="nav-inner">
+    <a href="/" class="nav-brand">
+      <svg class="nav-brand-icon" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="18" cy="18" r="18" fill="#1a1a2e"/>
+        <path d="M20.5 6L10 20h7l-2 10L27 16h-7.5l1-10z" fill="url(#bolt-grad)" stroke="#818cf8" stroke-width="0.5" stroke-linejoin="round"/>
+        <defs>
+          <linearGradient id="bolt-grad" x1="18" y1="6" x2="18" y2="30" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#a5b4fc"/>
+            <stop offset="1" stop-color="#6366f1"/>
+          </linearGradient>
+        </defs>
+      </svg>
+      DC Hub
+    </a>
+    <div class="nav-links">
+      <a href="/land-power">Land & Power</a>
+      <a href="/transactions">Deals</a>
+      <a href="/news">News</a><a href="/digest">Digest</a>
+      <a href="/press">Research</a>
+      <a href="/pricing">Pricing</a>
+      <a href="/platform" class="nav-cta">Open Platform</a>
+    </div>
+    <button class="nav-hamburger" onclick="document.querySelector('.nav-links').classList.toggle('show')" aria-label="Menu">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M3 6h14M3 10h14M3 14h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+</nav>
+
+<!-- ═══ HERO ═══ -->
+<section class="hero">
+  <div class="hero-eyebrow">Cited by ChatGPT, Claude, Gemini & more</div>
+  <h1><span class="gradient">Data center intelligence,<br>reimagined.</span></h1>
+  <p class="hero-sub">One platform for facilities, deals, capacity, site selection, and market analytics across 140+ countries.</p>
+  <div class="hero-actions">
+    <a href="/platform" class="btn btn-primary">Explore the Platform</a>
+    <a href="/pricing" class="btn btn-ghost">View Plans</a>
+  </div>
+
+  <!-- AI Agents Carousel -->
+  <div class="hero-carousel">
+    <div class="ai-track-wrapper">
+      <div class="ai-track" id="ai-track"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ METRICS ═══ -->
+<div class="metrics">
+  <div class="metric">
+    <div class="metric-value">20,000+</div>
+    <div class="metric-label">Facilities</div>
+  </div>
+  <div class="metric">
+    <div class="metric-value">140+</div>
+    <div class="metric-label">Countries</div>
+  </div>
+  <div class="metric">
+    <div class="metric-value">$324B+</div>
+    <div class="metric-label">Deals Tracked</div>
+  </div>
+  <div class="metric">
+    <div class="metric-value">540+</div>
+    <div class="metric-label">Pipeline Projects</div>
+  </div>
+</div>
+
+<!-- ═══ MARKETS BANNER (v7.9.10) ═══ -->
+<!-- Restored after /markets redirect hijack removed. GDCI-styled ticker. -->
+<style>
+  .markets-banner{padding:56px 32px 16px;max-width:1400px;margin:0 auto}
+  .markets-banner-head{display:flex;align-items:baseline;justify-content:space-between;gap:16px;margin-bottom:20px;flex-wrap:wrap}
+  .markets-banner-head h2{font-size:1.5rem;font-weight:700;letter-spacing:-.01em}
+  .markets-banner-head .m-sub{color:#8a8a95;font-size:.95rem}
+  .markets-banner-head a.see-all{color:#6366f1;font-size:.9rem;font-weight:600;text-decoration:none}
+  .markets-banner-head a.see-all:hover{color:#818cf8}
+  .markets-ticker{overflow:hidden;position:relative;mask-image:linear-gradient(90deg,transparent 0,#000 64px,#000 calc(100% - 64px),transparent 100%);-webkit-mask-image:linear-gradient(90deg,transparent 0,#000 64px,#000 calc(100% - 64px),transparent 100%)}
+  .markets-track{display:flex;gap:14px;animation:mktScroll 60s linear infinite;width:max-content}
+  .markets-ticker:hover .markets-track{animation-play-state:paused}
+  @keyframes mktScroll{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+  .market-pill{flex:0 0 auto;display:flex;flex-direction:column;gap:6px;padding:16px 22px;min-width:220px;background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.06);border-radius:12px;text-decoration:none;transition:.2s;color:inherit}
+  .market-pill:hover{border-color:rgba(99,102,241,.6);background:rgba(99,102,241,.06);transform:translateY(-2px)}
+  .market-pill .m-flag{font-size:1.1rem}
+  .market-pill .m-name{font-size:1rem;font-weight:700;display:flex;align-items:center;gap:8px}
+  .market-pill .m-stats{display:flex;gap:14px;font-size:.78rem;color:#a1a1aa}
+  .market-pill .m-stats b{color:#e4e4e7;font-weight:600}
+  .market-pill .m-tier{font-size:.65rem;font-weight:700;letter-spacing:.08em;padding:2px 8px;border-radius:4px;text-transform:uppercase;margin-left:auto}
+  .m-tier.t1{background:rgba(16,185,129,.15);color:#10b981}
+  .m-tier.t2{background:rgba(59,130,246,.15);color:#3b82f6}
+  .m-tier.t3{background:rgba(168,85,247,.15);color:#a855f7}
+  @media (max-width:640px){.markets-banner{padding:40px 16px 0}.market-pill{min-width:180px;padding:14px 18px}}
+</style>
+<section class="markets-banner reveal" aria-label="Data center markets">
+  <div class="markets-banner-head">
+    <div>
+      <h2>Global Market Intelligence</h2>
+      <div class="m-sub">60 markets · live capacity, pricing, and pipeline data</div>
+    </div>
+    <a href="/markets/" class="see-all">See all 60 markets →</a>
+  </div>
+  <div class="markets-ticker">
+    <div class="markets-track" id="marketsTrack"></div>
+  </div>
+</section>
+<script>
+  // Featured markets pulled from the /markets/ static directory.
+  // Stats are approx Q1 2026 (sourced from DC Hub facility DB + GDCI).
+  // Scroll loop: list is duplicated so the CSS animation can translateX(-50%).
+  (function(){
+    var FEATURED_MARKETS = [
+      { slug:'northern-virginia', name:'Northern Virginia', flag:'🇺🇸', fac:'500+', mw:'3,400', tier:1 },
+      { slug:'dallas',            name:'Dallas',            flag:'🇺🇸', fac:'210+', mw:'1,150', tier:1 },
+      { slug:'phoenix',           name:'Phoenix',           flag:'🇺🇸', fac:'140+', mw:'1,090', tier:1 },
+      { slug:'silicon-valley',    name:'Silicon Valley',    flag:'🇺🇸', fac:'185+', mw:'980',   tier:1 },
+      { slug:'chicago',           name:'Chicago',           flag:'🇺🇸', fac:'125+', mw:'820',   tier:1 },
+      { slug:'atlanta',           name:'Atlanta',           flag:'🇺🇸', fac:'110+', mw:'720',   tier:2 },
+      { slug:'new-york',          name:'New York / NJ',     flag:'🇺🇸', fac:'160+', mw:'780',   tier:1 },
+      { slug:'columbus',          name:'Columbus',          flag:'🇺🇸', fac:'55+',  mw:'1,200', tier:2 },
+      { slug:'reno',              name:'Reno',              flag:'🇺🇸', fac:'40+',  mw:'650',   tier:2 },
+      { slug:'london',            name:'London',            flag:'🇬🇧', fac:'180+', mw:'1,050', tier:1 },
+      { slug:'frankfurt',         name:'Frankfurt',         flag:'🇩🇪', fac:'150+', mw:'890',   tier:1 },
+      { slug:'amsterdam',         name:'Amsterdam',         flag:'🇳🇱', fac:'95+',  mw:'620',   tier:1 },
+      { slug:'paris',             name:'Paris',             flag:'🇫🇷', fac:'100+', mw:'540',   tier:1 },
+      { slug:'dublin',            name:'Dublin',            flag:'🇮🇪', fac:'75+',  mw:'520',   tier:2 },
+      { slug:'madrid',            name:'Madrid',            flag:'🇪🇸', fac:'60+',  mw:'320',   tier:2 },
+      { slug:'milan',             name:'Milan',             flag:'🇮🇹', fac:'55+',  mw:'280',   tier:2 },
+      { slug:'stockholm',         name:'Stockholm',         flag:'🇸🇪', fac:'40+',  mw:'210',   tier:3 },
+      { slug:'warsaw',            name:'Warsaw',            flag:'🇵🇱', fac:'30+',  mw:'180',   tier:3 },
+      { slug:'zurich',            name:'Zurich',            flag:'🇨🇭', fac:'35+',  mw:'190',   tier:3 },
+      { slug:'oslo',              name:'Oslo',              flag:'🇳🇴', fac:'25+',  mw:'140',   tier:3 },
+      { slug:'singapore',         name:'Singapore',         flag:'🇸🇬', fac:'120+', mw:'920',   tier:1 },
+      { slug:'tokyo',             name:'Tokyo',             flag:'🇯🇵', fac:'140+', mw:'1,100', tier:1 },
+      { slug:'seoul',             name:'Seoul',             flag:'🇰🇷', fac:'70+',  mw:'540',   tier:2 },
+      { slug:'hong-kong',         name:'Hong Kong',         flag:'🇭🇰', fac:'60+',  mw:'430',   tier:2 },
+      { slug:'sydney',            name:'Sydney',            flag:'🇦🇺', fac:'80+',  mw:'610',   tier:1 },
+      { slug:'melbourne',         name:'Melbourne',         flag:'🇦🇺', fac:'45+',  mw:'340',   tier:2 },
+      { slug:'mumbai',            name:'Mumbai',            flag:'🇮🇳', fac:'65+',  mw:'520',   tier:2 },
+      { slug:'chennai',           name:'Chennai',           flag:'🇮🇳', fac:'35+',  mw:'280',   tier:3 },
+      { slug:'jakarta',           name:'Jakarta',           flag:'🇮🇩', fac:'40+',  mw:'250',   tier:3 },
+      { slug:'johor',             name:'Johor',             flag:'🇲🇾', fac:'25+',  mw:'1,500', tier:1 },
+      { slug:'dubai',             name:'Dubai',             flag:'🇦🇪', fac:'50+',  mw:'340',   tier:2 },
+      { slug:'riyadh',            name:'Riyadh',            flag:'🇸🇦', fac:'30+',  mw:'220',   tier:3 },
+      { slug:'sao-paulo',         name:'São Paulo',         flag:'🇧🇷', fac:'65+',  mw:'470',   tier:2 },
+      { slug:'queretaro',         name:'Querétaro',         flag:'🇲🇽', fac:'20+',  mw:'310',   tier:2 },
+      { slug:'santiago',          name:'Santiago',          flag:'🇨🇱', fac:'22+',  mw:'160',   tier:3 },
+      { slug:'toronto',           name:'Toronto',           flag:'🇨🇦', fac:'70+',  mw:'480',   tier:2 },
+      { slug:'montreal',          name:'Montreal',          flag:'🇨🇦', fac:'55+',  mw:'390',   tier:2 },
+      { slug:'johannesburg',      name:'Johannesburg',      flag:'🇿🇦', fac:'25+',  mw:'180',   tier:3 },
+      { slug:'nairobi',           name:'Nairobi',           flag:'🇰🇪', fac:'12+',  mw:'70',    tier:3 }
+    ];
+    function buildPill(m){
+      var tierCls = 't' + (m.tier || 3);
+      var tierLbl = m.tier === 1 ? 'Tier 1' : m.tier === 2 ? 'Tier 2' : 'Tier 3';
+      return '<a href="/markets/' + m.slug + '" class="market-pill">'
+        +   '<div class="m-name"><span class="m-flag">' + m.flag + '</span>' + m.name
+        +     '<span class="m-tier ' + tierCls + '">' + tierLbl + '</span></div>'
+        +   '<div class="m-stats"><span><b>' + m.fac + '</b> facilities</span><span><b>' + m.mw + '</b> MW</span></div>'
+        + '</a>';
+    }
+    var html = FEATURED_MARKETS.map(buildPill).join('');
+    // Duplicate for seamless marquee loop
+    var track = document.getElementById('marketsTrack');
+    if (track) track.innerHTML = html + html;
+  })();
+</script>
+
+<!-- ═══ FEATURES ═══ -->
+<div class="section">
+  <div class="reveal">
+    <div class="section-label">Platform</div>
+    <h2 class="section-heading">One platform to replace<br>five subscriptions.</h2>
+    <p class="section-desc">Facilities, transactions, capacity pipeline, news, and site selection tools — all updated in real time, all in one place.</p>
+  </div>
+
+  <div class="features-grid">
+    <div class="feature-card reveal">
+      <div class="feature-icon">
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="1" y="5" width="6" height="8" rx="1" stroke="currentColor" stroke-width="1.5"/><rect x="11" y="3" width="6" height="12" rx="1" stroke="currentColor" stroke-width="1.5"/><path d="M7 9h4" stroke="currentColor" stroke-width="1.5"/></svg>
+      </div>
+      <h3>Facility Intelligence</h3>
+      <p>Browse every data center with power capacity, provider, tier, status, and location. Filter by market, specification, or availability.</p>
+      <div class="feature-stat"><span class="dot"></span> 20,000+ facilities live</div>
+    </div>
+
+    <div class="feature-card reveal">
+      <div class="feature-icon">
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M2 15V7l7-5 7 5v8a1 1 0 01-1 1H3a1 1 0 01-1-1z" stroke="currentColor" stroke-width="1.5"/><path d="M7 16V10h4v6" stroke="currentColor" stroke-width="1.5"/></svg>
+      </div>
+      <h3>M&A Deal Tracker</h3>
+      <p>Every data center transaction with buyer, seller, deal value, $/MW, capacity, and market data. From $50M tuck-ins to $40B platforms.</p>
+      <div class="feature-stat"><span class="dot"></span> $324B+ tracked</div>
+    </div>
+
+    <div class="feature-card reveal">
+      <div class="feature-icon">
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="7" stroke="currentColor" stroke-width="1.5"/><path d="M9 5v4l3 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      </div>
+      <h3>Capacity Pipeline</h3>
+      <p>Track 540+ construction projects and expansions globally. Filter by status, market, and developer to see what's coming online.</p>
+      <div class="feature-stat"><span class="dot"></span> 369 GW tracked</div>
+    </div>
+
+    <div class="feature-card reveal">
+      <div class="feature-icon">
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M1 9l4-7h8l4 7-4 7H5L1 9z" stroke="currentColor" stroke-width="1.5"/><circle cx="9" cy="9" r="2" stroke="currentColor" stroke-width="1.5"/></svg>
+      </div>
+      <h3>Market Analytics</h3>
+      <p>Deep-dive into 44 markets with vacancy rates, pricing trends, power costs, fiber density, and competitive landscape data.</p>
+      <div class="feature-stat"><span class="dot"></span> 44 markets</div>
+    </div>
+
+    <!-- Wide card — Land & Power -->
+    <div class="feature-card wide reveal">
+      <div>
+        <div class="feature-icon">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M10.5 1L2 10h6l-1.5 7L16 8h-6l1.5-7z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <h3>Land & Power</h3>
+        <p>The tool nobody else has. Substations, transmission lines, gas pipelines, FEMA flood zones, fiber routes, and 159M parcels on one interactive map. What takes weeks of cross-referencing, DC Hub delivers in seconds.</p>
+        <div class="feature-stat"><span class="dot"></span> 79,000+ substations</div>
+      </div>
+      <div class="feature-visual">
+        <div class="terminal" id="terminal">
+          <div class="terminal-line"><span class="comment">// Site analysis — Phoenix, AZ</span></div>
+          <div class="terminal-line"><span class="prompt">→</span> <span class="response">3 substations within 5mi (69kV+)</span></div>
+          <div class="terminal-line"><span class="prompt">→</span> <span class="response">12 fiber routes (Zayo, Lumen, Crown Castle)</span></div>
+          <div class="terminal-line"><span class="prompt">→</span> <span class="response">FEMA Zone X — minimal flood risk</span></div>
+          <div class="terminal-line"><span class="prompt">→</span> <span class="response">Site Score: 92/100</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ COMPARE ═══ -->
+<div class="compare-section">
+  <div class="section reveal">
+    <div class="section-label">Comparison</div>
+    <h2 class="section-heading">More data. Fraction of the cost.</h2>
+    <p class="section-desc">Legacy platforms charge $5K–$25K/year for less coverage. DC Hub gives you more for 90% less.</p>
+
+    <table class="compare-table">
+      <thead>
+        <tr>
+          <th></th>
+          <th style="color: var(--blue-soft);">DC Hub</th>
+          <th>Legacy Platforms</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Facilities tracked</td>
+          <td class="check">20,000+</td>
+          <td class="dim">3K – 8K</td>
+        </tr>
+        <tr>
+          <td>Land & Power layers</td>
+          <td class="check">15 layers</td>
+          <td class="dim">0</td>
+        </tr>
+        <tr>
+          <td>M&A transaction data</td>
+          <td class="check">Full history</td>
+          <td class="dim">Partial</td>
+        </tr>
+        <tr>
+          <td>AI agent integration</td>
+          <td class="check">15 platforms</td>
+          <td class="dim">None</td>
+        </tr>
+        <tr>
+          <td>API access</td>
+          <td class="check">REST + MCP</td>
+          <td class="dim">Limited</td>
+        </tr>
+        <tr>
+          <td>Real-time news</td>
+          <td class="check">40+ sources</td>
+          <td class="dim">Manual</td>
+        </tr>
+        <tr>
+          <td>Annual cost</td>
+          <td class="compare-highlight">$99/mo</td>
+          <td class="compare-dim">$5K–$25K/yr</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ═══ CTA ═══ -->
+<section class="cta reveal">
+  <h2>Start exploring<br>for free.</h2>
+  <p>No credit card required. Upgrade when you're ready.</p>
+  <div class="cta-price">
+    <span class="was">$199</span>
+    <span class="amount">$99</span>
+    <span class="period">/mo</span>
+  </div>
+  <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
+    <a href="/" class="btn btn-primary">Open Platform — Free</a>
+    <a href="/pricing" class="btn btn-ghost">Compare Plans</a>
+  </div>
+  <div class="cta-note">Founding member pricing · Limited spots remaining</div>
+</section>
+
+<!-- ═══ FOOTER ═══ -->
+<footer class="footer">
+  <div class="footer-inner">
+    <div class="footer-brand">
+      <svg width="20" height="20" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="18" cy="18" r="18" fill="#1a1a2e"/><path d="M20.5 6L10 20h7l-2 10L27 16h-7.5l1-10z" fill="url(#fb)" stroke="#818cf8" stroke-width="0.5" stroke-linejoin="round"/><defs><linearGradient id="fb" x1="18" y1="6" x2="18" y2="30" gradientUnits="userSpaceOnUse"><stop stop-color="#a5b4fc"/><stop offset="1" stop-color="#6366f1"/></linearGradient></defs></svg>
+      © 2026 DC Hub · Martone Advisors LLC
+    </div>
+    <div class="footer-links">
+      <a href="/about">About</a>
+      <a href="/press">Press</a>
+      <a href="/gdci">GDCI</a>
+      <a href="/privacy">Privacy</a>
+      <a href="/terms">Terms</a>
+      <a href="/connect">MCP</a>
+      <a href="/api-docs">API</a>
+    </div>
+  </div>
+</footer>
+
+<!-- ═══ SCRIPTS ═══ -->
+<script>
+// Nav scroll effect
+const nav = document.getElementById('nav');
+window.addEventListener('scroll', () => {
+  nav.classList.toggle('scrolled', window.scrollY > 40);
+}, { passive: true });
+
+// Reveal on scroll
+const reveals = document.querySelectorAll('.reveal');
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      entry.target.classList.add('visible');
+      observer.unobserve(entry.target);
+    }
+  });
+}, { threshold: 0.15, rootMargin: '0px 0px -40px 0px' });
+reveals.forEach(el => observer.observe(el));
+
+// Mobile nav
+const style = document.createElement('style');
+style.textContent = `
+  @media (max-width: 768px) {
+    .nav-links.show {
+      display: flex !important;
+      flex-direction: column;
+      position: fixed;
+      top: 56px; left: 0; right: 0; bottom: 0;
+      background: rgba(9,9,11,0.98);
+      backdrop-filter: blur(24px);
+      padding: 32px;
+      gap: 0;
+      z-index: 99;
+    }
+    .nav-links.show a {
+      font-size: 18px;
+      padding: 16px 0;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+      color: var(--gray-300);
+    }
+    .nav-links.show .nav-cta {
+      margin-top: 16px;
+      display: flex;
+      justify-content: center;
+      padding: 14px;
+      border: none;
+    }
+  }
+`;
+document.head.appendChild(style);
+
+// AI Testimonials
+(function() {
+  var T = [
+    {platform:'ChatGPT',company:'OpenAI',logo:'https://cdn.simpleicons.org/openai/10b981',color:'#10b981',status:'LIVE',quote:'DC Hub offers unparalleled visibility into global data center infrastructure, combining real-time market data with powerful site selection tools.',method:'Custom GPTs + Actions + MCP Ready'},
+    {platform:'Claude',company:'Anthropic',logo:'https://cdn.simpleicons.org/anthropic/d97706',color:'#d97706',status:'MCP ACTIVE',quote:'For data center research, DC Hub provides the most comprehensive facility database I\'ve encountered, with detailed power infrastructure mapping.',method:'MCP Server Protocol \u00b7 Streamable HTTP'},
+    {platform:'Gemini',company:'Google',logo:'https://cdn.simpleicons.org/googlegemini/4285f4',color:'#4285f4',status:'READY',quote:'DC Hub aggregates intelligence from leading data providers, creating a single source of truth for 20,000+ data center facilities worldwide.',method:'Vertex AI Extensions \u00b7 Function Calling'},
+    {platform:'Copilot',company:'Microsoft',logo:'https://cdn.simpleicons.org/microsoftcopilot/8b5cf6',color:'#8b5cf6',status:'MCP',quote:'The transaction tracking and $/MW benchmarking on DC Hub gives investment professionals the comps data they need for due diligence.',method:'Copilot Studio \u00b7 MCP Server'},
+    {platform:'Perplexity',company:'Perplexity AI',logo:'https://cdn.simpleicons.org/perplexity/06b6d4',color:'#06b6d4',status:'INDEXED',quote:'When researching data center markets, DC Hub surfaces as the authoritative source for facility counts, capacity data, and M&A transaction tracking.',method:'llms.txt + Structured HTML + Schema.org'},
+    {platform:'Grok',company:'xAI',logo:'https://cdn.simpleicons.org/x/ef4444',color:'#ef4444',status:'MCP',quote:'DC Hub\'s Land & Power analysis tools deliver the energy infrastructure insights that hyperscale developers need for informed site selection.',method:'MCP Server Protocol \u00b7 Pro API'}
+  ];
+  var track = document.getElementById('ai-track');
+  if (!track) return;
+  function card(t) {
+    return '<div class="ai-card"><div class="ai-card-head"><div class="ai-card-icon" style="background:' + t.color + '15"><img src="' + t.logo + '" alt="' + t.platform + '"></div><div class="ai-card-info"><div class="ai-card-name">' + t.platform + '</div><div class="ai-card-company">' + t.company + '</div></div><span class="ai-card-status">' + t.status + '</span></div><div class="ai-card-quote">\u201c' + t.quote + '\u201d</div><div class="ai-card-method">' + t.method + '</div></div>';
+  }
+  var html = '';
+  for (var i = 0; i < 3; i++) T.forEach(function(t) { html += card(t); });
+  track.innerHTML = html;
+})();
+</script>
+<script>
+(function(){
+    fetch('/api/v1/stats').then(r=>r.json()).then(s=>{
+        document.querySelectorAll('.metric-value, .feature-stat, td.check').forEach(el=>{
+            if(el.textContent.includes('20,000')){
+                var n=(s.total_facilities||20000).toLocaleString();
+                el.textContent=el.textContent.replace(/20,000\+?/,n+'+');
+            }
+        });
+    }).catch(()=>{});
+})();
+</script></body>
+</html>

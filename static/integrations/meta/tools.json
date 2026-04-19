@@ -1,0 +1,113 @@
+{
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "search_data_centers",
+        "description": "Search DC Hub's database of 10,706+ data centers across 140+ countries. Returns facility name, location, operator, capacity, and power details.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "q": {"type": "string", "description": "Search query — company name, city, state, or keyword"},
+            "country": {"type": "string", "description": "ISO 3166-1 alpha-2 country code (US, GB, DE, etc.)"},
+            "state": {"type": "string", "description": "US state abbreviation (TX, VA, etc.)"},
+            "limit": {"type": "integer", "description": "Maximum results to return (default 10, max 100)"}
+          },
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_energy_prices",
+        "description": "Get current electricity prices for a US state, including wholesale and retail rates.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "state": {"type": "string", "description": "US state abbreviation (TX, VA, CA, etc.)"}
+          },
+          "required": ["state"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_grid_fuel_mix",
+        "description": "Get real-time grid fuel mix for a US ISO region (ERCOT, PJM, CAISO, MISO, SPP, NYISO, ISONE).",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "iso": {"type": "string", "description": "ISO region code", "enum": ["ERCOT", "PJM", "CAISO", "MISO", "SPP", "NYISO", "ISONE"]}
+          },
+          "required": ["iso"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_carbon_intensity",
+        "description": "Get carbon intensity data for a US state in gCO2/kWh.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "state": {"type": "string", "description": "US state abbreviation"}
+          },
+          "required": ["state"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_site_score",
+        "description": "Calculate a data center site suitability score for a given location based on power, fiber, climate, risk, and cost factors.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "lat": {"type": "number", "description": "Latitude"},
+            "lon": {"type": "number", "description": "Longitude"}
+          },
+          "required": ["lat", "lon"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_transactions",
+        "description": "Get recent data center M&A transactions including buyer, seller, deal value, and facility details.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "limit": {"type": "integer", "description": "Number of transactions (default 10)"}
+          }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_market_report",
+        "description": "Get a comprehensive data center market overview report.",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "get_pipeline",
+        "description": "Get data center capacity pipeline — planned and under-construction facilities with MW capacity.",
+        "parameters": {
+          "type": "object",
+          "properties": {}
+        }
+      }
+    }
+  ]
+}

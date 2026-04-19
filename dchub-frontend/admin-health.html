@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DC Hub — System Health Dashboard</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Instrument+Sans:wght@400;600;700&display=swap');
+
+  :root {
+    --bg0: #04080E;
+    --bg1: #0A1220;
+    --bg2: #111B2B;
+    --bg3: #1A2D44;
+    --border: #1E3048;
+    --text1: #F0F4F8;
+    --text2: #8FA3B8;
+    --text3: #5D7590;
+    --accent: #6366F1;
+    --green: #10B981;
+    --red: #EF4444;
+    --orange: #F59E0B;
+    --cyan: #06B6D4;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg0);
+    color: var(--text1);
+    font-family: 'Instrument Sans', -apple-system, sans-serif;
+    min-height: 100vh;
+    padding: 24px;
+  }
+
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 32px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .header-left {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .header h1 {
+    font-size: 24px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+  }
+
+  .header h1 span { color: var(--accent); }
+
+  .status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+  }
+
+  .status-healthy { background: rgba(16,185,129,0.15); color: var(--green); }
+  .status-degraded { background: rgba(245,158,11,0.15); color: var(--orange); }
+  .status-critical { background: rgba(239,68,68,0.15); color: var(--red); }
+
+  .pulse {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    animation: pulse 2s ease-in-out infinite;
+  }
+
+  .pulse-green { background: var(--green); }
+  .pulse-orange { background: var(--orange); }
+  .pulse-red { background: var(--red); }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.5; transform: scale(1.3); }
+  }
+
+  .refresh-info {
+    font-size: 12px;
+    color: var(--text3);
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+
+  .card {
+    background: var(--bg1);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    transition: border-color 0.3s;
+  }
+
+  .card:hover { border-color: var(--accent); }
+
+  .card-label {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text3);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 8px;
+  }
+
+  .card-value {
+    font-size: 36px;
+    font-weight: 700;
+    font-family: 'JetBrains Mono', monospace;
+    letter-spacing: -1px;
+    line-height: 1;
+  }
+
+  .card-sub {
+    font-size: 12px;
+    color: var(--text3);
+    margin-top: 6px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+  .row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+
+  .section-title {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--text2);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 12px;
+    padding-left: 4px;
+  }
+
+  .pool-bar-container {
+    margin-top: 12px;
+    background: var(--bg3);
+    border-radius: 6px;
+    height: 24px;
+    overflow: hidden;
+    position: relative;
+  }
+
+  .pool-bar-fill {
+    height: 100%;
+    border-radius: 6px;
+    transition: width 0.8s ease, background 0.5s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+    font-family: 'JetBrains Mono', monospace;
+    color: white;
+    min-width: 40px;
+  }
+
+  .table-container {
+    background: var(--bg1);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+
+  th {
+    background: var(--bg2);
+    color: var(--text3);
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    padding: 10px 16px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+  }
+
+  td {
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text2);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+  }
+
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(99,102,241,0.03); }
+
+  .tag {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+  }
+
+  .tag-green { background: rgba(16,185,129,0.15); color: var(--green); }
+  .tag-red { background: rgba(239,68,68,0.15); color: var(--red); }
+  .tag-orange { background: rgba(245,158,11,0.15); color: var(--orange); }
+  .tag-blue { background: rgba(6,182,212,0.15); color: var(--cyan); }
+
+  .circuit-state {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 16px;
+    border-radius: 8px;
+    background: var(--bg2);
+    margin-top: 8px;
+  }
+
+  .circuit-icon { font-size: 28px; }
+
+  .log-container {
+    background: var(--bg1);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+    max-height: 200px;
+    overflow-y: auto;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    line-height: 1.8;
+    color: var(--text3);
+  }
+
+  .log-entry { border-bottom: 1px solid rgba(30,48,72,0.5); padding: 4px 0; }
+  .log-time { color: var(--text3); }
+  .log-ok { color: var(--green); }
+  .log-warn { color: var(--orange); }
+  .log-err { color: var(--red); }
+
+  .error-banner {
+    background: rgba(239,68,68,0.1);
+    border: 1px solid rgba(239,68,68,0.3);
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 24px;
+    display: none;
+    text-align: center;
+  }
+
+  .error-banner h3 { color: var(--red); margin-bottom: 8px; }
+  .error-banner p { color: var(--text2); font-size: 14px; }
+
+  .back-link {
+    color: var(--accent);
+    text-decoration: none;
+    font-size: 13px;
+  }
+
+  .back-link:hover { text-decoration: underline; }
+
+  @media (max-width: 900px) {
+    .grid { grid-template-columns: repeat(2, 1fr); }
+    .row, .row-3 { grid-template-columns: 1fr; }
+  }
+
+  @media (max-width: 600px) {
+    .grid { grid-template-columns: 1fr; }
+    body { padding: 12px; }
+  }
+</style>
+<style>nav:not(.dchub-nav):not(.dchub-bottom-nav):not(.mobile-nav-drawer-links nav){display:none!important}.nav:not(.dchub-nav){display:none!important}</style>
+<script src="/js/dchub-nav.js"></script>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-left">
+    <a href="/" class="back-link">← DC Hub</a>
+    <h1><span>System</span> Health</h1>
+    <div class="status-badge status-healthy" id="overall-badge">
+      <div class="pulse pulse-green" id="pulse"></div>
+      <span id="overall-text">LOADING</span>
+    </div>
+  </div>
+  <div class="refresh-info">
+    Auto-refresh: 10s | Last: <span id="last-updated">—</span>
+  </div>
+</div>
+
+<div class="error-banner" id="error-banner">
+  <h3>⚠️ Cannot reach backend</h3>
+  <p>The health endpoint is not responding. The server may be down.</p>
+</div>
+
+<!-- Top Metrics -->
+<div class="grid">
+  <div class="card">
+    <div class="card-label">Pool Utilization</div>
+    <div class="card-value" id="pool-pct" style="color: var(--green)">—%</div>
+    <div class="card-sub" id="pool-detail">— / — connections</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Memory (RSS)</div>
+    <div class="card-value" id="memory-val" style="color: var(--cyan)">— MB</div>
+    <div class="card-sub" id="memory-warn">—</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Circuit Breaker</div>
+    <div class="card-value" id="circuit-val" style="color: var(--green)">—</div>
+    <div class="card-sub" id="circuit-detail">— trips total</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Active Checkouts</div>
+    <div class="card-value" id="checkout-val" style="color: var(--accent)">—</div>
+    <div class="card-sub" id="checkout-detail">— leaked</div>
+  </div>
+</div>
+
+<!-- Pool Bar -->
+<div class="section-title">Connection Pool</div>
+<div class="card" style="margin-bottom: 24px;">
+  <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+    <span style="font-size: 13px; color: var(--text2);">In Use / Max</span>
+    <span style="font-size: 13px; font-family: 'JetBrains Mono', monospace; color: var(--text1);" id="pool-label">— / —</span>
+  </div>
+  <div class="pool-bar-container">
+    <div class="pool-bar-fill" id="pool-bar" style="width: 0%; background: var(--green);">0%</div>
+  </div>
+  <div style="display: flex; justify-content: space-between; margin-top: 12px; font-size: 12px; font-family: 'JetBrains Mono', monospace;">
+    <span style="color: var(--text3);">Acquired: <span id="stat-acquired" style="color: var(--text1);">—</span></span>
+    <span style="color: var(--text3);">Returned: <span id="stat-returned" style="color: var(--text1);">—</span></span>
+    <span style="color: var(--text3);">Timeouts: <span id="stat-timeouts" style="color: var(--orange);">—</span></span>
+    <span style="color: var(--text3);">Reclaims: <span id="stat-reclaims" style="color: var(--red);">—</span></span>
+  </div>
+</div>
+
+<!-- Circuit Breaker + Neon -->
+<div class="row">
+  <div>
+    <div class="section-title">Circuit Breaker</div>
+    <div class="card">
+      <div class="circuit-state" id="circuit-state">
+        <div class="circuit-icon" id="circuit-icon">🟢</div>
+        <div>
+          <div style="font-weight: 700; font-size: 16px;" id="circuit-state-text">CLOSED</div>
+          <div style="font-size: 12px; color: var(--text3);" id="circuit-state-sub">All connections flowing normally</div>
+        </div>
+      </div>
+      <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-top: 16px;">
+        <div>
+          <div class="card-label">Failures</div>
+          <div style="font-size: 20px; font-weight: 700; font-family: 'JetBrains Mono', monospace;" id="cb-failures">0</div>
+        </div>
+        <div>
+          <div class="card-label">Threshold</div>
+          <div style="font-size: 20px; font-weight: 700; font-family: 'JetBrains Mono', monospace;" id="cb-threshold">3</div>
+        </div>
+        <div>
+          <div class="card-label">Total Trips</div>
+          <div style="font-size: 20px; font-weight: 700; font-family: 'JetBrains Mono', monospace;" id="cb-trips">0</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div>
+    <div class="section-title">Neon PostgreSQL</div>
+    <div class="card">
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+        <div>
+          <div class="card-label">Our Max Pool</div>
+          <div style="font-size: 24px; font-weight: 700; font-family: 'JetBrains Mono', monospace;" id="neon-our">25</div>
+        </div>
+        <div>
+          <div class="card-label">Neon Limit</div>
+          <div style="font-size: 24px; font-weight: 700; font-family: 'JetBrains Mono', monospace;" id="neon-limit">100</div>
+        </div>
+      </div>
+      <div class="pool-bar-container" style="margin-top: 16px;">
+        <div class="pool-bar-fill" id="neon-bar" style="width: 25%; background: var(--accent);">25%</div>
+      </div>
+      <div class="card-sub" style="margin-top: 8px;" id="neon-note">Using 25 of 100 max Neon connections</div>
+    </div>
+  </div>
+</div>
+
+<!-- Leaked Connections -->
+<div class="section-title">Leaked Connections</div>
+<div class="table-container" style="margin-bottom: 24px;">
+  <table>
+    <thead><tr><th>Connection ID</th><th>Held (s)</th><th>Thread</th><th>Status</th></tr></thead>
+    <tbody id="leak-table">
+      <tr><td colspan="4" style="text-align: center; color: var(--green); padding: 16px;">✓ No leaked connections</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- Event Log -->
+<div class="section-title">Event Log</div>
+<div class="log-container" id="event-log">
+  <div class="log-entry"><span class="log-time">—</span> Waiting for first health check...</div>
+</div>
+
+<script>
+const API_BASE = 'https://dchub.cloud';
+const HEALTH_URL = API_BASE + '/api/health/db';
+const REFRESH_MS = 10000;
+let logEntries = [];
+let fetchCount = 0;
+let prevData = null;
+
+function now() {
+  return new Date().toLocaleTimeString('en-US', { hour12: false });
+}
+
+function addLog(msg, level) {
+  const cls = level === 'ok' ? 'log-ok' : level === 'warn' ? 'log-warn' : level === 'err' ? 'log-err' : '';
+  logEntries.unshift({ time: now(), msg, cls });
+  if (logEntries.length > 50) logEntries.pop();
+  const el = document.getElementById('event-log');
+  el.innerHTML = logEntries.map(e =>
+    '<div class="log-entry"><span class="log-time">' + e.time + '</span> <span class="' + e.cls + '">' + e.msg + '</span></div>'
+  ).join('');
+}
+
+function getBarColor(pct) {
+  if (pct < 50) return 'var(--green)';
+  if (pct < 75) return 'var(--orange)';
+  return 'var(--red)';
+}
+
+function getTextColor(pct) {
+  if (pct < 50) return 'var(--green)';
+  if (pct < 75) return 'var(--orange)';
+  return 'var(--red)';
+}
+
+function updateUI(data) {
+  document.getElementById('error-banner').style.display = 'none';
+
+  // Overall status
+  var overall = data.overall || 'unknown';
+  var badge = document.getElementById('overall-badge');
+  var pulse = document.getElementById('pulse');
+  var text = document.getElementById('overall-text');
+  badge.className = 'status-badge status-' + (overall === 'healthy' ? 'healthy' : overall === 'degraded' ? 'degraded' : 'critical');
+  pulse.className = 'pulse pulse-' + (overall === 'healthy' ? 'green' : overall === 'degraded' ? 'orange' : 'red');
+  text.textContent = overall.toUpperCase();
+
+  // Pool
+  var pool = data.pool || data.pools?.api || {};
+  var inUse = pool.in_use || 0;
+  var maxPool = pool.max_configured || 25;
+  var pct = Math.round((inUse / maxPool) * 100);
+
+  document.getElementById('pool-pct').textContent = pct + '%';
+  document.getElementById('pool-pct').style.color = getTextColor(pct);
+  document.getElementById('pool-detail').textContent = inUse + ' / ' + maxPool + ' connections';
+  document.getElementById('pool-label').textContent = inUse + ' / ' + maxPool;
+
+  var bar = document.getElementById('pool-bar');
+  bar.style.width = Math.max(pct, 4) + '%';
+  bar.style.background = getBarColor(pct);
+  bar.textContent = pct + '%';
+
+  // Stats
+  var stats = data.stats || {};
+  document.getElementById('stat-acquired').textContent = stats.acquired || 0;
+  document.getElementById('stat-returned').textContent = stats.returned || 0;
+  document.getElementById('stat-timeouts').textContent = stats.timeouts || stats.api_timeouts || 0;
+  document.getElementById('stat-reclaims').textContent = stats.forced_reclaims || 0;
+
+  // Memory
+  var mem = data.memory || {};
+  var rss = mem.rss_mb || 0;
+  document.getElementById('memory-val').textContent = Math.round(rss) + ' MB';
+  document.getElementById('memory-val').style.color = rss > 400 ? 'var(--red)' : rss > 300 ? 'var(--orange)' : 'var(--cyan)';
+  document.getElementById('memory-warn').textContent = mem.warning ? '⚠️ High memory usage' : '✓ Within budget';
+
+  // Circuit breaker
+  var cb = data.circuit_breaker || {};
+  var isOpen = cb.open || false;
+  document.getElementById('circuit-val').textContent = isOpen ? 'OPEN' : 'CLOSED';
+  document.getElementById('circuit-val').style.color = isOpen ? 'var(--red)' : 'var(--green)';
+  document.getElementById('circuit-detail').textContent = (cb.total_trips || 0) + ' trips total';
+  document.getElementById('circuit-icon').textContent = isOpen ? '🔴' : '🟢';
+  document.getElementById('circuit-state-text').textContent = isOpen ? 'OPEN — Failing fast' : 'CLOSED — Normal';
+  document.getElementById('circuit-state-sub').textContent = isOpen ? 'Database connections blocked for ' + (cb.recovery_timeout_s || 30) + 's' : 'All connections flowing normally';
+  document.getElementById('cb-failures').textContent = cb.consecutive_failures || 0;
+  document.getElementById('cb-threshold').textContent = cb.threshold || 3;
+  document.getElementById('cb-trips').textContent = cb.total_trips || 0;
+
+  // Checkouts
+  var checkouts = data.active_checkouts || 0;
+  var leaked = data.leaked_connections || [];
+  document.getElementById('checkout-val').textContent = checkouts;
+  document.getElementById('checkout-detail').textContent = leaked.length + ' leaked';
+
+  // Neon
+  var neon = data.neon_limits || {};
+  var ourMax = neon.our_max_total || maxPool;
+  document.getElementById('neon-our').textContent = ourMax;
+  var neonBar = document.getElementById('neon-bar');
+  var neonPct = Math.round((ourMax / 100) * 100);
+  neonBar.style.width = neonPct + '%';
+  neonBar.textContent = ourMax + ' / 100';
+  document.getElementById('neon-note').textContent = 'Using ' + ourMax + ' of 100 max Neon connections';
+
+  // Leak table
+  var leakTbody = document.getElementById('leak-table');
+  if (leaked.length === 0) {
+    leakTbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:var(--green);padding:16px;">✓ No leaked connections</td></tr>';
+  } else {
+    leakTbody.innerHTML = leaked.map(function(lc) {
+      return '<tr><td>' + (lc.conn_id || '?') + '</td><td style="color:var(--red)">' + Math.round(lc.held_seconds || 0) + 's</td><td>' + (lc.thread || '?') + '</td><td><span class="tag tag-red">LEAKED</span></td></tr>';
+    }).join('');
+  }
+
+  // Detect changes for log
+  if (prevData) {
+    var prevPct = prevData._pct || 0;
+    if (pct > 75 && prevPct <= 75) addLog('Pool utilization exceeded 75%: ' + pct + '%', 'warn');
+    if (pct > 90 && prevPct <= 90) addLog('CRITICAL: Pool utilization at ' + pct + '%', 'err');
+    if (pct < 50 && prevPct >= 75) addLog('Pool utilization recovered to ' + pct + '%', 'ok');
+    if (isOpen && !prevData.circuit_breaker?.open) addLog('Circuit breaker OPENED — database failing', 'err');
+    if (!isOpen && prevData.circuit_breaker?.open) addLog('Circuit breaker CLOSED — database recovered', 'ok');
+    if (leaked.length > 0 && (prevData.leaked_connections || []).length === 0) addLog(leaked.length + ' leaked connection(s) detected', 'warn');
+    var prevReclaims = prevData.stats?.forced_reclaims || 0;
+    var curReclaims = stats.forced_reclaims || 0;
+    if (curReclaims > prevReclaims) addLog((curReclaims - prevReclaims) + ' connection(s) force-reclaimed', 'warn');
+  }
+
+  data._pct = pct;
+  prevData = data;
+
+  document.getElementById('last-updated').textContent = now();
+}
+
+function showError() {
+  document.getElementById('error-banner').style.display = 'block';
+  document.getElementById('overall-badge').className = 'status-badge status-critical';
+  document.getElementById('pulse').className = 'pulse pulse-red';
+  document.getElementById('overall-text').textContent = 'UNREACHABLE';
+  addLog('Health endpoint unreachable', 'err');
+}
+
+async function fetchHealth() {
+  fetchCount++;
+  try {
+    var resp = await fetch(HEALTH_URL, { mode: 'cors', cache: 'no-store' });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    var data = await resp.json();
+    updateUI(data);
+    if (fetchCount === 1) addLog('Dashboard connected to health endpoint', 'ok');
+  } catch (e) {
+    showError();
+  }
+}
+
+fetchHealth();
+setInterval(fetchHealth, REFRESH_MS);
+</script>
+</body>
+</html>

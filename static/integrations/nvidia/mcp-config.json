@@ -1,0 +1,32 @@
+{
+  "mcpServers": {
+    "dchub": {
+      "type": "streamable-http",
+      "url": "https://dchub.cloud/mcp",
+      "headers": {
+        "X-API-Key": "dchub_nvidia_2026_verify"
+      },
+      "tools": [
+        "search_facilities",
+        "get_facility",
+        "get_market_data",
+        "search_deals",
+        "get_news",
+        "analyze_site"
+      ],
+      "metadata": {
+        "provider": "DC Hub Nexus",
+        "version": "2.1.0",
+        "tier": "pro",
+        "rate_limit": "300 req/min",
+        "max_results": 100,
+        "docs": "https://dchub.cloud/api-docs",
+        "nim_compatible": true,
+        "nim_models": [
+          "nvidia/llama-3.1-nemotron-70b",
+          "nvidia/llama-3.1-nemotron-8b"
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,1564 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Land & Power - DC Hub</title>
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg">
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script data-cfasync="false" src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        :root {
+            --bg1: #08080c;
+            --bg2: #0f0f14;
+            --bg3: #16161d;
+            --bg4: #1e1e28;
+            --border: #2a2a35;
+            --border-hover: #3a3a48;
+            --text: #f4f4f6;
+            --text2: #a8a8b3;
+            --text3: #6b6b78;
+            --accent: #6366f1;
+            --accent2: #818cf8;
+            --accent-glow: rgba(99, 102, 241, 0.15);
+            --green: #10b981;
+            --green-glow: rgba(16, 185, 129, 0.15);
+            --orange: #f59e0b;
+            --orange-glow: rgba(245, 158, 11, 0.15);
+            --red: #ef4444;
+            --red-glow: rgba(239, 68, 68, 0.15);
+            --purple: #a855f7;
+            --purple-glow: rgba(168, 85, 247, 0.15);
+            --cyan: #06b6d4;
+            --cyan-glow: rgba(6, 182, 212, 0.15);
+        }
+        
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            font-family: 'Outfit', sans-serif;
+            background: var(--bg1);
+            color: var(--text);
+            line-height: 1.6;
+        }
+        
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--border-hover); }
+        
+        .header {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 1000;
+            background: rgba(8, 8, 12, 0.9);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--border);
+            padding: 12px 32px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-weight: 700;
+            font-size: 1.4rem;
+            color: var(--text);
+            text-decoration: none;
+        }
+        
+        .logo-icon {
+            width: 38px;
+            height: 38px;
+            background: linear-gradient(135deg, var(--accent), var(--purple));
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+        }
+        
+        .nav {
+            display: flex;
+            gap: 6px;
+        }
+        
+        .nav a {
+            padding: 8px 16px;
+            color: var(--text2);
+            text-decoration: none;
+            font-size: 14px;
+            border-radius: 8px;
+            transition: all 0.2s ease;
+        }
+        
+        .nav a:hover, .nav a.active {
+            color: var(--text);
+            background: var(--bg3);
+        }
+        
+        .btn-primary {
+            padding: 10px 20px;
+            border-radius: 10px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            border: none;
+            text-decoration: none;
+            background: linear-gradient(135deg, var(--accent), var(--purple));
+            color: #fff;
+            transition: all 0.2s ease;
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 20px rgba(99, 102, 241, 0.3);
+        }
+        
+        .main {
+            display: grid;
+            grid-template-columns: 340px 1fr;
+            height: 100vh;
+            padding-top: 62px;
+        }
+        
+        .sidebar {
+            background: var(--bg2);
+            border-right: 1px solid var(--border);
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .sidebar-header {
+            padding: 20px 20px 16px;
+            border-bottom: 1px solid var(--border);
+            background: var(--bg2);
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+        
+        .sidebar-title {
+            font-size: 1.1rem;
+            font-weight: 700;
+            margin-bottom: 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .sidebar-title-icon {
+            font-size: 1.2rem;
+        }
+        
+        .search-wrapper {
+            position: relative;
+        }
+        
+        .search-icon {
+            position: absolute;
+            left: 14px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: var(--text3);
+            font-size: 14px;
+        }
+        
+        .search-input {
+            width: 100%;
+            padding: 11px 14px 11px 40px;
+            background: var(--bg3);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            color: var(--text);
+            font-size: 14px;
+            font-family: inherit;
+            transition: all 0.2s ease;
+        }
+        
+        .search-input:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px var(--accent-glow);
+        }
+        
+        .search-input::placeholder {
+            color: var(--text3);
+        }
+        
+        .sidebar-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+        }
+        
+        .presets-section {
+            margin-bottom: 20px;
+        }
+        
+        .section-label {
+            font-size: 10px;
+            font-weight: 600;
+            color: var(--text3);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 10px;
+            padding-left: 2px;
+        }
+        
+        .preset-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+        }
+        
+        .preset-btn {
+            padding: 10px 8px;
+            background: var(--bg3);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text2);
+            font-size: 11px;
+            font-weight: 500;
+            font-family: inherit;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+        }
+        
+        .preset-btn:hover {
+            border-color: var(--accent);
+            color: var(--text);
+            background: var(--accent-glow);
+        }
+        
+        .preset-btn.active {
+            border-color: var(--accent);
+            background: var(--accent-glow);
+            color: var(--accent2);
+        }
+        
+        .preset-icon {
+            font-size: 16px;
+        }
+        
+        .accordion {
+            margin-bottom: 12px;
+        }
+        
+        .accordion-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 14px;
+            background: var(--bg3);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        
+        .accordion-header:hover {
+            border-color: var(--border-hover);
+        }
+        
+        .accordion.open .accordion-header {
+            border-radius: 10px 10px 0 0;
+            border-bottom-color: transparent;
+        }
+        
+        .accordion-title {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .accordion-icon {
+            width: 28px;
+            height: 28px;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+        }
+        
+        .accordion-icon.power { background: var(--orange-glow); }
+        .accordion-icon.gas { background: var(--red-glow); }
+        .accordion-icon.fiber { background: var(--cyan-glow); }
+        .accordion-icon.water { background: rgba(59, 130, 246, 0.15); }
+        .accordion-icon.data { background: var(--green-glow); }
+        .accordion-icon.regulatory { background: var(--purple-glow); }
+        
+        .accordion-name {
+            font-weight: 600;
+            font-size: 13px;
+        }
+        
+        .accordion-count {
+            font-size: 11px;
+            color: var(--text3);
+            background: var(--bg4);
+            padding: 2px 8px;
+            border-radius: 10px;
+        }
+        
+        .accordion-chevron {
+            color: var(--text3);
+            transition: transform 0.2s ease;
+            font-size: 12px;
+        }
+        
+        .accordion.open .accordion-chevron {
+            transform: rotate(180deg);
+        }
+        
+        .accordion-content {
+            display: none;
+            padding: 10px;
+            background: var(--bg4);
+            border: 1px solid var(--border);
+            border-top: none;
+            border-radius: 0 0 10px 10px;
+        }
+        
+        .accordion.open .accordion-content {
+            display: block;
+            animation: slideDown 0.2s ease;
+        }
+        
+        @keyframes slideDown {
+            from { opacity: 0; transform: translateY(-8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        .layer-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 12px;
+            border-radius: 8px;
+            margin-bottom: 4px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            background: transparent;
+        }
+        
+        .layer-item:hover {
+            background: rgba(255, 255, 255, 0.03);
+        }
+        
+        .layer-item.active {
+            background: var(--accent-glow);
+        }
+        
+        .layer-item:last-child {
+            margin-bottom: 0;
+        }
+        
+        .layer-info {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .layer-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            opacity: 0.4;
+            transition: all 0.2s ease;
+        }
+        
+        .layer-item.active .layer-dot {
+            opacity: 1;
+            box-shadow: 0 0 8px currentColor;
+        }
+        
+        .layer-name {
+            font-size: 13px;
+            color: var(--text2);
+            transition: color 0.2s ease;
+        }
+        
+        .layer-item.active .layer-name {
+            color: var(--text);
+        }
+        
+        .layer-badge {
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: var(--bg3);
+            color: var(--text3);
+            font-family: 'JetBrains Mono', monospace;
+        }
+        
+        .toggle-mini {
+            width: 34px;
+            height: 18px;
+            background: var(--bg1);
+            border-radius: 9px;
+            position: relative;
+            transition: background 0.2s ease;
+        }
+        
+        .toggle-mini::after {
+            content: '';
+            position: absolute;
+            width: 14px;
+            height: 14px;
+            background: var(--text3);
+            border-radius: 50%;
+            top: 2px;
+            left: 2px;
+            transition: all 0.2s ease;
+        }
+        
+        .layer-item.active .toggle-mini {
+            background: var(--accent);
+        }
+        
+        .layer-item.active .toggle-mini::after {
+            left: 18px;
+            background: #fff;
+        }
+        
+        .tier-tabs {
+            display: flex;
+            gap: 4px;
+            background: var(--bg3);
+            padding: 4px;
+            border-radius: 10px;
+            margin-bottom: 12px;
+        }
+        
+        .tier-tab {
+            flex: 1;
+            padding: 8px 4px;
+            background: transparent;
+            border: none;
+            border-radius: 6px;
+            color: var(--text3);
+            font-size: 12px;
+            font-weight: 500;
+            font-family: inherit;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        
+        .tier-tab:hover {
+            color: var(--text2);
+        }
+        
+        .tier-tab.active {
+            background: var(--accent);
+            color: #fff;
+        }
+        
+        .market-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        
+        .market-card {
+            padding: 14px;
+            background: var(--bg3);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        
+        .market-card:hover {
+            border-color: var(--accent);
+            transform: translateX(2px);
+        }
+        
+        .market-card.active {
+            border-color: var(--accent);
+            background: var(--accent-glow);
+        }
+        
+        .market-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        
+        .market-name {
+            font-weight: 600;
+            font-size: 14px;
+        }
+        
+        .market-tier {
+            padding: 3px 8px;
+            border-radius: 6px;
+            font-size: 10px;
+            font-weight: 700;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        
+        .tier-1 { background: var(--green-glow); color: var(--green); }
+        .tier-2 { background: var(--accent-glow); color: var(--accent2); }
+        .tier-3 { background: var(--orange-glow); color: var(--orange); }
+        .tier-4 { background: var(--purple-glow); color: var(--purple); }
+        
+        .market-metrics {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 8px;
+        }
+        
+        .market-metric {
+            text-align: center;
+        }
+        
+        .metric-value {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text);
+        }
+        
+        .metric-label {
+            font-size: 9px;
+            color: var(--text3);
+            text-transform: uppercase;
+        }
+        
+        .map-container {
+            position: relative;
+            height: 100%;
+        }
+        
+        #map {
+            height: 100%;
+            width: 100%;
+        }
+        
+        .leaflet-container {
+            background: var(--bg2);
+        }
+        
+        .leaflet-popup-content-wrapper {
+            background: var(--bg2);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+        }
+        
+        .leaflet-popup-content {
+            margin: 0;
+            color: var(--text);
+        }
+        
+        .leaflet-popup-tip {
+            background: var(--bg2);
+        }
+        
+        .stats-bar {
+            position: absolute;
+            top: 16px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(8, 8, 12, 0.92);
+            backdrop-filter: blur(12px);
+            padding: 12px 24px;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            z-index: 1000;
+            display: flex;
+            gap: 32px;
+        }
+        
+        .stats-item {
+            text-align: center;
+        }
+        
+        .stats-value {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 1.2rem;
+            font-weight: 700;
+            color: var(--accent2);
+        }
+        
+        .stats-label {
+            font-size: 10px;
+            color: var(--text3);
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+        }
+        
+        .map-legend {
+            position: absolute;
+            bottom: 24px;
+            left: 16px;
+            background: rgba(8, 8, 12, 0.92);
+            backdrop-filter: blur(12px);
+            padding: 14px 16px;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            z-index: 1000;
+        }
+        
+        .legend-title {
+            font-weight: 600;
+            font-size: 11px;
+            margin-bottom: 10px;
+            color: var(--text2);
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+        }
+        
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 4px 0;
+            font-size: 12px;
+            color: var(--text2);
+        }
+        
+        .legend-line {
+            width: 20px;
+            height: 3px;
+            border-radius: 2px;
+        }
+        
+        .legend-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+        }
+        
+        .info-panel {
+            position: absolute;
+            top: 16px;
+            right: 16px;
+            width: 320px;
+            background: rgba(8, 8, 12, 0.95);
+            backdrop-filter: blur(16px);
+            border-radius: 16px;
+            border: 1px solid var(--border);
+            z-index: 1000;
+            display: none;
+            overflow: hidden;
+        }
+        
+        .info-panel.active {
+            display: block;
+            animation: panelSlideIn 0.25s ease;
+        }
+        
+        @keyframes panelSlideIn {
+            from { opacity: 0; transform: translateX(16px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+        
+        .info-header {
+            padding: 18px 20px;
+            border-bottom: 1px solid var(--border);
+            position: relative;
+            background: linear-gradient(180deg, var(--bg3) 0%, transparent 100%);
+        }
+        
+        .info-title {
+            font-size: 1.1rem;
+            font-weight: 700;
+        }
+        
+        .info-subtitle {
+            font-size: 12px;
+            color: var(--text2);
+            margin-top: 2px;
+        }
+        
+        .info-close {
+            position: absolute;
+            top: 14px;
+            right: 14px;
+            width: 28px;
+            height: 28px;
+            background: var(--bg3);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text2);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s ease;
+        }
+        
+        .info-close:hover {
+            background: var(--red-glow);
+            border-color: var(--red);
+            color: var(--red);
+        }
+        
+        .info-body {
+            padding: 18px 20px;
+        }
+        
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            margin-bottom: 18px;
+        }
+        
+        .info-stat {
+            padding: 12px;
+            background: var(--bg3);
+            border-radius: 10px;
+            border: 1px solid var(--border);
+        }
+        
+        .info-stat-value {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--accent2);
+        }
+        
+        .info-stat-label {
+            font-size: 10px;
+            color: var(--text3);
+            text-transform: uppercase;
+            margin-top: 2px;
+        }
+        
+        .info-section {
+            margin-bottom: 16px;
+        }
+        
+        .info-section:last-child {
+            margin-bottom: 0;
+        }
+        
+        .info-section-title {
+            font-size: 10px;
+            font-weight: 600;
+            color: var(--text3);
+            text-transform: uppercase;
+            margin-bottom: 8px;
+            letter-spacing: 0.3px;
+        }
+        
+        .info-list-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 10px;
+            background: var(--bg3);
+            border-radius: 8px;
+            font-size: 12px;
+            margin-bottom: 4px;
+        }
+        
+        .info-list-item:last-child {
+            margin-bottom: 0;
+        }
+        
+        .info-list-label {
+            color: var(--text2);
+        }
+        
+        .status-badge {
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: 600;
+        }
+        
+        .status-badge.available { background: var(--green-glow); color: var(--green); }
+        .status-badge.limited { background: var(--orange-glow); color: var(--orange); }
+        .status-badge.constrained { background: var(--red-glow); color: var(--red); }
+        
+        @media (max-width: 1024px) {
+            .main { grid-template-columns: 1fr; }
+            .sidebar, .stats-bar { display: none; }
+        }
+    </style>
+<script>
+// Page gate — require free account minimum, pro for full access
+window.DCHUB_PAGE_GATE = 'registered';
+
+// DC Hub Auth Sync — synchronously sets window.currentUser from localStorage
+(function() {
+  var session = {};
+  try { session = JSON.parse(localStorage.getItem('dchub_session') || '{}'); } catch(e) {}
+
+  // Extract plan — handle both raw user object format and normalized format
+  var plan = session.plan || null;
+  if (!plan && session.tier) {
+    plan = session.tier === 'pro' ? 'pro' : session.tier === 'enterprise' ? 'enterprise' : 'free';
+  }
+  var token = session.token || localStorage.getItem('dchub_token') || null;
+
+  if (plan) {
+    var gateTier = plan === 'pro' ? 'pro' : plan === 'enterprise' ? 'enterprise' : 'registered';
+    // Always rewrite in normalized format with expires
+    localStorage.setItem('dchub_session', JSON.stringify({
+      tier: gateTier,
+      expires: new Date(Date.now() + 30 * 86400000).toISOString(),
+      email: session.email || '',
+      plan: plan
+    }));
+    if (token) localStorage.setItem('dchub_token', token);
+    // Set synchronously so timer and layer limit can read it immediately
+    window.currentUser = { plan: plan, email: session.email || '', tier: gateTier };
+    console.log('[DC Hub] Auth sync: plan=' + plan + ' tier=' + gateTier);
+  }
+})();
+</script>
+<script src="/static/js/dchub-plan-sync.js"></script>
+</head>
+<body>
+    <header class="header">
+        <a href="/dashboard.html" class="logo">
+            <div class="logo-icon">⚡</div>
+            <span>DC Hub</span>
+        </a>
+        <nav class="nav">
+            <a href="/dashboard.html">Dashboard</a>
+            <a href="index.html#news">News</a>
+            <a href="/land-power" class="active">Land & Power</a>
+            <a href="/developers">Developers</a>
+        </nav>
+        <a href="index.html#pricing" class="btn-primary">Get Started</a>
+    </header>
+    
+    <main class="main">
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <h2 class="sidebar-title">
+                    <span class="sidebar-title-icon">🗺️</span>
+                    Site Selection
+                </h2>
+                <div class="search-wrapper">
+                    <span class="search-icon">🔍</span>
+                    <input type="text" class="search-input" id="market-search" placeholder="Search markets...">
+                </div>
+            </div>
+            
+            <div class="sidebar-content">
+                <div class="presets-section">
+                    <div class="section-label">Quick Views</div>
+                    <div class="preset-grid">
+                        <button class="preset-btn active" data-preset="power" onclick="applyPreset('power')">
+                            <span class="preset-icon">⚡</span>
+                            Power
+                        </button>
+                        <button class="preset-btn" data-preset="fiber" onclick="applyPreset('fiber')">
+                            <span class="preset-icon">🌐</span>
+                            Fiber
+                        </button>
+                        <button class="preset-btn" data-preset="all" onclick="applyPreset('all')">
+                            <span class="preset-icon">🗺️</span>
+                            All
+                        </button>
+                    </div>
+                </div>
+                
+                <div class="accordion open" data-group="power">
+                    <div class="accordion-header" onclick="toggleAccordion(this)">
+                        <div class="accordion-title">
+                            <div class="accordion-icon power">⚡</div>
+                            <span class="accordion-name">Power Infrastructure</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <span class="accordion-count">4 layers</span>
+                            <span class="accordion-chevron">▼</span>
+                        </div>
+                    </div>
+                    <div class="accordion-content">
+                        <div class="layer-item active" data-layer="transmission" onclick="toggleLayer(this)">
+                            <div class="layer-info">
+                                <div class="layer-dot" style="background: var(--orange);"></div>
+                                <span class="layer-name">Transmission Lines</span>
+                            </div>
+                            <div class="toggle-mini"></div>
+                        </div>
+                        <div class="layer-item active" data-layer="substations" onclick="toggleLayer(this)">
+                            <div class="layer-info">
+                                <div class="layer-dot" style="background: var(--purple);"></div>
+                                <span class="layer-name">Substations</span>
+                            </div>
+                            <div class="toggle-mini"></div>
+                        </div>
+                        <div class="layer-item" data-layer="nuclear" onclick="toggleLayer(this)">
+                            <div class="layer-info">
+                                <div class="layer-dot" style="background: var(--green);"></div>
+                                <span class="layer-name">Power Plants</span>
+                            </div>
+                            <div class="toggle-mini"></div>
+                        </div>
+                        <div class="layer-item" data-layer="utilityTerritories" onclick="toggleLayer(this)">
+                            <div class="layer-info">
+                                <div class="layer-dot" style="background: #94a3b8;"></div>
+                                <span class="layer-name">Utility Territories</span>
+                            </div>
+                            <div class="toggle-mini"></div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="accordion" data-group="gas">
+                    <div class="accordion-header" onclick="toggleAccordion(this)">
+                        <div class="accordion-title">
+                            <div class="accordion-icon gas">🔥</div>
+                            <span class="accordion-name">Gas Infrastructure</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <span class="accordion-count">4 layers</span>
+                            <span class="accordion-chevron">▼</span>
+                        </div>
+                    </div>
+                    <div class="accordion-content">
+                        <div class="layer-item" data-layer="gas" onclick="toggleLayer(this)">
+                            <div class="layer-info">
+                                <div class="layer-dot" style="background: var(--red);"></div>
+                                <span class="layer-name">Interstate Pipelines</span>
+                            </div>
+                            <div class="toggle-mini"></div>
+                        </div>
+                        <div class="layer-item" data-layer="gasStorage" onclick="toggleLayer(this)">
+                            <div class="layer-info">
+                                <div class="layer-dot" style="background: #dc2626;"></div>
+                                <span class="layer-name">Gas Hubs & Storage</span>
+                            </div>
+                            <div class="toggle-mini"></div>
+                        </div>
+                        <div class="layer-item" data-layer="gasProcessing" onclick="toggleLayer(this)">
+                            <div class="layer-info">
+                                <div class="layer-dot" style="background: #f97316;"></div>
+                                <span class="layer-name">Processing Plants</span>
+                            </div>
+                            <div class="toggle-mini"></div>
+                        </div>
+                        <div class="layer-item" data-layer="nglFractionators" onclick="toggleLayer(this)">
+                            <div class="layer-info">
+                                <div class="layer-dot" style="background: #a855f7;"></div>
+                                <span class="layer-name">NGL Fractionators</span>
+                            </div>
+                            <div class="toggle-mini"></div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="accordion" data-group="fiber">
+                    <div class="accordion-header" onclick="toggleAccordion(this)">
+                        <div class="accordion-title">
+                            <div class="accordion-icon fiber">🌐</div>
+                            <span class="accordion-name">Fiber & Connectivity</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <span class="accordion-count">2 layers</span>
+                            <span class="accordion-chevron">▼</span>
+                        </div>
+                    </div>
+                    <div class="accordion-content">
+                        <div class="layer-item" data-layer="fiber" onclick="toggleLayer(this)">
+                            <div class="layer-info">
+                                <div class="layer-dot" style="background: var(--cyan);"></div>
+                                <span class="layer-name">Long-Haul Fiber</span>
+                            </div>
+                            <div class="toggle-mini"></div>
+                        </div>
+                        <div class="layer-item" data-layer="exchanges" onclick="toggleLayer(this)">
+                            <div class="layer-info">
+                                <div class="layer-dot" style="background: #0ea5e9;"></div>
+                                <span class="layer-name">Internet Exchanges</span>
+                            </div>
+                            <div class="toggle-mini"></div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="accordion" data-group="data">
+                    <div class="accordion-header" onclick="toggleAccordion(this)">
+                        <div class="accordion-title">
+                            <div class="accordion-icon data">🏢</div>
+                            <span class="accordion-name">Data Centers</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <span class="accordion-count">2 layers</span>
+                            <span class="accordion-chevron">▼</span>
+                        </div>
+                    </div>
+                    <div class="accordion-content">
+                        <div class="layer-item active" data-layer="datacenters" onclick="toggleLayer(this)">
+                            <div class="layer-info">
+                                <div class="layer-dot" style="background: var(--green);"></div>
+                                <span class="layer-name">Existing Facilities</span>
+                            </div>
+                            <div class="toggle-mini"></div>
+                        </div>
+                        <div class="layer-item" data-layer="planned" onclick="toggleLayer(this)">
+                            <div class="layer-info">
+                                <div class="layer-dot" style="background: var(--accent);"></div>
+                                <span class="layer-name">Planned / Under Construction</span>
+                            </div>
+                            <div class="toggle-mini"></div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div style="margin-top: 20px;">
+                    <div class="section-label">Markets</div>
+                    <div class="tier-tabs">
+                        <button class="tier-tab active" data-tab="all" onclick="filterTier('all')">All</button>
+                        <button class="tier-tab" data-tab="tier-1" onclick="filterTier('tier-1')">Tier 1</button>
+                        <button class="tier-tab" data-tab="tier-2" onclick="filterTier('tier-2')">Tier 2</button>
+                        <button class="tier-tab" data-tab="tier-3" onclick="filterTier('tier-3')">Tier 3+</button>
+                    </div>
+                    <div class="market-list" id="market-list"></div>
+                </div>
+            </div>
+        </aside>
+        
+        <div class="map-container">
+            <div id="map"></div>
+            
+            <div class="stats-bar">
+                <div class="stats-item">
+                    <div class="stats-value">50+</div>
+                    <div class="stats-label">Markets</div>
+                </div>
+                <div class="stats-item">
+                    <div class="stats-value">85+</div>
+                    <div class="stats-label">GW Capacity</div>
+                </div>
+                <div class="stats-item">
+                    <div class="stats-value">2.1M</div>
+                    <div class="stats-label">Fiber Miles</div>
+                </div>
+                <div class="stats-item">
+                    <div class="stats-value">4,200+</div>
+                    <div class="stats-label">Facilities</div>
+                </div>
+            </div>
+            
+            <div class="map-legend">
+                <div class="legend-title">Infrastructure</div>
+                <div class="legend-item">
+                    <div class="legend-line" style="background: var(--orange);"></div>
+                    <span>Transmission</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-line" style="background: var(--red);"></div>
+                    <span>Gas Pipeline</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-line" style="background: var(--cyan);"></div>
+                    <span>Fiber</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-dot" style="background: var(--green);"></div>
+                    <span>Market</span>
+                </div>
+            </div>
+            
+            <div class="info-panel" id="info-panel">
+                <div class="info-header">
+                    <h3 class="info-title" id="info-title">Market</h3>
+                    <p class="info-subtitle" id="info-subtitle">Region</p>
+                    <button class="info-close" onclick="closeInfoPanel()">✕</button>
+                </div>
+                <div class="info-body">
+                    <div class="info-grid" id="info-grid"></div>
+                    <div class="info-section">
+                        <div class="info-section-title">Infrastructure</div>
+                        <div id="info-infrastructure"></div>
+                    </div>
+                    <div class="info-section">
+                        <div class="info-section-title">Utilities</div>
+                        <div id="info-utilities"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+<script src="/static/js/api-config.js"></script>
+<script data-cfasync="false" src="js/dchub-infrastructure.js"></script>
+<script data-cfasync="false">
+let map, layers = {}, currentFilter = 'all', activePreset = 'power';
+let infraLoaded = false;
+
+const markets = [
+    {name:"Northern Virginia",lat:39.04,lng:-77.49,tier:1,region:"NA",state:"VA",power:{available:"9.6 GW",timeline:"3-5 years",status:"constrained",utility:"Dominion"},gas:"Transco",fiber:["Lumen","Zayo","Crown Castle"],water:{status:"available"},land:"$2-4M/acre",stats:{facilities:950,uc:"1.8 GW",vacancy:"0.8%",pricing:"$220/kW"}},
+    {name:"Dallas-Fort Worth",lat:32.90,lng:-96.85,tier:1,region:"NA",state:"TX",power:{available:"2.4 GW",timeline:"2-3 years",status:"available",utility:"Oncor"},gas:"Enterprise",fiber:["Lumen","Zayo","AT&T"],water:{status:"available"},land:"$400K-1M/acre",stats:{facilities:520,uc:"1.1 GW",vacancy:"1.2%",pricing:"$165/kW"}},
+    {name:"Phoenix",lat:33.45,lng:-112.07,tier:1,region:"NA",state:"AZ",power:{available:"2.8 GW",timeline:"2-3 years",status:"available",utility:"APS/SRP"},gas:"El Paso NG",fiber:["Lumen","Zayo","Cox"],water:{status:"limited"},land:"$300K-800K/acre",stats:{facilities:480,uc:"1.3 GW",vacancy:"1.8%",pricing:"$185/kW"}},
+    {name:"Chicago",lat:41.88,lng:-87.63,tier:1,region:"NA",state:"IL",power:{available:"1.55 GW",timeline:"3-4 years",status:"limited",utility:"ComEd"},gas:"ANR",fiber:["Lumen","Zayo","Cogent"],water:{status:"available"},land:"$500K-1.2M/acre",stats:{facilities:420,uc:"1.18 GW",vacancy:"2.1%",pricing:"$155/kW"}},
+    {name:"Silicon Valley",lat:37.39,lng:-121.95,tier:1,region:"NA",state:"CA",power:{available:"2.9 GW",timeline:"4-6 years",status:"constrained",utility:"PG&E"},gas:"PG&E",fiber:["Lumen","Zayo","AT&T"],water:{status:"limited"},land:"$3-6M/acre",stats:{facilities:520,uc:"0.4 GW",vacancy:"1.4%",pricing:"$245/kW"}},
+    {name:"Atlanta",lat:33.76,lng:-84.39,tier:1,region:"NA",state:"GA",power:{available:"0.9 GW",timeline:"2-3 years",status:"available",utility:"Georgia Power"},gas:"Southern NG",fiber:["Lumen","Zayo","AT&T"],water:{status:"available"},land:"$200K-600K/acre",stats:{facilities:280,uc:"1.11 GW",vacancy:"2.8%",pricing:"$145/kW"}},
+    {name:"London",lat:51.51,lng:-0.13,tier:1,region:"EMEA",state:"UK",power:{available:"1.2 GW",timeline:"3-4 years",status:"limited",utility:"National Grid"},gas:"National",fiber:["BT","Colt","Zayo"],water:{status:"available"},land:"£2-5M/acre",stats:{facilities:480,uc:"0.35 GW",vacancy:"3.2%",pricing:"$195/kW"}},
+    {name:"Frankfurt",lat:50.11,lng:8.68,tier:1,region:"EMEA",state:"DE",power:{available:"1.0 GW",timeline:"3-4 years",status:"limited",utility:"Mainova"},gas:"ONTRAS",fiber:["DE-CIX","Colt"],water:{status:"available"},land:"€1.5-3M/acre",stats:{facilities:520,uc:"0.42 GW",vacancy:"2.8%",pricing:"$175/kW"}},
+    {name:"Singapore",lat:1.35,lng:103.82,tier:1,region:"APAC",state:"SG",power:{available:"0.9 GW",timeline:"3-4 years",status:"limited",utility:"SP Group"},gas:"Gas Supply",fiber:["Singtel","PCCW"],water:{status:"limited"},land:"$15-25M/acre",stats:{facilities:350,uc:"0.15 GW",vacancy:"1.9%",pricing:"$210/kW"}},
+    {name:"Tokyo",lat:35.68,lng:139.69,tier:1,region:"APAC",state:"JP",power:{available:"1.1 GW",timeline:"3-4 years",status:"limited",utility:"TEPCO"},gas:"Tokyo Gas",fiber:["NTT","KDDI"],water:{status:"available"},land:"$10-20M/acre",stats:{facilities:520,uc:"0.32 GW",vacancy:"2.4%",pricing:"$225/kW"}},
+    {name:"Austin",lat:30.27,lng:-97.74,tier:2,region:"NA",state:"TX",power:{available:"0.9 GW",timeline:"2-3 years",status:"available",utility:"Austin Energy"},gas:"Kinder Morgan",fiber:["Lumen","AT&T"],water:{status:"limited"},land:"$300K-700K/acre",stats:{facilities:140,uc:"0.34 GW",vacancy:"3.2%",pricing:"$135/kW"}},
+    {name:"New York Metro",lat:40.76,lng:-74.00,tier:2,region:"NA",state:"NJ",power:{available:"1.1 GW",timeline:"3-4 years",status:"limited",utility:"PSE&G"},gas:"Texas Eastern",fiber:["Lumen","Zayo","Cogent"],water:{status:"available"},land:"$1-3M/acre",stats:{facilities:450,uc:"0.5 GW",vacancy:"2.5%",pricing:"$195/kW"}},
+    {name:"Portland/Hillsboro",lat:45.52,lng:-122.68,tier:2,region:"NA",state:"OR",power:{available:"0.8 GW",timeline:"2-3 years",status:"available",utility:"PGE"},gas:"NW Natural",fiber:["Lumen","Zayo"],water:{status:"available"},land:"$200K-500K/acre",stats:{facilities:160,uc:"0.3 GW",vacancy:"3.5%",pricing:"$125/kW"}},
+    {name:"Denver",lat:39.74,lng:-104.99,tier:2,region:"NA",state:"CO",power:{available:"0.5 GW",timeline:"2-3 years",status:"available",utility:"Xcel"},gas:"Colorado Interstate",fiber:["Lumen","Zayo"],water:{status:"limited"},land:"$200K-500K/acre",stats:{facilities:180,uc:"0.2 GW",vacancy:"4.2%",pricing:"$115/kW"}},
+    {name:"Columbus",lat:39.96,lng:-83.00,tier:2,region:"NA",state:"OH",power:{available:"0.4 GW",timeline:"2-3 years",status:"available",utility:"AEP Ohio"},gas:"Columbia Gas",fiber:["Lumen","Zayo"],water:{status:"available"},land:"$100K-300K/acre",stats:{facilities:120,uc:"0.6 GW",vacancy:"2.9%",pricing:"$120/kW"}},
+    {name:"Salt Lake City",lat:40.76,lng:-111.89,tier:2,region:"NA",state:"UT",power:{available:"0.3 GW",timeline:"2-3 years",status:"available",utility:"Rocky Mtn"},gas:"Kern River",fiber:["Lumen","UTOPIA"],water:{status:"available"},land:"$150K-400K/acre",stats:{facilities:85,uc:"0.15 GW",vacancy:"5.1%",pricing:"$105/kW"}},
+    {name:"Seattle",lat:47.61,lng:-122.33,tier:2,region:"NA",state:"WA",power:{available:"0.6 GW",timeline:"3-4 years",status:"limited",utility:"Seattle City Light"},gas:"NW Pipeline",fiber:["Lumen","Wave"],water:{status:"available"},land:"$500K-1.5M/acre",stats:{facilities:220,uc:"0.35 GW",vacancy:"2.9%",pricing:"$165/kW"}},
+    {name:"Los Angeles",lat:34.05,lng:-118.24,tier:2,region:"NA",state:"CA",power:{available:"0.7 GW",timeline:"3-4 years",status:"limited",utility:"LADWP"},gas:"SoCalGas",fiber:["Lumen","Zayo","AT&T"],water:{status:"limited"},land:"$1-3M/acre",stats:{facilities:350,uc:"0.25 GW",vacancy:"3.8%",pricing:"$175/kW"}},
+    {name:"Nashville",lat:36.16,lng:-86.78,tier:3,region:"NA",state:"TN",power:{available:"0.25 GW",timeline:"1-2 years",status:"available",utility:"TVA"},gas:"East TN NG",fiber:["Lumen","AT&T"],water:{status:"available"},land:"$100K-300K/acre",stats:{facilities:45,uc:"0.45 GW",vacancy:"6.2%",pricing:"$95/kW"}},
+    {name:"Kansas City",lat:39.10,lng:-94.58,tier:3,region:"NA",state:"MO",power:{available:"0.2 GW",timeline:"1-2 years",status:"available",utility:"Evergy"},gas:"Panhandle",fiber:["Lumen","Google Fiber"],water:{status:"available"},land:"$50K-200K/acre",stats:{facilities:75,uc:"0.18 GW",vacancy:"5.8%",pricing:"$85/kW"}},
+    {name:"Charlotte",lat:35.23,lng:-80.84,tier:3,region:"NA",state:"NC",power:{available:"0.3 GW",timeline:"2-3 years",status:"available",utility:"Duke"},gas:"Transco",fiber:["Lumen","AT&T"],water:{status:"available"},land:"$100K-350K/acre",stats:{facilities:65,uc:"0.22 GW",vacancy:"4.9%",pricing:"$110/kW"}},
+    {name:"Reno",lat:39.53,lng:-119.81,tier:3,region:"NA",state:"NV",power:{available:"0.15 GW",timeline:"1-2 years",status:"available",utility:"NV Energy"},gas:"Paiute",fiber:["Lumen","Zayo"],water:{status:"limited"},land:"$50K-200K/acre",stats:{facilities:55,uc:"0.25 GW",vacancy:"6.5%",pricing:"$90/kW"}},
+    {name:"Las Vegas",lat:36.17,lng:-115.14,tier:3,region:"NA",state:"NV",power:{available:"0.35 GW",timeline:"2-3 years",status:"available",utility:"NV Energy"},gas:"Kern River",fiber:["Lumen","Cox"],water:{status:"constrained"},land:"$100K-400K/acre",stats:{facilities:85,uc:"0.3 GW",vacancy:"5.5%",pricing:"$100/kW"}},
+    {name:"Richmond",lat:37.54,lng:-77.44,tier:3,region:"NA",state:"VA",power:{available:"0.1 GW",timeline:"2-3 years",status:"available",utility:"Dominion"},gas:"Transco",fiber:["Lumen","Zayo"],water:{status:"available"},land:"$100K-300K/acre",stats:{facilities:25,uc:"0.2 GW",vacancy:"7.0%",pricing:"$95/kW"}},
+    {name:"Indianapolis",lat:39.77,lng:-86.16,tier:3,region:"NA",state:"IN",power:{available:"0.08 GW",timeline:"1-2 years",status:"available",utility:"AES"},gas:"Panhandle",fiber:["Lumen","AT&T"],water:{status:"available"},land:"$50K-150K/acre",stats:{facilities:35,uc:"0.15 GW",vacancy:"8.0%",pricing:"$80/kW"}},
+    {name:"Houston",lat:29.76,lng:-95.37,tier:3,region:"NA",state:"TX",power:{available:"0.58 GW",timeline:"2-3 years",status:"available",utility:"CenterPoint"},gas:"Multiple",fiber:["Lumen","Zayo"],water:{status:"available"},land:"$150K-500K/acre",stats:{facilities:160,uc:"0.3 GW",vacancy:"4.5%",pricing:"$115/kW"}},
+    {name:"Miami",lat:25.76,lng:-80.19,tier:3,region:"NA",state:"FL",power:{available:"0.6 GW",timeline:"2-3 years",status:"available",utility:"FPL"},gas:"Florida Gas",fiber:["Lumen","NAP Americas"],water:{status:"available"},land:"$300K-1M/acre",stats:{facilities:190,uc:"0.25 GW",vacancy:"4.0%",pricing:"$135/kW"}},
+    {name:"Quincy WA",lat:47.23,lng:-119.85,tier:3,region:"NA",state:"WA",power:{available:"0.45 GW",timeline:"1-2 years",status:"available",utility:"Grant PUD"},gas:"N/A",fiber:["Zayo","NoaNet"],water:{status:"available"},land:"$30K-100K/acre",stats:{facilities:65,uc:"0.3 GW",vacancy:"4.0%",pricing:"$70/kW"}},
+    {name:"Omaha",lat:41.26,lng:-95.94,tier:4,region:"NA",state:"NE",power:{available:"0.15 GW",timeline:"1-2 years",status:"available",utility:"OPPD"},gas:"Northern Natural",fiber:["Lumen"],water:{status:"available"},land:"$30K-100K/acre",stats:{facilities:25,uc:"0.08 GW",vacancy:"10%",pricing:"$70/kW"}},
+    {name:"Des Moines",lat:41.59,lng:-93.62,tier:4,region:"NA",state:"IA",power:{available:"0.12 GW",timeline:"1-2 years",status:"available",utility:"MidAmerican"},gas:"Northern Natural",fiber:["Lumen"],water:{status:"available"},land:"$25K-80K/acre",stats:{facilities:20,uc:"0.1 GW",vacancy:"12%",pricing:"$65/kW"}},
+    {name:"Boise",lat:43.62,lng:-116.21,tier:4,region:"NA",state:"ID",power:{available:"0.08 GW",timeline:"1-2 years",status:"available",utility:"Idaho Power"},gas:"Intermountain",fiber:["Lumen"],water:{status:"available"},land:"$40K-150K/acre",stats:{facilities:12,uc:"0.04 GW",vacancy:"18%",pricing:"$55/kW"}},
+    {name:"Tulsa",lat:36.15,lng:-95.99,tier:4,region:"NA",state:"OK",power:{available:"0.12 GW",timeline:"1-2 years",status:"available",utility:"PSO"},gas:"Multiple",fiber:["Lumen","Cox"],water:{status:"available"},land:"$25K-80K/acre",stats:{facilities:18,uc:"0.06 GW",vacancy:"14%",pricing:"$60/kW"}},
+    {name:"Louisville",lat:38.25,lng:-85.76,tier:4,region:"NA",state:"KY",power:{available:"0.1 GW",timeline:"1-2 years",status:"available",utility:"LG&E"},gas:"Texas Gas",fiber:["Lumen","AT&T"],water:{status:"available"},land:"$30K-100K/acre",stats:{facilities:20,uc:"0.06 GW",vacancy:"12%",pricing:"$70/kW"}},
+    {name:"Jacksonville",lat:30.33,lng:-81.66,tier:4,region:"NA",state:"FL",power:{available:"0.2 GW",timeline:"1-2 years",status:"available",utility:"JEA"},gas:"Florida Gas",fiber:["Lumen","AT&T"],water:{status:"available"},land:"$50K-200K/acre",stats:{facilities:30,uc:"0.1 GW",vacancy:"10%",pricing:"$80/kW"}},
+    {name:"Cheyenne",lat:41.14,lng:-104.82,tier:4,region:"NA",state:"WY",power:{available:"0.08 GW",timeline:"1-2 years",status:"available",utility:"Black Hills"},gas:"Cheyenne Plains",fiber:["Lumen"],water:{status:"limited"},land:"$15K-50K/acre",stats:{facilities:8,uc:"0.03 GW",vacancy:"25%",pricing:"$50/kW"}}
+];
+
+const transmissionRoutes = [
+    {coords:[[39,-77.5],[40,-83],[41.5,-87.5]]},
+    {coords:[[32.9,-96.8],[30.3,-97.7],[29.8,-95.4],[32.9,-96.8]]},
+    {coords:[[34.1,-118.2],[38.5,-122],[46,-122.7]]},
+    {coords:[[33.8,-84.4],[35.2,-80.8],[35.8,-78.6]]},
+    {coords:[[39,-77.5],[36,-79.5],[33.8,-84.4]]},
+    {coords:[[41.9,-87.6],[39.7,-105],[37.4,-122]]}
+];
+
+const gasRoutes = [
+    {coords:[[40.7,-74],[36,-79.5],[33.8,-84.4],[29.8,-95.4]]},
+    {coords:[[40.5,-110],[40,-95],[39,-84]]},
+    {coords:[[29.8,-95.4],[32,-97],[35,-98],[41,-96]]}
+];
+
+const fiberRoutes = [
+    {coords:[[40.7,-74],[38.5,-90.2],[39.7,-105],[37.4,-122]]},
+    {coords:[[40.7,-74],[41.9,-87.6],[39.7,-105],[34,-118.2]]},
+    {coords:[[42.3,-71],[40.7,-74],[33.8,-84.4],[32.9,-96.8]]}
+];
+
+function initMap() {
+    map = L.map('map', { center: [39, -98], zoom: 4, zoomControl: false });
+    L.control.zoom({ position: 'bottomright' }).addTo(map);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { attribution: 'CARTO' }).addTo(map);
+    
+    layers.transmission = L.layerGroup();
+    layers.substations = L.layerGroup();
+    layers.gas = L.layerGroup();
+    layers.fiber = L.layerGroup();
+    layers.markets = L.layerGroup();
+    layers.nuclear = L.layerGroup();
+    layers.datacenters = L.layerGroup();
+    layers.planned = L.layerGroup();
+    layers.exchanges = L.layerGroup();
+    layers.compressors = L.layerGroup();
+    layers.gasStorage = L.layerGroup();
+    layers.gasProcessing = L.layerGroup();
+    layers.nglFractionators = L.layerGroup();
+    layers.utilityTerritories = L.layerGroup();
+    
+    transmissionRoutes.forEach(r => layers.transmission.addLayer(
+        L.polyline(r.coords, { color: '#f59e0b', weight: 3, opacity: 0.8 })
+    ));
+    
+    gasRoutes.forEach(r => layers.gas.addLayer(
+        L.polyline(r.coords, { color: '#ef4444', weight: 2, opacity: 0.7, dashArray: '8,4' })
+    ));
+    
+    fiberRoutes.forEach(r => layers.fiber.addLayer(
+        L.polyline(r.coords, { color: '#06b6d4', weight: 2, opacity: 0.7 })
+    ));
+    
+    markets.filter(m => m.tier <= 2).forEach(m => layers.substations.addLayer(
+        L.circleMarker([m.lat, m.lng], { radius: 5, fillColor: '#a855f7', color: '#fff', weight: 1, fillOpacity: 0.8 })
+    ));
+    
+    markets.forEach(m => {
+        const c = m.tier === 1 ? '#10b981' : m.tier === 2 ? '#6366f1' : m.tier === 3 ? '#f59e0b' : '#a855f7';
+        const s = m.tier === 1 ? 10 : m.tier === 2 ? 8 : 6;
+        const mk = L.circleMarker([m.lat, m.lng], { radius: s, fillColor: c, color: '#fff', weight: 2, fillOpacity: 0.9 });
+        mk.on('click', () => showInfo(m));
+        mk.bindTooltip(m.name, { direction: 'top', offset: [0, -8] });
+        layers.markets.addLayer(mk);
+    });
+    
+    if (window.DCHubInfrastructure) {
+        DCHubInfrastructure.createStaticGasStorageLayer(layers.gasStorage);
+        DCHubInfrastructure.createStaticGasProcessingLayer(layers.gasProcessing);
+        DCHubInfrastructure.createStaticNGLFractionatorsLayer(layers.nglFractionators);
+        DCHubInfrastructure.createFallbackUtilityTerritories(layers.utilityTerritories);
+    }
+    
+    map.addLayer(layers.transmission);
+    map.addLayer(layers.substations);
+    map.addLayer(layers.markets);
+    renderList();
+    
+    map.on('moveend', loadDynamicLayers);
+}
+
+async function loadDynamicLayers() {
+    if (!window.DCHubInfrastructure) return;
+    const bounds = map.getBounds();
+    const zoom = map.getZoom();
+    if (zoom < 5) return;
+    
+    try {
+        await Promise.allSettled([
+            DCHubInfrastructure.loadSubstations(map, bounds, layers.substations),
+            DCHubInfrastructure.loadPowerPlants(map, bounds, layers.nuclear),
+            DCHubInfrastructure.loadTransmissionLines(map, bounds, layers.transmission),
+            DCHubInfrastructure.loadGasPipelines(map, bounds, layers.gas),
+            DCHubInfrastructure.loadDataCenters(map, bounds, layers.datacenters)
+        ]);
+    } catch (e) {
+        console.warn('Dynamic layer loading failed:', e.message);
+    }
+}
+
+function toggleAccordion(header) {
+    const accordion = header.parentElement;
+    const isOpen = accordion.classList.contains('open');
+    // Close all accordions first
+    document.querySelectorAll('.accordion').forEach(a => a.classList.remove('open'));
+    // Open clicked one only if it was closed
+}
+
+function toggleLayer(item) {
+    if (!item || !item.dataset) {
+        console.warn('toggleLayer called with invalid item');
+        return;
+    }
+    const layerName = item.dataset.layer;
+    if (!layerName) { console.warn('toggleLayer: No layer name specified'); return; }
+    if (!layers[layerName]) { console.warn('Layer not initialized'); return; }
+
+    const isActive = item.classList.contains('active');
+    // Read plan directly from localStorage — works regardless of window.currentUser timing
+    var _session = {}; try { _session = JSON.parse(localStorage.getItem('dchub_session') || '{}'); } catch(e) {}
+    var _plan = _session.plan || (window.currentUser && window.currentUser.plan) || 'free';
+
+    if (!isActive && _plan === 'free') {
+        const activeLayers = document.querySelectorAll('.layer-item.active').length;
+        if (activeLayers >= 5) {
+            showUpgradePrompt();
+            return;
+        }
+    }
+
+    item.classList.toggle('active');
+    if (item.classList.contains('active')) {
+        map.addLayer(layers[layerName]);
+    } else {
+        map.removeLayer(layers[layerName]);
+    }
+}
+
+function showUpgradePrompt() {
+    const existing = document.getElementById('upgrade-prompt');
+    if (existing) existing.remove();
+    const div = document.createElement('div');
+    div.id = 'upgrade-prompt';
+    div.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#1a1f2e;border:1px solid #f59e0b;border-radius:12px;padding:28px 32px;z-index:9999;max-width:360px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,0.6)';
+    div.innerHTML = '<div style="font-size:28px;margin-bottom:12px">⚡</div><div style="font-size:16px;font-weight:700;color:#fff;margin-bottom:8px">Free Plan Limit Reached</div><div style="font-size:13px;color:#9ca3af;margin-bottom:20px">Free accounts are limited to 5 layer selections. Upgrade to Pro for unlimited access.</div><div style="display:flex;gap:8px;margin-top:4px;flex-wrap:wrap;">
+<div style="flex:1;min-width:140px;border:1px solid #374151;border-radius:8px;padding:12px;background:#111;text-align:center;">
+<div style="font-size:11px;color:#9ca3af;text-transform:uppercase;margin-bottom:3px;">Developer</div>
+<div style="font-size:22px;font-weight:700;color:#fff;">$49<span style="font-size:12px;color:#6b7280;">/mo</span></div>
+<div style="font-size:11px;color:#6b7280;margin:4px 0 8px;">1,000 calls/day · All layers</div>
+<a href="/pricing#developer" style="display:block;padding:7px;border-radius:6px;background:#1d4ed8;color:#fff;font-size:12px;font-weight:600;text-decoration:none;">Start Developer →</a>
+</div>
+<div style="flex:1;min-width:140px;border:2px solid #f59e0b;border-radius:8px;padding:12px;background:#0f1119;text-align:center;">
+<div style="font-size:11px;color:#fbbf24;text-transform:uppercase;margin-bottom:3px;">⭐ Pro</div>
+<div style="font-size:22px;font-weight:700;color:#fff;">$99<span style="font-size:12px;color:#6b7280;">/mo</span></div>
+<div style="font-size:11px;color:#6b7280;margin:4px 0 8px;">10,000 calls/day · Export</div>
+<a href="/pricing#pro" style="display:block;padding:7px;border-radius:6px;background:#f59e0b;color:#000;font-size:12px;font-weight:700;text-decoration:none;">Upgrade to Pro →</a>
+</div>
+</div>
+<button onclick="document.getElementById('upgrade-prompt').remove()" style="margin-top:10px;padding:7px 14px;background:transparent;border:1px solid #374151;color:#6b7280;border-radius:8px;cursor:pointer;font-size:12px;">Dismiss</button>';
+    document.body.appendChild(div);
+}
+
+function applyPreset(preset) {
+    document.querySelectorAll('.preset-btn').forEach(btn => btn.classList.remove('active'));
+    document.querySelector(`[data-preset="${preset}"]`).classList.add('active');
+    activePreset = preset;
+    
+    const allLayerItems = document.querySelectorAll('.layer-item');
+    
+    if (preset === 'power') {
+        allLayerItems.forEach(item => {
+            const layer = item.dataset.layer;
+            const powerLayers = ['transmission', 'substations', 'nuclear', 'datacenters'];
+            if (powerLayers.includes(layer)) {
+                item.classList.add('active');
+                if (layers[layer]) map.addLayer(layers[layer]);
+            } else {
+                item.classList.remove('active');
+                if (layers[layer]) map.removeLayer(layers[layer]);
+            }
+        });
+    } else if (preset === 'fiber') {
+        allLayerItems.forEach(item => {
+            const layer = item.dataset.layer;
+            const fiberLayers = ['fiber', 'exchanges', 'datacenters'];
+            if (fiberLayers.includes(layer)) {
+                item.classList.add('active');
+                if (layers[layer]) map.addLayer(layers[layer]);
+            } else {
+                item.classList.remove('active');
+                if (layers[layer]) map.removeLayer(layers[layer]);
+            }
+        });
+    } else if (preset === 'all') {
+        allLayerItems.forEach(item => {
+            item.classList.add('active');
+            const layer = item.dataset.layer;
+            if (layers[layer]) map.addLayer(layers[layer]);
+        });
+    }
+}
+
+function filterTier(tier) {
+    currentFilter = tier;
+    document.querySelectorAll('.tier-tab').forEach(tab => tab.classList.remove('active'));
+    document.querySelector(`[data-tab="${tier}"]`).classList.add('active');
+    renderList(tier, document.getElementById('market-search').value);
+}
+
+function renderList(filter = 'all', search = '') {
+    const c = document.getElementById('market-list');
+    let f = markets;
+    
+    if (filter !== 'all') {
+        if (filter === 'tier-3') f = f.filter(m => m.tier >= 3);
+        else f = f.filter(m => m.tier === parseInt(filter.split('-')[1]));
+    }
+    
+    if (search) {
+        f = f.filter(m => 
+            m.name.toLowerCase().includes(search.toLowerCase()) || 
+            m.state.toLowerCase().includes(search.toLowerCase())
+        );
+    }
+    
+    c.innerHTML = f.map(m => `
+        <div class="market-card" onclick="selectMarket('${m.name}')">
+            <div class="market-header">
+                <span class="market-name">${m.name}</span>
+                <span class="market-tier tier-${m.tier}">T${m.tier}</span>
+            </div>
+            <div class="market-metrics">
+                <div class="market-metric">
+                    <div class="metric-value">${m.power.available}</div>
+                    <div class="metric-label">Power</div>
+                </div>
+                <div class="market-metric">
+                    <div class="metric-value">${m.stats.facilities}</div>
+                    <div class="metric-label">DCs</div>
+                </div>
+                <div class="market-metric">
+                    <div class="metric-value">${m.stats.vacancy}</div>
+                    <div class="metric-label">Vacancy</div>
+                </div>
+                <div class="market-metric">
+                    <div class="metric-value">${m.stats.pricing}</div>
+                    <div class="metric-label">Price</div>
+                </div>
+            </div>
+        </div>
+    `).join('');
+}
+
+function selectMarket(name) {
+    const m = markets.find(x => x.name === name);
+    if (m) {
+        map.setView([m.lat, m.lng], 8);
+        showInfo(m);
+    }
+}
+
+function showInfo(m) {
+    document.getElementById('info-title').textContent = m.name;
+    document.getElementById('info-subtitle').textContent = `${m.region} • ${m.state} • Tier ${m.tier}`;
+    
+    document.getElementById('info-grid').innerHTML = `
+        <div class="info-stat">
+            <div class="info-stat-value">${m.power.available}</div>
+            <div class="info-stat-label">Power Available</div>
+        </div>
+        <div class="info-stat">
+            <div class="info-stat-value">${m.stats.facilities}</div>
+            <div class="info-stat-label">Data Centers</div>
+        </div>
+        <div class="info-stat">
+            <div class="info-stat-value">${m.stats.uc}</div>
+            <div class="info-stat-label">Under Construction</div>
+        </div>
+        <div class="info-stat">
+            <div class="info-stat-value">${m.stats.pricing}</div>
+            <div class="info-stat-label">Pricing</div>
+        </div>
+    `;
+    
+    const ps = m.power.status === 'available' ? 'available' : m.power.status === 'limited' ? 'limited' : 'constrained';
+    const ws = m.water.status === 'available' ? 'available' : m.water.status === 'limited' ? 'limited' : 'constrained';
+    
+    document.getElementById('info-infrastructure').innerHTML = `
+        <div class="info-list-item">
+            <span class="info-list-label">Power Status</span>
+            <span class="status-badge ${ps}">${m.power.status}</span>
+        </div>
+        <div class="info-list-item">
+            <span class="info-list-label">Timeline</span>
+            <span>${m.power.timeline}</span>
+        </div>
+        <div class="info-list-item">
+            <span class="info-list-label">Land Cost</span>
+            <span>${m.land}</span>
+        </div>
+        <div class="info-list-item">
+            <span class="info-list-label">Water</span>
+            <span class="status-badge ${ws}">${m.water.status}</span>
+        </div>
+    `;
+    
+    document.getElementById('info-utilities').innerHTML = `
+        <div class="info-list-item">
+            <span class="info-list-label">Electric</span>
+            <span>${m.power.utility}</span>
+        </div>
+        <div class="info-list-item">
+            <span class="info-list-label">Gas</span>
+            <span>${m.gas}</span>
+        </div>
+        <div class="info-list-item">
+            <span class="info-list-label">Fiber</span>
+            <span>${m.fiber.slice(0, 2).join(', ')}</span>
+        </div>
+    `;
+    
+    document.getElementById('info-panel').classList.add('active');
+}
+
+function closeInfoPanel() {
+    document.getElementById('info-panel').classList.remove('active');
+}
+
+document.getElementById('market-search').addEventListener('input', e => {
+    renderList(currentFilter, e.target.value);
+});
+
+document.addEventListener('DOMContentLoaded', function() {
+    initMap();
+    // Check plan from dchub_session (written by dchub-auth.js)
+    var _s = {}; try { _s = JSON.parse(localStorage.getItem('dchub_session') || '{}'); } catch(e) {}
+    window.currentUser = { plan: _s.plan || 'anonymous', tier: _s.tier || 'anonymous' };
+    applyFreeTierMapRestriction();
+});
+
+function applyFreeTierMapRestriction() {
+    var plan = (window.currentUser && window.currentUser.plan) || 'anonymous';
+    if (plan === 'anonymous') return;
+    if (plan === 'pro' || plan === 'enterprise') return;
+    startPreviewCountdown();
+}
+
+function startPreviewCountdown() {
+    const PREVIEW_SECONDS = 60;
+    let remaining = PREVIEW_SECONDS;
+
+    const badge = document.createElement('div');
+    badge.id = 'preview-timer';
+    badge.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#1a1f2e;border:1px solid #f59e0b;border-radius:24px;padding:8px 20px;z-index:2000;font-size:13px;font-weight:600;color:#f59e0b;display:flex;align-items:center;gap:8px;box-shadow:0 4px 20px rgba(0,0,0,0.5)';
+    badge.innerHTML = '<span>⏱</span><span id="preview-timer-text">Free Preview: 1:00</span><a href="/pricing" style="margin-left:12px;padding:4px 12px;background:#f59e0b;color:#000;border-radius:12px;text-decoration:none;font-size:12px;font-weight:700">Upgrade</a>';
+    document.body.appendChild(badge);
+
+    let bannerShown = false;
+    const ticker = setInterval(() => {
+        remaining--;
+        const mins = Math.floor(remaining / 60);
+        const secs = remaining % 60;
+        const timerText = document.getElementById('preview-timer-text');
+        if (timerText) timerText.textContent = 'Free Preview: ' + mins + ':' + String(secs).padStart(2, '0');
+
+        if (remaining === 30 && !bannerShown) {
+            bannerShown = true;
+            const banner = document.createElement('div');
+            banner.id = 'preview-warning-banner';
+            banner.style.cssText = 'position:fixed;top:0;left:0;width:100%;background:linear-gradient(90deg,#92400e,#b45309);color:#fff;text-align:center;padding:10px;z-index:2001;font-size:13px;font-weight:600';
+            banner.innerHTML = 'Your free preview ends in 30 seconds — <a href="/pricing#developer" style="color:#93c5fd;text-decoration:underline">Developer $49</a> or <a href="/pricing#pro" style="color:#fde68a;text-decoration:underline">Pro $99</a> to keep full access';
+            document.body.appendChild(banner);
+        }
+
+        if (remaining <= 0) {
+            clearInterval(ticker);
+            lockMapForFreeUser();
+        }
+    }, 1000);
+}
+
+function lockMapForFreeUser() {
+    const timer = document.getElementById('preview-timer');
+    const banner = document.getElementById('preview-warning-banner');
+    if (timer) timer.remove();
+    if (banner) banner.remove();
+
+    if (typeof map !== 'undefined') {
+        map.dragging.disable();
+        map.scrollWheelZoom.disable();
+        map.doubleClickZoom.disable();
+        map.touchZoom.disable();
+        map.boxZoom.disable();
+        map.keyboard.disable();
+    }
+
+    const mapContainer = document.getElementById('map');
+    if (mapContainer) {
+        mapContainer.style.filter = 'blur(4px)';
+        mapContainer.style.pointerEvents = 'none';
+    }
+
+    const overlay = document.createElement('div');
+    overlay.id = 'map-lock-overlay';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;z-index:3000;display:flex;align-items:center;justify-content:center;';
+    overlay.innerHTML = '<div style="background:#0f1119;border:1px solid #f59e0b;border-radius:16px;padding:40px 36px;max-width:400px;text-align:center;box-shadow:0 24px 80px rgba(0,0,0,0.8)"><div style="font-size:36px;margin-bottom:16px">⚡</div><div style="font-size:20px;font-weight:800;color:#fff;margin-bottom:10px">Your Free Preview Has Ended</div><div style="font-size:14px;color:#9ca3af;margin-bottom:8px;line-height:1.6">You have seen what DC Hub Land & Power can do — 40+ infrastructure layers, substation proximity, site scoring, and more.</div><div style="font-size:14px;color:#9ca3af;margin-bottom:24px;line-height:1.6">Upgrade to Pro to unlock unlimited access.</div><div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
+<div style="flex:1;min-width:140px;border:1px solid #374151;border-radius:10px;padding:14px;background:#111;text-align:center;">
+<div style="font-size:11px;color:#9ca3af;text-transform:uppercase;margin-bottom:4px;">Developer</div>
+<div style="font-size:24px;font-weight:700;color:#fff;">$49<span style="font-size:13px;color:#6b7280;">/mo</span></div>
+<div style="font-size:11px;color:#6b7280;margin:5px 0 10px;">1,000 calls/day<br>All infrastructure layers</div>
+<a href="/pricing#developer" style="display:block;padding:8px;border-radius:8px;background:#1d4ed8;color:#fff;font-size:13px;font-weight:600;text-decoration:none;">Start Developer →</a>
+</div>
+<div style="flex:1;min-width:140px;border:2px solid #f59e0b;border-radius:10px;padding:14px;background:#1a1200;text-align:center;position:relative;">
+<div style="position:absolute;top:-9px;left:50%;transform:translateX(-50%);background:#f59e0b;color:#000;font-size:9px;font-weight:800;padding:2px 8px;border-radius:8px;">POPULAR</div>
+<div style="font-size:11px;color:#fbbf24;text-transform:uppercase;margin-bottom:4px;">Pro</div>
+<div style="font-size:24px;font-weight:700;color:#fff;">$99<span style="font-size:13px;color:#6b7280;">/mo</span></div>
+<div style="font-size:11px;color:#6b7280;margin:5px 0 10px;">10,000 calls/day<br>Site scoring + PDF export</div>
+<a href="/pricing#pro" style="display:block;padding:8px;border-radius:8px;background:#f59e0b;color:#000;font-size:13px;font-weight:800;text-decoration:none;">🚀 Upgrade to Pro →</a>
+</div>
+</div><div style="margin-top:12px"><a href="/login" style="color:#6b7280;font-size:12px;text-decoration:underline">Already have an account? Sign in</a></div></div>';
+    document.body.appendChild(overlay);
+}
+</script>
+</body>
+</html>

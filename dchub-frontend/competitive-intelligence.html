@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Competitive Intelligence | DC Hub</title>
+  <meta name="description" content="Data center competitive intelligence: real estate, fiber networks, SEC filings, construction permits, job postings, and competitor analysis across 140+ countries.">
+  <link rel="canonical" href="https://dchub.cloud/competitive-intelligence">
+  <style>
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    :root{--bg:#070b10;--sf:#0d1520;--sf2:#121e2e;--bd:#1a2d44;--tx:#c8d4e0;--dm:#5d7590;--wh:#eef2f7;--ac:#00c9a7;--gd:#e6a817;--cr:#ff6b6b;--pu:#845ef7;--bl:#339af0;--or:#ff922b}
+    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--tx);min-height:100vh;line-height:1.5}
+    a{color:var(--ac);text-decoration:none}a:hover{text-decoration:underline}
+    .nav{position:sticky;top:0;z-index:100;background:rgba(7,11,16,.92);backdrop-filter:blur(12px);border-bottom:1px solid var(--bd);padding:0 24px;display:flex;align-items:center;height:56px;gap:24px}
+    .nav-brand{font-weight:800;font-size:16px;color:var(--wh)}.nav-brand span{color:var(--ac)}
+    .nav-links{display:flex;gap:4px;overflow-x:auto}.nav-links a{padding:6px 14px;border-radius:6px;font-size:12px;font-weight:600;color:var(--dm);white-space:nowrap;transition:all .2s}
+    .nav-links a:hover{color:var(--wh);background:rgba(255,255,255,.04);text-decoration:none}
+    .nav-back{margin-left:auto;font-size:12px;font-weight:600;color:var(--dm);padding:6px 14px;border:1px solid var(--bd);border-radius:6px;transition:all .2s}
+    .nav-back:hover{color:var(--wh);border-color:var(--ac);text-decoration:none}
+    .hero{padding:48px 24px 32px;text-align:center;border-bottom:1px solid var(--bd);background:linear-gradient(180deg,rgba(0,201,167,.04) 0%,transparent 100%)}
+    .hero h1{font-size:28px;font-weight:800;color:var(--wh);margin-bottom:8px}
+    .hero p{color:var(--dm);font-size:14px;max-width:640px;margin:0 auto}
+    .hero-stats{display:flex;justify-content:center;gap:32px;margin-top:24px;flex-wrap:wrap}
+    .hero-stat .val{font-size:28px;font-weight:800;color:var(--ac)}.hero-stat .lbl{font-size:10px;text-transform:uppercase;letter-spacing:1.5px;color:var(--dm);margin-top:2px}
+    .main{max-width:1280px;margin:0 auto;padding:24px}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:20px}
+    .mod{background:var(--sf);border:1px solid var(--bd);border-radius:10px;overflow:hidden;transition:border-color .3s}
+    .mod:hover{border-color:rgba(255,255,255,.1)}
+    .mod-h{padding:16px 20px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:10px}
+    .mod-icon{width:36px;height:36px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
+    .mod-h h3{font-size:14px;font-weight:700;color:var(--wh)}
+    .mod-badge{margin-left:auto;font-size:10px;font-weight:700;padding:3px 8px;border-radius:10px;text-transform:uppercase;letter-spacing:.5px}
+    .mod-b{padding:16px 20px;min-height:180px}
+    .mod-b .ld{display:flex;align-items:center;justify-content:center;min-height:140px;color:var(--dm);font-size:12px}
+    .item{display:flex;align-items:flex-start;gap:10px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,.03)}.item:last-child{border-bottom:none}
+    .item-dot{width:8px;height:8px;border-radius:50%;margin-top:5px;flex-shrink:0}
+    .item-c{flex:1;min-width:0}.item-t{font-size:13px;font-weight:600;color:var(--wh);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .item-s{font-size:11px;color:var(--dm);margin-top:2px}.item-v{font-size:13px;font-weight:700;white-space:nowrap;margin-left:auto;padding-left:8px}
+    .m-re .mod-icon{background:rgba(230,168,23,.12);color:var(--gd)}.m-re .mod-badge{background:rgba(230,168,23,.12);color:var(--gd)}
+    .m-fi .mod-icon{background:rgba(0,201,167,.12);color:var(--ac)}.m-fi .mod-badge{background:rgba(0,201,167,.12);color:var(--ac)}
+    .m-se .mod-icon{background:rgba(255,107,107,.12);color:var(--cr)}.m-se .mod-badge{background:rgba(255,107,107,.12);color:var(--cr)}
+    .m-co .mod-icon{background:rgba(132,94,247,.12);color:var(--pu)}.m-co .mod-badge{background:rgba(132,94,247,.12);color:var(--pu)}
+    .m-jo .mod-icon{background:rgba(51,154,240,.12);color:var(--bl)}.m-jo .mod-badge{background:rgba(51,154,240,.12);color:var(--bl)}
+    .m-pe .mod-icon{background:rgba(255,146,43,.12);color:var(--or)}.m-pe .mod-badge{background:rgba(255,146,43,.12);color:var(--or)}
+    .cmp{background:var(--sf);border:1px solid var(--bd);border-radius:10px;padding:24px;margin-bottom:24px}
+    .cmp h3{font-size:14px;font-weight:700;color:var(--wh);margin-bottom:16px}
+    .cmp-r{display:flex;align-items:center;gap:12px;margin-bottom:10px}
+    .cmp-l{width:100px;font-size:12px;font-weight:600}.cmp-bar{flex:1;height:10px;background:var(--bd);border-radius:5px;overflow:hidden}
+    .cmp-fill{height:100%;border-radius:5px}.cmp-s{width:50px;text-align:right;font-size:13px;font-weight:700}
+    .ftr{text-align:center;padding:40px 24px;border-top:1px solid var(--bd);margin-top:40px;color:var(--dm);font-size:12px}
+    @media(max-width:768px){.grid{grid-template-columns:1fr}.hero-stats{gap:16px}.hero-stat .val{font-size:22px}.nav{padding:0 12px;gap:8px}}
+  </style>
+<style>nav:not(.dchub-nav):not(.dchub-bottom-nav):not(.mobile-nav-drawer-links nav){display:none!important}.nav:not(.dchub-nav){display:none!important}</style>
+<script src="/js/dchub-nav.js"></script>
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-brand">DC <span>Hub</span></div>
+    <div class="nav-links">
+      <a href="#real-estate">Real Estate</a><a href="#fiber">Fiber</a><a href="#sec">SEC</a>
+      <a href="#competitors">Competitors</a><a href="#jobs">Jobs</a><a href="#permits">Permits</a>
+    </div>
+    <a href="/land-power" class="nav-back">&larr; Land &amp; Power Map</a>
+  </nav>
+  <section class="hero">
+    <h1>&#9889; Competitive Intelligence Suite</h1>
+    <p>Real-time market intelligence across 6 modules &mdash; real estate, fiber, SEC filings, competitor analysis, job market signals, and construction permits.</p>
+    <div class="hero-stats" id="hero-stats"><div class="ld">Loading stats&hellip;</div></div>
+  </section>
+  <section class="main">
+    <div class="cmp" id="comparison"><h3>Loading feature comparison&hellip;</h3></div>
+    <div class="grid">
+      <div class="mod m-re" id="real-estate"><div class="mod-h"><div class="mod-icon">&#127968;</div><h3>Real Estate Intelligence</h3><span class="mod-badge">Loading</span></div><div class="mod-b"><div class="ld">Loading&hellip;</div></div></div>
+      <div class="mod m-fi" id="fiber"><div class="mod-h"><div class="mod-icon">&#128279;</div><h3>Fiber Network Discovery</h3><span class="mod-badge">Loading</span></div><div class="mod-b"><div class="ld">Loading&hellip;</div></div></div>
+      <div class="mod m-se" id="sec"><div class="mod-h"><div class="mod-icon">&#128200;</div><h3>SEC EDGAR Tracker</h3><span class="mod-badge">Loading</span></div><div class="mod-b"><div class="ld">Loading&hellip;</div></div></div>
+      <div class="mod m-co" id="competitors"><div class="mod-h"><div class="mod-icon">&#127919;</div><h3>Competitor Intelligence</h3><span class="mod-badge">Loading</span></div><div class="mod-b"><div class="ld">Loading&hellip;</div></div></div>
+      <div class="mod m-jo" id="jobs"><div class="mod-h"><div class="mod-icon">&#128188;</div><h3>Job Market Intelligence</h3><span class="mod-badge">Loading</span></div><div class="mod-b"><div class="ld">Loading&hellip;</div></div></div>
+      <div class="mod m-pe" id="permits"><div class="mod-h"><div class="mod-icon">&#127959;&#65039;</div><h3>Construction Permits</h3><span class="mod-badge">Loading</span></div><div class="mod-b"><div class="ld">Loading&hellip;</div></div></div>
+    </div>
+  </section>
+  <footer class="ftr">
+    <p>DC Hub Competitive Intelligence Suite &bull; <a href="https://dchub.cloud">dchub.cloud</a> &bull; 20,000+ Facilities &bull; 140+ Countries</p>
+  </footer>
+  <script>
+  (function(){
+    var API=window.DCHUB_API_BASE||'https://dchub.cloud';
+    function f(p){return fetch(API+p,{mode:'cors'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}).catch(function(e){console.warn('[CI] '+p+':',e.message);return null})}
+    function fm(n){if(!n)return'';if(n>=1e9)return'$'+(n/1e9).toFixed(1)+'B';if(n>=1e6)return'$'+(n/1e6).toFixed(0)+'M';return'$'+n.toLocaleString()}
+    function fn(n){return n?n.toLocaleString():'0'}
+    function items(el,list,color,tFn,sFn,vFn){
+      var b=el.querySelector('.mod-b');
+      if(!list.length){b.innerHTML='<div class="ld" style="color:var(--dm)">No data available</div>';return}
+      b.innerHTML=list.slice(0,6).map(function(i){return'<div class="item"><div class="item-dot" style="background:'+color+'"></div><div class="item-c"><div class="item-t">'+tFn(i)+'</div><div class="item-s">'+sFn(i)+'</div></div><div class="item-v" style="color:'+color+'">'+vFn(i)+'</div></div>'}).join('')}
+    function badge(el,txt){var b=el.querySelector('.mod-badge');if(b)b.textContent=txt}
+
+    // Hero stats + comparison
+    Promise.all([f('/api/fiber/routes'),f('/api/sec/expansion-signals'),f('/api/competitors/summary'),f('/api/jobs/trends')]).then(function(r){
+      var fib=r[0],sec=r[1],comp=r[2],jobs=r[3];
+      var fibMiles=0;if(fib&&fib.routes)fib.routes.forEach(function(x){fibMiles+=(x.route_miles||0)});
+      var secTotal=0;if(sec&&sec.signals)sec.signals.forEach(function(x){secTotal+=(x.investment_amount||0)});
+      var dcS=(comp&&comp.feature_score&&comp.feature_score.dc_hub)||10;
+      var avgS=(comp&&comp.feature_score&&comp.feature_score.competitor_avg)||2.3;
+      document.getElementById('hero-stats').innerHTML=
+        '<div class="hero-stat"><div class="val">32</div><div class="lbl">API Endpoints</div></div>'+
+        '<div class="hero-stat"><div class="val">'+fn(fibMiles)+'</div><div class="lbl">Fiber Miles</div></div>'+
+        '<div class="hero-stat"><div class="val">'+fm(secTotal)+'</div><div class="lbl">SEC Signals</div></div>'+
+        '<div class="hero-stat"><div class="val">'+fn((jobs&&jobs.total_q1_postings)||0)+'</div><div class="lbl">Q1 Job Posts</div></div>'+
+        '<div class="hero-stat"><div class="val">'+dcS+'/10</div><div class="lbl">Feature Score</div></div>';
+      // Comparison
+      var mx=(comp&&comp.feature_score)||{};
+      document.getElementById('comparison').innerHTML='<h3>Feature Coverage: DC Hub vs. Industry</h3>'+
+        '<div class="cmp-r"><div class="cmp-l" style="color:var(--ac)">DC Hub</div><div class="cmp-bar"><div class="cmp-fill" style="width:'+(dcS*10)+'%;background:var(--ac)"></div></div><div class="cmp-s" style="color:var(--ac)">'+dcS+'/10</div></div>'+
+        '<div class="cmp-r"><div class="cmp-l" style="color:var(--dm)">Avg Competitor</div><div class="cmp-bar"><div class="cmp-fill" style="width:'+(avgS*10)+'%;background:var(--dm)"></div></div><div class="cmp-s" style="color:var(--dm)">'+avgS+'/10</div></div>';
+    });
+
+    // Real Estate — /markets, /trends
+    Promise.all([f('/api/real-estate/markets'),f('/api/real-estate/trends')]).then(function(r){
+      var mkts=r[0],trends=r[1];
+      var names=mkts?Object.keys(mkts).filter(function(k){return Array.isArray(mkts[k])}):[];
+      badge(document.querySelector('.m-re'),names.length+' Markets');
+      var el=document.querySelector('.m-re');
+      // Combine coverage markets with trend data
+      var trendArr=(trends&&Array.isArray(trends.markets))?trends.markets:[];
+      if(trendArr.length){
+        items(el,trendArr,'var(--gd)',function(i){return i.market||'Unknown'},function(i){return(i.vacancy_rate!==undefined?i.vacancy_rate+'% vacancy':'')+(i.new_supply_mw?' \u2022 '+i.new_supply_mw+' MW new':'')},function(i){return i.yoy_change?'+'+i.yoy_change+'%':''})
+      } else if(names.length){
+        var list=names.map(function(n){return{name:n,state:mkts[n][0].state,counties:mkts[n].length}});
+        items(el,list,'var(--gd)',function(i){return i.name},function(i){return i.counties+' counties ('+i.state+')'},function(i){return''})
+      } else {el.querySelector('.mod-b').innerHTML='<div class="ld">No data</div>'}
+    });
+
+    // Fiber — /routes
+    f('/api/fiber/routes').then(function(d){
+      var routes=(d&&d.routes)||[];
+      badge(document.querySelector('.m-fi'),routes.length+' Routes');
+      items(document.querySelector('.m-fi'),routes,'var(--ac)',function(i){return i.route_name},function(i){return i.provider+' \u2022 '+i.start_city+' \u2192 '+i.end_city},function(i){return fn(i.route_miles)+' mi'})
+    });
+
+    // SEC — /expansion-signals
+    f('/api/sec/expansion-signals').then(function(d){
+      var sigs=(d&&d.signals)||[];
+      badge(document.querySelector('.m-se'),sigs.length+' Signals');
+      items(document.querySelector('.m-se'),sigs,'var(--cr)',function(i){return i.company},function(i){return i.signal_type+' \u2022 '+i.location},function(i){return fm(i.investment_amount)})
+    });
+
+    // Competitors — /matrix
+    f('/api/competitors/matrix').then(function(d){
+      var mx=(d&&d.matrix)||{};var keys=Object.keys(mx);
+      badge(document.querySelector('.m-co'),keys.length+' Compared');
+      var b=document.querySelector('.m-co .mod-b');
+      if(!keys.length){b.innerHTML='<div class="ld">No data</div>';return}
+      b.innerHTML=keys.map(function(k){var s=mx[k];var isHub=k.toLowerCase().indexOf('dc hub')>=0;return'<div class="item"><div class="item-dot" style="background:'+(isHub?'var(--ac)':'var(--pu)')+'"></div><div class="item-c"><div class="item-t">'+k+'</div><div style="margin-top:4px;height:6px;background:var(--bd);border-radius:3px;overflow:hidden"><div style="width:'+(s/10*100)+'%;height:100%;background:'+(isHub?'var(--ac)':'var(--dm)') +'"></div></div></div><div class="item-v" style="color:'+(isHub?'var(--ac)':'var(--dm)')+'">'+s+'/10</div></div>'}).join('')
+    });
+
+    // Jobs — /trends
+    f('/api/jobs/trends').then(function(d){
+      var trends=(d&&d.trends)||{};var cos=Object.keys(trends);
+      badge(document.querySelector('.m-jo'),cos.length+' Companies');
+      var list=cos.map(function(co){var t=trends[co];var c=(typeof t==='number')?t:(t&&(t.count||t.q1_postings||t.total))||0;return{name:co,count:c}}).sort(function(a,b){return b.count-a.count});
+      items(document.querySelector('.m-jo'),list,'var(--bl)',function(i){return i.name},function(i){return fn(i.count)+' postings'},function(i){return fn(i.count)})
+    });
+
+    // Permits — /pipeline
+    f('/api/permits/pipeline').then(function(d){
+      var ps=(d&&d.pipeline_summary)||{};var keys=Object.keys(ps);
+      badge(document.querySelector('.m-pe'),keys.length?'LIVE':'N/A');
+      var b=document.querySelector('.m-pe .mod-b');
+      if(!keys.length){b.innerHTML='<div class="ld">No pipeline data</div>';return}
+      b.innerHTML=keys.slice(0,6).map(function(k){var v=ps[k];var disp=(typeof v==='object')?JSON.stringify(v).substring(0,80):v;return'<div class="item"><div class="item-dot" style="background:var(--or)"></div><div class="item-c"><div class="item-t">'+k.replace(/_/g,' ')+'</div></div><div class="item-v" style="color:var(--or)">'+disp+'</div></div>'}).join('')
+    });
+
+    // Smooth scroll nav
+    document.querySelectorAll('.nav-links a').forEach(function(a){a.addEventListener('click',function(e){e.preventDefault();var t=document.querySelector(this.getAttribute('href'));if(t)t.scrollIntoView({behavior:'smooth'})})});
+  })();
+  </script>
+</body>
+</html>

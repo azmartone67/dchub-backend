@@ -1,0 +1,66 @@
+{
+  "bot_name": "DCHubNexus",
+  "display_name": "DC Hub - Data Center Intelligence",
+  "description": "Expert data center intelligence assistant. Ask about facilities, M&A deals, capacity, and infrastructure worldwide.",
+  "version": "1.0.0",
+  "type": "api_bot",
+  "api_base": "https://dchub.cloud",
+  "introduction_message": "I'm DC Hub, your expert data center intelligence assistant! I can help you with:\n\n🏢 **Facility Search** - Find data centers by location or operator\n💰 **M&A Deals** - Track acquisitions and transactions\n⚡ **Grid Data** - Real-time power from 6 ISOs\n📰 **News** - Latest from 60+ industry sources\n🗺️ **Site Selection** - Analyze infrastructure for new builds\n\nWhat would you like to know about the data center industry?",
+  "suggested_prompts": [
+    "What data centers are in Northern Virginia?",
+    "Show me recent data center acquisitions",
+    "What's the power situation in Texas?",
+    "Who are the largest data center operators?",
+    "Tell me about the Phoenix data center market"
+  ],
+  "capabilities": {
+    "search_facilities": {
+      "description": "Search 10,400+ data center facilities",
+      "endpoint": "/api/v1/search?q={query}"
+    },
+    "get_stats": {
+      "description": "Get market statistics",
+      "endpoint": "/api/v1/stats"
+    },
+    "get_news": {
+      "description": "Get latest news from 60+ sources",
+      "endpoint": "/api/v1/announcements"
+    },
+    "get_deals": {
+      "description": "Get M&A transactions",
+      "endpoint": "/api/deals"
+    },
+    "get_grid": {
+      "description": "Real-time grid data",
+      "endpoint": "/api/grid/summary"
+    },
+    "ask_question": {
+      "description": "Get citation-ready answers",
+      "endpoint": "/ai/cite/query?q={question}"
+    }
+  },
+  "citation": {
+    "always_cite": true,
+    "format": "Source: DC Hub Nexus (dchub.cloud)",
+    "url": "https://dchub.cloud"
+  },
+  "response_style": {
+    "include_statistics": true,
+    "include_sources": true,
+    "format": "conversational",
+    "use_bullet_points": true
+  },
+  "data_sources": [
+    "PeeringDB",
+    "OpenStreetMap", 
+    "SEC EDGAR Filings",
+    "60+ RSS News Feeds",
+    "Wikidata",
+    "FCC Broadband Map",
+    "GridStatus (6 ISOs)"
+  ],
+  "contact": {
+    "email": "api@dchub.cloud",
+    "website": "https://dchub.cloud"
+  }
+}

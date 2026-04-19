@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Wars - DC Hub Nexus</title>
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0a0e17;
+            color: #e0e0e0;
+            line-height: 1.6;
+            min-height: 100vh;
+        }
+        .top-bar {
+            background: #0d1117;
+            border-bottom: 1px solid #1e3a5f;
+            padding: 14px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .top-bar-logo {
+            font-size: 20px;
+            font-weight: 700;
+            color: #00d4ff;
+            text-decoration: none;
+        }
+        .top-bar-right {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+        .top-bar-btn {
+            background: none;
+            border: 1px solid #1e3a5f;
+            color: #8899aa;
+            padding: 6px 14px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            text-decoration: none;
+        }
+        .top-bar-btn:hover { border-color: #00d4ff; color: #00d4ff; }
+        .top-bar-email { color: #8899aa; font-size: 14px; }
+        .container {
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 32px 20px;
+        }
+        .page-header {
+            text-align: center;
+            margin-bottom: 36px;
+        }
+        .page-title {
+            font-size: 2rem;
+            font-weight: 800;
+            color: #ffffff;
+            margin-bottom: 6px;
+        }
+        .page-title span { color: #00d4ff; }
+        .page-subtitle {
+            color: #8899aa;
+            font-size: 0.95rem;
+        }
+        .leaderboard {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            justify-content: center;
+            margin-bottom: 36px;
+        }
+        .lb-card {
+            background: #141b2d;
+            border: 1px solid #1e3a5f;
+            border-radius: 10px;
+            padding: 14px 18px;
+            min-width: 140px;
+            text-align: center;
+        }
+        .lb-rank {
+            font-size: 11px;
+            color: #8899aa;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 4px;
+        }
+        .lb-name {
+            font-size: 1rem;
+            font-weight: 700;
+            margin-bottom: 2px;
+        }
+        .lb-score {
+            font-size: 1.5rem;
+            font-weight: 800;
+            color: #00d4ff;
+        }
+        .lb-meta {
+            font-size: 11px;
+            color: #667788;
+            margin-top: 2px;
+        }
+        .filters {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            justify-content: center;
+            margin-bottom: 28px;
+        }
+        .filter-btn {
+            background: #141b2d;
+            border: 1px solid #1e3a5f;
+            color: #8899aa;
+            padding: 6px 14px;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.2s;
+        }
+        .filter-btn:hover, .filter-btn.active {
+            border-color: #00d4ff;
+            color: #00d4ff;
+            background: rgba(0,212,255,0.08);
+        }
+        .battles-grid {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .battle-card {
+            background: #141b2d;
+            border: 1px solid #1e3a5f;
+            border-radius: 12px;
+            padding: 20px 24px;
+            cursor: pointer;
+            transition: border-color 0.2s, transform 0.15s;
+        }
+        .battle-card:hover {
+            border-color: #00d4ff;
+            transform: translateY(-1px);
+        }
+        .battle-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 10px;
+        }
+        .battle-category {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #00d4ff;
+            font-weight: 600;
+        }
+        .battle-date {
+            font-size: 12px;
+            color: #667788;
+        }
+        .battle-title {
+            font-size: 1.1rem;
+            font-weight: 700;
+            color: #fff;
+            margin-bottom: 8px;
+        }
+        .battle-desc {
+            font-size: 0.85rem;
+            color: #8899aa;
+            margin-bottom: 14px;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+        .fighters-row {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .fighter-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: rgba(255,255,255,0.04);
+            border: 1px solid #1e3a5f;
+            border-radius: 20px;
+            padding: 4px 12px 4px 8px;
+            font-size: 13px;
+        }
+        .fighter-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+        .fighter-score {
+            font-weight: 700;
+            color: #fff;
+            margin-left: 4px;
+        }
+        .fighter-winner {
+            border-color: #fbbf24;
+            background: rgba(251,191,36,0.06);
+        }
+        .fighter-winner::after {
+            content: '\1F3C6';
+            font-size: 12px;
+            margin-left: 2px;
+        }
+
+        .detail-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.75);
+            z-index: 1000;
+            overflow-y: auto;
+            padding: 40px 20px;
+        }
+        .detail-overlay.open { display: block; }
+        .detail-panel {
+            background: #0d1117;
+            border: 1px solid #1e3a5f;
+            border-radius: 16px;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 32px;
+            position: relative;
+        }
+        .detail-close {
+            position: absolute;
+            top: 16px;
+            right: 20px;
+            background: none;
+            border: none;
+            color: #8899aa;
+            font-size: 24px;
+            cursor: pointer;
+        }
+        .detail-close:hover { color: #fff; }
+        .detail-category {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #00d4ff;
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+        .detail-title {
+            font-size: 1.4rem;
+            font-weight: 800;
+            color: #fff;
+            margin-bottom: 8px;
+        }
+        .detail-desc {
+            color: #8899aa;
+            font-size: 0.9rem;
+            margin-bottom: 24px;
+            line-height: 1.7;
+        }
+        .detail-date {
+            font-size: 12px;
+            color: #667788;
+            margin-bottom: 20px;
+        }
+
+        .fighter-detail {
+            background: #141b2d;
+            border: 1px solid #1e3a5f;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 14px;
+        }
+        .fighter-detail.winner-card {
+            border-color: #fbbf24;
+            background: linear-gradient(135deg, rgba(251,191,36,0.06), #141b2d);
+        }
+        .fighter-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 14px;
+        }
+        .fighter-name-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .fighter-platform-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+        .fighter-platform-name {
+            font-size: 1.1rem;
+            font-weight: 700;
+            color: #fff;
+        }
+        .fighter-role-label {
+            font-size: 12px;
+            color: #8899aa;
+            background: rgba(255,255,255,0.04);
+            padding: 2px 10px;
+            border-radius: 10px;
+            border: 1px solid #1e3a5f;
+        }
+        .fighter-overall {
+            font-size: 1.6rem;
+            font-weight: 800;
+            color: #00d4ff;
+        }
+        .fighter-badges {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-bottom: 14px;
+        }
+        .badge {
+            font-size: 11px;
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-weight: 600;
+        }
+        .badge-winner {
+            background: rgba(251,191,36,0.15);
+            color: #fbbf24;
+            border: 1px solid rgba(251,191,36,0.3);
+        }
+        .badge-api {
+            background: rgba(0,212,255,0.1);
+            color: #00d4ff;
+            border: 1px solid rgba(0,212,255,0.2);
+        }
+        .badge-no-api {
+            background: rgba(239,68,68,0.1);
+            color: #ef4444;
+            border: 1px solid rgba(239,68,68,0.2);
+        }
+        .badge-pick {
+            background: rgba(139,92,246,0.1);
+            color: #a78bfa;
+            border: 1px solid rgba(139,92,246,0.2);
+        }
+
+        .score-bars {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-bottom: 14px;
+        }
+        .score-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .score-label {
+            width: 70px;
+            font-size: 12px;
+            color: #8899aa;
+            text-align: right;
+            flex-shrink: 0;
+        }
+        .score-bar-bg {
+            flex: 1;
+            height: 8px;
+            background: rgba(255,255,255,0.06);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .score-bar-fill {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 0.6s ease;
+        }
+        .score-val {
+            width: 32px;
+            font-size: 13px;
+            font-weight: 700;
+            color: #fff;
+            text-align: right;
+            flex-shrink: 0;
+        }
+
+        .fighter-summary {
+            margin-top: 10px;
+        }
+        .summary-toggle {
+            background: none;
+            border: none;
+            color: #00d4ff;
+            font-size: 13px;
+            cursor: pointer;
+            padding: 0;
+        }
+        .summary-toggle:hover { text-decoration: underline; }
+        .summary-text {
+            display: none;
+            margin-top: 8px;
+            font-size: 0.85rem;
+            color: #aab;
+            line-height: 1.7;
+            background: rgba(0,0,0,0.2);
+            padding: 12px;
+            border-radius: 8px;
+        }
+        .summary-text.open { display: block; }
+
+        .pro-gate {
+            text-align: center;
+            padding: 24px;
+            color: #8899aa;
+        }
+        .pro-gate-title {
+            font-size: 1.1rem;
+            font-weight: 700;
+            color: #fbbf24;
+            margin-bottom: 8px;
+        }
+        .pro-gate a {
+            color: #00d4ff;
+            text-decoration: none;
+        }
+        .pro-gate a:hover { text-decoration: underline; }
+
+        .loading-spinner {
+            width: 32px;
+            height: 32px;
+            border: 3px solid #1e3a5f;
+            border-top-color: #00d4ff;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin: 40px auto;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        @media (max-width: 600px) {
+            .container { padding: 20px 12px; }
+            .detail-panel { padding: 20px; }
+            .leaderboard { gap: 8px; }
+            .lb-card { min-width: 100px; padding: 10px 12px; }
+        }
+    </style>
+    <script src="/static/js/api-config.js"></script>
+<script>
+(function() {
+    var b = window.DCHUB_API_BASE || '';
+    window.API_BASE = b;
+    window.DCHUB_CONFIG = { apiBase: b, version: 'v93' };
+    if (!window.dchubFetch) {
+        window.dchubFetch = function(path, opts) {
+            opts = opts || {};
+            if (b) { opts.mode = opts.mode || 'cors'; opts.credentials = opts.credentials || 'include'; }
+            return fetch(b + path, opts);
+        };
+    }
+})();
+</script>
+<script src="/static/js/dchub-plan-sync.js"></script>
+</head>
+<body>
+    <div class="top-bar">
+        <a href="/" class="top-bar-logo">DC Hub Nexus</a>
+        <div class="top-bar-right" id="topBarRight">
+            <span class="top-bar-email" id="topBarEmail"></span>
+            <a href="/" class="top-bar-btn">Home</a>
+            <a href="/dashboard" class="top-bar-btn">Dashboard</a>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="page-header">
+            <div class="page-title">AI <span>Wars</span></div>
+            <div class="page-subtitle">Head-to-head AI platform battles on real data center intelligence questions</div>
+        </div>
+
+        <div id="leaderboardSection" class="leaderboard"></div>
+
+        <div class="filters" id="filterBar"></div>
+
+        <div id="loadingSpinner"><div class="loading-spinner"></div></div>
+        <div class="battles-grid" id="battlesGrid"></div>
+    </div>
+
+    <div class="detail-overlay" id="detailOverlay">
+        <div class="detail-panel" id="detailPanel">
+            <button class="detail-close" onclick="closeDetail()">&times;</button>
+            <div id="detailContent"></div>
+        </div>
+    </div>
+
+<script>
+const TOKEN_KEY = 'dchub_token';
+const PLATFORM_COLORS = {
+    claude: '#d97706', chatgpt: '#10b981', gemini: '#4285f4', grok: '#ef4444',
+    copilot: '#8b5cf6', mistral: '#f97316', perplexity: '#06b6d4', deepseek: '#3b82f6',
+    cohere: '#14b8a6', meta: '#0088ff', you: '#7c3aed', huggingchat: '#fbbf24'
+};
+const PLATFORM_NAMES = {
+    claude: 'Claude', chatgpt: 'ChatGPT', gemini: 'Gemini', grok: 'Grok',
+    copilot: 'Copilot', mistral: 'Mistral', perplexity: 'Perplexity', deepseek: 'DeepSeek',
+    cohere: 'Cohere', meta: 'Meta AI', you: 'You.com', huggingchat: 'HuggingChat'
+};
+const CAT_LABELS = {
+    'site-selection': 'Site Selection', 'ma-forensics': 'M&A Forensics',
+    'operator-showdown': 'Operator Showdown', 'market-deep-dive': 'Market Deep-Dive',
+    'weekly-brief': 'Weekly Brief', 'stump-the-ai': 'Stump the AI'
+};
+
+let allBattles = [];
+let activeFilter = 'all';
+let userPlan = null;
+
+async function init() {
+    await checkAuth();
+    await Promise.all([loadLeaderboard(), loadBattles()]);
+}
+
+async function checkAuth() {
+    const token = localStorage.getItem(TOKEN_KEY);
+    const storedUser = localStorage.getItem('dchub_user');
+    if (!token) {
+        if (storedUser) {
+            try {
+                const userInfo = JSON.parse(storedUser);
+                userPlan = (userInfo.plan || 'free').toLowerCase();
+                document.getElementById('topBarEmail').textContent = userInfo.email || '';
+                console.log('✅ AI Wars: Using stored user data, plan:', userPlan);
+                return;
+            } catch(e) {}
+        }
+        userPlan = 'free';
+        return;
+    }
+    try {
+        const res = await dchubFetch('/api/auth/me', {
+            headers: { 'Authorization': 'Bearer ' + token }
+        });
+        if (res.ok) {
+            const data = await res.json();
+            if (data.success && data.user) {
+                userPlan = (data.user.plan || 'free').toLowerCase();
+                document.getElementById('topBarEmail').textContent = data.user.email || '';
+                localStorage.setItem('dchub_user', JSON.stringify(data.user));
+                console.log('✅ AI Wars: Backend auth success, plan:', userPlan);
+                return;
+            }
+        }
+        if (storedUser) {
+            try {
+                const userInfo = JSON.parse(storedUser);
+                userPlan = (userInfo.plan || 'free').toLowerCase();
+                document.getElementById('topBarEmail').textContent = userInfo.email || '';
+                console.log('⚠️ AI Wars: Backend auth failed, using stored user data, plan:', userPlan);
+                return;
+            } catch(e) {}
+        }
+    } catch(e) {
+        console.log('⚠️ AI Wars: Auth check error:', e);
+        if (storedUser) {
+            try {
+                const userInfo = JSON.parse(storedUser);
+                userPlan = (userInfo.plan || 'free').toLowerCase();
+                document.getElementById('topBarEmail').textContent = userInfo.email || '';
+                console.log('⚠️ AI Wars: Network error, using stored user data, plan:', userPlan);
+                return;
+            } catch(e2) {}
+        }
+    }
+    userPlan = 'free';
+}
+
+function isPro() {
+    return userPlan === 'pro' || userPlan === 'enterprise' || userPlan === 'admin';
+}
+
+async function loadLeaderboard() {
+    try {
+        const res = await dchubFetch('/api/v1/ai-wars/leaderboard');
+        const data = await res.json();
+        if (!data.leaderboard) return;
+        const el = document.getElementById('leaderboardSection');
+        el.innerHTML = data.leaderboard.slice(0, 6).map(p => `
+            <div class="lb-card">
+                <div class="lb-rank">#${p.rank}</div>
+                <div class="lb-name" style="color:${p.color || '#fff'}">${esc(p.name)}</div>
+                <div class="lb-score">${p.overall_score.toFixed(1)}</div>
+                <div class="lb-meta">${p.total_wins}W / ${p.total_battles}B</div>
+            </div>
+        `).join('');
+    } catch(e) { console.error('Leaderboard error:', e); }
+}
+
+async function loadBattles() {
+    try {
+        const res = await dchubFetch('/api/v1/ai-wars/battles');
+        const data = await res.json();
+        allBattles = data.battles || [];
+        buildFilters();
+        renderBattles();
+    } catch(e) { console.error('Battles error:', e); }
+    document.getElementById('loadingSpinner').style.display = 'none';
+}
+
+function buildFilters() {
+    const cats = new Set(allBattles.map(b => b.category));
+    const el = document.getElementById('filterBar');
+    let html = '<button class="filter-btn active" onclick="setFilter(\'all\',this)">All</button>';
+    cats.forEach(c => {
+        html += `<button class="filter-btn" onclick="setFilter('${c}',this)">${CAT_LABELS[c] || c}</button>`;
+    });
+    el.innerHTML = html;
+}
+
+function setFilter(cat, btn) {
+    activeFilter = cat;
+    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    renderBattles();
+}
+
+function renderBattles() {
+    const filtered = activeFilter === 'all' ? allBattles : allBattles.filter(b => b.category === activeFilter);
+    const el = document.getElementById('battlesGrid');
+    if (!filtered.length) {
+        el.innerHTML = '<div style="text-align:center;color:#667788;padding:40px;">No battles found.</div>';
+        return;
+    }
+    el.innerHTML = filtered.map(b => {
+        const fighters = (b.fighters || []).sort((a,b) => (b.score_overall||0) - (a.score_overall||0));
+        const chips = fighters.map(f => {
+            const color = PLATFORM_COLORS[f.platform] || '#888';
+            const name = PLATFORM_NAMES[f.platform] || f.platform;
+            const winCls = f.is_winner ? ' fighter-winner' : '';
+            return `<span class="fighter-chip${winCls}">
+                <span class="fighter-dot" style="background:${color}"></span>
+                ${esc(name)} <span class="fighter-score">${f.score_overall}</span>
+            </span>`;
+        }).join('');
+        return `
+        <div class="battle-card" onclick="openDetail('${b.id}')">
+            <div class="battle-card-header">
+                <span class="battle-category">${CAT_LABELS[b.category] || b.category}</span>
+                <span class="battle-date">${b.date}</span>
+            </div>
+            <div class="battle-title">${esc(b.title)}</div>
+            <div class="battle-desc">${esc(b.description || '')}</div>
+            <div class="fighters-row">${chips}</div>
+        </div>`;
+    }).join('');
+}
+
+async function openDetail(battleId) {
+    const overlay = document.getElementById('detailOverlay');
+    const content = document.getElementById('detailContent');
+    overlay.classList.add('open');
+    content.innerHTML = '<div class="loading-spinner"></div>';
+
+    try {
+        const res = await dchubFetch('/api/v1/ai-wars/battles/' + battleId);
+        const data = await res.json();
+        if (!data.success || !data.battle) {
+            content.innerHTML = '<p style="color:#ef4444;">Battle not found.</p>';
+            return;
+        }
+        const b = data.battle;
+        const fighters = (b.fighters || []).sort((a,c) => (c.score_overall||0) - (a.score_overall||0));
+
+        let html = `
+            <div class="detail-category">${CAT_LABELS[b.category] || b.category}</div>
+            <div class="detail-title">${esc(b.title)}</div>
+            <div class="detail-date">${b.date}</div>
+            <div class="detail-desc">${esc(b.description || '')}</div>
+        `;
+
+        if (isPro()) {
+            html += fighters.map((f, i) => renderFighterDetail(f, i)).join('');
+        } else {
+            html += fighters.map(f => renderFighterBasic(f)).join('');
+            html += `
+                <div class="pro-gate">
+                    <div class="pro-gate-title">Pro Feature</div>
+                    <p>Upgrade to Pro to see detailed sub-scores, summaries, API usage, and fighter analysis.</p>
+                    <p style="margin-top:10px;"><a href="/dashboard">Upgrade to Pro &rarr;</a></p>
+                </div>
+            `;
+        }
+
+        content.innerHTML = html;
+    } catch(e) {
+        content.innerHTML = '<p style="color:#ef4444;">Failed to load battle details.</p>';
+    }
+}
+
+function renderFighterBasic(f) {
+    const color = PLATFORM_COLORS[f.platform] || '#888';
+    const name = PLATFORM_NAMES[f.platform] || f.platform;
+    const winCls = f.is_winner ? ' winner-card' : '';
+    return `
+        <div class="fighter-detail${winCls}">
+            <div class="fighter-header">
+                <div class="fighter-name-row">
+                    <span class="fighter-platform-dot" style="background:${color}"></span>
+                    <span class="fighter-platform-name">${esc(name)}</span>
+                    ${f.is_winner ? '<span class="badge badge-winner">Winner</span>' : ''}
+                </div>
+                <div class="fighter-overall">${f.score_overall}</div>
+            </div>
+        </div>
+    `;
+}
+
+function renderFighterDetail(f, idx) {
+    const color = PLATFORM_COLORS[f.platform] || '#888';
+    const name = PLATFORM_NAMES[f.platform] || f.platform;
+    const winCls = f.is_winner ? ' winner-card' : '';
+
+    const scores = [
+        { label: 'Accuracy', val: f.score_accuracy || 0 },
+        { label: 'Depth', val: f.score_depth || 0 },
+        { label: 'Speed', val: f.score_speed || 0 },
+        { label: 'Citation', val: f.score_citation || 0 },
+        { label: 'Insight', val: f.score_insight || 0 },
+    ];
+
+    const bars = scores.map(s => `
+        <div class="score-row">
+            <span class="score-label">${s.label}</span>
+            <div class="score-bar-bg">
+                <div class="score-bar-fill" style="width:${s.val}%;background:${color}"></div>
+            </div>
+            <span class="score-val">${s.val}</span>
+        </div>
+    `).join('');
+
+    let badges = '';
+    if (f.is_winner) badges += '<span class="badge badge-winner">Winner</span>';
+    if (f.api_calls > 0) badges += `<span class="badge badge-api">\uD83D\uDD0C ${f.api_calls} API calls</span>`;
+    else badges += '<span class="badge badge-no-api">\u274C No API</span>';
+    if (f.pick) badges += `<span class="badge badge-pick">Pick: ${esc(f.pick)}</span>`;
+
+    let summaryHtml = '';
+    if (f.summary) {
+        summaryHtml = `
+            <div class="fighter-summary">
+                <button class="summary-toggle" onclick="toggleSummary(event, 'sum-${idx}')">Show Summary</button>
+                <div class="summary-text" id="sum-${idx}">${esc(f.summary)}</div>
+            </div>
+        `;
+    }
+
+    return `
+        <div class="fighter-detail${winCls}">
+            <div class="fighter-header">
+                <div class="fighter-name-row">
+                    <span class="fighter-platform-dot" style="background:${color}"></span>
+                    <span class="fighter-platform-name">${esc(name)}</span>
+                    ${f.role ? `<span class="fighter-role-label">${esc(f.role)}</span>` : ''}
+                </div>
+                <div class="fighter-overall">${f.score_overall}</div>
+            </div>
+            <div class="fighter-badges">${badges}</div>
+            <div class="score-bars">${bars}</div>
+            ${summaryHtml}
+        </div>
+    `;
+}
+
+function toggleSummary(event, id) {
+    event.stopPropagation();
+    const el = document.getElementById(id);
+    const btn = event.target;
+    if (el.classList.contains('open')) {
+        el.classList.remove('open');
+        btn.textContent = 'Show Summary';
+    } else {
+        el.classList.add('open');
+        btn.textContent = 'Hide Summary';
+    }
+}
+
+function closeDetail() {
+    document.getElementById('detailOverlay').classList.remove('open');
+}
+
+document.getElementById('detailOverlay').addEventListener('click', function(e) {
+    if (e.target === this) closeDetail();
+});
+
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') closeDetail();
+});
+
+function esc(str) {
+    if (!str) return '';
+    const d = document.createElement('div');
+    d.textContent = str;
+    return d.innerHTML;
+}
+
+init();
+</script>
+</body>
+</html>

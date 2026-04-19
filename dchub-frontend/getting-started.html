@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DC Hub — Getting Started</title>
+<link rel="icon" href="https://dchub.cloud/favicon.ico" type="image/x-icon">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #09090b; --bg2: #12121a; --bg3: #1a1a2e;
+  --border: rgba(255,255,255,0.08); --text: #e0e0e0; --text2: #a0a0b0; --text3: #707080; --white: #fff;
+  --purple: #8b5cf6; --purple-lt: #a78bfa; --purple-dim: rgba(139,92,246,0.12);
+  --cyan: #3478f6; --cyan-dim: rgba(6,182,212,0.1); --accent: #3478f6;
+  --green: #10b981; --green-dim: rgba(16,185,129,0.12);
+  --orange: #f59e0b; --orange-dim: rgba(245,158,11,0.12);
+  --red: #ef4444; --red-dim: rgba(239,68,68,0.12);
+  --blue: #3b82f6; --blue-dim: rgba(59,130,246,0.12);
+  --r: 12px; --rs: 8px; --t: 0.2s cubic-bezier(0.4,0,0.2,1);
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'DM Sans',-apple-system,sans-serif; background:var(--bg); color:var(--text); line-height:1.65; -webkit-font-smoothing:antialiased; }
+body::before { content:''; position:fixed; inset:0; background-image:linear-gradient(rgba(139,92,246,0.03) 1px,transparent 1px),linear-gradient(90deg,rgba(139,92,246,0.03) 1px,transparent 1px); background-size:60px 60px; pointer-events:none; z-index:0; }
+.app { display:flex; min-height:100vh; position:relative; z-index:1; }
+
+/* Sidebar */
+.sb { width:272px; min-width:272px; background:var(--bg2); border-right:1px solid var(--border); position:fixed; top:0; left:0; bottom:0; overflow-y:auto; z-index:100; transition:transform .3s ease; display:flex; flex-direction:column; }
+.sb-brand { padding:24px 20px 20px; border-bottom:1px solid var(--border); }
+.sb-brand .lr { display:flex; align-items:center; gap:10px; margin-bottom:8px; }
+.logo-i { width:34px; height:34px; background:linear-gradient(135deg,var(--purple),var(--cyan)); border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:16px; font-weight:800; color:#fff; font-family:'JetBrains Mono',monospace; letter-spacing:-.5px; flex-shrink:0; }
+.logo-t { font-size:18px; font-weight:700; color:var(--white); letter-spacing:-.02em; }
+.logo-t span { background:linear-gradient(135deg,var(--purple),var(--cyan)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
+.sb-brand .sub { font-size:11px; color:var(--text3); text-transform:uppercase; letter-spacing:.1em; font-weight:500; padding-left:44px; }
+.sb-nav { padding:12px 10px; flex:1; }
+.ng { margin-bottom:4px; }
+.ng-l { font-size:10px; text-transform:uppercase; letter-spacing:.1em; color:var(--text3); padding:14px 12px 6px; font-weight:600; }
+.ni { display:flex; align-items:center; gap:10px; padding:8px 12px; border-radius:var(--rs); cursor:pointer; transition:all var(--t); font-size:13.5px; color:var(--text2); position:relative; user-select:none; text-decoration:none; }
+.ni:hover { background:rgba(139,92,246,.06); color:var(--text); }
+.ni.a { background:var(--purple-dim); color:var(--purple-lt); font-weight:500; }
+.ni.a::before { content:''; position:absolute; left:0; top:50%; transform:translateY(-50%); width:3px; height:18px; background:linear-gradient(180deg,var(--purple),var(--cyan)); border-radius:0 3px 3px 0; }
+.ni-i { width:18px; text-align:center; font-size:13px; flex-shrink:0; }
+.sb-ft { padding:16px 20px; border-top:1px solid var(--border); font-size:11px; color:var(--text3); }
+.sb-ft a { color:var(--purple-lt); text-decoration:none; }
+
+/* Main */
+.mn { flex:1; margin-left:272px; padding:36px 48px 80px; max-width:920px; }
+.sec { display:none; animation:fu .3s ease; }
+.sec.a { display:block; }
+@keyframes fu { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+
+/* Typography */
+h2 { font-size:26px; font-weight:700; color:var(--white); margin-bottom:6px; letter-spacing:-.02em; }
+h2 .gr { background:linear-gradient(135deg,var(--purple),var(--cyan)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
+.ss { font-size:14.5px; color:var(--text2); margin-bottom:28px; line-height:1.6; }
+h3 { font-size:16px; font-weight:600; color:var(--white); margin:24px 0 10px; }
+p { margin-bottom:12px; font-size:14px; }
+
+/* Cards */
+.c { background:var(--bg2); border:1px solid var(--border); border-radius:var(--r); padding:22px; margin-bottom:12px; transition:all var(--t); }
+.c:hover { border-color:rgba(139,92,246,.15); }
+.ch { display:flex; align-items:center; gap:12px; margin-bottom:12px; }
+.ci { width:34px; height:34px; border-radius:9px; display:flex; align-items:center; justify-content:center; font-size:16px; flex-shrink:0; }
+.ci.p { background:var(--purple-dim); } .ci.g { background:var(--green-dim); } .ci.o { background:var(--orange-dim); } .ci.cy { background:var(--cyan-dim); } .ci.b { background:var(--blue-dim); }
+.ct { font-size:14.5px; font-weight:600; color:var(--white); }
+.cd { font-size:12.5px; color:var(--text3); }
+.g2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin:12px 0; }
+
+/* Flow */
+.fl { position:relative; padding-left:36px; margin:16px 0; }
+.fl::before { content:''; position:absolute; left:14px; top:4px; bottom:4px; width:2px; background:linear-gradient(to bottom,var(--purple),var(--cyan)); border-radius:2px; }
+.fi { position:relative; margin-bottom:14px; padding:12px 16px; background:var(--bg2); border:1px solid var(--border); border-radius:var(--rs); font-size:13.5px; }
+.fi::before { content:attr(data-n); position:absolute; left:-30px; top:12px; width:21px; height:21px; background:linear-gradient(135deg,var(--purple),var(--accent)); color:#fff; font-size:11px; font-weight:700; border-radius:50%; display:flex; align-items:center; justify-content:center; }
+.fi strong { color:var(--white); display:block; margin-bottom:2px; }
+.fi .dm { color:var(--text2); font-size:12.5px; }
+
+/* Plans */
+.pls { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin:18px 0; }
+.pl { background:var(--bg2); border:1px solid var(--border); border-radius:var(--r); padding:22px; text-align:center; transition:all var(--t); }
+.pl:hover { transform:translateY(-2px); }
+.pl.h { border-color:var(--purple); box-shadow:0 0 40px rgba(139,92,246,.08); }
+.pt { font-size:11px; font-weight:600; color:var(--text3); text-transform:uppercase; letter-spacing:.08em; margin-bottom:6px; }
+.pl.h .pt { color:var(--purple-lt); }
+.pp { font-family:'JetBrains Mono',monospace; font-size:30px; font-weight:700; color:var(--white); margin-bottom:14px; }
+.pp span { font-size:13px; color:var(--text3); font-family:'DM Sans',sans-serif; }
+.pf { list-style:none; text-align:left; font-size:12.5px; }
+.pf li { padding:5px 0; display:flex; align-items:center; gap:7px; }
+.pf li::before { content:'✓'; color:var(--green); font-weight:700; font-size:11px; }
+
+/* Tables */
+.tw { overflow-x:auto; margin:14px 0; border-radius:var(--r); border:1px solid var(--border); }
+table { width:100%; border-collapse:collapse; font-size:13px; }
+thead th { background:var(--purple-dim); color:var(--purple-lt); font-weight:600; font-size:10.5px; text-transform:uppercase; letter-spacing:.06em; padding:10px 14px; text-align:left; border-bottom:1px solid var(--border); }
+tbody td { padding:10px 14px; border-bottom:1px solid rgba(255,255,255,.03); }
+tbody tr:last-child td { border-bottom:none; }
+tbody tr:hover { background:rgba(139,92,246,.03); }
+
+/* Code */
+.cb { background:#080810; border:1px solid var(--border); border-radius:var(--rs); padding:16px 18px; margin:12px 0; overflow-x:auto; position:relative; }
+.cb pre { font-family:'JetBrains Mono',monospace; font-size:12px; line-height:1.7; color:#c9d1d9; margin:0; white-space:pre; }
+.cb .cp { position:absolute; top:8px; right:8px; background:rgba(139,92,246,.1); border:1px solid rgba(139,92,246,.2); color:var(--purple-lt); padding:3px 10px; border-radius:6px; font-size:11px; cursor:pointer; font-family:'DM Sans',sans-serif; }
+.cb .cp.ok { background:var(--green-dim); color:var(--green); border-color:rgba(16,185,129,.3); }
+code { font-family:'JetBrains Mono',monospace; font-size:12px; background:rgba(139,92,246,.1); padding:2px 6px; border-radius:4px; color:var(--cyan); }
+
+/* Callouts */
+.co { border-radius:var(--r); padding:16px 18px; margin:16px 0; font-size:13.5px; border-left:3px solid; }
+.co.w { background:var(--orange-dim); border-color:var(--orange); } .co.e { background:var(--red-dim); border-color:var(--red); }
+.co.i { background:var(--purple-dim); border-color:var(--purple); } .co.s { background:var(--green-dim); border-color:var(--green); }
+.co b { display:block; margin-bottom:4px; font-size:13px; }
+.co.w b { color:var(--orange); } .co.e b { color:var(--red); } .co.i b { color:var(--purple-lt); } .co.s b { color:var(--green); }
+.co p { margin:0; font-size:13px; }
+
+/* Accordion / FAQ */
+.ac { background:var(--bg2); border:1px solid var(--border); border-radius:var(--r); margin-bottom:8px; overflow:hidden; }
+.ah { padding:14px 18px; cursor:pointer; display:flex; align-items:center; justify-content:space-between; user-select:none; }
+.ah:hover { background:rgba(139,92,246,.04); }
+.al { display:flex; align-items:center; gap:10px; }
+.av { transition:transform .25s ease; color:var(--text3); font-size:11px; }
+.ac.op .av { transform:rotate(180deg); }
+.ab { max-height:0; overflow:hidden; transition:max-height .35s ease; }
+.ai { padding:0 18px 18px; font-size:13.5px; }
+.ai p { margin-bottom:8px; } .ai strong { color:var(--white); }
+
+/* Badges */
+.bd { display:inline-flex; padding:2px 9px; border-radius:20px; font-size:10.5px; font-weight:600; }
+.bd.g { background:var(--green-dim); color:var(--green); } .bd.o { background:var(--orange-dim); color:var(--orange); }
+.bd.p { background:var(--purple-dim); color:var(--purple-lt); } .bd.cy { background:var(--cyan-dim); color:var(--cyan); }
+
+/* CTA Button */
+.cta { display:inline-flex; align-items:center; gap:8px; padding:12px 24px; border-radius:var(--rs); font-size:14px; font-weight:600; text-decoration:none; transition:all var(--t); cursor:pointer; border:none; font-family:'DM Sans',sans-serif; }
+.cta-primary { background:linear-gradient(135deg,var(--purple),var(--accent)); color:#fff; }
+.cta-primary:hover { transform:translateY(-1px); box-shadow:0 6px 20px rgba(139,92,246,.3); }
+.cta-secondary { background:var(--bg2); border:1px solid var(--border); color:var(--text); }
+.cta-secondary:hover { border-color:var(--purple); color:var(--white); }
+.cta-row { display:flex; gap:12px; margin:20px 0; flex-wrap:wrap; }
+
+/* Hero */
+.hero { text-align:center; padding:20px 0 36px; }
+.hero h1 { font-size:36px; font-weight:700; color:var(--white); margin-bottom:10px; letter-spacing:-.03em; }
+.hero h1 .gr { background:linear-gradient(135deg,var(--purple),var(--cyan)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
+.hero p { font-size:15px; color:var(--text2); max-width:560px; margin:0 auto 24px; line-height:1.7; }
+
+/* Mobile */
+.mh { display:none; position:fixed; top:0; left:0; right:0; height:52px; background:var(--bg2); border-bottom:1px solid var(--border); padding:0 16px; align-items:center; justify-content:space-between; z-index:200; }
+.hm { background:none; border:none; color:var(--text); font-size:20px; cursor:pointer; }
+.ol { display:none; position:fixed; inset:0; background:rgba(0,0,0,.65); z-index:99; }
+@media(max-width:768px) { .mh{display:flex} .sb{transform:translateX(-100%);z-index:150} .sb.op{transform:translateX(0)} .ol.op{display:block} .mn{margin-left:0;padding:68px 18px 60px} .pls{grid-template-columns:1fr} .g2{grid-template-columns:1fr} }
+</style>
+<style>nav:not(.dchub-nav):not(.dchub-bottom-nav):not(.mobile-nav-drawer-links nav){display:none!important}.nav:not(.dchub-nav){display:none!important}</style>
+<script src="/js/dchub-nav.js"></script>
+</head>
+<body>
+<div class="mh"><button class="hm" onclick="tSB()">☰</button><div style="display:flex;align-items:center;gap:8px"><div class="logo-i" style="width:26px;height:26px;font-size:12px;border-radius:6px">DC</div><span style="font-weight:600;color:var(--white);font-size:14px">Getting Started</span></div><div style="width:26px"></div></div>
+<div class="ol" id="ov" onclick="tSB()"></div>
+<div class="app">
+<nav class="sb" id="sb">
+  <div class="sb-brand"><div class="lr"><a href="https://dchub.cloud" style="display:flex;align-items:center;gap:10px;text-decoration:none"><div class="logo-i">DC</div><div class="logo-t">DC <span>Hub</span></div></a></div><div class="sub">Getting Started Guide</div></div>
+  <div class="sb-nav">
+    <div class="ng"><div class="ng-l">Overview</div><div class="ni a" data-s="welcome"><span class="ni-i">👋</span> Welcome</div><div class="ni" data-s="plans"><span class="ni-i">💎</span> Plans &amp; Pricing</div></div>
+    <div class="ng"><div class="ng-l">Setup</div><div class="ni" data-s="free-start"><span class="ni-i">🆓</span> Free Account</div><div class="ni" data-s="upgrade"><span class="ni-i">⚡</span> Upgrading to Pro</div><div class="ni" data-s="api"><span class="ni-i">🔑</span> Using Your API Key</div></div>
+    <div class="ng"><div class="ng-l">Help</div><div class="ni" data-s="after"><span class="ni-i">📬</span> After You Upgrade</div><div class="ni" data-s="faq"><span class="ni-i">❓</span> FAQ</div><div class="ni" data-s="contact"><span class="ni-i">💬</span> Contact Support</div></div>
+  </div>
+  <div class="sb-ft"><a href="https://dchub.cloud" target="_blank">dchub.cloud</a> · <a href="https://dchub.cloud/api-docs" target="_blank">API Docs</a></div>
+</nav>
+<main class="mn">
+
+<!-- WELCOME -->
+<div class="sec a" id="welcome">
+<div class="hero">
+  <h1>Welcome to <span class="gr">DC Hub</span></h1>
+  <p>The data center industry's intelligence platform — tracking 20,000+ facilities across 140+ countries. Here's everything you need to get started.</p>
+  <div class="cta-row" style="justify-content:center">
+    <a href="https://dchub.cloud/signup" class="cta cta-primary">Create Free Account</a>
+    <a href="https://dchub.cloud/api-docs" class="cta cta-secondary">View API Docs</a>
+  </div>
+</div>
+<h3>Quick Start</h3>
+<div class="g2">
+  <div class="c"><div class="ch"><div class="ci p">1</div><div><div class="ct">Create Your Account</div><div class="cd">Free — no credit card required</div></div></div><p style="font-size:13px">Sign up at dchub.cloud with your email. You'll get instant access to the dashboard and a free API key.</p></div>
+  <div class="c"><div class="ch"><div class="ci cy">2</div><div><div class="ct">Explore the Dashboard</div><div class="cd">Maps, markets, facilities</div></div></div><p style="font-size:13px">Browse data center facilities, view market analytics, and explore the interactive Land &amp; Power map.</p></div>
+  <div class="c"><div class="ch"><div class="ci g">3</div><div><div class="ct">Try the API</div><div class="cd">100 calls/day on the free plan</div></div></div><p style="font-size:13px">Use your API key to search facilities, pull market data, and integrate DC Hub into your tools and workflows.</p></div>
+  <div class="c"><div class="ch"><div class="ci o">4</div><div><div class="ct">Upgrade When Ready</div><div class="cd">Pro unlocks 10,000 calls/day</div></div></div><p style="font-size:13px">Need more API access, full MCP integration, or read/write capabilities? Upgrade to Pro or Founding Member.</p></div>
+</div>
+</div>
+
+<!-- PLANS -->
+<div class="sec" id="plans"><h2>Plans &amp; <span class="gr">Pricing</span></h2><p class="ss">Start free, upgrade when you need more. All paid plans include full API access and priority support.</p>
+<div class="pls">
+  <div class="pl"><div class="pt">Free</div><div class="pp">$0<span>/mo</span></div><ul class="pf"><li>100 API calls/day</li><li>Basic dashboard access</li><li>Read-only API key</li><li>Community support</li><li>Limited MCP access</li></ul></div>
+  <div class="pl h"><div class="pt">Founding Member</div><div class="pp">$99<span>/mo</span></div><ul class="pf"><li>10,000 API calls/day</li><li>Full dashboard access</li><li>Read/Write API key</li><li>Email support</li><li>Full MCP access</li><li>Locked-in early adopter rate</li></ul></div>
+  <div class="pl"><div class="pt">Pro</div><div class="pp">$199<span>/mo</span></div><ul class="pf"><li>10,000 API calls/day</li><li>Full dashboard access</li><li>Read/Write API key</li><li>Priority email support</li><li>Full MCP access</li></ul></div>
+</div>
+<div class="co i"><b>💡 Founding Member Pricing</b><p>The $99/mo Founding Member plan is a limited-time offer for early adopters. You get the same full Pro-tier API access at a locked-in rate. Once the program closes, this pricing won't be available again.</p></div>
+<div class="cta-row">
+  <a href="https://dchub.cloud/signup" class="cta cta-primary">Start Free</a>
+  <a href="https://dchub.cloud/pricing" class="cta cta-secondary">View Full Pricing</a>
+</div>
+</div>
+
+<!-- FREE ACCOUNT -->
+<div class="sec" id="free-start"><h2>Free Account <span class="gr">Setup</span></h2><p class="ss">Get started in under a minute — no credit card required.</p>
+<div class="fl">
+  <div class="fi" data-n="1"><strong>Visit dchub.cloud</strong><div class="dm">Click "Sign Up" or "Get Started" on the homepage.</div></div>
+  <div class="fi" data-n="2"><strong>Enter your details</strong><div class="dm">Provide your email, name, and choose a password.</div></div>
+  <div class="fi" data-n="3"><strong>Account created instantly</strong><div class="dm">You're in! Your dashboard is ready and your free API key is generated.</div></div>
+  <div class="fi" data-n="4"><strong>Check your email</strong><div class="dm">You'll receive a welcome email with your API key. Save it — this is the only time you'll see the full key.</div></div>
+  <div class="fi" data-n="5"><strong>Start exploring</strong><div class="dm">Log in to your dashboard, browse facilities, and try your first API call.</div></div>
+</div>
+<div class="co w"><b>⚠️ Save Your API Key</b><p>Your raw API key is only shown once — in your welcome email. For security, we store only a hashed version. If you lose it, you'll need to contact support for a new one.</p></div>
+<h3>What You Get</h3>
+<div class="g2">
+  <div class="c" style="padding:14px;font-size:13px"><span style="color:var(--green);margin-right:6px">✓</span> Dashboard access at dchub.cloud</div>
+  <div class="c" style="padding:14px;font-size:13px"><span style="color:var(--green);margin-right:6px">✓</span> 100 API calls per day</div>
+  <div class="c" style="padding:14px;font-size:13px"><span style="color:var(--green);margin-right:6px">✓</span> Facility search &amp; market data</div>
+  <div class="c" style="padding:14px;font-size:13px"><span style="color:var(--green);margin-right:6px">✓</span> Interactive Land &amp; Power map</div>
+</div>
+</div>
+
+<!-- UPGRADING -->
+<div class="sec" id="upgrade"><h2>Upgrading to <span class="gr">Pro</span></h2><p class="ss">Ready for full access? Here's exactly what happens when you upgrade.</p>
+<h3>How to Upgrade</h3>
+<div class="fl">
+  <div class="fi" data-n="1"><strong>Click "Upgrade" on your dashboard or pricing page</strong><div class="dm">Choose Founding Member ($99/mo) or Pro ($199/mo).</div></div>
+  <div class="fi" data-n="2"><strong>Complete payment on Stripe</strong><div class="dm">You'll be redirected to a secure Stripe checkout page. Enter your payment details.</div></div>
+  <div class="fi" data-n="3"><strong>Account activated automatically</strong><div class="dm">Once payment completes, your account is upgraded within seconds — no manual steps needed.</div></div>
+  <div class="fi" data-n="4"><strong>Welcome email with your Pro API key</strong><div class="dm">Check your inbox for an email from <strong>alerts@dchub.cloud</strong> containing your new Pro API key with 10,000 calls/day.</div></div>
+  <div class="fi" data-n="5"><strong>You're live!</strong><div class="dm">Log in to your dashboard — it will show your new plan. Your Pro API key is ready to use immediately.</div></div>
+</div>
+<div class="co s"><b>✅ What Changes When You Upgrade</b><p>Your API access jumps from 100 to 10,000 calls/day. You get a new read/write API key, full MCP integration, and priority support. Your dashboard will reflect your new plan.</p></div>
+</div>
+
+<!-- API KEY -->
+<div class="sec" id="api"><h2>Using Your <span class="gr">API Key</span></h2><p class="ss">Your API key unlocks programmatic access to DC Hub's data center intelligence.</p>
+<h3>Making Your First Call</h3>
+<p>Include your API key in the <code>X-API-Key</code> header with every request:</p>
+<div class="cb"><button class="cp" onclick="cpCode(this)">Copy</button><pre>curl -H "X-API-Key: YOUR_API_KEY" \
+  https://dchub.cloud/api/v1/search?q=Ashburn</pre></div>
+<h3>Search for Facilities</h3>
+<div class="cb"><button class="cp" onclick="cpCode(this)">Copy</button><pre>curl -H "X-API-Key: YOUR_API_KEY" \
+  https://dchub.cloud/api/v1/facilities?country=US&amp;limit=10</pre></div>
+<h3>Rate Limits</h3>
+<div class="tw"><table><thead><tr><th>Plan</th><th>Daily Limit</th><th>Permissions</th></tr></thead><tbody>
+  <tr><td><span class="bd p">Free</span></td><td>100 calls/day</td><td>Read-only</td></tr>
+  <tr><td><span class="bd cy">Founding / Pro</span></td><td>10,000 calls/day</td><td>Read + Write</td></tr>
+</tbody></table></div>
+<p style="margin-top:16px">For full endpoint documentation, visit the <a href="https://dchub.cloud/api-docs" style="color:var(--cyan);text-decoration:none">API Docs →</a></p>
+</div>
+
+<!-- AFTER UPGRADE -->
+<div class="sec" id="after"><h2>After You <span class="gr">Upgrade</span></h2><p class="ss">What to expect and what to do if something doesn't look right.</p>
+<h3>What Should Happen</h3>
+<div class="g2">
+  <div class="c"><div class="ch"><div class="ci g">📧</div><div><div class="ct">Welcome Email Arrives</div><div class="cd">Within a few minutes</div></div></div><p style="font-size:13px">Check your inbox (and spam) for an email from <strong>alerts@dchub.cloud</strong> with your Pro API key.</p></div>
+  <div class="c"><div class="ch"><div class="ci g">📊</div><div><div class="ct">Dashboard Shows New Plan</div><div class="cd">Immediate</div></div></div><p style="font-size:13px">Log in at dchub.cloud — your dashboard should display your Founding Member or Pro plan.</p></div>
+  <div class="c"><div class="ch"><div class="ci g">🔑</div><div><div class="ct">API Key Works</div><div class="cd">Immediate</div></div></div><p style="font-size:13px">Your new API key from the welcome email should return results with 10,000 calls/day access.</p></div>
+  <div class="c"><div class="ch"><div class="ci g">💳</div><div><div class="ct">Stripe Receipt</div><div class="cd">Within minutes</div></div></div><p style="font-size:13px">Stripe sends a separate payment receipt to the email you used at checkout.</p></div>
+</div>
+
+<h3>Something Not Right?</h3>
+<div class="co w"><b>⏳ Didn't Get the Welcome Email?</b><p>Check your spam/junk folder for an email from <strong>alerts@dchub.cloud</strong>. If it's not there after 15 minutes, contact us — we'll get your API key to you right away.</p></div>
+<div class="co w"><b>📊 Dashboard Still Shows "Free"?</b><p>Try logging out and back in. If it still shows Free, reach out to us with the email you used for payment and we'll fix it immediately.</p></div>
+<div class="co w"><b>🔑 API Key Not Working?</b><p>Make sure you're using the new Pro key from your welcome email (not your old free key). Include it as <code>X-API-Key</code> in the request header. Still having trouble? Contact us.</p></div>
+<div class="co w"><b>💳 Charged Twice or Duplicate Payment?</b><p>If you see a duplicate charge, email us immediately. We'll cancel the duplicate and issue a refund — usually processed within 3-5 business days.</p></div>
+</div>
+
+<!-- FAQ -->
+<div class="sec" id="faq"><h2>Frequently Asked <span class="gr">Questions</span></h2><p class="ss">Quick answers to common questions.</p>
+
+<div class="ac"><div class="ah" onclick="togAcc(this)"><div class="al"><strong style="font-size:13.5px">What's the difference between Founding Member and Pro?</strong></div><span class="av">▼</span></div><div class="ab"><div class="ai"><p>They have the <strong>same features</strong> — 10,000 API calls/day, read/write access, full MCP integration, and priority support. The difference is pricing: Founding Members lock in a $99/mo rate as early adopters, while Pro is $199/mo. The Founding Member program is limited and will close once spots are filled.</p></div></div></div>
+
+<div class="ac"><div class="ah" onclick="togAcc(this)"><div class="al"><strong style="font-size:13.5px">Can I change my plan later?</strong></div><span class="av">▼</span></div><div class="ab"><div class="ai"><p>Yes. Contact us to upgrade, downgrade, or cancel. We're building self-service plan management — for now, email us and we'll handle it within 24 hours.</p></div></div></div>
+
+<div class="ac"><div class="ah" onclick="togAcc(this)"><div class="al"><strong style="font-size:13.5px">How do I cancel my subscription?</strong></div><span class="av">▼</span></div><div class="ab"><div class="ai"><p>Email us at <strong>jonathan@dchub.cloud</strong> and we'll cancel your subscription immediately. You'll retain access through the end of your current billing period.</p></div></div></div>
+
+<div class="ac"><div class="ah" onclick="togAcc(this)"><div class="al"><strong style="font-size:13.5px">I lost my API key. Can I get a new one?</strong></div><span class="av">▼</span></div><div class="ab"><div class="ai"><p>For security, we only store a hashed version of your key — we can't retrieve the original. But we can generate a new one for you. Email us and we'll send a fresh API key within 24 hours. Your old key will be deactivated.</p></div></div></div>
+
+<div class="ac"><div class="ah" onclick="togAcc(this)"><div class="al"><strong style="font-size:13.5px">What data does the API provide?</strong></div><span class="av">▼</span></div><div class="ab"><div class="ai"><p>DC Hub tracks <strong>20,000+ data center facilities across 140+ countries</strong>. The API provides facility search, market intelligence, M&amp;A transaction data, capacity pipeline analytics, and energy infrastructure data. Visit the <a href="https://dchub.cloud/api-docs" style="color:var(--cyan)">API Docs</a> for full endpoint details.</p></div></div></div>
+
+<div class="ac"><div class="ah" onclick="togAcc(this)"><div class="al"><strong style="font-size:13.5px">What is MCP access?</strong></div><span class="av">▼</span></div><div class="ab"><div class="ai"><p>MCP (Model Context Protocol) lets AI assistants like ChatGPT, Claude, and Gemini access DC Hub's data directly. With MCP access, you can ask an AI to search for data centers, analyze markets, or pull facility details — and it queries DC Hub in real time. Pro and Founding Members get full MCP integration.</p></div></div></div>
+
+<div class="ac"><div class="ah" onclick="togAcc(this)"><div class="al"><strong style="font-size:13.5px">Is my payment information secure?</strong></div><span class="av">▼</span></div><div class="ab"><div class="ai"><p>Absolutely. All payments are processed through <strong>Stripe</strong>, a PCI Level 1 certified payment processor. DC Hub never sees or stores your credit card information.</p></div></div></div>
+
+<div class="ac"><div class="ah" onclick="togAcc(this)"><div class="al"><strong style="font-size:13.5px">Do you offer Enterprise plans?</strong></div><span class="av">▼</span></div><div class="ab"><div class="ai"><p>Yes — for organizations needing custom API limits, bulk data access, dedicated support, or white-label integrations, contact us to discuss Enterprise options tailored to your needs.</p></div></div></div>
+</div>
+
+<!-- CONTACT -->
+<div class="sec" id="contact"><h2>Contact <span class="gr">Support</span></h2><p class="ss">We're a small team and we respond fast. Here's how to reach us.</p>
+<div class="g2">
+  <div class="c"><div class="ch"><div class="ci p">📧</div><div><div class="ct">Email</div><div class="cd">Best for account issues &amp; API keys</div></div></div><p style="font-size:13px"><a href="mailto:jonathan@dchub.cloud" style="color:var(--cyan);text-decoration:none;font-weight:600">jonathan@dchub.cloud</a></p><p style="font-size:12.5px;color:var(--text3)">Typical response: same day</p></div>
+  <div class="c"><div class="ch"><div class="ci cy">📖</div><div><div class="ct">API Documentation</div><div class="cd">Endpoints, examples, schemas</div></div></div><p style="font-size:13px"><a href="https://dchub.cloud/api-docs" style="color:var(--cyan);text-decoration:none;font-weight:600">dchub.cloud/api-docs</a></p><p style="font-size:12.5px;color:var(--text3)">Full reference for all API endpoints</p></div>
+</div>
+<div class="co i"><b>💡 When Contacting Support</b><p>Please include: your <strong>account email</strong>, a description of the issue, and any error messages you're seeing. If it's a payment issue, include the email you used at Stripe checkout (it might be different from your DC Hub login).</p></div>
+</div>
+
+</main></div>
+<script>
+document.querySelectorAll('.ni').forEach(n=>{n.addEventListener('click',()=>{document.querySelectorAll('.ni').forEach(i=>i.classList.remove('a'));document.querySelectorAll('.sec').forEach(s=>s.classList.remove('a'));n.classList.add('a');document.getElementById(n.dataset.s).classList.add('a');document.getElementById('sb').classList.remove('op');document.getElementById('ov').classList.remove('op');window.scrollTo({top:0,behavior:'smooth'})})});
+function tSB(){document.getElementById('sb').classList.toggle('op');document.getElementById('ov').classList.toggle('op')}
+function togAcc(h){const a=h.parentElement,b=a.querySelector('.ab'),o=a.classList.contains('op');document.querySelectorAll('.ac').forEach(x=>{x.classList.remove('op');x.querySelector('.ab').style.maxHeight='0'});if(!o){a.classList.add('op');b.style.maxHeight=b.scrollHeight+'px'}}
+function cpCode(btn){const t=btn.parentElement.querySelector('pre').textContent;navigator.clipboard.writeText(t).then(()=>{btn.textContent='Copied!';btn.classList.add('ok');setTimeout(()=>{btn.textContent='Copy';btn.classList.remove('ok')},2000)})}
+// Deep link support
+if(window.location.hash){const s=window.location.hash.slice(1);const el=document.getElementById(s);if(el){document.querySelectorAll('.ni').forEach(i=>i.classList.remove('a'));document.querySelectorAll('.sec').forEach(i=>i.classList.remove('a'));el.classList.add('a');document.querySelector(`.ni[data-s="${s}"]`)?.classList.add('a')}}
+</script>
+</body>
+</html>

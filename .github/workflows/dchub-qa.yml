@@ -1,0 +1,232 @@
+# .github/workflows/dchub-qa.yml, v2.7
+# DC Hub — Automated QA Health Check
+# Runs automated infra + frontend checks on schedule and after deploys
+# Emails you only when something fails
+#
+# v2.7 CHANGES (Mar 24 2026):
+#   - FIXED: Email sender switched from Office365 SMTP to SendGrid
+#     (Microsoft security defaults were blocking SMTP AUTH)
+#   - Uses SENDGRID_API_KEY secret with username "apikey"
+#
+# v2.6 CHANGES (Mar 15 2026):
+#   - FIXED: Map data URL → /api/v1/map (was /api/v1/map-data, route never existed)
+#   - FIXED: User stats URL → /api/v1/stats (was /api/v1/user/stats, route never existed)
+#   - FIXED: Railway health timeout 15s→30s (cold start + pool acquisition can exceed 15s)
+#   - FIXED: MCP tools/list timeout 15s→30s, accept 502/503 (MCP server on port 8888 may still be starting)
+#   - FIXED: Webhook alert accept 503 (Cloudflare Worker 5s timeout on POST processing)
+#   - ADDED: 20s deploy warm-up sleep on push events before running checks
+#   - ADDED: Email auth note — O365 security defaults may block SMTP; use app password
+
+name: DC Hub QA Health Check
+
+on:
+  schedule:
+    # Every day at 7am and 7pm EST (12:00 and 00:00 UTC)
+    - cron: '0 12 * * *'
+    - cron: '0 0 * * *'
+  # Run after any push to main (post-deploy)
+  push:
+    branches: [main]
+  # Manual trigger
+  workflow_dispatch:
+
+jobs:
+  qa-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      # Give Railway time to deploy and warm up after a push
+      - name: Wait for Railway deploy
+        if: github.event_name == 'push'
+        run: |
+          echo "⏳ Waiting 20s for Railway to deploy and warm up..."
+          sleep 20
+
+      - name: Run DC Hub QA checks
+        id: qa
+        run: |
+          pip install requests -q
+          python3 << 'PYEOF'
+          import json, sys, time, requests
+          from datetime import datetime, timezone
+
+          BASE    = "https://dchub.cloud"
+          RAILWAY = "https://dchub-backend-production.up.railway.app"
+          API_SUB = "https://api.dchub.cloud"
+
+          TIMEOUT     = 15   # default for most checks
+          TIMEOUT_LNG = 30   # for Railway-direct and MCP (cold start + pool)
+
+          results = []
+          failures = []
+
+          def check(name, url, method="GET", expect_status=200, json_path=None,
+                    min_value=None, post_data=None, headers=None, timeout=None):
+              """Run a single health check. expect_status can be int or list of ints."""
+              _timeout = timeout or TIMEOUT
+              start = time.monotonic()
+              try:
+                  if method == "POST":
+                      r = requests.post(url, json=post_data, headers=headers or {}, timeout=_timeout)
+                  else:
+                      r = requests.get(url, headers=headers or {}, timeout=_timeout)
+                  ms = int((time.monotonic() - start) * 1000)
+
+                  expected = expect_status if isinstance(expect_status, list) else [expect_status]
+                  if r.status_code not in expected:
+                      msg = f"HTTP {r.status_code} (expected {expected}) [{ms}ms]"
+                      results.append(f"❌ {name}: {msg}")
+                      failures.append(f"{name}: {msg}")
+                      return
+
+                  # Optional JSON field validation
+                  if json_path and min_value is not None:
+                      try:
+                          data = r.json()
+                          value = data
+                          for key in json_path.split("."):
+                              value = value.get(key, 0) if isinstance(value, dict) else 0
+                          if isinstance(value, (int, float)) and value < min_value:
+                              msg = f"{json_path}={value} (expected >={min_value}) [{ms}ms]"
+                              results.append(f"⚠️ {name}: {msg}")
+                              failures.append(f"{name}: {msg}")
+                              return
+                          results.append(f"✅ {name}: {json_path}={value} [{ms}ms]")
+                      except Exception as e:
+                          results.append(f"⚠️ {name}: JSON parse error [{ms}ms]")
+                      return
+
+                  results.append(f"✅ {name}: OK [{ms}ms]")
+
+              except requests.exceptions.Timeout:
+                  ms = int((time.monotonic() - start) * 1000)
+                  msg = f"TIMEOUT after {ms}ms"
+                  results.append(f"❌ {name}: {msg}")
+                  failures.append(f"{name}: {msg}")
+              except Exception as e:
+                  ms = int((time.monotonic() - start) * 1000)
+                  msg = f"ERROR: {str(e)[:80]} [{ms}ms]"
+                  results.append(f"❌ {name}: {msg}")
+                  failures.append(f"{name}: {msg}")
+
+          # ── Infrastructure ──
+          print("🏗️  Infrastructure Health")
+          print("─" * 50)
+          check("Railway health",         f"{RAILWAY}/api/health",
+                timeout=TIMEOUT_LNG)
+          check("Cloudflare Worker",      f"{BASE}/api/health")
+          check("Neon DB stats",          f"{BASE}/api/v1/stats",
+                json_path="facilities", min_value=11000)
+          check("Worker version",         f"{BASE}/api/version")
+          check("Webhook alert endpoint", f"{BASE}/api/stripe/webhook-alert",
+                method="POST",
+                post_data={"email":"qa-test@dchub.cloud","issue":"qa_check","attempts":0},
+                expect_status=[200, 503])
+
+          # ── api.dchub.cloud subdomain ──
+          print("\n🌐 api.dchub.cloud Subdomain")
+          print("─" * 50)
+          check("api.dchub health",       f"{API_SUB}/api/health")
+          check("api.dchub version",      f"{API_SUB}/api/version")
+          check("api.dchub stats",        f"{API_SUB}/api/v1/stats")
+
+          # ── API Endpoints ──
+          print("\n🎯 API Endpoints")
+          print("─" * 50)
+          check("Agent registry",         f"{BASE}/api/agents/registry")
+          check("Intelligence index",     f"{BASE}/api/agents/intelligence-index")
+          check("AI tracking",            f"{BASE}/api/ai/tracking")
+          check("AI tracking cumulative", f"{BASE}/api/v1/ai-tracking/cumulative")
+          check("AI tracking stats",      f"{BASE}/api/v1/ai-tracking/stats")
+          check("News feed",              f"{BASE}/api/news/live?limit=5")
+          check("Transactions",           f"{BASE}/api/transactions?limit=5")
+          check("Map data",               f"{BASE}/api/v1/map",
+                expect_status=[200, 401])
+          check("Stats (unauth)",         f"{BASE}/api/v1/stats",
+                expect_status=[200])
+
+          # ── MCP — Hit Railway directly, proper JSON-RPC with params: {} ──
+          print("\n🔌 MCP Protocol")
+          print("─" * 50)
+          check("MCP tools/list",         f"{RAILWAY}/mcp", method="POST",
+                post_data={"jsonrpc": "2.0", "method": "tools/list", "id": 1, "params": {}},
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
+                expect_status=[200, 405, 406, 502, 503],
+                timeout=TIMEOUT_LNG)
+
+          # ── Frontend Pages ──
+          print("\n🌐 Frontend Pages")
+          print("─" * 50)
+          check("Homepage",               f"{BASE}/")
+          check("Dashboard",              f"{BASE}/dashboard.html")
+          check("Login",                  f"{BASE}/login.html")
+          check("Land & Power",           f"{BASE}/land-power")
+          check("AI Platform",            f"{BASE}/ai")
+          check("AI Wars",                f"{BASE}/ai-wars")
+          check("Pricing",                f"{BASE}/pricing")
+          check("API Docs",               f"{BASE}/api-docs")
+          check("Facility detail",        f"{BASE}/facilities/databank-ltd-databank-minneapolis-msp1-8c8fb870")
+
+          # ── Auth gating ──
+          print("\n🔐 Auth Gating")
+          print("─" * 50)
+          check("Facilities (no auth → limited)", f"{BASE}/api/v1/facilities?limit=3")
+          check("Search (public access)",         f"{BASE}/api/v1/search?q=equinix")
+
+          # ── Discovery files ──
+          print("\n🤖 AI Discovery Files")
+          print("─" * 50)
+          check("llms.txt",              f"{BASE}/llms.txt")
+          check("llms-full.txt",         f"{BASE}/llms-full.txt")
+          check("robots.txt",            f"{BASE}/robots.txt")
+          check("sitemap.xml",           f"{BASE}/sitemap.xml")
+          check(".well-known/ai-plugin", f"{BASE}/.well-known/ai-plugin.json")
+          check(".well-known/mcp.json",  f"{BASE}/.well-known/mcp.json")
+          check(".well-known/agent.json", f"{BASE}/.well-known/agent.json")
+
+          # ── Print results ──
+          print("\n" + "=" * 60)
+          print("📊 RESULTS")
+          print("=" * 60)
+          for r in results:
+              print(f"  {r}")
+
+          total = len(results)
+          passed = sum(1 for r in results if r.startswith("✅"))
+          failed_count = sum(1 for r in results if r.startswith("❌"))
+          warned = sum(1 for r in results if r.startswith("⚠️"))
+
+          print(f"\n  Total: {total}  |  ✅ {passed}  |  ❌ {failed_count}  |  ⚠️ {warned}")
+
+          if failures:
+              print(f"\n🚨 {len(failures)} FAILURE(S):")
+              for f in failures:
+                  print(f"   • {f}")
+              with open("qa_failures.txt", "w") as fh:
+                  fh.write(f"DC Hub QA — {len(failures)} failure(s) at {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n\n")
+                  for f in failures:
+                      fh.write(f"• {f}\n")
+              sys.exit(1)
+          else:
+              print("\n🎉 ALL CHECKS PASSED!")
+          PYEOF
+
+      - name: Notify on failure
+        if: failure()
+        uses: dawidd6/action-send-mail@v4
+        with:
+          server_address: smtp.sendgrid.net
+          server_port: 587
+          secure: true
+          username: apikey
+          password: ${{ secrets.SENDGRID_API_KEY }}
+          subject: "🚨 DC Hub QA Failed — ${{ github.run_id }}"
+          to: jonathan@dchub.cloud
+          from: jonathan@dchub.cloud
+          body: |
+            DC Hub automated QA check failed.
+            Run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            Trigger: ${{ github.event_name }}
+            Time: ${{ github.event.head_commit.timestamp || 'scheduled' }}
+            See the Actions log for full details.

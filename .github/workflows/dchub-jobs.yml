@@ -1,0 +1,180 @@
+# =============================================================================
+# DC Hub External Job Scheduler
+# =============================================================================
+# Triggers jobs_api.py endpoints on Railway for jobs NOT covered by
+# crawler_scheduler.py (which handles: news, energy_discovery, knowledge_sync, deals)
+#
+# This workflow covers:
+#   - discovery (facility discovery from PeeringDB/OSM/DatacenterMap)
+#   - auto-approve (merge discovered facilities)
+#   - outreach (AI outreach agent - 2x/day)
+#   - promotion (enhanced promotion - 1x/day)
+#   - evolution (evolution engine suggestions)
+#   - market-report (daily market report generation)
+#   - infrastructure-sync (infrastructure data sync)
+#   - capacity-headroom (capacity headroom calculation)
+#   - ambassador (agentic ambassador cycle)
+#   - backup (Neon → R2 nightly backup)
+#   - simple-alerts (alert condition checks)
+#
+# Auth: All endpoints require DCHUB_ADMIN_KEY via X-API-Key header.
+# Set DCHUB_ADMIN_KEY and RAILWAY_BACKEND_URL as GitHub repo secrets.
+# =============================================================================
+
+name: DC Hub Job Scheduler
+
+on:
+  schedule:
+    # ── Twice daily jobs ──────────────────────────────────────────────
+    # Outreach agent: 07:00 UTC and 19:00 UTC
+    - cron: '0 7,19 * * *'
+    # Ambassador: 08:30 UTC and 20:30 UTC
+    - cron: '30 8,20 * * *'
+
+    # ── Every 6 hours ─────────────────────────────────────────────────
+    # Discovery + auto-approve: 03:00, 09:00, 15:00, 21:00 UTC
+    - cron: '0 3,9,15,21 * * *'
+    # Capacity headroom: 04:00, 10:00, 16:00, 22:00 UTC
+    - cron: '0 4,10,16,22 * * *'
+    # Simple alerts check: 05:00, 11:00, 17:00, 23:00 UTC
+    - cron: '0 5,11,17,23 * * *'
+
+    # ── Daily jobs ────────────────────────────────────────────────────
+    # Evolution engine: 12:30 UTC
+    - cron: '30 12 * * *'
+    # Promotion: 13:00 UTC
+    - cron: '0 13 * * *'
+    # Market report: 14:30 UTC
+    - cron: '30 14 * * *'
+    # Infrastructure sync: 01:00 UTC
+    - cron: '0 1 * * *'
+
+    # ── Nightly ───────────────────────────────────────────────────────
+    # Backup (Neon → R2): 02:00 UTC
+    - cron: '0 2 * * *'
+
+  workflow_dispatch:
+    inputs:
+      job:
+        description: 'Specific job to run (leave empty for scheduled dispatch)'
+        required: false
+        type: choice
+        options:
+          - ''
+          - discovery
+          - auto-approve
+          - outreach
+          - promotion
+          - evolution
+          - market-report
+          - infrastructure-sync
+          - capacity-headroom
+          - ambassador
+          - backup
+          - simple-alerts
+          - keep-alive
+
+env:
+  BACKEND_URL: ${{ secrets.RAILWAY_BACKEND_URL }}
+  ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+
+jobs:
+  trigger-jobs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Determine which jobs to run
+        id: schedule
+        run: |
+          # Manual dispatch with specific job
+          if [ -n "${{ inputs.job }}" ]; then
+            echo "jobs=${{ inputs.job }}" >> $GITHUB_OUTPUT
+            echo "🔧 Manual trigger: ${{ inputs.job }}"
+            exit 0
+          fi
+
+          HOUR=$(date -u +%H)
+          MINUTE=$(date -u +%M)
+          echo "⏰ Current UTC: ${HOUR}:${MINUTE}"
+
+          JOBS=""
+
+          case "${HOUR}:00" in
+            "01:00") JOBS="infrastructure-sync" ;;
+            "02:00") JOBS="backup" ;;
+            "03:00") JOBS="discovery,auto-approve" ;;
+            "04:00") JOBS="capacity-headroom" ;;
+            "05:00") JOBS="simple-alerts" ;;
+            "07:00") JOBS="outreach" ;;
+            "09:00") JOBS="discovery,auto-approve" ;;
+            "10:00") JOBS="capacity-headroom" ;;
+            "11:00") JOBS="simple-alerts" ;;
+            "13:00") JOBS="promotion" ;;
+            "15:00") JOBS="discovery,auto-approve" ;;
+            "16:00") JOBS="capacity-headroom" ;;
+            "17:00") JOBS="simple-alerts" ;;
+            "19:00") JOBS="outreach" ;;
+            "20:00") JOBS="ambassador" ;; # 20:30 cron rounds to 20:00 check
+            "21:00") JOBS="discovery,auto-approve" ;;
+            "22:00") JOBS="capacity-headroom" ;;
+            "23:00") JOBS="simple-alerts" ;;
+          esac
+
+          # Half-hour jobs
+          case "${HOUR}:${MINUTE}" in
+            "08:30"|"08:3"*) JOBS="${JOBS:+$JOBS,}ambassador" ;;
+            "12:30"|"12:3"*) JOBS="${JOBS:+$JOBS,}evolution" ;;
+            "14:30"|"14:3"*) JOBS="${JOBS:+$JOBS,}market-report" ;;
+            "20:30"|"20:3"*) JOBS="${JOBS:+$JOBS,}ambassador" ;;
+          esac
+
+          if [ -z "$JOBS" ]; then
+            echo "⏭️ No jobs scheduled for ${HOUR}:${MINUTE} UTC"
+            JOBS="keep-alive"
+          fi
+
+          echo "jobs=$JOBS" >> $GITHUB_OUTPUT
+          echo "📋 Jobs to run: $JOBS"
+
+      - name: Run scheduled jobs
+        run: |
+          JOBS="${{ steps.schedule.outputs.jobs }}"
+          IFS=',' read -ra JOB_ARRAY <<< "$JOBS"
+
+          FAILED=0
+          for JOB in "${JOB_ARRAY[@]}"; do
+            JOB=$(echo "$JOB" | xargs)  # trim whitespace
+            echo ""
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "🚀 Triggering: $JOB"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+            HTTP_CODE=$(curl -s -o /tmp/response.json -w "%{http_code}" \
+              -X POST \
+              -H "X-API-Key: ${ADMIN_KEY}" \
+              -H "Content-Type: application/json" \
+              --max-time 300 \
+              "${BACKEND_URL}/api/jobs/${JOB}")
+
+            echo "HTTP Status: ${HTTP_CODE}"
+            cat /tmp/response.json 2>/dev/null | python3 -m json.tool 2>/dev/null || cat /tmp/response.json 2>/dev/null
+            echo ""
+
+            if [ "$HTTP_CODE" -ge 500 ]; then
+              echo "❌ FAILED: $JOB (HTTP $HTTP_CODE)"
+              FAILED=$((FAILED + 1))
+            elif [ "$HTTP_CODE" -ge 400 ]; then
+              echo "⚠️ CLIENT ERROR: $JOB (HTTP $HTTP_CODE)"
+            else
+              echo "✅ SUCCESS: $JOB"
+            fi
+
+            # Stagger between jobs to avoid overloading
+            sleep 5
+          done
+
+          if [ $FAILED -gt 0 ]; then
+            echo ""
+            echo "❌ $FAILED job(s) failed with 5xx errors"
+            exit 1
+          fi

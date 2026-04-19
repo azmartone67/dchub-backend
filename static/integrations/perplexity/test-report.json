@@ -1,0 +1,71 @@
+{
+  "report": "DC Hub Integration Verification",
+  "platform": "Perplexity",
+  "key": "dchub_perplexity_2026_verify",
+  "tested_at": "2026-02-16T20:00:00Z",
+  "tested_by": "DC Hub (server-side)",
+  "base_url": "https://dc-hub-replit-fixedzip--azmartone1.replit.app",
+  "summary": {
+    "total": 8,
+    "passed": 8,
+    "failed": 0
+  },
+  "results": [
+    {
+      "endpoint": "/api/agent/facilities?q=Equinix&country=US&limit=5",
+      "name": "Facility Search",
+      "status": "PASS",
+      "http_code": 200,
+      "sample": {"count": 5, "total_in_db": 10786}
+    },
+    {
+      "endpoint": "/api/agent/stats",
+      "name": "Platform Stats",
+      "status": "PASS",
+      "http_code": 200,
+      "sample": {"total_facilities": 10786, "countries_covered": 170, "providers_tracked": 3902}
+    },
+    {
+      "endpoint": "/api/transactions?limit=3",
+      "name": "Transactions",
+      "status": "PASS",
+      "http_code": 200,
+      "sample": {"count": 3, "includes": "buyer, seller, market, date, type"}
+    },
+    {
+      "endpoint": "/api/news?limit=5",
+      "name": "News Feed",
+      "status": "PASS",
+      "http_code": 200,
+      "note": "Returns current articles from PostgreSQL"
+    },
+    {
+      "endpoint": "/api/v1/stats",
+      "name": "Summary Stats",
+      "status": "PASS",
+      "http_code": 200,
+      "sample": {"sources": "PeeringDB, OpenStreetMap, ProviderWebsites, DatacenterHawk, Wikidata"}
+    },
+    {
+      "endpoint": "/api/v1/markets/list",
+      "name": "Markets List",
+      "status": "PASS",
+      "http_code": 200,
+      "sample": {"count": 32, "top_market": "Northern Virginia"}
+    },
+    {
+      "endpoint": "/api/v1/lmp/prices",
+      "name": "LMP Prices",
+      "status": "PASS",
+      "http_code": 200,
+      "sample": {"isos": ["CAISO", "ERCOT", "ISONE", "MISO", "NYISO", "PJM", "SPP"]}
+    },
+    {
+      "endpoint": "/api/v1/pipeline",
+      "name": "Pipeline Data",
+      "status": "PASS",
+      "http_code": 200,
+      "sample": {"quarters": ["2025-Q3", "2025-Q4", "2026-Q1"]}
+    }
+  ]
+}

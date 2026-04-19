@@ -1,0 +1,51 @@
+# docker-compose.yml
+# DC Hub × NVIDIA: MCP Data Layer + NIM Inference Layer
+#
+# Usage:
+#   export DC_HUB_API_KEY=dchub_nvidia_2026_verify
+#   docker-compose up -d
+#
+# Architecture:
+#   mcp-client → DC Hub API (data retrieval)
+#   nim-inference → NVIDIA NIM (optional AI summarization/scoring)
+
+version: "3.8"
+
+services:
+  # MCP Client: Retrieves data from DC Hub
+  mcp-client:
+    image: python:3.11-slim
+    container_name: dchub-mcp-client
+    environment:
+      - DC_HUB_API_KEY=${DC_HUB_API_KEY:-dchub_nvidia_2026_verify}
+      - DC_HUB_MCP_URL=https://dchub.cloud/mcp
+      - DC_HUB_BASE_URL=https://dchub.cloud/api
+    volumes:
+      - ./scripts:/app
+    working_dir: /app
+    command: >
+      bash -c "pip install requests && python health_check.py"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; r=requests.get('https://dchub.cloud/api/agent/stats', headers={'X-API-Key':'${DC_HUB_API_KEY}'}); assert r.status_code==200"]
+      interval: 300s
+      timeout: 15s
+      retries: 3
+
+  # NIM Inference: Optional GPU-accelerated AI layer
+  # Uncomment to enable NIM-powered summarization and risk scoring
+  #
+  # nim-inference:
+  #   image: nvcr.io/nim/nvidia/llama-3.1-nemotron-70b:latest
+  #   container_name: dchub-nim-inference
+  #   runtime: nvidia
+  #   environment:
+  #     - NVIDIA_VISIBLE_DEVICES=all
+  #   ports:
+  #     - "8000:8000"
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
