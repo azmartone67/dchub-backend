@@ -1188,13 +1188,21 @@
             });
             const d = await r.json();
 
-            if (d.success && (d.key || d.api_key)) {
+            // Backend may return key as string OR as nested object {api_key:"..."}
+            // Handle both shapes for forward/backward compat
+            let plaintext = null;
+            if (typeof d.api_key === 'string') plaintext = d.api_key;
+            else if (typeof d.key === 'string') plaintext = d.key;
+            else if (d.key && typeof d.key === 'object') plaintext = d.key.api_key || d.key.key || d.key.plaintext;
+            else if (d.key_data && typeof d.key_data === 'object') plaintext = d.key_data.api_key;
+
+            if (d.success && plaintext) {
                 closeModal('create-key');
-                document.getElementById('new-key-value').value = d.key || d.api_key;
+                document.getElementById('new-key-value').value = plaintext;
                 openModal('show-key');
                 document.getElementById('new-key-name').value = '';
             } else {
-                showToast(d.error || 'Failed to create key');
+                showToast(d.error || d.message || 'Failed to create key');
             }
         } catch (e) {
             showToast('Error creating API key');
