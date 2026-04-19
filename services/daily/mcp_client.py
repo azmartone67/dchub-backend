@@ -164,38 +164,66 @@ def _stats_to_rows(stats: dict) -> list[dict] | None:
     return rows or None
 
 
+def _seed_snapshot() -> dict:
+    return json.loads((Path(__file__).parent / "data.json").read_text())
+
+
 def fetch_snapshot() -> dict:
-    """Pull every state. Returns the full snapshot dict (renderable by render.py)."""
+    """Pull every state. Returns the full snapshot dict (renderable by render.py).
+
+    Resilience strategy:
+      1. If DRY_RUN or no API key — use bundled seed.
+      2. Try /stats for one-shot rollup.
+      3. Fall back to per-state /facilities pagination.
+      4. If all live paths fail for any reason — return bundled seed so the
+         image pipeline never breaks. The seed is labelled so downstream
+         consumers (the share page og:description, etc.) can tell the
+         difference.
+    """
     if DRY_RUN or not API_KEY:
         log.warning("DRY_RUN or no DCHUB_API_KEY — using bundled seed data.")
-        return json.loads((Path(__file__).parent / "data.json").read_text())
+        snap = _seed_snapshot()
+        snap["source"] = snap.get("source", "Aterio") + " · seed (no API key)"
+        return snap
 
     import datetime
-    rows: list[dict] | None = None
-    with _client() as c:
-        stats = fetch_stats(c)
-        if stats:
-            rows = _stats_to_rows(stats)
-            if rows:
-                log.info("got %d rows from /stats", len(rows))
+    try:
+        rows: list[dict] | None = None
+        with _client() as c:
+            stats = fetch_stats(c)
+            if stats:
+                rows = _stats_to_rows(stats)
+                if rows:
+                    log.info("got %d rows from /stats", len(rows))
 
-        if not rows:
-            log.info("falling back to per-state /facilities pagination")
-            rows = []
-            for st in US_STATES:
-                try:
-                    rows.append(fetch_state_counts(st, c).as_dict())
-                except httpx.HTTPStatusError as e:
-                    log.error("state=%s failed: %s", st, e)
-                    rows.append(StateRow(name=STATE_NAMES[st]).as_dict())
+            if not rows:
+                log.info("falling back to per-state /facilities pagination")
+                rows = []
+                for st in US_STATES:
+                    try:
+                        rows.append(fetch_state_counts(st, c).as_dict())
+                    except (httpx.HTTPStatusError, RuntimeError) as e:
+                        log.error("state=%s failed: %s", st, e)
+                        rows.append(StateRow(name=STATE_NAMES[st]).as_dict())
 
-    rows.sort(key=lambda r: r["op"] + r["uc"] + r["ann"], reverse=True)
-    return {
-        "as_of": datetime.date.today().isoformat(),
-        "source": "Aterio (via DC Hub MCP, Enterprise)",
-        "generated": datetime.datetime.utcnow().isoformat() + "Z",
-        "states": rows,
-    }
+        # if every state came back zero, the API shape doesn't match — seed instead
+        if rows and all(r["op"] + r["uc"] + r["ann"] == 0 for r in rows):
+            log.warning("all per-state counts were zero; falling back to seed")
+            raise RuntimeError("live API returned zero counts for all states")
+
+        rows.sort(key=lambda r: r["op"] + r["uc"] + r["ann"], reverse=True)
+        return {
+            "as_of": datetime.date.today().isoformat(),
+            "source": "Aterio (via DC Hub MCP, Enterprise)",
+            "generated": datetime.datetime.utcnow().isoformat() + "Z",
+            "states": rows,
+        }
+    except Exception as e:  # noqa: BLE001
+        log.error("live API fetch failed, falling back to seed: %s", e)
+        snap = _seed_snapshot()
+        snap["source"] = snap.get("source", "Aterio") + f" · seed (live API failed)"
+        snap["generated"] = datetime.datetime.utcnow().isoformat() + "Z"
+        return snap
 
 
 if __name__ == "__main__":
