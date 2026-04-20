@@ -57,3 +57,6 @@
 /news/*                        /press-release           200
 # Orphan URL redirect added 2026-04-19
 /press-release /press 301
+
+# /markets/ashburn → /ashburn (QA 2026-04-20: ashburn.html lives at root, not under markets/)
+/markets/ashburn               /ashburn                 301
