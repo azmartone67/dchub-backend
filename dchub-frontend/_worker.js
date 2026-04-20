@@ -903,6 +903,16 @@ export default {
   },
 
   async fetch(request, env, ctx) {
+    // --- press-release orphan redirect (press_release_worker_patch_v1) ---
+    // Bare /press-release shows "Press release not found" — dead detail URL.
+    // 301 to /press listing. Slug paths (/press-release/<slug>) unaffected.
+    try {
+      const _pr_url = new URL(request.url);
+      if (_pr_url.pathname === '/press-release' || _pr_url.pathname === '/press-release/') {
+        return Response.redirect(new URL('/press', _pr_url.origin).toString(), 301);
+      }
+    } catch (_e) { /* fall through to normal routing */ }
+
     const url = new URL(request.url);
     const startTime = Date.now();
     const pathname = url.pathname;
