@@ -12,19 +12,19 @@ logger = logging.getLogger(__name__)
 PLATFORM_CONFIGS = {
     "claude": {
         "env_key": "ANTHROPIC_API_KEY",
-        "url": "https://api.anthropic.com/v1/messages",
+        "url": "https://gateway.ai.cloudflare.com/v1/4bb33ec40ef02f9f4b41dc97668d5a52/dchub/anthropic/v1/messages",
         "model": "claude-sonnet-4-20250514",
         "adapter": "anthropic",
     },
     "chatgpt": {
         "env_key": "OPENAI_API_KEY",
-        "url": "https://api.openai.com/v1/chat/completions",
+        "url": "https://gateway.ai.cloudflare.com/v1/4bb33ec40ef02f9f4b41dc97668d5a52/dchub/openai/v1/chat/completions",
         "model": "gpt-4o",
         "adapter": "openai",
     },
     "gemini": {
         "env_key": "GOOGLE_AI_KEY",
-        "url": "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+        "url": "https://gateway.ai.cloudflare.com/v1/4bb33ec40ef02f9f4b41dc97668d5a52/dchub/google-ai-studio/v1beta/models/{model}:generateContent",
         "model": "gemini-2.0-flash",
         "adapter": "google",
     },
@@ -54,7 +54,7 @@ PLATFORM_CONFIGS = {
     },
     "copilot": {
         "env_key": "OPENAI_API_KEY",
-        "url": "https://api.openai.com/v1/chat/completions",
+        "url": "https://gateway.ai.cloudflare.com/v1/4bb33ec40ef02f9f4b41dc97668d5a52/dchub/openai/v1/chat/completions",
         "model": "gpt-4o",
         "adapter": "openai",
     },

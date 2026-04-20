@@ -55,7 +55,7 @@ def generate_all_responses(question, context_data=None, timeout=90):
     prompt = GENERATION_PROMPT.format(question=question, context=context_str, platform_descriptions=platform_desc)
     try:
         start = time.time()
-        r = requests.post("https://api.anthropic.com/v1/messages",
+        r = requests.post("https://gateway.ai.cloudflare.com/v1/4bb33ec40ef02f9f4b41dc97668d5a52/dchub/anthropic/v1/messages",
             json={"model": "claude-sonnet-4-20250514", "max_tokens": 8000, "messages": [{"role": "user", "content": prompt}]},
             headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"},
             timeout=timeout)

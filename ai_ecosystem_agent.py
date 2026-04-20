@@ -37,7 +37,7 @@ AGENT_STATE_FILE = 'data/ai_ecosystem_state.json'
 AI_PLATFORMS = {
     'claude': {
         'name': 'Anthropic Claude',
-        'mcp_endpoint': 'https://api.anthropic.com',
+        'mcp_endpoint': 'https://gateway.ai.cloudflare.com/v1/4bb33ec40ef02f9f4b41dc97668d5a52/dchub/anthropic',
         'discovery_method': 'MCP Protocol',
         'status': 'integrated'
     },

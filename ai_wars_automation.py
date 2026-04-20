@@ -517,7 +517,7 @@ def _call_openai(prompt, max_tokens=1000):
         return ""
 
     import requests
-    r = requests.post('https://api.openai.com/v1/chat/completions',
+    r = requests.post('https://gateway.ai.cloudflare.com/v1/4bb33ec40ef02f9f4b41dc97668d5a52/dchub/openai/v1/chat/completions',
         headers={'Authorization': f'Bearer {key}', 'Content-Type': 'application/json'},
         json={
             'model': 'gpt-4o-mini',
@@ -544,7 +544,7 @@ def _call_anthropic(prompt, max_tokens=1000):
         return ""
 
     import requests
-    r = requests.post('https://api.anthropic.com/v1/messages',
+    r = requests.post('https://gateway.ai.cloudflare.com/v1/4bb33ec40ef02f9f4b41dc97668d5a52/dchub/anthropic/v1/messages',
         headers={
             'x-api-key': key,
             'anthropic-version': '2023-06-01',
@@ -574,7 +574,7 @@ def _call_google(prompt, max_tokens=1000):
 
     import requests
     r = requests.post(
-        f'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent%skey={key}',
+        f'https://gateway.ai.cloudflare.com/v1/4bb33ec40ef02f9f4b41dc97668d5a52/dchub/google-ai-studio/v1beta/models/gemini-2.0-flash:generateContent%skey={key}',
         headers={'Content-Type': 'application/json'},
         json={
             'contents': [{'parts': [{'text': f"{SYSTEM_PROMPT}\n\n{prompt}"}]}],
@@ -772,7 +772,7 @@ def _call_mcp_native(platform_key, prompt, max_tokens=1000):
     import requests
 
     # Call Claude with DC Hub MCP server attached — this is how Cursor/Windsurf work
-    r = requests.post('https://api.anthropic.com/v1/messages',
+    r = requests.post('https://gateway.ai.cloudflare.com/v1/4bb33ec40ef02f9f4b41dc97668d5a52/dchub/anthropic/v1/messages',
         headers={
             'x-api-key': key,
             'anthropic-version': '2023-06-01',
@@ -893,7 +893,7 @@ def _call_copilot(prompt, max_tokens=1000):
         return ""
 
     import requests
-    r = requests.post('https://api.openai.com/v1/chat/completions',
+    r = requests.post('https://gateway.ai.cloudflare.com/v1/4bb33ec40ef02f9f4b41dc97668d5a52/dchub/openai/v1/chat/completions',
         headers={'Authorization': f'Bearer {key}', 'Content-Type': 'application/json'},
         json={
             'model': 'gpt-4o-mini',
