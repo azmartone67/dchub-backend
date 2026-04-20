@@ -13253,6 +13253,16 @@ def gas_compressor_stations():
 def active_fires():
     return jsonify({"fires": [], "source": "NASA FIRMS", "status": "ok"})
 
+
+# --- press-release orphan redirect (press_release_orphan_patch_v1) ---
+# Bare /press-release was a dead detail-template URL showing "not found".
+# Slug URLs (/press-release/<slug>) are unaffected by this rule.
+@app.before_request
+def _redirect_orphan_press_release():
+    from flask import request, redirect
+    if request.path.rstrip('/') == '/press-release':
+        return redirect('/press', code=301)
+
 if __name__ == '__main__':
     print("🚀 DC Hub API v86 Starting...")
     print(f"📊 PDF Generation: {'✅ Available' if PDF_AVAILABLE else '❌ Disabled'}")
