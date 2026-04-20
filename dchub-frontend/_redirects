@@ -55,3 +55,5 @@
 # ── Press release detail pages ──
 # /news/<slug> → press-release (NO .html — Pages pretty-URL strips it causing 404)
 /news/*                        /press-release           200
+# Orphan URL redirect added 2026-04-19
+/press-release /press 301

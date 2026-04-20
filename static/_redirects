@@ -1,2 +1,4 @@
 /openapi.json https://dchub-backend-production.up.railway.app/openapi.json 200
 /.well-known/openapi.json https://dchub-backend-production.up.railway.app/openapi.json 200
+# Orphan URL redirect added 2026-04-19
+/press-release /press 301
