@@ -100,7 +100,7 @@ def snapshot(date: str | None = None):
 
 @app.get("/generate")
 def generate(
-    theme: str = Query("a", pattern="^[abc]$"),
+    theme: str = Query("a", pattern="^[abcd]$"),
     size: str = Query("portrait", pattern="^(portrait|square|story)$"),
     date: str | None = None,
 ):
