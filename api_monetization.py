@@ -494,49 +494,125 @@ def require_api_key(f):
     
     return decorated
 
+def _resolve_plan_for_user(user_id):
+    """Look up a user's plan from the users table. Defaults to 'free' if missing/unknown."""
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT plan FROM users WHERE id = %s", (user_id,))
+        row = c.fetchone()
+        conn.close()
+        plan = (row['plan'] if row else None) or 'free'
+        if plan not in RATE_LIMITS:
+            plan = 'free'
+        return plan
+    except Exception:
+        return 'free'
+
+
+def _enforce_limit(user_id, plan):
+    """Apply rate limit. Returns (429_response_or_None, limit_info_dict).
+
+    On success, sets g.user_id, g.plan, g.rate_limit_info and returns (None, info).
+    On failure, returns (jsonify-429-response, info).
+    """
+    allowed, limit_info = monetization_rate_limiter.check_rate_limit(user_id, plan)
+    if not allowed:
+        return jsonify({'success': False, **limit_info}), limit_info
+    g.user_id = user_id
+    g.plan = plan
+    g.rate_limit_info = limit_info
+    return None, limit_info
+
+
 def api_rate_limit_middleware():
-    """Middleware to apply rate limiting to all API requests"""
+    """Middleware to apply rate limiting to all API requests.
+
+    Identity resolution (in order):
+      1. X-API-Key header or ?api_key=   -> that key's owner + plan
+      2. Authorization: Bearer dchub_... -> that key's owner + plan (API key via Bearer)
+      3. Authorization: Bearer <JWT>     -> JWT subject + plan from users table
+      4. No/empty credentials            -> anonymous IP-bucketed free tier
+
+    Invalid or malformed tokens do NOT silently fall through to a higher tier.
+    They either return 401 (caller explicitly offered a credential that failed)
+    or drop to anonymous free-tier limits (empty Bearer).
+    """
     # Skip exempt endpoints
     for exempt in EXEMPT_ENDPOINTS:
         if request.path.startswith(exempt):
             return None
-    
-    # Check for API key
+
+    # (1) API key via X-API-Key header or ?api_key= query param
     api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
-    
     if api_key:
         key_info = validate_api_key(api_key)
-        if key_info:
-            g.api_key_info = key_info
-            g.user_id = key_info['user_id']
-            g.plan = key_info.get('plan') or 'free'
-            return None
-    
-    # Check for JWT auth
-    auth_header = request.headers.get('Authorization')
-    if auth_header and auth_header.startswith('Bearer '):
-        # Let existing auth handle it
+        if not key_info:
+            return jsonify({
+                'success': False,
+                'error': 'invalid_api_key',
+                'message': 'Invalid or expired API key'
+            }), 401
+        plan = key_info.get('plan') or 'free'
+        resp, _ = _enforce_limit(key_info['user_id'], plan)
+        if resp is not None:
+            return resp, 429
+        g.api_key_info = key_info
+        update_key_usage(key_info['id'])
         return None
-    
-    # Anonymous request - apply free tier limits
+
+    # (2) Authorization: Bearer ...
+    auth_header = (request.headers.get('Authorization') or '').strip()
+    if auth_header.lower().startswith('bearer '):
+        token = auth_header.split(' ', 1)[1].strip()
+
+        # (2a) API key passed as a Bearer token (e.g. `Bearer dchub_live_...`)
+        if token.startswith('dchub_'):
+            key_info = validate_api_key(token)
+            if not key_info:
+                return jsonify({
+                    'success': False,
+                    'error': 'invalid_api_key',
+                    'message': 'Invalid or expired API key'
+                }), 401
+            plan = key_info.get('plan') or 'free'
+            resp, _ = _enforce_limit(key_info['user_id'], plan)
+            if resp is not None:
+                return resp, 429
+            g.api_key_info = key_info
+            update_key_usage(key_info['id'])
+            return None
+
+        # (2b) JWT bearer token
+        if token:
+            payload = None
+            try:
+                from main import decode_jwt
+                payload = decode_jwt(token)
+            except Exception:
+                payload = None
+            if not payload or not payload.get('user_id'):
+                return jsonify({
+                    'success': False,
+                    'error': 'invalid_token',
+                    'message': 'Invalid or expired token'
+                }), 401
+            user_id = payload['user_id']
+            plan = _resolve_plan_for_user(user_id)
+            resp, _ = _enforce_limit(user_id, plan)
+            if resp is not None:
+                return resp, 429
+            return None
+        # Empty Bearer -> fall through to anonymous
+
+    # (3) Anonymous request - apply free tier limits (IP-bucketed)
     ip = request.headers.get('CF-Connecting-IP') or \
          request.headers.get('X-Forwarded-For', '').split(',')[0].strip() or \
          request.remote_addr or 'unknown'
-    
     user_id = f"anon_{hashlib.md5(ip.encode()).hexdigest()[:12]}"
-    
-    allowed, limit_info = monetization_rate_limiter.check_rate_limit(user_id, 'free')
-    
-    if not allowed:
-        return jsonify({
-            'success': False,
-            **limit_info
-        }), 429
-    
-    g.user_id = user_id
-    g.plan = 'free'
-    g.rate_limit_info = limit_info
-    
+    resp, _ = _enforce_limit(user_id, 'free')
+    if resp is not None:
+        return resp, 429
     return None
 
 def track_request_middleware(response):
@@ -574,12 +650,17 @@ def track_request_middleware(response):
             user_agent=request.headers.get('User-Agent', '')[:200]
         )
     
-    # Add rate limit headers
+    # Add rate limit headers (authoritative — this file owns tier assignment)
     rate_info = getattr(g, 'rate_limit_info', None)
+    plan = getattr(g, 'plan', None)
     if rate_info and isinstance(rate_info, dict):
         response.headers['X-RateLimit-Limit'] = str(rate_info.get('limit_daily', 100))
         response.headers['X-RateLimit-Remaining'] = str(rate_info.get('remaining_daily', 0))
-    
+        response.headers['X-RateLimit-Limit-Minute'] = str(rate_info.get('limit_minute', 10))
+        response.headers['X-RateLimit-Remaining-Minute'] = str(rate_info.get('remaining_minute', 0))
+    if plan:
+        response.headers['X-RateLimit-Tier'] = plan
+
     return response
 
 # =============================================================================
