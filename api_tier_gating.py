@@ -43,6 +43,10 @@ from db_utils import get_db
 # ═══════════════════════════════════════════════════════════════
 
 DB_PATH = "dc_nexus.db"
+# -- Public URLs (override via DCHUB_SIGNUP_URL / DCHUB_PRICING_URL) --
+SIGNUP_URL  = os.environ.get('DCHUB_SIGNUP_URL',  'https://dchub.cloud/signup')
+PRICING_URL = os.environ.get('DCHUB_PRICING_URL', 'https://dchub.cloud/pricing')
+
 
 # Stripe Price IDs — set these as Replit Secrets after creating products
 STRIPE_PRICES_V2 = {
@@ -139,6 +143,8 @@ PLAN_INFO = {
         'price_monthly': 0,
         'price_annual': 0,
         'rate_limit': 10,
+        'tagline': 'Headline stats, news, and AI discovery (10 calls/day)',
+        'show_in_gate': True,
         'features': {
             'headline_stats': True,
             'news_feed': True,
@@ -164,6 +170,8 @@ PLAN_INFO = {
         'price_monthly': 49,
         'price_annual': 390,
         'rate_limit': 1000,
+        'tagline': 'Full facility DB + M&A + pipeline + energy (1,000 calls/day)',
+        'show_in_gate': True,
         'features': {
             'headline_stats': True,
             'news_feed': True,
@@ -189,6 +197,8 @@ PLAN_INFO = {
         'price_monthly': 199,
         'price_annual': 1590,
         'rate_limit': 10000,
+        'tagline': 'Developer + market compare + PDF reports (10,000 calls/day)',
+        'show_in_gate': True,
         'features': {
             'headline_stats': True,
             'news_feed': True,
@@ -214,6 +224,8 @@ PLAN_INFO = {
         'price_monthly': 699,
         'price_annual': 5990,
         'rate_limit': 100000,
+        'tagline': 'Pro + AI Brain + grid monitoring + land/power (100,000 calls/day)',
+        'show_in_gate': True,
         'features': {
             'headline_stats': True,
             'news_feed': True,
@@ -238,6 +250,19 @@ PLAN_INFO = {
 
 
 # ═══════════════════════════════════════════════════════════════
+
+def _build_gate_plans() -> dict:
+    """Build anon plan summary from PLAN_INFO. Single source of truth."""
+    out = {}
+    for key, info in PLAN_INFO.items():
+        if not info.get('show_in_gate', True): continue
+        if info.get('price_monthly', 0) == 0:
+            out[key] = f"Sign up at {SIGNUP_URL} for {info.get('rate_limit',0)} free API calls/day"
+        else:
+            tag = info.get('tagline', info.get('name', key))
+            out[key] = f"${info['price_monthly']}/mo — {tag}"
+    return out
+
 #  API KEY TABLE
 # ═══════════════════════════════════════════════════════════════
 
@@ -541,13 +566,9 @@ def require_plan(min_plan='pro'):
                         'success': False,
                         'error': 'plan_required',
                         'message': f'This endpoint requires a {min_plan.title()} plan or higher.',
-                        'plans': {
-                            'free': 'Sign up at https://dchub.cloud/signup for 10 free API calls/day',
-                            'pro': '$199/mo — Full facility DB, deals, pipeline, energy data',
-                            'enterprise': '$699/mo — AI Brain, site analysis, real-time grid monitoring',
-                        },
-                        'signup_url': 'https://dchub.cloud/signup',
-                        'pricing_url': 'https://dchub.cloud/pricing',
+                        'plans': _build_gate_plans(),
+                        'signup_url': SIGNUP_URL,
+                        'pricing_url': PRICING_URL,
                         'free_alternative': _get_free_alternative(request.path),
                     }), 403
 
