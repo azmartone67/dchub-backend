@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+exec ./scripts/guard-mass-delete.sh
