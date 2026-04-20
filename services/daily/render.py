@@ -497,6 +497,177 @@ def render(theme: Theme, size: Size, data: RenderData) -> Image.Image:
     return fn(data, size)
 
 
+# ─── brief renders (Phase 2: page-specific daily briefs) ───────────────────
+def _render_grid(data: dict, size: Size) -> Image.Image:
+    """Daily grid intelligence brief — 5 ISO regions + queue GW + highlight card."""
+    import datetime as _dt, textwrap as _tw
+    W, H, _n = SIZES[size]
+    pal = PAL["d"]
+    regions = data.get("regions", []) or []
+    total = data.get("total") or sum(r.get("total_queue_gw", 0) for r in regions)
+
+    fig = plt.figure(figsize=(W / 100, H / 100), dpi=100)
+    fig.patch.set_facecolor(pal["bg"])
+
+    today = _dt.date.today().isoformat()
+    ax_h = fig.add_axes([0.05, 0.91, 0.9, 0.07]); ax_h.axis("off"); ax_h.set_xlim(0, 1); ax_h.set_ylim(0, 1)
+    ax_h.text(0, 0.7, "G R I D   I N T E L L I G E N C E   B R I E F",
+              color=pal["accent"], fontsize=13, weight="bold", family="sans-serif")
+    ax_h.text(0, 0.2, f"Transmission queue across {len(regions)} ISO regions · {today}",
+              color=pal["dim"], fontsize=11, family="sans-serif")
+
+    # total-queue hero card
+    ax_t = fig.add_axes([0.05, 0.76, 0.9, 0.13]); ax_t.axis("off"); ax_t.set_xlim(0, 1); ax_t.set_ylim(0, 1)
+    ax_t.add_patch(FancyBboxPatch((0.01, 0.05), 0.98, 0.9, boxstyle="round,pad=0.02,rounding_size=0.04",
+                                  linewidth=1.5, edgecolor=pal["accent"], facecolor=pal["card_bg"]))
+    ax_t.text(0.04, 0.70, f"{int(total):,} GW", color=pal["ink"], fontsize=44, weight="bold",
+              family="sans-serif", va="center")
+    ax_t.text(0.04, 0.22, "Total interconnection queue across all tracked ISOs",
+              color=pal["dim"], fontsize=12, family="sans-serif", va="center")
+
+    # five region cards in a row
+    n = max(1, min(5, len(regions)))
+    card_w = 0.9 / n
+    for i, r in enumerate(regions[:5]):
+        x = 0.05 + i * card_w
+        ax_r = fig.add_axes([x + 0.005, 0.54, card_w - 0.01, 0.20]); ax_r.axis("off")
+        ax_r.set_xlim(0, 1); ax_r.set_ylim(0, 1)
+        ax_r.add_patch(FancyBboxPatch((0.02, 0.05), 0.96, 0.9, boxstyle="round,pad=0.02,rounding_size=0.05",
+                                      linewidth=1, edgecolor=pal["dim"], facecolor=pal["card_bg"]))
+        ax_r.text(0.5, 0.82, r.get("iso", "?"), color=pal["accent"], fontsize=14, weight="bold",
+                  family="sans-serif", ha="center")
+        ax_r.text(0.5, 0.50, f"{int(r.get('total_queue_gw', 0)):,}", color=pal["ink"],
+                  fontsize=26, weight="bold", family="sans-serif", ha="center")
+        ax_r.text(0.5, 0.28, "GW queue", color=pal["dim"], fontsize=9, family="sans-serif", ha="center")
+        states = "/".join((r.get("key_states") or [])[:3])
+        ax_r.text(0.5, 0.13, states or r.get("status", ""), color=pal["dim"], fontsize=9,
+                  family="sans-serif", ha="center")
+
+    # highlight card
+    live = [r for r in regions if r.get("status") == "live"]
+    hl = live[0] if live else (regions[0] if regions else None)
+    if hl:
+        ax_hl = fig.add_axes([0.05, 0.16, 0.9, 0.34]); ax_hl.axis("off"); ax_hl.set_xlim(0, 1); ax_hl.set_ylim(0, 1)
+        ax_hl.add_patch(FancyBboxPatch((0.01, 0.05), 0.98, 0.9, boxstyle="round,pad=0.02,rounding_size=0.04",
+                                       linewidth=1, edgecolor=pal["uc"], facecolor=pal["card_bg"]))
+        ax_hl.text(0.04, 0.85, "HIGHLIGHT · " + hl.get("name", ""), color=pal["uc"], fontsize=11,
+                   weight="bold", family="sans-serif")
+        ax_hl.text(0.04, 0.68, hl.get("headline", "")[:60], color=pal["ink"], fontsize=22,
+                   weight="bold", family="sans-serif")
+        wrapped = _tw.fill(hl.get("description", ""), width=75)
+        ax_hl.text(0.04, 0.42, wrapped, color=pal["ink"], fontsize=11, family="sans-serif", va="top")
+
+    ax_f = fig.add_axes([0.05, 0.02, 0.9, 0.03]); ax_f.axis("off"); ax_f.set_xlim(0, 1); ax_f.set_ylim(0, 1)
+    ax_f.text(0, 0.5, f"Source: {data.get('source', 'DC Hub /api/v1/grid-intelligence')}",
+              color=pal["dim"], fontsize=9, family="sans-serif", va="center")
+    ax_f.text(1, 0.5, "DCHUB.CLOUD / GRID", color=pal["accent"], fontsize=9, weight="bold",
+              family="sans-serif", va="center", ha="right")
+    return _figure_to_image(fig, facecolor=pal["bg"])
+
+
+def _render_gdci(data: dict, size: Size) -> Image.Image:
+    """Daily GDCI brief — composite score, components, top markets, signals."""
+    import datetime as _dt, textwrap as _tw
+    W, H, _n = SIZES[size]
+    pal = PAL["d"]
+    gdci = data.get("gdci") if isinstance(data.get("gdci"), dict) else data
+    g = gdci.get("global", {}) or {}
+    score = g.get("score", 0)
+    trend = (g.get("trend", "balanced") or "").upper()
+    comps = g.get("components", {}) or {}
+    top = (gdci.get("top_markets") or [])[:5]
+    signals = (gdci.get("key_signals") or [])[:3]
+
+    fig = plt.figure(figsize=(W / 100, H / 100), dpi=100)
+    fig.patch.set_facecolor(pal["bg"])
+
+    today = _dt.date.today().isoformat()
+    ax_h = fig.add_axes([0.05, 0.91, 0.9, 0.07]); ax_h.axis("off"); ax_h.set_xlim(0, 1); ax_h.set_ylim(0, 1)
+    ax_h.text(0, 0.7, "G D C I   D A I L Y   B R I E F", color=pal["accent"], fontsize=14,
+              weight="bold", family="sans-serif")
+    ax_h.text(0, 0.2, f"Global Data Center Composite Index · {today}",
+              color=pal["dim"], fontsize=11, family="sans-serif")
+
+    # score card
+    ax_s = fig.add_axes([0.05, 0.70, 0.30, 0.18]); ax_s.axis("off"); ax_s.set_xlim(0, 1); ax_s.set_ylim(0, 1)
+    ax_s.add_patch(FancyBboxPatch((0.01, 0.05), 0.98, 0.9, boxstyle="round,pad=0.02,rounding_size=0.04",
+                                  linewidth=1.5, edgecolor=pal["accent"], facecolor=pal["card_bg"]))
+    ax_s.text(0.5, 0.62, f"{float(score):.1f}", color=pal["ink"], fontsize=52, weight="bold",
+              family="sans-serif", ha="center")
+    ax_s.text(0.5, 0.20, f"GDCI · {trend}", color=pal["accent"], fontsize=11, weight="bold",
+              family="sans-serif", ha="center")
+
+    # outlook
+    ax_o = fig.add_axes([0.37, 0.70, 0.58, 0.18]); ax_o.axis("off"); ax_o.set_xlim(0, 1); ax_o.set_ylim(0, 1)
+    ax_o.add_patch(FancyBboxPatch((0.01, 0.05), 0.98, 0.9, boxstyle="round,pad=0.02,rounding_size=0.04",
+                                  linewidth=1, edgecolor=pal["dim"], facecolor=pal["card_bg"]))
+    ax_o.text(0.04, 0.82, "OUTLOOK", color=pal["dim"], fontsize=10, weight="bold", family="sans-serif")
+    wrapped = _tw.fill(g.get("outlook", ""), width=46)
+    ax_o.text(0.04, 0.42, wrapped, color=pal["ink"], fontsize=11, family="sans-serif", va="center")
+
+    # components
+    comp_order = [("Supply Pressure", "supply_pressure"), ("Demand Intensity", "demand_intensity"),
+                  ("Capital Velocity", "capital_velocity"), ("Energy Readiness", "energy_readiness"),
+                  ("Market Liquidity", "market_liquidity")]
+    ax_c = fig.add_axes([0.05, 0.36, 0.55, 0.30]); ax_c.axis("off")
+    ax_c.set_xlim(-20, 100); ax_c.set_ylim(-0.5, len(comp_order))
+    ax_c.text(0.0, 1.0, "COMPONENTS", color=pal["dim"], fontsize=10, weight="bold",
+              family="sans-serif", transform=ax_c.transAxes)
+    for i, (label, key) in enumerate(comp_order):
+        v = float(comps.get(key, 0) or 0)
+        y = len(comp_order) - 1 - i
+        ax_c.text(-20, y, label, color=pal["ink"], fontsize=10, family="sans-serif", va="center")
+        color = pal["op"] if v >= 0 else pal["ann"]
+        ax_c.barh(y, max(v, 0), color=color, edgecolor="none", height=0.55, zorder=3)
+        if v < 0:
+            ax_c.barh(y, v, color=color, edgecolor="none", height=0.55, zorder=3)
+        ax_c.text(v + 2 if v >= 0 else v - 2, y, f"{v:+.1f}", color=pal["ink"], fontsize=10,
+                  family="sans-serif", va="center", ha="left" if v >= 0 else "right")
+
+    # top markets
+    ax_t = fig.add_axes([0.62, 0.36, 0.33, 0.30]); ax_t.axis("off")
+    ax_t.set_xlim(0, 1); ax_t.set_ylim(-0.5, max(len(top), 1) + 0.5)
+    ax_t.text(0, 1.0, "TOP MARKETS", color=pal["dim"], fontsize=10, weight="bold",
+              family="sans-serif", transform=ax_t.transAxes)
+    for i, m in enumerate(top):
+        rank = m.get("rank", i + 1)
+        market = str(m.get("market", "?"))[:24]
+        sm = m.get("score", 0)
+        y = len(top) - 1 - i
+        ax_t.text(0, y, f"{rank}.", color=pal["dim"], fontsize=10, family="sans-serif", va="center")
+        ax_t.text(0.08, y, market, color=pal["ink"], fontsize=10, family="sans-serif", va="center")
+        ax_t.text(1, y, f"{sm}", color=pal["accent"], fontsize=11, weight="bold",
+                  family="sans-serif", ha="right", va="center")
+
+    # key signals
+    ax_k = fig.add_axes([0.05, 0.08, 0.9, 0.22]); ax_k.axis("off"); ax_k.set_xlim(0, 3); ax_k.set_ylim(0, 1)
+    ax_k.text(0, 0.95, "KEY SIGNALS", color=pal["dim"], fontsize=10, weight="bold",
+              family="sans-serif", transform=ax_k.transAxes)
+    for i, sig in enumerate(signals):
+        x = i
+        ax_k.text(x + 0.05, 0.55, str(sig.get("value", "")), color=pal["accent"], fontsize=24,
+                  weight="bold", family="sans-serif")
+        ax_k.text(x + 0.05, 0.30, str(sig.get("signal", "")), color=pal["ink"], fontsize=11,
+                  family="sans-serif")
+        ax_k.text(x + 0.05, 0.15, str(sig.get("detail", ""))[:40], color=pal["dim"], fontsize=9,
+                  family="sans-serif")
+
+    ax_f = fig.add_axes([0.05, 0.02, 0.9, 0.03]); ax_f.axis("off"); ax_f.set_xlim(0, 1); ax_f.set_ylim(0, 1)
+    ax_f.text(0, 0.5, f"Source: DC Hub /api/gdci · data_source={gdci.get('data_source', 'live')}",
+              color=pal["dim"], fontsize=9, family="sans-serif", va="center")
+    ax_f.text(1, 0.5, "DCHUB.CLOUD / GDCI", color=pal["accent"], fontsize=9, weight="bold",
+              family="sans-serif", va="center", ha="right")
+    return _figure_to_image(fig, facecolor=pal["bg"])
+
+
+def render_gdci(data: dict, size: Size) -> Image.Image:
+    return _render_gdci(data, size)
+
+
+def render_grid(data: dict, size: Size) -> Image.Image:
+    return _render_grid(data, size)
+
+
 # --- CLI --------------------------------------------------------------------
 
 def _cli():

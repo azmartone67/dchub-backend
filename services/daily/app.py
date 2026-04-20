@@ -102,10 +102,22 @@ def snapshot(date: str | None = None):
 def generate(
     theme: str = Query("a", pattern="^[abcd]$"),
     size: str = Query("portrait", pattern="^(portrait|square|story)$"),
+    brief: str | None = Query(None, pattern="^(gdci|grid)$"),
     date: str | None = None,
 ):
     d = datetime.date.fromisoformat(date) if date else datetime.date.today()
-    img = R.render(theme, size, _data_for(d))
+    if brief == "gdci":
+        data = _lazy_mcp().fetch_gdci()
+        if not data:
+            raise HTTPException(503, "GDCI data unavailable")
+        img = R.render_gdci(data, size)
+    elif brief == "grid":
+        data = _lazy_mcp().fetch_grid()
+        if not data:
+            raise HTTPException(503, "Grid data unavailable")
+        img = R.render_grid(data, size)
+    else:
+        img = R.render(theme, size, _data_for(d))
     buf = io.BytesIO(); img.save(buf, format="PNG"); buf.seek(0)
     return Response(
         content=buf.getvalue(),

@@ -280,6 +280,37 @@ def fetch_snapshot() -> dict:
         return snap
 
 
+def fetch_gdci() -> dict | None:
+    """GET dchub.cloud/api/gdci — returns composite index snapshot."""
+    headers = {"User-Agent": "dchub-daily/1.0"}
+    if API_KEY:
+        headers["X-API-Key"] = API_KEY
+    try:
+        r = httpx.get("https://dchub.cloud/api/gdci", headers=headers, timeout=30.0)
+        if r.status_code == 200:
+            return r.json()
+        log.warning("fetch_gdci: %d", r.status_code)
+    except httpx.HTTPError as e:
+        log.warning("fetch_gdci: %s", e)
+    return None
+
+
+def fetch_grid() -> dict | None:
+    """GET dchub.cloud/api/v1/grid-intelligence — returns 5 ISO regions snapshot."""
+    headers = {"User-Agent": "dchub-daily/1.0"}
+    if API_KEY:
+        headers["X-API-Key"] = API_KEY
+    try:
+        r = httpx.get("https://dchub.cloud/api/v1/grid-intelligence", headers=headers, timeout=30.0)
+        if r.status_code == 200:
+            return r.json()
+        log.warning("fetch_grid: %d", r.status_code)
+    except httpx.HTTPError as e:
+        log.warning("fetch_grid: %s", e)
+    return None
+
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     snap = fetch_snapshot()
