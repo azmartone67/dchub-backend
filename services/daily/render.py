@@ -33,7 +33,7 @@ from matplotlib.patheffects import withStroke
 import numpy as np
 from PIL import Image, ImageDraw
 
-Theme = Literal["a", "b", "c"]
+Theme = Literal["a", "b", "c", "d"]
 Size = Literal["portrait", "square", "story"]
 
 # --- palettes ---------------------------------------------------------------
@@ -44,6 +44,9 @@ PAL = {
           "ink": "#F6FBFF", "dim": "#7A8FA6", "accent": "#9EF3FF"},
     "c": {"bg": "#02060A", "op": "#39FF6A", "uc": "#4CE0FF", "ann": "#FF5EDC",
           "ink": "#C9FFD6", "dim": "#77D99A", "accent": "#39FF6A"},
+    "d": {"bg": "#0A1220", "op": "#A8F5D5", "uc": "#7FD6EA", "ann": "#C4B8FF",
+          "ink": "#E8F8FF", "dim": "#7FD6EA", "accent": "#9EF3FF",
+          "card_bg": "#0F1A2C"},
 }
 
 SIZES = {
@@ -263,9 +266,9 @@ def _render_a(data: RenderData, size: Size) -> Image.Image:
 
 # --- theme B ----------------------------------------------------------------
 
-def _render_b(data: RenderData, size: Size) -> Image.Image:
+def _render_b(data: RenderData, size: Size, pal_key: str = "b") -> Image.Image:
     W, H, N = SIZES[size]
-    pal = PAL["b"]
+    pal = PAL[pal_key]
     rows = top_n(data.states, N)
 
     total_op  = sum(s["op"]  for s in data.states)
@@ -331,7 +334,7 @@ def _kpi_row_b(fig, rect: list[float], total_op: int, total_uc: int, total_ann: 
         ax.set_xlim(0, 1); ax.set_ylim(0, 1)
         ax.add_patch(FancyBboxPatch((0.01, 0.05), 0.98, 0.90,
                                     boxstyle="round,pad=0.02,rounding_size=0.03",
-                                    linewidth=1.2, edgecolor=col, facecolor="#121829"))
+                                    linewidth=1.2, edgecolor=col, facecolor=pal.get("card_bg", "#121829")))
         ax.text(0.05, 0.68, " ".join(lbl.upper()), color=col, fontsize=10,
                 family="sans-serif", weight="bold")
         ax.text(0.05, 0.22, f"{val:,}", color=pal["ink"], fontsize=24,
@@ -488,6 +491,8 @@ def _figure_to_image(fig, facecolor: str) -> Image.Image:
 # --- public entrypoint ------------------------------------------------------
 
 def render(theme: Theme, size: Size, data: RenderData) -> Image.Image:
+    if theme == "d":
+        return _render_b(data, size, pal_key="d")
     fn = {"a": _render_a, "b": _render_b, "c": _render_c}[theme]
     return fn(data, size)
 
@@ -496,7 +501,7 @@ def render(theme: Theme, size: Size, data: RenderData) -> Image.Image:
 
 def _cli():
     p = argparse.ArgumentParser()
-    p.add_argument("--theme", choices=["a", "b", "c"], default="a")
+    p.add_argument("--theme", choices=["a", "b", "c", "d"], default="d")
     p.add_argument("--size", choices=list(SIZES), default="portrait")
     p.add_argument("--data", default="data.json")
     p.add_argument("--out", default="out.png")
