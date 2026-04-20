@@ -1,11 +1,17 @@
 """Thin HTTP client for the DC Hub MCP (dchub.cloud).
 
 Uses the REST-equivalent endpoints so this runs outside the MCP runtime
-(Railway / GitHub Actions / Replit). For production you plug your
-Enterprise API key into the DCHUB_API_KEY env var.
+(Railway / GitHub Actions / Replit). For production you plug your Enterprise
+API key into the DCHUB_API_KEY env var.
 
-If the DC Hub API is unreachable or DRY_RUN=1, we fall back to the last
-cached snapshot in Neon (or the bundled data.json seed).
+Resolution ladder (tried in order):
+  1. DRY_RUN or no API key            → bundled seed, tagged "seed (no API key)"
+  2. Per-state /facilities pagination → full live, tagged "DC Hub API · live per-state"
+  3. /stats global + seed distribution → hybrid, tagged with live totals in the source line
+  4. Bundled seed                      → fallback, tagged "seed (live API failed: <reason>)"
+
+Every step logs what it tried and why it fell through, so Railway deploy
+logs make it obvious which ladder rung produced the snapshot.
 """
 from __future__ import annotations
 
@@ -24,40 +30,43 @@ API_BASE = os.environ.get("DCHUB_API_BASE", "https://dchub.cloud/api/v1")
 API_KEY = os.environ.get("DCHUB_API_KEY", "")
 DRY_RUN = os.environ.get("DRY_RUN") == "1"
 
-# map API status strings → our bucket keys
+# map API status strings → our bucket keys (case-insensitive lookup key)
 STATUS_MAP = {
-    "Operational": "op",
-    "Under Construction": "uc",
-    "Planned": "ann",
-    "Announced": "ann",
+    "operational": "op",
+    "under construction": "uc",
+    "expanding": "uc",
+    "planned": "ann",
+    "announced": "ann",
+    "planning": "ann",
+    "under development": "ann",
+    "approved": "ann",
 }
 
 US_STATES = [
-    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "DC", "FL",
-    "GA", "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME",
-    "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH",
-    "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI",
-    "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "DC",
+    "FL", "GA", "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA",
+    "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV",
+    "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA",
+    "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV",
+    "WI", "WY",
 ]
 
 STATE_NAMES = {
     "AL": "ALABAMA", "AK": "ALASKA", "AZ": "ARIZONA", "AR": "ARKANSAS",
-    "CA": "CALIFORNIA", "CO": "COLORADO", "CT": "CONNECTICUT",
-    "DE": "DELAWARE", "DC": "DC", "FL": "FLORIDA", "GA": "GEORGIA",
-    "HI": "HAWAII", "ID": "IDAHO", "IL": "ILLINOIS", "IN": "INDIANA",
-    "IA": "IOWA", "KS": "KANSAS", "KY": "KENTUCKY", "LA": "LOUISIANA",
-    "ME": "MAINE", "MD": "MARYLAND", "MA": "MASSACHUSETTS",
-    "MI": "MICHIGAN", "MN": "MINNESOTA", "MS": "MISSISSIPPI",
-    "MO": "MISSOURI", "MT": "MONTANA", "NE": "NEBRASKA", "NV": "NEVADA",
-    "NH": "NEW HAMPSHIRE", "NJ": "NEW JERSEY", "NM": "NEW MEXICO",
-    "NY": "NEW YORK", "NC": "NORTH CAROLINA", "ND": "NORTH DAKOTA",
-    "OH": "OHIO", "OK": "OKLAHOMA", "OR": "OREGON", "PA": "PENNSYLVANIA",
-    "RI": "RHODE ISLAND", "SC": "SOUTH CAROLINA", "SD": "SOUTH DAKOTA",
-    "TN": "TENNESSEE", "TX": "TEXAS", "UT": "UTAH", "VT": "VERMONT",
-    "VA": "VIRGINIA", "WA": "WASHINGTON", "WV": "WEST VIRGINIA",
-    "WI": "WISCONSIN", "WY": "WYOMING",
+    "CA": "CALIFORNIA", "CO": "COLORADO", "CT": "CONNECTICUT", "DE": "DELAWARE",
+    "DC": "DC", "FL": "FLORIDA", "GA": "GEORGIA", "HI": "HAWAII", "ID": "IDAHO",
+    "IL": "ILLINOIS", "IN": "INDIANA", "IA": "IOWA", "KS": "KANSAS",
+    "KY": "KENTUCKY", "LA": "LOUISIANA", "ME": "MAINE", "MD": "MARYLAND",
+    "MA": "MASSACHUSETTS", "MI": "MICHIGAN", "MN": "MINNESOTA",
+    "MS": "MISSISSIPPI", "MO": "MISSOURI", "MT": "MONTANA", "NE": "NEBRASKA",
+    "NV": "NEVADA", "NH": "NEW HAMPSHIRE", "NJ": "NEW JERSEY",
+    "NM": "NEW MEXICO", "NY": "NEW YORK", "NC": "NORTH CAROLINA",
+    "ND": "NORTH DAKOTA", "OH": "OHIO", "OK": "OKLAHOMA", "OR": "OREGON",
+    "PA": "PENNSYLVANIA", "RI": "RHODE ISLAND", "SC": "SOUTH CAROLINA",
+    "SD": "SOUTH DAKOTA", "TN": "TENNESSEE", "TX": "TEXAS", "UT": "UTAH",
+    "VT": "VERMONT", "VA": "VIRGINIA", "WA": "WASHINGTON",
+    "WV": "WEST VIRGINIA", "WI": "WISCONSIN", "WY": "WYOMING",
 }
-
 
 @dataclass
 class StateRow:
@@ -74,26 +83,38 @@ def _client() -> httpx.Client:
     headers = {"User-Agent": "dchub-daily/1.0"}
     if API_KEY:
         headers["X-API-Key"] = API_KEY
-    return httpx.Client(base_url=API_BASE, timeout=30.0, headers=headers,
-                        follow_redirects=True)
+    return httpx.Client(
+        base_url=API_BASE,
+        timeout=30.0,
+        headers=headers,
+        follow_redirects=True,
+    )
 
 
 def fetch_stats(client: httpx.Client) -> dict | None:
-    """Try the /stats endpoint first — may return per-state rollups in one call."""
+    """GET /stats — returns global aggregates (by_status, by_source, totals)."""
     try:
         r = client.get("/stats")
         if r.status_code == 200:
             return r.json()
+        log.warning("/stats returned %d", r.status_code)
     except httpx.HTTPError as e:
         log.warning("/stats failed: %s", e)
     return None
 
 
-def search_facilities(client: httpx.Client, state: str, offset: int = 0,
-                      limit: int = 100) -> dict:
+def _bucket_status(status: str | None, row: StateRow) -> None:
+    if not status:
+        return
+    key = STATUS_MAP.get(status.strip().lower())
+    if key:
+        setattr(row, key, getattr(row, key) + 1)
+
+
+def search_facilities(
+    client: httpx.Client, state: str, offset: int = 0, limit: int = 100
+) -> dict:
     """One page of facilities for a state."""
-    # Try the documented /facilities endpoint; if DC Hub uses /facilities/search
-    # instead, it'll 404 once and we'll retry with the alt path.
     params = {"country": "US", "state": state, "limit": limit, "offset": offset}
     for path in ("/facilities", "/facilities/search"):
         r = client.get(path, params=params)
@@ -105,7 +126,14 @@ def search_facilities(client: httpx.Client, state: str, offset: int = 0,
 
 
 def fetch_state_counts(state: str, client: httpx.Client | None = None) -> StateRow:
-    """Paginate through all facilities in `state` and bucket by status."""
+    """Paginate through all facilities in `state` and bucket by status.
+
+    Defensive: we only count facilities whose returned `state` actually
+    matches the requested one. The DC Hub API has been observed to ignore
+    the `state` filter for unauthenticated / insufficient-tier callers and
+    return a global preview instead; without this check those preview rows
+    would be counted against every state.
+    """
     row = StateRow(name=STATE_NAMES.get(state, state))
     own_client = client is None
     client = client or _client()
@@ -115,9 +143,10 @@ def fetch_state_counts(state: str, client: httpx.Client | None = None) -> StateR
             payload = search_facilities(client, state, offset=offset, limit=100)
             data = payload.get("data", [])
             for f in data:
-                key = STATUS_MAP.get(f.get("status"), None)
-                if key:
-                    setattr(row, key, getattr(row, key) + 1)
+                if (f.get("state") or "").upper() != state:
+                    # filter was ignored — skip cross-state rows
+                    continue
+                _bucket_status(f.get("status"), row)
             if len(data) < 100:
                 break
             offset += 100
@@ -128,100 +157,143 @@ def fetch_state_counts(state: str, client: httpx.Client | None = None) -> StateR
     return row
 
 
-def _stats_to_rows(stats: dict) -> list[dict] | None:
-    """Best-effort parse of /stats into our per-state shape.
+def _extract_global_status_counts(stats: dict) -> dict | None:
+    """Pull Operational / Under Construction / Announced global totals from /stats.
 
-    DC Hub's /stats response format varies; we look for a by_state / states /
-    per_state block with op/uc/ann (or operational/under_construction/announced).
-    If we can't find one, return None so the caller falls back to pagination.
+    The real /stats response nests the counts under `data.by_status` with
+    PascalCase keys ("Operational", "Under Construction", "Planned", ...)
+    plus a few variants ("announced" lowercase, "Approved", "Expanding",
+    "Under Development", "Planning"). We fold them all into three buckets.
     """
-    candidates = (
-        stats.get("by_state"), stats.get("states"), stats.get("per_state"),
-        stats.get("us", {}).get("by_state") if isinstance(stats.get("us"), dict) else None,
-    )
-    raw = next((c for c in candidates if c), None)
-    if not raw:
+    if not isinstance(stats, dict):
         return None
+    data = stats.get("data") if isinstance(stats.get("data"), dict) else {}
+    by_status = data.get("by_status") or stats.get("by_status")
+    if not isinstance(by_status, dict):
+        return None
+    lc = {str(k).strip().lower(): v for k, v in by_status.items()}
 
-    def _pick(obj: dict, *keys: str) -> int:
-        for k in keys:
-            if k in obj and obj[k] is not None:
-                return int(obj[k])
-        return 0
+    def _n(*keys: str) -> int:
+        return sum(int(lc.get(k, 0) or 0) for k in keys)
 
-    rows = []
-    items = raw.items() if isinstance(raw, dict) else [(r.get("state", r.get("code", "")), r) for r in raw]
-    for code, vals in items:
-        if not isinstance(vals, dict):
-            continue
-        name = STATE_NAMES.get((code or "").upper()) or (vals.get("name") or code or "").upper()
-        rows.append({
-            "name": name,
-            "op":  _pick(vals, "op",  "operational", "Operational"),
-            "uc":  _pick(vals, "uc",  "under_construction", "Under Construction"),
-            "ann": _pick(vals, "ann", "announced", "planned", "Announced", "Planned"),
-        })
-    return rows or None
+    op = _n("operational")
+    uc = _n("under construction", "expanding")
+    ann = _n(
+        "announced", "planned", "planning",
+        "under development", "approved",
+    )
+    if op + uc + ann == 0:
+        return None
+    return {"op": op, "uc": uc, "ann": ann}
 
 
 def _seed_snapshot() -> dict:
     return json.loads((Path(__file__).parent / "data.json").read_text())
 
 
-def fetch_snapshot() -> dict:
-    """Pull every state. Returns the full snapshot dict (renderable by render.py).
+def _scale_seed_to_global(global_counts: dict) -> list[dict]:
+    """Scale the bundled seed per-state distribution to match live globals.
 
-    Resilience strategy:
-      1. If DRY_RUN or no API key — use bundled seed.
-      2. Try /stats for one-shot rollup.
-      3. Fall back to per-state /facilities pagination.
-      4. If all live paths fail for any reason — return bundled seed so the
-         image pipeline never breaks. The seed is labelled so downstream
-         consumers (the share page og:description, etc.) can tell the
-         difference.
+    Preserves the relative per-state shape from Aterio while pinning the
+    column sums to whatever `/stats` currently reports.
     """
+    seed_rows = _seed_snapshot().get("states", [])
+    if not seed_rows:
+        return []
+    s_op = sum(r.get("op", 0) for r in seed_rows) or 1
+    s_uc = sum(r.get("uc", 0) for r in seed_rows) or 1
+    s_ann = sum(r.get("ann", 0) for r in seed_rows) or 1
+    g_op, g_uc, g_ann = global_counts["op"], global_counts["uc"], global_counts["ann"]
+    scaled = [
+        {
+            "name": r["name"],
+            "op": max(0, round(r.get("op", 0) * g_op / s_op)),
+            "uc": max(0, round(r.get("uc", 0) * g_uc / s_uc)),
+            "ann": max(0, round(r.get("ann", 0) * g_ann / s_ann)),
+        }
+        for r in seed_rows
+    ]
+    scaled.sort(key=lambda r: r["op"] + r["uc"] + r["ann"], reverse=True)
+    return scaled
+
+
+def fetch_snapshot() -> dict:
+    """Pull every state. Returns the full snapshot dict (renderable by render.py)."""
+    import datetime
+
     if DRY_RUN or not API_KEY:
-        log.warning("DRY_RUN or no DCHUB_API_KEY — using bundled seed data.")
+        log.warning("DRY_RUN or no DCHUB_API_KEY — using bundled seed.")
         snap = _seed_snapshot()
         snap["source"] = snap.get("source", "Aterio") + " · seed (no API key)"
         return snap
 
-    import datetime
     try:
-        rows: list[dict] | None = None
         with _client() as c:
             stats = fetch_stats(c)
-            if stats:
-                rows = _stats_to_rows(stats)
-                if rows:
-                    log.info("got %d rows from /stats", len(rows))
+            global_counts = _extract_global_status_counts(stats) if stats else None
+            if global_counts:
+                log.info(
+                    "live /stats globals: op=%d uc=%d ann=%d",
+                    global_counts["op"], global_counts["uc"], global_counts["ann"],
+                )
 
-            if not rows:
-                log.info("falling back to per-state /facilities pagination")
-                rows = []
-                for st in US_STATES:
-                    try:
-                        rows.append(fetch_state_counts(st, c).as_dict())
-                    except (httpx.HTTPStatusError, RuntimeError) as e:
-                        log.error("state=%s failed: %s", st, e)
-                        rows.append(StateRow(name=STATE_NAMES[st]).as_dict())
+            # Strategy 1 — per-state /facilities pagination (best path if Enterprise auth works)
+            log.info("strategy 1: per-state /facilities pagination")
+            rows: list[dict] = []
+            for st in US_STATES:
+                try:
+                    rows.append(fetch_state_counts(st, c).as_dict())
+                except (httpx.HTTPStatusError, RuntimeError) as e:
+                    log.error("state=%s failed: %s", st, e)
+                    rows.append(StateRow(name=STATE_NAMES[st]).as_dict())
+            nonzero = sum(1 for r in rows if r["op"] + r["uc"] + r["ann"] > 0)
+            total = sum(r["op"] + r["uc"] + r["ann"] for r in rows)
+            log.info("strategy 1 result: %d/%d states nonzero, total=%d",
+                     nonzero, len(rows), total)
 
-        # if every state came back zero, the API shape doesn't match — seed instead
-        if rows and all(r["op"] + r["uc"] + r["ann"] == 0 for r in rows):
-            log.warning("all per-state counts were zero; falling back to seed")
-            raise RuntimeError("live API returned zero counts for all states")
+            if nonzero >= 20 and total >= 500:
+                rows.sort(key=lambda r: r["op"] + r["uc"] + r["ann"], reverse=True)
+                return {
+                    "as_of": datetime.date.today().isoformat(),
+                    "source": "DC Hub API · live per-state",
+                    "generated": datetime.datetime.utcnow().isoformat() + "Z",
+                    "states": rows,
+                    "unit": "facilities",
+                }
 
-        rows.sort(key=lambda r: r["op"] + r["uc"] + r["ann"], reverse=True)
-        return {
-            "as_of": datetime.date.today().isoformat(),
-            "source": "Aterio (via DC Hub MCP, Enterprise)",
-            "generated": datetime.datetime.utcnow().isoformat() + "Z",
-            "states": rows,
-        }
+            # Strategy 2 — hybrid: live globals from /stats + seed distribution
+            if global_counts:
+                log.warning(
+                    "strategy 1 unusable (nonzero=%d, total=%d); "
+                    "using /stats globals + seed per-state distribution",
+                    nonzero, total,
+                )
+                scaled = _scale_seed_to_global(global_counts)
+                if scaled:
+                    return {
+                        "as_of": datetime.date.today().isoformat(),
+                        "source": (
+                            f"DC Hub /stats (live: {global_counts['op']} op · "
+                            f"{global_counts['uc']} uc · {global_counts['ann']} ann) "
+                            "+ Aterio per-state distribution"
+                        ),
+                        "generated": datetime.datetime.utcnow().isoformat() + "Z",
+                        "states": scaled,
+                        "unit": "facilities",
+                    }
+
+            raise RuntimeError(
+                f"live strategies failed: per-state nonzero={nonzero} total={total}, "
+                f"stats_globals={bool(global_counts)}"
+            )
+
     except Exception as e:  # noqa: BLE001
         log.error("live API fetch failed, falling back to seed: %s", e)
         snap = _seed_snapshot()
-        snap["source"] = snap.get("source", "Aterio") + f" · seed (live API failed)"
+        snap["source"] = (
+            snap.get("source", "Aterio")
+            + f" · seed (live API failed: {str(e)[:80]})"
+        )
         snap["generated"] = datetime.datetime.utcnow().isoformat() + "Z"
         return snap
 
