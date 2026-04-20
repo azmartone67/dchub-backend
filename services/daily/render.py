@@ -44,9 +44,9 @@ PAL = {
           "ink": "#F6FBFF", "dim": "#7A8FA6", "accent": "#9EF3FF"},
     "c": {"bg": "#02060A", "op": "#39FF6A", "uc": "#4CE0FF", "ann": "#FF5EDC",
           "ink": "#C9FFD6", "dim": "#77D99A", "accent": "#39FF6A"},
-    "d": {"bg": "#0A1220", "op": "#A8F5D5", "uc": "#7FD6EA", "ann": "#C4B8FF",
-          "ink": "#E8F8FF", "dim": "#7FD6EA", "accent": "#9EF3FF",
-          "card_bg": "#0F1A2C"},
+    "d": {"bg": "#F4F1FA", "op": "#5B6EEE", "uc": "#8B5FE8", "ann": "#C4A0FF",
+          "ink": "#1E1B3A", "dim": "#6B6E88", "accent": "#5B4FE0",
+          "card_bg": "#FFFFFF"},
 }
 
 SIZES = {
