@@ -389,6 +389,117 @@ def register_smoke_routes(app):
 # CLI — run standalone
 # ═══════════════════════════════════════════════════════════
 
+
+# === SMOKE_PRESS_RELEASE_PATCH_V1 ===
+# Added 2026-04-19: frontend checks + admin-gated Flask route.
+# Remove this block (between the markers) to revert.
+
+FRONTEND_URL = os.environ.get('DCHUB_FRONTEND', 'https://dchub.cloud')
+
+FRONTEND_CHECKS = [
+    # (name, path, must_contain_any, must_not_contain_any, timeout_s)
+    ("press_listing",     "/press",         ["Press", "Media"],  ["Page Not Found"], 15),
+    ("press_release_url", "/press-release", [],                  ["not found", "Not Found"], 15),
+    ("news_listing",      "/news",          ["DC Hub"],          ["Page Not Found"], 15),
+    ("homepage",          "/",              ["DC Hub"],          ["Page Not Found"], 10),
+]
+
+def _frontend_check(path, must_contain, must_not_contain, timeout):
+    from urllib.request import Request, urlopen
+    from urllib.error import URLError, HTTPError
+    url = FRONTEND_URL.rstrip('/') + path
+    start = time.time()
+    try:
+        req = Request(url, headers={'User-Agent': 'DCHub-SmokeTest/1.0'})
+        with urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode('utf-8', errors='replace')
+            latency_ms = round((time.time() - start) * 1000)
+            low = body.lower()
+            issues = []
+            for needle in must_not_contain:
+                if needle.lower() in low:
+                    issues.append(f"contains forbidden: {needle!r}")
+            if must_contain and not any(n.lower() in low for n in must_contain):
+                issues.append(f"missing any of: {must_contain}")
+            return resp.status, latency_ms, issues
+    except HTTPError as e:
+        return e.code, round((time.time() - start) * 1000), [f"HTTP {e.code}"]
+    except URLError as e:
+        return 0, round((time.time() - start) * 1000), [str(e.reason)[:100]]
+    except Exception as e:
+        return 0, round((time.time() - start) * 1000), [str(e)[:100]]
+
+_original_run_smoke_test = run_smoke_test
+
+def run_smoke_test():
+    report = _original_run_smoke_test()
+    report.setdefault('summary', {})
+    report.setdefault('checks', [])
+    for name, path, must_contain, must_not, timeout in FRONTEND_CHECKS:
+        sc, lat, issues = _frontend_check(path, must_contain, must_not, timeout)
+        verdict = 'pass' if sc == 200 and not issues else 'fail'
+        report['checks'].append({
+            'name': f'frontend_{name}',
+            'path': path,
+            'status_code': sc,
+            'latency_ms': lat,
+            'verdict': verdict,
+            'issue': '; '.join(issues) if issues else '',
+        })
+        if verdict == 'fail':
+            report['summary']['failed'] = report['summary'].get('failed', 0) + 1
+        else:
+            report['summary']['passed'] = report['summary'].get('passed', 0) + 1
+        report['summary']['total_checks'] = report['summary'].get('total_checks', 0) + 1
+
+    # Recompute overall now that new checks landed
+    failed = report['summary'].get('failed', 0)
+    warnings = report['summary'].get('warnings', 0)
+    if failed >= 2:
+        report['overall'] = 'critical'
+    elif failed == 1:
+        report['overall'] = 'degraded'
+    elif warnings > 0:
+        report['overall'] = 'slow'
+    else:
+        report['overall'] = 'healthy'
+    return report
+
+
+def register_smoke_routes(app):
+    """Mount admin-gated /api/admin/smoke-test on the Flask app.
+    Gating: X-Admin-Key header (or Bearer) must equal DCHUB_ADMIN_KEY env var.
+    Returns 200 if overall is healthy/slow, 503 if degraded/critical,
+    so external monitors can alert on HTTP status alone.
+    """
+    try:
+        from flask import jsonify, request
+    except ImportError:
+        logger.warning("flask not installed — register_smoke_routes skipped")
+        return
+
+    expected = os.environ.get('DCHUB_ADMIN_KEY') or os.environ.get('DAILY_ADMIN_KEY', '')
+
+    @app.route('/api/admin/smoke-test', methods=['GET', 'POST'])
+    def _smoke_test_endpoint():
+        provided = (
+            request.headers.get('X-Admin-Key', '')
+            or request.headers.get('Authorization', '').replace('Bearer ', '', 1)
+        )
+        if not expected or provided != expected:
+            return jsonify({"error": "unauthorized — X-Admin-Key required"}), 401
+        try:
+            report = run_smoke_test()
+        except Exception as e:
+            logger.exception("smoke endpoint failed")
+            return jsonify({"error": "smoke crashed", "detail": str(e)[:200]}), 500
+        http_code = 200 if report.get('overall') in ('healthy', 'slow') else 503
+        return jsonify(report), http_code
+
+    logger.info("🧯 Smoke test endpoint registered: /api/admin/smoke-test (X-Admin-Key gated)")
+
+# === END SMOKE_PRESS_RELEASE_PATCH_V1 ===
+
 if __name__ == '__main__':
     import sys
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')

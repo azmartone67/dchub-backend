@@ -1008,7 +1008,21 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # CREATE FLASK APP IMMEDIATELY - Before any heavy imports
 # =============================================================================
+# --- smoke test route (smoke_patch_v1) ---
+try:
+    from smoke_test import register_smoke_routes as _register_smoke_routes_v1  # smoke_patch_v1
+except Exception as _e:
+    _register_smoke_routes_v1 = None
+    print('smoke_test import failed:', _e)
+
 app = Flask(__name__, static_folder='static', static_url_path='/static')
+# smoke_patch_v1: register admin-gated smoke endpoint
+if _register_smoke_routes_v1:
+    try:
+        _register_smoke_routes_v1(app)
+    except Exception as _e:
+        print('smoke route registration failed:', _e)
+
 
 # ChatGPT MCP Connector — CORS + Deep Research compatibility
 try:
