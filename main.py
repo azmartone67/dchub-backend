@@ -325,6 +325,7 @@ import sys
 import time
 import threading
 import logging
+import hmac
 
 # =============================================================================
 # NEON CONNECTION POOL - Resilient PostgreSQL with auto-reconnect
@@ -4099,9 +4100,14 @@ def enforce_tier_rate_limits():
     if path in _RATE_LIMIT_BYPASS_PATHS:
         return None
 
-    # Bypass requests from dchub.cloud frontend
-    origin = request.headers.get('Origin', '') or request.headers.get('Referer', '')
-    if 'dchub.cloud' in origin:
+    # Trusted-caller bypass (replaces the old Origin/Referer string-match, which
+    # was trivially spoofable — any caller could send `Referer: https://dchub.cloud/`
+    # to completely skip rate limiting). Now requires a cryptographically-verifiable
+    # header set only by our own Cloudflare Worker; all browser traffic (including
+    # logged-in dashboard requests) is rate-limited normally via their real tier.
+    internal_token = request.headers.get('X-DC-Internal-Token', '')
+    internal_secret = os.environ.get('INTERNAL_WORKER_SECRET', '')
+    if internal_token and internal_secret and hmac.compare_digest(internal_token, internal_secret):
         return None
 
     # Skip OPTIONS preflight
