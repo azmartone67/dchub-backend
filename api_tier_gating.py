@@ -553,7 +553,7 @@ def require_plan(min_plan='pro'):
                                     'error': 'invalid_api_key',
                                     'message': 'Invalid or inactive API key',
                                     'get_key_url': 'https://dchub.cloud/dashboard.html#api-keys',
-                                }), 401, {'Cache-Control': 'no-store, max-age=0'}
+                                }), 401, {'Cache-Control': 'private, no-store, max-age=0', 'Surrogate-Control': 'no-store', 'Pragma': 'no-cache'}
 
                         user_plan = info.get('plan', 'free')
                         auth_method = 'api_key'
@@ -570,7 +570,7 @@ def require_plan(min_plan='pro'):
                         'signup_url': SIGNUP_URL,
                         'pricing_url': PRICING_URL,
                         'free_alternative': _get_free_alternative(request.path),
-                    }), 403, {'Cache-Control': 'no-store, max-age=0'}
+                    }), 403, {'Cache-Control': 'private, no-store, max-age=0', 'Surrogate-Control': 'no-store', 'Pragma': 'no-cache'}
 
                 # ── STEP 5: Check tier level ───────────────────────────
                 if not user_has_access(user_plan, min_plan):
@@ -582,7 +582,7 @@ def require_plan(min_plan='pro'):
                         'required_plan': min_plan,
                         'upgrade_url': 'https://dchub.cloud/pricing',
                         'free_alternative': _get_free_alternative(request.path),
-                    }), 403, {'Cache-Control': 'no-store, max-age=0'}
+                    }), 403, {'Cache-Control': 'private, no-store, max-age=0', 'Surrogate-Control': 'no-store', 'Pragma': 'no-cache'}
 
                 # ── STEP 6: Authorized — add headers and proceed ───────
                 plan_limit = TIER_RATE_LIMITS.get(user_plan, 100)
@@ -946,7 +946,7 @@ def build_record_cap_error(user_key, tier, records_used, cap):
             'url': 'https://dchub.cloud/pricing',
             'checkout': 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c' if tier in ('free', 'founding', 'anon') else '',
         }
-    }), 429, {'Cache-Control': 'no-store, max-age=0'}
+    }), 429, {'Cache-Control': 'private, no-store, max-age=0', 'Surrogate-Control': 'no-store', 'Pragma': 'no-cache'}
 
 
 def build_page_cap_error(requested_page, tier, cap):
@@ -961,7 +961,7 @@ def build_page_cap_error(requested_page, tier, cap):
         'current_plan': tier,
         'tip': 'Use country, state, operator, or min_mw filters to get targeted results within your page limit.',
         'upgrade_url': 'https://dchub.cloud/pricing',
-    }), 403, {'Cache-Control': 'no-store, max-age=0'}
+    }), 403, {'Cache-Control': 'private, no-store, max-age=0', 'Surrogate-Control': 'no-store', 'Pragma': 'no-cache'}
 
 def add_tier_headers(response):
     """Add rate limit and tier headers to response."""
@@ -1012,7 +1012,7 @@ def register_stripe_v2_routes(app):
             link = PAYMENT_LINKS.get(plan)
             if link:
                 return jsonify({'redirect': True, 'url': link})
-            return jsonify({'error': f'Plan {plan} not configured in Stripe'}), 400, {'Cache-Control': 'no-store, max-age=0'}
+            return jsonify({'error': f'Plan {plan} not configured in Stripe'}), 400, {'Cache-Control': 'private, no-store, max-age=0', 'Surrogate-Control': 'no-store', 'Pragma': 'no-cache'}
 
         # Get user email from JWT or request body
         email = data.get('email', '')
@@ -1058,7 +1058,7 @@ def register_stripe_v2_routes(app):
             try:
                 event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
             except Exception as e:
-                return jsonify({'error': str(e)}), 400, {'Cache-Control': 'no-store, max-age=0'}
+                return jsonify({'error': str(e)}), 400, {'Cache-Control': 'private, no-store, max-age=0', 'Surrogate-Control': 'no-store', 'Pragma': 'no-cache'}
         else:
             import json
             event = json.loads(payload)
@@ -1232,14 +1232,14 @@ def register_api_key_routes(app):
         """Extract user payload from JWT Bearer token. Returns (payload, error_response)."""
         auth_header = request.headers.get('Authorization')
         if not auth_header or not auth_header.startswith('Bearer '):
-            return None, (jsonify({'error': 'Auth required'}), 401, {'Cache-Control': 'no-store, max-age=0'})
+            return None, (jsonify({'error': 'Auth required'}), 401, {'Cache-Control': 'private, no-store, max-age=0', 'Surrogate-Control': 'no-store', 'Pragma': 'no-cache'})
         decode_jwt = _get_decode_jwt()
         if not decode_jwt:
             return None, (jsonify({'error': 'Auth system not available'}), 503)
         token = auth_header.split(' ')[1]
         payload = decode_jwt(token)
         if not payload:
-            return None, (jsonify({'error': 'Invalid or expired token'}), 401, {'Cache-Control': 'no-store, max-age=0'})
+            return None, (jsonify({'error': 'Invalid or expired token'}), 401, {'Cache-Control': 'private, no-store, max-age=0', 'Surrogate-Control': 'no-store', 'Pragma': 'no-cache'})
         return payload, None
 
     @app.route('/api/v2/keys', methods=['GET'])
@@ -1290,7 +1290,7 @@ def register_api_key_routes(app):
             return jsonify({
                 'error': f'Key limit reached ({limits.get(plan, 3)} keys on {plan} plan)',
                 'upgrade_url': 'https://dchub.cloud/pricing',
-            }), 403, {'Cache-Control': 'no-store, max-age=0'}
+            }), 403, {'Cache-Control': 'private, no-store, max-age=0', 'Surrogate-Control': 'no-store', 'Pragma': 'no-cache'}
 
         raw_key = generate_api_key(user_id, email, plan, name)
 
@@ -1319,7 +1319,7 @@ def register_api_key_routes(app):
 
         if affected:
             return jsonify({'success': True, 'message': 'API key revoked'})
-        return jsonify({'error': 'Key not found'}), 404, {'Cache-Control': 'no-store, max-age=0'}
+        return jsonify({'error': 'Key not found'}), 404, {'Cache-Control': 'private, no-store, max-age=0', 'Surrogate-Control': 'no-store', 'Pragma': 'no-cache'}
 
     @app.route('/api/v2/usage', methods=['GET'])
     def get_api_usage():
