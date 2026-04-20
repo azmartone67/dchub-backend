@@ -5,13 +5,15 @@ Uses the REST-equivalent endpoints so this runs outside the MCP runtime
 API key into the DCHUB_API_KEY env var.
 
 Resolution ladder (tried in order):
-  1. DRY_RUN or no API key            → bundled seed, tagged "seed (no API key)"
-  2. Per-state /facilities pagination → full live, tagged "DC Hub API · live per-state"
-  3. /stats global + seed distribution → hybrid, tagged with live totals in the source line
-  4. Bundled seed                      → fallback, tagged "seed (live API failed: <reason>)"
+  1. DRY_RUN or no API key            → bundled seed, "seed (no API key)"
+  2. /stats + seed distribution       → hybrid, live globals + Aterio shape
+  3. Bundled seed                      → fallback, "seed (live API failed: <reason>)"
 
-Every step logs what it tried and why it fell through, so Railway deploy
-logs make it obvious which ladder rung produced the snapshot.
+We deliberately make AT MOST ONE external call per refresh to stay under
+DC Hub's Free-tier rate limits (~50 calls/day). The previous per-state
+pagination burned the entire daily quota on a single refresh. If/when
+Enterprise auth is wired up with a more generous quota, the per-state
+helpers (still in this file) can be re-enabled.
 """
 from __future__ import annotations
 
@@ -30,7 +32,6 @@ API_BASE = os.environ.get("DCHUB_API_BASE", "https://dchub.cloud/api/v1")
 API_KEY = os.environ.get("DCHUB_API_KEY", "")
 DRY_RUN = os.environ.get("DRY_RUN") == "1"
 
-# map API status strings → our bucket keys (case-insensitive lookup key)
 STATUS_MAP = {
     "operational": "op",
     "under construction": "uc",
@@ -92,14 +93,34 @@ def _client() -> httpx.Client:
 
 
 def fetch_stats(client: httpx.Client) -> dict | None:
-    """GET /stats — returns global aggregates (by_status, by_source, totals)."""
-    try:
-        r = client.get("/stats")
-        if r.status_code == 200:
-            return r.json()
-        log.warning("/stats returned %d", r.status_code)
-    except httpx.HTTPError as e:
-        log.warning("/stats failed: %s", e)
+    """GET /stats with retries on rate-limit and transient server errors.
+
+    Uses Retry-After when present, else exponential backoff capped at 10s per attempt.
+    Up to 3 attempts total. Returns None only if every attempt fails.
+    """
+    for attempt in range(3):
+        try:
+            r = client.get("/stats")
+            if r.status_code == 200:
+                return r.json()
+            if r.status_code == 429 or r.status_code >= 500:
+                ra = r.headers.get("retry-after")
+                try:
+                    wait = float(ra) if ra else 2.0 * (attempt + 1)
+                except (ValueError, TypeError):
+                    wait = 2.0 * (attempt + 1)
+                wait = min(wait, 10.0)
+                log.warning(
+                    "/stats %d (attempt %d/3), retrying after %.1fs",
+                    r.status_code, attempt + 1, wait,
+                )
+                time.sleep(wait)
+                continue
+            log.warning("/stats %d (giving up)", r.status_code)
+            return None
+        except httpx.HTTPError as e:
+            log.warning("/stats error (attempt %d/3): %s", attempt + 1, e)
+            time.sleep(1.5 * (attempt + 1))
     return None
 
 
@@ -114,7 +135,8 @@ def _bucket_status(status: str | None, row: StateRow) -> None:
 def search_facilities(
     client: httpx.Client, state: str, offset: int = 0, limit: int = 100
 ) -> dict:
-    """One page of facilities for a state."""
+    """One page of facilities for a state. (Kept for future use; NOT called in the
+    default refresh path because DC Hub Free tier caps at ~50 calls/day.)"""
     params = {"country": "US", "state": state, "limit": limit, "offset": offset}
     for path in ("/facilities", "/facilities/search"):
         r = client.get(path, params=params)
@@ -126,14 +148,8 @@ def search_facilities(
 
 
 def fetch_state_counts(state: str, client: httpx.Client | None = None) -> StateRow:
-    """Paginate through all facilities in `state` and bucket by status.
-
-    Defensive: we only count facilities whose returned `state` actually
-    matches the requested one. The DC Hub API has been observed to ignore
-    the `state` filter for unauthenticated / insufficient-tier callers and
-    return a global preview instead; without this check those preview rows
-    would be counted against every state.
-    """
+    """Paginated per-state bucket counts. Unused in default refresh (rate-limit);
+    callers should only invoke this with an Enterprise-tier key + sufficient quota."""
     row = StateRow(name=STATE_NAMES.get(state, state))
     own_client = client is None
     client = client or _client()
@@ -144,13 +160,12 @@ def fetch_state_counts(state: str, client: httpx.Client | None = None) -> StateR
             data = payload.get("data", [])
             for f in data:
                 if (f.get("state") or "").upper() != state:
-                    # filter was ignored — skip cross-state rows
                     continue
                 _bucket_status(f.get("status"), row)
             if len(data) < 100:
                 break
             offset += 100
-            time.sleep(0.1)  # be polite
+            time.sleep(0.1)
     finally:
         if own_client:
             client.close()
@@ -160,10 +175,8 @@ def fetch_state_counts(state: str, client: httpx.Client | None = None) -> StateR
 def _extract_global_status_counts(stats: dict) -> dict | None:
     """Pull Operational / Under Construction / Announced global totals from /stats.
 
-    The real /stats response nests the counts under `data.by_status` with
-    PascalCase keys ("Operational", "Under Construction", "Planned", ...)
-    plus a few variants ("announced" lowercase, "Approved", "Expanding",
-    "Under Development", "Planning"). We fold them all into three buckets.
+    Real /stats response nests counts under `data.by_status` with PascalCase
+    keys plus a few variants. We fold them all into three buckets (case-insensitive).
     """
     if not isinstance(stats, dict):
         return None
@@ -192,11 +205,7 @@ def _seed_snapshot() -> dict:
 
 
 def _scale_seed_to_global(global_counts: dict) -> list[dict]:
-    """Scale the bundled seed per-state distribution to match live globals.
-
-    Preserves the relative per-state shape from Aterio while pinning the
-    column sums to whatever `/stats` currently reports.
-    """
+    """Scale the bundled seed per-state distribution to match live globals."""
     seed_rows = _seed_snapshot().get("states", [])
     if not seed_rows:
         return []
@@ -218,7 +227,10 @@ def _scale_seed_to_global(global_counts: dict) -> list[dict]:
 
 
 def fetch_snapshot() -> dict:
-    """Pull every state. Returns the full snapshot dict (renderable by render.py)."""
+    """Pull snapshot. Returns the full dict (renderable by render.py).
+
+    Rate-limit-conscious: at most ONE external call per refresh.
+    """
     import datetime
 
     if DRY_RUN or not API_KEY:
@@ -229,44 +241,14 @@ def fetch_snapshot() -> dict:
 
     try:
         with _client() as c:
+            # Single external call: /stats, with retry on 429/5xx.
             stats = fetch_stats(c)
             global_counts = _extract_global_status_counts(stats) if stats else None
+
             if global_counts:
                 log.info(
                     "live /stats globals: op=%d uc=%d ann=%d",
                     global_counts["op"], global_counts["uc"], global_counts["ann"],
-                )
-
-            # Strategy 1 — per-state /facilities pagination (best path if Enterprise auth works)
-            log.info("strategy 1: per-state /facilities pagination")
-            rows: list[dict] = []
-            for st in US_STATES:
-                try:
-                    rows.append(fetch_state_counts(st, c).as_dict())
-                except (httpx.HTTPStatusError, RuntimeError) as e:
-                    log.error("state=%s failed: %s", st, e)
-                    rows.append(StateRow(name=STATE_NAMES[st]).as_dict())
-            nonzero = sum(1 for r in rows if r["op"] + r["uc"] + r["ann"] > 0)
-            total = sum(r["op"] + r["uc"] + r["ann"] for r in rows)
-            log.info("strategy 1 result: %d/%d states nonzero, total=%d",
-                     nonzero, len(rows), total)
-
-            if nonzero >= 20 and total >= 500:
-                rows.sort(key=lambda r: r["op"] + r["uc"] + r["ann"], reverse=True)
-                return {
-                    "as_of": datetime.date.today().isoformat(),
-                    "source": "DC Hub API · live per-state",
-                    "generated": datetime.datetime.utcnow().isoformat() + "Z",
-                    "states": rows,
-                    "unit": "facilities",
-                }
-
-            # Strategy 2 — hybrid: live globals from /stats + seed distribution
-            if global_counts:
-                log.warning(
-                    "strategy 1 unusable (nonzero=%d, total=%d); "
-                    "using /stats globals + seed per-state distribution",
-                    nonzero, total,
                 )
                 scaled = _scale_seed_to_global(global_counts)
                 if scaled:
@@ -283,8 +265,8 @@ def fetch_snapshot() -> dict:
                     }
 
             raise RuntimeError(
-                f"live strategies failed: per-state nonzero={nonzero} total={total}, "
-                f"stats_globals={bool(global_counts)}"
+                f"live /stats unusable (stats={bool(stats)} globals={bool(global_counts)}); "
+                "likely rate-limited, retry once daily quota resets"
             )
 
     except Exception as e:  # noqa: BLE001
