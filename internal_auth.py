@@ -46,9 +46,17 @@ def is_valid_internal_key(header_value):
 
     # Legacy fallback (logs on hit so we can track remaining hardcoded callers)
     if LEGACY_OK and header_value in _LEGACY_KEYS:
-        log.warning(
-            "internal_auth: legacy hardcoded key accepted — migrate caller to env-based"
-        )
+        # Enrich the warning with request context so Phase 2 triage can
+        # identify exactly which caller still sends a hardcoded value.
+        ctx = "startup/no-request-context"
+        try:
+            from flask import request, has_request_context
+            if has_request_context():
+                ua = request.headers.get("User-Agent", "?")[:80]
+                ctx = f"{request.method} {request.path} ua={ua}"
+        except Exception:
+            pass
+        log.warning("internal_auth: legacy hardcoded key accepted — migrate caller [%s]", ctx)
         return True
 
     return False
