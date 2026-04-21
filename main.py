@@ -7313,7 +7313,16 @@ def compare_markets():
                 {RAILWAY_EXCLUSION}
             """, params)
 
-            stats = dict(c.fetchone())
+            row = c.fetchone()
+            stats = {
+                'facility_count': row[0] if row else 0,
+                'total_power': row[1] if row else 0,
+                'avg_power': row[2] if row else 0,
+                'max_power': row[3] if row else 0,
+                'provider_count': row[4] if row else 0,
+                'operational': row[5] if row else 0,
+                'pipeline': row[6] if row else 0,
+            }
 
             # Top 5 providers
             c.execute(f"""

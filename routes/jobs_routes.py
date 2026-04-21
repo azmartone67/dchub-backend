@@ -60,7 +60,14 @@ def _require_admin_key():
     admin_secret = os.environ.get('ADMIN_SECRET', '')
     valid_keys = [k for k in [expected, admin_secret, 'dchub-admin'] if k]
     if not provided or not any(provided.strip() == k.strip() for k in valid_keys):
-        logger.warning("JOBS AUTH: ❌ failed (provided=%d chars, expected=%d chars)", len(provided.strip()), len(expected.strip()))
+        logger.warning(
+            "JOBS AUTH: ❌ failed (provided=%d chars, expected=%d chars) "
+            "method=%s path=%s ip=%s ua=%s",
+            len(provided.strip()), len(expected.strip()),
+            request.method, request.path,
+            request.remote_addr or "?",
+            (request.user_agent.string if request.user_agent else "?")[:80],
+        )
         return jsonify({'success': False, 'error': '🔒 authentication failed. Check DCHUB_ADMIN_KEY'}), 401
     return None
 
