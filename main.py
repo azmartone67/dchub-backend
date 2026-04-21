@@ -13317,11 +13317,6 @@ def public_mcp_count():
     except Exception as e:
         logger.error(f"[/api/public/mcp-count] error: {e}", exc_info=True)
         return jsonify({"total": 0, "platforms": [], "error": str(e)}), 500
-
-
-
-
-# ── diagnostic: news tables (temp, 2026-04-21) ──
 @app.route("/api/_diagnose/news-tables", methods=["GET"])
 def diagnose_news_tables():
     """TEMP diagnostic — will be removed. Lists news-related tables + schemas + row counts + sample."""
