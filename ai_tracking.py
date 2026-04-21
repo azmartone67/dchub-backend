@@ -490,6 +490,20 @@ def log_mcp_connection(
                 success, error_message, created_at
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (platform) DO UPDATE SET
+                method = EXCLUDED.method,
+                user_agent = EXCLUDED.user_agent,
+                ip_address = EXCLUDED.ip_address,
+                tool_name = EXCLUDED.tool_name,
+                params = EXCLUDED.params,
+                status_code = EXCLUDED.status_code,
+                response_ms = EXCLUDED.response_ms,
+                client_name = EXCLUDED.client_name,
+                client_version = EXCLUDED.client_version,
+                protocol_version = EXCLUDED.protocol_version,
+                success = EXCLUDED.success,
+                error_message = EXCLUDED.error_message,
+                created_at = EXCLUDED.created_at
         """, (
             platform, method, ua, ip,
             tool_name, params_str, status_code, response_ms or 0,
