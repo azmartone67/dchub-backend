@@ -469,7 +469,7 @@ def require_plan(min_plan='pro'):
             try:
                 # ── STEP 0: Check for internal bypass ──────────────────
                 internal_key = request.headers.get('X-Internal-Key', '')
-                if internal_key == 'dchub-internal-sync-2026':
+                if is_valid_internal_key(internal_key):
                     return f(*args, **kwargs)
                 
                 # ── STEP 1: Check web session cookies ──────────────────
@@ -649,7 +649,7 @@ def get_request_tier():
     try:
         from flask import request
         internal_key = request.headers.get('X-Internal-Key', '')
-        if internal_key == 'dchub-internal-sync-2026':
+        if is_valid_internal_key(internal_key):
             return 'admin'
         auth_header = request.headers.get('Authorization', '')
         if auth_header.startswith('Bearer '):

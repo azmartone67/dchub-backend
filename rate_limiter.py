@@ -71,7 +71,6 @@ LIMITS = {
 }
 
 # DC Hub internal key values (same as used in main.py route guards)
-INTERNAL_KEYS = frozenset(['dchub-internal-2024', 'dchub-internal-sync-2026'])
 
 
 def _get_client_ip():
@@ -88,7 +87,7 @@ def _get_key_and_tier():
     """
     # 1. MCP / internal traffic
     ik = request.headers.get('X-Internal-Key', '')
-    if ik in INTERNAL_KEYS:
+    if is_valid_internal_key(ik):
         return 'internal:mcp', 'internal'
 
     # 2. Authenticated user (JWT decoded by require_auth / optional_auth)
