@@ -13585,6 +13585,323 @@ def _apply_grid_queue_override(regions):
     return regions
 
 
+
+
+# ── Phase C shadow mode: /api/_health/patch-propose (added 2026-04-21) ──
+# Files Claude is PROHIBITED from touching. Anything matching one of these
+# patterns (substring match) gets the proposal rejected with safety_flag.
+_PHASE_C_BLOCKLIST_PATTERNS = [
+    "internal_auth", "api_tier_gating", "rate_limiter",
+    "api_data_protection", "secret", "credentials",
+    "migration", ".env", "alembic/",
+]
+# Allowlist: anything NOT in the blocklist AND in these dirs
+_PHASE_C_ALLOWLIST_DIRS = ["routes/", "services/", "main.py"]
+_PHASE_C_MAX_DIFF_LINES = 200
+
+_PHASE_C_PROMPT = """You are a code-patch proposer for the DC Hub backend. You will be given a failed health check with error context. Your job is to propose a minimal unified-diff fix.
+
+Respond in this EXACT format (no markdown fences around the whole response):
+
+EXPLANATION: 2-3 sentences on root cause + fix.
+FILES_CHANGED: comma-separated list of file paths
+DIFF:
+<unified diff starting with --- and +++>
+
+Constraints:
+- Only touch files in allowlist: {allowlist}
+- NEVER touch files matching blocklist: {blocklist}
+- Diff must be <= {max_lines} total changed lines
+- Prefer minimal fixes. No refactoring.
+- Never change auth code, secrets, or schema.
+
+If you cannot produce a safe diff, respond exactly:
+REJECT: <reason>
+
+--- FAILED CHECK CONTEXT ---
+Check: {check_name}
+Expected: {expected}
+Actual: {actual}
+Error: {error}
+
+--- HISTORY (last 3 findings for this check) ---
+{history}
+"""
+
+def _ensure_patch_attempts_table():
+    try:
+        with pg_connection() as pg:
+            cur = pg.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS patch_attempts (
+                    id BIGSERIAL PRIMARY KEY,
+                    check_name TEXT NOT NULL,
+                    finding_id BIGINT,
+                    triggered_at TIMESTAMPTZ DEFAULT NOW(),
+                    prompt TEXT,
+                    claude_response TEXT,
+                    files_changed TEXT[],
+                    diff TEXT,
+                    explanation TEXT,
+                    diff_lines INTEGER,
+                    passed_size_check BOOLEAN,
+                    passed_allowlist_check BOOLEAN,
+                    safety_flag TEXT,
+                    prompt_tokens INTEGER,
+                    completion_tokens INTEGER,
+                    duration_ms INTEGER,
+                    status TEXT,
+                    pr_url TEXT,
+                    model TEXT
+                )
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_patch_attempts_triggered ON patch_attempts(triggered_at DESC)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_patch_attempts_check ON patch_attempts(check_name, triggered_at DESC)")
+            pg.commit()
+    except Exception as e:
+        logger.error(f"[phase-c] table init: {e}")
+
+def _check_phase_c_daily_limit():
+    """Return True if under the daily limit."""
+    import os as _os
+    limit = int(_os.environ.get("PATCH_DAILY_LIMIT", "3"))
+    try:
+        with pg_connection() as pg:
+            cur = pg.cursor()
+            cur.execute("SELECT COUNT(*) FROM patch_attempts WHERE triggered_at > NOW() - INTERVAL '24 hours'")
+            cnt = cur.fetchone()[0]
+            return cnt < limit, cnt, limit
+    except Exception:
+        return True, 0, limit
+
+def _validate_phase_c_diff(diff_text, files_changed):
+    """Run allowlist + size checks on the proposed diff."""
+    flags = []
+    # Size check
+    diff_lines = sum(1 for L in (diff_text or "").split("\n") if L.startswith(("+", "-")) and not L.startswith(("+++", "---")))
+    size_ok = diff_lines <= _PHASE_C_MAX_DIFF_LINES
+    if not size_ok:
+        flags.append(f"diff_too_large:{diff_lines}lines")
+    # Allowlist/blocklist check
+    allowlist_ok = True
+    for fpath in (files_changed or []):
+        fpath = (fpath or "").strip()
+        if not fpath: continue
+        if any(blk in fpath for blk in _PHASE_C_BLOCKLIST_PATTERNS):
+            allowlist_ok = False
+            flags.append(f"blocklisted:{fpath}")
+        else:
+            if not any(fpath.startswith(allow) or fpath == allow for allow in _PHASE_C_ALLOWLIST_DIRS):
+                allowlist_ok = False
+                flags.append(f"outside_allowlist:{fpath}")
+    return size_ok, allowlist_ok, diff_lines, flags
+
+def _parse_claude_patch_response(text):
+    """Parse EXPLANATION / FILES_CHANGED / DIFF blocks from Claude's response."""
+    if not text: return {"reject_reason": "empty response"}
+    if text.strip().startswith("REJECT:"):
+        return {"reject_reason": text.split("REJECT:", 1)[1].strip()[:500]}
+    import re as _re
+    out = {}
+    m = _re.search(r"EXPLANATION:\s*(.+?)(?=\n[A-Z_]+:|\Z)", text, _re.S)
+    out["explanation"] = m.group(1).strip() if m else ""
+    m = _re.search(r"FILES_CHANGED:\s*(.+?)(?=\n[A-Z_]+:|\Z)", text, _re.S)
+    out["files_changed"] = [f.strip() for f in (m.group(1) if m else "").split(",") if f.strip()]
+    m = _re.search(r"DIFF:\s*(.+?)\Z", text, _re.S)
+    out["diff"] = m.group(1).strip() if m else ""
+    return out
+
+def _call_claude_via_gateway(prompt_text, model=None):
+    import httpx as _hx, os as _os, time as _t
+    model = model or _os.environ.get("PATCH_MODEL", "claude-sonnet-4-6")
+    gateway = _os.environ.get("AI_GATEWAY_BASE",
+        "https://gateway.ai.cloudflare.com/v1/4bb33ec40ef02f9f4b41dc97668d5a52/dchub/anthropic")
+    api_key = _os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return {"ok": False, "error": "ANTHROPIC_API_KEY not set", "duration_ms": 0}
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    body = {
+        "model": model,
+        "max_tokens": 2048,
+        "messages": [{"role": "user", "content": prompt_text}],
+    }
+    start = _t.time()
+    try:
+        r = _hx.post(f"{gateway}/v1/messages", json=body, headers=headers, timeout=60.0)
+        dur = int((_t.time() - start) * 1000)
+        if r.status_code != 200:
+            return {"ok": False, "error": f"HTTP {r.status_code}: {r.text[:200]}", "duration_ms": dur}
+        data = r.json()
+        text = ""
+        for b in (data.get("content") or []):
+            if b.get("type") == "text": text += b.get("text", "")
+        usage = data.get("usage") or {}
+        return {"ok": True, "text": text, "model": model, "duration_ms": dur,
+                "prompt_tokens": usage.get("input_tokens", 0),
+                "completion_tokens": usage.get("output_tokens", 0)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:300], "duration_ms": int((_t.time() - start) * 1000)}
+
+@app.route("/api/_health/patch-propose", methods=["POST", "GET"])
+def api_patch_propose():
+    """Phase C SHADOW MODE — Claude proposes a fix for a failing check.
+    Logs proposal to patch_attempts. Never applies, never opens PR.
+
+    Query/JSON params:
+      check: check_name (required unless synthetic=1)
+      synthetic: if 1, uses a test scenario instead of a real finding
+    """
+    _ensure_patch_attempts_table()
+    payload = (request.get_json(silent=True) or {}) if request.method == "POST" else {}
+    check_name = request.args.get("check") or payload.get("check") or ""
+    synthetic = request.args.get("synthetic") == "1" or payload.get("synthetic") is True
+
+    ok, used, limit = _check_phase_c_daily_limit()
+    if not ok:
+        return jsonify({"error": f"daily rate limit ({used}/{limit}) reached", "retry_after": "24h"}), 429
+
+    # Fetch finding context
+    finding = None
+    if synthetic:
+        finding = {
+            "id": None,
+            "check_name": "synthetic_example",
+            "expected": "data list non-empty",
+            "actual": "None",
+            "error": "TypeError: 'NoneType' object is not iterable — handler tried to iterate response before checking None",
+            "history": "last 3 runs: all failed with same error",
+        }
+        check_name = "synthetic_example"
+    elif check_name:
+        try:
+            with pg_connection() as pg:
+                cur = pg.cursor()
+                cur.execute("""
+                    SELECT id, expected, actual, error FROM site_health_findings
+                    WHERE check_name=%s AND check_name NOT LIKE 'autoheal:%%'
+                    ORDER BY checked_at DESC LIMIT 1
+                """, (check_name,))
+                row = cur.fetchone()
+                if not row:
+                    return jsonify({"error": f"no findings for check={check_name}"}), 404
+                finding = {"id": row[0], "check_name": check_name,
+                           "expected": row[1], "actual": row[2], "error": row[3]}
+                cur.execute("""
+                    SELECT status, actual, checked_at FROM site_health_findings
+                    WHERE check_name=%s ORDER BY checked_at DESC LIMIT 3
+                """, (check_name,))
+                finding["history"] = "\n".join(
+                    f"  - {r[2].isoformat()}: {r[0]} / actual={str(r[1])[:100]}" for r in cur.fetchall())
+        except Exception as e:
+            return jsonify({"error": str(e)[:200]}), 500
+    else:
+        return jsonify({"error": "check parameter required (or synthetic=1)"}), 400
+
+    prompt = _PHASE_C_PROMPT.format(
+        allowlist=", ".join(_PHASE_C_ALLOWLIST_DIRS),
+        blocklist=", ".join(_PHASE_C_BLOCKLIST_PATTERNS),
+        max_lines=_PHASE_C_MAX_DIFF_LINES,
+        check_name=finding["check_name"],
+        expected=finding.get("expected", ""),
+        actual=str(finding.get("actual", ""))[:400],
+        error=str(finding.get("error", ""))[:400],
+        history=finding.get("history", ""),
+    )
+
+    result = _call_claude_via_gateway(prompt)
+
+    if not result.get("ok"):
+        try:
+            with pg_connection() as pg:
+                cur = pg.cursor()
+                cur.execute("""
+                    INSERT INTO patch_attempts (check_name, finding_id, prompt, status, safety_flag, duration_ms)
+                    VALUES (%s, %s, %s, 'claude_error', %s, %s)
+                """, (check_name, finding.get("id"), prompt, result.get("error", "")[:300], result.get("duration_ms", 0)))
+                pg.commit()
+        except Exception: pass
+        return jsonify({"status": "claude_error", "error": result.get("error"),
+                        "duration_ms": result.get("duration_ms")}), 502
+
+    parsed = _parse_claude_patch_response(result["text"])
+    status = "rejected_empty"
+    safety_flag = None
+    size_ok = True; allowlist_ok = True; diff_lines = 0
+    if parsed.get("reject_reason"):
+        status = "claude_rejected"
+        safety_flag = parsed["reject_reason"]
+    elif parsed.get("diff"):
+        size_ok, allowlist_ok, diff_lines, flags = _validate_phase_c_diff(
+            parsed["diff"], parsed.get("files_changed", []))
+        if size_ok and allowlist_ok:
+            status = "shadow_logged"  # Would open PR in non-shadow mode
+        else:
+            status = "rejected_safety"
+            safety_flag = ",".join(flags)
+
+    try:
+        with pg_connection() as pg:
+            cur = pg.cursor()
+            cur.execute("""
+                INSERT INTO patch_attempts (check_name, finding_id, prompt, claude_response,
+                    files_changed, diff, explanation, diff_lines,
+                    passed_size_check, passed_allowlist_check, safety_flag,
+                    prompt_tokens, completion_tokens, duration_ms, status, model)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                RETURNING id
+            """, (check_name, finding.get("id"), prompt, result["text"],
+                  parsed.get("files_changed", []), parsed.get("diff", ""), parsed.get("explanation", ""),
+                  diff_lines, size_ok, allowlist_ok, safety_flag,
+                  result.get("prompt_tokens", 0), result.get("completion_tokens", 0),
+                  result["duration_ms"], status, result.get("model")))
+            attempt_id = cur.fetchone()[0]
+            pg.commit()
+    except Exception as e:
+        logger.error(f"[phase-c] log: {e}")
+        attempt_id = None
+
+    return jsonify({
+        "attempt_id": attempt_id,
+        "status": status,
+        "check_name": check_name,
+        "explanation": parsed.get("explanation", "")[:500],
+        "files_changed": parsed.get("files_changed", []),
+        "diff_lines": diff_lines,
+        "passed_size_check": size_ok,
+        "passed_allowlist_check": allowlist_ok,
+        "safety_flag": safety_flag,
+        "tokens": {"prompt": result.get("prompt_tokens"), "completion": result.get("completion_tokens")},
+        "duration_ms": result["duration_ms"],
+        "mode": "SHADOW — no PR opened, no code applied",
+    })
+
+@app.route("/api/_health/patch-attempts", methods=["GET"])
+def api_patch_attempts():
+    """List recent Phase C attempts. Read-only."""
+    _ensure_patch_attempts_table()
+    try:
+        with pg_connection() as pg:
+            cur = pg.cursor()
+            cur.execute("""
+                SELECT id, check_name, status, explanation, diff_lines,
+                       passed_size_check, passed_allowlist_check, safety_flag,
+                       duration_ms, triggered_at
+                FROM patch_attempts ORDER BY triggered_at DESC LIMIT 20
+            """)
+            rows = [{"id": r[0], "check": r[1], "status": r[2],
+                     "explanation": (r[3] or "")[:200], "diff_lines": r[4],
+                     "size_ok": r[5], "allowlist_ok": r[6], "safety_flag": r[7],
+                     "duration_ms": r[8], "triggered_at": r[9].isoformat() if r[9] else None}
+                    for r in cur.fetchall()]
+        return jsonify({"attempts": rows, "count": len(rows)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == '__main__':
     print("🚀 DC Hub API v86 Starting...")
     print(f"📊 PDF Generation: {'✅ Available' if PDF_AVAILABLE else '❌ Disabled'}")
