@@ -504,7 +504,7 @@ def _render_grid(data: dict, size: Size) -> Image.Image:
     W, H, _n = SIZES[size]
     pal = PAL["d"]
     regions = data.get("regions", []) or []
-    total = data.get("total") or sum((r.get("total_queue_gw") or 0) for r in regions)
+    total = sum((r.get("total_queue_gw") or 0) for r in regions)
 
     fig = plt.figure(figsize=(W / 100, H / 100), dpi=100)
     fig.patch.set_facecolor(pal["bg"])
@@ -536,7 +536,7 @@ def _render_grid(data: dict, size: Size) -> Image.Image:
                                       linewidth=1, edgecolor=pal["dim"], facecolor=pal["card_bg"]))
         ax_r.text(0.5, 0.82, r.get("iso", "?"), color=pal["accent"], fontsize=14, weight="bold",
                   family="sans-serif", ha="center")
-        ax_r.text(0.5, 0.50, f"{int(r.get('total_queue_gw') or 0):,}", color=pal["ink"],
+        ax_r.text(0.5, 0.50, (f"{int(r.get('total_queue_gw')):,}" if r.get('total_queue_gw') is not None else "—"), color=pal["ink"],
                   fontsize=26, weight="bold", family="sans-serif", ha="center")
         ax_r.text(0.5, 0.28, "GW queue", color=pal["dim"], fontsize=9, family="sans-serif", ha="center")
         states = "/".join((r.get("key_states") or [])[:3])
@@ -610,13 +610,13 @@ def _render_gdci(data: dict, size: Size) -> Image.Image:
                   ("Capital Velocity", "capital_velocity"), ("Energy Readiness", "energy_readiness"),
                   ("Market Liquidity", "market_liquidity")]
     ax_c = fig.add_axes([0.05, 0.36, 0.55, 0.30]); ax_c.axis("off")
-    ax_c.set_xlim(-20, 100); ax_c.set_ylim(-0.5, len(comp_order))
+    ax_c.set_xlim(-60, 100); ax_c.set_ylim(-0.5, len(comp_order))
     ax_c.text(0.0, 1.0, "COMPONENTS", color=pal["dim"], fontsize=10, weight="bold",
               family="sans-serif", transform=ax_c.transAxes)
     for i, (label, key) in enumerate(comp_order):
         v = float(comps.get(key, 0) or 0)
         y = len(comp_order) - 1 - i
-        ax_c.text(-20, y, label, color=pal["ink"], fontsize=10, family="sans-serif", va="center")
+        ax_c.text(-58, y, label, color=pal["ink"], fontsize=10, family="sans-serif", va="center")
         color = pal["op"] if v >= 0 else pal["ann"]
         ax_c.barh(y, max(v, 0), color=color, edgecolor="none", height=0.55, zorder=3)
         if v < 0:
