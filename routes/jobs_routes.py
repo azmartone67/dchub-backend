@@ -50,6 +50,13 @@ def init_jobs_routes(scheduler_registry, autopilot_available, evolution_availabl
 
 def _require_admin_key():
     """Validate admin key from header or query param. Returns error tuple or None."""
+    # Keep-alive is a low-security liveness ping — allow anonymous.
+    # Railway's internal health-check (source IP 100.64.x.x CGN range) hits
+    # this with no auth headers; the 'JOBS AUTH failed provided=0 chars'
+    # warnings were all this caller. No sensitive data returned, no side
+    # effects triggered, so short-circuiting the admin check is safe.
+    if request.path.endswith('/api/jobs/keep-alive'):
+        return None
     provided = (
         request.headers.get('X-Admin-Key', '')
         or request.headers.get('Authorization', '').replace('Bearer ', '')
