@@ -49,3 +49,9 @@ main.py.bak-*
 dchub_mcp_server.py.bak
 patch_mcp_descriptions.py
 tool-descriptions-v2.json
+
+# Keep binary deliverables and local scratch out of the repo
+*.zip
+qa_work/
+replit-autocommit-*/
+dchub-frontend-full-*.zip
