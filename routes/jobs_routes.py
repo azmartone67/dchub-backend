@@ -859,3 +859,53 @@ def scheduler_status():
         return jsonify(status)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+# ── Phase A.5 cron + alerts (added 2026-04-21) ──
+@jobs_bp.route("/api/jobs/health-probe", methods=["POST", "GET"])
+def job_health_probe():
+    """Cron: run probe + autoheal + alert on NEW failures only."""
+    import httpx as _hx, os as _os
+    port = _os.environ.get("PORT", "8080")
+    base = _os.environ.get("INTERNAL_BASE_URL", f"http://127.0.0.1:{port}")
+    prev_fails = set()
+    try:
+        import psycopg2
+        conn = psycopg2.connect(_os.environ.get("DATABASE_URL", ""))
+        cur = conn.cursor()
+        cur.execute("SELECT DISTINCT ON (check_name) check_name, status FROM site_health_findings WHERE check_name NOT LIKE 'autoheal:%' ORDER BY check_name, checked_at DESC")
+        for r in cur.fetchall():
+            if r[1] == "fail": prev_fails.add(r[0])
+        conn.close()
+    except Exception as e:
+        logger.warning(f"[cron-health] prev-fails: {e}")
+    try:
+        probe = _hx.get(base + "/api/_health/probe", timeout=60.0).json()
+    except Exception as e:
+        return jsonify({"ok": False, "stage": "probe", "error": str(e)[:200]}), 500
+    current_fails = set(c["check"] for c in probe.get("checks", []) if c["status"] == "fail")
+    new_fails = current_fails - prev_fails
+    resolved = prev_fails - current_fails
+    heal = None
+    if current_fails:
+        try:
+            heal = _hx.get(base + "/api/_health/autoheal", timeout=120.0).json()
+        except Exception as e:
+            heal = {"error": str(e)[:200]}
+    alerted = False
+    webhook = _os.environ.get("HEALTH_ALERT_WEBHOOK", "")
+    if new_fails and webhook:
+        try:
+            details = [c for c in probe.get("checks", []) if c["check"] in new_fails]
+            msg = {"text": f"DC Hub watchdog: {len(new_fails)} new failure(s)",
+                   "blocks": [{"type": "section", "text": {"type": "mrkdwn",
+                       "text": "*DC Hub — new failures*\n" + "\n".join(f"• `{c['check']}` — {str(c.get('actual', ''))[:150]}" for c in details)}}]}
+            _hx.post(webhook, json=msg, timeout=10.0)
+            alerted = True
+        except Exception as e:
+            logger.warning(f"[cron-health] webhook: {e}")
+    _reg_update("health_probe")
+    return jsonify({"ok": True, "summary": probe.get("summary"),
+                    "new_fails": sorted(new_fails), "resolved": sorted(resolved),
+                    "autoheal_summary": (heal or {}).get("summary"),
+                    "alerted": alerted, "webhook_configured": bool(webhook)})
+

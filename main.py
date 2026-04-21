@@ -13491,6 +13491,100 @@ def api_health_status():
         return jsonify({"error": str(e)}), 500
 
 
+
+
+# ── Phase B auto-heal: /api/_health/autoheal (added 2026-04-21) ──
+_AUTOHEAL_ACTIONS = {
+    "news_feed_returns_articles": {"description": "news crawler refresh", "method": "POST", "path": "/api/jobs/news-refresh", "admin_key_env": "DCHUB_ADMIN_KEY"},
+    "grid_all_5_isos_populated":  {"description": "grid-intelligence refresh", "method": "POST", "path": "/api/jobs/grid-refresh", "admin_key_env": "DCHUB_ADMIN_KEY", "optional": True},
+    "public_stats_has_data":      {"description": "facility discovery", "method": "POST", "path": "/api/jobs/discovery", "admin_key_env": "DCHUB_ADMIN_KEY"},
+}
+
+def _run_autoheal_action(check_name, action):
+    import httpx as _hx, os as _os, time as _t
+    start = _t.time()
+    base = _health_internal_base()
+    key = _os.environ.get(action.get("admin_key_env", ""), "")
+    headers = {"X-Admin-Key": key} if key else {}
+    params = {"admin_key": key} if key else {}
+    try:
+        r = (_hx.post if action["method"] == "POST" else _hx.get)(
+            base + action["path"], headers=headers, params=params,
+            timeout=30.0, follow_redirects=True)
+        dur = int((_t.time() - start) * 1000)
+        ok = r.status_code in (200, 201, 202, 204)
+        if not ok and action.get("optional"):
+            return {"check": check_name, "action": action["path"], "status": "skipped",
+                    "detail": f"optional endpoint returned {r.status_code}", "duration_ms": dur}
+        return {"check": check_name, "action": action["path"],
+                "status": "healed" if ok else "heal_failed",
+                "detail": f"HTTP {r.status_code}", "duration_ms": dur}
+    except Exception as e:
+        return {"check": check_name, "action": action["path"], "status": "heal_failed",
+                "detail": str(e)[:200], "duration_ms": int((_t.time() - start) * 1000)}
+
+@app.route("/api/_health/autoheal", methods=["GET", "POST"])
+def api_health_autoheal():
+    """Phase B auto-heal: scan latest findings, run allowlisted safe refreshes for fails."""
+    _ensure_site_health_table()
+    latest = {}
+    try:
+        with pg_connection() as pg:
+            cur = pg.cursor()
+            cur.execute("SELECT DISTINCT ON (check_name) check_name, status FROM site_health_findings ORDER BY check_name, checked_at DESC")
+            for r in cur.fetchall():
+                latest[r[0]] = r[1]
+    except Exception as e:
+        return jsonify({"error": f"read findings: {e}"}), 500
+    attempts = []
+    for check, status in latest.items():
+        if status != "fail": continue
+        action = _AUTOHEAL_ACTIONS.get(check)
+        if not action:
+            attempts.append({"check": check, "status": "no_action", "detail": "not in allowlist"})
+            continue
+        result = _run_autoheal_action(check, action)
+        attempts.append(result)
+        try:
+            with pg_connection() as pg:
+                cur = pg.cursor()
+                cur.execute("INSERT INTO site_health_findings (check_name,status,expected,actual,error,duration_ms) VALUES (%s,%s,%s,%s,%s,%s)",
+                            (f"autoheal:{check}", result["status"], action["description"], result.get("detail"), None, result.get("duration_ms")))
+                pg.commit()
+        except Exception as e:
+            logger.error(f"[_autoheal] log: {e}")
+    return jsonify({
+        "checked": len(latest), "failing": sum(1 for s in latest.values() if s == "fail"),
+        "heal_attempts": attempts,
+        "summary": {k: sum(1 for a in attempts if a.get("status") == k) for k in ("healed", "heal_failed", "skipped", "no_action")},
+        "as_of": datetime.utcnow().isoformat() + "Z",
+    })
+
+
+
+
+# ── grid ISO queue_gw override (added 2026-04-21) ──
+_GRID_QUEUE_GW_OVERRIDE = {
+    "ercot": 293.0, "pjm": 30.0, "miso": 15.0, "spp": 10.0,
+    "miso/spp": 25.0, "caiso": 20.0, "serc": 12.0, "serc/tva": 12.0,
+}
+
+def _apply_grid_queue_override(regions):
+    """Fill null total_queue_gw from override dict. Non-destructive."""
+    if not isinstance(regions, list): return regions
+    for r in regions:
+        if not isinstance(r, dict): continue
+        if r.get("total_queue_gw") is not None: continue
+        key = (r.get("iso") or r.get("id") or "").lower().strip()
+        norm = key.replace(" ", "").replace("/", "")
+        for k, v in _GRID_QUEUE_GW_OVERRIDE.items():
+            if key == k or norm == k.replace("/", ""):
+                r["total_queue_gw"] = v
+                r["_queue_gw_source"] = "estimate"
+                break
+    return regions
+
+
 if __name__ == '__main__':
     print("🚀 DC Hub API v86 Starting...")
     print(f"📊 PDF Generation: {'✅ Available' if PDF_AVAILABLE else '❌ Disabled'}")
