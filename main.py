@@ -9679,7 +9679,7 @@ def api_news_alias():
             where_clauses = ["title IS NOT NULL", "title != ''"]
             params = []
             if query:
-                where_clauses.append("(title ILIKE %s OR description ILIKE %s OR source ILIKE %s)")
+                where_clauses.append("(title ILIKE %s OR summary ILIKE %s OR source ILIKE %s)")
                 params.extend([f'%{query}%', f'%{query}%', f'%{query}%'])
             if category:
                 where_clauses.append("category ILIKE %s")
@@ -9687,12 +9687,12 @@ def api_news_alias():
             where_sql = ' AND '.join(where_clauses)
 
             # Try news table first, fallback to articles
-            for table in ('announcements', 'news_articles', 'news', 'articles'):
+            for table in ('news_articles', 'news_articles_full', 'announcements', 'news', 'articles'):
                 try:
                     pg_cur.execute(
-                        f"SELECT id, title, description AS summary, url, source, published_date AS published_at, category "
+                        f"SELECT id, title, summary, url, source, published_at, category "
                         f"FROM {table} WHERE {where_sql} "
-                        f"ORDER BY published_date DESC NULLS LAST LIMIT %s OFFSET %s",
+                        f"ORDER BY published_at DESC NULLS LAST LIMIT %s OFFSET %s",
                         params + [limit, offset]
                     )
                     rows = pg_cur.fetchall()
