@@ -164,6 +164,31 @@ def _do_refresh() -> dict:
                 hero_bytes = buf.getvalue()
                 hero_url = url
 
+    # Brief renders (Phase 3) — also render GDCI + Grid daily briefs to R2
+    for brief_name, fetch_fn, render_fn in [
+        ("gdci", _lazy_mcp().fetch_gdci, R.render_gdci),
+        ("grid", _lazy_mcp().fetch_grid, R.render_grid),
+    ]:
+        try:
+            brief_data = fetch_fn()
+            if not brief_data:
+                log.warning("brief %s: no data, skipping", brief_name)
+                continue
+            for size in SIZES:
+                img = render_fn(brief_data, size)
+                buf = io.BytesIO(); img.save(buf, format="PNG")
+                nbytes = buf.tell()
+                key = _r2_key(today, brief_name, size)
+                url = ""
+                try:
+                    url = _lazy_storage().upload(key, buf.getvalue())
+                    _lazy_db().upsert_render(today, brief_name, size, key, nbytes)
+                except Exception as e:  # noqa: BLE001
+                    log.error("brief upload failed %s: %s", key, e)
+                outputs.append({"theme": brief_name, "size": size, "bytes": nbytes, "url": url})
+        except Exception as e:  # noqa: BLE001
+            log.error("brief %s failed: %s", brief_name, e)
+
     # fan out to social (all no-ops if AUTOPOST_ENABLED != 1)
     post_result = {}
     if hero_bytes is not None:
