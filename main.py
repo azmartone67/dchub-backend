@@ -9687,7 +9687,7 @@ def api_news_alias():
             where_sql = ' AND '.join(where_clauses)
 
             # Try news table first, fallback to articles
-            for table in ('news', 'articles'):
+            for table in ('announcements', 'news_articles', 'news', 'articles'):
                 try:
                     pg_cur.execute(
                         f"SELECT id, title, description AS summary, url, source, published_date AS published_at, category "
@@ -9711,6 +9711,8 @@ def api_news_alias():
                     })
                 except Exception as e:
                     logger.warning(f"[/api/news] {table} query failed: {e}")
+                    try: pg_conn.rollback()
+                    except Exception: pass
                     continue
 
         # Both tables failed — return empty rather than 500
