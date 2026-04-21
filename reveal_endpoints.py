@@ -107,44 +107,78 @@ def reveal_cell_bulk():
             "suggested": f"/api/v1/reveal-grid-export?min_lat={min_lat}&max_lat={max_lat}&min_lon={min_lon}&max_lon={max_lon}",
         }), 413
 
-    # Delegate each cell to the existing reveal-cell logic via internal client
-    from flask import current_app
-    client = current_app.test_client()
+    # Delegate each cell to the existing reveal-cell endpoint via HTTP self-call.
+    # We prefer requests over Flask test_client because test_client is fragile
+    # under gunicorn workers; a straight HTTP round-trip is simpler and safer.
+    try:
+        import requests
+    except ImportError:
+        return jsonify({
+            "success": False,
+            "error": "The 'requests' library is required for bulk queries. pip install requests.",
+        }), 500
+
+    base_url = f"{request.scheme}://{request.host}"
 
     cells = []
+    missing_reveal_cell = False
+    inner_errors = 0
+
     for i in range(n_lat):
+        if missing_reveal_cell:
+            break
         for j in range(n_lon):
-            lat = min_lat + (i + 0.5) * cell_deg_lat
-            lon = min_lon + (j + 0.5) * cell_deg_lon
-            params = {"lat": lat, "lon": lon, "cell_size_km": cell_size_km}
+            lat_c = min_lat + (i + 0.5) * cell_deg_lat
+            lon_c = min_lon + (j + 0.5) * cell_deg_lon
+            params = {"lat": lat_c, "lon": lon_c, "cell_size_km": cell_size_km}
             if state:
                 params["state"] = state
             try:
-                r = client.get("/api/v1/reveal-cell", query_string=params)
+                r = requests.get(f"{base_url}/api/v1/reveal-cell", params=params, timeout=6)
+                if r.status_code == 404:
+                    missing_reveal_cell = True
+                    break
                 if r.status_code == 200:
-                    body = r.get_json()
+                    body = r.json()
                     if body.get("success"):
                         cells.append({
-                            "cell_id": body["cell"]["cell_id"],
-                            "lat": round(lat, 4),
-                            "lon": round(lon, 4),
+                            "cell_id": body.get("cell", {}).get("cell_id"),
+                            "lat": round(lat_c, 4),
+                            "lon": round(lon_c, 4),
                             "features": body.get("reveal_features", {}),
                             "suitability_composite": body.get("suitability_composite"),
                             "confidence": body.get("confidence"),
                             "slide25_coverage": body.get("slide25_coverage", {}),
                         })
+                    else:
+                        inner_errors += 1
+                else:
+                    inner_errors += 1
             except Exception as exc:
-                logger.debug("reveal-cell-bulk inner call failed at (%s,%s): %s", lat, lon, exc)
+                logger.debug("reveal-cell-bulk inner call failed at (%s,%s): %s", lat_c, lon_c, exc)
+                inner_errors += 1
 
-    return jsonify({
+    response = {
         "success": True,
         "bbox": {"min_lat": min_lat, "max_lat": max_lat, "min_lon": min_lon, "max_lon": max_lon},
         "cell_size_km": cell_size_km,
         "cells_returned": len(cells),
         "cells_requested": total,
+        "inner_errors": inner_errors,
         "cells": cells,
-        "source": "DC Hub reveal-cell-bulk  \u00B7  aggregated from /api/v1/reveal-cell",
-    })
+        "source": "DC Hub reveal-cell-bulk  \u00B7  aggregated via HTTP self-call to /api/v1/reveal-cell",
+    }
+
+    if missing_reveal_cell:
+        response["warning"] = (
+            "The /api/v1/reveal-cell endpoint is not registered on this server. "
+            "Deploy reveal_cell.py and register it to populate per-cell features. "
+            "Bulk schema (bbox, cells_requested, cell_size_km) is still returned for planning purposes."
+        )
+        response["cells_returned"] = 0
+        response["cells"] = []
+
+    return jsonify(response)
 
 
 # ===========================================================================
