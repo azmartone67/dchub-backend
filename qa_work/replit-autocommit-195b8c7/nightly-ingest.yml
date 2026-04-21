@@ -1,0 +1,57 @@
+name: nightly-ingest
+
+# Nightly SEC EDGAR ingest. Broker ingest runs weekly (see commented schedule).
+# Both can be triggered manually via workflow_dispatch for on-demand runs.
+
+on:
+  schedule:
+    - cron: "15 6 * * *"   # 06:15 UTC nightly
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "which ingest"
+        required: true
+        default: "sec"
+        type: choice
+        options: [sec, broker]
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -e .
+
+      - name: Run SEC ingest
+        if: ${{ github.event.inputs.source == 'sec' || github.event_name == 'schedule' }}
+        run: |
+          python -c "
+          from app.db import session_scope
+          from app.ingest.sec import run_sec_ingest
+          with session_scope() as db:
+              result = run_sec_ingest(db)
+              print(result)
+          "
+
+      - name: Run broker ingest
+        if: ${{ github.event.inputs.source == 'broker' }}
+        run: |
+          python -c "
+          from app.db import session_scope
+          from app.ingest.broker import run_broker_ingest
+          with session_scope() as db:
+              result = run_broker_ingest(db)
+              print(result)
+          "
+
+      - name: Validate post-ingest
+        if: always()
+        run: python -m scripts.validate_data

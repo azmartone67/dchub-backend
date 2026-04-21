@@ -30,6 +30,12 @@ import json
 import traceback
 from flask import Blueprint, request, jsonify
 
+try:
+    from main import _apply_grid_queue_override
+except Exception:
+    def _apply_grid_queue_override(regions): return regions
+
+
 logger = logging.getLogger(__name__)
 grid_intel_bp = Blueprint('grid_intel', __name__)
 
@@ -420,6 +426,82 @@ def list_grid_regions():
                 'corridor_count': corridor_count,
             })
 
+
+        # grid fill — Phase B
+
+
+        try: _apply_grid_queue_override(regions)
+
+
+        except Exception: pass
+
+
+        try: _apply_grid_queue_override(data['regions'])
+
+
+        except Exception: pass
+
+
+        try: _apply_grid_queue_override(result['regions'])
+
+
+        except Exception: pass
+
+
+        try: _apply_grid_queue_override(payload['regions'])
+
+
+        except Exception: pass
+
+
+        try: _apply_grid_queue_override(response['regions'])
+
+
+        except Exception: pass
+
+
+        try: _apply_grid_queue_override(response.get('regions'))
+
+
+        except Exception: pass
+
+
+        try: _apply_grid_queue_override(out['regions'])
+
+
+        except Exception: pass
+
+
+        try: _apply_grid_queue_override(out.get('regions'))
+
+
+        except Exception: pass
+
+
+        try: _apply_grid_queue_override(resp['regions'])
+
+
+        except Exception: pass
+
+
+        try: _apply_grid_queue_override(resp.get('regions'))
+
+
+        except Exception: pass
+
+
+        try: _apply_grid_queue_override(body['regions'])
+
+
+        except Exception: pass
+
+
+        try: _apply_grid_queue_override(body.get('regions'))
+
+
+        except Exception: pass
+
+
         return jsonify({
             'success': True,
             'regions': regions,
@@ -427,6 +509,57 @@ def list_grid_regions():
             'source': 'DC Hub Grid Intelligence',
         })
     except Exception as e:
+
+        # grid fill — Phase B
+
+        try: _apply_grid_queue_override(regions)
+
+        except Exception: pass
+
+        try: _apply_grid_queue_override(data['regions'])
+
+        except Exception: pass
+
+        try: _apply_grid_queue_override(result['regions'])
+
+        except Exception: pass
+
+        try: _apply_grid_queue_override(payload['regions'])
+
+        except Exception: pass
+
+        try: _apply_grid_queue_override(response['regions'])
+
+        except Exception: pass
+
+        try: _apply_grid_queue_override(response.get('regions'))
+
+        except Exception: pass
+
+        try: _apply_grid_queue_override(out['regions'])
+
+        except Exception: pass
+
+        try: _apply_grid_queue_override(out.get('regions'))
+
+        except Exception: pass
+
+        try: _apply_grid_queue_override(resp['regions'])
+
+        except Exception: pass
+
+        try: _apply_grid_queue_override(resp.get('regions'))
+
+        except Exception: pass
+
+        try: _apply_grid_queue_override(body['regions'])
+
+        except Exception: pass
+
+        try: _apply_grid_queue_override(body.get('regions'))
+
+        except Exception: pass
+
         return jsonify({'success': False, 'error': str(e)}), 500
     finally:
         if conn:
