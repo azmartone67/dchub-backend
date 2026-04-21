@@ -15642,3 +15642,12 @@ def ap_health():
 
 
 import dchub_cors_patch
+
+from reveal_endpoints import register_reveal_routes
+register_reveal_routes(app)
+
+try:
+    from reveal_cell import register_reveal_cell_routes
+    register_reveal_cell_routes(app)
+except ImportError:
+    logger.warning("⚠️ reveal_cell module not present — skipping (optional)")
