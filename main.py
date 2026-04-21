@@ -13319,6 +13319,50 @@ def public_mcp_count():
         return jsonify({"total": 0, "platforms": [], "error": str(e)}), 500
 
 
+
+
+# ── diagnostic: news tables (temp, 2026-04-21) ──
+@app.route("/api/_diagnose/news-tables", methods=["GET"])
+def diagnose_news_tables():
+    """TEMP diagnostic — will be removed. Lists news-related tables + schemas + row counts + sample."""
+    results = {}
+    try:
+        with pg_connection() as pg:
+            cur = pg.cursor()
+            cur.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema='public' "
+                "AND (table_name ~* 'news|article|announce|press') "
+                "ORDER BY table_name"
+            )
+            tables = [r[0] for r in cur.fetchall()]
+            for t in tables:
+                info = {"columns": [], "row_count": None, "sample": None, "error": None}
+                try:
+                    cur.execute(
+                        "SELECT column_name, data_type FROM information_schema.columns "
+                        "WHERE table_schema='public' AND table_name=%s "
+                        "ORDER BY ordinal_position", (t,)
+                    )
+                    info["columns"] = [{"name": r[0], "type": r[1]} for r in cur.fetchall()]
+                    cur.execute("SELECT COUNT(*) FROM " + t)
+                    info["row_count"] = int(cur.fetchone()[0] or 0)
+                    if info["row_count"] > 0:
+                        cur.execute("SELECT * FROM " + t + " LIMIT 1")
+                        row = cur.fetchone()
+                        if row:
+                            names = [d[0] for d in cur.description]
+                            info["sample"] = {names[i]: str(row[i])[:120] for i in range(len(row))}
+                except Exception as e:
+                    info["error"] = str(e)[:250]
+                    try: pg.rollback()
+                    except Exception: pass
+                results[t] = info
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"tables": results, "as_of": datetime.utcnow().isoformat() + "Z"})
+
+
 if __name__ == '__main__':
     print("🚀 DC Hub API v86 Starting...")
     print(f"📊 PDF Generation: {'✅ Available' if PDF_AVAILABLE else '❌ Disabled'}")
