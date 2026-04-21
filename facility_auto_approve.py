@@ -22,6 +22,7 @@ import re
 import logging
 import uuid
 from datetime import datetime, timezone
+from internal_auth import is_valid_internal_key, get_internal_key_for_client
 
 logger = logging.getLogger('facility_auto_approve')
 
@@ -423,7 +424,7 @@ def register_auto_approve_routes(app):
         internal_key = request.headers.get('X-Internal-Key', '')
         admin_key = request.headers.get('X-Admin-Key', '')
         expected_admin = os.environ.get('DCHUB_ADMIN_KEY', '')
-        if internal_key in ('dchub-internal-2024', 'dchub-internal-sync-2026'):
+        if is_valid_internal_key(internal_key):
             return True
         if expected_admin and admin_key == expected_admin:
             return True

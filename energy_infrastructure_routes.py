@@ -23,6 +23,7 @@ import time
 import logging
 from math import cos, radians, sin, sqrt, atan2, inf
 from db_utils import get_db
+from internal_auth import is_valid_internal_key, get_internal_key_for_client
 
 # Lazy tier gating - checks at runtime, not import time
 def require_plan(min_plan='pro'):
@@ -37,7 +38,7 @@ def require_plan(min_plan='pro'):
             try:
                 # X-Internal-Key bypass (MCP proxy + scheduler calls)
                 internal_key = request.headers.get('X-Internal-Key', '')
-                if internal_key in ('dchub-internal-2024', 'dchub-internal-sync-2026'):
+                if is_valid_internal_key(internal_key):
                     return f(*args, **kwargs)
 
                 from api_tier_gating import validate_api_key, user_has_access

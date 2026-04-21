@@ -82,6 +82,7 @@ import argparse
 from datetime import datetime, timezone
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
+from internal_auth import is_valid_internal_key, get_internal_key_for_client
 
 # ============================================================
 # CONFIG
@@ -391,7 +392,7 @@ def api_call(endpoint, method='POST', timeout=60):
     if ADMIN_KEY:
         headers['X-Admin-Key'] = ADMIN_KEY
         headers['Authorization'] = f'Bearer {ADMIN_KEY}'
-        headers['X-Internal-Key'] = 'dchub-internal-sync-2026'
+        headers['X-Internal-Key'] = get_internal_key_for_client()
 
     try:
         req = Request(url, method=method, headers=headers)

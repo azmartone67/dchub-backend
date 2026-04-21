@@ -6,6 +6,7 @@ import os, io, json, zipfile, logging, sqlite3, traceback
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 import requests
+from internal_auth import is_valid_internal_key, get_internal_key_for_client
 
 logger = logging.getLogger(__name__)
 SQLITE_DB = os.environ.get('SQLITE_DB', 'dc_nexus.db')
@@ -449,7 +450,7 @@ def register_kmz_routes(app, get_pg_connection):
     @app.route('/api/admin/kmz/process', methods=['POST'])
     def kmz_process_batch():
         ik = freq.headers.get('X-Internal-Key')
-        if ik != os.environ.get('INTERNAL_KEY', 'dchub-internal-sync-2026'):
+        if ik != get_internal_key_for_client():
             return jsonify({'error': 'Unauthorized'}), 403
         bs = min(freq.args.get('batch_size', 5, type=int), 20)
         return jsonify({'success': True, **processor.process_batch(batch_size=bs)})
@@ -457,7 +458,7 @@ def register_kmz_routes(app, get_pg_connection):
     @app.route('/api/admin/kmz/stats', methods=['GET'])
     def kmz_stats():
         ik = freq.headers.get('X-Internal-Key')
-        if ik != os.environ.get('INTERNAL_KEY', 'dchub-internal-sync-2026'):
+        if ik != get_internal_key_for_client():
             return jsonify({'error': 'Unauthorized'}), 403
         return jsonify({'success': True, **processor.get_stats()})
 

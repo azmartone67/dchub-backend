@@ -44,6 +44,7 @@ import logging
 import time
 import threading
 from datetime import datetime
+from internal_auth import is_valid_internal_key, get_internal_key_for_client
 
 import httpx
 from mcp.server.fastmcp import FastMCP
@@ -179,7 +180,7 @@ _MCP_HEADERS = {
     "Referer": "https://dchub.cloud",
     "X-Forwarded-Host": "dchub.cloud",
     "User-Agent": "DCHub-MCP/2.2",
-    "X-Internal-Key": "dchub-internal-sync-2026",
+    "X-Internal-Key": get_internal_key_for_client(),
 }
 _http = None
 _http_base = DCHUB_API_BASE

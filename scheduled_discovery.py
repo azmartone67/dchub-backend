@@ -19,11 +19,12 @@ import time
 import logging
 import requests
 from datetime import datetime, timezone
+from internal_auth import is_valid_internal_key, get_internal_key_for_client
 
 logger = logging.getLogger(__name__)
 
 _BASE_URL = "http://localhost:5000"
-_INTERNAL_KEY = "dchub-internal-sync-2026"
+_INTERNAL_KEY = get_internal_key_for_client()
 _scheduler_thread = None
 _running = False
 

@@ -25,6 +25,7 @@ import time
 from datetime import datetime, timezone
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
+from internal_auth import is_valid_internal_key, get_internal_key_for_client
 
 logger = logging.getLogger('energy_discovery')
 
@@ -548,7 +549,7 @@ def register_energy_discovery_routes(app):
         internal_key = request.headers.get('X-Internal-Key', '')
         admin_key = request.headers.get('X-Admin-Key', '')
         expected_admin = os.environ.get('DCHUB_ADMIN_KEY', '')
-        if internal_key == 'dchub-internal-2024':
+        if is_valid_internal_key(internal_key):
             return True
         if expected_admin and admin_key == expected_admin:
             return True

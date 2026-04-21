@@ -14,6 +14,7 @@ Applies 4 surgical patches:
 import re
 import sys
 import os
+from internal_auth import is_valid_internal_key, get_internal_key_for_client
 
 def apply_patch(filepath, old_marker_start, old_marker_end, new_code, patch_name):
     """Replace code between two marker strings in a file."""
@@ -69,7 +70,7 @@ PATCH1_NEW = """# ==============================================================
 def api_site_score():
     \"\"\"Composite site suitability score for data center development.\"\"\"
     internal_key = request.headers.get("X-Internal-Key", "")
-    if internal_key not in ("dchub-internal-2024", "dchub-internal-sync-2026"):
+    if not is_valid_internal_key(internal_key):
         user = getattr(request, "current_user", None)
         plan = (user or {}).get("plan", "free") if isinstance(user, dict) else "free"
         if plan not in ("pro", "enterprise"):
@@ -376,7 +377,7 @@ PATCH3_NEW = """def require_plan(min_plan='pro'):
             try:
                 # X-Internal-Key bypass (MCP proxy + scheduler calls)
                 internal_key = request.headers.get('X-Internal-Key', '')
-                if internal_key in ('dchub-internal-2024', 'dchub-internal-sync-2026'):
+                if is_valid_internal_key(internal_key):
                     return f(*args, **kwargs)
 
                 from api_tier_gating import validate_api_key, user_has_access

@@ -26,6 +26,7 @@ import logging
 from datetime import datetime, timedelta
 from functools import wraps
 from flask import request, jsonify
+from internal_auth import is_valid_internal_key, get_internal_key_for_client
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,7 @@ def _detect_caller_tier(decode_jwt_func=None):
 
     # 1. Internal key bypass
     internal_key = request.headers.get('X-Internal-Key', '')
-    if internal_key in ('dchub-internal-2024', 'dchub-internal-sync-2026'):
+    if is_valid_internal_key(internal_key):
         return 'pro', {'source': 'internal'}
 
     # 2. AI Wars keys

@@ -33,6 +33,7 @@ import json
 import logging
 import psycopg2
 from datetime import datetime, timezone
+from internal_auth import is_valid_internal_key, get_internal_key_for_client
 
 logger = logging.getLogger("dchub.smoke")
 
@@ -104,7 +105,7 @@ def _http_check(path, method="GET", needs_auth=False, timeout=15, api_key=None):
         headers['X-API-Key'] = api_key
     elif needs_auth and ADMIN_KEY:
         headers['X-Admin-Key'] = ADMIN_KEY
-        headers['X-Internal-Key'] = 'dchub-internal-sync-2026'
+        headers['X-Internal-Key'] = get_internal_key_for_client()
 
     start = time.time()
     try:

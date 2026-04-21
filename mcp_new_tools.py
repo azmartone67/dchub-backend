@@ -133,7 +133,7 @@ async def compare_sites(locations: str = "") -> str:
                         'state': loc.get('state', ''),
                         'capacity': loc.get('capacity_mw', 0),
                     },
-                    headers={'X-Internal-Key': 'dchub-internal-sync-2026'},
+                    headers={'X-Internal-Key': get_internal_key_for_client()},
                     timeout=15
                 )
                 if resp.status_code == 200:

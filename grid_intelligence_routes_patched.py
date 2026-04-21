@@ -29,6 +29,7 @@ import logging
 import json
 import traceback
 from flask import Blueprint, request, jsonify
+from internal_auth import is_valid_internal_key, get_internal_key_for_client
 
 try:
     from main import _apply_grid_queue_override
@@ -579,7 +580,7 @@ def get_grid_region(region_id):
     conn = None
     try:
         # Determine tier — internal key from MCP server bypasses all gating
-        _VALID_INTERNAL_KEYS = {'dchub-internal-sync-2026', 'dchub-internal-2024'}
+        # _VALID_INTERNAL_KEYS removed — use is_valid_internal_key() instead
         if request.headers.get('X-Internal-Key', '') in _VALID_INTERNAL_KEYS:
             tier = 'pro'
             tier_config = GRID_INTEL_TIER_CONFIG.get('pro', GRID_INTEL_TIER_CONFIG['developer'])
