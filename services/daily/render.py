@@ -504,7 +504,7 @@ def _render_grid(data: dict, size: Size) -> Image.Image:
     W, H, _n = SIZES[size]
     pal = PAL["d"]
     regions = data.get("regions", []) or []
-    total = data.get("total") or sum(r.get("total_queue_gw", 0) for r in regions)
+    total = data.get("total") or sum((r.get("total_queue_gw") or 0) for r in regions)
 
     fig = plt.figure(figsize=(W / 100, H / 100), dpi=100)
     fig.patch.set_facecolor(pal["bg"])
@@ -536,7 +536,7 @@ def _render_grid(data: dict, size: Size) -> Image.Image:
                                       linewidth=1, edgecolor=pal["dim"], facecolor=pal["card_bg"]))
         ax_r.text(0.5, 0.82, r.get("iso", "?"), color=pal["accent"], fontsize=14, weight="bold",
                   family="sans-serif", ha="center")
-        ax_r.text(0.5, 0.50, f"{int(r.get('total_queue_gw', 0)):,}", color=pal["ink"],
+        ax_r.text(0.5, 0.50, f"{int(r.get('total_queue_gw') or 0):,}", color=pal["ink"],
                   fontsize=26, weight="bold", family="sans-serif", ha="center")
         ax_r.text(0.5, 0.28, "GW queue", color=pal["dim"], fontsize=9, family="sans-serif", ha="center")
         states = "/".join((r.get("key_states") or [])[:3])
