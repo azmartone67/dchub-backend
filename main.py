@@ -9679,7 +9679,7 @@ def api_news_alias():
             where_clauses = ["title IS NOT NULL", "title != ''"]
             params = []
             if query:
-                where_clauses.append("(title ILIKE %s OR summary ILIKE %s OR source ILIKE %s)")
+                where_clauses.append("(title ILIKE %s OR description ILIKE %s OR source ILIKE %s)")
                 params.extend([f'%{query}%', f'%{query}%', f'%{query}%'])
             if category:
                 where_clauses.append("category ILIKE %s")
@@ -9690,9 +9690,9 @@ def api_news_alias():
             for table in ('news', 'articles'):
                 try:
                     pg_cur.execute(
-                        f"SELECT id, title, summary, url, source, published_at, category "
+                        f"SELECT id, title, description AS summary, url, source, published_date AS published_at, category "
                         f"FROM {table} WHERE {where_sql} "
-                        f"ORDER BY published_at DESC NULLS LAST LIMIT %s OFFSET %s",
+                        f"ORDER BY published_date DESC NULLS LAST LIMIT %s OFFSET %s",
                         params + [limit, offset]
                     )
                     rows = pg_cur.fetchall()
@@ -13277,6 +13277,44 @@ def _redirect_orphan_press_release():
     from flask import request, redirect
     if request.path.rstrip('/') == '/press-release':
         return redirect('/press', code=301)
+
+
+
+# ── public mcp counter (added 2026-04-21) ──
+@app.route('/api/public/mcp-count', methods=['GET'])
+def public_mcp_count():
+    """Public unauthed endpoint: total AI-agent connections + per-platform breakdown.
+    Used by the /ai page counter widget. Edge-cached 60s.
+    """
+    try:
+        with pg_connection() as pg:
+            cur = pg.cursor()
+            cur.execute("SELECT COALESCE(SUM(total_requests), 0) FROM ai_cumulative")
+            total = int(cur.fetchone()[0] or 0)
+            cur.execute(
+                "SELECT platform, name, company, color, total_requests, last_seen "
+                "FROM ai_cumulative ORDER BY total_requests DESC LIMIT 12"
+            )
+            platforms = [
+                {
+                    "platform": r[0], "name": r[1], "company": r[2],
+                    "color": r[3], "requests": int(r[4] or 0),
+                    "last_seen": r[5].isoformat() if r[5] else None,
+                }
+                for r in cur.fetchall()
+            ]
+        resp = jsonify({
+            "total": total,
+            "platforms": platforms,
+            "as_of": datetime.utcnow().isoformat() + "Z",
+        })
+        resp.headers["Cache-Control"] = "public, max-age=60, s-maxage=60"
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        return resp
+    except Exception as e:
+        logger.error(f"[/api/public/mcp-count] error: {e}", exc_info=True)
+        return jsonify({"total": 0, "platforms": [], "error": str(e)}), 500
+
 
 if __name__ == '__main__':
     print("🚀 DC Hub API v86 Starting...")
