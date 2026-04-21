@@ -15966,5 +15966,8 @@ register_reveal_routes(app)
 try:
     from reveal_cell import register_reveal_cell_routes
     register_reveal_cell_routes(app)
+    logger.info("✅ reveal_cell routes registered")
 except ImportError:
     logger.warning("⚠️ reveal_cell module not present — skipping (optional)")
+except Exception as _rc_exc:
+    logger.exception(f"🔴 reveal_cell registration FAILED (not ImportError): {_rc_exc}")
