@@ -9709,7 +9709,8 @@ def api_news_alias():
                         'count': len(articles), 'total': total,
                         'source': f'postgresql/{table}'
                     })
-                except Exception:
+                except Exception as e:
+                    logger.warning(f"[/api/news] {table} query failed: {e}")
                     continue
 
         # Both tables failed — return empty rather than 500
@@ -13299,7 +13300,7 @@ def public_mcp_count():
                 {
                     "platform": r[0], "name": r[1], "company": r[2],
                     "color": r[3], "requests": int(r[4] or 0),
-                    "last_seen": r[5].isoformat() if r[5] else None,
+                    "last_seen": (r[5].isoformat() if hasattr(r[5], "isoformat") else str(r[5])) if r[5] else None,
                 }
                 for r in cur.fetchall()
             ]
