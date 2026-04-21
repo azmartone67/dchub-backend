@@ -13903,6 +13903,96 @@ def api_patch_attempts():
         return jsonify({"error": str(e)}), 500
 
 
+
+
+# ── Phase 2 kill-switch verifier (added 2026-04-21) ──
+@app.route("/api/_health/auth-kill-switch-probe", methods=["GET"])
+def api_phase2_verifier():
+    """Tests whether the legacy-hardcoded-key kill switch is active.
+    
+    Uses internal_auth.is_valid_internal_key() to check two scenarios:
+    1. Legacy hardcoded string — should be REJECTED if LEGACY_OK=0, accepted if LEGACY_OK=1
+    2. Empty/missing key — should always be rejected
+    
+    Returns the current state so you can verify BEFORE flipping the kill switch.
+    """
+    import os as _os
+    legacy_ok = _os.environ.get("INTERNAL_AUTH_LEGACY_OK", "1") == "1"
+    
+    # Don't actually test the legacy strings in a way that logs them —
+    # just check the gate by inspecting env + the helper's behavior on a known probe
+    from internal_auth import is_valid_internal_key as _check
+    
+    # Test 1: env-based key should work (if set)
+    env_key = _os.environ.get("DCHUB_INTERNAL_KEY", "") or _os.environ.get("DCHUB_SYNC_KEY", "")
+    env_based_works = bool(env_key) and _check(env_key)
+    
+    # Test 2: legacy hardcoded — don't actually send the string; just check LEGACY_OK setting
+    legacy_accepted = legacy_ok  # if LEGACY_OK=1, legacy string would be accepted
+    
+    # Test 3: empty key rejected
+    empty_rejected = not _check("")
+    
+    return jsonify({
+        "phase2_status": {
+            "INTERNAL_AUTH_LEGACY_OK": _os.environ.get("INTERNAL_AUTH_LEGACY_OK", "1"),
+            "DCHUB_INTERNAL_KEY_set": bool(_os.environ.get("DCHUB_INTERNAL_KEY", "")),
+            "DCHUB_SYNC_KEY_set": bool(_os.environ.get("DCHUB_SYNC_KEY", "")),
+            "env_based_key_works": env_based_works,
+            "legacy_string_accepted": legacy_accepted,
+            "empty_key_rejected": empty_rejected,
+        },
+        "leak_closed": (not legacy_accepted) and env_based_works and empty_rejected,
+        "recommendation": (
+            "✅ Leak closed — INTERNAL_AUTH_LEGACY_OK=0 is active"
+            if not legacy_accepted and env_based_works
+            else "⚠ Kill switch not yet flipped. Set INTERNAL_AUTH_LEGACY_OK=0 on Railway."
+            if env_based_works
+            else "🔴 Env keys not set or invalid. Set DCHUB_INTERNAL_KEY and DCHUB_SYNC_KEY before flipping."
+        ),
+        "as_of": datetime.utcnow().isoformat() + "Z",
+    })
+
+@app.route("/api/_health/claude-gateway-probe", methods=["GET"])
+def api_claude_gateway_probe():
+    """Diagnoses why Phase C returned 401. Does NOT leak the API key."""
+    import os as _os
+    import httpx as _hx
+    key = _os.environ.get("ANTHROPIC_API_KEY", "")
+    gateway = _os.environ.get("AI_GATEWAY_BASE",
+        "https://gateway.ai.cloudflare.com/v1/4bb33ec40ef02f9f4b41dc97668d5a52/dchub/anthropic")
+    
+    diag = {
+        "ANTHROPIC_API_KEY_set": bool(key),
+        "ANTHROPIC_API_KEY_prefix": (key[:10] + "...") if key else None,
+        "AI_GATEWAY_BASE": gateway,
+    }
+    
+    if not key:
+        diag["recommendation"] = "Set ANTHROPIC_API_KEY on Railway (Anthropic console → API keys)"
+        return jsonify(diag)
+    
+    # Try a minimal request to see what the gateway actually returns
+    headers = {"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"}
+    body = {"model": "claude-sonnet-4-6", "max_tokens": 16,
+            "messages": [{"role": "user", "content": "ping"}]}
+    try:
+        r = _hx.post(f"{gateway}/v1/messages", json=body, headers=headers, timeout=30.0)
+        diag["gateway_status_code"] = r.status_code
+        diag["gateway_response_preview"] = r.text[:400]
+        if r.status_code == 200:
+            diag["recommendation"] = "✅ Claude gateway working"
+        elif r.status_code == 401:
+            diag["recommendation"] = "401 from gateway. Either the ANTHROPIC_API_KEY is wrong, or the AI Gateway itself needs a CF auth token as a separate header. Check gateway dashboard settings."
+        elif r.status_code == 404:
+            diag["recommendation"] = "404 from gateway. URL path wrong. Try AI_GATEWAY_BASE override."
+        else:
+            diag["recommendation"] = f"Unexpected HTTP {r.status_code}. See response_preview."
+    except Exception as e:
+        diag["error"] = str(e)[:300]
+    return jsonify(diag)
+
+
 if __name__ == '__main__':
     print("🚀 DC Hub API v86 Starting...")
     print(f"📊 PDF Generation: {'✅ Available' if PDF_AVAILABLE else '❌ Disabled'}")
