@@ -25,6 +25,18 @@ import logging
 import math
 from flask import Blueprint, jsonify, request
 
+def _unwrap_response(r):
+    """Handle both {success:True, key:v} and {status:success, data:{key:v}} shapes."""
+    if not isinstance(r, dict):
+        return r or {}
+    d = r.get("data")
+    if isinstance(d, dict):
+        # merge data into top-level for easy .get() access
+        merged = dict(r)
+        merged.update(d)
+        return merged
+    return r
+
 logger = logging.getLogger(__name__)
 
 reveal_bp = Blueprint("reveal_cell", __name__)
