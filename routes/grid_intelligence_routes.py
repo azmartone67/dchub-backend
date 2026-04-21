@@ -1,3 +1,4 @@
+from internal_auth import is_valid_internal_key
 """
 Grid Intelligence Briefs — API Routes
 ======================================
@@ -446,8 +447,8 @@ def get_grid_region(region_id):
     conn = None
     try:
         # Determine tier — internal key from MCP server bypasses all gating
-        _VALID_INTERNAL_KEYS = {'dchub-internal-sync-2026', 'dchub-internal-2024'}
-        if request.headers.get('X-Internal-Key', '') in _VALID_INTERNAL_KEYS:
+        _VALID_INTERNAL_KEYS = set()  # legacy removed; now uses internal_auth.is_valid_internal_key
+        if is_valid_internal_key(request.headers.get('X-Internal-Key', '')):
             tier = 'pro'
             tier_config = GRID_INTEL_TIER_CONFIG.get('pro', GRID_INTEL_TIER_CONFIG['developer'])
         else:

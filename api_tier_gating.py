@@ -1,3 +1,4 @@
+from internal_auth import is_valid_internal_key
 """
 DC Hub API Tier Gating System
 ==============================

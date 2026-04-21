@@ -1,3 +1,4 @@
+from internal_auth import is_valid_internal_key
 """
 DC Hub Fiber & Connectivity Provider Routes Blueprint
 ======================================================
@@ -612,7 +613,7 @@ def facility_connectivity(facility_id):
 def seed_providers():
     """Seed the fiber provider database with known providers and market data."""
     internal_key = request.headers.get('X-Internal-Key')
-    if internal_key not in ('dchub-internal-2024', 'dchub-internal-sync-2026'):
+    if not is_valid_internal_key(internal_key):  # centralized
         return jsonify({'error': 'authentication_required'}), 401
 
     conn = None

@@ -1,3 +1,4 @@
+from internal_auth import is_valid_internal_key
 """
 DC Hub API Data Protection & Anti-Scraping Module
 ===================================================
@@ -496,7 +497,7 @@ def protect_data(f):
             return f(*args, **kwargs)
         # Internal MCP bypass — trust calls from our own MCP server and admin tools
         internal_key = request.headers.get("X-Internal-Key", "")
-        if internal_key in ("dchub-internal-2024", "dchub-internal-sync-2026"):
+        if is_valid_internal_key(internal_key):  # centralized
             return f(*args, **kwargs)
         api_key = (
             request.headers.get("X-API-Key")

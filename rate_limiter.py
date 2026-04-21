@@ -1,3 +1,4 @@
+from internal_auth import is_valid_internal_key
 # rate_limiter.py
 # DC Hub - Rate Limiting Middleware
 # Location: root level (alongside main.py)

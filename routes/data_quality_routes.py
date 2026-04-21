@@ -1,3 +1,4 @@
+from internal_auth import is_valid_internal_key
 """
 DC Hub Data Quality Routes Blueprint
 ======================================
@@ -379,7 +380,7 @@ def recalculate_confidence():
     Protected — requires admin auth or internal key.
     """
     internal_key = request.headers.get('X-Internal-Key')
-    if internal_key not in ('dchub-internal-2024', 'dchub-internal-sync-2026'):
+    if not is_valid_internal_key(internal_key):  # centralized
         auth = request.headers.get('Authorization')
         if not auth:
             return jsonify({'error': 'authentication_required'}), 401
