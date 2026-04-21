@@ -13358,6 +13358,136 @@ def diagnose_news_tables():
     return jsonify({"tables": results, "as_of": datetime.utcnow().isoformat() + "Z"})
 
 
+
+
+# ── Phase A watchdog: /api/_health/* (added 2026-04-21) ──
+_HEALTH_CHECKS = [
+    ("news_feed_returns_articles", "/api/news?limit=3",
+     lambda d: (d.get("count") or 0) > 0,
+     "articles count > 0"),
+    ("mcp_counter_endpoint", "/api/public/mcp-count",
+     lambda d: (d.get("total") or 0) > 0 and len(d.get("platforms") or []) > 0,
+     "total > 0 and platforms non-empty"),
+    ("grid_all_5_isos_populated", "/api/v1/grid-intelligence",
+     lambda d: (len((d.get("data") or {}).get("regions") or d.get("regions") or []) >= 5) and all((r.get("total_queue_gw") is not None) for r in ((d.get("data") or {}).get("regions") or d.get("regions") or [])),
+     "all 5 ISO regions have total_queue_gw populated"),
+    ("stats_endpoint", "/api/v1/stats",
+     lambda d: bool(((d.get("data") or {}).get("by_status")) or d.get("by_status")),
+     "by_status present"),
+    ("facilities_endpoint", "/api/v1/facilities?limit=1",
+     lambda d: isinstance(d.get("data"), list) and len(d.get("data") or []) > 0,
+     "data list non-empty"),
+]
+
+def _health_internal_base():
+    port = os.environ.get("PORT", "8080")
+    return os.environ.get("INTERNAL_BASE_URL", f"http://127.0.0.1:{port}")
+
+def _run_one_health_check(name, path, check_fn, expected):
+    import httpx as _hx, time as _t, json as _j
+    start = _t.time()
+    try:
+        r = _hx.get(_health_internal_base() + path, timeout=10.0, follow_redirects=True)
+        dur = int((_t.time() - start) * 1000)
+        if r.status_code != 200:
+            return {"check": name, "status": "fail", "expected": expected,
+                    "actual": f"HTTP {r.status_code}", "error": "non-200",
+                    "duration_ms": dur}
+        try:
+            data = r.json()
+        except Exception as e:
+            return {"check": name, "status": "fail", "expected": expected,
+                    "actual": "non-JSON", "error": f"json decode: {str(e)[:120]}",
+                    "duration_ms": dur}
+        ok = bool(check_fn(data))
+        return {"check": name, "status": "pass" if ok else "fail",
+                "expected": expected,
+                "actual": "ok" if ok else _j.dumps(data)[:250],
+                "error": None, "duration_ms": dur}
+    except Exception as e:
+        return {"check": name, "status": "fail", "expected": expected,
+                "actual": None, "error": str(e)[:200],
+                "duration_ms": int((_t.time() - start) * 1000)}
+
+def _ensure_site_health_table():
+    try:
+        with pg_connection() as pg:
+            cur = pg.cursor()
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS site_health_findings ("
+                "  id BIGSERIAL PRIMARY KEY,"
+                "  check_name TEXT NOT NULL,"
+                "  status TEXT NOT NULL,"
+                "  expected TEXT, actual TEXT, error TEXT,"
+                "  duration_ms INTEGER,"
+                "  checked_at TIMESTAMPTZ DEFAULT NOW())"
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_site_health_checked_at ON site_health_findings(checked_at DESC)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_site_health_name_ts ON site_health_findings(check_name, checked_at DESC)")
+            pg.commit()
+    except Exception as e:
+        logger.error(f"[_health] table init: {e}")
+
+@app.route("/api/_health/probe", methods=["GET", "POST"])
+def api_health_probe():
+    """Phase A watchdog. Runs suite, records to site_health_findings, returns summary."""
+    _ensure_site_health_table()
+    results = [_run_one_health_check(n, p, f, e) for (n, p, f, e) in _HEALTH_CHECKS]
+    try:
+        with pg_connection() as pg:
+            cur = pg.cursor()
+            for r in results:
+                cur.execute(
+                    "INSERT INTO site_health_findings (check_name,status,expected,actual,error,duration_ms) "
+                    "VALUES (%s,%s,%s,%s,%s,%s)",
+                    (r["check"], r["status"], r["expected"], r["actual"], r["error"], r["duration_ms"])
+                )
+            pg.commit()
+    except Exception as e:
+        logger.error(f"[_health] persist: {e}")
+    p = sum(1 for r in results if r["status"] == "pass")
+    f_ = sum(1 for r in results if r["status"] == "fail")
+    return jsonify({
+        "summary": {"total": len(results), "pass": p, "fail": f_,
+                    "pass_rate_pct": round(p / max(1, len(results)) * 100, 1)},
+        "checks": results,
+        "as_of": datetime.utcnow().isoformat() + "Z",
+    })
+
+@app.route("/api/_health/status", methods=["GET"])
+def api_health_status():
+    """Latest finding per check + 24h stats."""
+    _ensure_site_health_table()
+    try:
+        with pg_connection() as pg:
+            cur = pg.cursor()
+            cur.execute(
+                "SELECT DISTINCT ON (check_name) "
+                "check_name, status, expected, actual, error, duration_ms, checked_at "
+                "FROM site_health_findings "
+                "ORDER BY check_name, checked_at DESC"
+            )
+            latest = [{"check": r[0], "status": r[1], "expected": r[2],
+                       "actual": r[3], "error": r[4], "duration_ms": r[5],
+                       "checked_at": r[6].isoformat() if r[6] else None}
+                      for r in cur.fetchall()]
+            cur.execute(
+                "SELECT check_name, "
+                "COUNT(*) FILTER (WHERE status='pass') AS passes, "
+                "COUNT(*) FILTER (WHERE status='fail') AS fails, "
+                "COUNT(*) AS total "
+                "FROM site_health_findings "
+                "WHERE checked_at > NOW() - INTERVAL '24 hours' "
+                "GROUP BY check_name ORDER BY check_name"
+            )
+            stats = [{"check": r[0], "passes_24h": r[1], "fails_24h": r[2], "total_24h": r[3]}
+                     for r in cur.fetchall()]
+        return jsonify({"latest": latest, "stats_24h": stats,
+                        "as_of": datetime.utcnow().isoformat() + "Z"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == '__main__':
     print("🚀 DC Hub API v86 Starting...")
     print(f"📊 PDF Generation: {'✅ Available' if PDF_AVAILABLE else '❌ Disabled'}")
