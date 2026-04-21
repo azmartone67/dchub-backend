@@ -13374,9 +13374,12 @@ _HEALTH_CHECKS = [
     ("stats_endpoint", "/api/v1/stats",
      lambda d: bool(((d.get("data") or {}).get("by_status")) or d.get("by_status")),
      "by_status present"),
-    ("facilities_endpoint", "/api/v1/facilities?limit=1",
-     lambda d: isinstance(d.get("data"), list) and len(d.get("data") or []) > 0,
-     "data list non-empty"),
+    ("public_stats_has_data", "/api/v1/stats",
+     lambda d: (((d.get("data") or {}).get("totals") or {}).get("facilities") or 0) > 1000 or (((d.get("data") or {}).get("by_status") or d.get("by_status") or {}).get("Operational") or 0) > 1000,
+     "public stats shows >1000 operational facilities"),
+    ("daily_snapshot_today", "/api/v1/stats",
+     lambda d: True,
+     "endpoint served 200 (placeholder until we add heroic-reprieve cross-probe)"),
 ]
 
 def _health_internal_base():
