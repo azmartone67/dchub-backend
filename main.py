@@ -2875,8 +2875,8 @@ def _get_mcp_caller_tier():
     """Determine caller's tier from API key. Returns (tier, key_info)."""
     # ── Internal-key bypass (mcpServers config / internal callers) ──────────
     _incoming_internal = request.headers.get('X-Internal-Key', '')
-    _valid_internal = {'dchub-internal-sync-2026', 'dchub-internal-2024'}
-    if _incoming_internal in _valid_internal:
+    # _valid_internal set removed — use is_valid_internal_key() directly
+    if is_valid_internal_key(_incoming_internal):
         return 'enterprise', {'plan': 'enterprise', 'user_id': 'internal',
                                'daily_limit': 100000, 'results_limit': 10000}
 

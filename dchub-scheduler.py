@@ -33,7 +33,7 @@ v3.7 changelog:
   - DISABLED infra_sync — runaway substation INSERT loop was exhausting Neon
     pool (49-50/50 connections) due to missing UNIQUE constraint on substations
     table + il.latitude column reference bug. Re-enable after DB fixes.
-  - FIXED X-Internal-Key header (was dchub-internal-2024, now dchub-internal-sync-2026)
+  - FIXED X-Internal-Key header (now via get_internal_key_for_client; env-based)
   - REMOVED orphaned @scheduler.task decorator at EOF (referenced nonexistent scheduler object)
   - 18 active jobs (was 19)
 
