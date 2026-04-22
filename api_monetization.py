@@ -538,13 +538,15 @@ def _ensure_user_row(jwt_payload):
         conn = get_db()
         c = conn.cursor()
         # Only insert if missing. Existing rows keep their stored plan — DB is truth.
+        # `password_hash` is NOT NULL in Neon; use an unusable sentinel so no
+        # password can ever authenticate this row (OAuth / JWT still work fine).
         c.execute(
             """
-            INSERT INTO users (id, email, plan, created_at)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO users (id, email, password_hash, plan, created_at)
+            VALUES (%s, %s, %s, %s, %s)
             ON CONFLICT (id) DO NOTHING
             """,
-            (user_id, email, claim_plan, now),
+            (user_id, email, '!oauth-only-no-password!', claim_plan, now),
         )
         conn.commit()
         conn.close()
