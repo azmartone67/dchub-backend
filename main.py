@@ -4090,8 +4090,22 @@ def _get_request_tier():
         platform = ai_info.get('platform', 'unknown')
         return f"aiwar_{platform}", ai_info.get('tier', 'pro')
 
-    # Check for authenticated user via API key in DB
-    api_key = request.headers.get('X-API-Key') or request.args.get('api_key') or ''
+    # Check for authenticated user via API key in DB.
+    # We accept the key on any of the canonical headers. Previously this only
+    # looked at X-API-Key, so `Authorization: Bearer dchub_xxx` (the MCP /
+    # RFC-6750 standard) silently fell through to IP-based free tier — which
+    # is exactly the symptom enterprise customers were hitting.
+    api_key = (
+        request.headers.get('X-API-Key')
+        or request.args.get('api_key')
+        or ''
+    )
+    if not api_key:
+        _auth = request.headers.get('Authorization', '')
+        if _auth.startswith('Bearer '):
+            _bearer = _auth[7:].strip()
+            if _bearer.startswith('dchub_'):
+                api_key = _bearer
     if api_key and api_key.startswith('dchub_'):
         key_hash = hashlib.sha256(api_key.encode()).hexdigest()
         try:
