@@ -5,7 +5,7 @@ Flask==3.0.0
 Flask-Compress==1.23
 Flask-Cors==4.0.0
 google-api-core==2.29.0
-google-auth==2.49.0.dev0
+google-auth>=2.35.0,<3.0
 google-cloud-core==2.5.0
 google-cloud-storage==2.19.0
 google-crc32c==1.8.0

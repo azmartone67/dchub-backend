@@ -55,3 +55,17 @@ tool-descriptions-v2.json
 qa_work/
 replit-autocommit-*/
 dchub-frontend-full-*.zip
+
+# === dchub cleanup additions ===
+.wrangler/
+__pycache__/
+*.pyc
+*.pyo
+nohup.out
+nohup.txt
+cookies.txt
+.DS_Store
+*.zip
+.env
+.env.*
+!.env.example
