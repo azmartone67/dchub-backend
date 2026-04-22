@@ -14123,26 +14123,8 @@ if __name__ == '__main__':
     except Exception as e:
         print(f"💾 Saved Searches: ⚠️ Error: {e}")
 
-    # Try to register LinkedIn Auto-Posting (linkedin_poster.py — Neon-backed)
-    try:
-        from linkedin_poster import register_linkedin_routes
-        register_linkedin_routes(app)
-        print("📱 LinkedIn Poster: ✅ Available (Neon-backed, weekly auto-post)")
-    except ImportError:
-        print("📱 LinkedIn Poster: ❌ Not installed")
-    except Exception as e:
-        print(f"📱 LinkedIn Poster: ⚠️ Error: {e}")
-
-    # Try to register AI Weekly Digest (ai_weekly_digest.py)
-    try:
-        from ai_weekly_digest import register_digest_routes
-        register_digest_routes(app)
-        print("📊 AI Weekly Digest: ✅ Available (/api/ai/weekly-digest)")
-    except ImportError:
-        print("📊 AI Weekly Digest: ❌ Not installed")
-    except Exception as e:
-        print(f"📊 AI Weekly Digest: ⚠️ Error: {e}")
-
+    # [v3 cleanup] duplicate register_linkedin_routes/register_digest_routes
+    # block removed — primary registration lives at lines ~4298-4310.
     print("🔍 DEBUG: Energy Auto-Discovery v3.0 already registered above (outside __main__)")
     # Energy Auto-Discovery is registered once at module level, not here
 
