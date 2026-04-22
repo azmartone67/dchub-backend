@@ -2121,6 +2121,17 @@ def serve_tools_manifest():
 
 logger.info("✅ AI Wars verification system loaded -- 13 platform keys, /api/verify-key, /integrations/tools.json")
 
+# =============================================================================
+# /api/me  — self-verification endpoint + better upgrade_required helper
+# Added via dchub_me.py. Safe to remove the two lines below to roll back.
+# =============================================================================
+try:
+    from dchub_me import me_blueprint, better_upgrade_required
+    app.register_blueprint(me_blueprint)
+    logger.info("✅ /api/me registered (dchub_me.py)")
+except Exception as _me_err:
+    logger.warning(f"⚠️  /api/me blueprint not loaded: {_me_err}")
+
 @app.route('/integrations/<platform>/', methods=['GET'])
 @app.route('/integrations/<platform>/<path:filename>', methods=['GET'])
 def serve_integration_package(platform, filename='README.md'):
