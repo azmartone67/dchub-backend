@@ -234,9 +234,13 @@ def hash_api_key(key):
     return hashlib.sha256(key.encode()).hexdigest()
 
 def get_key_prefix(key):
-    """Get displayable prefix of API key"""
-    # Show first 12 chars: dchub_live_xxxx...
-    return key[:16] + "..." if len(key) > 16 else key
+    """Return a stable prefix we store in DB (first 16 chars, no trailing ellipsis).
+
+    Previously this returned `key[:16] + "..."`, which polluted the stored value
+    and made `LIKE key_prefix || '%'` matching break. We now store a clean prefix;
+    dashboards can render the ellipsis at display time.
+    """
+    return key[:16] if len(key) > 16 else key
 
 def validate_api_key(key):
     """Validate API key and return key info"""
@@ -508,6 +512,45 @@ def _resolve_plan_for_user(user_id):
         return plan
     except Exception:
         return 'free'
+
+
+def _ensure_user_row(jwt_payload):
+    """Make sure a row exists in `users` for this JWT's user_id.
+
+    This prevents the orphan-key bug where `POST /api/v2/keys` would happily
+    INSERT an `api_keys` row for a user_id that didn't exist in `users`. Every
+    subsequent lookup (`/api/me`, `_get_request_tier`, require_api_key) joins
+    api_keys -> users, so a missing users row made the key unrecognizable.
+
+    We seed plan from the JWT claim but only on first-insert; we never overwrite
+    an existing users row (that would be an easy privilege-escalation vector if
+    the JWT claim were ever stale).
+    """
+    try:
+        user_id = jwt_payload.get('user_id')
+        if not user_id:
+            return
+        email = jwt_payload.get('email') or ''
+        claim_plan = jwt_payload.get('plan') or 'free'
+        if claim_plan not in RATE_LIMITS:
+            claim_plan = 'free'
+        now = datetime.utcnow().isoformat()
+        conn = get_db()
+        c = conn.cursor()
+        # Only insert if missing. Existing rows keep their stored plan — DB is truth.
+        c.execute(
+            """
+            INSERT INTO users (id, email, plan, created_at)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (id) DO NOTHING
+            """,
+            (user_id, email, claim_plan, now),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        # Never block key creation on a seed failure; log and continue.
+        print(f"⚠️  _ensure_user_row({jwt_payload.get('user_id')!r}) failed: {e}")
 
 
 def _enforce_limit(user_id, plan):
@@ -816,7 +859,7 @@ def create_api_key():
     auth_header = request.headers.get('Authorization')
     if not auth_header or not auth_header.startswith('Bearer '):
         return jsonify({'error': 'Authorization required'}), 401
-    
+
     try:
         from main import decode_jwt
         token = auth_header.split(' ')[1]
@@ -824,19 +867,26 @@ def create_api_key():
         if not payload:
             return jsonify({'error': 'Invalid token'}), 401
         user_id = payload['user_id']
-    except:
+    except Exception:
         return jsonify({'error': 'Auth error'}), 401
-    
+
     data = request.get_json() or {}
     name = data.get('name', 'Default Key')
-    
+
+    # Make sure there's a users row for this JWT before we INSERT the key.
+    # Without this, a valid JWT whose user_id has no matching users row would
+    # create an orphan api_keys row that no auth path can ever resolve.
+    _ensure_user_row(payload)
+
     conn = get_db()
     c = conn.cursor()
-    
+
     # Check user's plan and key limit
     c.execute("SELECT plan FROM users WHERE id = %s", (user_id,))
     user_row = c.fetchone()
-    plan = user_row['plan'] if user_row else 'free'
+    plan = (user_row['plan'] if user_row else None) or 'free'
+    if plan not in RATE_LIMITS:
+        plan = 'free'
     
     max_keys = RATE_LIMITS.get(plan, RATE_LIMITS['free'])['max_keys']
     
