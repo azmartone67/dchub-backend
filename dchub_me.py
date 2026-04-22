@@ -315,7 +315,15 @@ def me_endpoint():
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     resp = jsonify(body)
-    resp.headers["Cache-Control"] = "no-store"
+    # Per-request auth context — must never be cached by Cloudflare, the browser,
+    # or any proxy. `no-store` alone isn't always respected at the edge; we also
+    # need a Vary on the auth headers plus Cloudflare-specific cache directives
+    # so the edge varies by auth instead of serving a stale anonymous response.
+    resp.headers["Cache-Control"] = "no-store, no-cache, private, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Vary"] = "Authorization, X-API-Key, X-Internal-Key, Cookie"
+    resp.headers["CDN-Cache-Control"] = "no-store"
+    resp.headers["Cloudflare-CDN-Cache-Control"] = "no-store"
     resp.headers["Access-Control-Allow-Origin"] = "*"
     return resp, 200
 
