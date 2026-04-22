@@ -5025,7 +5025,12 @@ DB_PATH = "dc_nexus.db"
 WEBHOOK_QUEUE = queue.Queue()
 
 # JWT Configuration
-JWT_SECRET = os.environ.get('JWT_SECRET', 'dchub-super-secret-key-change-in-production')
+JWT_SECRET = os.environ.get('JWT_SECRET')
+if not JWT_SECRET or JWT_SECRET.strip() == '' or 'change-in-production' in JWT_SECRET.lower():
+    raise RuntimeError(
+        'JWT_SECRET environment variable is required and must be a real secret. '
+        'Set it in Railway Variables before starting the app.'
+    )
 JWT_EXPIRY_HOURS = 24 * 7  # 7 days
 
 # Stripe Configuration
