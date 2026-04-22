@@ -1,0 +1,100 @@
+Sleep cleanup run: Wed Apr 22 09:21:59 AM UTC 2026
+=========================================
+
+[#4] Orphan functions/ in dchub-backend
+rm 'functions/press-release.js'
+rm 'functions/press.js'
+ 2 files changed, 177 deletions(-)
+ delete mode 100644 functions/press-release.js
+ delete mode 100644 functions/press.js
+hint: its remote counterpart. If you want to integrate the remote changes,
+hint: use 'git pull' before pushing again.
+hint: See the 'Note about fast-forwards' in 'git push --help' for details.
+
+[#6] _redirects ordering in dchub-frontend
+  moved 8 rules to top
+[main d1b7dce] perf: move exact-match redirects above splat rules (CF hint)
+ 1 file changed, 10 insertions(+), 9 deletions(-)
+To https://github.com/azmartone67/dchub-frontend.git
+   a3aa014..d1b7dce  main -> main
+
+[#1] LinkedIn/AI-Digest double-registration (diagnostic)
+  --- Blueprint registrations in main.py ---
+72:from linkedin_autopost import linkedin_auto_bp, init_linkedin_tables, start_linkedin_scheduler, on_new_deal, on_weekly_digest
+73:# LinkedIn Daily Poster (linkedin_poster.py + linkedin_scheduler.py)
+980:# DISABLED: Old linkedin_scheduler replaced by linkedin_poster.py (Neon-backed)
+981:# from linkedin_scheduler import integrate_with_flask as integrate_linkedin_poster
+1040:# DISABLED: Old linkedin_scheduler replaced by linkedin_poster.py
+1041:# integrate_linkedin_poster(app)
+1504:        if init_linkedin_tables:
+1505:            init_linkedin_tables()
+1507:        # if start_linkedin_scheduler:
+1508:        #     start_linkedin_scheduler(interval_minutes=30)
+1875:# DISABLED: Old linkedin_autopost replaced by linkedin_poster.py (Neon-backed)
+1876:# from linkedin_autopost import linkedin_auto_bp, init_linkedin_tables, start_linkedin_scheduler, on_new_deal, on_weekly_digest
+1877:linkedin_auto_bp = None
+1878:init_linkedin_tables = None
+1879:start_linkedin_scheduler = None
+1881:on_weekly_digest = None
+4290:    if linkedin_auto_bp:
+4291:        app.register_blueprint(linkedin_auto_bp)
+4298:# LinkedIn Poster (Neon-backed, replaces old linkedin_scheduler + linkedin_autopost)
+4300:    from linkedin_poster import register_linkedin_routes
+4301:    register_linkedin_routes(app)
+4310:    from ai_weekly_digest import register_digest_routes
+4419:    ('LinkedInBot', 'LinkedInBot', 'linkedin'),
+9909:        results = {'news_sync': None, 'linkedin': None, 'date': date.today().isoformat()}
+9940:            from linkedin_autopost import create_text_post, get_valid_token
+9978:                results['linkedin'] = {'success': True, 'post_id': str(result)[:100] if result else None, 'articles_used': len(articles)}
+9980:                results['linkedin'] = {'success': False, 'error': 'No valid LinkedIn token'}
+9983:            results['linkedin'] = {'error': str(e)}
+9984:            logger.error(f"[daily_cron] linkedin failed: {traceback.format_exc()}")
+14108:    # Try to register LinkedIn Auto-Posting (linkedin_poster.py — Neon-backed)
+14110:        from linkedin_poster import register_linkedin_routes
+14111:        register_linkedin_routes(app)
+14118:    # Try to register AI Weekly Digest (ai_weekly_digest.py)
+14120:        from ai_weekly_digest import register_digest_routes
+  --- Files that import linkedin/digest modules ---
+/home/runner/workspace/ai_weekly_digest.py
+/home/runner/workspace/flask_linkedin_image_endpoint.py
+/home/runner/workspace/linkedin_autopost.py
+/home/runner/workspace/linkedin_poster.py
+/home/runner/workspace/linkedin_scheduler.py
+/home/runner/workspace/main.py
+  --- APScheduler job definitions ---
+784:def should_run_cycle(name, min_interval_seconds=30):
+790:        if now - last < min_interval_seconds:
+1082:        print("SELF-HEALING: ✅ Health monitor started (30s interval)")
+1506:        # DISABLED: LinkedIn scheduler runs inside web process - use cron instead
+1508:        #     start_linkedin_scheduler(interval_minutes=30)
+2470:        # DISABLED: Outreach scheduler runs inside web process - use cron instead
+4038:    alert_scheduler = register_alert_routes(app, start_scheduler=False, scheduler_interval=3600)
+4245:        start_promotion_scheduler(promotion_engine, interval_hours=24)
+6020:    """Manually trigger alert check (admin/cron endpoint)"""
+8060:            'energy_discovery': {'interval_seconds': 600, 'status': 'active'},
+8061:            'infrastructure_sync': {'interval_seconds': 21600, 'status': 'active'},
+8062:            'fiber_discovery': {'interval_seconds': 3600, 'status': 'active'},
+8063:            'facility_auto_approve': {'interval_seconds': 1800, 'status': 'active'},
+9895:@app.route('/api/cron/daily', methods=['POST', 'GET'])
+9896:def daily_cron():
+9897:    """Daily cron job: sync news to Neon + post to LinkedIn.
+9899:    Fire-and-forget: returns 202 Accepted immediately so cron-job.org's
+9902:    Check Railway logs for `[daily_cron] complete` to confirm completion.
+9933:            logger.info(f"[daily_cron] pushed {pushed} articles to Neon")
+9936:            logger.error(f"[daily_cron] news sync failed: {e}")
+
+[#5] press_releases cron freshness
+Traceback (most recent call last):
+  File "<string>", line 7, in <module>
+TypeError: unsupported format string passed to NoneType.__format__
+  total=12, most recent dates:
+    2026-04-15   | dc-hub-launches-air-permitting-intelligence
+    2026-04-09   | dc-hub-global-infrastructure-1-29m-records-live
+    2026-04-07   | tony-bishop-founding-member
+
+=========================================
+Morning report saved: /home/runner/workspace/MORNING_REPORT.txt
+
+Items still needing your hands tomorrow:
+  #2 MCP proxy worker: zip upload via CF dashboard
+  #3 INTERNAL_SYNC_SECRET: set CF worker env var in dashboard
