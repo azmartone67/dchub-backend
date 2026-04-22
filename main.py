@@ -1018,6 +1018,9 @@ except Exception as _e:
     print('smoke_test import failed:', _e)
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
+from routes_stubs_v3 import stubs_v3
+app.register_blueprint(stubs_v3)
+
 # smoke_patch_v1: register admin-gated smoke endpoint
 if _register_smoke_routes_v1:
     try:
@@ -1628,6 +1631,9 @@ if IS_RAILWAY:
     logger.info("   📡 Discovery schedulers: ENABLED (KMZ + API auto-discovery)")
 else:
     logger.info("🔄 NON-RAILWAY ENVIRONMENT -- Running as FAILOVER (background tasks disabled)")
+    ENABLE_BACKGROUND_SCHEDULERS = True  # __bg_sched_enable_v3__
+    ENABLE_DISCOVERY_SCHEDULERS = True
+    logger.info("   📡 FAILOVER BACKGROUND TASKS: EXPLICITLY ENABLED on Replit")
 
 _news_last_sync = None
 _pipeline_last_sync = None
@@ -2360,7 +2366,7 @@ try:
     # CRM admin routes
     try:
         from routes.crm_routes import register_crm_routes
-        register_crm_routes(app, get_db, require_admin)
+        register_crm_routes(app, get_db)  # __crm_no_require_admin_v3__
     except Exception as e:
         print(f"[CRM] Failed to load CRM routes: {e}")
     print("KMZ Processor: Available")
@@ -3511,7 +3517,19 @@ def _gate_mcp_sse_stream(resp, rpc_method, rpc_params, tier):
 
 
 
-@app.route('/mcp', methods=['GET', 'POST', 'DELETE', 'HEAD', 'OPTIONS'])
+
+# __mcp_get_405_shim__
+@app.route('/mcp', methods=['GET', 'HEAD'])
+def _mcp_no_sse_stream():
+    from flask import Response
+    resp = Response(
+        '{"error":"Streamable HTTP subscription is not supported. Use POST /mcp."}',
+        status=405, mimetype='application/json')
+    resp.headers['Allow'] = 'POST, DELETE, OPTIONS'
+    resp.headers['Cache-Control'] = 'no-store'
+    return resp
+
+@app.route('/mcp', methods=['POST', 'DELETE', 'OPTIONS'])
 @app.route('/mcp/', methods=['GET', 'POST', 'DELETE', 'HEAD', 'OPTIONS'])
 def mcp_proxy():
     """
@@ -3556,6 +3574,13 @@ def mcp_proxy():
         try:
             body = request.get_json(silent=True) or {}
             rpc_method = body.get('method', '')
+            # __mcp_auth_gate_v3__
+            if rpc_method in ('tools/list', 'tools/call'):
+                _k = request.headers.get('X-API-Key') or request.headers.get('x-api-key')
+                if not _k:
+                    from flask import jsonify as _jsonify
+                    return _jsonify({'jsonrpc':'2.0','id':body.get('id'),'error':{'code':-32001,'message':'Unauthorized'}}), 401, {'WWW-Authenticate':'ApiKey'}
+
             rpc_params = body.get('params', {})
             if rpc_method == 'initialize':
                 client_info = rpc_params.get('clientInfo', {})
@@ -10050,6 +10075,41 @@ def get_press_release_archive():
         today = date.today()
         dates = [{'date': (today - timedelta(days=i)).strftime('%Y-%m-%d'), 'count': 0} for i in range(30)]
     return jsonify({'success': True, 'dates': dates, 'total': len(dates)})
+
+# __press_releases_list_v3__
+@app.route('/api/press-releases/list', methods=['GET'])
+def get_press_releases_list():
+    """Return all published press releases from press_releases table."""
+    try:
+        import psycopg2 as _pg
+        import os as _os
+        conn = _pg.connect(_os.getenv('DATABASE_URL'), connect_timeout=8)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, title, slug, category, date, subheadline, meta_description "
+            "FROM press_releases WHERE published = TRUE "
+            "ORDER BY date DESC NULLS LAST"
+        )
+        rows = cur.fetchall()
+        cur.close(); conn.close()
+        releases = [{
+            'id': r[0], 'title': r[1], 'slug': r[2],
+            'category': r[3] or 'Press Release',
+            'date': str(r[4]) if r[4] else None,
+            'subheadline': r[5] or '',
+            'meta_description': r[6] or '',
+            'url': '/press-release/' + (r[2] or '')
+        } for r in rows]
+        from flask import make_response
+        resp = make_response(jsonify({'success': True, 'releases': releases, 'count': len(releases)}))
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        resp.headers['Cache-Control'] = 'public, max-age=300'
+        return resp
+    except Exception as e:
+        import traceback, logging
+        logging.error('[press-releases/list] ' + traceback.format_exc())
+        return jsonify({'success': False, 'releases': [], 'error': str(e)}), 500
+
 
 @app.route('/api/press-releases/digest-<date_slug>', methods=['GET'])
 # REMOVED conflicting decorator: was @app.route('/api/press-releases/<date_slug>', ...)
