@@ -765,6 +765,17 @@ async function handleAnonLock(request, env) {
 
 export default {
   async fetch(request, env, ctx) {
+  /* __mcp_get_405_v3__ */
+  try {
+    const _u = new URL(request.url);
+    if (request.method === 'GET' && (_u.pathname === '/mcp' || _u.pathname === '/mcp/')) {
+      return new Response('{"error":"SSE subscription not supported. Use POST /mcp"}', {
+        status: 405,
+        headers: { 'Allow':'POST, DELETE, OPTIONS', 'Content-Type':'application/json', 'Cache-Control':'no-store', 'Access-Control-Allow-Origin':'*' }
+      });
+    }
+  } catch (_e) {}
+
     const url = new URL(request.url);
     const pathname = url.pathname;
 

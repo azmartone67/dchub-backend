@@ -121,8 +121,14 @@ def _install_fiber_insert_guard():
                 return None
             raise
 
-    _cursor_cls.execute = _guarded_execute
-    _cursor_cls._fiber_guard_installed = True
+    try:
+        # __kmz_immutable_guard_v3__
+        _cursor_cls.execute = _guarded_execute
+        _cursor_cls._fiber_guard_installed = True
+    except TypeError:
+        # Modern psycopg2 makes cursor class immutable; fiber guard
+        # will be applied per-cursor at call sites instead.
+        pass
 
 _install_fiber_insert_guard()
 

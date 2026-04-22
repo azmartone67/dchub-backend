@@ -16,7 +16,7 @@ Categories:
 from flask import Blueprint, jsonify, request
 from datetime import datetime
 
-rankings_bp = Blueprint('rankings', __name__)
+rankings_bp = Blueprint('energy_rankings', __name__)
 
 # ---------------------------------------------------------------
 # Constants
