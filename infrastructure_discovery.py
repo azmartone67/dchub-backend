@@ -430,7 +430,7 @@ class FiberRouteDiscovery:
             INSERT INTO fiber_routes
             (name, provider, route_type, start_location, source, source_id)
             VALUES (%s, %s, %s, %s, %s, %s)
-            ON CONFLICT(source_id) DO NOTHING
+            ON CONFLICT DO NOTHING
         ''', (
             ix.get('name', 'Unknown IX'),
             'Internet Exchange', 'IX',
@@ -450,7 +450,7 @@ class FiberRouteDiscovery:
                 (name, provider, route_type, start_location, end_location,
                  start_lat, start_lng, end_lat, end_lng, source, source_id)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT(source_id) DO NOTHING
+                ON CONFLICT DO NOTHING
             ''', (
                 route['name'][:200],
                 route.get('provider', 'Unknown')[:100],
