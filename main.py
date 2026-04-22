@@ -1018,8 +1018,12 @@ except Exception as _e:
     print('smoke_test import failed:', _e)
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
-from routes_stubs_v3 import stubs_v3
-app.register_blueprint(stubs_v3)
+# routes_stubs_v3 is optional — wrap so a missing file doesn't kill the boot.
+try:
+    from routes_stubs_v3 import stubs_v3
+    app.register_blueprint(stubs_v3)
+except Exception as _stubs_v3_err:
+    print(f"routes_stubs_v3 import failed (non-fatal): {_stubs_v3_err}")
 
 # smoke_patch_v1: register admin-gated smoke endpoint
 if _register_smoke_routes_v1:
