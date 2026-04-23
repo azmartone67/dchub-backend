@@ -163,8 +163,7 @@ def _bars(ax, rows: list[dict], pal: dict, label_fontsize: float, num_fontsize: 
     # Soft chart bg + readable labels if theme defines them
     if "chart_bg" in pal:
         ax.set_facecolor(pal["chart_bg"])
-    label_color = pal.get("chart_ink", pal["ink"])
-    ax.set_yticklabels(names, color=label_color, family="monospace", fontsize=label_fontsize, weight="bold")
+    ax.set_yticklabels(names, color=pal["ink"], family="monospace", fontsize=label_fontsize, weight="bold")
     ax.tick_params(left=False)
     ax.set_xticks([])
     for s in ax.spines.values():
