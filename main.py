@@ -14616,7 +14616,7 @@ def uptime_check():
         'eia': len(EIA_CACHE),
         'hifld': len(HIFLD_CACHE),
         'oilgas': len(OILGAS_CACHE),
-        'deals': len(DEALS_CACHE),
+        'deals': len(DEALS_CACHE) if 'DEALS_CACHE' in dir() else 0,
         'rate_limiter_clients': len(rate_limiter.requests),
     }
     result = {
