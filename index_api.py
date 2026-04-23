@@ -173,6 +173,7 @@ def _get_config():
     if now - _config_ts < CONFIG_TTL and _config_cache:
         return _config_cache
     cfg = dict(DEFAULT_CONFIG)
+    conn = None
     try:
         conn = get_db()
         cur  = conn.cursor()
@@ -182,6 +183,12 @@ def _get_config():
         cur.close()
     except Exception as e:
         logger.warning("Config load failed: %s", e)
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
     _config_cache = cfg
     _config_ts    = now
     return cfg
