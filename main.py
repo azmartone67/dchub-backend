@@ -4943,6 +4943,7 @@ def grid_fuel_mix_live_v1_alias():
     }), 200
 
 @app.route('/api/v1/grid/<iso>', methods=['GET'])
+@require_plan('enterprise')
 def grid_iso_alias(iso):
     '''/api/v1/grid/<iso> -> /api/v1/grid-headroom?iso=<iso>'''
     qs = request.query_string.decode()
