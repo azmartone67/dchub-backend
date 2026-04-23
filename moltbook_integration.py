@@ -80,8 +80,9 @@ def save_credentials(data):
     """Save registration credentials to file and log for env setup."""
     with open(CREDENTIALS_FILE, "w") as f:
         json.dump(data, f, indent=2)
-    LOG.info("Credentials saved to %s", CREDENTIALS_FILE)
-    LOG.info("⚠️  Add MOLTBOOK_API_KEY=%s to Replit Secrets for persistence", data.get("api_key", "%s%s%s"))
+    key_len = len(data.get("api_key", "") or "")
+    LOG.info("Credentials file written (path redacted; %d-char token)", key_len)
+    LOG.info("Persistence reminder: set the Moltbook token in Replit Secrets (see CREDENTIALS_FILE for the value)")
 
 
 def _headers(api_key=None):

@@ -782,9 +782,10 @@ class APIAutoDiscovery:
     def health_check_registered_apis(self) -> Dict:
         results = {'checked': 0, 'healthy': 0, 'degraded': 0, 'down': 0, 'schema_changes': 0}
 
+        # PHASE 1: short DB read to grab the work list, then RELEASE the connection
+        # so it can't be held across the slow ArcGIS HTTP calls below.
         conn = get_db(self.db_path)
         cursor = conn.cursor()
-
         cursor.execute('''
             SELECT id, name, url, api_type, record_count, test_result
             FROM discovered_apis
@@ -792,8 +793,14 @@ class APIAutoDiscovery:
             AND (last_tested IS NULL OR last_tested < datetime('now', '-6 hours'))
             LIMIT 30
         ''')
-
         apis = cursor.fetchall()
+        conn.close()
+
+        # PHASE 2: do all HTTP work without holding any DB connection.
+        # Buffer per-API outcomes in memory.
+        update_rows = []   # for discovered_apis UPDATE
+        health_rows = []   # for api_health_checks INSERT
+        change_events = [] # (api_id, event_type, old, new, description)
 
         for api_id, name, url, api_type, prev_count, prev_result_json in apis:
             try:
@@ -823,10 +830,9 @@ class APIAutoDiscovery:
                 if prev_fields and new_fields and set(prev_fields) != set(new_fields):
                     results['schema_changes'] += 1
                     schema_hash = hashlib.sha256(json.dumps(sorted(new_fields)).encode()).hexdigest()[:16]
-
-                    self._log_change_event(cursor, api_id, 'schema_change',
+                    change_events.append((api_id, 'schema_change',
                         json.dumps(prev_fields), json.dumps(new_fields),
-                        f"Schema changed: fields went from {len(prev_fields)} to {len(new_fields)}")
+                        f"Schema changed: fields went from {len(prev_fields)} to {len(new_fields)}"))
                 else:
                     schema_hash = hashlib.sha256(json.dumps(sorted(new_fields)).encode()).hexdigest()[:16] if new_fields else ''
 
@@ -840,40 +846,55 @@ class APIAutoDiscovery:
                 if prev_count_int > 0 and new_count > 0:
                     change_pct = abs(new_count - prev_count_int) / prev_count_int * 100
                     if change_pct > 20:
-                        self._log_change_event(cursor, api_id, 'record_count_change',
+                        change_events.append((api_id, 'record_count_change',
                             str(prev_count_int), str(new_count),
-                            f"Record count changed by {change_pct:.1f}% ({prev_count_int} -> {new_count})")
+                            f"Record count changed by {change_pct:.1f}% ({prev_count_int} -> {new_count})"))
 
                 status = 'working' if is_healthy else 'degraded' if response_time > 5000 else 'failed'
+                now_iso = datetime.now().isoformat()
 
-                for attempt in range(3):
-                    try:
-                        cursor.execute('''
-                            UPDATE discovered_apis
-                            SET status = %s, last_tested = %s, test_result = %s,
-                                record_count = %s, updated_at = %s
-                            WHERE id = %s
-                        ''', (status, datetime.now().isoformat(), json.dumps(test_result),
-                              str(new_count) if new_count else prev_count,
-                              datetime.now().isoformat(), api_id))
-
-                        cursor.execute('''
-                            INSERT INTO api_health_checks
-                            (api_id, url, status_code, response_time_ms, record_count, schema_hash, is_healthy, error_message)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                        ''', (api_id, url, 200 if is_healthy else 0, response_time,
-                              new_count, schema_hash, 1 if is_healthy else 0,
-                              test_result.get('error', '')))
-                        break
-                    except Exception:
-                        time.sleep(0.5)
+                update_rows.append((status, now_iso, json.dumps(test_result),
+                    str(new_count) if new_count else prev_count, now_iso, api_id))
+                health_rows.append((api_id, url, 200 if is_healthy else 0, response_time,
+                    new_count, schema_hash, 1 if is_healthy else 0,
+                    test_result.get('error', '')))
 
                 time.sleep(0.5)
             except Exception as e:
                 logger.debug(f"Health check error for {name}: {e}")
 
-        conn.commit()
-        conn.close()
+        # PHASE 3: short DB write to flush all buffered results in one connection.
+        try:
+            conn = get_db(self.db_path)
+            cursor = conn.cursor()
+            for row in update_rows:
+                try:
+                    cursor.execute('''
+                        UPDATE discovered_apis
+                        SET status = %s, last_tested = %s, test_result = %s,
+                            record_count = %s, updated_at = %s
+                        WHERE id = %s
+                    ''', row)
+                except Exception:
+                    pass
+            for row in health_rows:
+                try:
+                    cursor.execute('''
+                        INSERT INTO api_health_checks
+                        (api_id, url, status_code, response_time_ms, record_count, schema_hash, is_healthy, error_message)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ''', row)
+                except Exception:
+                    pass
+            for ev in change_events:
+                try:
+                    self._log_change_event(cursor, ev[0], ev[1], ev[2], ev[3], ev[4])
+                except Exception:
+                    pass
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.warning(f"Health check write phase failed: {e}")
 
         self._cache['health_report'] = results
         logger.info(f"Health Check: checked={results['checked']}, healthy={results['healthy']}, down={results['down']}, schema_changes={results['schema_changes']}")
@@ -1007,18 +1028,20 @@ class APIAutoDiscovery:
     def test_all_apis(self) -> Dict:
         results = {'tested': 0, 'working': 0, 'failed': 0}
 
+        # PHASE 1: brief DB read to fetch the work list, then close the connection.
         conn = get_db(self.db_path)
         cursor = conn.cursor()
-
         cursor.execute('''
             SELECT id, name, url, api_type FROM discovered_apis
             WHERE status NOT IN ('deprecated')
             AND (last_tested IS NULL OR last_tested < datetime('now', '-7 days'))
             LIMIT 25
         ''')
-
         apis = cursor.fetchall()
+        conn.close()
 
+        # PHASE 2: HTTP work without holding a DB connection.
+        update_rows = []
         for api_id, name, url, api_type in apis:
             test_result = self.test_api(url, api_type or 'arcgis')
             results['tested'] += 1
@@ -1029,23 +1052,28 @@ class APIAutoDiscovery:
             else:
                 results['failed'] += 1
 
-            for attempt in range(3):
+            now_iso = datetime.now().isoformat()
+            update_rows.append((status, now_iso, json.dumps(test_result),
+                str(test_result.get('record_count', 0)), now_iso, api_id))
+            time.sleep(0.5)
+
+        # PHASE 3: brief DB write to flush all buffered updates.
+        try:
+            conn = get_db(self.db_path)
+            cursor = conn.cursor()
+            for row in update_rows:
                 try:
                     cursor.execute('''
                         UPDATE discovered_apis
                         SET status = %s, last_tested = %s, test_result = %s, record_count = %s, updated_at = %s
                         WHERE id = %s
-                    ''', (status, datetime.now().isoformat(), json.dumps(test_result),
-                          str(test_result.get('record_count', 0)),
-                          datetime.now().isoformat(), api_id))
-                    break
+                    ''', row)
                 except Exception:
-                    time.sleep(0.5)
-
-            time.sleep(0.5)
-
-        conn.commit()
-        conn.close()
+                    pass
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.warning(f"test_all_apis write phase failed: {e}")
 
         logger.info(f"API Testing: tested={results['tested']}, working={results['working']}, failed={results['failed']}")
         return results
