@@ -275,6 +275,7 @@ class GlobalIntelligenceAgent:
                     INSERT INTO fiber_carrier_routes
                     (name, provider, route_type, start_point, end_point, distance_km, coordinates, source_url, last_checked, data_source)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'seed')
+                    ON CONFLICT (provider, name) DO NOTHING
                 ''', (
                     route['name'], route['provider'], route['route_type'],
                     route['start_point'], route['end_point'], route['distance_km'],
