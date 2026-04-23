@@ -224,6 +224,9 @@ class PGCursorWrapper:
         row = self._cur.fetchone()
         if row is None:
             return None
+        # If cursor_factory already returned dict-like row, pass through (fixes cursor_factory=RealDictCursor)
+        if hasattr(row, 'keys') or isinstance(row, dict):
+            return row
         if self._cur.description:
             keys = [d[0] for d in self._cur.description]
             return PGRowProxy(row, keys)
@@ -233,6 +236,9 @@ class PGCursorWrapper:
         rows = self._cur.fetchall()
         if not rows:
             return []
+        # If cursor_factory already returned dict-like rows, pass through (fixes cursor_factory=RealDictCursor)
+        if rows and (hasattr(rows[0], 'keys') or isinstance(rows[0], dict)):
+            return rows
         if self._cur.description:
             keys = [d[0] for d in self._cur.description]
             return [PGRowProxy(r, keys) for r in rows]
