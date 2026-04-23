@@ -45,9 +45,9 @@ PAL = {
     "c": {"bg": "#02060A", "op": "#39FF6A", "uc": "#4CE0FF", "ann": "#FF5EDC",
           "ink": "#C9FFD6", "dim": "#77D99A", "accent": "#39FF6A"},
     "d": {"bg": "#0A0E1C",
-          "chart_bg": "#CBD5E1",   # soft slate-300 plot bg (was stark white)
-          "chart_ink": "#334155",  # slate-700 labels on soft bg
-          "chart_dim": "#64748B",  # slate-500 for secondary labels on soft bg
+          "chart_bg": "#F1F5F9",   # slate-100 (softer than white, still bright)
+          "chart_ink": "#0F172A",  # slate-900 — near-black for strong label contrast
+          "chart_dim": "#475569",  # slate-600 — medium, readable secondary text
           "op": "#5B8FFF",          # blue — operational
           "uc": "#8B7FFF",          # purple — under construction
           "ann": "#6B7280",         # grey — announced (less committed)
@@ -164,7 +164,7 @@ def _bars(ax, rows: list[dict], pal: dict, label_fontsize: float, num_fontsize: 
     if "chart_bg" in pal:
         ax.set_facecolor(pal["chart_bg"])
     label_color = pal.get("chart_ink", pal["ink"])
-    ax.set_yticklabels(names, color=label_color, family="monospace", fontsize=label_fontsize)
+    ax.set_yticklabels(names, color=label_color, family="monospace", fontsize=label_fontsize, weight="bold")
     ax.tick_params(left=False)
     ax.set_xticks([])
     for s in ax.spines.values():
