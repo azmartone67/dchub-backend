@@ -250,8 +250,8 @@ class PGConnectionWrapper:
         self._conn = pg_conn
         self._return_func = return_func
 
-    def cursor(self):
-        return PGCursorWrapper(self._conn.cursor())
+    def cursor(self, *args, **kwargs):
+        return PGCursorWrapper(self._conn.cursor(*args, **kwargs))
 
     def execute(self, sql, params=None):
         cur = self.cursor()
