@@ -4308,11 +4308,11 @@ try:
     app.register_blueprint(platforms_bp)
     app.register_blueprint(csp_report_bp)
     try:
-        from routes.pricing_connectivity_routes import pricing_connectivity_bp
-        app.register_blueprint(pricing_connectivity_bp)
-        print("✅ pricing_connectivity_bp registered")
+        from routes.pricing_connectivity_routes import register_pricing_connectivity_routes
+        register_pricing_connectivity_routes(app, get_pg_connection)
+        print("✅ pricing_connectivity registered via register function")
     except Exception as _e:
-        print(f"⚠️ pricing_connectivity_bp skipped: {_e}")
+        print(f"⚠️ pricing_connectivity skipped: {_e}")
     app.add_url_rule('/api/platform-cards', endpoint='platform_cards_alias', view_func=get_platform_cards, methods=['GET'])
     app.add_url_rule('/api/platform-cards/<platform_id>', endpoint='platform_card_detail_alias', view_func=get_platform_card, methods=['GET'])
     logger.info("✅ Platform Cards API registered (with /api/platform-cards alias)")
