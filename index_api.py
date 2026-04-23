@@ -287,9 +287,9 @@ def _load_bulk(cfg, _conn=None):
 
     mi_rows = []
     if _bool(cfg, 'mi_enabled'):
-        mi_rows = _run_query(f"SELECT LOWER(COALESCE(market,'')), avg_rate_per_kw FROM {mi} ORDER BY recorded_at DESC")
+        mi_rows = _run_query(f"SELECT LOWER(COALESCE(market,'')), avg_rate_per_kw FROM {mi} ORDER BY last_updated DESC")
 
-    deal_rows = _run_query(f"SELECT LOWER(COALESCE(market,'')), COUNT(*), COALESCE(SUM(mw),0) FROM {txn} WHERE date >= NOW() - INTERVAL '90 days' GROUP BY LOWER(COALESCE(market,''))")
+    deal_rows = _run_query(f"SELECT LOWER(COALESCE(market,'')), COUNT(*), COALESCE(SUM(mw),0) FROM {txn} WHERE date::timestamp >= NOW() - INTERVAL '90 days' GROUP BY LOWER(COALESCE(market,''))")
 
     # Large facility queries last
     op_rows = _run_query(f"SELECT UPPER(COALESCE(country,'')), LOWER(COALESCE(state,'')), LOWER(COALESCE(city,'')), COALESCE(power_mw,0) FROM {fac} WHERE status IN ({op_ph})", op_st)
