@@ -696,11 +696,19 @@ def pg_connection(pool_type=None):
         if conn is not None:
             return_pg_connection(conn)
 
+_HEALTH_MEMORY_THRESHOLD_MB = 2048
+
 def get_pool_health():
     """Purely in-memory health check -- NEVER touches the database or pool internals.
     Uses only counters, dicts, and stats tracked by our own code."""
-    mem = resource.getrusage(resource.RUSAGE_SELF)
-    mem_mb = mem.ru_maxrss / 1024
+    # Use current RSS (psutil) instead of ru_maxrss (which is peak-since-start
+    # and would make memory.warning sticky forever after any transient spike).
+    try:
+        import psutil as _ps
+        mem_mb = _ps.Process(os.getpid()).memory_info().rss / (1024 * 1024)
+    except Exception:
+        mem = resource.getrusage(resource.RUSAGE_SELF)
+        mem_mb = mem.ru_maxrss / 1024
 
     checked_out = 0
     leaked = []
@@ -757,7 +765,8 @@ def get_pool_health():
         },
         'memory': {
             'rss_mb': round(mem_mb, 1),
-            'warning': mem_mb > 512,
+            'warning': mem_mb > _HEALTH_MEMORY_THRESHOLD_MB,
+            'threshold_mb': _HEALTH_MEMORY_THRESHOLD_MB,
         },
         'neon_limits': {
             'note': 'Neon Launch plan, primary + read replica with autoscaling .25-8 CU',
@@ -1387,7 +1396,7 @@ def db_health_endpoint():
     if health.get('circuit_breaker', {}).get('open'):
         is_healthy = False
     if health.get('memory', {}).get('warning'):
-        health['memory']['message'] = 'Memory usage above 512MB threshold'
+        health['memory']['message'] = f"Memory usage above {_HEALTH_MEMORY_THRESHOLD_MB}MB threshold"
         is_healthy = False
     status_code = 200 if is_healthy else 503
     health['overall'] = 'healthy' if is_healthy else 'degraded'
@@ -14525,7 +14534,7 @@ def verify_tier_gating():
 import psutil as _psutil_mod
 _SERVER_RESTART_TS = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
 
-_MEMORY_LIMIT_MB = 256
+_MEMORY_LIMIT_MB = 1024
 _GC_INTERVAL = 60
 
 try:
@@ -14632,6 +14641,57 @@ def uptime_check():
         result['status'] = 'degraded'
         result['degraded_reason'] = 'news_scheduler_down'
     return jsonify(result)
+
+
+_TRACEMALLOC_STARTED = False
+
+@app.route('/api/admin/memory-top', methods=['GET'])
+def admin_memory_top():
+    """Return the top-20 Python memory allocators by file+lineno.
+
+    First call enables tracemalloc (subsequent allocations only).
+    Subsequent calls return a snapshot. Auth: X-Admin-Key header."""
+    from flask import jsonify, request
+    # Header-only to prevent leaking the admin key via URL/query/referrer logs.
+    admin_key = request.headers.get('X-Admin-Key')
+    expected = os.environ.get('DCHUB_ADMIN_KEY', '')
+    if not admin_key or not expected or admin_key != expected:
+        return jsonify({'error': 'unauthorized'}), 401
+
+    import tracemalloc
+    global _TRACEMALLOC_STARTED
+    proc = _psutil_mod.Process(os.getpid())
+    rss_mb = round(proc.memory_info().rss / (1024 * 1024), 1)
+
+    if not _TRACEMALLOC_STARTED:
+        tracemalloc.start(25)
+        _TRACEMALLOC_STARTED = True
+        return jsonify({
+            'status': 'tracemalloc_started',
+            'message': 'Allocator tracking enabled. Call again later to see what has been allocated since now.',
+            'rss_mb': rss_mb,
+            'tracemalloc_overhead_mb': round(tracemalloc.get_traced_memory()[0] / (1024 * 1024), 2),
+        })
+
+    snapshot = tracemalloc.take_snapshot()
+    stats = snapshot.statistics('lineno')[:20]
+    traced_current, traced_peak = tracemalloc.get_traced_memory()
+    return jsonify({
+        'status': 'ok',
+        'rss_mb': rss_mb,
+        'tracemalloc_current_mb': round(traced_current / (1024 * 1024), 2),
+        'tracemalloc_peak_mb': round(traced_peak / (1024 * 1024), 2),
+        'top_allocators': [
+            {
+                'file': stat.traceback[0].filename,
+                'line': stat.traceback[0].lineno,
+                'size_mb': round(stat.size / (1024 * 1024), 3),
+                'count': stat.count,
+            }
+            for stat in stats
+        ],
+    })
+
 
 # DISABLED: Hits 71+ endpoints at startup - unnecessary overhead
 if IS_RAILWAY: _deferred_bg_threads.append(('Tier Gate Verification', verify_tier_gating))
