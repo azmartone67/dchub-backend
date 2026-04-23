@@ -1,5 +1,6 @@
 from dotenv import load_dotenv
 from internal_auth import is_valid_internal_key, get_internal_key_for_client
+from csp_report import csp_report_bp
 load_dotenv()
 
 # =================================================================
@@ -4296,6 +4297,7 @@ except Exception as e:
 try:
     from platforms_api import platforms_bp, get_platform_cards, get_platform_card
     app.register_blueprint(platforms_bp)
+    app.register_blueprint(csp_report_bp)
     app.add_url_rule('/api/platform-cards', endpoint='platform_cards_alias', view_func=get_platform_cards, methods=['GET'])
     app.add_url_rule('/api/platform-cards/<platform_id>', endpoint='platform_card_detail_alias', view_func=get_platform_card, methods=['GET'])
     logger.info("✅ Platform Cards API registered (with /api/platform-cards alias)")
