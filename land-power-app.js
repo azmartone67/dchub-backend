@@ -9,8 +9,12 @@
         // BASE MAP OPTIONS - Google Maps + Others
         // ============================================
         
-        // Google Maps Tile URLs (using session token for authorized access)
-        var GOOGLE_API_KEY = 'AIzaSyDDG06_pDGoLrBee02kCQf5h48wFq2Kn2A';
+        // Google Maps Tile URLs — credential is injected at page-load time via
+        // <meta name="google-maps-key" content="..."> or window.GOOGLE_MAPS_KEY.
+        // Restrict the browser key by HTTP referrer in Google Cloud Console.
+        var GOOGLE_API_KEY = (typeof window !== 'undefined' && window.GOOGLE_MAPS_KEY)
+            || (document.querySelector('meta[name="google-maps-key"]') || {}).content
+            || '';
         
         // 1. Google Satellite
         var googleSatellite = L.tileLayer('https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', {

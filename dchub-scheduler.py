@@ -209,7 +209,7 @@ JOBS = {
     },
     'drip_emails': {
         'name': 'Welcome Email Drip',
-        'endpoint': '/api/admin/drip-check?admin_key=f4f961b15334c7b3a570681354638ed5',
+        'endpoint': f'/api/admin/drip-check?admin_key={os.environ.get("DCHUB_ADMIN_KEY", "")}',
         'method': 'POST',
         'hours': [16],               # 9 AM MST = 4 PM UTC
         'minute': 30,

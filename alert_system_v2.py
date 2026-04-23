@@ -1131,7 +1131,8 @@ if __name__ == '__main__':
     from flask import Flask
     
     app = Flask(__name__)
-    app.config['SECRET_KEY'] = 'test-secret'
+    import secrets as _sec
+    app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY') or _sec.token_hex(32)
     
     register_alert_routes(app, start_scheduler=False)
     

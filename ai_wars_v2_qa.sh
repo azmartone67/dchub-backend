@@ -7,7 +7,7 @@
 # ═══════════════════════════════════════════════════════════════
 
 BASE="https://dchub.cloud"
-ADMIN_KEY="f4f961b15334c7b3a570681354638ed5"
+ADMIN_KEY="${DCHUB_ADMIN_KEY:?DCHUB_ADMIN_KEY environment variable is required}"
 PASS=0
 FAIL=0
 

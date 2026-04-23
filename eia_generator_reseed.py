@@ -18,9 +18,9 @@ Strategy:
   4. TRUNCATE + batch-insert into eia_generators (clean slate)
 
 Usage:
-  # In Railway shell:
-  EIA_API_KEY=SuphqqIra7G46LHVDwb9CL5n4WYRwLu7ujeFXJMG \
-  NEON_DATABASE_URL="postgresql://..." \
+  # In Railway shell (export EIA_API_KEY and NEON_DATABASE_URL via env):
+  EIA_API_KEY="$EIA_API_KEY" \
+  NEON_DATABASE_URL="$NEON_DATABASE_URL" \
   python3 eia_generator_reseed.py
 
   # Or with defaults from env:

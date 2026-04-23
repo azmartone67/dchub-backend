@@ -3,7 +3,7 @@
 DC Hub Press Release Publisher
 Global Infrastructure: 1.29M Records Live
 """
-import subprocess, json, sys
+import os, subprocess, json, sys
 
 # ── Press Release Content ────────────────────────────────────────────────────
 
@@ -86,7 +86,7 @@ li_payload = json.dumps({
 li_result = subprocess.run([
     "curl", "-s", "-w", "\n%{http_code}",
     "-X", "POST", "https://dchub-backend-production.up.railway.app/api/linkedin/post",
-    "-H", "X-Admin-Key: f4f961b15334c7b3a570681354638ed5",
+    "-H", f"X-Admin-Key: {os.environ.get('DCHUB_ADMIN_KEY', '')}",
     "-H", "Content-Type: application/json",
     "-d", li_payload
 ], capture_output=True, text=True, timeout=30)
