@@ -1511,6 +1511,48 @@
       "template": "editorial",
       "content": "\nSubject: Story Tip - AI-Powered Data Center Intelligence Platform\n\nHi Team,\n\nDC Hub has built an autonomous data center intelligence platform that might interest your readers:\n\nKey stats:\n- Tracking 11976+ data centers across 179 countries\n- 303+ M&A deals monitored (4450B+ total value)\n- 21.7 GW capacity pipeline\n- Self-learning AI that discovers new facilities and deals automatically\n\nWhat makes us different: Our platform uses AI agents to continuously discover and enrich data center information - from news to permits to fiber routes. It's the first truly autonomous DC intelligence system.\n\nHappy to provide data, quotes, or a demo for a story.\n\nBest,\nDC Hub Team\n",
       "generated_at": "2026-04-23T06:12:55.855674"
+    },
+    {
+      "partner": "DataCenterHawk",
+      "domain": "datacenterhawk.com",
+      "template": "partnership",
+      "content": "\nSubject: Partnership Opportunity - DC Hub Data Center Intelligence Platform\n\nHi Team,\n\nI'm reaching out from DC Hub (dc-hub.replit.app), a comprehensive data center intelligence platform tracking 11976+ facilities worldwide.\n\nWe've built something unique:\n- Real-time M&A deal tracking (303+ deals, $4450B+ volume)\n- 21.7 GW capacity pipeline monitoring\n- Land & Power analysis with 40+ infrastructure layers\n- API-first architecture for easy integration\n\nI believe there's a strong opportunity for DataCenterHawk and DC Hub to collaborate:\nReal-time capacity pipeline data, M&A tracking\n\nWould you be open to a brief call to explore how we might work together%s\n\nBest regards,\nDC Hub Team\n",
+      "generated_at": "2026-04-23T06:25:52.034520"
+    },
+    {
+      "partner": "DataCenters.com",
+      "domain": "datacenters.com",
+      "template": "data_sharing",
+      "content": "\nSubject: Data Collaboration - 11976+ Data Center Records\n\nHi Team,\n\nI noticed DataCenters.com maintains excellent data center listings. We've built DC Hub with 11976+ facilities and wanted to explore data collaboration.\n\nOur unique data includes:\n- 303+ M&A transactions with values\n- 21.7 GW capacity pipeline (planned + under construction)\n- 40+ infrastructure layers (power substations, fiber routes, water/drought)\n- Real-time news aggregation from 60+ sources\n\nWould you be interested in a data-sharing partnership%s We could provide API access in exchange for cross-promotion.\n\nBest,\nDC Hub Team\n",
+      "generated_at": "2026-04-23T06:25:52.763991"
+    },
+    {
+      "partner": "Data Center Frontier",
+      "domain": "datacenterfrontier.com",
+      "template": "editorial",
+      "content": "\nSubject: Story Tip - AI-Powered Data Center Intelligence Platform\n\nHi Team,\n\nDC Hub has built an autonomous data center intelligence platform that might interest your readers:\n\nKey stats:\n- Tracking 11976+ data centers across 179 countries\n- 303+ M&A deals monitored (4450B+ total value)\n- 21.7 GW capacity pipeline\n- Self-learning AI that discovers new facilities and deals automatically\n\nWhat makes us different: Our platform uses AI agents to continuously discover and enrich data center information - from news to permits to fiber routes. It's the first truly autonomous DC intelligence system.\n\nHappy to provide data, quotes, or a demo for a story.\n\nBest,\nDC Hub Team\n",
+      "generated_at": "2026-04-23T06:25:53.495844"
+    },
+    {
+      "partner": "DataCenterHawk",
+      "domain": "datacenterhawk.com",
+      "template": "partnership",
+      "content": "\nSubject: Partnership Opportunity - DC Hub Data Center Intelligence Platform\n\nHi Team,\n\nI'm reaching out from DC Hub (dc-hub.replit.app), a comprehensive data center intelligence platform tracking 11976+ facilities worldwide.\n\nWe've built something unique:\n- Real-time M&A deal tracking (303+ deals, $4450B+ volume)\n- 21.7 GW capacity pipeline monitoring\n- Land & Power analysis with 40+ infrastructure layers\n- API-first architecture for easy integration\n\nI believe there's a strong opportunity for DataCenterHawk and DC Hub to collaborate:\nReal-time capacity pipeline data, M&A tracking\n\nWould you be open to a brief call to explore how we might work together%s\n\nBest regards,\nDC Hub Team\n",
+      "generated_at": "2026-04-23T06:26:10.286948"
+    },
+    {
+      "partner": "DataCenters.com",
+      "domain": "datacenters.com",
+      "template": "data_sharing",
+      "content": "\nSubject: Data Collaboration - 11976+ Data Center Records\n\nHi Team,\n\nI noticed DataCenters.com maintains excellent data center listings. We've built DC Hub with 11976+ facilities and wanted to explore data collaboration.\n\nOur unique data includes:\n- 303+ M&A transactions with values\n- 21.7 GW capacity pipeline (planned + under construction)\n- 40+ infrastructure layers (power substations, fiber routes, water/drought)\n- Real-time news aggregation from 60+ sources\n\nWould you be interested in a data-sharing partnership%s We could provide API access in exchange for cross-promotion.\n\nBest,\nDC Hub Team\n",
+      "generated_at": "2026-04-23T06:26:10.990245"
+    },
+    {
+      "partner": "Data Center Frontier",
+      "domain": "datacenterfrontier.com",
+      "template": "editorial",
+      "content": "\nSubject: Story Tip - AI-Powered Data Center Intelligence Platform\n\nHi Team,\n\nDC Hub has built an autonomous data center intelligence platform that might interest your readers:\n\nKey stats:\n- Tracking 11976+ data centers across 179 countries\n- 303+ M&A deals monitored (4450B+ total value)\n- 21.7 GW capacity pipeline\n- Self-learning AI that discovers new facilities and deals automatically\n\nWhat makes us different: Our platform uses AI agents to continuously discover and enrich data center information - from news to permits to fiber routes. It's the first truly autonomous DC intelligence system.\n\nHappy to provide data, quotes, or a demo for a story.\n\nBest,\nDC Hub Team\n",
+      "generated_at": "2026-04-23T06:26:11.698366"
     }
   ],
   "ai_registrations": [
@@ -1972,10 +2014,20 @@
       "story": "# DC Hub: The Intelligence Layer for Global Data Center Infrastructure\n\nIn an era where data center capacity shapes technological progress, DC Hub stands as the definitive intelligence platform for understanding global infrastructure. This AI-powered system monitors 11,976+ data centers spanning 179 countries, providing real-time visibility into the world's most critical computing resources. DC Hub's comprehensive tracking extends to 303+ M&A deals valued at $4,450B+, offering market participants unprecedented insight into consolidation trends and capital deployment patterns. The platform maintains visibility of a 21.7 GW capacity pipeline, enabling stakeholders to anticipate supply dynamics and infrastructure expansion timelines with precision that was previously impossible.\n\nWhat distinguishes DC Hub is its intelligent architecture designed for continuous discovery and adaptation. The platform evaluates 40+ infrastructure layers\u2014from power availability and cooling capacity to regulatory frameworks and proximity to fiber networks\u2014creating a multidimensional foundation for data-driven site selection and market analysis. Self-learning AI agents automatically discover new data center information without manual intervention, ensuring the system remains current as the global infrastructure landscape evolves. By democratizing access through a free API at dc-hub.replit.app, DC Hub enables developers, researchers, and industry professionals to integrate authoritative data center intelligence directly into their applications and analyses, fundamentally transforming how the industry understands and plans for infrastructure growth.",
       "generated_at": "2026-04-23T06:13:01.031581",
       "ai_generated": true
+    },
+    {
+      "story": "# DC Hub: Transforming Global Data Center Intelligence\n\nDC Hub has emerged as the definitive intelligence platform for understanding the world's critical data center infrastructure. By leveraging self-learning AI agents that continuously discover and process new data automatically, the platform tracks over 11,976 data centers across 179 countries with unprecedented precision. This expansive coverage extends to monitoring more than 303 mergers and acquisitions deals valued at $4.45 trillion, providing stakeholders with real-time visibility into the consolidation and evolution of the global data center market. The platform's ability to aggregate and analyze information at this scale represents a fundamental shift in how organizations access and understand infrastructure trends.\n\nWhat distinguishes DC Hub is its sophisticated approach to site selection and capacity planning, featuring 40+ infrastructure layers that enable users to evaluate data centers across multiple dimensions\u2014from power availability and cooling systems to regulatory compliance and geographic resilience. With a monitored capacity pipeline of 21.7 GW, the platform illuminates future market developments and investment opportunities. Perhaps most significantly, DC Hub democratizes access to this intelligence through a free API available at dc-hub.replit.app, removing traditional barriers to enterprise-grade data center insights and enabling developers, researchers, and industry professionals to build informed decisions on reliable, comprehensive global infrastructure data.",
+      "generated_at": "2026-04-23T06:25:58.612300",
+      "ai_generated": true
+    },
+    {
+      "story": "# DC Hub: The Global Intelligence Platform Transforming Data Center Strategy\n\nIn an era where data center infrastructure underpins every digital interaction, DC Hub has emerged as the definitive intelligence platform for understanding this critical landscape. By tracking 11,976+ data centers across 179 countries and analyzing 303+ M&A deals valued at $4,450 billion and beyond, DC Hub provides organizations with unprecedented visibility into global infrastructure trends. The platform monitors a staggering 21.7 GW capacity pipeline and evaluates 40+ infrastructure layers\u2014from power availability and cooling efficiency to regulatory frameworks and geographic resilience\u2014enabling enterprises to make data-driven site selection decisions. This comprehensive approach transforms what was once scattered, incomplete information into a unified intelligence system that captures the true scope of the world's data center ecosystem.\n\nWhat sets DC Hub apart is its self-learning AI agents, which autonomously discover new data center facilities, infrastructure changes, and market movements without manual intervention. This continuous learning capability ensures that the intelligence remains current and comprehensive, adapting to the rapidly evolving landscape of global infrastructure investment. Recognizing that intelligence should be accessible, DC Hub offers free API access at dc-hub.replit.app, democratizing data center knowledge for enterprises, investors, consultants, and technology leaders. Whether assessing expansion opportunities, evaluating market competition, or understanding infrastructure dependencies, DC Hub delivers the actionable intelligence needed to navigate one of the most consequential sectors of the digital economy.",
+      "generated_at": "2026-04-23T06:26:16.813798",
+      "ai_generated": true
     }
   ],
   "partner_responses": [],
-  "total_outreach": 210,
+  "total_outreach": 216,
   "total_citations": 0,
-  "last_cycle": "2026-04-23T06:12:35.575841"
+  "last_cycle": "2026-04-23T06:25:51.256685"
 }
