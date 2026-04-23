@@ -372,7 +372,10 @@ def main():
     print("=" * 60)
     print("DC Hub — EIA Pricing Discovery")
     print(f"Time: {datetime.now().isoformat()}")
-    print(f"API Key: {EIA_API_KEY[:8]}...")
+    if EIA_API_KEY:
+        print("Credential: configured")
+    else:
+        print("Credential: MISSING")
     print(f"Database: {DATABASE_URL[:40]}..." if DATABASE_URL else "NO DATABASE")
     print("=" * 60)
     

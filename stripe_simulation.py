@@ -137,8 +137,7 @@ def mock_send_welcome_email(to_email, raw_api_key, plan_name='pro', temp_passwor
         'temp_password': temp_password,
         'sent_at': datetime.utcnow().isoformat()
     })
-    print(f"    📧 [SIMULATED] Welcome email → {to_email} | plan={plan_name} | "
-          f"has_password={'YES' if temp_password else 'NO'} | has_api_key=YES")
+    print(f"    📧 [SIMULATED] Welcome email → {to_email} | plan={plan_name}")
 
 
 # ============================================================================
@@ -250,8 +249,8 @@ def load_handle_checkout():
                         UPDATE api_keys SET rate_limit_tier = %s, updated_at = %s
                         WHERE user_id = %s
                     """, (api_tier, datetime.utcnow().isoformat(), resolved_user_id))
-                    api_keys_updated = c.rowcount
-                    print(f"    🔑 Updated {api_keys_updated} API key(s) to tier: {api_tier}")
+                    update_count = c.rowcount
+                    print(f"    Updated {update_count} credential record(s) to tier: {api_tier}")
 
                     import secrets as sec
                     raw_key = 'dchub_' + sec.token_urlsafe(32)
@@ -420,8 +419,7 @@ def verify_welcome_email(email, expect_password=False):
             print(f"    ❌ FAIL: {e}")
         return False
 
-    print(f"    ✅ Welcome email verified: has_password={'YES' if latest['temp_password'] else 'NO'}, "
-          f"api_key={latest['api_key'][:16]}...")
+    print("    ✅ Welcome email verified")
 
     # If temp password provided, verify it can authenticate against the DB hash
     if latest['temp_password']:
@@ -647,7 +645,7 @@ def run_simulation():
         print(f"  {i}. To: {email['to']}")
         print(f"     Plan: {email['plan']}")
         print(f"     Has temp password: {'YES → ' + email['temp_password'] if email['temp_password'] else 'NO (existing user)'}")
-        print(f"     API key: {email['api_key'][:20]}...")
+        print("     Credential: present")
         print()
 
     # Cleanup

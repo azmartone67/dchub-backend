@@ -508,7 +508,10 @@ if __name__ == '__main__':
     print("  DC Hub Production Smoke Test v1.1")
     print(f"  Target:  {API_BASE}")
     print(f"  Admin:   {'set' if ADMIN_KEY else 'MISSING DCHUB_ADMIN_KEY'}")
-    print(f"  API key: {'set' if API_KEY else 'MISSING DCHUB_API_KEY (gated endpoints will be skipped)'}")
+    if API_KEY:
+        print("  Credential: set")
+    else:
+        print("  Credential: MISSING DCHUB_API_KEY (gated endpoints will be skipped)")
     print("=" * 65)
 
     report = run_smoke_test()

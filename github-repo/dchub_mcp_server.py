@@ -59,7 +59,7 @@ def _api_get(path: str, params: dict = None) -> dict:
     api_key = _current_api_key.get()
     if api_key:
         headers["X-API-Key"] = api_key
-        logger.debug(f"Forwarding API key to backend: {api_key[:16]}...")
+        logger.debug("Forwarding credential header to backend")
     
     try:
         resp = http_requests.get(url, params=params or {}, headers=headers, timeout=15)

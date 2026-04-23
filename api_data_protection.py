@@ -524,10 +524,8 @@ def protect_data(f):
             increment_violation(api_key, max_severity)
             _persist_anomalies(key_hash, anomalies)
 
-            logger.warning(
-                f"🚨 Anomalies detected for {key_hash}: "
-                + "; ".join(f"{a[0]}(sev={a[1]})" for a in anomalies)
-            )
+            anomaly_summary = "; ".join(f"{a[0]}(sev={a[1]})" for a in anomalies)
+            logger.warning("🚨 Anomalies detected (count=%d): %s", len(anomalies), anomaly_summary)
 
             # If severity is critical (score >= 10), soft-block
             total_score = _violation_scores.get(key_hash, 0)
