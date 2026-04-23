@@ -44,7 +44,13 @@ PAL = {
           "ink": "#F6FBFF", "dim": "#7A8FA6", "accent": "#9EF3FF"},
     "c": {"bg": "#02060A", "op": "#39FF6A", "uc": "#4CE0FF", "ann": "#FF5EDC",
           "ink": "#C9FFD6", "dim": "#77D99A", "accent": "#39FF6A"},
-    "d": {"bg": "#0A0E1C", "op": "#5B8FFF", "uc": "#8B7FFF", "ann": "#C4A0FF",
+    "d": {"bg": "#0A0E1C",
+          "chart_bg": "#CBD5E1",   # soft slate-300 plot bg (was stark white)
+          "chart_ink": "#334155",  # slate-700 labels on soft bg
+          "chart_dim": "#64748B",  # slate-500 for secondary labels on soft bg
+          "op": "#5B8FFF",          # blue — operational
+          "uc": "#8B7FFF",          # purple — under construction
+          "ann": "#6B7280",         # grey — announced (less committed)
           "ink": "#E8ECF7", "dim": "#8B92A8", "accent": "#4F8FFF",
           "card_bg": "#121629"},
 }
@@ -145,16 +151,20 @@ def _bars(ax, rows: list[dict], pal: dict, label_fontsize: float, num_fontsize: 
             if summary_labels:
                 ax.text(t + max_total * 0.01, yy,
                         f"{o} {u} {a}" if t < 0.10 * max_total else f"{t:,}",
-                        color=pal["dim"], fontsize=num_fontsize,
+                        color=pal.get("chart_dim", pal["dim"]), fontsize=num_fontsize,
                         va="center", family="monospace")
             else:
                 if t < 0.10 * max_total:
                     ax.text(t + max_total * 0.01, yy, f"{o} {u} {a}",
-                            color=pal["ink"], fontsize=num_fontsize,
+                            color=pal.get("chart_ink", pal["ink"]), fontsize=num_fontsize,
                             va="center", family="monospace")
 
     ax.set_yticks(y)
-    ax.set_yticklabels(names, color=pal["ink"], family="monospace", fontsize=label_fontsize)
+    # Soft chart bg + readable labels if theme defines them
+    if "chart_bg" in pal:
+        ax.set_facecolor(pal["chart_bg"])
+    label_color = pal.get("chart_ink", pal["ink"])
+    ax.set_yticklabels(names, color=label_color, family="monospace", fontsize=label_fontsize)
     ax.tick_params(left=False)
     ax.set_xticks([])
     for s in ax.spines.values():
