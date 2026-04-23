@@ -426,7 +426,7 @@ def setup_drip_routes(app, get_db_conn):
     @app.route('/api/admin/drip-check', methods=['POST'])
     def admin_drip_check():
         admin_key = request.args.get('admin_key')
-        if admin_key != os.environ.get('ADMIN_KEY', 'f4f961b15334c7b3a570681354638ed5'):
+        if admin_key != os.environ.get('DCHUB_ADMIN_KEY', ''):
             return jsonify({'error': 'Unauthorized'}), 403
 
         conn = get_db_conn()
@@ -439,7 +439,7 @@ def setup_drip_routes(app, get_db_conn):
     @app.route('/api/admin/drip-status', methods=['GET'])
     def admin_drip_status():
         admin_key = request.args.get('admin_key')
-        if admin_key != os.environ.get('ADMIN_KEY', 'f4f961b15334c7b3a570681354638ed5'):
+        if admin_key != os.environ.get('DCHUB_ADMIN_KEY', ''):
             return jsonify({'error': 'Unauthorized'}), 403
 
         conn = get_db_conn()

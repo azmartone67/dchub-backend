@@ -528,7 +528,7 @@ def autopilot_capacity_pipeline():
     if _auth.startswith('Bearer '): _api_key = _api_key or _auth[7:]
     _admin = _req.headers.get('X-Admin-Key','')
     _internal = _req.headers.get('X-Internal-Key','')
-    if not _api_key and _admin != 'f4f961b15334c7b3a570681354638ed5' and not is_valid_internal_key(_internal):
+    if not _api_key and _admin != os.environ.get('DCHUB_ADMIN_KEY', '') and not is_valid_internal_key(_internal):
         from flask import jsonify as _j
         return _j({'error':'unauthorized','message':'API key required','upgrade':'https://dchub.cloud/pricing'}), 401
     conn = None

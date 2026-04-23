@@ -65,7 +65,7 @@ def _require_admin_key():
     )
     expected = os.environ.get('DCHUB_ADMIN_KEY', '')
     admin_secret = os.environ.get('ADMIN_SECRET', '')
-    valid_keys = [k for k in [expected, admin_secret, 'dchub-admin'] if k]
+    valid_keys = [k for k in [expected, admin_secret] if k]
     if not provided or not any(provided.strip() == k.strip() for k in valid_keys):
         logger.warning(
             "JOBS AUTH: ❌ failed (provided=%d chars, expected=%d chars) "
