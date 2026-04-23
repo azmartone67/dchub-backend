@@ -15166,7 +15166,7 @@ def api_agents_intelligence_index():
         pipeline_gw = float(c.fetchone()[0] or 0)
         c.execute("SELECT market, score FROM gdci_scores ORDER BY score DESC NULLS LAST LIMIT 10")
         top_markets = [{'market': r[0], 'score': float(r[1] or 0)} for r in c.fetchall()]
-        c.execute("SELECT COUNT(*) FROM deals WHERE date >= NOW() - INTERVAL '90 days'")
+        c.execute("SELECT COUNT(*) FROM deals WHERE date::timestamp >= NOW() - INTERVAL '90 days'")
         recent_deals = c.fetchone()[0] or 0
         c.execute("SELECT COUNT(*) FROM substations")
         substation_count = c.fetchone()[0] or 0
