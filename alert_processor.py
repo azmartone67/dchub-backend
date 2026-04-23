@@ -779,7 +779,7 @@ def api_process_alerts():
     
     # Optional: require admin key
     admin_key = data.get('admin_key', '')
-    expected_key = os.environ.get('ADMIN_KEY', '')
+    expected_key = os.environ.get('DCHUB_ADMIN_KEY', '')
     
     if expected_key and admin_key != expected_key:
         return jsonify({'success': False, 'error': 'Unauthorized'}), 401

@@ -40,7 +40,7 @@ def _get_db(retries=3):
 
 def _check_admin(req):
     admin_key = req.headers.get('X-Admin-Key') or req.args.get('admin_key') or req.args.get('key')
-    valid_keys = [k for k in [os.environ.get('DCHUB_ADMIN_KEY', ''), 'dchub-admin'] if k]
+    valid_keys = [k for k in [os.environ.get('DCHUB_ADMIN_KEY', '')] if k]
     return admin_key in valid_keys
 
 def init_content_tables():
