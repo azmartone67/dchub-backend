@@ -83,20 +83,45 @@ def _get_client_ip():
 def _get_key_and_tier():
     """
     Identify client and their rate limit tier.
-    Checks: X-Internal-Key → request.user (JWT) → IP
+    Checks: X-Internal-Key → X-API-Key → request.user (JWT) → IP
+
+    PATCH 2026-04-24 (jm): Added X-API-Key recognition. Customers calling
+    any API route (not just /mcp) with a valid-looking API key were being
+    lumped into anonymous IP-based rate limiting (20 rpm), which is way
+    too low for real usage patterns. Paying customers with keys now get
+    'authenticated' tier (120 rpm / 5000 rph). This is a first-gate check
+    — downstream handlers still validate the key properly via
+    api_tier_gating.validate_api_key(). We don't DB-validate here (it
+    would add a round-trip per request and the rate limiter should be
+    cheap); we just recognize the format and trust-but-verify.
     """
-    # 1. MCP / internal traffic
+    # 1. MCP / internal service-to-service traffic
     ik = request.headers.get('X-Internal-Key', '')
     if is_valid_internal_key(ik):
         return 'internal:mcp', 'internal'
 
-    # 2. Authenticated user (JWT decoded by require_auth / optional_auth)
+    # 2. Customer API-key traffic (dchub_*, dch_* prefixes)
+    # We use the key's prefix as the bucket key so a Pro customer's burst
+    # of 100 requests in a second doesn't spill into another customer's bucket.
+    api_key = (
+        request.headers.get('X-API-Key', '') or
+        request.args.get('api_key', '')
+    )
+    if not api_key:
+        auth_h = request.headers.get('Authorization', '')
+        if auth_h.startswith('Bearer ') and auth_h[7:].startswith(('dchub_', 'dch_')):
+            api_key = auth_h[7:]
+    if api_key and api_key.startswith(('dchub_', 'dch_')) and len(api_key) >= 20:
+        # Bucket by first 16 chars (stable prefix, avoids logging full key)
+        return f'apikey:{api_key[:16]}', 'authenticated'
+
+    # 3. Authenticated user (JWT decoded by require_auth / optional_auth)
     user = getattr(request, 'user', None)
     if user and isinstance(user, dict):
         uid = user.get('user_id') or user.get('email') or 'unknown'
         return f'user:{uid}', 'authenticated'
 
-    # 3. Anonymous - rate limit by IP
+    # 4. Anonymous - rate limit by IP
     return f'ip:{_get_client_ip()}', 'anonymous'
 
 
@@ -107,9 +132,20 @@ def _get_key_and_tier():
 SKIP_PATHS = frozenset([
     '/health', '/api/health', '/api/v1/circuit-status', '/favicon.ico',
     '/robots.txt', '/sitemap.xml', '/.well-known/mcp-registry-auth',
+    # PATCH 2026-04-24 (jm): /mcp has its own tier-aware rate limiter inside
+    # mcp_gatekeeper.py (_rl.check). Double-limiting here was causing every
+    # real MCP customer (mcp-remote from Claude Desktop, dchub CLI, etc.) to
+    # hit anonymous 20-rpm caps during the normal 5-message init handshake
+    # (initialize → notifications/initialized → tools/list → prompts/list →
+    # resources/list, all in under 1 second) — tripping 429 on request #2
+    # and putting the client into a reconnect storm that never resolves.
+    '/mcp', '/mcp/',
 ])
 
-SKIP_PREFIXES = ('/static/', '/assets/', '/js/', '/css/', '/images/')
+# PATCH 2026-04-24 (jm): Added '/mcp/' prefix so any MCP sub-paths
+# (e.g. /mcp/sessions/xyz if future transport uses them) also bypass the
+# Flask-level rate limiter.
+SKIP_PREFIXES = ('/static/', '/assets/', '/js/', '/css/', '/images/', '/mcp/')
 
 
 # ---------------------------------------------------------------------------
