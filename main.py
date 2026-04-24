@@ -3999,27 +3999,41 @@ except Exception as e:
     logger.error(f"⚠️ AI Ecosystem Agent failed: {e}")
 
 # Autonomous Brain - Self-learning master agent
+# ------------------------------------------------------------------
+# PATCH 2026-04-23 (jm): Brain now has its OWN on/off flag because it
+# was incorrectly gated on ENABLE_BACKGROUND_SCHEDULERS, which is False
+# on Railway. No matching /api/jobs/autonomous-brain endpoint exists for
+# the external scheduler service to call, so gating Brain on that flag
+# meant Brain never ran on production — and capacity_pipeline and deals
+# have been frozen as a result.
+#
+# Fix: add AUTONOMOUS_BRAIN_ENABLED env var (default "true"). Set it to
+# "false" in Railway Variables only if you intentionally want Brain off.
+# Also upgraded the two exception-log calls to exc_info=True so future
+# init failures dump a full traceback instead of silently swallowing it.
+# ------------------------------------------------------------------
 try:
     from autonomous_brain import autonomous_bp, init_autonomous_brain
     app.register_blueprint(autonomous_bp)
     logger.info("✅ Autonomous Brain routes registered")
 
-    if ENABLE_BACKGROUND_SCHEDULERS:
+    _brain_enabled = os.environ.get('AUTONOMOUS_BRAIN_ENABLED', 'true').lower() == 'true'
+    if ENABLE_BACKGROUND_SCHEDULERS or _brain_enabled:
         def _start_autonomous_brain():
             import time
             time.sleep(90)
             try:
                 init_autonomous_brain()
-                logger.info("✅ Autonomous Brain started (every 5 min)")
+                logger.info("✅ Autonomous Brain started (every 5 min) [inline]")
             except Exception as e:
-                logger.error(f"⚠️ Autonomous Brain failed: {e}")
+                logger.error(f"⚠️ Autonomous Brain failed: {e}", exc_info=True)
 
         threading.Thread(target=_start_autonomous_brain, daemon=True).start()
-        logger.info("⏳ Autonomous Brain pending (90s delay)")
+        logger.info(f"⏳ Autonomous Brain pending (90s delay) [bg_sched={ENABLE_BACKGROUND_SCHEDULERS} brain_enabled={_brain_enabled}]")
     else:
-        logger.info("⏸️ Autonomous Brain scheduler PAUSED")
+        logger.info("⏸️ Autonomous Brain scheduler PAUSED (AUTONOMOUS_BRAIN_ENABLED=false)")
 except Exception as e:
-    logger.error(f"⚠️ Autonomous Brain failed: {e}")
+    logger.error(f"⚠️ Autonomous Brain failed: {e}", exc_info=True)
 
 # Agentic Ambassador System - Proactive outreach to industry partners and AI platforms
 try:
