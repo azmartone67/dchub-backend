@@ -141,17 +141,44 @@ def _run_with_guard(name, func):
 
 
 def _run_news_crawler():
-    """Run news sync once."""
+    """Run news sync once. Uses news_aggregator (proven working path)
+    with hourly sync to announcements for Brain extractors."""
     try:
-        from auto_sync import NewsSyncer
-        ns = NewsSyncer(interval_seconds=0)
-        ns.sync()
-    except ImportError:
+        from news_aggregator import run_aggregator
+        result = run_aggregator()
+        logger.info(f"📰 News aggregator: {result}")
+    except Exception as e:
+        logger.warning(f"news_aggregator failed, falling back to auto_sync: {e}")
         try:
-            from sync_news import sync_all_news
-            sync_all_news()
-        except ImportError:
-            logger.warning("News crawler not available (no auto_sync or sync_news module)")
+            from auto_sync import NewsSyncer
+            ns = NewsSyncer(interval_seconds=0)
+            ns.sync()
+        except Exception as e2:
+            logger.error(f"News crawler fully failed: {e2}")
+    # Mirror fresh news rows → announcements (Brain reads from announcements)
+    try:
+        import psycopg2, os
+        db_url = os.environ.get('NEON_DATABASE_URL') or os.environ.get('DATABASE_URL', '')
+        if db_url:
+            conn = psycopg2.connect(db_url, connect_timeout=10)
+            conn.autocommit = False
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO announcements (id, title, summary, source_url, source,
+                                              published_date, discovered_at, category, url)
+                    SELECT 'news_' || id::text, title, COALESCE(description, ''), url, source,
+                           COALESCE(published_date::text, created_at::text),
+                           created_at::text, COALESCE(category, 'industry'), url
+                    FROM news
+                    WHERE created_at > NOW() - INTERVAL '48 hours'
+                    ON CONFLICT (id) DO NOTHING
+                """)
+                inserted = cur.rowcount
+            conn.commit()
+            conn.close()
+            logger.info(f"📋 Synced {inserted} news rows to announcements")
+    except Exception as e:
+        logger.warning(f"news→announcements mirror failed: {e}")
 
 
 def _run_api_discovery():
