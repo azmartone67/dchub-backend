@@ -18,6 +18,23 @@ from flask import Blueprint, jsonify, request
 
 logger = logging.getLogger(__name__)
 
+# PATCH 2026-04-23 (jm): Import require_plan for tier gating the gas-storage
+# endpoint (which was leaking Pro-only data to free-tier callers, flagged by
+# the UNGATED tier-gating canary at runtime). Defensive import: if
+# api_tier_gating fails to load (partial deploy, dev env without the module),
+# we fall back to a no-op so the rest of this blueprint still registers.
+try:
+    from api_tier_gating import require_plan
+except Exception as _e:  # pragma: no cover
+    logger.warning(
+        "pricing_connectivity: require_plan unavailable (%s) — gas-storage will "
+        "remain UNGATED until api_tier_gating loads cleanly.", _e
+    )
+    def require_plan(plan):  # type: ignore[no-redef]
+        def _noop(fn):
+            return fn
+        return _noop
+
 pricing_connectivity_bp = Blueprint('pricing_connectivity', __name__)
 
 _get_conn = None
@@ -161,6 +178,7 @@ def get_gas_prices():
 
 
 @pricing_connectivity_bp.route('/api/v1/energy/gas-storage', methods=['GET'])
+@require_plan('pro')  # PATCH 2026-04-23 (jm): gate Pro-only — was leaking to free tier
 def get_gas_storage():
     """
     Get weekly natural gas storage data.
