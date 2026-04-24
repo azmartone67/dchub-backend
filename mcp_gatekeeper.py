@@ -192,7 +192,22 @@ def resolve_tier(api_key: Optional[str]) -> Tier:
 
 
 def _resolve_from_db_hash(api_key: str) -> Optional[Tier]:
-    """Look up an old-style key by its SHA-256 hash in the api_keys table."""
+    """Look up an old-style key by its SHA-256 hash in the api_keys table.
+
+    PATCH 2026-04-24 (jm): P0 — every Enterprise customer was being silently
+    treated as free tier because this query had `(ak.is_active = 1 OR
+    ak.is_active = true)`. The api_keys.is_active column is `integer`, and
+    PostgreSQL refuses to compare `integer = boolean` — it raises
+    `operator does not exist: integer = boolean`, which then got swallowed
+    by the `except Exception` below at DEBUG level (invisible in prod logs).
+    Result: every call to this function returned None, resolve_tier()
+    fell through to Tier.FREE, and every paying customer saw free-tier
+    responses in MCP.
+
+    Fix: drop the boolean branch — is_active is always integer in this
+    schema — and promote the exception from DEBUG to WARNING so any
+    future silent failure surfaces in Railway logs.
+    """
     try:
         import hashlib, psycopg2, psycopg2.extras
         key_hash = hashlib.sha256(api_key.encode()).hexdigest()
@@ -206,7 +221,7 @@ def _resolve_from_db_hash(api_key: str) -> Optional[Tier]:
                 SELECT ak.rate_limit_tier, ak.plan, COALESCE(u.plan, 'free') as user_plan
                 FROM api_keys ak
                 LEFT JOIN users u ON ak.user_id = u.id
-                WHERE ak.key_hash = %s AND (ak.is_active = 1 OR ak.is_active = true)
+                WHERE ak.key_hash = %s AND ak.is_active = 1
                 LIMIT 1
             """, (key_hash,))
             row = cur.fetchone()
@@ -218,7 +233,11 @@ def _resolve_from_db_hash(api_key: str) -> Optional[Tier]:
                         "founding": Tier.PRO}
             return tier_map.get(plan, Tier.FREE)
     except Exception as e:
-        logger.debug(f"DB hash lookup failed: {e}")
+        # Promoted from DEBUG → WARNING so silent tier-downgrades surface in logs.
+        logger.warning(
+            "mcp_gatekeeper._resolve_from_db_hash failed for key prefix %s: %s",
+            (api_key or "")[:12], e, exc_info=True
+        )
     return None
 
 
@@ -370,26 +389,39 @@ def _finalize(result_json: str, tool_name: str, api_key: Optional[str] = None) -
 
     max_rows = LIMITS[tier]["max_rows"]
 
+    # PATCH 2026-04-24 (jm): P0 — pre-populate `_meta` BEFORE iterating data,
+    # and snapshot `data.keys()` into a list so we never mutate the dict mid-
+    # iteration. The old code raised `RuntimeError: dictionary changed size
+    # during iteration` the first time a response needed truncation, because
+    # `data["_meta"] = {}` was being added inside the `for key, val in
+    # data.items():` loop. This is what made every search_facilities call
+    # with default limit=25 crash for free-tier callers (max_rows=5).
+    if "_meta" not in data:
+        data["_meta"] = {}
+
     # ── Truncate arrays ──
-    for key, val in data.items():
+    for key in list(data.keys()):
         if key.startswith("_"):
             continue
+        val = data[key]
         if isinstance(val, list) and len(val) > max_rows:
             total = len(val)
             data[key] = val[:max_rows]
-            if "_meta" not in data:
-                data["_meta"] = {}
             data["_meta"]["truncated"] = True
             data["_meta"]["showing"] = max_rows
             data["_meta"]["total_available"] = total
             data["_meta"]["upgrade"] = _cta_truncated(max_rows, total)
 
     # ── Redact premium fields on free tier ──
+    # PATCH 2026-04-24 (jm): snapshot keys with list() for the same dict-
+    # iteration safety as the truncation loop above. `_meta` is guaranteed
+    # to exist already (populated at the top of _finalize).
     if tier < Tier.DEVELOPER:
         fields = REDACT_FIELDS.get(tool_name, [])
         if fields:
             redacted = False
-            for key, val in data.items():
+            for key in list(data.keys()):
+                val = data[key]
                 if isinstance(val, list):
                     for item in val:
                         if isinstance(item, dict):
@@ -398,17 +430,14 @@ def _finalize(result_json: str, tool_name: str, api_key: Optional[str] = None) -
                                     item[f] = "🔒 Upgrade to Developer"
                                     redacted = True
             if redacted:
-                if "_meta" not in data:
-                    data["_meta"] = {}
                 data["_meta"]["fields_redacted"] = fields
                 data["_meta"]["redact_notice"] = _cta_redacted(tool_name)
 
     # ── Add usage footer ──
+    # _meta is guaranteed to exist from the top of _finalize (PATCH 2026-04-24).
     rl_key = api_key or "anon"
     usage = _rl.usage(rl_key)
     lim = LIMITS[tier]
-    if "_meta" not in data:
-        data["_meta"] = {}
     data["_meta"]["tier"] = TIER_NAME[tier]
     data["_meta"]["usage"] = {
         "calls_today": usage["today"],
