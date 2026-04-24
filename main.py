@@ -2926,20 +2926,37 @@ def _get_mcp_caller_tier():
 
     try:
         from api_tier_gating import validate_api_key
-        # PATCH 2026-04-23 (jm): validate_api_key occasionally returns None
-        # (not a tuple) in edge cases — e.g. malformed key, DB lookup miss.
-        # Unpacking None as a 2-tuple crashed every MCP request with:
-        #   MCP tier check error: cannot unpack non-iterable NoneType object
-        # Guard the return shape here and fall through to the free-tier default.
-        # exc_info=True gives us a real traceback for ANY other failure.
+        # PATCH 2026-04-24 (jm): P0 — Enterprise customers were being silently
+        # downgraded to free tier because validate_api_key() was refactored to
+        # return a dict (not a tuple), but this function was still doing
+        # `valid, info = result` — which raises ValueError when unpacking a
+        # 5-key dict into 2 variables. The outer except caught it, logged
+        # "MCP tier check error", and fell through to `return 'free', None`.
+        # Result: every paying customer's API key (including admin) got
+        # free-tier responses across all MCP tools.
+        #
+        # Fix: handle both shapes defensively.
+        #   - New shape:  dict  {'plan': ..., 'user_id': ..., ...}
+        #   - Legacy:     (valid_bool, info_dict)
+        #   - Invalid:    None
+        # Keeps exc_info=True so any FUTURE shape change also dumps a stack.
         result = validate_api_key(api_key)
         if result is None:
             return 'free', None
-        valid, info = result
-        if valid and info:
-            return info.get('plan', 'free'), info
-        if info and info.get('error') == 'daily_limit_exceeded':
-            return 'rate_limited', info
+
+        # New canonical shape — dict returned directly on success
+        if isinstance(result, dict):
+            if result.get('error') == 'daily_limit_exceeded':
+                return 'rate_limited', result
+            return result.get('plan', 'free'), result
+
+        # Legacy shape — (valid, info) tuple (kept for backward compat)
+        if isinstance(result, tuple) and len(result) == 2:
+            valid, info = result
+            if valid and info:
+                return info.get('plan', 'free'), info
+            if info and info.get('error') == 'daily_limit_exceeded':
+                return 'rate_limited', info
     except Exception as e:
         logger.error(f"MCP tier check error: {e}", exc_info=True)
 
