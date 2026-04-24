@@ -2926,13 +2926,22 @@ def _get_mcp_caller_tier():
 
     try:
         from api_tier_gating import validate_api_key
-        valid, info = validate_api_key(api_key)
+        # PATCH 2026-04-23 (jm): validate_api_key occasionally returns None
+        # (not a tuple) in edge cases — e.g. malformed key, DB lookup miss.
+        # Unpacking None as a 2-tuple crashed every MCP request with:
+        #   MCP tier check error: cannot unpack non-iterable NoneType object
+        # Guard the return shape here and fall through to the free-tier default.
+        # exc_info=True gives us a real traceback for ANY other failure.
+        result = validate_api_key(api_key)
+        if result is None:
+            return 'free', None
+        valid, info = result
         if valid and info:
             return info.get('plan', 'free'), info
         if info and info.get('error') == 'daily_limit_exceeded':
             return 'rate_limited', info
     except Exception as e:
-        logger.error(f"MCP tier check error: {e}")
+        logger.error(f"MCP tier check error: {e}", exc_info=True)
 
     return 'free', None
 
