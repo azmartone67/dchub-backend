@@ -232,7 +232,7 @@ class AutonomousBrain:
                 cur = conn.cursor(cursor_factory=RealDictCursor)
 
                 cur.execute("""
-                    SELECT id, title, content, source, source_url, published_date
+                    SELECT id, title, COALESCE(content, summary, '') AS content, source, source_url, published_date
                     FROM announcements
                     WHERE (title ILIKE '%MW%' OR title ILIKE '%GW%'
                         OR title ILIKE '%megawatt%' OR title ILIKE '%gigawatt%'
@@ -308,7 +308,7 @@ class AutonomousBrain:
                 cur = conn.cursor(cursor_factory=RealDictCursor)
 
                 cur.execute("""
-                    SELECT id, title, content, source, source_url, published_date
+                    SELECT id, title, COALESCE(content, summary, '') AS content, source, source_url, published_date
                     FROM announcements
                     WHERE (title ILIKE '%acqui%' OR title ILIKE '%merg%'
                         OR title ILIKE '%buy%' OR title ILIKE '%sell%'
@@ -512,7 +512,7 @@ class AutonomousBrain:
                 cur = conn.cursor(cursor_factory=RealDictCursor)
 
                 cur.execute("""
-                    SELECT id, title, content, source_url FROM announcements
+                    SELECT id, title, COALESCE(content, summary, '') AS content, source_url FROM announcements
                     WHERE published_date > NOW() - INTERVAL '7 days'
                     ORDER BY published_date DESC LIMIT 300
                 """)
@@ -553,7 +553,7 @@ class AutonomousBrain:
                 cur = conn.cursor(cursor_factory=RealDictCursor)
 
                 cur.execute("""
-                    SELECT id, title, content, source_url FROM announcements
+                    SELECT id, title, COALESCE(content, summary, '') AS content, source_url FROM announcements
                     WHERE published_date > NOW() - INTERVAL '7 days'
                     ORDER BY published_date DESC LIMIT 300
                 """)
@@ -594,7 +594,7 @@ class AutonomousBrain:
                 cur = conn.cursor(cursor_factory=RealDictCursor)
 
                 cur.execute("""
-                    SELECT id, title, content, source_url FROM announcements
+                    SELECT id, title, COALESCE(content, summary, '') AS content, source_url FROM announcements
                     WHERE published_date > NOW() - INTERVAL '7 days'
                     ORDER BY published_date DESC LIMIT 300
                 """)
@@ -641,7 +641,7 @@ class AutonomousBrain:
                 cur = conn.cursor(cursor_factory=RealDictCursor)
 
                 cur.execute("""
-                    SELECT id, title, content, source_url FROM announcements
+                    SELECT id, title, COALESCE(content, summary, '') AS content, source_url FROM announcements
                     WHERE published_date > NOW() - INTERVAL '7 days'
                     ORDER BY published_date DESC LIMIT 300
                 """)
@@ -682,7 +682,7 @@ class AutonomousBrain:
                 cur = conn.cursor(cursor_factory=RealDictCursor)
 
                 cur.execute("""
-                    SELECT id, title, content, source_url FROM announcements
+                    SELECT id, title, COALESCE(content, summary, '') AS content, source_url FROM announcements
                     WHERE published_date > NOW() - INTERVAL '7 days'
                     ORDER BY published_date DESC LIMIT 300
                 """)
@@ -725,7 +725,7 @@ class AutonomousBrain:
                 cur = conn.cursor(cursor_factory=RealDictCursor)
 
                 cur.execute("""
-                    SELECT id, title, content, source_url FROM announcements
+                    SELECT id, title, COALESCE(content, summary, '') AS content, source_url FROM announcements
                     WHERE published_date > NOW() - INTERVAL '3 days'
                     ORDER BY published_date DESC LIMIT 200
                 """)
