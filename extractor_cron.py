@@ -29,7 +29,7 @@ SOURCE_CONFIDENCE_FLOORS = {
     "datacenterfrontier.com": 0.65,
     "dcd": 0.65,
     "datacenterhawk.com": 0.65,
-    "_default": 0.80,
+    "_default": 0.65,
 }
 
 def _floor_for_source(source):
