@@ -56,6 +56,7 @@ STRIPE_PRICES_V2 = {
     'pro_annual':           os.environ.get('STRIPE_PRICE_PRO_ANNUAL', 'price_XXXXX'),
     'enterprise_monthly':   os.environ.get('STRIPE_PRICE_ENTERPRISE_MONTHLY', 'price_XXXXX'),
     'enterprise_annual':    os.environ.get('STRIPE_PRICE_ENTERPRISE_ANNUAL', 'price_XXXXX'),
+    'research_seed_annual': os.environ.get('STRIPE_PRICE_RESEARCH_SEED_ANNUAL', 'price_XXXXX'),
     'founding':             os.environ.get('STRIPE_PRICE_FOUNDING', 'price_XXXXX'),
     'developer_monthly':    os.environ.get('STRIPE_PRICE_DEV_MONTHLY', 'price_XXXXX'),
 }
@@ -66,6 +67,7 @@ PAYMENT_LINKS = {
     'pro_annual':         'https://buy.stripe.com/4gM3cwcVk3JjbSR9maaZi01',
     'enterprise_monthly': '',  # TODO: Create in Stripe Dashboard
     'enterprise_annual':  '',  # TODO: Create in Stripe Dashboard
+    'research_seed_annual': 'https://buy.stripe.com/cNi3cwaNc0x75utdCqaZi0e',
     'founding':           'https://buy.stripe.com/9B6fZi1cCdjT3ml8i6aZi00',
     'developer_monthly':  'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c',
 }
@@ -77,6 +79,7 @@ PLAN_LEVELS = {
     'developer': 2,  # Developer tier - $49/mo, 1000 calls/day
     'pro': 3,
     'enterprise': 4,
+    'research_seed': 4,    # NEW: research-institution tier, enterprise-equivalent access
     'admin': 99,
 }
 
@@ -636,7 +639,7 @@ def _get_free_alternative(path):
 
 FACILITY_TIER_LIMITS = {
     'anon': 50, 'free': 200, 'founding': 500, 'developer': 500,
-    'pro': 2000, 'enterprise': 9999, 'admin': 9999,
+    'pro': 2000, 'enterprise': 9999, 'research_seed': 9999, 'developer': 1000, 'admin': 9999,
 }
 FACILITY_VISIBLE_FIELDS = {
     'anon': {'name', 'city', 'country', 'latitude', 'longitude', 'status', 'slug'},
@@ -1089,6 +1092,8 @@ def _map_stripe_plan_to_tier(plan_key):
         'enterprise_monthly': 'enterprise',
         'enterprise_annual': 'enterprise',
         'founding': 'founding',
+        'research_seed_annual': 'research_seed',  # NEW: research-institution tier (NLR et al.)
+        'developer_monthly': 'developer',         # also missing previously
     }
     return mapping.get(plan_key, 'pro')
 
@@ -1115,7 +1120,7 @@ def _handle_checkout_v2(session):
     print(f"✅ User upgraded to {tier}: {email}")
 
     # Auto-generate API key for Pro/Enterprise users
-    if tier in ('pro', 'enterprise', 'founding'):
+    if tier in ('pro', 'enterprise', 'founding', 'research_seed', 'developer'):
         try:
             _auto_provision_api_key(email, tier)
         except Exception as e:
