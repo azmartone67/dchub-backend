@@ -8,6 +8,11 @@ echo "  DC Hub Nexus — Self-Healing Server v2.1"
 echo "  $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
 echo "============================================"
 
+# Make all git ops non-interactive: any missing/expired credential causes
+# git to fail fast instead of blocking on replit-git-askpass forever.
+export GIT_TERMINAL_PROMPT=0
+export GIT_ASKPASS=/bin/true
+
 # ===================================================================
 # GitHub auto-sync
 # - Source of truth: origin/main on azmartone67/dchub-backend
