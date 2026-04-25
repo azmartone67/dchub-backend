@@ -24,6 +24,7 @@ logger = logging.getLogger('job_bridges')
 # ============================================================
 try:
     import autonomous_brain
+    from autonomous_brain import brain
 
     def run_autopilot_cycle():
         """Bridge: autopilot job → brain.run_autonomous_cycle with deals focus"""
