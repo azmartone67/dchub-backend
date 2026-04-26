@@ -2,11 +2,11 @@
   "created_at": "2026-01-28T09:07:08.368423",
   "total_discoveries": 0,
   "total_enrichments": 0,
-  "total_outreach": 8636,
+  "total_outreach": 8686,
   "platforms_registered": [
     "claude"
   ],
-  "last_run": "2026-04-25T18:02:43.582593",
+  "last_run": "2026-04-26T20:25:31.660216",
   "discovered_companies": [],
   "outreach_log": [
     {
@@ -60458,6 +60458,356 @@
       "platform": "Perplexity AI",
       "method": "Web Discovery",
       "timestamp": "2026-04-25T18:02:45.781863",
+      "status": "pending_integration",
+      "notes": "Ready for Web Discovery"
+    },
+    {
+      "platform": "OpenAI ChatGPT",
+      "method": "Actions/Plugins",
+      "timestamp": "2026-04-26T12:37:31.689979",
+      "status": "manifest_ready",
+      "notes": "OpenAPI spec available for ChatGPT Actions"
+    },
+    {
+      "platform": "Google Gemini",
+      "method": "Vertex AI Extensions",
+      "timestamp": "2026-04-26T12:37:31.689986",
+      "status": "discovery_enabled",
+      "notes": "Vertex AI Extension manifest generated"
+    },
+    {
+      "platform": "Groq",
+      "method": "Tool Integration",
+      "timestamp": "2026-04-26T12:37:31.689990",
+      "status": "pending_integration",
+      "notes": "Ready for Tool Integration"
+    },
+    {
+      "platform": "Microsoft Copilot",
+      "method": "Plugins API",
+      "timestamp": "2026-04-26T12:37:31.689994",
+      "status": "pending_integration",
+      "notes": "Ready for Plugins API"
+    },
+    {
+      "platform": "Perplexity AI",
+      "method": "Web Discovery",
+      "timestamp": "2026-04-26T12:37:31.689998",
+      "status": "pending_integration",
+      "notes": "Ready for Web Discovery"
+    },
+    {
+      "platform": "OpenAI ChatGPT",
+      "method": "Actions/Plugins",
+      "timestamp": "2026-04-26T18:53:41.885943",
+      "status": "manifest_ready",
+      "notes": "OpenAPI spec available for ChatGPT Actions"
+    },
+    {
+      "platform": "Google Gemini",
+      "method": "Vertex AI Extensions",
+      "timestamp": "2026-04-26T18:53:41.885950",
+      "status": "discovery_enabled",
+      "notes": "Vertex AI Extension manifest generated"
+    },
+    {
+      "platform": "Groq",
+      "method": "Tool Integration",
+      "timestamp": "2026-04-26T18:53:41.885954",
+      "status": "pending_integration",
+      "notes": "Ready for Tool Integration"
+    },
+    {
+      "platform": "Microsoft Copilot",
+      "method": "Plugins API",
+      "timestamp": "2026-04-26T18:53:41.885957",
+      "status": "pending_integration",
+      "notes": "Ready for Plugins API"
+    },
+    {
+      "platform": "Perplexity AI",
+      "method": "Web Discovery",
+      "timestamp": "2026-04-26T18:53:41.885972",
+      "status": "pending_integration",
+      "notes": "Ready for Web Discovery"
+    },
+    {
+      "platform": "OpenAI ChatGPT",
+      "method": "Actions/Plugins",
+      "timestamp": "2026-04-26T19:08:46.954423",
+      "status": "manifest_ready",
+      "notes": "OpenAPI spec available for ChatGPT Actions"
+    },
+    {
+      "platform": "Google Gemini",
+      "method": "Vertex AI Extensions",
+      "timestamp": "2026-04-26T19:08:46.954429",
+      "status": "discovery_enabled",
+      "notes": "Vertex AI Extension manifest generated"
+    },
+    {
+      "platform": "Groq",
+      "method": "Tool Integration",
+      "timestamp": "2026-04-26T19:08:46.954432",
+      "status": "pending_integration",
+      "notes": "Ready for Tool Integration"
+    },
+    {
+      "platform": "Microsoft Copilot",
+      "method": "Plugins API",
+      "timestamp": "2026-04-26T19:08:46.954434",
+      "status": "pending_integration",
+      "notes": "Ready for Plugins API"
+    },
+    {
+      "platform": "Perplexity AI",
+      "method": "Web Discovery",
+      "timestamp": "2026-04-26T19:08:46.954437",
+      "status": "pending_integration",
+      "notes": "Ready for Web Discovery"
+    },
+    {
+      "platform": "OpenAI ChatGPT",
+      "method": "Actions/Plugins",
+      "timestamp": "2026-04-26T19:16:51.919640",
+      "status": "manifest_ready",
+      "notes": "OpenAPI spec available for ChatGPT Actions"
+    },
+    {
+      "platform": "Google Gemini",
+      "method": "Vertex AI Extensions",
+      "timestamp": "2026-04-26T19:16:51.919645",
+      "status": "discovery_enabled",
+      "notes": "Vertex AI Extension manifest generated"
+    },
+    {
+      "platform": "Groq",
+      "method": "Tool Integration",
+      "timestamp": "2026-04-26T19:16:51.919648",
+      "status": "pending_integration",
+      "notes": "Ready for Tool Integration"
+    },
+    {
+      "platform": "Microsoft Copilot",
+      "method": "Plugins API",
+      "timestamp": "2026-04-26T19:16:51.919650",
+      "status": "pending_integration",
+      "notes": "Ready for Plugins API"
+    },
+    {
+      "platform": "Perplexity AI",
+      "method": "Web Discovery",
+      "timestamp": "2026-04-26T19:16:51.919653",
+      "status": "pending_integration",
+      "notes": "Ready for Web Discovery"
+    },
+    {
+      "platform": "OpenAI ChatGPT",
+      "method": "Actions/Plugins",
+      "timestamp": "2026-04-26T19:31:14.621450",
+      "status": "manifest_ready",
+      "notes": "OpenAPI spec available for ChatGPT Actions"
+    },
+    {
+      "platform": "Google Gemini",
+      "method": "Vertex AI Extensions",
+      "timestamp": "2026-04-26T19:31:14.621457",
+      "status": "discovery_enabled",
+      "notes": "Vertex AI Extension manifest generated"
+    },
+    {
+      "platform": "Groq",
+      "method": "Tool Integration",
+      "timestamp": "2026-04-26T19:31:14.621460",
+      "status": "pending_integration",
+      "notes": "Ready for Tool Integration"
+    },
+    {
+      "platform": "Microsoft Copilot",
+      "method": "Plugins API",
+      "timestamp": "2026-04-26T19:31:14.621462",
+      "status": "pending_integration",
+      "notes": "Ready for Plugins API"
+    },
+    {
+      "platform": "Perplexity AI",
+      "method": "Web Discovery",
+      "timestamp": "2026-04-26T19:31:14.621465",
+      "status": "pending_integration",
+      "notes": "Ready for Web Discovery"
+    },
+    {
+      "platform": "OpenAI ChatGPT",
+      "method": "Actions/Plugins",
+      "timestamp": "2026-04-26T19:46:22.220842",
+      "status": "manifest_ready",
+      "notes": "OpenAPI spec available for ChatGPT Actions"
+    },
+    {
+      "platform": "Google Gemini",
+      "method": "Vertex AI Extensions",
+      "timestamp": "2026-04-26T19:46:22.220851",
+      "status": "discovery_enabled",
+      "notes": "Vertex AI Extension manifest generated"
+    },
+    {
+      "platform": "Groq",
+      "method": "Tool Integration",
+      "timestamp": "2026-04-26T19:46:22.220855",
+      "status": "pending_integration",
+      "notes": "Ready for Tool Integration"
+    },
+    {
+      "platform": "Microsoft Copilot",
+      "method": "Plugins API",
+      "timestamp": "2026-04-26T19:46:22.220859",
+      "status": "pending_integration",
+      "notes": "Ready for Plugins API"
+    },
+    {
+      "platform": "Perplexity AI",
+      "method": "Web Discovery",
+      "timestamp": "2026-04-26T19:46:22.220862",
+      "status": "pending_integration",
+      "notes": "Ready for Web Discovery"
+    },
+    {
+      "platform": "OpenAI ChatGPT",
+      "method": "Actions/Plugins",
+      "timestamp": "2026-04-26T19:49:06.675787",
+      "status": "manifest_ready",
+      "notes": "OpenAPI spec available for ChatGPT Actions"
+    },
+    {
+      "platform": "Google Gemini",
+      "method": "Vertex AI Extensions",
+      "timestamp": "2026-04-26T19:49:06.675793",
+      "status": "discovery_enabled",
+      "notes": "Vertex AI Extension manifest generated"
+    },
+    {
+      "platform": "Groq",
+      "method": "Tool Integration",
+      "timestamp": "2026-04-26T19:49:06.675796",
+      "status": "pending_integration",
+      "notes": "Ready for Tool Integration"
+    },
+    {
+      "platform": "Microsoft Copilot",
+      "method": "Plugins API",
+      "timestamp": "2026-04-26T19:49:06.675799",
+      "status": "pending_integration",
+      "notes": "Ready for Plugins API"
+    },
+    {
+      "platform": "Perplexity AI",
+      "method": "Web Discovery",
+      "timestamp": "2026-04-26T19:49:06.675801",
+      "status": "pending_integration",
+      "notes": "Ready for Web Discovery"
+    },
+    {
+      "platform": "OpenAI ChatGPT",
+      "method": "Actions/Plugins",
+      "timestamp": "2026-04-26T20:04:11.782952",
+      "status": "manifest_ready",
+      "notes": "OpenAPI spec available for ChatGPT Actions"
+    },
+    {
+      "platform": "Google Gemini",
+      "method": "Vertex AI Extensions",
+      "timestamp": "2026-04-26T20:04:11.782957",
+      "status": "discovery_enabled",
+      "notes": "Vertex AI Extension manifest generated"
+    },
+    {
+      "platform": "Groq",
+      "method": "Tool Integration",
+      "timestamp": "2026-04-26T20:04:11.782959",
+      "status": "pending_integration",
+      "notes": "Ready for Tool Integration"
+    },
+    {
+      "platform": "Microsoft Copilot",
+      "method": "Plugins API",
+      "timestamp": "2026-04-26T20:04:11.782962",
+      "status": "pending_integration",
+      "notes": "Ready for Plugins API"
+    },
+    {
+      "platform": "Perplexity AI",
+      "method": "Web Discovery",
+      "timestamp": "2026-04-26T20:04:11.782965",
+      "status": "pending_integration",
+      "notes": "Ready for Web Discovery"
+    },
+    {
+      "platform": "OpenAI ChatGPT",
+      "method": "Actions/Plugins",
+      "timestamp": "2026-04-26T20:11:09.996315",
+      "status": "manifest_ready",
+      "notes": "OpenAPI spec available for ChatGPT Actions"
+    },
+    {
+      "platform": "Google Gemini",
+      "method": "Vertex AI Extensions",
+      "timestamp": "2026-04-26T20:11:09.996323",
+      "status": "discovery_enabled",
+      "notes": "Vertex AI Extension manifest generated"
+    },
+    {
+      "platform": "Groq",
+      "method": "Tool Integration",
+      "timestamp": "2026-04-26T20:11:09.996327",
+      "status": "pending_integration",
+      "notes": "Ready for Tool Integration"
+    },
+    {
+      "platform": "Microsoft Copilot",
+      "method": "Plugins API",
+      "timestamp": "2026-04-26T20:11:09.996331",
+      "status": "pending_integration",
+      "notes": "Ready for Plugins API"
+    },
+    {
+      "platform": "Perplexity AI",
+      "method": "Web Discovery",
+      "timestamp": "2026-04-26T20:11:09.996335",
+      "status": "pending_integration",
+      "notes": "Ready for Web Discovery"
+    },
+    {
+      "platform": "OpenAI ChatGPT",
+      "method": "Actions/Plugins",
+      "timestamp": "2026-04-26T20:25:34.057252",
+      "status": "manifest_ready",
+      "notes": "OpenAPI spec available for ChatGPT Actions"
+    },
+    {
+      "platform": "Google Gemini",
+      "method": "Vertex AI Extensions",
+      "timestamp": "2026-04-26T20:25:34.057257",
+      "status": "discovery_enabled",
+      "notes": "Vertex AI Extension manifest generated"
+    },
+    {
+      "platform": "Groq",
+      "method": "Tool Integration",
+      "timestamp": "2026-04-26T20:25:34.057260",
+      "status": "pending_integration",
+      "notes": "Ready for Tool Integration"
+    },
+    {
+      "platform": "Microsoft Copilot",
+      "method": "Plugins API",
+      "timestamp": "2026-04-26T20:25:34.057262",
+      "status": "pending_integration",
+      "notes": "Ready for Plugins API"
+    },
+    {
+      "platform": "Perplexity AI",
+      "method": "Web Discovery",
+      "timestamp": "2026-04-26T20:25:34.057264",
       "status": "pending_integration",
       "notes": "Ready for Web Discovery"
     }
