@@ -51,6 +51,11 @@ def _data_for(date: datetime.date | None) -> R.RenderData:
     if os.environ.get("DATABASE_URL"):
         try:
             snap = _lazy_db().get_snapshot(date)
+            if not snap and date is not None:
+                    # v4.5.16: fall back to latest available snapshot before bundled cold-start seed.
+                    # The daily refresh cron may not have written a row for today yet, but the DB
+                    # has older snapshots that are still fresher than the static data.json.
+                    snap = _lazy_db().get_snapshot(None)
         except Exception as e:  # noqa: BLE001
             log.warning("db read failed: %s", e)
     if not snap:
