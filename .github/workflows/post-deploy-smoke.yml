@@ -1,5 +1,85 @@
 name: Post-Deploy Smoke Test
 
+# Replacement for the failing version.
+# Changes:
+#   • Slack notify only fires when SLACK_WEBHOOK_URL secret IS set
+#     (the v1 errored out with "Need to provide at least one botToken or
+#     webhookUrl" on every failure → we never saw the real failures).
+#   • Smoke test runs the new dchub_qa_v2.py from the fixkit (better
+#     diagnostics: separates worker/neon/railway layers).
+#   • Cron cadence kept at every 30 min.
+#   • Adds a JSON artifact upload so failures can be inspected without
+#     re-running.
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: pip install --quiet psycopg2-binary requests
+
+      - name: Wait for Railway rebuild to settle
+        if: github.event_name == 'push'
+        run: sleep 90
+
+      - name: Run smoke test (new diagnostic version)
+        id: smoke
+        env:
+          DCHUB_API_KEY:   ${{ secrets.DCHUB_API_KEY }}
+          DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          # If you keep the fixkit checked into the repo at tools/fixkit/, run that;
+          # otherwise fall back to the legacy smoke script.
+          if [ -f tools/fixkit/dchub_qa_v2.py ]; then
+            python3 tools/fixkit/dchub_qa_v2.py --base https://dchub.cloud --report report.json
+          elif [ -f dchub-qa.py ]; then
+            python3 dchub-qa.py
+          else
+            echo "::error::No smoke script found"
+            exit 1
+          fi
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-report
+          path: report.json
+          if-no-files-found: ignore
+
+      # Single notify step — runtime-checks for the secret so we never crash
+      # the way v1 did with "Need to provide at least one botToken or webhookUrl".
+      - name: Notify on failure
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "::warning::SLACK_WEBHOOK_URL secret not set — smoke failure was silent."
+            echo "::warning::Add it at Settings → Secrets → Actions, then re-run this workflow."
+            exit 0
+          fi
+          curl -sS -X POST -H 'Content-Type: application/json' \
+            --data "{\"text\":\":rotating_light: DC Hub smoke FAILED — run ${{ github.run_id }}\\n${RUN_URL}\"}" \
+            "$SLACK_WEBHOOK_URL" \
+            || echo "::warning::Slack notify POST failed (network/webhook invalid)"
+name: Post-Deploy Smoke Test
+
 # Runs after every push to main (once Railway finishes rebuilding),
 # and every 30 min as a safety net. Fails the build — and pings you —
 # on any gated-endpoint regression (e.g. a broken @require_plan path).
