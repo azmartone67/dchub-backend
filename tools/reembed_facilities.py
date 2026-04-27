@@ -277,7 +277,7 @@ def main():
     conn = psycopg2.connect(db_url)
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-    cur.execute('SELECT COUNT(*) AS c FROM facilities')
+    cur.execute('SELECT COUNT(*) AS c FROM discovered_facilities')
     total = cur.fetchone()['c']
     print(f'==> {total:,} facilities total in Neon')
 
@@ -289,9 +289,13 @@ def main():
 
     while True:
         cur.execute("""
-            SELECT id, name, provider, city, state, country, latitude, longitude,
-                   power_mw, status, facility_type, certifications, slug
-            FROM facilities
+            SELECT id, name, provider, city, state, country,
+                   latitude, longitude,
+                   power_mw, status,
+                   COALESCE(facility_type, NULL) AS facility_type,
+                   NULL::text AS certifications,
+                   NULL::text AS slug
+            FROM discovered_facilities
             ORDER BY id
             LIMIT %s OFFSET %s
         """, (BATCH_SIZE, offset))
