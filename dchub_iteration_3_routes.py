@@ -350,6 +350,22 @@ def semantic_search():
     post_filter_count = len(matches)
     matches = matches[:topK]
 
+    # Iteration 5: optional composite reranking (score x log(power_mw+1) x status_weight)
+    if (request.args.get('rerank', '').lower() in ('true','1','yes','y')):
+        import math as _math
+        def _composite(_m):
+            md = _m.get('metadata') or {}
+            score = _m.get('score') or 0.0
+            mw = md.get('power_mw') or 0
+            try: mw = float(mw)
+            except (TypeError, ValueError): mw = 0
+            status = (md.get('status') or '').lower()
+            status_weight = 1.2 if 'construction' in status else (1.0 if 'operational' in status else 0.85)
+            cs = score * _math.log(1 + mw) * status_weight
+            _m['composite_score'] = cs
+            return cs
+        matches = sorted(matches, key=_composite, reverse=True)
+
     if hydrate_flag:
         matches = _hydrate(matches)
 
@@ -370,6 +386,7 @@ def semantic_search():
             'status':            md.get('status'),
             'hydrated':          m.get('hydrated'),
             'hydration_method': m.get('hydration_method'),
+            'composite_score':  m.get('composite_score'),
         })
 
     return jsonify({

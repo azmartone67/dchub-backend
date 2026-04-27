@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DC Hub — Semantic Search Explorer</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: #0a1220;
+    color: #e8f8ff;
+    padding: 24px;
+    line-height: 1.5;
+  }
+  .wrap { max-width: 1100px; margin: 0 auto; }
+  h1 { color: #00d4aa; margin: 0 0 8px; font-size: 24px; }
+  p.lead { color: #94a3b8; margin: 0 0 24px; }
+  .card {
+    background: #141b2d;
+    border: 1px solid #1e293b;
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  .form { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; }
+  .form label { display: block; font-size: 12px; color: #94a3b8; margin-bottom: 4px; }
+  .form input, .form select {
+    width: 100%;
+    background: #0a1220;
+    color: #e8f8ff;
+    border: 1px solid #334155;
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 14px;
+    font-family: inherit;
+  }
+  .form .full { grid-column: 1 / -1; }
+  .form .checks { grid-column: 1 / -1; display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; }
+  .form .checks label { display: flex; align-items: center; gap: 6px; color: #e8f8ff; margin: 0; }
+  button {
+    background: #00d4aa;
+    color: #0a1220;
+    border: 0;
+    padding: 10px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 14px;
+  }
+  button:hover { background: #00f0c0; }
+  button.secondary { background: transparent; color: #94a3b8; border: 1px solid #334155; }
+  .runtime-tag {
+    display: inline-block;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 3px;
+    margin-left: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .runtime-edge { background: #00d4aa; color: #0a1220; }
+  .runtime-flask { background: #475569; color: #e8f8ff; }
+  .meta { font-size: 12px; color: #64748b; margin-bottom: 12px; }
+  .match {
+    background: #1a2235;
+    padding: 12px;
+    border-radius: 6px;
+    margin-bottom: 8px;
+    border-left: 3px solid #00d4aa;
+  }
+  .match h3 { margin: 0 0 4px; font-size: 15px; color: #00d4aa; }
+  .match .score { float: right; font-size: 12px; color: #94a3b8; }
+  .match .row { font-size: 13px; color: #cbd5e1; }
+  .match .badges { margin-top: 6px; display: flex; gap: 6px; flex-wrap: wrap; font-size: 11px; }
+  .badge {
+    background: #0a1220;
+    padding: 2px 8px;
+    border-radius: 3px;
+    border: 1px solid #334155;
+  }
+  pre {
+    background: #0a1220;
+    border: 1px solid #1e293b;
+    padding: 12px;
+    border-radius: 6px;
+    overflow-x: auto;
+    font-size: 12px;
+    max-height: 400px;
+  }
+  .endpoint-toggle {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 12px;
+  }
+  .endpoint-toggle button {
+    flex: 1;
+    background: transparent;
+    color: #94a3b8;
+    border: 1px solid #334155;
+    padding: 6px 12px;
+    font-weight: 400;
+  }
+  .endpoint-toggle button.active {
+    background: #00d4aa;
+    color: #0a1220;
+    font-weight: 600;
+    border-color: #00d4aa;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Semantic Search Explorer <span class="runtime-tag" id="rt-tag">edge</span></h1>
+  <p class="lead">Query 21,319 data center facilities by natural-language similarity. Backed by Cloudflare Vectorize over BGE-base-en-v1.5 embeddings.</p>
+
+  <div class="card">
+    <div class="endpoint-toggle">
+      <button id="btn-edge" class="active" data-endpoint="edge">Edge (Cloudflare) — fastest</button>
+      <button id="btn-flask" data-endpoint="flask">Flask (Railway) — supports hydrate</button>
+    </div>
+
+    <div class="form">
+      <div class="full">
+        <label>Query</label>
+        <input type="text" id="q" value="hyperscale facility with PJM grid access" placeholder="e.g. 30 MW with low water risk in MISO" />
+      </div>
+      <div>
+        <label>Grid (ISO/RTO)</label>
+        <select id="grid">
+          <option value="">Any</option>
+          <option value="PJM">PJM</option>
+          <option value="ERCOT">ERCOT</option>
+          <option value="CAISO">CAISO</option>
+          <option value="MISO">MISO</option>
+          <option value="SPP">SPP</option>
+          <option value="SOCO">SOCO</option>
+          <option value="NYISO">NYISO</option>
+          <option value="ISO-NE">ISO-NE</option>
+          <option value="NWPP">NWPP</option>
+        </select>
+      </div>
+      <div>
+        <label>States (CSV)</label>
+        <input type="text" id="states" placeholder="VA,PA,NJ" />
+      </div>
+      <div>
+        <label>Min MW</label>
+        <input type="number" id="min_mw" min="0" placeholder="30" />
+      </div>
+      <div>
+        <label>Max MW</label>
+        <input type="number" id="max_mw" min="0" placeholder="" />
+      </div>
+      <div>
+        <label>Provider (substring)</label>
+        <input type="text" id="provider" placeholder="Equinix" />
+      </div>
+      <div>
+        <label>topK</label>
+        <input type="number" id="topK" min="1" max="50" value="5" />
+      </div>
+      <div class="checks">
+        <label><input type="checkbox" id="hydrate" /> Hydrate (Flask only)</label>
+        <label><input type="checkbox" id="rerank" /> Rerank (score x log MW x status)</label>
+      </div>
+      <div class="full">
+        <button id="go">Search</button>
+        <button class="secondary" id="copy-curl">Copy curl</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="status" class="meta"></div>
+  <div id="results" class="card" style="display:none">
+    <h3 style="margin-top:0">Matches</h3>
+    <div id="matches"></div>
+  </div>
+  <div id="raw-card" class="card" style="display:none">
+    <h3 style="margin-top:0">Raw response</h3>
+    <pre id="raw"></pre>
+  </div>
+</div>
+
+<script>
+let activeEndpoint = 'edge';
+const tag = document.getElementById('rt-tag');
+
+document.querySelectorAll('.endpoint-toggle button').forEach(b => {
+  b.addEventListener('click', () => {
+    document.querySelectorAll('.endpoint-toggle button').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    activeEndpoint = b.dataset.endpoint;
+    tag.textContent = activeEndpoint === 'edge' ? 'edge' : 'flask';
+    tag.className = 'runtime-tag ' + (activeEndpoint === 'edge' ? 'runtime-edge' : 'runtime-flask');
+  });
+});
+
+function buildUrl() {
+  const params = new URLSearchParams();
+  const q = document.getElementById('q').value.trim();
+  if (!q) return null;
+  params.set('q', q);
+  params.set('topK', document.getElementById('topK').value || '5');
+  for (const k of ['grid','states','provider']) {
+    const v = document.getElementById(k).value.trim();
+    if (v) params.set(k, v);
+  }
+  for (const k of ['min_mw','max_mw']) {
+    const v = document.getElementById(k).value;
+    if (v) params.set(k, v);
+  }
+  if (document.getElementById('hydrate').checked && activeEndpoint === 'flask') {
+    params.set('hydrate', 'true');
+  }
+  if (document.getElementById('rerank').checked) {
+    params.set('rerank', 'true');
+  }
+  const path = activeEndpoint === 'edge'
+    ? '/api/v1/search/edge'
+    : '/api/v1/search/semantic';
+  return path + '?' + params.toString();
+}
+
+document.getElementById('go').addEventListener('click', async () => {
+  const url = buildUrl();
+  if (!url) { alert('Enter a query'); return; }
+  const status = document.getElementById('status');
+  const results = document.getElementById('results');
+  const matchesEl = document.getElementById('matches');
+  const raw = document.getElementById('raw');
+  const rawCard = document.getElementById('raw-card');
+
+  status.textContent = 'Searching...';
+  results.style.display = 'none';
+  rawCard.style.display = 'none';
+
+  const t0 = performance.now();
+  try {
+    const resp = await fetch(url);
+    const data = await resp.json();
+    const elapsed = Math.round(performance.now() - t0);
+
+    if (!data.matches) {
+      status.textContent = 'Error: ' + (data.error || resp.status);
+      raw.textContent = JSON.stringify(data, null, 2);
+      rawCard.style.display = 'block';
+      return;
+    }
+
+    const tm = data.timing_ms || {};
+    const fs = data.filter_stats || {};
+    status.innerHTML =
+      'Returned <b>' + data.matches.length + '</b> of <b>' + (fs.fetched || data.matches.length) +
+      '</b> fetched (<b>' + (fs.matched_filters ?? data.matches.length) + '</b> matched filters)' +
+      ' &middot; runtime: <b>' + (data.runtime || activeEndpoint) + '</b>' +
+      ' &middot; total: <b>' + (tm.total ?? elapsed) + 'ms</b>' +
+      (tm.embed != null ? ' (embed ' + tm.embed + 'ms, query ' + tm.query + 'ms)' : '');
+
+    matchesEl.innerHTML = data.matches.map(m => {
+      const score = m.score != null ? m.score.toFixed(3) : '?';
+      const composite = m.composite_score != null ? ' &middot; rerank: ' + m.composite_score.toFixed(2) : '';
+      const provider = m.provider ? ('<span class="badge">' + m.provider + '</span>') : '';
+      const state = m.state ? ('<span class="badge">' + m.state + '</span>') : '';
+      const country = m.country ? ('<span class="badge">' + m.country + '</span>') : '';
+      const status_b = m.status ? ('<span class="badge">' + m.status + '</span>') : '';
+      const mw = m.power_mw ? ('<span class="badge">' + m.power_mw + ' MW</span>') : '';
+      const hydrated = m.hydrated && m.hydrated.source_url
+        ? '<a href="' + m.hydrated.source_url + '" target="_blank" style="color:#00d4aa;font-size:12px">source link</a>'
+        : '';
+      return [
+        '<div class="match">',
+        '  <span class="score">score ' + score + composite + '</span>',
+        '  <h3>' + (m.name || '(unnamed)') + '</h3>',
+        '  <div class="row">' + (m.city || '') + (m.city && m.state ? ', ' : '') + (m.state || '') + ' &middot; ' + hydrated + '</div>',
+        '  <div class="badges">' + provider + state + country + status_b + mw + '</div>',
+        '</div>'
+      ].join('');
+    }).join('');
+    results.style.display = 'block';
+
+    raw.textContent = JSON.stringify(data, null, 2);
+    rawCard.style.display = 'block';
+  } catch (e) {
+    status.textContent = 'Network error: ' + e.message;
+  }
+});
+
+document.getElementById('copy-curl').addEventListener('click', () => {
+  const url = buildUrl();
+  if (!url) return;
+  const cmd = "curl -sS 'https://dchub.cloud" + url + "' | python3 -m json.tool";
+  navigator.clipboard.writeText(cmd);
+  const btn = document.getElementById('copy-curl');
+  const old = btn.textContent;
+  btn.textContent = 'Copied!';
+  setTimeout(() => { btn.textContent = old; }, 1500);
+});
+</script>
+</body>
+</html>
