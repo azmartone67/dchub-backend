@@ -1105,6 +1105,38 @@ function json(data, status = 200) {
 // PROXY TO RAILWAY
 // ============================================================
 async function proxyToRailway(request, pathname, search, edgeTtl, timeoutMs) {
+    // === v4.7: semantic search via Vectorize ===
+  if (pathname === '/api/v1/search/semantic') {
+    const apiKey = extractApiKey(request, url);
+    const tierInfo = await resolveApiKeyTier(apiKey, env);
+    if (!apiKey || tierInfo.invalid) return addCORS(json({ error: 'api_key_required', message: 'Provide X-API-Key. Get one at https://dchub.cloud/dashboard.html#api-keys' }, 401), request);
+    if (tierInfo.tier === 'free') return addCORS(json({ error: 'plan_required', message: 'Semantic search requires Developer plan or higher.', upgrade_url: 'https://dchub.cloud/pricing#developer' }, 403), request);
+    if (!env.AI || !env.VECTORIZE) return addCORS(json({ error: 'feature_unavailable', message: 'Semantic search index not bound.' }, 503), request);
+    let q = '', k = 10, flt = null;
+    try {
+      if (request.method === 'POST') {
+        const b = await request.json();
+        q = (b.query || b.q || '').trim();
+        k = Math.max(1, Math.min(parseInt(b.topK || b.top_k || b.limit || 10), 50));
+        flt = b.filter || null;
+      } else {
+        q = (url.searchParams.get('q') || url.searchParams.get('query') || '').trim();
+        k = Math.max(1, Math.min(parseInt(url.searchParams.get('topK') || '10'), 50));
+      }
+    } catch (e) { return addCORS(json({ error: 'bad_request' }, 400), request); }
+    if (!q) return addCORS(json({ error: 'missing_query', message: 'Provide ?q=... or POST {"query":"..."}' }, 400), request);
+    try {
+      const emb = await env.AI.run('@cf/baai/bge-base-en-v1.5', { text: [q] });
+      const v = emb && emb.data && emb.data[0];
+      if (!v) throw new Error('embedding failed');
+      const opts = { topK: k, returnMetadata: 'all' };
+      if (flt) opts.filter = flt;
+      const r = await env.VECTORIZE.query(v, opts);
+      const results = (r.matches || []).map(m => Object.assign({ score: m.score }, m.metadata));
+      return addCORS(json({ query: q, count: results.length, results, worker_version: '4.7.0' }, 200), request);
+    } catch (e) { return addCORS(json({ error: 'search_failed', message: String(e.message || e) }, 500), request); }
+  }
+
   const targetUrl = RAILWAY_BACKEND + pathname + (search || '');
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);

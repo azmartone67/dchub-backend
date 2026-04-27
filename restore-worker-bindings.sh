@@ -81,17 +81,18 @@ print(json.dumps(meta))
 PYEOF
 
 echo "→ Bindings being restored:"
-python3 -c '
+python3 <<'PYEOF'
 import json
 m = json.load(open("/tmp/metadata.json"))
 for b in m["bindings"]:
+    name = b["name"]
     if b["type"] == "secret_text":
-        print(f"  secret  {b[\"name\"]}")
+        print(f"  secret  {name}")
     elif b["type"] == "kv_namespace":
-        print(f"  KV      {b[\"name\"]:20s} → {b[\"namespace_id\"]}")
+        print(f"  KV      {name:20s} -> {b['namespace_id']}")
     elif b["type"] == "r2_bucket":
-        print(f"  R2      {b[\"name\"]:20s} → {b[\"bucket_name\"]}")
-'
+        print(f"  R2      {name:20s} -> {b['bucket_name']}")
+PYEOF
 
 echo
 echo "→ Uploading worker with bindings..."
@@ -117,14 +118,18 @@ echo
 echo "→ Verify bindings stuck:"
 sleep 3
 curl -sS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-  "$API" \
-  | python3 -c '
-import sys, json
-d = json.load(sys.stdin)
+  "$API" > /tmp/worker-info.json
+
+python3 <<'PYEOF'
+import json
+d = json.load(open("/tmp/worker-info.json"))
 r = d.get("result", {})
-print(f"  has_modules: {r.get(\"has_modules\")}, has_assets: {r.get(\"has_assets\")}")
-print(f"  handlers:    {r.get(\"handlers\")}")
-'
+hm = r.get("has_modules")
+ha = r.get("has_assets")
+hd = r.get("handlers")
+print(f"  has_modules: {hm}, has_assets: {ha}")
+print(f"  handlers:    {hd}")
+PYEOF
 
 echo
 echo "✓ Done. Now retry:"

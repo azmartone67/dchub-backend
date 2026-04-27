@@ -108,8 +108,11 @@ while :; do
   COUNT=$(python3 -c '
 import json, sys
 d = json.load(open("'"$PAGE_FILE"'"))
-items = d.get("data") or d.get("results") or d.get("facilities") or d if isinstance(d, list) else d
-print(len(items if isinstance(items, list) else items.get("data", [])))
+if isinstance(d, list):
+    items = d
+else:
+    items = d.get("data") or d.get("results") or d.get("facilities") or []
+print(len(items))
 ' 2>/dev/null || echo 0)
   echo "  rows: $COUNT"
 
@@ -123,34 +126,36 @@ print(len(items if isinstance(items, list) else items.get("data", [])))
   # Build a JSONL of {id, text, metadata} for this page
   PROMPT_FILE="$WORK/prompts-$PAGE.jsonl"
   python3 - "$PAGE_FILE" "$PROMPT_FILE" <<'PY'
-import json, sys, pathlib
+import json, sys, pathlib, hashlib
 src, dst = sys.argv[1], sys.argv[2]
 d = json.load(open(src))
-items = d.get("data") or d.get("results") or d.get("facilities") or (d if isinstance(d, list) else [])
+if isinstance(d, list):
+    items = d
+else:
+    items = d.get("data") or d.get("results") or d.get("facilities") or []
 out = []
 for f in items:
-    fid = str(f.get("id") or f.get("facility_id") or f.get("slug") or "")
-    if not fid: continue
-    parts = [
-        f.get("name") or "",
-        f.get("city") or "",
-        f.get("state") or "",
-        f.get("country") or "",
-        f.get("operator") or "",
-        f.get("status") or "",
-    ]
-    mw = f.get("capacity_mw") or f.get("critical_it_mw") or f.get("power_mw")
+    name = (f.get("name") or "").strip()
+    if not name: continue
+    state = (f.get("state") or "").strip()
+    city = (f.get("city") or "").strip()
+    country = (f.get("country") or "US").strip()
+    provider = (f.get("provider") or f.get("operator") or "").strip()
+    status = (f.get("status") or "").strip()
+    ftype = (f.get("facility_type") or "").strip() if f.get("facility_type") else ""
+    mw = f.get("power_mw") or f.get("capacity_mw") or f.get("critical_it_mw")
+    lat = f.get("latitude"); lng = f.get("longitude")
+    fid = hashlib.sha1(f"{name}|{state}|{city}".lower().encode("utf-8")).hexdigest()[:32]
+    parts = [name, city, state, country, provider, status]
     if mw: parts.append(f"{mw} MW")
-    tier = f.get("tier")
-    if tier: parts.append(f"Tier {tier}")
-    text = ", ".join(p for p in parts if p)[:512] or fid
+    if ftype: parts.append(ftype)
+    text = ", ".join(p for p in parts if p)[:512]
     meta = {
-        "name": f.get("name", "")[:128],
-        "state": (f.get("state") or "")[:32],
-        "country": (f.get("country") or "US")[:8],
-        "operator": (f.get("operator") or "")[:64],
-        "capacity_mw": float(mw) if mw else 0.0,
-        "status": (f.get("status") or "")[:32],
+        "name": name[:128], "state": state[:32], "city": city[:64],
+        "country": country[:8], "provider": provider[:64],
+        "power_mw": float(mw) if mw else 0.0, "status": status[:32],
+        "lat": float(lat) if lat is not None else 0.0,
+        "lng": float(lng) if lng is not None else 0.0,
     }
     out.append({"id": fid, "text": text, "metadata": meta})
 pathlib.Path(dst).write_text("\n".join(json.dumps(o) for o in out))
