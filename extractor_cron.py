@@ -248,6 +248,8 @@ def process_one(conn, row, dry_run):
     return counters
 
 def main():
+
+    daily_refresh_if_needed()
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=DEFAULT_BATCH_LIMIT)
     parser.add_argument("--backfill", type=int, default=0)
@@ -283,6 +285,46 @@ def main():
     except Exception as e:
         logger.warning("Failed to log run heartbeat: %s", e); conn.rollback()
     conn.close()
+
+
+# === Daily refresh hook (added 2026-04-27) =====================================
+# Calls POST /refresh on the daily service once per UTC day so dchub.cloud/daily
+# advances. Gated via /tmp file so we only fire once per container-day even
+# though this cron runs every 5 minutes.
+DAILY_SVC_URL = os.environ.get("DAILY_SVC_URL", "").rstrip("/")
+REFRESH_SECRET = os.environ.get("REFRESH_SECRET", "")
+DAILY_GATE_FILE = "/tmp/daily-refresh-last-run.txt"
+
+def daily_refresh_if_needed():
+    if not DAILY_SVC_URL or not REFRESH_SECRET:
+        logger.debug("daily-refresh: DAILY_SVC_URL or REFRESH_SECRET not set; skipping")
+        return
+    today = datetime.utcnow().date().isoformat()
+    try:
+        if os.path.exists(DAILY_GATE_FILE):
+            with open(DAILY_GATE_FILE) as f:
+                last = f.read().strip()
+            if last == today:
+                logger.debug("daily-refresh: already done today (%s)", today)
+                return
+    except Exception as e:
+        logger.warning("daily-refresh: gate read failed: %s", e)
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            f"{DAILY_SVC_URL}/refresh",
+            method="POST",
+            headers={"X-Refresh-Secret": REFRESH_SECRET},
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = resp.read().decode()[:200]
+            logger.info("daily-refresh: HTTP %d | %s", resp.status, body)
+        with open(DAILY_GATE_FILE, "w") as f:
+            f.write(today)
+        logger.info("daily-refresh: gate updated to %s", today)
+    except Exception as e:
+        logger.warning("daily-refresh: POST failed: %s", e)
+# === end daily refresh hook ===================================================
 
 if __name__ == "__main__":
     main()
