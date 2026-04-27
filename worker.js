@@ -404,7 +404,7 @@ async function getUsage(identifier, env) {
 
 function gateResponse(responseJson, toolName, tierConfig, usage) {
   if (!responseJson?.result?.content) return responseJson;
-  if (tierConfig.daily_limit <= 10 && usage.calls >= 5) {
+  if (tierConfig.daily_limit <= 10 && usage.calls >= 1) {
     const remaining = Math.max(0, tierConfig.daily_limit - usage.calls);
     responseJson.result.content.push({
       type: 'text',
@@ -1462,7 +1462,7 @@ export default {
       const _it5_url = new URL(request.url);
       if (_it5_url.pathname === '/api/v1/search/edge')        return it5HandleEdgeSearch(request, env);
       if (_it5_url.pathname === '/api/v1/search/grids/edge')  return it5HandleGrids();
-      if (_it5_url.pathname === '/static/search-explorer.html')  return _serveSearchExplorer();
+      if (_it5_url.pathname === '/api/v1/explorer' || _it5_url.pathname === '/explorer')  return _serveSearchExplorer();
     }
     // === end iteration 5 routes ===
     const url = new URL(request.url);
@@ -1537,6 +1537,42 @@ export default {
           },
         });
       }
+      // ╔═════ v4.7: Intercept tools/call for semantic_search (no Railway round-trip) ═════╗
+      if (request.method === 'POST') {
+        try {
+          const reqClone = request.clone();
+          const body = await reqClone.json();
+          if (body.method === 'tools/call' && body.params?.name === 'semantic_search') {
+            const args = body.params.arguments || {};
+            const query = (args.query || '').trim();
+            const topK = Math.max(1, Math.min(parseInt(args.topK || 10), 50));
+            if (!query) {
+              return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id || null, error: { code: -32602, message: 'query parameter required' } }), { status: 400, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' } });
+            }
+            if (!env.AI || !env.VECTORIZE) {
+              return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id || null, error: { code: -32603, message: 'Vectorize/AI not bound' } }), { status: 503, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' } });
+            }
+            const apiKey = extractApiKey(request, url);
+            const tierInfo = await resolveApiKeyTier(apiKey, env);
+            if (!apiKey || tierInfo.invalid || tierInfo.tier === 'free') {
+              return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id || null, result: { content: [{ type: 'text', text: '🔒 Semantic search requires Developer plan or higher.\nGet yours at https://dchub.cloud/pricing#developer ($49/mo, 1,000 calls/day).\nOr signup free for 10 calls/day: https://dchub.cloud/signup' }], isError: false } }), { status: 200, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'X-DC-Worker-Version': WORKER_VERSION, 'x-dc-hub-source': 'worker-mcp-tier-gate' } });
+            }
+            try {
+              const emb = await env.AI.run('@cf/baai/bge-base-en-v1.5', { text: [query] });
+              const v = emb && emb.data && emb.data[0];
+              if (!v) throw new Error('embedding failed');
+              const r = await env.VECTORIZE.query(v, { topK, returnMetadata: 'all' });
+              const results = (r.matches || []).map(m => Object.assign({ score: m.score }, m.metadata));
+              const summary = `Found ${results.length} match${results.length === 1 ? '' : 'es'} for: "${query}"`;
+              return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id || null, result: { content: [{ type: 'text', text: summary }, { type: 'text', text: JSON.stringify(results, null, 2) }], isError: false } }), { status: 200, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'X-DC-Worker-Version': WORKER_VERSION, 'x-dc-hub-source': 'worker-mcp-vectorize' } });
+            } catch (e) {
+              return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id || null, error: { code: -32603, message: 'search_failed: ' + String(e.message || e) } }), { status: 500, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' } });
+            }
+          }
+        } catch (e) { /* fall through to Railway passthrough */ }
+      }
+      // ╚═══════════════════════════════════════════════════════════════════════════════╝
+
       try {
         const fwdHeaders = new Headers(request.headers);
         fwdHeaders.delete('host');
