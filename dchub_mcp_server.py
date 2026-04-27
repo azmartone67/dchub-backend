@@ -40,6 +40,36 @@ Test: curl -X POST http://127.0.0.1:8888/mcp \
 import os
 import sys
 import json
+
+# === DC Hub MCP JSON encoder (handles Decimal/datetime/UUID/bytes/set) ===
+# Fixes get_fiber_intel and any other tool that returns Decimal from psycopg.
+# Monkey-patches json.dumps for this process only (MCP runs as a sidecar on 8888).
+import decimal as _dchub_mcp_decimal
+import datetime as _dchub_mcp_datetime
+import uuid as _dchub_mcp_uuid
+
+class DCHubMCPJSONEncoder(json.JSONEncoder):
+    def default(self, o):
+        if isinstance(o, _dchub_mcp_decimal.Decimal):
+            return float(o)
+        if isinstance(o, (_dchub_mcp_datetime.datetime, _dchub_mcp_datetime.date)):
+            return o.isoformat()
+        if isinstance(o, _dchub_mcp_uuid.UUID):
+            return str(o)
+        if isinstance(o, (bytes, bytearray)):
+            return o.decode('utf-8', errors='replace')
+        if isinstance(o, set):
+            return list(o)
+        return super().default(o)
+
+_dchub_mcp_original_json_dumps = json.dumps
+def _dchub_mcp_patched_dumps(obj, **kwargs):
+    if 'cls' not in kwargs and 'default' not in kwargs:
+        kwargs['cls'] = DCHubMCPJSONEncoder
+    return _dchub_mcp_original_json_dumps(obj, **kwargs)
+json.dumps = _dchub_mcp_patched_dumps
+# === end DC Hub MCP JSON encoder ===
+
 import logging
 import time
 import threading

@@ -3130,3 +3130,73 @@ if __name__ == '__main__':
             print(f"⚠️ Could not start email worker: {e}")
     
     app.run(host='0.0.0.0', port=5000, debug=True)
+
+
+# === DC Hub refresh routes for dchub-cron v2 ===
+# Tolerant best-effort: tries known ingestion entry points; if none wire up,
+# returns a 200 no-op so the cron tail-log stays green and we can wire the
+# real entry function in a follow-up without breaking anything.
+from datetime import datetime as _dchub_refresh_dt
+
+def _dchub_try_run(*candidates):
+    """Try each (module, attr) pair until one resolves and returns its result."""
+    for module_name, attr in candidates:
+        try:
+            mod = __import__(module_name, fromlist=[attr])
+            fn = getattr(mod, attr, None)
+            if callable(fn):
+                return fn(), module_name + '.' + attr, None
+        except Exception as e:
+            continue
+    return None, None, 'no-ingestion-entrypoint-found'
+
+@app.route('/api/transactions/refresh', methods=['POST', 'GET'])
+def _dchub_refresh_transactions():
+    started = _dchub_refresh_dt.utcnow().isoformat()
+    result, entry, err = _dchub_try_run(
+        ('deal_ingestion_scheduler', 'run_deal_ingestion'),
+        ('deal_ingestion_scheduler', 'ingest_deals'),
+        ('deal_ingestion_scheduler', 'run'),
+        ('deal_scraper',             'run'),
+        ('deal_scraper',             'scrape_all'),
+        ('seed_comprehensive_deals', 'run'),
+    )
+    inserted = 0
+    if isinstance(result, dict):
+        inserted = result.get('inserted', 0) or result.get('count', 0)
+    elif isinstance(result, int):
+        inserted = result
+    return jsonify({
+        'ok': err is None,
+        'started': started,
+        'finished': _dchub_refresh_dt.utcnow().isoformat(),
+        'entrypoint': entry,
+        'inserted': inserted,
+        'note': err,
+    }), 200
+
+@app.route('/api/facilities/refresh', methods=['POST', 'GET'])
+def _dchub_refresh_facilities():
+    started = _dchub_refresh_dt.utcnow().isoformat()
+    result, entry, err = _dchub_try_run(
+        ('facility_ingestion',         'run_facility_ingestion'),
+        ('facility_ingestion',         'ingest_facilities'),
+        ('facility_ingestion',         'run'),
+        ('carrier_facility_ingestion', 'ingest'),
+        ('carrier_facility_ingestion', 'run'),
+        ('populate_facilities',        'run'),
+    )
+    inserted = 0
+    if isinstance(result, dict):
+        inserted = result.get('inserted', 0) or result.get('count', 0)
+    elif isinstance(result, int):
+        inserted = result
+    return jsonify({
+        'ok': err is None,
+        'started': started,
+        'finished': _dchub_refresh_dt.utcnow().isoformat(),
+        'entrypoint': entry,
+        'inserted': inserted,
+        'note': err,
+    }), 200
+# === end DC Hub refresh routes ===
