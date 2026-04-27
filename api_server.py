@@ -3200,3 +3200,13 @@ def _dchub_refresh_facilities():
         'note': err,
     }), 200
 # === end DC Hub refresh routes ===
+
+
+# === Iteration 2: transactions/ingest, facility infra, land-power snapshot ===
+try:
+    from dchub_iteration_2_routes import register_iteration_2_routes as _it2_register
+    _it2_register(app)
+except Exception as _it2_err:
+    import logging as _it2_log
+    _it2_log.getLogger('dchub.iteration2').warning('Failed to register iteration 2 routes: %s', _it2_err)
+# === end iteration 2 ===

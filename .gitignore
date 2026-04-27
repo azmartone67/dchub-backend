@@ -69,3 +69,14 @@ cookies.txt
 .env
 .env.*
 !.env.example
+
+# DC Hub housekeeping
+.watcher.pid
+data/*_state.json
+dchub-fixpack.tgz
+INSTALL-ONELINER.sh
+INSTALL-AND-SHIP-iteration2.sh
+0[1-4]-*.js
+0[1-4]-*.py
+admin_press_route_DEPRECATED.py.bak
+dchub-cron-v2.1.js
