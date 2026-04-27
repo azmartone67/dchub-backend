@@ -1028,6 +1028,19 @@ except Exception as _e:
     print('smoke_test import failed:', _e)
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
+
+
+# === Iteration 2: transactions/ingest, facility infra, land-power snapshot ===
+try:
+    print('[iteration2] importing dchub_iteration_2_routes...', flush=True)
+    from dchub_iteration_2_routes import register_iteration_2_routes as _it2_register
+    _it2_register(app)
+    print('[iteration2] registration COMPLETE', flush=True)
+except Exception as _it2_err:
+    import traceback as _it2_tb
+    print('[iteration2] FAILED:', repr(_it2_err), flush=True)
+    _it2_tb.print_exc()
+# === end iteration 2 ===
 # routes_stubs_v3 is optional — wrap so a missing file doesn't kill the boot.
 try:
     from routes_stubs_v3 import stubs_v3
