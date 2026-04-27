@@ -110,6 +110,51 @@ except ImportError as e:
     print(f"⚠️ Email service not available: {e}")
 
 app = Flask(__name__)
+
+# === DC Hub JSON encoder — handles Decimal/datetime/UUID/bytes/set ===
+# Fixes get_fiber_intel and any numeric-column endpoint returning 500.
+# Compatible with Flask 2.3+ (JSONProvider) and earlier (JSONEncoder).
+import decimal as _dchub_decimal
+import datetime as _dchub_datetime
+import uuid as _dchub_uuid
+
+def _dchub_json_default(o):
+    if isinstance(o, _dchub_decimal.Decimal):
+        return float(o)
+    if isinstance(o, (_dchub_datetime.datetime, _dchub_datetime.date)):
+        return o.isoformat()
+    if isinstance(o, _dchub_uuid.UUID):
+        return str(o)
+    if isinstance(o, (bytes, bytearray)):
+        return o.decode('utf-8', errors='replace')
+    if isinstance(o, set):
+        return list(o)
+    raise TypeError(f'Object of type {type(o).__name__} is not JSON serializable')
+
+try:
+    from flask.json.provider import DefaultJSONProvider as _DefaultJSONProvider
+
+    class DCHubJSONProvider(_DefaultJSONProvider):
+        def default(self, o):
+            try:
+                return _dchub_json_default(o)
+            except TypeError:
+                return super().default(o)
+
+    app.json = DCHubJSONProvider(app)
+except ImportError:
+    from flask.json import JSONEncoder as _JSONEncoder
+
+    class DCHubJSONEncoder(_JSONEncoder):
+        def default(self, o):
+            try:
+                return _dchub_json_default(o)
+            except TypeError:
+                return super().default(o)
+
+    app.json_encoder = DCHubJSONEncoder
+# === end DC Hub JSON encoder ===
+
 register_nav_config_route(app)
 CORS(app, origins=['https://dchub.cloud', 'https://www.dchub.cloud'])
 
