@@ -6965,7 +6965,7 @@ def handle_checkout_completed(session):
             key_prefix = raw_key[:raw_key.rindex('_') + 1]  # e.g. 'dchub_dev_'
 
             _pg_execute(
-                "INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions, rate_limit_tier, is_active, created_at, usage_count, plan, calls_today, calls_total) VALUES (%s, %s, %s, %s, '[\"read\",\"write\"]', %s, 1, %s, 0, %s, 0, 0) ON CONFLICT (key) DO UPDATE SET user_id = EXCLUDED.user_id, key_hash = EXCLUDED.key_hash, key_prefix = EXCLUDED.key_prefix, name = EXCLUDED.name, permissions = EXCLUDED.permissions, rate_limit_tier = EXCLUDED.rate_limit_tier, is_active = EXCLUDED.is_active, created_at = EXCLUDED.created_at, usage_count = EXCLUDED.usage_count, plan = EXCLUDED.plan, calls_today = EXCLUDED.calls_today, calls_total = EXCLUDED.calls_total",
+                "INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions, rate_limit_tier, is_active, created_at, usage_count, plan, calls_today, calls_total) VALUES (%s, %s, %s, %s, '[\"read\",\"write\"]', %s, 1, %s, 0, %s, 0, 0) ON CONFLICT (key_hash) DO UPDATE SET user_id = EXCLUDED.user_id, key_hash = EXCLUDED.key_hash, key_prefix = EXCLUDED.key_prefix, name = EXCLUDED.name, permissions = EXCLUDED.permissions, rate_limit_tier = EXCLUDED.rate_limit_tier, is_active = EXCLUDED.is_active, created_at = EXCLUDED.created_at, usage_count = EXCLUDED.usage_count, plan = EXCLUDED.plan, calls_today = EXCLUDED.calls_today, calls_total = EXCLUDED.calls_total",
                 (new_user_id, key_hash, key_prefix, f'{customer_email} Pro Key', api_tier, now, plan_name))
 
             print(f"✨ Created new user account for {customer_email} (id: {new_user_id})")
@@ -6992,7 +6992,7 @@ def handle_checkout_completed(session):
                 key_prefix = raw_key[:12]
 
                 _pg_execute(
-                    "INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions, rate_limit_tier, is_active, created_at, usage_count, plan, calls_today, calls_total) VALUES (%s, %s, %s, %s, '[\"read\",\"write\"]', %s, 1, %s, 0, %s, 0, 0) ON CONFLICT (key) DO UPDATE SET user_id = EXCLUDED.user_id, key_hash = EXCLUDED.key_hash, key_prefix = EXCLUDED.key_prefix, name = EXCLUDED.name, permissions = EXCLUDED.permissions, rate_limit_tier = EXCLUDED.rate_limit_tier, is_active = EXCLUDED.is_active, created_at = EXCLUDED.created_at, usage_count = EXCLUDED.usage_count, plan = EXCLUDED.plan, calls_today = EXCLUDED.calls_today, calls_total = EXCLUDED.calls_total",
+                    "INSERT INTO api_keys (user_id, key_hash, key_prefix, name, permissions, rate_limit_tier, is_active, created_at, usage_count, plan, calls_today, calls_total) VALUES (%s, %s, %s, %s, '[\"read\",\"write\"]', %s, 1, %s, 0, %s, 0, 0) ON CONFLICT (key_hash) DO UPDATE SET user_id = EXCLUDED.user_id, key_hash = EXCLUDED.key_hash, key_prefix = EXCLUDED.key_prefix, name = EXCLUDED.name, permissions = EXCLUDED.permissions, rate_limit_tier = EXCLUDED.rate_limit_tier, is_active = EXCLUDED.is_active, created_at = EXCLUDED.created_at, usage_count = EXCLUDED.usage_count, plan = EXCLUDED.plan, calls_today = EXCLUDED.calls_today, calls_total = EXCLUDED.calls_total",
                     (resolved_user_id, key_hash, key_prefix, f'{customer_email} Pro Key', api_tier, now, plan_name))
                 print(f"🔑 Generated new {plan_name} API key for existing user: {key_prefix}...")
                 send_welcome_email_sendgrid(customer_email, raw_key, plan_name)
@@ -14944,7 +14944,7 @@ def get_facility_by_id(facility_id):
         elif api_key:
             try:
                 cur2 = conn.cursor()
-                cur2.execute("SELECT u.plan FROM api_keys ak JOIN users u ON ak.user_id = u.id WHERE ak.key = %s AND ak.active = true LIMIT 1", (api_key,))
+                cur2.execute("SELECT u.plan FROM api_keys ak JOIN users u ON ak.user_id = u.id WHERE ak.key_hash = %s AND ak.is_active = 1 LIMIT 1", (api_key,))
                 plan_row = cur2.fetchone()
                 if plan_row:
                     caller_plan = plan_row[0] or "free"
@@ -14998,7 +14998,7 @@ def api_site_score():
             try:
                 _kconn = get_read_db()
                 _kc = _kconn.cursor()
-                _kc.execute("SELECT u.plan FROM api_keys ak JOIN users u ON ak.user_id = u.id WHERE ak.key_value = %s AND ak.is_active = TRUE LIMIT 1", (_api_key,))
+                _kc.execute("SELECT u.plan FROM api_keys ak JOIN users u ON ak.user_id = u.id WHERE ak.key_hash = %s AND ak.is_active = 1 LIMIT 1", (_api_key,))
                 _krow = _kc.fetchone()
                 _kconn.close()
                 if _krow and _krow[0] in ('pro', 'enterprise', 'developer'):
@@ -15314,7 +15314,7 @@ def api_site_forecast():
                 _kc = _kconn.cursor()
                 _kc.execute(
                     "SELECT u.plan FROM api_keys ak JOIN users u ON ak.user_id = u.id "
-                    "WHERE ak.key_value = %s AND ak.is_active = TRUE LIMIT 1", (api_key,))
+                    "WHERE ak.key_hash = %s AND ak.is_active = 1 LIMIT 1", (api_key,))
                 _krow = _kc.fetchone()
                 if _krow:
                     plan = _krow[0]
