@@ -1043,6 +1043,19 @@ except Exception as _it2_err:
 # === end iteration 2 ===
 
 
+# === Iteration 3: semantic search via Cloudflare Vectorize ===
+try:
+    print('[iteration3] importing dchub_iteration_3_routes...', flush=True)
+    from dchub_iteration_3_routes import register_iteration_3_routes as _it3_register
+    _it3_register(app)
+    print('[iteration3] registration COMPLETE', flush=True)
+except Exception as _it3_err:
+    import traceback as _it3_tb
+    print('[iteration3] FAILED:', repr(_it3_err), flush=True)
+    _it3_tb.print_exc()
+# === end iteration 3 ===
+
+
 # routes_stubs_v3 is optional — wrap so a missing file doesn't kill the boot.
 try:
     from routes_stubs_v3 import stubs_v3
