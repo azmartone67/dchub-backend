@@ -1,23 +1,16 @@
-"""DC Hub iteration 2 — additive Flask routes.
+"""DC Hub iteration 2 v2 — schema-correct against Neon.
 
-Three new endpoints registered as a Blueprint-style add_url_rule pass:
+Schema discovered from production:
+  facilities        — provider, latitude, longitude, power_mw, status, slug, id (text)
+  substations       — operator, lat, lng (lng not lon!), voltage_kv, name
+  fiber_routes      — provider AS carrier, route_type, start_lat/lng, end_lat/lng
+  gas_pipelines     — operator, pipeline_type, diameter_inches, lat, lng (empty: 0 rows)
+  transmission_lines — RELATION DOES NOT EXIST: tolerant table-name discovery below
+  capacity_pipeline / discovered_pipelines / ps_pipeline — pipeline candidates
 
-  POST /api/v1/transactions/ingest               — real deal scraping (best-effort dispatch)
-  GET  /api/v1/facilities/<id>/infrastructure    — substations/transmission/gas/fiber near facility
-  GET  /api/v1/land-power/snapshot?bbox=...&layers=...
-                                                  — bbox-filtered land-power layers, single envelope
-
-Designed to be safe on a Flask + PostGIS + psycopg2 stack. Uses tolerant
-entry-point dispatch and tolerant DB connection lookup so it can land in
-api_server.py without knowing the precise local conventions.
-
-Wire by adding to api_server.py:
-
-    try:
-        from dchub_iteration_2_routes import register_iteration_2_routes
-        register_iteration_2_routes(app)
-    except Exception as e:
-        import logging; logging.getLogger('dchub.iteration2').warning('register failed: %s', e)
+No PostGIS geom columns — using plain lat/lng with haversine for "nearby"
+queries and bbox for snapshot. Bbox prefilter keeps haversine fast even
+without a spatial index.
 """
 from __future__ import annotations
 
@@ -28,27 +21,12 @@ from flask import jsonify, request
 
 logger = logging.getLogger('dchub.iteration2')
 
-# ============================================================
-# Tolerant helpers
-# ============================================================
 
-def _try_run(*candidates):
-    """Try (module, attr) pairs until one resolves and returns its result."""
-    for module_name, attr in candidates:
-        try:
-            mod = __import__(module_name, fromlist=[attr])
-            fn = getattr(mod, attr, None)
-            if callable(fn):
-                logger.info("iteration2: dispatching %s.%s", module_name, attr)
-                return fn(), f"{module_name}.{attr}", None
-        except Exception as e:
-            logger.debug("iteration2: tried %s.%s: %s", module_name, attr, e)
-            continue
-    return None, None, 'no-entrypoint-found'
-
+# ============================================================
+# Connection + helpers
+# ============================================================
 
 def _get_pg_conn():
-    """Get a psycopg2 connection. Tries common patterns first, env var as fallback."""
     for module_name, attr in [
         ('db_persistence',       'get_pg_connection'),
         ('db_persistence',       'get_connection'),
@@ -63,18 +41,16 @@ def _get_pg_conn():
                 return fn()
         except Exception:
             continue
-    # Last-resort env var
     import psycopg2
     url = (os.environ.get('DATABASE_URL')
            or os.environ.get('NEON_DATABASE_URL')
            or os.environ.get('DCHUB_DATABASE_URL'))
     if not url:
-        raise RuntimeError("No DATABASE_URL / NEON_DATABASE_URL set")
+        raise RuntimeError("No DATABASE_URL set")
     return psycopg2.connect(url)
 
 
 def _q(conn, sql, *args, label='query'):
-    """Execute SELECT, return list of dicts. Logs and returns [] on error."""
     try:
         c = conn.cursor()
         c.execute(sql, args)
@@ -84,11 +60,38 @@ def _q(conn, sql, *args, label='query'):
         return rows
     except Exception as e:
         logger.warning("iteration2: %s failed: %s", label, e)
-        try:
-            conn.rollback()
-        except Exception:
-            pass
+        try: conn.rollback()
+        except Exception: pass
         return []
+
+
+def _table_exists(conn, table_name):
+    try:
+        c = conn.cursor()
+        c.execute("SELECT to_regclass('public.' || %s) IS NOT NULL", (table_name,))
+        exists = c.fetchone()[0]
+        c.close()
+        return bool(exists)
+    except Exception:
+        try: conn.rollback()
+        except Exception: pass
+        return False
+
+
+def _find_first_existing(conn, candidates):
+    for t in candidates:
+        if _table_exists(conn, t):
+            return t
+    return None
+
+
+# Bounding-box helper for "within radius_km of (lat, lon)".
+# 1 degree latitude ≈ 111 km; longitude shrinks by cos(lat).
+import math
+def _bbox_for_radius(lat, lon, radius_km):
+    dlat = radius_km / 111.0
+    dlon = radius_km / (111.0 * max(math.cos(math.radians(lat)), 0.01))
+    return (lat - dlat, lat + dlat, lon - dlon, lon + dlon)
 
 
 # ============================================================
@@ -96,17 +99,23 @@ def _q(conn, sql, *args, label='query'):
 # ============================================================
 def transactions_ingest():
     started = datetime.utcnow().isoformat()
-    result, entry, err = _try_run(
-        ('deal_scraper',             'scrape_all'),
-        ('deal_scraper',             'run'),
-        ('deal_scraper',             'main'),
-        ('deal_ingestion_scheduler', 'run_deal_ingestion'),
-        ('deal_ingestion_scheduler', 'ingest_deals'),
-        ('deal_ingestion_scheduler', 'run'),
-        ('seed_comprehensive_deals', 'run'),
-        ('news_facility_extractor',  'extract_deals'),
-        ('news_facility_extractor',  'run'),
-    )
+    result, entry, err = None, None, None
+
+    # Primary entry: deal_scraper.run_scrape(dry_run=False) -> Dict
+    try:
+        from deal_scraper import run_scrape as _scrape
+        result = _scrape(dry_run=False)
+        entry = 'deal_scraper.run_scrape'
+    except Exception as e:
+        logger.info("iteration2: run_scrape failed: %s", e)
+        # Fallback: deal_ingestion_scheduler.run_ingestion(get_db)
+        try:
+            from deal_ingestion_scheduler import run_ingestion as _ingest
+            result = _ingest(_get_pg_conn)
+            entry = 'deal_ingestion_scheduler.run_ingestion'
+        except Exception as e2:
+            err = f'no-entrypoint: run_scrape={e}; run_ingestion={e2}'
+
     inserted = 0
     if isinstance(result, dict):
         inserted = (result.get('inserted', 0)
@@ -117,12 +126,14 @@ def transactions_ingest():
         inserted = result
     elif isinstance(result, list):
         inserted = len(result)
+
     return jsonify({
         'ok': err is None,
         'started': started,
         'finished': datetime.utcnow().isoformat(),
         'entrypoint': entry,
         'inserted': inserted,
+        'result_summary': str(result)[:300] if result else None,
         'note': err,
     }), 200
 
@@ -131,7 +142,6 @@ def transactions_ingest():
 # /api/v1/facilities/<facility_id>/infrastructure
 # ============================================================
 def facility_infrastructure(facility_id):
-    """Return nearby substations, transmission, gas, fiber for one facility."""
     try:
         radius_km = float(request.args.get('radius_km', 50))
     except ValueError:
@@ -140,91 +150,121 @@ def facility_infrastructure(facility_id):
 
     conn = _get_pg_conn()
     try:
+        # Resolve facility coords by id (text) or slug
         c = conn.cursor()
-        # Resolve facility coords by id (numeric or string), fallback to slug column if present
-        c.execute(
-            "SELECT lat, lon FROM facilities WHERE id::text = %s LIMIT 1",
-            (str(facility_id),)
-        )
+        c.execute("""
+            SELECT latitude, longitude, name, provider, power_mw
+            FROM facilities WHERE id = %s OR slug = %s LIMIT 1
+        """, (str(facility_id), str(facility_id)))
         row = c.fetchone()
-        if not row:
-            try:
-                c.execute("SELECT lat, lon FROM facilities WHERE slug = %s LIMIT 1",
-                          (str(facility_id),))
-                row = c.fetchone()
-            except Exception:
-                conn.rollback()
+        c.close()
         if not row or row[0] is None or row[1] is None:
             return jsonify({
                 'error': 'facility-not-found-or-missing-coordinates',
                 'facility_id': facility_id,
             }), 404
         lat, lon = float(row[0]), float(row[1])
-        c.close()
+        facility_meta = {
+            'name':     row[2],
+            'provider': row[3],
+            'power_mw': float(row[4]) if row[4] is not None else None,
+        }
 
-        radius_m = radius_km * 1000.0
-        fiber_radius_m = min(radius_km, 25.0) * 1000.0
+        s_lat, n_lat, w_lon, e_lon = _bbox_for_radius(lat, lon, radius_km)
+        s_lat25, n_lat25, w_lon25, e_lon25 = _bbox_for_radius(lat, lon, min(radius_km, 25))
 
+        # Haversine distance template (km), works on lat/lng columns
+        # Note: substations + gas use lng (not lon)
         substations = _q(conn, """
-            SELECT id, name, voltage_kv, operator,
-                   ST_DistanceSphere(geom::geometry,
-                                     ST_SetSRID(ST_MakePoint(%s, %s), 4326))/1000.0 AS distance_km
+            SELECT id, name, voltage_kv, operator, lat, lng AS lon,
+                   2 * 6371 * asin(sqrt(
+                       power(sin(radians((lat - %s)/2)), 2) +
+                       cos(radians(%s)) * cos(radians(lat)) *
+                       power(sin(radians((lng - %s)/2)), 2)
+                   )) AS distance_km
             FROM substations
-            WHERE ST_DWithin(geom::geography,
-                             ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s)
+            WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s
+              AND voltage_kv >= 69
             ORDER BY distance_km LIMIT 25
-        """, lon, lat, lon, lat, radius_m, label='substations')
-
-        transmission = _q(conn, """
-            SELECT id, name, voltage_kv, owner,
-                   ST_DistanceSphere(geom::geometry,
-                                     ST_SetSRID(ST_MakePoint(%s, %s), 4326))/1000.0 AS distance_km
-            FROM transmission_lines
-            WHERE ST_DWithin(geom::geography,
-                             ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s)
-            ORDER BY distance_km LIMIT 25
-        """, lon, lat, lon, lat, radius_m, label='transmission')
+        """, lat, lat, lon, s_lat, n_lat, w_lon, e_lon, label='substations')
 
         gas = _q(conn, """
-            SELECT id, name, operator, diameter_in,
-                   ST_DistanceSphere(geom::geometry,
-                                     ST_SetSRID(ST_MakePoint(%s, %s), 4326))/1000.0 AS distance_km
+            SELECT id, name, operator, pipeline_type, diameter_inches,
+                   lat, lng AS lon,
+                   2 * 6371 * asin(sqrt(
+                       power(sin(radians((lat - %s)/2)), 2) +
+                       cos(radians(%s)) * cos(radians(lat)) *
+                       power(sin(radians((lng - %s)/2)), 2)
+                   )) AS distance_km
             FROM gas_pipelines
-            WHERE ST_DWithin(geom::geography,
-                             ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s)
+            WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s
             ORDER BY distance_km LIMIT 25
-        """, lon, lat, lon, lat, radius_m, label='gas')
+        """, lat, lat, lon, s_lat, n_lat, w_lon, e_lon, label='gas')
 
+        # Fiber routes are line segments; check if EITHER endpoint is in bbox.
+        # Use start point for distance ordering (good enough for "nearby" UX).
         fiber_rows = _q(conn, """
-            SELECT id, provider AS carrier, route_type,
-                   ST_DistanceSphere(geom::geometry,
-                                     ST_SetSRID(ST_MakePoint(%s, %s), 4326))/1000.0 AS distance_km
+            SELECT id, provider AS carrier, route_type, distance_miles,
+                   start_lat, start_lng, end_lat, end_lng,
+                   2 * 6371 * asin(sqrt(
+                       power(sin(radians((start_lat - %s)/2)), 2) +
+                       cos(radians(%s)) * cos(radians(start_lat)) *
+                       power(sin(radians((start_lng - %s)/2)), 2)
+                   )) AS distance_km
             FROM fiber_routes
-            WHERE ST_DWithin(geom::geography,
-                             ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s)
+            WHERE (start_lat BETWEEN %s AND %s AND start_lng BETWEEN %s AND %s)
+               OR (end_lat   BETWEEN %s AND %s AND end_lng   BETWEEN %s AND %s)
             ORDER BY distance_km LIMIT 50
-        """, lon, lat, lon, lat, fiber_radius_m, label='fiber')
+        """, lat, lat, lon,
+             s_lat25, n_lat25, w_lon25, e_lon25,
+             s_lat25, n_lat25, w_lon25, e_lon25, label='fiber')
+
+        # Transmission: discover the actual table name
+        tx_table = _find_first_existing(conn, [
+            'transmission_lines', 'hifld_transmission_lines',
+            'transmission', 'hifld_transmission', 'tx_lines',
+        ])
+        if tx_table:
+            # Conservative SELECT — common columns only; missing ones become None
+            transmission = _q(conn, f"""
+                SELECT id, name, voltage_kv, lat, lng AS lon,
+                       2 * 6371 * asin(sqrt(
+                           power(sin(radians((lat - %s)/2)), 2) +
+                           cos(radians(%s)) * cos(radians(lat)) *
+                           power(sin(radians((lng - %s)/2)), 2)
+                       )) AS distance_km
+                FROM {tx_table}
+                WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s
+                ORDER BY distance_km LIMIT 25
+            """, lat, lat, lon, s_lat, n_lat, w_lon, e_lon, label=f'transmission({tx_table})')
+        else:
+            transmission = []
 
         carriers = {}
         for r in fiber_rows:
             cname = r.get('carrier') or 'Unknown'
-            if cname not in carriers or r['distance_km'] < carriers[cname]['nearest_km']:
-                carriers[cname] = {'name': cname, 'nearest_km': r['distance_km'], 'route_count': 0}
+            d = r.get('distance_km')
+            if d is None:
+                continue
+            if cname not in carriers or d < carriers[cname]['nearest_km']:
+                carriers[cname] = {'name': cname, 'nearest_km': d, 'route_count': 0}
             carriers[cname]['route_count'] += 1
         carriers_list = sorted(carriers.values(), key=lambda x: x['nearest_km'])
 
-        def _summary(rows, key='distance_km'):
+        def _summary(rows):
             return {
                 'count': len(rows),
-                'nearest_km': float(rows[0][key]) if rows else None,
+                'nearest_km': float(rows[0]['distance_km']) if rows and rows[0].get('distance_km') is not None else None,
             }
 
         return jsonify({
             'facility_id': facility_id,
+            'facility': facility_meta,
             'lat': lat, 'lon': lon,
             'radius_km': radius_km,
             'substations': substations,
             'transmission_lines': transmission,
+            'transmission_table_used': tx_table,
             'gas_pipelines': gas,
             'fiber': {'carriers': carriers_list, 'routes': fiber_rows},
             'summary': {
@@ -238,10 +278,8 @@ def facility_infrastructure(facility_id):
             },
         }), 200
     finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+        try: conn.close()
+        except Exception: pass
 
 
 # ============================================================
@@ -267,70 +305,118 @@ def land_power_snapshot():
     conn = _get_pg_conn()
     try:
         result = {}
+        meta = {}
+
         if 'facilities' in requested:
             result['facilities'] = _q(conn, """
-                SELECT id, name, operator, capacity_mw, status, lat, lon
+                SELECT id, name, provider, power_mw AS capacity_mw, status,
+                       latitude AS lat, longitude AS lon, slug
                 FROM facilities
-                WHERE lat BETWEEN %s AND %s AND lon BETWEEN %s AND %s
+                WHERE latitude BETWEEN %s AND %s AND longitude BETWEEN %s AND %s
                 LIMIT 500
             """, south, north, west, east, label='facilities')
+
         if 'substations' in requested:
             result['substations'] = _q(conn, """
-                SELECT id, name, voltage_kv, operator,
-                       ST_Y(geom::geometry) AS lat, ST_X(geom::geometry) AS lon
+                SELECT id, name, voltage_kv, operator, lat, lng AS lon
                 FROM substations
-                WHERE geom && ST_MakeEnvelope(%s,%s,%s,%s,4326) AND voltage_kv >= 69
+                WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s
+                  AND voltage_kv >= 69
                 LIMIT 1000
-            """, west, south, east, north, label='substations')
+            """, south, north, west, east, label='substations')
+
         if 'transmission' in requested:
-            result['transmission'] = _q(conn, """
-                SELECT id, name, voltage_kv, owner,
-                       ST_AsGeoJSON(geom)::json AS geometry
-                FROM transmission_lines
-                WHERE geom && ST_MakeEnvelope(%s,%s,%s,%s,4326)
-                LIMIT 2000
-            """, west, south, east, north, label='transmission')
+            tx_table = _find_first_existing(conn, [
+                'transmission_lines', 'hifld_transmission_lines',
+                'transmission', 'hifld_transmission', 'tx_lines',
+            ])
+            meta['transmission_table'] = tx_table
+            if tx_table:
+                result['transmission'] = _q(conn, f"""
+                    SELECT id, name, voltage_kv, lat, lng AS lon
+                    FROM {tx_table}
+                    WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s
+                    LIMIT 2000
+                """, south, north, west, east, label=f'transmission({tx_table})')
+            else:
+                result['transmission'] = []
+
         if 'gas' in requested:
             result['gas'] = _q(conn, """
-                SELECT id, name, operator, diameter_in,
-                       ST_AsGeoJSON(geom)::json AS geometry
+                SELECT id, name, operator, pipeline_type, diameter_inches,
+                       lat, lng AS lon
                 FROM gas_pipelines
-                WHERE geom && ST_MakeEnvelope(%s,%s,%s,%s,4326)
+                WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s
                 LIMIT 1000
-            """, west, south, east, north, label='gas')
+            """, south, north, west, east, label='gas')
+
         if 'fiber' in requested:
+            # Include route if either endpoint is in bbox.
             result['fiber'] = _q(conn, """
-                SELECT id, provider AS carrier, route_type,
-                       ST_AsGeoJSON(geom)::json AS geometry
+                SELECT id, provider AS carrier, route_type, distance_miles,
+                       start_lat, start_lng, end_lat, end_lng
                 FROM fiber_routes
-                WHERE geom && ST_MakeEnvelope(%s,%s,%s,%s,4326)
+                WHERE (start_lat BETWEEN %s AND %s AND start_lng BETWEEN %s AND %s)
+                   OR (end_lat   BETWEEN %s AND %s AND end_lng   BETWEEN %s AND %s)
                 LIMIT 2000
-            """, west, south, east, north, label='fiber')
+            """, south, north, west, east, south, north, west, east, label='fiber')
+
         if 'pipeline' in requested:
-            result['pipeline'] = _q(conn, """
-                SELECT id, project_name, company, capacity_mw, delivery_quarter, status, lat, lon
-                FROM dc_pipeline
-                WHERE lat BETWEEN %s AND %s AND lon BETWEEN %s AND %s
-                  AND status IN ('announced','construction')
-                LIMIT 200
-            """, south, north, west, east, label='pipeline')
+            # Future-build inventory — try the candidates from discovery
+            pl_table = _find_first_existing(conn, [
+                'capacity_pipeline', 'discovered_pipelines', 'ps_pipeline',
+                'dc_properties',
+            ])
+            meta['pipeline_table'] = pl_table
+            if pl_table:
+                # Probe columns once, then SELECT only what exists
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT column_name FROM information_schema.columns
+                    WHERE table_name = %s
+                """, (pl_table,))
+                cols = {r[0] for r in cur.fetchall()}
+                cur.close()
+                # Build SELECT from columns we know how to handle
+                wanted_lat = 'lat' if 'lat' in cols else ('latitude' if 'latitude' in cols else None)
+                wanted_lon = ('lng' if 'lng' in cols
+                              else ('lon' if 'lon' in cols
+                                    else ('longitude' if 'longitude' in cols else None)))
+                if wanted_lat and wanted_lon:
+                    pick = [c for c in [
+                        'id','name','project_name','company','operator','provider',
+                        'power_mw','capacity_mw','status','delivery_quarter',
+                        'expected_completion','market'
+                    ] if c in cols]
+                    select_cols = ', '.join(pick + [f"{wanted_lat} AS lat", f"{wanted_lon} AS lon"])
+                    sql = f"""
+                        SELECT {select_cols}
+                        FROM {pl_table}
+                        WHERE {wanted_lat} BETWEEN %s AND %s AND {wanted_lon} BETWEEN %s AND %s
+                        LIMIT 200
+                    """
+                    result['pipeline'] = _q(conn, sql, south, north, west, east, label=f'pipeline({pl_table})')
+                else:
+                    result['pipeline'] = []
+                    meta['pipeline_warning'] = f"{pl_table} has no lat/lon columns"
+            else:
+                result['pipeline'] = []
+
         return jsonify({
             'bbox':   {'west': west, 'south': south, 'east': east, 'north': north},
             'layers': result,
             'counts': {k: len(v) for k, v in result.items()},
+            'meta':   meta,
         }), 200
     finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+        try: conn.close()
+        except Exception: pass
 
 
 # ============================================================
 # Registration
 # ============================================================
 def register_iteration_2_routes(app):
-    """Register the three iteration-2 routes onto the given Flask app."""
     app.add_url_rule(
         '/api/v1/transactions/ingest',
         endpoint='it2_transactions_ingest',
@@ -349,4 +435,4 @@ def register_iteration_2_routes(app):
         view_func=land_power_snapshot,
         methods=['GET'],
     )
-    logger.info("iteration2: registered transactions/ingest, facilities/<id>/infrastructure, land-power/snapshot")
+    logger.info("iteration2 v2: registered transactions/ingest, facilities/<id>/infrastructure, land-power/snapshot")
