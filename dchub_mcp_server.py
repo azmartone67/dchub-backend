@@ -3215,6 +3215,73 @@ def get_air_permitting(lat: float, lon: float, capacity_mw: float = 100) -> dict
         payload = _json.loads(r.read())
     return payload.get("data", payload)
 
+
+
+# ============================================================
+# Semantic search tool — calls Flask /api/v1/search/semantic
+# Surfaces iteration 4 hybrid retrieval (Vectorize + filters + hydrate)
+# to MCP clients (Claude Desktop, ChatGPT Connector, Cursor, etc.)
+# ============================================================
+
+@mcp.tool()
+def search_facilities_semantic(
+    q: str,
+    topK: int = 5,
+    grid: str = "",
+    states: str = "",
+    min_mw: float = 0,
+    max_mw: float = 0,
+    provider: str = "",
+    country: str = "",
+    hydrate: bool = False,
+) -> str:
+    """Search 21,319 data center facilities by natural-language similarity.
+
+    Use when the user describes the facility by capability, region, or
+    use-case rather than by exact name. Backed by a Cloudflare Vectorize
+    index over BGE-base-en-v1.5 embeddings, with optional structured
+    filters applied after the vector match.
+
+    Args:
+        q: Natural-language query (e.g. "30 MW with PJM access",
+           "Texas hyperscale near renewable PPAs", "European colo with low water risk").
+        topK: Number of results to return (1-50, default 5).
+        grid: ISO/grid filter — one of PJM, ERCOT, CAISO, MISO, SPP,
+              SOCO, NYISO, ISO-NE, NWPP. Empty = no grid filter.
+        states: Comma-separated US state codes (e.g. "VA,PA,NJ").
+                Empty = any state. Combines with grid (intersection).
+        min_mw: Minimum power capacity in MW. 0 = no minimum.
+        max_mw: Maximum power capacity in MW. 0 = no maximum.
+        provider: Substring match on provider name (case-insensitive).
+        country: Two-letter country code (e.g. "US"). Empty = any.
+        hydrate: When true, each match also includes the full Neon
+                 facilities row (slug, source_url, certifications, sqft).
+
+    Returns:
+        JSON string with: query, topK, count, matches[], filters,
+        filter_stats (fetched/matched_filters/returned), timing_ms,
+        index, model. Each match has score + metadata; if hydrate=true,
+        also a hydrated block with the full DB row.
+    """
+    import urllib.parse, urllib.request, json as _json
+    params = {"q": q, "topK": int(topK)}
+    if grid:     params["grid"]     = grid
+    if states:   params["states"]   = states
+    if min_mw:   params["min_mw"]   = min_mw
+    if max_mw:   params["max_mw"]   = max_mw
+    if provider: params["provider"] = provider
+    if country:  params["country"]  = country
+    if hydrate:  params["hydrate"]  = "true"
+    url = ("https://dchub-backend-production.up.railway.app"
+           "/api/v1/search/semantic?" + urllib.parse.urlencode(params))
+    try:
+        with urllib.request.urlopen(url, timeout=20) as resp:
+            return resp.read().decode("utf-8")
+    except Exception as e:
+        return _json.dumps({"error": "search-failed", "detail": str(e)})
+# ============================================================
+
+
 if __name__ == "__main__":
     # Warm connection pool on startup
     if _POOL_AVAILABLE:
