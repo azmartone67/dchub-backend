@@ -118,7 +118,8 @@ def transactions_ingest():
 
     inserted = 0
     if isinstance(result, dict):
-        inserted = (result.get('inserted', 0)
+        inserted = (result.get('deals_inserted', 0)
+                    or result.get('inserted', 0)
                     or result.get('count', 0)
                     or result.get('new_deals', 0)
                     or result.get('added', 0))
@@ -362,26 +363,37 @@ def land_power_snapshot():
             """, south, north, west, east, south, north, west, east, label='fiber')
 
         if 'pipeline' in requested:
-            # Future-build inventory — try the candidates from discovery
-            pl_table = _find_first_existing(conn, [
-                'capacity_pipeline', 'discovered_pipelines', 'ps_pipeline',
-                'dc_properties',
-            ])
-            meta['pipeline_table'] = pl_table
-            if pl_table:
-                # Probe columns once, then SELECT only what exists
+            # Future-build inventory — iterate candidates, pick first that has BOTH
+            # a usable lat-column and lon-column; remember which candidates lacked coords.
+            candidates = ['capacity_pipeline', 'discovered_pipelines',
+                          'ps_pipeline', 'dc_properties']
+            pl_table = None
+            cols = set()
+            wanted_lat = None
+            wanted_lon = None
+            attempted = []
+            for cand in candidates:
+                if not _table_exists(conn, cand):
+                    continue
                 cur = conn.cursor()
                 cur.execute("""
                     SELECT column_name FROM information_schema.columns
                     WHERE table_name = %s
-                """, (pl_table,))
-                cols = {r[0] for r in cur.fetchall()}
+                """, (cand,))
+                cand_cols = {r[0] for r in cur.fetchall()}
                 cur.close()
-                # Build SELECT from columns we know how to handle
-                wanted_lat = 'lat' if 'lat' in cols else ('latitude' if 'latitude' in cols else None)
-                wanted_lon = ('lng' if 'lng' in cols
-                              else ('lon' if 'lon' in cols
-                                    else ('longitude' if 'longitude' in cols else None)))
+                cand_lat = 'lat' if 'lat' in cand_cols else ('latitude' if 'latitude' in cand_cols else None)
+                cand_lon = ('lng' if 'lng' in cand_cols
+                            else ('lon' if 'lon' in cand_cols
+                                  else ('longitude' if 'longitude' in cand_cols else None)))
+                attempted.append({'table': cand, 'has_coords': bool(cand_lat and cand_lon)})
+                if cand_lat and cand_lon:
+                    pl_table, cols = cand, cand_cols
+                    wanted_lat, wanted_lon = cand_lat, cand_lon
+                    break
+            meta['pipeline_table'] = pl_table
+            meta['pipeline_attempted'] = attempted
+            if pl_table:
                 if wanted_lat and wanted_lon:
                     pick = [c for c in [
                         'id','name','project_name','company','operator','provider',
