@@ -400,7 +400,7 @@ FRONTEND_URL = os.environ.get('DCHUB_FRONTEND', 'https://dchub.cloud')
 FRONTEND_CHECKS = [
     # (name, path, must_contain_any, must_not_contain_any, timeout_s)
     ("press_listing",     "/press",         ["Press", "Media"],  ["Page Not Found"], 15),
-    ("press_release_url", "/press-release", [],                  ["not found", "Not Found"], 15),
+    ("press_release_url", "/press-release", ["Today's Headlines", "Semantic Search Explorer"], [], 15),
     ("news_listing",      "/news",          ["DC Hub"],          ["Page Not Found"], 15),
     ("homepage",          "/",              ["DC Hub"],          ["Page Not Found"], 10),
 ]
