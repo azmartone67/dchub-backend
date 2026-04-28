@@ -1,15 +1,7 @@
 name: Post-Deploy Smoke Test
-
-# Replacement for the failing version.
-# Changes:
-#   • Slack notify only fires when SLACK_WEBHOOK_URL secret IS set
-#     (the v1 errored out with "Need to provide at least one botToken or
-#     webhookUrl" on every failure → we never saw the real failures).
-#   • Smoke test runs the new dchub_qa_v2.py from the fixkit (better
-#     diagnostics: separates worker/neon/railway layers).
-#   • Cron cadence kept at every 30 min.
-#   • Adds a JSON artifact upload so failures can be inspected without
-#     re-running.
+# Runs after every push to main (once Railway finishes rebuilding),
+# and every 30 min as a safety net. Fails the build — and pings you —
+# on any gated-endpoint regression OR on a 2026-04-28 regression.
 
 on:
   push:
@@ -21,7 +13,7 @@ on:
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v6
 
@@ -36,16 +28,18 @@ jobs:
         if: github.event_name == 'push'
         run: sleep 90
 
-      - name: Run smoke test (new diagnostic version)
+      - name: Run main smoke test (Railway / DB / MCP)
         id: smoke
         env:
-          DCHUB_API_KEY:   ${{ secrets.DCHUB_API_KEY }}
-          DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          DCHUB_API_BASE:    https://dchub-backend-production.up.railway.app
+          DCHUB_ADMIN_KEY:   ${{ secrets.DCHUB_ADMIN_KEY }}
+          DCHUB_API_KEY:     ${{ secrets.DCHUB_API_KEY }}
+          NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
         run: |
-          # If you keep the fixkit checked into the repo at tools/fixkit/, run that;
-          # otherwise fall back to the legacy smoke script.
           if [ -f tools/fixkit/dchub_qa_v2.py ]; then
             python3 tools/fixkit/dchub_qa_v2.py --base https://dchub.cloud --report report.json
+          elif [ -f smoke_test.py ]; then
+            python3 smoke_test.py
           elif [ -f dchub-qa.py ]; then
             python3 dchub-qa.py
           else
@@ -53,7 +47,7 @@ jobs:
             exit 1
           fi
 
-      - name: Upload report
+      - name: Upload main smoke report
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -61,8 +55,30 @@ jobs:
           path: report.json
           if-no-files-found: ignore
 
-      # Single notify step — runtime-checks for the secret so we never crash
-      # the way v1 did with "Need to provide at least one botToken or webhookUrl".
+      # DCHUB-REGRESSION-2026-04-28: extra checks for the 2026-04-28 fixes
+      # (press-release daily brief, Explorer, MCP discovery, coord-parser,
+      #  right-panel CSS, Worker version, pr_queue integrity).
+      - name: Run 2026-04-28 regression smoke
+        if: always()
+        run: |
+          if [ -f dchub-frontend/qa/smoke_regression_2026_04_28.py ]; then
+            python3 dchub-frontend/qa/smoke_regression_2026_04_28.py \
+              --base https://dchub.cloud \
+              --report regression-report.json
+          else
+            echo "::warning::regression smoke not present at dchub-frontend/qa/smoke_regression_2026_04_28.py — skipped"
+          fi
+
+      - name: Upload regression report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-report
+          path: regression-report.json
+          if-no-files-found: ignore
+
+      # Single notify step — gated on SLACK_WEBHOOK_URL being present so we
+      # never crash with "Need to provide at least one botToken or webhookUrl".
       - name: Notify on failure
         if: failure()
         env:
@@ -78,52 +94,3 @@ jobs:
             --data "{\"text\":\":rotating_light: DC Hub smoke FAILED — run ${{ github.run_id }}\\n${RUN_URL}\"}" \
             "$SLACK_WEBHOOK_URL" \
             || echo "::warning::Slack notify POST failed (network/webhook invalid)"
-name: Post-Deploy Smoke Test
-
-# Runs after every push to main (once Railway finishes rebuilding),
-# and every 30 min as a safety net. Fails the build — and pings you —
-# on any gated-endpoint regression (e.g. a broken @require_plan path).
-
-on:
-  push:
-    branches: [main]
-  schedule:
-    - cron: '*/30 * * * *'
-  workflow_dispatch:
-
-jobs:
-  smoke:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install deps
-        run: pip install psycopg2-binary
-
-      - name: Wait for Railway rebuild to settle
-        if: github.event_name == 'push'
-        run: sleep 90  # give Railway time to swap traffic to new container
-
-      - name: Run smoke test
-        env:
-          DCHUB_API_BASE:  https://dchub-backend-production.up.railway.app
-          DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
-          DCHUB_API_KEY:   ${{ secrets.DCHUB_API_KEY }}
-          NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
-        run: python smoke_test.py
-
-      - name: Notify on failure
-        if: failure()
-        uses: slackapi/slack-github-action@v1
-        with:
-          channel-id: ${{ secrets.SLACK_ALERT_CHANNEL }}
-          slack-message: |
-            :red_circle: DC Hub smoke test FAILED on commit ${{ github.sha }}
-            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        env:
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
