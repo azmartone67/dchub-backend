@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+# DCHUB-CRAWLER-BACKOFF-2026-04-28
+# Reduced deals-crawler frequency from hourly to nightly + global semaphore
+# so concurrent crawlers cannot starve the gunicorn worker pool.
+import threading as _dchub_threading
+_DCHUB_CRAWLER_LOCK = _dchub_threading.BoundedSemaphore(1)
+
 """
 DC Hub Staggered Crawler Scheduler 2.0
 ====================================
