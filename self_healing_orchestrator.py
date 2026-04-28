@@ -523,7 +523,8 @@ HEALERS = [
     ('mcp_process',        heal_mcp_process),
     ('memory',             heal_memory),
     ('connection_pool',    heal_connection_pool),
-    ('stats_cache',        heal_stats_cache),    ('press_release_route',  heal_press_release_route),
+    ('stats_cache',        heal_stats_cache),
+    ('press_release_route',  heal_press_release_route),
     ('pr_queue_json',        heal_pr_queue_json),
     ('coord_parser_version', heal_coord_parser_version),
     # DCHUB-PROTECTION-2026-04-28-WIRED
