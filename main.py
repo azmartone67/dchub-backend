@@ -16275,3 +16275,8 @@ except ImportError:
     logger.warning("⚠️ reveal_cell module not present — skipping (optional)")
 except Exception as _rc_exc:
     logger.exception(f"🔴 reveal_cell registration FAILED (not ImportError): {_rc_exc}")
+
+
+# --- Smart search routes (added automatically) ---
+from search_routes import register_search_routes
+register_search_routes(app)
