@@ -524,10 +524,6 @@ HEALERS = [
     ('memory',             heal_memory),
     ('connection_pool',    heal_connection_pool),
     ('stats_cache',        heal_stats_cache),
-    ('press_release_route',  heal_press_release_route),
-    ('pr_queue_json',        heal_pr_queue_json),
-    ('coord_parser_version', heal_coord_parser_version),
-    # DCHUB-PROTECTION-2026-04-28-WIRED
 
 ]
 
@@ -646,3 +642,75 @@ if __name__ == '__main__':
         status = "HEALED" if result['healed'] else "OK"
         print("  %s: %s — %s" % (name, status, result['message']))
     print("\nTotal heals: %d" % _healer_stats['total_heals'])
+
+# ============================================================
+# DCHUB-PROTECTION-2026-04-28 — regression heal hooks
+# ============================================================
+import json as _dchub_json
+import os as _dchub_os
+import re as _dchub_re
+import subprocess as _dchub_subprocess
+try:
+    import requests as _dchub_requests
+except ImportError:
+    _dchub_requests = None
+
+_DCHUB_PROD_BASE = "https://dchub.cloud"
+_DCHUB_BACKEND_DIR = _dchub_os.environ.get("BACKEND_DIR", _dchub_os.path.expanduser("~/workspace"))
+_DCHUB_HEAL_LOG = logging.getLogger("self-healer.dchub-2026-04-28")
+
+
+def heal_press_release_route():
+    if _dchub_requests is None:
+        return
+    try:
+        r = _dchub_requests.get(_DCHUB_PROD_BASE + "/press-release", timeout=10)
+        has_markers = "Today's Headlines" in r.text
+        if r.status_code != 200 or not has_markers:
+            _DCHUB_HEAL_LOG.warning("[regression] /press-release status=%s markers=%s",
+                                    r.status_code, has_markers)
+    except Exception as e:
+        _DCHUB_HEAL_LOG.warning("[regression] /press-release probe failed: %s", e)
+
+
+def heal_pr_queue_json():
+    p = _dchub_os.path.join(_DCHUB_BACKEND_DIR, "pr_queue.json")
+    if not _dchub_os.path.isfile(p):
+        return
+    try:
+        with open(p) as f:
+            data = _dchub_json.load(f)
+        if not isinstance(data, list):
+            raise ValueError("top-level not list")
+    except Exception as e:
+        _DCHUB_HEAL_LOG.warning("[regression] pr_queue.json invalid (%s) - restoring from git", e)
+        try:
+            _dchub_subprocess.run(
+                ["git", "checkout", "HEAD", "--", "pr_queue.json"],
+                cwd=_DCHUB_BACKEND_DIR, check=True, capture_output=True, timeout=20,
+            )
+        except Exception as ee:
+            _DCHUB_HEAL_LOG.warning("[regression] pr_queue.json restore failed: %s", ee)
+
+
+def heal_coord_parser_version():
+    if _dchub_requests is None:
+        return
+    try:
+        r = _dchub_requests.get(_DCHUB_PROD_BASE + "/land-power-map", timeout=10)
+        m = _dchub_re.search(r"coord-parser-fix\.js\?v=(\d+)", r.text)
+        if not m:
+            _DCHUB_HEAL_LOG.warning("[regression] coord-parser tag missing on land-power-map")
+            return
+        v = int(m.group(1))
+        if v < 6:
+            _DCHUB_HEAL_LOG.warning("[regression] coord-parser regressed to v=%s (expected >=6)", v)
+    except Exception as e:
+        _DCHUB_HEAL_LOG.warning("[regression] coord-parser probe failed: %s", e)
+
+# DCHUB-PROTECTION-2026-04-28: register regression healers AFTER their defs
+HEALERS.extend([
+    ('press_release_route',  heal_press_release_route),
+    ('pr_queue_json',        heal_pr_queue_json),
+    ('coord_parser_version', heal_coord_parser_version),
+])
