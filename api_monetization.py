@@ -1182,7 +1182,7 @@ def register_monetization_routes(app, apply_middleware=True):
     if apply_middleware:
         @app.before_request
         def monetization_before_request():
-            if request.path in ('/api/health', '/api/version', '/ping'):
+            if request.path in ('/api/health', '/api/version', '/ping', '/api/press-releases'):
             return  # skip rate limiting for health/internal endpoints
             g.request_start_time = time.time()
             return api_rate_limit_middleware()
