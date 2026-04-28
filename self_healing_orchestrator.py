@@ -711,3 +711,10 @@ def heal_coord_parser_version():
         return (False, "v=%s OK" % v)
     except Exception as e:
         return (False, "probe failed: %s" % e)
+
+# DCHUB-PROTECTION-2026-04-28: register regression healers AFTER their defs
+HEALERS.extend([
+    ('press_release_route',  heal_press_release_route),
+    ('pr_queue_json',        heal_pr_queue_json),
+    ('coord_parser_version', heal_coord_parser_version),
+])
