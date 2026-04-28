@@ -658,30 +658,31 @@ except ImportError:
 _DCHUB_PROD_BASE = "https://dchub.cloud"
 _DCHUB_BACKEND_DIR = _dchub_os.environ.get("BACKEND_DIR", _dchub_os.path.expanduser("~/workspace"))
 _DCHUB_HEAL_LOG = logging.getLogger("self-healer.dchub-2026-04-28")
-
-
 def heal_press_release_route():
     if _dchub_requests is None:
-        return
+        return (False, "requests lib unavailable")
     try:
         r = _dchub_requests.get(_DCHUB_PROD_BASE + "/press-release", timeout=10)
         has_markers = "Today's Headlines" in r.text
         if r.status_code != 200 or not has_markers:
-            _DCHUB_HEAL_LOG.warning("[regression] /press-release status=%s markers=%s",
-                                    r.status_code, has_markers)
+            msg = "regression: status=%s markers=%s" % (r.status_code, has_markers)
+            _DCHUB_HEAL_LOG.warning("[regression] /press-release %s", msg)
+            return (False, msg)
+        return (False, "OK")
     except Exception as e:
-        _DCHUB_HEAL_LOG.warning("[regression] /press-release probe failed: %s", e)
+        return (False, "probe failed: %s" % e)
 
 
 def heal_pr_queue_json():
     p = _dchub_os.path.join(_DCHUB_BACKEND_DIR, "pr_queue.json")
     if not _dchub_os.path.isfile(p):
-        return
+        return (False, "file not found")
     try:
         with open(p) as f:
             data = _dchub_json.load(f)
         if not isinstance(data, list):
             raise ValueError("top-level not list")
+        return (False, "valid; %d entries" % len(data))
     except Exception as e:
         _DCHUB_HEAL_LOG.warning("[regression] pr_queue.json invalid (%s) - restoring from git", e)
         try:
@@ -689,28 +690,24 @@ def heal_pr_queue_json():
                 ["git", "checkout", "HEAD", "--", "pr_queue.json"],
                 cwd=_DCHUB_BACKEND_DIR, check=True, capture_output=True, timeout=20,
             )
+            return (True, "restored from git HEAD (was: %s)" % e)
         except Exception as ee:
-            _DCHUB_HEAL_LOG.warning("[regression] pr_queue.json restore failed: %s", ee)
+            return (False, "restore failed: %s" % ee)
 
 
 def heal_coord_parser_version():
     if _dchub_requests is None:
-        return
+        return (False, "requests lib unavailable")
     try:
         r = _dchub_requests.get(_DCHUB_PROD_BASE + "/land-power-map", timeout=10)
         m = _dchub_re.search(r"coord-parser-fix\.js\?v=(\d+)", r.text)
         if not m:
-            _DCHUB_HEAL_LOG.warning("[regression] coord-parser tag missing on land-power-map")
-            return
+            return (False, "tag missing")
         v = int(m.group(1))
         if v < 6:
-            _DCHUB_HEAL_LOG.warning("[regression] coord-parser regressed to v=%s (expected >=6)", v)
+            msg = "regressed to v=%s (expected >=6)" % v
+            _DCHUB_HEAL_LOG.warning("[regression] coord-parser %s", msg)
+            return (False, msg)
+        return (False, "v=%s OK" % v)
     except Exception as e:
-        _DCHUB_HEAL_LOG.warning("[regression] coord-parser probe failed: %s", e)
-
-# DCHUB-PROTECTION-2026-04-28: register regression healers AFTER their defs
-HEALERS.extend([
-    ('press_release_route',  heal_press_release_route),
-    ('pr_queue_json',        heal_pr_queue_json),
-    ('coord_parser_version', heal_coord_parser_version),
-])
+        return (False, "probe failed: %s" % e)
