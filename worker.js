@@ -1449,6 +1449,111 @@ function it5HandleGrids() {
 // === end iteration 5 helpers ===
 
 
+
+
+// === Edge-served facility detail page (Railway-independent fallback) ===
+function _serveFacilityPage(slug) {
+  const decoded = decodeURIComponent(slug);
+  const titleCase = decoded.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  const html = `<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<title>${titleCase} | DC Hub</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Facility details for ${titleCase} on DC Hub. View specs, location, power capacity, and connectivity.">
+<meta property="og:title" content="${titleCase} | DC Hub">
+<meta property="og:description" content="Facility details on DC Hub — 21,000+ data centers across 140+ countries.">
+<meta property="og:image" content="https://dchub.cloud/images/og-home.png">
+<meta property="og:url" content="https://dchub.cloud/facilities/${decoded}">
+<link rel="icon" href="/favicon.ico">
+<style>
+:root{color-scheme:dark}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0a0e1a;color:#c9d1e0;font-family:-apple-system,'Segoe UI',sans-serif;min-height:100vh;line-height:1.6}
+.wrap{max-width:900px;margin:0 auto;padding:24px}
+nav{background:#0d1224;border-bottom:1px solid #1a2035;padding:16px 24px;display:flex;justify-content:space-between;align-items:center}
+nav a{color:#00d4ff;text-decoration:none;font-weight:600}
+.crumb{font-size:13px;color:#7a8499;margin:16px 0}
+.crumb a{color:#00d4ff;text-decoration:none}
+h1{font-size:28px;margin:24px 0 8px;color:#fff}
+.subhead{color:#7a8499;margin-bottom:24px}
+.card{background:#141b2d;border:1px solid #1e293b;border-radius:10px;padding:24px;margin-bottom:16px}
+.card h2{font-size:18px;margin:0 0 12px;color:#00d4ff}
+.row{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #1e293b}
+.row:last-child{border-bottom:0}
+.row .k{color:#7a8499}
+.row .v{color:#e8f8ff;font-family:'JetBrains Mono',monospace;font-size:13px}
+.cta-row{display:flex;gap:12px;margin-top:24px}
+.cta{display:inline-block;background:#00d4aa;color:#0a1220;padding:10px 18px;border-radius:6px;text-decoration:none;font-weight:600}
+.cta.secondary{background:transparent;color:#00d4ff;border:1px solid #00d4ff}
+.loading{padding:24px;text-align:center;color:#7a8499}
+.error{padding:16px;background:#2d1a1a;border:1px solid #5a2a2a;border-radius:8px;color:#f4a4a4;font-size:14px}
+</style>
+</head>
+<body>
+<nav><a href="/">DC Hub</a><a href="/map">← Back to Map</a></nav>
+<div class="wrap">
+  <div class="crumb"><a href="/">Home</a> &middot; <a href="/map">Facilities Map</a> &middot; ${titleCase}</div>
+  <h1>${titleCase}</h1>
+  <p class="subhead">Facility details &middot; <span style="font-family:monospace;font-size:12px">${decoded}</span></p>
+  <div class="card" id="details">
+    <div class="loading" id="loading">Loading facility details from edge cache...</div>
+    <div id="content" style="display:none"></div>
+  </div>
+  <div class="cta-row">
+    <a class="cta" href="/api/v1/explorer">Open Search Explorer</a>
+    <a class="cta secondary" href="/map">Back to Map</a>
+  </div>
+</div>
+<script>
+(async () => {
+  const slug = ${JSON.stringify(decoded)};
+  const loadingEl = document.getElementById('loading');
+  const contentEl = document.getElementById('content');
+  const RETRIES = 3;
+  let data = null;
+  for (let i = 0; i < RETRIES; i++) {
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 6000);
+      const r = await fetch('/api/v1/facilities/' + encodeURIComponent(slug), { signal: ctrl.signal });
+      clearTimeout(t);
+      if (r.ok) { data = await r.json(); break; }
+    } catch (e) {
+      if (i < RETRIES - 1) await new Promise(res => setTimeout(res, 1500 * (i + 1)));
+    }
+  }
+  loadingEl.style.display = 'none';
+  if (!data) {
+    contentEl.innerHTML = '<div class="error">Could not load facility details right now. Try again in a moment, or use the search explorer to find this facility by name.</div>';
+    contentEl.style.display = 'block';
+    return;
+  }
+  const f = data.facility || data;
+  const fields = [
+    ['Provider', f.provider], ['Status', f.status],
+    ['City', f.city], ['State', f.state], ['Country', f.country],
+    ['Power capacity', f.power_mw ? f.power_mw + ' MW' : null],
+    ['Tier', f.tier], ['Latitude', f.latitude || f.lat], ['Longitude', f.longitude || f.lng || f.lon],
+  ].filter(r => r[1] != null && r[1] !== '');
+  contentEl.innerHTML = '<h2>Specifications</h2>' +
+    fields.map(r => '<div class="row"><span class="k">' + r[0] + '</span><span class="v">' + r[1] + '</span></div>').join('');
+  contentEl.style.display = 'block';
+})();
+</script>
+</body></html>`;
+  return new Response(html, {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'public, max-age=300',
+      'X-Frame-Options': 'SAMEORIGIN',
+    },
+  });
+}
+// === end facility page handler ===
+
+
 export default {
   async scheduled(event, env, ctx) {
     if (!env.DCHUB_CACHE) return;
@@ -1463,6 +1568,11 @@ export default {
       if (_it5_url.pathname === '/api/v1/search/edge')        return it5HandleEdgeSearch(request, env);
       if (_it5_url.pathname === '/api/v1/search/grids/edge')  return it5HandleGrids();
       if (_it5_url.pathname === '/api/v1/explorer' || _it5_url.pathname === '/explorer')  return _serveSearchExplorer();
+      // Edge-served facility detail page — graceful when Railway endpoints time out
+      if (_it5_url.pathname.startsWith('/facilities/') && _it5_url.pathname.length > 12) {
+        const slug = _it5_url.pathname.replace('/facilities/', '');
+        if (slug && !slug.includes('/')) return _serveFacilityPage(slug);
+      }
     }
     // === end iteration 5 routes ===
     const url = new URL(request.url);
