@@ -74,8 +74,9 @@
 // ============================================================
 // CONFIGURATION
 // ============================================================
-const RAILWAY_BACKEND = 'https://dchub-api-production.up.railway.app';
-const WORKER_VERSION = '4.8.0';
+const RAILWAY_BACKEND = 'https://dchub-backend-production.up.railway.app';
+const MCP_BACKEND     = 'https://dchub-mcp-server-production.up.railway.app';
+const WORKER_VERSION = '4.8.3';
 const MCP_CACHE_STALE_TTL = 86400;
 const MCP_CACHE_FRESH_TTL = 300;
 const MCP_NO_CACHE_METHODS = new Set([
@@ -1690,7 +1691,7 @@ export default {
         fwdHeaders.delete('cf-ray');
         fwdHeaders.delete('cf-visitor');
         fwdHeaders.delete('x-forwarded-proto');
-        const upstream = await fetch(`${RAILWAY_BACKEND}${pathname}${url.search}`, {
+        const upstream = await fetch(`${MCP_BACKEND}${pathname}${url.search}`, {
           method:   request.method,
           headers:  fwdHeaders,
           body:     (request.method === 'GET' || request.method === 'HEAD') ? undefined : request.body,
@@ -1793,7 +1794,7 @@ export default {
       if (contentType.includes('text/html')) {
         const resp = new Response(pagesResp.body, pagesResp);
         resp.headers.set('Cache-Control', 'public, max-age=120, stale-while-revalidate=300');
-        resp.headers.set('Link', ['<https://dchub-api-production.up.railway.app>; rel=preconnect', '<https://unpkg.com>; rel=preconnect', '<https://fonts.googleapis.com>; rel=preconnect', '<https://fonts.gstatic.com>; rel=preconnect; crossorigin'].join(', '));
+        resp.headers.set('Link', ['<https://dchub-backend-production.up.railway.app>; rel=preconnect', '<https://unpkg.com>; rel=preconnect', '<https://fonts.googleapis.com>; rel=preconnect', '<https://fonts.gstatic.com>; rel=preconnect; crossorigin'].join(', '));
         resp.headers.set('X-DC-Worker-Version', WORKER_VERSION);
         return resp;
       }
