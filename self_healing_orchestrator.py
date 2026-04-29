@@ -45,7 +45,7 @@ logger = logging.getLogger('self-healer')
 # Configuration
 # ============================================================
 HEAL_INTERVAL = 120          # Check every 2 minutes
-RAILWAY_API_BASE = 'https://dchub-backend-production.up.railway.app'
+RAILWAY_API_BASE = 'https://dchub-backend-production-f7dd.up.railway.app'
 BLOCKED_API_BASES = ['127.0.0.1', 'localhost', '0.0.0.0']
 MEMORY_WARN_MB = 350
 MEMORY_CRITICAL_MB = 450

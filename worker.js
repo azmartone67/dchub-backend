@@ -74,7 +74,7 @@
 // ============================================================
 // CONFIGURATION
 // ============================================================
-const RAILWAY_BACKEND = 'https://dchub-backend-production.up.railway.app';
+const RAILWAY_BACKEND = 'https://dchub-backend-production-f7dd.up.railway.app';
 const WORKER_VERSION = '4.7.0';
 const MCP_CACHE_STALE_TTL = 86400;
 const MCP_CACHE_FRESH_TTL = 300;
@@ -1683,7 +1683,7 @@ export default {
       if (contentType.includes('text/html')) {
         const resp = new Response(pagesResp.body, pagesResp);
         resp.headers.set('Cache-Control', 'public, max-age=120, stale-while-revalidate=300');
-        resp.headers.set('Link', ['<https://dchub-backend-production.up.railway.app>; rel=preconnect', '<https://unpkg.com>; rel=preconnect', '<https://fonts.googleapis.com>; rel=preconnect', '<https://fonts.gstatic.com>; rel=preconnect; crossorigin'].join(', '));
+        resp.headers.set('Link', ['<https://dchub-backend-production-f7dd.up.railway.app>; rel=preconnect', '<https://unpkg.com>; rel=preconnect', '<https://fonts.googleapis.com>; rel=preconnect', '<https://fonts.gstatic.com>; rel=preconnect; crossorigin'].join(', '));
         resp.headers.set('X-DC-Worker-Version', WORKER_VERSION);
         return resp;
       }

@@ -13,7 +13,7 @@ Usage:
   python3 dchub-scheduler.py --status     # Check health + job status
 
 Environment:
-  DCHUB_API_BASE    — API base URL (default: https://dchub-backend-production.up.railway.app)
+  DCHUB_API_BASE    — API base URL (default: https://dchub-backend-production-f7dd.up.railway.app)
   DCHUB_ADMIN_KEY   — Admin API key (required)
 
 v3.9 changelog:
@@ -87,7 +87,7 @@ from internal_auth import is_valid_internal_key, get_internal_key_for_client
 # ============================================================
 # CONFIG
 # ============================================================
-API_BASE = os.environ.get('DCHUB_API_BASE', 'https://dchub-backend-production.up.railway.app')
+API_BASE = os.environ.get('DCHUB_API_BASE', 'https://dchub-backend-production-f7dd.up.railway.app')
 ADMIN_KEY = os.environ.get('DCHUB_ADMIN_KEY', '')
 
 logging.basicConfig(

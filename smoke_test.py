@@ -23,7 +23,7 @@ Checks:
   12. Fiber routes (/api/fiber/routes)
 
 Environment:
-  DCHUB_API_BASE   — API base URL (default: https://dchub-backend-production.up.railway.app)
+  DCHUB_API_BASE   — API base URL (default: https://dchub-backend-production-f7dd.up.railway.app)
   DCHUB_ADMIN_KEY  — Admin key for authenticated endpoints
 """
 
@@ -41,7 +41,7 @@ logger = logging.getLogger("dchub.smoke")
 # CONFIG
 # ═══════════════════════════════════════════════════════════
 
-API_BASE = os.environ.get('DCHUB_API_BASE', 'https://dchub-backend-production.up.railway.app')
+API_BASE = os.environ.get('DCHUB_API_BASE', 'https://dchub-backend-production-f7dd.up.railway.app')
 ADMIN_KEY = os.environ.get('DCHUB_ADMIN_KEY', '')
 API_KEY   = os.environ.get('DCHUB_API_KEY', '')  # for gated endpoints (Pro/Enterprise)
 
