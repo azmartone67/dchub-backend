@@ -13,7 +13,7 @@ jobs:
     steps:
       - name: Keep alive and News refresh
         run: |
-          RAILWAY="https://dchub-backend-production.up.railway.app"
+          RAILWAY="https://dchub-backend-production-f7dd.up.railway.app"
           echo "Keep-alive ping..."
           curl -sf "$RAILWAY/api/jobs/keep-alive" | head -1 || echo "Keep-alive failed"
           echo ""
@@ -27,7 +27,7 @@ jobs:
     steps:
       - name: Infrastructure discovery
         run: |
-          RAILWAY="https://dchub-backend-production.up.railway.app"
+          RAILWAY="https://dchub-backend-production-f7dd.up.railway.app"
           echo "Starting infrastructure sync at $(date -u)"
           echo ""
           echo "Step 1/4: Infrastructure discovery (fiber, substations, gas)..."
@@ -36,7 +36,7 @@ jobs:
 
       - name: Energy discovery per market
         run: |
-          RAILWAY="https://dchub-backend-production.up.railway.app"
+          RAILWAY="https://dchub-backend-production-f7dd.up.railway.app"
           echo "Step 2/4: Energy discovery (23 markets)..."
           MARKETS="phoenix dallas northern_virginia atlanta las_vegas salt_lake_city columbus des_moines chicago silicon_valley new_york seattle portland denver san_antonio houston miami reno sacramento minneapolis kansas_city richmond nashville"
           TOTAL=0
@@ -57,13 +57,13 @@ jobs:
 
       - name: KMZ fiber processing
         run: |
-          RAILWAY="https://dchub-backend-production.up.railway.app"
+          RAILWAY="https://dchub-backend-production-f7dd.up.railway.app"
           echo "Step 3/4: KMZ fiber source processing..."
           curl -sf --max-time 90 -X POST "$RAILWAY/api/kmz-discovery/run" 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print('Success:', d.get('success','?'))" 2>/dev/null || echo "KMZ processing timed out"
 
       - name: Evolution and auto-approve
         run: |
-          RAILWAY="https://dchub-backend-production.up.railway.app"
+          RAILWAY="https://dchub-backend-production-f7dd.up.railway.app"
           echo "Step 4/4: Evolution engine + auto-approve..."
           curl -sf --max-time 60 -X POST "$RAILWAY/api/jobs/evolution" 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print('Evolution:', d.get('success','?'))" 2>/dev/null || echo "Evolution timed out"
           sleep 3
@@ -71,7 +71,7 @@ jobs:
 
       - name: Warm caches
         run: |
-          RAILWAY="https://dchub-backend-production.up.railway.app"
+          RAILWAY="https://dchub-backend-production-f7dd.up.railway.app"
           echo "Warming PeeringDB and H3 caches..."
           curl -sf "$RAILWAY/api/v2/connectivity/summary?lat=39.0&lng=-77.4" > /dev/null && echo "  NoVA cached"
           sleep 2
@@ -86,7 +86,7 @@ jobs:
 
       - name: Health check
         run: |
-          RAILWAY="https://dchub-backend-production.up.railway.app"
+          RAILWAY="https://dchub-backend-production-f7dd.up.railway.app"
           echo "Final health check..."
           curl -sf "$RAILWAY/api/health" | python3 -m json.tool | head -10
           echo ""
