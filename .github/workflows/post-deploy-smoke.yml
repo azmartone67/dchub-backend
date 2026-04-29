@@ -31,7 +31,7 @@ jobs:
       - name: Run main smoke test (Railway / DB / MCP)
         id: smoke
         env:
-          DCHUB_API_BASE:    https://dchub-backend-production-f7dd.up.railway.app
+          DCHUB_API_BASE:    https://dchub-api-production.up.railway.app
           DCHUB_ADMIN_KEY:   ${{ secrets.DCHUB_ADMIN_KEY }}
           DCHUB_API_KEY:     ${{ secrets.DCHUB_API_KEY }}
           NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
