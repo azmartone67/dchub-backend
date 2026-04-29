@@ -84,6 +84,21 @@ from mcp.server.fastmcp import FastMCP
 
 from mcp_gatekeeper import gate, finalize, GatekeeperMiddleware, init_db, _load_keys_from_db
 
+# === pydantic >=2.10 compat shim for mcp 1.26.0 ===
+# Upstream `mcp/server/fastmcp/utilities/func_metadata.py:_create_wrapped_model`
+# calls `create_model(name, result=annotation)`, which pydantic 2.10+ rejects
+# with: "A non-annotated attribute was detected: `result = <class 'str'>`".
+# The pydantic-v2-correct call is `create_model(name, result=(annotation, ...))`.
+# Patch BEFORE any @mcp.tool decorators run so primitive return types work.
+try:
+    from mcp.server.fastmcp.utilities import func_metadata as _dchub_fm
+    from pydantic import create_model as _dchub_create_model
+    def _dchub_create_wrapped_model(func_name, annotation):
+        return _dchub_create_model(f"{func_name}Output", result=(annotation, ...))
+    _dchub_fm._create_wrapped_model = _dchub_create_wrapped_model
+except Exception as _dchub_patch_err:
+    print(f"[mcp-shim] pydantic compat patch skipped: {_dchub_patch_err}", file=sys.stderr)
+
 
 # =============================================================================
 # CONFIG

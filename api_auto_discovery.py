@@ -965,62 +965,77 @@ class APIAutoDiscovery:
         return results
 
     def detect_deprecated_apis(self) -> Dict:
+        # 3-phase: brief read → in-memory decision → batched write.
+        # Eliminates pool starvation observed when this method ran for 80+s
+        # under the api-auto-discovery-scheduler thread (Apr 2026).
         results = {'checked': 0, 'deprecated': 0, 'recovered': 0}
 
+        # PHASE 1: brief read to fetch the work list, then close the connection.
+        rows = []
         conn = get_db(self.db_path)
-        cursor = conn.cursor()
-
-        cursor.execute('''
-            SELECT da.id, da.name, da.url, da.api_type, da.status,
-                   COUNT(hc.id) as check_count,
-                   SUM(CASE WHEN hc.is_healthy = 0 THEN 1 ELSE 0 END) as fail_count
-            FROM discovered_apis da
-            LEFT JOIN api_health_checks hc ON da.id = hc.api_id
-                AND hc.checked_at > datetime('now', '-7 days')
-            WHERE da.status IN ('working', 'verified', 'failed', 'degraded')
-            GROUP BY da.id
-            HAVING COUNT(hc.id) >= 3
-        ''')
-
-        rows = cursor.fetchall()
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT da.id, da.name, da.url, da.api_type, da.status,
+                       COUNT(hc.id) as check_count,
+                       SUM(CASE WHEN hc.is_healthy = 0 THEN 1 ELSE 0 END) as fail_count
+                FROM discovered_apis da
+                LEFT JOIN api_health_checks hc ON da.id = hc.api_id
+                    AND hc.checked_at > datetime('now', '-7 days')
+                WHERE da.status IN ('working', 'verified', 'failed', 'degraded')
+                GROUP BY da.id
+                HAVING COUNT(hc.id) >= 3
+            ''')
+            rows = cursor.fetchall()
+        finally:
+            try: conn.close()
+            except Exception: pass
         results['checked'] = len(rows)
 
+        # PHASE 2: in-memory decisions (no DB held).
+        deprecate_ops = []  # (api_id, current_status, fail_count, check_count)
+        recover_ops = []
         for api_id, name, url, api_type, current_status, check_count, fail_count in rows:
+            check_count = check_count or 0
+            fail_count = fail_count or 0
             fail_rate = fail_count / check_count if check_count > 0 else 0
 
             if fail_rate >= 0.8 and current_status not in ('deprecated',):
-                results['deprecated'] += 1
+                deprecate_ops.append((api_id, current_status, fail_count, check_count))
                 self._cache['deprecated_apis'].append(name)
-
-                for attempt in range(3):
-                    try:
-                        cursor.execute('''
-                            UPDATE discovered_apis SET status = 'deprecated', updated_at = %s WHERE id = %s
-                        ''', (datetime.now().isoformat(), api_id))
-                        break
-                    except Exception:
-                        time.sleep(0.5)
-
-                self._log_change_event(cursor, api_id, 'deprecated', current_status, 'deprecated',
-                    f"API failed {fail_count}/{check_count} health checks in 7 days")
-
             elif fail_rate <= 0.2 and current_status in ('failed', 'degraded', 'deprecated'):
-                results['recovered'] += 1
+                recover_ops.append((api_id, current_status, fail_count, check_count))
+        results['deprecated'] = len(deprecate_ops)
+        results['recovered'] = len(recover_ops)
 
-                for attempt in range(3):
+        # PHASE 3: batched writes in a fresh connection (only if we have work).
+        if deprecate_ops or recover_ops:
+            conn = get_db(self.db_path)
+            try:
+                cursor = conn.cursor()
+                now = datetime.now().isoformat()
+                for api_id, current_status, fail_count, check_count in deprecate_ops:
                     try:
-                        cursor.execute('''
-                            UPDATE discovered_apis SET status = 'working', updated_at = %s WHERE id = %s
-                        ''', (datetime.now().isoformat(), api_id))
-                        break
-                    except Exception:
-                        time.sleep(0.5)
-
-                self._log_change_event(cursor, api_id, 'recovered', current_status, 'working',
-                    f"API recovered - passing {check_count - fail_count}/{check_count} health checks")
-
-        conn.commit()
-        conn.close()
+                        cursor.execute(
+                            'UPDATE discovered_apis SET status = %s, updated_at = %s WHERE id = %s',
+                            ('deprecated', now, api_id))
+                        self._log_change_event(cursor, api_id, 'deprecated', current_status, 'deprecated',
+                            f"API failed {fail_count}/{check_count} health checks in 7 days")
+                    except Exception as e:
+                        logger.debug(f"Deprecate write failed for api_id={api_id}: {e}")
+                for api_id, current_status, fail_count, check_count in recover_ops:
+                    try:
+                        cursor.execute(
+                            'UPDATE discovered_apis SET status = %s, updated_at = %s WHERE id = %s',
+                            ('working', now, api_id))
+                        self._log_change_event(cursor, api_id, 'recovered', current_status, 'working',
+                            f"API recovered - passing {check_count - fail_count}/{check_count} health checks")
+                    except Exception as e:
+                        logger.debug(f"Recover write failed for api_id={api_id}: {e}")
+                conn.commit()
+            finally:
+                try: conn.close()
+                except Exception: pass
 
         logger.info(f"Deprecation Check: checked={results['checked']}, deprecated={results['deprecated']}, recovered={results['recovered']}")
         return results
@@ -1139,63 +1154,68 @@ class APIAutoDiscovery:
         return results
 
     def get_discovery_status(self) -> Dict:
+        # Wrapped in try/finally so a slow query or exception cannot leak the
+        # connection — previously this method was observed holding a pool slot
+        # for 84s under the scheduler thread (Apr 2026), starving the pool.
         conn = get_db(self.db_path)
-        cursor = conn.cursor()
+        try:
+            cursor = conn.cursor()
 
-        cursor.execute('SELECT COUNT(*) FROM discovered_apis')
-        total_apis = cursor.fetchone()[0]
+            cursor.execute('SELECT COUNT(*) FROM discovered_apis')
+            total_apis = cursor.fetchone()[0]
 
-        cursor.execute("SELECT COUNT(*) FROM discovered_apis WHERE status IN ('working', 'verified')")
-        working_apis = cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(*) FROM discovered_apis WHERE status IN ('working', 'verified')")
+            working_apis = cursor.fetchone()[0]
 
-        cursor.execute("SELECT COUNT(*) FROM discovered_apis WHERE status = 'failed'")
-        failed_apis = cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(*) FROM discovered_apis WHERE status = 'failed'")
+            failed_apis = cursor.fetchone()[0]
 
-        cursor.execute("SELECT COUNT(*) FROM discovered_apis WHERE status = 'deprecated'")
-        deprecated_apis = cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(*) FROM discovered_apis WHERE status = 'deprecated'")
+            deprecated_apis = cursor.fetchone()[0]
 
-        cursor.execute("SELECT COUNT(*) FROM discovered_apis WHERE integrated = 1")
-        integrated_apis = cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(*) FROM discovered_apis WHERE integrated = 1")
+            integrated_apis = cursor.fetchone()[0]
 
-        cursor.execute('SELECT category, COUNT(*) FROM discovered_apis GROUP BY category')
-        by_category = dict(cursor.fetchall())
+            cursor.execute('SELECT category, COUNT(*) FROM discovered_apis GROUP BY category')
+            by_category = dict(cursor.fetchall())
 
-        cursor.execute('SELECT api_type, COUNT(*) FROM discovered_apis GROUP BY api_type')
-        by_type = dict(cursor.fetchall())
+            cursor.execute('SELECT api_type, COUNT(*) FROM discovered_apis GROUP BY api_type')
+            by_type = dict(cursor.fetchall())
 
-        cursor.execute('SELECT COUNT(*) FROM learned_infrastructure')
-        items_learned = cursor.fetchone()[0]
+            cursor.execute('SELECT COUNT(*) FROM learned_infrastructure')
+            items_learned = cursor.fetchone()[0]
 
-        cursor.execute('SELECT category, COUNT(*) FROM learned_infrastructure GROUP BY category')
-        learned_by_category = dict(cursor.fetchall())
+            cursor.execute('SELECT category, COUNT(*) FROM learned_infrastructure GROUP BY category')
+            learned_by_category = dict(cursor.fetchall())
 
-        cursor.execute('SELECT COUNT(*) FROM api_registry WHERE enabled = 1')
-        registry_count = cursor.fetchone()[0]
+            cursor.execute('SELECT COUNT(*) FROM api_registry WHERE enabled = 1')
+            registry_count = cursor.fetchone()[0]
 
-        cursor.execute("SELECT COUNT(*) FROM api_health_checks WHERE checked_at > NOW() - INTERVAL '24 hours'")
-        checks_24h = cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(*) FROM api_health_checks WHERE checked_at > NOW() - INTERVAL '24 hours'")
+            checks_24h = cursor.fetchone()[0]
 
-        cursor.execute("SELECT COUNT(*) FROM api_change_events WHERE detected_at > NOW() - INTERVAL '7 days'")
-        changes_7d = cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(*) FROM api_change_events WHERE detected_at > NOW() - INTERVAL '7 days'")
+            changes_7d = cursor.fetchone()[0]
 
-        cursor.execute('''
-            SELECT name, category, api_type, record_count, status, last_tested
-            FROM discovered_apis
-            WHERE status IN ('working', 'verified')
-            ORDER BY updated_at DESC
-            LIMIT 15
-        ''')
-        top_apis = [{'name': r[0], 'category': r[1], 'type': r[2], 'records': r[3],
-                      'status': r[4], 'last_tested': r[5]} for r in cursor.fetchall()]
+            cursor.execute('''
+                SELECT name, category, api_type, record_count, status, last_tested
+                FROM discovered_apis
+                WHERE status IN ('working', 'verified')
+                ORDER BY updated_at DESC
+                LIMIT 15
+            ''')
+            top_apis = [{'name': r[0], 'category': r[1], 'type': r[2], 'records': r[3],
+                          'status': r[4], 'last_tested': r[5]} for r in cursor.fetchall()]
 
-        cursor.execute('''
-            SELECT event_type, COUNT(*) FROM api_change_events
-            WHERE detected_at > datetime('now', '-30 days')
-            GROUP BY event_type
-        ''')
-        recent_changes = dict(cursor.fetchall())
-
-        conn.close()
+            cursor.execute('''
+                SELECT event_type, COUNT(*) FROM api_change_events
+                WHERE detected_at > datetime('now', '-30 days')
+                GROUP BY event_type
+            ''')
+            recent_changes = dict(cursor.fetchall())
+        finally:
+            try: conn.close()
+            except Exception: pass
 
         return {
             'total_apis_discovered': total_apis,
