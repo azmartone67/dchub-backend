@@ -308,7 +308,7 @@ def _run_market_refresh():
         try:
             import urllib.request
             req = urllib.request.Request(
-                'https://dchub-backend-production-f7dd.up.railway.app/api/deals/refresh',
+                'https://dchub-api-production.up.railway.app/api/deals/refresh',
                 method='POST',
                 headers={'X-Admin-Key': os.environ.get('DCHUB_ADMIN_KEY', '')}
             )
@@ -326,7 +326,7 @@ def _run_market_refresh():
     try:
         import urllib.request, json
         req = urllib.request.Request(
-            'https://dchub-backend-production-f7dd.up.railway.app/api/market-report/generate',
+            'https://dchub-api-production.up.railway.app/api/market-report/generate',
             method='POST',
             headers={'X-Admin-Key': os.environ.get('DCHUB_ADMIN_KEY', '')}
         )
@@ -345,7 +345,7 @@ def _run_market_refresh():
         import random
         cat = random.choice(categories)
         req = urllib.request.Request(
-            'https://dchub-backend-production-f7dd.up.railway.app/api/v1/ai-wars/auto-battle',
+            'https://dchub-api-production.up.railway.app/api/v1/ai-wars/auto-battle',
             method='POST',
             data=_json.dumps({'category': cat}).encode('utf-8'),
             headers={
@@ -367,7 +367,7 @@ def _run_market_refresh():
     try:
         import urllib.request
         req = urllib.request.Request(
-            'https://dchub-backend-production-f7dd.up.railway.app/api/ai-ecosystem/run',
+            'https://dchub-api-production.up.railway.app/api/ai-ecosystem/run',
             method='POST',
             headers={'X-Admin-Key': os.environ.get('DCHUB_ADMIN_KEY', '')}
         )
