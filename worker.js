@@ -1568,9 +1568,9 @@ export default {
       if (_it5_url.pathname === '/api/v1/search/edge')        return it5HandleEdgeSearch(request, env);
       if (_it5_url.pathname === '/api/v1/search/grids/edge')  return it5HandleGrids();
       if (_it5_url.pathname === '/api/v1/explorer' || _it5_url.pathname === '/explorer')  return _serveSearchExplorer();
-      // Edge-served facility detail page — graceful when Railway endpoints time out
-      if (_it5_url.pathname.startsWith('/facilities/') && _it5_url.pathname.length > 12) {
-        const slug = _it5_url.pathname.replace('/facilities/', '');
+      // Edge-served facility detail page — under /api/v1/* prefix (Pages routes to worker)
+      if (_it5_url.pathname.startsWith('/api/v1/facility/')) {
+        const slug = _it5_url.pathname.replace('/api/v1/facility/', '');
         if (slug && !slug.includes('/')) return _serveFacilityPage(slug);
       }
     }
