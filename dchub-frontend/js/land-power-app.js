@@ -9344,6 +9344,19 @@ var markets = {
             
             // Get county tax info
             var taxInfo = getCountyTaxInfo(lat, lng);
+
+            // International graceful fallback (non-US/CA coords like Malaysia, EU, APAC)
+            // Prevents 'Cannot read property of null' which silently bails _doEvaluateSite
+            if (!isoRegion || !isoRegion.abbrev) {
+                isoRegion = { name: 'International', abbrev: 'INTL', lmp: 'N/A' };
+            }
+            if (!taxInfo || typeof taxInfo.rate !== 'number') {
+                taxInfo = {
+                    county: (taxInfo && taxInfo.county) || 'International (limited data)',
+                    rate: 0,
+                    notes: (taxInfo && taxInfo.notes) || 'Tax data unavailable outside US — site analysis limited to power/fiber/airport distances.'
+                };
+            }
             
             // Get environmental risk
             var envRisk = getEnvironmentalRisk(lat, lng);
