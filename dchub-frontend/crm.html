@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DC Hub — CRM</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #09090b;
+  --surface: #12121a;
+  --surface2: #1a1a25;
+  --border: #2a2a3a;
+  --text: #e8e8f0;
+  --text-dim: #8888a0;
+  --accent: #4f8cff;
+  --accent-glow: rgba(79,140,255,0.15);
+  --green: #34d399;
+  --green-bg: rgba(52,211,153,0.1);
+  --orange: #fb923c;
+  --orange-bg: rgba(251,146,60,0.1);
+  --red: #f87171;
+  --red-bg: rgba(248,113,113,0.1);
+  --purple: #a78bfa;
+  --purple-bg: rgba(167,139,250,0.1);
+  --yellow: #fbbf24;
+  --yellow-bg: rgba(251,191,36,0.1);
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'DM Sans',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; }
+
+/* Top bar */
+.topbar {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:16px 32px; border-bottom:1px solid var(--border);
+  background:var(--surface);
+}
+.topbar h1 { font-size:18px; font-weight:700; letter-spacing:-0.5px; }
+.topbar h1 span { color:var(--accent); }
+.topbar-stats { display:flex; gap:24px; }
+.topbar-stat { text-align:center; }
+.topbar-stat .val { font-size:22px; font-weight:700; font-family:'JetBrains Mono',monospace; }
+.topbar-stat .lbl { font-size:11px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; }
+
+/* Filters */
+.filters {
+  display:flex; gap:12px; padding:16px 32px; flex-wrap:wrap; align-items:center;
+  border-bottom:1px solid var(--border); background:var(--surface);
+}
+.filter-btn {
+  padding:6px 14px; border-radius:6px; border:1px solid var(--border);
+  background:transparent; color:var(--text-dim); cursor:pointer;
+  font-size:13px; font-family:'DM Sans',sans-serif; transition:all 0.15s;
+}
+.filter-btn:hover { border-color:var(--accent); color:var(--text); }
+.filter-btn.active { background:var(--accent-glow); border-color:var(--accent); color:var(--accent); }
+.filter-search {
+  padding:6px 14px; border-radius:6px; border:1px solid var(--border);
+  background:var(--surface2); color:var(--text); font-size:13px;
+  font-family:'DM Sans',sans-serif; width:220px; margin-left:auto;
+}
+.filter-search::placeholder { color:var(--text-dim); }
+
+/* Attention bar */
+.attention-bar {
+  display:flex; gap:16px; padding:16px 32px; overflow-x:auto;
+  border-bottom:1px solid var(--border);
+}
+.attention-card {
+  min-width:200px; padding:14px 18px; border-radius:10px;
+  border:1px solid var(--border); background:var(--surface);
+  cursor:pointer; transition:all 0.15s; flex-shrink:0;
+}
+.attention-card:hover { border-color:var(--accent); transform:translateY(-1px); }
+.attention-card.overdue { border-left:3px solid var(--red); }
+.attention-card.due-soon { border-left:3px solid var(--orange); }
+.attention-card.untouched { border-left:3px solid var(--yellow); }
+.attention-card .ac-name { font-weight:600; font-size:14px; margin-bottom:2px; }
+.attention-card .ac-company { font-size:12px; color:var(--text-dim); margin-bottom:6px; }
+.attention-card .ac-reason { font-size:11px; padding:3px 8px; border-radius:4px; display:inline-block; }
+.attention-card.overdue .ac-reason { background:var(--red-bg); color:var(--red); }
+.attention-card.due-soon .ac-reason { background:var(--orange-bg); color:var(--orange); }
+.attention-card.untouched .ac-reason { background:var(--yellow-bg); color:var(--yellow); }
+
+/* Main table */
+.table-wrap { padding:0 32px 32px; overflow-x:auto; }
+table { width:100%; border-collapse:collapse; margin-top:16px; }
+th {
+  text-align:left; padding:10px 14px; font-size:11px; font-weight:600;
+  text-transform:uppercase; letter-spacing:0.5px; color:var(--text-dim);
+  border-bottom:1px solid var(--border); position:sticky; top:0; background:var(--bg);
+}
+td {
+  padding:12px 14px; font-size:13px; border-bottom:1px solid var(--border);
+  vertical-align:middle;
+}
+tr:hover td { background:var(--surface); }
+tr.row-paying td { background:rgba(52,211,153,0.03); }
+
+/* Badges */
+.badge {
+  display:inline-block; padding:3px 10px; border-radius:4px;
+  font-size:11px; font-weight:600; letter-spacing:0.3px;
+}
+.badge-pro { background:var(--green-bg); color:var(--green); }
+.badge-founding { background:var(--purple-bg); color:var(--purple); }
+.badge-free { background:var(--orange-bg); color:var(--orange); }
+
+.stage-badge {
+  display:inline-block; padding:3px 10px; border-radius:4px;
+  font-size:11px; font-weight:500; cursor:pointer; position:relative;
+}
+.stage-new { background:var(--yellow-bg); color:var(--yellow); }
+.stage-engaged { background:var(--green-bg); color:var(--green); }
+.stage-nurturing { background:var(--accent-glow); color:var(--accent); }
+.stage-opportunity { background:var(--purple-bg); color:var(--purple); }
+.stage-converted { background:var(--green-bg); color:var(--green); }
+.stage-churned { background:var(--red-bg); color:var(--red); }
+.stage-inactive { background:rgba(136,136,160,0.1); color:var(--text-dim); }
+
+.days-cold { color:var(--red); font-weight:600; }
+.days-warm { color:var(--orange); }
+.days-ok { color:var(--text-dim); }
+
+.touch-count { font-family:'JetBrains Mono',monospace; font-size:13px; }
+
+/* Action buttons */
+.action-btn {
+  padding:4px 10px; border-radius:5px; border:1px solid var(--border);
+  background:transparent; color:var(--text-dim); cursor:pointer;
+  font-size:12px; font-family:'DM Sans',sans-serif; transition:all 0.15s;
+}
+.action-btn:hover { border-color:var(--accent); color:var(--accent); }
+.action-btn-primary {
+  padding:4px 10px; border-radius:5px; border:1px solid var(--accent);
+  background:var(--accent-glow); color:var(--accent); cursor:pointer;
+  font-size:12px; font-family:'DM Sans',sans-serif;
+}
+
+/* Modal */
+.modal-overlay {
+  position:fixed; top:0; left:0; right:0; bottom:0;
+  background:rgba(0,0,0,0.7); z-index:1000; display:none;
+  align-items:center; justify-content:center;
+}
+.modal-overlay.open { display:flex; }
+.modal {
+  background:var(--surface); border:1px solid var(--border);
+  border-radius:12px; width:520px; max-width:90vw; max-height:85vh;
+  overflow-y:auto; padding:28px;
+}
+.modal h2 { font-size:18px; font-weight:700; margin-bottom:4px; }
+.modal .modal-sub { font-size:13px; color:var(--text-dim); margin-bottom:20px; }
+.modal label { display:block; font-size:12px; font-weight:600; color:var(--text-dim); margin-bottom:4px; margin-top:14px; text-transform:uppercase; letter-spacing:0.3px; }
+.modal select, .modal input, .modal textarea {
+  width:100%; padding:8px 12px; border-radius:6px; border:1px solid var(--border);
+  background:var(--surface2); color:var(--text); font-size:13px;
+  font-family:'DM Sans',sans-serif;
+}
+.modal textarea { resize:vertical; min-height:70px; }
+.modal-actions { display:flex; gap:10px; margin-top:20px; justify-content:flex-end; }
+.modal-actions button {
+  padding:8px 20px; border-radius:6px; font-size:13px; font-weight:600;
+  cursor:pointer; font-family:'DM Sans',sans-serif; border:none;
+}
+.btn-save { background:var(--accent); color:#fff; }
+.btn-cancel { background:var(--surface2); color:var(--text-dim); border:1px solid var(--border) !important; }
+
+/* Timeline in modal */
+.timeline { margin-top:16px; }
+.timeline-item {
+  display:flex; gap:12px; padding:10px 0;
+  border-bottom:1px solid var(--border);
+}
+.timeline-item:last-child { border-bottom:none; }
+.timeline-dot {
+  width:8px; height:8px; border-radius:50%; margin-top:5px; flex-shrink:0;
+}
+.timeline-dot.email_sent { background:var(--accent); }
+.timeline-dot.signup { background:var(--green); }
+.timeline-dot.call, .timeline-dot.meeting { background:var(--purple); }
+.timeline-dot.note { background:var(--text-dim); }
+.timeline-dot.plan_change { background:var(--orange); }
+.timeline-dot.demo_scheduled, .timeline-dot.demo_completed { background:var(--yellow); }
+.timeline-content { flex:1; }
+.timeline-content .tl-subject { font-size:13px; font-weight:500; }
+.timeline-content .tl-detail { font-size:12px; color:var(--text-dim); margin-top:2px; }
+.timeline-content .tl-date { font-size:11px; color:var(--text-dim); margin-top:2px; font-family:'JetBrains Mono',monospace; }
+
+.empty-state { text-align:center; padding:60px 20px; color:var(--text-dim); }
+.empty-state p { font-size:14px; }
+
+@media (max-width:768px) {
+  .topbar, .filters, .table-wrap { padding-left:16px; padding-right:16px; }
+  .topbar-stats { gap:14px; }
+  .topbar-stat .val { font-size:18px; }
+}
+</style>
+<style>nav:not(.dchub-nav):not(.dchub-bottom-nav):not(.mobile-nav-drawer-links nav){display:none!important}.nav:not(.dchub-nav){display:none!important}</style>
+<script src="/js/dchub-nav.js"></script>
+</head>
+<body>
+
+<div class="topbar">
+  <h1><span>DC Hub</span> CRM</h1>
+  <div class="topbar-stats">
+    <div class="topbar-stat"><div class="val" id="stat-total">—</div><div class="lbl">Customers</div></div>
+    <div class="topbar-stat"><div class="val" id="stat-paying">—</div><div class="lbl">Paying</div></div>
+    <div class="topbar-stat"><div class="val" id="stat-free">—</div><div class="lbl">Free</div></div>
+    <div class="topbar-stat"><div class="val" id="stat-untouched">—</div><div class="lbl">Need Attention</div></div>
+  </div>
+</div>
+
+<div class="filters">
+  <button class="filter-btn active" data-filter="all">All</button>
+  <button class="filter-btn" data-filter="paying">Paying</button>
+  <button class="filter-btn" data-filter="free">Free</button>
+  <button class="filter-btn" data-filter="attention">Needs Attention</button>
+  <button class="filter-btn" data-filter="follow-up">Follow-ups Due</button>
+  <input type="text" class="filter-search" placeholder="Search name, email, company..." id="searchInput">
+</div>
+
+<div id="attentionBar" class="attention-bar"></div>
+
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Email</th>
+        <th>Company</th>
+        <th>Plan</th>
+        <th>Stage</th>
+        <th>Days Silent</th>
+        <th>Touches</th>
+        <th>Last Touch</th>
+        <th>Next Follow-up</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody id="customerTable"></tbody>
+  </table>
+  <div class="empty-state" id="emptyState" style="display:none;">
+    <p>No customers match this filter.</p>
+  </div>
+</div>
+
+<!-- Log Touchpoint Modal -->
+<div class="modal-overlay" id="touchModal">
+  <div class="modal">
+    <h2 id="modalTitle">Log Touchpoint</h2>
+    <div class="modal-sub" id="modalSub"></div>
+
+    <label>Type</label>
+    <select id="touchType">
+      <option value="email_sent">Email Sent</option>
+      <option value="email_reply">Email Reply Received</option>
+      <option value="call">Phone Call</option>
+      <option value="meeting">Meeting</option>
+      <option value="demo_scheduled">Demo Scheduled</option>
+      <option value="demo_completed">Demo Completed</option>
+      <option value="linkedin_message">LinkedIn Message</option>
+      <option value="linkedin_connect">LinkedIn Connect</option>
+      <option value="note">Internal Note</option>
+      <option value="follow_up_scheduled">Follow-up Scheduled</option>
+      <option value="support_request">Support Request</option>
+    </select>
+
+    <label>Subject</label>
+    <input type="text" id="touchSubject" placeholder="Brief description...">
+
+    <label>Details (optional)</label>
+    <textarea id="touchDetails" placeholder="Longer notes..."></textarea>
+
+    <label>Outcome</label>
+    <select id="touchOutcome">
+      <option value="">—</option>
+      <option value="positive">Positive</option>
+      <option value="neutral">Neutral</option>
+      <option value="no_response">No Response</option>
+      <option value="negative">Negative</option>
+    </select>
+
+    <label>Follow-up Date (optional)</label>
+    <input type="date" id="touchFollowUp">
+
+    <label>Update Stage</label>
+    <select id="touchStage">
+      <option value="">— No change —</option>
+      <option value="new">New</option>
+      <option value="engaged">Engaged</option>
+      <option value="nurturing">Nurturing</option>
+      <option value="opportunity">Opportunity</option>
+      <option value="converted">Converted</option>
+      <option value="churned">Churned</option>
+      <option value="inactive">Inactive</option>
+    </select>
+
+    <div id="touchTimeline"></div>
+
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="closeModal()">Cancel</button>
+      <button class="btn-save" onclick="saveTouchpoint()">Save Touchpoint</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ============================================================
+// DC Hub CRM — Frontend Controller
+// ============================================================
+// This page calls your Railway backend API endpoints.
+// You'll need to add 3 routes to main.py (or a new crm_routes.py):
+//   GET  /api/admin/crm/customers
+//   POST /api/admin/crm/touchpoint
+//   GET  /api/admin/crm/touchpoints/:user_id
+// See the companion crm_routes.py file.
+// ============================================================
+
+const API_BASE = window.location.origin;
+let allCustomers = [];
+let currentFilter = 'all';
+let currentUserId = null;
+
+// ── Auth gate: block page until admin is verified ──
+(function authGate() {
+  const token = localStorage.getItem('dchub_token') || localStorage.getItem('dchub_session');
+  if (!token) {
+    document.body.innerHTML = '';
+    window.location.href = '/login?redirect=/admin/crm';
+    return;
+  }
+  // Hide content until API confirms admin access
+  document.body.style.visibility = 'hidden';
+  fetch(API_BASE + '/api/admin/crm/customers', {
+    headers: { 'Authorization': 'Bearer ' + token }
+  }).then(res => {
+    if (res.status === 401 || res.status === 403) {
+      document.body.innerHTML = '';
+      window.location.href = '/login?redirect=/admin/crm';
+    } else {
+      document.body.style.visibility = 'visible';
+    }
+  }).catch(() => {
+    document.body.style.visibility = 'visible'; // show error state
+  });
+})();
+
+async function fetchWithAuth(url, opts = {}) {
+  const token = localStorage.getItem('dchub_token') || localStorage.getItem('dchub_session');
+  if (!token) { window.location.href = '/login?redirect=/admin/crm'; return; }
+  opts.headers = { ...opts.headers, 'Content-Type': 'application/json' };
+  if (token) opts.headers['Authorization'] = `Bearer ${token}`;
+  const res = await fetch(url, opts);
+  if (res.status === 401 || res.status === 403) {
+    window.location.href = '/login?redirect=/admin/crm';
+    return;
+  }
+  if (!res.ok) throw new Error(`API error: ${res.status}`);
+  return res.json();
+}
+
+async function loadCustomers() {
+  try {
+    const data = await fetchWithAuth(`${API_BASE}/api/admin/crm/customers`);
+    allCustomers = data.customers || data;
+    renderAll();
+  } catch (err) {
+    console.error('Failed to load customers:', err);
+    document.getElementById('customerTable').innerHTML =
+      `<tr><td colspan="10" style="text-align:center;padding:40px;color:var(--text-dim)">
+        Failed to load — check that /api/admin/crm/customers is deployed.<br>
+        <span style="font-size:12px;font-family:monospace">${err.message}</span>
+      </td></tr>`;
+  }
+}
+
+function renderAll() {
+  renderStats();
+  renderAttentionBar();
+  renderTable();
+}
+
+function renderStats() {
+  const real = allCustomers;
+  const paying = real.filter(c => ['pro','founding'].includes(c.plan));
+  const free = real.filter(c => c.plan === 'free');
+  const untouched = real.filter(c => c.days_since_touch > 14 || c.total_touches <= 1);
+
+  document.getElementById('stat-total').textContent = real.length;
+  document.getElementById('stat-paying').textContent = paying.length;
+  document.getElementById('stat-free').textContent = free.length;
+  document.getElementById('stat-untouched').textContent = untouched.length;
+}
+
+function renderAttentionBar() {
+  const bar = document.getElementById('attentionBar');
+  const needs = allCustomers
+    .filter(c => c.days_since_touch > 7 || (c.next_follow_up && new Date(c.next_follow_up) <= new Date()))
+    .sort((a, b) => b.days_since_touch - a.days_since_touch)
+    .slice(0, 10);
+
+  if (!needs.length) { bar.style.display = 'none'; return; }
+  bar.style.display = 'flex';
+
+  bar.innerHTML = needs.map(c => {
+    let cls = 'untouched', reason = `${c.days_since_touch}d silent`;
+    if (c.next_follow_up && new Date(c.next_follow_up) < new Date()) {
+      cls = 'overdue'; reason = 'Follow-up overdue';
+    } else if (c.days_since_touch > 14) {
+      cls = 'overdue'; reason = `${c.days_since_touch}d — going cold`;
+    } else if (c.days_since_touch > 7) {
+      cls = 'due-soon'; reason = `${c.days_since_touch}d since contact`;
+    }
+    return `
+      <div class="attention-card ${cls}" onclick="openModal('${c.id}')">
+        <div class="ac-name">${esc(c.name || '(no name)')}</div>
+        <div class="ac-company">${esc(c.company || domainFrom(c.email))}</div>
+        <div class="ac-reason">${reason}</div>
+      </div>`;
+  }).join('');
+}
+
+function renderTable() {
+  const search = document.getElementById('searchInput').value.toLowerCase();
+  let filtered = allCustomers;
+
+  if (currentFilter === 'paying') filtered = filtered.filter(c => ['pro','founding'].includes(c.plan));
+  if (currentFilter === 'free') filtered = filtered.filter(c => c.plan === 'free');
+  if (currentFilter === 'attention') filtered = filtered.filter(c => c.days_since_touch > 14 || c.total_touches <= 1);
+  if (currentFilter === 'follow-up') filtered = filtered.filter(c => c.next_follow_up);
+
+  if (search) {
+    filtered = filtered.filter(c =>
+      (c.name||'').toLowerCase().includes(search) ||
+      (c.email||'').toLowerCase().includes(search) ||
+      (c.company||'').toLowerCase().includes(search)
+    );
+  }
+
+  const tbody = document.getElementById('customerTable');
+  const empty = document.getElementById('emptyState');
+
+  if (!filtered.length) {
+    tbody.innerHTML = '';
+    empty.style.display = 'block';
+    return;
+  }
+  empty.style.display = 'none';
+
+  tbody.innerHTML = filtered.map(c => {
+    const isPaying = ['pro','founding'].includes(c.plan);
+    const planBadge = c.plan === 'founding' ? 'badge-founding' : isPaying ? 'badge-pro' : 'badge-free';
+    const stageCls = `stage-${c.lifecycle_stage || 'new'}`;
+    const daysClass = c.days_since_touch > 14 ? 'days-cold' : c.days_since_touch > 7 ? 'days-warm' : 'days-ok';
+
+    return `<tr class="${isPaying ? 'row-paying' : ''}">
+      <td><strong>${esc(c.name || '(no name)')}</strong></td>
+      <td style="font-family:'JetBrains Mono',monospace;font-size:12px">${esc(c.email)}</td>
+      <td>${esc(c.company || '')}</td>
+      <td><span class="badge ${planBadge}">${c.plan.toUpperCase()}</span></td>
+      <td><span class="stage-badge ${stageCls}">${(c.lifecycle_stage||'new').replace('_',' ')}</span></td>
+      <td class="${daysClass}">${c.days_since_touch ?? '—'}</td>
+      <td class="touch-count">${c.total_touches ?? 0}</td>
+      <td style="font-size:12px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.last_touch_subject || '—')}</td>
+      <td style="font-size:12px">${c.next_follow_up ? formatDate(c.next_follow_up) : '—'}</td>
+      <td>
+        <button class="action-btn-primary" onclick="openModal('${c.id}')">+ Touch</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+async function openModal(userId) {
+  currentUserId = userId;
+  const c = allCustomers.find(x => x.id === userId);
+  if (!c) return;
+
+  document.getElementById('modalTitle').textContent = c.name || '(no name)';
+  document.getElementById('modalSub').textContent = `${c.email}${c.company ? ' · ' + c.company : ''} · ${c.plan.toUpperCase()}`;
+  document.getElementById('touchType').value = 'email_sent';
+  document.getElementById('touchSubject').value = '';
+  document.getElementById('touchDetails').value = '';
+  document.getElementById('touchOutcome').value = '';
+  document.getElementById('touchFollowUp').value = '';
+  document.getElementById('touchStage').value = '';
+
+  // Load timeline
+  const timelineEl = document.getElementById('touchTimeline');
+  timelineEl.innerHTML = '<div style="padding:16px;color:var(--text-dim);font-size:13px">Loading history...</div>';
+
+  try {
+    const data = await fetchWithAuth(`${API_BASE}/api/admin/crm/touchpoints/${userId}`);
+    const touches = data.touchpoints || data || [];
+    if (touches.length) {
+      timelineEl.innerHTML = '<label style="margin-top:18px">History</label><div class="timeline">' +
+        touches.map(t => `
+          <div class="timeline-item">
+            <div class="timeline-dot ${t.touch_type}"></div>
+            <div class="timeline-content">
+              <div class="tl-subject">${esc(t.subject || t.touch_type.replace(/_/g,' '))}</div>
+              ${t.details ? `<div class="tl-detail">${esc(t.details)}</div>` : ''}
+              <div class="tl-date">${formatDate(t.created_at)}${t.outcome ? ' · ' + t.outcome : ''}</div>
+            </div>
+          </div>`
+        ).join('') + '</div>';
+    } else {
+      timelineEl.innerHTML = '<div style="padding:12px 0;color:var(--text-dim);font-size:13px;font-style:italic">No touchpoints yet — this customer hasn\'t been contacted.</div>';
+    }
+  } catch (err) {
+    timelineEl.innerHTML = `<div style="padding:12px 0;color:var(--red);font-size:12px">Could not load history: ${err.message}</div>`;
+  }
+
+  document.getElementById('touchModal').classList.add('open');
+}
+
+function closeModal() {
+  document.getElementById('touchModal').classList.remove('open');
+  currentUserId = null;
+}
+
+async function saveTouchpoint() {
+  if (!currentUserId) return;
+  const payload = {
+    user_id: currentUserId,
+    touch_type: document.getElementById('touchType').value,
+    subject: document.getElementById('touchSubject').value,
+    details: document.getElementById('touchDetails').value || null,
+    outcome: document.getElementById('touchOutcome').value || null,
+    follow_up_date: document.getElementById('touchFollowUp').value || null,
+    new_stage: document.getElementById('touchStage').value || null,
+  };
+
+  if (!payload.subject) { alert('Please enter a subject.'); return; }
+
+  try {
+    await fetchWithAuth(`${API_BASE}/api/admin/crm/touchpoint`, {
+      method: 'POST', body: JSON.stringify(payload)
+    });
+    closeModal();
+    await loadCustomers();
+  } catch (err) {
+    alert('Failed to save: ' + err.message);
+  }
+}
+
+// Filter buttons
+document.querySelectorAll('.filter-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    currentFilter = btn.dataset.filter;
+    renderTable();
+  });
+});
+
+document.getElementById('searchInput').addEventListener('input', renderTable);
+
+// Close modal on overlay click
+document.getElementById('touchModal').addEventListener('click', e => {
+  if (e.target === document.getElementById('touchModal')) closeModal();
+});
+
+// Utilities
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function domainFrom(email) { return email ? email.split('@')[1] : ''; }
+function formatDate(d) {
+  if (!d) return '';
+  const dt = new Date(d);
+  return dt.toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' });
+}
+
+// Boot
+loadCustomers();
+</script>
+</body>
+</html>

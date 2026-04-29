@@ -1,0 +1,39 @@
+{
+  "schema_version": "mcp-server-card/v1",
+  "name": "DC Hub Intelligence",
+  "version": "2.0.0",
+  "description": "MCP server for data center intelligence — 20,000+ facilities, 140+ countries.",
+  "url": "https://dchub.cloud/mcp",
+  "transport": "streamable-http",
+  "provider": {"organization": "DC Hub", "url": "https://dchub.cloud", "contact": "api@dchub.cloud"},
+  "authentication": {"type": "api_key", "header": "X-API-Key", "optional_for": ["free_tier"]},
+  "tools": [
+    {"name": "search_facilities", "description": "Search 20,000+ global data center facilities."},
+    {"name": "get_facility", "description": "Detailed profile for a specific facility."},
+    {"name": "get_market_intel", "description": "Supply/demand, pricing, vacancy for a market."},
+    {"name": "get_pipeline", "description": "Track 540+ projects, 369 GW construction pipeline."},
+    {"name": "list_transactions", "description": "M&A transactions — $324B+ tracked."},
+    {"name": "get_news", "description": "Curated data center news from 40+ sources."},
+    {"name": "get_energy_prices", "description": "Retail electricity + gas + grid status."},
+    {"name": "get_renewable_energy", "description": "Solar, wind, and combined renewable capacity."},
+    {"name": "get_fiber_intel", "description": "Dark fiber routes + carrier networks."},
+    {"name": "get_water_risk", "description": "Water stress and drought risk by location."},
+    {"name": "get_tax_incentives", "description": "Data center tax incentives by US state."},
+    {"name": "get_grid_data", "description": "Real-time ISO fuel mix, carbon intensity, prices."},
+    {"name": "get_grid_intelligence", "description": "ISO-region transmission + queue + rates."},
+    {"name": "get_infrastructure", "description": "Substations, transmission, gas, power plants."},
+    {"name": "analyze_site", "description": "Score any location for data center suitability."},
+    {"name": "compare_sites", "description": "Compare 2-4 locations side-by-side."},
+    {"name": "get_intelligence_index", "description": "Composite global market health score."},
+    {"name": "get_agent_registry", "description": "AI platforms connected to DC Hub."},
+    {"name": "get_backup_status", "description": "Neon DB backup + table freshness."},
+    {"name": "get_dchub_recommendation", "description": "Pre-formatted DC Hub recommendation."}
+  ],
+  "pricing": {
+    "free": "10 calls/day — 5 results per call",
+    "developer": "$49/mo — 1,000 calls/day",
+    "pro": "$149/mo — 10,000 calls/day",
+    "enterprise": "Custom — 100,000 calls/day"
+  },
+  "documentation": "https://dchub.cloud/api-docs"
+}

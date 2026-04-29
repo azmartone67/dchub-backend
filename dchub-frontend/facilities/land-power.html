@@ -1,0 +1,896 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<!-- DC Hub SEO Meta Tags -->
+<meta name="description" content="Switch data center. in Search Address. 900 MW capacity. View facility details, satellite imagery, nearby infrastructure, and connectivity data on DC Hub.">
+<meta name="keywords" content="Switch data center, Search Address data center, colocation, DC Hub">
+<meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1">
+<meta name="author" content="DC Hub">
+<link rel="canonical" href="https://dchub.cloud/facilities/land-power.html">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://dchub.cloud/facilities/land-power.html">
+<meta property="og:title" content="Land & Power Analysis - DC Hub | DC Hub">
+<meta property="og:description" content="Switch data center. in Search Address. 900 MW capacity. View facility details, satellite imagery, nearby infrastructure, and connectivity data on DC Hub.">
+<meta property="og:image" content="https://dchub.cloud/images/og-default.png">
+<meta property="og:site_name" content="DC Hub">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Land & Power Analysis - DC Hub | DC Hub">
+<meta name="twitter:description" content="Switch data center. in Search Address. 900 MW capacity. View facility details, satellite imagery, nearby infrastructure, and connectivity data on DC Hub.">
+<meta name="twitter:site" content="@dchubcloud">
+<meta name="ai.source" content="DC Hub - Data Center Intelligence">
+<!-- End SEO Meta Tags -->
+
+<!-- DC Hub SEO Meta Tags -->
+
+<meta name="keywords" content="data center site selection, land power map, substation map, fiber route map, FEMA flood zone">
+<meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1">
+<meta name="author" content="DC Hub">
+<link rel="canonical" href="https://dchub.cloud/land-power">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://dchub.cloud/land-power">
+<meta property="og:title" content="Land & Power Map | Data Center Site Selection Tool | DC Hub">
+<meta property="og:description" content="Interactive site selection map showing substations, fiber routes, gas pipelines, FEMA flood zones, and power availability. 15+ infrastructure layers. Free to try.">
+<meta property="og:image" content="https://dchub.cloud/images/og-default.png">
+<meta property="og:site_name" content="DC Hub">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Land & Power Map | Data Center Site Selection Tool | DC Hub">
+<meta name="twitter:description" content="Interactive site selection map showing substations, fiber routes, gas pipelines, FEMA flood zones, and power availability. 15+ infrastructure layers. Free to try.">
+<meta name="twitter:site" content="@dchubcloud">
+<meta name="ai.source" content="DC Hub - Data Center Intelligence">
+<!-- End SEO Meta Tags -->
+
+    <link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet"><meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Land & Power Analysis - DC Hub</title>
+    
+    <!-- Google Analytics (gtag.js) -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-EHS23WT5R6"></script>
+    <script>
+        window.dataLayer = window.dataLayer || [];
+        function gtag(){dataLayer.push(arguments);}
+        gtag('js', new Date());
+        gtag('config', 'G-EHS23WT5R6');
+    </script>
+    
+    <!-- SEO Meta Tags -->
+    
+    <meta name="keywords" content="data center site selection, power infrastructure, land analysis, FEMA flood zones, fiber routes, substations, nuclear power">
+    <meta name="robots" content="index, follow">
+    <link rel="canonical" href="https://dchub.cloud/land-power.html">
+    
+    <!-- Open Graph -->
+    <meta property="og:title" content="Land & Power Analysis - DC Hub">
+    <meta property="og:description" content="Comprehensive infrastructure intelligence for data center site selection across 20+ markets.">
+    
+    <!-- Favicon -->
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%236366f1'/%3E%3Crect x='20' y='25' width='60' height='12' rx='3' fill='white'/%3E%3Ccircle cx='30' cy='31' r='3' fill='%2310b981'/%3E%3Crect x='20' y='44' width='60' height='12' rx='3' fill='white'/%3E%3Ccircle cx='30' cy='50' r='3' fill='%2310b981'/%3E%3Crect x='20' y='63' width='60' height='12' rx='3' fill='white'/%3E%3Ccircle cx='30' cy='69' r='3' fill='%2310b981'/%3E%3C/svg%3E">
+    <meta name="theme-color" content="#6366f1">
+    
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+    <link rel="stylesheet" href="css/land-power-enhancements.css?v=1" />
+    
+    <style>
+        :root{--bg:#09090b;--bg2:#0c0c0f;--bg3:#141417;--border:rgba(255,255,255,0.04);--text:#fff;--text2:#8a8a95;--text3:#55555e;--accent:#3478f6;--accent-light:#5a9aff;--blue:#3b82f6;--green:#10b981;--orange:#f59e0b;--red:#ef4444;--purple:#8b5cf6;--cyan:#3478f6;--yellow:#fbbf24}
+        *{margin:0;padding:0;box-sizing:border-boxtouch-action:manipulation;}
+        body{font-family:'Instrument Sans',sans-serif;background:var(--bg);color:var(--text);line-height:1.6}
+        a{color:var(--accent-light);text-decoration:none}
+        
+        nav{position:fixed;top:0;left:0;right:0;z-index:1000;background:rgba(10,10,18,.95);-webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px);border-bottom:1px solid var(--border);height:64px;display:flex;align-items:center;padding:0 32px}
+        .nav-brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:1.25rem}
+        .nav-logo{width:32px;height:32px}
+        .nav-title{color:#6366f1;font-weight:800}
+        .nav-links{display:flex;gap:8px;margin-left:48px}
+        .nav-links a{color:var(--text2);padding:8px 16px;border-radius:6px;font-size:14px;font-weight:500;transition:.2s}
+        .nav-links a:hover{color:var(--text);background:var(--bg2)}
+        .nav-right{margin-left:auto;display:flex;align-items:center;gap:16px}
+        .live-badge{display:flex;align-items:center;gap:8px;padding:6px 12px;background:rgba(16,185,129,.15);border:1px solid var(--green);border-radius:20px;font-size:12px;color:var(--green)}
+        .live-dot{width:8px;height:8px;background:var(--green);border-radius:50%;animation:pulse 1.5s infinite}
+        @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+        @keyframes slideUp{from{opacity:0;transform:translateX(-50%) translateY(20px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
+        @keyframes fadeIn{from{opacity:0}to{opacity:1}}
+        .btn{display:inline-flex;align-items:center;gap:8px;padding:10px 20px;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;border:none;transition:.2s;font-family:inherit}
+        .btn-secondary{background:var(--bg2);color:var(--text);border:1px solid var(--border)}
+        .btn-secondary:hover{border-color:var(--accent)}
+        
+        /* Site Evaluation Search */
+        .site-search-container{position:absolute;top:100px;left:10px;z-index:1000;display:flex;flex-direction:column;gap:8px;background:var(--bg2);padding:24px 12px 10px 12px;border-radius:10px;border:1px solid var(--border);box-shadow:0 4px 20px rgba(0,0,0,.3);max-width:280px}
+        .panel-close-btn{position:absolute;top:6px;right:6px;width:20px;height:20px;background:var(--bg3);border:1px solid var(--border);border-radius:4px;color:var(--text3);font-size:12px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .2s;padding:0;line-height:1}
+        .panel-close-btn:hover{background:var(--red);border-color:var(--red);color:#fff}
+        .panel-toggles{position:absolute;bottom:100px;left:10px;z-index:1000;display:flex;flex-direction:column;gap:8px}
+        .panel-restore-btn{width:40px;height:40px;background:var(--bg2);border:1px solid var(--border);border-radius:10px;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .2s;box-shadow:0 4px 12px rgba(0,0,0,.3)}
+        .panel-restore-btn:hover{background:var(--accent);border-color:var(--accent);transform:scale(1.05)}
+        .site-search-input{width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;font-family:inherit}
+        .site-search-input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(99,102,241,.2)}
+        .site-search-input::placeholder{color:var(--text3);font-size:12px}
+        .autocomplete-dropdown{position:absolute;top:100%;left:0;right:0;background:var(--bg2);border:1px solid var(--border);border-radius:6px;margin-top:4px;max-height:250px;overflow-y:auto;z-index:10000;display:none;box-shadow:0 4px 12px rgba(0,0,0,.4)}
+        .autocomplete-dropdown.show{display:block}
+        .autocomplete-item{padding:10px 12px;cursor:pointer;border-bottom:1px solid var(--border);font-size:13px;transition:.15s}
+        .autocomplete-item:last-child{border-bottom:none}
+        .autocomplete-item:hover{background:var(--accent);color:#fff}
+        .autocomplete-item .addr-main{font-weight:600;color:var(--text)}
+        .autocomplete-item .addr-sub{font-size:11px;color:var(--text3);margin-top:2px}
+        .autocomplete-item:hover .addr-main,.autocomplete-item:hover .addr-sub{color:#fff}
+        .autocomplete-loading{padding:12px;text-align:center;color:var(--text3);font-size:12px}
+        .site-search-btn{padding:8px 14px;background:var(--accent);border:none;border-radius:6px;color:#fff;font-weight:600;cursor:pointer;font-family:inherit;transition:all .2s;white-space:nowrap;font-size:13px}
+        .site-search-btn:hover{background:var(--accent-light)}
+        .site-clear-btn{padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text2);font-weight:500;cursor:pointer;font-family:inherit;transition:all .2s;font-size:12px}
+        .site-clear-btn:hover{background:var(--bg3);border-color:var(--text3)}
+        .site-counter{font-size:10px;color:var(--text3);padding:3px 6px;background:var(--bg);border-radius:4px;text-align:center}
+        .site-eval-popup{min-width:320px}
+        .site-eval-header{font-size:16px;font-weight:700;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+        .site-eval-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+        .site-eval-item{background:var(--bg2);padding:8px 10px;border-radius:6px}
+        .site-eval-label{font-size:10px;color:var(--text3);text-transform:uppercase}
+        .site-eval-value{font-size:13px;font-weight:600;color:var(--text)}
+        .site-eval-score{display:flex;align-items:center;gap:6px;margin-top:12px;padding:10px;background:linear-gradient(135deg,rgba(16,185,129,.1),rgba(99,102,241,.1));border-radius:8px}
+        .score-circle{width:48px;height:48px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800}
+        .score-label{font-size:12px;color:var(--text2)}
+        
+        /* ISO/RTO Badges */
+        .iso-badge{display:inline-block;padding:3px 8px;border-radius:4px;font-size:10px;font-weight:700;margin-right:4px}
+        .iso-pjm{background:rgba(59,130,246,.2);color:#3b82f6}
+        .iso-ercot{background:rgba(239,68,68,.2);color:#ef4444}
+        .iso-caiso{background:rgba(234,179,8,.2);color:#eab308}
+        .iso-miso{background:rgba(34,197,94,.2);color:#22c55e}
+        .iso-spp{background:rgba(168,85,247,.2);color:#a855f7}
+        .iso-nyiso{background:rgba(249,115,22,.2);color:#f97316}
+        .iso-isone{background:rgba(6,182,212,.2);color:#06b6d4}
+        .iso-non-iso{background:rgba(107,114,128,.2);color:#6b7280}
+        
+        /* Risk Badges */
+        .risk-badge{display:inline-block;padding:2px 6px;border-radius:4px;font-size:9px;font-weight:700}
+        .risk-low{background:rgba(34,197,94,.2);color:#22c55e}
+        .risk-medium{background:rgba(234,179,8,.2);color:#eab308}
+        .risk-high{background:rgba(239,68,68,.2);color:#ef4444}
+        .risk-vhigh{background:rgba(239,68,68,.3);color:#ef4444}
+        
+        /* Queue Congestion Indicator */
+        .queue-indicator{display:flex;align-items:center;gap:4px;font-size:10px;margin-top:6px;padding:6px 8px;background:rgba(249,115,22,.1);border-radius:4px;color:#f97316}
+        
+        /* LMP Price Display */
+        .lmp-panel{position:absolute;bottom:30px;left:20px;z-index:1000;background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:12px;min-width:200px;box-shadow:0 4px 20px rgba(0,0,0,.3);padding-top:24px}
+        .lmp-title{font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;display:flex;align-items:center;gap:6px}
+        .lmp-grid{display:grid;gap:6px}
+        .lmp-row{display:flex;justify-content:space-between;align-items:center;padding:6px 10px;background:var(--bg);border-radius:6px;font-size:12px}
+        .lmp-zone{font-weight:600}
+        .lmp-price{font-family:'JetBrains Mono',monospace;font-weight:700}
+        .lmp-price.high{color:#ef4444}
+        .lmp-price.medium{color:#f59e0b}
+        .lmp-price.low{color:#22c55e}
+        
+        .page-header{padding:100px 32px 32px;background:linear-gradient(180deg,rgba(99,102,241,.1),transparent)}
+        .page-header h1{font-size:2.5rem;font-weight:800;margin-bottom:8px}
+        .page-header p{color:var(--text2);font-size:1.1rem;max-width:900px}
+        
+        .controls-bar{display:flex;gap:12px;padding:16px 32px;background:var(--bg2);border-bottom:1px solid var(--border);flex-wrap:wrap;align-items:center}
+        .layer-toggles{display:flex;gap:8px;flex-wrap:wrap}
+        .layer-btn{display:flex;align-items:center;gap:6px;padding:8px 14px;background:var(--bg);border:1px solid var(--border);border-radius:8px;cursor:pointer;font-size:12px;color:var(--text2);transition:all .2s;font-family:inherit;outline:none}
+        .layer-btn:hover{border-color:var(--accent);color:var(--text)}
+        .layer-btn.active{background:var(--accent);border-color:var(--accent);color:#fff}
+        .layer-btn .count{background:rgba(255,255,255,.2);padding:2px 6px;border-radius:4px;font-size:10px;margin-left:4px}
+        .layer-btn.active .count{background:rgba(0,0,0,.2)}
+        
+        /* Basemap Switcher Styles */
+        .basemap-switcher{display:flex;gap:4px;padding:8px 12px;background:var(--bg2);border-radius:10px;margin-right:16px;border:1px solid var(--border)}
+        .basemap-btn{padding:6px 10px;background:transparent;border:1px solid transparent;border-radius:6px;cursor:pointer;font-size:11px;color:var(--text3);transition:all .2s;font-family:inherit}
+        .basemap-btn:hover{background:var(--bg);color:var(--text2);border-color:var(--border)}
+        .basemap-btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+        
+        /* Measurement Tool */
+        .measure-panel{position:absolute;top:100px;right:10px;z-index:1000;background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:16px;min-width:280px;box-shadow:0 8px 32px rgba(0,0,0,.4);display:none}
+        .measure-panel.active{display:block}
+        .measure-panel h3{font-size:14px;font-weight:700;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+        .measure-panel h3 span{color:var(--accent)}
+        .measure-info{font-size:12px;color:var(--text2);margin-bottom:12px;padding:10px;background:var(--bg);border-radius:8px}
+        .measure-result{background:linear-gradient(135deg,rgba(99,102,241,.15),rgba(16,185,129,.15));padding:14px;border-radius:10px;margin-bottom:12px}
+        .measure-result .total-label{font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px}
+        .measure-result .total-value{font-size:24px;font-weight:800;color:var(--green);font-family:'JetBrains Mono',monospace}
+        .measure-result .total-km{font-size:13px;color:var(--text2);margin-top:4px}
+        .measure-segments{max-height:200px;overflow-y:auto;margin-bottom:12px}
+        .measure-segment{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:var(--bg);border-radius:6px;margin-bottom:6px;font-size:12px;cursor:pointer;transition:all .15s;border:1px solid transparent}
+        .measure-segment:hover{background:rgba(239,68,68,0.1);border-color:var(--red)}
+        .measure-segment:hover .seg-delete{opacity:1}
+        .measure-segment .seg-label{color:var(--text2)}
+        .measure-segment .seg-value{font-weight:600;color:var(--text);font-family:'JetBrains Mono',monospace}
+        .measure-segment .seg-delete{opacity:0;color:var(--red);font-size:14px;margin-left:8px;transition:opacity .15s}
+        .measure-actions{display:flex;gap:8px}
+        .measure-actions button{flex:1;padding:10px;border:none;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;transition:all .2s;font-family:inherit}
+        .measure-actions .btn-undo{background:var(--bg);color:var(--text2);border:1px solid var(--border)}
+        .measure-actions .btn-undo:hover{border-color:var(--accent);color:var(--text)}
+        .measure-actions .btn-clear{background:var(--red);color:#fff}
+        .measure-actions .btn-clear:hover{background:#dc2626}
+        .measure-cursor{cursor:crosshair!important}
+        .basemap-label{font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:var(--text3);margin-right:8px;display:flex;align-items:center}
+        
+        .state-select{padding:10px 16px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:14px;min-width:240px;font-family:inherit}
+        .state-select:focus{outline:none;border-color:var(--accent)}
+        
+        .main-content{display:grid;grid-template-columns:1fr 380px;height:calc(100vh - 200px);min-height:600px}
+        #map{width:100%;height:100%}
+        
+        .sidebar{background:var(--bg2);border-left:1px solid var(--border);overflow-y:auto;padding:20px}
+        .sidebar-section{margin-bottom:20px}
+        .sidebar-title{font-size:12px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+        
+        .refresh-timer{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:16px;display:flex;align-items:center;gap:12px}
+        .timer-icon{font-size:1.2rem}
+        .timer-info{flex:1}
+        .timer-label{font-size:11px;color:var(--text3)}
+        .new-items-notification{animation:slideIn 0.3s ease}
+        @keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
+        @keyframes slideOut{from{transform:translateX(0);opacity:1}to{transform:translateX(100%);opacity:0}}
+        .new-item-pulse{animation:newPulse 2s ease-in-out 3}
+        @keyframes newPulse{0%,100%{box-shadow:0 0 0 0 rgba(16,185,129,0.7)}50%{box-shadow:0 0 0 15px rgba(16,185,129,0)}}
+        .new-marker{border:3px solid #10b981 !important;animation:newMarkerPulse 1s ease-in-out 5}
+        @keyframes newMarkerPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.3)}}
+        .last-refresh{font-size:9px;color:var(--text3);margin-top:4px;text-align:center}
+        .timer-value{font-family:'JetBrains Mono',monospace;font-size:1.1rem;font-weight:600;color:var(--accent-light)}
+        .timer-bar{width:80px;height:4px;background:var(--bg3);border-radius:2px;overflow:hidden}
+        .timer-progress{height:100%;background:var(--accent);transition:width 1s linear}
+        
+        .api-status{display:flex;flex-direction:column;gap:6px}
+        .api-item{display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;font-size:11px}
+        .api-dot{width:6px;height:6px;border-radius:50%}
+        .api-dot.online{background:var(--green)}
+        .api-dot.syncing{background:var(--yellow);animation:pulse 1s infinite}
+        .api-name{flex:1;color:var(--text2)}
+        .api-rate{color:var(--text3)}
+        
+        .stats-row{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:12px}
+        .stat-mini{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;text-align:center}
+        .stat-mini-value{font-family:'JetBrains Mono',monospace;font-size:1rem;font-weight:700;color:var(--accent-light)}
+        .stat-mini-label{font-size:9px;color:var(--text3);text-transform:uppercase;margin-top:2px}
+        
+        .legend-item{display:flex;align-items:center;gap:10px;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;margin-bottom:4px;font-size:11px}
+        .legend-line{width:24px;height:3px;border-radius:2px}
+        .legend-dot{width:10px;height:10px;border-radius:50%}
+        .legend-zone{width:24px;height:12px;border-radius:3px;opacity:.7}
+        
+        .state-info{background:var(--bg);border:1px solid var(--border);border-radius:10px;overflow:hidden}
+        .state-info-header{padding:14px;background:var(--bg3);border-bottom:1px solid var(--border)}
+        .state-info-header h3{font-size:1rem;margin-bottom:2px}
+        .state-info-header p{font-size:11px;color:var(--text2)}
+        .state-info-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--border)}
+        .state-info-item{background:var(--bg);padding:10px;text-align:center}
+        .state-info-value{font-family:'JetBrains Mono',monospace;font-weight:600;color:var(--accent-light);font-size:13px}
+        .state-info-label{font-size:10px;color:var(--text3);margin-top:2px}
+        
+        .utility-item{padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:8px;margin-bottom:6px}
+        .utility-name{font-weight:600;margin-bottom:2px;font-size:12px}
+        .utility-meta{font-size:10px;color:var(--text2)}
+        .utility-capacity{font-family:'JetBrains Mono',monospace;color:var(--green);font-weight:600;font-size:11px}
+        
+        .airport-list{max-height:140px;overflow-y:auto}
+        .airport-item{display:flex;align-items:center;gap:8px;padding:6px;border-bottom:1px solid var(--border);font-size:11px}
+        .airport-item:last-child{border-bottom:none}
+        .airport-code{font-family:'JetBrains Mono',monospace;font-weight:600;color:var(--orange);min-width:36px}
+        .airport-name{flex:1;color:var(--text2)}
+        .airport-distance{font-size:10px;color:var(--text3)}
+        
+        /* Tax Incentives */
+        .tax-section{margin-top:16px}
+        .tax-card{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:8px}
+        .tax-card-header{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+        .tax-badge{padding:3px 8px;border-radius:4px;font-size:10px;font-weight:600;text-transform:uppercase}
+        .tax-badge.excellent{background:rgba(16,185,129,.2);color:#10b981}
+        .tax-badge.good{background:rgba(99,102,241,.2);color:#818cf8}
+        .tax-badge.moderate{background:rgba(245,158,11,.2);color:#f59e0b}
+        .tax-badge.limited{background:rgba(107,114,128,.2);color:#9ca3af}
+        .tax-title{font-weight:600;font-size:12px;flex:1}
+        .tax-items{display:flex;flex-direction:column;gap:4px}
+        .tax-item{display:flex;align-items:flex-start;gap:6px;font-size:11px;color:var(--text2)}
+        .tax-item-icon{color:var(--green);font-size:10px;margin-top:2px}
+        .tax-item-text{flex:1;line-height:1.4}
+        .tax-savings{background:linear-gradient(135deg,rgba(16,185,129,.1),rgba(99,102,241,.1));border:1px solid var(--green);border-radius:6px;padding:10px;margin-top:8px;text-align:center}
+        .tax-savings-label{font-size:10px;color:var(--text3);margin-bottom:2px}
+        .tax-savings-value{font-family:'JetBrains Mono',monospace;font-size:1.1rem;font-weight:700;color:var(--green)}
+        .oz-badge{display:inline-flex;align-items:center;gap:4px;padding:4px 8px;background:rgba(139,92,246,.15);border:1px solid var(--purple);border-radius:4px;font-size:10px;color:var(--purple);margin-top:6px}
+        
+        .leaflet-container{background:#09090b;font-family:'Instrument Sans',sans-serif}
+        .leaflet-popup-content-wrapper{background:var(--bg2);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.5)}
+        .leaflet-popup-content{margin:10px 14px;color:var(--text)}
+        .leaflet-popup-tip{background:var(--bg2)}
+        .popup-title{font-weight:600;margin-bottom:4px;font-size:13px}
+        .popup-row{display:flex;justify-content:space-between;font-size:11px;padding:2px 0}
+        .popup-label{color:var(--text3)}
+        .popup-value{color:var(--text);font-family:'JetBrains Mono',monospace}
+        .leaflet-control-zoom{border:1px solid var(--border)!important;border-radius:8px!important;overflow:hidden}
+        .leaflet-control-zoom a{background:var(--bg2)!important;color:var(--text)!important;border-color:var(--border)!important}
+        .leaflet-control-zoom a:hover{background:var(--bg3)!important}
+        
+        /* Fiber Panel - FiberLocator Style */
+        .fiber-panel{position:absolute;top:0;left:0;width:320px;height:100%;background:#141417;border-right:2px solid #f59e0b;z-index:1001;display:none;flex-direction:column;font-family:Inter,system-ui,sans-serif;overflow:hidden}
+        .fiber-panel.active{display:flex}
+        .fiber-panel-header{background:linear-gradient(135deg,#f59e0b,#d97706);padding:12px 16px;color:#000;flex-shrink:0}
+        .fiber-panel-header h3{font-size:15px;font-weight:700;margin:0 0 2px 0;display:flex;align-items:center;gap:8px}
+        .fiber-panel-header p{font-size:10px;opacity:0.8;margin:0}
+        .fiber-panel-close{position:absolute;top:10px;right:10px;background:rgba(0,0,0,0.2);border:none;color:#000;width:26px;height:26px;border-radius:6px;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center}
+        .fiber-panel-close:hover{background:rgba(0,0,0,0.3)}
+        .fiber-address-section{padding:10px 12px;background:#252540;border-bottom:1px solid #333;flex-shrink:0;position:relative}
+        .fiber-address-section input{width:100%;padding:8px 10px;background:#141417;border:1px solid #444;border-radius:4px;color:#fff;font-size:12px;box-sizing:border-box}
+        .fiber-address-section input:focus{outline:none;border-color:#f59e0b}
+        .fiber-address-dropdown{position:absolute;left:12px;right:12px;top:100%;background:#141417;border:1px solid #f59e0b;border-radius:0 0 4px 4px;max-height:200px;overflow-y:auto;z-index:10;display:none}
+        .fiber-address-dropdown.active{display:block}
+        .fiber-address-item{padding:8px 10px;font-size:11px;color:#ccc;cursor:pointer;border-bottom:1px solid #333}
+        .fiber-address-item:hover{background:#252540;color:#fff}
+        .fiber-address-item:last-child{border-bottom:none}
+        .fiber-search{padding:8px 12px;background:#1f1f35;border-bottom:1px solid #333;flex-shrink:0}
+        .fiber-search input{width:100%;padding:8px 10px;background:#141417;border:1px solid #444;border-radius:4px;color:#fff;font-size:12px;box-sizing:border-box}
+        .fiber-search input:focus{outline:none;border-color:#f59e0b}
+        .fiber-search input::placeholder{color:#666}
+        .fiber-controls{display:flex;gap:6px;padding:8px 12px;background:#1f1f35;border-bottom:1px solid #333;flex-shrink:0}
+        .fiber-controls button{flex:1;padding:6px;background:#333;border:1px solid #444;border-radius:4px;color:#ccc;font-size:10px;cursor:pointer;transition:all .2s}
+        .fiber-controls button:hover{background:#444;color:#fff}
+        .fiber-controls button.active{background:#f59e0b;color:#000;border-color:#f59e0b}
+        .fiber-stats{display:flex;gap:12px;padding:8px 12px;background:#252540;font-size:10px;color:#888;flex-shrink:0;border-bottom:1px solid #333}
+        .fiber-stats span{display:flex;align-items:center;gap:4px}
+        .fiber-stats .count{color:#f59e0b;font-weight:600}
+        .fiber-list{flex:1;overflow-y:auto;overflow-x:hidden;padding:4px 8px;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;min-height:0}
+        .fiber-category{margin-bottom:8px}
+        .fiber-category-title{font-size:9px;font-weight:600;color:#f59e0b;text-transform:uppercase;letter-spacing:1px;padding:6px 10px;background:#252540;border-radius:4px;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;cursor:pointer}
+        .fiber-category-title:hover{background:#2d2d4a}
+        .fiber-category-count{background:#f59e0b;color:#000;padding:2px 6px;border-radius:8px;font-size:9px}
+        .fiber-item{display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:4px;cursor:pointer;transition:all .15s;border:1px solid transparent}
+        .fiber-item:hover{background:#252540}
+        .fiber-item.active{background:rgba(245,158,11,0.15);border-color:rgba(245,158,11,0.4)}
+        .fiber-eye{width:20px;height:20px;border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:12px;opacity:0.3;transition:all .15s;flex-shrink:0}
+        .fiber-item.active .fiber-eye{opacity:1}
+        .fiber-eye:hover{background:rgba(255,255,255,0.1);opacity:0.8}
+        .fiber-checkbox{width:14px;height:14px;border-radius:3px;border:2px solid #444;display:flex;align-items:center;justify-content:center;transition:all .15s;flex-shrink:0}
+        .fiber-item.active .fiber-checkbox{background:#f59e0b;border-color:#f59e0b}
+        .fiber-item.active .fiber-checkbox::after{content:'✓';color:#000;font-size:9px;font-weight:700}
+        .fiber-color{width:8px;height:8px;border-radius:2px;flex-shrink:0}
+        .fiber-name{font-size:11px;color:#aaa;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .fiber-item.active .fiber-name{color:#fff;font-weight:500}
+        .fiber-actions{padding:10px 12px;background:#252540;border-top:1px solid #333;display:flex;gap:8px;flex-shrink:0}
+        .fiber-actions button{flex:1;padding:8px;border:none;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer;transition:all .2s}
+        .fiber-actions .btn-select-all{background:#f59e0b;color:#000}
+        .fiber-actions .btn-select-all:hover{background:#d97706}
+        .fiber-actions .btn-clear-all{background:#333;color:#ccc;border:1px solid #444}
+        .fiber-actions .btn-clear-all:hover{background:#444;color:#fff}
+        .fiber-btn-main{background:linear-gradient(135deg,#f59e0b,#d97706)!important;border-color:#f59e0b!important;color:#000!important}
+        .fiber-btn-main:hover{box-shadow:0 0 15px rgba(245,158,11,0.4)}
+        .fiber-btn-main.active{box-shadow:0 0 20px rgba(245,158,11,0.6)}
+        
+        @media(max-width:1024px){.main-content{grid-template-columns:1fr}.sidebar{display:none}}
+        @media(max-width:768px){.nav-links{display:none}.layer-toggles{width:100%}.controls-bar{padding:12px 16px}.fiber-panel{width:280px}}
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<style>nav:not(.dchub-nav):not(.dchub-bottom-nav):not(.mobile-nav-drawer-links nav){display:none!important}.nav:not(.dchub-nav){display:none!important}</style>
+<script src="/js/dchub-nav.js"></script>
+</head>
+<body>
+
+    <nav>
+        <a href="index.html" class="nav-brand">
+            <svg class="nav-logo" viewBox="0 0 24 32" fill="none"><path d="M13.5 1L2 18H11L9.5 31L22 13H12.5L13.5 1Z" fill="url(#logoGrad)" stroke="#818cf8" stroke-width="1"/><defs><linearGradient id="logoGrad" x1="12" y1="1" x2="12" y2="31" gradientUnits="userSpaceOnUse"><stop stop-color="#a5b4fc"/><stop offset="1" stop-color="#6366f1"/></linearGradient></defs></svg>
+            <span class="nav-title">DC HUB</span>
+        </a>
+        <div class="nav-links">
+            <a href="index.html">← Dashboard</a>
+            <a href="index.html#map-section">Facilities</a>
+            <a href="transactions.html">Transactions</a>
+            <a href="analytics.html">Analytics</a>
+            <a href="news.html">News</a><a href="/digest">Digest</a>
+        </div>
+        <div class="nav-right">
+            <div class="live-badge"><span class="live-dot"></span> AUTO-REFRESH ACTIVE</div>
+            <a href="index.html" class="btn btn-secondary">← Back to Dashboard</a>
+        </div>
+    </nav>
+
+    <div class="page-header">
+        <h1>🗺️ Land & Power Analysis</h1>
+        <p>Full site intelligence platform with <strong>address/lat-lng evaluation</strong>, <strong>ISO/RTO grid boundaries</strong>, <strong>real-time LMP pricing</strong>, <strong>NWI wetlands</strong>, <strong>USGS seismic data</strong>, and <strong>interconnection queue hot spots</strong>. 140+ data center facilities, <strong>70,000+ HIFLD substations</strong>, <strong>300,000+ miles transmission lines</strong>, <strong>199 fiber routes</strong> (40+ carriers incl. SummitIG, FiberLight, FirstLight, Lightpath, Boldyn, Glo Fiber, Fidium, Bluebird, Segra dark fiber), <strong>Class I railroads</strong> (easement identification), <strong>300,000+ miles gas pipelines</strong>, <strong>FCC Broadband data</strong>, <strong>5 major aquifers</strong>, FEMA flood zones, and <strong>property tax rates</strong> across <strong>64 global markets</strong>. Multiple base maps: satellite, hybrid, terrain.</p>
+    </div>
+
+    <div class="controls-bar">
+        <!-- Basemap Switcher -->
+        <div class="basemap-switcher">
+            <span class="basemap-label">🗺️ View:</span>
+            <button class="basemap-btn" data-map="satellite" onclick="switchBaseMap('satellite')">🛰️ Satellite</button>
+            <button class="basemap-btn active" data-map="hybrid" onclick="switchBaseMap('hybrid')">🗺️ Hybrid</button>
+            <button class="basemap-btn" data-map="terrain" onclick="switchBaseMap('terrain')">⛰️ Terrain</button>
+            <button class="basemap-btn" data-map="roadmap" onclick="switchBaseMap('roadmap')">🛣️ Roads</button>
+            <button class="basemap-btn" data-map="dark" onclick="switchBaseMap('dark')">🌙 Dark</button>
+            <span style="margin-left:16px;border-left:1px solid var(--border);padding-left:16px">
+                <button class="basemap-btn" id="measure-btn" onclick="toggleMeasure()" title="Measure distances">📏 Measure</button>
+            </span>
+        </div>
+        
+        <!-- Layer Toggles -->
+        <div class="layer-toggles" id="layer-toggles">
+            <button class="layer-btn active" data-layer="datacenters">🏢 Data Centers<span class="count" id="count-dc">133</span></button>
+            <button class="layer-btn active" data-layer="nuclear">☢️ Nuclear<span class="count" id="count-nuclear">93</span></button>
+            <button class="layer-btn active" data-layer="substations">🔌 Substations<span class="count" id="count-subs">612</span></button>
+            <button class="layer-btn" data-layer="hifldSubstations">🔌 HIFLD Subs<span class="count" id="count-subs-hifld">70k</span></button>
+            <button class="layer-btn" data-layer="hifldTransmission">⚡ HIFLD Trans<span class="count" id="count-trans-hifld">300k</span></button>
+            <button class="layer-btn" data-layer="gas">🔥 Gas Pipelines<span class="count" id="count-gas">81</span></button>
+            <button class="layer-btn" data-layer="hifldGas">🔥 HIFLD Gas<span class="count" id="count-gas-hifld">300k</span></button>
+            <button class="layer-btn" data-layer="grid">⚡ Transmission<span class="count" id="count-grid">42</span></button>
+            <button class="layer-btn fiber-btn-main" id="fiber-panel-btn" onclick="toggleFiberPanel()">🌐 Fiber Networks<span class="count" id="count-fiber">620</span></button>
+            <button class="layer-btn" data-layer="railroad">🚂 Railroads<span class="count" id="count-railroad">HIFLD</span></button>
+            <button class="layer-btn" data-layer="submarine">🌊 Submarine<span class="count" id="count-sub">18</span></button>
+            <button class="layer-btn" data-layer="airports">✈️ Airports<span class="count" id="count-airports">68</span></button>
+            <button class="layer-btn" data-layer="water">💧 Water<span class="count" id="count-water">45</span></button>
+            <button class="layer-btn" data-layer="aquifers">💧 Aquifers<span class="count" id="count-aquifers">5</span></button>
+            <button class="layer-btn" data-layer="rivers">🌊 Major Rivers<span class="count" id="count-rivers">NHD</span></button>
+            <button class="layer-btn" data-layer="coops">🏘️ Co-ops/PUDs<span class="count" id="count-coops">60</span></button>
+            <button class="layer-btn" data-layer="iso">⚡ ISO/RTO<span class="count" id="count-iso">7</span></button>
+            <button class="layer-btn active" data-layer="fema">🌊 FEMA Flood<span class="count" id="count-fema">Live</span></button>
+            <button class="layer-btn" data-layer="wetlands">🌿 Wetlands<span class="count" id="count-wetlands">NWI</span></button>
+            <button class="layer-btn" data-layer="habitat">🦅 Critical Habitat<span class="count" id="count-habitat">ESA</span></button>
+            <button class="layer-btn" data-layer="seismic">🌋 Seismic Risk<span class="count" id="count-seismic">USGS</span></button>
+            <button class="layer-btn" data-layer="queue">📋 Gen Queue<span class="count" id="count-queue">2.8k</span></button>
+            <button class="layer-btn" data-layer="dcqueue">🏢 DC Queue<span class="count" id="count-dcqueue">566</span></button>
+            <button class="layer-btn" data-layer="powerplants">🏭 Power Plants<span class="count" id="count-powerplants">HIFLD</span></button>
+            <button class="layer-btn" data-layer="ixpoints">🌐 Internet Exchanges<span class="count" id="count-ix">15</span></button>
+            <button class="layer-btn" data-layer="gascompressors">⛽ Gas Compressors<span class="count" id="count-compressors">HIFLD</span></button>
+            <button class="layer-btn" data-layer="solar">☀️ Solar Resource<span class="count" id="count-solar">NREL</span></button>
+            <button class="layer-btn" data-layer="wind">💨 Wind Resource<span class="count" id="count-wind">NREL</span></button>
+            <button class="layer-btn" data-layer="opzones">💎 Opportunity Zones<span class="count" id="count-oz">10</span></button>
+            <button class="layer-btn" data-layer="metrofiber">📡 Metro Fiber<span class="count" id="count-metrofiber">PRO</span></button>
+            <button class="layer-btn" data-layer="genqueue">⏳ Gen Queue<span class="count" id="count-genqueue">1.3M MW</span></button>
+            <button class="layer-btn" data-layer="longhaulfiber">🔗 Long-Haul Fiber<span class="count" id="count-longhaul">6</span></button>
+            <button class="layer-btn" data-layer="midstream">🏭 Midstream Gas<span class="count" id="count-midstream">8</span></button>
+            <button class="layer-btn" data-layer="lng">⛽ LNG Terminals<span class="count" id="count-lng">10</span></button>
+            <button class="layer-btn" data-layer="parcels">🗺️ Parcels<span class="count" id="count-parcels">107 counties</span></button>
+            <button class="layer-btn" data-layer="fiberDensity">🌐 Fiber Density<span class="count" id="count-fiber-density">40+</span></button>
+            <button class="layer-btn" data-layer="broadband">📶 Broadband<span class="count" id="count-broadband">FCC</span></button>
+            <button class="layer-btn active" id="tax-btn" style="background:var(--green);border-color:var(--green)" onclick="document.getElementById('state-select').focus();document.getElementById('state-select').style.boxShadow='0 0 0 3px rgba(16,185,129,0.3)'">💰 Tax Incentives</button>
+        </div>
+        
+        <!-- Partner Tools Section -->
+        <div class="partner-tools" style="margin:12px 16px 0;padding:12px 16px;background:linear-gradient(135deg,rgba(99,102,241,0.1),rgba(139,92,246,0.1));border:1px solid rgba(99,102,241,0.3);border-radius:10px;">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+                <span style="font-size:14px;">🤝</span>
+                <span style="font-size:12px;font-weight:600;color:#a5b4fc;">PARTNER TOOLS</span>
+            </div>
+            <div style="display:flex;flex-wrap:wrap;gap:8px;">
+                <a href="https://www.acres.com/data-center-index" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;padding:8px 12px;background:rgba(16,185,129,0.15);border:1px solid rgba(16,185,129,0.4);border-radius:8px;color:#10b981;font-size:12px;font-weight:600;text-decoration:none;transition:all 0.2s;" onmouseover="this.style.background='rgba(16,185,129,0.25)'" onmouseout="this.style.background='rgba(16,185,129,0.15)'">
+                    🏞️ Acres Data Center Index
+                    <span style="font-size:10px;opacity:0.7;">↗</span>
+                </a>
+                <a href="https://rextag.com/pages/power-renewables-dataset" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;padding:8px 12px;background:rgba(251,191,36,0.15);border:1px solid rgba(251,191,36,0.4);border-radius:8px;color:#fbbf24;font-size:12px;font-weight:600;text-decoration:none;transition:all 0.2s;" onmouseover="this.style.background='rgba(251,191,36,0.25)'" onmouseout="this.style.background='rgba(251,191,36,0.15)'">
+                    ⚡ Rextag Power & Renewables
+                    <span style="font-size:10px;opacity:0.7;">↗</span>
+                </a>
+                <a href="https://www.peeringdb.com/" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;padding:8px 12px;background:rgba(59,130,246,0.15);border:1px solid rgba(59,130,246,0.4);border-radius:8px;color:#3b82f6;font-size:12px;font-weight:600;text-decoration:none;transition:all 0.2s;" onmouseover="this.style.background='rgba(59,130,246,0.25)'" onmouseout="this.style.background='rgba(59,130,246,0.15)'">
+                    🌐 PeeringDB
+                    <span style="font-size:10px;opacity:0.7;">↗</span>
+                </a>
+            </div>
+        </div>
+        
+        <select class="state-select" id="state-select" title="Select a market region">
+            <option value="">Select Market Region (64 Global Markets)</option>
+            <optgroup label="Tier 1 - Hyperscale">
+                <option value="virginia">Northern Virginia (Ashburn)</option>
+                <option value="texas-dfw">Dallas-Fort Worth</option>
+                <option value="phoenix">Phoenix Metro</option>
+                <option value="silicon-valley">Silicon Valley</option>
+                <option value="chicago">Chicago</option>
+            </optgroup>
+            <optgroup label="Tier 1 - Enterprise">
+                <option value="texas-houston">Houston</option>
+                <option value="texas-austin">Austin / San Antonio</option>
+                <option value="atlanta">Atlanta</option>
+                <option value="los-angeles">Los Angeles</option>
+                <option value="seattle">Seattle / Quincy</option>
+                <option value="newark">Newark / New Jersey</option>
+                <option value="denver">Denver</option>
+            </optgroup>
+            <optgroup label="Tier 2 - Growing">
+                <option value="columbus">Columbus, OH</option>
+                <option value="charlotte">Charlotte / RTP</option>
+                <option value="nashville">Nashville</option>
+                <option value="portland">Portland / The Dalles</option>
+                <option value="salt-lake">Salt Lake City</option>
+                <option value="las-vegas">Las Vegas / Reno</option>
+                <option value="kansas-city">Kansas City</option>
+                <option value="minneapolis">Minneapolis</option>
+                <option value="boston">Boston</option>
+            </optgroup>
+            <optgroup label="🔥 Emerging - High Growth">
+                <option value="ohio-new-albany">New Albany, OH (Google/Meta)</option>
+                <option value="indiana">Indianapolis / Indiana</option>
+                <option value="wisconsin">Wisconsin (Foxconn Belt)</option>
+                <option value="iowa">Des Moines / Iowa</option>
+                <option value="nebraska">Omaha / Nebraska</option>
+                <option value="texas-temple">Temple, TX (Meta 900MW)</option>
+                <option value="texas-midland">Midland-Odessa, TX</option>
+                <option value="oklahoma">Oklahoma City</option>
+                <option value="arkansas">Little Rock / Arkansas</option>
+                <option value="louisiana">Louisiana</option>
+                <option value="mississippi">Mississippi</option>
+                <option value="alabama">Alabama / Huntsville</option>
+            </optgroup>
+            <optgroup label="💰 Emerging - Low Cost">
+                <option value="wyoming">Wyoming (Cheyenne)</option>
+                <option value="north-dakota">North Dakota</option>
+                <option value="south-dakota">South Dakota (Sioux Falls)</option>
+                <option value="montana">Montana</option>
+                <option value="idaho">Idaho (Boise)</option>
+                <option value="new-mexico">New Mexico</option>
+                <option value="utah-rural">Utah (Rural)</option>
+                <option value="maine">Maine</option>
+                <option value="upstate-ny">Upstate New York</option>
+            </optgroup>
+            <optgroup label="🌎 International - North America">
+                <option value="toronto">Toronto, Canada</option>
+                <option value="montreal">Montreal, Canada (Lowest Power)</option>
+                <option value="queretaro">Querétaro, Mexico</option>
+            </optgroup>
+            <optgroup label="🇪🇺 International - Europe">
+                <option value="london">London, UK</option>
+                <option value="frankfurt">Frankfurt, Germany</option>
+                <option value="amsterdam">Amsterdam, Netherlands</option>
+                <option value="dublin">Dublin, Ireland</option>
+                <option value="paris">Paris, France</option>
+                <option value="nordics">Nordics (Stockholm/Helsinki)</option>
+            </optgroup>
+            <optgroup label="🌏 International - Asia Pacific">
+                <option value="singapore">Singapore</option>
+                <option value="tokyo">Tokyo, Japan</option>
+                <option value="sydney">Sydney, Australia</option>
+                <option value="mumbai">Mumbai, India</option>
+                <option value="hong-kong">Hong Kong</option>
+            </optgroup>
+            <optgroup label="🏜️ International - Middle East">
+                <option value="uae">UAE (Dubai/Abu Dhabi)</option>
+                <option value="saudi">Saudi Arabia (Riyadh/NEOM)</option>
+            </optgroup>
+            <optgroup label="🌴 More US Markets">
+                <option value="miami">Miami / South Florida</option>
+                <option value="san-diego">San Diego</option>
+                <option value="pittsburgh">Pittsburgh</option>
+                <option value="detroit">Detroit / Michigan</option>
+                <option value="cleveland">Cleveland / Northeast Ohio</option>
+                <option value="tampa">Tampa Bay</option>
+            </optgroup>
+        </select>
+    </div>
+
+    <div class="main-content">
+        <div id="map">
+            <!-- FiberLocator-Style Fiber Networks Panel -->
+            <div class="fiber-panel" id="fiber-panel">
+                <div class="fiber-panel-header">
+                    <button class="fiber-panel-close" onclick="toggleFiberPanel()">×</button>
+                    <h3>⚡ DC Hub Fiber</h3>
+                    <p>620 Networks • Dark Fiber • Long-Haul</p>
+                </div>
+                <div class="fiber-address-section">
+                    <div style="font-size:10px;color:#f59e0b;margin-bottom:4px;font-weight:600;">📍 Search Address</div>
+                    <input type="text" id="fiber-address-search" placeholder="Enter address..." oninput="handleFiberAddressInput(this.value)" onkeypress="if(event.key==='Enter'){searchFiberAddress();hideFiberDropdown();}">
+                    <div class="fiber-address-dropdown" id="fiber-address-dropdown"></div>
+                    <button onclick="searchFiberAddress()" style="width:100%;margin-top:6px;padding:7px;background:#f59e0b;border:none;border-radius:4px;color:#000;font-size:10px;font-weight:600;cursor:pointer;">🔍 Find Networks</button>
+                </div>
+                <div class="fiber-search">
+                    <input type="text" id="fiber-search-input" placeholder="🔍 Filter carriers..." oninput="filterFiberList()">
+                </div>
+                <div class="fiber-controls">
+                    <button id="filter-all" class="active" onclick="filterFiberType('all')">All</button>
+                    <button id="filter-metro" onclick="filterFiberType('metro')">Metro</button>
+                    <button id="filter-dark" onclick="filterFiberType('dark')">Dark</button>
+                    <button id="filter-longhaul" onclick="filterFiberType('longhaul')">Long-Haul</button>
+                </div>
+                <div class="fiber-stats">
+                    <span>Networks: <span class="count" id="fiber-visible-count">620</span></span>
+                    <span>Active: <span class="count" id="fiber-active-count">0</span></span>
+                    <span>Routes: <span class="count" id="fiber-routes-count">0</span></span>
+                </div>
+                <div class="fiber-list" id="fiber-list">
+                    <!-- Fiber carriers will be populated by JavaScript -->
+                </div>
+                <div class="fiber-actions">
+                    <button class="btn-select-all" onclick="selectAllFiber()">✓ Select All</button>
+                    <button class="btn-clear-all" onclick="clearAllFiber()">✕ Clear All</button>
+                </div>
+                <div style="padding:8px 12px;background:#1f1f35;border-top:1px solid #333;">
+                    <button onclick="if(typeof showAllFiberRoutes==='function'){showAllFiberRoutes()}else{alert('Function not found!')}" style="width:100%;padding:10px;background:linear-gradient(135deg,#10b981,#059669);border:none;border-radius:4px;color:#fff;font-size:11px;font-weight:600;cursor:pointer;margin-bottom:6px;">🗺️ Show All Fiber Routes</button>
+                    <button onclick="if(typeof loadSubmarineCables==='function'){loadSubmarineCables()}else{alert('Function not found!')}" style="width:100%;padding:10px;background:linear-gradient(135deg,#8b5cf6,#6d28d9);border:none;border-radius:4px;color:#fff;font-size:11px;font-weight:600;cursor:pointer;">🌊 Load Submarine Cables</button>
+                </div>
+                <div style="padding:8px 12px;background:#252540;border-top:1px solid #333;">
+                    <div style="font-size:10px;color:#f59e0b;margin-bottom:4px;font-weight:600;">📁 Import KMZ/KML File</div>
+                    <input type="file" id="kmz-upload" accept=".kmz,.kml,.geojson,.json" onchange="handleKMZUpload(event)" style="width:100%;font-size:10px;color:#888;">
+                </div>
+            </div>
+            
+            <!-- Site Evaluation Search - Left Side -->
+            <div class="site-search-container" id="site-search-container">
+                <button class="panel-close-btn" onclick="togglePanel('site-search-container')" title="Hide panel">✕</button>
+                <div style="position:relative;">
+                    <input type="text" class="site-search-input" id="site-search" placeholder="Start typing address..." autocomplete="off">
+                    <div class="autocomplete-dropdown" id="autocomplete-dropdown"></div>
+                </div>
+                <div style="display:flex;gap:6px;">
+                    <button class="site-search-btn" id="site-search-btn" style="flex:1">📍 Evaluate</button>
+                    <button class="site-clear-btn" id="site-clear-btn">🗑️</button>
+                </div>
+                <div style="display:flex;gap:6px;margin-top:6px">
+                    <button class="site-clear-btn" id="export-report-btn" style="flex:1;background:var(--green);border-color:var(--green);color:#fff" onclick="exportSiteReport()">📥 Export PDF</button>
+                </div>
+                <span class="site-counter" id="site-counter" style="font-size:11px;text-align:center">0 sites</span>
+            </div>
+            
+            <!-- Real-Time LMP Panel -->
+            <div class="lmp-panel" id="lmp-panel">
+                <button class="panel-close-btn" onclick="togglePanel('lmp-panel')" title="Hide panel">✕</button>
+                <div class="lmp-title"><span class="live-dot"></span> Real-Time LMP ($/MWh)</div>
+                <div class="lmp-grid" id="lmp-grid">
+                    <div class="lmp-row"><span class="lmp-zone">PJM West</span><span class="lmp-price low" id="lmp-pjm">$32.45</span></div>
+                    <div class="lmp-row"><span class="lmp-zone">ERCOT North</span><span class="lmp-price low" id="lmp-ercot">$28.12</span></div>
+                    <div class="lmp-row"><span class="lmp-zone">CAISO SP15</span><span class="lmp-price medium" id="lmp-caiso">$45.67</span></div>
+                    <div class="lmp-row"><span class="lmp-zone">MISO Central</span><span class="lmp-price low" id="lmp-miso">$31.20</span></div>
+                    <div class="lmp-row"><span class="lmp-zone">SPP South</span><span class="lmp-price low" id="lmp-spp">$29.85</span></div>
+                    <div class="lmp-row"><span class="lmp-zone">NYISO Zone J</span><span class="lmp-price high" id="lmp-nyiso">$58.30</span></div>
+                    <div class="lmp-row"><span class="lmp-zone">ISO-NE Hub</span><span class="lmp-price medium" id="lmp-isone">$42.15</span></div>
+                </div>
+                <div style="font-size:9px;color:var(--text3);margin-top:6px;text-align:center">⚡ Simulated - Real APIs require registration</div>
+            </div>
+            
+            <!-- Toggle buttons to restore hidden panels -->
+            <div class="panel-toggles" id="panel-toggles">
+                <button class="panel-restore-btn" id="restore-search" onclick="restorePanel('site-search-container')" style="display:none" title="Show address search">📍</button>
+                <button class="panel-restore-btn" id="restore-lmp" onclick="restorePanel('lmp-panel')" style="display:none" title="Show power rates">⚡</button>
+            </div>
+            
+            <!-- Measurement Tool Panel -->
+            <div class="measure-panel" id="measure-panel">
+                <h3>📏 <span>Distance Measure</span></h3>
+                <div class="measure-info" id="measure-info">
+                    Click on map to set points. Measure distance from site to grid, gas, or fiber infrastructure.
+                </div>
+                <div class="measure-result" id="measure-result" style="display:none">
+                    <div class="total-label">Total Distance</div>
+                    <div class="total-value" id="measure-total">0.00 mi</div>
+                    <div class="total-km" id="measure-total-km">0.00 km</div>
+                </div>
+                <div class="measure-segments" id="measure-segments"></div>
+                <div class="measure-actions">
+                    <button class="btn-undo" onclick="undoMeasure()" title="Remove last point">↩️ Undo Last</button>
+                    <button class="btn-clear" onclick="clearMeasure()" title="Clear all measurements">🗑️ Clear All</button>
+                </div>
+                <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:10px;color:var(--text3);">
+                    💡 Click segments above to delete individually
+                </div>
+            </div>
+        </div>
+        <div class="sidebar">
+            <div class="refresh-timer">
+                <div class="timer-icon">🔄</div>
+                <div class="timer-info">
+                    <div class="timer-label">Next API Refresh</div>
+                    <div class="timer-value" id="timer-value">60s</div>
+                </div>
+                <div class="timer-bar">
+                    <div class="timer-progress" id="timer-progress" style="width:100%"></div>
+                </div>
+                <button onclick="toggleAutoRefresh()" id="auto-refresh-btn" style="background:#10b981;border:none;color:#fff;padding:4px 8px;border-radius:4px;font-size:9px;cursor:pointer;margin-left:8px">AUTO</button>
+            </div>
+            <div class="last-refresh" id="last-refresh-time">Last refresh: Initializing...</div>
+            
+            <div class="sidebar-section">
+                <div class="sidebar-title">📡 API Data Sources <span style="font-size:9px;color:var(--green);float:right" id="api-status-indicator">● LIVE</span></div>
+                <div class="api-status">
+                    <div class="api-item"><span class="api-dot online"></span><span class="api-name">HIFLD Power/Grid</span><span class="api-rate" id="api-hifld">Live</span></div>
+                    <div class="api-item"><span class="api-dot online"></span><span class="api-name">OpenStreetMap</span><span class="api-rate" id="api-osm">Live</span></div>
+                    <div class="api-item"><span class="api-dot online"></span><span class="api-name">FEMA NFHL Flood</span><span class="api-rate">Live</span></div>
+                    <div class="api-item"><span class="api-dot online"></span><span class="api-name">FCC Broadband</span><span class="api-rate">Live</span></div>
+                    <div class="api-item"><span class="api-dot online"></span><span class="api-name">RTO/ISO Queues</span><span class="api-rate">1.3M MW</span></div>
+                    <div class="api-item"><span class="api-dot online"></span><span class="api-name">PeeringDB IX</span><span class="api-rate">15</span></div>
+                    <div class="api-item"><span class="api-dot online"></span><span class="api-name">Midstream Gas</span><span class="api-rate">180 Bcf/d</span></div>
+                    <div class="api-item"><span class="api-dot online"></span><span class="api-name">LNG Terminals</span><span class="api-rate">180 MTPA</span></div>
+                    <div class="api-item"><span class="api-dot online"></span><span class="api-name">Fiber Routes</span><span class="api-rate" id="api-fiber">807</span></div>
+                    <div class="api-item"><span class="api-dot online"></span><span class="api-name">Treasury OZ</span><span class="api-rate">10 zones</span></div>
+                    <div class="api-item"><span class="api-dot syncing"></span><span class="api-name">ISO/RTO LMP</span><span class="api-rate">5m</span></div>
+                </div>
+            </div>
+            
+            <div class="sidebar-section">
+                <div class="sidebar-title">📊 Infrastructure Totals</div>
+                <div class="stats-row">
+                    <div class="stat-mini"><div class="stat-mini-value" id="stat-dc">142</div><div class="stat-mini-label">Data Centers</div></div>
+                    <div class="stat-mini"><div class="stat-mini-value" id="stat-nuclear">76</div><div class="stat-mini-label">Nuclear</div></div>
+                    <div class="stat-mini"><div class="stat-mini-value" id="stat-subs">48</div><div class="stat-mini-label">Substations</div></div>
+                </div>
+                <div class="stats-row">
+                    <div class="stat-mini"><div class="stat-mini-value" id="stat-airports">33</div><div class="stat-mini-label">Airports</div></div>
+                    <div class="stat-mini"><div class="stat-mini-value" id="stat-fiber">10</div><div class="stat-mini-label">Fiber</div></div>
+                    <div class="stat-mini"><div class="stat-mini-value" id="stat-gas">16</div><div class="stat-mini-label">Pipelines</div></div>
+                </div>
+            </div>
+            
+            <div class="sidebar-section">
+                <div class="sidebar-title">📍 Map Legend</div>
+                <div class="legend-item"><div class="legend-dot" style="background:#6366f1"></div><span>Data Center (Active)</span></div>
+                <div class="legend-item"><div class="legend-dot" style="background:#f59e0b"></div><span>Data Center (Construction)</span></div>
+                <div class="legend-item"><div class="legend-dot" style="background:#fbbf24"></div><span>Nuclear Reactor (NRC)</span></div>
+                <div class="legend-item"><div class="legend-dot" style="background:#06b6d4"></div><span>Substation (OSM)</span></div>
+                <div class="legend-item"><div class="legend-line" style="background:#f97316"></div><span>Gas Pipeline</span></div>
+                <div class="legend-item"><div class="legend-line" style="background:#3b82f6"></div><span>HV Transmission</span></div>
+                <div class="legend-item"><div class="legend-line" style="background:#10b981;border-style:dashed"></div><span>Fiber Backbone</span></div>
+                <div class="legend-item"><div class="legend-dot" style="background:#8b5cf6"></div><span>Major Airport</span></div>
+                <div class="legend-item"><div class="legend-zone" style="background:#3b82f6"></div><span>FEMA Flood Zone</span></div>
+                <div class="legend-item"><div class="legend-zone" style="background:#22c55e"></div><span>NWI Wetlands</span></div>
+                <div class="legend-item"><div class="legend-zone" style="background:#f97316"></div><span>Critical Habitat (ESA)</span></div>
+                <div class="legend-item"><div class="legend-dot" style="background:#ef4444"></div><span>Earthquake (M5+)</span></div>
+                <div class="legend-item"><div class="legend-dot" style="background:#eab308"></div><span>Earthquake (M3-5)</span></div>
+                <div class="legend-item"><div class="legend-dot" style="background:#a855f7"></div><span>Queue Project</span></div>
+            </div>
+            
+            <div class="sidebar-section" id="state-section" style="display:none">
+                <div class="sidebar-title">⚡ Market Details</div>
+                <div class="state-info" id="state-info"></div>
+            </div>
+            
+            <div class="sidebar-section" id="utility-section" style="display:none">
+                <div class="sidebar-title">🏢 Utilities</div>
+                <div id="utility-list"></div>
+            </div>
+            
+            <div class="sidebar-section" id="airport-section" style="display:none">
+                <div class="sidebar-title">✈️ Nearby Airports</div>
+                <div class="airport-list" id="airport-list"></div>
+            </div>
+            
+            <div class="sidebar-section" id="tax-section" style="display:none">
+                <div class="sidebar-title">💰 Tax Incentives</div>
+                <div id="tax-content"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+    <!-- Esri Leaflet for county parcel services -->
+    <script src="/static/vendor/esri-leaflet-3.0.12.min.js"></script>
+    <script src="js/land-power-app.js?v=98"></script>
+    <!-- Footer -->
+    <div style="position:fixed;bottom:0;left:0;right:0;background:rgba(10,10,18,0.95);backdrop-filter:blur(10px);border-top:1px solid rgba(255,255,255,0.04);padding:8px 20px;display:flex;justify-content:space-between;align-items:center;font-size:11px;color:#6b7280;z-index:900">
+        <span>© 2025 DC Hub | <a href="index.html" style="color:#818cf8">Home</a> | <a href="about.html" style="color:#818cf8">About</a></span>
+        <span><a href="terms.html" style="color:#6b7280">Terms</a> · <a href="privacy.html" style="color:#6b7280">Privacy</a> · Built in Phoenix 🌵</span>
+    </div>
+    
+    <!-- HIFLD Infrastructure Data Integration -->
+    <script src="js/dchub-infrastructure.js?v=97"></script>
+    
+    <!-- Energy Infrastructure Enhancement (DOT Pipelines, Texas RRC, State Wells) -->
+    <script src="js/energy-infrastructure.js?v=1"></script>
+    
+    <!-- Energy UI Enhancement (Layer toggles, Site analysis) -->
+    <script src="js/energy-enhancement.js?v=1"></script>
+    
+    <!-- DC Hub Land & Power Enhancements v2.0 (EIA Prices, Power Plants, PDF Export) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="js/land-power-enhancements.js?v=1"></script>
+    
+    <!-- Panel Toggle Functions -->
+    <script>
+    function togglePanel(panelId) {
+        var panel = document.getElementById(panelId);
+        if (panel) {
+            panel.style.display = 'none';
+            // Show the restore button
+            if (panelId === 'site-search-container') {
+                document.getElementById('restore-search').style.display = 'flex';
+            } else if (panelId === 'lmp-panel') {
+                document.getElementById('restore-lmp').style.display = 'flex';
+            }
+        }
+    }
+    
+    function restorePanel(panelId) {
+        var panel = document.getElementById(panelId);
+        if (panel) {
+            panel.style.display = 'flex';
+            // Hide the restore button
+            if (panelId === 'site-search-container') {
+                document.getElementById('restore-search').style.display = 'none';
+            } else if (panelId === 'lmp-panel') {
+                document.getElementById('restore-lmp').style.display = 'none';
+            }
+        }
+    }
+    </script>
+    
+    <!-- DC Hub Protection -->
+    <script src="js/dchub-protection.js?v=97"></script>
+
+<!-- DC Hub Marketing Chatbot Widget -->
+<style>
+#dchub-chat-widget{position:fixed;bottom:24px;right:24px;z-index:99999;font-family:'Instrument Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}
+#dchub-chat-toggle{width:64px;height:64px;border-radius:50%;background:linear-gradient(135deg,#6366f1 0%,#4f46e5 100%);border:none;cursor:pointer;box-shadow:0 4px 24px rgba(99,102,241,0.4);display:flex;align-items:center;justify-content:center;transition:all 0.3s ease;position:relative}
+#dchub-chat-toggle:hover{transform:scale(1.1);box-shadow:0 6px 32px rgba(99,102,241,0.5)}
+#dchub-chat-toggle svg{width:28px;height:28px;fill:white;transition:transform 0.3s ease}
+#dchub-chat-badge{position:absolute;top:-4px;right:-4px;width:20px;height:20px;background:#10b981;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:white;animation:dchub-pulse 2s infinite}
+@keyframes dchub-pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.1)}}
+#dchub-chat-window{position:absolute;bottom:80px;right:0;width:380px;height:560px;background:#0f172a;border-radius:16px;box-shadow:0 8px 48px rgba(0,0,0,0.4);display:none;flex-direction:column;overflow:hidden;border:1px solid rgba(255,255,255,0.08)}
+#dchub-chat-window.open{display:flex;animation:dchub-slideUp 0.3s ease}
+@keyframes dchub-slideUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
+#dchub-chat-header{padding:16px 20px;background:linear-gradient(135deg,#6366f1 0%,#4f46e5 100%);display:flex;align-items:center;gap:12px}
+#dchub-chat-header-icon{width:40px;height:40px;background:rgba(255,255,255,0.2);border-radius:10px;display:flex;align-items:center;justify-content:center}
+#dchub-chat-header-icon svg{width:24px;height:24px;fill:white}
+#dchub-chat-header-info{flex:1}
+#dchub-chat-header-title{font-size:16px;font-weight:600;color:white;margin:0}
+#dchub-chat-header-subtitle{font-size:12px;color:rgba(255,255,255,0.8);margin:2px 0 0 0}
+#dchub-chat-close{background:none;border:none;cursor:pointer;padding:4px;opacity:0.8;transition:opacity 0.2s}
+#dchub-chat-close:hover{opacity:1}
+#dchub-chat-close svg{width:20px;height:20px;fill:white}
+#dchub-chat-messages{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px}
+#dchub-chat-messages::-webkit-scrollbar{width:6px}
+#dchub-chat-messages::-webkit-scrollbar-track{background:transparent}
+#dchub-chat-messages::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.08);border-radius:3px}
+.dchub-msg{max-width:85%;padding:12px 16px;border-radius:16px;font-size:14px;line-height:1.5;animation:dchub-fadeIn 0.3s ease}
+@keyframes dchub-fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.dchub-msg.bot{background:rgba(255,255,255,0.04);color:#f1f5f9;align-self:flex-start;border-bottom-left-radius:4px}
+.dchub-msg.user{background:linear-gradient(135deg,#6366f1 0%,#4f46e5 100%);color:white;align-self:flex-end;border-bottom-right-radius:4px}
+.dchub-msg a{color:#10b981;text-decoration:none}
+.dchub-msg a:hover{text-decoration:underline}
+.dchub-typing{display:flex;gap:4px;padding:12px 16px;background:rgba(255,255,255,0.04);border-radius:16px;align-self:flex-start;border-bottom-left-radius:4px}
+.dchub-typing-dot{width:8px;height:8px;background:#94a3b8;border-radius:50%;animation:dchub-typing 1.4s infinite}
+.dchub-typing-dot:nth-child(2){animation-delay:0.2s}
+.dchub-typing-dot:nth-child(3){animation-delay:0.4s}
+@keyframes dchub-typing{0%,60%,100%{transform:translateY(0);opacity:0.4}30%{transform:translateY(-4px);opacity:1}}
+#dchub-quick-actions{padding:12px 16px;display:flex;flex-wrap:wrap;gap:8px;border-top:1px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.04)}
+.dchub-quick-btn{padding:8px 14px;background:#0f172a;border:1px solid rgba(255,255,255,0.08);border-radius:20px;color:#f1f5f9;font-size:12px;cursor:pointer;transition:all 0.2s}
+.dchub-quick-btn:hover{background:#6366f1;border-color:#6366f1}
+#dchub-chat-input-area{padding:12px 16px;border-top:1px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.04);display:flex;gap:8px;align-items:flex-end}
+#dchub-chat-input{flex:1;background:#0f172a;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:12px 16px;color:#f1f5f9;font-size:14px;resize:none;max-height:100px;font-family:inherit}
+#dchub-chat-input:focus{outline:none;border-color:#6366f1}
+#dchub-chat-input::placeholder{color:#94a3b8}
+#dchub-chat-send{width:44px;height:44px;background:linear-gradient(135deg,#6366f1 0%,#4f46e5 100%);border:none;border-radius:12px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:transform 0.2s}
+#dchub-chat-send:hover{transform:scale(1.05)}
+#dchub-chat-send:disabled{opacity:0.5;cursor:not-allowed;transform:none}
+#dchub-chat-send svg{width:20px;height:20px;fill:white}
+#dchub-powered{padding:8px;text-align:center;font-size:10px;color:#94a3b8;background:#0f172a}
+#dchub-powered a{color:#6366f1;text-decoration:none}
+@media(max-width:480px){#dchub-chat-widget{bottom:80px;right:16px}#dchub-chat-window{width:calc(100vw - 32px);height:calc(100vh - 200px);right:-8px}#dchub-chat-toggle{width:56px;height:56px}}
+</style>
+<div id="dchub-chat-widget">
+  <button id="dchub-chat-toggle" onclick="DCHubChat.toggle()">
+    <svg viewBox="0 0 24 24" id="dchub-toggle-icon"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H5.2L4 17.2V4h16v12z"/><path d="M7 9h10v2H7zm0-3h10v2H7zm0 6h7v2H7z"/></svg>
+    <span id="dchub-chat-badge">1</span>
+  </button>
+  <div id="dchub-chat-window">
+    <div id="dchub-chat-header">
+      <div id="dchub-chat-header-icon"><svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg></div>
+      <div id="dchub-chat-header-info">
+        <h3 id="dchub-chat-header-title">DC Hub Assistant</h3>
+        <p id="dchub-chat-header-subtitle">Land & Power Analysis • Online</p>
+      </div>
+      <button id="dchub-chat-close" onclick="DCHubChat.toggle()"><svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>
+    </div>
+    <div id="dchub-chat-messages"></div>
+    <div id="dchub-quick-actions">
+      <button class="dchub-quick-btn" onclick="DCHubChat.quickAsk('How do I evaluate a site?')">📍 Site Eval</button>
+      <button class="dchub-quick-btn" onclick="DCHubChat.quickAsk('What fiber carriers are available?')">🌐 Fiber</button>
+      <button class="dchub-quick-btn" onclick="DCHubChat.quickAsk('How do I check power availability?')">⚡ Power</button>
+      <button class="dchub-quick-btn" onclick="DCHubChat.quickAsk('Show me HIFLD data layers')">📊 HIFLD</button>
+    </div>
+    <div id="dchub-chat-input-area">
+      <textarea id="dchub-chat-input" placeholder="Ask about land analysis, power, fiber..." rows="1" onkeydown="DCHubChat.handleKeydown(event)"></textarea>
+      <button id="dchub-chat-send" onclick="DCHubChat.send()"><svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg></button>
+    </div>
+    <div id="dchub-powered">Powered by <a href="https://dchub.cloud" target="_blank">DC Hub</a> • Land & Power Intelligence</div>
+  </div>
+</div>
+<script>
+const DCHubChat={config:{apiBase:'https://dchub.cloud',welcomeMessage:'👋 Welcome to Land & Power Analysis!\n\nI can help you with:\n\n• **Site Evaluation** - Enter an address or coordinates\n• **Infrastructure Layers** - HIFLD substations, transmission, fiber\n• **Power Analysis** - Check capacity and nearby facilities\n• **Fiber Connectivity** - 807 routes, 620 carriers\n\nHow can I help with your site analysis?',autoOpenDelay:0,leadCaptureAfterMessages:5},isOpen:false,history:[],leadInfo:{},messageCount:0,leadCaptured:false,
+init(){this.addMessage(this.config.welcomeMessage,'bot');const savedLead=localStorage.getItem('dchub_lead');if(savedLead){this.leadInfo=JSON.parse(savedLead);this.leadCaptured=true}const input=document.getElementById('dchub-chat-input');if(input){input.addEventListener('input',function(){this.style.height='auto';this.style.height=Math.min(this.scrollHeight,100)+'px'})}},
+toggle(){this.isOpen?this.close():this.open()},
+open(){this.isOpen=true;document.getElementById('dchub-chat-window').classList.add('open');document.getElementById('dchub-chat-badge').style.display='none';document.getElementById('dchub-chat-input').focus();document.getElementById('dchub-toggle-icon').innerHTML='<path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>'},
+close(){this.isOpen=false;document.getElementById('dchub-chat-window').classList.remove('open');document.getElementById('dchub-toggle-icon').innerHTML='<path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H5.2L4 17.2V4h16v12z"/><path d="M7 9h10v2H7zm0-3h10v2H7zm0 6h7v2H7z"/>'},
+async send(){const input=document.getElementById('dchub-chat-input');const message=input.value.trim();if(!message)return;input.value='';input.style.height='auto';this.addMessage(message,'user');this.history.push({role:'user',content:message});this.messageCount++;this.showTyping();document.getElementById('dchub-chat-send').disabled=true;try{const response=await fetch(`${this.config.apiBase}/api/agents/sales/chat`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:message,history:this.history.slice(-10),lead_info:this.leadInfo,context:'land-power'})});const data=await response.json();this.hideTyping();if(data.error){this.addMessage('Sorry, I encountered an error. Please try again.','bot')}else{this.addMessage(data.response,'bot');this.history.push({role:'assistant',content:data.response})}}catch(error){this.hideTyping();this.addMessage('Connection error. Check your internet connection.','bot')}document.getElementById('dchub-chat-send').disabled=false;document.getElementById('dchub-chat-input').focus()},
+quickAsk(question){document.getElementById('dchub-chat-input').value=question;this.send()},
+handleKeydown(event){if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();this.send()}},
+addMessage(content,type){const messagesDiv=document.getElementById('dchub-chat-messages');const messageDiv=document.createElement('div');messageDiv.className=`dchub-msg ${type}`;messageDiv.innerHTML=this.formatMessage(content);messagesDiv.appendChild(messageDiv);messagesDiv.scrollTop=messagesDiv.scrollHeight},
+formatMessage(content){return content.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>').replace(/\n/g,'<br>').replace(/^• /gm,'&bull; ')},
+showTyping(){const messagesDiv=document.getElementById('dchub-chat-messages');const typingDiv=document.createElement('div');typingDiv.className='dchub-typing';typingDiv.id='dchub-typing';typingDiv.innerHTML='<div class="dchub-typing-dot"></div><div class="dchub-typing-dot"></div><div class="dchub-typing-dot"></div>';messagesDiv.appendChild(typingDiv);messagesDiv.scrollTop=messagesDiv.scrollHeight},
+hideTyping(){const typing=document.getElementById('dchub-typing');if(typing)typing.remove()}};
+if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',()=>DCHubChat.init())}else{DCHubChat.init()}
+</script>
+<!-- End DC Hub Marketing Chatbot -->
+</html>

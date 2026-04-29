@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Developer Plan — $49/mo | DC Hub Intelligence API</title>
+    <meta name="description" content="Access 20+ data center intelligence API endpoints via MCP or REST. 1,000 queries/day, fiber maps, grid data, market intel. Start free, upgrade when ready.">
+    <meta property="og:title" content="DC Hub Developer Plan — $49/mo">
+    <meta property="og:description" content="20+ API endpoints for data center intelligence. Fiber maps, grid data, market intel. Start free.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://dchub.cloud/developers/signup">
+    <link rel="canonical" href="https://dchub.cloud/developers/signup">
+    <script src="/js/dchub-nav.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --bg: #0a0e1a;
+            --surface: #111827;
+            --surface2: #1a2332;
+            --border: #1e293b;
+            --accent: #3b82f6;
+            --accent-glow: rgba(59, 130, 246, 0.25);
+            --green: #10b981;
+            --orange: #f59e0b;
+            --text: #e2e8f0;
+            --text2: #94a3b8;
+            --text3: #64748b;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            padding-top: 48px; /* nav height */
+        }
+
+        /* ── HERO ────────────────────────────── */
+        .hero {
+            text-align: center;
+            padding: 80px 24px 60px;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        .hero-badge {
+            display: inline-block;
+            background: rgba(59, 130, 246, 0.15);
+            color: var(--accent);
+            font-size: 13px;
+            font-weight: 600;
+            padding: 6px 16px;
+            border-radius: 100px;
+            border: 1px solid rgba(59, 130, 246, 0.3);
+            margin-bottom: 24px;
+            letter-spacing: 0.5px;
+        }
+        .hero h1 {
+            font-size: clamp(32px, 5vw, 48px);
+            font-weight: 700;
+            line-height: 1.15;
+            margin-bottom: 20px;
+        }
+        .hero h1 span { color: var(--accent); }
+        .hero p {
+            font-size: 18px;
+            color: var(--text2);
+            max-width: 600px;
+            margin: 0 auto 32px;
+        }
+        .hero-price {
+            font-size: 56px;
+            font-weight: 800;
+            margin-bottom: 4px;
+        }
+        .hero-price span { font-size: 20px; color: var(--text2); font-weight: 400; }
+        .hero-sub { font-size: 14px; color: var(--text3); margin-bottom: 32px; }
+
+        /* ── CTA BUTTONS ─────────────────────── */
+        .cta-row {
+            display: flex;
+            gap: 16px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        .btn-primary {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: var(--accent);
+            color: #fff;
+            font-size: 16px;
+            font-weight: 600;
+            padding: 14px 32px;
+            border-radius: 10px;
+            border: none;
+            cursor: pointer;
+            text-decoration: none;
+            transition: all 0.2s;
+            box-shadow: 0 0 24px var(--accent-glow);
+        }
+        .btn-primary:hover {
+            background: #2563eb;
+            transform: translateY(-1px);
+            box-shadow: 0 0 32px var(--accent-glow);
+        }
+        .btn-secondary {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: transparent;
+            color: var(--text);
+            font-size: 16px;
+            font-weight: 500;
+            padding: 14px 28px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            cursor: pointer;
+            text-decoration: none;
+            transition: all 0.2s;
+        }
+        .btn-secondary:hover {
+            background: var(--surface);
+            border-color: var(--text3);
+        }
+
+        /* ── COMPARISON TABLE ────────────────── */
+        .section { max-width: 960px; margin: 0 auto; padding: 80px 24px; }
+        .section-title {
+            text-align: center;
+            font-size: 28px;
+            font-weight: 700;
+            margin-bottom: 12px;
+        }
+        .section-sub {
+            text-align: center;
+            color: var(--text2);
+            font-size: 16px;
+            margin-bottom: 48px;
+        }
+
+        .plan-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 20px;
+        }
+        .plan-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 32px 28px;
+            position: relative;
+            transition: border-color 0.2s;
+        }
+        .plan-card.featured {
+            border-color: var(--accent);
+            box-shadow: 0 0 40px var(--accent-glow);
+        }
+        .plan-card.featured::before {
+            content: 'BEST VALUE';
+            position: absolute;
+            top: -12px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--accent);
+            color: #fff;
+            font-size: 11px;
+            font-weight: 700;
+            padding: 4px 16px;
+            border-radius: 100px;
+            letter-spacing: 1px;
+        }
+        .plan-name { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
+        .plan-price {
+            font-size: 36px;
+            font-weight: 800;
+            margin-bottom: 4px;
+        }
+        .plan-price span { font-size: 16px; color: var(--text2); font-weight: 400; }
+        .plan-desc { color: var(--text2); font-size: 14px; margin-bottom: 24px; }
+        .plan-features { list-style: none; margin-bottom: 28px; }
+        .plan-features li {
+            font-size: 14px;
+            color: var(--text2);
+            padding: 6px 0;
+            padding-left: 24px;
+            position: relative;
+        }
+        .plan-features li::before {
+            content: '✓';
+            position: absolute;
+            left: 0;
+            color: var(--green);
+            font-weight: 700;
+        }
+        .plan-features li.limited::before {
+            content: '~';
+            color: var(--orange);
+        }
+        .plan-features li.no::before {
+            content: '✕';
+            color: var(--text3);
+        }
+        .plan-btn {
+            display: block;
+            width: 100%;
+            text-align: center;
+            padding: 12px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            text-decoration: none;
+            transition: all 0.2s;
+        }
+        .plan-btn-primary {
+            background: var(--accent);
+            color: #fff;
+        }
+        .plan-btn-primary:hover { background: #2563eb; }
+        .plan-btn-outline {
+            background: transparent;
+            color: var(--text);
+            border: 1px solid var(--border);
+        }
+        .plan-btn-outline:hover { border-color: var(--text3); }
+
+        /* ── FEATURE BREAKDOWN ───────────────── */
+        .features-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }
+        .features-table th {
+            text-align: left;
+            padding: 12px 16px;
+            background: var(--surface);
+            color: var(--text2);
+            font-weight: 600;
+            border-bottom: 1px solid var(--border);
+        }
+        .features-table td {
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border);
+            color: var(--text2);
+        }
+        .features-table tr:hover td { background: rgba(59, 130, 246, 0.03); }
+        .features-table .check { color: var(--green); font-weight: 700; }
+        .features-table .partial { color: var(--orange); }
+        .features-table .no { color: var(--text3); }
+
+        /* ── MCP INTEGRATION SECTION ─────────── */
+        .mcp-section {
+            background: var(--surface);
+            border-radius: 16px;
+            padding: 48px 40px;
+            border: 1px solid var(--border);
+        }
+        .mcp-section h3 { font-size: 22px; margin-bottom: 16px; }
+        .code-block {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 20px 24px;
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            font-size: 13px;
+            line-height: 1.7;
+            overflow-x: auto;
+            margin: 20px 0;
+            color: var(--text2);
+        }
+        .code-block .comment { color: var(--text3); }
+        .code-block .string { color: var(--green); }
+        .code-block .key { color: var(--accent); }
+
+        /* ── USE CASES ───────────────────────── */
+        .use-cases {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 20px;
+        }
+        .use-case {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 28px;
+        }
+        .use-case-icon { font-size: 28px; margin-bottom: 12px; }
+        .use-case h4 { font-size: 16px; margin-bottom: 8px; }
+        .use-case p { color: var(--text2); font-size: 14px; }
+
+        /* ── FAQ ──────────────────────────────── */
+        .faq-item {
+            border-bottom: 1px solid var(--border);
+            padding: 20px 0;
+        }
+        .faq-q {
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .faq-q::after { content: '+'; font-size: 20px; color: var(--text3); }
+        .faq-q.open::after { content: '-'; }
+        .faq-a {
+            color: var(--text2);
+            font-size: 14px;
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s;
+            padding-top: 0;
+        }
+        .faq-a.open { max-height: 200px; padding-top: 12px; }
+
+        /* ── BOTTOM CTA ──────────────────────── */
+        .bottom-cta {
+            text-align: center;
+            padding: 80px 24px;
+            background: linear-gradient(180deg, transparent, rgba(59, 130, 246, 0.05));
+        }
+        .bottom-cta h2 {
+            font-size: 32px;
+            margin-bottom: 16px;
+        }
+        .bottom-cta p {
+            color: var(--text2);
+            font-size: 16px;
+            margin-bottom: 32px;
+        }
+
+        /* ── FOOTER ──────────────────────────── */
+        .dev-footer {
+            text-align: center;
+            padding: 40px 24px;
+            color: var(--text3);
+            font-size: 13px;
+            border-top: 1px solid var(--border);
+        }
+        .dev-footer a { color: var(--text2); text-decoration: none; }
+
+        @media (max-width: 768px) {
+            .hero { padding: 60px 20px 40px; }
+            .hero-price { font-size: 42px; }
+            .section { padding: 60px 20px; }
+            .mcp-section { padding: 28px 20px; }
+            .features-table { font-size: 12px; }
+            .features-table th, .features-table td { padding: 8px 10px; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- ══ HERO ═══════════════════════════════════ -->
+<section class="hero">
+    <div class="hero-badge">NOW AVAILABLE — MCP + REST API</div>
+    <h1>Data Center Intelligence<br>for <span>Developers</span></h1>
+    <p>20+ API endpoints covering facilities, power grid, fiber connectivity, market intel, and more. Works with Claude, ChatGPT, and any MCP-compatible AI.</p>
+    <div class="hero-price">$49<span>/mo</span></div>
+    <div class="hero-sub">1,000 queries/day &middot; All 20+ tools &middot; Cancel anytime</div>
+    <div class="cta-row">
+        <a href="https://buy.stripe.com/dchub-developer" class="btn-primary" id="cta-top">
+            Start Developer Plan
+        </a>
+        <a href="/mcp" class="btn-secondary">
+            Try Free First &rarr;
+        </a>
+    </div>
+</section>
+
+<!-- ══ PLAN COMPARISON ════════════════════════ -->
+<section class="section">
+    <h2 class="section-title">Choose Your Plan</h2>
+    <p class="section-sub">Start free, upgrade when you need more power</p>
+
+    <div class="plan-grid">
+        <!-- Free -->
+        <div class="plan-card">
+            <div class="plan-name">Free</div>
+            <div class="plan-price">$0<span>/mo</span></div>
+            <div class="plan-desc">Explore the platform</div>
+            <ul class="plan-features">
+                <li>25 queries/day</li>
+                <li>5 of 20+ tools</li>
+                <li>Basic facility search</li>
+                <li>Grid overview (state-level)</li>
+                <li class="no">No fiber/carrier data</li>
+                <li class="no">No market intel</li>
+                <li class="no">No priority support</li>
+            </ul>
+            <a href="/mcp" class="plan-btn plan-btn-outline">Start Free</a>
+        </div>
+
+        <!-- Developer (featured) -->
+        <div class="plan-card featured">
+            <div class="plan-name">Developer</div>
+            <div class="plan-price">$49<span>/mo</span></div>
+            <div class="plan-desc">Build with full intelligence</div>
+            <ul class="plan-features">
+                <li>1,000 queries/day</li>
+                <li>All 20+ tools unlocked</li>
+                <li>Full facility database</li>
+                <li>Fiber &amp; carrier maps</li>
+                <li>Subsea cable data</li>
+                <li>Grid intelligence (county)</li>
+                <li>Market intel &amp; tax data</li>
+                <li>Email support</li>
+            </ul>
+            <a href="https://buy.stripe.com/dchub-developer" class="plan-btn plan-btn-primary" id="cta-plan">Get Developer</a>
+        </div>
+
+        <!-- Pro -->
+        <div class="plan-card">
+            <div class="plan-name">Pro</div>
+            <div class="plan-price">$249<span>/mo</span></div>
+            <div class="plan-desc">For teams &amp; heavy usage</div>
+            <ul class="plan-features">
+                <li>10,000 queries/day</li>
+                <li>All 20+ tools unlocked</li>
+                <li>Full facility database</li>
+                <li>Fiber &amp; carrier maps</li>
+                <li>Bulk export &amp; webhooks</li>
+                <li>Site comparison tool</li>
+                <li>Custom analysis</li>
+                <li>Priority Slack support</li>
+            </ul>
+            <a href="/contact?plan=pro" class="plan-btn plan-btn-outline">Contact Sales</a>
+        </div>
+    </div>
+</section>
+
+<!-- ══ FEATURE TABLE ══════════════════════════ -->
+<section class="section">
+    <h2 class="section-title">What You Get</h2>
+    <p class="section-sub">Every Developer plan endpoint, explained</p>
+
+    <table class="features-table">
+        <thead>
+            <tr>
+                <th>Capability</th>
+                <th>Free</th>
+                <th>Developer ($49)</th>
+                <th>Pro ($249)</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Facility Search &amp; Details</td>
+                <td class="partial">Basic</td>
+                <td class="check">Full (20K+)</td>
+                <td class="check">Full + Export</td>
+            </tr>
+            <tr>
+                <td>Grid Intelligence</td>
+                <td class="partial">State only</td>
+                <td class="check">County + Substation</td>
+                <td class="check">Full + Custom</td>
+            </tr>
+            <tr>
+                <td>Fiber &amp; Carrier Maps</td>
+                <td class="no">--</td>
+                <td class="check">Full Access</td>
+                <td class="check">Full + Dark Fiber</td>
+            </tr>
+            <tr>
+                <td>Subsea Cable Data</td>
+                <td class="no">--</td>
+                <td class="check">500+ cables</td>
+                <td class="check">Full + Geometry</td>
+            </tr>
+            <tr>
+                <td>Market Intel</td>
+                <td class="no">--</td>
+                <td class="check">All markets</td>
+                <td class="check">Full + Trends</td>
+            </tr>
+            <tr>
+                <td>Energy Prices</td>
+                <td class="no">--</td>
+                <td class="check">All states</td>
+                <td class="check">Full + Forecast</td>
+            </tr>
+            <tr>
+                <td>Tax Incentives</td>
+                <td class="no">--</td>
+                <td class="check">All states</td>
+                <td class="check">Full + Custom</td>
+            </tr>
+            <tr>
+                <td>Water Risk</td>
+                <td class="no">--</td>
+                <td class="check">County level</td>
+                <td class="check">Full + Forecast</td>
+            </tr>
+            <tr>
+                <td>Renewable Energy</td>
+                <td class="no">--</td>
+                <td class="check">All sources</td>
+                <td class="check">Full + PPA data</td>
+            </tr>
+            <tr>
+                <td>Site Comparison</td>
+                <td class="no">--</td>
+                <td class="partial">2 sites</td>
+                <td class="check">Unlimited</td>
+            </tr>
+            <tr>
+                <td>Pipeline Tracking</td>
+                <td class="no">--</td>
+                <td class="check">Full Access</td>
+                <td class="check">Full + Alerts</td>
+            </tr>
+            <tr>
+                <td>Daily Query Limit</td>
+                <td>25</td>
+                <td><strong>1,000</strong></td>
+                <td><strong>10,000</strong></td>
+            </tr>
+            <tr>
+                <td>Support</td>
+                <td class="no">Community</td>
+                <td>Email</td>
+                <td><strong>Priority Slack</strong></td>
+            </tr>
+        </tbody>
+    </table>
+</section>
+
+<!-- ══ MCP INTEGRATION ════════════════════════ -->
+<section class="section">
+    <div class="mcp-section">
+        <h3>Works with Your AI Workflow</h3>
+        <p style="color:var(--text2);margin-bottom:20px;">
+            Connect DC Hub to Claude, ChatGPT, or any MCP-compatible client in seconds.
+        </p>
+        <div class="code-block">
+<span class="comment">// Claude Desktop — claude_desktop_config.json</span>
+{
+  <span class="key">"mcpServers"</span>: {
+    <span class="key">"dchub"</span>: {
+      <span class="key">"url"</span>: <span class="string">"https://dchub.cloud/mcp"</span>,
+      <span class="key">"transport"</span>: <span class="string">"streamable-http"</span>
+    }
+  }
+}
+        </div>
+        <p style="color:var(--text3);font-size:13px;">
+            Also works with REST API at <code>dchub.cloud/api/v1/</code> — same data, same limits.
+        </p>
+    </div>
+</section>
+
+<!-- ══ USE CASES ══════════════════════════════ -->
+<section class="section">
+    <h2 class="section-title">Built For</h2>
+    <p class="section-sub">How developers use DC Hub intelligence</p>
+
+    <div class="use-cases">
+        <div class="use-case">
+            <div class="use-case-icon">&#x1f50c;</div>
+            <h4>Site Selection Automation</h4>
+            <p>Score locations by power, fiber, water, tax incentives — programmatically. Feed results into your internal tools.</p>
+        </div>
+        <div class="use-case">
+            <div class="use-case-icon">&#x1f916;</div>
+            <h4>AI-Powered Research</h4>
+            <p>Give your AI assistant real-time data center market intelligence. Ask questions, get sourced answers.</p>
+        </div>
+        <div class="use-case">
+            <div class="use-case-icon">&#x1f4ca;</div>
+            <h4>Portfolio Monitoring</h4>
+            <p>Track grid capacity, new builds, and market shifts across your facility portfolio with daily syncs.</p>
+        </div>
+        <div class="use-case">
+            <div class="use-case-icon">&#x1f310;</div>
+            <h4>Fiber Connectivity Analysis</h4>
+            <p>Map carrier presence, subsea cable proximity, and dark fiber availability for any location.</p>
+        </div>
+        <div class="use-case">
+            <div class="use-case-icon">&#x26a1;</div>
+            <h4>Energy Cost Modeling</h4>
+            <p>Compare energy prices, renewable mix, and grid reliability across all 50 states.</p>
+        </div>
+        <div class="use-case">
+            <div class="use-case-icon">&#x1f4b0;</div>
+            <h4>Investment Due Diligence</h4>
+            <p>Pull market intel, pipeline data, and facility details for M&amp;A research and investment memos.</p>
+        </div>
+    </div>
+</section>
+
+<!-- ══ FAQ ═════════════════════════════════════ -->
+<section class="section">
+    <h2 class="section-title">FAQ</h2>
+    <div style="max-width:680px;margin:32px auto 0;">
+        <div class="faq-item">
+            <div class="faq-q" onclick="toggleFaq(this)">Can I try before I pay?</div>
+            <div class="faq-a">Yes. The Free tier gives you 25 queries/day across 5 core tools. Connect via MCP or REST API and explore the data. Upgrade to Developer when you need more endpoints or higher limits.</div>
+        </div>
+        <div class="faq-item">
+            <div class="faq-q" onclick="toggleFaq(this)">How does billing work?</div>
+            <div class="faq-a">Monthly subscription via Stripe. Cancel anytime from your dashboard, no contracts. Your access continues through the end of the billing period.</div>
+        </div>
+        <div class="faq-item">
+            <div class="faq-q" onclick="toggleFaq(this)">What happens if I hit my daily limit?</div>
+            <div class="faq-a">Queries return a friendly limit message with your reset time. No overage charges. If you consistently hit limits, upgrade to Pro for 10x the quota.</div>
+        </div>
+        <div class="faq-item">
+            <div class="faq-q" onclick="toggleFaq(this)">Do you support REST API too?</div>
+            <div class="faq-a">Yes. Every MCP tool is also available as a REST endpoint at dchub.cloud/api/v1/. Same auth, same data, same rate limits.</div>
+        </div>
+        <div class="faq-item">
+            <div class="faq-q" onclick="toggleFaq(this)">What AI clients work with the MCP?</div>
+            <div class="faq-a">Claude Desktop, Claude Code, ChatGPT (via plugin), Cursor, Windsurf, and any client that supports MCP streamable-http transport.</div>
+        </div>
+        <div class="faq-item">
+            <div class="faq-q" onclick="toggleFaq(this)">How fresh is the data?</div>
+            <div class="faq-a">Facility data syncs daily. Grid, fiber, and market data update weekly. Subsea cables and carrier presence refresh weekly from TeleGeography and PeeringDB.</div>
+        </div>
+    </div>
+</section>
+
+<!-- ══ BOTTOM CTA ═════════════════════════════ -->
+<section class="bottom-cta">
+    <h2>Ready to build with DC Hub?</h2>
+    <p>Start free, upgrade in 30 seconds. No credit card required for free tier.</p>
+    <div class="cta-row">
+        <a href="https://buy.stripe.com/dchub-developer" class="btn-primary" id="cta-bottom">
+            Start Developer Plan — $49/mo
+        </a>
+        <a href="/mcp" class="btn-secondary">
+            Explore Free Tier
+        </a>
+    </div>
+</section>
+
+<footer class="dev-footer">
+    <p>&copy; 2026 DC Hub Intelligence &middot; <a href="/privacy">Privacy</a> &middot; <a href="/terms">Terms</a> &middot; <a href="/api-docs">API Docs</a></p>
+</footer>
+
+<script>
+function toggleFaq(el) {
+    el.classList.toggle('open');
+    var answer = el.nextElementSibling;
+    answer.classList.toggle('open');
+}
+
+// Track CTA clicks for conversion funnel
+document.querySelectorAll('[id^="cta-"]').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+        var label = btn.id.replace('cta-', '');
+        if (window.gtag) {
+            gtag('event', 'developer_cta_click', {
+                event_category: 'conversion',
+                event_label: label,
+                value: 49
+            });
+        }
+        // Also ping our MCP analytics
+        fetch('/api/v1/track-conversion', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                event: 'developer_cta_click',
+                label: label,
+                page: '/developers/signup',
+                timestamp: new Date().toISOString()
+            })
+        }).catch(function() {});
+    });
+});
+</script>
+</body>
+</html>

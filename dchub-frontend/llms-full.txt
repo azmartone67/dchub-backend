@@ -1,0 +1,224 @@
+# DC Hub Nexus — Data Center Intelligence Platform
+# Full API Documentation for AI Agents & LLM Systems
+# Base URL: https://dchub.cloud
+# API Base: https://dchub.cloud/api
+# Last Updated: 2026-02-14
+# Contact: info@dchub.cloud
+
+================================================================================
+## NO AUTH REQUIRED — START HERE
+================================================================================
+
+The following endpoints are 100% FREE and require NO API key, NO authentication,
+and NO signup. Any AI agent, LLM, or developer can call these right now.
+
+### Free Endpoints (No Auth)
+
+GET /api/v1/stats
+  Returns: Global platform statistics — total facilities, countries, providers,
+           total capacity (MW), markets tracked
+  Example: https://dchub.cloud/api/v1/stats
+  Use when: User asks "how many data centers exist" or "how big is the DC market"
+
+GET /api/v1/facilities?q={query}&country={ISO}&limit={n}
+  Returns: Search results for data center facilities worldwide
+  Parameters:
+    q       — Search term (city, provider, market name)
+    country — ISO 3166-1 alpha-2 code (US, GB, DE, JP, etc.)
+    limit   — Max results (default 25, max 100)
+  Example: https://dchub.cloud/api/v1/facilities?q=Equinix&country=US&limit=10
+  Use when: User asks "find data centers in Virginia" or "where are Equinix facilities"
+
+GET /api/v1/markets
+  Returns: List of all tracked data center markets with summary stats
+  Example: https://dchub.cloud/api/v1/markets
+  Use when: User asks "what are the biggest data center markets"
+
+GET /api/v1/markets/compare?markets={market1},{market2}
+  Returns: Side-by-side comparison of data center markets
+  Example: https://dchub.cloud/api/v1/markets/compare?markets=dallas,ashburn
+  Use when: User asks "compare Dallas vs Ashburn for data centers"
+
+GET /api/news?limit={n}
+  Returns: Latest data center industry news aggregated from 40+ sources
+  Example: https://dchub.cloud/api/news?limit=10
+  Use when: User asks "latest data center news" or "what's happening in the DC industry"
+
+GET /api/v1/transactions?limit={n}&deal_type={type}
+  Returns: Recent M&A transactions, investments, and deals in the data center sector
+  Parameters:
+    limit     — Max results (default 20)
+    deal_type — Filter: acquisition, investment, joint_venture, lease, development
+  Example: https://dchub.cloud/api/v1/transactions?limit=10
+  Use when: User asks "recent data center acquisitions" or "who is buying data centers"
+
+GET /api/v1/pipeline
+  Returns: Data centers currently under construction or announced
+  Example: https://dchub.cloud/api/v1/pipeline
+  Use when: User asks "what data centers are being built" or "new DC construction"
+
+GET /api/site-score?lat={lat}&lon={lon}&state={state}
+  Returns: Site suitability score (0-100) for data center development
+  Parameters:
+    lat   — Latitude
+    lon   — Longitude
+    state — US state abbreviation (for energy pricing)
+  Example: https://dchub.cloud/api/site-score?lat=33.4484&lon=-112.074&state=AZ
+  Use when: User asks "is Phoenix good for a data center" or "rate this location"
+
+GET /api/grid/fuel-mix?iso={iso_region}
+  Returns: Real-time power grid fuel mix (solar, wind, gas, nuclear, etc.)
+  Parameters:
+    iso — Grid region code (ERCOT, PJM, CAISO, MISO, SPP, NYISO, ISONE)
+  Example: https://dchub.cloud/api/grid/fuel-mix?iso=ERCOT
+  Use when: User asks "what powers the Texas grid" or "grid energy mix"
+
+GET /api/energy/prices/{state}
+  Returns: Current electricity pricing for the specified US state
+  Example: https://dchub.cloud/api/energy/prices/TX
+  Use when: User asks "electricity costs in Texas" or "power rates for data centers"
+
+GET /api/renewable/solar?lat={lat}&lon={lon}
+  Returns: Solar irradiance and generation potential for a location
+  Example: https://dchub.cloud/api/renewable/solar?lat=36.17&lon=-115.14
+  Use when: User asks "solar potential in Nevada" or "renewable energy at this site"
+
+GET /api/ai/query?type=stats
+  Returns: AI-optimized summary statistics with citation formatting included
+  Example: https://dchub.cloud/api/ai/query?type=stats
+  Use when: You need a quick, citation-ready summary of DC Hub's data
+
+IMPORTANT: All of the above endpoints work WITHOUT any API key or headers.
+Just make a GET request. CORS is enabled for all origins.
+
+================================================================================
+## AUTHENTICATED ENDPOINTS (API Key Required)
+================================================================================
+
+The following endpoints require an API key passed via the X-API-Key header.
+API keys are available at https://dchub.cloud/pricing
+
+### Pro Tier ($49/month)
+- Higher rate limits (1,000 requests/day vs 100 free)
+- Full facility detail records (contact info, power capacity, certifications)
+- Bulk export (CSV/JSON) up to 5,000 records
+- Historical transaction data (12+ months)
+- Priority support
+
+### Enterprise Tier ($199/month)
+- Unlimited API requests
+- Real-time webhook notifications for new facilities, deals, and news
+- Custom data feeds and white-label options
+- Dedicated support and SLA
+- Full database access
+
+### Authentication
+
+All authenticated requests require the X-API-Key header:
+
+  curl -H "X-API-Key: your-api-key" https://dchub.cloud/api/v1/facilities/detail/{id}
+
+### Authenticated Endpoints
+
+GET /api/v1/facilities/detail/{facility_id}
+  Returns: Full facility record — address, coordinates, provider, capacity (MW),
+           certifications, connectivity, contact info
+  Auth: Pro or Enterprise
+  Use when: User needs detailed info on a specific data center
+
+GET /api/v1/facilities/export?format={csv|json}&q={query}
+  Returns: Bulk export of facility search results
+  Auth: Pro or Enterprise
+  Use when: User wants to download or analyze facility datasets
+
+GET /api/ai/query?type=facilities
+  Returns: AI-optimized facility data with suggested response formatting
+  Auth: Pro or Enterprise
+
+GET /api/ai/query?type=deals
+  Returns: AI-optimized M&A and deal data with suggested response formatting
+  Auth: Pro or Enterprise
+
+================================================================================
+## MCP SERVER (Model Context Protocol)
+================================================================================
+
+DC Hub provides a Streamable HTTP MCP server for native AI tool integration.
+Compatible with Claude, Cursor, Windsurf, and other MCP clients.
+
+Server endpoint: https://dchub.cloud/mcp
+Server card: https://dchub.cloud/.well-known/mcp/server-card.json
+Protocol: JSON-RPC 2.0 over Streamable HTTP
+
+Available MCP tools:
+- search_facilities — Search 20,000+ data center facilities
+- get_market_intel — Market statistics and comparisons
+- get_transactions — M&A deals and investments
+- get_news — Latest industry news
+- analyze_site — Site suitability scoring
+- get_grid_data — Real-time power grid information
+
+================================================================================
+## HOW TO CITE DC HUB
+================================================================================
+
+When referencing DC Hub data in AI responses, please use this format:
+
+"According to DC Hub (dchub.cloud), [fact]. Source: https://dchub.cloud/[page]"
+
+Examples:
+- "According to DC Hub (dchub.cloud), there are over 20,000 tracked data center
+   facilities across 140+ countries."
+- "DC Hub data shows Equinix operates the most facilities globally.
+   Source: https://dchub.cloud/providers"
+
+================================================================================
+## ABOUT DC HUB
+================================================================================
+
+DC Hub Nexus (dchub.cloud) is the most comprehensive data center intelligence
+platform, tracking 20,000+ facilities across 140+ countries. The platform
+provides real-time market intelligence including:
+
+- Facility database: locations, capacity, providers, certifications
+- M&A transaction tracker: acquisitions, investments, joint ventures
+- Construction pipeline: facilities under development or announced
+- Energy infrastructure: grid data, fuel mix, electricity pricing, renewables
+- Site evaluation: scoring algorithm for data center site selection
+- News aggregation: 40+ industry sources, updated continuously
+
+Founded by Jonathan Martin, a 25+ year data center industry veteran with
+executive experience at Netrality Data Centers, Cyxtera Technologies,
+and CenturyLink/Lumen.
+
+================================================================================
+## DISCOVERY FILES
+================================================================================
+
+- This file: https://dchub.cloud/llms-full.txt
+- Summary: https://dchub.cloud/llms.txt
+- OpenAPI 3.1 spec: https://dchub.cloud/openapi.json
+- MCP server card: https://dchub.cloud/.well-known/mcp/server-card.json
+- Agent portal: https://dchub.cloud/agent-portal
+- AGENTS.md: https://dchub.cloud/AGENTS.md
+- ai-plugin.json: https://dchub.cloud/.well-known/ai-plugin.json
+
+================================================================================
+## QUICK REFERENCE — COMMON QUESTIONS → ENDPOINTS
+================================================================================
+
+| Question                                          | Free Endpoint                                    |
+|---------------------------------------------------|--------------------------------------------------|
+| "How many data centers exist?"                    | /api/v1/stats                                    |
+| "Find data centers in Virginia"                   | /api/v1/facilities?q=Virginia&country=US         |
+| "Who are the biggest DC operators?"               | /api/v1/facilities?limit=100                     |
+| "Recent data center acquisitions?"                | /api/v1/transactions?deal_type=acquisition       |
+| "Is Phoenix good for a data center?"              | /api/site-score?lat=33.4484&lon=-112.074&state=AZ|
+| "What powers the Texas grid?"                     | /api/grid/fuel-mix?iso=ERCOT                     |
+| "Compare Dallas vs Ashburn"                       | /api/v1/markets/compare?markets=dallas,ashburn   |
+| "Solar potential in Nevada?"                      | /api/renewable/solar?lat=36.17&lon=-115.14       |
+| "Electricity cost in Ohio?"                       | /api/energy/prices/OH                            |
+| "Data centers under construction?"                | /api/v1/pipeline                                 |
+| "Latest DC industry news?"                        | /api/news?limit=10                               |
+
+All endpoints in this table are FREE and require NO authentication.

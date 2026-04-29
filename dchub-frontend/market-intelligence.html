@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Data Center Market Intelligence | Vacancy Rates & Pricing | DC Hub</title>
+    <meta name="description" content="Live data center market data from CBRE and JLL. Track vacancy rates (1.6%), pricing trends ($200+/kW), and absorption across 28 global markets.">
+    <meta name="keywords" content="data center market data, data center vacancy rates, data center pricing, colocation market intelligence, CBRE data center, JLL data center">
+    <link rel="canonical" href="https://dchub.cloud/market-intelligence">
+    <meta property="og:title" content="Data Center Market Intelligence — 28 Markets Analyzed | DC Hub">
+    <meta property="og:description" content="Vacancy rates, pricing, construction pipeline, and absorption across 28 global data center markets.">
+    <meta property="og:url" content="https://dchub.cloud/market-intelligence">
+    <meta property="og:type" content="website">
+    <link rel="icon" href="/favicon.ico">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap');
+        
+        :root {
+            --bg: #09090b;
+            --bg-card: #141417;
+            --bg-card-hover: #1e1e23;
+            --border: #1e2d3d;
+            --border-hover: #2a3f55;
+            --text: #e2e8f0;
+            --text-dim: #8b9bb4;
+            --text-muted: #5a6a7e;
+            --accent: #3b82f6;
+            --accent-dim: rgba(59,130,246,0.15);
+            --green: #10b981;
+            --green-dim: rgba(16,185,129,0.15);
+            --red: #ef4444;
+            --red-dim: rgba(239,68,68,0.15);
+            --amber: #f59e0b;
+            --amber-dim: rgba(245,158,11,0.15);
+            --purple: #8b5cf6;
+            --purple-dim: rgba(139,92,246,0.15);
+            --cyan: #3478f6;
+            --cyan-dim: rgba(6,182,212,0.15);
+        }
+        
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            font-family: 'DM Sans', -apple-system, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            line-height: 1.5;
+        }
+        
+        /* ── NAV BAR ── */
+        .nav {
+            position: sticky; top: 0; z-index: 100;
+            background: rgba(10,14,23,0.92);
+            backdrop-filter: blur(16px);
+            border-bottom: 1px solid var(--border);
+            padding: 0 24px;
+            height: 56px;
+            display: flex; align-items: center; justify-content: space-between;
+        }
+        .nav-brand {
+            font-weight: 700; font-size: 18px;
+            color: var(--text);
+            text-decoration: none;
+            display: flex; align-items: center; gap: 8px;
+        }
+        .nav-brand span { color: var(--accent); }
+        .nav-links { display: flex; gap: 4px; }
+        .nav-links a {
+            color: var(--text-dim); text-decoration: none;
+            padding: 8px 14px; border-radius: 8px;
+            font-size: 13px; font-weight: 500;
+            transition: all 0.15s;
+        }
+        .nav-links a:hover { color: var(--text); background: var(--bg-card); }
+        .nav-links a.active { color: var(--accent); background: var(--accent-dim); }
+        
+        /* ── HERO ── */
+        .hero {
+            padding: 48px 24px 32px;
+            max-width: 1400px; margin: 0 auto;
+        }
+        .hero-label {
+            font-size: 12px; font-weight: 600; letter-spacing: 1.5px;
+            color: var(--accent); text-transform: uppercase;
+            margin-bottom: 8px;
+        }
+        .hero h1 {
+            font-size: clamp(28px, 4vw, 42px);
+            font-weight: 700; line-height: 1.15;
+            margin-bottom: 12px;
+        }
+        .hero p {
+            font-size: 16px; color: var(--text-dim);
+            max-width: 700px; margin-bottom: 24px;
+        }
+        .hero-source {
+            display: inline-flex; align-items: center; gap: 8px;
+            font-size: 12px; color: var(--text-muted);
+            background: var(--bg-card); border: 1px solid var(--border);
+            padding: 6px 14px; border-radius: 20px;
+        }
+        .hero-source .dot {
+            width: 6px; height: 6px; border-radius: 50%;
+            background: var(--green);
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+        
+        /* ── KPI STRIP ── */
+        .kpi-strip {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+            max-width: 1400px; margin: 0 auto;
+            padding: 0 24px 32px;
+        }
+        .kpi {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 16px 20px;
+            transition: border-color 0.2s;
+        }
+        .kpi:hover { border-color: var(--border-hover); }
+        .kpi-label {
+            font-size: 11px; font-weight: 600;
+            color: var(--text-muted); text-transform: uppercase;
+            letter-spacing: 0.8px; margin-bottom: 6px;
+        }
+        .kpi-value {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 24px; font-weight: 700;
+        }
+        .kpi-sub {
+            font-size: 12px; color: var(--text-dim); margin-top: 4px;
+        }
+        
+        /* ── FILTER BAR ── */
+        .filters {
+            max-width: 1400px; margin: 0 auto;
+            padding: 0 24px 20px;
+            display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+        }
+        .filter-btn {
+            background: var(--bg-card); border: 1px solid var(--border);
+            color: var(--text-dim); padding: 7px 16px;
+            border-radius: 8px; cursor: pointer;
+            font-size: 13px; font-weight: 500;
+            transition: all 0.15s;
+            font-family: inherit;
+        }
+        .filter-btn:hover { border-color: var(--border-hover); color: var(--text); }
+        .filter-btn.active {
+            background: var(--accent-dim); border-color: var(--accent);
+            color: var(--accent);
+        }
+        .filter-sep { width: 1px; height: 24px; background: var(--border); margin: 0 4px; }
+        .sort-select {
+            background: var(--bg-card); border: 1px solid var(--border);
+            color: var(--text-dim); padding: 7px 12px;
+            border-radius: 8px; font-size: 13px;
+            font-family: inherit; cursor: pointer;
+            outline: none;
+        }
+        .sort-select:focus { border-color: var(--accent); }
+        .sort-select option { background: var(--bg); }
+        
+        /* ── MARKET TABLE ── */
+        .table-wrap {
+            max-width: 1400px; margin: 0 auto;
+            padding: 0 24px 48px;
+            overflow-x: auto;
+        }
+        .mi-table {
+            width: 100%; border-collapse: separate;
+            border-spacing: 0; font-size: 13px;
+        }
+        .mi-table thead th {
+            position: sticky; top: 56px; z-index: 10;
+            background: var(--bg);
+            padding: 12px 14px;
+            text-align: left; font-weight: 600;
+            color: var(--text-muted); font-size: 11px;
+            text-transform: uppercase; letter-spacing: 0.8px;
+            border-bottom: 1px solid var(--border);
+            white-space: nowrap; cursor: pointer;
+            user-select: none;
+            transition: color 0.15s;
+            box-shadow: 0 -8px 0 0 var(--bg);
+        }
+        .mi-table thead th:hover { color: var(--accent); }
+        .mi-table thead th.sorted { color: var(--accent); }
+        .mi-table thead th .sort-arrow { margin-left: 4px; font-size: 10px; }
+        .mi-table tbody tr {
+            transition: background 0.15s;
+            cursor: pointer;
+        }
+        .mi-table tbody tr:hover { background: var(--bg-card-hover); }
+        .mi-table tbody td {
+            padding: 12px 14px;
+            border-bottom: 1px solid rgba(30,45,61,0.5);
+            white-space: nowrap;
+        }
+        .market-name {
+            font-weight: 600; color: var(--text);
+            display: flex; align-items: center; gap: 8px;
+        }
+        .market-name .region-dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            flex-shrink: 0;
+        }
+        .region-na { background: var(--accent); }
+        .region-emea { background: var(--purple); }
+        .region-apac { background: var(--cyan); }
+        
+        .vacancy-pill {
+            display: inline-flex; align-items: center;
+            padding: 3px 10px; border-radius: 12px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px; font-weight: 600;
+        }
+        .vacancy-tight { background: var(--red-dim); color: var(--red); }
+        .vacancy-mid { background: var(--amber-dim); color: var(--amber); }
+        .vacancy-loose { background: var(--green-dim); color: var(--green); }
+        
+        .mono {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+        }
+        .yoy-up { color: var(--green); }
+        .yoy-flat { color: var(--text-dim); }
+        .yoy-down { color: var(--red); }
+        
+        .bar-cell { min-width: 120px; }
+        .bar-bg {
+            background: var(--border);
+            border-radius: 4px; height: 8px;
+            overflow: hidden; position: relative;
+        }
+        .bar-fill {
+            height: 100%; border-radius: 4px;
+            background: var(--accent);
+            transition: width 0.6s ease;
+        }
+        .bar-fill.construction { background: var(--amber); }
+        
+        .providers-cell {
+            font-size: 11px; color: var(--text-dim);
+            max-width: 200px; white-space: normal;
+            line-height: 1.4;
+        }
+        
+        /* ── DETAIL PANEL ── */
+        .detail-overlay {
+            position: fixed; inset: 0; z-index: 200;
+            background: rgba(0,0,0,0.6);
+            backdrop-filter: blur(4px);
+            display: none; align-items: flex-start; justify-content: flex-end;
+        }
+        .detail-overlay.open { display: flex; }
+        .detail-panel {
+            width: min(520px, 95vw); height: 100vh;
+            background: var(--bg-card);
+            border-left: 1px solid var(--border);
+            overflow-y: auto;
+            padding: 32px 28px;
+            animation: slideIn 0.25s ease;
+        }
+        @keyframes slideIn { from { transform: translateX(100%); } to { transform: translateX(0); } }
+        .detail-close {
+            position: absolute; top: 16px; right: 16px;
+            background: none; border: none; color: var(--text-dim);
+            font-size: 22px; cursor: pointer;
+            width: 36px; height: 36px;
+            display: flex; align-items: center; justify-content: center;
+            border-radius: 8px;
+        }
+        .detail-close:hover { background: var(--bg); color: var(--text); }
+        .detail-header {
+            margin-bottom: 24px; position: relative;
+        }
+        .detail-header h2 { font-size: 24px; font-weight: 700; }
+        .detail-header .detail-region {
+            font-size: 13px; color: var(--text-dim); margin-top: 4px;
+        }
+        .detail-grid {
+            display: grid; grid-template-columns: 1fr 1fr;
+            gap: 12px; margin-bottom: 24px;
+        }
+        .detail-stat {
+            background: var(--bg); border-radius: 10px;
+            padding: 14px 16px;
+        }
+        .detail-stat-label {
+            font-size: 11px; color: var(--text-muted);
+            text-transform: uppercase; letter-spacing: 0.6px;
+            margin-bottom: 4px;
+        }
+        .detail-stat-value {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 20px; font-weight: 700;
+        }
+        .detail-stat-sub { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+        .detail-section-title {
+            font-size: 13px; font-weight: 600; color: var(--text-muted);
+            text-transform: uppercase; letter-spacing: 0.8px;
+            margin: 20px 0 10px;
+        }
+        .detail-providers {
+            display: flex; flex-wrap: wrap; gap: 6px;
+        }
+        .detail-provider-tag {
+            background: var(--bg); border: 1px solid var(--border);
+            padding: 5px 12px; border-radius: 6px;
+            font-size: 12px; font-weight: 500;
+        }
+        .detail-highlights {
+            list-style: none;
+        }
+        .detail-highlights li {
+            padding: 8px 0;
+            border-bottom: 1px solid rgba(30,45,61,0.4);
+            font-size: 14px; color: var(--text-dim);
+            display: flex; gap: 8px;
+        }
+        .detail-highlights li::before {
+            content: '→'; color: var(--accent);
+            flex-shrink: 0;
+        }
+        
+        /* ── FOOTER ── */
+        .mi-footer {
+            max-width: 1400px; margin: 0 auto;
+            padding: 24px 24px 48px;
+            border-top: 1px solid var(--border);
+            display: flex; flex-wrap: wrap; justify-content: space-between;
+            gap: 16px; font-size: 12px; color: var(--text-muted);
+        }
+        .mi-footer a { color: var(--accent); text-decoration: none; }
+        .mi-footer a:hover { text-decoration: underline; }
+        
+        /* ── LOADING ── */
+        .loading-state {
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            padding: 80px 24px; gap: 16px;
+        }
+        .spinner {
+            width: 32px; height: 32px;
+            border: 3px solid var(--border);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .loading-text { color: var(--text-dim); font-size: 14px; }
+        
+        /* ── RESPONSIVE ── */
+        @media (max-width: 768px) {
+            .nav-links { display: none; }
+            .hero { padding: 32px 16px 24px; }
+            .kpi-strip { padding: 0 16px 24px; grid-template-columns: 1fr 1fr; }
+            .filters { padding: 0 16px 16px; }
+            .table-wrap { padding: 0 8px 32px; }
+            .mi-table { font-size: 12px; }
+            .mi-table thead th, .mi-table tbody td { padding: 8px 10px; }
+            .detail-panel { padding: 24px 16px; }
+        }
+    </style>
+<style>nav:not(.dchub-nav):not(.dchub-bottom-nav):not(.mobile-nav-drawer-links nav){display:none!important}.nav:not(.dchub-nav){display:none!important}</style>
+<script src="/js/dchub-nav.js"></script>
+</head>
+<body>
+
+<!-- ── NAV ── -->
+<nav class="nav">
+    <a href="/" class="nav-brand"><svg viewBox="0 0 36 36" width="22" height="22" fill="none" style="vertical-align:middle"><circle cx="18" cy="18" r="18" fill="#1a1a2e"/><path d="M20.5 6L10 20h7l-2 10L27 16h-7.5l1-10z" fill="#818cf8"/></svg> DC <span>Hub</span></a>
+    <div class="nav-links">
+        <a href="/markets">Markets</a>
+        <a href="/market-intelligence" class="active">Intelligence</a>
+        <a href="/land-power">Land & Power</a>
+        <a href="/transactions">Transactions</a>
+        <a href="/news">News</a><a href="/digest">Digest</a>
+        <a href="/pricing">Pricing</a>
+    </div>
+</nav>
+
+<!-- ── HERO ── -->
+<header class="hero">
+    <div class="hero-label">Market Intelligence</div>
+    <h1>Global Data Center Markets</h1>
+    <p>Vacancy rates, pricing trends, absorption data, and construction pipeline across 28 markets worldwide. Sourced from CBRE and JLL research.</p>
+    <span class="hero-source">
+        <span class="dot"></span>
+        Live data · CBRE H1 2025 · JLL H1 2025
+    </span>
+</header>
+
+<!-- ── KPI STRIP ── -->
+<div class="kpi-strip" id="kpi-strip">
+    <div class="kpi">
+        <div class="kpi-label">Avg Vacancy</div>
+        <div class="kpi-value" id="kpi-vacancy">—</div>
+        <div class="kpi-sub">Across all markets</div>
+    </div>
+    <div class="kpi">
+        <div class="kpi-label">Total Inventory</div>
+        <div class="kpi-value" id="kpi-inventory">—</div>
+        <div class="kpi-sub">Operational capacity</div>
+    </div>
+    <div class="kpi">
+        <div class="kpi-label">Under Construction</div>
+        <div class="kpi-value" id="kpi-construction">—</div>
+        <div class="kpi-sub" id="kpi-construction-sub">Pipeline</div>
+    </div>
+    <div class="kpi">
+        <div class="kpi-label">H1 Absorption</div>
+        <div class="kpi-value" id="kpi-absorption">—</div>
+        <div class="kpi-sub">Record pace</div>
+    </div>
+    <div class="kpi">
+        <div class="kpi-label">Tightest Market</div>
+        <div class="kpi-value" id="kpi-tightest" style="font-size:16px">—</div>
+        <div class="kpi-sub" id="kpi-tightest-sub"></div>
+    </div>
+    <div class="kpi">
+        <div class="kpi-label">Fastest Growing</div>
+        <div class="kpi-value" id="kpi-fastest" style="font-size:16px">—</div>
+        <div class="kpi-sub" id="kpi-fastest-sub"></div>
+    </div>
+</div>
+
+<!-- ── FILTERS ── -->
+<div class="filters">
+    <button class="filter-btn active" data-region="">All Markets</button>
+    <button class="filter-btn" data-region="North America">🇺🇸 North America</button>
+    <button class="filter-btn" data-region="EMEA">🇪🇺 EMEA</button>
+    <button class="filter-btn" data-region="APAC">🌏 APAC</button>
+    <div class="filter-sep"></div>
+    <select class="sort-select" id="sort-select">
+        <option value="vacancy_rate:asc">Vacancy ↑ (tightest first)</option>
+        <option value="vacancy_rate:desc">Vacancy ↓</option>
+        <option value="avg_asking_rate:desc">Price ↓ (highest first)</option>
+        <option value="avg_asking_rate:asc">Price ↑</option>
+        <option value="yoy_price_change:desc">YoY Growth ↓</option>
+        <option value="absorption_mw:desc">Absorption ↓</option>
+        <option value="under_construction_mw:desc">Pipeline ↓</option>
+        <option value="num_facilities:desc">Facilities ↓</option>
+    </select>
+</div>
+
+<!-- ── TABLE ── -->
+<div class="table-wrap">
+    <div id="loading" class="loading-state">
+        <div class="spinner"></div>
+        <div class="loading-text">Loading market intelligence…</div>
+    </div>
+    <table class="mi-table" id="mi-table" style="display:none">
+        <thead>
+            <tr>
+                <th data-sort="market">Market <span class="sort-arrow"></span></th>
+                <th data-sort="vacancy_rate" class="sorted">Vacancy <span class="sort-arrow">↑</span></th>
+                <th data-sort="avg_asking_rate">Asking Rate <span class="sort-arrow"></span></th>
+                <th data-sort="yoy_price_change">YoY Δ <span class="sort-arrow"></span></th>
+                <th data-sort="absorption_mw">Absorption <span class="sort-arrow"></span></th>
+                <th data-sort="inventory_mw">Inventory <span class="sort-arrow"></span></th>
+                <th data-sort="under_construction_mw">Pipeline <span class="sort-arrow"></span></th>
+                <th>Top Providers</th>
+            </tr>
+        </thead>
+        <tbody id="mi-body"></tbody>
+    </table>
+</div>
+
+<!-- ── DETAIL OVERLAY ── -->
+<div class="detail-overlay" id="detail-overlay">
+    <div class="detail-panel" id="detail-panel">
+        <button class="detail-close" id="detail-close">✕</button>
+        <div id="detail-content"></div>
+    </div>
+</div>
+
+<!-- ── FOOTER ── -->
+<footer class="mi-footer">
+    <div>
+        Data sourced from <strong>CBRE</strong> and <strong>JLL</strong> H1 2025 research reports.
+        Updated quarterly. <a href="/about">About DC Hub</a>
+    </div>
+    <div>
+        © 2026 <a href="/">DC Hub</a> · Built in Phoenix, AZ 🌵
+    </div>
+</footer>
+
+<script>
+(function() {
+    'use strict';
+
+    var API_BASE = 'https://dchub.cloud';
+    var allMarkets = [];
+    var currentRegion = '';
+    var currentSort = 'vacancy_rate';
+    var currentOrder = 'asc';
+
+    // ── FETCH DATA ────────────────────────────────────────
+    function loadData() {
+        fetch(API_BASE + '/api/market-intelligence')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.success && data.markets) {
+                    allMarkets = data.markets;
+                    renderKPIs(data.summary);
+                    renderTable(allMarkets);
+                    document.getElementById('loading').style.display = 'none';
+                    document.getElementById('mi-table').style.display = 'table';
+                } else {
+                    showFallback();
+                }
+            })
+            .catch(function() {
+                showFallback();
+            });
+    }
+
+    // ── FALLBACK: use /api/real-estate/trends if new endpoint not deployed yet ──
+    function showFallback() {
+        fetch(API_BASE + '/api/real-estate/trends')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.markets) {
+                    var markets = Array.isArray(data.markets) ? data.markets : [];
+                    allMarkets = markets.map(function(m) {
+                        return {
+                            market: m.market,
+                            region: 'North America',
+                            vacancy_rate: m.vacancy_rate || 0,
+                            vacancy_source: 'DC Hub Trends',
+                            avg_asking_rate: 0,
+                            asking_rate_unit: '$/kW/mo',
+                            yoy_price_change: m.yoy_change || 0,
+                            absorption_mw: Math.round((m.absorption_rate || 0) * 10),
+                            inventory_mw: 0,
+                            under_construction_mw: m.new_supply_mw || 0,
+                            pre_leased_pct: 0,
+                            num_facilities: 0,
+                        };
+                    });
+                    renderKPIs(null);
+                    renderTable(allMarkets);
+                    document.getElementById('loading').style.display = 'none';
+                    document.getElementById('mi-table').style.display = 'table';
+                }
+            })
+            .catch(function() {
+                document.getElementById('loading').innerHTML =
+                    '<div style="color:var(--red)">Failed to load market data. Backend may be restarting.</div>';
+            });
+    }
+
+    // ── KPIs ──────────────────────────────────────────────
+    function renderKPIs(summary) {
+        if (!summary) {
+            document.getElementById('kpi-vacancy').textContent = '—';
+            return;
+        }
+        document.getElementById('kpi-vacancy').textContent = summary.avg_vacancy || summary.avg_vacancy_rate || '—';
+        document.getElementById('kpi-inventory').textContent = fmtGW(summary.total_inventory_mw || summary.total_mw);
+        document.getElementById('kpi-construction').textContent = fmtGW(summary.total_under_construction_mw || summary.total_pipeline_mw);
+        document.getElementById('kpi-absorption').textContent = fmtGW(summary.total_absorption_mw || summary.total_absorption_mw);
+        document.getElementById('kpi-tightest').textContent = summary.tightest_market;
+        var tv = String(summary.tightest_vacancy || ''); document.getElementById('kpi-tightest-sub').textContent = (tv.includes('%') ? tv : tv + '%') + ' vacancy';
+        document.getElementById('kpi-fastest').textContent = summary.fastest_growing_market || summary.fastest_growing || '—';
+        document.getElementById('kpi-fastest-sub').textContent = summary.fastest_yoy || (summary.fastest_yoy_change ? '+' + summary.fastest_yoy_change + '% YoY' : '');
+    }
+
+    function fmtGW(mw) {
+        if (!mw) return '—';
+        return mw >= 1000 ? (mw / 1000).toFixed(1) + ' GW' : mw + ' MW';
+    }
+
+    // ── TABLE RENDER ─────────────────────────────────────
+    function renderTable(markets) {
+        var tbody = document.getElementById('mi-body');
+        var maxInventory = Math.max.apply(null, markets.map(function(m){return m.inventory_mw||0})) || 1;
+        var maxPipeline = Math.max.apply(null, markets.map(function(m){return m.under_construction_mw||0})) || 1;
+
+        tbody.innerHTML = markets.map(function(m) {
+            var vClass = m.vacancy_rate <= 2.5 ? 'vacancy-tight' :
+                         m.vacancy_rate <= 4.0 ? 'vacancy-mid' : 'vacancy-loose';
+            var regionClass = (m.region||'').indexOf('America') > -1 ? 'region-na' :
+                              (m.region||'').indexOf('EMEA') > -1 ? 'region-emea' : 'region-apac';
+            var yoyClass = m.yoy_price_change > 10 ? 'yoy-up' :
+                           m.yoy_price_change > 0 ? 'yoy-flat' : 'yoy-down';
+            var invPct = Math.round((m.inventory_mw / maxInventory) * 100);
+            var pipePct = Math.round((m.under_construction_mw / maxPipeline) * 100);
+
+            return '<tr data-market="' + encodeURIComponent(m.market) + '">' +
+                '<td><div class="market-name"><span class="region-dot ' + regionClass + '"></span>' + m.market + '</div></td>' +
+                '<td><span class="vacancy-pill ' + vClass + '">' + m.vacancy_rate + '%</span></td>' +
+                '<td class="mono">' + (m.avg_asking_rate ? '$' + m.avg_asking_rate : '—') + '</td>' +
+                '<td class="mono ' + yoyClass + '">+' + m.yoy_price_change + '%</td>' +
+                '<td class="mono">' + (m.absorption_mw ? m.absorption_mw + ' MW' : '—') + '</td>' +
+                '<td class="bar-cell"><div style="font-size:12px;margin-bottom:3px" class="mono">' + fmtGW(m.inventory_mw) + '</div><div class="bar-bg"><div class="bar-fill" style="width:' + invPct + '%"></div></div></td>' +
+                '<td class="bar-cell"><div style="font-size:12px;margin-bottom:3px" class="mono">' + fmtGW(m.under_construction_mw) + '</div><div class="bar-bg"><div class="bar-fill construction" style="width:' + pipePct + '%"></div></div></td>' +
+                '<td class="providers-cell">' + (m.top_providers ? m.top_providers.slice(0,3).join(', ') : '—') + '</td>' +
+                '</tr>';
+        }).join('');
+    }
+
+    // ── SORT + FILTER ────────────────────────────────────
+    function applyFilters() {
+        var filtered = allMarkets;
+        if (currentRegion) {
+            filtered = allMarkets.filter(function(m) {
+                return (m.region || '').toLowerCase() === currentRegion.toLowerCase();
+            });
+        }
+
+        filtered.sort(function(a, b) {
+            var va = a[currentSort] || 0;
+            var vb = b[currentSort] || 0;
+            if (currentSort === 'market') {
+                va = a.market || '';
+                vb = b.market || '';
+                return currentOrder === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
+            }
+            return currentOrder === 'asc' ? va - vb : vb - va;
+        });
+
+        renderTable(filtered);
+    }
+
+    // Region buttons
+    document.querySelectorAll('.filter-btn').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            document.querySelectorAll('.filter-btn').forEach(function(b){b.classList.remove('active')});
+            btn.classList.add('active');
+            currentRegion = btn.getAttribute('data-region');
+            applyFilters();
+        });
+    });
+
+    // Sort dropdown
+    document.getElementById('sort-select').addEventListener('change', function() {
+        var parts = this.value.split(':');
+        currentSort = parts[0];
+        currentOrder = parts[1];
+        applyFilters();
+        // Update th arrows
+        document.querySelectorAll('.mi-table thead th').forEach(function(th) {
+            th.classList.remove('sorted');
+            th.querySelector('.sort-arrow').textContent = '';
+        });
+        var th = document.querySelector('th[data-sort="'+currentSort+'"]');
+        if (th) {
+            th.classList.add('sorted');
+            th.querySelector('.sort-arrow').textContent = currentOrder === 'asc' ? '↑' : '↓';
+        }
+    });
+
+    // Column header click sort
+    document.querySelectorAll('.mi-table thead th[data-sort]').forEach(function(th) {
+        th.addEventListener('click', function() {
+            var field = th.getAttribute('data-sort');
+            if (currentSort === field) {
+                currentOrder = currentOrder === 'asc' ? 'desc' : 'asc';
+            } else {
+                currentSort = field;
+                currentOrder = field === 'market' ? 'asc' : 'desc';
+            }
+            // sync dropdown
+            var val = currentSort + ':' + currentOrder;
+            var sel = document.getElementById('sort-select');
+            for (var i = 0; i < sel.options.length; i++) {
+                if (sel.options[i].value === val) { sel.selectedIndex = i; break; }
+            }
+            applyFilters();
+            // arrows
+            document.querySelectorAll('.mi-table thead th').forEach(function(h) {
+                h.classList.remove('sorted');
+                h.querySelector('.sort-arrow').textContent = '';
+            });
+            th.classList.add('sorted');
+            th.querySelector('.sort-arrow').textContent = currentOrder === 'asc' ? '↑' : '↓';
+        });
+    });
+
+    // ── DETAIL PANEL ─────────────────────────────────────
+    document.getElementById('mi-body').addEventListener('click', function(e) {
+        var row = e.target.closest('tr[data-market]');
+        if (!row) return;
+        var market = decodeURIComponent(row.getAttribute('data-market'));
+        openDetail(market);
+    });
+
+    function openDetail(marketName) {
+        var slug = marketName.toLowerCase().replace(/\s+/g, '-');
+        fetch(API_BASE + '/api/market-intelligence/' + encodeURIComponent(slug))
+            .then(function(r) { return r.json(); })
+            .then(function(resp) {
+                if (resp.success && resp.data) {
+                    renderDetail(resp.data);
+                    document.getElementById('detail-overlay').classList.add('open');
+                }
+            })
+            .catch(function() {
+                // Fallback: find in local data
+                var m = allMarkets.find(function(mk){return mk.market === marketName});
+                if (m) {
+                    renderDetail(m);
+                    document.getElementById('detail-overlay').classList.add('open');
+                }
+            });
+    }
+
+    function renderDetail(d) {
+        var regionLabel = d.region || 'North America';
+        var html =
+            '<div class="detail-header">' +
+                '<h2>' + (d.market || '—') + '</h2>' +
+                '<div class="detail-region">' + regionLabel + '</div>' +
+            '</div>' +
+            '<div class="detail-grid">' +
+                detailStat('Vacancy Rate', d.vacancy_rate + '%', d.vacancy_source || '') +
+                detailStat('Asking Rate', '$' + d.avg_asking_rate + '/kW/mo', 'YoY: +' + d.yoy_price_change + '%') +
+                detailStat('Absorption', (d.absorption_mw||0) + ' MW', d.absorption_period || 'H1 2025') +
+                detailStat('Inventory', fmtGW(d.inventory_mw), d.num_facilities + ' facilities') +
+                detailStat('Under Construction', fmtGW(d.under_construction_mw), (d.pre_leased_pct||0) + '% pre-leased') +
+                detailStat('Power Cost', '$' + (d.power_cost_kwh||'—') + '/kWh', (d.fiber_carriers||0) + ' fiber carriers') +
+            '</div>';
+
+        if (d.top_providers && d.top_providers.length) {
+            html += '<div class="detail-section-title">Top Providers</div>' +
+                '<div class="detail-providers">' +
+                d.top_providers.map(function(p){return '<span class="detail-provider-tag">'+p+'</span>'}).join('') +
+                '</div>';
+        }
+
+        if (d.highlights && d.highlights.length) {
+            html += '<div class="detail-section-title">Market Highlights</div>' +
+                '<ul class="detail-highlights">' +
+                d.highlights.map(function(h){return '<li>'+h+'</li>'}).join('') +
+                '</ul>';
+        }
+
+        document.getElementById('detail-content').innerHTML = html;
+    }
+
+    function detailStat(label, value, sub) {
+        return '<div class="detail-stat">' +
+            '<div class="detail-stat-label">' + label + '</div>' +
+            '<div class="detail-stat-value">' + value + '</div>' +
+            (sub ? '<div class="detail-stat-sub">' + sub + '</div>' : '') +
+            '</div>';
+    }
+
+    // Close detail
+    document.getElementById('detail-close').addEventListener('click', function() {
+        document.getElementById('detail-overlay').classList.remove('open');
+    });
+    document.getElementById('detail-overlay').addEventListener('click', function(e) {
+        if (e.target === this) this.classList.remove('open');
+    });
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') document.getElementById('detail-overlay').classList.remove('open');
+    });
+
+    // ── INIT ─────────────────────────────────────────────
+    loadData();
+})();
+</script>
+</body>
+</html>
