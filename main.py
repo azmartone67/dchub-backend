@@ -1,4 +1,9 @@
+# === BISECT PROBES (REMOVE AFTER DEBUG) ===
+import sys as _bp_sys
+_bp_sys.stderr.write('BISECT: TOP-OF-MAIN\n'); _bp_sys.stderr.flush()
+# === END BISECT HEADER ===
 from dotenv import load_dotenv
+_bp_sys.stderr.write('BISECT-LINE-00001\n'); _bp_sys.stderr.flush()
 from internal_auth import is_valid_internal_key, get_internal_key_for_client
 from csp_report import csp_report_bp
 load_dotenv()
@@ -245,6 +250,7 @@ if _git_os.environ.get('REPLIT_ENVIRONMENT') or _git_os.environ.get('REPL_ID'):
         print("GIT PULL: Timed out after 30s -- continuing with current code")
     except Exception as _git_err:
         print(f"GIT PULL: Failed ({_git_err}) -- continuing with current code")
+_bp_sys.stderr.write('BISECT-LINE-00247\n'); _bp_sys.stderr.flush()
 
 # =================================================================
 # PERMANENT FIX: Force Neon as the ONLY PostgreSQL database
@@ -317,6 +323,7 @@ if _neon_url:
         print(f"DATABASE: Using Neon PostgreSQL as primary database")
     else:
         print(f"DATABASE: ⚠️ NEON_DATABASE_URL cleaned value is not a valid postgres:// URL -- skipping")
+_bp_sys.stderr.write('BISECT-LINE-00319\n'); _bp_sys.stderr.flush()
 del _os_db, _re_db, _neon_url
 
 # =============================================================================
@@ -353,6 +360,7 @@ except ImportError:
     print("SELF-HEALING: ⚠️ self_healing.py not found — self-healing disabled")
 
 _pg_pool_obj = None
+_bp_sys.stderr.write('BISECT-LINE-00355\n'); _bp_sys.stderr.flush()
 
 _circuit_breaker = {
     'failures': 0,
@@ -473,6 +481,7 @@ def _check_circuit_breaker():
             print(f"CIRCUIT BREAKER: ✅ Half-open, retrying database connection")
             return True
         return False
+_bp_sys.stderr.write('BISECT-LINE-00475\n'); _bp_sys.stderr.flush()
 
 def _record_circuit_success():
     with _circuit_lock:
@@ -787,6 +796,7 @@ _init_pg_pool()
 # BACKGROUND TASK GUARDS — Prevent duplicate cycles and concurrent storms
 # =============================================================================
 _cycle_guard = {}
+_bp_sys.stderr.write('BISECT-LINE-00789\n'); _bp_sys.stderr.flush()
 _cycle_guard_lock = threading.Lock()
 _bg_task_mutex = threading.Lock()
 _bg_task_running = None
@@ -933,6 +943,7 @@ def return_read_connection(conn, pool_source='read', error=False):
 _keepalive_logger = logging.getLogger('neon_keepalive')
 _keepalive_logger.setLevel(logging.INFO)
 _keepalive_logger.propagate = False
+_bp_sys.stderr.write('BISECT-LINE-00935\n'); _bp_sys.stderr.flush()
 if not _keepalive_logger.handlers:
     _kh = logging.StreamHandler(sys.stdout)
     _kh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
@@ -1016,6 +1027,7 @@ from utils.cache import BoundedCache
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+_bp_sys.stderr.write('BISECT-LINE-01018\n'); _bp_sys.stderr.flush()
 
 # =============================================================================
 # CREATE FLASK APP IMMEDIATELY - Before any heavy imports
@@ -1155,6 +1167,7 @@ def handle_cors_preflight():
         resp.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Admin-Key'
         resp.headers['Access-Control-Max-Age'] = '86400'
         return resp
+_bp_sys.stderr.write('BISECT-LINE-01157\n'); _bp_sys.stderr.flush()
 # ─────────────────────────────────────────────────────────────────────────────
 @app.route('/research')
 def research_page():
@@ -1264,6 +1277,7 @@ def api_stats_shortcut():
     if qs:
         target += '%s' + qs
     return redirect(target)
+_bp_sys.stderr.write('BISECT-LINE-01266\n'); _bp_sys.stderr.flush()
 
 @app.route('/api/facilities')
 @app.route('/api/v1/facilities')
@@ -1414,6 +1428,7 @@ def health_check():
 @app.route('/.well-known/health')
 def well_known_health():
     return {'status': 'ok'}, 200
+_bp_sys.stderr.write('BISECT-LINE-01416\n'); _bp_sys.stderr.flush()
 
 @app.route('/api/health/db')
 def db_health_endpoint():
@@ -1599,6 +1614,7 @@ logger.info("🗄️ Database initialization scheduled (background thread)")
 logger.info("📦 Loading core modules...")
 
 from flask_cors import CORS
+_bp_sys.stderr.write('BISECT-LINE-01601\n'); _bp_sys.stderr.flush()
 from flask_compress import Compress
 from functools import wraps
 import json
@@ -1613,6 +1629,7 @@ from html import unescape, escape as html_escape
 import jwt
 import io
 from collections import defaultdict
+_bp_sys.stderr.write('BISECT-LINE-01615\n'); _bp_sys.stderr.flush()
 
 logger.info("✅ Core modules loaded")
 
@@ -1678,6 +1695,7 @@ else:
     logger.info("   📡 FAILOVER BACKGROUND TASKS: EXPLICITLY ENABLED on Replit")
 
 _news_last_sync = None
+_bp_sys.stderr.write('BISECT-LINE-01680\n'); _bp_sys.stderr.flush()
 _pipeline_last_sync = None
 
 # =============================================================================
@@ -1768,6 +1786,7 @@ try:
 except ImportError as e:
     register_competitor_intel = None
     logger.warning(f"  ⚠️ competitor_intelligence: {e}")
+_bp_sys.stderr.write('BISECT-LINE-01770\n'); _bp_sys.stderr.flush()
 
 try:
     from job_posting_aggregator import register_job_aggregator
@@ -1917,6 +1936,7 @@ def get_read_db(*args, **kwargs):
 # DISABLED: Old linkedin_autopost replaced by linkedin_poster.py (Neon-backed)
 # from linkedin_autopost import linkedin_auto_bp, init_linkedin_tables, start_linkedin_scheduler, on_new_deal, on_weekly_digest
 linkedin_auto_bp = None
+_bp_sys.stderr.write('BISECT-LINE-01919\n'); _bp_sys.stderr.flush()
 init_linkedin_tables = None
 start_linkedin_scheduler = None
 on_new_deal = None
@@ -2133,6 +2153,7 @@ def verify_api_key_endpoint():
             "instructions": "Include your key as: Authorization: Bearer <key> OR X-API-Key: <key>",
             "free_tier": "Most endpoints work without a key (limited results)"
         }), 401
+_bp_sys.stderr.write('BISECT-LINE-02135\n'); _bp_sys.stderr.flush()
 
 @app.route('/integrations/tools.json', methods=['GET'])
 def serve_tools_manifest():
@@ -2242,6 +2263,7 @@ AutoPilotScheduler = None
 setup_admin_routes = None
 user_analytics = None
 print("🤖 Auto-Pilot: routes active; legacy engine replaced by Energy Auto-Discovery v3.0")
+_bp_sys.stderr.write('BISECT-LINE-02244\n'); _bp_sys.stderr.flush()
 
 # Intelligence Engine (Daily Email, LinkedIn, Deal Alerts)
 try:
@@ -2331,6 +2353,7 @@ try:
     logger.info("✅ Google Integration routes configured")
 except Exception as e:
     logger.warning(f"Google Integration routes failed: {e}")
+_bp_sys.stderr.write('BISECT-LINE-02333\n'); _bp_sys.stderr.flush()
 
 try:
     setup_google_meta_routes(app)
@@ -2442,6 +2465,7 @@ if ENABLE_BACKGROUND_SCHEDULERS:
         logger.error(f"⚠️ Global Intelligence Agent failed: {e}")
 else:
     logger.info("⏸️ Global Intelligence Agent PAUSED")
+_bp_sys.stderr.write('BISECT-LINE-02444\n'); _bp_sys.stderr.flush()
 
 try:
     from proactive_discovery import create_proactive_discovery_blueprint
@@ -2592,6 +2616,7 @@ def mcp_messages_proxy():
         return jsonify({'error': 'MCP server not running on port 8888'}), 502
     except Exception as e:
         return jsonify({'error': f'MCP message error: {str(e)}'}), 502
+_bp_sys.stderr.write('BISECT-LINE-02594\n'); _bp_sys.stderr.flush()
 
 MCP_INTERNAL_URL = 'http://127.0.0.1:8888/mcp'
 
@@ -2928,6 +2953,7 @@ def _check_mcp_daily_limit(ip_address):
 
     entry['count'] += 1
     return True, MCP_FREE_DAILY_LIMIT - entry['count'], entry['count']
+_bp_sys.stderr.write('BISECT-LINE-02930\n'); _bp_sys.stderr.flush()
 
 
 def _get_mcp_caller_tier():
@@ -4021,6 +4047,7 @@ try:
     logger.info("   GET  /api/admin/discovery/ai-tracking")
 except Exception as e:
     logger.error(f"⚠️ Discovery Monitoring API failed: {e}")
+_bp_sys.stderr.write('BISECT-LINE-04023\n'); _bp_sys.stderr.flush()
 
 try:
     from site_risk_apis import register_site_risk_routes
@@ -4294,6 +4321,7 @@ def enforce_tier_rate_limits():
     return None
 
 logger.info("✅ Tier-aware rate limiting middleware ACTIVE")
+_bp_sys.stderr.write('BISECT-LINE-04296\n'); _bp_sys.stderr.flush()
 
 # API Tier Gating System - Lazy enforcement
 # The early require_plan stub is defined near the top of this file (after Flask app creation).
@@ -4454,6 +4482,7 @@ except ImportError:
     logger.warning("⚠️ Enhanced Features: Not installed (enhanced_features.py missing)")
 except Exception as e:
     logger.error(f"⚠️ Enhanced Features failed: {e}")
+_bp_sys.stderr.write('BISECT-LINE-04456\n'); _bp_sys.stderr.flush()
 
 try:
     from gdci import gdci_bp
@@ -4730,6 +4759,7 @@ def crawler_stats():
             'recent_visits': [],
             'summary': {'google_visits': 0, 'meta_visits': 0, 'last_24_hours': 0, 'total': 0}
         })
+_bp_sys.stderr.write('BISECT-LINE-04732\n'); _bp_sys.stderr.flush()
 
 @app.route('/api/crawlers/recent', methods=['GET', 'OPTIONS'])
 def crawler_recent():
@@ -4952,6 +4982,7 @@ def handle_error(e):
         response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Requested-With'
         response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
     return response
+_bp_sys.stderr.write('BISECT-LINE-04954\n'); _bp_sys.stderr.flush()
 
 # =============================================================================
 # ENERGY ROUTES BLUEPRINT (Phase 2 Extract 1)
@@ -5117,6 +5148,7 @@ if not JWT_SECRET or JWT_SECRET.strip() == '' or 'change-in-production' in JWT_S
         'JWT_SECRET environment variable is required and must be a real secret. '
         'Set it in Railway Variables before starting the app.'
     )
+_bp_sys.stderr.write('BISECT-LINE-05119\n'); _bp_sys.stderr.flush()
 JWT_EXPIRY_HOURS = 24 * 7  # 7 days
 
 # Stripe Configuration
@@ -5621,6 +5653,7 @@ def capture_lead():
     finally:
         try: conn.close()
         except Exception: pass
+_bp_sys.stderr.write('BISECT-LINE-05623\n'); _bp_sys.stderr.flush()
 
 @app.route('/api/leads/verify/<token>', methods=['GET'])
 def verify_lead(token):
@@ -6143,6 +6176,7 @@ STRIPE_PRICES = {
     'founding': os.environ.get('STRIPE_PRICE_FOUNDING', 'price_XXXXX'),
     'developer_monthly': os.environ.get('STRIPE_PRICE_DEV_MONTHLY', 'price_1TB2WrJ9ey2ATcQlth13YBUT'),
 }
+_bp_sys.stderr.write('BISECT-LINE-06145\n'); _bp_sys.stderr.flush()
 
 @app.route('/api/stripe/config', methods=['GET'])
 def stripe_config():
@@ -7026,6 +7060,7 @@ def handle_subscription_created(subscription):
         finally:
             try: conn.close()
             except Exception: pass
+_bp_sys.stderr.write('BISECT-LINE-07028\n'); _bp_sys.stderr.flush()
 
 def handle_subscription_updated(subscription):
     """Handle subscription changes - writes to PostgreSQL first, then SQLite"""
@@ -7864,6 +7899,7 @@ def get_ai_platforms_status():
         'mcp_count': mcp_count,
         'total': len(platforms)
     })
+_bp_sys.stderr.write('BISECT-LINE-07866\n'); _bp_sys.stderr.flush()
 
 @app.route('/api/v1/ambassador/log', methods=['POST'])
 def log_ambassador_broadcast():
@@ -8888,6 +8924,7 @@ def agents_health():
         "anthropic_configured": bool(os.environ.get('ANTHROPIC_API_KEY')),
         "timestamp": datetime.utcnow().isoformat()
     })
+_bp_sys.stderr.write('BISECT-LINE-08890\n'); _bp_sys.stderr.flush()
 
 @app.route('/api/agents/enrichment/submit', methods=['POST'])
 def enrichment_submit():
@@ -9225,6 +9262,7 @@ def ai_tracking_full():
     finally:
         if conn:
             return_pg_connection(conn)
+_bp_sys.stderr.write('BISECT-LINE-09227\n'); _bp_sys.stderr.flush()
 
 @app.route('/api/ai-usage/stats', methods=['GET', 'POST'])
 def ai_usage_stats_alias():
@@ -9464,6 +9502,7 @@ def ai_hub_status():
         "total_api_hits": total_hits,
         "leaderboard": leaderboard
     })
+_bp_sys.stderr.write('BISECT-LINE-09466\n'); _bp_sys.stderr.flush()
 
 @app.route('/connect')
 def connect_page():
@@ -9579,6 +9618,7 @@ def market_intelligence_page():
     resp.headers['Content-Type'] = 'text/html'
     resp.headers['Cache-Control'] = 'no-cache'
     return resp
+_bp_sys.stderr.write('BISECT-LINE-09581\n'); _bp_sys.stderr.flush()
 
 @app.route('/api/config')
 def api_config():
@@ -10195,6 +10235,7 @@ def get_press_release_archive():
         today = date.today()
         dates = [{'date': (today - timedelta(days=i)).strftime('%Y-%m-%d'), 'count': 0} for i in range(30)]
     return jsonify({'success': True, 'dates': dates, 'total': len(dates)})
+_bp_sys.stderr.write('BISECT-LINE-10197\n'); _bp_sys.stderr.flush()
 
 # __press_releases_list_v3__
 @app.route('/api/press-releases/list', methods=['GET'])
@@ -10619,6 +10660,7 @@ def admin_load_substations():
         except Exception:
             pass
         return jsonify({"success": False, "error": str(e)}), 500
+_bp_sys.stderr.write('BISECT-LINE-10621\n'); _bp_sys.stderr.flush()
 def seed_serverfarm_facilities():
     """Seed missing ServerFarm facilities with retry logic for database locks."""
     import time
@@ -10931,6 +10973,7 @@ def capacity_heatmap_public():
 
 logger.info("✅ Consolidated Land & Power endpoint registered: /api/v1/land-power/data")
 logger.info("✅ Public heatmap endpoint registered: /api/v1/capacity/heatmap/public")
+_bp_sys.stderr.write('BISECT-LINE-10933\n'); _bp_sys.stderr.flush()
 
 # =============================================================================
 # FIBER ROUTES MANAGEMENT ENDPOINTS
@@ -11065,6 +11108,7 @@ _register_scheduler('ai_ecosystem', 900, 'AI ecosystem agent enrichment')
 _register_scheduler('autonomous_brain', 300, 'Autonomous learning & pattern detection')
 _register_scheduler('alert_email_checker', 3600, 'Alert email notification checker')
 _register_scheduler('simple_alerts_processor', 900, 'Simple alerts processing loop')
+_bp_sys.stderr.write('BISECT-LINE-11067\n'); _bp_sys.stderr.flush()
 _register_scheduler('daily_market_report', 86400, 'Daily market report generation')
 _register_scheduler('infrastructure_sync', 21600, 'Fiber, properties, permits, substations sync')
 _register_scheduler('promotion_engine', 86400, 'SEO promotion & directory submissions')
@@ -11224,6 +11268,7 @@ def audit_schedulers():
         'thread_names': [t.name for t in threading.enumerate()],
         'generated_at': datetime.utcnow().isoformat()
     })
+_bp_sys.stderr.write('BISECT-LINE-11226\n'); _bp_sys.stderr.flush()
 
 @app.route('/api/health/data-freshness', methods=['GET'])
 def data_freshness():
@@ -11862,6 +11907,7 @@ def admin_run_auto_approval():
         return jsonify({'success': True, 'result': result})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+_bp_sys.stderr.write('BISECT-LINE-11864\n'); _bp_sys.stderr.flush()
 
 @app.route('/api/admin/deal/update', methods=['POST'])
 def admin_update_deal():
@@ -12255,6 +12301,7 @@ except ImportError:
 # NEWS SCHEDULER (module-level so gunicorn picks it up)
 # =============================================================================
 _news_admin_registered = False
+_bp_sys.stderr.write('BISECT-LINE-12257\n'); _bp_sys.stderr.flush()
 try:
     from auto_sync import register_admin_apis as _register_news_admin, NewsSyncer as _NewsSyncer
     _register_news_admin(app)
@@ -12785,6 +12832,7 @@ def cleanup_testimonials():
     finally:
         try: conn.close()
         except Exception: pass
+_bp_sys.stderr.write('BISECT-LINE-12787\n'); _bp_sys.stderr.flush()
 
 
 @app.route('/api/v1/testimonials/refresh-timestamps', methods=['POST'])
@@ -13398,6 +13446,7 @@ def get_market_intelligence():
     except Exception as e:
         logger.error(f"market-intelligence error: {e}")
         return jsonify({'success': False, 'error': str(e), 'markets': []}), 500
+_bp_sys.stderr.write('BISECT-LINE-13400\n'); _bp_sys.stderr.flush()
 
 # Sprint 3: H3 Scoring + HIFLD Communications
 try:
@@ -13566,6 +13615,7 @@ _HEALTH_CHECKS = [
 def _health_internal_base():
     port = os.environ.get("PORT", "8080")
     return os.environ.get("INTERNAL_BASE_URL", f"http://127.0.0.1:{port}")
+_bp_sys.stderr.write('BISECT-LINE-13568\n'); _bp_sys.stderr.flush()
 
 def _run_one_health_check(name, path, check_fn, expected):
     import httpx as _hx, time as _t, json as _j
@@ -13841,6 +13891,7 @@ def _ensure_patch_attempts_table():
             pg.commit()
     except Exception as e:
         logger.error(f"[phase-c] table init: {e}")
+_bp_sys.stderr.write('BISECT-LINE-13843\n'); _bp_sys.stderr.flush()
 
 def _check_phase_c_daily_limit():
     """Return True if under the daily limit."""
@@ -14607,6 +14658,7 @@ def verify_tier_gating():
 # UPTIME CHECK ENDPOINT - Read-only, no auth (registered BEFORE test_client)
 # =============================================================================
 import psutil as _psutil_mod
+_bp_sys.stderr.write('BISECT-LINE-14609\n'); _bp_sys.stderr.flush()
 _SERVER_RESTART_TS = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
 
 _MEMORY_LIMIT_MB = 1024
@@ -14812,6 +14864,7 @@ def _memory_guarded(name, target):
             pass
         target()
     return wrapper
+_bp_sys.stderr.write('BISECT-LINE-14814\n'); _bp_sys.stderr.flush()
 
 def _start_background_tasks():
     logger.info("🚀 STAGGERED STARTUP: Beginning background task launch (%d tasks queued)", len(_deferred_bg_threads))
@@ -15533,6 +15586,7 @@ try:
     print("🧠 Intelligence Routes Blueprint: ✅ Registered (6 routes)")
 except Exception as e:
     print(f"🧠 Intelligence Routes Blueprint: ⚠️ Failed to load: {e}")
+_bp_sys.stderr.write('BISECT-LINE-15535\n'); _bp_sys.stderr.flush()
 
 # =============================================================================
 # CONNECTIVITY INTELLIGENCE BLUEPRINT (Phase 5b)
@@ -15759,6 +15813,7 @@ def cf_stub_ecosystem():
         except Exception:
             pass
         return jsonify({"success": False, "error": str(e)}), 500
+_bp_sys.stderr.write('BISECT-LINE-15761\n'); _bp_sys.stderr.flush()
 
 @app.route('/api/rankings/states', methods=['GET'])
 def cf_stub_state_rankings():
@@ -15930,6 +15985,7 @@ def _ap_haversine_km(lat1, lon1, lat2, lon2):
 def _ap_in_bounds(lat, lon, bounds):
     (mnLat, mnLon), (mxLat, mxLon) = bounds
     return mnLat <= lat <= mxLat and mnLon <= lon <= mxLon
+_bp_sys.stderr.write('BISECT-LINE-15932\n'); _bp_sys.stderr.flush()
 
 
 def _ap_na_factor(pollutant, lat, lon):
@@ -16239,6 +16295,7 @@ def ap_score():
 
     return jsonify({"success":True,"count":1,"data":result,
                     "elapsed_ms":round((_ap_time.time()-_t0)*1000, 2)})
+_bp_sys.stderr.write('BISECT-LINE-16241\n'); _bp_sys.stderr.flush()
 
 
 @app.route('/api/infrastructure/air-permitting/health', methods=['GET'])
