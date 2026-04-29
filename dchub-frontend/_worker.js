@@ -74,7 +74,7 @@
 // ============================================================
 // CONFIGURATION
 // ============================================================
-const RAILWAY_BACKEND = 'https://dchub-api-production.up.railway.app';
+const RAILWAY_BACKEND = 'https://dchub-backend-production.up.railway.app';
 const WORKER_VERSION = '4.8.2';
 const _DCHUB_BUILD_MARKER = 'rebuild-1777448239';
 
@@ -1424,7 +1424,7 @@ export default {
       if (contentType.includes('text/html')) {
         const resp = new Response(pagesResp.body, pagesResp);
         resp.headers.set('Cache-Control', 'public, max-age=120, stale-while-revalidate=300');
-        resp.headers.set('Link', ['<https://dchub-api-production.up.railway.app>; rel=preconnect', '<https://unpkg.com>; rel=preconnect', '<https://fonts.googleapis.com>; rel=preconnect', '<https://fonts.gstatic.com>; rel=preconnect; crossorigin'].join(', '));
+        resp.headers.set('Link', ['<https://dchub-backend-production.up.railway.app>; rel=preconnect', '<https://unpkg.com>; rel=preconnect', '<https://fonts.googleapis.com>; rel=preconnect', '<https://fonts.gstatic.com>; rel=preconnect; crossorigin'].join(', '));
         resp.headers.set('X-DC-Worker-Version', WORKER_VERSION);
         return resp;
       }

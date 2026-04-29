@@ -1,4 +1,4 @@
-const BACKEND = 'https://dchub-api-production.up.railway.app';
+const BACKEND = 'https://dchub-backend-production.up.railway.app';
 const esc = s => String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 function shell(title, desc, body) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>${esc(title)}</title><meta name="description" content="${esc(desc)}"/><link rel="stylesheet" href="/styles.css"/>

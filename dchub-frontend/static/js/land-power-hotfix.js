@@ -138,7 +138,7 @@
   // Worker v4.1.4 times out on /api/v1/site-planner/analyze.
   // Add a retry that goes direct to Railway if Worker returns 503.
 
-  var RAILWAY_DIRECT = 'https://dchub-api-production.up.railway.app';
+  var RAILWAY_DIRECT = 'https://dchub-backend-production.up.railway.app';
 
   function patchSitePlannerRetry() {
     if (typeof window.spAnalyze !== 'function') return;

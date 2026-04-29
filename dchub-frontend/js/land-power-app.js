@@ -11399,7 +11399,7 @@ function loadGasWellheads() {
  * API base: Set REPLIT_API_BASE to your Replit app URL
  */
 
-const REPLIT_API_BASE = 'https://dchub-api-production.up.railway.app';  // ← fixed
+const REPLIT_API_BASE = 'https://dchub-backend-production.up.railway.app';  // ← fixed
 
 // ── Submarine Cables ─────────────────────────────────────────
 // TeleGeography: 694 cable systems + 1,893 landing points
