@@ -52,7 +52,7 @@ jobs:
           from datetime import datetime, timezone
 
           BASE    = "https://dchub.cloud"
-          RAILWAY = "https://dchub-backend-production.up.railway.app"
+          RAILWAY = "https://dchub-backend-production-f7dd.up.railway.app"
           API_SUB = "https://api.dchub.cloud"
 
           TIMEOUT     = 15   # default for most checks
