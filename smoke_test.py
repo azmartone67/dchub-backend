@@ -54,7 +54,7 @@ SMOKE_CHECKS = [
     ("transactions",    "/api/transactions?limit=2",            "GET",  False, 15, 200),
     ("map",             "/api/v1/map?limit=2",                  "GET",  False, 15, 200),
     ("watchdog",        "/api/health/watchdog",                 "GET",  False, 10, 200),
-    ("pool_status",     "/api/admin/pool-status",               "GET",  True,  10, 200),
+    ("pool_status",     "/api/health/db",                        "GET",  False, 10, 200),
     ("grid_intel",      "/api/v1/grid-intelligence",            "GET",  False, 15, 200),
     ("fiber",           "/api/fiber/routes?limit=2",            "GET",  False, 15, 200),
     ("substations",     "/api/infrastructure/substations?lat=33.45&lon=-112.07&limit=2", "GET", False, 15, 200),
