@@ -13,7 +13,7 @@ jobs:
     steps:
       - name: Keep alive and News refresh
         run: |
-          RAILWAY="https://dchub-backend-production-f7dd.up.railway.app"
+          RAILWAY="https:/dchub-api-production.up.railway.app"
           echo "Keep-alive ping..."
           curl -sf "$RAILWAY/api/jobs/keep-alive" | head -1 || echo "Keep-alive failed"
           echo ""
