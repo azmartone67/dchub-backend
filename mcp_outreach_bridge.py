@@ -43,14 +43,14 @@ def build_admin_digest():
     with _conn() as c, c.cursor() as cur:
         cur.execute("""
             SELECT COUNT(*) FROM mcp_upgrade_signals
-            WHERE created_at >= NOW() - INTERVAL '24 hours'
+            WHERE created_at::timestamptz >= NOW() - INTERVAL '24 hours'
         """)
         new_signals_24h = cur.fetchone()[0]
 
         cur.execute("""
             SELECT tool_requested, mcp_client, COUNT(*) AS n
             FROM mcp_upgrade_signals
-            WHERE created_at >= NOW() - INTERVAL '24 hours'
+            WHERE created_at::timestamptz >= NOW() - INTERVAL '24 hours'
             GROUP BY tool_requested, mcp_client
             ORDER BY n DESC LIMIT 10
         """)
@@ -61,7 +61,7 @@ def build_admin_digest():
                    s.created_at, k.developer_id, k.tier
             FROM mcp_upgrade_signals s
             LEFT JOIN mcp_dev_keys k ON k.api_key = s.session_id
-            WHERE s.created_at >= NOW() - INTERVAL '24 hours'
+            WHERE s.created_at::timestamptz >= NOW() - INTERVAL '24 hours'
               AND (s.user_email IS NOT NULL OR k.email IS NOT NULL)
             ORDER BY s.created_at DESC LIMIT 10
         """)
@@ -82,7 +82,7 @@ def build_admin_digest():
             SELECT
                 (SELECT COUNT(*) FROM mcp_call_log WHERE timestamp >= NOW() - INTERVAL '24 hours') AS calls_24h,
                 (SELECT COUNT(*) FROM mcp_dev_keys WHERE status = 'active') AS active_keys,
-                (SELECT COUNT(*) FROM mcp_conversions WHERE created_at >= NOW() - INTERVAL '7 days') AS conversions_7d
+                (SELECT COUNT(*) FROM mcp_conversions WHERE created_at::timestamptz >= NOW() - INTERVAL '7 days') AS conversions_7d
         """)
         funnel = cur.fetchone() or (0, 0, 0)
 
@@ -178,7 +178,7 @@ def queue_keyed_user_nurture():
                    s.tool_requested, s.mcp_client, s.message_shown, s.created_at
             FROM mcp_upgrade_signals s
             LEFT JOIN mcp_dev_keys k ON k.api_key = s.session_id
-            WHERE s.created_at >= NOW() - INTERVAL '7 days'
+            WHERE s.created_at::timestamptz >= NOW() - INTERVAL '7 days'
               AND COALESCE(s.user_email, k.email) IS NOT NULL
               AND s.outreach_sent = false
         """)
@@ -260,7 +260,7 @@ def flag_dormant_platforms():
                     SELECT 1 FROM ai_outreach_log
                     WHERE platform = %s
                       AND action = 'winback_flagged'
-                      AND created_at >= NOW() - INTERVAL '14 days'
+                      AND created_at::timestamptz >= NOW() - INTERVAL '14 days'
                 """, (platform,))
                 if cur.fetchone():
                     continue
