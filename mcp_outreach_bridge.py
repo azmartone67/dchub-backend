@@ -266,12 +266,10 @@ def flag_dormant_platforms():
                     continue
                 cur.execute("""
                     INSERT INTO ai_outreach_log
-                      (platform, action, endpoint, status, message, created_at)
-                    VALUES (%s, 'winback_flagged', NULL, 'pending',
-                            %s, NOW())
+                      (platform, action, endpoint, status, response_code, created_at)
+                    VALUES (%s, 'winback_flagged', %s, 'pending', NULL, NOW())
                 """, (platform,
-                      f"Platform silent {int(days)}d (was {total_requests} historic calls). "
-                      f"Draft available at dchub-mcp-v2.1/outreach/{platform}.md"))
+                      f"silent_{int(days)}d_{total_requests}_historic"))
                 flagged.append({"platform": platform, "days_silent": int(days), "historic_calls": total_requests})
             except Exception as e:
                 logger.error(f"[mcp_outreach] winback flag failed for {platform}: {e}")
