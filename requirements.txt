@@ -17,7 +17,6 @@ httpx-sse==0.4.3
 lxml==6.1.0
 mcp==1.26.0
 oauthlib==3.3.1
-psycopg2-binary==2.9.11
 PyJWT==2.12.0
 python-dotenv==1.2.1
 redis==7.3.0
@@ -28,3 +27,5 @@ psutil==7.0.0
 h3
 reportlab>=4.0.0
 anthropic>=0.40.0
+psycopg[binary]>=3.2
+psycopg2-binary>=2.9

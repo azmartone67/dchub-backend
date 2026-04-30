@@ -28,7 +28,13 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from functools import wraps
 
-import psycopg
+# Compat: prefer psycopg (v3), fall back to psycopg2 if Railway only has the older one
+try:
+    import psycopg
+    _PSYCOPG_VERSION = 3
+except ImportError:
+    import psycopg2 as psycopg  # type: ignore
+    _PSYCOPG_VERSION = 2
 from flask import Blueprint, Response, jsonify, request
 
 mcp_bp = Blueprint("mcp_bp", __name__)
@@ -44,7 +50,11 @@ if not NEON_URL:
 
 @contextmanager
 def _conn_ctx():
-    conn = psycopg.connect(NEON_URL, autocommit=True)
+    if _PSYCOPG_VERSION == 3:
+        conn = psycopg.connect(NEON_URL, autocommit=True)
+    else:
+        conn = psycopg.connect(NEON_URL)
+        conn.autocommit = True
     try:
         yield conn
     finally:
