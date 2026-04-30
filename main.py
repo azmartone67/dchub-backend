@@ -1030,6 +1030,16 @@ except Exception as _e:
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 
 
+# ── MCP v2.1 telemetry + key validation ──────────────────────────
+try:
+    from flask_mcp_endpoints import mcp_bp
+    app.register_blueprint(mcp_bp)
+    print('[mcp v2.1] blueprint registered: /api/v1/keys/validate, /api/v1/mcp/track, /api/v1/mcp/stats')
+except Exception as _mcp_err:
+    print(f'[mcp v2.1] blueprint registration FAILED: {_mcp_err}')
+
+
+
 # === Iteration 2: transactions/ingest, facility infra, land-power snapshot ===
 try:
     print('[iteration2] importing dchub_iteration_2_routes...', flush=True)

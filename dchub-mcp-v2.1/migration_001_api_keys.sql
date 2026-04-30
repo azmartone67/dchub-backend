@@ -1,16 +1,19 @@
 -- DC Hub — Migration 001 (Neon Postgres)
--- Adds api_keys (developer license records) and mcp_call_log (per-tool-call telemetry).
--- Idempotent: uses IF NOT EXISTS everywhere.
+-- Adds mcp_dev_keys (developer license records for the MCP server) and
+-- mcp_call_log (per-tool-call telemetry).
+-- Idempotent — IF NOT EXISTS everywhere; no transaction wrapper so a
+-- pre-existing object doesn't roll back the whole file.
+--
+-- NOTE: this project already has an `api_keys` table used by Stripe / billing.
+-- We do NOT touch it. MCP keys live in `mcp_dev_keys` to keep the two systems
+-- decoupled. If you later want to merge them, do it deliberately with a view
+-- or a migration script that maps columns.
 --
 -- Usage:
 --   psql "$NEON_DATABASE_URL" -f migration_001_api_keys.sql
---
--- Or from the Neon SQL Editor in the dashboard, paste this whole file and run.
 
-BEGIN;
-
--- ── Developer license records ────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS api_keys (
+-- ── MCP developer license records ────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS mcp_dev_keys (
     api_key       TEXT PRIMARY KEY,                          -- secret presented as X-API-Key
     developer_id  TEXT NOT NULL,                             -- stable id assigned at signup
     email         TEXT,
@@ -23,10 +26,10 @@ CREATE TABLE IF NOT EXISTS api_keys (
     metadata      JSONB
 );
 
-CREATE INDEX IF NOT EXISTS idx_api_keys_developer ON api_keys(developer_id);
-CREATE INDEX IF NOT EXISTS idx_api_keys_email     ON api_keys(email);
-CREATE INDEX IF NOT EXISTS idx_api_keys_tier      ON api_keys(tier);
-CREATE INDEX IF NOT EXISTS idx_api_keys_status    ON api_keys(status);
+CREATE INDEX IF NOT EXISTS idx_mcp_dev_keys_developer ON mcp_dev_keys(developer_id);
+CREATE INDEX IF NOT EXISTS idx_mcp_dev_keys_email     ON mcp_dev_keys(email);
+CREATE INDEX IF NOT EXISTS idx_mcp_dev_keys_tier      ON mcp_dev_keys(tier);
+CREATE INDEX IF NOT EXISTS idx_mcp_dev_keys_status    ON mcp_dev_keys(status);
 
 -- ── Per-tool-call telemetry ──────────────────────────────────────────────
 -- This is what the patched server.mjs writes to via POST /api/v1/mcp/track.
@@ -68,9 +71,7 @@ FROM mcp_call_log
 WHERE timestamp >= NOW() - INTERVAL '7 days'
 GROUP BY tool, platform, tier;
 
-COMMIT;
-
 -- ── Verification query — run this after the migration ────────────────────
--- SELECT 'api_keys' AS tbl, COUNT(*) FROM api_keys
+-- SELECT 'mcp_dev_keys' AS tbl, COUNT(*) FROM mcp_dev_keys
 -- UNION ALL
 -- SELECT 'mcp_call_log', COUNT(*) FROM mcp_call_log;

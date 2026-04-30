@@ -45,7 +45,7 @@ def cmd_mint(args):
 
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
-            """INSERT INTO api_keys
+            """INSERT INTO mcp_dev_keys
                  (api_key, developer_id, email, tier, status, metadata)
                VALUES (%s, %s, %s, %s, 'active', %s::jsonb)""",
             (api_key, developer_id, args.email, args.tier, json.dumps(metadata)),
@@ -65,7 +65,7 @@ def cmd_mint(args):
 
 def cmd_list(args):
     sql = ("SELECT api_key, developer_id, email, tier, status, "
-           "created_at, last_used_at FROM api_keys WHERE 1=1")
+           "created_at, last_used_at FROM mcp_dev_keys WHERE 1=1")
     params = []
     if args.email:
         sql += " AND email = %s"
@@ -94,7 +94,7 @@ def cmd_list(args):
 def cmd_revoke(args):
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
-            "UPDATE api_keys SET status='revoked' WHERE api_key=%s AND status='active'",
+            "UPDATE mcp_dev_keys SET status='revoked' WHERE api_key=%s AND status='active'",
             (args.key,),
         )
         n = cur.rowcount
@@ -104,7 +104,7 @@ def cmd_revoke(args):
 def cmd_upgrade(args):
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
-            "UPDATE api_keys SET tier=%s WHERE api_key=%s AND status='active'",
+            "UPDATE mcp_dev_keys SET tier=%s WHERE api_key=%s AND status='active'",
             (args.tier, args.key),
         )
         n = cur.rowcount
@@ -118,7 +118,7 @@ def cmd_stats(args):
     with _connect() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT tier, COUNT(*)::int, COUNT(*) FILTER (WHERE last_used_at IS NOT NULL)::int "
-            "FROM api_keys WHERE status='active' GROUP BY tier ORDER BY tier"
+            "FROM mcp_dev_keys WHERE status='active' GROUP BY tier ORDER BY tier"
         )
         keys = [{"tier": r[0], "n": r[1], "active_users": r[2]} for r in cur.fetchall()]
 

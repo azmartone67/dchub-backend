@@ -70,7 +70,7 @@ def validate_key():
     with _pool.connection() as conn, conn.cursor() as cur:
         cur.execute(
             """SELECT developer_id, email, tier, status
-               FROM api_keys WHERE api_key = %s""",
+               FROM mcp_dev_keys WHERE api_key = %s""",
             (api_key,),
         )
         row = cur.fetchone()
@@ -82,7 +82,7 @@ def validate_key():
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
-                "UPDATE api_keys SET last_used_at = NOW() WHERE api_key = %s",
+                "UPDATE mcp_dev_keys SET last_used_at = NOW() WHERE api_key = %s",
                 (api_key,),
             )
     except Exception:
@@ -210,7 +210,7 @@ def mcp_stats():
         }
 
         cur.execute(
-            "SELECT tier, COUNT(*)::int FROM api_keys WHERE status='active' GROUP BY tier ORDER BY tier"
+            "SELECT tier, COUNT(*)::int FROM mcp_dev_keys WHERE status='active' GROUP BY tier ORDER BY tier"
         )
         out["keys_by_tier"] = [{"tier": r[0], "n": r[1]} for r in cur.fetchall()]
 
