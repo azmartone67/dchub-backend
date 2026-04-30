@@ -75,7 +75,7 @@
 // CONFIGURATION
 // ============================================================
 const RAILWAY_BACKEND = 'https://dchub-backend-production.up.railway.app';
-const MCP_BACKEND     = 'https://dchub-mcp-server-production.up.railway.app';
+const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app';
 const WORKER_VERSION = '4.8.3';
 const MCP_CACHE_STALE_TTL = 86400;
 const MCP_CACHE_FRESH_TTL = 300;
