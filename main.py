@@ -1035,6 +1035,15 @@ _mcp_v21_status = {'registered': False, 'error': None, 'traceback': None}
 try:
     from flask_mcp_endpoints import mcp_bp
     app.register_blueprint(mcp_bp)
+
+
+# ── MCP outreach bridge (digest + nurture + dormant winback) ────────
+try:
+    from mcp_outreach_bridge import register_mcp_outreach_routes
+    register_mcp_outreach_routes(app)
+    print('[mcp_outreach_bridge] wired into Flask')
+except Exception as _err:
+    print(f'[mcp_outreach_bridge] wire failed: {_err}')
     _mcp_v21_status['registered'] = True
     print('[mcp v2.1] blueprint registered: /api/v1/keys/validate, /api/v1/mcp/track, /api/v1/mcp/stats')
 except Exception as _mcp_err:
