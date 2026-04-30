@@ -215,3 +215,97 @@ def mcp_stats():
         out["keys_by_tier"] = [{"tier": r[0], "n": r[1]} for r in cur.fetchall()]
 
     return jsonify(out), 200
+
+
+# ── POST /api/v1/dev-signup — Self-serve free dev key issuance (PUBLIC) ────
+
+@mcp_bp.post("/api/v1/dev-signup")
+def dev_signup():
+    import secrets
+    body  = request.get_json(silent=True) or {}
+    email = (body.get("email") or "").strip().lower()
+    if not email or "@" not in email or len(email) > 254:
+        return jsonify({"error": "valid email required"}), 400
+
+    api_key      = f"dch_live_{secrets.token_hex(16)}"
+    developer_id = f"dev_{secrets.token_hex(8)}"
+
+    try:
+        with _pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT api_key FROM mcp_dev_keys WHERE email=%s AND status=%s LIMIT 1",
+                (email, "active"),
+            )
+            existing = cur.fetchone()
+            if existing:
+                return jsonify({
+                    "api_key": existing[0], "tier": "free", "email": email,
+                    "is_new": False, "header": "X-API-Key",
+                    "docs": "https://dchub.cloud/ai",
+                    "upgrade_url": "https://dchub.cloud/ai#pricing",
+                }), 200
+            cur.execute(
+                """INSERT INTO mcp_dev_keys
+                     (api_key, developer_id, email, tier, status, metadata)
+                   VALUES (%s, %s, %s, %s, %s, %s::jsonb)""",
+                (api_key, developer_id, email, "free", "active",
+                 '{"source":"dev-signup-form"}'),
+            )
+    except Exception as e:
+        return jsonify({"error": "key issuance failed", "detail": str(e)}), 500
+
+    return jsonify({
+        "api_key": api_key, "tier": "free", "email": email,
+        "is_new": True, "header": "X-API-Key",
+        "docs": "https://dchub.cloud/ai",
+        "upgrade_url": "https://dchub.cloud/ai#pricing",
+    }), 200
+
+
+# ── GET /api/v1/mcp/funnel — Public aggregate stats for the dashboard ─────
+
+@mcp_bp.get("/api/v1/mcp/funnel")
+def mcp_funnel():
+    out = {}
+    try:
+        with _pool.connection() as conn, conn.cursor() as cur:
+            cur.execute("""SELECT COUNT(*) FROM mcp_tool_calls
+                           WHERE created_at >= NOW() - INTERVAL %s""",
+                        ("7 days",))
+            out["tool_calls_7d"] = cur.fetchone()[0]
+
+            cur.execute("""SELECT COUNT(*) FROM mcp_upgrade_signals
+                           WHERE created_at >= NOW() - INTERVAL %s""",
+                        ("7 days",))
+            out["upgrade_signals_7d"] = cur.fetchone()[0]
+
+            cur.execute("""SELECT COUNT(*) FROM mcp_conversions
+                           WHERE created_at >= NOW() - INTERVAL %s""",
+                        ("30 days",))
+            out["conversions_30d"] = cur.fetchone()[0]
+
+            cur.execute("""SELECT tier, COUNT(*) FROM mcp_dev_keys
+                           WHERE status=%s GROUP BY tier""", ("active",))
+            out["keys_by_tier"] = {r[0]: r[1] for r in cur.fetchall()}
+
+            cur.execute("""SELECT tool_requested, COUNT(*) AS n
+                           FROM mcp_upgrade_signals
+                           WHERE created_at >= NOW() - INTERVAL %s
+                           GROUP BY tool_requested ORDER BY n DESC LIMIT 10""",
+                        ("30 days",))
+            out["top_signal_tools_30d"] = [{"tool": r[0], "n": r[1]} for r in cur.fetchall()]
+
+            cur.execute("""SELECT tool_name, COUNT(*) AS n,
+                                  COUNT(DISTINCT ip_address) AS users
+                           FROM mcp_tool_calls
+                           WHERE tool_name IN (%s,%s,%s,%s,%s)
+                             AND created_at >= NOW() - INTERVAL %s
+                           GROUP BY tool_name ORDER BY n DESC""",
+                        ("analyze_site","compare_sites","get_grid_intelligence",
+                         "get_dchub_recommendation","get_fiber_intel","30 days"))
+            out["paid_tool_demand_30d"] = [
+                {"tool": r[0], "calls": r[1], "users": r[2]} for r in cur.fetchall()
+            ]
+    except Exception as e:
+        out["error"] = str(e)
+    return jsonify(out), 200

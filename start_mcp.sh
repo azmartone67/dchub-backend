@@ -1,51 +1,40 @@
 #!/bin/bash
-# =============================================================================
-# MCP Server Launcher — Self-healing infinite restart loop
-# Replaces the old 3-retry-then-die version.
-# The MCP server MUST stay alive for the /mcp proxy in main.py to work.
-# =============================================================================
+# v2: race-condition-aware MCP launcher
+set -u
+echo "=== MCP Server Launcher v2 ==="
 
-echo "=== MCP Server Launcher (self-healing) ==="
+# Hit Flask via the SAME Railway $PORT — no Cloudflare round-trip
+FLASK_PORT="${PORT:-5000}"
+export DCHUB_API_BASE="${DCHUB_API_BASE_OVERRIDE:-http://127.0.0.1:${FLASK_PORT}}"
+export BACKEND_BASE_URL="${BACKEND_BASE_URL:-${DCHUB_API_BASE}}"
+echo "[MCP] DCHUB_API_BASE=${DCHUB_API_BASE}"
 
-# Kill any stale MCP server on port 8888
-echo "Clearing port 8888..."
+# Wait for Flask before launching MCP (avoids start-order crash)
+echo "[MCP] Waiting up to 90s for Flask..."
+for i in $(seq 1 45); do
+  if curl -fsS "${DCHUB_API_BASE}/api/health" -m 2 >/dev/null 2>&1; then
+    echo "[MCP] Flask ready (took ${i} attempts)"; break
+  fi
+  sleep 2
+done
+
 pkill -f "python dchub_mcp_server.py" 2>/dev/null
 fuser -k 8888/tcp 2>/dev/null
 sleep 1
 
-BACKOFF=3          # Initial restart delay (seconds)
-MAX_BACKOFF=60     # Cap backoff at 60 seconds
-ATTEMPT=0
-HEALTHY_THRESHOLD=120  # If process runs >120s, reset backoff (it was healthy)
+BACKOFF=3; MAX_BACKOFF=60; ATTEMPT=0; HEALTHY_THRESHOLD=120
 
 while true; do
-    ATTEMPT=$((ATTEMPT+1))
-    START_TIME=$(date +%s)
-    echo "[MCP] Starting dchub_mcp_server.py on port 8888 (attempt #$ATTEMPT, backoff=${BACKOFF}s)..."
-    
-    python dchub_mcp_server.py --port 8888
-    EXIT_CODE=$?
-    END_TIME=$(date +%s)
-    RUNTIME=$((END_TIME - START_TIME))
-    
-    echo "[MCP] Process exited (code $EXIT_CODE) after ${RUNTIME}s"
-    
-    # If it ran for a while, it was healthy — reset backoff
-    if [ $RUNTIME -gt $HEALTHY_THRESHOLD ]; then
-        BACKOFF=3
-        echo "[MCP] Was healthy for ${RUNTIME}s — resetting backoff to ${BACKOFF}s"
-    else
-        # Exponential backoff for rapid crashes
-        BACKOFF=$((BACKOFF * 2))
-        if [ $BACKOFF -gt $MAX_BACKOFF ]; then
-            BACKOFF=$MAX_BACKOFF
-        fi
-        echo "[MCP] Crashed quickly (${RUNTIME}s) — increasing backoff to ${BACKOFF}s"
-    fi
-    
-    # Clean up port before restart
-    fuser -k 8888/tcp 2>/dev/null
-    
-    echo "[MCP] Restarting in ${BACKOFF}s..."
-    sleep $BACKOFF
+  ATTEMPT=$((ATTEMPT+1)); START=$(date +%s)
+  echo "[MCP] Starting (attempt #$ATTEMPT, backoff=${BACKOFF}s)"
+  python dchub_mcp_server.py --port 8888
+  RUNTIME=$(( $(date +%s) - START ))
+  echo "[MCP] Exited after ${RUNTIME}s"
+  if [ $RUNTIME -gt $HEALTHY_THRESHOLD ]; then
+    BACKOFF=3
+  else
+    BACKOFF=$((BACKOFF * 2)); [ $BACKOFF -gt $MAX_BACKOFF ] && BACKOFF=$MAX_BACKOFF
+  fi
+  fuser -k 8888/tcp 2>/dev/null
+  sleep $BACKOFF
 done
