@@ -1034,7 +1034,9 @@ app = Flask(__name__, static_folder='static', static_url_path='/static')
 _mcp_v21_status = {'registered': False, 'error': None, 'traceback': None}
 try:
     from flask_mcp_endpoints import mcp_bp
-    app.register_blueprint(mcp_bp)    _mcp_v21_status['registered'] = True
+    app.register_blueprint(mcp_bp)
+    
+    _mcp_v21_status['registered'] = True
     print('[mcp v2.1] blueprint registered: /api/v1/keys/validate, /api/v1/mcp/track, /api/v1/mcp/stats')
 except Exception as _mcp_err:
     import traceback as _tb
