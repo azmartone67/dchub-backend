@@ -149,3 +149,49 @@ def gate_tool_call(tool_name, api_key=None, user_agent=None,
 
     return {"allowed": True, "tier": tier, "platform": platform,
             "message": None, "upgrade_url": None}
+
+
+# ── Decorator for tool handlers ─────────────────────────────────────────────
+import functools
+
+def gated(tool_name: str):
+    """
+    Decorator: wraps a tool function so it fires an upgrade signal and
+    short-circuits when the calling user is on free tier and the tool is paid.
+
+    Usage in dchub_mcp_server.py:
+        @gated("analyze_site")
+        @mcp.tool(name="analyze_site", description="...")
+        def analyze_site(...):
+            ...
+    """
+    def decorator(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            # Best-effort context extraction. dchub_mcp_server.py uses a
+            # ContextVar named _current_api_key; if other vars exist, we'll
+            # extend over time.
+            try:
+                from dchub_mcp_server import _current_api_key  # type: ignore
+                api_key = _current_api_key.get()
+            except Exception:
+                api_key = ""
+            user_agent = ""  # set by the request layer if a future patch lands
+
+            gate = gate_tool_call(
+                tool_name,
+                api_key=api_key,
+                user_agent=user_agent,
+            )
+            if not gate["allowed"]:
+                return {
+                    "error":       "tier_gate_blocked",
+                    "message":     gate["message"],
+                    "upgrade_url": gate["upgrade_url"],
+                    "tier":        gate["tier"],
+                    "platform":    gate["platform"],
+                }
+            return fn(*args, **kwargs)
+
+        return wrapper
+    return decorator
