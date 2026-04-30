@@ -1,41 +1,46 @@
 """
-DC Hub — Flask MCP key validation + telemetry endpoints (Neon Postgres)
-─────────────────────────────────────────────────────────────────────────
-Drop into the Railway-deployed Flask backend, register the blueprint:
-
+DC Hub — Flask MCP key validation + telemetry + dev-signup + dashboard endpoints
+─────────────────────────────────────────────────────────────────────────────
+Drop into the Railway Flask backend. In main.py:
     from flask_mcp_endpoints import mcp_bp
     app.register_blueprint(mcp_bp)
 
-Required env (Railway):
-    NEON_DATABASE_URL    — postgres://… connection string (use the Neon pooler URL)
-    DCHUB_INTERNAL_KEY   — must match the value in the patched server.mjs
+Endpoints (all under mcp_bp):
+    POST /api/v1/keys/validate    (internal)  validate dev key, return tier
+    POST /api/v1/mcp/track        (internal)  log a tool-call telemetry row
+    GET  /api/v1/mcp/stats        (internal)  rolled-up stats (last N days)
+    POST /api/v1/dev-signup       (public)    self-serve free dev key by email
+    GET  /api/v1/mcp/funnel       (public)    aggregate KPIs for dashboard
+    GET  /api/v1/mcp/dashboard    (public)    serves static/mcp-dashboard.html
 
-Endpoints:
-    POST /api/v1/keys/validate   {api_key} → {valid, tier, developer_id, email}
-    POST /api/v1/mcp/track       {tool, params, platform, api_key, tier,
-                                  session_id, status, duration_ms, timestamp}
-    GET  /api/v1/mcp/stats?days=N  (internal) → 7d rollup of tool calls + funnel
+Required env:
+    NEON_DATABASE_URL    Postgres connection string
+    DCHUB_INTERNAL_KEY   shared secret for internal endpoints
 
-All endpoints require X-Internal-Key matching DCHUB_INTERNAL_KEY.
-
-Dependencies (add to requirements.txt):
-    psycopg[binary,pool]>=3.2
+Dependencies:
+    psycopg[binary]>=3.2       (no _pool extra needed)
 """
 
-import os
 import json
+import os
+import secrets
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from functools import wraps
 
-from flask import Blueprint, request, jsonify
 import psycopg
-from contextlib import contextmanager
+from flask import Blueprint, Response, jsonify, request
 
 mcp_bp = Blueprint("mcp_bp", __name__)
 
 NEON_URL     = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
 INTERNAL_KEY = os.environ.get("DCHUB_INTERNAL_KEY", "dchub-internal-sync-2026")
 
+if not NEON_URL:
+    raise RuntimeError("NEON_DATABASE_URL (or DATABASE_URL) must be set for flask_mcp_endpoints")
+
+
+# ── Connection helper (no pool — plain psycopg.connect per request) ────────
 
 @contextmanager
 def _conn_ctx():
@@ -45,20 +50,17 @@ def _conn_ctx():
     finally:
         conn.close()
 
+
 class _PoolShim:
+    """Backward-compatible shim so existing `_pool.connection()` calls work."""
     def connection(self):
         return _conn_ctx()
+
+
 _pool = _PoolShim()
 
-if not NEON_URL:
-    raise RuntimeError("NEON_DATABASE_URL (or DATABASE_URL) must be set for flask_mcp_endpoints")
 
-# Connection pool — small and short-lived, suitable for Railway's container model.
-# If you add Cloudflare Hyperdrive, point NEON_DATABASE_URL at the Hyperdrive URL.
-,
-    kwargs={"autocommit": True},
-)
-
+# ── Internal-only auth decorator ───────────────────────────────────────────
 
 def _require_internal(fn):
     @wraps(fn)
@@ -69,7 +71,7 @@ def _require_internal(fn):
     return wrapper
 
 
-# ── POST /api/v1/keys/validate ────────────────────────────────────────────
+# ── POST /api/v1/keys/validate ─────────────────────────────────────────────
 
 @mcp_bp.post("/api/v1/keys/validate")
 @_require_internal
@@ -81,8 +83,7 @@ def validate_key():
 
     with _pool.connection() as conn, conn.cursor() as cur:
         cur.execute(
-            """SELECT developer_id, email, tier, status
-               FROM mcp_dev_keys WHERE api_key = %s""",
+            "SELECT developer_id, email, tier, status FROM mcp_dev_keys WHERE api_key = %s",
             (api_key,),
         )
         row = cur.fetchone()
@@ -90,7 +91,6 @@ def validate_key():
     if not row or row[3] != "active":
         return jsonify({"valid": False, "tier": "free"}), 200
 
-    # Lazy last_used update — best effort, no need to block the response on it
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
@@ -108,7 +108,7 @@ def validate_key():
     }), 200
 
 
-# ── POST /api/v1/mcp/track ────────────────────────────────────────────────
+# ── POST /api/v1/mcp/track ─────────────────────────────────────────────────
 
 @mcp_bp.post("/api/v1/mcp/track")
 @_require_internal
@@ -136,9 +136,7 @@ def track_tool_call():
                       session_id, status, duration_ms)
                    VALUES (%s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s)""",
                 (
-                    ts_dt,
-                    tool,
-                    params,
+                    ts_dt, tool, params,
                     body.get("platform"),
                     body.get("api_key"),
                     body.get("tier"),
@@ -148,13 +146,12 @@ def track_tool_call():
                 ),
             )
     except Exception as e:
-        # Never block the MCP server on logging failures. Log and return 200 ok=false.
         return jsonify({"ok": False, "error": str(e)}), 200
 
     return jsonify({"ok": True}), 200
 
 
-# ── GET /api/v1/mcp/stats — for our own dashboard / triage ────────────────
+# ── GET /api/v1/mcp/stats — for our own admin dashboard ───────────────────
 
 @mcp_bp.get("/api/v1/mcp/stats")
 @_require_internal
@@ -168,12 +165,10 @@ def mcp_stats():
 
     with _pool.connection() as conn, conn.cursor() as cur:
         cur.execute(
-            """SELECT date_trunc('day', timestamp)::date AS day,
-                      platform, COUNT(*) AS n
+            """SELECT date_trunc('day', timestamp)::date AS day, platform, COUNT(*) AS n
                FROM mcp_call_log
                WHERE timestamp >= NOW() - make_interval(days => %s)
-               GROUP BY day, platform
-               ORDER BY day DESC, n DESC""",
+               GROUP BY day, platform ORDER BY day DESC, n DESC""",
             (days,),
         )
         out["by_day_platform"] = [
@@ -182,31 +177,28 @@ def mcp_stats():
 
         cur.execute(
             """SELECT tool,
-                      COUNT(*)::int                                       AS n,
-                      AVG(duration_ms)::int                                AS avg_ms,
-                      COUNT(*) FILTER (WHERE status='error')::int          AS errors,
+                      COUNT(*)::int AS n,
+                      AVG(duration_ms)::int AS avg_ms,
+                      COUNT(*) FILTER (WHERE status='error')::int AS errors,
                       COUNT(*) FILTER (WHERE status='blocked_paid_only')::int AS upgrade_blocks,
-                      COUNT(DISTINCT api_key)::int                         AS distinct_devs
+                      COUNT(DISTINCT api_key)::int AS distinct_devs
                FROM mcp_call_log
                WHERE timestamp >= NOW() - make_interval(days => %s)
-               GROUP BY tool
-               ORDER BY n DESC""",
+               GROUP BY tool ORDER BY n DESC""",
             (days,),
         )
         out["by_tool"] = [
-            {
-                "tool": r[0], "n": r[1], "avg_ms": r[2],
-                "errors": r[3], "upgrade_blocks": r[4], "distinct_devs": r[5],
-            }
+            {"tool": r[0], "n": r[1], "avg_ms": r[2],
+             "errors": r[3], "upgrade_blocks": r[4], "distinct_devs": r[5]}
             for r in cur.fetchall()
         ]
 
         cur.execute(
             """SELECT
-                 COUNT(*) FILTER (WHERE api_key IS NOT NULL)::int      AS keyed_calls,
-                 COUNT(DISTINCT api_key)                                AS keyed_devs,
-                 COUNT(DISTINCT session_id)                             AS sessions,
-                 COUNT(*)::int                                          AS tool_calls,
+                 COUNT(*) FILTER (WHERE api_key IS NOT NULL)::int AS keyed_calls,
+                 COUNT(DISTINCT api_key) AS keyed_devs,
+                 COUNT(DISTINCT session_id) AS sessions,
+                 COUNT(*)::int AS tool_calls,
                  COUNT(*) FILTER (WHERE status='blocked_paid_only')::int AS paid_block_events
                FROM mcp_call_log
                WHERE timestamp >= NOW() - make_interval(days => %s)""",
@@ -229,11 +221,10 @@ def mcp_stats():
     return jsonify(out), 200
 
 
-# ── POST /api/v1/dev-signup — Self-serve free dev key issuance (PUBLIC) ────
+# ── POST /api/v1/dev-signup — Self-serve free dev key (PUBLIC) ────────────
 
 @mcp_bp.post("/api/v1/dev-signup")
 def dev_signup():
-    import secrets
     body  = request.get_json(silent=True) or {}
     email = (body.get("email") or "").strip().lower()
     if not email or "@" not in email or len(email) > 254:
@@ -245,31 +236,36 @@ def dev_signup():
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
-                "SELECT api_key FROM mcp_dev_keys WHERE email=%s AND status=%s LIMIT 1",
-                (email, "active"),
+                "SELECT api_key FROM mcp_dev_keys WHERE email=%s AND status='active' LIMIT 1",
+                (email,),
             )
             existing = cur.fetchone()
             if existing:
                 return jsonify({
-                    "api_key": existing[0], "tier": "free", "email": email,
-                    "is_new": False, "header": "X-API-Key",
-                    "docs": "https://dchub.cloud/ai",
+                    "api_key":     existing[0],
+                    "tier":        "free",
+                    "email":       email,
+                    "is_new":      False,
+                    "header":      "X-API-Key",
+                    "docs":        "https://dchub.cloud/ai",
                     "upgrade_url": "https://dchub.cloud/ai#pricing",
                 }), 200
             cur.execute(
                 """INSERT INTO mcp_dev_keys
                      (api_key, developer_id, email, tier, status, metadata)
-                   VALUES (%s, %s, %s, %s, %s, %s::jsonb)""",
-                (api_key, developer_id, email, "free", "active",
-                 '{"source":"dev-signup-form"}'),
+                   VALUES (%s, %s, %s, 'free', 'active', %s::jsonb)""",
+                (api_key, developer_id, email, '{"source":"dev-signup-form"}'),
             )
     except Exception as e:
         return jsonify({"error": "key issuance failed", "detail": str(e)}), 500
 
     return jsonify({
-        "api_key": api_key, "tier": "free", "email": email,
-        "is_new": True, "header": "X-API-Key",
-        "docs": "https://dchub.cloud/ai",
+        "api_key":     api_key,
+        "tier":        "free",
+        "email":       email,
+        "is_new":      True,
+        "header":      "X-API-Key",
+        "docs":        "https://dchub.cloud/ai",
         "upgrade_url": "https://dchub.cloud/ai#pricing",
     }), 200
 
@@ -281,40 +277,46 @@ def mcp_funnel():
     out = {}
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
-            cur.execute("""SELECT COUNT(*) FROM mcp_tool_calls
-                           WHERE created_at >= NOW() - INTERVAL %s""",
-                        ("7 days",))
+            cur.execute(
+                "SELECT COUNT(*) FROM mcp_tool_calls WHERE created_at >= NOW() - INTERVAL '7 days'"
+            )
             out["tool_calls_7d"] = cur.fetchone()[0]
 
-            cur.execute("""SELECT COUNT(*) FROM mcp_upgrade_signals
-                           WHERE created_at >= NOW() - INTERVAL %s""",
-                        ("7 days",))
+            cur.execute(
+                "SELECT COUNT(*) FROM mcp_upgrade_signals WHERE created_at >= NOW() - INTERVAL '7 days'"
+            )
             out["upgrade_signals_7d"] = cur.fetchone()[0]
 
-            cur.execute("""SELECT COUNT(*) FROM mcp_conversions
-                           WHERE created_at >= NOW() - INTERVAL %s""",
-                        ("30 days",))
+            cur.execute(
+                "SELECT COUNT(*) FROM mcp_conversions WHERE created_at >= NOW() - INTERVAL '30 days'"
+            )
             out["conversions_30d"] = cur.fetchone()[0]
 
-            cur.execute("""SELECT tier, COUNT(*) FROM mcp_dev_keys
-                           WHERE status=%s GROUP BY tier""", ("active",))
+            cur.execute(
+                "SELECT tier, COUNT(*) FROM mcp_dev_keys WHERE status='active' GROUP BY tier"
+            )
             out["keys_by_tier"] = {r[0]: r[1] for r in cur.fetchall()}
 
-            cur.execute("""SELECT tool_requested, COUNT(*) AS n
-                           FROM mcp_upgrade_signals
-                           WHERE created_at >= NOW() - INTERVAL %s
-                           GROUP BY tool_requested ORDER BY n DESC LIMIT 10""",
-                        ("30 days",))
-            out["top_signal_tools_30d"] = [{"tool": r[0], "n": r[1]} for r in cur.fetchall()]
+            cur.execute(
+                """SELECT tool_requested, COUNT(*) AS n
+                   FROM mcp_upgrade_signals
+                   WHERE created_at >= NOW() - INTERVAL '30 days'
+                   GROUP BY tool_requested ORDER BY n DESC LIMIT 10"""
+            )
+            out["top_signal_tools_30d"] = [
+                {"tool": r[0], "n": r[1]} for r in cur.fetchall()
+            ]
 
-            cur.execute("""SELECT tool_name, COUNT(*) AS n,
-                                  COUNT(DISTINCT ip_address) AS users
-                           FROM mcp_tool_calls
-                           WHERE tool_name IN (%s,%s,%s,%s,%s)
-                             AND created_at >= NOW() - INTERVAL %s
-                           GROUP BY tool_name ORDER BY n DESC""",
-                        ("analyze_site","compare_sites","get_grid_intelligence",
-                         "get_dchub_recommendation","get_fiber_intel","30 days"))
+            cur.execute(
+                """SELECT tool_name, COUNT(*) AS n,
+                          COUNT(DISTINCT ip_address) AS users
+                   FROM mcp_tool_calls
+                   WHERE tool_name = ANY(%s)
+                     AND created_at >= NOW() - INTERVAL '30 days'
+                   GROUP BY tool_name ORDER BY n DESC""",
+                (["analyze_site", "compare_sites", "get_grid_intelligence",
+                  "get_dchub_recommendation", "get_fiber_intel"],),
+            )
             out["paid_tool_demand_30d"] = [
                 {"tool": r[0], "calls": r[1], "users": r[2]} for r in cur.fetchall()
             ]
@@ -323,12 +325,11 @@ def mcp_funnel():
     return jsonify(out), 200
 
 
-# ── GET /api/v1/mcp/dashboard — serve the dashboard HTML through Flask ────
+# ── GET /api/v1/mcp/dashboard — Serve the dashboard HTML through Flask ────
 
 @mcp_bp.get("/api/v1/mcp/dashboard")
 def mcp_dashboard():
-    """Serve the dashboard HTML directly so it goes through Cloudflare's /api/* route."""
-    from flask import Response
+    """Serves static/mcp-dashboard.html via the /api/* path so Cloudflare proxies it."""
     try:
         with open("static/mcp-dashboard.html", "r") as f:
             return Response(f.read(), mimetype="text/html")
