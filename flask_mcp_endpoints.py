@@ -28,22 +28,34 @@ from datetime import datetime, timezone
 from functools import wraps
 
 from flask import Blueprint, request, jsonify
-from psycopg_pool import ConnectionPool
+import psycopg
+from contextlib import contextmanager
 
 mcp_bp = Blueprint("mcp_bp", __name__)
 
 NEON_URL     = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
 INTERNAL_KEY = os.environ.get("DCHUB_INTERNAL_KEY", "dchub-internal-sync-2026")
 
+
+@contextmanager
+def _conn_ctx():
+    conn = psycopg.connect(NEON_URL, autocommit=True)
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+class _PoolShim:
+    def connection(self):
+        return _conn_ctx()
+_pool = _PoolShim()
+
 if not NEON_URL:
     raise RuntimeError("NEON_DATABASE_URL (or DATABASE_URL) must be set for flask_mcp_endpoints")
 
 # Connection pool — small and short-lived, suitable for Railway's container model.
 # If you add Cloudflare Hyperdrive, point NEON_DATABASE_URL at the Hyperdrive URL.
-_pool = ConnectionPool(
-    NEON_URL,
-    min_size=1,
-    max_size=int(os.environ.get("MCP_PG_POOL_MAX", "5")),
+,
     kwargs={"autocommit": True},
 )
 
@@ -309,3 +321,16 @@ def mcp_funnel():
     except Exception as e:
         out["error"] = str(e)
     return jsonify(out), 200
+
+
+# ── GET /api/v1/mcp/dashboard — serve the dashboard HTML through Flask ────
+
+@mcp_bp.get("/api/v1/mcp/dashboard")
+def mcp_dashboard():
+    """Serve the dashboard HTML directly so it goes through Cloudflare's /api/* route."""
+    from flask import Response
+    try:
+        with open("static/mcp-dashboard.html", "r") as f:
+            return Response(f.read(), mimetype="text/html")
+    except FileNotFoundError:
+        return Response("dashboard not found", status=404)

@@ -1031,12 +1031,22 @@ app = Flask(__name__, static_folder='static', static_url_path='/static')
 
 
 # ── MCP v2.1 telemetry + key validation ──────────────────────────
+_mcp_v21_status = {'registered': False, 'error': None, 'traceback': None}
 try:
     from flask_mcp_endpoints import mcp_bp
     app.register_blueprint(mcp_bp)
+    _mcp_v21_status['registered'] = True
     print('[mcp v2.1] blueprint registered: /api/v1/keys/validate, /api/v1/mcp/track, /api/v1/mcp/stats')
 except Exception as _mcp_err:
+    import traceback as _tb
+    _mcp_v21_status['error'] = str(_mcp_err)
+    _mcp_v21_status['traceback'] = _tb.format_exc()
     print(f'[mcp v2.1] blueprint registration FAILED: {_mcp_err}')
+
+@app.route('/api/v1/_mcp_status')
+def _mcp_status_route():
+    from flask import jsonify as _jsonify
+    return _jsonify(_mcp_v21_status), 200
 
 
 
