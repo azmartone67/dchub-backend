@@ -1517,7 +1517,7 @@ h1{font-size:28px;margin:24px 0 8px;color:#fff}
     try {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), 6000);
-      const r = await fetch('/api/v1/facilities/' + encodeURIComponent(slug), { signal: ctrl.signal });
+      const r = await fetch('/api/v1/facilities/by-slug/' + encodeURIComponent(slug), { signal: ctrl.signal });
       clearTimeout(t);
       if (r.ok) { data = await r.json(); break; }
     } catch (e) {
@@ -1530,7 +1530,7 @@ h1{font-size:28px;margin:24px 0 8px;color:#fff}
     contentEl.style.display = 'block';
     return;
   }
-  const f = data.facility || data;
+  const f = (data.data && data.data.facility) || data.data || data.facility || data;
   const fields = [
     ['Provider', f.provider], ['Status', f.status],
     ['City', f.city], ['State', f.state], ['Country', f.country],
