@@ -1,5 +1,5 @@
-[deploy]
-startCommand = "gunicorn main:app --bind 0.0.0.0:$PORT --workers 1 --threads 8 --timeout 120 --max-requests 1000 --max-requests-jitter 50 --preload"
+deploy]
+startCommand = "gunicorn main:app --bind 0.0.0.0:$PORT --workers 1 --threads 8 --timeout 120 --max-requests 1000 --max-requests-jitter 50"
 healthcheckPath = "/api/health"
 healthcheckTimeout = 120
 restartPolicyType = "ON_FAILURE"
