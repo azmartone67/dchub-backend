@@ -369,7 +369,7 @@ def stripe_webhook_mcp():
 
     payload = request.get_data()
     sig     = request.headers.get("Stripe-Signature", "")
-    secret  = os.environ.get("STRIPE_WEBHOOK_SECRET_MCP", "")
+    secret  = os.environ.get("STRIPE_WEBHOOK_SECRET_MCP") or os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 
     try:
         if secret:
