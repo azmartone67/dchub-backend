@@ -488,3 +488,37 @@ def env_stripe_check():
             k for k in os.environ.keys() if k.upper().startswith("STRIPE")
         ]),
     }), 200
+
+
+
+# ── POST /api/v1/mcp/trial-check — has this session used its trial? ────────
+
+@mcp_bp.post("/api/v1/mcp/trial-check")
+@_require_internal
+def trial_check():
+    """server.mjs calls this to ask: has session_id already consumed its
+    free preview for this tool? Returns {trial_used, prior_calls}.
+
+    A trial is "used" if mcp_call_log has any prior status='ok' OR
+    status='trial_used' row for the same (session_id, tool) combo.
+    """
+    body = request.get_json(silent=True) or {}
+    session_id = body.get("session_id")
+    tool = body.get("tool")
+    if not session_id or not tool:
+        return jsonify({"trial_used": True, "prior_calls": 0,
+                        "reason": "missing_session_or_tool"}), 200
+    try:
+        with _pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """SELECT COUNT(*) FROM mcp_call_log
+                   WHERE session_id = %s
+                     AND tool = %s
+                     AND status IN ('ok', 'trial_used')""",
+                (session_id, tool),
+            )
+            prior = cur.fetchone()[0]
+        return jsonify({"trial_used": prior > 0, "prior_calls": prior}), 200
+    except Exception as e:
+        return jsonify({"trial_used": True, "prior_calls": 0,
+                        "error": str(e)}), 200
