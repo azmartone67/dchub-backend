@@ -15814,19 +15814,64 @@ def cf_stub_state_rankings():
 
 @app.route('/api/v1/infrastructure', methods=['GET'])
 def cf_stub_infrastructure():
-    """Cloudflare Worker failover: infrastructure asset counts."""
+    """Infrastructure asset counts. Supports optional lat/lon/radius_km for nearby filtering.
+
+    When lat & lon provided, returns counts of assets within a bounding box
+    of `radius_km` (default 50 km) around the point. Otherwise returns global counts.
+    """
+    import math as _m
+    lat = request.args.get('lat', type=float)
+    lon = request.args.get('lon', type=float)
+    radius_km = request.args.get('radius_km', 50, type=float)
+    use_geo = (lat is not None and lon is not None)
+
+    bbox = None
+    if use_geo:
+        d_lat = radius_km / 111.0
+        d_lon = radius_km / (111.0 * max(_m.cos(_m.radians(lat)), 0.01))
+        bbox = (lat - d_lat, lat + d_lat, lon - d_lon, lon + d_lon)
+
+    LAT_COLS = ['latitude', 'lat']
+    LON_COLS = ['longitude', 'lon', 'lng']
+
+    conn = None
     try:
         conn = get_pg_connection()
         cur = conn.cursor()
         counts = {}
         for table in ['substations', 'transmission_lines_eia', 'gas_pipelines', 'discovered_power_plants']:
             try:
-                cur.execute(f"SELECT COUNT(*) FROM {table}")
-                counts[table] = cur.fetchone()[0]
+                if use_geo:
+                    found = False
+                    for lat_col in LAT_COLS:
+                        if found: break
+                        for lon_col in LON_COLS:
+                            try:
+                                cur.execute(
+                                    f"SELECT COUNT(*) FROM {table} "
+                                    f"WHERE {lat_col} BETWEEN %s AND %s AND {lon_col} BETWEEN %s AND %s",
+                                    bbox
+                                )
+                                counts[table] = cur.fetchone()[0]
+                                found = True
+                                break
+                            except Exception:
+                                try: conn.rollback()
+                                except Exception: pass
+                    if not found:
+                        counts[table] = 0
+                else:
+                    cur.execute(f"SELECT COUNT(*) FROM {table}")
+                    counts[table] = cur.fetchone()[0]
             except Exception:
                 counts[table] = 0
+                try: conn.rollback()
+                except Exception: pass
         return_pg_connection(conn)
-        return jsonify({"success": True, "counts": counts})
+        result = {"success": True, "counts": counts}
+        if use_geo:
+            result["filter"] = {"lat": lat, "lon": lon, "radius_km": radius_km}
+        return jsonify(result)
     except Exception as e:
         try:
             if conn: return_pg_connection(conn)
