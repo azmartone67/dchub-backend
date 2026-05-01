@@ -467,3 +467,24 @@ def dev_signup_form():
             return Response(f.read(), mimetype="text/html")
     except FileNotFoundError:
         return Response("<h1>Signup widget not deployed</h1>", status=404, mimetype="text/html")
+
+
+
+# ── GET /api/v1/_env_stripe_check — verify Stripe env vars are loaded ──────
+
+@mcp_bp.get("/api/v1/_env_stripe_check")
+@_require_internal
+def env_stripe_check():
+    """Diagnostic: is STRIPE_WEBHOOK_SECRET_MCP loaded? (no secret values exposed)"""
+    sec = os.environ.get("STRIPE_WEBHOOK_SECRET_MCP", "")
+    key = os.environ.get("STRIPE_SECRET_KEY", "")
+    return jsonify({
+        "STRIPE_WEBHOOK_SECRET_MCP_set":         bool(sec),
+        "STRIPE_WEBHOOK_SECRET_MCP_length":      len(sec) if sec else 0,
+        "STRIPE_WEBHOOK_SECRET_MCP_prefix":      (sec[:6] + "…") if sec else None,
+        "STRIPE_SECRET_KEY_set":                 bool(key),
+        "STRIPE_SECRET_KEY_prefix":              (key[:7] + "…") if key else None,
+        "all_env_vars_starting_with_STRIPE":     sorted([
+            k for k in os.environ.keys() if k.upper().startswith("STRIPE")
+        ]),
+    }), 200
