@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<title>DC Hub — Get your free dev key</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  *{box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0a0a0a;color:#e6e6e6;margin:0;padding:40px 20px;display:flex;justify-content:center;min-height:100vh}
+  .widget{max-width:520px;width:100%;background:#161616;border:1px solid #262626;border-radius:12px;padding:32px;align-self:flex-start}
+  h1{font-weight:300;letter-spacing:-.02em;margin:0 0 8px;font-size:28px}
+  .sub{color:#888;margin:0 0 28px;font-size:14px;line-height:1.5}
+  label{display:block;font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;font-weight:600}
+  input[type=email]{width:100%;padding:13px 14px;background:#0d0d0d;border:1px solid #2a2a2a;border-radius:6px;color:#e6e6e6;font-size:15px}
+  input[type=email]:focus{outline:none;border-color:#0066cc;background:#0a0a0a}
+  button{margin-top:16px;width:100%;padding:14px;background:#0066cc;color:white;border:0;border-radius:6px;font-size:15px;font-weight:500;cursor:pointer;transition:background .15s}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  button:hover:not(:disabled){background:#0080ff}
+  .result{margin-top:20px;padding:16px;background:#0d0d0d;border:1px solid #2a2a2a;border-radius:6px;font-size:13px;line-height:1.5}
+  .result.ok{border-color:#1f3d2e;background:#0a1f15}
+  .result.err{border-color:#3d1f1f;background:#1f0a0a;color:#f87171}
+  pre{background:#000;padding:12px;border-radius:4px;font-size:11px;overflow-x:auto;margin:8px 0;color:#9af}
+  .footer{font-size:12px;color:#666;margin-top:24px;line-height:1.6}
+  code{background:#0d0d0d;padding:2px 6px;border-radius:3px;font-size:11px;color:#9af}
+  a{color:#0080ff;text-decoration:none}
+  a:hover{text-decoration:underline}
+</style>
+</head><body>
+<div class="widget">
+  <h1>Get your free DC Hub MCP key</h1>
+  <p class="sub">30 seconds. No credit card. 100 calls/day across the free-tier tools.</p>
+
+  <label for="email">Email</label>
+  <input type="email" id="email" placeholder="you@example.com" autocomplete="email" autofocus>
+
+  <button id="btn" onclick="signup()">Get my key</button>
+
+  <div id="result" style="display:none" class="result"></div>
+
+  <div class="footer">
+    Free tier covers <code>search_facilities</code>, <code>get_facility</code>, <code>list_transactions</code>, <code>get_news</code>, <code>get_market_intel</code>, <code>get_pipeline</code>, <code>get_grid_data</code>, <code>get_water_risk</code> + more.
+    <br><br>
+    Want unlimited results + paid tools (<code>analyze_site</code>, <code>compare_sites</code>, <code>get_grid_intelligence</code>)? <a href="https://dchub.cloud/ai#pricing">Upgrade to Pro ($49/mo)</a>.
+  </div>
+</div>
+
+<script>
+async function signup() {
+  const btn    = document.getElementById('btn');
+  const result = document.getElementById('result');
+  const email  = document.getElementById('email').value.trim();
+
+  if (!email || !email.includes('@')) {
+    result.style.display = 'block';
+    result.className = 'result err';
+    result.textContent = 'Please enter a valid email.';
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Issuing key…';
+  result.style.display = 'none';
+
+  try {
+    const r = await fetch('/api/v1/dev-signup', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({email})
+    });
+    const d = await r.json();
+
+    result.style.display = 'block';
+    if (d.api_key) {
+      result.className = 'result ok';
+      result.innerHTML =
+        '<strong>' + (d.is_new ? '✓ Key issued' : '✓ Welcome back — your existing key:') + '</strong>' +
+        '<pre>' + d.api_key + '</pre>' +
+        '<strong>Next:</strong> drop this in your MCP client config as the <code>X-API-Key</code> header.' +
+        '<pre>{\n  "mcpServers": {\n    "dc-hub": {\n      "url": "https://dchub.cloud/mcp",\n      "headers": { "X-API-Key": "' + d.api_key + '" }\n    }\n  }\n}</pre>' +
+        '<a href="' + (d.upgrade_url || 'https://dchub.cloud/ai#pricing') + '">Upgrade to Pro →</a>  for unlimited + paid tools.';
+      btn.textContent = 'Done';
+    } else {
+      result.className = 'result err';
+      result.textContent = 'Error: ' + (d.error || JSON.stringify(d));
+      btn.disabled = false;
+      btn.textContent = 'Try again';
+    }
+  } catch (e) {
+    result.style.display = 'block';
+    result.className = 'result err';
+    result.textContent = 'Network error: ' + e.message;
+    btn.disabled = false;
+    btn.textContent = 'Try again';
+  }
+}
+
+document.getElementById('email').addEventListener('keypress', (e) => {
+  if (e.key === 'Enter') signup();
+});
+</script>
+</body></html>

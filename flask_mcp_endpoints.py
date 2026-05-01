@@ -345,3 +345,125 @@ def mcp_dashboard():
             return Response(f.read(), mimetype="text/html")
     except FileNotFoundError:
         return Response("dashboard not found", status=404)
+
+
+
+# ── POST /api/v1/stripe/webhook-mcp — Stripe → mcp_conversions ─────────────
+
+@mcp_bp.post("/api/v1/stripe/webhook-mcp")
+def stripe_webhook_mcp():
+    """Handle Stripe customer.subscription.{created,updated}.
+    Records conversion in mcp_conversions with attribution to the most recent
+    mcp_upgrade_signal for the customer's email.
+
+    Configure on Stripe dashboard: Webhooks → Add endpoint:
+      URL:     https://dchub.cloud/api/v1/stripe/webhook-mcp
+      Events:  customer.subscription.created, customer.subscription.updated
+      Secret:  store as STRIPE_WEBHOOK_SECRET_MCP env var on Railway.
+               Also needs STRIPE_SECRET_KEY env var to look up customer email.
+    """
+    try:
+        import stripe
+    except ImportError:
+        return jsonify({"error": "stripe library not installed"}), 500
+
+    payload = request.get_data()
+    sig     = request.headers.get("Stripe-Signature", "")
+    secret  = os.environ.get("STRIPE_WEBHOOK_SECRET_MCP", "")
+
+    try:
+        if secret:
+            event = stripe.Webhook.construct_event(payload, sig, secret)
+        else:
+            # No secret configured — accept (dev/test mode); production should set secret
+            event = json.loads(payload.decode("utf-8"))
+    except Exception as e:
+        return jsonify({"error": "invalid signature", "detail": str(e)}), 400
+
+    event_type = event.get("type", "") if isinstance(event, dict) else getattr(event, "type", "")
+    if event_type not in ("customer.subscription.created", "customer.subscription.updated"):
+        return jsonify({"ok": True, "ignored": event_type}), 200
+
+    obj = event["data"]["object"] if isinstance(event, dict) else event.data.object
+    obj = dict(obj) if not isinstance(obj, dict) else obj
+    customer_id = obj.get("customer")
+    sub_id      = obj.get("id")
+
+    # Resolve customer email
+    email = None
+    try:
+        api_key = os.environ.get("STRIPE_SECRET_KEY", "")
+        if api_key and customer_id:
+            stripe.api_key = api_key
+            cust = stripe.Customer.retrieve(customer_id)
+            email = (getattr(cust, "email", "") or "").lower() or None
+    except Exception:
+        pass
+    if not email:
+        return jsonify({"ok": False, "error": "couldnt resolve customer email"}), 200
+
+    # Determine plan + MRR
+    items = obj.get("items", {}).get("data", []) if obj.get("items") else []
+    plan_to   = "pro"
+    mrr_cents = 4900
+    if items:
+        price = items[0].get("price", {}) if isinstance(items[0], dict) else {}
+        plan_to   = price.get("lookup_key") or price.get("nickname") or "pro"
+        mrr_cents = price.get("unit_amount") or 4900
+
+    # Find most recent signal for this email (attribution)
+    attribution_id = None
+    try:
+        with _pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """SELECT s.id FROM mcp_upgrade_signals s
+                   LEFT JOIN mcp_dev_keys k ON k.api_key = s.session_id
+                   WHERE COALESCE(s.user_email, k.email) = %s
+                   ORDER BY s.created_at DESC LIMIT 1""",
+                (email,),
+            )
+            row = cur.fetchone()
+            attribution_id = row[0] if row else None
+    except Exception:
+        pass
+
+    # Insert (idempotent on stripe_subscription_id thanks to the UNIQUE constraint)
+    try:
+        with _pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO mcp_conversions
+                     (user_email, stripe_customer_id, stripe_subscription_id,
+                      plan_to, mrr_cents, source, attribution_signal_id)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (stripe_subscription_id) DO UPDATE
+                     SET plan_to   = EXCLUDED.plan_to,
+                         mrr_cents = EXCLUDED.mrr_cents
+                   RETURNING id""",
+                (email, customer_id, sub_id, plan_to, mrr_cents,
+                 "stripe_webhook_mcp", attribution_id),
+            )
+            conv_id = cur.fetchone()[0]
+    except Exception as e:
+        return jsonify({"error": "db insert failed", "detail": str(e)}), 500
+
+    return jsonify({
+        "ok":                    True,
+        "conversion_id":         conv_id,
+        "email":                 email,
+        "attribution_signal_id": attribution_id,
+        "plan_to":               plan_to,
+        "mrr_cents":             mrr_cents,
+    }), 200
+
+
+
+# ── GET /api/v1/dev-signup-form — Serve the widget HTML through Flask ─────
+
+@mcp_bp.get("/api/v1/dev-signup-form")
+def dev_signup_form():
+    """Serve the standalone signup widget. Embed via iframe or link from /ai."""
+    try:
+        with open("static/signup-widget.html", "r") as f:
+            return Response(f.read(), mimetype="text/html")
+    except FileNotFoundError:
+        return Response("<h1>Signup widget not deployed</h1>", status=404, mimetype="text/html")
