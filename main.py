@@ -1294,9 +1294,8 @@ def api_stats_shortcut():
     if qs:
         target += '%s' + qs
     return redirect(target)
-
+    
 @app.route('/api/facilities')
-@app.route('/api/v1/facilities')
 @require_plan('pro')
 def get_facilities():
     limit = min(int(request.args.get('limit', 2000)), 5000)
