@@ -668,6 +668,8 @@ def get_pipeline():
     market_filter = request.args.get('market')
     company_filter = request.args.get('company')
     quarter_filter = request.args.get('quarter')  # e.g. '2026-Q1'
+    country_filter = (request.args.get('country') or '').strip()
+    state_filter = (request.args.get('state') or '').strip()
     limit = request.args.get('limit', 200, type=int)
     
     pipeline = PIPELINE_DATA.copy()
@@ -727,6 +729,36 @@ def get_pipeline():
     
     if quarter_filter:
         pipeline = [p for p in pipeline if p.get('delivery') == quarter_filter]
+
+    if country_filter:
+        cf = country_filter.lower()
+        _COUNTRY_KEYS = {
+            'us': ['usa','united states','virginia','ashburn','texas','dallas','austin','california','silicon valley','oregon','iowa','georgia','atlanta','illinois','chicago','arizona','phoenix','ohio','columbus','north carolina','charlotte','nevada','reno','washington','quincy','new york'],
+            'de': ['germany','frankfurt','berlin','munich'],
+            'gb': ['uk','united kingdom','britain','london','manchester'],
+            'fr': ['france','paris','marseille'],
+            'nl': ['netherlands','amsterdam','rotterdam'],
+            'ie': ['ireland','dublin'],
+            'jp': ['japan','tokyo','osaka'],
+            'sg': ['singapore'],
+            'au': ['australia','sydney','melbourne'],
+            'in': ['india','mumbai','chennai','hyderabad'],
+            'br': ['brazil','sao paulo'],
+            'ca': ['canada','toronto','montreal'],
+            'es': ['spain','madrid','barcelona'],
+            'it': ['italy','milan','rome'],
+            'pl': ['poland','warsaw'],
+            'se': ['sweden','stockholm'],
+            'kr': ['korea','seoul'],
+            'cn': ['china','beijing','shanghai','shenzhen'],
+            'hk': ['hong kong','hk'],
+        }
+        keywords = _COUNTRY_KEYS.get(cf, [cf])
+        pipeline = [p for p in pipeline if any(k in p.get('market', '').lower() for k in keywords)]
+
+    if state_filter:
+        sf = state_filter.lower()
+        pipeline = [p for p in pipeline if sf in p.get('market', '').lower()]
     
     # Sort by delivery date
     pipeline.sort(key=lambda x: x.get('delivery', 'Z'))
