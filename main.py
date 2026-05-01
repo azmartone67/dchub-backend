@@ -4616,8 +4616,8 @@ def admin_key_audit():
     c.execute("""
         SELECT id, key_prefix, plan, rate_limit_tier, user_id
         FROM api_keys
-        WHERE (key_prefix LIKE 'dchub_pro_%' AND (plan != 'pro' OR plan IS NULL))
-           OR (key_prefix LIKE 'dchub_ent_%' AND (plan != 'enterprise' OR plan IS NULL))
+        WHERE (key_prefix ILIKE 'dchub_pro_%' AND (plan != 'pro' OR plan IS NULL))
+           OR (key_prefix ILIKE 'dchub_ent_%' AND (plan != 'enterprise' OR plan IS NULL))
     """)
     prefix_mismatches = c.fetchall()
 
@@ -5413,14 +5413,14 @@ MARKET_ALIASES = {
 }
 
 RAILWAY_EXCLUSION = """
-    AND provider NOT LIKE '%%Railway%%'
-    AND provider NOT LIKE '%%Railroad%%'
-    AND provider NOT LIKE '%%Rail %%'
-    AND provider NOT LIKE '%%SNCF%%'
-    AND provider NOT LIKE '%%Metro%%'
-    AND provider NOT LIKE '%%Transit%%'
-    AND provider NOT LIKE '%%Amtrak%%'
-    AND provider NOT LIKE '%%Bahn%%'
+    AND provider NOT ILIKE '%%Railway%%'
+    AND provider NOT ILIKE '%%Railroad%%'
+    AND provider NOT ILIKE '%%Rail %%'
+    AND provider NOT ILIKE '%%SNCF%%'
+    AND provider NOT ILIKE '%%Metro%%'
+    AND provider NOT ILIKE '%%Transit%%'
+    AND provider NOT ILIKE '%%Amtrak%%'
+    AND provider NOT ILIKE '%%Bahn%%'
 """
 
 # =============================================================================
@@ -6127,7 +6127,7 @@ def check_and_send_alert_emails():
             try:
                 c.execute("""
                     SELECT COUNT(*) FROM discovered_facilities
-                    WHERE market LIKE %s
+                    WHERE market ILIKE %s
                     AND created_at > NOW() - INTERVAL '1 day'
                 """, (f'%{market}%',))
                 new_count = c.fetchone()[0]
@@ -7468,7 +7468,7 @@ def compare_markets():
                     conditions.append('state = %s')
                     params.append(city)
                 else:
-                    conditions.append('city LIKE %s')
+                    conditions.append('city ILIKE %s')
                     params.append(f'%{city}%')
 
             where_clause = ' OR '.join(conditions)
@@ -7689,7 +7689,7 @@ def generate_market_pdf(markets, report_type):
                     conditions.append('state = %s')
                     params.append(city)
                 else:
-                    conditions.append('city LIKE %s')
+                    conditions.append('city ILIKE %s')
                     params.append(f'%{city}%')
 
             where_clause = ' OR '.join(conditions)
@@ -8570,11 +8570,11 @@ def _list_facilities_full():
                     conditions.append('state = %s')
                     params.append(city)
                 else:
-                    conditions.append('city LIKE %s')
+                    conditions.append('city ILIKE %s')
                     params.append(f'%{city}%')
             search_clause = f" AND ({' OR '.join(conditions)})"
         else:
-            search_clause = " AND (city LIKE %s OR state LIKE %s OR name LIKE %s OR provider LIKE %s)"
+            search_clause = " AND (city ILIKE %s OR state ILIKE %s OR name ILIKE %s OR provider ILIKE %s)"
             params.extend([f'%{q}%', f'%{q}%', f'%{q}%', f'%{q}%'])
 
         sql += search_clause
@@ -8585,8 +8585,8 @@ def _list_facilities_full():
         count_sql += " AND country = %s"
         params.append(country)
     if provider:
-        sql += " AND provider LIKE %s"
-        count_sql += " AND provider LIKE %s"
+        sql += " AND provider ILIKE %s"
+        count_sql += " AND provider ILIKE %s"
         params.append(f"%{provider}%")
     if status:
         sql += " AND status = %s"
@@ -8693,11 +8693,11 @@ def _list_facilities_free():
                     conditions.append('state = %s')
                     params.append(city)
                 else:
-                    conditions.append('city LIKE %s')
+                    conditions.append('city ILIKE %s')
                     params.append(f'%{city}%')
             search_clause = f" AND ({' OR '.join(conditions)})"
         else:
-            search_clause = " AND (city LIKE %s OR state LIKE %s OR name LIKE %s OR provider LIKE %s)"
+            search_clause = " AND (city ILIKE %s OR state ILIKE %s OR name ILIKE %s OR provider ILIKE %s)"
             params.extend([f'%{q}%', f'%{q}%', f'%{q}%', f'%{q}%'])
         sql += search_clause
         count_sql += search_clause
@@ -8707,8 +8707,8 @@ def _list_facilities_free():
         count_sql += " AND country = %s"
         params.append(country)
     if provider:
-        sql += " AND provider LIKE %s"
-        count_sql += " AND provider LIKE %s"
+        sql += " AND provider ILIKE %s"
+        count_sql += " AND provider ILIKE %s"
         params.append(f"%{provider}%")
     state = request.args.get('state')
     if state:
@@ -10463,7 +10463,7 @@ def email_unsubscribe():
         c = conn.cursor()
         c.execute("""
             UPDATE leads SET subscribed = 0 WHERE email IN (
-                SELECT DISTINCT email FROM email_queue WHERE body_html LIKE %s
+                SELECT DISTINCT email FROM email_queue WHERE body_html ILIKE %s
             )
         """, (f'%{token}%',))
         conn.commit()
@@ -12784,13 +12784,13 @@ def cleanup_testimonials():
         # Remove old-format raw JSON quotes
         c.execute("""
             DELETE FROM ai_testimonials 
-            WHERE quote LIKE 'AI agent used DC Hub%%tool with parameters%%'
+            WHERE quote ILIKE 'AI agent used DC Hub%%tool with parameters%%'
         """)
         old_format = c.rowcount
         # Remove entries where platform is 'unknown' and quote starts with 'unknown'
         c.execute("""
             DELETE FROM ai_testimonials
-            WHERE platform = 'unknown' AND quote LIKE 'unknown %%'
+            WHERE platform = 'unknown' AND quote ILIKE 'unknown %%'
         """)
         unknown_removed = c.rowcount
         # Remove test entries
@@ -13992,7 +13992,7 @@ def api_patch_propose():
                 cur = pg.cursor()
                 cur.execute("""
                     SELECT id, expected, actual, error FROM site_health_findings
-                    WHERE check_name=%s AND check_name NOT LIKE 'autoheal:%%'
+                    WHERE check_name=%s AND check_name NOT ILIKE 'autoheal:%%'
                     ORDER BY checked_at DESC LIMIT 1
                 """, (check_name,))
                 row = cur.fetchone()
@@ -15156,7 +15156,7 @@ def api_site_score():
         try:
             c.execute("""
                 SELECT COUNT(DISTINCT provider) FROM fiber_routes
-                WHERE UPPER(states_served) LIKE %s OR UPPER(states_served) LIKE %s
+                WHERE UPPER(states_served) ILIKE %s OR UPPER(states_served) ILIKE %s
             """, (f'%{state}%', f'%, {state}%'))
             fiber_carriers = c.fetchone()[0] or 0
             if fiber_carriers >= 5:
