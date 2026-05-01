@@ -15831,38 +15831,31 @@ def cf_stub_infrastructure():
         d_lon = radius_km / (111.0 * max(_m.cos(_m.radians(lat)), 0.01))
         bbox = (lat - d_lat, lat + d_lat, lon - d_lon, lon + d_lon)
 
-    LAT_COLS = ['latitude', 'lat']
-    LON_COLS = ['longitude', 'lon', 'lng']
+    # Explicit per-table geo column names (avoids rollback cascade from
+    # try-loop column-name guessing that failed silently for gas_pipelines).
+    TABLE_GEO = {
+        'substations':              ('latitude', 'longitude'),
+        'transmission_lines_eia':   ('latitude', 'longitude'),
+        'gas_pipelines':            ('lat',      'lng'),
+        'discovered_power_plants':  ('latitude', 'longitude'),
+    }
 
     conn = None
     try:
         conn = get_pg_connection()
         cur = conn.cursor()
         counts = {}
-        for table in ['substations', 'transmission_lines_eia', 'gas_pipelines', 'discovered_power_plants']:
+        for table, (lat_col, lon_col) in TABLE_GEO.items():
             try:
                 if use_geo:
-                    found = False
-                    for lat_col in LAT_COLS:
-                        if found: break
-                        for lon_col in LON_COLS:
-                            try:
-                                cur.execute(
-                                    f"SELECT COUNT(*) FROM {table} "
-                                    f"WHERE {lat_col} BETWEEN %s AND %s AND {lon_col} BETWEEN %s AND %s",
-                                    bbox
-                                )
-                                counts[table] = cur.fetchone()[0]
-                                found = True
-                                break
-                            except Exception:
-                                try: conn.rollback()
-                                except Exception: pass
-                    if not found:
-                        counts[table] = 0
+                    cur.execute(
+                        f"SELECT COUNT(*) FROM {table} "
+                        f"WHERE {lat_col} BETWEEN %s AND %s AND {lon_col} BETWEEN %s AND %s",
+                        bbox
+                    )
                 else:
                     cur.execute(f"SELECT COUNT(*) FROM {table}")
-                    counts[table] = cur.fetchone()[0]
+                counts[table] = cur.fetchone()[0]
             except Exception:
                 counts[table] = 0
                 try: conn.rollback()
