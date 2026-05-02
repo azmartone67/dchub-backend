@@ -92,7 +92,14 @@ def init_real_estate_db():
         conn.close()
     logger.info("✅ Real Estate Intelligence tables initialized")
 
-init_real_estate_db()
+try:
+    init_real_estate_db()
+except Exception as e:
+    import logging
+    logging.getLogger(__name__).warning(
+        "init_real_estate_db failed at import (%s) — module loads anyway, "
+        "will lazy-retry on first request", e
+    )
 
 
 class CountyAssessorAPI:
