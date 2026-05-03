@@ -592,9 +592,19 @@ def check_stale_dates():
         r'\s+(\d{1,2}),\s+(20\d{2})\b'
     )
     failures = []
+    import time as _t
+    cb = str(int(_t.time()))
     for url in pages:
+        bust_url = url + ('&' if '?' in url else '?') + '_doctor=' + cb
         try:
-            req = urllib.request.Request(url, headers={'User-Agent': 'DCHubDoctor/1.0'})
+            req = urllib.request.Request(
+                bust_url,
+                headers={
+                    'User-Agent': 'DCHubDoctor/1.0',
+                    'Cache-Control': 'no-cache',
+                    'Pragma': 'no-cache',
+                },
+            )
             html = urllib.request.urlopen(req, timeout=8).read().decode('utf-8', errors='ignore')
         except Exception:
             continue
