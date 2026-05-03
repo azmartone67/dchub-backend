@@ -14961,6 +14961,12 @@ def get_facility_by_id(facility_id):
                    OR df.source_id = %s
                 LIMIT 1
             """, (facility_id, facility_id, facility_id))
+        row = cur.fetchone()
+        if not row:
+            return jsonify({"success": False, "error": "Facility not found", "id": facility_id}), 404
+        cols = [d[0] for d in cur.description]
+        full_data = dict(zip(cols, row))
+
 
         # Tier gating: check if caller has Developer+ access
         internal_key = request.headers.get("X-Internal-Key", "")
