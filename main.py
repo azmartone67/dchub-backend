@@ -8673,8 +8673,8 @@ def _list_facilities_full():
 def _list_facilities_free():
     """Freemium facility listing -- max 5 results, basic fields only."""
     FREE_LIMIT = 5
-    BASIC_FIELDS = ('name', 'city', 'state', 'country', 'provider')
-
+    # Freemium facility listing -- max 5 results, IDs + basic fields (full data paywalled).
+    BASIC_FIELDS = ('id', 'name', 'city', 'state', 'country', 'provider', 'slug')
     q = request.args.get('q', '').strip()
     country = request.args.get('country')
     provider = request.args.get('provider')
