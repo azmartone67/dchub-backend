@@ -1,0 +1,67 @@
+name: DC Hub Daily Status Check
+
+on:
+  schedule:
+    # 09:00 UTC daily = 04:00 EST / 02:00 MST. Adjust if you want a different time.
+    - cron: "0 9 * * *"
+  workflow_dispatch:  # lets you run it manually from the GitHub UI
+
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run dchub_status.py
+        id: doctor
+        run: |
+          # Save output for later steps
+          set +e
+          python3 dchub_status.py | tee status-output.txt
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Parse summary
+        id: parse
+        run: |
+          # Extract the OK/PAID/WARN/FAIL counts from the summary line
+          line=$(grep -E "^\s+OK:" status-output.txt | head -1)
+          echo "summary=$line" >> "$GITHUB_OUTPUT"
+
+      - name: Upload status output as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: status-output-${{ github.run_id }}
+          path: status-output.txt
+          retention-days: 30
+
+      - name: Open issue on regression
+        if: steps.doctor.outputs.exit_code != '0'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const output = fs.readFileSync('status-output.txt', 'utf8').slice(-3000);
+            const date = new Date().toISOString().slice(0, 10);
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `[STATUS] Daily check failed — ${date}`,
+              body: `Daily \`dchub_status.py\` run reported failures.\n\n\`\`\`\n${output}\n\`\`\`\n\nView the full artifact at the bottom of [this run](${context.payload.repository.html_url}/actions/runs/${context.runId}).`,
+              labels: ['monitoring', 'auto']
+            });
+
+      - name: Final status
+        run: |
+          if [ "${{ steps.doctor.outputs.exit_code }}" != "0" ]; then
+            echo "::error::Doctor reported FAIL items — see issue and artifact."
+            exit 1
+          fi
+          echo "::notice::Doctor passed — ${{ steps.parse.outputs.summary }}"

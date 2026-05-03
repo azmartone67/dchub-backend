@@ -15884,6 +15884,114 @@ def cf_stub_infrastructure():
             pass
         return jsonify({"success": False, "error": str(e)}), 500
 
+@app.route('/api/v1/energy/renewable', methods=['GET'])
+def api_v1_energy_renewable():
+    """Renewable energy data: PPAs (energy_ppas) + utility-scale plants (power_plants_eia).
+
+    Query params:
+      energy_type — solar | wind | combined (default: combined)
+      state       — US state abbr (e.g. 'TX'); empty = all states
+      lat / lon   — optional, narrows power plants to ~1 deg bounding box
+      limit       — max rows per source (default 25, max 100)
+    """
+    energy_type = (request.args.get('energy_type') or 'combined').lower().strip()
+    state = (request.args.get('state') or '').upper().strip()
+    lat = request.args.get('lat', type=float)
+    lon = request.args.get('lon', type=float)
+    limit = min(request.args.get('limit', 25, type=int), 100)
+
+    conn = None
+    try:
+        conn = get_read_db()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SET LOCAL statement_timeout = 8000")
+
+        # ── 1. PPAs from energy_ppas ──
+        ppa_where = []
+        ppa_params = []
+        if state and len(state) <= 3:
+            ppa_where.append("UPPER(state) = UPPER(%s)")
+            ppa_params.append(state)
+        if energy_type and energy_type != 'combined':
+            ppa_where.append("LOWER(fuel_source) LIKE %s")
+            ppa_params.append(f"%{energy_type.lower()}%")
+        ppa_clause = " AND ".join(ppa_where) if ppa_where else "1=1"
+        try:
+            cur.execute(
+                "SELECT buyer, power_mw, fuel_source, state, facility_name "
+                f"FROM energy_ppas WHERE {ppa_clause} "
+                "ORDER BY power_mw DESC NULLS LAST LIMIT %s",
+                ppa_params + [limit])
+            ppas = [dict(r) for r in cur.fetchall()]
+        except Exception:
+            ppas = []
+
+        # PPA totals (always)
+        try:
+            cur.execute("SELECT COUNT(*), COALESCE(SUM(power_mw), 0) FROM energy_ppas")
+            tot_row = cur.fetchone() or {}
+            ppas_total_count = int(tot_row.get('count', 0) or 0)
+            ppas_total_mw = round(float(tot_row.get('coalesce', 0) or 0), 0)
+        except Exception:
+            ppas_total_count = 0
+            ppas_total_mw = 0
+
+        # ── 2. Utility-scale plants from power_plants_eia ──
+        installations = []
+        try:
+            plant_where = []
+            plant_params = []
+            if energy_type == 'solar':
+                plant_where.append("UPPER(energy_source) IN ('SUN', 'SOLAR')")
+            elif energy_type == 'wind':
+                plant_where.append("UPPER(energy_source) IN ('WND', 'WIND')")
+            else:
+                plant_where.append("UPPER(energy_source) IN ('SUN', 'SOLAR', 'WND', 'WIND')")
+            if state and len(state) <= 3:
+                plant_where.append("UPPER(state) = UPPER(%s)")
+                plant_params.append(state)
+            if lat is not None and lon is not None:
+                plant_where.append("lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s")
+                plant_params.extend([lat - 1.0, lat + 1.0, lon - 1.0, lon + 1.0])
+            cur.execute(
+                "SELECT plant_name, state, capacity_mw, energy_source, lat, lng "
+                f"FROM power_plants_eia WHERE {' AND '.join(plant_where)} "
+                "ORDER BY capacity_mw DESC NULLS LAST LIMIT %s",
+                plant_params + [limit])
+            installations = [dict(r) for r in cur.fetchall()]
+        except Exception:
+            installations = []
+
+        result = {
+            'success': True,
+            'dc_industry_ppas': ppas,
+            'ppa_count': len(ppas),
+            'ppa_total_count': ppas_total_count,
+            'ppa_total_mw': ppas_total_mw,
+            'renewable_installations': installations,
+            'installations_count': len(installations),
+            'filters_applied': {
+                'energy_type': energy_type,
+                'state': state or 'all',
+                'lat': lat,
+                'lon': lon,
+            },
+            'data_source': 'DC Hub + EIA-860',
+        }
+        if not ppas and not installations:
+            result['note'] = (f"No {energy_type} renewables found"
+                              + (f" in {state}" if state else "")
+                              + ". Try energy_type=combined or remove the state filter.")
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"renewable_energy error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        if conn:
+            try: conn.close()
+            except Exception: pass
+
+
 @app.route('/api/v1/energy/summary', methods=['GET'])
 def cf_stub_energy_summary():
     """Cloudflare Worker failover: energy overview (source: eia_retail_rates)."""
