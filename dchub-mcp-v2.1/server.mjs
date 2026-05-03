@@ -438,7 +438,7 @@ app.delete('/mcp', async (req, res) => {
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`DC Hub MCP Server v2.1.0 on port ${PORT}`);
+  console.log(`DC Hub MCP Server v2.1.1 on port ${PORT}`);
   console.log(`  MCP:     http://0.0.0.0:${PORT}/mcp`);
   console.log(`  Health:  http://0.0.0.0:${PORT}/health`);
   console.log(`  Backend: ${API_BASE}`);
