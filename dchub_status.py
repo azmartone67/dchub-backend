@@ -253,7 +253,24 @@ def assess(api_key=None, verbose=False):
     if not ok:
         record("MCP initialize", "fail", info)
         print(f"\n{RED}Cannot continue — MCP handshake failed.{RESET}")
-        return results
+        # Phase 8 — automated stale-date check on customer-facing pages.
+    try:
+        _stale = check_stale_dates()
+        if _stale:
+            for hit in _stale:
+                check(
+                    f"stale-date {hit['url']} → {hit['date']}",
+                    "fail",
+                    hit['context'][:80],
+                )
+                results['issues'].append(
+                    (f"stale-date {hit['url']}", "fail", hit['date'])
+                )
+                results['fail'] = results.get('fail', 0) + 1
+    except Exception as e:
+        # never let the meta-check break the doctor itself
+        pass
+    return results
     record("MCP initialize", "ok", info)
 
     # ─── 3. MCP Tools ───
@@ -546,6 +563,51 @@ def assess(api_key=None, verbose=False):
         for label, verdict, detail in results["issues"]:
             print(f"    {fmt(verdict)} {label}: {detail}")
     return results
+
+
+# =============================================================================
+# Stale-date detector (Phase 8)
+# Scans customer-facing pages for dates in the past. Catches the
+# 'Founding Members closes March 31' class of bug structurally instead of
+# relying on memory.
+# =============================================================================
+def check_stale_dates():
+    """Return list of {url, date, context} for any past dates found."""
+    import re
+    import datetime
+    import urllib.request
+    pages = [
+        'https://dchub.cloud/pricing',
+        'https://dchub.cloud/',
+        'https://dchub.cloud/ai',
+    ]
+    today = datetime.date.today()
+    months = {
+        'January': 1, 'February': 2, 'March': 3, 'April': 4,
+        'May': 5, 'June': 6, 'July': 7, 'August': 8,
+        'September': 9, 'October': 10, 'November': 11, 'December': 12,
+    }
+    pattern = re.compile(
+        r'\b(January|February|March|April|May|June|July|August|September|October|November|December)'
+        r'\s+(\d{1,2}),\s+(20\d{2})\b'
+    )
+    failures = []
+    for url in pages:
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': 'DCHubDoctor/1.0'})
+            html = urllib.request.urlopen(req, timeout=8).read().decode('utf-8', errors='ignore')
+        except Exception:
+            continue
+        for m in pattern.finditer(html):
+            try:
+                d = datetime.date(int(m.group(3)), months[m.group(1)], int(m.group(2)))
+                if d < today:
+                    raw = html[max(0, m.start() - 40):m.end() + 20]
+                    snippet = raw.replace('\n', ' ').replace('\r', ' ').strip()
+                    failures.append({'url': url, 'date': str(d), 'context': snippet})
+            except Exception:
+                pass
+    return failures
 
 
 if __name__ == "__main__":
