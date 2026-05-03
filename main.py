@@ -14202,6 +14202,114 @@ def api_claude_gateway_probe():
     return jsonify(diag)
 
 
+
+
+# =============================================================================
+# /api/v1/me  +  /api/v1/usage   — Phase 7 conversion-funnel visibility
+# Lets dev-tier users see their own quota, and gives /dashboard the data it
+# needs to render in-product upgrade prompts at the right moment.
+# Defensive: falls back to safe placeholders if the request-log table is
+# missing or the schema differs from what we assume.
+# =============================================================================
+@app.route('/api/v1/me', methods=['GET'])
+def api_v1_me():
+    api_key = request.headers.get('X-API-Key', '') or request.args.get('api_key', '')
+    if not api_key:
+        return jsonify({'success': False, 'error': 'no_api_key'}), 401
+    import hashlib as _hl
+    key_hash = _hl.sha256(api_key.encode()).hexdigest()
+    conn = None
+    try:
+        conn = get_read_db()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("""
+            SELECT u.id, u.email, COALESCE(u.plan,'free') AS plan,
+                   u.created_at AS user_created_at,
+                   ak.created_at AS key_issued_at,
+                   ak.is_active
+            FROM api_keys ak
+            JOIN users u ON ak.user_id = u.id
+            WHERE ak.key_hash = %s AND ak.is_active = 1
+            LIMIT 1
+        """, (key_hash,))
+        row = cur.fetchone()
+        if not row:
+            return jsonify({'success': False, 'error': 'invalid_or_revoked_key'}), 401
+        return jsonify({'success': True, 'user': dict(row)})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        if conn:
+            try: conn.close()
+            except Exception: pass
+
+
+@app.route('/api/v1/usage', methods=['GET'])
+def api_v1_usage():
+    api_key = request.headers.get('X-API-Key', '') or request.args.get('api_key', '')
+    if not api_key:
+        return jsonify({'success': False, 'error': 'no_api_key'}), 401
+    import hashlib as _hl
+    key_hash = _hl.sha256(api_key.encode()).hexdigest()
+    DAILY_QUOTA = {'free': 100, 'developer': 1000, 'pro': 100000, 'enterprise': 1000000}
+    conn = None
+    try:
+        conn = get_read_db()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("""
+            SELECT u.id, COALESCE(u.plan,'free') AS plan
+            FROM api_keys ak JOIN users u ON ak.user_id = u.id
+            WHERE ak.key_hash = %s AND ak.is_active = 1 LIMIT 1
+        """, (key_hash,))
+        u = cur.fetchone()
+        if not u:
+            return jsonify({'success': False, 'error': 'invalid_key'}), 401
+        plan = (u.get('plan') or 'free').lower()
+        quota = DAILY_QUOTA.get(plan, 100)
+        today = 0
+        last_7 = []
+        by_tool = []
+        # Try a few likely log-table names; fall back gracefully.
+        for table in ('api_request_log', 'request_log', 'api_calls', 'mcp_request_log'):
+            try:
+                cur.execute(f"SELECT COUNT(*) AS c FROM {table} WHERE user_id = %s AND created_at >= CURRENT_DATE", (u['id'],))
+                today = int(cur.fetchone()['c'] or 0)
+                cur.execute(f"""
+                    SELECT DATE(created_at) AS d, COUNT(*) AS n
+                    FROM {table}
+                    WHERE user_id = %s AND created_at >= CURRENT_DATE - INTERVAL '7 days'
+                    GROUP BY DATE(created_at) ORDER BY d
+                """, (u['id'],))
+                last_7 = [{'date': str(r['d']), 'requests': int(r['n'])} for r in cur.fetchall()]
+                cur.execute(f"""
+                    SELECT tool_name, COUNT(*) AS n
+                    FROM {table}
+                    WHERE user_id = %s AND created_at >= CURRENT_DATE - INTERVAL '7 days'
+                    GROUP BY tool_name ORDER BY n DESC LIMIT 10
+                """, (u['id'],))
+                by_tool = [{'tool': r['tool_name'], 'count': int(r['n'])} for r in cur.fetchall()]
+                break  # found a working table — stop trying
+            except Exception:
+                conn.rollback()
+                continue
+        pct = round(100.0 * today / quota, 1) if quota else 0
+        return jsonify({
+            'success': True,
+            'plan': plan,
+            'today': today,
+            'daily_quota': quota,
+            'pct_of_daily': pct,
+            'last_7_days': last_7,
+            'top_tools': by_tool,
+            'upgrade_url': 'https://dchub.cloud/pricing' if plan in ('free','developer') else None,
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        if conn:
+            try: conn.close()
+            except Exception: pass
+
 if __name__ == '__main__':
     print("🚀 DC Hub API v86 Starting...")
     print(f"📊 PDF Generation: {'✅ Available' if PDF_AVAILABLE else '❌ Disabled'}")
