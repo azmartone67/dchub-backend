@@ -14967,7 +14967,6 @@ def get_facility_by_id(facility_id):
                 row = cur.fetchone()
                 if not row:
                     # fall through to legacy slug/merged_facility_id/source_id lookup
-                    cur.execute = cur.execute  # no-op marker; re-run real query below
                     pass
                 else:
                     cols = [d[0] for d in cur.description]
