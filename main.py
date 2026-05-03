@@ -14246,6 +14246,14 @@ def api_v1_me():
 
 @app.route('/api/v1/usage', methods=['GET'])
 def api_v1_usage():
+    """Phase 8 hotfix-3: real schema-aware usage stats.
+
+    Per-user 'today' count comes from users.api_calls_today (the canonical
+    counter that's incremented on every authenticated API call).
+    'last_7_days' and 'top_tools' are PLATFORM-WIDE aggregates from
+    mcp_tool_calls (which is IP-attributed only — no user_id column).
+    Labeled accordingly in the response so the UI can disclose this.
+    """
     api_key = request.headers.get('X-API-Key', '') or request.args.get('api_key', '')
     if not api_key:
         return jsonify({'success': False, 'error': 'no_api_key'}), 401
@@ -14256,8 +14264,13 @@ def api_v1_usage():
     try:
         conn = get_read_db()
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        # Look up user + today's per-user count (users.api_calls_today is
+        # the canonical counter — already populated by existing tracking).
         cur.execute("""
-            SELECT u.id, COALESCE(u.plan,'free') AS plan
+            SELECT u.id,
+                   COALESCE(u.plan,'free') AS plan,
+                   COALESCE(u.api_calls_today, 0) AS api_calls_today,
+                   COALESCE(u.api_calls_total, 0) AS api_calls_total
             FROM api_keys ak JOIN users u ON ak.user_id = u.id
             WHERE ak.key_hash = %s AND ak.is_active = 1 LIMIT 1
         """, (key_hash,))
@@ -14266,41 +14279,52 @@ def api_v1_usage():
             return jsonify({'success': False, 'error': 'invalid_key'}), 401
         plan = (u.get('plan') or 'free').lower()
         quota = DAILY_QUOTA.get(plan, 100)
-        today = 0
+        today = int(u.get('api_calls_today') or 0)
+        total = int(u.get('api_calls_total') or 0)
+
+        # Platform-wide last-7-days breakdown from mcp_tool_calls
         last_7 = []
+        try:
+            cur.execute("""
+                SELECT DATE(created_at) AS d, COUNT(*) AS n
+                FROM mcp_tool_calls
+                WHERE created_at >= CURRENT_DATE - INTERVAL '7 days'
+                GROUP BY DATE(created_at)
+                ORDER BY d
+            """)
+            last_7 = [{'date': str(r['d']), 'requests': int(r['n'])} for r in cur.fetchall()]
+        except Exception:
+            try: conn.rollback()
+            except Exception: pass
+
+        # Platform-wide top tools (last 7 days) from mcp_tool_calls
         by_tool = []
-        # Try a few likely log-table names; fall back gracefully.
-        for table in ('api_request_log', 'request_log', 'api_calls', 'mcp_request_log'):
-            try:
-                cur.execute(f"SELECT COUNT(*) AS c FROM {table} WHERE user_id = %s AND created_at >= CURRENT_DATE", (u['id'],))
-                today = int(cur.fetchone()['c'] or 0)
-                cur.execute(f"""
-                    SELECT DATE(created_at) AS d, COUNT(*) AS n
-                    FROM {table}
-                    WHERE user_id = %s AND created_at >= CURRENT_DATE - INTERVAL '7 days'
-                    GROUP BY DATE(created_at) ORDER BY d
-                """, (u['id'],))
-                last_7 = [{'date': str(r['d']), 'requests': int(r['n'])} for r in cur.fetchall()]
-                cur.execute(f"""
-                    SELECT tool_name, COUNT(*) AS n
-                    FROM {table}
-                    WHERE user_id = %s AND created_at >= CURRENT_DATE - INTERVAL '7 days'
-                    GROUP BY tool_name ORDER BY n DESC LIMIT 10
-                """, (u['id'],))
-                by_tool = [{'tool': r['tool_name'], 'count': int(r['n'])} for r in cur.fetchall()]
-                break  # found a working table — stop trying
-            except Exception:
-                conn.rollback()
-                continue
+        try:
+            cur.execute("""
+                SELECT tool_name, COUNT(*) AS n
+                FROM mcp_tool_calls
+                WHERE created_at >= CURRENT_DATE - INTERVAL '7 days'
+                GROUP BY tool_name
+                ORDER BY n DESC
+                LIMIT 10
+            """)
+            by_tool = [{'tool': r['tool_name'], 'count': int(r['n'])} for r in cur.fetchall()]
+        except Exception:
+            try: conn.rollback()
+            except Exception: pass
+
         pct = round(100.0 * today / quota, 1) if quota else 0
         return jsonify({
             'success': True,
             'plan': plan,
             'today': today,
+            'total_all_time': total,
             'daily_quota': quota,
             'pct_of_daily': pct,
             'last_7_days': last_7,
+            'last_7_days_scope': 'platform',  # not per-user; mcp_tool_calls is IP-attributed
             'top_tools': by_tool,
+            'top_tools_scope': 'platform',
             'upgrade_url': 'https://dchub.cloud/pricing' if plan in ('free','developer') else None,
         })
     except Exception as e:
