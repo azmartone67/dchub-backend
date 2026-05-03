@@ -14948,48 +14948,6 @@ def get_facility_by_id(facility_id):
             """, (int_id,))
 
         except ValueError:
-            # Composite-id shape (paid-tier search result): trailing -<8 hex>
-            # Resolve via the same MD5 hash logic used by /api/v1/facilities/<path:slug>.
-            parts_for_hash = facility_id.rsplit('-', 1)
-            if (len(parts_for_hash) == 2
-                    and len(parts_for_hash[1]) == 8
-                    and all(c in '0123456789abcdef' for c in parts_for_hash[1].lower())):
-                cur.execute("""
-                    SELECT df.id, df.name, df.provider, df.city, df.state, df.country, df.market AS region,
-                           df.latitude, df.longitude, df.power_mw, df.status, df.address, df.source,
-                           f.permit_date, f.approval_date, f.co_date,
-                           f.permit_source, f.permit_confidence::float AS permit_confidence
-                    FROM discovered_facilities df
-                    LEFT JOIN facilities f ON f.id = df.merged_facility_id
-                    WHERE LEFT(MD5(df.id::text), 8) = %s
-                    LIMIT 1
-                """, (parts_for_hash[1].lower(),))
-                row = cur.fetchone()
-                if not row:
-                    # fall through to legacy slug/merged_facility_id/source_id lookup
-                    pass
-                else:
-                    cols = [d[0] for d in cur.description]
-                    full_data = dict(zip(cols, row))
-                    # short-circuit: emulate the post-fetch path (tier gating)
-                    internal_key = request.headers.get('X-Internal-Key', '')
-                    is_internal = is_valid_internal_key(internal_key)
-                    api_key = request.headers.get('X-API-Key', '') or request.args.get('api_key', '')
-                    caller_plan = 'free'
-                    if is_internal:
-                        caller_plan = 'pro'
-                    elif api_key:
-                        try:
-                            cur2 = conn.cursor()
-                            cur2.execute('SELECT u.plan FROM api_keys ak JOIN users u ON ak.user_id = u.id WHERE ak.key_hash = %s AND ak.is_active = 1 LIMIT 1', (api_key,))
-                            pr = cur2.fetchone()
-                            if pr: caller_plan = pr[0] or 'free'
-                        except Exception:
-                            pass
-                    if caller_plan in ('pro', 'enterprise', 'developer'):
-                        return jsonify({'success': True, 'data': full_data})
-                    free_data = {k: v for k, v in full_data.items() if k in ('id','name','provider','city','state','country','status','region','permit_date','permit_source')}
-                    return jsonify({'success': True, 'data': free_data, 'tier': 'free', 'upgrade_url': 'https://dchub.cloud/pricing'})
             # hex string / slug fallback (slug first — most common from search results)
             cur.execute("""
                 SELECT df.id, df.name, df.provider, df.city, df.state, df.country, df.market AS region,
@@ -15004,6 +14962,19 @@ def get_facility_by_id(facility_id):
                 LIMIT 1
             """, (facility_id, facility_id, facility_id))
         row = cur.fetchone()
+        if not row:
+            # Fallback: composite paid-tier IDs come from the `facilities` table directly
+            # (text PK), not discovered_facilities. Try a direct lookup there before 404'ing.
+            cur.execute("""
+                SELECT id, name, provider, city, state, country, region,
+                       latitude, longitude, power_mw, status, address, source,
+                       permit_date, approval_date, co_date,
+                       permit_source, permit_confidence::float AS permit_confidence
+                FROM facilities
+                WHERE id = %s
+                LIMIT 1
+            """, (facility_id,))
+            row = cur.fetchone()
         if not row:
             return jsonify({"success": False, "error": "Facility not found", "id": facility_id}), 404
         cols = [d[0] for d in cur.description]
