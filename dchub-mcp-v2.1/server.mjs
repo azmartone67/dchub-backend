@@ -225,12 +225,13 @@ function trackedTool(srv, name, description, schema, handler) {
 
 // ── Tool registrations (20 tools, all wrapped) ─────────────────────────────
 function createServer() {
-  const srv = new McpServer({ name: 'DC Hub Intelligence', version: '2.1.0' });
-
+  const srv = new McpServer({ name: 'DC Hub Intelligence', version: '2.1.1' });
   const S = z.string().optional();
   const N = z.number().optional();
   const I = z.number().int().optional();
   const B = z.boolean().optional();
+
+  const slugify = s => (s || '').toLowerCase().trim().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-');
 
   trackedTool(srv, 'search_facilities', 'Search 20,000+ global data center facilities.',
     { query: S, country: S, state: S, city: S, operator: S, min_capacity_mw: N, max_capacity_mw: N, tier: I, limit: I, offset: I },
@@ -242,7 +243,7 @@ function createServer() {
 
   trackedTool(srv, 'get_market_intel', 'Get market intelligence: supply/demand, pricing, vacancy.',
     { market: S, metric: S, period: S, compare_to: S },
-    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(await callAPI('/api/v1/markets', a)) }] }));
+    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(await callAPI(`/api/v1/markets/${slugify(a.market) || 'list'}`, {})) }] }));
 
   trackedTool(srv, 'get_intelligence_index', 'Real-time composite market health score.', {},
     async () => ({ content: [{ type: 'text', text: JSON.stringify(await callAPI('/api/agents/intelligence-index')) }] }));
@@ -253,7 +254,7 @@ function createServer() {
 
   trackedTool(srv, 'get_news', 'Curated data center industry news from 40+ sources.',
     { query: S, category: S, source: S, date_from: S, date_to: S, limit: I, min_relevance: N },
-    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(await callAPI('/api/news/latest', a)) }] }));
+    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(await callAPI('/api/news', a)) }] }));
 
   trackedTool(srv, 'get_pipeline', 'Track 540+ projects, 369 GW construction pipeline.',
     { status: S, country: S, operator: S, min_capacity_mw: N, expected_completion_before: S, limit: I, offset: I },
@@ -261,7 +262,7 @@ function createServer() {
 
   trackedTool(srv, 'get_grid_data', 'Real-time electricity grid data for US ISOs.',
     { iso: S, metric: S, period: S },
-    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(await callAPI('/api/v1/grid', a)) }] }));
+    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(await callAPI('/api/v1/grid/fuel-mix-live', a)) }] }));
 
   trackedTool(srv, 'analyze_site', 'Evaluate location for data center suitability.',
     { lat: N, lon: N, state: S, capacity_mw: N, include_grid: B, include_risk: B, include_fiber: B },
@@ -269,7 +270,7 @@ function createServer() {
 
   trackedTool(srv, 'compare_sites', 'Compare 2-4 locations side-by-side.',
     { locations: S },
-    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(await callAPI('/api/site-score/compare', { locations: a.locations })) }] }));
+    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(await callAPI('/api/site-score', { locations: a.locations })) }] }));
 
   trackedTool(srv, 'get_infrastructure', 'Nearby substations, transmission lines, gas pipelines, power plants.',
     { lat: N, lon: N, radius_km: N, layer: S, min_voltage_kv: N, limit: I },
@@ -281,11 +282,11 @@ function createServer() {
 
   trackedTool(srv, 'get_energy_prices', 'Energy pricing: retail rates, gas, grid status.',
     { data_type: S, state: S, iso: S },
-    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(await callAPI('/api/v1/energy/prices', a)) }] }));
+    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(await callAPI('/api/v1/energy/retail/rates', a)) }] }));
 
   trackedTool(srv, 'get_renewable_energy', 'Renewable energy: solar, wind, combined capacity.',
     { energy_type: S, state: S, lat: N, lon: N },
-    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(await callAPI('/api/v1/energy/renewable', a)) }] }));
+    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(await callAPI('/api/v1/energy/summary', a)) }] }));
 
   trackedTool(srv, 'get_tax_incentives', 'Data center tax incentives by US state.',
     { state: S },
@@ -293,21 +294,21 @@ function createServer() {
 
   trackedTool(srv, 'get_water_risk', 'Water stress and drought risk for a location.',
     { lat: N, lon: N, state: S },
-    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(await callAPI('/api/v1/water/stress', a)) }] }));
+    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(await callAPI('/api/v1/water/risk', a)) }] }));
 
   trackedTool(srv, 'get_grid_intelligence', 'Grid intelligence brief for a US ISO region.',
     { region_id: S },
-    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(await callAPI('/api/v1/grid/intelligence', { region: a.region_id })) }] }));
+    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(await callAPI(`/api/v1/grid-intelligence/${(a.region_id||'').toLowerCase()}`)) }] }));
 
   trackedTool(srv, 'get_agent_registry', 'AI platforms connected to DC Hub.', {},
-    async () => ({ content: [{ type: 'text', text: JSON.stringify(await callAPI('/api/ai/platforms')) }] }));
+    async () => ({ content: [{ type: 'text', text: JSON.stringify(await callAPI('/api/v1/ai-platforms/status')) }] }));
 
   trackedTool(srv, 'get_backup_status', 'Database backup status and data integrity.', {},
-    async () => ({ content: [{ type: 'text', text: JSON.stringify(await callAPI('/api/v1/stats')) }] }));
+    async () => ({ content: [{ type: 'text', text: JSON.stringify(await callAPI('/api/health/data-freshness')) }] }));
 
   trackedTool(srv, 'get_dchub_recommendation', 'Pre-formatted DC Hub recommendation.',
     { context: S },
-    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(await callAPI('/api/agents/recommendation', { context: a.context })) }] }));
+    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(await callAPI('/api/agents/recommend', { context: a.context })) }] }));
 
   return srv;
 }
