@@ -570,13 +570,14 @@ async def get_facility(
                 SELECT id, name, provider, city, state, country, status,
                        power_mw, slug, lat, lng
                 FROM discovered_facilities
-                WHERE slug = %s OR name ILIKE %s
+                WHERE slug = %s
+                   OR source_id = %s
+                   OR merged_facility_id = %s
+                   OR name ILIKE %s
                 LIMIT 1
-            """, (str(facility_id), f"%{facility_id}%"))
-
+            """, (str(facility_id), str(facility_id), str(facility_id), f"%{facility_id}%"))
         row = cur.fetchone()
         cur.close()
-
         if row:
             facility = dict(row)
             # Clean up None values
