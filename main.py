@@ -14946,8 +14946,9 @@ def get_facility_by_id(facility_id):
                 LEFT JOIN facilities f ON f.id = df.merged_facility_id
                 WHERE df.id = %s LIMIT 1
             """, (int_id,))
+
         except ValueError:
-            # hex string — look up via merged_facility_id
+            # hex string / slug fallback (slug first — most common from search results)
             cur.execute("""
                 SELECT df.id, df.name, df.provider, df.city, df.state, df.country, df.market AS region,
                        df.latitude, df.longitude, df.power_mw, df.status, df.address, df.source,
@@ -14955,13 +14956,11 @@ def get_facility_by_id(facility_id):
                        f.permit_source, f.permit_confidence::float AS permit_confidence
                 FROM discovered_facilities df
                 LEFT JOIN facilities f ON f.id = df.merged_facility_id
-                WHERE df.merged_facility_id = %s OR df.source_id = %s LIMIT 1
-            """, (facility_id, facility_id))
-        row = cur.fetchone()
-        if not row:
-            return jsonify({"success": False, "error": "Facility not found", "id": facility_id}), 404
-        cols = [d[0] for d in cur.description]
-        full_data = dict(zip(cols, row))
+                WHERE df.slug = %s
+                   OR df.merged_facility_id = %s
+                   OR df.source_id = %s
+                LIMIT 1
+            """, (facility_id, facility_id, facility_id))
 
         # Tier gating: check if caller has Developer+ access
         internal_key = request.headers.get("X-Internal-Key", "")
