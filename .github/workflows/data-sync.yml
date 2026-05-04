@@ -25,6 +25,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - name: Run all standalone loaders (phase 12f)
+        run: |
+          RAILWAY="https://dchub-backend-production.up.railway.app"
+          INTERNAL_KEY="${{ secrets.DCHUB_INTERNAL_KEY }}"
+          if [ -z "$INTERNAL_KEY" ]; then
+            INTERNAL_KEY="dchub-internal-sync-2026"  # falls through to phase 9h's relaxed allowlist
+          fi
+          echo "Step 0/4: Running every standalone loader..."
+          curl -sfS --max-time 600 -X POST "$RAILWAY/api/admin/run-all-loaders" \
+            -H "Content-Type: application/json" \
+            -H "X-Internal-Key: $INTERNAL_KEY" \
+            | python3 -m json.tool || echo "(loader runner non-200 or timeout — see Railway logs)"
+          echo ""
+
       - name: Infrastructure discovery
         run: |
           RAILWAY="https://dchub-backend-production.up.railway.app"

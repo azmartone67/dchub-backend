@@ -14530,6 +14530,71 @@ def phase12c_admin_load_all():
 # --- end phase 12c ----------------------------------------------------------
 
 
+
+
+# --- phase 12f: run every standalone loader and report per-module status ----
+@app.route('/api/admin/run-all-loaders', methods=['POST'])
+def phase12f_run_all_loaders():
+    """Trigger every standalone ingestion loader.
+
+    Each loader module is imported lazily and its discovered entry point
+    is invoked. Per-module results returned so we can see which ones
+    write data and which don't.
+
+    Auth: X-Internal-Key header. Accepts the values that Phase 9h already
+    relaxed (env vars + 'dchub-internal-sync-2026' default).
+    """
+    sent = (request.headers.get('X-Internal-Key') or '').strip()
+    allowed = {'dchub-internal-sync-2026'}
+    for n in ('DCHUB_INTERNAL_KEY','INTERNAL_KEY','MCP_INTERNAL_KEY','DCHUB_ADMIN_KEY'):
+        v = os.environ.get(n)
+        if v: allowed.add(v)
+    if not (sent and sent in {a for a in allowed if a}):
+        return jsonify({'error': 'forbidden'}), 403
+
+    # (module_name, [candidate_entry_point_function_names])
+    loaders = [
+        ('load_substations',          ['load']),
+        ('hifld_substation_loader',   ['load','main','run']),
+        ('eia860_bulk_loader',        ['load','main','run']),
+        ('pipeline_sync',             ['sync','load','main','run']),
+        ('facility_ingestion',        ['ingest','run','main']),
+        ('hifld_communications',      ['load','main','run']),
+        ('subsea_cable_ingestion',    ['ingest','run','main']),
+        ('eia_generator_reseed',      ['reseed','main','run']),
+        ('energy_auto_discovery',     ['run','sync','main']),
+        ('eia_gas_bulk_loader',       ['load','main','run']),
+    ]
+    out = {'success': True, 'ran_at': datetime.utcnow().isoformat(), 'loaders': {}}
+    for mod_name, candidates in loaders:
+        rec = {'ok': False}
+        try:
+            mod = __import__(mod_name)
+            fn = None; fn_name = None
+            for c in candidates:
+                if hasattr(mod, c) and callable(getattr(mod, c)):
+                    fn = getattr(mod, c); fn_name = c; break
+            if fn is None:
+                rec['error'] = 'no callable entry point in ' + str(candidates)
+            else:
+                try:
+                    res = fn()
+                    rec['ok'] = True
+                    rec['entry_point'] = fn_name
+                    if res is not None:
+                        rec['result'] = str(res)[:300]
+                except Exception as e:
+                    rec['error'] = type(e).__name__ + ': ' + str(e)[:300]
+                    rec['entry_point'] = fn_name
+        except ModuleNotFoundError as e:
+            rec['error'] = 'module not found: ' + str(e)[:200]
+        except Exception as e:
+            rec['error'] = type(e).__name__ + ': ' + str(e)[:300]
+        out['loaders'][mod_name] = rec
+    return jsonify(out)
+# --- end phase 12f ----------------------------------------------------------
+
+
 if __name__ == '__main__':
     print("🚀 DC Hub API v86 Starting...")
     print(f"📊 PDF Generation: {'✅ Available' if PDF_AVAILABLE else '❌ Disabled'}")
