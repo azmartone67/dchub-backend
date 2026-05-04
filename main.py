@@ -1046,6 +1046,20 @@ except Exception as _e:
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 
 
+
+# --- Phase 22 + 23 + 24 blueprints (auto-wired) ---
+try:
+    from routes.observability_routes import observability_bp
+    from routes.grid_public_routes import grid_public_bp
+    from routes.grid_card_routes import grid_card_bp
+    app.register_blueprint(observability_bp)
+    app.register_blueprint(grid_public_bp)
+    app.register_blueprint(grid_card_bp)
+except Exception as _e:
+    import logging
+    logging.getLogger(__name__).warning('phase22-24 wiring failed: %s', _e)
+# --- end Phase 22 + 23 + 24 ---
+
 # --- phase 19: clean geocoder, ArcGIS first (proven works locally) ---------
 @app.route('/api/v1/geocode', methods=['GET', 'OPTIONS'])
 def phase19_geocode():
