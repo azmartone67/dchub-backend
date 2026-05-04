@@ -1,6 +1,0 @@
-{
-  "name": "dchub-mcp-server",
-  "description": "Data center market intelligence MCP server providing AI agents with access to 50,000+ global data center facilities, real-time electricity grid data, M&A transactions, construction pipeline tracking, and site suitability analysis.",
-  "transport": "streamable-http",
-  "url": "https://dchub.cloud/mcp"
-}
