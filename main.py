@@ -14334,6 +14334,75 @@ def api_v1_usage():
             try: conn.close()
             except Exception: pass
 
+
+
+# --- phase 10: data freshness endpoint --------------------------------------
+@app.route('/api/v1/data-freshness', methods=['GET'])
+def api_v1_data_freshness():
+    """Return max(timestamp) per data source so the UI can show 'data as of X'."""
+    import datetime as _dt
+    sources = []; conn = None
+    try:
+        conn = get_read_db()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        candidates = [
+            ('mcp_tool_calls', 'mcp_tool_calls', 'created_at'),
+            ('users', 'users', 'created_at'),
+            ('api_keys', 'api_keys', 'created_at'),
+            ('facilities', 'facilities', 'updated_at'),
+            ('facilities', 'facilities', 'created_at'),
+            ('substations', 'substations', 'updated_at'),
+            ('pipelines', 'pipelines', 'updated_at'),
+            ('power_plants', 'power_plants', 'updated_at'),
+            ('transmission', 'transmission', 'updated_at'),
+            ('fiber_routes', 'fiber_routes', 'updated_at'),
+        ]
+        seen = set()
+        for label, table, col in candidates:
+            if label in seen: continue
+            try:
+                cur.execute(f"SELECT MAX({col}) AS latest, COUNT(*) AS n FROM {table}")
+                row = cur.fetchone() or {}
+                if row.get('latest') is not None:
+                    sources.append({'source': label, 'latest': str(row['latest']),
+                                    'rows': int(row.get('n') or 0), 'column': col})
+                    seen.add(label)
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+        return jsonify({'success': True, 'sources': sources,
+                        'as_of': str(_dt.datetime.utcnow())})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        if conn:
+            try: conn.close()
+            except Exception: pass
+# --- end phase 10 ----------------------------------------------------------
+
+
+
+
+# --- phase 11: edge cache hardening for public stats endpoints -------------
+@app.after_request
+def _phase11_cache_public_stats(resp):
+    try:
+        path = (request.path or '')
+        if path in ('/api/v1/stats', '/api/founding-members'):
+            # Allow CF/edge to cache for 60s and serve stale for up to 5min
+            # while origin recovers. Eliminates the intermittent 503s
+            # observed on the page.
+            if resp.status_code == 200:
+                resp.headers['Cache-Control'] = 'public, max-age=60, stale-while-revalidate=300'
+            elif resp.status_code in (502, 503, 504):
+                # Force shorter retry on errors
+                resp.headers['Cache-Control'] = 'public, max-age=5'
+    except Exception:
+        pass
+    return resp
+# --- end phase 11 ----------------------------------------------------------
+
+
 if __name__ == '__main__':
     print("🚀 DC Hub API v86 Starting...")
     print(f"📊 PDF Generation: {'✅ Available' if PDF_AVAILABLE else '❌ Disabled'}")
