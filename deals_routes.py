@@ -22,6 +22,7 @@ import logging
 from datetime import datetime
 from functools import wraps
 from flask import Blueprint, request, jsonify
+from utils.pipeline_alias import expand_query, matches_any  # phase32_alias_normalize
 
 from utils.cache import BoundedCache
 

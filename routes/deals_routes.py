@@ -20,6 +20,7 @@ import os
 import time
 import logging
 from datetime import datetime
+from utils.pipeline_alias import expand_query, matches_any  # phase32_alias_normalize
 try:
     from redis_cache import cache_get, cache_set
 except ImportError:

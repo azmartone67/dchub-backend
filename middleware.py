@@ -20,6 +20,7 @@ from enum import IntEnum
 from typing import Optional, Dict, Any, List, Callable
 from datetime import datetime, timedelta
 from collections import defaultdict
+from utils.pipeline_alias import expand_query, matches_any  # phase32_alias_normalize
 
 
 # ---------------------------------------------------------------------------

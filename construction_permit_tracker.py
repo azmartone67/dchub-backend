@@ -13,6 +13,7 @@ from flask import Blueprint, jsonify, request
 import json
 import os
 from db_utils import get_db
+from utils.pipeline_alias import expand_query, matches_any  # phase32_alias_normalize
 
 logger = logging.getLogger(__name__)
 

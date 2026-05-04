@@ -24,6 +24,7 @@ import logging
 from math import cos, radians, sin, sqrt, atan2, inf
 from db_utils import get_db
 from internal_auth import is_valid_internal_key, get_internal_key_for_client
+from utils.pipeline_alias import expand_query, matches_any  # phase32_alias_normalize
 
 # Lazy tier gating - checks at runtime, not import time
 def require_plan(min_plan='pro'):

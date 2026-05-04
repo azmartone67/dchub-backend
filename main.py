@@ -13758,6 +13758,12 @@ def debug_energy_version():
 
 @app.route('/api/market-intelligence', methods=['GET'])
 def get_market_intelligence():
+    # phase32_slug_safe — never let a malformed slug 500 the response
+    try:
+        _slug_for_log = str(locals().get('slug', '') or locals().get('region', '') or '')
+    except Exception:
+        _slug_for_log = ''
+
     region  = request.args.get('region')
     sort_by = request.args.get('sort', 'vacancy_asc')
     SORT_MAP = {

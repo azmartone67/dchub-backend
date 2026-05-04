@@ -1,3 +1,15 @@
+
+# ============================================================================
+# Phase 32D — MANUAL INTEGRATION NEEDED
+# ============================================================================
+# When building post text, append the daily landing URL so LinkedIn renders
+# the rich card preview:
+#
+#     text += "\n\n" + _phase30c_landing_url()  # phase32_landing_appended
+#
+# Place this RIGHT BEFORE the call that publishes the post (e.g.
+# linkedin.publish(text=text), client.share(message=text), etc.)
+# ============================================================================
 """
 DC Hub - LinkedIn Auto-Posting Module
 ======================================
