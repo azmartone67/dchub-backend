@@ -25,6 +25,18 @@ from math import cos, radians, sin, sqrt, atan2, inf
 from db_utils import get_db
 from internal_auth import is_valid_internal_key, get_internal_key_for_client
 from utils.pipeline_alias import expand_query, matches_any  # phase32_alias_normalize
+# ============================================================================
+# Phase 34 — alias-wired query
+# ============================================================================
+# Where SQL queries match the new "WHERE LOWER(col) = ANY(%s)" pattern,
+# the parameter must now be passed as a tuple of lowercase candidates:
+#
+#     from utils.pipeline_alias import expand_query
+#     candidates = tuple(c.lower() for c in expand_query(query))
+#     cur.execute(sql, (candidates,))
+#
+# This makes 'amazon' match AWS rows, 'google' match GCP, etc.
+# ============================================================================
 
 # Lazy tier gating - checks at runtime, not import time
 def require_plan(min_plan='pro'):
@@ -867,7 +879,7 @@ def setup_energy_routes(app):
                                 SELECT id, name, fuel_type, capacity_mw, generation_mwh,
                                        operator, status, state, county, sector, source
                                 FROM discovered_power_plants
-                                WHERE state = %s
+                                WHERE LOWER(state) = ANY(%s)  -- phase34_alias_wired
                             """, (state,))
 
                             for row in cursor.fetchall():

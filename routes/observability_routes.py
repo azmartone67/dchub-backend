@@ -286,3 +286,45 @@ def phase27_diag_routes():
             'sample_first_60': rules[:60],
         }
     })
+
+
+@observability_bp.route('/api/v1/watchdog', methods=['GET'])
+def phase34_watchdog():
+    """Phase 34 — minimal watchdog endpoint.
+
+    Returns 200 + a status snapshot. Used by the post-deploy smoke test
+    and external monitors. The real watchdog logic (anomaly detection
+    over the last 24h of metrics) is in health_watchdog.py — this
+    endpoint just provides a stable URL that always responds.
+    """
+    from flask import jsonify, current_app
+    out = {
+        'success': True,
+        'status': 'ok',
+        'data': {
+            'as_of': None,
+            'flask_routes': len(list(current_app.url_map.iter_rules())),
+        },
+    }
+    try:
+        import datetime
+        out['data']['as_of'] = datetime.datetime.utcnow().isoformat() + 'Z'
+    except Exception:
+        pass
+    try:
+        from db_utils import try_get_db
+        conn = try_get_db()
+        if conn:
+            cur = conn.cursor()
+            try:
+                cur.execute("SELECT COUNT(*) FROM mcp_tool_calls WHERE called_at > NOW() - INTERVAL '1 hour'")
+                r = cur.fetchone() or (0,)
+                out['data']['mcp_calls_1h'] = int(r[0] or 0)
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+            try: conn.close()
+            except Exception: pass
+    except Exception as _e:
+        out['data']['_db_error'] = type(_e).__name__
+    return jsonify(out)

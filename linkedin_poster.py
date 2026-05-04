@@ -713,6 +713,7 @@ def register_linkedin_routes(app):
         data = request.get_json() or {}
         # Accept both "text" and "content" for convenience
         text = (data.get('text') or data.get('content') or '').strip()
+        text = text + '\n\n' + _phase30c_landing_url()  # phase34_landing_done
 
         if not text:
             return _cors_json({'error': 'Missing "text" or "content" field'}, 400)

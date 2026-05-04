@@ -382,6 +382,8 @@ class DCHubContentGenerator:
         text += "Track the full deal pipeline and 470+ transactions on DC Hub.\n\n"
         text += "#DataCenter #Infrastructure #MandA #DigitalInfrastructure"
 
+        text = text + '\n\n' + _phase30c_landing_url()  # phase34_landing_done
+
         return {
             'text': text,
             'url': 'https://dchub.cloud/transactions',

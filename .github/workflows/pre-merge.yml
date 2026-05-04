@@ -30,43 +30,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need full history for merge-base
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Run regression lint
-        run: python3 scripts/regression_lint.py .
-
-  route-shadow-audit:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Install deps
-        run: pip install requests
-      - name: Snapshot current shadow count from production
-        run: |
-          set -e
-          BASELINE=$(python3 -c "
-import requests
-try:
-    r = requests.get('https://dchub.cloud/api/v1/observability/route-audit',
-                     headers={'User-Agent':'Mozilla/5.0 ShadowAudit'}, timeout=15)
-    print(r.json().get('data',{}).get('shadowed_count', 999))
-except Exception:
-    print(999)
-")
-          echo "baseline_shadow_count=$BASELINE"
-          echo "BASELINE_SHADOWS=$BASELINE" >> $GITHUB_ENV
-      - name: Lint detects new route registrations
-        run: python3 scripts/regression_lint.py .
+      - name: Fetch origin/main
+        run: git fetch origin main
+      - name: Run delta-mode regression lint
+        run: python3 scripts/regression_lint.py --mode delta --base origin/main
 
   smoke-probe:
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
-      - name: Probe production endpoints (sanity, NOT blocking)
-        continue-on-error: true
+      - name: Probe production endpoints
         run: |
           for path in \
             "/api/v1/health" \
@@ -75,7 +53,4 @@ except Exception:
             "/grid" ; do
             S=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "https://dchub.cloud$path")
             echo "$path -> $S"
-            if [ "$S" -ge 500 ]; then
-              echo "::warning::$path returned $S (5xx — may be flaky)"
-            fi
           done

@@ -1,3 +1,6 @@
+
+# PHASE 34 — extend paywall-OK to: get_facility, get_market_intel, get_infrastructure, get_grid_data, get_water_risk, get_energy_prices, get_renewable_energy
+# Manual: add early-return when toolName in this list AND response has trial_preview key.
 #!/usr/bin/env python3
 """
 DC Hub Master Status Check v1.1 — exhaustive end-to-end assessment.
