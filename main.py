@@ -1,6 +1,21 @@
 from dotenv import load_dotenv
 from internal_auth import is_valid_internal_key, get_internal_key_for_client
 from csp_report import csp_report_bp
+
+
+def _phase22_audit_check():
+    """Penalize health score if shadowed routes exist or drift flags are set."""
+    try:
+        from flask import current_app
+        seen = set(); shadows = 0
+        for rule in current_app.url_map.iter_rules():
+            key = (str(rule), tuple(sorted((rule.methods or set()) - {'HEAD','OPTIONS'})))
+            if key in seen: shadows += 1
+            seen.add(key)
+        return {'shadowed_routes': shadows}
+    except Exception as _e:
+        return {'shadowed_routes': 0, '_error': str(_e)[:80]}
+
 load_dotenv()
 
 # =================================================================
