@@ -71,3 +71,32 @@ def card(iso):
     buf.seek(0)
     return Response(buf.read(), mimetype='image/png',
                     headers={'Cache-Control': 'public, max-age=300'})
+
+
+@grid_card_bp.route('/api/v1/_diag/routes', methods=['GET'])
+def phase25_diag_routes():
+    """Phase 25 diagnostic — list every Flask route currently registered.
+
+    Use to figure out why /api/v1/observability/* returns 404 even though
+    the blueprint should be wired.
+    """
+    from flask import current_app, jsonify
+    rules = []
+    for r in current_app.url_map.iter_rules():
+        rules.append({
+            'path': str(r),
+            'endpoint': r.endpoint,
+            'methods': sorted((r.methods or set()) - {'HEAD','OPTIONS'}),
+        })
+    rules.sort(key=lambda x: x['path'])
+    obs = [r for r in rules if 'observability' in r['path'] or r['endpoint'].startswith('observability')]
+    grid = [r for r in rules if r['path'].startswith('/grid') or '/grid/' in r['path']]
+    return jsonify({
+        'success': True,
+        'data': {
+            'total_routes': len(rules),
+            'observability_routes': obs,
+            'grid_routes_first_30': [r for r in rules if 'grid' in r['path'].lower()][:30],
+            'sample_first_50': rules[:50],
+        }
+    })
