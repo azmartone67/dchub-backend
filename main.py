@@ -14790,29 +14790,79 @@ def phase12j_load_energy_discovery_live():
                     'check_at': '/api/admin/loader-status'})
 
 
-@app.route('/api/admin/probe-hifld-fetch', methods=['GET','POST'])
-def phase12j_probe_hifld_fetch():
-    """Call hifld_substation_loader.fetch_page(0, 5) directly and return raw
-    output so we can see WHY it returns None despite HIFLD being reachable
-    via probe-network."""
+# --- end phase 12j ----------------------------------------------------------
+
+
+
+
+# --- phase 12l: deeper HIFLD probe — capture URL, status, body, exception ---
+@app.route('/api/admin/probe-hifld-deep', methods=['GET','POST'])
+def phase12l_probe_hifld_deep():
+    """Build the exact URL fetch_page builds, call it directly, return
+    everything — so we can see why fetch_page returns None even with
+    the URL typo fixed.
+    """
     out = {'success': True}
+    import urllib.request, urllib.parse, urllib.error, json as _json, io, contextlib
+
+    # 1) Build the URL the same way fetch_page does
     try:
         import hifld_substation_loader as hsl
-        try:
-            res = hsl.fetch_page(0, 5)
-            out['fetch_page_result'] = repr(res)[:800]
-            out['result_is_none'] = res is None
-            if res is not None:
-                features, exceeded = res
-                out['feature_count'] = len(features) if features else 0
-        except Exception as e:
-            import traceback
-            out['fetch_page_error'] = type(e).__name__ + ': ' + str(e)[:300]
-            out['traceback'] = traceback.format_exc()[:1500]
+        out['SUBSTATIONS_URL'] = getattr(hsl, 'SUBSTATIONS_URL', None)
+        out['USER_AGENT'] = getattr(hsl, 'USER_AGENT', None)
+        out['BATCH_SIZE'] = getattr(hsl, 'BATCH_SIZE', None)
+        params = urllib.parse.urlencode({
+            'where': '1=1',
+            'outFields': 'NAME,CITY,STATE,STATUS,MAX_VOLT,MIN_VOLT,LATITUDE,LONGITUDE,OWNER,NAICS_CODE,COUNTY',
+            'returnGeometry': 'true',
+            'outSR': '4326',
+            'f': 'json',
+            'resultOffset': 0,
+            'resultRecordCount': 5,
+        })
+        url = (out['SUBSTATIONS_URL'] or '') + '?' + params
+        out['constructed_url'] = url
     except Exception as e:
-        out['import_error'] = type(e).__name__ + ': ' + str(e)[:300]
+        out['url_build_error'] = type(e).__name__ + ': ' + str(e)
+        return jsonify(out)
+
+    # 2) Make the request directly
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': out['USER_AGENT'] or 'DCHub/1.0'})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = resp.read().decode('utf-8', errors='replace')
+            out['http_status'] = resp.status
+            out['response_size'] = len(body)
+            out['body_first_500'] = body[:500]
+            out['body_last_300'] = body[-300:]
+            try:
+                data = _json.loads(body)
+                out['parsed_keys'] = list(data.keys())[:10]
+                out['has_error_key'] = 'error' in data
+                if 'error' in data:
+                    out['error_value'] = str(data.get('error'))[:500]
+                if 'features' in data:
+                    out['feature_count'] = len(data['features'])
+            except Exception as je:
+                out['json_parse_error'] = type(je).__name__ + ': ' + str(je)[:200]
+    except urllib.error.HTTPError as e:
+        out['http_status'] = e.code
+        out['http_error_body'] = e.read().decode('utf-8', errors='replace')[:500]
+    except Exception as e:
+        out['fetch_exception'] = type(e).__name__ + ': ' + str(e)[:300]
+
+    # 3) Also call fetch_page with stdout captured
+    try:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            res = hsl.fetch_page(0, 5)
+        out['fetch_page_stdout'] = buf.getvalue()[:500]
+        out['fetch_page_returned'] = repr(res)[:300]
+    except Exception as e:
+        out['fetch_page_call_exception'] = type(e).__name__ + ': ' + str(e)[:200]
+
     return jsonify(out)
-# --- end phase 12j ----------------------------------------------------------
+# --- end phase 12l ----------------------------------------------------------
 
 
 if __name__ == '__main__':
