@@ -1031,66 +1031,59 @@ except Exception as _e:
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 
 
-# --- phase 18d: geocoder proxy (Census + Nominatim) — bypasses browser CORS -
-@app.route('/api/v1/geocode', methods=['GET'])
-def phase18d_geocode_proxy():
-    """Server-side proxy to Census + Nominatim + Photon.
+# --- phase 18f: clean geocoder proxy via requests ---------------------------
+@app.route('/api/v1/geocode', methods=['GET', 'OPTIONS'])
+def phase18f_geocode():
+    """Same-origin proxy to public geocoders. Uses `requests` (IPv4-friendly)
+    instead of urllib (which has IPv6-first behavior that fails on Railway)."""
+    if request.method == 'OPTIONS':
+        resp = jsonify({'ok': True})
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        resp.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+        return resp
 
-    Uses requests library (better IPv4 default vs urllib's IPv6-first)
-    to bypass Railway's flaky IPv6 egress.
-
-    Returns: {lat, lng, label, source} on success, or 404 with diagnostics.
-    """
     address = (request.args.get('address') or '').strip()
     if not address or len(address) < 4:
         return jsonify({'error': 'address required (>=4 chars)'}), 400
 
     try:
         import requests as _rq
-    except Exception as _ie:
-        return jsonify({'error': 'requests library unavailable',
-                        'detail': str(_ie)}), 500
+    except Exception as _e:
+        return jsonify({'error': 'requests unavailable', 'detail': str(_e)}), 500
 
-    out = {}
-    headers = {
+    diag = {}
+    H = {
         'User-Agent': 'DCHub-Geocoder/1.0 (https://dchub.cloud)',
         'Accept': 'application/json',
     }
 
-    # 1) US Census Geocoder
-    try:
-        r = _rq.get(
-            'https://geocoding.geo.census.gov/geocoder/locations/onelineaddress',
-            params={'address': address, 'benchmark': 'Public_AR_Current', 'format': 'json'},
-            headers=headers, timeout=12,
-        )
-        if r.ok:
-            data = r.json()
-            matches = ((data.get('result') or {}).get('addressMatches') or [])
-            if matches:
-                m = matches[0]
-                c = m.get('coordinates') or {}
-                if isinstance(c.get('y'), (int, float)) and isinstance(c.get('x'), (int, float)):
-                    resp = jsonify({
-                        'lat': c['y'], 'lng': c['x'],
-                        'label': m.get('matchedAddress') or address,
-                        'source': 'US Census Geocoder',
-                    })
-                    resp.headers['Cache-Control'] = 'public, max-age=86400'
-                    resp.headers['Access-Control-Allow-Origin'] = '*'
-                    return resp
-        else:
-            out['_census_status'] = r.status_code
-    except Exception as e:
-        out['_census_error'] = type(e).__name__ + ': ' + str(e)[:200]
+    def _ok(lat, lng, label, source):
+        resp = jsonify({'lat': lat, 'lng': lng, 'label': label, 'source': source})
+        resp.headers['Cache-Control'] = 'public, max-age=86400'
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
 
-    # 2) Photon (Komoot's Nominatim mirror — has CORS + IPv4)
+    # 1) Nominatim — proven working from Phase 18e Test 2
     try:
-        r = _rq.get(
-            'https://photon.komoot.io/api/',
-            params={'q': address, 'limit': 1},
-            headers=headers, timeout=12,
-        )
+        r = _rq.get('https://nominatim.openstreetmap.org/search',
+                    params={'format': 'json', 'q': address, 'limit': 1, 'addressdetails': 1},
+                    headers=H, timeout=12)
+        diag['nominatim_status'] = r.status_code
+        if r.ok:
+            arr = r.json()
+            if isinstance(arr, list) and arr:
+                m = arr[0]
+                lat = float(m.get('lat')); lng = float(m.get('lon'))
+                return _ok(lat, lng, m.get('display_name') or address, 'OSM Nominatim')
+    except Exception as e:
+        diag['nominatim_error'] = type(e).__name__ + ': ' + str(e)[:200]
+
+    # 2) Photon — Komoot's mirror, often has fresher data
+    try:
+        r = _rq.get('https://photon.komoot.io/api/',
+                    params={'q': address, 'limit': 1},
+                    headers=H, timeout=10)
+        diag['photon_status'] = r.status_code
         if r.ok:
             data = r.json()
             features = data.get('features') or []
@@ -1100,54 +1093,43 @@ def phase18d_geocode_proxy():
                 if len(coords) >= 2:
                     lng, lat = float(coords[0]), float(coords[1])
                     props = f.get('properties') or {}
-                    label_parts = [props.get(k) for k in ('name','street','housenumber','city','state','postcode','country') if props.get(k)]
-                    label = ', '.join(label_parts) if label_parts else address
-                    resp = jsonify({
-                        'lat': lat, 'lng': lng, 'label': label,
-                        'source': 'Photon (Komoot)',
-                    })
-                    resp.headers['Cache-Control'] = 'public, max-age=86400'
-                    resp.headers['Access-Control-Allow-Origin'] = '*'
-                    return resp
-        else:
-            out['_photon_status'] = r.status_code
+                    parts = [props.get(k) for k in
+                             ('name', 'street', 'housenumber', 'city',
+                              'state', 'postcode', 'country') if props.get(k)]
+                    return _ok(lat, lng,
+                               ', '.join(parts) if parts else address,
+                               'Photon (Komoot)')
     except Exception as e:
-        out['_photon_error'] = type(e).__name__ + ': ' + str(e)[:200]
+        diag['photon_error'] = type(e).__name__ + ': ' + str(e)[:200]
 
-    # 3) OSM Nominatim
+    # 3) Census — best for US street-level if Railway can reach it
     try:
-        r = _rq.get(
-            'https://nominatim.openstreetmap.org/search',
-            params={'format': 'json', 'q': address, 'limit': 1, 'addressdetails': 1},
-            headers=headers, timeout=15,
-        )
+        r = _rq.get('https://geocoding.geo.census.gov/geocoder/locations/onelineaddress',
+                    params={'address': address, 'benchmark': 'Public_AR_Current', 'format': 'json'},
+                    headers=H, timeout=10)
+        diag['census_status'] = r.status_code
         if r.ok:
-            arr = r.json()
-            if isinstance(arr, list) and arr:
-                m = arr[0]
-                try: lat = float(m.get('lat')); lng = float(m.get('lon'))
-                except Exception: lat = lng = None
-                if lat is not None and lng is not None:
-                    resp = jsonify({
-                        'lat': lat, 'lng': lng,
-                        'label': m.get('display_name') or address,
-                        'source': 'OSM Nominatim',
-                    })
-                    resp.headers['Cache-Control'] = 'public, max-age=86400'
-                    resp.headers['Access-Control-Allow-Origin'] = '*'
-                    return resp
-        else:
-            out['_nominatim_status'] = r.status_code
+            data = r.json()
+            matches = ((data.get('result') or {}).get('addressMatches') or [])
+            if matches:
+                m = matches[0]
+                c = m.get('coordinates') or {}
+                if isinstance(c.get('y'), (int, float)) and isinstance(c.get('x'), (int, float)):
+                    return _ok(c['y'], c['x'],
+                               m.get('matchedAddress') or address,
+                               'US Census Geocoder')
     except Exception as e:
-        out['_nominatim_error'] = type(e).__name__ + ': ' + str(e)[:200]
+        diag['census_error'] = type(e).__name__ + ': ' + str(e)[:200]
 
-    # No match anywhere — return diagnostics so we can see which provider failed
-    resp = jsonify({'error': 'no match for address',
-                    'address': address,
-                    **out})
+    # All providers tried — return diagnostics
+    resp = jsonify({'error': 'no match', 'address': address, 'diag': diag})
     resp.headers['Access-Control-Allow-Origin'] = '*'
     return resp, 404
-# --- end phase 18d ----------------------------------------------------------
+# --- end phase 18f ----------------------------------------------------------
+
+
+
+
 
 
 
