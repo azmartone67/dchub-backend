@@ -1031,11 +1031,9 @@ except Exception as _e:
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 
 
-# --- phase 18g: 4-provider geocoder with US bias ---------------------------
+# --- phase 19: clean geocoder, ArcGIS first (proven works locally) ---------
 @app.route('/api/v1/geocode', methods=['GET', 'OPTIONS'])
-def phase18g_geocode():
-    """Same-origin geocoder proxy: ArcGIS → Nominatim → Photon → Census.
-    Adds US country bias + structured query fallback for sparse OSM areas."""
+def phase19_geocode():
     if request.method == 'OPTIONS':
         resp = jsonify({'ok': True})
         resp.headers['Access-Control-Allow-Origin'] = '*'
@@ -1045,73 +1043,53 @@ def phase18g_geocode():
     address = (request.args.get('address') or '').strip()
     if not address or len(address) < 4:
         return jsonify({'error': 'address required (>=4 chars)'}), 400
-
     try:
         import requests as _rq
         import re as _re
     except Exception as _e:
-        return jsonify({'error': 'imports unavailable', 'detail': str(_e)}), 500
+        return jsonify({'error': 'imports', 'detail': str(_e)}), 500
 
-    diag = {}
-    H = {
-        'User-Agent': 'DCHub-Geocoder/1.0 (https://dchub.cloud)',
-        'Accept': 'application/json',
-    }
+    diag = {'tried': []}
+    H = {'User-Agent': 'DCHub-Geocoder/1.0 (https://dchub.cloud)',
+         'Accept': 'application/json'}
 
     def _ok(lat, lng, label, source):
-        resp = jsonify({'lat': float(lat), 'lng': float(lng),
-                        'label': label, 'source': source})
-        resp.headers['Cache-Control'] = 'public, max-age=86400'
-        resp.headers['Access-Control-Allow-Origin'] = '*'
-        return resp
+        r = jsonify({'lat': float(lat), 'lng': float(lng), 'label': label, 'source': source})
+        r.headers['Cache-Control'] = 'public, max-age=86400'
+        r.headers['Access-Control-Allow-Origin'] = '*'
+        return r
 
-    # Detect US bias signals
-    US_STATES_RE = _re.compile(r'\b(AL|AK|AZ|AR|CA|CO|CT|DC|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY)\b')
-    is_pure_zip = bool(_re.match(r'^\d{5}(-\d{4})?$', address))
-    has_us_state = bool(US_STATES_RE.search(address))
-    looks_us = is_pure_zip or has_us_state or 'USA' in address.upper() or 'US' in address.upper().split(',')[-1].strip()
+    US_STATES = _re.compile(r'\b(AL|AK|AZ|AR|CA|CO|CT|DC|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY)\b')
+    is_zip = bool(_re.match(r'^\d{5}(-\d{4})?$', address))
+    looks_us = is_zip or bool(US_STATES.search(address)) or 'USA' in address.upper()
 
-    # Parse structured address parts (loose heuristic)
-    parts = [s.strip() for s in address.split(',')]
-    street = parts[0] if parts else ''
-    city = parts[1] if len(parts) > 1 else ''
-    state_zip = parts[2] if len(parts) > 2 else (parts[1] if len(parts) > 1 else '')
-    state_match = US_STATES_RE.search(state_zip)
-    state = state_match.group(0) if state_match else ''
-    zip_match = _re.search(r'\b\d{5}(-\d{4})?\b', address)
-    zip_code = zip_match.group(0) if zip_match else ''
-
-    # 1) ArcGIS World Geocoder — has TIGER street data, free for low usage
+    # 1) ArcGIS World Geocoder — has TIGER street data
+    diag['tried'].append('arcgis')
     try:
-        params = {
-            'SingleLine': address,
-            'f': 'json',
-            'forStorage': 'false',
-            'maxLocations': 1,
-        }
+        params = {'SingleLine': address, 'f': 'json',
+                  'forStorage': 'false', 'maxLocations': 1}
         if looks_us:
             params['countryCode'] = 'USA'
         r = _rq.get('https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates',
-                    params=params, headers=H, timeout=10)
+                    params=params, headers=H, timeout=12)
         diag['arcgis_status'] = r.status_code
         if r.ok:
-            data = r.json()
-            cands = data.get('candidates') or []
+            cands = (r.json() or {}).get('candidates') or []
             if cands:
-                c = cands[0]
-                loc = c.get('location') or {}
+                c = cands[0]; loc = c.get('location') or {}
                 if isinstance(loc.get('y'), (int, float)) and isinstance(loc.get('x'), (int, float)):
                     return _ok(loc['y'], loc['x'],
                                c.get('address') or address,
                                'ArcGIS World Geocoder')
+        diag['arcgis_no_match'] = True
     except Exception as e:
         diag['arcgis_error'] = type(e).__name__ + ': ' + str(e)[:200]
 
     # 2) Nominatim with US bias + structured fallback
+    diag['tried'].append('nominatim')
     try:
         params = {'format': 'json', 'q': address, 'limit': 1, 'addressdetails': 1}
-        if looks_us:
-            params['countrycodes'] = 'us'
+        if looks_us: params['countrycodes'] = 'us'
         r = _rq.get('https://nominatim.openstreetmap.org/search',
                     params=params, headers=H, timeout=12)
         diag['nominatim_status'] = r.status_code
@@ -1119,32 +1097,16 @@ def phase18g_geocode():
             arr = r.json()
             if isinstance(arr, list) and arr:
                 m = arr[0]
-                lat = float(m.get('lat')); lng = float(m.get('lon'))
-                return _ok(lat, lng, m.get('display_name') or address, 'OSM Nominatim')
-            # Structured fallback if free-form didn't match
-            if street and city and (state or zip_code):
-                params2 = {'format': 'json', 'limit': 1, 'addressdetails': 1,
-                           'street': street, 'city': city,
-                           'state': state, 'postalcode': zip_code,
-                           'country': 'United States' if looks_us else ''}
-                r2 = _rq.get('https://nominatim.openstreetmap.org/search',
-                             params=params2, headers=H, timeout=12)
-                if r2.ok:
-                    arr2 = r2.json()
-                    if isinstance(arr2, list) and arr2:
-                        m = arr2[0]
-                        lat = float(m.get('lat')); lng = float(m.get('lon'))
-                        return _ok(lat, lng, m.get('display_name') or address,
-                                   'OSM Nominatim (structured)')
+                return _ok(float(m['lat']), float(m['lon']),
+                           m.get('display_name') or address, 'OSM Nominatim')
     except Exception as e:
         diag['nominatim_error'] = type(e).__name__ + ': ' + str(e)[:200]
 
-    # 3) Photon with US bbox bias
+    # 3) Photon
+    diag['tried'].append('photon')
     try:
         params = {'q': address, 'limit': 1}
-        if looks_us:
-            # Continental US bbox so 78644 doesn't hit Ukraine etc.
-            params['bbox'] = '-125,24,-66,50'
+        if looks_us: params['bbox'] = '-125,24,-66,50'
         r = _rq.get('https://photon.komoot.io/api/',
                     params=params, headers=H, timeout=10)
         diag['photon_status'] = r.status_code
@@ -1152,43 +1114,133 @@ def phase18g_geocode():
             data = r.json()
             features = data.get('features') or []
             if features:
-                f = features[0]
-                coords = (f.get('geometry') or {}).get('coordinates') or []
+                f = features[0]; coords = (f.get('geometry') or {}).get('coordinates') or []
                 if len(coords) >= 2:
                     lng, lat = float(coords[0]), float(coords[1])
                     props = f.get('properties') or {}
-                    parts2 = [props.get(k) for k in
-                             ('name', 'street', 'housenumber', 'city',
-                              'state', 'postcode', 'country') if props.get(k)]
-                    return _ok(lat, lng,
-                               ', '.join(parts2) if parts2 else address,
-                               'Photon (Komoot)')
+                    parts = [props.get(k) for k in
+                             ('name','street','housenumber','city','state','postcode','country')
+                             if props.get(k)]
+                    return _ok(lat, lng, ', '.join(parts) or address, 'Photon (Komoot)')
     except Exception as e:
         diag['photon_error'] = type(e).__name__ + ': ' + str(e)[:200]
-
-    # 4) US Census — last resort (Railway IPv6 issues)
-    try:
-        r = _rq.get('https://geocoding.geo.census.gov/geocoder/locations/onelineaddress',
-                    params={'address': address, 'benchmark': 'Public_AR_Current', 'format': 'json'},
-                    headers=H, timeout=8)
-        diag['census_status'] = r.status_code
-        if r.ok:
-            data = r.json()
-            matches = ((data.get('result') or {}).get('addressMatches') or [])
-            if matches:
-                m = matches[0]
-                c = m.get('coordinates') or {}
-                if isinstance(c.get('y'), (int, float)) and isinstance(c.get('x'), (int, float)):
-                    return _ok(c['y'], c['x'],
-                               m.get('matchedAddress') or address,
-                               'US Census Geocoder')
-    except Exception as e:
-        diag['census_error'] = type(e).__name__ + ': ' + str(e)[:200]
 
     resp = jsonify({'error': 'no match', 'address': address, 'diag': diag})
     resp.headers['Access-Control-Allow-Origin'] = '*'
     return resp, 404
-# --- end phase 18g ----------------------------------------------------------
+# --- end phase 19 ----------------------------------------------------------
+
+
+# --- phase 19b: grid intelligence aggregate endpoint -----------------------
+@app.route('/api/v1/grid/intelligence/<region>', methods=['GET'])
+def phase19b_grid_intelligence(region):
+    """Aggregate grid view for an ISO/region.
+    Combines our existing grid-headroom data with EIA real-time generation
+    mix + demand. Region codes: PJM, MISO, ERCOT, CAISO, NYISO, SPP, ISONE.
+    """
+    region = (region or '').upper().strip()
+    EIA_RTO_MAP = {
+        'PJM': 'PJM', 'MISO': 'MISO', 'ERCOT': 'ERCO',
+        'CAISO': 'CISO', 'NYISO': 'NYIS', 'SPP': 'SWPP',
+        'ISONE': 'ISNE', 'NEISO': 'ISNE',
+    }
+    rto_code = EIA_RTO_MAP.get(region)
+    if not rto_code:
+        return jsonify({'error': 'unknown region',
+                        'supported': list(EIA_RTO_MAP.keys())}), 400
+
+    out = {'region': region, 'rto_code': rto_code}
+
+    try:
+        import requests as _rq
+    except Exception:
+        return jsonify({'error': 'requests unavailable'}), 500
+
+    H = {'User-Agent': 'DCHub-Grid/1.0 (https://dchub.cloud)',
+         'Accept': 'application/json'}
+
+    # 1) Real-time demand from EIA
+    try:
+        eia_key = os.environ.get('EIA_API_KEY', '')
+        params = {
+            'frequency': 'hourly',
+            'data[0]': 'value',
+            'facets[respondent][]': rto_code,
+            'facets[type][]': 'D',  # D = demand
+            'sort[0][column]': 'period',
+            'sort[0][direction]': 'desc',
+            'offset': 0,
+            'length': 24,
+        }
+        if eia_key: params['api_key'] = eia_key
+        r = _rq.get('https://api.eia.gov/v2/electricity/rto/region-data/data',
+                    params=params, headers=H, timeout=15)
+        if r.ok:
+            data = (r.json() or {}).get('response', {}).get('data', [])
+            if data:
+                latest = data[0]
+                out['demand_mw'] = latest.get('value')
+                out['demand_period'] = latest.get('period')
+                # 24h demand series
+                out['demand_24h'] = [{'period': d.get('period'),
+                                      'mw': d.get('value')} for d in data]
+        else:
+            out['eia_demand_error'] = f'HTTP {r.status_code}'
+    except Exception as e:
+        out['eia_demand_error'] = type(e).__name__ + ': ' + str(e)[:200]
+
+    # 2) Generation mix from EIA (current + 24h)
+    try:
+        eia_key = os.environ.get('EIA_API_KEY', '')
+        params = {
+            'frequency': 'hourly',
+            'data[0]': 'value',
+            'facets[respondent][]': rto_code,
+            'facets[fueltype][]': ['NG','COL','NUC','SUN','WND','WAT','OTH'],
+            'sort[0][column]': 'period',
+            'sort[0][direction]': 'desc',
+            'offset': 0,
+            'length': 168,  # 7 days × 24h
+        }
+        if eia_key: params['api_key'] = eia_key
+        r = _rq.get('https://api.eia.gov/v2/electricity/rto/fuel-type-data/data',
+                    params=params, headers=H, timeout=15)
+        if r.ok:
+            data = (r.json() or {}).get('response', {}).get('data', [])
+            # Latest snapshot per fuel
+            latest_by_fuel = {}
+            for d in data:
+                fuel = d.get('fueltype')
+                if fuel and fuel not in latest_by_fuel:
+                    latest_by_fuel[fuel] = {'mw': d.get('value'),
+                                            'period': d.get('period')}
+            out['generation_mix'] = latest_by_fuel
+        else:
+            out['eia_genmix_error'] = f'HTTP {r.status_code}'
+    except Exception as e:
+        out['eia_genmix_error'] = type(e).__name__ + ': ' + str(e)[:200]
+
+    # 3) Try to call our own grid-headroom endpoint for substation context
+    try:
+        r = _rq.get(f'https://dchub.cloud/api/v1/grid-headroom/{region}',
+                    headers=H, timeout=8)
+        if r.ok:
+            out['headroom'] = r.json()
+    except Exception as e:
+        out['headroom_error'] = type(e).__name__ + ': ' + str(e)[:200]
+
+    out['note'] = 'EIA hourly RTO data via api.eia.gov/v2/electricity/rto. ' + \
+                  ('Set EIA_API_KEY env var on Railway for higher rate limits.' if not os.environ.get('EIA_API_KEY') else '')
+
+    resp = jsonify(out)
+    resp.headers['Cache-Control'] = 'public, max-age=300'
+    resp.headers['Access-Control-Allow-Origin'] = '*'
+    return resp
+# --- end phase 19b ---------------------------------------------------------
+
+
+
+
 
 
 
