@@ -164,6 +164,40 @@ def track_tool_call():
     if params is not None and not isinstance(params, str):
         params = json.dumps(params, default=str)
 
+    # phase9j_dual: also write to legacy mcp_tool_calls so the existing
+    # /api/v1/usage and /api/v1/data-freshness queries (which read from
+    # that table) reflect activity. The 4/30 rewrite of this file moved
+    # writes to mcp_call_log; this dual-write keeps both readable.
+    try:
+        from db_utils import try_get_db
+        _db_lt = try_get_db()
+        if _db_lt:
+            _c_lt = _db_lt.cursor()
+            _params_str = params if isinstance(params, str) else (json.dumps(params or {}) if params is not None else '{}')
+            _c_lt.execute(
+                """INSERT INTO mcp_tool_calls
+                       (tool_name, platform, client_name, params, success,
+                        response_time_ms, ip_address, user_agent)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                (
+                    str(tool)[:200],
+                    (str(body.get('platform') or 'mcp-worker'))[:80],
+                    (str(body.get('client_name') or body.get('client') or body.get('session_id') or 'unknown'))[:200],
+                    (_params_str or '{}')[:4000],
+                    bool((body.get('status') in (None, 'ok', 'success', 200, True)) or body.get('success', True)),
+                    int((body.get('duration_ms') or body.get('response_time_ms') or 0) or 0),
+                    (request.headers.get('X-Forwarded-For') or request.remote_addr or '')[:64],
+                    (request.headers.get('User-Agent') or '')[:300],
+                )
+            )
+            _db_lt.commit()
+            try: _db_lt.close()
+            except Exception: pass
+    except Exception as _e_lt:
+        try: import logging as _log9j; _log9j.getLogger(__name__).warning('phase9j_dual mcp_tool_calls insert: %s', _e_lt)
+        except Exception: pass
+
+
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
