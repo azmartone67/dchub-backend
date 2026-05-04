@@ -9,6 +9,7 @@ load_dotenv()
 # Added: 2026-03-07 (Neon outage prevention) 1.0
 # =================================================================
 import sys as _bg_sys
+import json
 import os as _bg_os
 
 # --- Syntax Self-Check ---
