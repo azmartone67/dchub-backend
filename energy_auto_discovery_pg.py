@@ -632,69 +632,10 @@ def register_energy_discovery_routes(app):
 
     @app.route('/api/energy-discovery/status', methods=['GET'])
     def energy_discovery_status():
-        """Get energy discovery status and stats."""
-        try:
-            conn = _get_neon_conn()
-            cur = conn.cursor()
-
-            stats = {}
-
-            # Power plants
-            try:
-                cur.execute("SELECT COUNT(*), COALESCE(SUM(total_mw), 0) FROM discovered_power_plants")
-                row = cur.fetchone()
-                stats['total_power_plants'] = row[0]
-                stats['total_capacity_mw'] = float(row[1])
-                cur.execute("SELECT COUNT(*) FROM discovered_power_plants WHERE is_new = 1")
-                stats['new_power_plants'] = cur.fetchone()[0]
-            except Exception:
-                stats['total_power_plants'] = 0
-                stats['total_capacity_mw'] = 0
-
-            # Infrastructure layers
-            for cat in ['substation', 'transmission', 'gas_compressor', 'gas_processing']:
-                try:
-                    cur.execute(
-                        "SELECT COUNT(*) FROM infrastructure_layers WHERE category = %s",
-                        (cat,)
-                    )
-                    stats[f'total_{cat}s'] = cur.fetchone()[0]
-                except Exception:
-                    stats[f'total_{cat}s'] = 0
-
-            # Recent syncs
-            try:
-                cur.execute("""
-                    SELECT source, market, records_found, records_new,
-                           duration_seconds, error, synced_at
-                    FROM energy_sync_log
-                    ORDER BY synced_at DESC
-                    LIMIT 10
-                """)
-                cols = [d[0] for d in cur.description]
-                stats['recent_syncs'] = [dict(zip(cols, r)) for r in cur.fetchall()]
-            except Exception:
-                stats['recent_syncs'] = []
-
-            stats['markets_monitored'] = len(MONITORED_MARKETS)
-            # Fallback: if DB tables are empty, use seed data counts
-            if stats.get('total_power_plants', 0) == 0:
-                stats['total_power_plants'] = 32
-                stats['total_capacity_mw'] = 48750
-                stats['total_transmissions'] = 13
-                stats['total_pipelines'] = 14
-                stats['total_wind_projects'] = 10
-                stats['running'] = True
-                stats['seed_data'] = True
-            stats['hifld_sources'] = len(HIFLD_SOURCES)
-            stats.update(_phase25_real_counts())  # phase27_truth_up
-
-            cur.close()
-            conn.close()
-            return jsonify({'success': True, 'data': stats})
-
-        except Exception as e:
-            return jsonify({'success': False, 'error': str(e)}), 500
+        """Phase 29 — clean replacement. Returns real DB counts."""
+        from flask import jsonify
+        data = _phase25_real_counts()
+        return jsonify({'success': True, 'data': data})
 
     @app.route('/api/energy-discovery/health', methods=['GET'])
     def energy_discovery_health():
