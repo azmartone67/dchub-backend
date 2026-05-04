@@ -508,3 +508,24 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+# phase12i: non-CLI orchestrator so the async loader endpoint can call it
+def ingest_all_sources():
+    """Run every fetcher without going through argparse.
+
+    Returns dict of per-source counts. Designed to be called from main.py's
+    /api/admin/load-facilities-live endpoint without command-line args.
+    """
+    out = {}
+    for name in ('fetch_peeringdb', 'fetch_osm', 'fetch_news_facilities', 'fetch_cloudscene'):
+        fn = globals().get(name)
+        if not callable(fn):
+            out[name] = {'ok': False, 'error': 'not callable'}
+            continue
+        try:
+            res = fn()
+            out[name] = {'ok': True, 'result': str(res)[:200] if res is not None else 'ran'}
+        except Exception as e:
+            out[name] = {'ok': False, 'error': type(e).__name__ + ': ' + str(e)[:200]}
+    return out
+

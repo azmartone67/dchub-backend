@@ -14682,7 +14682,9 @@ def phase12g_load_facilities_live():
     if not _phase12g_check_auth():
         return jsonify({'error': 'forbidden'}), 403
     return jsonify(phase12g_loader_async(
-        'facility_ingestion', ['main','ingest','run'], 'facilities'))
+        'facility_ingestion',
+        ['ingest_all_sources','run_all','sync_all','fetch_peeringdb'],
+        'facilities'))
 
 
 @app.route('/api/admin/loader-status', methods=['GET'])
@@ -14690,6 +14692,48 @@ def phase12g_loader_status():
     """Read the latest state of every async loader."""
     return jsonify({'success': True, 'loaders': dict(phase12g_loader_state)})
 # --- end phase 12g ----------------------------------------------------------
+
+
+
+
+# --- phase 12i: probe outbound connectivity from Railway --------------------
+@app.route('/api/admin/probe-network', methods=['POST', 'GET'])
+def phase12i_probe_network():
+    """Test whether Railway can reach the upstream APIs the loaders depend on.
+
+    No auth required — observability only, no data exposed.
+    """
+    import urllib.request, urllib.error, time as _t
+    targets = [
+        ('hifld_substations_arcgis', 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Substations/FeatureServer/0?f=json'),
+        ('hifld_power_plants_arcgis', 'https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Power_Plants/FeatureServer/0?f=json'),
+        ('hifld_opendata',  'https://hifld-geoplatform.opendata.arcgis.com/'),
+        ('eia_v2',          'https://api.eia.gov/v2/'),
+        ('peeringdb',       'https://www.peeringdb.com/api/fac?limit=1'),
+        ('cloudflare',      'https://1.1.1.1/'),
+    ]
+    out = {}
+    for name, url in targets:
+        rec = {'url': url}
+        t0 = _t.time()
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': 'DCHub-Probe/1.0'})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                rec['status'] = resp.status
+                rec['ok'] = True
+                rec['ms'] = int((_t.time() - t0) * 1000)
+        except urllib.error.HTTPError as e:
+            rec['status'] = e.code
+            rec['ok'] = False
+            rec['error'] = 'HTTPError ' + str(e.code) + ': ' + str(e.reason)[:120]
+            rec['ms'] = int((_t.time() - t0) * 1000)
+        except Exception as e:
+            rec['ok'] = False
+            rec['error'] = type(e).__name__ + ': ' + str(e)[:200]
+            rec['ms'] = int((_t.time() - t0) * 1000)
+        out[name] = rec
+    return jsonify({'success': True, 'targets': out, 'ran_at': datetime.utcnow().isoformat()})
+# --- end phase 12i ----------------------------------------------------------
 
 
 if __name__ == '__main__':
