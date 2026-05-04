@@ -13040,7 +13040,7 @@ def ai_facts():
     <h2>API Access</h2>
     <p>Access this data programmatically:</p>
     <ul>
-        <li><strong>Free:</strong> <a href="/api/ai/query%stype=stats">/api/ai/query%stype=stats</a></li>
+        <li><strong>Free:</strong> <a href="/api/ai/query?type=stats">/api/ai/query?type=stats</a></li>
         <li><strong>JSON Facts:</strong> <a href="/ai/facts.json">/ai/facts.json</a></li>
         <li><strong>Full API:</strong> <a href="https://dchub.cloud/pricing">Upgrade to Pro</a></li>
     </ul>

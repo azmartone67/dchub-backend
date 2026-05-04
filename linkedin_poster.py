@@ -487,7 +487,7 @@ def generate_pipeline_post():
     """Generate a LinkedIn post about new facilities / pipeline."""
     import requests as req
     try:
-        resp = req.get('https://dchub.cloud/api/ai/query%stype=facilities&limit=3&sort=newest', timeout=15)
+        resp = req.get('https://dchub.cloud/api/ai/query?type=facilities&limit=3&sort=newest', timeout=15)
         data = resp.json()
         facilities = data.get('data', [])
     except Exception as e:

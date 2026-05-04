@@ -50,7 +50,7 @@ def fetch_page(offset, batch_size=BATCH_SIZE):
         'resultRecordCount': batch_size,
     })
     
-    url = f"{SUBSTATIONS_URL}%s{params}"
+    url = f"{SUBSTATIONS_URL}?{params}"
     req = urllib.request.Request(url, headers={'User-Agent': USER_AGENT})
     
     try:

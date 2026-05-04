@@ -261,7 +261,7 @@ DATA_GOV_SEARCHES = [
 
 STATE_GIS_ENDPOINTS = [
     {'name': 'TX RRC Oil/Gas Wells', 'category': 'power', 'type': 'rest',
-     'url': 'https://gis.rrc.texas.gov/arcgis/rest/services/public/RRCGIS_Wells/MapServer/0/query%swhere=1%3D1&outFields=*&f=json&resultRecordCount=5',
+     'url': 'https://gis.rrc.texas.gov/arcgis/rest/services/public/RRCGIS_Wells/MapServer/0/query?where=1%3D1&outFields=*&f=json&resultRecordCount=5',
      'description': 'Texas Railroad Commission oil/gas well locations', 'scan_frequency': 'daily'},
     {'name': 'TX RRC Pipelines', 'category': 'gas', 'type': 'arcgis',
      'url': 'https://gis.rrc.texas.gov/arcgis/rest/services/public/RRCGIS_Pipeline/MapServer/0',
@@ -291,7 +291,7 @@ FEDERAL_AGENCY_ENDPOINTS = [
      'url': 'https://gis.blm.gov/arcgis/rest/services/lands/BLM_Natl_SMA_LimitedDisp_Cached_Tiles/MapServer/0',
      'description': 'BLM federal land surface management for large DC site selection', 'scan_frequency': 'daily'},
     {'name': 'Census TIGER Urban Areas', 'category': 'other', 'type': 'rest',
-     'url': 'https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/tigerWMS_ACS2023/MapServer/0/query%swhere=1%3D1&outFields=*&f=json&resultRecordCount=5',
+     'url': 'https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/tigerWMS_ACS2023/MapServer/0/query?where=1%3D1&outFields=*&f=json&resultRecordCount=5',
      'description': 'Census TIGER urban area boundaries for demographic analysis', 'scan_frequency': 'daily'},
 ]
 
@@ -461,7 +461,7 @@ class APIAutoDiscovery:
             start = time.time()
 
             if api_type == 'arcgis':
-                test_url = f"{url}/query%swhere=1=1&outFields=*&returnCountOnly=true&f=json"
+                test_url = f"{url}/query?where=1=1&outFields=*&returnCountOnly=true&f=json"
                 response = self.session.get(test_url, timeout=15)
                 result['response_time_ms'] = round((time.time() - start) * 1000, 1)
 
@@ -1113,7 +1113,7 @@ class APIAutoDiscovery:
 
         for api_id, name, category, url, api_type in apis:
             try:
-                query_url = f"{url}/query%swhere=1=1&outFields=*&resultRecordCount=100&f=json"
+                query_url = f"{url}/query?where=1=1&outFields=*&resultRecordCount=100&f=json"
                 response = self.session.get(query_url, timeout=20)
 
                 if response.status_code == 200:
