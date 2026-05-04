@@ -25,19 +25,29 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Run all standalone loaders (phase 12f)
+      - name: Fire async loaders (phase 12g — non-blocking)
         run: |
           RAILWAY="https://dchub-backend-production.up.railway.app"
           INTERNAL_KEY="${{ secrets.DCHUB_INTERNAL_KEY }}"
           if [ -z "$INTERNAL_KEY" ]; then
-            INTERNAL_KEY="dchub-internal-sync-2026"  # falls through to phase 9h's relaxed allowlist
+            INTERNAL_KEY="dchub-internal-sync-2026"
           fi
-          echo "Step 0/4: Running every standalone loader..."
-          curl -sfS --max-time 600 -X POST "$RAILWAY/api/admin/run-all-loaders" \
-            -H "Content-Type: application/json" \
-            -H "X-Internal-Key: $INTERNAL_KEY" \
-            | python3 -m json.tool || echo "(loader runner non-200 or timeout — see Railway logs)"
+          echo "Step 0/4: Firing async loaders..."
+          for endpoint in load-substations-live load-power-plants-live load-pipelines-live load-facilities-live; do
+            echo "  → $endpoint"
+            curl -sS --max-time 15 -X POST "$RAILWAY/api/admin/$endpoint" \
+              -H "X-Internal-Key: $INTERNAL_KEY" \
+              -H "Content-Type: application/json" \
+              | python3 -m json.tool || echo "    (non-JSON response — see Railway logs)"
+            echo ""
+          done
+          echo "Sleeping 90s while loaders run in background..."
+          sleep 90
           echo ""
+          echo "Final loader status:"
+          curl -sS --max-time 10 "$RAILWAY/api/admin/loader-status" \
+            -H "X-Internal-Key: $INTERNAL_KEY" \
+            | python3 -m json.tool || echo "(status endpoint unreachable)"
 
       - name: Infrastructure discovery
         run: |

@@ -14595,6 +14595,100 @@ def phase12f_run_all_loaders():
 # --- end phase 12f ----------------------------------------------------------
 
 
+
+
+# --- phase 12g: async per-loader endpoints (no proxy timeout) ---------------
+def phase12g_loader_async(mod_name, fn_candidates, status_key):
+    """Run a loader function in a background thread.
+
+    Returns immediately with {started: True}. Subsequent calls to
+    /api/admin/loader-status read the in-memory state.
+    """
+    import threading, traceback
+    state = phase12g_loader_state
+    if state.get(status_key, {}).get('running'):
+        return {'started': False, 'reason': 'already running', 'status_key': status_key}
+
+    def _runner():
+        rec = {'running': True, 'started_at': datetime.utcnow().isoformat()}
+        state[status_key] = rec
+        try:
+            mod = __import__(mod_name)
+            fn = None; fn_name = None
+            for c in fn_candidates:
+                if hasattr(mod, c) and callable(getattr(mod, c)):
+                    fn = getattr(mod, c); fn_name = c; break
+            if fn is None:
+                rec['error'] = 'no callable entry in ' + str(fn_candidates)
+                return
+            rec['entry_point'] = fn_name
+            res = fn()
+            rec['result'] = str(res)[:500] if res is not None else 'ran'
+            rec['ok'] = True
+        except Exception as e:
+            rec['error'] = type(e).__name__ + ': ' + str(e)[:500]
+            rec['traceback'] = traceback.format_exc()[:1500]
+        finally:
+            rec['running'] = False
+            rec['finished_at'] = datetime.utcnow().isoformat()
+
+    t = threading.Thread(target=_runner, daemon=True)
+    t.start()
+    return {'started': True, 'status_key': status_key, 'check_at': '/api/admin/loader-status'}
+
+
+# in-memory state — survives across requests within one Railway worker
+phase12g_loader_state = {}
+
+
+def _phase12g_check_auth():
+    sent = (request.headers.get('X-Internal-Key') or '').strip()
+    allowed = {'dchub-internal-sync-2026'}
+    for n in ('DCHUB_INTERNAL_KEY','INTERNAL_KEY','MCP_INTERNAL_KEY','DCHUB_ADMIN_KEY'):
+        v = os.environ.get(n)
+        if v: allowed.add(v)
+    return sent and sent in {a for a in allowed if a}
+
+
+@app.route('/api/admin/load-substations-live', methods=['POST'])
+def phase12g_load_substations_live():
+    if not _phase12g_check_auth():
+        return jsonify({'error': 'forbidden'}), 403
+    return jsonify(phase12g_loader_async(
+        'hifld_substation_loader', ['main','load','run'], 'substations'))
+
+
+@app.route('/api/admin/load-power-plants-live', methods=['POST'])
+def phase12g_load_power_plants_live():
+    if not _phase12g_check_auth():
+        return jsonify({'error': 'forbidden'}), 403
+    return jsonify(phase12g_loader_async(
+        'eia_generator_reseed', ['main','reseed','run'], 'power_plants'))
+
+
+@app.route('/api/admin/load-pipelines-live', methods=['POST'])
+def phase12g_load_pipelines_live():
+    if not _phase12g_check_auth():
+        return jsonify({'error': 'forbidden'}), 403
+    return jsonify(phase12g_loader_async(
+        'pipeline_sync', ['main','sync','run'], 'pipelines'))
+
+
+@app.route('/api/admin/load-facilities-live', methods=['POST'])
+def phase12g_load_facilities_live():
+    if not _phase12g_check_auth():
+        return jsonify({'error': 'forbidden'}), 403
+    return jsonify(phase12g_loader_async(
+        'facility_ingestion', ['main','ingest','run'], 'facilities'))
+
+
+@app.route('/api/admin/loader-status', methods=['GET'])
+def phase12g_loader_status():
+    """Read the latest state of every async loader."""
+    return jsonify({'success': True, 'loaders': dict(phase12g_loader_state)})
+# --- end phase 12g ----------------------------------------------------------
+
+
 if __name__ == '__main__':
     print("🚀 DC Hub API v86 Starting...")
     print(f"📊 PDF Generation: {'✅ Available' if PDF_AVAILABLE else '❌ Disabled'}")
