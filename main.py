@@ -14463,6 +14463,61 @@ except Exception as _e:
 # --- end phase 9g -----------------------------------------------------------
 
 
+
+
+# --- phase 12c: one-shot admin endpoint to repopulate stale data ------------
+# Calls each known loader module's entry point. Returns per-module status
+# so we can see exactly which one is broken (vs the silent failure of
+# /api/energy-discovery/power-plants and /api/infrastructure/sync).
+@app.route('/api/admin/phase12c-rerun-loaders', methods=['POST'])
+def phase12c_admin_load_all():
+    """Run each known loader once and report per-module status.
+
+    Auth: X-Internal-Key matching DCHUB_INTERNAL_KEY env var (or the
+    legacy 'dchub-internal-sync-2026' default we relaxed in Phase 9h).
+    """
+    sent = (request.headers.get('X-Internal-Key') or '').strip()
+    allowed = {os.environ.get('DCHUB_INTERNAL_KEY','dchub-internal-sync-2026'),
+               'dchub-internal-sync-2026',
+               os.environ.get('INTERNAL_KEY',''),
+               os.environ.get('MCP_INTERNAL_KEY','')}
+    if not (sent and sent in {a for a in allowed if a}):
+        return jsonify({'error': 'forbidden'}), 403
+
+    out = {'success': True, 'loaders': {}}
+    loaders = [
+        ('hifld_substation_loader', 'load'),
+        ('hifld_communications', 'load'),
+        ('eia860_bulk_loader', 'load'),
+        ('eia_gas_bulk_loader', 'load'),
+        ('pipeline_sync', 'sync'),
+        ('facility_ingestion', 'ingest'),
+        ('subsea_cable_ingestion', 'ingest'),
+        ('eia_generator_reseed', 'reseed'),
+    ]
+    for mod, fn in loaders:
+        try:
+            m = __import__(mod)
+            f = getattr(m, fn, None)
+            if not callable(f):
+                # try common alternates
+                for alt in ('main', 'run', 'execute', 'load_all'):
+                    f = getattr(m, alt, None)
+                    if callable(f): fn = alt; break
+            if not callable(f):
+                out['loaders'][mod] = {'ok': False, 'error': f'no callable entry point ({fn})'}
+                continue
+            res = f()
+            out['loaders'][mod] = {'ok': True, 'result': str(res)[:200] if res is not None else 'ran'}
+        except ModuleNotFoundError as e:
+            out['loaders'][mod] = {'ok': False, 'error': f'module not found: {e}'}
+        except Exception as e:
+            out['loaders'][mod] = {'ok': False, 'error': type(e).__name__ + ': ' + str(e)[:200]}
+    out['ran_at'] = datetime.utcnow().isoformat()
+    return jsonify(out)
+# --- end phase 12c ----------------------------------------------------------
+
+
 if __name__ == '__main__':
     print("🚀 DC Hub API v86 Starting...")
     print(f"📊 PDF Generation: {'✅ Available' if PDF_AVAILABLE else '❌ Disabled'}")
