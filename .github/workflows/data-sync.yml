@@ -33,7 +33,7 @@ jobs:
             INTERNAL_KEY="dchub-internal-sync-2026"
           fi
           echo "Step 0/4: Firing async loaders..."
-          for endpoint in load-substations-live load-power-plants-live load-pipelines-live load-facilities-live; do
+          for endpoint in load-substations-live load-power-plants-live load-pipelines-live load-facilities-live load-energy-discovery-live; do
             echo "  → $endpoint"
             curl -sS --max-time 15 -X POST "$RAILWAY/api/admin/$endpoint" \
               -H "X-Internal-Key: $INTERNAL_KEY" \

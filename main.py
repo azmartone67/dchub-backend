@@ -14736,6 +14736,85 @@ def phase12i_probe_network():
 # --- end phase 12i ----------------------------------------------------------
 
 
+
+
+# --- phase 12j: master sync via energy_auto_discovery -----------------------
+@app.route('/api/admin/load-energy-discovery-live', methods=['POST'])
+def phase12j_load_energy_discovery_live():
+    """Async wrapper: open a DB connection and call run_full_sync().
+
+    energy_auto_discovery.run_full_sync(conn) iterates 23 markets and
+    calls sync_power_plants, sync_substations, sync_gas_infrastructure
+    for each — all from HIFLD ArcGIS (no EIA dependency).
+    """
+    sent = (request.headers.get('X-Internal-Key') or '').strip()
+    allowed = {'dchub-internal-sync-2026'}
+    for n in ('DCHUB_INTERNAL_KEY','INTERNAL_KEY','MCP_INTERNAL_KEY','DCHUB_ADMIN_KEY'):
+        v = os.environ.get(n)
+        if v: allowed.add(v)
+    if not (sent and sent in {a for a in allowed if a}):
+        return jsonify({'error': 'forbidden'}), 403
+
+    import threading, traceback
+    state = phase12g_loader_state
+    if state.get('energy_discovery', {}).get('running'):
+        return jsonify({'started': False, 'reason': 'already running'})
+
+    def _runner():
+        rec = {'running': True, 'started_at': datetime.utcnow().isoformat()}
+        state['energy_discovery'] = rec
+        try:
+            from db_utils import get_db
+            from energy_auto_discovery import run_full_sync
+            conn = get_db()
+            try:
+                results = run_full_sync(conn)
+                rec['ok'] = True
+                rec['result'] = str(results)[:1500]
+            finally:
+                try: conn.close()
+                except Exception: pass
+        except SystemExit as e:
+            rec['error'] = 'SystemExit code=' + str(getattr(e,'code',None))
+            rec['traceback'] = traceback.format_exc()[:1500]
+        except BaseException as e:
+            rec['error'] = type(e).__name__ + ': ' + str(e)[:500]
+            rec['traceback'] = traceback.format_exc()[:1500]
+        finally:
+            rec['running'] = False
+            rec['finished_at'] = datetime.utcnow().isoformat()
+
+    t = threading.Thread(target=_runner, daemon=True)
+    t.start()
+    return jsonify({'started': True, 'status_key': 'energy_discovery',
+                    'check_at': '/api/admin/loader-status'})
+
+
+@app.route('/api/admin/probe-hifld-fetch', methods=['GET','POST'])
+def phase12j_probe_hifld_fetch():
+    """Call hifld_substation_loader.fetch_page(0, 5) directly and return raw
+    output so we can see WHY it returns None despite HIFLD being reachable
+    via probe-network."""
+    out = {'success': True}
+    try:
+        import hifld_substation_loader as hsl
+        try:
+            res = hsl.fetch_page(0, 5)
+            out['fetch_page_result'] = repr(res)[:800]
+            out['result_is_none'] = res is None
+            if res is not None:
+                features, exceeded = res
+                out['feature_count'] = len(features) if features else 0
+        except Exception as e:
+            import traceback
+            out['fetch_page_error'] = type(e).__name__ + ': ' + str(e)[:300]
+            out['traceback'] = traceback.format_exc()[:1500]
+    except Exception as e:
+        out['import_error'] = type(e).__name__ + ': ' + str(e)[:300]
+    return jsonify(out)
+# --- end phase 12j ----------------------------------------------------------
+
+
 if __name__ == '__main__':
     print("🚀 DC Hub API v86 Starting...")
     print(f"📊 PDF Generation: {'✅ Available' if PDF_AVAILABLE else '❌ Disabled'}")
