@@ -27,6 +27,78 @@ from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 from internal_auth import is_valid_internal_key, get_internal_key_for_client
 
+# ============================================================================
+# Phase 25/27/28 — replace static seed values with live DB counts.
+# Called from energy_discovery_status() via stats.update(_phase25_real_counts())
+# inserted after the seed assignments. All exceptions swallowed → never
+# breaks the response.
+# ============================================================================
+def _phase25_real_counts():
+    out = {
+        'markets_monitored': 23,
+        'hifld_sources': 5,
+        'running': True,
+        'recent_syncs': [],
+        'seed_data': True,
+        'total_capacity_mw': 0,
+        'total_gas_compressors': 0,
+        'total_gas_processings': 0,
+        'total_pipelines': 0,
+        'total_power_plants': 0,
+        'total_substations': 0,
+        'total_transmissions': 0,
+        'total_wind_projects': 0,
+    }
+    try:
+        from db_utils import try_get_db
+        conn = try_get_db()
+        if not conn:
+            return out
+        cur = conn.cursor()
+        for label, table in [
+            ('total_substations',     'substations'),
+            ('total_pipelines',       'pipelines'),
+            ('total_power_plants',    'power_plants'),
+            ('total_transmissions',   'transmission'),
+            ('total_wind_projects',   'wind_projects'),
+            ('total_gas_compressors', 'gas_compressors'),
+            ('total_gas_processings', 'gas_processings'),
+        ]:
+            try:
+                cur.execute(f"SELECT COUNT(*) FROM {table}")
+                r = cur.fetchone() or (0,)
+                out[label] = int(r[0] or 0)
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+        try:
+            cur.execute("SELECT COALESCE(SUM(capacity_mw), 0) FROM power_plants")
+            r = cur.fetchone() or (0,)
+            out['total_capacity_mw'] = int(r[0] or 0)
+        except Exception:
+            try: conn.rollback()
+            except Exception: pass
+        try:
+            cur.execute(
+                "SELECT 'substations' AS source, MAX(updated_at) AS at FROM substations "
+                "UNION ALL SELECT 'pipelines',    MAX(updated_at) FROM pipelines "
+                "UNION ALL SELECT 'power_plants', MAX(updated_at) FROM power_plants"
+            )
+            out['recent_syncs'] = [
+                {'source': r[0], 'at': str(r[1]) if r[1] else None}
+                for r in cur.fetchall()
+            ]
+        except Exception:
+            try: conn.rollback()
+            except Exception: pass
+        out['seed_data'] = (out['total_substations'] < 1000)
+        try: conn.close()
+        except Exception: pass
+    except Exception as _e:
+        out['_error'] = type(_e).__name__ + ': ' + str(_e)[:200]
+    return out
+
+
 # phase12m: ArcGIS REST rejects URL-encoded = and , in where/outFields.
 def _phase12m_build_query(params_dict):
     from urllib.parse import quote
