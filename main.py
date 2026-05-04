@@ -1031,11 +1031,11 @@ except Exception as _e:
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 
 
-# --- phase 18f: clean geocoder proxy via requests ---------------------------
+# --- phase 18g: 4-provider geocoder with US bias ---------------------------
 @app.route('/api/v1/geocode', methods=['GET', 'OPTIONS'])
-def phase18f_geocode():
-    """Same-origin proxy to public geocoders. Uses `requests` (IPv4-friendly)
-    instead of urllib (which has IPv6-first behavior that fails on Railway)."""
+def phase18g_geocode():
+    """Same-origin geocoder proxy: ArcGIS → Nominatim → Photon → Census.
+    Adds US country bias + structured query fallback for sparse OSM areas."""
     if request.method == 'OPTIONS':
         resp = jsonify({'ok': True})
         resp.headers['Access-Control-Allow-Origin'] = '*'
@@ -1048,8 +1048,9 @@ def phase18f_geocode():
 
     try:
         import requests as _rq
+        import re as _re
     except Exception as _e:
-        return jsonify({'error': 'requests unavailable', 'detail': str(_e)}), 500
+        return jsonify({'error': 'imports unavailable', 'detail': str(_e)}), 500
 
     diag = {}
     H = {
@@ -1058,16 +1059,61 @@ def phase18f_geocode():
     }
 
     def _ok(lat, lng, label, source):
-        resp = jsonify({'lat': lat, 'lng': lng, 'label': label, 'source': source})
+        resp = jsonify({'lat': float(lat), 'lng': float(lng),
+                        'label': label, 'source': source})
         resp.headers['Cache-Control'] = 'public, max-age=86400'
         resp.headers['Access-Control-Allow-Origin'] = '*'
         return resp
 
-    # 1) Nominatim — proven working from Phase 18e Test 2
+    # Detect US bias signals
+    US_STATES_RE = _re.compile(r'\b(AL|AK|AZ|AR|CA|CO|CT|DC|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY)\b')
+    is_pure_zip = bool(_re.match(r'^\d{5}(-\d{4})?$', address))
+    has_us_state = bool(US_STATES_RE.search(address))
+    looks_us = is_pure_zip or has_us_state or 'USA' in address.upper() or 'US' in address.upper().split(',')[-1].strip()
+
+    # Parse structured address parts (loose heuristic)
+    parts = [s.strip() for s in address.split(',')]
+    street = parts[0] if parts else ''
+    city = parts[1] if len(parts) > 1 else ''
+    state_zip = parts[2] if len(parts) > 2 else (parts[1] if len(parts) > 1 else '')
+    state_match = US_STATES_RE.search(state_zip)
+    state = state_match.group(0) if state_match else ''
+    zip_match = _re.search(r'\b\d{5}(-\d{4})?\b', address)
+    zip_code = zip_match.group(0) if zip_match else ''
+
+    # 1) ArcGIS World Geocoder — has TIGER street data, free for low usage
     try:
+        params = {
+            'SingleLine': address,
+            'f': 'json',
+            'forStorage': 'false',
+            'maxLocations': 1,
+        }
+        if looks_us:
+            params['countryCode'] = 'USA'
+        r = _rq.get('https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates',
+                    params=params, headers=H, timeout=10)
+        diag['arcgis_status'] = r.status_code
+        if r.ok:
+            data = r.json()
+            cands = data.get('candidates') or []
+            if cands:
+                c = cands[0]
+                loc = c.get('location') or {}
+                if isinstance(loc.get('y'), (int, float)) and isinstance(loc.get('x'), (int, float)):
+                    return _ok(loc['y'], loc['x'],
+                               c.get('address') or address,
+                               'ArcGIS World Geocoder')
+    except Exception as e:
+        diag['arcgis_error'] = type(e).__name__ + ': ' + str(e)[:200]
+
+    # 2) Nominatim with US bias + structured fallback
+    try:
+        params = {'format': 'json', 'q': address, 'limit': 1, 'addressdetails': 1}
+        if looks_us:
+            params['countrycodes'] = 'us'
         r = _rq.get('https://nominatim.openstreetmap.org/search',
-                    params={'format': 'json', 'q': address, 'limit': 1, 'addressdetails': 1},
-                    headers=H, timeout=12)
+                    params=params, headers=H, timeout=12)
         diag['nominatim_status'] = r.status_code
         if r.ok:
             arr = r.json()
@@ -1075,14 +1121,32 @@ def phase18f_geocode():
                 m = arr[0]
                 lat = float(m.get('lat')); lng = float(m.get('lon'))
                 return _ok(lat, lng, m.get('display_name') or address, 'OSM Nominatim')
+            # Structured fallback if free-form didn't match
+            if street and city and (state or zip_code):
+                params2 = {'format': 'json', 'limit': 1, 'addressdetails': 1,
+                           'street': street, 'city': city,
+                           'state': state, 'postalcode': zip_code,
+                           'country': 'United States' if looks_us else ''}
+                r2 = _rq.get('https://nominatim.openstreetmap.org/search',
+                             params=params2, headers=H, timeout=12)
+                if r2.ok:
+                    arr2 = r2.json()
+                    if isinstance(arr2, list) and arr2:
+                        m = arr2[0]
+                        lat = float(m.get('lat')); lng = float(m.get('lon'))
+                        return _ok(lat, lng, m.get('display_name') or address,
+                                   'OSM Nominatim (structured)')
     except Exception as e:
         diag['nominatim_error'] = type(e).__name__ + ': ' + str(e)[:200]
 
-    # 2) Photon — Komoot's mirror, often has fresher data
+    # 3) Photon with US bbox bias
     try:
+        params = {'q': address, 'limit': 1}
+        if looks_us:
+            # Continental US bbox so 78644 doesn't hit Ukraine etc.
+            params['bbox'] = '-125,24,-66,50'
         r = _rq.get('https://photon.komoot.io/api/',
-                    params={'q': address, 'limit': 1},
-                    headers=H, timeout=10)
+                    params=params, headers=H, timeout=10)
         diag['photon_status'] = r.status_code
         if r.ok:
             data = r.json()
@@ -1093,20 +1157,20 @@ def phase18f_geocode():
                 if len(coords) >= 2:
                     lng, lat = float(coords[0]), float(coords[1])
                     props = f.get('properties') or {}
-                    parts = [props.get(k) for k in
+                    parts2 = [props.get(k) for k in
                              ('name', 'street', 'housenumber', 'city',
                               'state', 'postcode', 'country') if props.get(k)]
                     return _ok(lat, lng,
-                               ', '.join(parts) if parts else address,
+                               ', '.join(parts2) if parts2 else address,
                                'Photon (Komoot)')
     except Exception as e:
         diag['photon_error'] = type(e).__name__ + ': ' + str(e)[:200]
 
-    # 3) Census — best for US street-level if Railway can reach it
+    # 4) US Census — last resort (Railway IPv6 issues)
     try:
         r = _rq.get('https://geocoding.geo.census.gov/geocoder/locations/onelineaddress',
                     params={'address': address, 'benchmark': 'Public_AR_Current', 'format': 'json'},
-                    headers=H, timeout=10)
+                    headers=H, timeout=8)
         diag['census_status'] = r.status_code
         if r.ok:
             data = r.json()
@@ -1121,11 +1185,14 @@ def phase18f_geocode():
     except Exception as e:
         diag['census_error'] = type(e).__name__ + ': ' + str(e)[:200]
 
-    # All providers tried — return diagnostics
     resp = jsonify({'error': 'no match', 'address': address, 'diag': diag})
     resp.headers['Access-Control-Allow-Origin'] = '*'
     return resp, 404
-# --- end phase 18f ----------------------------------------------------------
+# --- end phase 18g ----------------------------------------------------------
+
+
+
+
 
 
 
