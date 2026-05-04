@@ -5429,32 +5429,6 @@ def init_new_tables():
             user_agent TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )''')
-
-
-        # phase16_conversions_table: tracks paid Stripe checkouts so the
-        # dashboard's conversions_30d count finally has data to query.
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS conversions (
-                id SERIAL PRIMARY KEY,
-                stripe_session_id TEXT UNIQUE,
-                stripe_customer_id TEXT,
-                customer_email TEXT,
-                amount_cents INTEGER,
-                currency TEXT DEFAULT 'usd',
-                plan TEXT,                      -- 'developer' | 'pro' | 'enterprise'
-                client_reference_id TEXT,       -- captures ?ref=mcp-trial&tool=X attribution
-                source_tool TEXT,               -- parsed from client_reference_id
-                source_ref TEXT,                -- parsed from client_reference_id
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        try:
-            c.execute("CREATE INDEX IF NOT EXISTS idx_conversions_created_at ON conversions(created_at)")
-        except Exception: pass
-
-        # v4.1 schema — tool_name/params/status_code/response_ms added so tools/call
-        # rows are distinguishable from handshakes in a single query. ai_tracking.py
-        # runs idempotent ALTER TABLE migrations at startup for existing deployments.
         c.execute('''CREATE TABLE IF NOT EXISTS mcp_connections (
             id SERIAL PRIMARY KEY,
             platform TEXT NOT NULL,
@@ -7186,6 +7160,65 @@ def handle_checkout_completed(session):
         print(f"❌ WEBHOOK ERROR in handle_checkout_completed: {e}")
         traceback.print_exc()
 
+
+    # phase17_mcp_conversion: write the conversion to mcp_conversions table
+    try:
+        _p17_data = data if isinstance(data, dict) else {}
+        _p17_session_id = _p17_data.get('id')
+        _p17_email = (_p17_data.get('customer_email')
+                      or (_p17_data.get('customer_details') or {}).get('email') or '')
+        _p17_customer = _p17_data.get('customer')
+        _p17_amount = _p17_data.get('amount_total') or 0
+        _p17_currency = (_p17_data.get('currency') or 'usd')
+        _p17_cref = _p17_data.get('client_reference_id') or ''
+        _p17_meta = _p17_data.get('metadata') or {}
+        _p17_plan = _p17_meta.get('plan', 'unknown')
+        if _p17_plan == 'unknown' and _p17_amount:
+            _ah = int(_p17_amount) // 100
+            if _ah >= 600: _p17_plan = 'enterprise'
+            elif _ah >= 200: _p17_plan = 'pro'
+            elif _ah >= 30: _p17_plan = 'developer'
+        _p17_src = None; _p17_tool = None
+        if _p17_cref:
+            import re as _re17
+            _m = _re17.match(r'ref_([^_]+)__tool_(.+)', str(_p17_cref))
+            if _m: _p17_src, _p17_tool = _m.group(1), _m.group(2)
+        from db_utils import try_get_db as _p17_get_db
+        _p17_db = _p17_get_db()
+        if _p17_db:
+            _p17_c = _p17_db.cursor()
+            # Try the rich INSERT first; fall back to minimal columns if schema differs
+            try:
+                _p17_c.execute(
+                    '''INSERT INTO mcp_conversions
+                        (stripe_session_id, stripe_customer_id, customer_email,
+                         amount_cents, currency, plan, client_reference_id,
+                         source_tool, source_ref)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                       ON CONFLICT DO NOTHING''',
+                    (_p17_session_id, _p17_customer, _p17_email,
+                     int(_p17_amount or 0), _p17_currency, _p17_plan,
+                     _p17_cref, _p17_tool, _p17_src))
+            except Exception as _e1:
+                _p17_db.rollback()
+                # Minimal-schema fallback: just the essentials
+                try:
+                    _p17_c2 = _p17_db.cursor()
+                    _p17_c2.execute(
+                        'INSERT INTO mcp_conversions (stripe_session_id, plan, amount_cents) VALUES (%s,%s,%s)',
+                        (_p17_session_id, _p17_plan, int(_p17_amount or 0)))
+                except Exception as _e2:
+                    _p17_db.rollback()
+                    try: logger.warning(f'phase17 mcp_conversions both insert paths failed: rich={_e1} minimal={_e2}')
+                    except Exception: pass
+            _p17_db.commit()
+            try: _p17_db.close()
+            except Exception: pass
+            try: logger.info(f'phase17: conversion logged session={_p17_session_id} plan={_p17_plan} ref={_p17_cref}')
+            except Exception: pass
+    except Exception as _p17_e:
+        try: logger.warning(f'phase17 mcp_conversions logging failed: {_p17_e}')
+        except Exception: pass
 def handle_subscription_created(subscription):
     """Handle new subscription - writes to PostgreSQL first"""
     customer_id = subscription.get('customer', '')
