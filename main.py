@@ -1099,6 +1099,43 @@ def phase14c_health_aggregate():
         except Exception as e:
             out['checks']['user_acquisition'] = {'status': 'unknown', 'error': str(e)[:200]}
         out['checks']['database'] = {'status': 'green', 'note': 'connection ok'}
+        # Check 4: funnel leak — many signals, zero conversions = yellow
+        try:
+            cur.execute("""
+                SELECT
+                  (SELECT COUNT(*) FROM mcp_upgrade_signals
+                     WHERE created_at >= CURRENT_DATE - INTERVAL '7 days') AS signals_7d,
+                  (SELECT COUNT(*) FROM mcp_upgrade_signals
+                     WHERE created_at >= CURRENT_DATE - INTERVAL '30 days') AS signals_30d
+            """)
+            row = cur.fetchone() or {}
+            signals_7d = int(row.get('signals_7d') or 0)
+            signals_30d = int(row.get('signals_30d') or 0)
+            # Try multiple table names for conversions count
+            conv_30d = 0
+            for tbl in ('conversions', 'mcp_conversions', 'stripe_conversions'):
+                try:
+                    cur.execute(f"""SELECT COUNT(*) AS n FROM {tbl}
+                                    WHERE created_at >= CURRENT_DATE - INTERVAL '30 days'""")
+                    r = cur.fetchone() or {}
+                    conv_30d = int(r.get('n') or 0)
+                    break
+                except Exception:
+                    try: conn.rollback()
+                    except Exception: pass
+            check = {'signals_7d': signals_7d, 'signals_30d': signals_30d,
+                     'conversions_30d': conv_30d}
+            # Funnel-leak heuristic: lots of signals but no conversions
+            if signals_30d >= 100 and conv_30d == 0:
+                check['status'] = 'yellow'
+                check['note'] = 'funnel leak — 100+ signals, 0 conversions'
+                if out['status'] == 'green': out['status'] = 'yellow'
+            else:
+                check['status'] = 'green'
+            out['checks']['funnel'] = check  # phase15_funnel_check
+        except Exception as e:
+            out['checks']['funnel'] = {'status': 'unknown', 'error': str(e)[:200]}
+
     except Exception as e:
         out['status'] = 'red'
         out['checks']['database'] = {'status': 'red', 'error': str(e)[:200]}
