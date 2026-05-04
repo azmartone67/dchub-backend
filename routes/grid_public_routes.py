@@ -144,7 +144,7 @@ def render_grid_hub_html(cards, schema, tier):
                 if isinstance(gm, dict) and gm:
                     top_fuel = max(gm.items(), key=lambda kv: kv[1] or 0)[0]
             cards_html.append(f'''
-            <a class="grid-card" href="/grid/{c['iso']}">
+            <a class="grid-card" href="/grid/{c['iso'].lower()}">  <!-- phase26_lowercase_links -->
               <div class="iso-badge">{c['iso']}</div>
               <h3>{c['name']}</h3>
               <div class="states">{c['states']}</div>
