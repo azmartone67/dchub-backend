@@ -27,6 +27,14 @@ from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 from internal_auth import is_valid_internal_key, get_internal_key_for_client
 
+# phase12m: ArcGIS REST rejects URL-encoded = and , in where/outFields.
+def _phase12m_build_query(params_dict):
+    from urllib.parse import quote
+    parts = []
+    for k, v in params_dict.items():
+        parts.append(f"{quote(str(k), safe='')}={quote(str(v), safe='=,+*<>:')}")
+    return "&".join(parts)
+
 logger = logging.getLogger('energy_discovery')
 
 # =============================================================================
@@ -132,7 +140,7 @@ def query_arcgis(url, fields='*', where='1=1', result_count=5000,
         params['inSR'] = '4326'
 
     from urllib.parse import urlencode
-    query_string = urlencode({k: v for k, v in params.items()})
+    query_string = _phase12m_build_query({k: v for k, v in params.items()})
     full_url = f"{url}/query?{query_string}"
 
     try:

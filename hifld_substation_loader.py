@@ -21,6 +21,16 @@ import urllib.request
 import urllib.parse
 import math
 
+# phase12m: ArcGIS REST rejects URL-encoded = and , in where/outFields.
+# Use quote() with safe chars instead of urlencode().
+def _phase12m_build_query(params_dict):
+    from urllib.parse import quote
+    parts = []
+    for k, v in params_dict.items():
+        # safe chars: leave =, ,, +, *, < > etc. unencoded
+        parts.append(f"{quote(str(k), safe='')}={quote(str(v), safe='=,+*<>:')}")
+    return "&".join(parts)
+
 # ArcGIS Feature Server — paginated query (more reliable than Hub download)
 HIFLD_BASE = "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services"
 SUBSTATIONS_URL = f"{HIFLD_BASE}/Electric_Substations/FeatureServer/0/query"
@@ -40,7 +50,7 @@ USER_AGENT = 'DCHub-HIFLD-Loader/1.0 (dchub.cloud)'
 
 def fetch_page(offset, batch_size=BATCH_SIZE):
     """Fetch a page of substations from HIFLD ArcGIS Feature Server."""
-    params = urllib.parse.urlencode({
+    params = _phase12m_build_query({
         'where': '1=1',
         'outFields': 'NAME,CITY,STATE,STATUS,MAX_VOLT,MIN_VOLT,LATITUDE,LONGITUDE,OWNER,NAICS_CODE,COUNTY',
         'returnGeometry': 'true',
