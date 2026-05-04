@@ -1031,6 +1031,87 @@ except Exception as _e:
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 
 
+# --- phase 14c: aggregate health endpoint (registered EARLY to win routing) -
+@app.route('/api/v1/health', methods=['GET'], endpoint='phase14c_health_aggregate')
+def phase14c_health_aggregate():
+    """Aggregate health: red/yellow/green across telemetry, land_power,
+    user_acquisition, and database connectivity. Single ping target.
+    """
+    import datetime as _dt
+    out = {'status': 'green', 'checks': {}, 'as_of': _dt.datetime.utcnow().isoformat()}
+    conn = None
+    try:
+        conn = get_read_db()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        # telemetry
+        try:
+            cur.execute("SELECT MAX(created_at) AS m, COUNT(*) AS n FROM mcp_tool_calls")
+            row = cur.fetchone() or {}
+            latest = row.get('m')
+            if latest:
+                hours = (_dt.datetime.utcnow() - latest).total_seconds() / 3600.0
+                check = {'latest': str(latest), 'hours_stale': round(hours, 1),
+                         'rows': int(row.get('n') or 0)}
+                if hours > 24: check['status'] = 'red'; out['status'] = 'red'
+                elif hours > 6:
+                    check['status'] = 'yellow'
+                    if out['status'] == 'green': out['status'] = 'yellow'
+                else: check['status'] = 'green'
+                out['checks']['telemetry'] = check
+        except Exception as e:
+            out['checks']['telemetry'] = {'status': 'red', 'error': str(e)[:200]}
+            out['status'] = 'red'
+        # land_power
+        try:
+            cur.execute("SELECT MAX(updated_at) AS m, COUNT(*) AS n FROM substations")
+            row = cur.fetchone() or {}
+            latest = row.get('m')
+            if latest:
+                days = (_dt.datetime.utcnow() - latest).days
+                check = {'latest': str(latest), 'days_stale': days,
+                         'rows': int(row.get('n') or 0)}
+                if days > 14: check['status'] = 'red'; out['status'] = 'red'
+                elif days > 8:
+                    check['status'] = 'yellow'
+                    if out['status'] == 'green': out['status'] = 'yellow'
+                else: check['status'] = 'green'
+                out['checks']['land_power'] = check
+        except Exception as e:
+            out['checks']['land_power'] = {'status': 'red', 'error': str(e)[:200]}
+        # user_acquisition
+        try:
+            cur.execute("SELECT MAX(created_at) AS m, COUNT(*) AS n FROM api_keys")
+            row = cur.fetchone() or {}
+            latest = row.get('m')
+            if latest:
+                if isinstance(latest, str):
+                    try: latest = _dt.datetime.fromisoformat(latest.replace('Z','+00:00'))
+                    except Exception: latest = None
+                if latest and hasattr(latest, 'replace'):
+                    latest = latest.replace(tzinfo=None) if latest.tzinfo else latest
+                    days = (_dt.datetime.utcnow() - latest).days
+                    check = {'latest': str(latest), 'days_since_signup': days,
+                             'total_keys': int(row.get('n') or 0)}
+                    check['status'] = 'green' if days < 14 else 'yellow'
+                    if check['status'] == 'yellow' and out['status'] == 'green':
+                        out['status'] = 'yellow'
+                    out['checks']['user_acquisition'] = check
+        except Exception as e:
+            out['checks']['user_acquisition'] = {'status': 'unknown', 'error': str(e)[:200]}
+        out['checks']['database'] = {'status': 'green', 'note': 'connection ok'}
+    except Exception as e:
+        out['status'] = 'red'
+        out['checks']['database'] = {'status': 'red', 'error': str(e)[:200]}
+    finally:
+        if conn:
+            try: conn.close()
+            except Exception: pass
+    return jsonify(out)
+# --- end phase 14c ---------------------------------------------------------
+
+
+
+
 # phase12d_safe_register: wrap register_blueprint so one failure doesn't
 # silence the others. Logs which blueprint failed and why.
 def phase12d_safe_register(app_, bp, name='unknown'):
@@ -14958,97 +15039,6 @@ def phase13_osm_all():
 
 
 
-# --- phase 14: aggregate health endpoint ------------------------------------
-@app.route('/api/v1/health', methods=['GET'])
-def phase14_health_aggregate():
-    """Aggregate health across critical subsystems. Returns red/yellow/green.
-
-    Subsystems checked:
-      • data-freshness — alerts if any source >7 days stale (yellow >3d, red >7d)
-      • mcp_tool_calls writes — alerts if no writes in last 6 hours (yellow)
-                                or 24 hours (red)
-      • api_keys writes — yellow >7d stale (signals user-acquisition stall)
-      • database connectivity — red if no connection
-    """
-    import datetime as _dt
-    out = {'status': 'green', 'checks': {}, 'as_of': _dt.datetime.utcnow().isoformat()}
-    conn = None
-    try:
-        conn = get_read_db()
-        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-
-        # Check 1: mcp_tool_calls freshness (telemetry health)
-        try:
-            cur.execute("SELECT MAX(created_at) AS m, COUNT(*) AS n FROM mcp_tool_calls")
-            row = cur.fetchone() or {}
-            latest = row.get('m')
-            if latest:
-                hours = (_dt.datetime.utcnow() - latest).total_seconds() / 3600.0
-                check = {'latest': str(latest), 'hours_stale': round(hours, 1),
-                         'rows': int(row.get('n') or 0)}
-                if hours > 24:
-                    check['status'] = 'red'; out['status'] = 'red'
-                elif hours > 6:
-                    check['status'] = 'yellow'
-                    if out['status'] == 'green': out['status'] = 'yellow'
-                else:
-                    check['status'] = 'green'
-                out['checks']['telemetry'] = check
-        except Exception as e:
-            out['checks']['telemetry'] = {'status': 'red', 'error': str(e)[:200]}
-            out['status'] = 'red'
-
-        # Check 2: substations freshness (Land-Power health)
-        try:
-            cur.execute("SELECT MAX(updated_at) AS m, COUNT(*) AS n FROM substations")
-            row = cur.fetchone() or {}
-            latest = row.get('m')
-            if latest:
-                days = (_dt.datetime.utcnow() - latest).days
-                check = {'latest': str(latest), 'days_stale': days,
-                         'rows': int(row.get('n') or 0)}
-                if days > 14:
-                    check['status'] = 'red'; out['status'] = 'red'
-                elif days > 8:
-                    check['status'] = 'yellow'
-                    if out['status'] == 'green': out['status'] = 'yellow'
-                else:
-                    check['status'] = 'green'
-                out['checks']['land_power'] = check
-        except Exception as e:
-            out['checks']['land_power'] = {'status': 'red', 'error': str(e)[:200]}
-
-        # Check 3: api_keys recency (user acquisition)
-        try:
-            cur.execute("SELECT MAX(created_at) AS m, COUNT(*) AS n FROM api_keys")
-            row = cur.fetchone() or {}
-            latest = row.get('m')
-            if latest:
-                if isinstance(latest, str):
-                    latest = _dt.datetime.fromisoformat(latest.replace('Z', '+00:00'))
-                if hasattr(latest, 'replace'):
-                    latest = latest.replace(tzinfo=None)
-                days = (_dt.datetime.utcnow() - latest).days
-                check = {'latest': str(latest), 'days_since_signup': days,
-                         'total_keys': int(row.get('n') or 0)}
-                check['status'] = 'green' if days < 14 else 'yellow'
-                if check['status'] == 'yellow' and out['status'] == 'green':
-                    out['status'] = 'yellow'
-                out['checks']['user_acquisition'] = check
-        except Exception as e:
-            out['checks']['user_acquisition'] = {'status': 'unknown', 'error': str(e)[:200]}
-
-        out['checks']['database'] = {'status': 'green', 'note': 'connection ok'}
-    except Exception as e:
-        out['status'] = 'red'
-        out['checks']['database'] = {'status': 'red', 'error': str(e)[:200]}
-    finally:
-        if conn:
-            try: conn.close()
-            except Exception: pass
-
-    return jsonify(out)
-# --- end phase 14 -----------------------------------------------------------
 
 
 if __name__ == '__main__':
