@@ -5430,6 +5430,28 @@ def init_new_tables():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )''')
 
+
+        # phase16_conversions_table: tracks paid Stripe checkouts so the
+        # dashboard's conversions_30d count finally has data to query.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS conversions (
+                id SERIAL PRIMARY KEY,
+                stripe_session_id TEXT UNIQUE,
+                stripe_customer_id TEXT,
+                customer_email TEXT,
+                amount_cents INTEGER,
+                currency TEXT DEFAULT 'usd',
+                plan TEXT,                      -- 'developer' | 'pro' | 'enterprise'
+                client_reference_id TEXT,       -- captures ?ref=mcp-trial&tool=X attribution
+                source_tool TEXT,               -- parsed from client_reference_id
+                source_ref TEXT,                -- parsed from client_reference_id
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        try:
+            c.execute("CREATE INDEX IF NOT EXISTS idx_conversions_created_at ON conversions(created_at)")
+        except Exception: pass
+
         # v4.1 schema — tool_name/params/status_code/response_ms added so tools/call
         # rows are distinguishable from handshakes in a single query. ai_tracking.py
         # runs idempotent ALTER TABLE migrations at startup for existing deployments.
