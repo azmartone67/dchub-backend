@@ -18,6 +18,7 @@ def _iso_for_date(d):
     return DAILY_ISO[d.weekday() % len(DAILY_ISO)]
 
 
+@social_posts_bp.route('/api/v1/social/posts/<date>', methods=['GET'])  # phase31_canonical_url — CF-allowlisted
 @social_posts_bp.route('/posts/daily/<date>', methods=['GET'])
 def daily_post_landing(date):
     """OG-rich landing page for daily LinkedIn auto-posts."""
@@ -55,13 +56,13 @@ def daily_post_landing(date):
   <meta property="og:image" content="{card_url}">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="1200">
-  <meta property="og:url" content="https://dchub.cloud/posts/daily/{d.isoformat()}">
+  <meta property="og:url" content="https://dchub.cloud/api/v1/social/posts/{d.isoformat()}">
   <meta property="og:type" content="article">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:image" content="{card_url}">
   <meta name="twitter:title" content="{title}">
   <meta name="twitter:description" content="{desc}">
-  <link rel="canonical" href="https://dchub.cloud/posts/daily/{d.isoformat()}">
+  <link rel="canonical" href="https://dchub.cloud/api/v1/social/posts/{d.isoformat()}">
   <script type="application/ld+json">{json.dumps(schema)}</script>
   <style>
     body {{ font-family: -apple-system, system-ui, sans-serif; margin: 0; background: #0a0e1a; color: #e6e9f0; min-height: 100vh; }}

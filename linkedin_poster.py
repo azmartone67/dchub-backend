@@ -40,7 +40,7 @@ def _phase30c_landing_url(d=None):
     import datetime
     if d is None:
         d = datetime.date.today()
-    return f"https://dchub.cloud/posts/daily/{d.isoformat()}"
+    return f"https://dchub.cloud/api/v1/social/posts/{d.isoformat()}"  # phase31_canonical_url
 
 logger = logging.getLogger('linkedin')
 
