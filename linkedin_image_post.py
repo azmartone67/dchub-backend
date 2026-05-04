@@ -23,6 +23,13 @@ import requests
 from datetime import datetime
 from dotenv import load_dotenv
 
+# Phase 30C — daily landing URL (LinkedIn renders rich card from this URL's OG)
+def _phase30c_landing_url(d=None):
+    import datetime
+    if d is None:
+        d = datetime.date.today()
+    return f"https://dchub.cloud/posts/daily/{d.isoformat()}"
+
 load_dotenv()
 
 # ── Config ─────────────────────────────────────────────────────────────────────

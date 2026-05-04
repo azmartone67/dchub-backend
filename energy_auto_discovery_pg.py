@@ -680,3 +680,58 @@ def register_energy_discovery_routes(app):
 
     logger.info(f"⚡ Energy Auto-Discovery v3.0 (PostgreSQL) registered — {len(MONITORED_MARKETS)} markets, {len(HIFLD_SOURCES)} sources")
     return True
+
+
+# ============================================================================
+# Phase 30A — sync-all-tables endpoint
+# ============================================================================
+def phase30_sync_all_tables_register(app):
+    """Register /api/jobs/sync-all-tables. Called from main.py."""
+    from flask import jsonify, request
+    import os, time, traceback
+
+    @app.route('/api/jobs/sync-all-tables', methods=['POST'])
+    def phase30_sync_all_tables():
+        # Auth via X-Internal-Key
+        internal_key = request.headers.get('X-Internal-Key', '')
+        expected = os.environ.get('DCHUB_INTERNAL_KEY', '')
+        if not expected or internal_key != expected:
+            return jsonify({'success': False, 'error': 'unauthorized'}), 401
+        results = {
+            'started_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+            'tables': {},
+            'errors': [],
+        }
+        # Try each loader if it exists. Each block is isolated so one failure
+        # doesn't kill the whole sync.
+        loader_attempts = [
+            ('pipelines',         'pipeline_loader',          'load_pipelines'),
+            ('transmission',      'transmission_loader',      'load_transmission'),
+            ('wind_projects',     'wind_loader',              'load_wind_projects'),
+            ('gas_compressors',   'gas_compressor_loader',    'load_gas_compressors'),
+            ('gas_processings',   'gas_processing_loader',    'load_gas_processings'),
+            ('power_plants',      'power_plant_loader',       'load_power_plants'),
+            ('substations',       'osm_substations_loader',   'load_osm_substations'),
+        ]
+        for table, mod, fn in loader_attempts:
+            try:
+                m = __import__(mod, fromlist=[fn])
+                f = getattr(m, fn, None)
+                if not f:
+                    results['tables'][table] = {'status': 'skipped', 'reason': f'{mod}.{fn} missing'}
+                    continue
+                t0 = time.time()
+                got = f()
+                results['tables'][table] = {
+                    'status': 'ok',
+                    'rows_or_result': got if isinstance(got, (int, str)) else 'completed',
+                    'elapsed_s': round(time.time() - t0, 2),
+                }
+            except ImportError as _e:
+                results['tables'][table] = {'status': 'skipped', 'reason': f'import: {_e}'[:120]}
+            except Exception as _e:
+                results['tables'][table] = {'status': 'error', 'error': type(_e).__name__ + ': ' + str(_e)[:200]}
+                results['errors'].append({'table': table, 'error': str(_e)[:200]})
+        results['ended_at'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+        results['ok_count'] = sum(1 for v in results['tables'].values() if v.get('status') == 'ok')
+        return jsonify({'success': True, 'data': results})

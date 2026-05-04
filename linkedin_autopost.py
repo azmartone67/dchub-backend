@@ -27,6 +27,13 @@ from functools import wraps
 # Flask imports (matches your existing backend)
 from flask import Blueprint, request, jsonify, redirect, session
 
+# Phase 30C — daily landing URL (LinkedIn renders rich card from this URL's OG)
+def _phase30c_landing_url(d=None):
+    import datetime
+    if d is None:
+        d = datetime.date.today()
+    return f"https://dchub.cloud/posts/daily/{d.isoformat()}"
+
 logger = logging.getLogger('dchub.linkedin')
 
 # =============================================================================

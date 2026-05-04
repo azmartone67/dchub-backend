@@ -18,6 +18,13 @@ import io
 import requests
 from flask import request, jsonify
 
+# Phase 30C — daily landing URL (LinkedIn renders rich card from this URL's OG)
+def _phase30c_landing_url(d=None):
+    import datetime
+    if d is None:
+        d = datetime.date.today()
+    return f"https://dchub.cloud/posts/daily/{d.isoformat()}"
+
 
 # ── Auth helper (already in your main.py — don't duplicate) ──────────────────
 

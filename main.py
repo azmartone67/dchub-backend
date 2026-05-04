@@ -1052,9 +1052,11 @@ try:
     from routes.observability_routes import observability_bp
     from routes.grid_public_routes import grid_public_bp
     from routes.grid_card_routes import grid_card_bp
+    from routes.social_posts_routes import social_posts_bp
     app.register_blueprint(observability_bp)
     app.register_blueprint(grid_public_bp)
     app.register_blueprint(grid_card_bp)
+    app.register_blueprint(social_posts_bp)
 except Exception as _e:
     import logging
     logging.getLogger(__name__).warning('phase22-24 wiring failed: %s', _e)
@@ -13428,6 +13430,12 @@ logger.info("✅ AI Query endpoints registered: /api/ai/query, /api/ai/cite, /ai
 try:
     from energy_auto_discovery_pg import register_energy_discovery_routes
     register_energy_discovery_routes(app)
+    try:
+        from energy_auto_discovery_pg import phase30_sync_all_tables_register
+        phase30_sync_all_tables_register(app)
+    except Exception as _e30a:
+        import logging; logging.getLogger(__name__).warning(f"phase30A wire failed: {_e30a}")
+
     print("⚡ Energy Auto-Discovery v3.0 (PostgreSQL): ✅ Registered")
 except ImportError:
     # Fallback to old SQLite version if pg version not deployed yet
@@ -17610,3 +17618,32 @@ except Exception as _rc_exc:
 # --- Smart search routes (added automatically) ---
 from search_routes import register_search_routes
 register_search_routes(app)
+
+
+# Phase 30B — log shadowed routes at boot so they show up in Railway logs
+def phase30b_shadow_log():
+    try:
+        seen = {}; shadows = []
+        for r in app.url_map.iter_rules():
+            key = (str(r), tuple(sorted((r.methods or set()) - {"HEAD","OPTIONS"})))
+            if key in seen:
+                shadows.append(f"{r}  endpoints={seen[key]} + {r.endpoint}")
+            else:
+                seen[key] = r.endpoint
+        import logging
+        log = logging.getLogger(__name__)
+        if shadows:
+            log.warning(f"phase30b_shadow_log: {len(shadows)} shadowed route(s) detected")
+            for s in shadows[:30]:
+                log.warning(f"  shadow: {s}")
+        else:
+            log.info("phase30b_shadow_log: no shadowed routes")
+    except Exception as _e:
+        import logging
+        logging.getLogger(__name__).warning(f"phase30b_shadow_log failed: {_e}")
+
+try:
+    phase30b_shadow_log()
+except Exception:
+    pass
+

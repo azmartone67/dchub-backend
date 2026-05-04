@@ -16,6 +16,13 @@ import threading
 import logging
 from datetime import datetime, timezone
 
+# Phase 30C — daily landing URL (LinkedIn renders rich card from this URL's OG)
+def _phase30c_landing_url(d=None):
+    import datetime
+    if d is None:
+        d = datetime.date.today()
+    return f"https://dchub.cloud/posts/daily/{d.isoformat()}"
+
 log = logging.getLogger('linkedin-scheduler')
 
 POST_HOUR = int(os.environ.get('POST_HOUR', '14'))  # UTC (14 UTC = 7am MST)
