@@ -14865,6 +14865,97 @@ def phase12l_probe_hifld_deep():
 # --- end phase 12l ----------------------------------------------------------
 
 
+
+
+# --- phase 13: OSM Overpass loaders -----------------------------------------
+def _phase13_osm_async(loader_name, status_key):
+    """Run an OSM loader function in a background thread, store status."""
+    import threading, traceback
+    state = phase12g_loader_state
+    if state.get(status_key, {}).get('running'):
+        return {'started': False, 'reason': 'already running'}
+
+    def _run():
+        rec = {'running': True, 'started_at': datetime.utcnow().isoformat()}
+        state[status_key] = rec
+        try:
+            from osm_overpass_loader import (
+                load_substations, load_power_plants,
+                load_transmission_lines, load_pipelines,
+                load_communications_towers, run_all_osm,
+            )
+            fn_map = {
+                'osm_substations': load_substations,
+                'osm_power_plants': load_power_plants,
+                'osm_transmission_lines': load_transmission_lines,
+                'osm_pipelines': load_pipelines,
+                'osm_comm_towers': load_communications_towers,
+                'osm_all': run_all_osm,
+            }
+            fn = fn_map.get(loader_name)
+            if not fn:
+                rec['error'] = f'unknown loader: {loader_name}'; return
+            res = fn()
+            rec['ok'] = True
+            rec['result'] = str(res)[:3000] if res is not None else 'ran'
+        except Exception as e:
+            rec['error'] = type(e).__name__ + ': ' + str(e)[:500]
+            rec['traceback'] = traceback.format_exc()[:1500]
+        finally:
+            rec['running'] = False
+            rec['finished_at'] = datetime.utcnow().isoformat()
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return {'started': True, 'status_key': status_key,
+            'check_at': '/api/admin/loader-status'}
+
+
+def _phase13_check_auth():
+    sent = (request.headers.get('X-Internal-Key') or '').strip()
+    allowed = {'dchub-internal-sync-2026'}
+    for n in ('DCHUB_INTERNAL_KEY','INTERNAL_KEY','MCP_INTERNAL_KEY','DCHUB_ADMIN_KEY'):
+        v = os.environ.get(n)
+        if v: allowed.add(v)
+    return sent and sent in {a for a in allowed if a}
+
+
+@app.route('/api/admin/load-osm-substations-live', methods=['POST'])
+def phase13_osm_substations():
+    if not _phase13_check_auth():
+        return jsonify({'error': 'forbidden'}), 403
+    return jsonify(_phase13_osm_async('osm_substations', 'osm_substations'))
+
+
+@app.route('/api/admin/load-osm-power-plants-live', methods=['POST'])
+def phase13_osm_power_plants():
+    if not _phase13_check_auth():
+        return jsonify({'error': 'forbidden'}), 403
+    return jsonify(_phase13_osm_async('osm_power_plants', 'osm_power_plants'))
+
+
+@app.route('/api/admin/load-osm-transmission-live', methods=['POST'])
+def phase13_osm_transmission():
+    if not _phase13_check_auth():
+        return jsonify({'error': 'forbidden'}), 403
+    return jsonify(_phase13_osm_async('osm_transmission_lines', 'osm_transmission'))
+
+
+@app.route('/api/admin/load-osm-pipelines-live', methods=['POST'])
+def phase13_osm_pipelines():
+    if not _phase13_check_auth():
+        return jsonify({'error': 'forbidden'}), 403
+    return jsonify(_phase13_osm_async('osm_pipelines', 'osm_pipelines'))
+
+
+@app.route('/api/admin/load-osm-all-live', methods=['POST'])
+def phase13_osm_all():
+    if not _phase13_check_auth():
+        return jsonify({'error': 'forbidden'}), 403
+    return jsonify(_phase13_osm_async('osm_all', 'osm_all'))
+# --- end phase 13 -----------------------------------------------------------
+
+
 if __name__ == '__main__':
     print("🚀 DC Hub API v86 Starting...")
     print(f"📊 PDF Generation: {'✅ Available' if PDF_AVAILABLE else '❌ Disabled'}")
