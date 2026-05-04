@@ -1031,6 +1031,98 @@ except Exception as _e:
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 
 
+# --- phase 18d: geocoder proxy (Census + Nominatim) — bypasses browser CORS -
+@app.route('/api/v1/geocode', methods=['GET'])
+def phase18d_geocode_proxy():
+    """Server-side proxy to Census Geocoder + Nominatim.
+
+    The browser cannot call those endpoints directly because they do not
+    send Access-Control-Allow-Origin. This same-origin endpoint is
+    callable from the Land-Power map and any other DC Hub front-end.
+
+    Returns: {lat, lng, label, source} or {error, ...}
+    """
+    import urllib.request, urllib.parse, json as _json, time as _t
+    address = (request.args.get('address') or '').strip()
+    if not address or len(address) < 4:
+        return jsonify({'error': 'address required (>=4 chars)'}), 400
+
+    out = {}
+
+    # 1) US Census Geocoder — best for US addresses
+    try:
+        params = {
+            'address': address,
+            'benchmark': 'Public_AR_Current',
+            'format': 'json',
+        }
+        url = ('https://geocoding.geo.census.gov/geocoder/locations/onelineaddress'
+               + '?' + urllib.parse.urlencode(params))
+        req = urllib.request.Request(url, headers={
+            'User-Agent': 'DCHub-Geocoder/1.0 (https://dchub.cloud)',
+            'Accept': 'application/json',
+        })
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = _json.loads(resp.read().decode('utf-8'))
+        matches = ((data.get('result') or {}).get('addressMatches') or [])
+        if matches:
+            m = matches[0]
+            c = m.get('coordinates') or {}
+            if isinstance(c.get('y'), (int, float)) and isinstance(c.get('x'), (int, float)):
+                out = {
+                    'lat': c['y'],
+                    'lng': c['x'],
+                    'label': m.get('matchedAddress') or address,
+                    'source': 'US Census Geocoder',
+                }
+                resp_json = jsonify(out)
+                resp_json.headers['Cache-Control'] = 'public, max-age=86400'
+                resp_json.headers['Access-Control-Allow-Origin'] = '*'
+                return resp_json
+    except Exception as e:
+        out['_census_error'] = type(e).__name__ + ': ' + str(e)[:200]
+
+    # 2) OSM Nominatim — international fallback
+    try:
+        # Nominatim usage policy requires User-Agent and a small delay
+        params = {'format': 'json', 'q': address, 'limit': 1, 'addressdetails': 1}
+        url = ('https://nominatim.openstreetmap.org/search'
+               + '?' + urllib.parse.urlencode(params))
+        req = urllib.request.Request(url, headers={
+            'User-Agent': 'DCHub-Geocoder/1.0 (https://dchub.cloud)',
+            'Accept': 'application/json',
+        })
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            arr = _json.loads(resp.read().decode('utf-8'))
+        if isinstance(arr, list) and arr:
+            m = arr[0]
+            try: lat = float(m.get('lat')); lng = float(m.get('lon'))
+            except Exception: lat = lng = None
+            if lat is not None and lng is not None:
+                out = {
+                    'lat': lat,
+                    'lng': lng,
+                    'label': m.get('display_name') or address,
+                    'source': 'OSM Nominatim',
+                }
+                resp_json = jsonify(out)
+                resp_json.headers['Cache-Control'] = 'public, max-age=86400'
+                resp_json.headers['Access-Control-Allow-Origin'] = '*'
+                return resp_json
+    except Exception as e:
+        out['_nominatim_error'] = type(e).__name__ + ': ' + str(e)[:200]
+
+    # No match anywhere
+    resp_json = jsonify({'error': 'no match for address',
+                         'address': address,
+                         **{k: v for k, v in out.items() if k.startswith('_')}})
+    resp_json.headers['Access-Control-Allow-Origin'] = '*'
+    return resp_json, 404
+# --- end phase 18d ----------------------------------------------------------
+
+
+
+
 # --- phase 14c: aggregate health endpoint (registered EARLY to win routing) -
 @app.route('/api/v1/health', methods=['GET'], endpoint='phase14c_health_aggregate')
 def phase14c_health_aggregate():
