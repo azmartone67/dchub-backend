@@ -94,3 +94,13 @@ jobs:
             --data "{\"text\":\":rotating_light: DC Hub smoke FAILED — run ${{ github.run_id }}\\n${RUN_URL}\"}" \
             "$SLACK_WEBHOOK_URL" \
             || echo "::warning::Slack notify POST failed (network/webhook invalid)"
+
+      - name: Notify on workflow failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create -R azmartone67/dchub-backend \
+            --title "[workflow-failed] ${{ github.workflow }} on $(date -u +%Y-%m-%d_%H:%M)" \
+            --body "Workflow run ${{ github.run_id }} failed. View logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --label workflow-failure || true
