@@ -150,7 +150,7 @@ def validate_key():
 @_require_internal
 def track_tool_call():
     body = request.get_json(silent=True) or {}
-    tool = body.get("tool")
+    tool = (body.get('tool') or body.get('tool_name'))
     if not tool:
         return jsonify({"ok": False, "error": "missing tool"}), 200
 
@@ -178,7 +178,7 @@ def track_tool_call():
                     body.get("tier"),
                     body.get("session_id"),
                     body.get("status"),
-                    body.get("duration_ms"),
+                    (body.get('duration_ms') or (body.get('response_time_ms') or body.get('duration_ms'))),
                 ),
             )
     except Exception as e:
