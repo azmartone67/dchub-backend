@@ -1,0 +1,64 @@
+name: DC Hub Self-Healing Watchdog
+# Phase 14: hourly health checks across every critical subsystem.
+# Opens a GH issue tagged 'watchdog' on any red signal.
+on:
+  schedule:
+    - cron: '17 * * * *'   # every hour at :17 to spread load
+  workflow_dispatch:
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      API_KEY: ${{ secrets.DCHUB_API_KEY_CANARY }}
+    steps:
+      - name: Run aggregate health probe
+        id: probe
+        run: |
+          set +e
+          out=$(curl -sf --max-time 30 "https://dchub.cloud/api/v1/health?_t=$(date +%s)")
+          rc=$?
+          echo "$out" > /tmp/health.json
+          echo "exit_code=$rc" >> $GITHUB_OUTPUT
+          if [ $rc -eq 0 ]; then
+            cat /tmp/health.json | python3 -m json.tool
+            status=$(cat /tmp/health.json | python3 -c 'import sys,json;print(json.load(sys.stdin).get("status","unknown"))')
+            echo "status=$status" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Open issue if RED
+        if: steps.probe.outputs.status == 'red' || steps.probe.outputs.exit_code != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BODY="$(cat /tmp/health.json 2>/dev/null || echo 'health endpoint unreachable')"
+          gh issue create -R azmartone67/dchub-backend \
+            --title "[watchdog] DC Hub health check tripped — $(date -u +%H:%M)" \
+            --body "$BODY" \
+            --label watchdog || true
+
+      - name: Per-subsystem deep checks
+        run: |
+          echo "=== /api/v1/data-freshness ==="
+          curl -sf "https://dchub.cloud/api/v1/data-freshness?_t=$(date +%s)" \
+            | python3 -m json.tool | head -30
+          echo ""
+          echo "=== /api/v1/usage with canary key ==="
+          if [ -n "$API_KEY" ]; then
+            curl -sf "https://dchub.cloud/api/v1/usage?_t=$(date +%s)" \
+              -H "X-API-Key: $API_KEY" | python3 -m json.tool | head -10
+          fi
+          echo ""
+          echo "=== /mcp tools/list ==="
+          SID=$(curl -sf -i -X POST "https://dchub.cloud/mcp" \
+                -H "Content-Type: application/json" \
+                -H "Accept: application/json, text/event-stream" \
+                -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"watchdog","version":"1"}}}' \
+                | grep -i '^mcp-session-id:' | awk '{print $2}' | tr -d '\r\n')
+          curl -sf -X POST "https://dchub.cloud/mcp" \
+              -H "Content-Type: application/json" \
+              -H "Accept: application/json, text/event-stream" \
+              ${SID:+-H "Mcp-Session-Id: $SID"} \
+              -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
+              | grep -oE '"name":"[^"]+"' | wc -l
