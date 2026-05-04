@@ -35,7 +35,6 @@ CRITICAL_METRICS = [
 
 
 @observability_bp.route('/api/v1/observability/route-audit', methods=['GET'])
-@observability_bp.route('/obs/route-audit', methods=['GET'])  # phase25_obs_dual_mount
 def route_audit():
     """Inventory all Flask routes and flag shadowed ones."""
     seen = {}
@@ -66,7 +65,6 @@ def route_audit():
 
 
 @observability_bp.route('/api/v1/observability/drift', methods=['GET'])
-@observability_bp.route('/obs/drift', methods=['GET'])
 def drift():
     """Return rolling baselines + current values for critical metrics."""
     out = {'success': True, 'data': {'metrics': [], 'as_of': datetime.datetime.utcnow().isoformat() + 'Z'}}
@@ -146,7 +144,6 @@ def drift():
 
 
 @observability_bp.route('/api/v1/observability/anomalies', methods=['GET'])
-@observability_bp.route('/obs/anomalies', methods=['GET'])
 def anomalies():
     """Last 7 days of anomaly digests."""
     out = {'success': True, 'data': {'anomalies': []}}
@@ -189,7 +186,6 @@ def anomalies():
 
 
 @observability_bp.route('/api/v1/observability/snapshot', methods=['POST'])
-@observability_bp.route('/obs/snapshot', methods=['POST'])
 def snapshot():
     """Persist current metric values to observability_metrics.
 
@@ -264,3 +260,29 @@ def snapshot():
     except Exception as _e:
         out['data']['_error'] = type(_e).__name__ + ': ' + str(_e)[:200]
     return jsonify(out)
+
+
+@observability_bp.route('/api/v1/observability/diag-routes', methods=['GET'])
+def phase27_diag_routes():
+    """Phase 27 — list every Flask route. Lives under the
+    /api/v1/observability/* namespace which is on the CF Worker allowlist."""
+    from flask import current_app, jsonify
+    rules = []
+    for r in current_app.url_map.iter_rules():
+        rules.append({
+            'path': str(r),
+            'endpoint': r.endpoint,
+            'methods': sorted((r.methods or set()) - {'HEAD','OPTIONS'}),
+        })
+    rules.sort(key=lambda x: x['path'])
+    obs = [r for r in rules if 'observability' in r['path'] or r['endpoint'].startswith('observability')]
+    grid = [r for r in rules if r['path'].startswith('/grid') or '/grid' in r['path']]
+    return jsonify({
+        'success': True,
+        'data': {
+            'total_routes': len(rules),
+            'observability_routes': obs,
+            'grid_routes': grid,
+            'sample_first_60': rules[:60],
+        }
+    })

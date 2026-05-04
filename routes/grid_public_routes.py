@@ -72,7 +72,6 @@ def grid_hub():
 
 @grid_public_bp.route('/grid/<iso>', methods=['GET'])
 @grid_public_bp.route('/grid/<iso>/', methods=['GET'])
-@grid_public_bp.route('/g/<iso>', methods=['GET'])  # phase25_iso_normalized fallback path
 def grid_iso(iso):
     """Per-ISO deep page."""
     iso = iso.upper()

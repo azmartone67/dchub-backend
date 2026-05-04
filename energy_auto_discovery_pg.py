@@ -615,6 +615,7 @@ def register_energy_discovery_routes(app):
                 stats['running'] = True
                 stats['seed_data'] = True
             stats['hifld_sources'] = len(HIFLD_SOURCES)
+            stats.update(_phase25_real_counts())  # phase27_truth_up
 
             cur.close()
             conn.close()
