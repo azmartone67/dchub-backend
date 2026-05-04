@@ -369,11 +369,10 @@ def verify(conn):
 def main():
     if not DB_URL:
         log.error("No NEON_DATABASE_URL or DATABASE_URL set")
-        sys.exit(1)
+        raise RuntimeError("loader aborted: upstream API unavailable or guard tripped (was sys.exit(1))")
     if not EIA_API_KEY:
         log.error("No EIA_API_KEY set")
-        sys.exit(1)
-    
+        raise RuntimeError("loader aborted: upstream API unavailable or guard tripped (was sys.exit(1))")
     log.info("=" * 60)
     log.info("  DC Hub — EIA Generator Re-Seed")
     log.info("  Source: EIA API v2 (Form 860/860M)")
@@ -385,15 +384,13 @@ def main():
     raw_rows = fetch_all_generators()
     if not raw_rows:
         log.error("No data returned from EIA API")
-        sys.exit(1)
-    
+        raise RuntimeError("loader aborted: upstream API unavailable or guard tripped (was sys.exit(1))")
     # Step 2: Aggregate to plant level
     log.info("\n🔧 Step 2: Aggregating to plant-level with coordinates...")
     plants = aggregate_to_plants(raw_rows)
     if not plants:
         log.error("No plants with coordinates after aggregation")
-        sys.exit(1)
-    
+        raise RuntimeError("loader aborted: upstream API unavailable or guard tripped (was sys.exit(1))")
     # Step 3: Upsert to Neon
     log.info("\n💾 Step 3: Upserting to Neon eia_generators table...")
     conn = psycopg2.connect(DB_URL, connect_timeout=30)

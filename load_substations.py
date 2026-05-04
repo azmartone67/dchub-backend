@@ -12,7 +12,7 @@ def load():
     for state in STATES:
         try:
             # Build URL with raw string — no encoding
-            url = "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Substations/FeatureServer/0/query%swhere=STATE='" + state + "'&outFields=NAME,MAX_VOLT,LATITUDE,LONGITUDE,OWNER,CITY&returnGeometry=false&f=json&resultRecordCount=2000"
+            url = "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Substations/FeatureServer/0/query?where=STATE='" + state + "'&outFields=NAME,MAX_VOLT,LATITUDE,LONGITUDE,OWNER,CITY&returnGeometry=false&f=json&resultRecordCount=2000"
             req = urllib.request.Request(url)
             req.add_header("User-Agent", "DCHub/1.0")
             with urllib.request.urlopen(req, timeout=15) as resp:

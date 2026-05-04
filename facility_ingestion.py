@@ -35,7 +35,7 @@ def get_db():
     url = os.environ.get('DATABASE_URL')
     if not url:
         print("ERROR: DATABASE_URL not set")
-        sys.exit(1)
+        raise RuntimeError("loader aborted: upstream API unavailable or guard tripped (was sys.exit(1))")
     return psycopg2.connect(url)
 
 

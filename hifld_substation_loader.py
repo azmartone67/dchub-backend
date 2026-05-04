@@ -160,8 +160,7 @@ def main():
         print("✅ Connected to Neon PostgreSQL")
     except Exception as e:
         print(f"❌ Could not connect to database: {e}")
-        sys.exit(1)
-    
+        raise RuntimeError("loader aborted: upstream API unavailable or guard tripped (was sys.exit(1))")
     # Check current count
     cur = conn.cursor()
     cur.execute("SELECT COUNT(*) FROM substations")
@@ -180,8 +179,7 @@ def main():
         print("❌ All HIFLD sources unavailable. Try again later.")
         print("   You can also download the CSV manually from:")
         print("   https://hifld-geoplatform.opendata.arcgis.com/datasets/electric-substations")
-        sys.exit(1)
-    
+        raise RuntimeError("loader aborted: upstream API unavailable or guard tripped (was sys.exit(1))")
     features, _ = test_result
     print(f"✅ API available — test returned {len(features)} features")
     

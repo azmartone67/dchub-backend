@@ -14625,7 +14625,10 @@ def phase12g_loader_async(mod_name, fn_candidates, status_key):
             res = fn()
             rec['result'] = str(res)[:500] if res is not None else 'ran'
             rec['ok'] = True
-        except Exception as e:
+        except SystemExit as e:
+            rec['error'] = 'SystemExit code=' + str(getattr(e,'code',None)) + ' (loader called sys.exit; HIFLD or upstream API was likely unavailable)'
+            rec['traceback'] = traceback.format_exc()[:1500]
+        except BaseException as e:
             rec['error'] = type(e).__name__ + ': ' + str(e)[:500]
             rec['traceback'] = traceback.format_exc()[:1500]
         finally:
