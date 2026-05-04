@@ -14404,6 +14404,65 @@ def _phase11_cache_public_stats(resp):
 # --- end phase 11 ----------------------------------------------------------
 
 
+
+
+# --- phase 9g: redundant /api/v1/mcp/track on the main app -------------------
+# Belt-and-braces: we patched flask_mcp_endpoints.py, but in case the
+# blueprint registration order or url_prefix mishandles the path, this
+# directly registers the route on the Flask app. add_url_rule with a unique
+# endpoint name avoids conflict.
+def phase9g_mcp_track_override():
+    try:
+        payload = request.get_json(silent=True) or {}
+    except Exception:
+        payload = {}
+    tool_name = (str(payload.get('tool_name') or 'unknown'))[:200]
+    if not tool_name or tool_name == 'unknown':
+        return jsonify({'success': False, 'error': 'tool_name required'}), 200
+    platform_v= (str(payload.get('platform') or 'mcp-worker'))[:80]
+    client    = (str(payload.get('client_name') or 'unknown'))[:200]
+    params_v  = payload.get('params')
+    if not isinstance(params_v, str):
+        try: params_v = json.dumps(params_v or {})
+        except Exception: params_v = '{}'
+    success_v = bool(payload.get('success', True))
+    duration  = int(payload.get('response_time_ms') or payload.get('duration_ms') or 0)
+    ip        = (request.headers.get('X-Forwarded-For') or request.remote_addr or '')[:64]
+    ua        = (request.headers.get('User-Agent') or '')[:300]
+    db = None
+    try:
+        from db_utils import try_get_db
+        db = try_get_db()
+        if db:
+            c = db.cursor()
+            c.execute("""INSERT INTO mcp_tool_calls
+                (tool_name, platform, client_name, params, success,
+                 response_time_ms, ip_address, user_agent)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                (tool_name, platform_v, client, params_v[:4000],
+                 success_v, duration, ip, ua))
+            db.commit()
+            return jsonify({'success': True, 'logged': True, 'src': 'phase9g_main'})
+    except Exception as e:
+        try: logger.error(f"phase9g_main track INSERT: {e}")
+        except Exception: pass
+    finally:
+        if db:
+            try: db.close()
+            except Exception: pass
+    return jsonify({'success': True, 'logged': False, 'src': 'phase9g_main'})
+
+try:
+    app.add_url_rule('/api/v1/mcp/track',
+                     endpoint='phase9g_mcp_track_override',
+                     view_func=phase9g_mcp_track_override,
+                     methods=['POST'])
+except Exception as _e:
+    try: logger.warning(f'phase9g override registration: {_e}')
+    except Exception: pass
+# --- end phase 9g -----------------------------------------------------------
+
+
 if __name__ == '__main__':
     print("🚀 DC Hub API v86 Starting...")
     print(f"📊 PDF Generation: {'✅ Available' if PDF_AVAILABLE else '❌ Disabled'}")
