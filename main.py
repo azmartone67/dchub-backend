@@ -1031,6 +1031,18 @@ except Exception as _e:
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 
 
+# phase12d_safe_register: wrap register_blueprint so one failure doesn't
+# silence the others. Logs which blueprint failed and why.
+def phase12d_safe_register(app_, bp, name='unknown'):
+    try:
+        app_.register_blueprint(bp)
+        try: logger.info(f'[blueprint] registered {name}')
+        except Exception: print(f'[blueprint] registered {name}')
+    except Exception as _e:
+        try: logger.error(f'[blueprint] FAILED to register {name}: {_e}')
+        except Exception: print(f'[blueprint] FAILED to register {name}: {_e}')
+
+
 # ── MCP v2.1 telemetry + key validation ──────────────────────────
 _mcp_v21_status = {'registered': False, 'error': None, 'traceback': None}
 try:
