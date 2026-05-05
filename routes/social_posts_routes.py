@@ -31,7 +31,7 @@ def daily_post_landing(date):
 
     iso = _iso_for_date(d)
     pretty_date = d.strftime('%b %d, %Y')
-    card_url = f'https://dchub.cloud/api/v1/grid/{iso}/card.png?d={d.isoformat()}'
+    card_url = f'https://dchub.cloud/api/v1/grid/{iso}/card.png'  # phase58b_og_fix
     title = f'DC Hub Industry Pulse — {pretty_date}'
     desc = f'{iso} live demand, generation mix, and headroom. Updated every 5 minutes from EIA.'
 
@@ -55,8 +55,11 @@ def daily_post_landing(date):
   <meta property="og:title" content="{title}">
   <meta property="og:description" content="{desc}">
   <meta property="og:image" content="{card_url}">
+  <meta property="og:image:secure_url" content="{card_url}">
+  <meta property="og:image:type" content="image/png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="1200">
+  <meta property="og:image:alt" content="DC Hub {iso} grid intelligence pulse — live demand, generation mix, headroom">
   <meta property="og:url" content="https://dchub.cloud/api/v1/social/posts/{d.isoformat()}">
   <meta property="og:type" content="article">
   <meta name="twitter:card" content="summary_large_image">
