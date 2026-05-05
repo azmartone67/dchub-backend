@@ -1,4 +1,9 @@
 
+# Phase 46 — MANUAL EDIT NEEDED:
+# Find your post-text variable (e.g. text/message/body/content) and add:
+#   text = text + '\n\n' + _phase30c_landing_url()  # phase46_landing_done
+# right before the call that publishes/sends the post.
+
 # ============================================================================
 # Phase 32D — MANUAL INTEGRATION NEEDED
 # ============================================================================
