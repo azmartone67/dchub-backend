@@ -33,7 +33,7 @@ def daily_post_landing(date):
     pretty_date = d.strftime('%b %d, %Y')
     card_url = f'https://dchub.cloud/api/v1/grid/{iso}/card.png'  # phase58b_og_fix
     title = f'DC Hub Industry Pulse — {pretty_date}'
-    desc = f'{iso} live demand, generation mix, and headroom. Updated every 5 minutes from EIA.'
+    desc = f'{iso} live demand, generation mix, and headroom data, refreshed every 5 minutes from EIA. Real-time grid intelligence for data center site selection, energy traders, and operators.'
 
     schema = {
         '@context': 'https://schema.org',
