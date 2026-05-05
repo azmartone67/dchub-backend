@@ -1,0 +1,181 @@
+"""Phase 37 — paywall response builder with conversion-optimized messaging.
+
+Every paid MCP tool that returns a trial_preview / paid_only response
+should call build_paywall_response() to produce the canonical envelope.
+
+Three improvements over the old shape:
+
+  1. human_message field — a literal markdown string the AI assistant
+     must render verbatim. Survives Claude/Cursor/Cline summarization.
+
+  2. Escalation by call count — the same user hitting a paid tool gets
+     progressively stronger messaging:
+       Calls 1–2:  standard "this is a Pro feature"
+       Calls 3–5:  + 50% off discount code TRYDCHUB50
+       Calls 6+:   hard paywall with countdown urgency
+
+  3. Email capture CTA at tier 2+ for anonymous users — converts hot
+     prospects into known email leads even when they don't buy today.
+
+The original trial_preview / error fields are preserved so existing
+clients (selfheal validators etc.) keep working.
+"""
+import os
+
+
+PRICING_URL = 'https://dchub.cloud/pricing'
+SIGNUP_URL = 'https://dchub.cloud/signup'
+EMAIL_CAPTURE_URL = 'https://dchub.cloud/api/v1/dev-signup-form'
+
+DISCOUNT_CODE_TIER2 = 'TRYDCHUB50'   # 50% off first month
+DISCOUNT_CODE_TIER3 = 'LASTCALL30'   # 30% off, urgency framing
+
+
+def get_user_call_count(user_id, tool_name, days=7):
+    """Return how many times user_id has called tool_name in the last N days.
+
+    Used to drive the escalation tier. Falls back to 0 on any DB error so
+    the paywall response always returns SOMETHING, never crashes.
+    """
+    if not user_id or not tool_name:
+        return 0
+    try:
+        from db_utils import try_get_db
+        conn = try_get_db()
+        if not conn: return 0
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                "SELECT COUNT(*) FROM mcp_tool_calls "
+                "WHERE user_id = %s AND tool_name = %s "
+                f"AND called_at > NOW() - INTERVAL '{int(days)} days'",
+                (user_id, tool_name)
+            )
+            r = cur.fetchone() or (0,)
+            return int(r[0] or 0)
+        finally:
+            try: conn.close()
+            except Exception: pass
+    except Exception:
+        return 0
+
+
+def _attribution_url(base, tool_name, call_count, current_tier='free', extra_params=None):
+    """Append attribution query params to the upgrade URL.
+
+    Result like: https://dchub.cloud/pricing?from=mcp&tool=get_grid_intelligence&calls=4&tier=free
+    Lets us measure click-through per-tool per-tier in conversion tracking.
+    """
+    from urllib.parse import urlencode
+    params = {
+        'from': 'mcp',
+        'tool': tool_name or 'unknown',
+        'calls': call_count,
+        'tier': current_tier or 'free',
+    }
+    if extra_params:
+        params.update(extra_params)
+    sep = '&' if '?' in base else '?'
+    return f"{base}{sep}{urlencode(params)}"
+
+
+def _build_human_message(tool_name, call_count, current_tier, partial_data_summary=None):
+    """The literal markdown the AI assistant has to render. This is the
+    single most important field — it's what the human actually sees."""
+    pretty_tool = (tool_name or '').replace('get_', '').replace('_', ' ').title() or 'this feature'
+    pricing_url = _attribution_url(PRICING_URL, tool_name, call_count, current_tier)
+    signup_url = _attribution_url(SIGNUP_URL, tool_name, call_count, current_tier)
+
+    # Tier 3 — hard paywall with urgency (calls 6+)
+    if call_count >= 6:
+        discount_url = _attribution_url(
+            PRICING_URL, tool_name, call_count, current_tier,
+            extra_params={'discount': DISCOUNT_CODE_TIER3}
+        )
+        return (
+            f"🔒 **Free tier limit reached.** You've used `{tool_name}` {call_count} times "
+            f"this week — your free preview is exhausted.\n\n"
+            f"**[Upgrade to Pro now → {discount_url}]({discount_url})** "
+            f"Apply code `{DISCOUNT_CODE_TIER3}` for 30% off your first month.\n\n"
+            f"_$49/mo unlocks {pretty_tool} + all 7 ISOs grid intel + fiber + queue analytics._"
+        )
+
+    # Tier 2 — discount + email capture (calls 3-5)
+    if call_count >= 3:
+        discount_url = _attribution_url(
+            PRICING_URL, tool_name, call_count, current_tier,
+            extra_params={'discount': DISCOUNT_CODE_TIER2}
+        )
+        email_url = _attribution_url(EMAIL_CAPTURE_URL, tool_name, call_count, current_tier)
+        return (
+            f"🎯 **You've hit `{tool_name}` {call_count} times — looks like you need this.**\n\n"
+            f"**Get 50% off your first month** with code `{DISCOUNT_CODE_TIER2}`: "
+            f"[Upgrade to Pro →]({discount_url})\n\n"
+            f"Not ready? **[Get a 7-day free trial via email →]({email_url})** — "
+            f"no credit card, full Pro access for a week.\n\n"
+            f"_Pro unlocks: {pretty_tool}, all 7 ISO grid intel, fiber routes, queue analytics, API access._"
+        )
+
+    # Tier 1 — standard preview (calls 1-2)
+    return (
+        f"🔓 **You've hit a Pro feature.** Get full `{tool_name}` data + 6 more ISOs grid intel "
+        f"+ fiber routes for **$49/mo**.\n\n"
+        f"**[Start 7-day free trial →]({pricing_url})** — no credit card required.\n\n"
+        f"_Free tier shows partial data. Upgrade for live, complete results._"
+    )
+
+
+def build_paywall_response(
+    tool_name,
+    user_id=None,
+    current_tier='free',
+    trial_preview_data=None,
+    error_code='paid_only',
+):
+    """Build the canonical paywall response for a paid tool.
+
+    Args:
+      tool_name: 'get_grid_intelligence', 'get_facility', etc.
+      user_id: caller's user_id (for call-count escalation).
+              None = anonymous; treated as call_count=0.
+      current_tier: 'free' / 'pro' / 'enterprise' (typically 'free' here).
+      trial_preview_data: optional dict of partial data to expose.
+                          When present, response uses trial_preview
+                          shape; when None, uses error='paid_only' shape.
+      error_code: error code when trial_preview_data is None
+                  (default 'paid_only' to match selfheal validators).
+
+    Returns dict suitable for jsonify() in a Flask handler. Selfheal
+    validator accepts both shapes since v1.3.13.
+    """
+    call_count = get_user_call_count(user_id, tool_name) if user_id else 0
+    human_message = _build_human_message(
+        tool_name, call_count, current_tier,
+        partial_data_summary=trial_preview_data,
+    )
+    pricing_url = _attribution_url(PRICING_URL, tool_name, call_count, current_tier)
+    signup_url = _attribution_url(SIGNUP_URL, tool_name, call_count, current_tier)
+
+    base = {
+        'tool': tool_name,
+        'human_message': human_message,
+        'upgrade_url': pricing_url,
+        'signup_url': signup_url,
+        'current_tier': current_tier,
+        'user_calls_7d': call_count,
+        'tier_signal': (
+            'hard_paywall' if call_count >= 6
+            else 'discount_offer' if call_count >= 3
+            else 'preview'
+        ),
+    }
+    if trial_preview_data is not None:
+        base['trial_preview'] = trial_preview_data
+    else:
+        base['error'] = error_code
+    return base
+
+
+def attribution_url(tool_name, call_count=0, current_tier='free'):
+    """Public helper for places that just need a URL with attribution."""
+    return _attribution_url(PRICING_URL, tool_name, call_count, current_tier)
