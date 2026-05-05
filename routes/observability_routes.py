@@ -1,4 +1,4 @@
-"""Phase 40 — complete observability blueprint.
+"""Phase 40/42 — complete observability blueprint. phase42_unstacked
 
 Consolidates everything from Phases 22, 24, 25, 27, 38, 39 into one file:
   GET  /api/v1/observability/route-audit          — Flask url_map shadow detection
@@ -323,7 +323,6 @@ def _track_click_inner():
 
 
 @observability_bp.route('/api/v1/observability/conversion-track', methods=['POST', 'GET'])
-@observability_bp.route('/api/v1/conversion/track', methods=['POST', 'GET'])
 def conversion_track():
     """Phase 39 — record an attributed upgrade-URL click.
 
@@ -373,7 +372,6 @@ def _funnel_inner():
 
 
 @observability_bp.route('/api/v1/observability/conversion-funnel', methods=['GET'])
-@observability_bp.route('/api/v1/conversion/funnel', methods=['GET'])
 def conversion_funnel():
     """Phase 39 — funnel rollup endpoint.
 
