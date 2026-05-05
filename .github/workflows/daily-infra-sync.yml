@@ -8,7 +8,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Trigger /api/jobs/sync-all-tables
+      - name: Trigger /api/jobs/infrastructure-sync
         env:
           INTERNAL_KEY: ${{ secrets.DCHUB_INTERNAL_KEY }}
         run: |
@@ -21,7 +21,7 @@ jobs:
             -H "X-Internal-Key: $INTERNAL_KEY" \
             -H "Content-Type: application/json" \
             --max-time 1500 \
-            "https://dchub.cloud/api/jobs/sync-all-tables")
+            "https://dchub.cloud/api/jobs/infrastructure-sync")
           STATUS=$?
           echo "curl_exit=$STATUS"
           echo "response: $BODY" | head -c 4000
