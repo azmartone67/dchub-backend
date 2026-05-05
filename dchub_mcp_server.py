@@ -40,6 +40,12 @@ Test: curl -X POST http://127.0.0.1:8888/mcp \
 import os
 import sys
 import json
+# phase52_alias_wired
+try:
+    from utils.pipeline_alias import alias_fallback, expand_query
+except ImportError:
+    alias_fallback = lambda fn, q, *a, **kw: fn(q, *a, **kw)
+    expand_query = lambda q: [q]
 
 # === DC Hub MCP JSON encoder (handles Decimal/datetime/UUID/bytes/set) ===
 # Fixes get_fiber_intel and any other tool that returns Decimal from psycopg.

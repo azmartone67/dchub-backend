@@ -82,7 +82,7 @@ def _record_click():
 
 
 def _funnel_rollup():
-    """Return signals + clicks + paid rollup over last N days."""
+    """Phase 52 funnel rollup — tries multiple signal-source tables."""
     days = max(1, min(int(request.args.get('days', 30)), 90))
     out = {'success': True, 'event': 'funnel', 'days': days, 'data': {
         'signals': 0, 'clicks': 0, 'paid': 0,
@@ -93,24 +93,50 @@ def _funnel_rollup():
         conn = try_get_db()
         if conn:
             cur = conn.cursor()
-            for label, sql in [
-                ('signals', f"SELECT COUNT(*) FROM mcp_conversions WHERE created_at > NOW() - INTERVAL '{days} days'"),
-                ('clicks',  f"SELECT COUNT(*) FROM mcp_conversion_clicks WHERE clicked_at > NOW() - INTERVAL '{days} days'"),
-                ('paid',    f"SELECT COUNT(*) FROM mcp_conversions WHERE stage = 'paid' AND created_at > NOW() - INTERVAL '{days} days'"),
-            ]:
+
+            # Phase 52 fix: try multiple signal sources to match the dashboard widget
+            # signals = upgrade signals fired (any of: mcp_signals, mcp_conversions
+            # rows where stage='signal' or 'paywall_hit', or upgrade_signals table)
+            signal_queries = [
+                f"SELECT COUNT(*) FROM mcp_signals WHERE created_at > NOW() - INTERVAL '{days} days'",
+                f"SELECT COUNT(*) FROM upgrade_signals WHERE created_at > NOW() - INTERVAL '{days} days'",
+                f"SELECT COUNT(*) FROM mcp_conversions WHERE stage IN ('signal','paywall_hit','upgrade_signal') AND created_at > NOW() - INTERVAL '{days} days'",
+                f"SELECT COUNT(*) FROM mcp_conversions WHERE created_at > NOW() - INTERVAL '{days} days'",
+            ]
+            for sql in signal_queries:
                 try:
                     cur.execute(sql)
-                    out['data'][label] = int((cur.fetchone() or (0,))[0])
+                    n = int((cur.fetchone() or (0,))[0])
+                    if n > 0:
+                        out['data']['signals'] = n
+                        out['data']['signals_source'] = sql.split('FROM ')[1].split(' ')[0]
+                        break
                 except Exception:
                     try: conn.rollback()
                     except Exception: pass
-                    out['data'][label] = -1
+
+            try:
+                cur.execute(f"SELECT COUNT(*) FROM mcp_conversion_clicks WHERE clicked_at > NOW() - INTERVAL '{days} days'")
+                out['data']['clicks'] = int((cur.fetchone() or (0,))[0])
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+                out['data']['clicks'] = -1
+
+            try:
+                cur.execute(f"SELECT COUNT(*) FROM mcp_conversions WHERE stage = 'paid' AND created_at > NOW() - INTERVAL '{days} days'")
+                out['data']['paid'] = int((cur.fetchone() or (0,))[0])
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+                out['data']['paid'] = -1
+
             try: conn.close()
             except Exception: pass
 
             sig = out['data']['signals'] or 0
-            clk = out['data']['clicks'] or 0
-            pad = out['data']['paid'] or 0
+            clk = max(0, out['data']['clicks']) or 0
+            pad = max(0, out['data']['paid']) or 0
             if sig > 0:
                 out['data']['click_through_rate'] = round(clk / sig * 100, 2)
             if clk > 0:
@@ -118,7 +144,7 @@ def _funnel_rollup():
     except Exception as _e:
         out['_error'] = type(_e).__name__
     return jsonify(out)
-
+# phase52_funnel_fixed
 
 @observability_bp.route('/api/v1/observability/route-audit', methods=['GET'])
 def route_audit():
