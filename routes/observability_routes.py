@@ -401,3 +401,162 @@ def diag_routes():
             'sample_first_60': rules[:60],
         }
     })
+
+
+# ----------------------------------------------------------------------------
+# Phase 60 -- phase60_top_users
+# Leaderboard of MCP upgrade-signal users for direct outreach.
+# ----------------------------------------------------------------------------
+@observability_bp.route('/api/v1/observability/top-users', methods=['GET'])
+def phase60_top_users():
+    """Top users by upgrade-signal count.
+
+    Query params:
+      limit  : int, default 50, max 500
+      format : 'json' (default) or 'csv'
+      token  : optional, must equal TOP_USERS_TOKEN env if that var is set
+    """
+    import os, csv, io
+    from flask import request, jsonify, Response
+
+    # Optional gate
+    admin_token = os.environ.get('TOP_USERS_TOKEN')
+    if admin_token:
+        provided = request.headers.get('X-Admin-Token') or request.args.get('token')
+        if provided != admin_token:
+            return jsonify({'error': 'unauthorized'}), 401
+
+    try:
+        limit = int(request.args.get('limit', '50'))
+    except (TypeError, ValueError):
+        limit = 50
+    limit = max(1, min(limit, 500))
+    fmt = (request.args.get('format') or 'json').lower()
+
+    neon = os.environ.get('NEON_DATABASE_URL')
+    if not neon:
+        return jsonify({'error': 'NEON_DATABASE_URL not configured'}), 500
+
+    conn = None
+    try:
+        try:
+            import psycopg
+            conn = psycopg.connect(neon)
+        except ImportError:
+            import psycopg2
+            conn = psycopg2.connect(neon)
+    except Exception as e:
+        return jsonify({'error': f'db_connect: {e}'}), 500
+
+    try:
+        cur = conn.cursor()
+
+        # Discover columns dynamically so we work with whatever schema landed
+        cur.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = %s ORDER BY ordinal_position",
+            ('mcp_upgrade_signals',)
+        )
+        cols = [r[0] for r in cur.fetchall()]
+        if not cols:
+            return jsonify({
+                'error': 'mcp_upgrade_signals table not found',
+                'phase': 60,
+            }), 500
+
+        user_candidates = [
+            'user_id', 'user_identifier', 'email', 'user_email',
+            'api_key', 'client_id', 'session_id', 'ip', 'ip_address',
+            'remote_addr', 'caller_id'
+        ]
+        user_col = next((c for c in user_candidates if c in cols), None)
+        if not user_col:
+            return jsonify({
+                'error': 'no user-identifier column found',
+                'columns': cols,
+                'phase': 60,
+            }), 500
+
+        tool_col = next((c for c in ['tool_name', 'tool', 'mcp_tool'] if c in cols), None)
+        time_col = next((c for c in ['created_at', 'timestamp', 'ts', 'inserted_at'] if c in cols), None)
+        if not tool_col or not time_col:
+            return jsonify({
+                'error': 'missing tool or time column',
+                'columns': cols,
+                'phase': 60,
+            }), 500
+
+        sql = (
+            "SELECT "
+            "  {u} AS user_id, "
+            "  COUNT(*) AS signal_count, "
+            "  COUNT(DISTINCT {t}) AS distinct_tools, "
+            "  ARRAY_AGG(DISTINCT {t}) AS tools_tried, "
+            "  MIN({ts}) AS first_seen, "
+            "  MAX({ts}) AS last_seen "
+            "FROM mcp_upgrade_signals "
+            "WHERE {u} IS NOT NULL "
+            "GROUP BY {u} "
+            "ORDER BY signal_count DESC "
+            "LIMIT %s"
+        ).format(u=user_col, t=tool_col, ts=time_col)
+
+        cur.execute(sql, (limit,))
+        rows = cur.fetchall()
+
+        result = []
+        for r in rows:
+            tools = r[3] or []
+            if not isinstance(tools, list):
+                tools = list(tools) if tools else []
+            result.append({
+                'user_id': str(r[0]) if r[0] is not None else None,
+                'signal_count': int(r[1] or 0),
+                'distinct_tools': int(r[2] or 0),
+                'tools_tried': tools,
+                'first_seen': r[4].isoformat() if r[4] else None,
+                'last_seen': r[5].isoformat() if r[5] else None,
+            })
+
+        # Total signals + distinct users overall (not just top N)
+        cur.execute(
+            ("SELECT COUNT(*) AS total_signals, COUNT(DISTINCT {u}) AS distinct_users "
+             "FROM mcp_upgrade_signals WHERE {u} IS NOT NULL").format(u=user_col)
+        )
+        agg = cur.fetchone()
+        total_signals = int(agg[0] or 0)
+        distinct_users = int(agg[1] or 0)
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+    if fmt == 'csv':
+        sio = io.StringIO()
+        writer = csv.writer(sio)
+        writer.writerow(['user_id', 'signal_count', 'distinct_tools',
+                         'tools_tried', 'first_seen', 'last_seen'])
+        for u in result:
+            writer.writerow([
+                u['user_id'], u['signal_count'], u['distinct_tools'],
+                '|'.join(u['tools_tried']),
+                u['first_seen'], u['last_seen']
+            ])
+        return Response(sio.getvalue(), mimetype='text/csv', headers={
+            'Content-Disposition': 'attachment; filename="dchub-top-users.csv"'
+        })
+
+    return jsonify({
+        'phase': 60,
+        'user_column': user_col,
+        'tool_column': tool_col,
+        'time_column': time_col,
+        'distinct_users': distinct_users,
+        'total_signals': total_signals,
+        'count': len(result),
+        'limit': limit,
+        'top_users': result,
+    })
+
