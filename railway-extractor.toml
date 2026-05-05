@@ -1,0 +1,3 @@
+[deploy]
+startCommand = "python3 extractor_cron.py --limit 50"
+restartPolicyType = "NEVER"
