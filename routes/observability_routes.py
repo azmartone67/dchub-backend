@@ -6,8 +6,8 @@ Consolidates everything from Phases 22, 24, 25, 27, 38, 39 into one file:
   GET  /api/v1/observability/anomalies            — last 7 days of digest entries
   POST /api/v1/observability/snapshot             — record current metric values
   GET  /api/v1/observability/diag-routes          — full url_map dump
-  POST /api/v1/observability/conversion/track     — record upgrade-URL click
-  GET  /api/v1/observability/conversion/funnel    — signals/clicks/paid rollup
+  POST /api/v1/observability/conversion-track     — record upgrade-URL click
+  GET  /api/v1/observability/conversion-funnel    — signals/clicks/paid rollup
   GET  /api/v1/conversion/track                   — legacy alias (CF-blocked)
   GET  /api/v1/conversion/funnel                  — legacy alias (CF-blocked)
 """
@@ -322,12 +322,12 @@ def _track_click_inner():
     return jsonify(out)
 
 
-@observability_bp.route('/api/v1/observability/conversion/track', methods=['POST', 'GET'])
+@observability_bp.route('/api/v1/observability/conversion-track', methods=['POST', 'GET'])
 @observability_bp.route('/api/v1/conversion/track', methods=['POST', 'GET'])
 def conversion_track():
     """Phase 39 — record an attributed upgrade-URL click.
 
-    Canonical path: /api/v1/observability/conversion/track (CF-allowlisted)
+    Canonical path: /api/v1/observability/conversion-track (CF-allowlisted)
     Legacy path:    /api/v1/conversion/track (CF-blocked, kept for fallback)
     """
     return _track_click_inner()
@@ -372,12 +372,12 @@ def _funnel_inner():
     return jsonify(out)
 
 
-@observability_bp.route('/api/v1/observability/conversion/funnel', methods=['GET'])
+@observability_bp.route('/api/v1/observability/conversion-funnel', methods=['GET'])
 @observability_bp.route('/api/v1/conversion/funnel', methods=['GET'])
 def conversion_funnel():
     """Phase 39 — funnel rollup endpoint.
 
-    Canonical: /api/v1/observability/conversion/funnel (CF-allowlisted)
+    Canonical: /api/v1/observability/conversion-funnel (CF-allowlisted)
     Legacy:    /api/v1/conversion/funnel (CF-blocked)
     """
     return _funnel_inner()
