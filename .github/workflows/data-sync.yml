@@ -1,0 +1,170 @@
+name: DC Hub Data Sync
+
+on:
+  schedule:
+    - cron: '0 0,6,12,18 * * *'
+    - cron: '30 */3 * * *'
+  workflow_dispatch:
+
+jobs:
+  keep-alive-and-news:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Keep alive and News refresh
+        run: |
+          RAILWAY="https:/dchub-api-production.up.railway.app"
+          echo "Keep-alive ping..."
+          curl -sf "$RAILWAY/api/jobs/keep-alive" | head -1 || echo "Keep-alive failed"
+          echo ""
+          echo "News/deals refresh..."
+          curl -sf --max-time 60 -X POST "$RAILWAY/api/jobs/news-refresh" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('success','?'), str(d.get('result',''))[:200])" 2>/dev/null || echo "News refresh timed out"
+
+      - name: Notify on workflow failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create -R azmartone67/dchub-backend \
+            --title "[workflow-failed] ${{ github.workflow }} on $(date -u +%Y-%m-%d_%H:%M)" \
+            --body "Workflow run ${{ github.run_id }} failed. View logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --label workflow-failure || true
+  sync-infrastructure:
+    if: github.event.schedule == '0 0,6,12,18 * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Fire async loaders (phase 12g — non-blocking)
+        run: |
+          RAILWAY="https://dchub-backend-production.up.railway.app"
+          INTERNAL_KEY="${{ secrets.DCHUB_INTERNAL_KEY }}"
+          if [ -z "$INTERNAL_KEY" ]; then
+            INTERNAL_KEY="dchub-internal-sync-2026"
+          fi
+          echo "Step 0/4: Firing async loaders..."
+          for endpoint in load-substations-live load-power-plants-live load-pipelines-live load-facilities-live load-energy-discovery-live; do
+            echo "  → $endpoint"
+            curl -sS --max-time 15 -X POST "$RAILWAY/api/admin/$endpoint" \
+              -H "X-Internal-Key: $INTERNAL_KEY" \
+              -H "Content-Type: application/json" \
+              | python3 -m json.tool || echo "    (non-JSON response — see Railway logs)"
+            echo ""
+          done
+          echo "Sleeping 90s while loaders run in background..."
+          sleep 90
+          echo ""
+          echo "Final loader status:"
+          curl -sS --max-time 10 "$RAILWAY/api/admin/loader-status" \
+            -H "X-Internal-Key: $INTERNAL_KEY" \
+            | python3 -m json.tool || echo "(status endpoint unreachable)"
+
+      - name: Infrastructure discovery
+        run: |
+          RAILWAY="https://dchub-backend-production.up.railway.app"
+          echo "Starting infrastructure sync at $(date -u)"
+          echo ""
+          echo "Step 1/4: Infrastructure discovery (fiber, substations, gas)..."
+          curl -sf --max-time 90 -X POST "$RAILWAY/api/infrastructure/sync" 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print('Success:', d.get('success','?'))" 2>/dev/null || echo "Infrastructure sync timed out"
+          sleep 5
+
+      - name: Energy discovery per market
+        run: |
+          RAILWAY="https://dchub-backend-production.up.railway.app"
+          echo "Step 2/4: Energy discovery (23 markets)..."
+          MARKETS="phoenix dallas northern_virginia atlanta las_vegas salt_lake_city columbus des_moines chicago silicon_valley new_york seattle portland denver san_antonio houston miami reno sacramento minneapolis kansas_city richmond nashville"
+          TOTAL=0
+          ERRORS=0
+          for MARKET in $MARKETS; do
+            RESULT=$(curl -sf --max-time 60 "$RAILWAY/api/energy-discovery/power-plants?market=$MARKET&limit=500" 2>/dev/null)
+            if [ $? -eq 0 ]; then
+              COUNT=$(echo "$RESULT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('count',0))" 2>/dev/null || echo "0")
+              echo "  OK $MARKET: $COUNT plants"
+              TOTAL=$((TOTAL + COUNT))
+            else
+              echo "  FAIL $MARKET"
+              ERRORS=$((ERRORS + 1))
+            fi
+            sleep 3
+          done
+          echo "Energy sync done: $TOTAL plants, $ERRORS errors"
+
+      - name: KMZ fiber processing
+        run: |
+          RAILWAY="https://dchub-backend-production.up.railway.app"
+          echo "Step 3/4: KMZ fiber source processing..."
+          curl -sf --max-time 90 -X POST "$RAILWAY/api/kmz-discovery/run" 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print('Success:', d.get('success','?'))" 2>/dev/null || echo "KMZ processing timed out"
+
+      - name: Evolution and auto-approve
+        run: |
+          RAILWAY="https://dchub-backend-production.up.railway.app"
+          echo "Step 4/4: Evolution engine + auto-approve..."
+          curl -sf --max-time 60 -X POST "$RAILWAY/api/jobs/evolution" 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print('Evolution:', d.get('success','?'))" 2>/dev/null || echo "Evolution timed out"
+          sleep 3
+          curl -sf --max-time 30 -X POST "$RAILWAY/api/jobs/auto-approve" 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print('Auto-approve:', d.get('success','?'))" 2>/dev/null || echo "Auto-approve timed out"
+
+      - name: Warm caches
+        run: |
+          RAILWAY="https://dchub-backend-production.up.railway.app"
+          echo "Warming PeeringDB and H3 caches..."
+          curl -sf "$RAILWAY/api/v2/connectivity/summary?lat=39.0&lng=-77.4" > /dev/null && echo "  NoVA cached"
+          sleep 2
+          curl -sf "$RAILWAY/api/v2/connectivity/summary?lat=32.8&lng=-96.8" > /dev/null && echo "  Dallas cached"
+          sleep 2
+          curl -sf "$RAILWAY/api/v2/connectivity/summary?lat=33.4&lng=-112.0" > /dev/null && echo "  Phoenix cached"
+          sleep 2
+          curl -sf "$RAILWAY/api/v2/connectivity/summary?lat=37.4&lng=-122.0" > /dev/null && echo "  Silicon Valley cached"
+          sleep 2
+          curl -sf "$RAILWAY/api/v2/connectivity/summary?lat=41.9&lng=-87.6" > /dev/null && echo "  Chicago cached"
+          echo "Caches warmed"
+
+      - name: Health check
+        run: |
+          RAILWAY="https://dchub-backend-production.up.railway.app"
+          echo "Final health check..."
+          curl -sf "$RAILWAY/api/health" | python3 -m json.tool | head -10
+          echo ""
+          curl -sf "$RAILWAY/api/energy-discovery/status" | python3 -c "import json,sys; d=json.load(sys.stdin).get('data',{}); print('Plants:', d.get('total_power_plants',0), '| Pipelines:', d.get('total_pipelines',0), '| TX Lines:', d.get('total_transmission_lines',0), '| Markets:', d.get('markets_monitored',0))" 2>/dev/null || echo "Status check failed"
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      - name: Notify on workflow failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create -R azmartone67/dchub-backend \
+            --title "[workflow-failed] ${{ github.workflow }} on $(date -u +%Y-%m-%d_%H:%M)" \
+            --body "Workflow run ${{ github.run_id }} failed. View logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --label workflow-failure || true

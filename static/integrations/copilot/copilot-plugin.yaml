@@ -1,0 +1,19 @@
+name: dchub
+description: DC Hub — Data center intelligence platform with 10,706+ facilities
+capabilities:
+  - search_facilities
+  - energy_prices
+  - carbon_intensity
+  - site_scoring
+  - transactions
+  - market_reports
+api:
+  type: openapi
+  spec_url: https://dchub.cloud/openapi.json
+auth:
+  type: api_key
+  header: X-API-Key
+  key: dchub_copilot_2026_verify
+mcp:
+  url: https://dc-hub-replit-fixedzip--azmartone1.replit.app/mcp
+  transport: streamable-http

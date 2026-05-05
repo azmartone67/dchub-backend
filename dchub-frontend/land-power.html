@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Land & Power Map — DC Hub | The Industry's Most Complete Site Selection Tool</title>
+<meta name="description" content="612+ substations. Transmission lines. Fiber routes. Renewable energy. Flood zones. 20,000+ facilities. 40+ data layers in one interactive map. Free to use.">
+<meta property="og:title" content="Land & Power Map — 40+ Infrastructure Data Layers in One Map">
+<meta property="og:description" content="The only data center site selection tool with substations, transmission lines, fiber routes, renewables, flood zones & AI scoring. Try it free.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://dchub.cloud/land-power">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" type="image/svg+xml" href="/icons/icon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#09090b;--bg2:#0c0c0f;--bg3:#141417;--border:rgba(255,255,255,0.04);--text:#e2e8f0;--text2:#8a8a95;--text3:#55555e;--accent:#3478f6;--accent-light:#5a9aff;--green:#10b981;--amber:#f59e0b;--red:#ef4444;--cyan:#3478f6;--orange:#f97316;--purple:#8b5cf6;--sans:'Instrument Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;--mono:'JetBrains Mono','SF Mono',monospace}
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{font-family:var(--sans);background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+a{color:var(--accent-light);text-decoration:none}
+
+@keyframes fadeUp{from{opacity:0;transform:translateY(24px)}to{opacity:1;transform:none}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+@keyframes glow{0%,100%{box-shadow:0 0 20px rgba(99,102,241,0.15)}50%{box-shadow:0 0 40px rgba(99,102,241,0.3)}}
+@keyframes countUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+.reveal{opacity:0;transform:translateY(24px);transition:opacity .6s cubic-bezier(.16,1,.3,1),transform .6s cubic-bezier(.16,1,.3,1)}
+.reveal.visible{opacity:1;transform:none}
+
+/* Nav */
+nav{position:fixed;top:0;left:0;right:0;z-index:100;background:rgba(10,14,26,0.92);backdrop-filter:blur(20px);border-bottom:1px solid var(--border);height:56px;display:flex;align-items:center;padding:0 24px}
+.nav-inner{max-width:1100px;margin:0 auto;width:100%;display:flex;align-items:center;justify-content:space-between}
+.nav-brand{display:flex;align-items:center;gap:10px;text-decoration:none}
+.nav-brand svg{width:22px;height:30px}
+.nav-brand span{font-weight:800;font-size:1.1rem;color:var(--accent-light);letter-spacing:-0.5px}
+.nav-links{display:flex;gap:24px;align-items:center}
+.nav-links a{color:var(--text2);font-size:13.5px;font-weight:500;transition:color .15s}
+.nav-links a:hover{color:var(--text)}
+.nav-links a.active{color:var(--accent-light)}
+.nav-cta{padding:8px 20px;background:var(--accent);color:#fff;border-radius:8px;font-weight:600;font-size:13px;transition:all .2s;border:none;cursor:pointer}
+.nav-cta:hover{background:var(--accent-light);transform:translateY(-1px);box-shadow:0 4px 16px rgba(99,102,241,0.3)}
+
+/* Hero */
+.hero{padding:140px 24px 80px;text-align:center;position:relative;overflow:hidden}
+.hero::before{content:'';position:absolute;top:0;left:50%;transform:translateX(-50%);width:140%;height:100%;background:radial-gradient(ellipse at top,rgba(99,102,241,0.10) 0%,transparent 50%),radial-gradient(ellipse at 30% 60%,rgba(6,182,212,0.06) 0%,transparent 40%),radial-gradient(ellipse at 70% 40%,rgba(249,115,22,0.04) 0%,transparent 40%);pointer-events:none}
+.hero-badge{display:inline-flex;align-items:center;gap:8px;padding:6px 16px;background:rgba(249,115,22,0.08);border:1px solid rgba(249,115,22,0.2);border-radius:99px;font-size:13px;color:var(--orange);margin-bottom:28px;animation:fadeUp .6s cubic-bezier(.16,1,.3,1) both;font-weight:600}
+.hero-badge::before{content:'';width:7px;height:7px;background:var(--orange);border-radius:50%;animation:pulse 2s infinite}
+.hero h1{font-size:clamp(2.4rem,5.5vw,3.8rem);font-weight:900;line-height:1.06;letter-spacing:-0.035em;margin-bottom:20px;max-width:780px;margin-left:auto;margin-right:auto;animation:fadeUp .6s cubic-bezier(.16,1,.3,1) .1s both}
+.hero h1 .gradient{background:linear-gradient(135deg,#38bdf8,var(--accent-light),#c084fc);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.hero p{font-size:1.15rem;color:var(--text2);max-width:560px;margin:0 auto 36px;line-height:1.65;animation:fadeUp .6s cubic-bezier(.16,1,.3,1) .2s both}
+.hero-buttons{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;animation:fadeUp .6s cubic-bezier(.16,1,.3,1) .3s both}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:14px 28px;border-radius:10px;font-weight:600;font-size:15px;cursor:pointer;transition:all .2s;border:none;text-decoration:none;font-family:var(--sans)}
+.btn-primary{background:linear-gradient(135deg,var(--accent),#4f46e5);color:#fff;animation:glow 3s ease-in-out infinite}
+.btn-primary:hover{transform:translateY(-2px);box-shadow:0 8px 32px rgba(99,102,241,0.4)}
+.btn-ghost{background:rgba(255,255,255,0.04);color:var(--text2);border:1px solid var(--border)}
+.btn-ghost:hover{color:var(--text);border-color:rgba(255,255,255,0.15)}
+.hero-sub{font-size:12.5px;color:var(--text3);margin-top:16px;animation:fadeUp .6s cubic-bezier(.16,1,.3,1) .4s both}
+
+/* Stats bar */
+.stats-bar{display:flex;justify-content:center;gap:1px;max-width:800px;margin:48px auto 0;background:var(--border);border-radius:14px;overflow:hidden;animation:fadeUp .6s cubic-bezier(.16,1,.3,1) .5s both}
+.stat-item{flex:1;padding:20px 16px;background:var(--bg2);text-align:center}
+.stat-item:first-child{border-radius:14px 0 0 14px}
+.stat-item:last-child{border-radius:0 14px 14px 0}
+.stat-num{font-family:var(--mono);font-size:1.6rem;font-weight:700;color:var(--accent-light)}
+.stat-label{font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-top:4px}
+
+/* Layer Cards */
+.layers-section{padding:100px 24px 80px;max-width:1100px;margin:0 auto}
+.layers-section h2{text-align:center;font-size:2rem;font-weight:800;margin-bottom:8px}
+.layers-section .sub{text-align:center;color:var(--text2);font-size:1rem;margin-bottom:56px;max-width:560px;margin-left:auto;margin-right:auto}
+.layers-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px}
+.layer-card{background:var(--bg2);border:1px solid var(--border);border-radius:16px;padding:28px;transition:all .25s;position:relative;overflow:hidden}
+.layer-card:hover{border-color:rgba(99,102,241,0.3);transform:translateY(-4px);box-shadow:0 12px 40px rgba(0,0,0,0.3)}
+.layer-card::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;border-radius:16px 16px 0 0}
+.layer-card[data-accent="amber"]::before{background:var(--amber)}
+.layer-card[data-accent="blue"]::before{background:#3b82f6}
+.layer-card[data-accent="green"]::before{background:var(--green)}
+.layer-card[data-accent="orange"]::before{background:var(--orange)}
+.layer-card[data-accent="cyan"]::before{background:var(--cyan)}
+.layer-card[data-accent="purple"]::before{background:var(--purple)}
+.layer-card[data-accent="indigo"]::before{background:var(--accent)}
+.layer-head{display:flex;align-items:center;gap:14px;margin-bottom:14px}
+.layer-icon{font-size:1.8rem;width:48px;height:48px;display:flex;align-items:center;justify-content:center;border-radius:12px;flex-shrink:0}
+.layer-card[data-accent="amber"] .layer-icon{background:rgba(245,158,11,0.1)}
+.layer-card[data-accent="blue"] .layer-icon{background:rgba(59,130,246,0.1)}
+.layer-card[data-accent="green"] .layer-icon{background:rgba(16,185,129,0.1)}
+.layer-card[data-accent="orange"] .layer-icon{background:rgba(249,115,22,0.1)}
+.layer-card[data-accent="cyan"] .layer-icon{background:rgba(6,182,212,0.1)}
+.layer-card[data-accent="purple"] .layer-icon{background:rgba(139,92,246,0.1)}
+.layer-card[data-accent="indigo"] .layer-icon{background:rgba(99,102,241,0.1)}
+.layer-title{font-weight:700;font-size:16px;margin-bottom:2px}
+.layer-stat{font-family:var(--mono);font-size:12px;font-weight:600}
+.layer-card[data-accent="amber"] .layer-stat{color:var(--amber)}
+.layer-card[data-accent="blue"] .layer-stat{color:#3b82f6}
+.layer-card[data-accent="green"] .layer-stat{color:var(--green)}
+.layer-card[data-accent="orange"] .layer-stat{color:var(--orange)}
+.layer-card[data-accent="cyan"] .layer-stat{color:var(--cyan)}
+.layer-card[data-accent="purple"] .layer-stat{color:var(--purple)}
+.layer-card[data-accent="indigo"] .layer-stat{color:var(--accent-light)}
+.layer-desc{font-size:14px;color:var(--text2);line-height:1.6}
+
+/* Power-led section */
+.power-section{padding:80px 24px;background:var(--bg2);border-top:1px solid var(--border);border-bottom:1px solid var(--border)}
+.power-inner{max-width:800px;margin:0 auto;text-align:center}
+.power-section h2{font-size:2rem;font-weight:800;margin-bottom:12px}
+.power-section .sub{color:var(--text2);font-size:1rem;margin-bottom:40px;max-width:600px;margin-left:auto;margin-right:auto;line-height:1.65}
+.power-quote{font-size:1.1rem;color:var(--text);line-height:1.7;font-style:italic;max-width:620px;margin:0 auto 20px;position:relative;padding:0 24px}
+.power-quote::before{content:'\201C';position:absolute;left:-8px;top:-12px;font-size:3.5rem;color:var(--accent);font-style:normal;opacity:.3;font-family:Georgia,serif}
+.power-attr{font-size:13px;color:var(--text3)}
+
+/* Comparison Table */
+.compare-section{padding:100px 24px 80px;max-width:900px;margin:0 auto}
+.compare-section h2{text-align:center;font-size:2rem;font-weight:800;margin-bottom:8px}
+.compare-section .sub{text-align:center;color:var(--text2);font-size:1rem;margin-bottom:48px;max-width:520px;margin-left:auto;margin-right:auto}
+.compare-table{width:100%;border-collapse:separate;border-spacing:0;overflow:hidden;border-radius:14px;border:1px solid var(--border)}
+.compare-table th{background:var(--bg3);padding:14px 16px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--text3);font-weight:600;text-align:center;border-bottom:1px solid var(--border)}
+.compare-table th:first-child{text-align:left;width:38%}
+.compare-table th.dchub{color:var(--accent-light);background:rgba(99,102,241,0.06)}
+.compare-table td{padding:13px 16px;font-size:14px;border-bottom:1px solid rgba(30,41,59,0.5);text-align:center;background:var(--bg2)}
+.compare-table tr:last-child td{border-bottom:none}
+.compare-table td:first-child{text-align:left;font-weight:500;color:var(--text)}
+.compare-table td.dchub{background:rgba(99,102,241,0.04)}
+.check{color:var(--green);font-weight:700;font-size:16px}
+.cross{color:var(--red);opacity:.6;font-size:16px}
+.partial{color:var(--amber);font-size:16px}
+.price-row td{font-family:var(--mono);font-weight:600;font-size:15px}
+.price-row .check{color:var(--green);font-size:15px}
+.price-row .cross{color:var(--red);font-size:15px;opacity:1}
+
+/* Challenge */
+.challenge-section{padding:80px 24px;text-align:center}
+.challenge-inner{max-width:700px;margin:0 auto;padding:48px 40px;border:2px solid rgba(249,115,22,0.2);border-radius:20px;background:linear-gradient(135deg,rgba(249,115,22,0.03),rgba(99,102,241,0.03))}
+.challenge-section h2{font-size:1.6rem;font-weight:800;margin-bottom:16px}
+.challenge-section p{color:var(--text2);font-size:15px;line-height:1.65;margin-bottom:24px;max-width:560px;margin-left:auto;margin-right:auto}
+.challenge-cta{display:inline-flex;align-items:center;gap:8px;padding:14px 32px;border-radius:10px;font-weight:700;font-size:15px;cursor:pointer;transition:all .2s;border:2px solid var(--orange);background:transparent;color:var(--orange);text-decoration:none;font-family:var(--sans)}
+.challenge-cta:hover{background:var(--orange);color:#fff;transform:translateY(-2px);box-shadow:0 8px 32px rgba(249,115,22,0.25)}
+
+/* Use Cases */
+.use-section{padding:100px 24px 80px;max-width:900px;margin:0 auto}
+.use-section h2{text-align:center;font-size:2rem;font-weight:800;margin-bottom:48px}
+.use-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.use-card{padding:28px;border-radius:14px;background:var(--bg2);border:1px solid var(--border);transition:border-color .2s}
+.use-card:hover{border-color:rgba(99,102,241,0.25)}
+.use-who{font-family:var(--mono);font-size:11px;color:var(--accent-light);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px}
+.use-title{font-weight:700;font-size:16px;margin-bottom:8px}
+.use-desc{font-size:14px;color:var(--text2);line-height:1.6}
+
+/* CTA */
+.cta-section{padding:100px 24px 80px;text-align:center;background:radial-gradient(ellipse at bottom,rgba(99,102,241,0.08) 0%,transparent 60%)}
+.cta-section h2{font-size:clamp(1.8rem,4vw,2.5rem);font-weight:800;margin-bottom:12px}
+.cta-section h2 .gradient{background:linear-gradient(135deg,#38bdf8,var(--accent-light));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.cta-section>p{color:var(--text2);font-size:1rem;margin-bottom:32px;max-width:480px;margin-left:auto;margin-right:auto}
+.cta-buttons{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-bottom:16px}
+.cta-note{font-size:12.5px;color:var(--text3)}
+
+footer{padding:32px 24px;border-top:1px solid var(--border);text-align:center}
+footer p{font-size:12px;color:var(--text3)}
+footer a{color:var(--text3);margin:0 12px}
+footer a:hover{color:var(--text2)}
+
+@media(max-width:768px){
+  .nav-links{display:none}
+  .hero{padding:110px 20px 60px}
+  .hero h1{font-size:2rem}
+  .stats-bar{flex-wrap:wrap;gap:1px;border-radius:12px}
+  .stat-item{flex:1 1 calc(50% - 1px);min-width:140px}
+  .stat-item:first-child{border-radius:12px 0 0 0}
+  .stat-item:nth-child(2){border-radius:0 12px 0 0}
+  .stat-item:nth-child(3){border-radius:0 0 0 12px}
+  .stat-item:last-child{border-radius:0 0 12px 0}
+  .layers-grid{grid-template-columns:1fr}
+  .compare-table{font-size:12px}
+  .compare-table th,.compare-table td{padding:10px 8px}
+  .use-grid{grid-template-columns:1fr}
+  .challenge-inner{padding:32px 24px}
+  .hero-buttons{flex-direction:column;align-items:center}
+}
+</style>
+<script src="/js/dchub-plan-sync.js"></script>
+<style>nav:not(.dchub-nav):not(.dchub-bottom-nav):not(.mobile-nav-drawer-links nav){display:none!important}.nav:not(.dchub-nav){display:none!important}</style>
+<script src="/js/dchub-nav.js"></script>
+</head>
+<body>
+
+<nav><div class="nav-inner">
+  <a href="/" class="nav-brand">
+    <svg viewBox="0 0 24 32" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M13.5 1L2 18H11L9.5 31L22 13H12.5L13.5 1Z" fill="url(#lg)" stroke="#818cf8" stroke-width="1"/><defs><linearGradient id="lg" x1="12" y1="1" x2="12" y2="31" gradientUnits="userSpaceOnUse"><stop stop-color="#a5b4fc"/><stop offset="1" stop-color="#6366f1"/></linearGradient></defs></svg>
+    <span>DC HUB</span>
+  </a>
+  <div class="nav-links">
+    <a href="/">Platform</a>
+    <a href="/land-power" class="active">Land &amp; Power</a>
+    <a href="/transactions">Deals</a>
+    <a href="/news">News</a><a href="/digest">Digest</a>
+    <a href="/pricing">Pricing</a>
+  </div>
+  <a href="/land-power-map" class="nav-cta">Launch Map →</a>
+</div></nav>
+
+<!-- ========== HERO ========== -->
+<section class="hero">
+  <div class="hero-badge">⚡ Power is the new location</div>
+  <h1>The industry's most complete <span class="gradient">site selection map</span></h1>
+  <p>Substations. Transmission lines. Fiber routes. Renewable energy. Flood zones. 20,000+ facilities. All in one interactive map. No other platform comes close.</p>
+  <div class="hero-buttons">
+    <a href="/land-power-map" class="btn btn-primary">Launch the Map — Free →</a>
+    <a href="#layers" class="btn btn-ghost">See What's Included</a>
+  </div>
+  <p class="hero-sub">No login required. No credit card. No sales call.</p>
+  <div class="stats-bar">
+    <div class="stat-item"><div class="stat-num">40+</div><div class="stat-label">Data Layers</div></div>
+    <div class="stat-item"><div class="stat-num" id="lp-stat-subs">612+</div><div class="stat-label">Substations</div></div>
+    <div class="stat-item"><div class="stat-num">20K+</div><div class="stat-label">Facilities</div></div>
+    <div class="stat-item"><div class="stat-num">$0</div><div class="stat-label">To Start</div></div>
+  </div>
+</section>
+
+<!-- ========== POWER-LED SECTION ========== -->
+<section class="power-section reveal">
+  <div class="power-inner">
+    <h2>Power availability now determines where data centers get built</h2>
+    <p class="sub">Both CBRE and JLL confirm: power has replaced geography as the #1 factor in site selection. DC Hub is the only self-service platform that maps the energy infrastructure alongside the data centers.</p>
+    <div class="power-quote">The viability of infrastructure projects now hinges on energy availability. Power is no longer a constraint — it's the gatekeeper.</div>
+    <div class="power-attr">— DC Byte Research, 2025</div>
+  </div>
+</section>
+
+<!-- ========== DATA LAYERS ========== -->
+<section class="layers-section" id="layers">
+  <h2 class="reveal">7 data layers you can't find anywhere else</h2>
+  <p class="sub reveal">Every layer works together. Toggle them on and off to build a complete picture of any location's viability — in seconds, not weeks.</p>
+  <div class="layers-grid">
+    <div class="layer-card reveal" data-accent="amber">
+      <div class="layer-head">
+        <div class="layer-icon">⚡</div>
+        <div><div class="layer-title" id="lp-layer-subs">612+ Substation Locations</div><div class="layer-stat">ENERGY · EXCLUSIVE</div></div>
+      </div>
+      <div class="layer-desc">Every major electrical substation mapped across the US. See exactly where grid capacity exists before your competitors do. Eliminate months of utility research in a single view.</div>
+    </div>
+    <div class="layer-card reveal" data-accent="blue">
+      <div class="layer-head">
+        <div class="layer-icon">🔌</div>
+        <div><div class="layer-title">Transmission Line Corridors</div><div class="layer-stat">ENERGY · EXCLUSIVE</div></div>
+      </div>
+      <div class="layer-desc">High-voltage transmission infrastructure mapped in real time. Understand delivery pathways, voltage levels, and proximity to planned campuses — critical for 50MW+ deployments.</div>
+    </div>
+    <div class="layer-card reveal" data-accent="green">
+      <div class="layer-head">
+        <div class="layer-icon">☀️</div>
+        <div><div class="layer-title">Renewable Energy Sources</div><div class="layer-stat">SUSTAINABILITY</div></div>
+      </div>
+      <div class="layer-desc">Solar, wind, and hydro generation facilities overlaid on your site search. Support sustainability commitments, identify PPA opportunities, and meet hyperscale carbon-neutral demands.</div>
+    </div>
+    <div class="layer-card reveal" data-accent="orange">
+      <div class="layer-head">
+        <div class="layer-icon">🔥</div>
+        <div><div class="layer-title">Natural Gas Pipeline Routes</div><div class="layer-stat">ENERGY · EXCLUSIVE</div></div>
+      </div>
+      <div class="layer-desc">With grid delivery timelines stretching 3-5+ years, on-site generation is the new fast lane. See pipeline proximity before you commit to a site. Nobody else maps this for data centers.</div>
+    </div>
+    <div class="layer-card reveal" data-accent="cyan">
+      <div class="layer-head">
+        <div class="layer-icon">🌊</div>
+        <div><div class="layer-title">Flood Zone & Environmental Risk</div><div class="layer-stat">RISK · DUE DILIGENCE</div></div>
+      </div>
+      <div class="layer-desc">FEMA flood zones, seismic data, and climate risk overlays — all on the same map as your power and facility data. Institutional investors now require this analysis. Skip the $200K consulting engagement.</div>
+    </div>
+    <div class="layer-card reveal" data-accent="purple">
+      <div class="layer-head">
+        <div class="layer-icon">🔗</div>
+        <div><div class="layer-title">33+ Fiber Hub Locations</div><div class="layer-stat">CONNECTIVITY</div></div>
+      </div>
+      <div class="layer-desc">Major interconnection points, carrier hotels, and cloud on-ramps — AWS, Azure, GCP, Oracle, Megaport — mapped alongside your energy infrastructure. Other tools charge $4,500/yr per seat for just the fiber layer.</div>
+    </div>
+    <div class="layer-card reveal" data-accent="indigo">
+      <div class="layer-head">
+        <div class="layer-icon">🤖</div>
+        <div><div class="layer-title">AI-Powered Site Scoring</div><div class="layer-stat">INTELLIGENCE</div></div>
+      </div>
+      <div class="layer-desc">Score any location for data center viability — energy access, carbon intensity, connectivity density, environmental risk — with a single click. Replace weeks of spreadsheet analysis with one second of intelligence.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ========== COMPARISON TABLE ========== -->
+<section class="compare-section">
+  <h2 class="reveal">What you get vs. what they charge</h2>
+  <p class="sub reveal">DC Hub includes infrastructure intelligence that competitors don't offer at any price.</p>
+  <div class="reveal">
+    <table class="compare-table">
+      <thead>
+        <tr>
+          <th>Capability</th>
+          <th class="dchub">DC Hub</th>
+          <th>dcHawk</th>
+          <th>DC Byte</th>
+          <th>FiberLocator</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td id="lp-table-subs">Substations (612+)</td><td class="dchub"><span class="check">✓</span></td><td><span class="cross">✗</span></td><td><span class="cross">✗</span></td><td><span class="cross">✗</span></td></tr>
+        <tr><td>Transmission Lines</td><td class="dchub"><span class="check">✓</span></td><td><span class="cross">✗</span></td><td><span class="cross">✗</span></td><td><span class="cross">✗</span></td></tr>
+        <tr><td>Renewable Energy</td><td class="dchub"><span class="check">✓</span></td><td><span class="cross">✗</span></td><td><span class="cross">✗</span></td><td><span class="cross">✗</span></td></tr>
+        <tr><td>Gas Pipelines</td><td class="dchub"><span class="check">✓</span></td><td><span class="cross">✗</span></td><td><span class="cross">✗</span></td><td><span class="cross">✗</span></td></tr>
+        <tr><td>Fiber &amp; Connectivity</td><td class="dchub"><span class="check">✓</span></td><td><span class="cross">✗</span></td><td><span class="partial">◐</span></td><td><span class="check">✓</span></td></tr>
+        <tr><td>Flood / Risk Overlays</td><td class="dchub"><span class="check">✓</span></td><td><span class="cross">✗</span></td><td><span class="partial">◐</span></td><td><span class="cross">✗</span></td></tr>
+        <tr><td>20,000+ Facilities</td><td class="dchub"><span class="check">✓</span></td><td><span class="partial">◐</span></td><td><span class="partial">◐</span></td><td><span class="cross">✗</span></td></tr>
+        <tr><td>AI Site Scoring</td><td class="dchub"><span class="check">✓</span></td><td><span class="cross">✗</span></td><td><span class="cross">✗</span></td><td><span class="cross">✗</span></td></tr>
+        <tr><td>Public REST API</td><td class="dchub"><span class="check">✓</span></td><td><span class="cross">✗</span></td><td><span class="cross">✗</span></td><td><span class="cross">✗</span></td></tr>
+        <tr><td>AI Platform Integrations</td><td class="dchub"><span class="check">✓</span></td><td><span class="cross">✗</span></td><td><span class="cross">✗</span></td><td><span class="cross">✗</span></td></tr>
+        <tr class="price-row"><td style="font-weight:700">Starting price</td><td class="dchub"><span class="check">Free</span></td><td><span class="cross">$15K+/yr</span></td><td><span class="cross">Contact</span></td><td><span class="cross">$4,500/yr</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ========== CHALLENGE ========== -->
+<section class="challenge-section">
+  <div class="challenge-inner reveal">
+    <h2>🏆 The Open Challenge</h2>
+    <p>Find any competing platform that offers more infrastructure data layers in a single interactive map — substations, transmission lines, renewables, gas pipelines, fiber routes, flood zones, and AI site scoring. If you can, we'll buy you a year of their subscription.</p>
+    <a href="/land-power-map" class="challenge-cta">Accept the Challenge →</a>
+  </div>
+</section>
+
+<!-- ========== USE CASES ========== -->
+<section class="use-section">
+  <h2 class="reveal">Built for every role in site selection</h2>
+  <div class="use-grid">
+    <div class="use-card reveal">
+      <div class="use-who">Developers &amp; Operators</div>
+      <div class="use-title">Find viable sites in minutes, not months</div>
+      <div class="use-desc">Screen locations by power availability, fiber proximity, and environmental risk before committing resources. See exactly which substations serve prospective parcels and whether transmission capacity exists.</div>
+    </div>
+    <div class="use-card reveal">
+      <div class="use-who">Investors &amp; Analysts</div>
+      <div class="use-title">Due diligence with real infrastructure data</div>
+      <div class="use-desc">Validate site claims with actual substation locations, transmission corridors, and grid capacity data. Combine with M&A transaction benchmarks and AI site scoring for comprehensive underwriting.</div>
+    </div>
+    <div class="use-card reveal">
+      <div class="use-who">Brokers &amp; Consultants</div>
+      <div class="use-title">Win clients with the most complete map</div>
+      <div class="use-desc">Open Land & Power in client meetings and show infrastructure intelligence no other tool provides. Evaluate sites live, toggle data layers, and deliver assessments on the spot. Free Pro access for qualified professionals.</div>
+    </div>
+    <div class="use-card reveal">
+      <div class="use-who">Hyperscale &amp; Enterprise</div>
+      <div class="use-title">Power-led campus planning at scale</div>
+      <div class="use-desc">Map renewable energy sources for PPA sourcing, identify gas pipeline proximity for on-site generation, and assess long-term climate risk. API access for integration into internal planning tools.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ========== CTA ========== -->
+<section class="cta-section">
+  <h2 class="reveal">Try it right now. <span class="gradient">No login required.</span></h2>
+  <p class="reveal" id="lp-cta-text">40+ data layers. 612+ substations. 20,000+ facilities. The industry's most complete site selection map — and you can use it in the next 10 seconds.</p>
+  <div class="cta-buttons reveal">
+    <a href="/land-power-map" class="btn btn-primary">Launch Land &amp; Power Map →</a>
+    <a href="/pricing" class="btn btn-ghost">View Pro Plans</a>
+  </div>
+  <p class="cta-note reveal">Free tier includes full map access. Pro unlocks advanced layers, API access, and AI site scoring.</p>
+</section>
+
+<footer>
+  <p>© 2026 DC Hub · Built in Phoenix, AZ 🌵</p>
+  <p style="margin-top:8px"><a href="/">Platform</a><a href="/about">About</a><a href="/pricing">Pricing</a><a href="/connect">AI Hub</a><a href="/api">API Docs</a></p>
+</footer>
+
+<script>
+(function(){
+  var obs=new IntersectionObserver(function(entries){entries.forEach(function(e){if(e.isIntersecting){e.target.classList.add('visible');obs.unobserve(e.target)}})},{threshold:0.12});
+  document.querySelectorAll('.reveal').forEach(function(el){obs.observe(el)});
+})();
+</script>
+<script>
+/* Live stats from API — updates hardcoded substation/facility counts */
+(function(){
+  var API='https://dchub.cloud';
+  var xhr=new XMLHttpRequest();
+  xhr.open('GET',API+'/api/v1/stats',true);
+  xhr.timeout=8000;
+  xhr.onload=function(){
+    if(xhr.status!==200)return;
+    try{
+      var r=JSON.parse(xhr.responseText);
+      var s=r.data||r;
+      var subs=s.total_substations||s.substations||r.substations;
+      var fac=s.total_facilities||r.facilities;
+      if(subs&&subs>0){
+        var sf=subs.toLocaleString()+'+';
+        var el1=document.getElementById('lp-stat-subs');
+        if(el1)el1.textContent=sf;
+        var el2=document.getElementById('lp-layer-subs');
+        if(el2)el2.textContent=sf+' Substation Locations';
+        var el3=document.getElementById('lp-table-subs');
+        if(el3)el3.textContent='Substations ('+sf+')';
+        var el4=document.getElementById('lp-cta-text');
+        if(el4&&fac){
+          var ff=fac>=1000?(Math.floor(fac/1000)+'K+'):fac.toLocaleString()+'+';
+          el4.textContent='40+ data layers. '+sf+' substations. '+ff+' facilities. The industry\u2019s most complete site selection map \u2014 and you can use it in the next 10 seconds.';
+        }
+      }
+    }catch(e){}
+  };
+  xhr.send();
+})();
+</script>
+</body>
+</html>

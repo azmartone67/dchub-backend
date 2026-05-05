@@ -1,0 +1,108 @@
+{
+  "toolUseExamples": [
+    {
+      "query": "What is the data center capacity pipeline in Northern Virginia?",
+      "extensionOperation": {
+        "operationId": "get_pipeline"
+      },
+      "displayName": "Get Pipeline Data",
+      "requestParams": {
+        "fields": [
+          { "key": "market", "value": { "string_value": "northern-virginia" } },
+          { "key": "status", "value": { "string_value": "under-construction" } }
+        ]
+      },
+      "responseParams": {
+        "fields": [
+          { "key": "total_mw", "value": { "number_value": 5900 } },
+          { "key": "projects_count", "value": { "number_value": 47 } }
+        ]
+      }
+    },
+    {
+      "query": "Find Equinix facilities in the United States",
+      "extensionOperation": {
+        "operationId": "get_facilities"
+      },
+      "displayName": "Search Facilities",
+      "requestParams": {
+        "fields": [
+          { "key": "q", "value": { "string_value": "Equinix" } },
+          { "key": "country", "value": { "string_value": "US" } },
+          { "key": "limit", "value": { "number_value": 50 } }
+        ]
+      }
+    },
+    {
+      "query": "What are the largest data center M&A deals?",
+      "extensionOperation": {
+        "operationId": "get_transactions"
+      },
+      "displayName": "Search M&A Deals",
+      "requestParams": {
+        "fields": [
+          { "key": "limit", "value": { "number_value": 10 } },
+          { "key": "sort", "value": { "string_value": "value_desc" } }
+        ]
+      }
+    },
+    {
+      "query": "Evaluate site risk for a data center in Miami at 25.76, -80.19",
+      "extensionOperation": {
+        "operationId": "get_composite_site_score"
+      },
+      "displayName": "Get Site Risk Score",
+      "requestParams": {
+        "fields": [
+          { "key": "lat", "value": { "number_value": 25.76 } },
+          { "key": "lon", "value": { "number_value": -80.19 } }
+        ]
+      }
+    },
+    {
+      "query": "What is the current electricity price in the PJM market?",
+      "extensionOperation": {
+        "operationId": "get_lmp_prices"
+      },
+      "displayName": "Get Energy Pricing",
+      "requestParams": {
+        "fields": [
+          { "key": "iso", "value": { "string_value": "PJM" } }
+        ]
+      }
+    },
+    {
+      "query": "Compare data center markets in Dallas vs Phoenix",
+      "extensionOperation": {
+        "operationId": "get_markets_list"
+      },
+      "displayName": "List Markets",
+      "requestParams": {
+        "fields": []
+      },
+      "responseNote": "Filter results client-side for Dallas and Phoenix comparison"
+    },
+    {
+      "query": "What is the latest data center industry news?",
+      "extensionOperation": {
+        "operationId": "get_news"
+      },
+      "displayName": "Get Industry News",
+      "requestParams": {
+        "fields": [
+          { "key": "limit", "value": { "number_value": 10 } }
+        ]
+      }
+    },
+    {
+      "query": "How many data centers does DC Hub track globally?",
+      "extensionOperation": {
+        "operationId": "get_agent_stats"
+      },
+      "displayName": "Get Platform Stats",
+      "requestParams": {
+        "fields": []
+      }
+    }
+  ]
+}

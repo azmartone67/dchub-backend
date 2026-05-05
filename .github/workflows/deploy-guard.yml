@@ -1,0 +1,68 @@
+name: Deploy Guard
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy-guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Syntax check all Python files
+        run: |
+          echo "Checking Python syntax..."
+          ERRORS=0
+          for f in $(find . -name "*.py" -not -path "./.git/*" -not -path "./venv/*"); do
+            if ! python -c "import py_compile; py_compile.compile('$f', doraise=True)" 2>/dev/null; then
+              echo "FAIL: $f"
+              python -c "import py_compile; py_compile.compile('$f', doraise=True)" 2>&1 || true
+              ERRORS=$((ERRORS + 1))
+            fi
+          done
+          if [ $ERRORS -gt 0 ]; then
+            echo "$ERRORS file(s) have syntax errors"
+            exit 1
+          fi
+          echo "All Python files pass syntax check"
+
+      - name: Verify railway.json healthcheck
+        run: |
+          python3 -c "
+          import json, sys
+          with open('railway.json') as f:
+              config = json.load(f)
+          hc = config.get('deploy', {}).get('healthcheckPath', '')
+          if not hc:
+              print('railway.json missing healthcheckPath')
+              sys.exit(1)
+          print(f'railway.json OK: healthcheck={hc}')
+          "
+
+      - name: Scan for dangerous patterns
+        run: |
+          # MCP deadlock check
+          if grep -n "DCHUB_API_BASE.*127\.0\.0\.1\|DCHUB_API_BASE.*localhost" dchub_mcp_server.py 2>/dev/null; then
+            echo "DCHUB_API_BASE points to localhost - MCP deadlock risk"
+            exit 1
+          fi
+          echo "No dangerous patterns found"
+
+      - name: Notify on workflow failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create -R azmartone67/dchub-backend \
+            --title "[workflow-failed] ${{ github.workflow }} on $(date -u +%Y-%m-%d_%H:%M)" \
+            --body "Workflow run ${{ github.run_id }} failed. View logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --label workflow-failure || true

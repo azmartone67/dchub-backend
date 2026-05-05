@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DC Hub — User Onboarding Guide</title>
+<link rel="icon" href="https://dchub.cloud/favicon.ico" type="image/x-icon">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #09090b; --bg2: #12121a; --bg3: #1a1a2e;
+  --border: rgba(255,255,255,0.08); --text: #e0e0e0; --text2: #a0a0b0; --text3: #707080; --white: #fff;
+  --purple: #8b5cf6; --purple-lt: #a78bfa; --purple-dim: rgba(139,92,246,0.12);
+  --cyan: #3478f6; --cyan-dim: rgba(6,182,212,0.1); --accent: #3478f6;
+  --green: #10b981; --green-dim: rgba(16,185,129,0.12);
+  --orange: #f59e0b; --orange-dim: rgba(245,158,11,0.12);
+  --red: #ef4444; --red-dim: rgba(239,68,68,0.12);
+  --blue: #3b82f6; --blue-dim: rgba(59,130,246,0.12);
+  --r: 12px; --rs: 8px; --t: 0.2s cubic-bezier(0.4,0,0.2,1);
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'DM Sans',-apple-system,sans-serif; background:var(--bg); color:var(--text); line-height:1.65; -webkit-font-smoothing:antialiased; }
+body::before { content:''; position:fixed; inset:0; background-image:linear-gradient(rgba(139,92,246,0.03) 1px,transparent 1px),linear-gradient(90deg,rgba(139,92,246,0.03) 1px,transparent 1px); background-size:60px 60px; pointer-events:none; z-index:0; }
+.app { display:flex; min-height:100vh; position:relative; z-index:1; }
+
+/* Sidebar */
+.sb { width:272px; min-width:272px; background:var(--bg2); border-right:1px solid var(--border); position:fixed; top:0; left:0; bottom:0; overflow-y:auto; z-index:100; transition:transform .3s ease; display:flex; flex-direction:column; }
+.sb-brand { padding:24px 20px 20px; border-bottom:1px solid var(--border); }
+.sb-brand .lr { display:flex; align-items:center; gap:10px; margin-bottom:8px; }
+.logo-i { width:34px; height:34px; background:linear-gradient(135deg,var(--purple),var(--cyan)); border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:16px; font-weight:800; color:#fff; font-family:'JetBrains Mono',monospace; letter-spacing:-.5px; flex-shrink:0; }
+.logo-t { font-size:18px; font-weight:700; color:var(--white); letter-spacing:-.02em; }
+.logo-t span { background:linear-gradient(135deg,var(--purple),var(--cyan)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
+.sb-brand .sub { font-size:11px; color:var(--text3); text-transform:uppercase; letter-spacing:.1em; font-weight:500; padding-left:44px; }
+.sb-nav { padding:12px 10px; flex:1; }
+.ng { margin-bottom:4px; }
+.ng-l { font-size:10px; text-transform:uppercase; letter-spacing:.1em; color:var(--text3); padding:14px 12px 6px; font-weight:600; }
+.ni { display:flex; align-items:center; gap:10px; padding:8px 12px; border-radius:var(--rs); cursor:pointer; transition:all var(--t); font-size:13.5px; color:var(--text2); position:relative; user-select:none; }
+.ni:hover { background:rgba(139,92,246,.06); color:var(--text); }
+.ni.a { background:var(--purple-dim); color:var(--purple-lt); font-weight:500; }
+.ni.a::before { content:''; position:absolute; left:0; top:50%; transform:translateY(-50%); width:3px; height:18px; background:linear-gradient(180deg,var(--purple),var(--cyan)); border-radius:0 3px 3px 0; }
+.ni-i { width:18px; text-align:center; font-size:13px; flex-shrink:0; }
+.sb-ft { padding:16px 20px; border-top:1px solid var(--border); font-size:11px; color:var(--text3); }
+.sb-ft a { color:var(--purple-lt); text-decoration:none; }
+
+/* Main */
+.mn { flex:1; margin-left:272px; padding:36px 48px 80px; max-width:920px; }
+.sec { display:none; animation:fu .3s ease; }
+.sec.a { display:block; }
+@keyframes fu { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+
+/* Typography */
+h2 { font-size:26px; font-weight:700; color:var(--white); margin-bottom:6px; letter-spacing:-.02em; }
+h2 .gr { background:linear-gradient(135deg,var(--purple),var(--cyan)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
+.ss { font-size:14.5px; color:var(--text2); margin-bottom:28px; line-height:1.6; }
+h3 { font-size:16px; font-weight:600; color:var(--white); margin:24px 0 10px; }
+h4 { font-size:12px; font-weight:600; color:var(--text3); text-transform:uppercase; letter-spacing:.06em; margin:20px 0 8px; }
+p { margin-bottom:12px; font-size:14px; }
+
+/* Cards */
+.c { background:var(--bg2); border:1px solid var(--border); border-radius:var(--r); padding:22px; margin-bottom:12px; transition:all var(--t); }
+.c:hover { border-color:rgba(139,92,246,.15); }
+.ch { display:flex; align-items:center; gap:12px; margin-bottom:12px; }
+.ci { width:34px; height:34px; border-radius:9px; display:flex; align-items:center; justify-content:center; font-size:16px; flex-shrink:0; }
+.ci.p { background:var(--purple-dim); } .ci.g { background:var(--green-dim); } .ci.o { background:var(--orange-dim); } .ci.cy { background:var(--cyan-dim); }
+.ct { font-size:14.5px; font-weight:600; color:var(--white); }
+.cd { font-size:12.5px; color:var(--text3); }
+.g2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin:12px 0; }
+
+/* Flow */
+.fl { position:relative; padding-left:36px; margin:16px 0; }
+.fl::before { content:''; position:absolute; left:14px; top:4px; bottom:4px; width:2px; background:linear-gradient(to bottom,var(--purple),var(--cyan)); border-radius:2px; }
+.fi { position:relative; margin-bottom:14px; padding:12px 16px; background:var(--bg2); border:1px solid var(--border); border-radius:var(--rs); font-size:13.5px; }
+.fi::before { content:attr(data-n); position:absolute; left:-30px; top:12px; width:21px; height:21px; background:linear-gradient(135deg,var(--purple),var(--accent)); color:#fff; font-size:11px; font-weight:700; border-radius:50%; display:flex; align-items:center; justify-content:center; }
+.fi strong { color:var(--white); display:block; margin-bottom:2px; }
+.fi .dm { color:var(--text2); font-size:12.5px; }
+
+/* Tables */
+.tw { overflow-x:auto; margin:14px 0; border-radius:var(--r); border:1px solid var(--border); }
+table { width:100%; border-collapse:collapse; font-size:13px; }
+thead th { background:var(--purple-dim); color:var(--purple-lt); font-weight:600; font-size:10.5px; text-transform:uppercase; letter-spacing:.06em; padding:10px 14px; text-align:left; border-bottom:1px solid var(--border); }
+tbody td { padding:10px 14px; border-bottom:1px solid rgba(255,255,255,.03); }
+tbody tr:last-child td { border-bottom:none; }
+tbody tr:hover { background:rgba(139,92,246,.03); }
+
+/* Code */
+.cb { background:#080810; border:1px solid var(--border); border-radius:var(--rs); padding:16px 18px; margin:12px 0; overflow-x:auto; position:relative; }
+.cb pre { font-family:'JetBrains Mono',monospace; font-size:12px; line-height:1.7; color:#c9d1d9; margin:0; white-space:pre; }
+.cb .cp { position:absolute; top:8px; right:8px; background:rgba(139,92,246,.1); border:1px solid rgba(139,92,246,.2); color:var(--purple-lt); padding:3px 10px; border-radius:6px; font-size:11px; cursor:pointer; font-family:'DM Sans',sans-serif; }
+.cb .cp.ok { background:var(--green-dim); color:var(--green); border-color:rgba(16,185,129,.3); }
+code { font-family:'JetBrains Mono',monospace; font-size:12px; background:rgba(139,92,246,.1); padding:2px 6px; border-radius:4px; color:var(--cyan); }
+
+/* Callouts */
+.co { border-radius:var(--r); padding:16px 18px; margin:16px 0; font-size:13.5px; border-left:3px solid; }
+.co.w { background:var(--orange-dim); border-color:var(--orange); } .co.e { background:var(--red-dim); border-color:var(--red); }
+.co.i { background:var(--purple-dim); border-color:var(--purple); } .co.s { background:var(--green-dim); border-color:var(--green); }
+.co b { display:block; margin-bottom:4px; font-size:13px; }
+.co.w b { color:var(--orange); } .co.e b { color:var(--red); } .co.i b { color:var(--purple-lt); } .co.s b { color:var(--green); }
+.co p { margin:0; font-size:13px; }
+
+/* Badges */
+.bd { display:inline-flex; padding:2px 9px; border-radius:20px; font-size:10.5px; font-weight:600; }
+.bd.g { background:var(--green-dim); color:var(--green); } .bd.o { background:var(--orange-dim); color:var(--orange); }
+.bd.r { background:var(--red-dim); color:var(--red); } .bd.p { background:var(--purple-dim); color:var(--purple-lt); }
+
+/* Plans */
+.pls { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin:18px 0; }
+.pl { background:var(--bg2); border:1px solid var(--border); border-radius:var(--r); padding:22px; text-align:center; transition:all var(--t); }
+.pl:hover { transform:translateY(-2px); }
+.pl.h { border-color:var(--purple); box-shadow:0 0 40px rgba(139,92,246,.08); }
+.pt { font-size:11px; font-weight:600; color:var(--text3); text-transform:uppercase; letter-spacing:.08em; margin-bottom:6px; }
+.pl.h .pt { color:var(--purple-lt); }
+.pp { font-family:'JetBrains Mono',monospace; font-size:30px; font-weight:700; color:var(--white); margin-bottom:14px; }
+.pp span { font-size:13px; color:var(--text3); font-family:'DM Sans',sans-serif; }
+.pf { list-style:none; text-align:left; font-size:12.5px; }
+.pf li { padding:5px 0; display:flex; align-items:center; gap:7px; }
+.pf li::before { content:'✓'; color:var(--green); font-weight:700; font-size:11px; }
+
+/* Accordion */
+.ac { background:var(--bg2); border:1px solid var(--border); border-radius:var(--r); margin-bottom:8px; overflow:hidden; }
+.ah { padding:14px 18px; cursor:pointer; display:flex; align-items:center; justify-content:space-between; user-select:none; }
+.ah:hover { background:rgba(139,92,246,.04); }
+.al { display:flex; align-items:center; gap:10px; }
+.av { transition:transform .25s ease; color:var(--text3); font-size:11px; }
+.ac.op .av { transform:rotate(180deg); }
+.ab { max-height:0; overflow:hidden; transition:max-height .35s ease; }
+.ai { padding:0 18px 18px; font-size:13.5px; }
+.ai p { margin-bottom:8px; } .ai strong { color:var(--white); }
+
+/* Checklist */
+.ck { list-style:none; margin:12px 0; }
+.ck li { padding:9px 0; border-bottom:1px solid rgba(255,255,255,.03); display:flex; align-items:flex-start; gap:10px; font-size:13.5px; }
+.ck li:last-child { border-bottom:none; }
+.cx { width:17px; height:17px; border:2px solid var(--border); border-radius:4px; flex-shrink:0; margin-top:2px; cursor:pointer; display:flex; align-items:center; justify-content:center; transition:all var(--t); }
+.cx:hover { border-color:var(--purple); }
+.cx.on { background:linear-gradient(135deg,var(--purple),var(--accent)); border-color:var(--purple); }
+.cx.on::after { content:'✓'; color:#fff; font-size:10px; font-weight:700; }
+
+/* Troubleshoot cards */
+.tc { background:var(--bg2); border:1px solid var(--border); border-radius:var(--r); padding:18px; margin-bottom:10px; cursor:pointer; transition:all var(--t); }
+.tc:hover { border-color:rgba(139,92,246,.15); }
+.tc .sy { font-weight:600; color:var(--white); font-size:14px; margin-bottom:3px; }
+.tc .cu { font-size:12.5px; color:var(--text3); }
+.tc .fx { margin-top:12px; padding-top:12px; border-top:1px solid var(--border); font-size:13px; display:none; }
+.tc.op .fx { display:block; }
+
+/* Search */
+.sr { position:relative; margin-bottom:20px; }
+.sr input { width:100%; background:var(--bg2); border:1px solid var(--border); border-radius:var(--r); padding:11px 14px 11px 40px; color:var(--text); font-size:13.5px; font-family:'DM Sans',sans-serif; outline:none; }
+.sr input:focus { border-color:var(--purple); box-shadow:0 0 0 3px rgba(139,92,246,.1); }
+.sr input::placeholder { color:var(--text3); }
+.sr .si { position:absolute; left:14px; top:50%; transform:translateY(-50%); color:var(--text3); font-size:14px; }
+
+/* Mobile */
+.mh { display:none; position:fixed; top:0; left:0; right:0; height:52px; background:var(--bg2); border-bottom:1px solid var(--border); padding:0 16px; align-items:center; justify-content:space-between; z-index:200; }
+.hm { background:none; border:none; color:var(--text); font-size:20px; cursor:pointer; }
+.ol { display:none; position:fixed; inset:0; background:rgba(0,0,0,.65); z-index:99; }
+@media(max-width:768px) { .mh{display:flex} .sb{transform:translateX(-100%);z-index:150} .sb.op{transform:translateX(0)} .ol.op{display:block} .mn{margin-left:0;padding:68px 18px 60px} .pls{grid-template-columns:1fr} .g2{grid-template-columns:1fr} }
+</style>
+</head>
+<body>
+<div class="mh"><button class="hm" onclick="tSB()">☰</button><div style="display:flex;align-items:center;gap:8px"><div class="logo-i" style="width:26px;height:26px;font-size:12px;border-radius:6px">DC</div><span style="font-weight:600;color:var(--white);font-size:14px">Onboarding Guide</span></div><div style="width:26px"></div></div>
+<div class="ol" id="ov" onclick="tSB()"></div>
+<div class="app">
+<nav class="sb" id="sb">
+  <div class="sb-brand"><div class="lr"><div class="logo-i">DC</div><div class="logo-t">DC <span>Hub</span></div></div><div class="sub">Onboarding Guide · v1.0</div></div>
+  <div class="sb-nav">
+    <div class="ng"><div class="ng-l">Getting Started</div><div class="ni a" data-s="overview"><span class="ni-i">📋</span> Overview</div><div class="ni" data-s="arch"><span class="ni-i">🏗️</span> Architecture</div><div class="ni" data-s="plans"><span class="ni-i">💎</span> Plan Tiers</div></div>
+    <div class="ng"><div class="ng-l">User Flows</div><div class="ni" data-s="free"><span class="ni-i">🆓</span> Free Sign-Up</div><div class="ni" data-s="pro"><span class="ni-i">⚡</span> Pro Upgrade</div><div class="ni" data-s="hook"><span class="ni-i">🔗</span> Webhook Config</div></div>
+    <div class="ng"><div class="ng-l">Troubleshooting</div><div class="ni" data-s="issues"><span class="ni-i">🐛</span> Known Issues</div><div class="ni" data-s="diag"><span class="ni-i">🔍</span> Quick Diagnosis</div><div class="ni" data-s="manual"><span class="ni-i">🛠️</span> Manual Creation</div></div>
+    <div class="ng"><div class="ng-l">Operations</div><div class="ni" data-s="acct"><span class="ni-i">👤</span> Account Mgmt</div><div class="ni" data-s="road"><span class="ni-i">🗺️</span> Roadmap</div></div>
+  </div>
+  <div class="sb-ft"><a href="https://dchub.cloud" target="_blank">dchub.cloud</a> · Built in Phoenix, AZ 🌵</div>
+</nav>
+<main class="mn">
+
+<!-- OVERVIEW -->
+<div class="sec a" id="overview"><h2>Onboarding <span class="gr">Overview</span></h2><p class="ss">Single source of truth for DC Hub user onboarding — from free sign-up through Pro activation and account management.</p>
+<div class="g2">
+  <div class="c"><div class="ch"><div class="ci p">🆓</div><div><div class="ct">Free Sign-Up</div><div class="cd">Self-service, no payment required</div></div></div><p style="font-size:13px">User registers → account created → free API key generated → welcome email sent via SendGrid.</p></div>
+  <div class="c"><div class="ch"><div class="ci cy">⚡</div><div><div class="ct">Pro Upgrade</div><div class="cd">Stripe Checkout + webhook</div></div></div><p style="font-size:13px">User pays via Stripe → webhook fires → DB updated to Pro → Pro API key generated → credentials emailed.</p></div>
+  <div class="c"><div class="ch"><div class="ci o">🔧</div><div><div class="ct">Manual Fallback</div><div class="cd">When automation fails</div></div></div><p style="font-size:13px">Check Stripe logs → verify DB records → create/update in Replit Shell → email credentials to customer.</p></div>
+  <div class="c"><div class="ch"><div class="ci g">✅</div><div><div class="ct">Verification</div><div class="cd">Post-activation checklist</div></div></div><p style="font-size:13px">User can log in → dashboard shows correct plan → API key works → old keys deactivated.</p></div>
+</div></div>
+
+<!-- ARCHITECTURE -->
+<div class="sec" id="arch"><h2>Platform <span class="gr">Architecture</span></h2><p class="ss">How the components connect to power onboarding and account management.</p>
+<div class="tw"><table><thead><tr><th>Component</th><th>Technology</th><th>Purpose</th></tr></thead><tbody>
+  <tr><td><strong>Frontend</strong></td><td>Cloudflare Pages</td><td>dchub.cloud — dashboard, sign-up, pricing</td></tr>
+  <tr><td><strong>Backend API</strong></td><td>Python / Flask on Replit</td><td>Auth routes, webhook handlers, API endpoints</td></tr>
+  <tr><td><strong>Database</strong></td><td>SQLite (dc_nexus.db)</td><td>users, api_keys, user_plans tables</td></tr>
+  <tr><td><strong>Payments</strong></td><td>Stripe Checkout</td><td>Hosted payment page + webhook callbacks</td></tr>
+  <tr><td><strong>Email</strong></td><td>SendGrid</td><td>Welcome emails, credential delivery</td></tr>
+</tbody></table></div>
+<div class="co e"><b>⚠️ SQLite Persistence Risk</b><p>SQLite is file-based and <strong>not guaranteed to persist</strong> across Replit deployments. #1 risk to customer data. PostgreSQL migration planned.</p></div>
+<h3>Key Database Tables</h3>
+<div class="g2">
+  <div class="c" style="padding:16px"><h4 style="margin-top:0">users</h4><p style="font-size:12px;color:var(--text2);margin:0"><code>id</code> · <code>email</code> · <code>password_hash</code> · <code>name</code> · <code>plan</code> · <code>subscription_status</code> · <code>stripe_customer_id</code></p></div>
+  <div class="c" style="padding:16px"><h4 style="margin-top:0">api_keys</h4><p style="font-size:12px;color:var(--text2);margin:0"><code>user_id</code> · <code>key_hash</code> · <code>key_prefix</code> · <code>plan</code> · <code>rate_limit_tier</code> · <code>is_active</code></p></div>
+</div></div>
+
+<!-- PLANS -->
+<div class="sec" id="plans"><h2>Plan <span class="gr">Tiers</span></h2><p class="ss">Feature comparison across Free, Pro, and Enterprise.</p>
+<div class="pls">
+  <div class="pl"><div class="pt">Free</div><div class="pp">$0<span>/mo</span></div><ul class="pf"><li>100 API calls/day</li><li>Basic dashboard</li><li>Read-only API key</li><li>Community support</li><li>Limited MCP access</li></ul></div>
+  <div class="pl h"><div class="pt">Pro</div><div class="pp">$99<span>/mo</span></div><ul class="pf"><li>10,000 API calls/day</li><li>Full dashboard</li><li>Read/Write API key</li><li>Email support</li><li>Full MCP access</li></ul></div>
+  <div class="pl"><div class="pt">Enterprise</div><div class="pp">Custom</div><ul class="pf"><li>Custom API limits</li><li>Full + Custom dashboard</li><li>Read/Write + Bulk</li><li>Dedicated support</li><li>Priority MCP</li></ul></div>
+</div></div>
+
+<!-- FREE SIGNUP -->
+<div class="sec" id="free"><h2>Free Account <span class="gr">Sign-Up</span></h2><p class="ss">No payment required. Users explore DC Hub with limited API access and basic dashboard.</p>
+<h3>User-Facing Flow</h3>
+<div class="fl">
+  <div class="fi" data-n="1"><strong>User visits dchub.cloud</strong><div class="dm">Clicks "Sign Up" or "Get Started."</div></div>
+  <div class="fi" data-n="2"><strong>Registration form</strong><div class="dm">Provides email, name, password.</div></div>
+  <div class="fi" data-n="3"><strong>Account created</strong><div class="dm">Inserted into <code>users</code> with <code>plan = "free"</code>.</div></div>
+  <div class="fi" data-n="4"><strong>API key generated</strong><div class="dm">Free-tier: read-only, 100 calls/day. Raw key shown once.</div></div>
+  <div class="fi" data-n="5"><strong>Welcome email</strong><div class="dm">SendGrid delivers confirmation + API key.</div></div>
+  <div class="fi" data-n="6"><strong>User logs in</strong><div class="dm">Immediate dashboard and API access.</div></div>
+</div>
+<div class="co w"><b>API Key Visibility</b><p>Raw API key is <strong>only available at creation time</strong>. Only the hash is stored. If welcome email fails, a new key must be generated.</p></div>
+<h3>Database Records</h3>
+<div class="tw"><table><thead><tr><th>Table</th><th>Field</th><th>Value</th></tr></thead><tbody>
+  <tr><td rowspan="4"><strong>users</strong></td><td>email</td><td><a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="c8bdbbadba88adb0a9a5b8a4ade6aba7a5">[email&#160;protected]</a></td></tr>
+  <tr><td>password_hash</td><td>pbkdf2_hmac salt:hash (PBKDF2-SHA256, 100k iterations)</td></tr>
+  <tr><td>plan</td><td><span class="bd p">free</span></td></tr>
+  <tr><td>stripe_customer_id</td><td><em>(empty)</em></td></tr>
+  <tr><td rowspan="3"><strong>api_keys</strong></td><td>plan</td><td><span class="bd p">free</span></td></tr>
+  <tr><td>rate_limit_tier</td><td>free (100/day)</td></tr>
+  <tr><td>is_active</td><td>1</td></tr>
+</tbody></table></div></div>
+
+<!-- PRO UPGRADE -->
+<div class="sec" id="pro"><h2>Pro Plan <span class="gr">Upgrade</span></h2><p class="ss">Stripe Checkout handles payment, then a webhook triggers activation. Most onboarding issues occur here.</p>
+<h3>Happy Path (Automated)</h3>
+<div class="fl">
+  <div class="fi" data-n="1"><strong>User clicks "Upgrade to Pro"</strong><div class="dm">Dashboard or pricing page.</div></div>
+  <div class="fi" data-n="2"><strong>Stripe Checkout</strong><div class="dm">Redirected to Stripe's hosted payment page.</div></div>
+  <div class="fi" data-n="3"><strong>Payment completes</strong><div class="dm">Stripe fires <code>checkout.session.completed</code> webhook.</div></div>
+  <div class="fi" data-n="4"><strong>Webhook activates</strong><div class="dm">Looks up user → updates to Pro → generates Pro API key.</div></div>
+  <div class="fi" data-n="5"><strong>Credentials emailed</strong><div class="dm">SendGrid sends API key (10k/day, r/w).</div></div>
+  <div class="fi" data-n="6"><strong>User is live</strong><div class="dm">Dashboard shows Pro. Full access enabled.</div></div>
+</div>
+<div class="co e"><b>🔴 Webhook URL Must Match Deployment</b><p>If Replit redeploys and Stripe webhook isn't updated, <strong>all activations silently fail</strong>. Verify after every deploy.</p></div>
+<h3>Webhook Handler Must:</h3>
+<ul class="ck">
+  <li><span class="cx" onclick="this.classList.toggle('on')"></span> Look up user by email from Stripe session</li>
+  <li><span class="cx" onclick="this.classList.toggle('on')"></span> Check for duplicate records</li>
+  <li><span class="cx" onclick="this.classList.toggle('on')"></span> Update plan → "pro", subscription_status → "active"</li>
+  <li><span class="cx" onclick="this.classList.toggle('on')"></span> Store stripe_customer_id</li>
+  <li><span class="cx" onclick="this.classList.toggle('on')"></span> Generate Pro API key (read/write, 10k/day)</li>
+  <li><span class="cx" onclick="this.classList.toggle('on')"></span> Send welcome email with raw API key</li>
+  <li><span class="cx" onclick="this.classList.toggle('on')"></span> Log success/failure</li>
+</ul></div>
+
+<!-- WEBHOOK -->
+<div class="sec" id="hook"><h2>Stripe <span class="gr">Webhook Config</span></h2><p class="ss">Required webhook events and handlers.</p>
+<div class="tw"><table><thead><tr><th>Event</th><th>Purpose</th><th>Action</th></tr></thead><tbody>
+  <tr><td><code>checkout.session.completed</code></td><td>Successful payment</td><td>Create/upgrade user, generate key, email</td></tr>
+  <tr><td><code>checkout.session.async_payment_failed</code></td><td>Delayed failure</td><td>Log, don't activate</td></tr>
+  <tr><td><code>invoice.paid</code></td><td>Recurring success</td><td>Confirm active, reset billing</td></tr>
+  <tr><td><code>invoice.payment_failed</code></td><td>Recurring failure</td><td>Notify user, may downgrade</td></tr>
+</tbody></table></div>
+<h3>Post-Deploy Verification</h3>
+<ul class="ck">
+  <li><span class="cx" onclick="this.classList.toggle('on')"></span> Stripe Dashboard → Developers → Webhooks</li>
+  <li><span class="cx" onclick="this.classList.toggle('on')"></span> Endpoint URL matches current Replit deployment</li>
+  <li><span class="cx" onclick="this.classList.toggle('on')"></span> All 4 events subscribed</li>
+  <li><span class="cx" onclick="this.classList.toggle('on')"></span> Recent Deliveries show 200 status</li>
+  <li><span class="cx" onclick="this.classList.toggle('on')"></span> No old/duplicate endpoints active</li>
+</ul></div>
+
+<!-- KNOWN ISSUES -->
+<div class="sec" id="issues"><h2>Known <span class="gr">Issues</span></h2><p class="ss">Documented onboarding problems with root cause and resolution.</p>
+<div class="ac"><div class="ah" onclick="togAcc(this)"><div class="al"><span class="bd r">HIGH</span><strong style="font-size:13.5px">Webhook Fails to Create User</strong></div><span class="av">▼</span></div><div class="ab"><div class="ai"><p><strong>Symptoms:</strong> Customer pays but no account. No email.</p><p><strong>Root Cause:</strong> Webhook URL stale or handler crashed.</p><p><strong>Fix:</strong> Check Stripe webhook logs → verify URL → create manually → email credentials.</p></div></div></div>
+<div class="ac"><div class="ah" onclick="togAcc(this)"><div class="al"><span class="bd r">HIGH</span><strong style="font-size:13.5px">Duplicate User Records</strong></div><span class="av">▼</span></div><div class="ab"><div class="ai"><p><strong>Symptoms:</strong> Logs in but sees "free" despite paying.</p><p><strong>Root Cause:</strong> Free sign-up record #1 + Stripe webhook record #2.</p><p><strong>Fix:</strong> Query all records by email → update login record to Pro → transfer keys → delete duplicate.</p></div></div></div>
+<div class="ac"><div class="ah" onclick="togAcc(this)"><div class="al"><span class="bd g">FIXED</span><strong style="font-size:13.5px">Password Hash Mismatch</strong></div><span class="av">▼</span></div><div class="ab"><div class="ai"><p><strong>Symptoms:</strong> Can't log in. "Invalid credentials."</p><p><strong>Root Cause:</strong> Webhook used a placeholder string (<code>'stripe_checkout'</code>) instead of calling <code>hash_password()</code>. Manual resets used plain SHA-256 instead of <code>pbkdf2_hmac</code> with salt.</p><p><strong>Fix (applied):</strong> Webhook now uses <code>hash_password()</code> with <code>pbkdf2_hmac</code> + salt. Temp password is included in the welcome email.</p><div class="co s" style="margin-top:10px"><b>✅ Hashing Standardized</b><p>All auth uses <code>pbkdf2_hmac('sha256', password, salt, 100000)</code> → stored as <code>salt:hash</code>. Manual scripts updated to match.</p></div></div></div></div>
+<div class="ac"><div class="ah" onclick="togAcc(this)"><div class="al"><span class="bd o">MEDIUM</span><strong style="font-size:13.5px">API Key Never Delivered</strong></div><span class="av">▼</span></div><div class="ab"><div class="ai"><p><strong>Symptoms:</strong> Account shows Pro but no key received.</p><p><strong>Root Cause:</strong> SendGrid not configured or email failed.</p><p><strong>Fix:</strong> Generate new key → deactivate old → email to customer.</p></div></div></div>
+<div class="ac"><div class="ah" onclick="togAcc(this)"><div class="al"><span class="bd r">CRITICAL</span><strong style="font-size:13.5px">SQLite Database Reset</strong></div><span class="av">▼</span></div><div class="ab"><div class="ai"><p><strong>Symptoms:</strong> Multiple customers lose access simultaneously.</p><p><strong>Root Cause:</strong> Replit deployment reset SQLite file.</p><div class="co e" style="margin-top:10px"><b>Permanent Fix Required</b><p>Migrate to PostgreSQL. Single biggest risk to customer accounts.</p></div></div></div></div>
+</div>
+
+<!-- QUICK DIAGNOSIS -->
+<div class="sec" id="diag"><h2>Quick <span class="gr">Diagnosis</span></h2><p class="ss">Customer reports an issue? Find the symptom below.</p>
+<div class="sr"><span class="si">🔍</span><input type="text" id="ts" placeholder="Search symptoms... (e.g., 'can't log in', 'shows free')" oninput="filterT()"></div>
+<div id="tl">
+  <div class="tc" onclick="this.classList.toggle('op')" data-q="paid no account never received"><div class="sy">"I paid but I don't have an account"</div><div class="cu">Stripe webhook failed or endpoint URL stale.</div><div class="fx"><strong>Steps:</strong><br>1. Check Stripe → Webhooks → Recent Deliveries<br>2. Update URL if stale<br>3. Create account manually<br>4. Email credentials</div></div>
+  <div class="tc" onclick="this.classList.toggle('op')" data-q="plan shows free still not pro"><div class="sy">"My plan still shows Free"</div><div class="cu">Duplicate user records — free + Stripe-created.</div><div class="fx"><strong>Steps:</strong><br>1. <code>SELECT * FROM users WHERE email LIKE '%...'</code><br>2. Find login record (valid password_hash)<br>3. Update to plan='pro', add stripe_customer_id<br>4. Transfer keys, delete duplicate</div></div>
+  <div class="tc" onclick="this.classList.toggle('op')" data-q="can't log in invalid credentials password"><div class="sy">"I can't log in"</div><div class="cu">Password hash mismatch or placeholder password.</div><div class="fx"><strong>Steps:</strong><br>1. Check if last_login is NULL<br>2. Generate: <code>secrets.token_urlsafe(12)</code><br>3. Hash with same algorithm as login route<br>4. UPDATE password_hash<br>5. Send new temp password</div></div>
+  <div class="tc" onclick="this.classList.toggle('op')" data-q="api key never got didn't receive"><div class="sy">"I never got my API key"</div><div class="cu">SendGrid not configured or email failed.</div><div class="fx"><strong>Steps:</strong><br>1. Check api_keys for existing keys<br>2. Deactivate old keys<br>3. Generate new in Replit Shell<br>4. Email raw key</div></div>
+  <div class="tc" onclick="this.classList.toggle('op')" data-q="manage subscription cancel billing"><div class="sy">"How do I manage my subscription?"</div><div class="cu">Self-service not built yet.</div><div class="fx">Direct to Stripe Customer Portal if integrated, otherwise handle manually via Stripe Dashboard.</div></div>
+  <div class="tc" onclick="this.classList.toggle('op')" data-q="api key stopped working broken rate"><div class="sy">"My API key stopped working"</div><div class="cu">DB reset, key deactivated, or rate limit.</div><div class="fx"><strong>Steps:</strong><br>1. <code>SELECT * FROM api_keys WHERE user_id=?</code><br>2. Verify is_active=1, plan matches<br>3. Check calls_today vs limit<br>4. Regenerate if missing</div></div>
+</div></div>
+
+<!-- MANUAL CREATION -->
+<div class="sec" id="manual"><h2>Manual <span class="gr">Account Creation</span></h2><p class="ss">Emergency process when webhook fails. Run in Replit Shell.</p>
+<h3>Step 1: Verify Customer Doesn't Exist</h3>
+<div class="cb"><button class="cp" onclick="cpCode(this)">Copy</button><pre>python3 -c "
+import sqlite3
+conn = sqlite3.connect('dc_nexus.db')
+c = conn.cursor()
+c.execute('SELECT * FROM users WHERE email LIKE ?', ('%CUSTOMER_EMAIL%',))
+print([d[0] for d in c.description])
+for r in c.fetchall(): print(r)
+conn.close()
+"</pre></div>
+<h3>Step 2: Create User + API Key</h3>
+<div class="co i"><b>⚠️ Password Hashing</b><p>DC Hub uses <code>pbkdf2_hmac</code> with a random salt (format: <code>salt:hash</code>). Do NOT use plain SHA-256 — logins will fail.</p></div>
+<div class="cb"><button class="cp" onclick="cpCode(this)">Copy</button><pre>python3 -c "
+import sqlite3, hashlib, secrets, datetime
+conn = sqlite3.connect('dc_nexus.db')
+c = conn.cursor()
+now = datetime.datetime.utcnow().isoformat()
+
+# Hash password with pbkdf2_hmac (MUST match app's hash_password)
+pwd = secrets.token_urlsafe(12)
+salt = secrets.token_hex(16)
+h = hashlib.pbkdf2_hmac('sha256', pwd.encode(), salt.encode(), 100000)
+password_hash = f'{salt}:{h.hex()}'
+
+c.execute('''INSERT INTO users (email, password_hash, name, plan, role,
+  api_calls_today, api_calls_total, created_at,
+  stripe_customer_id, subscription_status)
+  VALUES (?,?,?,'pro','pro',0,0,?,'','active')''',
+  ('EMAIL', password_hash, 'NAME', now))
+
+uid = c.lastrowid
+key = 'dchub_' + secrets.token_urlsafe(32)
+kh = hashlib.sha256(key.encode()).hexdigest()
+c.execute('''INSERT INTO api_keys (user_id, key_hash, key_prefix,
+  name, permissions, rate_limit_tier, is_active, created_at,
+  usage_count, plan, calls_today, calls_total)
+  VALUES (?,?,?,?,'[\"read\",\"write\"]','pro',1,?,0,'pro',0,0)''',
+  (uid, kh, key[:12], 'NAME Pro Key', now))
+
+conn.commit(); conn.close()
+print('User ID:', uid)
+print('API Key:', key)
+print('Temp Password:', pwd)
+"</pre></div>
+<div class="co w"><b>Replace Placeholders</b><p>Swap <code>EMAIL</code> and <code>NAME</code> with actual values. <code>USER_ID</code> is now auto-captured via <code>lastrowid</code>.</p></div>
+<h3>Step 3: Reset Password (Existing User)</h3>
+<div class="cb"><button class="cp" onclick="cpCode(this)">Copy</button><pre>python3 -c "
+import sqlite3, hashlib, secrets
+conn = sqlite3.connect('dc_nexus.db')
+c = conn.cursor()
+
+# Hash with pbkdf2_hmac + salt (MUST match app)
+pwd = secrets.token_urlsafe(12)
+salt = secrets.token_hex(16)
+h = hashlib.pbkdf2_hmac('sha256', pwd.encode(), salt.encode(), 100000)
+password_hash = f'{salt}:{h.hex()}'
+
+c.execute('''UPDATE users SET password_hash=?, plan='pro',
+  role='pro', subscription_status='active'
+  WHERE email=?''', (password_hash, 'EMAIL'))
+print('Updated:', c.rowcount)
+conn.commit(); conn.close()
+print('Temp password:', pwd)
+"</pre></div>
+<div class="co s"><b>✅ Post-Creation Checklist</b><p>Verify: (1) User can log in (2) Dashboard shows Pro (3) API key works (4) Old keys deactivated.</p></div></div>
+
+<!-- ACCOUNT MGMT -->
+<div class="sec" id="acct"><h2>Account <span class="gr">Management</span></h2><p class="ss">What customers can do today vs. what's needed.</p>
+<h3>Currently Available</h3>
+<div class="g2">
+  <div class="c" style="padding:14px;font-size:13px"><span style="color:var(--green);margin-right:6px">✓</span> Log in at dchub.cloud</div>
+  <div class="c" style="padding:14px;font-size:13px"><span style="color:var(--green);margin-right:6px">✓</span> View plan on dashboard</div>
+  <div class="c" style="padding:14px;font-size:13px"><span style="color:var(--green);margin-right:6px">✓</span> API docs at /api-docs</div>
+  <div class="c" style="padding:14px;font-size:13px"><span style="color:var(--green);margin-right:6px">✓</span> API key for requests</div>
+</div>
+<h3>Self-Service Gaps</h3>
+<div class="tw"><table><thead><tr><th>Feature</th><th>Priority</th><th>Status</th></tr></thead><tbody>
+  <tr><td>Password reset</td><td><span class="bd r">HIGH</span></td><td>Not built</td></tr>
+  <tr><td>Plan upgrade</td><td><span class="bd r">HIGH</span></td><td>Partial</td></tr>
+  <tr><td>Subscription mgmt</td><td><span class="bd r">HIGH</span></td><td>Not built</td></tr>
+  <tr><td>Key regeneration</td><td><span class="bd o">MED</span></td><td>Not built</td></tr>
+  <tr><td>Usage dashboard</td><td><span class="bd o">MED</span></td><td>Not built</td></tr>
+  <tr><td>Email change</td><td><span class="bd p">LOW</span></td><td>Not built</td></tr>
+</tbody></table></div>
+<h3>Stripe Customer Portal</h3>
+<p>Add a "Manage Subscription" button redirecting via <code>stripe_customer_id</code>. Solves payments, invoices, and cancellations without custom code.</p></div>
+
+<!-- ROADMAP -->
+<div class="sec" id="road"><h2>Improvement <span class="gr">Roadmap</span></h2><p class="ss">Prioritized improvements to eliminate manual work.</p>
+<h3>🔴 Immediate (This Week)</h3>
+<ul class="ck"><li><span class="cx on"></span> Verify webhook URL after every deploy</li><li><span class="cx on"></span> Ensure SendGrid fires on webhook account creation</li><li><span class="cx on"></span> Standardize password hashing (→ pbkdf2_hmac)</li><li><span class="cx on"></span> Add webhook handler logging</li><li><span class="cx on"></span> Include temp password in welcome email</li><li><span class="cx on"></span> Sync role field with plan on all upgrade/downgrade paths</li></ul>
+<h3>🟠 Short-Term (This Month)</h3>
+<ul class="ck"><li><span class="cx" onclick="this.classList.toggle('on')"></span> Build password reset flow</li><li><span class="cx" onclick="this.classList.toggle('on')"></span> Integrate Stripe Customer Portal</li><li><span class="cx" onclick="this.classList.toggle('on')"></span> Duplicate-user detection in webhook</li><li><span class="cx" onclick="this.classList.toggle('on')"></span> End-to-end checkout test</li></ul>
+<h3>🟡 Medium-Term (Next Quarter)</h3>
+<ul class="ck"><li><span class="cx" onclick="this.classList.toggle('on')"></span> <strong>Migrate SQLite → PostgreSQL</strong></li><li><span class="cx" onclick="this.classList.toggle('on')"></span> Self-service key regeneration</li><li><span class="cx" onclick="this.classList.toggle('on')"></span> Usage dashboard</li><li><span class="cx" onclick="this.classList.toggle('on')"></span> JWT session management</li><li><span class="cx" onclick="this.classList.toggle('on')"></span> Admin panel for accounts</li></ul></div>
+
+</main></div>
+<script data-cfasync="false" src="/cdn-cgi/scripts/5c5dd728/cloudflare-static/email-decode.min.js"></script><script>
+document.querySelectorAll('.ni').forEach(n=>{n.addEventListener('click',()=>{document.querySelectorAll('.ni').forEach(i=>i.classList.remove('a'));document.querySelectorAll('.sec').forEach(s=>s.classList.remove('a'));n.classList.add('a');document.getElementById(n.dataset.s).classList.add('a');document.getElementById('sb').classList.remove('op');document.getElementById('ov').classList.remove('op');window.scrollTo({top:0,behavior:'smooth'})})});
+function tSB(){document.getElementById('sb').classList.toggle('op');document.getElementById('ov').classList.toggle('op')}
+function togAcc(h){const a=h.parentElement,b=a.querySelector('.ab'),o=a.classList.contains('op');document.querySelectorAll('.ac').forEach(x=>{x.classList.remove('op');x.querySelector('.ab').style.maxHeight='0'});if(!o){a.classList.add('op');b.style.maxHeight=b.scrollHeight+'px'}}
+function cpCode(btn){const t=btn.parentElement.querySelector('pre').textContent;navigator.clipboard.writeText(t).then(()=>{btn.textContent='Copied!';btn.classList.add('ok');setTimeout(()=>{btn.textContent='Copy';btn.classList.remove('ok')},2000)})}
+function filt

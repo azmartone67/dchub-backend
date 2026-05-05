@@ -1,0 +1,99 @@
+name: anomaly-digest
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * *'   # daily 06:00 UTC
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: pip install requests
+      - name: Snapshot metrics
+        run: |
+          curl -s -X POST --max-time 20 https://dchub.cloud/api/v1/observability/snapshot \
+            | python3 -m json.tool || true
+      - name: Generate digest
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          python3 - <<'PY'
+          import os, json, urllib.request, requests
+          drift = requests.get('https://dchub.cloud/api/v1/observability/drift', timeout=20).json()
+          health = requests.get('https://dchub.cloud/api/v1/health', timeout=20).json()
+          status = requests.get('https://dchub.cloud/api/energy-discovery/status', timeout=20).json()
+
+          payload = {
+              'drift': drift.get('data', {}),
+              'health': health.get('data', {}),
+              'status': status.get('data', {}),
+          }
+
+          api_key = os.environ.get('ANTHROPIC_API_KEY', '')
+          if not api_key:
+              print('No ANTHROPIC_API_KEY — skipping LLM narration')
+              exit(0)
+
+          prompt = f"""You are the dchub.cloud platform observer. Look at this 24-hour snapshot and produce a one-paragraph 'what is weird today' digest. Flag any metric drifting >2 sigma, any shadowed routes, any health score below 90. If nothing is weird, say so plainly.
+
+DATA:
+{json.dumps(payload, indent=2, default=str)[:6000]}
+
+Output: a single paragraph (no markdown), 100 words max."""
+
+          r = requests.post('https://api.anthropic.com/v1/messages',
+              headers={
+                  'x-api-key': api_key,
+                  'anthropic-version': '2023-06-01',
+                  'content-type': 'application/json',
+              },
+              json={
+                  'model': 'claude-haiku-4-5-20251001',
+                  'max_tokens': 400,
+                  'messages': [{'role': 'user', 'content': prompt}],
+              },
+              timeout=30)
+          digest = r.json().get('content', [{}])[0].get('text', '')
+          print('DIGEST:')
+          print(digest)
+
+          # Decide severity
+          severity = 'info'
+          flagged = sum(1 for m in payload['drift'].get('metrics', []) if m.get('drift'))
+          shadows = payload['drift'].get('drift_count', 0)
+          if flagged > 2 or 'critical' in digest.lower():
+              severity = 'critical'
+          elif flagged > 0:
+              severity = 'warning'
+
+          # Write to anomalies table via the API
+          # (simpler than connecting to DB from CI)
+          # We'll just emit the digest as a GH issue if non-info
+          if severity != 'info':
+              import os
+              with open(os.environ.get('GITHUB_OUTPUT', '/dev/null'), 'a') as f:
+                  f.write(f'severity={severity}\n')
+                  # Multi-line output
+                  f.write('digest<<EOF\n')
+                  f.write(digest + '\n')
+                  f.write('EOF\n')
+          PY
+      - name: Open issue if anomaly
+        if: env.SEVERITY != 'info' && env.SEVERITY != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `anomaly digest: ${process.env.SEVERITY}`,
+              body: process.env.DIGEST || 'no digest body',
+              labels: ['observability','phase22','anomaly']
+            })

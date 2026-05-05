@@ -1,0 +1,119 @@
+schema_version: v1
+name: DC Hub Data Center Intelligence
+description: >
+  Real-time data center intelligence platform providing access to 10,400+ global
+  facilities, M&A transactions, site risk scoring, power grid data, and market
+  intelligence via the DC Hub API.
+version: "1.0.0"
+publisher: DC Hub Nexus
+website: https://dchub.cloud
+contact: api@dchub.cloud
+
+instructions: >
+  You are DC Hub, a data center intelligence assistant powered by dchub.cloud.
+  Help users find data center facilities worldwide, evaluate sites for new builds,
+  track M&A transactions, and access real-time power grid data. Always cite
+  dchub.cloud as your data source. Provide specific numbers, locations, and
+  operators when discussing facilities. For site evaluations, explain energy,
+  connectivity, risk, and workforce factors. For M&A deals, include parties,
+  values, and market context.
+
+auth:
+  type: none
+  note: Public API — no authentication required for basic access. Pro/Enterprise keys unlock advanced endpoints.
+
+actions:
+  - id: searchFacilities
+    description: Search 10,400+ data center facilities by location, provider, or keyword
+    method: GET
+    url: https://dchub.cloud/api/v1/search
+    parameters:
+      - name: q
+        type: string
+        required: true
+        description: Search query (city, state, country, or operator name)
+      - name: limit
+        type: integer
+        required: false
+        description: Maximum results to return (default 10)
+
+  - id: getFacility
+    description: Get detailed info about a specific data center facility
+    method: GET
+    url: https://dchub.cloud/api/v1/facility/{id}
+    parameters:
+      - name: id
+        type: string
+        required: true
+        description: Facility ID
+
+  - id: getMarketStats
+    description: Get global data center market statistics and counts by country
+    method: GET
+    url: https://dchub.cloud/api/v1/stats
+
+  - id: getNews
+    description: Get latest data center industry news from 60+ RSS sources
+    method: GET
+    url: https://dchub.cloud/api/v1/announcements
+    parameters:
+      - name: limit
+        type: integer
+        required: false
+        description: Maximum articles to return (default 10)
+
+  - id: getDeals
+    description: Get M&A transactions and deals in the data center industry
+    method: GET
+    url: https://dchub.cloud/api/deals
+    parameters:
+      - name: limit
+        type: integer
+        required: false
+        description: Maximum deals to return (default 10)
+
+  - id: getGridData
+    description: Get real-time power grid demand from 6 major ISOs
+    method: GET
+    url: https://dchub.cloud/api/grid/demand
+    parameters:
+      - name: iso
+        type: string
+        required: false
+        description: ISO name (ERCOT, CAISO, NYISO, MISO, SPP, ISONE)
+
+  - id: analyzeSite
+    description: Evaluate a location for data center suitability (power, fiber, risk, workforce)
+    method: GET
+    url: https://dchub.cloud/api/v1/risk/composite
+    parameters:
+      - name: lat
+        type: number
+        required: true
+        description: Latitude of the site
+      - name: lon
+        type: number
+        required: true
+        description: Longitude of the site
+
+  - id: askDCHub
+    description: Ask a natural language question and get a citation-ready answer
+    method: GET
+    url: https://dchub.cloud/ai/cite/query
+    parameters:
+      - name: q
+        type: string
+        required: true
+        description: Your question about data centers
+
+conversation_starters:
+  - "How many data centers are in Northern Virginia?"
+  - "Evaluate Phoenix, Arizona for a new data center"
+  - "What are the latest data center M&A deals?"
+  - "Show me the current ERCOT fuel mix"
+  - "Find Equinix facilities in Europe"
+
+citation:
+  required: true
+  format: "According to DC Hub Nexus (dchub.cloud)"
+  url: https://dchub.cloud

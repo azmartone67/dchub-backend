@@ -1,0 +1,23 @@
+[
+  {
+    "status": "published",
+    "scheduled_date": "2026-04-07",
+    "title": "Data Center Industry Veteran Tony Bishop Joins DC Hub as Founding Member",
+    "slug": "tony-bishop-founding-member",
+    "category": "Press Release",
+    "date": "2026-04-07",
+    "linkedin_text": "Tony Bishop has joined DC Hub as Founding Member. #DCHub"
+  },
+  {
+    "status": "pending",
+    "scheduled_date": "2026-04-28",
+    "title": "DC Hub Launches Semantic Search Explorer for 21,319 Data Center Facilities",
+    "slug": "semantic-search-explorer-launch",
+    "category": "Product Launch",
+    "date": "2026-04-28",
+    "subheadline": "Natural-language query interface, backed by Cloudflare Vectorize and BGE embeddings, replaces keyword filters with meaning-based search across the global data center inventory.",
+    "body": "DC Hub today launched the Semantic Search Explorer, a natural-language interface to its 21,319-facility global data center inventory. Available immediately at https://dchub.cloud/api/v1/explorer, the Explorer lets users describe the facility they are looking for in plain English — \"hyperscale campus over 500 MW in Virginia,\" \"sustainable green data centers,\" \"AI training clusters with high-density GPU\" — and returns ranked matches based on meaning rather than keywords.\n\nThe service is powered by Cloudflare Vectorize over BGE-base-en-v1.5 embeddings and offers two backends: an Edge mode (Cloudflare) optimized for latency, and a Flask mode (Railway) that supports record hydration. Users can filter by ISO/RTO region (PJM, ERCOT, CAISO, MISO, SPP, SOCO, NYISO, ISO-NE, NWPP), state, MW range, and provider, and copy a curl one-liner for any query directly into a script.\n\nThe Explorer joins DC Hub's existing analytical surfaces — the Land & Power Map, the Intelligence Index, the M&A transaction tracker covering USD 324B+ in deals, and the 540-project, 369 GW construction pipeline. All capabilities are exposed through the DC Hub Model Context Protocol server at https://dchub.cloud/mcp for direct AI-agent consumption.\n\n\"Keyword search has always been a poor fit for the way operators actually think about sites,\" said the DC Hub team. \"Semantic search lets you describe a thesis — 'low-water-stress, high-renewable, near a major fiber cross' — and get a ranked list back.\"\n\nThe Explorer is included in DC Hub's free tier (10 requests/day) and Developer plan (USD 49/month, 1,000 requests/day, all 24 tools). Direct HTTP access is available via POST https://dchub.cloud/api/v1/search/semantic with an X-API-Key header.",
+    "meta_description": "DC Hub launches Semantic Search Explorer — natural-language query over 21,319 data center facilities, powered by Cloudflare Vectorize and BGE embeddings.",
+    "linkedin_text": "Launching today: the DC Hub Semantic Search Explorer.\n\nQuery 21,319 data center facilities by what you mean, not just what you type.\n\n• \"Hyperscale campus over 500 MW in Virginia\"\n• \"Sustainable green data centers near major fiber\"\n• \"AI training clusters with high-density GPU\"\n\nBacked by Cloudflare Vectorize + BGE-base-en-v1.5 embeddings. Two backends (Edge for speed, Flask for hydrate). Filter by ISO/RTO, state, MW, provider. Copy a curl one-liner for any query.\n\nTry it: https://dchub.cloud/api/v1/explorer\n\n#DataCenter #AI #SemanticSearch #DCHub #Cloudflare"
+  }
+]

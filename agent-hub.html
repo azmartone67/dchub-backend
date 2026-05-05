@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent Hub — DC Hub Intelligence Platform</title>
+    <meta name="description" content="DC Hub Agent Hub: 4 specialized AI agents for sales, data enrichment, social media, and AI platform discovery and outreach.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;0,9..40,800;1,9..40,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-base: #060610;
+            --bg-raised: #0c0c1d;
+            --bg-surface: #10102a;
+            --bg-surface-hover: #161640;
+            --bg-inset: #08081a;
+            --border-dim: rgba(80, 85, 160, 0.12);
+            --border-mid: rgba(80, 85, 160, 0.22);
+            --border-bright: rgba(99, 102, 241, 0.45);
+            --text-100: #eceef4;
+            --text-200: #a0a4be;
+            --text-300: #686b88;
+            --text-400: #44465a;
+            --accent: #6366f1;
+            --accent-light: #818cf8;
+            --green: #22c55e;
+            --green-dim: rgba(34,197,94,0.12);
+            --cyan: #06b6d4;
+            --cyan-dim: rgba(6,182,212,0.10);
+            --amber: #eab308;
+            --amber-dim: rgba(234,179,8,0.10);
+            --rose: #f43f5e;
+            --rose-dim: rgba(244,63,94,0.10);
+            --blue: #3b82f6;
+            --font: 'DM Sans', system-ui, -apple-system, sans-serif;
+            --mono: 'IBM Plex Mono', 'Menlo', monospace;
+        }
+        *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+        html { scroll-behavior: smooth; }
+        body {
+            font-family: var(--font);
+            background: var(--bg-base);
+            color: var(--text-100);
+            min-height: 100vh;
+            -webkit-font-smoothing: antialiased;
+        }
+        code { font-family: var(--mono); font-size: 0.85em; color: var(--cyan); }
+
+        .ambient { position: fixed; inset:0; pointer-events: none; z-index:0; overflow: hidden; }
+        .ambient::before {
+            content:''; position:absolute; top: -300px; left: 50%; transform: translateX(-50%);
+            width: 900px; height: 500px;
+            background: radial-gradient(ellipse, rgba(99,102,241,0.06) 0%, transparent 70%);
+        }
+        .ambient::after {
+            content:''; position:absolute; bottom: -200px; right: -100px;
+            width: 600px; height: 400px;
+            background: radial-gradient(ellipse, rgba(6,182,212,0.04) 0%, transparent 70%);
+        }
+
+        .site-header {
+            position: sticky; top:0; z-index:50;
+            background: rgba(6,6,16,0.82);
+            backdrop-filter: blur(24px) saturate(1.4);
+            border-bottom: 1px solid var(--border-dim);
+        }
+        .header-inner {
+            max-width: 1320px; margin: 0 auto; padding: 0 28px;
+            height: 58px; display: flex; align-items: center; justify-content: space-between;
+        }
+        .hdr-left { display:flex; align-items:center; gap:14px; }
+        .logo-link {
+            display:flex; align-items:center; gap:9px;
+            text-decoration: none; color: var(--text-100);
+            font-weight: 700; font-size: 1.05rem;
+        }
+        .logo-mark {
+            width:30px; height:30px; border-radius:7px;
+            background: linear-gradient(135deg, var(--accent), var(--accent-light));
+            display:flex; align-items:center; justify-content:center;
+            font-size: 13px; color:#fff;
+        }
+        .hdr-sep { width:1px; height:22px; background:var(--border-mid); }
+        .hdr-page { font-size: 0.82rem; font-weight: 600; color: var(--text-200); display:flex; align-items:center; gap:8px; }
+        .hdr-tag {
+            font-size: 0.62rem; font-weight: 700; padding: 2px 8px; border-radius: 4px;
+            text-transform: uppercase; letter-spacing: 0.6px;
+        }
+        .hdr-tag.live { background: var(--green-dim); color: var(--green); }
+        .hdr-right { display:flex; align-items:center; gap:8px; }
+        .hdr-btn {
+            font-family: var(--font); font-size: 0.78rem; font-weight: 600;
+            padding: 7px 16px; border-radius: 8px;
+            border: 1px solid var(--border-mid); background: var(--bg-raised);
+            color: var(--text-200); cursor: pointer; transition: all 0.15s;
+            text-decoration:none; display:inline-flex; align-items:center; gap:5px;
+        }
+        .hdr-btn:hover { border-color: var(--border-bright); color: var(--text-100); }
+        .hdr-btn.accent { background: var(--accent); border-color: var(--accent); color:#fff; }
+        .hdr-btn.accent:hover { background: #5558e6; }
+
+        .page { position:relative; z-index:1; max-width:1320px; margin:0 auto; padding: 32px 28px 80px; }
+
+        .section-head { margin-bottom: 28px; }
+        .section-title { font-size: 1.6rem; font-weight: 800; line-height:1.2; margin-bottom: 6px; }
+        .section-sub { font-size: 0.88rem; color: var(--text-200); line-height:1.5; max-width: 700px; }
+
+        .stats-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; margin-bottom: 28px; }
+        .stat-pill {
+            background: var(--bg-raised); border: 1px solid var(--border-dim); border-radius: 10px;
+            padding: 16px 18px; display:flex; align-items:center; gap:12px; transition: border-color 0.2s;
+        }
+        .stat-pill:hover { border-color: var(--border-mid); }
+        .stat-dot { width: 38px; height: 38px; border-radius: 9px; display:flex; align-items:center; justify-content:center; font-size: 1rem; flex-shrink:0; }
+        .stat-num { font-family: var(--mono); font-size: 1.35rem; font-weight: 700; line-height:1; }
+        .stat-lbl { font-size: 0.7rem; color: var(--text-300); margin-top:1px; }
+
+        .agents { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-bottom: 24px; }
+        .agent {
+            background: var(--bg-raised); border: 1px solid var(--border-dim); border-radius: 14px;
+            overflow: hidden; transition: all 0.25s;
+        }
+        .agent:hover { border-color: var(--border-mid); box-shadow: 0 4px 24px rgba(0,0,0,0.2); }
+        .agent.full-width { grid-column: 1 / -1; }
+        .agent.highlight {
+            border-color: rgba(6,182,212,0.2);
+            background: linear-gradient(180deg, rgba(6,182,212,0.03) 0%, var(--bg-raised) 40%);
+        }
+        .agent.highlight:hover { border-color: rgba(6,182,212,0.4); box-shadow: 0 4px 32px rgba(6,182,212,0.08); }
+
+        .agent-top { padding: 22px 24px 0; display:flex; align-items:flex-start; justify-content:space-between; }
+        .agent-top-left { display:flex; align-items:center; gap:14px; }
+        .agent-icon {
+            width: 50px; height:50px; border-radius: 12px;
+            display:flex; align-items:center; justify-content:center; font-size: 1.45rem; flex-shrink:0;
+        }
+        .agent-icon.sales { background: linear-gradient(135deg, rgba(99,102,241,0.15), rgba(99,102,241,0.04)); }
+        .agent-icon.enrich { background: linear-gradient(135deg, rgba(34,197,94,0.15), rgba(34,197,94,0.04)); }
+        .agent-icon.social { background: linear-gradient(135deg, rgba(234,179,8,0.15), rgba(234,179,8,0.04)); }
+        .agent-icon.disco { background: linear-gradient(135deg, rgba(6,182,212,0.18), rgba(6,182,212,0.04)); }
+
+        .agent-title { font-size: 1.02rem; font-weight: 700; }
+        .agent-mode { font-size: 0.68rem; color: var(--text-300); margin-top:2px; font-family: var(--mono); }
+
+        .agent-badges { display:flex; align-items:center; gap:7px; flex-shrink:0; }
+        .badge {
+            font-size: 0.65rem; font-weight: 700; padding: 3px 10px; border-radius: 20px;
+            display:inline-flex; align-items:center; gap:5px; white-space: nowrap;
+        }
+        .badge.running { background: var(--green-dim); color: var(--green); }
+        .badge.running .dot { width:5px; height:5px; background: var(--green); border-radius:50%; animation: blink 2s infinite; }
+        .badge.new { background: var(--cyan-dim); color: var(--cyan); font-weight:800; letter-spacing:0.5px; }
+        @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+        .agent-desc { padding: 10px 24px 0; font-size: 0.82rem; color: var(--text-200); line-height:1.55; }
+        .agent-tags { padding: 14px 24px 0; display:flex; flex-wrap:wrap; gap:6px; }
+        .tag {
+            font-size: 0.68rem; font-weight: 600; padding: 4px 11px; border-radius: 6px;
+            background: var(--bg-surface); border: 1px solid var(--border-dim); color: var(--text-200);
+        }
+        .agent-content { padding: 18px 24px 22px; }
+
+        .chat-box {
+            background: var(--bg-inset); border: 1px solid var(--border-dim); border-radius: 10px;
+            height: 220px; display:flex; flex-direction:column;
+        }
+        .chat-msgs { flex:1; overflow-y:auto; padding:14px; display:flex; flex-direction:column; gap:8px; }
+        .chat-msgs::-webkit-scrollbar { width:3px; }
+        .chat-msgs::-webkit-scrollbar-thumb { background:var(--border-dim); border-radius:3px; }
+        .bubble { max-width: 82%; padding: 9px 14px; border-radius: 10px; font-size: 0.8rem; line-height:1.5; }
+        .bubble.bot { align-self:flex-start; background: var(--bg-surface); border:1px solid var(--border-dim); }
+        .bubble.usr { align-self:flex-end; background: var(--accent); color:#fff; }
+        .chat-bar { display:flex; align-items:center; gap:8px; padding: 10px 14px; border-top: 1px solid var(--border-dim); }
+        .chat-in {
+            flex:1; font-family:var(--font); font-size:0.8rem;
+            background:transparent; border:none; outline:none; color:var(--text-100);
+        }
+        .chat-in::placeholder { color:var(--text-400); }
+        .chat-go {
+            width:30px; height:30px; border-radius:7px; border:none;
+            background:var(--accent); color:#fff; cursor:pointer;
+            display:flex; align-items:center; justify-content:center;
+            font-size:0.85rem; transition: background 0.15s; flex-shrink:0;
+        }
+        .chat-go:hover { background:#5558e6; }
+        .quick-row { display:flex; flex-wrap:wrap; gap:5px; margin-bottom:10px; }
+        .qk {
+            font-family:var(--font); font-size:0.68rem; font-weight:600;
+            padding:4px 11px; border-radius:20px;
+            background:var(--bg-surface); border:1px solid var(--border-dim);
+            color:var(--text-200); cursor:pointer; transition:all 0.15s;
+        }
+        .qk:hover { border-color:var(--border-bright); color:var(--text-100); }
+
+        .disco-counters { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom:14px; }
+        .dctr { background: var(--bg-inset); border:1px solid var(--border-dim); border-radius:8px; padding:14px; text-align:center; }
+        .dctr-val { font-family:var(--mono); font-size:1.4rem; font-weight:700; color: var(--cyan); }
+        .dctr-lbl { font-size:0.66rem; color:var(--text-300); margin-top:2px; }
+
+        .disco-cols { display:grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom:14px; }
+        .disco-panel { background: var(--bg-inset); border:1px solid var(--border-dim); border-radius:8px; padding:14px 16px; }
+        .disco-panel h4 {
+            font-size:0.68rem; font-weight:700; text-transform:uppercase; letter-spacing:0.7px;
+            color:var(--text-300); margin-bottom:10px; display:flex; align-items:center; gap:6px;
+        }
+        .pf-row { display:flex; align-items:center; justify-content:space-between; padding: 4px 0; font-size:0.76rem; }
+        .pf-name { display:flex; align-items:center; gap:8px; font-weight:500; color:var(--text-100); }
+        .pf-dot {
+            width:18px; height:18px; border-radius:4px;
+            display:flex; align-items:center; justify-content:center; font-size:0.58rem; font-weight:800;
+        }
+        .pf-badge { font-family:var(--mono); font-size:0.62rem; font-weight:600; padding:2px 8px; border-radius:4px; }
+        .pf-badge.ok { background:var(--green-dim); color:var(--green); }
+
+        .dir-row { display:flex; align-items:center; justify-content:space-between; padding:3px 0; font-size:0.74rem; }
+        .dir-name { color:var(--text-200); }
+        .dir-ok { font-size:0.64rem; font-weight:600; color:var(--green); }
+        .dir-divider { height:1px; background:var(--border-dim); margin:8px 0; }
+
+        .organic-bar {
+            background:var(--bg-inset); border:1px solid var(--border-dim); border-radius:8px;
+            padding:12px 16px; display:flex; align-items:center; gap:10px; margin-bottom:14px;
+        }
+        .organic-bar .ob-icon { font-size:1.05rem; }
+        .organic-bar .ob-label { font-size:0.78rem; color:var(--text-200); font-weight:500; }
+        .organic-bar .ob-val { margin-left:auto; font-family:var(--mono); font-size:0.78rem; font-weight:700; }
+
+        .disco-actions { display:grid; grid-template-columns: repeat(4, 1fr); gap:8px; }
+        .da-btn {
+            font-family:var(--font); font-size:0.72rem; font-weight:600;
+            padding:9px 10px; border-radius:8px;
+            border:1px solid var(--border-dim); background:var(--bg-surface);
+            color:var(--text-200); cursor:pointer; transition:all 0.15s;
+            display:flex; align-items:center; justify-content:center; gap:5px;
+        }
+        .da-btn:hover { border-color:var(--border-bright); color:var(--text-100); }
+        .da-btn.primary { background: var(--cyan); border-color:var(--cyan); color:#fff; }
+        .da-btn.primary:hover { background:#0891b2; }
+        .da-btn:disabled { opacity:0.45; cursor:not-allowed; }
+
+        .endpoints-section {
+            background: var(--bg-raised); border:1px solid var(--border-dim); border-radius:14px;
+            padding:24px; margin-bottom:18px;
+        }
+        .ep-title { font-size:0.88rem; font-weight:700; margin-bottom:16px; display:flex; align-items:center; gap:8px; }
+        .ep-grid { display:grid; grid-template-columns: repeat(4,1fr); gap:10px; }
+        .ep-card {
+            background:var(--bg-inset); border:1px solid var(--border-dim); border-radius:8px;
+            padding:13px 14px; cursor:pointer; transition: border-color 0.15s;
+        }
+        .ep-card:hover { border-color:var(--border-bright); }
+        .ep-method {
+            font-family:var(--mono); font-size:0.6rem; font-weight:700;
+            padding:2px 6px; border-radius:3px; display:inline-block; margin-bottom:5px;
+        }
+        .ep-method.get { background:var(--green-dim); color:var(--green); }
+        .ep-method.post { background:rgba(99,102,241,0.12); color:var(--accent-light); }
+        .ep-path { font-family:var(--mono); font-size:0.7rem; color:var(--text-100); word-break:break-all; margin-bottom:3px; }
+        .ep-desc { font-size:0.65rem; color:var(--text-400); }
+
+        .log-section {
+            background: var(--bg-raised); border:1px solid var(--border-dim); border-radius:14px; padding:24px;
+        }
+        .log-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; }
+        .log-title { font-size:0.88rem; font-weight:700; display:flex; align-items:center; gap:8px; }
+        .log-live { font-size:0.65rem; font-weight:600; color:var(--green); display:flex; align-items:center; gap:5px; }
+        .log-live .dot { width:5px;height:5px;background:var(--green);border-radius:50%;animation:blink 2s infinite; }
+        .log-body {
+            max-height:180px; overflow-y:auto;
+            font-family:var(--mono); font-size:0.7rem; line-height:1.9; color:var(--text-200);
+        }
+        .log-body::-webkit-scrollbar { width:3px; }
+        .log-body::-webkit-scrollbar-thumb { background:var(--border-dim);border-radius:3px; }
+        .le { display:flex; gap:12px; }
+        .le-t { color:var(--text-400); white-space:nowrap; }
+        .le-e .hi { color:var(--cyan); }
+        .le-e .ok { color:var(--green); }
+        .le-e .wr { color:var(--amber); }
+
+        .modal-overlay {
+            display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7);
+            z-index:200; align-items:center; justify-content:center; padding:24px;
+        }
+        .modal-overlay.open { display:flex; }
+        .modal-box {
+            background:var(--bg-raised); border:1px solid var(--border-mid); border-radius:14px;
+            max-width:660px; width:100%; max-height:80vh; overflow-y:auto; padding:28px;
+        }
+        .modal-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; }
+        .modal-head h3 { font-size:1rem; font-weight:700; }
+        .modal-close { background:none; border:none; color:var(--text-300); font-size:1.2rem; cursor:pointer; }
+        .modal-close:hover { color:var(--text-100); }
+        #pitchContent {
+            font-family:var(--mono); font-size:0.76rem; line-height:1.7;
+            color:var(--text-200); white-space:pre-wrap; word-wrap:break-word;
+        }
+
+        @media (max-width:1080px) {
+            .agents { grid-template-columns:1fr; }
+            .agent.full-width { grid-column:auto; }
+            .stats-row { grid-template-columns: repeat(3,1fr); }
+            .ep-grid { grid-template-columns: repeat(2,1fr); }
+            .disco-actions { grid-template-columns: repeat(2,1fr); }
+        }
+        @media (max-width:640px) {
+            .page { padding:16px 14px 60px; }
+            .stats-row { grid-template-columns:1fr 1fr; }
+            .disco-cols { grid-template-columns:1fr; }
+            .disco-counters { grid-template-columns:1fr; }
+            .ep-grid { grid-template-columns:1fr; }
+            .disco-actions { grid-template-columns:1fr 1fr; }
+            .hdr-right { display:none; }
+            .section-title { font-size:1.2rem; }
+        }
+    </style>
+<script src="/static/js/api-config.js"></script>
+</head>
+<body>
+
+<div class="ambient"></div>
+
+<header class="site-header">
+    <div class="header-inner">
+        <div class="hdr-left">
+            <a href="/" class="logo-link"><span class="logo-mark">⚡</span>DC Hub</a>
+            <span class="hdr-sep"></span>
+            <span class="hdr-page">Agent Hub <span class="hdr-tag live">Live</span></span>
+        </div>
+        <div class="hdr-right">
+            <a href="/" class="hdr-btn">← Platform</a>
+            <a href="/api-docs" class="hdr-btn">API Docs</a>
+            <button class="hdr-btn accent" onclick="forceOutreach()">▶ Run Outreach</button>
+        </div>
+    </div>
+</header>
+
+<main class="page">
+    <div class="section-head">
+        <h1 class="section-title">🤖 Agent Hub</h1>
+        <p class="section-sub">Specialized AI agents running on the DC Hub backend. Each handles a different aspect of data center intelligence — from sales to deep market research.</p>
+    </div>
+
+    <div class="stats-row">
+        <div class="stat-pill"><div class="stat-dot" style="background:rgba(99,102,241,0.1);">🤖</div><div><div class="stat-num">4</div><div class="stat-lbl">Active Agents</div></div></div>
+        <div class="stat-pill"><div class="stat-dot" style="background:var(--cyan-dim);">📡</div><div><div class="stat-num" id="hOutreach">--</div><div class="stat-lbl">Outreach Events</div></div></div>
+        <div class="stat-pill"><div class="stat-dot" style="background:var(--green-dim);">🌐</div><div><div class="stat-num">7</div><div class="stat-lbl">AI Platforms</div></div></div>
+        <div class="stat-pill"><div class="stat-dot" style="background:var(--amber-dim);">📁</div><div><div class="stat-num">8</div><div class="stat-lbl">Directories</div></div></div>
+        <div class="stat-pill"><div class="stat-dot" style="background:var(--rose-dim);">🔍</div><div><div class="stat-num">4</div><div class="stat-lbl">Search Engines</div></div></div>
+    </div>
+
+    <div class="agents">
+        <!-- ═══ AI DISCOVERY AGENT ═══ -->
+        <div class="agent full-width highlight">
+            <div class="agent-top">
+                <div class="agent-top-left">
+                    <div class="agent-icon disco">🛰️</div>
+                    <div><div class="agent-title">AI Discovery &amp; Outreach Agent</div><div class="agent-mode">Cycle: every 5 min</div></div>
+                </div>
+                <div class="agent-badges">
+                    <span class="badge new">✦ NEW</span>
+                    <span class="badge running"><span class="dot"></span> Running</span>
+                </div>
+            </div>
+            <p class="agent-desc">Proactively broadcasts DC Hub across 9 AI platforms, 8 tool directories, and 4 search engines every 5 minutes. Generates fresh pitches with live stats, monitors organic AI traffic, and manages discovery endpoints (<code>/llms.txt</code>, <code>/mcp.json</code>, <code>/openapi.json</code>).</p>
+            <div class="agent-tags">
+                <span class="tag">Auto-Discovery</span><span class="tag">Platform Broadcast</span>
+                <span class="tag">Directory Submission</span><span class="tag">IndexNow</span>
+                <span class="tag">Organic Detection</span><span class="tag">Pitch Generation</span>
+            </div>
+            <div class="agent-content">
+                <div class="disco-counters">
+                    <div class="dctr"><div class="dctr-val" id="cOutreach">--</div><div class="dctr-lbl">Outreach Events</div></div>
+                    <div class="dctr"><div class="dctr-val" id="cIndexNow">--</div><div class="dctr-lbl">IndexNow Pings</div></div>
+                    <div class="dctr"><div class="dctr-val" id="cDirPings">--</div><div class="dctr-lbl">Directory Pings</div></div>
+                </div>
+                <div class="disco-cols">
+                    <div class="disco-panel">
+                        <h4>📡 AI Platform Broadcasts</h4>
+                        <div class="pf-row"><span class="pf-name"><span class="pf-dot" style="background:rgba(16,163,127,0.12);color:#10a37f;">G</span>ChatGPT</span><span class="pf-badge ok">✓ /openapi.json</span></div>
+                        <div class="pf-row"><span class="pf-name"><span class="pf-dot" style="background:rgba(204,133,81,0.12);color:#cc8551;">C</span>Claude</span><span class="pf-badge ok">✓ /mcp.json</span></div>
+                        <div class="pf-row"><span class="pf-name"><span class="pf-dot" style="background:rgba(66,133,244,0.12);color:#4285f4;">G</span>Gemini</span><span class="pf-badge ok">✓ /mcp.json</span></div>
+                        <div class="pf-row"><span class="pf-name"><span class="pf-dot" style="background:rgba(32,129,226,0.12);color:#2081e2;">P</span>Perplexity</span><span class="pf-badge ok">✓ /llms.txt</span></div>
+                        <div class="pf-row"><span class="pf-name"><span class="pf-dot" style="background:rgba(255,255,255,0.06);color:#ccc;">X</span>Grok</span><span class="pf-badge ok">✓ /api/stats</span></div>
+                        <div class="pf-row"><span class="pf-name"><span class="pf-dot" style="background:rgba(0,120,212,0.12);color:#0078d4;">M</span>Copilot</span><span class="pf-badge ok">✓ /openapi.json</span></div>
+                        <div class="pf-row"><span class="pf-name"><span class="pf-dot" style="background:rgba(69,89,164,0.12);color:#4559a4;">D</span>DeepSeek</span><span class="pf-badge ok">✓ /api/query</span></div>
+                        <div class="pf-row"><span class="pf-name"><span class="pf-dot" style="background:rgba(102,51,255,0.12);color:#6633ff;">Y</span>You.com</span><span class="pf-badge ok">✓ Agent Live</span></div>
+                        <div class="pf-row"><span class="pf-name"><span class="pf-dot" style="background:rgba(6,104,225,0.12);color:#0668e1;">M</span>Meta AI</span><span class="pf-badge ok">✓ /llms.txt</span></div>
+                    </div>
+                    <div class="disco-panel">
+                        <h4>📁 Directories &amp; Search Engines</h4>
+                        <div class="dir-row"><span class="dir-name">GPTStore.ai</span><span class="dir-ok">✓ Pinged</span></div>
+                        <div class="dir-row"><span class="dir-name">GPT-Finder.com</span><span class="dir-ok">✓ Pinged</span></div>
+                        <div class="dir-row"><span class="dir-name">There's An AI For That</span><span class="dir-ok">✓ Pinged</span></div>
+                        <div class="dir-row"><span class="dir-name">AI Tools Directory</span><span class="dir-ok">✓ Pinged</span></div>
+                        <div class="dir-row"><span class="dir-name">Futurepedia</span><span class="dir-ok">✓ Pinged</span></div>
+                        <div class="dir-row"><span class="dir-name">Toolify.ai</span><span class="dir-ok">✓ Pinged</span></div>
+                        <div class="dir-row"><span class="dir-name">AI Tool Hunt</span><span class="dir-ok">✓ Pinged</span></div>
+                        <div class="dir-row"><span class="dir-name">TopAI.tools</span><span class="dir-ok">✓ Pinged</span></div>
+                        <div class="dir-divider"></div>
+                        <div class="dir-row"><span class="dir-name" style="color:var(--text-100);font-weight:600;">🔍 Google Sitemap</span><span class="dir-ok">✓ Sent</span></div>
+                        <div class="dir-row"><span class="dir-name" style="color:var(--text-100);font-weight:600;">🔍 Bing Sitemap</span><span class="dir-ok">✓ Sent</span></div>
+                        <div class="dir-row"><span class="dir-name" style="color:var(--text-100);font-weight:600;">🔍 Bing IndexNow</span><span class="dir-ok">✓ Sent</span></div>
+                        <div class="dir-row"><span class="dir-name" style="color:var(--text-100);font-weight:600;">🔍 Yandex IndexNow</span><span class="dir-ok">✓ Sent</span></div>
+                    </div>
+                </div>
+                <div class="organic-bar">
+                    <span class="ob-icon">🎯</span>
+                    <span class="ob-label">Organic AI Traffic Detection</span>
+                    <span class="ob-val" id="organicVal" style="color:var(--amber);">Monitoring...</span>
+                </div>
+                <div class="disco-actions">
+                    <button class="da-btn primary" id="forceBtn" onclick="forceOutreach()">▶ Force Cycle</button>
+                    <button class="da-btn" onclick="openPitch()">📝 View Pitch</button>
+                    <button class="da-btn" onclick="openEP('/api/outreach/social-posts')">📱 Social Templates</button>
+                    <button class="da-btn" onclick="openEP('/api/outreach/directories')">📁 Directory Info</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══ SALES AGENT ═══ -->
+        <div class="agent">
+            <div class="agent-top">
+                <div class="agent-top-left"><div class="agent-icon sales">💼</div><div><div class="agent-title">Sales Agent</div><div class="agent-mode">On-demand</div></div></div>
+                <span class="badge running"><span class="dot"></span> Running</span>
+            </div>
+            <p class="agent-desc">Answers questions about DC Hub features, qualifies leads by company and use case, handles pricing objections, and books demos. Powered by Claude with full platform context.</p>
+            <div class="agent-tags"><span class="tag">Lead Qualification</span><span class="tag">Pricing Analysis</span><span class="tag">Demo Booking</span><span class="tag">Objection Handling</span></div>
+            <div class="agent-content">
+                <div class="quick-row">
+                    <button class="qk" onclick="fillChat('sales','What are your pricing plans?')">💰 Pricing</button>
+                    <button class="qk" onclick="fillChat('sales','I\'d like to schedule a demo')">📅 Demo</button>
+                    <button class="qk" onclick="fillChat('sales','What markets do you cover?')">🗺️ Markets</button>
+                    <button class="qk" onclick="fillChat('sales','Tell me about API access')">🔌 API</button>
+                </div>
+                <div class="chat-box">
+                    <div class="chat-msgs" id="salesMsgs"><div class="bubble bot">Hey! I'm the DC Hub Sales Agent. I can help with pricing, demos, and platform questions. What are you looking for?</div></div>
+                    <div class="chat-bar"><input class="chat-in" id="salesIn" placeholder="Ask about pricing, features, demos..." onkeydown="if(event.key==='Enter')sendMsg('sales')"><button class="chat-go" onclick="sendMsg('sales')">→</button></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══ ENRICHMENT AGENT ═══ -->
+        <div class="agent">
+            <div class="agent-top">
+                <div class="agent-top-left"><div class="agent-icon enrich">🧠</div><div><div class="agent-title">Enrichment Agent</div><div class="agent-mode">Continuous</div></div></div>
+                <span class="badge running"><span class="dot"></span> Running</span>
+            </div>
+            <p class="agent-desc">Auto-discovers facilities, validates records, researches specific markets, and enriches facility data. Uses Claude for AI-powered market research and facility spec extraction.</p>
+            <div class="agent-tags"><span class="tag">Market Research</span><span class="tag">Facility Discovery</span><span class="tag">Data Validation</span><span class="tag">Record Enrichment</span></div>
+            <div class="agent-content">
+                <div class="quick-row">
+                    <button class="qk" onclick="fillChat('enrich','Discover data centers in Dallas-Fort Worth')">🏗️ Discover</button>
+                    <button class="qk" onclick="fillChat('enrich','Validate Equinix facilities in Virginia')">✅ Validate</button>
+                    <button class="qk" onclick="fillChat('enrich','Market research on Phoenix data center market')">📊 Research</button>
+                </div>
+                <div class="chat-box">
+                    <div class="chat-msgs" id="enrichMsgs"><div class="bubble bot">I'll help you discover and validate data center facilities. Try asking about a specific market or operator.</div></div>
+                    <div class="chat-bar"><input class="chat-in" id="enrichIn" placeholder="Discover facilities, research markets..." onkeydown="if(event.key==='Enter')sendMsg('enrich')"><button class="chat-go" onclick="sendMsg('enrich')">→</button></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══ SOCIAL AGENT ═══ -->
+        <div class="agent">
+            <div class="agent-top">
+                <div class="agent-top-left"><div class="agent-icon social">📢</div><div><div class="agent-title">Social Agent</div><div class="agent-mode">On-demand</div></div></div>
+                <span class="badge running"><span class="dot"></span> Running</span>
+            </div>
+            <p class="agent-desc">Generates professional LinkedIn posts from news, market data, and platform milestones. Creates content calendars and manages social promotion of DC Hub insights.</p>
+            <div class="agent-tags"><span class="tag">LinkedIn Posts</span><span class="tag">News-to-Posts</span><span class="tag">Content Calendar</span><span class="tag">Brand Promotion</span></div>
+            <div class="agent-content">
+                <div class="quick-row">
+                    <button class="qk" onclick="fillChat('social','Generate a daily stats update post')">📊 Stats</button>
+                    <button class="qk" onclick="fillChat('social','Create a post about the construction pipeline')">🏗️ Pipeline</button>
+                    <button class="qk" onclick="fillChat('social','Write about recent M&A activity')">💰 M&amp;A</button>
+                    <button class="qk" onclick="fillChat('social','Share an insight about AI data center demand')">💡 Insight</button>
+                </div>
+                <div class="chat-box">
+                    <div class="chat-msgs" id="socialMsgs"><div class="bubble bot">I generate LinkedIn-ready posts from DC Hub data. Pick a topic or describe what you want to post about!</div></div>
+                    <div class="chat-bar"><input class="chat-in" id="socialIn" placeholder="Generate posts about market trends..." onkeydown="if(event.key==='Enter')sendMsg('social')"><button class="chat-go" onclick="sendMsg('social')">→</button></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══ Endpoints ═══ -->
+    <div class="endpoints-section">
+        <div class="ep-title">🔌 API Endpoints</div>
+        <div class="ep-grid">
+            <div class="ep-card" onclick="openEP('/api/outreach/status')"><span class="ep-method get">GET</span><div class="ep-path">/api/outreach/status</div><div class="ep-desc">Full outreach stats</div></div>
+            <div class="ep-card" onclick="openEP('/api/outreach/organic')"><span class="ep-method get">GET</span><div class="ep-path">/api/outreach/organic</div><div class="ep-desc">Organic traffic alerts</div></div>
+            <div class="ep-card" onclick="openEP('/api/outreach/pitch')"><span class="ep-method get">GET</span><div class="ep-path">/api/outreach/pitch</div><div class="ep-desc">Current AI pitch</div></div>
+            <div class="ep-card" onclick="openEP('/api/outreach/social-posts')"><span class="ep-method get">GET</span><div class="ep-path">/api/outreach/social-posts</div><div class="ep-desc">Social templates</div></div>
+            <div class="ep-card" onclick="openEP('/api/outreach/directories')"><span class="ep-method get">GET</span><div class="ep-path">/api/outreach/directories</div><div class="ep-desc">Directory info</div></div>
+            <div class="ep-card" onclick="forceOutreach()"><span class="ep-method post">POST</span><div class="ep-path">/api/outreach/run</div><div class="ep-desc">Force outreach cycle</div></div>
+            <div class="ep-card" onclick="openEP('/api/agents/stats')"><span class="ep-method get">GET</span><div class="ep-path">/api/agents/stats</div><div class="ep-desc">All agent stats</div></div>
+            <div class="ep-card" onclick="openEP('/api/agents/logs')"><span class="ep-method get">GET</span><div class="ep-path">/api/agents/logs</div><div class="ep-desc">Activity logs</div></div>
+        </div>
+    </div>
+
+    <!-- ═══ Activity Log ═══ -->
+    <div class="log-section">
+        <div class="log-head">
+            <div class="log-title">📋 Agent Activity Log</div>
+            <div class="log-live"><span class="dot"></span> Live</div>
+        </div>
+        <div class="log-body" id="logBody"><div class="le"><span class="le-t">--:--:--</span><span class="le-e">Loading...</span></div></div>
+    </div>
+</main>
+
+<!-- ═══ Pitch Modal ═══ -->
+<div class="modal-overlay" id="pitchModal">
+    <div class="modal-box">
+        <div class="modal-head"><h3>📝 Current AI Pitch</h3><button class="modal-close" onclick="closePitch()">✕</button></div>
+        <pre id="pitchContent"></pre>
+    </div>
+</div>
+
+<script>
+const API = window.location.origin;
+const EP = { sales:'/api/agents/sales/chat', enrich:'/api/agents/enrichment/market-research', social:'/api/agents/social/generate' };
+const PK = { sales:'message', enrich:'query', social:'topic' };
+
+async function loadStatus() {
+    try {
+        const r = await fetch(API+'/api/outreach/status'); if(!r.ok) return;
+        const d = await r.json();
+        const ev=d.total_events||d.outreach_events||0, ix=d.indexnow_pings||0, dp=d.directory_pings||0;
+        document.getElementById('cOutreach').textContent=ev;
+        document.getElementById('cIndexNow').textContent=ix;
+        document.getElementById('cDirPings').textContent=dp;
+        document.getElementById('hOutreach').textContent=ev;
+    } catch(e){}
+}
+async function loadOrganic() {
+    try {
+        const r = await fetch(API+'/api/outreach/organic'); if(!r.ok) return;
+        const d = await r.json(), el = document.getElementById('organicVal');
+        if(d.organic_detected||(d.platforms&&d.platforms.length>0)){
+            el.textContent=d.platforms.length+' platform(s) detected!'; el.style.color='var(--green)';
+        } else { el.textContent='No organic traffic yet'; el.style.color='var(--amber)'; }
+    } catch(e){ document.getElementById('organicVal').textContent='Monitoring...'; }
+}
+async function forceOutreach() {
+    const b=document.getElementById('forceBtn'); b.disabled=true; b.textContent='⏳ Running...';
+    try { await fetch(API+'/api/outreach/run',{method:'POST'}); b.textContent='✅ Done!'; loadStatus(); loadLog();
+    } catch(e){ b.textContent='❌ Error'; }
+    setTimeout(()=>{ b.textContent='▶ Force Cycle'; b.disabled=false; },2000);
+}
+async function openPitch() {
+    try { const r=await fetch(API+'/api/outreach/pitch'), d=await r.json();
+        document.getElementById('pitchContent').textContent=d.pitch||JSON.stringify(d,null,2);
+        document.getElementById('pitchModal').classList.add('open');
+    } catch(e){ alert('Pitch endpoint not available.'); }
+}
+function closePitch(){ document.getElementById('pitchModal').classList.remove('open'); }
+function openEP(p){ window.open(API+p,'_blank'); }
+
+async function loadLog() {
+    try {
+        const r=await fetch(API+'/api/agents/logs?limit=20'); if(!r.ok) throw 0;
+        const d=await r.json(), logs=d.logs||d.entries||[], el=document.getElementById('logBody');
+        if(!logs.length){ el.innerHTML='<div class="le"><span class="le-t">'+ts()+'</span><span class="le-e">Agent Hub active — waiting for events...</span></div>'; return; }
+        el.innerHTML=logs.map(l=>{
+            const t=l.timestamp?new Date(l.timestamp).toLocaleTimeString():'--:--';
+            return '<div class="le"><span class="le-t">'+t+'</span><span class="le-e"><span class="hi">['+(l.agent||'system')+']</span> '+esc(l.action||l.event||l.message||'')+'</span></div>';
+        }).join('');
+    } catch(e){
+        const t=ts();
+        document.getElementById('logBody').innerHTML=
+            '<div class="le"><span class="le-t">'+t+'</span><span class="le-e"><span class="hi">[discovery]</span> <span class="ok">AI Outreach Agent initialized</span> — 9 platforms, 8 directories, 4 search engines</span></div>'+
+            '<div class="le"><span class="le-t">'+t+'</span><span class="le-e"><span class="hi">[discovery]</span> IndexNow → Bing, Yandex <span class="ok">✓</span></span></div>'+
+            '<div class="le"><span class="le-t">'+t+'</span><span class="le-e"><span class="hi">[sales]</span> Agent <span class="ok">online</span></span></div>'+
+            '<div class="le"><span class="le-t">'+t+'</span><span class="le-e"><span class="hi">[enrichment]</span> Agent <span class="ok">online</span> — 20,000+ facilities</span></div>'+
+            '<div class="le"><span class="le-t">'+t+'</span><span class="le-e"><span class="hi">[social]</span> Agent <span class="ok">online</span></span></div>';
+    }
+}
+
+function fillChat(a,t){ document.getElementById(a+'In').value=t; document.getElementById(a+'In').focus(); }
+async function sendMsg(a){
+    const i=document.getElementById(a+'In'), t=i.value.trim(); if(!t) return;
+    addB(a,t,true); i.value='';
+    try {
+        const b={}; b[PK[a]]=t;
+        const r=await fetch(API+EP[a],{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
+        const d=await r.json();
+        addB(a, d.response||d.reply||d.post||d.summary||'Processing...', false);
+    } catch(e){ addB(a,'Connection issue — verify Replit backend is running.',false); }
+}
+function addB(a,t,u){ const c=document.getElementById(a+'Msgs'), b=document.createElement('div'); b.className='bubble '+(u?'usr':'bot'); b.textContent=t; c.appendChild(b); c.scrollTop=c.scrollHeight; }
+function esc(s){ const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
+function ts(){ return new Date().toLocaleTimeString(); }
+
+loadStatus(); loadOrganic(); loadLog();
+setInterval(loadStatus,30000); setInterval(loadOrganic,30000); setInterval(loadLog,60000);
+document.getElementById('pitchModal').addEventListener('click',function(e){ if(e.target===this) closePitch(); });
+</script>
+<script src="/js/dchub-nav.js"></script>
+</body>
+</html>

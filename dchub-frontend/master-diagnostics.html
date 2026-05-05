@@ -1,0 +1,966 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex, nofollow">
+<title>DC Hub — Master Diagnostics v2.0</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg-deep: #06080f;
+  --bg-panel: #0c1019;
+  --bg-card: #111724;
+  --bg-elevated: #182036;
+  --border: #1e2940;
+  --border-active: #2d3f66;
+  --text-primary: #e8edf5;
+  --text-secondary: #8896b0;
+  --text-dim: #4a5672;
+  --green: #00e6a0;
+  --green-bg: rgba(0,230,160,0.08);
+  --green-border: rgba(0,230,160,0.25);
+  --red: #ff4d6a;
+  --red-bg: rgba(255,77,106,0.08);
+  --red-border: rgba(255,77,106,0.25);
+  --amber: #ffb020;
+  --amber-bg: rgba(255,176,32,0.08);
+  --amber-border: rgba(255,176,32,0.25);
+  --blue: #4d8dff;
+  --blue-bg: rgba(77,141,255,0.08);
+  --blue-border: rgba(77,141,255,0.25);
+  --purple: #9b6dff;
+  --purple-bg: rgba(155,109,255,0.08);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Outfit', sans-serif;
+  background: var(--bg-deep);
+  color: var(--text-primary);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+.grain {
+  position: fixed; inset: 0; z-index: 0; pointer-events: none; opacity: 0.03;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+.container { max-width: 1100px; margin: 0 auto; padding: 32px 24px; position: relative; z-index: 1; }
+
+/* Header */
+.header { margin-bottom: 32px; }
+.header-top { display: flex; align-items: center; gap: 16px; margin-bottom: 8px; }
+.logo {
+  font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 13px;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px;
+  padding: 6px 12px; color: var(--green); letter-spacing: 1px;
+}
+.header h1 { font-size: 26px; font-weight: 800; letter-spacing: -0.5px; }
+.header h1 span { color: var(--green); }
+.header-sub { color: var(--text-dim); font-size: 14px; font-family: 'JetBrains Mono', monospace; }
+
+/* Summary Banner */
+.summary-banner {
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px;
+  padding: 20px 24px; margin-bottom: 24px; display: flex; align-items: center; gap: 20px;
+  transition: border-color 0.4s;
+}
+.summary-banner.healthy { border-color: var(--green-border); background: var(--green-bg); }
+.summary-banner.degraded { border-color: var(--amber-border); background: var(--amber-bg); }
+.summary-banner.down { border-color: var(--red-border); background: var(--red-bg); }
+.summary-icon { font-size: 36px; flex-shrink: 0; }
+.summary-text h2 { font-size: 18px; font-weight: 700; }
+.summary-text p { font-size: 13px; color: var(--text-secondary); margin-top: 4px; }
+.summary-counts { margin-left: auto; display: flex; gap: 16px; flex-shrink: 0; }
+.count-chip {
+  font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 600;
+  padding: 4px 12px; border-radius: 20px;
+}
+.count-chip.pass { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
+.count-chip.fail { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-border); }
+.count-chip.warn { background: var(--amber-bg); color: var(--amber); border: 1px solid var(--amber-border); }
+
+/* Actions Bar */
+.actions-bar {
+  display: flex; gap: 10px; margin-bottom: 28px; flex-wrap: wrap;
+}
+.btn {
+  font-family: 'Outfit', sans-serif; font-size: 14px; font-weight: 600;
+  padding: 10px 22px; border-radius: 8px; cursor: pointer; border: 1px solid var(--border);
+  background: var(--bg-card); color: var(--text-primary); transition: all 0.2s;
+  display: inline-flex; align-items: center; gap: 8px;
+}
+.btn:hover { border-color: var(--green); background: var(--bg-elevated); }
+.btn.primary { background: var(--green); color: var(--bg-deep); border-color: var(--green); }
+.btn.primary:hover { background: #00ffb3; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Section */
+.section {
+  background: var(--bg-panel); border: 1px solid var(--border); border-radius: 12px;
+  margin-bottom: 20px; overflow: hidden;
+}
+.section-header {
+  padding: 16px 20px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+}
+.section-header h2 {
+  font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 1.5px; color: var(--text-secondary);
+}
+.section-header .badge {
+  font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600;
+  padding: 3px 10px; border-radius: 10px;
+}
+.badge.pass { background: var(--green-bg); color: var(--green); }
+.badge.fail { background: var(--red-bg); color: var(--red); }
+.badge.warn { background: var(--amber-bg); color: var(--amber); }
+.badge.info { background: var(--blue-bg); color: var(--blue); }
+.badge.pending { background: var(--bg-elevated); color: var(--text-dim); }
+
+/* Test Row */
+.test-row {
+  display: flex; align-items: flex-start; padding: 12px 20px;
+  border-bottom: 1px solid rgba(30,41,64,0.5); transition: background 0.2s;
+}
+.test-row:last-child { border-bottom: none; }
+.test-row:hover { background: rgba(255,255,255,0.015); }
+.test-dot {
+  width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+  margin-top: 5px; margin-right: 14px; transition: background 0.3s;
+}
+.test-dot.pending { background: var(--text-dim); animation: pulse 1.2s infinite; }
+.test-dot.pass { background: var(--green); box-shadow: 0 0 8px rgba(0,230,160,0.4); }
+.test-dot.fail { background: var(--red); box-shadow: 0 0 8px rgba(255,77,106,0.4); }
+.test-dot.warn { background: var(--amber); box-shadow: 0 0 8px rgba(255,176,32,0.4); }
+.test-dot.skip { background: var(--text-dim); }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+.test-info { flex: 1; min-width: 0; }
+.test-name { font-size: 14px; font-weight: 500; color: var(--text-primary); }
+.test-name .critical-tag {
+  font-family: 'JetBrains Mono', monospace; font-size: 9px; font-weight: 700;
+  background: var(--red-bg); color: var(--red); padding: 2px 6px; border-radius: 4px;
+  margin-left: 8px; vertical-align: middle;
+}
+.test-detail {
+  font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-dim);
+  margin-top: 3px; word-break: break-all;
+}
+.test-detail.error { color: var(--red); }
+.test-detail.warning { color: var(--amber); }
+.test-timing {
+  font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-dim);
+  flex-shrink: 0; margin-left: 12px; min-width: 60px; text-align: right;
+}
+.test-timing.fast { color: var(--green); }
+.test-timing.slow { color: var(--amber); }
+.test-timing.timeout { color: var(--red); }
+
+/* Expandable JSON */
+.json-expand {
+  background: var(--bg-deep); border: 1px solid var(--border); border-radius: 6px;
+  padding: 10px 14px; margin-top: 8px; font-family: 'JetBrains Mono', monospace;
+  font-size: 10px; color: var(--text-dim); max-height: 160px; overflow-y: auto;
+  white-space: pre-wrap; word-break: break-word; line-height: 1.5;
+}
+
+/* Fix Panel */
+.fix-panel {
+  background: var(--bg-card); border: 1px solid var(--amber-border); border-radius: 10px;
+  padding: 18px 20px; margin-top: 10px;
+}
+.fix-panel h3 { font-size: 14px; font-weight: 700; color: var(--amber); margin-bottom: 8px; }
+.fix-panel p { font-size: 13px; color: var(--text-secondary); margin-bottom: 10px; }
+.fix-panel pre {
+  background: var(--bg-deep); border: 1px solid var(--border); border-radius: 6px;
+  padding: 12px 16px; font-family: 'JetBrains Mono', monospace; font-size: 11px;
+  color: var(--green); overflow-x: auto; white-space: pre-wrap; word-break: break-all;
+  line-height: 1.6; position: relative;
+}
+.copy-btn {
+  position: absolute; top: 8px; right: 8px; background: var(--bg-elevated);
+  border: 1px solid var(--border); color: var(--text-secondary); padding: 4px 10px;
+  border-radius: 4px; cursor: pointer; font-size: 11px; font-family: 'JetBrains Mono', monospace;
+}
+.copy-btn:hover { color: var(--green); border-color: var(--green); }
+
+/* Recommendation */
+.rec-card {
+  background: var(--bg-card); border: 1px solid var(--purple); border-left: 3px solid var(--purple);
+  border-radius: 8px; padding: 16px 20px; margin-top: 16px;
+}
+.rec-card h3 { font-size: 14px; font-weight: 700; color: var(--purple); margin-bottom: 6px; }
+.rec-card p { font-size: 13px; color: var(--text-secondary); line-height: 1.6; }
+.rec-card code {
+  background: var(--bg-deep); padding: 2px 6px; border-radius: 3px;
+  font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--green);
+}
+
+/* Log */
+.log-area {
+  background: var(--bg-deep); border: 1px solid var(--border); border-radius: 8px;
+  padding: 14px 18px; max-height: 300px; overflow-y: auto; font-family: 'JetBrains Mono', monospace;
+  font-size: 11px; line-height: 1.8;
+}
+.log-line .ts { color: var(--text-dim); }
+.log-line .ok { color: var(--green); }
+.log-line .err { color: var(--red); }
+.log-line .wrn { color: var(--amber); }
+.log-line .inf { color: var(--blue); }
+
+/* Responsive */
+@media (max-width: 700px) {
+  .container { padding: 16px 12px; }
+  .summary-banner { flex-direction: column; align-items: flex-start; }
+  .summary-counts { margin-left: 0; }
+  .actions-bar { flex-direction: column; }
+  .test-row { padding: 10px 14px; }
+}
+</style>
+<style>nav:not(.dchub-nav):not(.dchub-bottom-nav):not(.mobile-nav-drawer-links nav){display:none!important}.nav:not(.dchub-nav){display:none!important}</style>
+<script src="/js/dchub-nav.js"></script>
+</head>
+<body>
+<div class="grain"></div>
+<div class="container">
+
+<div class="header">
+  <div class="header-top">
+    <div class="logo">DC HUB</div>
+    <h1>Master <span>Diagnostics</span> v2.0</h1>
+  </div>
+  <p class="header-sub">Unified health check — API paths · CSP · OAuth · Cloudflare Worker · Neon DB</p>
+</div>
+
+<div id="summary-banner" class="summary-banner">
+  <div class="summary-icon">🔍</div>
+  <div class="summary-text">
+    <h2>Ready to diagnose</h2>
+    <p>Click "Run All Tests" to check every layer of your stack.</p>
+  </div>
+</div>
+
+<div class="actions-bar">
+  <button class="btn primary" id="btn-run" onclick="runAll()">▶ Run All Tests</button>
+  <button class="btn" onclick="location.reload()">↻ Reset</button>
+  <button class="btn" onclick="document.getElementById('log-section').scrollIntoView({behavior:'smooth'})">📋 Jump to Log</button>
+  <button class="btn" id="btn-export" onclick="exportReport()" disabled>📄 Export Report</button>
+</div>
+
+<div id="results-container"></div>
+
+<div id="fixes-container"></div>
+
+<div class="section" id="log-section" style="margin-top: 8px;">
+  <div class="section-header">
+    <h2>📋 Execution Log</h2>
+    <span class="badge info" id="log-count">0 entries</span>
+  </div>
+  <div class="log-area" id="log-area"></div>
+</div>
+
+</div><!-- /container -->
+
+<script>
+// ============================================================
+//  CONFIGURATION
+// ============================================================
+const PATHS = {
+  sameOrigin: '',
+  replit: 'https://dc-hub-replit-fixedzip--azmartone1.replit.app',
+  apiSubdomain: 'https://dchub.cloud',
+};
+
+const CORE_ENDPOINTS = [
+  { path: '/api/health',                   name: 'Health Check',        critical: true  },
+  { path: '/api/v1/version',               name: 'Version',             critical: true  },
+  { path: '/api/v1/stats',                 name: 'Platform Stats',      critical: true  },
+  { path: '/api/news/live?limit=2',        name: 'News (Live)',         critical: true  },
+  { path: '/api/agent/facilities?limit=2', name: 'Facilities (Agent)',  critical: true  },
+  { path: '/api/v1/deals?limit=2',         name: 'Deals / Transactions',critical: false },
+  { path: '/api/transactions/public?limit=5', name: 'Transactions (Public)', critical: false },
+  { path: '/api/v1/map',                   name: 'Map Data',            critical: false, authRequired: true },
+  { path: '/api/ai/query?type=stats',      name: 'AI Query Stats',      critical: false },
+  { path: '/api/founding-members',          name: 'Founding Members',    critical: false },
+  { path: '/api/ecosystem',                name: 'Ecosystem',           critical: false },
+  { path: '/api/v1/market-report',         name: 'Market Report',       critical: false },
+];
+
+const AUTH_ENDPOINTS = [
+  { path: '/api/auth/google/redirect', name: 'Google OAuth Redirect', expectRedirect: true },
+  { path: '/api/auth/me',              name: 'Auth Status (/me)',     expectUnauth: true },
+];
+
+const INFRA_ENDPOINTS = [
+  { path: '/.well-known/mcp.json', name: 'MCP Discovery' },
+  { path: '/mcp',                   name: 'MCP Server' },
+  { path: '/openapi.json',          name: 'OpenAPI Spec' },
+  { path: '/robots.txt',            name: 'robots.txt' },
+];
+
+let allResults = [];
+let logEntries = [];
+
+// ============================================================
+//  LOGGING
+// ============================================================
+function log(msg, type = 'inf') {
+  const ts = new Date().toLocaleTimeString('en-US', { hour12: false });
+  logEntries.push({ ts, msg, type });
+  const area = document.getElementById('log-area');
+  const line = document.createElement('div');
+  line.className = 'log-line';
+  line.innerHTML = `<span class="ts">${ts}</span> <span class="${type}">${msg}</span>`;
+  area.appendChild(line);
+  area.scrollTop = area.scrollHeight;
+  document.getElementById('log-count').textContent = logEntries.length + ' entries';
+}
+
+// ============================================================
+//  FETCH WITH TIMEOUT
+// ============================================================
+async function safeFetch(url, opts = {}, timeoutMs = 12000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  const start = performance.now();
+  try {
+    const resp = await fetch(url, { ...opts, signal: ctrl.signal, cache: 'no-store' });
+    clearTimeout(timer);
+    const elapsed = Math.round(performance.now() - start);
+    return { resp, elapsed, error: null };
+  } catch (err) {
+    clearTimeout(timer);
+    const elapsed = Math.round(performance.now() - start);
+    const msg = err.name === 'AbortError' ? 'TIMEOUT (>' + (timeoutMs/1000) + 's)' : err.message;
+    return { resp: null, elapsed, error: msg };
+  }
+}
+
+// ============================================================
+//  TEST A SINGLE ENDPOINT
+// ============================================================
+async function testEndpoint(baseUrl, ep) {
+  const url = baseUrl + ep.path;
+
+  // OAuth redirect endpoints: use redirect:'manual' to avoid cross-origin CORS failures
+  // when fetch tries to follow the 302 to accounts.google.com
+  if (ep.expectRedirect) {
+    const { resp, elapsed, error } = await safeFetch(url, { headers: { 'Accept': 'application/json' }, redirect: 'manual' });
+    if (error) {
+      // Even with redirect:'manual', some browsers may throw on opaque redirects
+      const isCors = error.includes('Failed to fetch') || error.includes('NetworkError');
+      if (isCors) return { status: 'pass', msg: 'Redirect detected (cross-origin 302 — working as expected)', elapsed, url };
+      return { status: 'fail', msg: error, elapsed, url };
+    }
+    // Status 0 with opaqueredirect type = browser saw the 302 but blocked the body (expected)
+    if (resp.type === 'opaqueredirect' || resp.status === 0) return { status: 'pass', msg: 'OAuth redirect working (302)', elapsed, url };
+    // 301/302/303/307/308 = redirect captured by manual mode
+    if (resp.status >= 300 && resp.status < 400) return { status: 'pass', msg: `OAuth redirect working (${resp.status})`, elapsed, url };
+    // 200 = endpoint exists but didn't redirect (unusual but not broken)
+    if (resp.status === 200) return { status: 'pass', msg: 'OAuth endpoint responding (200)', elapsed, url };
+    // 4xx/5xx = actually broken
+    if (resp.status >= 500) return { status: 'fail', msg: `HTTP ${resp.status} — backend error`, elapsed, url };
+    if (resp.status === 404) return { status: 'fail', msg: `HTTP 404 — route missing`, elapsed, url };
+    return { status: 'warn', msg: `HTTP ${resp.status}`, elapsed, url };
+  }
+
+  const { resp, elapsed, error } = await safeFetch(url, { headers: { 'Accept': 'application/json' } });
+
+  if (error) {
+    const isCors = error.includes('Failed to fetch') || error.includes('NetworkError');
+    return { status: 'fail', msg: isCors ? 'CORS / Network blocked' : error, elapsed, url, isCors };
+  }
+
+  // For auth/me — 401 is expected when not logged in
+  if (ep.expectUnauth) {
+    if (resp.status === 401 || resp.status === 403) return { status: 'pass', msg: `Auth gate working (${resp.status})`, elapsed, url };
+    if (resp.ok) return { status: 'pass', msg: 'Authenticated session found', elapsed, url };
+    return { status: 'fail', msg: `HTTP ${resp.status}`, elapsed, url };
+  }
+
+  if (resp.status === 401 && ep.authRequired) return { status: 'pass', msg: 'Auth gate working (401 — protected endpoint)', elapsed, url };
+  if (resp.status === 401) return { status: 'warn', msg: 'HTTP 401 — Auth required (should this be public?)', elapsed, url };
+  if (resp.status === 403) return { status: 'warn', msg: 'HTTP 403 — Forbidden (tier gating?)', elapsed, url };
+  if (resp.status === 503) return { status: 'fail', msg: 'HTTP 503 — Backend unavailable', elapsed, url };
+  if (resp.status === 502) return { status: 'fail', msg: 'HTTP 502 — Bad gateway (Replit down?)', elapsed, url };
+  if (resp.status === 524) return { status: 'fail', msg: 'HTTP 524 — Cloudflare timeout', elapsed, url };
+  if (!resp.ok) return { status: 'fail', msg: `HTTP ${resp.status}`, elapsed, url };
+
+  // Check content type
+  const ct = resp.headers.get('content-type') || '';
+  if (ct.includes('text/html') && !ep.path.includes('robots') && !ep.path.includes('mcp')) {
+    return { status: 'fail', msg: 'Got HTML instead of JSON — route not found or Cloudflare error page', elapsed, url };
+  }
+
+  // Try parse JSON
+  const text = await resp.text();
+  try {
+    const data = JSON.parse(text);
+    // Check emptiness
+    const isEmpty = (Array.isArray(data) && data.length === 0)
+      || (data.articles && data.articles.length === 0)
+      || (data.data && Array.isArray(data.data) && data.data.length === 0)
+      || (data.total === 0 && data.count === 0);
+    if (isEmpty) return { status: 'warn', msg: 'OK but EMPTY data returned', elapsed, url, data };
+    return { status: 'pass', msg: 'OK', elapsed, url, data };
+  } catch (e) {
+    // Non-JSON is fine for robots.txt, mcp, etc
+    if (ep.path.includes('robots') || ep.path.includes('openapi')) {
+      return { status: 'pass', msg: 'OK (non-JSON)', elapsed, url };
+    }
+    return { status: 'warn', msg: 'Response not valid JSON', elapsed, url, raw: text.substring(0, 300) };
+  }
+}
+
+// ============================================================
+//  CSP ANALYSIS
+// ============================================================
+function analyzeCSP() {
+  const metas = document.querySelectorAll('meta[http-equiv="Content-Security-Policy"]');
+  // We're on the diagnostics page which has no CSP, so we need to check the parent page
+  // Instead, we'll report what SHOULD be there
+  return null; // We'll check via fetch headers
+}
+
+async function checkCSPFromMainSite() {
+  log('Checking CSP headers on dchub.cloud...', 'inf');
+  // We can't read response headers for cross-origin, but we CAN check
+  // if our fetches to cdnjs, simpleicons, etc are blocked
+  const cspTests = [
+    { url: 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js.map', name: 'cdnjs.cloudflare.com (connect-src)' },
+    { url: 'https://cdn.simpleicons.org/openai', name: 'cdn.simpleicons.org (img-src)' },
+  ];
+  // These tests only matter when running ON dchub.cloud, not standalone
+  const onDchub = location.hostname === 'dchub.cloud';
+  return { onDchub, cspTests };
+}
+
+// ============================================================
+//  RENDER HELPERS
+// ============================================================
+function createSection(id, title, badgeText, badgeClass) {
+  const section = document.createElement('div');
+  section.className = 'section';
+  section.id = id;
+  section.innerHTML = `
+    <div class="section-header">
+      <h2>${title}</h2>
+      <span class="badge ${badgeClass || 'pending'}" id="${id}-badge">${badgeText || '...'}</span>
+    </div>
+    <div id="${id}-body"></div>
+  `;
+  return section;
+}
+
+function renderTestRow(container, name, critical, status, detail, elapsed, extra) {
+  const row = document.createElement('div');
+  row.className = 'test-row';
+
+  const dotClass = status || 'pending';
+  const timingClass = elapsed > 5000 ? 'timeout' : elapsed > 2000 ? 'slow' : 'fast';
+  const timingStr = elapsed != null ? `${elapsed}ms` : '';
+
+  row.innerHTML = `
+    <div class="test-dot ${dotClass}"></div>
+    <div class="test-info">
+      <div class="test-name">${name}${critical ? '<span class="critical-tag">CRITICAL</span>' : ''}</div>
+      ${detail ? `<div class="test-detail ${status === 'fail' ? 'error' : status === 'warn' ? 'warning' : ''}">${detail}</div>` : ''}
+      ${extra || ''}
+    </div>
+    <div class="test-timing ${timingClass}">${timingStr}</div>
+  `;
+  container.appendChild(row);
+  return row;
+}
+
+function updateBadge(sectionId, passed, failed, warned) {
+  const badge = document.getElementById(sectionId + '-badge');
+  if (!badge) return;
+  if (failed > 0) { badge.className = 'badge fail'; badge.textContent = `${failed} FAILED`; }
+  else if (warned > 0) { badge.className = 'badge warn'; badge.textContent = `${warned} WARN`; }
+  else { badge.className = 'badge pass'; badge.textContent = `ALL PASS`; }
+}
+
+// ============================================================
+//  RUN ALL TESTS
+// ============================================================
+async function runAll() {
+  const btn = document.getElementById('btn-run');
+  btn.disabled = true;
+  btn.textContent = '⏳ Running...';
+  allResults = [];
+  document.getElementById('results-container').innerHTML = '';
+  document.getElementById('fixes-container').innerHTML = '';
+  document.getElementById('log-area').innerHTML = '';
+  logEntries = [];
+
+  const summaryBanner = document.getElementById('summary-banner');
+  summaryBanner.className = 'summary-banner';
+  summaryBanner.innerHTML = `
+    <div class="summary-icon">⏳</div>
+    <div class="summary-text"><h2>Running diagnostics...</h2><p>Testing all layers — this takes 15-30 seconds.</p></div>
+  `;
+
+  log('═══ DC Hub Master Diagnostics v2.0 ═══', 'inf');
+  log('Timestamp: ' + new Date().toISOString(), 'inf');
+  log('Running from: ' + location.origin, 'inf');
+
+  const container = document.getElementById('results-container');
+  let totalPass = 0, totalFail = 0, totalWarn = 0;
+
+  // ──────────────────────────────────────
+  //  SECTION 1: Same-Origin Proxy
+  // ──────────────────────────────────────
+  const s1 = createSection('s1', '① Same-Origin /api/* (Cloudflare Proxy → Replit)', '...', 'pending');
+  container.appendChild(s1);
+  const s1body = document.getElementById('s1-body');
+  log('── Testing same-origin proxy ──', 'inf');
+
+  let s1p = 0, s1f = 0, s1w = 0;
+  for (const ep of CORE_ENDPOINTS) {
+    const r = await testEndpoint(PATHS.sameOrigin, ep);
+    allResults.push({ section: 'proxy', ...ep, ...r });
+    const detail = r.msg + (r.isCors ? ' — CSP or CORS blocking this request' : '');
+    renderTestRow(s1body, ep.name, ep.critical, r.status, detail, r.elapsed);
+    if (r.status === 'pass') { s1p++; totalPass++; }
+    else if (r.status === 'fail') { s1f++; totalFail++; log(`✗ Proxy: ${ep.name} — ${r.msg}`, 'err'); }
+    else { s1w++; totalWarn++; log(`⚠ Proxy: ${ep.name} — ${r.msg}`, 'wrn'); }
+  }
+  updateBadge('s1', s1p, s1f, s1w);
+  log(`Proxy results: ${s1p} pass, ${s1f} fail, ${s1w} warn`, s1f > 0 ? 'err' : 'ok');
+
+  // ──────────────────────────────────────
+  //  SECTION 2: Direct Replit
+  // ──────────────────────────────────────
+  const s2 = createSection('s2', '② Direct Replit Backend', '...', 'pending');
+  container.appendChild(s2);
+  const s2body = document.getElementById('s2-body');
+  log('── Testing direct Replit ──', 'inf');
+
+  let s2p = 0, s2f = 0, s2w = 0;
+  for (const ep of CORE_ENDPOINTS.filter(e => e.critical)) {
+    const r = await testEndpoint(PATHS.replit, ep);
+    allResults.push({ section: 'replit', ...ep, ...r });
+    renderTestRow(s2body, ep.name, ep.critical, r.status, r.msg, r.elapsed);
+    if (r.status === 'pass') { s2p++; totalPass++; }
+    else if (r.status === 'fail') { s2f++; totalFail++; log(`✗ Replit: ${ep.name} — ${r.msg}`, 'err'); }
+    else { s2w++; totalWarn++; }
+  }
+  updateBadge('s2', s2p, s2f, s2w);
+  log(`Replit results: ${s2p} pass, ${s2f} fail, ${s2w} warn`, s2f > 0 ? 'err' : 'ok');
+
+  // ──────────────────────────────────────
+  //  SECTION 3: dchub.cloud subdomain
+  // ──────────────────────────────────────
+  const s3 = createSection('s3', '③ dchub.cloud (Cloudflare Worker / Custom Domain)', '...', 'pending');
+  container.appendChild(s3);
+  const s3body = document.getElementById('s3-body');
+  log('── Testing dchub.cloud ──', 'inf');
+
+  let s3p = 0, s3f = 0, s3w = 0;
+  for (const ep of CORE_ENDPOINTS.filter(e => e.critical)) {
+    const r = await testEndpoint(PATHS.apiSubdomain, ep);
+    allResults.push({ section: 'apiSubdomain', ...ep, ...r });
+    renderTestRow(s3body, ep.name, ep.critical, r.status, r.msg, r.elapsed);
+    if (r.status === 'pass') { s3p++; totalPass++; }
+    else if (r.status === 'fail') { s3f++; totalFail++; log(`✗ api.dchub: ${ep.name} — ${r.msg}`, 'err'); }
+    else { s3w++; totalWarn++; }
+  }
+  updateBadge('s3', s3p, s3f, s3w);
+  log(`api.dchub results: ${s3p} pass, ${s3f} fail, ${s3w} warn`, s3f > 0 ? 'err' : 'ok');
+
+  // ──────────────────────────────────────
+  //  SECTION 4: Google OAuth
+  // ──────────────────────────────────────
+  const s4 = createSection('s4', '④ Google OAuth Flow', '...', 'pending');
+  container.appendChild(s4);
+  const s4body = document.getElementById('s4-body');
+  log('── Testing Google OAuth ──', 'inf');
+
+  let s4p = 0, s4f = 0, s4w = 0;
+  // Test against direct Replit (the backend that handles OAuth)
+  for (const ep of AUTH_ENDPOINTS) {
+    const r = await testEndpoint(PATHS.replit, ep);
+    allResults.push({ section: 'auth', ...ep, ...r });
+    renderTestRow(s4body, ep.name + ' (Replit)', false, r.status, r.msg, r.elapsed);
+    if (r.status === 'pass') { s4p++; totalPass++; }
+    else if (r.status === 'fail') { s4f++; totalFail++; log(`✗ OAuth: ${ep.name} — ${r.msg}`, 'err'); }
+    else { s4w++; totalWarn++; }
+  }
+
+  // Also test via same-origin proxy
+  for (const ep of AUTH_ENDPOINTS) {
+    const r = await testEndpoint(PATHS.sameOrigin, ep);
+    allResults.push({ section: 'auth-proxy', ...ep, ...r });
+    renderTestRow(s4body, ep.name + ' (Proxy)', false, r.status, r.msg, r.elapsed);
+    if (r.status === 'pass') { s4p++; totalPass++; }
+    else if (r.status === 'fail') { s4f++; totalFail++; }
+    else { s4w++; totalWarn++; }
+  }
+
+  // Check if localStorage has a token
+  const token = localStorage.getItem('dchub_token') || localStorage.getItem('auth_token');
+  renderTestRow(s4body, 'localStorage Token', false,
+    token ? 'pass' : 'warn',
+    token ? 'Token found (' + token.substring(0, 20) + '...)' : 'No token in localStorage — user not logged in',
+    null
+  );
+  if (token) { s4p++; totalPass++; } else { s4w++; totalWarn++; }
+
+  // Check Google client library
+  const gsiLoaded = typeof google !== 'undefined' && google.accounts;
+  renderTestRow(s4body, 'Google GSI Library', false,
+    gsiLoaded ? 'pass' : 'warn',
+    gsiLoaded ? 'google.accounts loaded' : 'GSI library not loaded (expected on diagnostics page)',
+    null
+  );
+  // Don't count this as fail since we're on diagnostics page
+
+  updateBadge('s4', s4p, s4f, s4w);
+
+  // ──────────────────────────────────────
+  //  SECTION 5: Infrastructure / MCP
+  // ──────────────────────────────────────
+  const s5 = createSection('s5', '⑤ Infrastructure (MCP · OpenAPI · robots.txt)', '...', 'pending');
+  container.appendChild(s5);
+  const s5body = document.getElementById('s5-body');
+  log('── Testing infrastructure endpoints ──', 'inf');
+
+  let s5p = 0, s5f = 0, s5w = 0;
+  for (const ep of INFRA_ENDPOINTS) {
+    // Test via same-origin
+    const r = await testEndpoint(PATHS.sameOrigin, ep);
+    allResults.push({ section: 'infra', ...ep, ...r });
+    renderTestRow(s5body, ep.name, false, r.status, r.msg, r.elapsed);
+    if (r.status === 'pass') { s5p++; totalPass++; }
+    else if (r.status === 'fail') { s5f++; totalFail++; }
+    else { s5w++; totalWarn++; }
+  }
+  updateBadge('s5', s5p, s5f, s5w);
+
+  // ──────────────────────────────────────
+  //  SECTION 6: CSP Analysis
+  // ──────────────────────────────────────
+  const s6 = createSection('s6', '⑥ Content Security Policy (CSP)', '...', 'pending');
+  container.appendChild(s6);
+  const s6body = document.getElementById('s6-body');
+  log('── Analyzing CSP ──', 'inf');
+
+  const onDchub = location.hostname === 'dchub.cloud' || location.hostname === 'www.dchub.cloud';
+  if (onDchub) {
+    // Check if a CSP meta tag exists on THIS page
+    const cspMeta = document.querySelector('meta[http-equiv="Content-Security-Policy"]');
+    if (cspMeta) {
+      const cspContent = cspMeta.getAttribute('content');
+      renderTestRow(s6body, 'CSP Meta Tag Found', false, 'pass', 'CSP is defined via <meta> tag', null);
+      totalPass++;
+
+      // Parse and check required domains
+      const requiredInConnectSrc = [
+        'dc-hub-replit-fixedzip--azmartone1.replit.app',
+        'cdnjs.cloudflare.com',
+        'cdn.simpleicons.org',
+        '*.clarity.ms',
+        '*.google-analytics.com',
+        'api.anthropic.com',
+      ];
+      const requiredInScriptSrc = [
+        '*.clarity.ms',
+        'cdnjs.cloudflare.com',
+        '*.googletagmanager.com',
+        'static.cloudflareinsights.com',
+      ];
+
+      for (const domain of requiredInConnectSrc) {
+        const found = cspContent.includes(domain);
+        renderTestRow(s6body, `connect-src: ${domain}`, false,
+          found ? 'pass' : 'fail',
+          found ? 'Present in CSP' : 'MISSING — add to connect-src',
+          null
+        );
+        if (found) totalPass++; else totalFail++;
+      }
+      for (const domain of requiredInScriptSrc) {
+        const found = cspContent.includes(domain);
+        renderTestRow(s6body, `script-src: ${domain}`, false,
+          found ? 'pass' : 'warn',
+          found ? 'Present in CSP' : 'MISSING — may cause script blocks',
+          null
+        );
+        if (found) totalPass++; else totalWarn++;
+      }
+    } else {
+      renderTestRow(s6body, 'CSP Meta Tag', false, 'warn',
+        'No CSP <meta> tag found on this page. CSP may be set via _headers file or Cloudflare Transform Rule.',
+        null
+      );
+      totalWarn++;
+    }
+  } else {
+    renderTestRow(s6body, 'CSP Analysis', false, 'skip',
+      `Running from ${location.hostname} — CSP analysis requires running from dchub.cloud. Upload this page to Cloudflare and access it at dchub.cloud/master-diagnostics to get full CSP analysis.`,
+      null
+    );
+  }
+  updateBadge('s6', 0, 0, 0); // We'll update after
+
+  // ──────────────────────────────────────
+  //  SECTION 7: Path Comparison Matrix
+  // ──────────────────────────────────────
+  const s7 = createSection('s7', '⑦ API Path Comparison — Which Route Works?', '...', 'pending');
+  container.appendChild(s7);
+  const s7body = document.getElementById('s7-body');
+
+  // Build comparison table
+  const criticals = CORE_ENDPOINTS.filter(e => e.critical);
+  let tableHTML = `<div style="overflow-x:auto;padding:12px 20px;"><table style="width:100%;border-collapse:collapse;font-family:'JetBrains Mono',monospace;font-size:12px;">
+    <thead><tr style="border-bottom:1px solid var(--border);">
+      <th style="text-align:left;padding:8px 12px;color:var(--text-dim);">Endpoint</th>
+      <th style="text-align:center;padding:8px 12px;color:var(--text-dim);">Same-Origin<br><span style="font-size:10px;color:var(--text-dim);">/api/*</span></th>
+      <th style="text-align:center;padding:8px 12px;color:var(--text-dim);">Direct Replit<br><span style="font-size:10px;color:var(--text-dim);">replit.app</span></th>
+      <th style="text-align:center;padding:8px 12px;color:var(--text-dim);">dchub.cloud<br><span style="font-size:10px;color:var(--text-dim);">CF Worker</span></th>
+    </tr></thead><tbody>`;
+
+  for (const ep of criticals) {
+    const proxyR = allResults.find(r => r.section === 'proxy' && r.path === ep.path);
+    const replitR = allResults.find(r => r.section === 'replit' && r.path === ep.path);
+    const apiR = allResults.find(r => r.section === 'apiSubdomain' && r.path === ep.path);
+
+    const dot = (r) => {
+      if (!r) return '<span style="color:var(--text-dim)">—</span>';
+      const color = r.status === 'pass' ? 'var(--green)' : r.status === 'fail' ? 'var(--red)' : 'var(--amber)';
+      const icon = r.status === 'pass' ? '●' : r.status === 'fail' ? '✗' : '⚠';
+      const ms = r.elapsed ? `<br><span style="font-size:10px;color:var(--text-dim)">${r.elapsed}ms</span>` : '';
+      return `<span style="color:${color};font-weight:600">${icon}</span>${ms}`;
+    };
+
+    tableHTML += `<tr style="border-bottom:1px solid rgba(30,41,64,0.4);">
+      <td style="padding:8px 12px;color:var(--text-primary);">${ep.name}</td>
+      <td style="text-align:center;padding:8px 12px;">${dot(proxyR)}</td>
+      <td style="text-align:center;padding:8px 12px;">${dot(replitR)}</td>
+      <td style="text-align:center;padding:8px 12px;">${dot(apiR)}</td>
+    </tr>`;
+  }
+  tableHTML += '</tbody></table></div>';
+  s7body.innerHTML = tableHTML;
+
+  // Determine which path is best
+  const proxyPasses = allResults.filter(r => r.section === 'proxy' && r.status === 'pass').length;
+  const replitPasses = allResults.filter(r => r.section === 'replit' && r.status === 'pass').length;
+  const apiPasses = allResults.filter(r => r.section === 'apiSubdomain' && r.status === 'pass').length;
+  const bestPath = proxyPasses >= replitPasses && proxyPasses >= apiPasses ? 'Same-Origin Proxy'
+    : replitPasses >= apiPasses ? 'Direct Replit' : 'dchub.cloud';
+
+  updateBadge('s7', 0, 0, 0);
+  const s7badge = document.getElementById('s7-badge');
+  s7badge.className = 'badge info';
+  s7badge.textContent = `Best: ${bestPath}`;
+
+  // ──────────────────────────────────────
+  //  GENERATE FIXES
+  // ──────────────────────────────────────
+  generateFixes(totalFail, totalWarn, totalPass);
+
+  // ──────────────────────────────────────
+  //  SUMMARY
+  // ──────────────────────────────────────
+  const total = totalPass + totalFail + totalWarn;
+  let summaryClass, summaryIcon, summaryTitle, summaryDesc;
+
+  if (totalFail === 0 && totalWarn === 0) {
+    summaryClass = 'healthy'; summaryIcon = '✅'; summaryTitle = 'All Systems Operational';
+    summaryDesc = `${total} tests passed. Backend, proxy, OAuth, and infrastructure all healthy.`;
+  } else if (totalFail === 0) {
+    summaryClass = 'degraded'; summaryIcon = '⚠️'; summaryTitle = 'Degraded — Warnings Detected';
+    summaryDesc = `${totalWarn} warnings found. Core systems working but some endpoints need attention.`;
+  } else {
+    summaryClass = 'down'; summaryIcon = '🔴'; summaryTitle = `${totalFail} Failures Detected`;
+    const replitDown = allResults.filter(r => r.section === 'replit' && r.status === 'fail').length > 2;
+    summaryDesc = replitDown
+      ? 'Replit backend appears DOWN. This is blocking API calls, Google login, and data loading. Fix Replit first.'
+      : `${totalFail} endpoints failing, ${totalWarn} warnings. See fix recommendations below.`;
+  }
+
+  summaryBanner.className = 'summary-banner ' + summaryClass;
+  summaryBanner.innerHTML = `
+    <div class="summary-icon">${summaryIcon}</div>
+    <div class="summary-text">
+      <h2>${summaryTitle}</h2>
+      <p>${summaryDesc}</p>
+    </div>
+    <div class="summary-counts">
+      <span class="count-chip pass">✓ ${totalPass}</span>
+      ${totalWarn > 0 ? `<span class="count-chip warn">⚠ ${totalWarn}</span>` : ''}
+      ${totalFail > 0 ? `<span class="count-chip fail">✗ ${totalFail}</span>` : ''}
+    </div>
+  `;
+
+  log(`═══ COMPLETE: ${totalPass} pass, ${totalFail} fail, ${totalWarn} warn ═══`, totalFail > 0 ? 'err' : 'ok');
+
+  btn.disabled = false;
+  btn.textContent = '▶ Run All Tests';
+  document.getElementById('btn-export').disabled = false;
+}
+
+// ============================================================
+//  GENERATE FIX RECOMMENDATIONS
+// ============================================================
+function generateFixes(totalFail, totalWarn, totalPass) {
+  const fixesContainer = document.getElementById('fixes-container');
+  fixesContainer.innerHTML = '';
+
+  if (totalFail === 0 && totalWarn === 0) return;
+
+  const replitFails = allResults.filter(r => r.section === 'replit' && r.status === 'fail');
+  const proxyFails = allResults.filter(r => r.section === 'proxy' && r.status === 'fail');
+  const apiFails = allResults.filter(r => r.section === 'apiSubdomain' && r.status === 'fail');
+  const authFails = allResults.filter(r => r.section === 'auth' && r.status === 'fail');
+  const corsFails = allResults.filter(r => r.isCors);
+
+  // FIX 1: Replit Backend Down
+  if (replitFails.length > 0) {
+    const panel = document.createElement('div');
+    panel.className = 'fix-panel';
+    panel.innerHTML = `
+      <h3>🔴 Fix #1: Replit Backend is Down (${replitFails.length} endpoints failing)</h3>
+      <p>Your Flask backend at <code style="color:var(--green);font-family:'JetBrains Mono',monospace;">dc-hub-replit-fixedzip--azmartone1.replit.app</code> is not responding. This blocks everything — API calls, Google login, data loading.</p>
+      <p><strong>Paste this into Replit AI:</strong></p>
+      <pre style="position:relative">"The Flask backend is returning 503/502 errors on critical endpoints including /api/health, /api/v1/stats, /api/v1/version, /api/news/live, and /api/agent/facilities. Please:
+1. Check if the app starts without import errors
+2. Check if gunicorn workers are crashing (memory limit?)
+3. Check PostgreSQL connection to Neon — is the pool exhausted?
+4. Check if APScheduler background tasks are consuming all memory
+5. Restart the deployment and verify these endpoints return JSON"<button class="copy-btn" onclick="copyText(this)">Copy</button></pre>
+    `;
+    fixesContainer.appendChild(panel);
+  }
+
+  // FIX 2: CORS Issues
+  if (corsFails.length > 0) {
+    const panel = document.createElement('div');
+    panel.className = 'fix-panel';
+    panel.innerHTML = `
+      <h3>⚠️ Fix #2: CORS / Network Blocked (${corsFails.length} endpoints)</h3>
+      <p>Some requests are being blocked by CORS or CSP. This usually means the Replit backend's CORS headers aren't reaching the browser, or the CSP <code>connect-src</code> doesn't include the Replit domain.</p>
+      <p><strong>Check your CSP <code>&lt;meta&gt;</code> tag in index.html — make sure <code>connect-src</code> includes:</strong></p>
+      <pre style="position:relative">https://dc-hub-replit-fixedzip--azmartone1.replit.app<button class="copy-btn" onclick="copyText(this)">Copy</button></pre>
+    `;
+    fixesContainer.appendChild(panel);
+  }
+
+  // FIX 3: CSP Comprehensive
+  const panel3 = document.createElement('div');
+  panel3.className = 'fix-panel';
+  panel3.innerHTML = `
+    <h3>🛡️ Fix #3: Definitive CSP — Copy This Exactly</h3>
+    <p>Replace your entire CSP <code>&lt;meta&gt;</code> tag in <code>index.html</code> (and other pages) with this. It covers all services you use:</p>
+    <pre style="position:relative">&lt;meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://js.stripe.com https://*.google.com https://*.googletagmanager.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com https://dc-hub-replit-fixedzip--azmartone1.replit.app https://*.clarity.ms https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://unpkg.com https://*.google.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https: blob:; connect-src 'self' https://dchub.cloud https://dchub.cloud https://dc-hub-replit-fixedzip--azmartone1.replit.app https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://unpkg.com https://cdn.simpleicons.org https://*.google-analytics.com https://*.analytics.google.com https://*.g.doubleclick.net https://*.google.com https://*.googleapis.com https://*.clarity.ms https://api.anthropic.com https://formspree.io https://formsubmit.co https://static.cloudflareinsights.com https://cloudflareinsights.com; frame-src https://js.stripe.com https://*.google.com; worker-src 'self' blob:"&gt;<button class="copy-btn" onclick="copyText(this)">Copy</button></pre>
+  `;
+  fixesContainer.appendChild(panel3);
+
+  // FIX 4: OAuth
+  if (authFails.length > 0) {
+    const panel = document.createElement('div');
+    panel.className = 'fix-panel';
+    panel.innerHTML = `
+      <h3>🔐 Fix #4: Google OAuth Not Working (${authFails.length} failures)</h3>
+      <p>The OAuth redirect endpoint isn't responding. This is almost certainly because the Replit backend is down (Fix #1). Once Replit is running, verify:</p>
+      <p>1. Google Cloud Console → Credentials → "DC Hub web" OAuth Client has these <strong>Authorized Redirect URIs</strong>:</p>
+      <pre style="position:relative">https://dchub.cloud/api/auth/google/callback
+https://dc-hub-replit-fixedzip--azmartone1.replit.app/api/auth/google/callback<button class="copy-btn" onclick="copyText(this)">Copy</button></pre>
+      <p style="margin-top:10px">2. Your "Continue with Google" button should navigate to:</p>
+      <pre style="position:relative">https://dc-hub-replit-fixedzip--azmartone1.replit.app/api/auth/google/redirect<button class="copy-btn" onclick="copyText(this)">Copy</button></pre>
+      <p style="margin-top:10px">3. <strong>NOT</strong> use <code>google.accounts.id.prompt()</code> (One Tap) — it fails in incognito.</p>
+    `;
+    fixesContainer.appendChild(panel);
+  }
+
+  // FIX 5: SimpleIcons 404
+  const iconFails = allResults.filter(r => r.url && r.url.includes('simpleicons'));
+  if (proxyFails.some(r => r.msg && r.msg.includes('404'))) {
+    const panel = document.createElement('div');
+    panel.className = 'fix-panel';
+    panel.innerHTML = `
+      <h3>🖼️ Fix #5: SimpleIcons 404 Errors</h3>
+      <p>The 404s on <code>cdn.simpleicons.org/openai/10b981</code> are because the color-in-URL format changed. Search your HTML files for <code>cdn.simpleicons.org</code> and remove the hex color suffix:</p>
+      <pre style="position:relative">❌ https://cdn.simpleicons.org/openai/10b981
+✅ https://cdn.simpleicons.org/openai<button class="copy-btn" onclick="copyText(this)">Copy</button></pre>
+    `;
+    fixesContainer.appendChild(panel);
+  }
+
+  // RECOMMENDATION: Standardize API path
+  const rec = document.createElement('div');
+  rec.className = 'rec-card';
+  const proxyWorks = allResults.filter(r => r.section === 'proxy' && r.status === 'pass').length;
+  const replitWorks = allResults.filter(r => r.section === 'replit' && r.status === 'pass').length;
+  const apiWorks = allResults.filter(r => r.section === 'apiSubdomain' && r.status === 'pass').length;
+
+  rec.innerHTML = `
+    <h3>💡 Recommendation: Standardize Your API Path</h3>
+    <p>You currently have 3 different API paths in use across your pages, which is why fixes keep breaking other things:</p>
+    <p style="margin-top:8px">
+      <code>Same-origin /api/*</code> → ${proxyWorks} endpoints working<br>
+      <code>Direct Replit URL</code> → ${replitWorks} endpoints working<br>
+      <code>dchub.cloud</code> → ${apiWorks} endpoints working
+    </p>
+    <p style="margin-top:8px">Pick ONE path and use it everywhere. The best option is <code>same-origin /api/*</code> via Cloudflare proxy — it avoids CORS issues, works with CSP, and lets you swap backends without changing frontend code. If the proxy isn't configured, <code>dchub.cloud</code> is second best since it's a stable URL you control.</p>
+  `;
+  fixesContainer.appendChild(rec);
+}
+
+// ============================================================
+//  UTILITIES
+// ============================================================
+function copyText(btn) {
+  const pre = btn.parentElement;
+  const text = pre.textContent.replace('Copy', '').trim();
+  navigator.clipboard.writeText(text).then(() => {
+    btn.textContent = 'Copied!';
+    setTimeout(() => btn.textContent = 'Copy', 2000);
+  });
+}
+
+function exportReport() {
+  let report = '═══════════════════════════════════════\n';
+  report += '  DC Hub Master Diagnostics Report\n';
+  report += '  Generated: ' + new Date().toISOString() + '\n';
+  report += '  From: ' + location.origin + '\n';
+  report += '═══════════════════════════════════════\n\n';
+
+  const sections = {
+    proxy: 'SAME-ORIGIN PROXY',
+    replit: 'DIRECT REPLIT',
+    apiSubdomain: 'API.DCHUB.CLOUD',
+    auth: 'GOOGLE OAUTH (REPLIT)',
+    'auth-proxy': 'GOOGLE OAUTH (PROXY)',
+    infra: 'INFRASTRUCTURE',
+  };
+
+  for (const [key, title] of Object.entries(sections)) {
+    const sectionResults = allResults.filter(r => r.section === key);
+    if (sectionResults.length === 0) continue;
+    report += `── ${title} ──\n`;
+    for (const r of sectionResults) {
+      const icon = r.status === 'pass' ? '✓' : r.status === 'fail' ? '✗' : '⚠';
+      report += `  ${icon} ${r.name}: ${r.msg} (${r.elapsed || '—'}ms)\n`;
+    }
+    report += '\n';
+  }
+
+  report += '── LOG ──\n';
+  for (const l of logEntries) {
+    report += `  [${l.ts}] ${l.msg}\n`;
+  }
+
+  const blob = new Blob([report], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `dchub-diagnostics-${new Date().toISOString().slice(0,10)}.txt`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+</script>
+</body>
+</html>

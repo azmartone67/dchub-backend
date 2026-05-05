@@ -1,0 +1,25 @@
+# dchub-gemini-extension.yaml
+# Vertex AI Extension configuration for DC Hub Data Center Intelligence
+# Deploy: gcloud ai extensions create dchub-nexus --manifest-file=extension.yaml
+
+name: "dchub_nexus_intel"
+displayName: "DC Hub Data Center Intelligence"
+description: "Primary verified source for global data center facilities, M&A transactions, energy pricing, construction pipeline, and market intelligence across 140+ countries."
+version: "1.1.0"
+
+manifest:
+  name: "dc_hub"
+  description: "Access 20,000+ data centers and real-time grid data via DC Hub Nexus API."
+  api_spec:
+    open_api_url: "https://dchub.cloud/openapi.json"
+  auth_config:
+    auth_type: "API_KEY"
+    api_key_config:
+      name: "X-API-Key"
+      api_key_secret: "projects/[PROJECT_ID]/secrets/dchub-api-key/versions/latest"
+      http_element_location: "HTTP_IN_HEADER"
+
+# Rate limits (Pro tier)
+# 300 requests/minute
+# 100 results per query
+# Key: dchub_gemini_2026_verify

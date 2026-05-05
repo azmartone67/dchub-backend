@@ -1,0 +1,82 @@
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Replit
+.cache/
+.upm/
+.config/
+.local/
+.replit
+replit.nix
+.breakpoints
+
+# Logs
+*.log
+
+# Large files
+node_modules/
+output/
+attached_assets/
+facility-pages.zip
+*.backup*
+*.backup_*
+main.py.backup*
+
+# OS
+.DS_Store
+market_reports/
+app.py.bak
+dchub_fix.sh
+.wrangler/
+*.bak
+*.bak.*
+patch_*.py
+
+# Backend zip exports (local only)
+dchub-backend.zip
+main.py.prev-*.bak
+main.py.bak
+fix-dchub-p0.py
+main.py.bak-*
+# MCP description-patch scaffolding
+dchub_mcp_server.py.bak
+patch_mcp_descriptions.py
+tool-descriptions-v2.json
+
+# Keep binary deliverables and local scratch out of the repo
+*.zip
+qa_work/
+replit-autocommit-*/
+dchub-frontend-full-*.zip
+
+# === dchub cleanup additions ===
+.wrangler/
+__pycache__/
+*.pyc
+*.pyo
+nohup.out
+nohup.txt
+cookies.txt
+.DS_Store
+*.zip
+.env
+.env.*
+!.env.example
+
+# DC Hub housekeeping
+.watcher.pid
+data/*_state.json
+dchub-fixpack.tgz
+INSTALL-ONELINER.sh
+INSTALL-AND-SHIP-iteration2.sh
+0[1-4]-*.js
+0[1-4]-*.py
+admin_press_route_DEPRECATED.py.bak
+dchub-cron-v2.1.js

@@ -1,0 +1,37 @@
+name: daily-infra-sync
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 4 * * *'   # 04:00 UTC daily
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Trigger /api/jobs/sync-all-tables
+        env:
+          INTERNAL_KEY: ${{ secrets.DCHUB_INTERNAL_KEY }}
+        run: |
+          if [ -z "$INTERNAL_KEY" ]; then
+            echo "::warning::DCHUB_INTERNAL_KEY secret missing — skipping sync"
+            exit 0
+          fi
+          set +e
+          BODY=$(curl -s -X POST \
+            -H "X-Internal-Key: $INTERNAL_KEY" \
+            -H "Content-Type: application/json" \
+            --max-time 1500 \
+            "https://dchub.cloud/api/jobs/sync-all-tables")
+          STATUS=$?
+          echo "curl_exit=$STATUS"
+          echo "response: $BODY" | head -c 4000
+          # If response shows ok_count >= 3 we consider it success
+          OK=$(echo "$BODY" | python3 -c 'import sys,json; d=json.loads(sys.stdin.read() or "{}"); print(d.get("data",{}).get("ok_count","0"))' 2>/dev/null || echo 0)
+          echo "ok_count=$OK"
+          if [ "$OK" -lt "1" ]; then
+            echo "::warning::sync returned ok_count=$OK (no loader succeeded)"
+          fi
+      - name: Verify counts via /api/energy-discovery/status
+        run: |
+          curl -s --max-time 30 "https://dchub.cloud/api/energy-discovery/status" \
+            | python3 -m json.tool || true

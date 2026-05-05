@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Get API Access - DC Hub Nexus</title>
+    <meta name="description" content="Sign up for free API access to DC Hub Nexus - 50,000+ data centers, M&A deals, construction pipeline data">
+    <link rel="icon" type="image/svg+xml" href="/icons/icon.svg">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Inter', sans-serif;
+            background: linear-gradient(135deg, #0a0a0f 0%, #1a1a2e 50%, #0a0a0f 100%);
+            min-height: 100vh;
+            color: #e0e0e0;
+        }
+        .container {
+            max-width: 500px;
+            margin: 0 auto;
+            padding: 40px 20px;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+        .logo {
+            font-size: 28px;
+            font-weight: 700;
+            color: #00d4ff;
+            margin-bottom: 10px;
+        }
+        .tagline {
+            color: #888;
+            font-size: 14px;
+        }
+        .card {
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 16px;
+            padding: 32px;
+        }
+        h1 {
+            font-size: 24px;
+            margin-bottom: 8px;
+            color: #fff;
+        }
+        .subtitle {
+            color: #888;
+            margin-bottom: 24px;
+            font-size: 14px;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-size: 14px;
+            color: #aaa;
+        }
+        input {
+            width: 100%;
+            padding: 14px 16px;
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 8px;
+            background: rgba(0,0,0,0.3);
+            color: #fff;
+            font-size: 16px;
+            transition: border-color 0.2s;
+        }
+        input:focus {
+            outline: none;
+            border-color: #00d4ff;
+        }
+        input::placeholder {
+            color: #555;
+        }
+        button {
+            width: 100%;
+            padding: 16px;
+            background: linear-gradient(135deg, #00d4ff 0%, #0099cc 100%);
+            border: none;
+            border-radius: 8px;
+            color: #000;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(0,212,255,0.3);
+        }
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .features {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            margin-top: 24px;
+            padding-top: 24px;
+            border-top: 1px solid rgba(255,255,255,0.1);
+        }
+        .feature {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            color: #aaa;
+        }
+        .feature-icon {
+            color: #00d4ff;
+        }
+        .result {
+            margin-top: 24px;
+            padding: 20px;
+            background: rgba(0,212,255,0.1);
+            border: 1px solid rgba(0,212,255,0.3);
+            border-radius: 8px;
+            display: none;
+        }
+        .result.show { display: block; }
+        .result.error {
+            background: rgba(255,100,100,0.1);
+            border-color: rgba(255,100,100,0.3);
+        }
+        .api-key {
+            font-family: monospace;
+            background: rgba(0,0,0,0.4);
+            padding: 12px;
+            border-radius: 6px;
+            margin: 12px 0;
+            word-break: break-all;
+            font-size: 14px;
+            color: #00ff88;
+        }
+        .copy-btn {
+            background: rgba(255,255,255,0.1);
+            border: 1px solid rgba(255,255,255,0.2);
+            color: #fff;
+            padding: 8px 16px;
+            font-size: 13px;
+            margin-top: 8px;
+        }
+        .stats {
+            display: flex;
+            justify-content: space-around;
+            margin-top: 32px;
+            text-align: center;
+        }
+        .stat-value {
+            font-size: 24px;
+            font-weight: 700;
+            color: #00d4ff;
+        }
+        .stat-label {
+            font-size: 12px;
+            color: #666;
+            margin-top: 4px;
+        }
+    </style>
+    <script src="/static/js/api-config.js"></script>
+<script>
+(function() {
+    var b = window.DCHUB_API_BASE || '';
+    window.API_BASE = b;
+    window.DCHUB_CONFIG = { apiBase: b, version: 'v93' };
+    if (!window.dchubFetch) {
+        window.dchubFetch = function(path, opts) {
+            opts = opts || {};
+            if (b) { opts.mode = opts.mode || 'cors'; opts.credentials = opts.credentials || 'include'; }
+            return fetch(b + path, opts);
+        };
+    }
+})();
+</script>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="logo">DC Hub Nexus</div>
+            <div class="tagline">Data Center Intelligence Platform</div>
+        </div>
+        
+        <div class="card">
+            <h1>Get Free API Access</h1>
+            <p class="subtitle">Instant access to 50,000+ data center facilities, M&A deals, and market intelligence</p>
+            
+            <form id="signupForm">
+                <div class="form-group">
+                    <label>Email Address</label>
+                    <input type="email" id="email" placeholder="you@company.com" required>
+                </div>
+                <div class="form-group">
+                    <label>Company / Organization</label>
+                    <input type="text" id="company" placeholder="Your company name" required>
+                </div>
+                <div class="form-group">
+                    <label>Use Case (optional)</label>
+                    <input type="text" id="usecase" placeholder="e.g., Research, Site Selection, AI Training">
+                </div>
+                <button type="submit" id="submitBtn">Generate API Key</button>
+            </form>
+            
+            <div class="result" id="result">
+                <strong>Your API Key:</strong>
+                <div class="api-key" id="apiKey"></div>
+                <button class="copy-btn" onclick="copyKey()">Copy to Clipboard</button>
+                <p style="margin-top: 16px; font-size: 13px; color: #888;">
+                    Save this key securely. Include it in requests as:<br>
+                    <code style="color: #00d4ff;">X-API-Key: your-key</code>
+                </p>
+            </div>
+            
+            <div class="features">
+                <div class="feature"><span class="feature-icon">&#10003;</span> 50,000+ Facilities</div>
+                <div class="feature"><span class="feature-icon">&#10003;</span> Real-time News</div>
+                <div class="feature"><span class="feature-icon">&#10003;</span> M&A Deal Tracking</div>
+                <div class="feature"><span class="feature-icon">&#10003;</span> Construction Pipeline</div>
+                <div class="feature"><span class="feature-icon">&#10003;</span> Infrastructure Data</div>
+                <div class="feature"><span class="feature-icon">&#10003;</span> 40+ Gov Data Layers</div>
+            </div>
+        </div>
+        
+        <div class="stats">
+            <div>
+                <div class="stat-value">50K+</div>
+                <div class="stat-label">Facilities</div>
+            </div>
+            <div>
+                <div class="stat-value">21 GW</div>
+                <div class="stat-label">Pipeline</div>
+            </div>
+            <div>
+                <div class="stat-value">$51B+</div>
+                <div class="stat-label">Deals Tracked</div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        let generatedKey = '';
+        
+        document.getElementById('signupForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const btn = document.getElementById('submitBtn');
+            btn.disabled = true;
+            btn.textContent = 'Generating...';
+            
+            const data = {
+                email: document.getElementById('email').value,
+                company: document.getElementById('company').value,
+                usecase: document.getElementById('usecase').value
+            };
+            
+            try {
+                const resp = await dchubFetch('/api/signup', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+                const result = await resp.json();
+                
+                if (result.success) {
+                    generatedKey = result.api_key;
+                    document.getElementById('apiKey').textContent = result.api_key;
+                    document.getElementById('result').classList.add('show');
+                    document.getElementById('result').classList.remove('error');
+                    btn.textContent = 'Key Generated!';
+                } else {
+                    document.getElementById('apiKey').textContent = result.error || 'Signup failed';
+                    document.getElementById('result').classList.add('show', 'error');
+                    btn.textContent = 'Try Again';
+                    btn.disabled = false;
+                }
+            } catch (err) {
+                document.getElementById('apiKey').textContent = 'Network error - please try again';
+                document.getElementById('result').classList.add('show', 'error');
+                btn.textContent = 'Try Again';
+                btn.disabled = false;
+            }
+        });
+        
+        function copyKey() {
+            navigator.clipboard.writeText(generatedKey);
+            document.querySelector('.copy-btn').textContent = 'Copied!';
+            setTimeout(() => {
+                document.querySelector('.copy-btn').textContent = 'Copy to Clipboard';
+            }, 2000);
+        }
+    </script>
+</body>
+</html>

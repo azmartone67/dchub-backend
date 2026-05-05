@@ -1,0 +1,841 @@
+{
+  "stats": {
+    "total_runs": 426,
+    "items_learned": 38596,
+    "improvements_made": 0,
+    "apis_discovered": 0,
+    "quality_fixes": 0,
+    "last_run": "2026-03-14T22:02:46.923528"
+  },
+  "knowledge": {
+    "operators": {
+      "Digital Realty": {
+        "facilities": 356
+      },
+      "Equinix, Inc.": {
+        "facilities": 219
+      },
+      "Equinix": {
+        "facilities": 217
+      },
+      "Amazon Web Services": {
+        "facilities": 127
+      },
+      "Flexential": {
+        "facilities": 101
+      },
+      "CyrusOne": {
+        "facilities": 85
+      },
+      "Microsoft": {
+        "facilities": 68
+      },
+      "DataBank, Ltd.": {
+        "facilities": 63
+      },
+      "DataBank": {
+        "facilities": 56
+      },
+      "Cogent Communications, Inc.": {
+        "facilities": 55
+      },
+      "Vantage": {
+        "facilities": 55
+      },
+      "Centersquare": {
+        "facilities": 54
+      },
+      "EXA Infrastructure": {
+        "facilities": 54
+      },
+      "CoreSite": {
+        "facilities": 53
+      },
+      "Lumen Technologies Inc": {
+        "facilities": 49
+      },
+      "Chorus New Zealand Limited": {
+        "facilities": 48
+      },
+      "Cologix, Inc.": {
+        "facilities": 43
+      },
+      "EdgeConneX Inc.": {
+        "facilities": 42
+      },
+      "Meta": {
+        "facilities": 40
+      },
+      "Flexential Corp.": {
+        "facilities": 39
+      },
+      "NTT": {
+        "facilities": 38
+      },
+      "TierPoint, LLC": {
+        "facilities": 38
+      },
+      "ST Telemedia Global Data Centres (STT GDC)": {
+        "facilities": 35
+      },
+      "Quality Technology Services": {
+        "facilities": 34
+      },
+      "CyrusOne Inc.": {
+        "facilities": 33
+      },
+      "nLighten HQ BV": {
+        "facilities": 33
+      },
+      "Google": {
+        "facilities": 32
+      },
+      "H5 Data Centers": {
+        "facilities": 32
+      },
+      "NTT DATA's Global Data Centers division": {
+        "facilities": 29
+      },
+      "Telehouse - Global Data Centers": {
+        "facilities": 28
+      },
+      "atNorth": {
+        "facilities": 28
+      },
+      "C\u00e1mara Argentina de Internet (CABASE)": {
+        "facilities": 27
+      },
+      "Sify Technologies Limited": {
+        "facilities": 27
+      },
+      "KIO": {
+        "facilities": 26
+      },
+      "Ascenty DataCenters e Telecom": {
+        "facilities": 25
+      },
+      "QTS Realty Trust, Inc.": {
+        "facilities": 25
+      },
+      "GlobalConnect Group": {
+        "facilities": 24
+      },
+      "National Internet Exchange of India": {
+        "facilities": 24
+      },
+      "365 Data Centers": {
+        "facilities": 23
+      },
+      "Keppel Data Centres Holding Pte Ltd": {
+        "facilities": 23
+      },
+      "PT Telekomunikasi Indonesia Int": {
+        "facilities": 23
+      },
+      "Vocus Group": {
+        "facilities": 23
+      },
+      "euNetworks Group": {
+        "facilities": 23
+      },
+      "AtlasEdge": {
+        "facilities": 22
+      },
+      "Colocation America Corporation": {
+        "facilities": 22
+      },
+      "Colt Technology Services Group": {
+        "facilities": 22
+      },
+      "Iron Mountain Data Centers": {
+        "facilities": 22
+      },
+      "Telxius Cable": {
+        "facilities": 22
+      },
+      "Pulsant": {
+        "facilities": 21
+      },
+      "Vantage Data Centers": {
+        "facilities": 21
+      },
+      "Crown Castle Inc.": {
+        "facilities": 20
+      },
+      "BR.Digital": {
+        "facilities": 19
+      },
+      "Ishan Netsol Pvt Ltd": {
+        "facilities": 19
+      },
+      "Cirion": {
+        "facilities": 18
+      },
+      "Lumen Technologies": {
+        "facilities": 18
+      },
+      "NEXTDC": {
+        "facilities": 18
+      },
+      "EdgeConneX": {
+        "facilities": 17
+      },
+      "NTT  DOCOMO BUSINESS (Data Centers)": {
+        "facilities": 17
+      },
+      "CtrlS Datacenters Ltd": {
+        "facilities": 16
+      },
+      "Princeton Digital Group": {
+        "facilities": 16
+      },
+      "Asosiasi Penyelenggara Jasa Internet Indonesia": {
+        "facilities": 15
+      },
+      "Etix Everywhere": {
+        "facilities": 15
+      },
+      "Expedient": {
+        "facilities": 15
+      },
+      "Orange Polska Spolka Akcyjna": {
+        "facilities": 15
+      },
+      "Stack Infrastructure": {
+        "facilities": 15
+      },
+      "Switch": {
+        "facilities": 15
+      },
+      "center3": {
+        "facilities": 15
+      },
+      "eStruxture Data Centers Inc.": {
+        "facilities": 15
+      },
+      "CDC Data Centres": {
+        "facilities": 14
+      },
+      "NorthC Datacenters": {
+        "facilities": 14
+      },
+      "T5 Data Centers": {
+        "facilities": 14
+      },
+      "VPLS": {
+        "facilities": 14
+      },
+      "ATC HOLDING FIBRA MEXICO": {
+        "facilities": 13
+      },
+      "ITENOS GmbH": {
+        "facilities": 13
+      },
+      "NTTCINS": {
+        "facilities": 13
+      },
+      "Penta C.V.": {
+        "facilities": 13
+      },
+      "Scala Data Centers": {
+        "facilities": 13
+      },
+      "Canberra Data Centres": {
+        "facilities": 12
+      },
+      "DartPoints, LLC": {
+        "facilities": 12
+      },
+      "Digital Edge DC": {
+        "facilities": 12
+      },
+      "Global Switch": {
+        "facilities": 12
+      },
+      "Nordavind DC Sites": {
+        "facilities": 12
+      },
+      "Nxtra Data Ltd": {
+        "facilities": 12
+      },
+      "Relined Fiber Network": {
+        "facilities": 12
+      },
+      "UltraEdge": {
+        "facilities": 12
+      },
+      "Leading Edge Data Centres": {
+        "facilities": 11
+      },
+      "Neterra Ltd.": {
+        "facilities": 11
+      },
+      "NextDC": {
+        "facilities": 11
+      },
+      "Serverfarm": {
+        "facilities": 11
+      },
+      "TATA Communications Ltd": {
+        "facilities": 11
+      },
+      "Telekom Malaysia Berhad (TM)": {
+        "facilities": 11
+      },
+      "Verizon Communications, Inc.": {
+        "facilities": 11
+      },
+      "ark data centers": {
+        "facilities": 11
+      },
+      "Advanced Communications Technology": {
+        "facilities": 10
+      },
+      "Datacenter United": {
+        "facilities": 10
+      },
+      "EdgeUno, Inc.": {
+        "facilities": 10
+      },
+      "Interxion": {
+        "facilities": 10
+      },
+      "Khazna Data Centers Limited": {
+        "facilities": 10
+      },
+      "Netrality Data Centers": {
+        "facilities": 10
+      },
+      "RagingWire Data Centers - NTT": {
+        "facilities": 10
+      },
+      "Sabey Data Centers": {
+        "facilities": 10
+      },
+      "Telehouse": {
+        "facilities": 10
+      },
+      "Vitro Inc.": {
+        "facilities": 10
+      },
+      "Zayo Group": {
+        "facilities": 10
+      },
+      "Ziply Fiber": {
+        "facilities": 10
+      },
+      "kt cloud Co., Ltd": {
+        "facilities": 10
+      },
+      "Aligned Data Centers": {
+        "facilities": 9
+      },
+      "BDx DC Services Limited": {
+        "facilities": 9
+      },
+      "DigiCo": {
+        "facilities": 9
+      },
+      "Elea Data Centers": {
+        "facilities": 9
+      },
+      "Iron Mountain": {
+        "facilities": 9
+      },
+      "Aligned": {
+        "facilities": 8
+      },
+      "Arelion": {
+        "facilities": 8
+      },
+      "D-VoiS Broadband Pvt. Ltd.": {
+        "facilities": 8
+      },
+      "DCI Indonesia": {
+        "facilities": 8
+      },
+      "Extreme Infocom Pvt. Ltd.": {
+        "facilities": 8
+      },
+      "IDC\u30d5\u30ed\u30f3\u30c6\u30a3\u30a2": {
+        "facilities": 8
+      },
+      "Nav\u00e9galo": {
+        "facilities": 8
+      },
+      "OPCORE": {
+        "facilities": 8
+      },
+      "Open Access Data Centres": {
+        "facilities": 8
+      },
+      "Orange": {
+        "facilities": 8
+      },
+      "QTS": {
+        "facilities": 8
+      },
+      "Retelit S.p.A.": {
+        "facilities": 8
+      },
+      "SFR": {
+        "facilities": 8
+      },
+      "South Front Networks": {
+        "facilities": 8
+      },
+      "Sungard Availability Services": {
+        "facilities": 8
+      },
+      "TDF": {
+        "facilities": 8
+      },
+      "Tanzania Telecommunications Corporation (TTCL Corporation)": {
+        "facilities": 8
+      },
+      "Telia Company": {
+        "facilities": 8
+      },
+      "Web Werks DataCenter Pvt. Ltd.": {
+        "facilities": 8
+      },
+      "iomart Hosting Limited": {
+        "facilities": 8
+      },
+      "3HCLOUD LLC": {
+        "facilities": 7
+      },
+      "Africa Data Centres": {
+        "facilities": 7
+      },
+      "AiNET": {
+        "facilities": 7
+      },
+      "Bridge Data Centres": {
+        "facilities": 7
+      },
+      "CentriLogic": {
+        "facilities": 7
+      },
+      "CloudHQ": {
+        "facilities": 7
+      },
+      "Cogent": {
+        "facilities": 7
+      },
+      "ColoCrossing": {
+        "facilities": 7
+      },
+      "Digital Fortress": {
+        "facilities": 7
+      },
+      "Lincoln Rackhouse": {
+        "facilities": 7
+      },
+      "Moratel International | PT Ekamas Mora Republik Tbk": {
+        "facilities": 7
+      },
+      "Netia S.A.": {
+        "facilities": 7
+      },
+      "NorthC Deutschland GmbH": {
+        "facilities": 7
+      },
+      "PhoenixNAP": {
+        "facilities": 7
+      },
+      "REFSA": {
+        "facilities": 7
+      },
+      "Sabey": {
+        "facilities": 7
+      },
+      "Stream Data Centers": {
+        "facilities": 7
+      },
+      "TelemaxX Telekommunikation GmbH": {
+        "facilities": 7
+      },
+      "Teraco": {
+        "facilities": 7
+      },
+      "Virtus": {
+        "facilities": 7
+      },
+      "iAdvantage Hong Kong": {
+        "facilities": 7
+      },
+      "AirTrunk": {
+        "facilities": 6
+      },
+      "Bahnhof": {
+        "facilities": 6
+      },
+      "CKW Fiber Services AG": {
+        "facilities": 6
+      },
+      "Cable & Wireless": {
+        "facilities": 6
+      },
+      "ColocationIX GmbH": {
+        "facilities": 6
+      },
+      "DATA4 s.a r.l": {
+        "facilities": 6
+      },
+      "DC BLOX Parent LLC": {
+        "facilities": 6
+      },
+      "Elisa Oyj": {
+        "facilities": 6
+      },
+      "Eurofiber": {
+        "facilities": 6
+      },
+      "Green Datacenter AG": {
+        "facilities": 6
+      },
+      "IXcellerate LLC": {
+        "facilities": 6
+      },
+      "LCL Belgium": {
+        "facilities": 6
+      },
+      "LightEdge Solutions": {
+        "facilities": 6
+      },
+      "NTT DATA, Middle East and Africa (MEA)": {
+        "facilities": 6
+      },
+      "NorthC": {
+        "facilities": 6
+      },
+      "OD CLOUD (DIVERSITY)": {
+        "facilities": 6
+      },
+      "OneNeck IT Solutions LLC": {
+        "facilities": 6
+      },
+      "PAIX Data Centres": {
+        "facilities": 6
+      },
+      "PT XLSmart Telecom Sejahtera Tbk": {
+        "facilities": 6
+      },
+      "RAXIO GROUP": {
+        "facilities": 6
+      },
+      "Reliance Communications Limited": {
+        "facilities": 6
+      },
+      "Selectel": {
+        "facilities": 6
+      },
+      "Tecto Data Centers": {
+        "facilities": 6
+      },
+      "Telecom Italia Sparkle S.p.A.": {
+        "facilities": 6
+      },
+      "TierPoint": {
+        "facilities": 6
+      },
+      "True North Data Solutions": {
+        "facilities": 6
+      },
+      "Univerzalne telekomunikacije d.o.o.": {
+        "facilities": 6
+      },
+      "VAS \"Latvijas Valsts radio un televizijas centrs\"": {
+        "facilities": 6
+      },
+      "Verizon": {
+        "facilities": 6
+      },
+      "Verne Global": {
+        "facilities": 6
+      },
+      "WNET Global Network": {
+        "facilities": 6
+      },
+      "AIMS Data Centre Sdn Bhd": {
+        "facilities": 5
+      },
+      "AT TOKYO Corporation": {
+        "facilities": 5
+      },
+      "Anexio Datacenters, LLC": {
+        "facilities": 5
+      },
+      "Angola Cables": {
+        "facilities": 5
+      },
+      "Ark Data Centres": {
+        "facilities": 5
+      },
+      "Bezeq International Ltd": {
+        "facilities": 5
+      },
+      "Cellnex Netherlands B.V.": {
+        "facilities": 5
+      },
+      "Chunghwa Telecom Co., Ltd.": {
+        "facilities": 5
+      },
+      "Cibicom A/S": {
+        "facilities": 5
+      },
+      "Citynet": {
+        "facilities": 5
+      },
+      "Cyxtera": {
+        "facilities": 5
+      },
+      "DataPro": {
+        "facilities": 5
+      },
+      "ESDS Software Solution Ltd.": {
+        "facilities": 5
+      },
+      "EdgeCore Digital Infrastructure": {
+        "facilities": 5
+      },
+      "Element Critical, LLC": {
+        "facilities": 5
+      },
+      "Eurofiber France": {
+        "facilities": 5
+      },
+      "Fujitsu Australia Limited": {
+        "facilities": 5
+      },
+      "AWS": {
+        "facilities": 167
+      },
+      "Cologix": {
+        "facilities": 64
+      },
+      "Oracle": {
+        "facilities": 40
+      },
+      "Meta Platforms": {
+        "facilities": 38
+      },
+      "QTS Realty": {
+        "facilities": 37
+      },
+      "Stack": {
+        "facilities": 34
+      },
+      "STT GDC": {
+        "facilities": 33
+      },
+      "PDG": {
+        "facilities": 22
+      },
+      "Scala": {
+        "facilities": 22
+      },
+      "CoreWeave": {
+        "facilities": 22
+      },
+      "Compass": {
+        "facilities": 21
+      },
+      "Colt DCS": {
+        "facilities": 20
+      },
+      "Ascenty": {
+        "facilities": 20
+      },
+      "GDS": {
+        "facilities": 18
+      },
+      "Huawei Cloud": {
+        "facilities": 15
+      },
+      "Tencent Cloud": {
+        "facilities": 15
+      },
+      "OVHcloud": {
+        "facilities": 14
+      },
+      "Alibaba Cloud": {
+        "facilities": 13
+      },
+      "STACK Infrastructure": {
+        "facilities": 12
+      },
+      "Involta": {
+        "facilities": 11
+      },
+      "Stream": {
+        "facilities": 10
+      },
+      "Chindata": {
+        "facilities": 10
+      },
+      "Compass Datacenters": {
+        "facilities": 9
+      },
+      "Evoque": {
+        "facilities": 9
+      },
+      "Yondr Group": {
+        "facilities": 9
+      },
+      "Raxio": {
+        "facilities": 9
+      },
+      "Arcadian Infracom": {
+        "facilities": 9
+      },
+      "Prime": {
+        "facilities": 8
+      },
+      "dc2scale SAS": {
+        "facilities": 8
+      },
+      "US Signal": {
+        "facilities": 8
+      },
+      "Turkcell": {
+        "facilities": 8
+      },
+      "Leaseweb": {
+        "facilities": 7
+      },
+      "LG CNS": {
+        "facilities": 7
+      },
+      "Element Critical": {
+        "facilities": 7
+      },
+      "ServerFarm": {
+        "facilities": 7
+      },
+      "EdgeCore": {
+        "facilities": 7
+      },
+      "Borealis Data Center": {
+        "facilities": 7
+      },
+      "Glesys AB": {
+        "facilities": 7
+      },
+      "Crusoe Energy": {
+        "facilities": 7
+      },
+      "AdaniConneX": {
+        "facilities": 7
+      },
+      "GasLINE": {
+        "facilities": 7
+      },
+      "Lumen": {
+        "facilities": 6
+      },
+      "FPT Telecom": {
+        "facilities": 6
+      }
+    },
+    "markets": {},
+    "technologies": {},
+    "trends": {},
+    "terminology": {
+      "colocation": "Shared data center facility where multiple customers lease space",
+      "hyperscale": "Extremely large data center, typically 100MW+ for cloud/tech giants",
+      "edge": "Smaller facilities located closer to end users for low latency",
+      "pue": "Power Usage Effectiveness - ratio of total facility power to IT equipment power",
+      "tier": "Uptime Institute classification of data center redundancy (I-IV)",
+      "n+1": "Redundancy design with one backup for N primary components",
+      "hot aisle": "Row of server racks where hot exhaust air is expelled",
+      "cold aisle": "Row of server racks where cool air is supplied",
+      "ups": "Uninterruptible Power Supply - battery backup for power continuity",
+      "pdu": "Power Distribution Unit - distributes power to server racks",
+      "crah": "Computer Room Air Handler - precision cooling unit",
+      "crac": "Computer Room Air Conditioner - precision cooling unit",
+      "raised floor": "Elevated floor with space below for cooling air distribution",
+      "cross-connect": "Direct connection between two tenants in the same facility",
+      "meet-me room": "Carrier-neutral room where network providers interconnect",
+      "mw": "Megawatt - unit of power capacity (1MW = 1000kW)",
+      "shell": "Empty building ready for data center fit-out",
+      "white space": "Usable data center floor space for IT equipment",
+      "dark fiber": "Unused fiber optic cable capacity",
+      "latency": "Time delay in data transmission, measured in milliseconds",
+      "interconnection": "Physical connection between networks at a data center",
+      "ix": "Internet Exchange point where networks peer",
+      "reit": "Real Estate Investment Trust - tax-advantaged real estate company",
+      "cap rate": "Capitalization rate - property value metric for investment",
+      "nnn": "Triple net lease where tenant pays taxes, insurance, maintenance",
+      "powered shell": "Building with power infrastructure but no IT equipment",
+      "critical load": "Essential power load for IT equipment",
+      "mechanical load": "Power for cooling and support systems",
+      "carrier hotel": "Building with many network providers and interconnections",
+      "modular": "Pre-fabricated data center components for rapid deployment"
+    },
+    "relationships": {},
+    "decisions": {
+      "last_check": "2026-03-14T21:59:32.714623",
+      "pending_analysis": [],
+      "patterns": {
+        "category_stats": {
+          "backend": {
+            "total": 1,
+            "success_rate": 100.0,
+            "avg_impact": 8.0
+          }
+        },
+        "type_stats": {
+          "feature": {
+            "total": 1,
+            "success_rate": 100.0,
+            "avg_impact": 8.0
+          }
+        },
+        "technology_stats": {
+          "python": {
+            "total": 1,
+            "success_rate": 100.0
+          },
+          "flask": {
+            "total": 1,
+            "success_rate": 100.0
+          },
+          "ai": {
+            "total": 1,
+            "success_rate": 100.0
+          }
+        },
+        "effort_accuracy": {
+          "medium": {
+            "samples": 1,
+            "avg_accuracy_ratio": 0.0
+          }
+        },
+        "last_updated": "2026-03-14T22:00:16.889858"
+      },
+      "ai_insights": {
+        "insights": [
+          {
+            "insight": "Your backend and feature development decisions show perfect success rates with high impact (8.0), but sample size is extremely limited (only 1 decision). This creates a false sense of confidence and prevents meaningful pattern analysis.",
+            "category": "data_quality",
+            "action": "Increase decision tracking volume by documenting all development decisions for at least 10-15 iterations before drawing conclusions. Set up systematic logging for every backend change, feature addition, and technology choice to build a statistically meaningful dataset."
+          },
+          {
+            "insight": "Python, Flask, and AI technologies show 100% success rates, indicating strong team competency in these areas, but the effort estimation accuracy is at 0.0 for medium-complexity tasks, suggesting significant planning gaps.",
+            "category": "estimation_improvement",
+            "action": "Implement a structured estimation process for medium-complexity tasks using techniques like story point poker or three-point estimation. Create historical baselines for Python/Flask/AI projects to improve future effort predictions and track estimation vs. actual time spent."
+          },
+          {
+            "insight": "Current decision categories are too narrow (only backend/feature types tracked), missing critical decision areas like architecture, deployment, testing, and technical debt management that could reveal important patterns.",
+            "category": "decision_tracking",
+            "action": "Expand decision categorization to include architecture, infrastructure, testing, security, and refactoring decisions. Create a decision log template that captures decision context, alternatives considered, rationale, and measurable outcomes across all development areas."
+          }
+        ],
+        "generated_at": "2026-03-14T22:00:39.331655"
+      }
+    }
+  },
+  "last_saved": "2026-03-14T22:02:46.923590"
+}

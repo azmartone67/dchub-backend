@@ -1,0 +1,77 @@
+{
+  "name": "DC Hub Nexus",
+  "description": "Data center intelligence platform tracking 20,000+ facilities across 140+ countries. Provides facility search, M&A deal tracking ($51B+), capacity pipeline (21+ GW), real-time energy analytics, site selection scoring, and industry news from 40+ sources via MCP.",
+  "url": "https://dchub.cloud",
+  "version": "3.1.0",
+  "provider": {
+    "organization": "DC Hub",
+    "url": "https://dchub.cloud"
+  },
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": false
+  },
+  "defaultInputModes": ["text/plain", "application/json"],
+  "defaultOutputModes": ["application/json", "text/plain"],
+  "skills": [
+    {
+      "id": "search-facilities",
+      "name": "Search Data Center Facilities",
+      "description": "Search 20,000+ data center facilities by location, operator, market, or country.",
+      "tags": ["data-center", "colocation", "infrastructure", "facilities"],
+      "examples": [
+        "Find data centers in Virginia",
+        "List Equinix facilities in Europe",
+        "How many data centers are in Phoenix?"
+      ]
+    },
+    {
+      "id": "market-intelligence",
+      "name": "Data Center Market Intelligence",
+      "description": "Get M&A deals, capacity pipeline, and market analytics. Tracks 700+ transactions totaling $51B+.",
+      "tags": ["mergers", "acquisitions", "market-data", "deals"],
+      "examples": [
+        "Show recent data center acquisitions",
+        "What is the total capacity pipeline?",
+        "List the biggest data center deals of 2024"
+      ]
+    },
+    {
+      "id": "industry-news",
+      "name": "Data Center Industry News",
+      "description": "Real-time news aggregation from 40+ industry sources.",
+      "tags": ["news", "industry", "data-center"],
+      "examples": [
+        "Latest data center news",
+        "Any recent hyperscaler announcements?"
+      ]
+    },
+    {
+      "id": "site-analysis",
+      "name": "Site Suitability Analysis",
+      "description": "Evaluate locations for data center suitability including power, fiber, water, and natural disaster risk.",
+      "tags": ["site-selection", "power", "energy", "location"],
+      "examples": [
+        "Analyze Phoenix AZ for data center suitability",
+        "Compare power costs in Texas vs Virginia"
+      ]
+    }
+  ],
+  "authentication": {
+    "schemes": [
+      {
+        "scheme": "apiKey",
+        "in": "header",
+        "name": "X-API-Key",
+        "description": "Optional. Free tier: 100 requests/day without key."
+      }
+    ]
+  },
+  "mcpServers": {
+    "dchub": {
+      "httpUrl": "https://dc-hub-replit-fixedzip--azmartone1.replit.app/mcp",
+      "description": "DC Hub Nexus MCP Server - Streamable HTTP transport"
+    }
+  }
+}

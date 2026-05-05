@@ -1,0 +1,206 @@
+openapi: 3.1.0
+info:
+  title: DC Hub Nexus API
+  description: Data center intelligence platform with 10,000+ facilities, M&A deals, and infrastructure data
+  version: 2.0.0
+  contact:
+    email: api@dchub.cloud
+servers:
+  - url: https://dchub.cloud
+    description: Production server
+
+paths:
+  /api/v1/search:
+    get:
+      operationId: searchFacilities
+      summary: Search data center facilities
+      description: Search 10,000+ data center facilities by location, provider name, or keywords
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Search query (city, state, country, or provider name)
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+          description: Number of results to return
+      responses:
+        '200':
+          description: List of matching facilities
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  facilities:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        city:
+                          type: string
+                        country:
+                          type: string
+                        provider:
+                          type: string
+
+  /api/v1/stats:
+    get:
+      operationId: getStats
+      summary: Get platform statistics
+      description: Get aggregate statistics about data centers, deals, and capacity
+      responses:
+        '200':
+          description: Platform statistics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  facilities:
+                    type: integer
+                  announcements:
+                    type: integer
+                  deals:
+                    type: integer
+
+  /api/v1/announcements:
+    get:
+      operationId: getNews
+      summary: Get latest data center news
+      description: Get recent news and announcements from 60+ industry sources
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: List of news articles
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  announcements:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        title:
+                          type: string
+                        summary:
+                          type: string
+                        source:
+                          type: string
+
+  /api/deals:
+    get:
+      operationId: getDeals
+      summary: Get M&A transactions
+      description: Get data center M&A deals and transactions
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: List of M&A deals
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deals:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        buyer:
+                          type: string
+                        seller:
+                          type: string
+                        deal_value:
+                          type: string
+                        year:
+                          type: integer
+
+  /api/capacity-pipeline:
+    get:
+      operationId: getCapacityPipeline
+      summary: Get capacity pipeline data
+      description: Get data center capacity under development (MW)
+      parameters:
+        - name: market
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Filter by market/location
+      responses:
+        '200':
+          description: Capacity pipeline entries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pipeline:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        operator:
+                          type: string
+                        capacity_mw:
+                          type: number
+                        market:
+                          type: string
+
+  /api/ai/query:
+    get:
+      operationId: aiQuery
+      summary: AI-optimized query with citation
+      description: Get data with pre-built citation prompts for AI responses
+      parameters:
+        - name: type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [stats, facilities, deals, capacity]
+          description: Type of data to query
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Search query for facilities
+      responses:
+        '200':
+          description: Data with citation prompts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  source:
+                    type: string
+                  citation:
+                    type: string
+                  suggested_response:
+                    type: string
+                  data:
+                    type: object

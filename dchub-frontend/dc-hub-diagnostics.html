@@ -1,0 +1,1054 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DC Hub — System Diagnostics</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Outfit:wght@300;500;700;900&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0a0c10;
+  --surface: #12151c;
+  --surface-2: #1a1e28;
+  --border: #252a36;
+  --border-bright: #3a4155;
+  --text: #e2e6f0;
+  --text-dim: #8890a4;
+  --text-faint: #555d72;
+  --green: #34d399;
+  --green-bg: rgba(52,211,153,0.08);
+  --green-border: rgba(52,211,153,0.25);
+  --red: #f87171;
+  --red-bg: rgba(248,113,113,0.08);
+  --red-border: rgba(248,113,113,0.25);
+  --amber: #fbbf24;
+  --amber-bg: rgba(251,191,36,0.08);
+  --amber-border: rgba(251,191,36,0.25);
+  --blue: #60a5fa;
+  --blue-bg: rgba(96,165,250,0.08);
+  --blue-border: rgba(96,165,250,0.25);
+  --cyan: #22d3ee;
+  --purple: #a78bfa;
+  --mono: 'JetBrains Mono', monospace;
+  --sans: 'Outfit', sans-serif;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+/* Subtle grid background */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(255,255,255,0.015) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.015) 1px, transparent 1px);
+  background-size: 40px 40px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.container {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 24px 20px;
+  position: relative;
+  z-index: 1;
+}
+
+/* Header */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 32px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--border);
+}
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.logo-mark {
+  width: 44px;
+  height: 44px;
+  background: linear-gradient(135deg, var(--cyan), var(--blue));
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 16px;
+  color: var(--bg);
+  letter-spacing: -1px;
+}
+.header h1 {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+}
+.header h1 span { color: var(--text-dim); font-weight: 300; }
+.header-meta {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-faint);
+  text-align: right;
+  line-height: 1.6;
+}
+
+/* Score bar */
+.score-bar {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-bottom: 28px;
+}
+.score-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  text-align: center;
+}
+.score-card .label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+  font-weight: 500;
+}
+.score-card .value {
+  font-family: var(--mono);
+  font-size: 28px;
+  font-weight: 700;
+}
+.score-card .value.pass { color: var(--green); }
+.score-card .value.fail { color: var(--red); }
+.score-card .value.warn { color: var(--amber); }
+.score-card .value.neutral { color: var(--blue); }
+
+/* Controls */
+.controls {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 28px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.btn {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 10px 20px;
+  border: 1px solid var(--border-bright);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  transition: all 0.15s;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.btn:hover { background: var(--surface-2); border-color: var(--blue); }
+.btn-primary {
+  background: linear-gradient(135deg, var(--cyan), var(--blue));
+  color: var(--bg);
+  border-color: transparent;
+}
+.btn-primary:hover { opacity: 0.9; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.config-input {
+  font-family: var(--mono);
+  font-size: 13px;
+  padding: 10px 14px;
+  border: 1px solid var(--border-bright);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  flex: 1;
+  min-width: 280px;
+}
+.config-input:focus { outline: none; border-color: var(--cyan); }
+.status-pill {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 20px;
+  margin-left: auto;
+}
+.status-pill.running { background: var(--blue-bg); color: var(--blue); border: 1px solid var(--blue-border); }
+.status-pill.done { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
+.status-pill.idle { background: var(--surface-2); color: var(--text-faint); border: 1px solid var(--border); }
+
+/* Sections */
+.section {
+  margin-bottom: 24px;
+}
+.section-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  cursor: pointer;
+}
+.section-header h2 {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.3px;
+}
+.section-badge {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+.section-badge.pass { background: var(--green-bg); color: var(--green); }
+.section-badge.fail { background: var(--red-bg); color: var(--red); }
+.section-badge.pending { background: var(--surface-2); color: var(--text-faint); }
+.section-toggle {
+  margin-left: auto;
+  color: var(--text-faint);
+  font-size: 12px;
+  transition: transform 0.2s;
+}
+
+/* Test rows */
+.test-list {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.test-row {
+  display: grid;
+  grid-template-columns: 32px 1fr 90px 80px 160px;
+  align-items: center;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  gap: 8px;
+  transition: background 0.15s;
+}
+.test-row:last-child { border-bottom: none; }
+.test-row:hover { background: var(--surface-2); }
+.test-row .icon {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+}
+.test-row .icon.pass { background: var(--green-bg); color: var(--green); }
+.test-row .icon.fail { background: var(--red-bg); color: var(--red); }
+.test-row .icon.warn { background: var(--amber-bg); color: var(--amber); }
+.test-row .icon.pending { background: var(--surface-2); color: var(--text-faint); }
+.test-row .icon.running { background: var(--blue-bg); color: var(--blue); animation: pulse 1s infinite; }
+.test-row .name {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.test-row .method {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  text-align: center;
+}
+.test-row .timing {
+  font-family: var(--mono);
+  font-size: 11px;
+  text-align: center;
+}
+.test-row .timing.fast { color: var(--green); }
+.test-row .timing.medium { color: var(--amber); }
+.test-row .timing.slow { color: var(--red); }
+.test-row .result {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  text-align: center;
+  white-space: nowrap;
+}
+.test-row .result.pass { background: var(--green-bg); color: var(--green); }
+.test-row .result.fail { background: var(--red-bg); color: var(--red); }
+.test-row .result.warn { background: var(--amber-bg); color: var(--amber); }
+.test-row .result.pending { background: var(--surface-2); color: var(--text-faint); }
+
+/* Detail drawer */
+.test-detail {
+  display: none;
+  grid-column: 1 / -1;
+  background: var(--bg);
+  border-radius: 6px;
+  padding: 12px;
+  margin: 4px 0 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.test-detail.open { display: block; }
+
+/* Log panel */
+.log-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  margin-top: 24px;
+}
+.log-panel h3 {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.log-scroll {
+  background: var(--bg);
+  border-radius: 6px;
+  padding: 12px;
+  height: 220px;
+  overflow-y: auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.7;
+}
+.log-line { color: var(--text-dim); }
+.log-line .ts { color: var(--text-faint); }
+.log-line.ok { color: var(--green); }
+.log-line.err { color: var(--red); }
+.log-line.warn { color: var(--amber); }
+.log-line.info { color: var(--blue); }
+
+/* CORS fix panel */
+.fix-panel {
+  background: var(--surface);
+  border: 1px solid var(--amber-border);
+  border-radius: 10px;
+  padding: 20px;
+  margin-top: 24px;
+  display: none;
+}
+.fix-panel.visible { display: block; }
+.fix-panel h3 { font-size: 14px; font-weight: 700; color: var(--amber); margin-bottom: 12px; }
+.fix-panel pre {
+  background: var(--bg);
+  border-radius: 6px;
+  padding: 14px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-x: auto;
+  color: var(--text-dim);
+  margin: 10px 0;
+}
+.fix-panel p { font-size: 13px; color: var(--text-dim); line-height: 1.6; margin-bottom: 8px; }
+.copy-btn {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 4px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.copy-btn:hover { border-color: var(--cyan); color: var(--cyan); }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .score-bar { grid-template-columns: repeat(2, 1fr); }
+  .test-row { grid-template-columns: 28px 1fr 70px 70px; }
+  .test-row .result { display: none; }
+  .header { flex-direction: column; align-items: flex-start; gap: 8px; }
+  .header-meta { text-align: left; }
+  .controls { flex-direction: column; }
+  .config-input { min-width: unset; width: 100%; }
+}
+</style>
+<style>nav:not(.dchub-nav):not(.dchub-bottom-nav):not(.mobile-nav-drawer-links nav){display:none!important}.nav:not(.dchub-nav){display:none!important}</style>
+<script src="/js/dchub-nav.js"></script>
+</head>
+<body>
+
+<div class="container">
+  <!-- Header -->
+  <div class="header">
+    <div class="header-left">
+      <div class="logo-mark">DC</div>
+      <h1>System Diagnostics <span>v2.0</span></h1>
+    </div>
+    <div class="header-meta">
+      <div id="runTimestamp">Last run: —</div>
+      <div id="envInfo">Environment: detecting...</div>
+    </div>
+  </div>
+
+  <!-- Score Cards -->
+  <div class="score-bar">
+    <div class="score-card">
+      <div class="label">Passed</div>
+      <div class="value pass" id="totalPass">—</div>
+    </div>
+    <div class="score-card">
+      <div class="label">Failed</div>
+      <div class="value fail" id="totalFail">—</div>
+    </div>
+    <div class="score-card">
+      <div class="label">CORS Blocked</div>
+      <div class="value warn" id="totalCors">—</div>
+    </div>
+    <div class="score-card">
+      <div class="label">Avg Latency</div>
+      <div class="value neutral" id="avgLatency">—</div>
+    </div>
+  </div>
+
+  <!-- Controls -->
+  <div class="controls">
+    <input type="text" class="config-input" id="backendUrl"
+      value="https://dchub.cloud"
+      placeholder="Backend URL (e.g. https://your-replit.replit.app)">
+    <button class="btn btn-primary" id="runBtn" onclick="runAllTests()">▶ Run All Tests</button>
+    <button class="btn" onclick="exportResults()">↓ Export</button>
+    <span class="status-pill idle" id="globalStatus">IDLE</span>
+  </div>
+
+  <!-- Section 1: CORS & Connectivity -->
+  <div class="section" id="section-cors">
+    <div class="section-header" onclick="toggleSection('cors')">
+      <h2>⚡ CORS & Connectivity</h2>
+      <span class="section-badge pending" id="badge-cors">PENDING</span>
+      <span class="section-toggle" id="toggle-cors">▼</span>
+    </div>
+    <div class="test-list" id="list-cors"></div>
+  </div>
+
+  <!-- Section 2: Core API Endpoints -->
+  <div class="section" id="section-api">
+    <div class="section-header" onclick="toggleSection('api')">
+      <h2>🔌 Core API Endpoints</h2>
+      <span class="section-badge pending" id="badge-api">PENDING</span>
+      <span class="section-toggle" id="toggle-api">▼</span>
+    </div>
+    <div class="test-list" id="list-api"></div>
+  </div>
+
+  <!-- Section 3: Frontend Resources -->
+  <div class="section" id="section-frontend">
+    <div class="section-header" onclick="toggleSection('frontend')">
+      <h2>🌐 Frontend Resources</h2>
+      <span class="section-badge pending" id="badge-frontend">PENDING</span>
+      <span class="section-toggle" id="toggle-frontend">▼</span>
+    </div>
+    <div class="test-list" id="list-frontend"></div>
+  </div>
+
+  <!-- Section 4: Data Integrity -->
+  <div class="section" id="section-data">
+    <div class="section-header" onclick="toggleSection('data')">
+      <h2>📊 Data Integrity</h2>
+      <span class="section-badge pending" id="badge-data">PENDING</span>
+      <span class="section-toggle" id="toggle-data">▼</span>
+    </div>
+    <div class="test-list" id="list-data"></div>
+  </div>
+
+  <!-- Section 5: Backend Health -->
+  <div class="section" id="section-health">
+    <div class="section-header" onclick="toggleSection('health')">
+      <h2>🏥 Backend Health & Schedulers</h2>
+      <span class="section-badge pending" id="badge-health">PENDING</span>
+      <span class="section-toggle" id="toggle-health">▼</span>
+    </div>
+    <div class="test-list" id="list-health"></div>
+  </div>
+
+  <!-- CORS Fix Panel -->
+  <div class="fix-panel" id="corsFixPanel">
+    <h3>⚠️ CORS Fix Required — Paste into Replit main.py</h3>
+    <p>Your backend is rejecting cross-origin requests from dchub.cloud. Add ONE of these fixes:</p>
+    <p><strong>Option A — flask-cors (recommended):</strong></p>
+    <pre id="fixA">from flask_cors import CORS
+
+# Add right after: app = Flask(__name__)
+CORS(app, resources={r"/api/*": {
+    "origins": ["https://dchub.cloud", "https://www.dchub.cloud"],
+    "methods": ["GET", "POST", "OPTIONS", "DELETE"],
+    "allow_headers": ["Content-Type", "Authorization", "Accept"]
+}})</pre>
+    <button class="copy-btn" onclick="copyFix('fixA')">Copy Option A</button>
+
+    <p style="margin-top:14px"><strong>Option B — Manual headers (no dependency):</strong></p>
+    <pre id="fixB">@app.after_request
+def add_cors_headers(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, DELETE"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, Accept"
+    return response</pre>
+    <button class="copy-btn" onclick="copyFix('fixB')">Copy Option B</button>
+
+    <p style="margin-top:14px"><strong>Also add SQLite WAL mode to prevent "database is locked" errors:</strong></p>
+    <pre id="fixC"># Add to your database initialization
+import sqlite3
+conn = sqlite3.connect('your_database.db')
+conn.execute("PRAGMA journal_mode=WAL")
+conn.execute("PRAGMA busy_timeout=5000")</pre>
+    <button class="copy-btn" onclick="copyFix('fixC')">Copy SQLite Fix</button>
+  </div>
+
+  <!-- Live Log -->
+  <div class="log-panel">
+    <h3>📋 Live Log <span style="font-weight:300;color:var(--text-faint)">(click any test row for details)</span></h3>
+    <div class="log-scroll" id="logScroll"></div>
+  </div>
+</div>
+
+<script>
+// ============================================================
+// DC Hub Diagnostics v2.0
+// ============================================================
+const FRONTEND_BASE = 'https://dchub.cloud';
+let BACKEND_BASE = '';
+let results = { pass: 0, fail: 0, cors: 0, latencies: [], details: [] };
+
+// Test definitions
+const TESTS = {
+  cors: [
+    { id: 'cors-preflight', name: 'OPTIONS preflight → /api/v1/stats', method: 'OPTIONS', path: '/api/v1/stats', type: 'cors' },
+    { id: 'cors-get', name: 'GET with Origin header → /api/v1/stats', method: 'GET', path: '/api/v1/stats', type: 'cors-header' },
+    { id: 'cors-news', name: 'Cross-origin GET → /api/news/live', method: 'GET', path: '/api/news/live?limit=2', type: 'cors' },
+    { id: 'cors-deals', name: 'Cross-origin GET → /api/deals', method: 'GET', path: '/api/deals?limit=2', type: 'cors' },
+    { id: 'cors-transactions', name: 'Cross-origin GET → /api/transactions', method: 'GET', path: '/api/transactions?limit=2', type: 'cors' },
+  ],
+  api: [
+    { id: 'api-stats', name: '/api/v1/stats', method: 'GET', path: '/api/v1/stats', expect: 'json' },
+    { id: 'api-facilities', name: '/api/v1/facilities?limit=2', method: 'GET', path: '/api/v1/facilities?limit=2', expect: 'json' },
+    { id: 'api-news', name: '/api/news/live?limit=3', method: 'GET', path: '/api/news/live?limit=3', expect: 'json' },
+    { id: 'api-deals', name: '/api/deals?limit=3', method: 'GET', path: '/api/deals?limit=3', expect: 'json' },
+    { id: 'api-transactions', name: '/api/transactions?limit=3', method: 'GET', path: '/api/transactions?limit=3', expect: 'json' },
+    { id: 'api-markets', name: '/api/markets', method: 'GET', path: '/api/markets', expect: 'json' },
+    { id: 'api-pipeline', name: '/api/pipeline', method: 'GET', path: '/api/pipeline', expect: 'json' },
+    { id: 'api-brain-status', name: '/api/brain/status', method: 'GET', path: '/api/brain/status', expect: 'json' },
+    { id: 'api-search', name: '/api/v1/facilities?q=phoenix', method: 'GET', path: '/api/v1/facilities?q=phoenix&limit=2', expect: 'json' },
+    { id: 'api-capacity', name: '/api/v1/facilities?type=capacity', method: 'GET', path: '/api/v1/facilities?type=capacity', expect: 'json' },
+    { id: 'api-v1-deals', name: '/api/v1/facilities?type=deals', method: 'GET', path: '/api/v1/facilities?type=deals', expect: 'json' },
+  ],
+  frontend: [
+    { id: 'fe-index', name: 'Homepage (index.html)', method: 'GET', url: FRONTEND_BASE + '/', expect: 'html' },
+    { id: 'fe-land', name: 'Land & Power page', method: 'GET', url: FRONTEND_BASE + '/land-power', expect: 'html' },
+    { id: 'fe-news', name: 'News page', method: 'GET', url: FRONTEND_BASE + '/news', expect: 'html' },
+    { id: 'fe-assets', name: 'Assets page', method: 'GET', url: FRONTEND_BASE + '/assets', expect: 'html' },
+    { id: 'fe-transactions', name: 'Transactions page', method: 'GET', url: FRONTEND_BASE + '/transactions', expect: 'html' },
+    { id: 'fe-pricing', name: 'Pricing page', method: 'GET', url: FRONTEND_BASE + '/pricing', expect: 'html' },
+    { id: 'fe-manifest', name: 'manifest.json (PWA)', method: 'GET', url: FRONTEND_BASE + '/manifest.json', expect: 'json' },
+    { id: 'fe-sw', name: 'Service Worker (sw.js)', method: 'GET', url: FRONTEND_BASE + '/sw.js', expect: 'js' },
+    { id: 'fe-ai-deals', name: 'AI Deals page', method: 'GET', url: FRONTEND_BASE + '/ai-deals', expect: 'html' },
+    { id: 'fe-ai-pipeline', name: 'AI Pipeline page', method: 'GET', url: FRONTEND_BASE + '/ai-pipeline', expect: 'html' },
+  ],
+  data: [
+    { id: 'data-fac-count', name: 'Facility count > 0', method: 'GET', path: '/api/v1/stats', check: 'facility_count' },
+    { id: 'data-news-items', name: 'News returns articles', method: 'GET', path: '/api/news/live?limit=3', check: 'has_items' },
+    { id: 'data-deals-items', name: 'Deals returns records', method: 'GET', path: '/api/deals?limit=3', check: 'has_items' },
+    { id: 'data-search-results', name: 'Search "phoenix" returns results', method: 'GET', path: '/api/v1/facilities?q=phoenix&limit=5', check: 'search_results' },
+    { id: 'data-json-valid', name: 'Stats JSON schema valid', method: 'GET', path: '/api/v1/stats', check: 'stats_schema' },
+  ],
+  health: [
+    { id: 'health-root', name: 'Backend root / health', method: 'GET', path: '/', expect: 'any' },
+    { id: 'health-api-disc', name: 'API discovery status', method: 'GET', path: '/api/discovery/status', expect: 'json' },
+    { id: 'health-kmz-disc', name: 'KMZ discovery status', method: 'GET', path: '/api/kmz-discovery/status', expect: 'json' },
+    { id: 'health-energy', name: 'Energy data status', method: 'GET', path: '/api/energy/status', expect: 'json' },
+    { id: 'health-usage', name: 'Usage/rate limiting', method: 'GET', path: '/api/usage/status', expect: 'json' },
+  ],
+};
+
+// ============================================================
+// Rendering
+// ============================================================
+function renderTestRows() {
+  for (const [section, tests] of Object.entries(TESTS)) {
+    const list = document.getElementById(`list-${section}`);
+    list.innerHTML = tests.map(t => `
+      <div class="test-row" id="row-${t.id}" onclick="toggleDetail('${t.id}')">
+        <div class="icon pending" id="icon-${t.id}">○</div>
+        <div class="name">${t.name}</div>
+        <div class="method">${t.method}</div>
+        <div class="timing" id="time-${t.id}">—</div>
+        <div class="result pending" id="result-${t.id}">PENDING</div>
+      </div>
+      <div class="test-detail" id="detail-${t.id}"></div>
+    `).join('');
+  }
+}
+
+function setTestState(id, state, time, detail) {
+  const icon = document.getElementById(`icon-${id}`);
+  const timeEl = document.getElementById(`time-${id}`);
+  const resultEl = document.getElementById(`result-${id}`);
+  const detailEl = document.getElementById(`detail-${id}`);
+
+  const states = {
+    running: { icon: '◉', iconClass: 'running', result: 'TESTING...', resultClass: 'pending' },
+    pass: { icon: '✓', iconClass: 'pass', result: 'PASS', resultClass: 'pass' },
+    fail: { icon: '✗', iconClass: 'fail', result: 'FAIL', resultClass: 'fail' },
+    cors: { icon: '🔒', iconClass: 'warn', result: 'CORS BLOCKED', resultClass: 'warn' },
+    warn: { icon: '!', iconClass: 'warn', result: 'WARNING', resultClass: 'warn' },
+    timeout: { icon: '⏱', iconClass: 'fail', result: 'TIMEOUT', resultClass: 'fail' },
+  };
+
+  const s = states[state] || states.fail;
+  icon.textContent = s.icon;
+  icon.className = `icon ${s.iconClass}`;
+  resultEl.textContent = s.result;
+  resultEl.className = `result ${s.resultClass}`;
+
+  if (time !== null && time !== undefined) {
+    timeEl.textContent = `${time}ms`;
+    timeEl.className = `timing ${time < 300 ? 'fast' : time < 1000 ? 'medium' : 'slow'}`;
+  }
+
+  if (detail) {
+    detailEl.textContent = typeof detail === 'object' ? JSON.stringify(detail, null, 2) : detail;
+  }
+}
+
+function toggleDetail(id) {
+  const el = document.getElementById(`detail-${id}`);
+  el.classList.toggle('open');
+}
+
+function toggleSection(name) {
+  const list = document.getElementById(`list-${name}`);
+  const toggle = document.getElementById(`toggle-${name}`);
+  if (list.style.display === 'none') {
+    list.style.display = '';
+    toggle.textContent = '▼';
+  } else {
+    list.style.display = 'none';
+    toggle.textContent = '►';
+  }
+}
+
+// ============================================================
+// Logging
+// ============================================================
+function log(msg, level = '') {
+  const scroll = document.getElementById('logScroll');
+  const ts = new Date().toLocaleTimeString();
+  const line = document.createElement('div');
+  line.className = `log-line ${level}`;
+  line.innerHTML = `<span class="ts">[${ts}]</span> ${msg}`;
+  scroll.appendChild(line);
+  scroll.scrollTop = scroll.scrollHeight;
+}
+
+// ============================================================
+// Test Runner
+// ============================================================
+async function fetchWithTimeout(url, options = {}, timeout = 10000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+  const start = performance.now();
+  try {
+    const resp = await fetch(url, { ...options, signal: controller.signal });
+    const elapsed = Math.round(performance.now() - start);
+    clearTimeout(timer);
+    return { resp, elapsed, error: null };
+  } catch (e) {
+    const elapsed = Math.round(performance.now() - start);
+    clearTimeout(timer);
+    if (e.name === 'AbortError') return { resp: null, elapsed, error: 'TIMEOUT' };
+    return { resp: null, elapsed, error: e.message };
+  }
+}
+
+async function runCorsTests() {
+  log('━━ CORS & Connectivity Tests ━━', 'info');
+  let pass = 0, fail = 0;
+
+  for (const t of TESTS.cors) {
+    setTestState(t.id, 'running');
+    const url = BACKEND_BASE + t.path;
+    log(`Testing ${t.method} ${t.path}...`);
+
+    const options = { method: t.method, mode: 'cors' };
+    if (t.type === 'cors-header') {
+      options.headers = { 'Origin': FRONTEND_BASE };
+    }
+
+    const { resp, elapsed, error } = await fetchWithTimeout(url, options);
+
+    if (error) {
+      if (error === 'TIMEOUT') {
+        setTestState(t.id, 'timeout', elapsed, 'Request timed out after 10s');
+        log(`✗ ${t.name}: TIMEOUT (${elapsed}ms)`, 'err');
+      } else {
+        setTestState(t.id, 'cors', elapsed, `CORS blocked or network error: ${error}`);
+        log(`🔒 ${t.name}: CORS BLOCKED (${elapsed}ms)`, 'warn');
+        results.cors++;
+      }
+      fail++;
+      results.details.push({ id: t.id, status: 'cors', time: elapsed, error });
+    } else {
+      const corsHeader = resp.headers.get('access-control-allow-origin');
+      if (corsHeader) {
+        setTestState(t.id, 'pass', elapsed, `CORS OK — Allow-Origin: ${corsHeader}\nStatus: ${resp.status}`);
+        log(`✓ ${t.name}: PASS (${elapsed}ms) — ACAO: ${corsHeader}`, 'ok');
+        pass++;
+      } else if (resp.ok) {
+        setTestState(t.id, 'warn', elapsed, `Response OK (${resp.status}) but no CORS header returned.\nThis may work for same-origin but fail cross-origin.`);
+        log(`! ${t.name}: No CORS header in response (${elapsed}ms)`, 'warn');
+        pass++;
+      } else {
+        setTestState(t.id, 'fail', elapsed, `HTTP ${resp.status}`);
+        log(`✗ ${t.name}: HTTP ${resp.status} (${elapsed}ms)`, 'err');
+        fail++;
+      }
+      results.latencies.push(elapsed);
+      results.details.push({ id: t.id, status: corsHeader ? 'pass' : 'warn', time: elapsed });
+    }
+  }
+
+  updateBadge('cors', pass, fail);
+  return { pass, fail };
+}
+
+async function runApiTests() {
+  log('━━ Core API Endpoint Tests ━━', 'info');
+  let pass = 0, fail = 0;
+
+  for (const t of TESTS.api) {
+    setTestState(t.id, 'running');
+    const url = BACKEND_BASE + t.path;
+    log(`Testing ${t.path}...`);
+
+    const { resp, elapsed, error } = await fetchWithTimeout(url, { mode: 'cors' });
+
+    if (error) {
+      const state = error.includes('Failed to fetch') ? 'cors' : 'fail';
+      setTestState(t.id, state, elapsed, error);
+      log(`✗ ${t.name}: ${error} (${elapsed}ms)`, 'err');
+      if (state === 'cors') results.cors++;
+      fail++;
+    } else if (!resp.ok) {
+      setTestState(t.id, 'fail', elapsed, `HTTP ${resp.status} ${resp.statusText}`);
+      log(`✗ ${t.name}: HTTP ${resp.status} (${elapsed}ms)`, 'err');
+      fail++;
+    } else {
+      try {
+        const data = await resp.json();
+        const preview = JSON.stringify(data).substring(0, 300);
+        setTestState(t.id, 'pass', elapsed, preview);
+        log(`✓ ${t.name}: OK (${elapsed}ms)`, 'ok');
+        pass++;
+        results.latencies.push(elapsed);
+      } catch (e) {
+        const text = await resp.clone().text();
+        if (t.expect === 'json') {
+          setTestState(t.id, 'warn', elapsed, `Not JSON: ${text.substring(0, 200)}`);
+          log(`! ${t.name}: Not JSON (${elapsed}ms)`, 'warn');
+        } else {
+          setTestState(t.id, 'pass', elapsed, text.substring(0, 200));
+          log(`✓ ${t.name}: OK (${elapsed}ms)`, 'ok');
+          pass++;
+        }
+      }
+    }
+    results.details.push({ id: t.id, time: elapsed });
+  }
+
+  updateBadge('api', pass, fail);
+  return { pass, fail };
+}
+
+async function runFrontendTests() {
+  log('━━ Frontend Resource Tests ━━', 'info');
+  let pass = 0, fail = 0;
+
+  for (const t of TESTS.frontend) {
+    setTestState(t.id, 'running');
+    const url = t.url;
+    log(`Checking ${url}...`);
+
+    const { resp, elapsed, error } = await fetchWithTimeout(url, { mode: 'cors' });
+
+    if (error) {
+      setTestState(t.id, 'fail', elapsed, error);
+      log(`✗ ${t.name}: ${error} (${elapsed}ms)`, 'err');
+      fail++;
+    } else if (!resp.ok) {
+      setTestState(t.id, 'fail', elapsed, `HTTP ${resp.status}`);
+      log(`✗ ${t.name}: HTTP ${resp.status} (${elapsed}ms)`, 'err');
+      fail++;
+    } else {
+      const ct = resp.headers.get('content-type') || '';
+      let detail = `Status: ${resp.status}, Content-Type: ${ct}`;
+      if (t.expect === 'html' && !ct.includes('html')) {
+        setTestState(t.id, 'warn', elapsed, `Expected HTML, got: ${ct}`);
+        log(`! ${t.name}: Wrong content-type (${elapsed}ms)`, 'warn');
+      } else {
+        setTestState(t.id, 'pass', elapsed, detail);
+        log(`✓ ${t.name}: OK (${elapsed}ms)`, 'ok');
+      }
+      pass++;
+      results.latencies.push(elapsed);
+    }
+  }
+
+  updateBadge('frontend', pass, fail);
+  return { pass, fail };
+}
+
+async function runDataTests() {
+  log('━━ Data Integrity Tests ━━', 'info');
+  let pass = 0, fail = 0;
+
+  for (const t of TESTS.data) {
+    setTestState(t.id, 'running');
+    const url = BACKEND_BASE + t.path;
+    log(`Validating ${t.check} via ${t.path}...`);
+
+    const { resp, elapsed, error } = await fetchWithTimeout(url, { mode: 'cors' });
+
+    if (error || !resp || !resp.ok) {
+      setTestState(t.id, 'fail', elapsed, error || `HTTP ${resp?.status}`);
+      log(`✗ ${t.name}: Cannot reach endpoint`, 'err');
+      fail++;
+      continue;
+    }
+
+    try {
+      const data = await resp.json();
+      let ok = false;
+      let detail = '';
+
+      switch (t.check) {
+        case 'facility_count':
+          const count = data.total || data.facility_count || data.total_facilities || (data.data && data.data.length) || 0;
+          ok = count > 0;
+          detail = `Facility count: ${count}`;
+          break;
+        case 'has_items':
+          const items = data.data || data.articles || data.deals || data.transactions || data.results || [];
+          ok = Array.isArray(items) ? items.length > 0 : Object.keys(data).length > 2;
+          detail = `Items returned: ${Array.isArray(items) ? items.length : 'object'}`;
+          break;
+        case 'search_results':
+          const sr = data.data || data.results || data.facilities || [];
+          ok = Array.isArray(sr) && sr.length > 0;
+          detail = `Search results: ${Array.isArray(sr) ? sr.length : 0}`;
+          break;
+        case 'stats_schema':
+          ok = data && typeof data === 'object' && !data.error;
+          detail = `Keys: ${Object.keys(data).join(', ')}`;
+          break;
+      }
+
+      setTestState(t.id, ok ? 'pass' : 'fail', elapsed, detail);
+      log(`${ok ? '✓' : '✗'} ${t.name}: ${detail} (${elapsed}ms)`, ok ? 'ok' : 'err');
+      ok ? pass++ : fail++;
+      results.latencies.push(elapsed);
+    } catch (e) {
+      setTestState(t.id, 'fail', elapsed, `JSON parse error: ${e.message}`);
+      log(`✗ ${t.name}: Bad JSON`, 'err');
+      fail++;
+    }
+  }
+
+  updateBadge('data', pass, fail);
+  return { pass, fail };
+}
+
+async function runHealthTests() {
+  log('━━ Backend Health Tests ━━', 'info');
+  let pass = 0, fail = 0;
+
+  for (const t of TESTS.health) {
+    setTestState(t.id, 'running');
+    const url = BACKEND_BASE + t.path;
+    log(`Checking ${t.path}...`);
+
+    const { resp, elapsed, error } = await fetchWithTimeout(url, { mode: 'cors' });
+
+    if (error) {
+      setTestState(t.id, error.includes('fetch') ? 'cors' : 'fail', elapsed, error);
+      log(`✗ ${t.name}: ${error} (${elapsed}ms)`, 'err');
+      fail++;
+    } else if (!resp.ok && resp.status !== 404) {
+      setTestState(t.id, 'fail', elapsed, `HTTP ${resp.status}`);
+      log(`✗ ${t.name}: HTTP ${resp.status} (${elapsed}ms)`, 'err');
+      fail++;
+    } else if (resp.status === 404) {
+      setTestState(t.id, 'warn', elapsed, 'Endpoint not found (404) — may not be implemented');
+      log(`! ${t.name}: 404 Not Found (${elapsed}ms)`, 'warn');
+      pass++; // not critical
+    } else {
+      try {
+        const data = await resp.json();
+        setTestState(t.id, 'pass', elapsed, JSON.stringify(data).substring(0, 300));
+        log(`✓ ${t.name}: OK (${elapsed}ms)`, 'ok');
+      } catch {
+        setTestState(t.id, 'pass', elapsed, `Status: ${resp.status}`);
+        log(`✓ ${t.name}: Responding (${elapsed}ms)`, 'ok');
+      }
+      pass++;
+      results.latencies.push(elapsed);
+    }
+  }
+
+  updateBadge('health', pass, fail);
+  return { pass, fail };
+}
+
+function updateBadge(section, pass, fail) {
+  const badge = document.getElementById(`badge-${section}`);
+  const total = pass + fail;
+  if (fail === 0) {
+    badge.textContent = `${pass}/${total} PASS`;
+    badge.className = 'section-badge pass';
+  } else {
+    badge.textContent = `${fail} FAILED`;
+    badge.className = 'section-badge fail';
+  }
+}
+
+function updateScoreCards() {
+  document.getElementById('totalPass').textContent = results.pass;
+  document.getElementById('totalFail').textContent = results.fail;
+  document.getElementById('totalCors').textContent = results.cors;
+  const avg = results.latencies.length > 0
+    ? Math.round(results.latencies.reduce((a, b) => a + b, 0) / results.latencies.length)
+    : 0;
+  document.getElementById('avgLatency').textContent = avg ? `${avg}ms` : '—';
+}
+
+// ============================================================
+// Main Runner
+// ============================================================
+async function runAllTests() {
+  BACKEND_BASE = document.getElementById('backendUrl').value.replace(/\/+$/, '');
+  results = { pass: 0, fail: 0, cors: 0, latencies: [], details: [] };
+
+  const btn = document.getElementById('runBtn');
+  const status = document.getElementById('globalStatus');
+  btn.disabled = true;
+  status.textContent = 'RUNNING';
+  status.className = 'status-pill running';
+  document.getElementById('logScroll').innerHTML = '';
+
+  document.getElementById('runTimestamp').textContent = `Last run: ${new Date().toLocaleString()}`;
+  document.getElementById('envInfo').textContent = `Backend: ${BACKEND_BASE}`;
+
+  log(`DC Hub Diagnostics v2.0 — Starting full suite`, 'info');
+  log(`Backend: ${BACKEND_BASE}`, 'info');
+  log(`Frontend: ${FRONTEND_BASE}`, 'info');
+  log('');
+
+  // Reset badges
+  for (const s of ['cors', 'api', 'frontend', 'data', 'health']) {
+    document.getElementById(`badge-${s}`).textContent = 'TESTING';
+    document.getElementById(`badge-${s}`).className = 'section-badge pending';
+  }
+
+  // Run each section
+  const r1 = await runCorsTests();
+  results.pass += r1.pass; results.fail += r1.fail;
+  updateScoreCards();
+
+  log('');
+  const r2 = await runApiTests();
+  results.pass += r2.pass; results.fail += r2.fail;
+  updateScoreCards();
+
+  log('');
+  const r3 = await runFrontendTests();
+  results.pass += r3.pass; results.fail += r3.fail;
+  updateScoreCards();
+
+  log('');
+  const r4 = await runDataTests();
+  results.pass += r4.pass; results.fail += r4.fail;
+  updateScoreCards();
+
+  log('');
+  const r5 = await runHealthTests();
+  results.pass += r5.pass; results.fail += r5.fail;
+  updateScoreCards();
+
+  // Show CORS fix if needed
+  if (results.cors > 0) {
+    document.getElementById('corsFixPanel').classList.add('visible');
+    log('');
+    log(`⚠️ ${results.cors} CORS-blocked endpoints detected. Fix panel shown below.`, 'warn');
+  }
+
+  log('');
+  log(`━━ Complete: ${results.pass} passed, ${results.fail} failed, ${results.cors} CORS blocked ━━`, results.fail > 0 ? 'warn' : 'ok');
+
+  btn.disabled = false;
+  status.textContent = results.fail === 0 ? 'ALL PASS' : `${results.fail} FAILED`;
+  status.className = `status-pill ${results.fail === 0 ? 'done' : 'idle'}`;
+}
+
+// ============================================================
+// Utilities
+// ============================================================
+function copyFix(id) {
+  const text = document.getElementById(id).textContent;
+  navigator.clipboard.writeText(text).then(() => {
+    const btn = document.getElementById(id).nextElementSibling;
+    btn.textContent = '✓ Copied!';
+    setTimeout(() => btn.textContent = btn.textContent.includes('A') ? 'Copy Option A' : btn.textContent.includes('B') ? 'Copy Option B' : 'Copy SQLite Fix', 1500);
+  });
+}
+
+function exportResults() {
+  const report = {
+    timestamp: new Date().toISOString(),
+    backend: BACKEND_BASE,
+    frontend: FRONTEND_BASE,
+    summary: { passed: results.pass, failed: results.fail, cors_blocked: results.cors },
+    avg_latency_ms: results.latencies.length > 0 ? Math.round(results.latencies.reduce((a,b) => a+b, 0) / results.latencies.length) : null,
+    details: results.details,
+  };
+  const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `dc-hub-diagnostics-${Date.now()}.json`;
+  a.click();
+}
+
+// Init
+renderTestRows();
+document.getElementById('envInfo').textContent = `Frontend: ${FRONTEND_BASE} | UA: ${navigator.userAgent.split(' ').slice(-2).join(' ')}`;
+</script>
+</body>
+</html>

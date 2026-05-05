@@ -1,0 +1,207 @@
+# .github/workflows/dchub-qa.yml
+# DC Hub — Automated QA Health Check, v2
+# Runs automated infra + frontend checks on schedule and after deploys
+# Emails you only when something fails
+
+name: DC Hub QA Health Check
+
+on:
+  schedule:
+    # Every day at 7am and 7pm EST (12:00 and 00:00 UTC)
+    - cron: '0 12 * * *'
+    - cron: '0 0 * * *'
+  # Run after any push to main (post-deploy)
+  push:
+    branches: [main]
+  # Manual trigger
+  workflow_dispatch:
+
+jobs:
+  qa-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Run DC Hub QA checks
+        id: qa
+        run: |
+          pip install requests -q
+
+          python3 << 'PYEOF'
+          import json, sys, time, requests
+          from datetime import datetime, timezone
+
+          BASE    = "https://dchub.cloud"
+          RAILWAY = "https://dchub-backend-production.up.railway.app"
+          TIMEOUT = 20
+
+          results = []
+          failures = []
+
+          def check(name, url, method="GET", expect_status=200, accept_statuses=None, json_path=None, min_value=None, post_data=None, headers=None, retries=1):
+              """Run a single health check with optional retries and multiple accepted statuses."""
+              for attempt in range(retries):
+                  start = time.monotonic()
+                  try:
+                      if method == "POST":
+                          r = requests.post(url, json=post_data, headers=headers or {}, timeout=TIMEOUT)
+                      else:
+                          r = requests.get(url, headers=headers or {}, timeout=TIMEOUT)
+                      ms = int((time.monotonic() - start) * 1000)
+
+                      # Build list of acceptable status codes
+                      ok_statuses = accept_statuses or [expect_status]
+
+                      if r.status_code not in ok_statuses:
+                          if attempt < retries - 1:
+                              time.sleep(3)  # Wait before retry
+                              continue
+                          msg = f"HTTP {r.status_code} (expected {ok_statuses}) [{ms}ms]"
+                          results.append(f"❌ {name}: {msg}")
+                          failures.append(f"{name}: {msg}")
+                          return
+
+                      # Optional JSON field validation
+                      if json_path and min_value is not None:
+                          try:
+                              data = r.json()
+                              value = data
+                              for key in json_path.split("."):
+                                  value = value.get(key, 0) if isinstance(value, dict) else 0
+                              if isinstance(value, (int, float)) and value < min_value:
+                                  msg = f"{json_path}={value} (expected >={min_value}) [{ms}ms]"
+                                  results.append(f"⚠️ {name}: {msg}")
+                                  failures.append(f"{name}: {msg}")
+                                  return
+                              results.append(f"✅ {name}: {json_path}={value} [{ms}ms]")
+                          except Exception as e:
+                              results.append(f"⚠️ {name}: JSON parse error [{ms}ms]")
+                          return
+
+                      retry_note = f" (retry {attempt+1})" if attempt > 0 else ""
+                      results.append(f"✅ {name}: OK [{ms}ms]{retry_note}")
+                      return
+
+                  except requests.exceptions.Timeout:
+                      ms = int((time.monotonic() - start) * 1000)
+                      if attempt < retries - 1:
+                          time.sleep(3)
+                          continue
+                      msg = f"TIMEOUT after {ms}ms"
+                      results.append(f"❌ {name}: {msg}")
+                      failures.append(f"{name}: {msg}")
+                  except Exception as e:
+                      ms = int((time.monotonic() - start) * 1000)
+                      if attempt < retries - 1:
+                          time.sleep(3)
+                          continue
+                      msg = f"ERROR: {str(e)[:80]} [{ms}ms]"
+                      results.append(f"❌ {name}: {msg}")
+                      failures.append(f"{name}: {msg}")
+
+          # ── Infrastructure ──
+          print("🏗️  Infrastructure Health")
+          print("─" * 50)
+          check("Railway health",         f"{RAILWAY}/api/health", retries=2)
+          check("Cloudflare Worker",      f"{BASE}/api/health")
+          check("Neon DB stats",          f"{BASE}/api/v1/stats",
+                json_path="data.total_facilities", min_value=11000)
+
+          # ── API Endpoints ──
+          print("\n🎯 API Endpoints")
+          print("─" * 50)
+          check("Agent registry",         f"{BASE}/api/agents/registry")
+          check("Intelligence index",     f"{BASE}/api/agents/intelligence-index")
+          check("AI tracking",            f"{BASE}/api/ai/tracking")
+          check("News feed",              f"{BASE}/api/news/live?limit=5")
+          check("Transactions",           f"{BASE}/api/transactions?limit=5")
+          check("Map data",               f"{BASE}/api/v1/map?all=true&limit=5")
+          check("User stats (unauth)",    f"{BASE}/api/v1/user/stats",
+                accept_statuses=[401, 403, 503], retries=2)
+
+          # ── MCP ──
+          print("\n🔌 MCP Protocol")
+          print("─" * 50)
+          check("MCP tools/list",         f"{BASE}/mcp", method="POST",
+                post_data={"jsonrpc": "2.0", "method": "tools/list", "id": 1},
+                headers={"Content-Type": "application/json"},
+                retries=2)
+
+          # ── Frontend Pages ──
+          print("\n🌐 Frontend Pages")
+          print("─" * 50)
+          check("Homepage",               f"{BASE}/")
+          check("Dashboard",              f"{BASE}/dashboard.html")
+          check("Login",                  f"{BASE}/login.html")
+          check("Land & Power",           f"{BASE}/land-power")
+          check("AI Platform",            f"{BASE}/ai")
+          check("AI Wars",               f"{BASE}/aiwars")
+          check("Pricing",               f"{BASE}/pricing")
+          check("API Docs",              f"{BASE}/api-docs")
+          check("Facility detail",        f"{BASE}/facilities/databank-ltd-databank-minneapolis-msp1-8c8fb870")
+
+          # ── Auth gating ──
+          print("\n🔐 Auth Gating")
+          print("─" * 50)
+          check("Facilities (no auth → limited)", f"{BASE}/api/v1/facilities?limit=3")
+          check("Search (no auth)",       f"{BASE}/api/v1/search?q=equinix",
+                accept_statuses=[401, 403, 429])
+
+          # ── Discovery files ──
+          print("\n🤖 AI Discovery Files")
+          print("─" * 50)
+          check("llms.txt",              f"{BASE}/llms.txt")
+          check("llms-full.txt",         f"{BASE}/llms-full.txt")
+          check("robots.txt",            f"{BASE}/robots.txt")
+          check("sitemap.xml",           f"{BASE}/sitemap.xml")
+          check(".well-known/ai-plugin", f"{BASE}/.well-known/ai-plugin.json")
+
+          # ── Print results ──
+          print("\n" + "=" * 60)
+          print("📊 RESULTS")
+          print("=" * 60)
+          for r in results:
+              print(f"  {r}")
+
+          total = len(results)
+          passed = sum(1 for r in results if r.startswith("✅"))
+          failed_count = sum(1 for r in results if r.startswith("❌"))
+          warned = sum(1 for r in results if r.startswith("⚠️"))
+
+          print(f"\n  Total: {total}  |  ✅ {passed}  |  ❌ {failed_count}  |  ⚠️ {warned}")
+
+          if failures:
+              print(f"\n🚨 {len(failures)} FAILURE(S):")
+              for f in failures:
+                  print(f"   • {f}")
+              # Write failures to file for notification step
+              with open("qa_failures.txt", "w") as fh:
+                  fh.write(f"DC Hub QA — {len(failures)} failure(s) at {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n\n")
+                  for f in failures:
+                      fh.write(f"• {f}\n")
+              sys.exit(1)
+          else:
+              print("\n🎉 ALL CHECKS PASSED!")
+          PYEOF
+
+      - name: Notify on failure
+        if: failure()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtpout.secureserver.net
+          server_port: 587
+          secure: false
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: "🚨 DC Hub QA Failed — ${{ github.run_id }}"
+          to: jonathan@dchub.cloud
+          from: jonathan@dchub.cloud
+          body: |
+            DC Hub automated QA check failed.
+
+            Run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            Trigger: ${{ github.event_name }}
+            Time: ${{ github.event.head_commit.timestamp || 'scheduled' }}
+
+            See the Actions log for full details.

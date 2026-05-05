@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "t-CsaHq8TdlhzNIaiZYbn"
+uri = "file://dc_hub_users.csv"
+type = "table"
+title = "DC Hub Users - All Accounts"

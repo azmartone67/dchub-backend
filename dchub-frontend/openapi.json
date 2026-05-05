@@ -1,0 +1,26 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "DC Hub API",
+    "description": "Data center intelligence API. 13,000+ facilities globally with power, fiber, and grid data. See https://dchub.cloud/api-docs for full reference.",
+    "version": "2.5.2",
+    "contact": { "name": "DC Hub", "url": "https://dchub.cloud", "email": "support@dchub.cloud" },
+    "license": { "name": "Proprietary — tiered access", "url": "https://dchub.cloud/terms" }
+  },
+  "servers": [{ "url": "https://dchub.cloud/api/v1", "description": "Production" }],
+  "security": [{ "apiKey": [] }],
+  "components": {
+    "securitySchemes": {
+      "apiKey": { "type": "apiKey", "name": "X-API-Key", "in": "header", "description": "Get your key at https://dchub.cloud/developers/signup" }
+    }
+  },
+  "paths": {
+    "/stats": { "get": { "summary": "Global aggregates", "responses": { "200": { "description": "OK" } } } },
+    "/facilities": { "get": { "summary": "Facility search", "parameters": [{"name":"country","in":"query","schema":{"type":"string"}},{"name":"state","in":"query","schema":{"type":"string"}},{"name":"status","in":"query","schema":{"type":"string"}},{"name":"limit","in":"query","schema":{"type":"integer","default":100,"maximum":5000}},{"name":"offset","in":"query","schema":{"type":"integer","default":0}}], "responses": { "200": { "description": "OK" } } } },
+    "/markets/compare": { "get": { "summary": "Compare 2-4 markets side-by-side", "parameters": [{"name":"markets","in":"query","required":true,"schema":{"type":"string"},"example":"Dallas,Ashburn,Phoenix"}], "responses": { "200": { "description": "OK" } } } },
+    "/news": { "get": { "summary": "Industry news feed", "parameters": [{"name":"limit","in":"query","schema":{"type":"integer","default":50,"maximum":200}},{"name":"query","in":"query","schema":{"type":"string"}},{"name":"category","in":"query","schema":{"type":"string"}}], "responses": { "200": { "description": "OK" } }, "security": [] } },
+    "/transactions": { "get": { "summary": "M&A + financing transactions", "responses": { "200": { "description": "OK" } } } },
+    "/grid/{iso}": { "get": { "summary": "Grid operator intelligence", "parameters": [{"name":"iso","in":"path","required":true,"schema":{"type":"string","enum":["pjm","miso","ercot","caiso","spp","nyiso","iso-ne"]}}], "responses": { "200": { "description": "OK" } } } },
+    "/public/mcp-count": { "get": { "summary": "Public AI-agent request counter", "servers": [{"url":"https://dchub-api-production.up.railway.app/api"}], "responses": { "200": { "description": "OK" } }, "security": [] } }
+  }
+}

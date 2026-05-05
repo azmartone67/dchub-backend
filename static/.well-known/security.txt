@@ -1,0 +1,4 @@
+Contact: mailto:api@dchub.cloud
+Preferred-Languages: en
+Canonical: https://dchub.cloud/.well-known/security.txt
+Expires: 2027-01-31T00:00:00.000Z

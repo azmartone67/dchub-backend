@@ -1,0 +1,106 @@
+name: Post-Deploy Smoke Test
+# Runs after every push to main (once Railway finishes rebuilding),
+# and every 30 min as a safety net. Fails the build — and pings you —
+# on any gated-endpoint regression OR on a 2026-04-28 regression.
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: pip install --quiet psycopg2-binary requests
+
+      - name: Wait for Railway rebuild to settle
+        if: github.event_name == 'push'
+        run: sleep 90
+
+      - name: Run main smoke test (Railway / DB / MCP)
+        id: smoke
+        env:
+          DCHUB_API_BASE:    https://dchub-api-production.up.railway.app
+          DCHUB_ADMIN_KEY:   ${{ secrets.DCHUB_ADMIN_KEY }}
+          DCHUB_API_KEY:     ${{ secrets.DCHUB_API_KEY }}
+          NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+        run: |
+          if [ -f tools/fixkit/dchub_qa_v2.py ]; then
+            python3 tools/fixkit/dchub_qa_v2.py --base https://dchub.cloud --report report.json
+          elif [ -f smoke_test.py ]; then
+            python3 smoke_test.py
+          elif [ -f dchub-qa.py ]; then
+            python3 dchub-qa.py
+          else
+            echo "::error::No smoke script found"
+            exit 1
+          fi
+
+      - name: Upload main smoke report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-report
+          path: report.json
+          if-no-files-found: ignore
+
+      # DCHUB-REGRESSION-2026-04-28: extra checks for the 2026-04-28 fixes
+      # (press-release daily brief, Explorer, MCP discovery, coord-parser,
+      #  right-panel CSS, Worker version, pr_queue integrity).
+      - name: Run 2026-04-28 regression smoke
+        if: always()
+        run: |
+          if [ -f dchub-frontend/qa/smoke_regression_2026_04_28.py ]; then
+            python3 dchub-frontend/qa/smoke_regression_2026_04_28.py \
+              --base https://dchub.cloud \
+              --report regression-report.json
+          else
+            echo "::warning::regression smoke not present at dchub-frontend/qa/smoke_regression_2026_04_28.py — skipped"
+          fi
+
+      - name: Upload regression report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-report
+          path: regression-report.json
+          if-no-files-found: ignore
+
+      # Single notify step — gated on SLACK_WEBHOOK_URL being present so we
+      # never crash with "Need to provide at least one botToken or webhookUrl".
+      - name: Notify on failure
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "::warning::SLACK_WEBHOOK_URL secret not set — smoke failure was silent."
+            echo "::warning::Add it at Settings → Secrets → Actions, then re-run this workflow."
+            exit 0
+          fi
+          curl -sS -X POST -H 'Content-Type: application/json' \
+            --data "{\"text\":\":rotating_light: DC Hub smoke FAILED — run ${{ github.run_id }}\\n${RUN_URL}\"}" \
+            "$SLACK_WEBHOOK_URL" \
+            || echo "::warning::Slack notify POST failed (network/webhook invalid)"
+
+      - name: Notify on workflow failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create -R azmartone67/dchub-backend \
+            --title "[workflow-failed] ${{ github.workflow }} on $(date -u +%Y-%m-%d_%H:%M)" \
+            --body "Workflow run ${{ github.run_id }} failed. View logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --label workflow-failure || true

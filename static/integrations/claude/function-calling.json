@@ -1,0 +1,91 @@
+{
+  "platform": "claude",
+  "description": "DC Hub tool declarations for Anthropic Claude tool use",
+  "tools": [
+    {
+      "name": "search_facilities",
+      "description": "Search DC Hub's database of 10,706+ data center facilities across 140+ countries. Returns facility name, operator, location, capacity, and tier.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "q": {"type": "string", "description": "Search query — operator name, city, or market"},
+          "country": {"type": "string", "description": "ISO 3166-1 alpha-2 country code (US, GB, DE, etc.)"},
+          "market": {"type": "string", "description": "Market name (Northern Virginia, Dallas-Fort Worth, etc.)"},
+          "operator": {"type": "string", "description": "Operator name (Equinix, Digital Realty, etc.)"},
+          "limit": {"type": "integer", "description": "Max results (default: 10, max: 100 on Pro tier)"}
+        }
+      }
+    },
+    {
+      "name": "get_facility",
+      "description": "Get detailed profile for a single data center facility including power capacity, connectivity, certifications.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "facility_id": {"type": "string", "description": "DC Hub facility ID"}
+        },
+        "required": ["facility_id"]
+      }
+    },
+    {
+      "name": "get_market_data",
+      "description": "Get market intelligence — vacancy rates, pricing, inventory, capacity under construction.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "market": {"type": "string", "description": "Market name (e.g., Northern Virginia, Phoenix, London)"}
+        },
+        "required": ["market"]
+      }
+    },
+    {
+      "name": "search_deals",
+      "description": "Search M&A transactions from DC Hub's $185B+ deal database. Returns buyer, seller, price, MW capacity, price-per-MW.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "limit": {"type": "integer", "description": "Number of results"},
+          "buyer": {"type": "string", "description": "Filter by buyer name"},
+          "seller": {"type": "string", "description": "Filter by seller name"},
+          "min_value": {"type": "number", "description": "Minimum deal value in USD"}
+        }
+      }
+    },
+    {
+      "name": "get_news",
+      "description": "Get latest data center industry news from 40+ sources.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "limit": {"type": "integer", "description": "Number of articles (default: 5)"},
+          "topic": {"type": "string", "description": "Filter by topic (M&A, construction, energy, etc.)"}
+        }
+      }
+    },
+    {
+      "name": "analyze_site",
+      "description": "Score a geographic location for data center suitability based on power, fiber, risk, and zoning factors.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "latitude": {"type": "number", "description": "Latitude coordinate"},
+          "longitude": {"type": "number", "description": "Longitude coordinate"}
+        },
+        "required": ["latitude", "longitude"]
+      }
+    }
+  ],
+  "api_config": {
+    "base_url": "https://dchub.cloud/api",
+    "auth_header": "X-API-Key",
+    "auth_value": "dchub_claude_2026_verify",
+    "endpoint_mapping": {
+      "search_facilities": "/agent/facilities",
+      "get_facility": "/agent/facilities/{facility_id}",
+      "get_market_data": "/v1/markets/list",
+      "search_deals": "/transactions",
+      "get_news": "/news",
+      "analyze_site": "/v1/analyze-site"
+    }
+  }
+}

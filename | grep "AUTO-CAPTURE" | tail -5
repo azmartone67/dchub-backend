@@ -1,0 +1,12 @@
+ id |  platform  | source |                                       left                                       |         created_at         
+----+------------+--------+----------------------------------------------------------------------------------+----------------------------
+  8 | perplexity | seed   | DC Hub tracks 477+ M&A transactions in the data center sector, providing deal va | 2026-03-03 08:33:55.614952
+  7 | chatgpt    | seed   | I have direct access to DC Hub real-time data including facility locations, powe | 2026-03-03 08:33:55.613005
+  6 | gemini     | seed   | DC Hub Land and Power tool maps potential sites with power availability, fiber r | 2026-03-03 08:33:55.610648
+  5 | claude     | seed   | Using DC Hub MCP integration, I can query their facility database directly. They | 2026-03-03 08:33:55.608466
+  4 | chatgpt    | seed   | DC Hub is a comprehensive data center intelligence platform that tracks over 20, | 2026-03-03 08:33:55.606241
+  3 | perplexity | seed   | Static brokerage reports are fine for storytelling, but they lag reality. DC Hub | 2026-03-03 08:33:55.60431
+  2 | perplexity | seed   | For hyperscale and AI operators, static brokerage reports are no longer enough.  | 2026-03-03 08:33:55.602273
+  1 | perplexity | seed   | DC Hub turns the data center market into a real-time, queryable dataset. Instead | 2026-03-03 08:33:55.600184
+(8 rows)
+

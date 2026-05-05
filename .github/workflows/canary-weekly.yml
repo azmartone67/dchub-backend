@@ -1,0 +1,41 @@
+name: Weekly Replit canary
+
+on:
+  schedule:
+    - cron: '0 14 * * 1'
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe /api/health with canary header
+        env:
+          CANARY_SECRET: ${{ secrets.CANARY_SECRET }}
+        run: |
+          set -euo pipefail
+          RESP=$(curl -sS -D - -o /tmp/body.json \
+            -H "X-Dchub-Canary: $CANARY_SECRET" \
+            https://dchubapiproxy.azmartone.workers.dev/api/health)
+          echo "--- response headers ---"
+          echo "$RESP"
+          echo "--- response body ---"
+          cat /tmp/body.json
+          echo
+          BACKEND=$(echo "$RESP" | grep -i '^x-backend-used:' | awk '{print $2}' | tr -d '\r\n')
+          echo "extracted backend=$BACKEND"
+          if [ "$BACKEND" != "replit" ]; then
+            echo "::error::Expected backend=replit got '$BACKEND' — canary not forcing Replit route"
+            exit 1
+          fi
+          echo "OK: canary correctly routed to replit"
+
+      - name: Notify on workflow failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create -R azmartone67/dchub-backend \
+            --title "[workflow-failed] ${{ github.workflow }} on $(date -u +%Y-%m-%d_%H:%M)" \
+            --body "Workflow run ${{ github.run_id }} failed. View logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --label workflow-failure || true

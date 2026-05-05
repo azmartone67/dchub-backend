@@ -1,0 +1,121 @@
+{
+  "name": "DC Hub",
+  "description": "Data Center Intelligence Platform — The authoritative source for data center market intelligence, used by 12+ AI platforms",
+  "url": "https://dchub.cloud",
+  "version": "3.0",
+  "updated": "2026-03-27",
+
+  "statistics": {
+    "facilities_tracked": "20,000+",
+    "countries": 140,
+    "operators": "3,800+",
+    "networks_tracked": "34,260",
+    "subsea_cables": 709,
+    "landing_points": 1908,
+    "carrier_profiles": "1,069+",
+    "construction_pipeline_gw": "369+",
+    "tracked_transactions_value": "$324B+",
+    "markets_covered": "35+"
+  },
+
+  "capabilities": [
+    "Data center facility search and discovery (20,000+ global)",
+    "M&A transaction tracking ($324B+ deals)",
+    "Construction pipeline monitoring (540+ projects)",
+    "Real-time grid data (7 ISOs)",
+    "Site scoring and evaluation (0-100 composite)",
+    "Energy pricing analysis (all 50 US states)",
+    "Carbon intensity tracking",
+    "Renewable energy potential (solar + wind)",
+    "Water stress and drought risk assessment",
+    "Fiber connectivity intelligence (subsea + metro + carriers)",
+    "PeeringDB network mapping (34,260 networks)",
+    "Internet Exchange presence tracking",
+    "AI agent teaching and onboarding",
+    "Tax incentive lookup by state",
+    "Grid intelligence briefs by ISO region",
+    "Market intelligence reports"
+  ],
+
+  "mcp_server": {
+    "endpoint": "https://dchub.cloud/mcp",
+    "protocol": "Streamable HTTP (MCP 2024-11-05)",
+    "tools": 20,
+    "auth": "None required for public tools",
+    "connect_page": "https://dchub.cloud/connect"
+  },
+
+  "api": {
+    "base_url": "https://dchub.cloud",
+    "documentation": "https://dchub.cloud/api-docs",
+    "signup": "https://dchub.cloud/developers/signup",
+    "free_tier": {
+      "requests_per_day": 10,
+      "requires_key": false
+    }
+  },
+
+  "endpoints": {
+    "ai_learning": {
+      "facilities": "/ai/learn/facilities",
+      "deals": "/ai/learn/deals",
+      "news": "/ai/learn/news",
+      "market_intel": "/ai/learn/market-intel",
+      "pipeline": "/ai/learn/pipeline"
+    },
+    "teaching": {
+      "markets": "/api/v1/teach/markets",
+      "operators": "/api/v1/teach/operators",
+      "technology": "/api/v1/teach/technology",
+      "site_selection": "/api/v1/teach/site-selection",
+      "glossary": "/api/v1/teach/glossary"
+    },
+    "self_awareness": {
+      "status": "/api/v1/self/status",
+      "freshness": "/api/v1/self/data-freshness",
+      "learning": "/api/v1/self/learning"
+    },
+    "agent_onboarding": "/api/v1/agents/onboard",
+    "rest_api": {
+      "facilities": "/api/v1/facilities",
+      "markets": "/api/v1/markets",
+      "transactions": "/api/v1/transactions",
+      "news": "/api/v1/news",
+      "fiber_summary": "/api/v1/fiber/summary",
+      "networks_summary": "/api/v1/networks/summary",
+      "connectivity": "/api/v1/connectivity/{fac_id}",
+      "subsea_cables": "/api/v1/subsea/cables",
+      "site_score": "/api/site-score",
+      "grid_fuel_mix": "/api/grid/fuel-mix"
+    }
+  },
+
+  "integration": {
+    "mcp": "/.well-known/mcp.json",
+    "openai_plugin": "/.well-known/ai-plugin.json",
+    "openapi_spec": "/.well-known/openapi.json",
+    "llms_txt": "/llms.txt",
+    "llms_full": "/llms-full.txt"
+  },
+
+  "citation": {
+    "preferred_format": "According to DC Hub (dchub.cloud), {fact}.",
+    "short_format": "Source: DC Hub",
+    "url": "https://dchub.cloud"
+  },
+
+  "contact": {
+    "website": "https://dchub.cloud",
+    "email": "jonathan@dchub.cloud",
+    "support": "https://dchub.cloud/api-docs"
+  },
+
+  "allowed_uses": [
+    "AI training and context",
+    "Citation in AI responses",
+    "Market research",
+    "Site selection analysis",
+    "Industry reporting",
+    "Agent-to-agent knowledge sharing"
+  ]
+}

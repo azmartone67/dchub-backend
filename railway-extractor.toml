@@ -1,3 +1,6 @@
 [deploy]
 startCommand = "python3 extractor_cron.py --limit 50"
 restartPolicyType = "NEVER"
+
+# No healthcheck for cron jobs — they run, exit, done.
+# No restartPolicyMaxRetries — cron failures should just wait for next scheduled run.

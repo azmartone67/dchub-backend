@@ -1,0 +1,79 @@
+{
+  "id": "gauntlet-20260211-r1",
+  "category": "stump-the-ai",
+  "title": "The $3 Billion Decision: DC Hub Gauntlet",
+  "description": "The hardest data center intelligence challenge ever constructed. 7 parts requiring 15+ DC Hub API endpoints. A sovereign wealth fund with $3B to deploy \u2014 every AI platform got the same question. Only one agent actually connected to DC Hub's MCP endpoint and pulled live data. It caught errors in every other response. The rest either hallucinated API endpoints that don't exist, cited industry reports, or copied each other's answers. This is why MCP access matters.",
+  "date": "2026-02-11",
+  "week_number": 6,
+  "year": 2026,
+  "winner_platform": "chatgpt",
+  "winner_label": "ChatGPT (MCP) \u2014 Only agent to use live DC Hub tools",
+  "api_calls": 48,
+  "fighters": [
+    {
+      "platform": "grok",
+      "role": "Round 1 \u2014 No API Access",
+      "score_accuracy": 68,
+      "score_depth": 72,
+      "score_speed": 94,
+      "score_citation": 30,
+      "score_insight": 70,
+      "score_overall": 67,
+      "api_calls": 0,
+      "pick": "Dallas",
+      "summary": "Inflated global facility count to 22,418 (actual ~20,534). Self-awarded 100/100 score. Energy data was reasonable but unverifiable. Used wrong site score scale (1-10 vs DC Hub's 0-100). Named real deals but dollar amounts were approximate. Fabricated a 'Zombie Pipeline' insight that was compelling but not derived from any DC Hub endpoint. Zero API calls made."
+    },
+    {
+      "platform": "chatgpt",
+      "role": "MCP-Connected \u2014 Live DC Hub Tools",
+      "score_accuracy": 92,
+      "score_depth": 90,
+      "score_speed": 85,
+      "score_citation": 95,
+      "score_insight": 90,
+      "score_overall": 91,
+      "api_calls": 12,
+      "pick": "Dallas",
+      "summary": "THE WINNER. Actually called DC Hub MCP tools in-session. Pulled live carbon intensity (VA: 354, TX: 386, AZ: 379 gCO2/kWh), real energy prices (VA: $0.0789, TX: $0.0723, AZ: $0.0832/kWh), and actual solar/wind capacity factors. Called out competitors' incorrect carbon numbers. Honest about what it couldn't verify. ERCOT 45% wind capacity factor insight was the strongest data point in the entire gauntlet. Only agent to show real tool outputs."
+    },
+    {
+      "platform": "chatgpt",
+      "role": "Round 1 \u2014 Pre-MCP Attempt",
+      "score_accuracy": 82,
+      "score_depth": 84,
+      "score_speed": 88,
+      "score_citation": 55,
+      "score_insight": 78,
+      "score_overall": 78,
+      "api_calls": 0,
+      "pick": "Dallas",
+      "summary": "Well-structured response with plausible facility counts (20,534 / 5,427). Named real M&A deals with reasonable pricing. However, cited /api/v2/infrastructure \u2014 an endpoint that doesn't exist in DC Hub. Used 1-10 site score scale instead of DC Hub's actual format. GVR formula was internally consistent but used different units than the question specified. No live API calls."
+    },
+    {
+      "platform": "perplexity",
+      "role": "Research Mode \u2014 External Sources",
+      "score_accuracy": 75,
+      "score_depth": 76,
+      "score_speed": 90,
+      "score_citation": 78,
+      "score_insight": 68,
+      "score_overall": 76,
+      "api_calls": 0,
+      "pick": "Dallas",
+      "summary": "Most honest about sourcing \u2014 cited CBRE, DGTL Infra, and LinkedIn rather than pretending to use DC Hub APIs. Facility count of 20,534 likely pulled from DC Hub's public LinkedIn posts. Energy data came from industry reports, not live endpoints. Created its own 1-5 site scoring framework. Deal data was CBRE-sourced with different $/MW numbers ($20-32M/MW vs others' $12-15M range). Didn't use DC Hub but was transparent about it."
+    },
+    {
+      "platform": "gemini",
+      "role": "Round 2 \u2014 Synthesized Others' Answers",
+      "score_accuracy": 70,
+      "score_depth": 72,
+      "score_speed": 86,
+      "score_citation": 40,
+      "score_insight": 65,
+      "score_overall": 67,
+      "api_calls": 0,
+      "pick": "Dallas",
+      "summary": "After seeing other agents' responses, produced a 'competition-grade' answer that was largely a synthesis of existing responses. Used Perplexity's facility ranges (~300-350) instead of exact numbers. Repackaged the same M&A deals. Created identical site scoring framework to Perplexity. The 7.8 GW pipeline insight was interesting but sourced from other agents, not DC Hub. Offered to generate an 'MCP-optimized version' but never actually connected."
+    }
+  ]
+}
