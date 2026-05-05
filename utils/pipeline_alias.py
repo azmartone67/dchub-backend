@@ -50,3 +50,31 @@ def matches_any(value, query):
         if cand.lower() in val_lower:
             return True
     return False
+
+
+def alias_fallback(run_query_fn, query, *args, **kwargs):
+    """Phase 47 — added retry-with-aliases helper."""
+    try:
+        result = run_query_fn(query, *args, **kwargs)
+    except Exception:
+        return run_query_fn(query, *args, **kwargs)
+
+    def _is_empty(r):
+        if r is None: return True
+        if isinstance(r, list): return len(r) == 0
+        if isinstance(r, dict):
+            for k in ('rows', 'results', 'pipelines', 'data', 'items'):
+                v = r.get(k)
+                if isinstance(v, list) and len(v) == 0: return True
+            return False
+        return False
+
+    if not _is_empty(result): return result
+
+    for canonical in expand_query(query):
+        if str(canonical).lower() == str(query).lower(): continue
+        try:
+            alt = run_query_fn(canonical, *args, **kwargs)
+            if not _is_empty(alt): return alt
+        except Exception: continue
+    return result

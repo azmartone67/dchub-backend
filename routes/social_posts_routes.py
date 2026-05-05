@@ -81,7 +81,7 @@ def daily_post_landing(date):
     <p class="meta">Live grid intelligence for {iso} ({pretty_date})</p>
     <img src="{card_url}" alt="{iso} grid pulse {pretty_date}" class="card-img">
     <p>{desc}</p>
-    <a class="cta" href="/grid/{iso.lower()}">View live {iso} dashboard →</a>
+    <a class="cta" href="/grid#{iso.lower()}"  # phase47_cf_safe_cta - was /grid/{iso.lower()}, now /grid hub>View live {iso} dashboard →</a>
     <p style="margin-top:3rem;color:#6b7593;font-size:.9rem">
       <a href="/grid" style="color:#ff6b35">All ISOs</a> ·
       <a href="/" style="color:#ff6b35">DC Hub home</a>
