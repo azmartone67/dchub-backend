@@ -5,7 +5,8 @@ import datetime
 observability_bp = Blueprint('observability', __name__)
 
 
-@observability_bp.route('/api/v1/conversion/track', methods=['POST', 'GET'])
+@observability_bp.route('/api/v1/observability/conversion/track', methods=['POST', 'GET'])  # phase39_canonical_track
+@observability_bp.route('/api/v1/conversion/track', methods=['POST', 'GET'])  # legacy fallback (CF-blocked)
 def phase38_track_click():
     """Phase 38 — record an attributed upgrade-URL click."""
     args = request.args if request.method == 'GET' else (request.get_json(silent=True) or request.form)
@@ -54,7 +55,8 @@ def phase38_track_click():
     return jsonify(out)
 
 
-@observability_bp.route('/api/v1/conversion/funnel', methods=['GET'])
+@observability_bp.route('/api/v1/observability/conversion/funnel', methods=['GET'])  # phase39_canonical_track
+@observability_bp.route('/api/v1/conversion/funnel', methods=['GET'])  # legacy fallback (CF-blocked)
 def phase38_funnel():
     """Quick funnel report — signals, clicks, conversions over last N days."""
     days = max(1, min(int(request.args.get('days', 30)), 90))
