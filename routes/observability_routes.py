@@ -97,7 +97,8 @@ def _funnel_rollup():
             # Phase 52 fix: try multiple signal sources to match the dashboard widget
             # signals = upgrade signals fired (any of: mcp_signals, mcp_conversions
             # rows where stage='signal' or 'paywall_hit', or upgrade_signals table)
-            signal_queries = [
+            signal_queries = [  # phase53_correct_table — mcp_upgrade_signals is the real one
+                f"SELECT COUNT(*) FROM mcp_upgrade_signals WHERE created_at > NOW() - INTERVAL '{days} days'",
                 f"SELECT COUNT(*) FROM mcp_signals WHERE created_at > NOW() - INTERVAL '{days} days'",
                 f"SELECT COUNT(*) FROM upgrade_signals WHERE created_at > NOW() - INTERVAL '{days} days'",
                 f"SELECT COUNT(*) FROM mcp_conversions WHERE stage IN ('signal','paywall_hit','upgrade_signal') AND created_at > NOW() - INTERVAL '{days} days'",
