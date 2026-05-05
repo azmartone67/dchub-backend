@@ -13,6 +13,15 @@ import threading
 from datetime import datetime, timedelta
 from flask import Blueprint, request, jsonify
 
+# phase57_landing — daily landing URL helper for LinkedIn rich-card preview
+def _phase30c_landing_url(d=None):
+    """Return canonical /api/v1/social/posts/<date> URL for LinkedIn OG card."""
+    import datetime
+    if d is None:
+        d = datetime.date.today()
+    return f"https://dchub.cloud/api/v1/social/posts/{d.isoformat()}"
+
+
 logger = logging.getLogger(__name__)
 
 content_bp = Blueprint('content_publisher', __name__)

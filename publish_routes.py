@@ -15,6 +15,15 @@ Requires:
 
 from __future__ import annotations
 
+# phase57_landing — daily landing URL helper for LinkedIn rich-card preview
+def _phase30c_landing_url(d=None):
+    """Return canonical /api/v1/social/posts/<date> URL for LinkedIn OG card."""
+    import datetime
+    if d is None:
+        d = datetime.date.today()
+    return f"https://dchub.cloud/api/v1/social/posts/{d.isoformat()}"
+
+
 import os
 import json
 import logging
