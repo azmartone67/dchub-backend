@@ -17,11 +17,25 @@ def card(iso):
     except Exception:
         return Response('PIL not installed', status=500)
 
-    try:
-        r = requests.get(f'http://127.0.0.1:8080/api/v1/grid/intelligence/{iso}', timeout=6)
-        d = r.json().get('data', {}) if r.ok else {}
-    except Exception:
-        d = {}
+    # phase67_port_fix -- previously hardcoded :8080 which fails on Railway.
+    # Try local loopback with PORT env var, fall back to public URL.
+    import os as _os
+    d = {}
+    _port = _os.environ.get('PORT', '8080')
+    _urls = [
+        f'http://127.0.0.1:{_port}/api/v1/grid/intelligence/{iso}',
+        f'https://dchub-backend-production.up.railway.app/api/v1/grid/intelligence/{iso}',
+    ]
+    for _u in _urls:
+        try:
+            r = requests.get(_u, timeout=6)
+            if r.ok:
+                _payload = r.json()
+                d = _payload.get('data', {}) or _payload or {}
+                if d.get('current_demand_mw') or d.get('total_capacity_mw') or d.get('headroom_pct'):
+                    break
+        except Exception:
+            continue
 
     demand = int(d.get('current_demand_mw', 0) or 0)
     headroom = float(d.get('headroom_pct', 0) or 0)
