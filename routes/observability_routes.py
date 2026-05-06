@@ -404,24 +404,38 @@ def diag_routes():
 
 
 # ----------------------------------------------------------------------------
-# Phase 60 / 60e -- phase60e_outreach_workbench
-# Top users by upgrade-signal count, schema-aware, with outreach metadata.
+# Phase 60 / 61.A -- phase61_top_users_pivot
+# Top-users with group_by + optional reverse-DNS enrichment.
 # ----------------------------------------------------------------------------
 @observability_bp.route('/api/v1/observability/top-users', methods=['GET'])
 def phase60_top_users():
-    """Top users by upgrade-signal count. Outreach-campaign workbench.
+    """Top users by upgrade-signal count, with multiple grouping keys.
 
     Query params:
-      limit               int, default 50, max 500
+      group_by            email (default), ip, user_agent, session_id, mcp_client
+      reverse_dns         1 to enrich IP rows with reverse DNS + provider guess
+      limit               int, default 50, max 1000
       format              json (default) or csv
-      include_converted   1 to include already-converted users
-      include_contacted   1 to include users where outreach_sent=true
-      tier                filter to specific tier_required (Pro, Enterprise)
+      include_converted   1 to include already-converted groups
+      include_contacted   1 to include groups already contacted
+      tier                filter to specific tier_required
       mcp_client          filter to specific AI client
       token               required if TOP_USERS_TOKEN env is set
     """
-    import os, csv, io, traceback
+    import os, csv, io, traceback, socket
+    from concurrent.futures import ThreadPoolExecutor
     from flask import request, jsonify, Response
+
+    GROUP_BY_MAP = {
+        'email': 'user_email',
+        'ip': 'ip_address',
+        'session_id': 'session_id',
+        'session': 'session_id',
+        'user_agent': 'user_agent',
+        'agent': 'user_agent',
+        'mcp_client': 'mcp_client',
+        'client': 'mcp_client',
+    }
 
     debug_steps = []
     def _step(msg): debug_steps.append(msg)
@@ -435,13 +449,16 @@ def phase60_top_users():
             if provided != admin_token:
                 return jsonify({'error': 'unauthorized'}), 401
 
+        group_by = (request.args.get('group_by') or 'email').lower()
+        group_col = GROUP_BY_MAP.get(group_by, 'user_email')
         try:
             limit = int(request.args.get('limit', '50'))
         except (TypeError, ValueError):
             limit = 50
-        limit = max(1, min(limit, 500))
+        limit = max(1, min(limit, 1000))
         fmt = (request.args.get('format') or 'json').lower()
         debug = request.args.get('debug') == '1'
+        do_rdns = request.args.get('reverse_dns') == '1'
         include_converted = request.args.get('include_converted') == '1'
         include_contacted = request.args.get('include_contacted') == '1'
         tier_filter = request.args.get('tier')
@@ -449,7 +466,7 @@ def phase60_top_users():
 
         neon = os.environ.get('NEON_DATABASE_URL') or os.environ.get('DATABASE_URL')
         if not neon:
-            return jsonify({'error': 'no DB url configured', 'phase': '60e'}), 500
+            return jsonify({'error': 'no DB url configured', 'phase': '61'}), 500
 
         conn = None
         connector = None
@@ -464,14 +481,13 @@ def phase60_top_users():
                 last_err = f"{modname}: {type(e).__name__}: {e}"
                 continue
         if not conn:
-            return jsonify({'error': 'no postgres driver', 'last_error': last_err, 'phase': '60e'}), 500
-        _step(f"connected via {connector}")
+            return jsonify({'error': 'no postgres driver', 'last_error': last_err, 'phase': '61'}), 500
+        _step(f"connected via {connector}; group_by={group_by} ({group_col})")
 
         try:
             cur = conn.cursor()
 
-            # Build the WHERE clause for filters
-            where_clauses = ["user_email IS NOT NULL"]
+            where_clauses = [group_col + " IS NOT NULL"]
             sql_args = []
             if not include_converted:
                 where_clauses.append("(converted IS NULL OR converted = false)")
@@ -485,15 +501,16 @@ def phase60_top_users():
                 sql_args.append(client_filter)
             where_sql = " AND ".join(where_clauses)
 
-            # Per-user leaderboard
             sql = (
                 "SELECT "
-                "  user_email, "
+                "  " + group_col + " AS identifier, "
                 "  COUNT(*) AS signal_count, "
                 "  COUNT(DISTINCT tool_requested) AS distinct_tools, "
                 "  STRING_AGG(DISTINCT tool_requested::text, ',' ORDER BY tool_requested::text) AS tools_csv, "
                 "  STRING_AGG(DISTINCT COALESCE(mcp_client, 'unknown')::text, ',') AS clients_csv, "
                 "  STRING_AGG(DISTINCT COALESCE(tier_required, '')::text, ',') AS tiers_csv, "
+                "  STRING_AGG(DISTINCT COALESCE(user_email, '')::text, ',') AS emails_csv, "
+                "  STRING_AGG(DISTINCT COALESCE(ip_address, '')::text, ',') AS ips_csv, "
                 "  BOOL_OR(COALESCE(converted, false)) AS has_converted, "
                 "  MAX(converted_at) AS converted_at, "
                 "  BOOL_OR(COALESCE(outreach_sent, false)) AS outreach_done, "
@@ -502,7 +519,7 @@ def phase60_top_users():
                 "  MAX(created_at) AS last_seen "
                 "FROM mcp_upgrade_signals "
                 "WHERE " + where_sql + " "
-                "GROUP BY user_email "
+                "GROUP BY " + group_col + " "
                 "ORDER BY signal_count DESC "
                 "LIMIT %s"
             )
@@ -515,71 +532,98 @@ def phase60_top_users():
                 tools_csv = r[3] or ''
                 clients_csv = r[4] or ''
                 tiers_csv = r[5] or ''
+                emails_csv = r[6] or ''
+                ips_csv = r[7] or ''
                 top_users.append({
-                    'email': r[0],
+                    'identifier': r[0],
+                    'group_by': group_by,
                     'signal_count': int(r[1] or 0),
                     'distinct_tools': int(r[2] or 0),
                     'tools_tried': [s.strip() for s in tools_csv.split(',') if s.strip()],
                     'mcp_clients': [s.strip() for s in clients_csv.split(',') if s.strip()],
                     'tiers_required': [s.strip() for s in tiers_csv.split(',') if s.strip()],
-                    'converted': bool(r[6]),
-                    'converted_at': r[7].isoformat() if r[7] else None,
-                    'outreach_sent': bool(r[8]),
-                    'outreach_sent_at': r[9].isoformat() if r[9] else None,
-                    'first_seen': r[10].isoformat() if r[10] else None,
-                    'last_seen': r[11].isoformat() if r[11] else None,
+                    'emails_seen': [s for s in (emails_csv.split(',') if emails_csv else []) if s and s != ''],
+                    'ips_seen': [s for s in (ips_csv.split(',') if ips_csv else []) if s and s != ''],
+                    'converted': bool(r[8]),
+                    'converted_at': r[9].isoformat() if r[9] else None,
+                    'outreach_sent': bool(r[10]),
+                    'outreach_sent_at': r[11].isoformat() if r[11] else None,
+                    'first_seen': r[12].isoformat() if r[12] else None,
+                    'last_seen': r[13].isoformat() if r[13] else None,
                 })
 
-            # Top-level totals (across the WHOLE signals table, no filter)
+            # If group_by=ip + reverse_dns=1, do parallel reverse-DNS lookups
+            if group_by == 'ip' and do_rdns and top_users:
+                def _lookup(ip):
+                    try:
+                        socket.setdefaulttimeout(1.5)
+                        hostname = socket.gethostbyaddr(ip)[0]
+                        return ip, hostname
+                    except Exception:
+                        return ip, None
+
+                ips_to_lookup = [u['identifier'] for u in top_users[:50] if u['identifier']]
+                hostmap = {}
+                with ThreadPoolExecutor(max_workers=10) as ex:
+                    for ip, host in ex.map(_lookup, ips_to_lookup):
+                        hostmap[ip] = host
+
+                def _classify(host):
+                    if not host: return None
+                    h = host.lower()
+                    if 'amazonaws.com' in h or 'compute-1' in h: return 'AWS'
+                    if 'googleusercontent' in h or 'googleapis' in h or '1e100.net' in h: return 'GCP'
+                    if 'azure' in h or 'cloudapp.net' in h: return 'Azure'
+                    if 'cloudflare' in h or 'cdn-cgi' in h: return 'Cloudflare'
+                    if 'github' in h: return 'GitHub'
+                    if 'digitalocean' in h: return 'DigitalOcean'
+                    if 'linode' in h: return 'Linode'
+                    if 'vercel' in h or 'netlify' in h: return 'Vercel/Netlify'
+                    if 'comcast' in h or 'spectrum' in h or 'verizon' in h or 'att.net' in h or 'cox.net' in h:
+                        return 'Residential ISP'
+                    # Try second-level domain as company guess
+                    parts = h.split('.')
+                    if len(parts) >= 2:
+                        return parts[-2]
+                    return 'unknown'
+
+                for u in top_users:
+                    h = hostmap.get(u['identifier'])
+                    u['hostname'] = h
+                    u['provider_guess'] = _classify(h)
+                _step(f"reverse DNS done for {len(hostmap)} ips")
+
+            # Top-level totals
             cur.execute("SELECT COUNT(*) FROM mcp_upgrade_signals")
             total_signals = int(cur.fetchone()[0] or 0)
 
-            cur.execute("SELECT COUNT(DISTINCT user_email) FROM mcp_upgrade_signals WHERE user_email IS NOT NULL")
-            total_distinct_users = int(cur.fetchone()[0] or 0)
+            cur.execute("SELECT COUNT(DISTINCT " + group_col + ") FROM mcp_upgrade_signals WHERE " + group_col + " IS NOT NULL")
+            total_distinct = int(cur.fetchone()[0] or 0)
 
             cur.execute(
-                "SELECT COUNT(DISTINCT user_email) FROM mcp_upgrade_signals "
-                "WHERE user_email IS NOT NULL AND COALESCE(converted, false) = true"
+                "SELECT COUNT(DISTINCT " + group_col + ") FROM mcp_upgrade_signals "
+                "WHERE " + group_col + " IS NOT NULL AND COALESCE(converted, false) = true"
             )
-            converted_users = int(cur.fetchone()[0] or 0)
+            converted_groups = int(cur.fetchone()[0] or 0)
 
             cur.execute(
-                "SELECT COUNT(DISTINCT user_email) FROM mcp_upgrade_signals "
-                "WHERE user_email IS NOT NULL AND COALESCE(outreach_sent, false) = true"
+                "SELECT COUNT(DISTINCT " + group_col + ") FROM mcp_upgrade_signals "
+                "WHERE " + group_col + " IS NOT NULL AND COALESCE(outreach_sent, false) = true"
             )
-            contacted_users = int(cur.fetchone()[0] or 0)
+            contacted_groups = int(cur.fetchone()[0] or 0)
 
-            # Breakdown by mcp_client
+            # Always-included breakdowns (regardless of group_by)
             cur.execute(
-                "SELECT COALESCE(mcp_client, 'unknown') AS c, COUNT(*) AS n, "
-                "COUNT(DISTINCT user_email) AS users "
-                "FROM mcp_upgrade_signals "
-                "GROUP BY c "
-                "ORDER BY n DESC "
-                "LIMIT 20"
+                "SELECT COALESCE(mcp_client, 'unknown') AS c, COUNT(*) AS n "
+                "FROM mcp_upgrade_signals GROUP BY c ORDER BY n DESC LIMIT 20"
             )
-            by_client = [{'mcp_client': r[0], 'signals': int(r[1]), 'users': int(r[2])} for r in cur.fetchall()]
+            by_client = [{'mcp_client': r[0], 'signals': int(r[1])} for r in cur.fetchall()]
 
-            # Breakdown by tier_required
             cur.execute(
-                "SELECT COALESCE(tier_required, 'unknown') AS t, COUNT(*) AS n, "
-                "COUNT(DISTINCT user_email) AS users "
-                "FROM mcp_upgrade_signals "
-                "GROUP BY t "
-                "ORDER BY n DESC"
+                "SELECT COALESCE(tool_requested, 'unknown') AS tr, COUNT(*) AS n "
+                "FROM mcp_upgrade_signals GROUP BY tr ORDER BY n DESC LIMIT 20"
             )
-            by_tier = [{'tier_required': r[0], 'signals': int(r[1]), 'users': int(r[2])} for r in cur.fetchall()]
-
-            # Breakdown by tool_requested
-            cur.execute(
-                "SELECT COALESCE(tool_requested, 'unknown') AS tr, COUNT(*) AS n, "
-                "COUNT(DISTINCT user_email) AS users "
-                "FROM mcp_upgrade_signals "
-                "GROUP BY tr "
-                "ORDER BY n DESC "
-                "LIMIT 20"
-            )
-            by_tool = [{'tool_requested': r[0], 'signals': int(r[1]), 'users': int(r[2])} for r in cur.fetchall()]
+            by_tool = [{'tool_requested': r[0], 'signals': int(r[1])} for r in cur.fetchall()]
             _step("aggregates done")
         finally:
             try: conn.close()
@@ -588,30 +632,40 @@ def phase60_top_users():
         if fmt == 'csv':
             sio = io.StringIO()
             writer = csv.writer(sio)
-            writer.writerow([
-                'email', 'signal_count', 'distinct_tools', 'tools_tried',
-                'mcp_clients', 'tiers_required', 'converted', 'converted_at',
-                'outreach_sent', 'outreach_sent_at', 'first_seen', 'last_seen'
-            ])
+            base_cols = ['identifier', 'group_by', 'signal_count', 'distinct_tools',
+                         'tools_tried', 'mcp_clients', 'emails_seen', 'ips_seen',
+                         'tiers_required', 'converted', 'outreach_sent',
+                         'first_seen', 'last_seen']
+            if group_by == 'ip' and do_rdns:
+                base_cols.extend(['hostname', 'provider_guess'])
+            writer.writerow(base_cols)
             for u in top_users:
-                writer.writerow([
-                    u['email'], u['signal_count'], u['distinct_tools'],
-                    '|'.join(u['tools_tried']),
-                    '|'.join(u['mcp_clients']),
-                    '|'.join(u['tiers_required']),
-                    u['converted'], u['converted_at'],
-                    u['outreach_sent'], u['outreach_sent_at'],
-                    u['first_seen'], u['last_seen']
-                ])
+                row = [
+                    u.get('identifier'), u.get('group_by'),
+                    u.get('signal_count'), u.get('distinct_tools'),
+                    '|'.join(u.get('tools_tried') or []),
+                    '|'.join(u.get('mcp_clients') or []),
+                    '|'.join(u.get('emails_seen') or []),
+                    '|'.join(u.get('ips_seen') or []),
+                    '|'.join(u.get('tiers_required') or []),
+                    u.get('converted'), u.get('outreach_sent'),
+                    u.get('first_seen'), u.get('last_seen'),
+                ]
+                if group_by == 'ip' and do_rdns:
+                    row.extend([u.get('hostname'), u.get('provider_guess')])
+                writer.writerow(row)
             return Response(sio.getvalue(), mimetype='text/csv', headers={
-                'Content-Disposition': 'attachment; filename="dchub-top-users.csv"'
+                'Content-Disposition': 'attachment; filename="dchub-top-' + group_by + '.csv"'
             })
 
         payload = {
-            'phase': '60e',
+            'phase': '61',
             'connector': connector,
+            'group_by': group_by,
+            'group_col': group_col,
             'count': len(top_users),
             'limit': limit,
+            'reverse_dns_applied': bool(group_by == 'ip' and do_rdns),
             'filters': {
                 'include_converted': include_converted,
                 'include_contacted': include_contacted,
@@ -620,13 +674,12 @@ def phase60_top_users():
             },
             'totals': {
                 'total_signals': total_signals,
-                'distinct_users_with_email': total_distinct_users,
-                'converted_users': converted_users,
-                'contacted_users': contacted_users,
-                'conversion_rate_pct': round(100.0 * converted_users / total_distinct_users, 2) if total_distinct_users else 0,
+                'distinct_groups': total_distinct,
+                'converted_groups': converted_groups,
+                'contacted_groups': contacted_groups,
+                'conversion_rate_pct': round(100.0 * converted_groups / total_distinct, 2) if total_distinct else 0,
             },
             'by_mcp_client': by_client,
-            'by_tier_required': by_tier,
             'by_tool_requested': by_tool,
             'top_users': top_users,
         }
@@ -641,5 +694,5 @@ def phase60_top_users():
             'message': str(e),
             'traceback': traceback.format_exc(),
             'debug_steps': debug_steps,
-            'phase': '60e',
+            'phase': '61',
         }), 500
