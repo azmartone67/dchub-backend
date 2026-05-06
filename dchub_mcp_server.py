@@ -1400,6 +1400,14 @@ async def get_pipeline(
         JSON array of pipeline projects with operator, location, capacity, status, and timeline.
     
     """
+    # phase62_alias_wired -- normalize company aliases (amazon -> AWS, etc.)
+    try:
+        from utils.pipeline_alias import alias_fallback
+        if 'company' in locals() and locals().get('company'):
+            company = alias_fallback(company) or company
+    except Exception:
+        pass
+
     # ── Auth gate ──
     _block = gate("get_pipeline")
     if _block: return _block

@@ -77,17 +77,17 @@ def validate_key_tier(api_key: str = "") -> str:
 def fire_upgrade_signal(*, signal_type, tool_requested=None, tier_current="free",
                         tier_required="paid", message_shown=None, mcp_client=None,
                         user_agent=None, daily_usage=None, daily_limit=None,
-                        session_id=None, user_email=None):
+                        session_id=None, user_email=None, ip_address=None):  # phase62_ip_capture
     """Insert a row into mcp_upgrade_signals. Never raises — telemetry is fire-and-forget."""
     try:
         with _cursor() as cur:
             cur.execute(
                 """INSERT INTO mcp_upgrade_signals
-                     (session_id, user_email, signal_type, tool_requested,
+                     (session_id, user_email, ip_address, signal_type, tool_requested,
                       tier_current, tier_required, daily_usage, daily_limit,
                       message_shown, mcp_client, user_agent, created_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())""",
-                (session_id, user_email, signal_type, tool_requested,
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())""",
+                (session_id, user_email, ip_address, signal_type, tool_requested,
                  tier_current, tier_required, daily_usage, daily_limit,
                  message_shown, mcp_client, user_agent),
             )
@@ -111,7 +111,7 @@ def _daily_call_count(api_key: str) -> int:
         return 0
 
 def gate_tool_call(tool_name, api_key=None, user_agent=None,
-                   session_id=None, user_email=None):
+                   session_id=None, user_email=None, ip_address=None):  # phase62_ip_capture
     """
     Run before tool execution. Returns:
         {allowed, tier, platform, message, upgrade_url}
