@@ -663,6 +663,20 @@ def _get_transactions_free():
 @_lazy_protect_data
 def get_pipeline():
     """Get construction pipeline data"""
+    # phase64a_alias_wired -- normalize company aliases (amazon->AWS, etc.)
+    try:
+        from utils.pipeline_alias import alias_fallback as _alias
+        _co = request.args.get('company')
+        if _co:
+            _norm = _alias(_co)
+            if _norm and _norm != _co:
+                # Override request.args by mutating the underlying ImmutableMultiDict
+                from werkzeug.datastructures import MultiDict
+                _new_args = MultiDict(request.args)
+                _new_args.setlist('company', [_norm])
+                request.args = _new_args  # local override on request proxy
+    except Exception:
+        pass
     status_filter = request.args.get('status')  # 'construction', 'announced', 'all'
     _status_map = {'under_construction': 'construction', 'in_progress': 'construction', 'completed': 'operational', 'planned': 'announced'}
     if status_filter: status_filter = _status_map.get(status_filter, status_filter)

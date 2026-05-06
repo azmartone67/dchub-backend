@@ -785,3 +785,136 @@ def phase62f_recent_signals():
             'traceback': traceback.format_exc(),
         }), 500
 
+
+# ----------------------------------------------------------------------------
+# Phase 64c -- phase64c_dev_keys
+# Schema-discover the dev_keys table and surface emails for outreach.
+# ----------------------------------------------------------------------------
+@observability_bp.route('/api/v1/observability/dev-keys', methods=['GET'])
+def phase64c_dev_keys():
+    """List active dev keys with their emails.
+
+    Schema-discovers the table by looking for one with both 'email' and
+    a tier-like column. Optional gate: TOP_USERS_TOKEN env var.
+    """
+    import os, traceback
+    from flask import request, jsonify
+
+    try:
+        admin_token = os.environ.get('TOP_USERS_TOKEN')
+        if admin_token:
+            provided = request.headers.get('X-Admin-Token') or request.args.get('token')
+            if provided != admin_token:
+                return jsonify({'error': 'unauthorized'}), 401
+
+        neon = os.environ.get('NEON_DATABASE_URL') or os.environ.get('DATABASE_URL')
+        if not neon:
+            return jsonify({'error': 'no DB url'}), 500
+
+        conn = None
+        for modname in ('psycopg', 'psycopg2'):
+            try:
+                mod = __import__(modname)
+                conn = mod.connect(neon); break
+            except Exception:
+                continue
+        if not conn:
+            return jsonify({'error': 'no postgres driver'}), 500
+
+        try:
+            cur = conn.cursor()
+
+            # Find candidate tables (anything with key/dev/api in name)
+            cur.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = 'public' "
+                "AND (table_name ILIKE %s OR table_name ILIKE %s OR table_name ILIKE %s) "
+                "ORDER BY table_name",
+                ('%key%', '%dev%', '%api%')
+            )
+            candidates = [r[0] for r in cur.fetchall()]
+
+            chosen = None
+            chosen_cols = []
+            for tbl in candidates:
+                cur.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = %s AND table_schema = 'public' "
+                    "ORDER BY ordinal_position",
+                    (tbl,)
+                )
+                cols = [r[0] for r in cur.fetchall()]
+                has_email = 'email' in cols
+                has_tier = any(c in cols for c in ('tier', 'plan', 'subscription_tier', 'tier_level'))
+                has_keylike = any(c in cols for c in ('key', 'api_key', 'token', 'dev_key', 'key_value'))
+                if has_email and (has_tier or has_keylike):
+                    chosen = tbl
+                    chosen_cols = cols
+                    break
+
+            if not chosen:
+                return jsonify({
+                    'error': 'no dev key table with email+tier found',
+                    'candidates': candidates,
+                    'phase': '64c',
+                }), 500
+
+            # Build a SELECT with whatever useful columns exist
+            preferred = ['id', 'email', 'tier', 'plan', 'subscription_tier',
+                         'is_active', 'active', 'enabled',
+                         'key_id', 'created_at', 'last_used_at',
+                         'last_seen_at', 'last_used', 'usage_count']
+            select_cols = [c for c in preferred if c in chosen_cols]
+            if not select_cols:
+                select_cols = ['email']
+
+            order_by = 'created_at DESC' if 'created_at' in chosen_cols else 'email'
+            sql = (
+                'SELECT ' + ', '.join('"' + c + '"' for c in select_cols)
+                + ' FROM "' + chosen + '" '
+                + 'ORDER BY ' + order_by
+                + ' LIMIT 200'
+            )
+            cur.execute(sql)
+            rows = cur.fetchall()
+
+            keys = []
+            for r in rows:
+                d = {}
+                for i, col in enumerate(select_cols):
+                    v = r[i]
+                    if hasattr(v, 'isoformat'):
+                        v = v.isoformat()
+                    d[col] = v
+                keys.append(d)
+
+            # Also a per-tier rollup if a tier-like column exists
+            tier_col = next((c for c in ('tier', 'plan', 'subscription_tier', 'tier_level') if c in chosen_cols), None)
+            tier_rollup = []
+            if tier_col:
+                cur.execute(
+                    'SELECT "' + tier_col + '" AS tier, COUNT(*) AS n '
+                    'FROM "' + chosen + '" GROUP BY tier ORDER BY n DESC'
+                )
+                tier_rollup = [{'tier': r[0], 'count': int(r[1])} for r in cur.fetchall()]
+        finally:
+            try: conn.close()
+            except Exception: pass
+
+        return jsonify({
+            'phase': '64c',
+            'table': chosen,
+            'columns_used': select_cols,
+            'count': len(keys),
+            'tier_rollup': tier_rollup,
+            'keys': keys,
+        })
+
+    except Exception as e:
+        return jsonify({
+            'error': 'unhandled',
+            'type': type(e).__name__,
+            'message': str(e),
+            'traceback': traceback.format_exc(),
+        }), 500
+
