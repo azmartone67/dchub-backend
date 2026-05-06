@@ -696,3 +696,92 @@ def phase60_top_users():
             'debug_steps': debug_steps,
             'phase': '61',
         }), 500
+
+
+# ----------------------------------------------------------------------------
+# Phase 62f -- phase62f_recent_signals
+# Dump the N most recent raw rows from mcp_upgrade_signals.
+# Tells us which columns are populated by the active writer.
+# ----------------------------------------------------------------------------
+@observability_bp.route('/api/v1/observability/recent-signals', methods=['GET'])
+def phase62f_recent_signals():
+    """Most recent rows from mcp_upgrade_signals, all columns, no aggregation."""
+    import os, traceback
+    from flask import request, jsonify
+
+    try:
+        try:
+            limit = int(request.args.get('limit', '10'))
+        except (TypeError, ValueError):
+            limit = 10
+        limit = max(1, min(limit, 100))
+
+        neon = os.environ.get('NEON_DATABASE_URL') or os.environ.get('DATABASE_URL')
+        if not neon:
+            return jsonify({'error': 'no DB url'}), 500
+
+        conn = None
+        for modname in ('psycopg', 'psycopg2'):
+            try:
+                mod = __import__(modname)
+                conn = mod.connect(neon)
+                break
+            except Exception:
+                continue
+        if not conn:
+            return jsonify({'error': 'no postgres driver'}), 500
+
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'mcp_upgrade_signals' "
+                "ORDER BY ordinal_position"
+            )
+            cols = [r[0] for r in cur.fetchall()]
+
+            cur.execute(
+                "SELECT * FROM mcp_upgrade_signals "
+                "ORDER BY created_at DESC NULLS LAST LIMIT %s",
+                (limit,)
+            )
+            rows = cur.fetchall()
+
+            out = []
+            for r in rows:
+                row = {}
+                for i, col in enumerate(cols):
+                    v = r[i]
+                    if hasattr(v, 'isoformat'):
+                        v = v.isoformat()
+                    row[col] = v
+                out.append(row)
+
+            # Also a per-column populated count over the last 100 rows
+            cur.execute("SELECT * FROM mcp_upgrade_signals ORDER BY created_at DESC NULLS LAST LIMIT 100")
+            recent_100 = cur.fetchall()
+            populated = {col: 0 for col in cols}
+            for r in recent_100:
+                for i, col in enumerate(cols):
+                    if r[i] is not None and r[i] != '':
+                        populated[col] += 1
+        finally:
+            try: conn.close()
+            except Exception: pass
+
+        return jsonify({
+            'phase': '62f',
+            'columns': cols,
+            'population_last_100_rows': populated,
+            'count': len(out),
+            'recent_signals': out,
+        })
+
+    except Exception as e:
+        return jsonify({
+            'error': 'unhandled',
+            'type': type(e).__name__,
+            'message': str(e),
+            'traceback': traceback.format_exc(),
+        }), 500
+
