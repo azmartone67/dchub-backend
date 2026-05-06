@@ -80,6 +80,18 @@ def fire_upgrade_signal(*, signal_type, tool_requested=None, tier_current="free"
                         user_agent=None, daily_usage=None, daily_limit=None,
                         session_id=None, user_email=None, ip_address=None):  # phase62_ip_capture
     """Insert a row into mcp_upgrade_signals. Never raises — telemetry is fire-and-forget."""
+    # phase62j_chain_fallback -- pull IP/UA from Flask request scope
+    try:
+        from flask import request as _req, has_request_context as _hrc
+        if _hrc():
+            if not ip_address:
+                ip_address = ((_req.headers.get('X-Forwarded-For') or '').split(',')[0].strip()
+                              or _req.headers.get('Cf-Connecting-Ip')
+                              or _req.remote_addr)
+            if not user_agent:
+                user_agent = _req.headers.get('User-Agent')
+    except Exception:
+        pass
     try:
         with _cursor() as cur:
             cur.execute(
@@ -118,6 +130,18 @@ def gate_tool_call(tool_name, api_key=None, user_agent=None,
         {allowed, tier, platform, message, upgrade_url}
     Fires upgrade signal automatically when allowed=False.
     """
+    # phase62j_chain_fallback -- pull IP/UA from Flask request scope
+    try:
+        from flask import request as _req, has_request_context as _hrc
+        if _hrc():
+            if not ip_address:
+                ip_address = ((_req.headers.get('X-Forwarded-For') or '').split(',')[0].strip()
+                              or _req.headers.get('Cf-Connecting-Ip')
+                              or _req.remote_addr)
+            if not user_agent:
+                user_agent = _req.headers.get('User-Agent')
+    except Exception:
+        pass
     tier     = validate_key_tier(api_key)
     platform = detect_platform(user_agent)
 
