@@ -146,8 +146,20 @@ def gate_tool_call(tool_name, api_key=None, user_agent=None,
     platform = detect_platform(user_agent)
 
     if tool_name in PAID_ONLY_TOOLS and tier == "free":
-        msg = (f"The {tool_name} tool requires a paid DC Hub developer license. "
-               f"{'Upgrade at ' + UPGRADE_URL if api_key else 'Get a free key at ' + SIGNUP_URL + ' or upgrade at ' + UPGRADE_URL}.")
+
+        # phase63_redeem_msg -- include per-session redeem URL
+
+        _redeem_url = f"https://dchub.cloud/api/v1/redeem/{session_id}" if session_id else SIGNUP_URL
+
+        msg = (
+
+        f"The {tool_name} tool requires a paid plan. "
+
+        f"Get your free dev key (60 sec, just your email): {_redeem_url} "
+
+        f"-- or upgrade to Pro at {UPGRADE_URL} for $49/mo unlimited access."
+
+        )
         fire_upgrade_signal(
             signal_type="paid_tool_blocked", tool_requested=tool_name,
             tier_current=tier, tier_required="paid", message_shown=msg,
