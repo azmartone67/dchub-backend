@@ -198,6 +198,18 @@ def log_upgrade_signal(get_db, signal_type, tool_requested=None,
                        tier_current='free', tier_required='developer',
                        daily_usage=0, daily_limit=25,
                        message_shown=None, mcp_client=None, user_agent=None):
+    # phase62b_request_fallback -- pull IP from request if caller didn't pass
+    try:
+        if not ip_address:
+            from flask import request as _flask_req
+            ip_address = ((_flask_req.headers.get('x-forwarded-for') or '').split(',')[0].strip()
+                          or _flask_req.remote_addr)
+        if not user_agent:
+            from flask import request as _flask_req
+            user_agent = _flask_req.headers.get('User-Agent')
+    except Exception:
+        pass  # outside request context, leave as-is
+
     """
     Capture an upgrade signal — a moment when a free user bumps against limits.
     These are sales leads for Developer tier outreach.
