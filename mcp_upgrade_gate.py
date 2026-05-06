@@ -1,3 +1,4 @@
+# phase62i_ip_fallback -- IP captured via Flask request fallback
 """
 mcp_upgrade_gate.py — Paywall, signal-firing, platform detection for MCP.
 Wire from dchub_mcp_server.py:
@@ -127,8 +128,7 @@ def gate_tool_call(tool_name, api_key=None, user_agent=None,
             signal_type="paid_tool_blocked", tool_requested=tool_name,
             tier_current=tier, tier_required="paid", message_shown=msg,
             mcp_client=platform, user_agent=user_agent,
-            session_id=session_id, user_email=user_email,
-        )
+            session_id=session_id, user_email=user_email, ip_address=ip_address)
         return {"allowed": False, "tier": tier, "platform": platform,
                 "message": msg, "upgrade_url": UPGRADE_URL}
 
@@ -142,8 +142,7 @@ def gate_tool_call(tool_name, api_key=None, user_agent=None,
                 tier_current=tier, tier_required="paid",
                 daily_usage=used, daily_limit=FREE_DAILY_LIMIT,
                 message_shown=msg, mcp_client=platform, user_agent=user_agent,
-                session_id=session_id, user_email=user_email,
-            )
+                session_id=session_id, user_email=user_email, ip_address=ip_address)
             return {"allowed": False, "tier": tier, "platform": platform,
                     "message": msg, "upgrade_url": UPGRADE_URL}
 
