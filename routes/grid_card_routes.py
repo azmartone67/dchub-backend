@@ -31,15 +31,34 @@ def card(iso):
             r = requests.get(_u, timeout=6)
             if r.ok:
                 _payload = r.json()
-                d = _payload.get('data', {}) or _payload or {}
-                if d.get('current_demand_mw') or d.get('total_capacity_mw') or d.get('headroom_pct'):
+                # phase67b_correct_fields -- the endpoint returns the data
+                # at the top level, not nested under 'data'
+                d = _payload.get('data', None)
+                if d is None or not isinstance(d, dict) or not d:
+                    d = _payload
+                if d.get('demand_mw') or d.get('current_demand_mw') or d.get('demand_24h'):
                     break
         except Exception:
             continue
 
-    demand = int(d.get('current_demand_mw', 0) or 0)
-    headroom = float(d.get('headroom_pct', 0) or 0)
-    cap = int(d.get('total_capacity_mw', 0) or 0)
+    # phase67b_correct_fields -- read real field names from EIA RTO endpoint
+    def _to_int(v):
+        try: return int(float(v))
+        except (TypeError, ValueError): return 0
+
+    # Current demand: try multiple field names
+    demand = _to_int(d.get('demand_mw') or d.get('current_demand_mw') or 0)
+
+    # 24h peak as capacity proxy
+    _h24 = d.get('demand_24h') or []
+    _peaks = [_to_int(row.get('mw')) for row in _h24 if isinstance(row, dict)]
+    cap = max(_peaks) if _peaks else _to_int(d.get('total_capacity_mw') or demand)
+
+    # Headroom as % below 24h peak (how much room before today's peak)
+    if cap > 0 and demand > 0:
+        headroom = max(0.0, (cap - demand) / cap * 100.0)
+    else:
+        headroom = float(d.get('headroom_pct', 0) or 0)
 
     W, H = 1200, 1200
     img = Image.new('RGB', (W, H), (10, 14, 26))
@@ -75,7 +94,7 @@ def card(iso):
     color = (76, 175, 80) if headroom > 30 else ((255, 193, 7) if headroom > 15 else (244, 67, 54))
     draw.rectangle([(bar_x, bar_y), (bar_x + fill_w, bar_y + bar_h)], fill=color)
     draw.text((60, 820), f'{headroom:.0f}% HEADROOM', font=font(56), fill=(230, 233, 240))
-    draw.text((60, 890), f'{cap:,} MW total capacity', font=font(36), fill=(154, 165, 190))
+    draw.text((60, 890), f'24h peak: {cap:,} MW', font=font(36), fill=(154, 165, 190))
 
     # Footer
     draw.text((60, H - 100), 'Live EIA data · dchub.cloud/grid', font=font(36), fill=(154, 165, 190))
