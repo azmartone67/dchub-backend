@@ -16800,6 +16800,8 @@ except Exception as e:
 try:
     from routes.grid_intelligence_routes import grid_intel_bp
     app.register_blueprint(grid_intel_bp)
+    app.register_blueprint(admin_ai_deals_bp)
+    app.register_blueprint(news_digests_read_bp)
     logger.info("✅ Grid Intelligence routes registered")
 except Exception as e:
     logger.warning(f"⚠️ Grid Intelligence: {e}")
@@ -17630,6 +17632,8 @@ except Exception as _rc_exc:
 
 # --- Smart search routes (added automatically) ---
 from search_routes import register_search_routes
+from routes.admin_ai_deals import admin_ai_deals_bp
+from routes.news_digests_read import news_digests_read_bp
 register_search_routes(app)
 
 
