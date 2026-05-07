@@ -23,12 +23,49 @@ from typing import List, Dict, Optional
 
 API_BASE = "https://api.regulations.gov/v4"
 KEYWORDS = [
-    "data center",
-    "hyperscale",
-    "AI infrastructure",
-    "computing facility",
-    "server farm",
+    # phase75b_relevance -- specific phrases that filter out monitoring/research/vehicles
+    "hyperscale data center",
+    "data center campus",
+    "data center facility construction",
+    "data center site selection",
+    "AI computing infrastructure",
+    "AI training facility",
+    "computing campus",
+    "server farm construction",
+    "high performance computing facility",
 ]
+
+
+# phase75b_relevance -- score each filing 0-3 based on title+summary content
+RELEVANCE_TERMS_HIGH = [
+    "hyperscale", "MW", "megawatt", "gigawatt", "GW",
+    "AI training", "AI infrastructure", "AI compute",
+    "campus construction", "server farm",
+]
+RELEVANCE_TERMS_MEDIUM = [
+    "data center", "computing facility", "computing campus",
+    "site selection", "interconnection", "transmission upgrade",
+]
+RELEVANCE_TERMS_NEGATIVE = [
+    "monitoring", "ambient", "transcriptom", "vehicle", "school bus",
+    "research data center", "data detective", "data security forms",
+    "study data", "data quality", "data analytics",
+]
+
+
+def relevance_score(title: str, summary: str) -> str:
+    """Return 'high', 'medium', or 'low' based on text content."""
+    text = (title + " " + summary).lower()
+    for neg in RELEVANCE_TERMS_NEGATIVE:
+        if neg in text:
+            return "low"
+    for high in RELEVANCE_TERMS_HIGH:
+        if high.lower() in text:
+            return "high"
+    for med in RELEVANCE_TERMS_MEDIUM:
+        if med.lower() in text:
+            return "medium"
+    return "low"
 
 
 def _api_key() -> str:
@@ -83,7 +120,7 @@ def parse_document(doc: dict) -> Dict:
 
 
 def ensure_table(conn) -> None:
-    """Create nepa_filings table if it doesn't already exist."""
+    """Create nepa_filings table if it doesn't already exist; add relevance col."""
     cur = conn.cursor()
     cur.execute("""
         CREATE TABLE IF NOT EXISTS nepa_filings (
@@ -104,20 +141,28 @@ def ensure_table(conn) -> None:
     """)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_nepa_filings_posted ON nepa_filings(posted_date DESC);")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_nepa_filings_agency ON nepa_filings(agency);")
+    # phase75b_relevance: add relevance column if missing
+    cur.execute("""
+        ALTER TABLE nepa_filings
+        ADD COLUMN IF NOT EXISTS relevance TEXT DEFAULT 'unknown';
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_nepa_filings_relevance ON nepa_filings(relevance);")
     conn.commit()
 
 
 def upsert_filing(conn, parsed: Dict, keyword: str) -> bool:
     """Insert a filing if not already present. Returns True if inserted."""
     cur = conn.cursor()
+    rel = relevance_score(parsed.get("title") or "", parsed.get("summary") or "")
     try:
         cur.execute("""
             INSERT INTO nepa_filings
                 (document_id, docket_id, agency, title, summary,
-                 posted_date, received_date, document_type, url, keyword_matched)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (document_id) DO NOTHING
-            RETURNING id
+                 posted_date, received_date, document_type, url, keyword_matched, relevance)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (document_id) DO UPDATE
+              SET relevance = EXCLUDED.relevance
+            RETURNING id, (xmax = 0) AS inserted
         """, (
             parsed.get("document_id"),
             parsed.get("docket_id"),
@@ -129,10 +174,11 @@ def upsert_filing(conn, parsed: Dict, keyword: str) -> bool:
             parsed.get("document_type"),
             parsed.get("url"),
             keyword,
+            rel,
         ))
         row = cur.fetchone()
         conn.commit()
-        return bool(row)
+        return bool(row and row[1])
     except Exception as e:
         conn.rollback()
         print(f"[nepa_scraper] upsert failed: {e}")

@@ -987,21 +987,21 @@ def phase73_discovery_freshness():
                     tables_with_created.append(tbl)
 
             results = []
+            # phase73b_interval_fix -- embed sanitized int into INTERVAL literal
+            interval_clause = "NOW() - INTERVAL '" + str(int(limit_days)) + " days'"
             for tbl in tables_with_created:
                 # Count last N days
                 cur.execute(
                     'SELECT COUNT(*) FROM "' + tbl + '" '
-                    "WHERE created_at >= NOW() - INTERVAL %s",
-                    (str(limit_days) + ' days',)
+                    'WHERE created_at >= ' + interval_clause
                 )
                 total_recent = int(cur.fetchone()[0] or 0)
 
                 # Per-day breakdown
                 cur.execute(
                     'SELECT DATE(created_at) AS d, COUNT(*) FROM "' + tbl + '" '
-                    "WHERE created_at >= NOW() - INTERVAL %s "
-                    "GROUP BY d ORDER BY d DESC",
-                    (str(limit_days) + ' days',)
+                    'WHERE created_at >= ' + interval_clause + ' '
+                    'GROUP BY d ORDER BY d DESC'
                 )
                 per_day = [{'date': str(r[0]), 'count': int(r[1])} for r in cur.fetchall()]
 
@@ -1016,9 +1016,8 @@ def phase73_discovery_freshness():
                 if cur.fetchone():
                     cur.execute(
                         'SELECT COALESCE(source, \'unknown\') AS s, COUNT(*) FROM "' + tbl + '" '
-                        "WHERE created_at >= NOW() - INTERVAL %s "
-                        "GROUP BY s ORDER BY 2 DESC LIMIT 15",
-                        (str(limit_days) + ' days',)
+                        'WHERE created_at >= ' + interval_clause + ' '
+                        'GROUP BY s ORDER BY 2 DESC LIMIT 15'
                     )
                     by_source = [{'source': r[0], 'count': int(r[1])} for r in cur.fetchall()]
 
@@ -1119,16 +1118,26 @@ def phase75_nepa_filings():
                     'filings': [],
                 })
 
+            # phase75b_filter -- default to high+medium relevance, opt-in to all
+            min_relevance = (request.args.get('min_relevance') or 'medium').lower()
+            allowed_rel = {
+                'high':    ("'high'",),
+                'medium':  ("'high'", "'medium'"),
+                'all':     ("'high'", "'medium'", "'low'", "'unknown'"),
+            }.get(min_relevance, ("'high'", "'medium'"))
+            in_clause = "(" + ", ".join(allowed_rel) + ")"
             cur.execute(
                 "SELECT id, document_id, docket_id, agency, title, summary, "
-                "posted_date, document_type, url, keyword_matched, created_at "
-                "FROM nepa_filings ORDER BY posted_date DESC NULLS LAST, id DESC "
+                "posted_date, document_type, url, keyword_matched, created_at, relevance "
+                "FROM nepa_filings "
+                "WHERE COALESCE(relevance, 'unknown') IN " + in_clause + " "
+                "ORDER BY posted_date DESC NULLS LAST, id DESC "
                 "LIMIT %s",
                 (limit,)
             )
             rows = cur.fetchall()
             cols = ['id','document_id','docket_id','agency','title','summary',
-                    'posted_date','document_type','url','keyword_matched','created_at']
+                    'posted_date','document_type','url','keyword_matched','created_at','relevance']
             filings = []
             for r in rows:
                 d = {}
