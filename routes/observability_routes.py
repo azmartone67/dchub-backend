@@ -918,3 +918,254 @@ def phase64c_dev_keys():
             'traceback': traceback.format_exc(),
         }), 500
 
+
+# ----------------------------------------------------------------------------
+# Phase 73 -- phase73_discovery_freshness
+# Daily breakdown of newly-discovered records across all data tables.
+# ----------------------------------------------------------------------------
+@observability_bp.route('/api/v1/discovery/last-7d', methods=['GET'])
+def phase73_discovery_freshness():
+    """For each table with a created_at column, report new rows in last 7d.
+
+    Useful as a morning glance: is auto-discovery actually finding things?
+    """
+    import os, traceback
+    from flask import request, jsonify
+
+    try:
+        try:
+            limit_days = int(request.args.get('days', '7'))
+        except (TypeError, ValueError):
+            limit_days = 7
+        limit_days = max(1, min(limit_days, 30))
+
+        # Tables of interest (empty list => discover automatically)
+        candidates = [
+            'facilities', 'main_facilities', 'discovered_facilities',
+            'substations', 'eia_generators', 'fiber_routes',
+            'gas_pipelines', 'transmission_lines', 'power_plants',
+            'mcp_upgrade_signals', 'mcp_tool_calls',
+            'nepa_filings',
+        ]
+
+        neon = os.environ.get('NEON_DATABASE_URL') or os.environ.get('DATABASE_URL')
+        if not neon:
+            return jsonify({'error': 'no DB url'}), 500
+
+        conn = None
+        for modname in ('psycopg', 'psycopg2'):
+            try:
+                mod = __import__(modname)
+                conn = mod.connect(neon); break
+            except Exception:
+                continue
+        if not conn:
+            return jsonify({'error': 'no postgres driver'}), 500
+
+        try:
+            cur = conn.cursor()
+
+            # Filter to tables that actually exist + have created_at
+            cur.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = 'public' AND table_name = ANY(%s)",
+                (candidates,)
+            )
+            existing = {r[0] for r in cur.fetchall()}
+
+            tables_with_created = []
+            for tbl in candidates:
+                if tbl not in existing:
+                    continue
+                cur.execute(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND table_name = %s "
+                    "AND column_name = 'created_at' LIMIT 1",
+                    (tbl,)
+                )
+                if cur.fetchone():
+                    tables_with_created.append(tbl)
+
+            results = []
+            for tbl in tables_with_created:
+                # Count last N days
+                cur.execute(
+                    'SELECT COUNT(*) FROM "' + tbl + '" '
+                    "WHERE created_at >= NOW() - INTERVAL %s",
+                    (str(limit_days) + ' days',)
+                )
+                total_recent = int(cur.fetchone()[0] or 0)
+
+                # Per-day breakdown
+                cur.execute(
+                    'SELECT DATE(created_at) AS d, COUNT(*) FROM "' + tbl + '" '
+                    "WHERE created_at >= NOW() - INTERVAL %s "
+                    "GROUP BY d ORDER BY d DESC",
+                    (str(limit_days) + ' days',)
+                )
+                per_day = [{'date': str(r[0]), 'count': int(r[1])} for r in cur.fetchall()]
+
+                # Source breakdown (if column exists)
+                cur.execute(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND table_name = %s "
+                    "AND column_name = 'source' LIMIT 1",
+                    (tbl,)
+                )
+                by_source = []
+                if cur.fetchone():
+                    cur.execute(
+                        'SELECT COALESCE(source, \'unknown\') AS s, COUNT(*) FROM "' + tbl + '" '
+                        "WHERE created_at >= NOW() - INTERVAL %s "
+                        "GROUP BY s ORDER BY 2 DESC LIMIT 15",
+                        (str(limit_days) + ' days',)
+                    )
+                    by_source = [{'source': r[0], 'count': int(r[1])} for r in cur.fetchall()]
+
+                results.append({
+                    'table': tbl,
+                    'total_last_' + str(limit_days) + 'd': total_recent,
+                    'per_day': per_day,
+                    'by_source': by_source,
+                })
+        finally:
+            try: conn.close()
+            except Exception: pass
+
+        return jsonify({
+            'phase': '73',
+            'days': limit_days,
+            'tables_checked': len(tables_with_created),
+            'results': results,
+        })
+
+    except Exception as e:
+        return jsonify({
+            'error': 'unhandled',
+            'type': type(e).__name__,
+            'message': str(e),
+            'traceback': traceback.format_exc(),
+        }), 500
+
+
+# ----------------------------------------------------------------------------
+# Phase 75 -- phase75_nepa_endpoint
+# Read recent NEPA filings + optionally trigger a refresh scrape.
+# ----------------------------------------------------------------------------
+@observability_bp.route('/api/v1/discovery/nepa', methods=['GET'])
+def phase75_nepa_filings():
+    """Recent NEPA filings related to data center / AI infrastructure projects.
+
+    Query params:
+      limit       int, default 25, max 200
+      refresh     1 to trigger a fresh scrape (admin token required if set)
+      token       admin token if NEPA_ADMIN_TOKEN env is set
+    """
+    import os, traceback
+    from flask import request, jsonify
+
+    try:
+        try:
+            limit = int(request.args.get('limit', '25'))
+        except (TypeError, ValueError):
+            limit = 25
+        limit = max(1, min(limit, 200))
+
+        triggered = False
+        new_count = 0
+        if request.args.get('refresh') == '1':
+            admin_token = os.environ.get('NEPA_ADMIN_TOKEN')
+            if admin_token:
+                provided = request.headers.get('X-Admin-Token') or request.args.get('token')
+                if provided != admin_token:
+                    return jsonify({'error': 'unauthorized'}), 401
+            try:
+                from services.nepa_scraper import scrape_recent_filings
+                new_count = scrape_recent_filings(max_pages=2)
+                triggered = True
+            except Exception as e:
+                return jsonify({
+                    'error': 'scraper failed',
+                    'type': type(e).__name__,
+                    'message': str(e),
+                }), 500
+
+        neon = os.environ.get('NEON_DATABASE_URL') or os.environ.get('DATABASE_URL')
+        if not neon:
+            return jsonify({'error': 'no DB url'}), 500
+        conn = None
+        for modname in ('psycopg', 'psycopg2'):
+            try:
+                mod = __import__(modname)
+                conn = mod.connect(neon); break
+            except Exception:
+                continue
+        if not conn:
+            return jsonify({'error': 'no postgres driver'}), 500
+
+        try:
+            cur = conn.cursor()
+            # Make sure the table exists (the scraper creates it,
+            # but the read endpoint should not crash if no scrape has run)
+            cur.execute(
+                "SELECT 1 FROM information_schema.tables "
+                "WHERE table_schema = 'public' AND table_name = 'nepa_filings' LIMIT 1"
+            )
+            if not cur.fetchone():
+                return jsonify({
+                    'phase': '75',
+                    'message': 'nepa_filings table does not exist yet; run with ?refresh=1 to create + populate',
+                    'count': 0,
+                    'filings': [],
+                })
+
+            cur.execute(
+                "SELECT id, document_id, docket_id, agency, title, summary, "
+                "posted_date, document_type, url, keyword_matched, created_at "
+                "FROM nepa_filings ORDER BY posted_date DESC NULLS LAST, id DESC "
+                "LIMIT %s",
+                (limit,)
+            )
+            rows = cur.fetchall()
+            cols = ['id','document_id','docket_id','agency','title','summary',
+                    'posted_date','document_type','url','keyword_matched','created_at']
+            filings = []
+            for r in rows:
+                d = {}
+                for i, c in enumerate(cols):
+                    v = r[i]
+                    if hasattr(v, 'isoformat'):
+                        v = v.isoformat()
+                    d[c] = v
+                filings.append(d)
+
+            cur.execute("SELECT COUNT(*) FROM nepa_filings")
+            total = int(cur.fetchone()[0] or 0)
+
+            cur.execute(
+                "SELECT agency, COUNT(*) FROM nepa_filings "
+                "GROUP BY agency ORDER BY 2 DESC LIMIT 10"
+            )
+            by_agency = [{'agency': r[0], 'count': int(r[1])} for r in cur.fetchall()]
+        finally:
+            try: conn.close()
+            except Exception: pass
+
+        return jsonify({
+            'phase': '75',
+            'total_filings': total,
+            'returned': len(filings),
+            'refresh_triggered': triggered,
+            'new_inserted_this_call': new_count,
+            'by_agency': by_agency,
+            'filings': filings,
+        })
+
+    except Exception as e:
+        return jsonify({
+            'error': 'unhandled',
+            'type': type(e).__name__,
+            'message': str(e),
+            'traceback': traceback.format_exc(),
+        }), 500
+
