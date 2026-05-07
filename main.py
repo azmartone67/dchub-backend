@@ -1,3 +1,4 @@
+# phase69_gating_rollout -- gating.js + data-gate attrs added
 from dotenv import load_dotenv
 from internal_auth import is_valid_internal_key, get_internal_key_for_client
 from csp_report import csp_report_bp
@@ -6938,6 +6939,7 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
 .cta {{ display: inline-block; background: linear-gradient(135deg, #00d4ff, #0099cc); color: #fff !important; padding: 14px 32px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 16px; margin: 20px 0; }}
 .footer {{ background: #f8f9fa; padding: 24px 40px; text-align: center; font-size: 12px; color: #9a9aaa; }}
 </style>
+  <script src="/static/gating.js" defer></script>
 </head>
 <body>
 <div class="wrapper">
