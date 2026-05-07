@@ -2,7 +2,7 @@
 
 These render server-side HTML for SEO. Each page has Schema.org JSON-LD,
 OG meta tags, and pulls live data from /api/v1/grid/intelligence/<iso>.
-"""
+ [phase68_gating_applied]"""
 from flask import Blueprint, render_template, jsonify, request, Response
 import json, datetime, requests
 
@@ -194,6 +194,7 @@ def render_grid_hub_html(cards, schema, tier):
     .free-banner {{ background: #ff6b35; color: #0a0e1a; padding: .75rem; text-align: center; font-weight: 600; }}
     .free-banner a {{ color: #0a0e1a; text-decoration: underline; }}
   </style>
+  <script src="/static/gating.js" defer></script>
 </head>
 <body>
   {'<div class="free-banner">Free tier viewing PJM + ERCOT only. <a href="/pricing">Unlock all 7 ISOs →</a></div>' if tier == 'free' else ''}

@@ -1050,11 +1050,14 @@ app = Flask(__name__, static_folder='static', static_url_path='/static')
 # --- Phase 22 + 23 + 24 blueprints (auto-wired) ---
 try:
     from routes.observability_routes import observability_bp
+    from routes.gating_routes import gating_bp, register_jinja_filter  # phase68_gating_bp
     from routes.redeem_routes import redeem_bp  # phase63b_redeem_bp
     from routes.grid_public_routes import grid_public_bp
     from routes.grid_card_routes import grid_card_bp
     from routes.social_posts_routes import social_posts_bp
     app.register_blueprint(observability_bp)
+    app.register_blueprint(gating_bp)  # phase68_gating_bp
+    register_jinja_filter(app)  # phase68_gating_bp
     app.register_blueprint(redeem_bp)  # phase63b_redeem_bp
     app.register_blueprint(grid_public_bp)
     app.register_blueprint(grid_card_bp)
