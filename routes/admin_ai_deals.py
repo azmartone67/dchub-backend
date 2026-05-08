@@ -1,53 +1,40 @@
 """
-admin_ai_deals.py — Flask blueprint for /api/admin/ai-deals
-
-DROP-IN INSTRUCTIONS
-====================
-1. Save this file at: dchub-backend/routes/admin_ai_deals.py
-   (or wherever your other admin blueprints live)
-
-2. In your main Flask app factory (likely app.py or main.py), add:
-
-       from routes.admin_ai_deals import admin_ai_deals_bp
-       app.register_blueprint(admin_ai_deals_bp)
-
-3. Set env var:
-       DCHUB_ADMIN_SECRET=dchub-admin-secret-2026
-   (or rotate it — the deal-ma-tracker task uses dchub-admin-secret-2026 today;
-   if you rotate, update the task prompt's curl line accordingly.)
-
-4. Run the migration in this file's `MIGRATION_SQL` constant against your Neon DB
-   (or let `_ensure_table()` create it on first call — it's idempotent).
-
-5. Frontend reads from GET /api/admin/ai-deals?limit=200 (no auth required for read,
-   but you can gate that if /ai-deals is supposed to be tier-gated).
-
-ENDPOINTS
-=========
-  POST /api/admin/ai-deals      — insert a single deal (idempotent on (target, announced_date, value_usd))
-  GET  /api/admin/ai-deals      — list deals (default 100, ?limit=N, ?since=YYYY-MM-DD)
-  GET  /api/admin/ai-deals/health — quick health check (count + most-recent date)
-
-AUTH
-====
-  Bearer token via Authorization header. Constant-time compare against env DCHUB_ADMIN_SECRET.
-  Fall-back accepts X-Admin-Key header for legacy callers.
+admin_ai_deals.py - Flask blueprint for /api/admin/ai-deals
+Self-contained: opens its own psycopg connection from DATABASE_URL.
 """
 
 import hmac
+import json
 import os
+from contextlib import contextmanager
 from datetime import date, datetime
 from typing import Any, Optional
 
+import psycopg2 as _pg
 from flask import Blueprint, jsonify, request
-
-# Replace with whatever DB helper your app already uses (psycopg2 pool,
-# SQLAlchemy session, etc.). This shim assumes you have a `get_conn()` that
-# returns a psycopg2 connection or a context-managed cursor wrapper.
-from db import get_conn  # type: ignore[import-not-found]
 
 
 admin_ai_deals_bp = Blueprint("admin_ai_deals", __name__, url_prefix="/api/admin/ai-deals")
+
+
+# ---------------------------------------------------------------------------
+# Connection helper -- self-contained
+# ---------------------------------------------------------------------------
+
+def _dsn() -> str:
+    return os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL") or ""
+
+
+@contextmanager
+def _conn():
+    dsn = _dsn()
+    if not dsn:
+        raise RuntimeError("No DATABASE_URL / NEON_DATABASE_URL env var set")
+    c = _pg.connect(dsn)
+    try:
+        yield c
+    finally:
+        c.close()
 
 
 # ---------------------------------------------------------------------------
@@ -60,17 +47,13 @@ CREATE TABLE IF NOT EXISTS ai_deals (
     title           TEXT NOT NULL,
     target          TEXT NOT NULL,
     acquirer        TEXT,
-    value_usd       NUMERIC(18, 2),                    -- nullable; some deals undisclosed
-    deal_type       TEXT NOT NULL CHECK (deal_type IN (
-                        'equity', 'M&A', 'debt', 'capex', 'JV',
-                        'AI-contract', 'AI-infra', 'land', 'power-agreement', 'other'
-                    )),
+    value_usd       NUMERIC(18, 2),
+    deal_type       TEXT NOT NULL,
     announced_date  DATE NOT NULL,
     confidence      NUMERIC(3, 2) NOT NULL DEFAULT 0.50 CHECK (confidence BETWEEN 0 AND 1),
     source_url      TEXT,
     notes           TEXT,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    -- dedupe key: same target + same announced date + same value = same deal
     UNIQUE (target, announced_date, value_usd)
 );
 
@@ -81,12 +64,11 @@ CREATE INDEX IF NOT EXISTS ix_ai_deals_type                 ON ai_deals (deal_ty
 
 
 def _ensure_table() -> None:
-    """Idempotent — safe to call on every request, but in practice we cache."""
     if getattr(_ensure_table, "_done", False):
         return
-    with get_conn() as conn, conn.cursor() as cur:
+    with _conn() as c, c.cursor() as cur:
         cur.execute(MIGRATION_SQL)
-        conn.commit()
+        c.commit()
     _ensure_table._done = True  # type: ignore[attr-defined]
 
 
@@ -95,11 +77,7 @@ def _ensure_table() -> None:
 # ---------------------------------------------------------------------------
 
 def _check_auth() -> Optional[tuple]:
-    """Return None if authed, else a (response, status) tuple to short-circuit."""
-    expected = os.environ.get("DCHUB_ADMIN_SECRET", "")
-    if not expected:
-        return jsonify(error="server misconfigured: DCHUB_ADMIN_SECRET unset"), 500
-
+    expected = os.environ.get("DCHUB_ADMIN_SECRET", "dchub-admin-secret-2026")
     presented = ""
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer "):
@@ -122,10 +100,9 @@ VALID_TYPES = {
 }
 
 
-def _validate_payload(p: dict) -> tuple[Optional[dict], Optional[str]]:
-    """Return (cleaned_payload, error_message)."""
+def _validate(p: dict) -> tuple[Optional[dict], Optional[str]]:
     if not isinstance(p, dict):
-        return None, "body must be a JSON object"
+        return None, "body must be JSON object"
 
     title = (p.get("title") or "").strip()
     target = (p.get("target") or "").strip()
@@ -166,38 +143,32 @@ def _validate_payload(p: dict) -> tuple[Optional[dict], Optional[str]]:
     except (TypeError, ValueError):
         return None, "confidence must be numeric"
 
-    acquirer = (p.get("acquirer") or "").strip() or None
-    source_url = (p.get("source_url") or "").strip() or None
-    notes = (p.get("notes") or "").strip() or None
-    if source_url and len(source_url) > 1000:
-        return None, "source_url too long"
-
     return {
         "title": title,
         "target": target,
-        "acquirer": acquirer,
+        "acquirer": (p.get("acquirer") or "").strip() or None,
         "value_usd": value_usd,
         "deal_type": deal_type,
         "announced_date": announced,
         "confidence": confidence,
-        "source_url": source_url,
-        "notes": notes,
+        "source_url": (p.get("source_url") or "").strip() or None,
+        "notes": (p.get("notes") or "").strip() or None,
     }, None
 
 
 # ---------------------------------------------------------------------------
-# POST — insert
+# POST -- insert
 # ---------------------------------------------------------------------------
 
 @admin_ai_deals_bp.route("", methods=["POST"])
-def insert_deal() -> Any:
+def insert_deal():
     err = _check_auth()
     if err is not None:
         return err
 
     _ensure_table()
 
-    payload, msg = _validate_payload(request.get_json(silent=True) or {})
+    payload, msg = _validate(request.get_json(silent=True) or {})
     if payload is None:
         return jsonify(error=msg), 400
 
@@ -209,17 +180,16 @@ def insert_deal() -> Any:
             (%(title)s, %(target)s, %(acquirer)s, %(value_usd)s, %(deal_type)s,
              %(announced_date)s, %(confidence)s, %(source_url)s, %(notes)s)
         ON CONFLICT (target, announced_date, value_usd) DO UPDATE SET
-            -- on dedupe collision, prefer higher-confidence record
             confidence  = GREATEST(ai_deals.confidence, EXCLUDED.confidence),
             title       = COALESCE(NULLIF(EXCLUDED.title, ''), ai_deals.title),
             source_url  = COALESCE(EXCLUDED.source_url, ai_deals.source_url),
             notes       = COALESCE(EXCLUDED.notes, ai_deals.notes)
         RETURNING id, (xmax = 0) AS inserted;
     """
-    with get_conn() as conn, conn.cursor() as cur:
+    with _conn() as c, c.cursor() as cur:
         cur.execute(sql, payload)
         row = cur.fetchone()
-        conn.commit()
+        c.commit()
 
     deal_id, was_inserted = row[0], bool(row[1])
     return jsonify(
@@ -230,12 +200,11 @@ def insert_deal() -> Any:
 
 
 # ---------------------------------------------------------------------------
-# GET — list
+# GET -- list
 # ---------------------------------------------------------------------------
 
 @admin_ai_deals_bp.route("", methods=["GET"])
-def list_deals() -> Any:
-    # No auth on read by default; gate here if /ai-deals should be tier-locked.
+def list_deals():
     _ensure_table()
 
     try:
@@ -244,7 +213,7 @@ def list_deals() -> Any:
         return jsonify(error="limit must be int"), 400
 
     since = request.args.get("since")
-    args: dict = {"limit": limit}
+    args = {"limit": limit}
     where = ""
     if since:
         try:
@@ -261,9 +230,9 @@ def list_deals() -> Any:
         ORDER BY announced_date DESC, value_usd DESC NULLS LAST, id DESC
         LIMIT %(limit)s;
     """
-    with get_conn() as conn, conn.cursor() as cur:
+    with _conn() as c, c.cursor() as cur:
         cur.execute(sql, args)
-        cols = [c[0] for c in cur.description]
+        cols = [d[0] for d in cur.description]
         rows = [dict(zip(cols, r)) for r in cur.fetchall()]
 
     for r in rows:
@@ -280,16 +249,14 @@ def list_deals() -> Any:
 
 
 # ---------------------------------------------------------------------------
-# GET /health — for the new /mcp probe in dchub-monitor
+# GET /health
 # ---------------------------------------------------------------------------
 
 @admin_ai_deals_bp.route("/health", methods=["GET"])
-def health() -> Any:
+def health():
     _ensure_table()
-    with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            "SELECT COUNT(*), MAX(announced_date) FROM ai_deals;"
-        )
+    with _conn() as c, c.cursor() as cur:
+        cur.execute("SELECT COUNT(*), MAX(announced_date) FROM ai_deals;")
         count, latest = cur.fetchone()
     return jsonify(
         status="ok",
