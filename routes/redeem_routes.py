@@ -19,48 +19,39 @@ from flask import Blueprint, request, Response
 
 # === phase 99b: actually create a dev key + send via SendGrid ============
 def _generate_dev_key():
-    """Returns a new dev key string like 'dchub_dev_<32hex>'."""
-    return f"dchub_dev_{secrets.token_hex(16)}"
+    """Returns a new dev key string like 'dch_live_<32hex>' — matches existing keys."""
+    return f"dch_live_{secrets.token_hex(16)}"
 
 
 def _persist_dev_key(conn, email, api_key, session_id, source="redeem"):
-    """Insert into the api_keys table. Returns (success: bool, error: str)."""
+    """Insert into mcp_dev_keys (the actual table per gen_dev_key.py).
+
+    Schema: api_key, developer_id, email, tier, status, metadata.
+    Returns (success: bool, error: str_or_none, developer_id_or_none).
+    """
+    import json as _json
+    developer_id = f"dev_{secrets.token_hex(8)}"
+    metadata = {"source": source, "session_id": session_id}
     try:
         cur = conn.cursor()
-        # Try common table names — first one that works wins
-        for table_name in ("api_keys", "dev_keys", "mcp_keys", "developer_keys"):
-            try:
-                cur.execute(
-                    f"INSERT INTO {table_name} (api_key, email, tier, source, session_id, created_at) "
-                    f"VALUES (%s, %s, %s, %s, %s, NOW()) "
-                    f"ON CONFLICT (api_key) DO NOTHING",
-                    (api_key, email, "developer", source, session_id),
-                )
-                conn.commit()
-                return True, None
-            except Exception as e:
-                conn.rollback()
-                err = str(e)
-                if "does not exist" in err.lower():
-                    continue  # try next table name
-                else:
-                    # column mismatch or constraint issue — try minimal insert
-                    try:
-                        cur.execute(
-                            f"INSERT INTO {table_name} (api_key, email) VALUES (%s, %s) ON CONFLICT DO NOTHING",
-                            (api_key, email),
-                        )
-                        conn.commit()
-                        return True, None
-                    except Exception as e2:
-                        conn.rollback()
-                        err = f"{type(e).__name__}: {e}; minimal_insert_also_failed: {type(e2).__name__}: {e2}"
-                        continue
-        return False, f"no api_keys table found"
+        cur.execute(
+            """INSERT INTO mcp_dev_keys
+                  (api_key, developer_id, email, tier, status, metadata)
+               VALUES (%s, %s, %s, %s, 'active', %s::jsonb)
+               ON CONFLICT (api_key) DO NOTHING
+               RETURNING developer_id""",
+            (api_key, developer_id, email, "developer", _json.dumps(metadata)),
+        )
+        row = cur.fetchone()
+        conn.commit()
+        if row is None:
+            # already existed (rare with random key) — generate a new one
+            return False, "ON CONFLICT — key collision (extremely rare)", None
+        return True, None, developer_id
     except Exception as e:
         try: conn.rollback()
         except Exception: pass
-        return False, f"{type(e).__name__}: {e}"
+        return False, f"{type(e).__name__}: {e}", None
 
 
 def _send_dev_key_email(email, api_key, tools_tried):
