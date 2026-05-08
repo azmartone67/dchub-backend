@@ -48,7 +48,12 @@ def _p99_persist_key(conn, email, api_key, session_id):
 
 
 def _p99_send_email(email, api_key, tools_tried):
-    """Try SendGrid first, fall back to SMTP. Returns (ok, info_or_error)."""
+    """Send dev-key email via Resend (primary) or GoDaddy SMTP (fallback).
+
+    SendGrid removed in phase 102c (account permanently OOC, user declined
+    upgrade). Resend errors are surfaced even when SMTP succeeds, so we can
+    always diagnose Resend without it being masked by a working fallback.
+    """
     import os as _os, json as _j
     import urllib.request as _ur, urllib.error as _ue
 
@@ -60,8 +65,7 @@ def _p99_send_email(email, api_key, tools_tried):
         f'  {{"mcpServers":{{"dchub":{{"command":"npx","args":["-y","mcp-remote","https://dchub.cloud/mcp"],"env":{{"DCHUB_API_KEY":"{api_key}"}}}}}}}}\n\n'
         f"Direct API:\n"
         f"  curl -H 'Authorization: Bearer {api_key}' https://dchub.cloud/api/v1/grid-intelligence?iso=ERCOT\n\n"
-        f"Unlocks: 50 facility lookups, real-time grid (7 ISOs), fiber intel, "
-        f"M&A deals, 650+ GW pipeline.\n\n"
+        f"Unlocks: 50 facility lookups, real-time grid (7 ISOs), fiber intel, M&A deals, 650+ GW pipeline.\n\n"
         f"Upgrade to Pro at https://dchub.cloud/pricing — $49/mo unlimited.\n"
     )
     html_install = (
@@ -79,143 +83,47 @@ def _p99_send_email(email, api_key, tools_tried):
         "<p><a href='https://dchub.cloud/pricing'>Upgrade to Pro</a> for unlimited access.</p>"
         "</body></html>"
     )
-    from_email = _os.environ.get("DCHUB_FROM_EMAIL", "noreply@dchub.cloud")
 
-    # Try Resend first (most reliable, simplest API)
-    resend_key = _os.environ.get("RESEND_API_KEY")
+    from_email = _os.environ.get("DCHUB_FROM_EMAIL", "DC Hub <jonathan@dchub.cloud>")
+    if "@" not in from_email and "<" not in from_email:
+        from_email = "DC Hub <jonathan@dchub.cloud>"
+
+    errors = []
+
+    # === 1. Resend (primary) ===
+    resend_key = (_os.environ.get("RESEND_API_KEY") or "").strip()
     if resend_key:
-        resend_payload = {
-            "from": from_email if "@" in from_email else "DC Hub <noreply@dchub.cloud>",
-            "to": [email],
-            "subject": subject,
-            "text": text,
-            "html": html,
-        }
-        resend_req = _ur.Request(
-            "https://api.resend.com/emails",
-            data=_j.dumps(resend_payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {resend_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
         try:
-            with _ur.urlopen(resend_req, timeout=10) as resp:
-                if 200 <= resp.status < 300:
-                    return True, "via:resend"
-                rs_err = f"resend HTTP {resp.status}"
-        except _ue.HTTPError as e:
-            rs_err = f"resend HTTP {e.code}"
-            try: rs_err += ": " + e.read().decode("utf-8")[:200]
-            except Exception: pass
+            payload = {"from": from_email, "to": [email], "subject": subject,
+                       "text": text, "html": html}
+            req = _ur.Request("https://api.resend.com/emails",
+                data=_j.dumps(payload).encode("utf-8"),
+                headers={"Authorization": f"Bearer {resend_key}",
+                         "Content-Type": "application/json"},
+                method="POST")
+            try:
+                with _ur.urlopen(req, timeout=15) as resp:
+                    body = resp.read().decode("utf-8", errors="replace")
+                    if 200 <= resp.status < 300:
+                        return True, f"via:resend (id={body[:120]})"
+                    errors.append(f"resend:HTTP {resp.status}: {body[:300]}")
+            except _ue.HTTPError as e:
+                try: ebody = e.read().decode("utf-8", errors="replace")
+                except Exception: ebody = "(no body)"
+                errors.append(f"resend:HTTP {e.code}: {ebody[:300]}")
+            except Exception as e:
+                errors.append(f"resend:{type(e).__name__}: {str(e)[:200]}")
         except Exception as e:
-            rs_err = f"resend {type(e).__name__}: {e}"
+            errors.append(f"resend:setup-error:{type(e).__name__}: {str(e)[:200]}")
     else:
-        rs_err = "RESEND_API_KEY not set"
+        errors.append("resend:RESEND_API_KEY not set")
 
-    # Try Resend first (most reliable, simplest API)
-    resend_key = _os.environ.get("RESEND_API_KEY")
-    if resend_key:
-        resend_payload = {
-            "from": from_email if "@" in from_email else "DC Hub <noreply@dchub.cloud>",
-            "to": [email],
-            "subject": subject,
-            "text": text,
-            "html": html,
-        }
-        resend_req = _ur.Request(
-            "https://api.resend.com/emails",
-            data=_j.dumps(resend_payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {resend_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        try:
-            with _ur.urlopen(resend_req, timeout=10) as resp:
-                if 200 <= resp.status < 300:
-                    return True, "via:resend"
-                rs_err = f"resend HTTP {resp.status}"
-        except _ue.HTTPError as e:
-            rs_err = f"resend HTTP {e.code}"
-            try: rs_err += ": " + e.read().decode("utf-8")[:200]
-            except Exception: pass
-        except Exception as e:
-            rs_err = f"resend {type(e).__name__}: {e}"
-    else:
-        rs_err = "RESEND_API_KEY not set"
-
-    # Try Resend first (most reliable, simplest API)
-    resend_key = _os.environ.get("RESEND_API_KEY")
-    if resend_key:
-        resend_payload = {
-            "from": from_email if "@" in from_email else "DC Hub <noreply@dchub.cloud>",
-            "to": [email],
-            "subject": subject,
-            "text": text,
-            "html": html,
-        }
-        resend_req = _ur.Request(
-            "https://api.resend.com/emails",
-            data=_j.dumps(resend_payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {resend_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        try:
-            with _ur.urlopen(resend_req, timeout=10) as resp:
-                if 200 <= resp.status < 300:
-                    return True, "via:resend"
-                rs_err = f"resend HTTP {resp.status}"
-        except _ue.HTTPError as e:
-            rs_err = f"resend HTTP {e.code}"
-            try: rs_err += ": " + e.read().decode("utf-8")[:200]
-            except Exception: pass
-        except Exception as e:
-            rs_err = f"resend {type(e).__name__}: {e}"
-    else:
-        rs_err = "RESEND_API_KEY not set"
-
-    # Try SendGrid first
-    sg_key = _os.environ.get("SENDGRID_API_KEY")
-    sg_err = "SENDGRID_API_KEY not set"
-    if sg_key:
-        payload = {
-            "personalizations": [{"to": [{"email": email}]}],
-            "from": {"email": from_email, "name": "DC Hub"},
-            "subject": subject,
-            "content": [
-                {"type": "text/plain", "value": text},
-                {"type": "text/html", "value": html},
-            ],
-        }
-        req = _ur.Request(
-            "https://api.sendgrid.com/v3/mail/send",
-            data=_j.dumps(payload).encode("utf-8"),
-            headers={"Authorization": f"Bearer {sg_key}", "Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            with _ur.urlopen(req, timeout=10) as resp:
-                if 200 <= resp.status < 300:
-                    return True, "via:sendgrid"
-                sg_err = f"sendgrid HTTP {resp.status}"
-        except _ue.HTTPError as e:
-            sg_err = f"sendgrid HTTP {e.code}"
-            try: sg_err += ": " + e.read().decode("utf-8")[:150]
-            except Exception: pass
-        except Exception as e:
-            sg_err = f"sendgrid {type(e).__name__}: {e}"
-
-    # Fall back to SMTP
+    # === 2. GoDaddy SMTP (fallback) ===
     smtp_user = _os.environ.get("SMTP_USER") or _os.environ.get("SMTP_USERNAME")
     smtp_pass = _os.environ.get("SMTP_PASS") or _os.environ.get("SMTP_PASSWORD")
     smtp_host = _os.environ.get("SMTP_HOST")
     smtp_port = int(_os.environ.get("SMTP_PORT", 587))
+
     if smtp_host and smtp_user and smtp_pass:
         try:
             import smtplib
@@ -223,37 +131,22 @@ def _p99_send_email(email, api_key, tools_tried):
             from email.mime.text import MIMEText
             msg = MIMEMultipart("alternative")
             msg["Subject"] = subject
-            # phase 99i: GoDaddy strict — From must match authenticated user
             msg["From"] = f"DC Hub <{smtp_user}>" if "@" in smtp_user else smtp_user
             msg["Reply-To"] = from_email if "@" in from_email else smtp_user
             msg["To"] = email
             msg.attach(MIMEText(text, "plain"))
             msg.attach(MIMEText(html, "html"))
-            import io as _p99_io
-            _p99_smtp_log = _p99_io.StringIO()
-            try:
-                with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as srv:
-                    # Capture SMTP conversation for debugging
-                    import sys as _p99_sys
-                    _orig_stderr = _p99_sys.stderr
-                    _p99_sys.stderr = _p99_smtp_log
-                    try:
-                        srv.set_debuglevel(1)
-                        srv.ehlo()
-                        srv.starttls()
-                        srv.ehlo()
-                        srv.login(smtp_user, smtp_pass)
-                        srv.send_message(msg)
-                    finally:
-                        _p99_sys.stderr = _orig_stderr
-                return True, f"via:smtp (sg_failed: {sg_err})"
-            except Exception as _smtp_e:
-                _conv = _p99_smtp_log.getvalue()[-500:]
-                return False, f"resend:{rs_err}; sendgrid:{sg_err}; smtp:{type(_smtp_e).__name__}: {_smtp_e}; conv={_conv!r}"
+            with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as srv:
+                srv.ehlo(); srv.starttls(); srv.ehlo()
+                srv.login(smtp_user, smtp_pass)
+                srv.send_message(msg)
+            return True, f"via:smtp (resend_failed: {'; '.join(errors)[:400]})"
         except Exception as e:
-            return False, f"sendgrid:{sg_err}; smtp:{type(e).__name__}: {e}"
+            errors.append(f"smtp:{type(e).__name__}: {str(e)[:300]}")
+    else:
+        errors.append("smtp:not_configured")
 
-    return False, f"resend:{rs_err}; sendgrid:{sg_err}; smtp:not_configured"
+    return False, "; ".join(errors)
 
 # === end phase 99h helpers ============================================
 

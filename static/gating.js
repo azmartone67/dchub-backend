@@ -30,7 +30,7 @@
     {
       // $/MW-day, $/kWh, $/MWh rates
       regex: /\$\s*\d+(?:\.\d+)?\s*\/\s*(?:MW-day|kWh|MWh)/g,
-      placeholder: '$$$$',
+      placeholder: '—',
       label: 'rate'
     },
     {
@@ -42,7 +42,7 @@
     {
       // Dollar amounts >= $1M
       regex: /\$\s*\d{1,3}(?:,\d{3})+(?:\.\d+)?(?:M|B|K)?\b/g,
-      placeholder: '$$$$',
+      placeholder: '—',
       label: 'amount'
     }
   ];

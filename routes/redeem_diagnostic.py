@@ -345,6 +345,43 @@ def env_snoop():
     ), 200
 
 
+
+
+@redeem_diagnostic_bp.route("/resend-direct", methods=["GET"])
+def resend_direct():
+    """Test Resend directly with NO fallback. Surfaces raw HTTP code + body."""
+    import os as _os, json as _j
+    import urllib.request as _ur, urllib.error as _ue
+    from flask import request as _req
+    to_email = _req.args.get("to") or "azmartone@gmail.com"
+    resend_key = (_os.environ.get("RESEND_API_KEY") or "").strip()
+    if not resend_key:
+        return jsonify(ok=False, error="RESEND_API_KEY not set"), 500
+    from_email = _os.environ.get("DCHUB_FROM_EMAIL", "DC Hub <jonathan@dchub.cloud>")
+    payload = {"from": from_email, "to": [to_email],
+               "subject": "DC Hub - Resend direct diagnostic",
+               "text": "If you got this, Resend is wired correctly.",
+               "html": "<p>If you got this, Resend is wired correctly.</p>"}
+    req = _ur.Request("https://api.resend.com/emails",
+        data=_j.dumps(payload).encode("utf-8"),
+        headers={"Authorization": f"Bearer {resend_key}", "Content-Type": "application/json"},
+        method="POST")
+    out = {"to": to_email, "from": from_email}
+    try:
+        with _ur.urlopen(req, timeout=15) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+            out["http_status"] = resp.status; out["body"] = body[:500]
+            out["ok"] = 200 <= resp.status < 300
+    except _ue.HTTPError as e:
+        try: body = e.read().decode("utf-8", errors="replace")
+        except Exception: body = ""
+        out["http_status"] = e.code; out["body"] = body[:500]; out["ok"] = False
+    except Exception as e:
+        out["http_status"] = None
+        out["body"] = f"{type(e).__name__}: {str(e)[:300]}"; out["ok"] = False
+    return jsonify(out), (200 if out.get("ok") else 500)
+
+
 @redeem_diagnostic_bp.route("/recent", methods=["GET"])
 def recent():
     """Last 20 redeem attempts across all emails (admin view)."""

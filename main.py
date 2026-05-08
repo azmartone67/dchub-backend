@@ -1057,6 +1057,7 @@ try:
     from routes.grid_card_routes import grid_card_bp
     from routes.social_posts_routes import social_posts_bp
     app.register_blueprint(observability_bp)
+app.register_blueprint(qa_patterns_bp)
     app.register_blueprint(gating_bp)  # phase68_gating_bp
     register_jinja_filter(app)  # phase68_gating_bp
     app.register_blueprint(redeem_bp)  # phase63b_redeem_bp
@@ -17644,6 +17645,7 @@ from routes.sec_edgar import sec_edgar_bp
 from routes.extractor_brain import extractor_brain_bp
 from routes.redeem_tracking import redeem_tracking_bp
 from routes.redeem_diagnostic import redeem_diagnostic_bp
+from routes.qa_patterns import qa_patterns_bp
 from routes.site_qa import site_qa_bp
 app.register_blueprint(admin_ai_deals_bp)
 app.register_blueprint(news_digests_read_bp)
