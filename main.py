@@ -17643,6 +17643,7 @@ from routes.iso_isone import iso_isone_bp
 from routes.grid_snapshot import grid_snapshot_bp
 from routes.sec_edgar import sec_edgar_bp
 from routes.extractor_brain import extractor_brain_bp
+from routes.redeem_tracking import redeem_tracking_bp
 app.register_blueprint(admin_ai_deals_bp)
 app.register_blueprint(news_digests_read_bp)
 app.register_blueprint(sources_bp)
@@ -17656,6 +17657,7 @@ app.register_blueprint(iso_isone_bp)
 app.register_blueprint(grid_snapshot_bp)
 app.register_blueprint(sec_edgar_bp)
 app.register_blueprint(extractor_brain_bp)
+app.register_blueprint(redeem_tracking_bp)
 register_search_routes(app)
 
 
