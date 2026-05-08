@@ -1,0 +1,134 @@
+# data-pulse: every 15 min, fan out to all extractors + notify the brain.
+# Runs on GitHub Actions runners (free, unrestricted internet egress).
+#
+# Replaces the Cowork scheduled task which can't reach dchub.cloud due to
+# Cowork sandbox egress restrictions. GitHub Actions has no such limit.
+#
+# Schedule: every 15 min (note: GH may delay scheduled runs by a few min
+# under load; effective cadence is ~15-25 min, which is fine).
+#
+# Manually trigger anytime: Actions tab → "data-pulse" → Run workflow.
+
+name: data-pulse
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}  # allow manual trigger from Actions UI
+
+jobs:
+  pulse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Compute pulse metadata
+        id: meta
+        run: |
+          echo "iso_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+          echo "minute=$(date -u +%-M)" >> $GITHUB_OUTPUT
+          echo "start_epoch=$(date +%s)" >> $GITHUB_OUTPUT
+
+      - name: Trigger ISO orchestrator (all 6 ISOs)
+        id: iso
+        run: |
+          ISO_RESPONSE=$(curl -sS --max-time 90 -X POST \
+            https://dchub-backend-production.up.railway.app/api/v1/iso/all/extract)
+          echo "$ISO_RESPONSE" | head -c 1000
+          echo ""
+          ROWS=$(echo "$ISO_RESPONSE" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('total_rows_inserted', 0))" 2>/dev/null || echo 0)
+          FAILED=$(echo "$ISO_RESPONSE" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('failed_count', 0))" 2>/dev/null || echo 0)
+          echo "rows=$ROWS" >> $GITHUB_OUTPUT
+          echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "::notice title=ISO Orchestrator::rows=$ROWS failed=$FAILED"
+
+      - name: Trigger SEC EDGAR (hourly only — minute < 5)
+        id: sec
+        run: |
+          if [ "${{ steps.meta.outputs.minute }}" -lt 5 ]; then
+            echo "Running SEC EDGAR (hourly cadence — minute=${{ steps.meta.outputs.minute }})"
+            SEC_RESPONSE=$(curl -sS --max-time 120 -X POST \
+              https://dchub-backend-production.up.railway.app/api/v1/sec/extract)
+            echo "$SEC_RESPONSE" | head -c 1000
+            echo ""
+            ROWS=$(echo "$SEC_RESPONSE" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('rows_inserted', 0))" 2>/dev/null || echo 0)
+            FAILED=$(echo "$SEC_RESPONSE" | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d.get('companies_failed', [])))" 2>/dev/null || echo 0)
+            echo "rows=$ROWS" >> $GITHUB_OUTPUT
+            echo "failed=$FAILED" >> $GITHUB_OUTPUT
+            echo "ran=true" >> $GITHUB_OUTPUT
+            echo "::notice title=SEC EDGAR::rows=$ROWS failed=$FAILED"
+          else
+            echo "Skipping SEC EDGAR (minute=${{ steps.meta.outputs.minute }}, not in hourly window)"
+            echo "rows=0" >> $GITHUB_OUTPUT
+            echo "failed=0" >> $GITHUB_OUTPUT
+            echo "ran=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Compute totals
+        id: totals
+        run: |
+          TOTAL_ROWS=$(( ${{ steps.iso.outputs.rows }} + ${{ steps.sec.outputs.rows }} ))
+          TOTAL_FAILED=$(( ${{ steps.iso.outputs.failed }} + ${{ steps.sec.outputs.failed }} ))
+          END_EPOCH=$(date +%s)
+          DURATION_MS=$(( (END_EPOCH - ${{ steps.meta.outputs.start_epoch }}) * 1000 ))
+          echo "total_rows=$TOTAL_ROWS" >> $GITHUB_OUTPUT
+          echo "total_failed=$TOTAL_FAILED" >> $GITHUB_OUTPUT
+          echo "duration_ms=$DURATION_MS" >> $GITHUB_OUTPUT
+          if [ "$TOTAL_FAILED" -eq 0 ]; then
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "error=null" >> $GITHUB_OUTPUT
+          else
+            echo "status=partial" >> $GITHUB_OUTPUT
+            echo "error=\"$TOTAL_FAILED extractor(s) failed during pulse\"" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Notify the autonomous intelligence brain
+        run: |
+          curl -sS --max-time 30 -X POST \
+            -H "Content-Type: application/json" \
+            -d '{
+              "source_id": "github-actions-data-pulse",
+              "outcome": "${{ steps.totals.outputs.status }}",
+              "rows_inserted": ${{ steps.totals.outputs.total_rows }},
+              "duration_ms": ${{ steps.totals.outputs.duration_ms }},
+              "error": ${{ steps.totals.outputs.error }},
+              "observations": {
+                "iso_rows": ${{ steps.iso.outputs.rows }},
+                "sec_rows": ${{ steps.sec.outputs.rows }},
+                "sec_ran": ${{ steps.sec.outputs.ran }},
+                "iso_failed": ${{ steps.iso.outputs.failed }},
+                "sec_failed": ${{ steps.sec.outputs.failed }},
+                "pulse_ts": "${{ steps.meta.outputs.iso_ts }}",
+                "trigger": "github-actions"
+              }
+            }' \
+            https://dchub.cloud/api/v1/intelligence/observe | head -c 500
+
+      - name: Heartbeat the source registry
+        run: |
+          curl -sS --max-time 15 -X POST \
+            -H "Authorization: Bearer ${{ secrets.DCHUB_ADMIN_SECRET || 'dchub-admin-secret-2026' }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "status": "${{ steps.totals.outputs.status }}",
+              "rows_affected": ${{ steps.totals.outputs.total_rows }},
+              "duration_ms": ${{ steps.totals.outputs.duration_ms }},
+              "metadata": {
+                "iso_rows": ${{ steps.iso.outputs.rows }},
+                "sec_rows": ${{ steps.sec.outputs.rows }},
+                "sec_ran": ${{ steps.sec.outputs.ran }},
+                "trigger": "github-actions"
+              }
+            }' \
+            https://dchub.cloud/api/v1/sources/cowork-data-pulse/heartbeat | head -c 500
+
+      - name: Pulse summary
+        run: |
+          echo "## Pulse Summary"
+          echo "- Time:        ${{ steps.meta.outputs.iso_ts }}"
+          echo "- ISO rows:    ${{ steps.iso.outputs.rows }}"
+          echo "- SEC ran:     ${{ steps.sec.outputs.ran }}"
+          echo "- SEC rows:    ${{ steps.sec.outputs.rows }}"
+          echo "- Total rows:  ${{ steps.totals.outputs.total_rows }}"
+          echo "- Total failed: ${{ steps.totals.outputs.total_failed }}"
+          echo "- Duration:    ${{ steps.totals.outputs.duration_ms }}ms"
+          echo "- Status:      ${{ steps.totals.outputs.status }}"
