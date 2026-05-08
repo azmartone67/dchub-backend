@@ -149,15 +149,15 @@ def gate_tool_call(tool_name, api_key=None, user_agent=None,
 
         # phase63_redeem_msg -- include per-session redeem URL
 
-        _redeem_url = f"https://dchub.cloud/api/v1/redeem/{session_id}" if session_id else SIGNUP_URL
+        _redeem_url = f"https://dchub.cloud/api/v1/redeem/{session_id}?source=mcp&tool={tool_name}&tier=developer" if session_id else SIGNUP_URL
 
         msg = (
 
-        f"The {tool_name} tool requires a paid plan. "
+        f"🔓 **The {tool_name} tool requires a paid plan.**"
 
-        f"Get your free dev key (60 sec, just your email): {_redeem_url} "
+        f"\n\n👉 **Get your free dev key (60 seconds):**\n{_redeem_url}\n\nNo credit card. Just email + verify. Unlocks 50 facility lookups, real-time grid for 7 ISOs, fiber intel, M&A deals.\n\n"
 
-        f"-- or upgrade to Pro at {UPGRADE_URL} for $49/mo unlimited access."
+        f"_Or upgrade to Pro at {UPGRADE_URL} for $49/mo unlimited access._"
 
         )
         fire_upgrade_signal(
