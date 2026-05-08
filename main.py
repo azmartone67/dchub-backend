@@ -17637,6 +17637,10 @@ from routes.iso_ercot import iso_ercot_bp
 from routes.iso_caiso import iso_caiso_bp
 from routes.iso_nyiso import iso_nyiso_bp
 from routes.iso_orchestrator import iso_orchestrator_bp
+from routes.iso_miso import iso_miso_bp
+from routes.iso_spp import iso_spp_bp
+from routes.iso_isone import iso_isone_bp
+from routes.grid_snapshot import grid_snapshot_bp
 app.register_blueprint(admin_ai_deals_bp)
 app.register_blueprint(news_digests_read_bp)
 app.register_blueprint(sources_bp)
@@ -17644,6 +17648,10 @@ app.register_blueprint(iso_ercot_bp)
 app.register_blueprint(iso_caiso_bp)
 app.register_blueprint(iso_nyiso_bp)
 app.register_blueprint(iso_orchestrator_bp)
+app.register_blueprint(iso_miso_bp)
+app.register_blueprint(iso_spp_bp)
+app.register_blueprint(iso_isone_bp)
+app.register_blueprint(grid_snapshot_bp)
 register_search_routes(app)
 
 

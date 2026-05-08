@@ -38,6 +38,9 @@ def extract_all():
         ("iso_ercot", "ERCOT"),
         ("iso_caiso", "CAISO"),
         ("iso_nyiso", "NYISO"),
+        ("iso_miso",  "MISO"),
+        ("iso_spp",   "SPP"),
+        ("iso_isone", "ISONE"),
     ]
 
     for module_name, label in extractors:
@@ -83,7 +86,7 @@ def extract_all():
 def health():
     return jsonify(
         status="ok",
-        registered_isos=["ERCOT", "CAISO", "NYISO"],
+        registered_isos=["ERCOT", "CAISO", "NYISO", "MISO", "SPP", "ISONE"],
         endpoint="/api/v1/iso/all/extract",
-        future_isos=["MISO", "SPP", "ISONE"],
+        future_isos=[],
     ), 200
