@@ -17632,8 +17632,10 @@ except Exception as _rc_exc:
 from search_routes import register_search_routes
 from routes.admin_ai_deals import admin_ai_deals_bp
 from routes.news_digests_read import news_digests_read_bp
+from routes.sources import sources_bp
 app.register_blueprint(admin_ai_deals_bp)
 app.register_blueprint(news_digests_read_bp)
+app.register_blueprint(sources_bp)
 register_search_routes(app)
 
 
