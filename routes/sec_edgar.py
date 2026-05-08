@@ -81,7 +81,7 @@ def _conn():
 
 
 MIGRATION_SQL = """
-CREATE TABLE IF NOT EXISTS sec_filings (
+CREATE TABLE IF NOT EXISTS sec_filings_v2 (
     id                  BIGSERIAL PRIMARY KEY,
     accession_number    TEXT UNIQUE NOT NULL,
     cik                 TEXT NOT NULL,
@@ -98,10 +98,10 @@ CREATE TABLE IF NOT EXISTS sec_filings (
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS ix_sec_filings_cik_date    ON sec_filings (cik, filing_date DESC);
-CREATE INDEX IF NOT EXISTS ix_sec_filings_form_date   ON sec_filings (form_type, filing_date DESC);
-CREATE INDEX IF NOT EXISTS ix_sec_filings_filing_date ON sec_filings (filing_date DESC);
-CREATE INDEX IF NOT EXISTS ix_sec_filings_ticker      ON sec_filings (ticker);
+CREATE INDEX IF NOT EXISTS ix_sec_filings_v2_cik_date    ON sec_filings_v2 (cik, filing_date DESC);
+CREATE INDEX IF NOT EXISTS ix_sec_filings_v2_form_date   ON sec_filings_v2 (form_type, filing_date DESC);
+CREATE INDEX IF NOT EXISTS ix_sec_filings_v2_filing_date ON sec_filings_v2 (filing_date DESC);
+CREATE INDEX IF NOT EXISTS ix_sec_filings_v2_ticker      ON sec_filings_v2 (ticker);
 """
 
 
@@ -143,7 +143,7 @@ def _persist_filings(filings, cik, ticker, company_name, category):
         for f in filings:
             try:
                 cur.execute(
-                    """INSERT INTO sec_filings
+                    """INSERT INTO sec_filings_v2
                           (accession_number, cik, ticker, company_name, category,
                            form_type, filing_date, accepted_at,
                            primary_doc_url, primary_doc_desc, items, metadata)
@@ -344,7 +344,7 @@ def list_filings():
         SELECT id, accession_number, cik, ticker, company_name, category,
                form_type, filing_date, accepted_at,
                primary_doc_url, primary_doc_desc, items, created_at
-        FROM sec_filings
+        FROM sec_filings_v2
         {where}
         ORDER BY filing_date DESC, accepted_at DESC NULLS LAST, id DESC
         LIMIT %(limit)s
@@ -378,7 +378,7 @@ def list_companies():
             """SELECT ticker, cik, company_name, category,
                       COUNT(*) AS filings_count,
                       MAX(filing_date) AS most_recent_filing
-               FROM sec_filings
+               FROM sec_filings_v2
                GROUP BY ticker, cik, company_name, category
                ORDER BY filings_count DESC"""
         )
@@ -411,7 +411,7 @@ def health():
         cur.execute(
             """SELECT MAX(filing_date), MAX(created_at), COUNT(*),
                       COUNT(DISTINCT cik), COUNT(DISTINCT form_type)
-               FROM sec_filings"""
+               FROM sec_filings_v2"""
         )
         latest_filing, latest_extract, total, distinct_ciks, distinct_forms = cur.fetchone()
     return jsonify(
