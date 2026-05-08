@@ -114,10 +114,14 @@ def _parse_system_conditions(html: str) -> dict:
 
     def _grab(label_pattern, value_unit_re=r"([\d,\.]+)\s*([A-Z%]+)?", _strip_unit_chars=False):
         m = re.search(
-            r"<td[^>]*>\s*" + label_pattern + r"\s*</td>\s*<td[^>]*>\s*" + value_unit_re,
+            r"<td[^>]*>\s*(?:" + label_pattern + r")\s*</td>\s*<td[^>]*>\s*" + value_unit_re,
             html, re.I | re.S,
         )
         if not m:
+            return None, None
+        # Guard: m.group(1) can be None if label_pattern alternation matched
+        # without capturing the value side
+        if m.group(1) is None:
             return None, None
         raw_value = m.group(1).replace(",", "")
         try:
@@ -180,8 +184,15 @@ def run_extraction() -> dict:
 
     try:
         html = _fetch(ERCOT_CONDITIONS_URL)
+        summary["html_size"] = len(html) if html else 0
         metrics = _parse_system_conditions(html)
         summary["metrics_extracted"] = len(metrics)
+        # If we fetched HTML but extracted nothing, capture a sample for debugging
+        if not metrics and html:
+            # First 400 chars of body, after stripping HTML head
+            import re as _re_dbg
+            body_match = _re_dbg.search(r"<body[^>]*>(.{200,500})", html, _re_dbg.S)
+            summary["html_preview"] = body_match.group(1)[:400] if body_match else html[:400]
         summary["sample_metric"] = next(iter(metrics.items())) if metrics else None
         rows = _persist_metrics(metrics)
         summary["rows_inserted"] = rows
