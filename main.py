@@ -17633,9 +17633,11 @@ from search_routes import register_search_routes
 from routes.admin_ai_deals import admin_ai_deals_bp
 from routes.news_digests_read import news_digests_read_bp
 from routes.sources import sources_bp
+from routes.iso_ercot import iso_ercot_bp
 app.register_blueprint(admin_ai_deals_bp)
 app.register_blueprint(news_digests_read_bp)
 app.register_blueprint(sources_bp)
+app.register_blueprint(iso_ercot_bp)
 register_search_routes(app)
 
 
