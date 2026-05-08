@@ -38,7 +38,7 @@ except ImportError:
     def _heartbeat(*args, **kwargs): pass
 
 
-sec_edgar_bp = Blueprint("sec_edgar", __name__, url_prefix="/api/v1/sec")
+sec_edgar_bp = Blueprint("sec_edgar_filings", __name__, url_prefix="/api/v1/sec")
 SOURCE_ID = "sec-edgar-filings"
 
 # DC-relevant company CIK registry. CIKs are SEC's canonical company IDs.
