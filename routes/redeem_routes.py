@@ -81,6 +81,39 @@ def _p99_send_email(email, api_key, tools_tried):
     )
     from_email = _os.environ.get("DCHUB_FROM_EMAIL", "noreply@dchub.cloud")
 
+    # Try Resend first (most reliable, simplest API)
+    resend_key = _os.environ.get("RESEND_API_KEY")
+    if resend_key:
+        resend_payload = {
+            "from": from_email if "@" in from_email else "DC Hub <noreply@dchub.cloud>",
+            "to": [email],
+            "subject": subject,
+            "text": text,
+            "html": html,
+        }
+        resend_req = _ur.Request(
+            "https://api.resend.com/emails",
+            data=_j.dumps(resend_payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {resend_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with _ur.urlopen(resend_req, timeout=10) as resp:
+                if 200 <= resp.status < 300:
+                    return True, "via:resend"
+                rs_err = f"resend HTTP {resp.status}"
+        except _ue.HTTPError as e:
+            rs_err = f"resend HTTP {e.code}"
+            try: rs_err += ": " + e.read().decode("utf-8")[:200]
+            except Exception: pass
+        except Exception as e:
+            rs_err = f"resend {type(e).__name__}: {e}"
+    else:
+        rs_err = "RESEND_API_KEY not set"
+
     # Try SendGrid first
     sg_key = _os.environ.get("SENDGRID_API_KEY")
     sg_err = "SENDGRID_API_KEY not set"
@@ -150,11 +183,11 @@ def _p99_send_email(email, api_key, tools_tried):
                 return True, f"via:smtp (sg_failed: {sg_err})"
             except Exception as _smtp_e:
                 _conv = _p99_smtp_log.getvalue()[-500:]
-                return False, f"sendgrid:{sg_err}; smtp:{type(_smtp_e).__name__}: {_smtp_e}; conv={_conv!r}"
+                return False, f"resend:{rs_err}; sendgrid:{sg_err}; smtp:{type(_smtp_e).__name__}: {_smtp_e}; conv={_conv!r}"
         except Exception as e:
             return False, f"sendgrid:{sg_err}; smtp:{type(e).__name__}: {e}"
 
-    return False, f"sendgrid:{sg_err}; smtp:not_configured"
+    return False, f"resend:{rs_err}; sendgrid:{sg_err}; smtp:not_configured"
 
 # === end phase 99h helpers ============================================
 
