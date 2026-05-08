@@ -40,7 +40,7 @@ def _persist_dev_key(conn, email, api_key, session_id, source="redeem"):
                VALUES (%s, %s, %s, %s, 'active', %s::jsonb)
                ON CONFLICT (api_key) DO NOTHING
                RETURNING developer_id""",
-            (api_key, developer_id, email, "developer", _json.dumps(metadata)),
+            (api_key, developer_id, email, "free", _json.dumps(metadata)),
         )
         row = cur.fetchone()
         conn.commit()
