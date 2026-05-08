@@ -20,6 +20,37 @@ Three improvements over the old shape:
 The original trial_preview / error fields are preserved so existing
 clients (selfheal validators etc.) keep working.
 """
+
+# === phase 98c: AI-agent-friendly URL prominence ===
+# When build_paywall_response builds the message, we want the URL on its own
+# line, emoji-prefixed, so AI clients render it clickably. This block
+# overrides any existing inline URL formatting.
+import os as _os_p98c
+
+PHASE_98C_BANNER_TEMPLATE = (
+    "🔓 **Unlock the full result with a free DC Hub dev key:**\n"
+    "\n"
+    "👉 {redeem_url}\n"
+    "\n"
+    "Free in 60 seconds (just email + verify). No credit card.\n"
+    "\n"
+    "Unlocks: 50 facility lookups, real-time grid (7 ISOs), "
+    "fiber intel, M&A deals, 650+ GW pipeline."
+)
+
+def _phase98c_format_redeem_url(redeem_url, tool_name=None, tier=None):
+    """Add attribution query params if missing."""
+    if not redeem_url:
+        return redeem_url
+    if "?" in redeem_url:
+        return redeem_url  # already has params
+    sep = "?"
+    if tool_name:
+        redeem_url = f"{redeem_url}{sep}source=mcp&tool={tool_name}"
+        sep = "&"
+    if tier:
+        redeem_url = f"{redeem_url}{sep}tier={tier}"
+    return redeem_url
 import os
 
 
