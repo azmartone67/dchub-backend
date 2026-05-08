@@ -1136,3 +1136,28 @@ def init_autonomous_brain():
     """Initialize and start the autonomous brain"""
     brain.start_scheduler(interval_seconds=300)
     return brain
+
+# === phase 92: source-registry heartbeat ===
+# Wraps run_brain_cycle to ping heartbeat after each cycle.
+_phase92_heartbeat_registered = True
+try:
+    from dchub_heartbeat import heartbeat as _phase92_heartbeat
+    if 'run_brain_cycle' in globals() and callable(globals()['run_brain_cycle']):
+        _orig_run_brain_cycle = globals()['run_brain_cycle']
+        import time as _phase92_time, functools as _phase92_functools
+        @_phase92_functools.wraps(_orig_run_brain_cycle)
+        def _phase92_wrapped(*a, **kw):
+            _started = _phase92_time.time()
+            try:
+                result = _orig_run_brain_cycle(*a, **kw)
+                _phase92_heartbeat("backend-autonomous-brain", status="success",
+                                  duration_ms=int((_phase92_time.time() - _started) * 1000))
+                return result
+            except Exception as _e:
+                _phase92_heartbeat("backend-autonomous-brain", status="failure",
+                                  duration_ms=int((_phase92_time.time() - _started) * 1000),
+                                  error=f"{type(_e).__name__}: {_e}")
+                raise
+        globals()['run_brain_cycle'] = _phase92_wrapped
+except Exception:
+    pass

@@ -129,3 +129,20 @@ Update the SEO meta tags:
 - ai-pipeline title: "Data Center Construction Pipeline | 15+ GW Tracked | DC Hub"
 - ai-deals title: "Data Center M&A Tracker | $61B+ in 2025 | DC Hub"
 """
+
+# === phase 92: source-registry heartbeat (auto-fires on clean module exit) ===
+# Non-invasive: never crashes the script if the registry is unreachable.
+# Source ID: backend-pipeline-deals-update
+_phase92_heartbeat_registered = True
+try:
+    import atexit as _phase92_atexit
+    from dchub_heartbeat import heartbeat as _phase92_heartbeat
+    def _phase92_emit():
+        try:
+            _phase92_heartbeat("backend-pipeline-deals-update", status="success",
+                              metadata={"trigger": "atexit"})
+        except Exception:
+            pass
+    _phase92_atexit.register(_phase92_emit)
+except Exception:
+    pass  # heartbeat module unavailable; extractor continues normally
