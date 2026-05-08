@@ -1,31 +1,33 @@
 """
 admin_ai_deals.py - Flask blueprint for /api/v1/ai-deals
-Maps deal-ma-tracker's API contract to the EXISTING ai_deals table schema:
+Writes to the LIVE `deals` table (the abandoned ai_deals table is no longer
+the canonical source). Schema mapping below.
 
-  api field       -> column            type / notes
+  api field       -> deals column      transform
   -------------------------------------------------
-  title           -> (not stored; merged into description if provided)
-  target          -> seller            (NOT NULL)
-  acquirer        -> buyer             (NOT NULL)
-  value_usd       -> deal_value_usd    (numeric, nullable)
-  (derived)       -> deal_value_str    ("$5.2B" display)
-  deal_type       -> deal_type         (varchar(50))
-  confidence      -> confidence        (real, 0-1)
-  announced_date  -> deal_date         (date NOT NULL)
-  source_url      -> source_url        (text)
-  notes           -> description       (text)
-  (auto-sha256)   -> deal_hash         (varchar(64) NOT NULL, dedupe key)
-  (auto)          -> ai_detected       (TRUE)
-  (auto)          -> status            ('active')
-  (auto)          -> ingestion_batch   ('deal-ma-tracker-YYYY-MM-DD')
-  (auto)          -> created_at, updated_at
+  (auto)          -> id                "AUTO-YYYYMMDD-<6char hex>" deterministic
+  target          -> seller            as-is
+  acquirer        -> buyer             as-is
+  value_usd       -> value             / 1_000_000  (millions)
+  announced_date  -> date              .isoformat() (text "YYYY-MM-DD")
+  announced_date  -> year              .year (integer)
+  deal_type       -> type              as-is (M&A, JV, equity, debt, capex, etc.)
+  (derived)       -> deal_category     "transaction" or category from type
+  confidence      -> extraction_confidence  as-is (0-1)
+  source_url      -> source_url        as-is
+  notes           -> notes             as-is
+  (auto)          -> status            "active"
+  (auto)          -> extracted_via     "deal-ma-tracker"
+  (auto)          -> extracted_at      NOW()
+  (auto)          -> created_at        NOW() ISO text
+  (auto)          -> verified          0 (AI-detected, not yet human verified)
 """
 
 import hashlib
 import hmac
 import os
 from contextlib import contextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Optional
 
 import psycopg2 as _pg
@@ -51,28 +53,6 @@ def _conn():
         c.close()
 
 
-# Defensive: ensure unique index on deal_hash exists so ON CONFLICT works.
-# Idempotent — safe on every call but cached after first success.
-INDEX_SQL = """
-CREATE UNIQUE INDEX IF NOT EXISTS ix_ai_deals_deal_hash_unique
-    ON ai_deals (deal_hash);
-"""
-
-
-def _ensure_index() -> None:
-    if getattr(_ensure_index, "_done", False):
-        return
-    try:
-        with _conn() as c, c.cursor() as cur:
-            cur.execute(INDEX_SQL)
-            c.commit()
-    except Exception:
-        # If we can't create the index (perms, etc), let the route handler
-        # surface the underlying error -- don't crash startup.
-        pass
-    _ensure_index._done = True  # type: ignore[attr-defined]
-
-
 # ---------------------------------------------------------------------------
 # Auth
 # ---------------------------------------------------------------------------
@@ -91,130 +71,147 @@ def _check_auth() -> Optional[tuple]:
 
 
 # ---------------------------------------------------------------------------
-# Validation + field mapping
+# Validation + mapping to deals schema
 # ---------------------------------------------------------------------------
 
 VALID_TYPES = {
     "equity", "M&A", "debt", "capex", "JV",
     "AI-contract", "AI-infra", "land", "power-agreement", "other",
+    # also accept lowercase variants found in existing data
+    "m&a", "jv", "ma", "land_acquisition", "ai_contract", "ai_infra",
+    "transaction", "acquisition",
 }
 
 
-def _format_deal_value_str(v: Optional[float]) -> Optional[str]:
-    """5_200_000_000 -> '$5.2B', 500_000_000 -> '$500M', 1_500_000 -> '$1.5M'."""
-    if v is None:
-        return None
-    try:
-        n = float(v)
-    except (TypeError, ValueError):
-        return None
-    if n >= 1_000_000_000:
-        return f"${n / 1_000_000_000:.1f}B"
-    if n >= 1_000_000:
-        return f"${n / 1_000_000:.1f}M"
-    if n >= 1_000:
-        return f"${n / 1_000:.0f}K"
-    return f"${n:.0f}"
+def _normalize_type(t: str) -> str:
+    """Map flexible inputs to canonical type values."""
+    t = t.strip()
+    aliases = {
+        "ma": "M&A",
+        "m&a": "M&A",
+        "jv": "JV",
+        "land_acquisition": "land",
+        "ai_contract": "AI-contract",
+        "ai_infra": "AI-infra",
+    }
+    return aliases.get(t.lower(), t)
 
 
-def _build_deal_hash(buyer: str, seller: str, deal_date: date, value_usd: Optional[float]) -> str:
+def _category_for_type(t: str) -> str:
+    """Map specific type to high-level deal_category."""
+    t_lower = t.lower()
+    if "capex" in t_lower or "infra" in t_lower:
+        return "capex"
+    if "power" in t_lower:
+        return "power agreement"
+    if "land" in t_lower:
+        return "land acquisition"
+    if "contract" in t_lower:
+        return "ai contract"
+    return "transaction"
+
+
+def _build_deal_id(buyer: str, seller: str, deal_date: date, value_millions: Optional[float]) -> str:
+    """Match the existing format: AUTO-YYYYMMDD-<6char hex>."""
     raw = "|".join([
         buyer.strip().lower(),
         seller.strip().lower(),
         deal_date.isoformat(),
-        f"{float(value_usd):.2f}" if value_usd is not None else "null",
+        f"{float(value_millions):.4f}" if value_millions is not None else "null",
     ])
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    suffix = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:6]
+    return f"AUTO-{deal_date.strftime('%Y%m%d')}-{suffix}"
 
 
 def _validate_and_map(p: dict) -> tuple[Optional[dict], Optional[str]]:
-    """Validate API payload and return a dict matching the existing column names."""
     if not isinstance(p, dict):
         return None, "body must be JSON object"
 
-    # API contract field aliases — accept either api-style or column-style names
-    target  = (p.get("target")  or p.get("seller")   or "").strip()
-    buyer   = (p.get("acquirer") or p.get("buyer")   or "").strip()
-    title   = (p.get("title")   or "").strip()
-    notes   = (p.get("notes")   or p.get("description") or "").strip()
-    src     = (p.get("source_url") or "").strip() or None
-    src_name= (p.get("source_name") or "").strip() or None
+    buyer  = (p.get("acquirer") or p.get("buyer") or "").strip()
+    seller = (p.get("target")   or p.get("seller") or "").strip()
+    notes  = (p.get("notes") or p.get("description") or "").strip() or None
+    src    = (p.get("source_url") or "").strip() or None
+    region = (p.get("region") or "").strip() or None
+    market = (p.get("market") or "").strip() or None
 
-    if not target or len(target) > 255:
-        return None, "target/seller required, <= 255 chars"
-    if not buyer or len(buyer) > 255:
-        return None, "acquirer/buyer required, <= 255 chars"
+    if not buyer or len(buyer) > 500:
+        return None, "acquirer/buyer required"
+    if not seller or len(seller) > 500:
+        return None, "target/seller required"
 
-    deal_type = (p.get("deal_type") or "").strip()
-    if deal_type not in VALID_TYPES:
-        return None, f"deal_type must be one of {sorted(VALID_TYPES)}"
-    if len(deal_type) > 50:
-        return None, "deal_type too long"
+    deal_type_raw = (p.get("deal_type") or p.get("type") or "").strip()
+    if not deal_type_raw:
+        return None, "deal_type required"
+    deal_type = _normalize_type(deal_type_raw)
 
-    deal_date = p.get("announced_date") or p.get("deal_date")
-    if isinstance(deal_date, str):
+    deal_date_in = p.get("announced_date") or p.get("date") or p.get("deal_date")
+    if isinstance(deal_date_in, str):
         try:
-            deal_date = date.fromisoformat(deal_date)
+            deal_date_obj = date.fromisoformat(deal_date_in[:10])
         except ValueError:
             return None, "announced_date must be YYYY-MM-DD"
-    elif not isinstance(deal_date, date):
-        return None, "announced_date required (YYYY-MM-DD)"
-    if deal_date > date.today():
+    elif isinstance(deal_date_in, date):
+        deal_date_obj = deal_date_in
+    else:
+        return None, "announced_date required"
+
+    if deal_date_obj > date.today():
         return None, "announced_date cannot be in the future"
 
-    value_usd = p.get("value_usd") if "value_usd" in p else p.get("deal_value_usd")
-    if value_usd is not None:
+    # Value: input is USD; deals.value is MILLIONS. Convert.
+    raw_value = p.get("value_usd") if "value_usd" in p else p.get("value")
+    value_millions: Optional[float] = None
+    if raw_value is not None:
         try:
-            value_usd = float(value_usd)
-            if value_usd < 0 or value_usd > 1e13:
-                return None, "value_usd out of plausible range"
+            v = float(raw_value)
+            # Heuristic: if the number is huge (>= 1e8), assume USD; convert to millions.
+            # If small (< 1e6), assume already in millions and leave alone.
+            if v >= 1e8:
+                value_millions = v / 1_000_000.0
+            else:
+                value_millions = v
+            if value_millions < 0 or value_millions > 1e7:
+                return None, "value out of plausible range (millions)"
         except (TypeError, ValueError):
-            return None, "value_usd must be numeric"
+            return None, "value must be numeric"
 
-    confidence = p.get("confidence", 0.5)
+    confidence = p.get("confidence", 0.85)
     try:
         confidence = float(confidence)
+        # Some legacy rows store confidence as 0-100, others 0-1. Normalize to 0-1.
+        if confidence > 1.0:
+            confidence = confidence / 100.0
         if not (0.0 <= confidence <= 1.0):
-            return None, "confidence must be between 0 and 1"
+            return None, "confidence must be between 0 and 1 (or 0-100)"
     except (TypeError, ValueError):
         return None, "confidence must be numeric"
 
-    region = (p.get("region") or "").strip() or None
-    market = (p.get("market") or "").strip() or None
-    if region and len(region) > 100:
-        region = region[:100]
-    if market and len(market) > 255:
-        market = market[:255]
-
-    # Build description: prefer explicit notes; fall back to title; else None
-    description = notes or (title or None)
-
-    deal_hash = _build_deal_hash(buyer, seller=target, deal_date=deal_date, value_usd=value_usd)
-    deal_value_str = _format_deal_value_str(value_usd)
-    ingestion_batch = f"deal-ma-tracker-{date.today().isoformat()}"
+    deal_id = _build_deal_id(buyer, seller, deal_date_obj, value_millions)
+    deal_category = _category_for_type(deal_type)
 
     return {
-        "deal_hash": deal_hash,
+        "id": deal_id,
+        "date": deal_date_obj.isoformat(),
+        "year": deal_date_obj.year,
         "buyer": buyer,
-        "seller": target,
-        "deal_value_usd": value_usd,
-        "deal_value_str": deal_value_str,
-        "deal_type": deal_type,
-        "confidence": confidence,
-        "deal_date": deal_date,
+        "seller": seller,
+        "value": value_millions,
+        "type": deal_type,
+        "deal_category": deal_category,
         "region": region,
         "market": market,
         "source_url": src,
-        "source_name": src_name,
-        "description": description,
-        "ai_detected": True,
+        "notes": notes,
+        "verified": 0,
         "status": "active",
-        "ingestion_batch": ingestion_batch,
+        "extraction_confidence": confidence,
+        "extracted_via": "deal-ma-tracker",
+        "extracted_at": datetime.now(timezone.utc),
     }, None
 
 
 # ---------------------------------------------------------------------------
-# POST -- insert (or upsert by deal_hash)
+# POST -- insert (or upsert by id)
 # ---------------------------------------------------------------------------
 
 @admin_ai_deals_bp.route("", methods=["POST"])
@@ -223,37 +220,33 @@ def insert_deal():
     if err is not None:
         return err
 
-    _ensure_index()
-
     payload, msg = _validate_and_map(request.get_json(silent=True) or {})
     if payload is None:
         return jsonify(error=msg), 400
 
     sql = """
-        INSERT INTO ai_deals (
-            deal_hash, buyer, seller,
-            deal_value_usd, deal_value_str, deal_type, confidence,
-            deal_date, region, market,
-            source_url, source_name, description,
-            ai_detected, status, ingestion_batch,
-            created_at, updated_at
+        INSERT INTO deals (
+            id, date, year, buyer, seller, value, type, deal_category,
+            region, market, source_url, notes, verified, status,
+            extraction_confidence, extracted_via, extracted_at, created_at
         )
         VALUES (
-            %(deal_hash)s, %(buyer)s, %(seller)s,
-            %(deal_value_usd)s, %(deal_value_str)s, %(deal_type)s, %(confidence)s,
-            %(deal_date)s, %(region)s, %(market)s,
-            %(source_url)s, %(source_name)s, %(description)s,
-            %(ai_detected)s, %(status)s, %(ingestion_batch)s,
-            NOW(), NOW()
+            %(id)s, %(date)s, %(year)s, %(buyer)s, %(seller)s, %(value)s,
+            %(type)s, %(deal_category)s, %(region)s, %(market)s,
+            %(source_url)s, %(notes)s, %(verified)s, %(status)s,
+            %(extraction_confidence)s, %(extracted_via)s, %(extracted_at)s,
+            NOW()::text
         )
-        ON CONFLICT (deal_hash) DO UPDATE SET
-            confidence       = GREATEST(ai_deals.confidence, EXCLUDED.confidence),
-            description      = COALESCE(EXCLUDED.description, ai_deals.description),
-            source_url       = COALESCE(EXCLUDED.source_url, ai_deals.source_url),
-            source_name      = COALESCE(EXCLUDED.source_name, ai_deals.source_name),
-            ingestion_batch  = EXCLUDED.ingestion_batch,
-            updated_at       = NOW()
-        RETURNING id, (xmax = 0) AS inserted, deal_hash;
+        ON CONFLICT (id) DO UPDATE SET
+            extraction_confidence = GREATEST(
+                COALESCE(deals.extraction_confidence, 0),
+                COALESCE(EXCLUDED.extraction_confidence, 0)
+            ),
+            notes        = COALESCE(EXCLUDED.notes, deals.notes),
+            source_url   = COALESCE(EXCLUDED.source_url, deals.source_url),
+            extracted_via = EXCLUDED.extracted_via,
+            extracted_at  = EXCLUDED.extracted_at
+        RETURNING id, (xmax = 0) AS inserted;
     """
     try:
         with _conn() as c, c.cursor() as cur:
@@ -263,20 +256,18 @@ def insert_deal():
     except Exception as e:
         return jsonify(error=f"insert failed: {type(e).__name__}: {e}"), 500
 
-    deal_id, was_inserted, deal_hash = row[0], bool(row[1]), row[2]
+    deal_id, was_inserted = row[0], bool(row[1])
+    out = dict(payload)
+    out["extracted_at"] = out["extracted_at"].isoformat()
     return jsonify(
         id=deal_id,
-        deal_hash=deal_hash,
         status="inserted" if was_inserted else "merged",
-        deal={
-            **{k: v for k, v in payload.items() if k != "deal_date"},
-            "deal_date": payload["deal_date"].isoformat(),
-        },
+        deal=out,
     ), (201 if was_inserted else 200)
 
 
 # ---------------------------------------------------------------------------
-# GET -- list (returns existing schema verbatim)
+# GET -- list
 # ---------------------------------------------------------------------------
 
 @admin_ai_deals_bp.route("", methods=["GET"])
@@ -291,21 +282,19 @@ def list_deals():
     where = ""
     if since:
         try:
-            args["since"] = date.fromisoformat(since)
-            where = "WHERE deal_date >= %(since)s"
+            args["since"] = date.fromisoformat(since).isoformat()
+            where = "WHERE date >= %(since)s"
         except ValueError:
             return jsonify(error="since must be YYYY-MM-DD"), 400
 
     sql = f"""
-        SELECT id, deal_hash, buyer, seller,
-               deal_value_usd, deal_value_str, deal_type, confidence,
-               deal_date, region, market,
-               source_url, source_name, description,
-               ai_detected, status, ingestion_batch,
-               created_at, updated_at
-        FROM ai_deals
+        SELECT id, date, year, buyer, seller, value, type, deal_category,
+               region, market, source_url, notes, verified, status,
+               extraction_confidence, extracted_via, extracted_at,
+               deal_date, created_at
+        FROM deals
         {where}
-        ORDER BY deal_date DESC, deal_value_usd DESC NULLS LAST, id DESC
+        ORDER BY date DESC NULLS LAST, value DESC NULLS LAST, id DESC
         LIMIT %(limit)s;
     """
     try:
@@ -317,16 +306,17 @@ def list_deals():
         return jsonify(error=f"list failed: {type(e).__name__}: {e}"), 500
 
     for r in rows:
-        if isinstance(r.get("deal_date"), date):
-            r["deal_date"] = r["deal_date"].isoformat()
-        if isinstance(r.get("created_at"), datetime):
-            r["created_at"] = r["created_at"].isoformat()
-        if isinstance(r.get("updated_at"), datetime):
-            r["updated_at"] = r["updated_at"].isoformat()
-        if r.get("deal_value_usd") is not None:
-            r["deal_value_usd"] = float(r["deal_value_usd"])
-        if r.get("confidence") is not None:
-            r["confidence"] = float(r["confidence"])
+        for ts_field in ("extracted_at", "deal_date"):
+            v = r.get(ts_field)
+            if isinstance(v, datetime):
+                r[ts_field] = v.isoformat()
+            elif isinstance(v, date):
+                r[ts_field] = v.isoformat()
+        if r.get("value") is not None:
+            r["value"] = float(r["value"])
+            r["value_usd"] = r["value"] * 1_000_000.0  # convenience
+        if r.get("extraction_confidence") is not None:
+            r["extraction_confidence"] = float(r["extraction_confidence"])
 
     return jsonify(count=len(rows), deals=rows), 200
 
@@ -339,13 +329,15 @@ def list_deals():
 def health():
     try:
         with _conn() as c, c.cursor() as cur:
-            cur.execute("SELECT COUNT(*), MAX(deal_date) FROM ai_deals;")
-            count, latest = cur.fetchone()
+            cur.execute("SELECT COUNT(*), MAX(date), MAX(extracted_at) FROM deals;")
+            count, latest_date, most_recent = cur.fetchone()
         return jsonify(
             status="ok",
             count=int(count or 0),
-            latest_deal_date=latest.isoformat() if latest else None,
-            schema="existing",
+            latest_date=latest_date if isinstance(latest_date, str) else (latest_date.isoformat() if latest_date else None),
+            most_recent_extraction=most_recent.isoformat() if most_recent else None,
+            schema="deals",
+            target_table="deals",
         ), 200
     except Exception as e:
         return jsonify(error=f"health failed: {type(e).__name__}: {e}"), 500
