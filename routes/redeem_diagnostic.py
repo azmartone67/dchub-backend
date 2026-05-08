@@ -1,3 +1,4 @@
+# phase 101c: force redeploy at 2026-05-08T22:43:45Z
 """
 redeem_diagnostic.py — diagnose why email-sending in redeem flow fails.
 
