@@ -47,13 +47,25 @@ def extract_all():
     total_rows = sum(r.get("rows_inserted", 0) for r in results)
     failed = [r for r in results if r.get("status") not in ("ok",)]
 
+    # Status logic: orchestrator's job is to run all extractors.
+    # If at least ONE produced rows, the orchestrator succeeded — per-ISO
+    # failures are still visible on each source's own page.
+    succeeded_count = sum(1 for r in results if r.get("status") == "ok")
+    if total_rows > 0 or succeeded_count >= len(results) / 2:
+        orch_status = "success"
+    elif succeeded_count == 0:
+        orch_status = "failure"
+    else:
+        orch_status = "success"  # at least 1 worked
     _heartbeat(
         SOURCE_ID,
-        status=("success" if not failed else "partial"),
+        status=orch_status,
         rows_affected=total_rows,
         duration_ms=elapsed_ms,
+        error=("; ".join(r.get("error", "") for r in failed)[:500] if orch_status == "failure" else None),
         metadata={
             "iso_count": len(results),
+            "succeeded": succeeded_count,
             "failed_isos": [r["iso"] for r in failed],
         },
     )

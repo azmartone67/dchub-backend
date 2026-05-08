@@ -1,27 +1,20 @@
 """
 iso_caiso.py — California ISO real-time grid data extractor.
-Pattern matches iso_ercot.py. Writes to shared grid_data table.
 
-CAISO publishes fuel mix at:
-  https://www.caiso.com/outlook/SP/fuelsource.csv
-  (CSV with current generation by fuel type — solar, wind, gas, nuclear, etc.)
-
-Plus current load at:
-  https://www.caiso.com/outlook/SP/current_demand.csv (best effort — may differ)
+CAISO's published URL paths have shifted over the years. We try multiple
+known endpoints in sequence and use the first that returns 200.
 """
 
 import os
-import re
 import csv
 import io
 import time
 import urllib.request
 import urllib.error
 from contextlib import contextmanager
-from datetime import datetime, timezone
 
 import psycopg2 as _pg
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify
 
 try:
     from dchub_heartbeat import heartbeat as _heartbeat
@@ -32,8 +25,14 @@ except ImportError:
 iso_caiso_bp = Blueprint("iso_caiso", __name__, url_prefix="/api/v1/iso/caiso")
 SOURCE_ID = "iso-caiso-realtime"
 
-CAISO_FUEL_URL = "https://www.caiso.com/outlook/SP/fuelsource.csv"
-CAISO_DEMAND_URL = "https://www.caiso.com/outlook/SP/demand.csv"
+# Try in order — first success wins
+CAISO_URLS = [
+    "https://www.caiso.com/outlook/current/fuelsource.csv",
+    "https://www.caiso.com/outlook/SP/fuelsource.csv",
+    "https://www.caiso.com/outlook/sp/fuelsource.csv",
+    "https://www.caiso.com/outlook/current/fuelmix.csv",
+    "https://www.caiso.com/Documents/RealTimeGen.csv",
+]
 
 
 def _dsn(): return os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL") or ""
@@ -45,33 +44,55 @@ def _conn():
     finally: c.close()
 
 
-def _fetch(url, timeout=20):
-    req = urllib.request.Request(url, headers={"User-Agent": "dchub-iso-caiso/1.0"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read().decode("utf-8", errors="replace")
+def _fetch_first_working(urls, timeout=20):
+    """Try each URL; return (text, working_url) or raise last error."""
+    last_err = None
+    for url in urls:
+        req = urllib.request.Request(url, headers={"User-Agent": "dchub-iso-caiso/1.0"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                if 200 <= resp.status < 300:
+                    return resp.read().decode("utf-8", errors="replace"), url
+        except urllib.error.HTTPError as e:
+            last_err = f"{url}: HTTP {e.code}"
+            continue
+        except (urllib.error.URLError, OSError) as e:
+            last_err = f"{url}: {type(e).__name__}: {e}"
+            continue
+    raise RuntimeError(f"all CAISO URLs failed; last_err: {last_err}")
 
 
 def _parse_caiso_fuel_csv(csv_text):
-    """CAISO fuelsource.csv: time + columns per fuel type. We take the most recent row."""
+    """CAISO fuel CSV: time + columns per fuel. Take the most recent row.
+
+    Format varies; we accept whichever columns are present and create
+    fuel_<name>_mw metrics for any numeric column we recognize.
+    """
     reader = csv.DictReader(io.StringIO(csv_text))
     rows = list(reader)
-    if not rows:
-        return {}
+    if not rows: return {}
 
-    last = rows[-1]  # most recent row
+    # Take the row with the latest timestamp (last row in chronological CSV)
+    last = rows[-1]
     metrics = {}
-    fuel_columns = ["Solar", "Wind", "Geothermal", "Biomass", "Biogas", "Small hydro",
-                    "Coal", "Nuclear", "Natural gas", "Large hydro", "Batteries", "Imports", "Other"]
-    for col in fuel_columns:
-        for variant in (col, col.lower(), col.replace(" ", "_").lower(), col.upper()):
-            if variant in last:
-                try:
-                    val = float(last[variant])
-                    metric_name = "fuel_" + col.lower().replace(" ", "_") + "_mw"
-                    metrics[metric_name] = {"value": val, "unit": "MW"}
-                    break
-                except (TypeError, ValueError):
-                    pass
+
+    # All columns except known time/timestamp columns become potential metrics
+    skip_cols = {"time", "timestamp", "Time", "Timestamp", "interval", "Interval",
+                 "TIME", "INTERVAL", "datetime", "DateTime"}
+    for col, val in last.items():
+        if not col or col in skip_cols:
+            continue
+        try:
+            num = float(val)
+        except (TypeError, ValueError):
+            continue
+        # Normalize column name to metric_name
+        clean = col.strip().lower().replace(" ", "_").replace("-", "_")
+        # Drop non-alphanumeric except _
+        clean = "".join(ch for ch in clean if ch.isalnum() or ch == "_")
+        if clean and num != 0:
+            metrics[f"fuel_{clean}_mw"] = {"value": num, "unit": "MW"}
+
     return metrics
 
 
@@ -97,7 +118,8 @@ def run_extraction():
     started = time.time()
     summary = {"iso": "CAISO", "metrics_extracted": 0, "rows_inserted": 0, "errors": []}
     try:
-        csv_text = _fetch(CAISO_FUEL_URL)
+        csv_text, working_url = _fetch_first_working(CAISO_URLS)
+        summary["fetched_url"] = working_url
         summary["html_size"] = len(csv_text)
         metrics = _parse_caiso_fuel_csv(csv_text)
         summary["metrics_extracted"] = len(metrics)
@@ -107,8 +129,9 @@ def run_extraction():
         summary["rows_inserted"] = rows
         elapsed_ms = int((time.time() - started) * 1000)
         summary["duration_ms"] = elapsed_ms
-        _heartbeat(SOURCE_ID, status="success", rows_affected=rows, duration_ms=elapsed_ms,
-                   metadata={"metrics_extracted": len(metrics)})
+        _heartbeat(SOURCE_ID, status="success", rows_affected=rows,
+                   duration_ms=elapsed_ms,
+                   metadata={"metrics_extracted": len(metrics), "url": working_url})
         summary["status"] = "ok"
     except Exception as e:
         elapsed_ms = int((time.time() - started) * 1000)
@@ -137,7 +160,8 @@ def latest():
     by_metric = {}
     for n, v, u, ts in rows:
         if n not in by_metric:
-            by_metric[n] = {"metric": n, "value": v, "unit": u, "timestamp": ts.isoformat() if ts else None}
+            by_metric[n] = {"metric": n, "value": v, "unit": u,
+                            "timestamp": ts.isoformat() if ts else None}
     return jsonify(iso="CAISO", metrics=list(by_metric.values())), 200
 
 
