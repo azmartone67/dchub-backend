@@ -7696,7 +7696,6 @@ def create_portal_session():
 # =============================================================================
 
 @app.route('/api/v1/markets/list', methods=['GET'])
-@require_plan('enterprise')
 def list_markets():
     """List all available markets with basic stats"""
     conn = get_db()
