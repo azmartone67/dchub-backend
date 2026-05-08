@@ -12,6 +12,134 @@ import re
 import datetime
 from flask import Blueprint, request, Response
 
+
+# === phase 99h: dev-key creation + email send ============================
+import secrets as _p99_secrets
+import logging as _p99_logging
+_p99_logger = _p99_logging.getLogger("redeem.phase99h")
+
+
+def _p99_make_key():
+    return f"dch_live_{_p99_secrets.token_hex(16)}"
+
+
+def _p99_persist_key(conn, email, api_key, session_id):
+    """INSERT into mcp_dev_keys. Returns (ok, err, developer_id)."""
+    import json as _j
+    developer_id = f"dev_{_p99_secrets.token_hex(8)}"
+    metadata = {"source": "redeem", "session_id": session_id}
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO mcp_dev_keys (api_key, developer_id, email, tier, status, metadata) "
+            "VALUES (%s, %s, %s, %s, 'active', %s::jsonb) "
+            "ON CONFLICT (api_key) DO NOTHING RETURNING developer_id",
+            (api_key, developer_id, email, "free", _j.dumps(metadata)),
+        )
+        row = cur.fetchone()
+        conn.commit()
+        if row is None:
+            return False, "key_collision", None
+        return True, None, developer_id
+    except Exception as e:
+        try: conn.rollback()
+        except Exception: pass
+        return False, f"{type(e).__name__}: {e}", None
+
+
+def _p99_send_email(email, api_key, tools_tried):
+    """Try SendGrid first, fall back to SMTP. Returns (ok, info_or_error)."""
+    import os as _os, json as _j
+    import urllib.request as _ur, urllib.error as _ue
+
+    subject = "Your DC Hub dev key is ready"
+    text = (
+        f"Your DC Hub dev key:\n\n"
+        f"  {api_key}\n\n"
+        f"Add to Claude Desktop / Cursor / Cline config:\n\n"
+        f'  {{"mcpServers":{{"dchub":{{"command":"npx","args":["-y","mcp-remote","https://dchub.cloud/mcp"],"env":{{"DCHUB_API_KEY":"{api_key}"}}}}}}}}\n\n'
+        f"Direct API:\n"
+        f"  curl -H 'Authorization: Bearer {api_key}' https://dchub.cloud/api/v1/grid-intelligence?iso=ERCOT\n\n"
+        f"Unlocks: 50 facility lookups, real-time grid (7 ISOs), fiber intel, "
+        f"M&A deals, 650+ GW pipeline.\n\n"
+        f"Upgrade to Pro at https://dchub.cloud/pricing — $49/mo unlimited.\n"
+    )
+    html_install = (
+        '{"mcpServers":{"dchub":{"command":"npx",'
+        '"args":["-y","mcp-remote","https://dchub.cloud/mcp"],'
+        '"env":{"DCHUB_API_KEY":"' + api_key + '"}}}}'
+    )
+    html = (
+        "<html><body style='font-family:system-ui;max-width:600px;margin:auto;padding:24px'>"
+        "<h2>Your DC Hub dev key is ready</h2>"
+        f"<p>API key:<br><code style='background:#eee;padding:6px 10px;border-radius:4px'>{api_key}</code></p>"
+        "<p>Add to your AI assistant config:</p>"
+        f"<pre style='background:#1a1a1a;color:#eee;padding:12px;border-radius:6px;font-size:12px;overflow-x:auto'>{html_install}</pre>"
+        "<p>Unlocks 50 facility lookups, real-time grid (7 ISOs), fiber intel, M&A deals.</p>"
+        "<p><a href='https://dchub.cloud/pricing'>Upgrade to Pro</a> for unlimited access.</p>"
+        "</body></html>"
+    )
+    from_email = _os.environ.get("DCHUB_FROM_EMAIL", "noreply@dchub.cloud")
+
+    # Try SendGrid first
+    sg_key = _os.environ.get("SENDGRID_API_KEY")
+    sg_err = "SENDGRID_API_KEY not set"
+    if sg_key:
+        payload = {
+            "personalizations": [{"to": [{"email": email}]}],
+            "from": {"email": from_email, "name": "DC Hub"},
+            "subject": subject,
+            "content": [
+                {"type": "text/plain", "value": text},
+                {"type": "text/html", "value": html},
+            ],
+        }
+        req = _ur.Request(
+            "https://api.sendgrid.com/v3/mail/send",
+            data=_j.dumps(payload).encode("utf-8"),
+            headers={"Authorization": f"Bearer {sg_key}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with _ur.urlopen(req, timeout=10) as resp:
+                if 200 <= resp.status < 300:
+                    return True, "via:sendgrid"
+                sg_err = f"sendgrid HTTP {resp.status}"
+        except _ue.HTTPError as e:
+            sg_err = f"sendgrid HTTP {e.code}"
+            try: sg_err += ": " + e.read().decode("utf-8")[:150]
+            except Exception: pass
+        except Exception as e:
+            sg_err = f"sendgrid {type(e).__name__}: {e}"
+
+    # Fall back to SMTP
+    smtp_user = _os.environ.get("SMTP_USER") or _os.environ.get("SMTP_USERNAME")
+    smtp_pass = _os.environ.get("SMTP_PASS") or _os.environ.get("SMTP_PASSWORD")
+    smtp_host = _os.environ.get("SMTP_HOST")
+    smtp_port = int(_os.environ.get("SMTP_PORT", 587))
+    if smtp_host and smtp_user and smtp_pass:
+        try:
+            import smtplib
+            from email.mime.multipart import MIMEMultipart
+            from email.mime.text import MIMEText
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = subject
+            msg["From"] = from_email if "@" in from_email else smtp_user
+            msg["To"] = email
+            msg.attach(MIMEText(text, "plain"))
+            msg.attach(MIMEText(html, "html"))
+            with smtplib.SMTP(smtp_host, smtp_port, timeout=10) as srv:
+                srv.starttls()
+                srv.login(smtp_user, smtp_pass)
+                srv.send_message(msg)
+            return True, f"via:smtp (sg_failed: {sg_err})"
+        except Exception as e:
+            return False, f"sendgrid:{sg_err}; smtp:{type(e).__name__}: {e}"
+
+    return False, f"sendgrid:{sg_err}; smtp:not_configured"
+
+# === end phase 99h helpers ============================================
+
 redeem_bp = Blueprint('redeem', __name__)
 
 EMAIL_RE = re.compile(r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$')
@@ -105,7 +233,7 @@ SUCCESS_HTML = """<!DOCTYPE html>
   </div>
 
   <p style="font-size: 0.8rem; color: #888; margin-top: 2rem;">
-    Need it now? Upgrade to Pro for $49/mo unlimited at <a href="https://dchub.cloud/ai#pricing">dchub.cloud/ai#pricing</a>.
+    Need it now? Upgrade to Pro for $49/mo unlimited at <a href="https://dchub.cloud/pricing">dchub.cloud/pricing</a>.
   </p>
 </body>
 </html>
@@ -215,6 +343,34 @@ def phase63_redeem(session_id):
                 pass
 
         tools_display = ', '.join(tools_tried[:5]) if tools_tried else 'paid MCP tools'
+
+        # phase 99h: create key + send email + log
+        _p99_api_key = _p99_make_key()
+        _p99_key_ok, _p99_key_err, _p99_dev_id = False, None, None
+        _p99_email_ok, _p99_email_info = False, None
+        try:
+            _p99_conn, _p99_ci = _connect()
+            if _p99_conn:
+                _p99_key_ok, _p99_key_err, _p99_dev_id = _p99_persist_key(_p99_conn, email, _p99_api_key, session_id)
+                try: _p99_conn.close()
+                except Exception: pass
+            if _p99_key_ok:
+                _p99_email_ok, _p99_email_info = _p99_send_email(email, _p99_api_key, tools_tried)
+        except Exception as _p99_e:
+            _p99_key_err = _p99_key_err or f'unexpected: {type(_p99_e).__name__}: {_p99_e}'
+        try:
+            from routes.redeem_diagnostic import record_redeem_attempt as _p99_rec
+            _p99_rec(
+                session_id=session_id, email=email,
+                email_send_ok=_p99_email_ok,
+                email_send_error=_p99_email_info if not _p99_email_ok else None,
+                api_key_created=_p99_key_ok,
+                api_key_id=_p99_api_key if _p99_key_ok else None,
+                extra={'key_err': _p99_key_err, 'developer_id': _p99_dev_id, 'email_info': _p99_email_info},
+            )
+        except Exception:
+            pass
+        _p99_logger.info(f'redeem session={session_id} email={email} key_ok={_p99_key_ok} email_ok={_p99_email_ok}')
         return Response(
             SUCCESS_HTML.replace('__EMAIL__', email)
                         .replace('__TOOLS__', tools_display),
