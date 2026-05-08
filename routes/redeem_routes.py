@@ -371,6 +371,35 @@ def phase63_redeem(session_id):
                 pass
 
         tools_display = ', '.join(tools_tried[:5]) if tools_tried else 'paid MCP tools'
+
+        # === phase 99d: actually create dev key + send email ===
+        api_key = _generate_dev_key()
+        key_ok, key_err, developer_id = False, None, None
+        email_ok, email_err = False, None
+        try:
+            conn2, _ci = _connect()
+            if conn2:
+                key_ok, key_err, developer_id = _persist_dev_key(conn2, email, api_key, session_id)
+                try: conn2.close()
+                except Exception: pass
+            if key_ok:
+                email_ok, email_err = _send_dev_key_email(email, api_key, tools_tried)
+        except Exception as _e_phase99d:
+            key_err = key_err or f'unexpected: {type(_e_phase99d).__name__}: {_e_phase99d}'
+
+        try:
+            from routes.redeem_diagnostic import record_redeem_attempt
+            record_redeem_attempt(
+                session_id=session_id, email=email,
+                email_send_ok=email_ok, email_send_error=email_err,
+                api_key_created=key_ok,
+                api_key_id=api_key if key_ok else None,
+                extra={'key_err': key_err, 'tools_tried': (tools_tried or [])[:5], 'developer_id': developer_id},
+            )
+        except Exception:
+            pass
+        _logger.info(f'redeem session={session_id} email={email} key_ok={key_ok} email_ok={email_ok}')
+
         return Response(
             SUCCESS_HTML.replace('__EMAIL__', email)
                         .replace('__TOOLS__', tools_display),
