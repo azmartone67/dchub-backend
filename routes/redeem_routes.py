@@ -55,20 +55,19 @@ def _persist_dev_key(conn, email, api_key, session_id, source="redeem"):
 
 
 def _send_dev_key_email(email, api_key, tools_tried):
-    """Send via SendGrid HTTP API. Returns (ok: bool, error_str: Optional[str])."""
+    """Send dev key email. Tries SendGrid first, falls back to SMTP on 401/5xx.
+
+    Returns (ok: bool, error_or_via: str_or_None).
+    On success, the second value is None or 'via:smtp' if fell back to SMTP.
+    """
     import os, json
     import urllib.request
     import urllib.error
-
-    sendgrid_key = os.environ.get("SENDGRID_API_KEY")
-    if not sendgrid_key:
-        return False, "SENDGRID_API_KEY not configured"
 
     from_email = os.environ.get("DCHUB_FROM_EMAIL", "noreply@dchub.cloud")
     from_name = os.environ.get("DCHUB_FROM_NAME", "DC Hub")
 
     tools_display = ", ".join(tools_tried[:5]) if tools_tried else "paid MCP tools"
-
     subject = "🔓 Your DC Hub dev key is ready"
 
     install_block = (
@@ -135,146 +134,81 @@ Need more? Upgrade to Pro at https://dchub.cloud/pricing — $49/mo unlimited.
 — The DC Hub team
 """
 
-    payload = {
-        "personalizations": [{"to": [{"email": email}]}],
-        "from": {"email": from_email, "name": from_name},
-        "subject": subject,
-        "content": [
-            {"type": "text/plain", "value": text},
-            {"type": "text/html", "value": html},
-        ],
-    }
-    req = urllib.request.Request(
-        "https://api.sendgrid.com/v3/mail/send",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {sendgrid_key}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
+    sendgrid_err = None
+    sendgrid_key = os.environ.get("SENDGRID_API_KEY")
+    if sendgrid_key:
+        payload = {
+            "personalizations": [{"to": [{"email": email}]}],
+            "from": {"email": from_email, "name": from_name},
+            "subject": subject,
+            "content": [
+                {"type": "text/plain", "value": text},
+                {"type": "text/html", "value": html},
+            ],
+        }
+        req = urllib.request.Request(
+            "https://api.sendgrid.com/v3/mail/send",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {sendgrid_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if 200 <= resp.status < 300:
+                    return True, None
+                sendgrid_err = f"SendGrid HTTP {resp.status}"
+        except urllib.error.HTTPError as e:
+            body = ""
+            try: body = e.read().decode("utf-8")[:300]
+            except Exception: pass
+            sendgrid_err = f"SendGrid HTTP {e.code}: {body}"
+        except Exception as e:
+            sendgrid_err = f"SendGrid {type(e).__name__}: {e}"
+    else:
+        sendgrid_err = "SENDGRID_API_KEY not set"
+
+    # Fall back to SMTP if SendGrid failed
+    smtp_host = os.environ.get("SMTP_HOST")
+    smtp_port_raw = os.environ.get("SMTP_PORT", "587")
+    smtp_user = os.environ.get("SMTP_USER") or os.environ.get("SMTP_USERNAME")
+    smtp_pass = os.environ.get("SMTP_PASS") or os.environ.get("SMTP_PASSWORD")
+
+    if not (smtp_host and smtp_user and smtp_pass):
+        return False, f"sendgrid: {sendgrid_err}; smtp: SMTP_USER/SMTP_PASS not configured"
+
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            if 200 <= resp.status < 300:
-                return True, None
-            return False, f"SendGrid HTTP {resp.status}"
-    except urllib.error.HTTPError as e:
-        body = ""
-        try: body = e.read().decode("utf-8")[:500]
-        except Exception: pass
-        return False, f"SendGrid HTTP {e.code}: {body}"
+        smtp_port = int(smtp_port_raw)
+    except (TypeError, ValueError):
+        smtp_port = 587
+
+    try:
+        import smtplib
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
+        from email.utils import formataddr
+
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = formataddr((from_name, from_email if "@" in (from_email or "") else smtp_user))
+        msg["To"] = email
+        msg.attach(MIMEText(text, "plain", "utf-8"))
+        msg.attach(MIMEText(html, "html", "utf-8"))
+
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=10) as server:
+            server.ehlo()
+            try:
+                server.starttls()
+                server.ehlo()
+            except Exception:
+                pass
+            server.login(smtp_user, smtp_pass)
+            server.send_message(msg)
+        return True, f"via:smtp (sendgrid_failed: {sendgrid_err})"
     except Exception as e:
-        return False, f"{type(e).__name__}: {e}"
-
-# === end phase 99b helpers ============================================
-
-redeem_bp = Blueprint('redeem', __name__)
-
-EMAIL_RE = re.compile(r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$')
-UUID_RE = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
-
-FORM_HTML = """<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>Get your free DC Hub dev key</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-  * { box-sizing: border-box; }
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-         max-width: 480px; margin: 0 auto; padding: 4rem 1.5rem;
-         color: #111; background: #fafafa; line-height: 1.55; }
-  h1 { font-size: 1.5rem; margin: 0 0 0.5rem; font-weight: 600; }
-  .sub { color: #555; margin: 0 0 1.5rem; font-size: 0.95rem; }
-  .badge { display: inline-block; background: #e8f5e9; color: #1b5e20;
-           padding: 0.2rem 0.6rem; border-radius: 4px; font-size: 0.8rem;
-           font-weight: 600; margin-bottom: 1rem; }
-  input[type="email"] { width: 100%; padding: 0.85rem 1rem; border: 1.5px solid #d0d0d0;
-          border-radius: 8px; font-size: 1rem; background: #fff;
-          margin: 1rem 0 0.75rem; transition: border-color 0.15s; }
-  input[type="email"]:focus { outline: 0; border-color: #1976d2; }
-  button { background: #1976d2; color: #fff; border: 0; padding: 0.85rem 1.5rem;
-           border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: pointer;
-           width: 100%; transition: background 0.15s; }
-  button:hover { background: #1565c0; }
-  ul.bullets { padding-left: 1.2rem; margin: 1rem 0; color: #555; font-size: 0.92rem; }
-  ul.bullets li { margin: 0.3rem 0; }
-  .note { font-size: 0.8rem; color: #888; margin-top: 2rem; padding-top: 1rem;
-          border-top: 1px solid #eee; }
-  code { font-family: "SF Mono", Monaco, Consolas, monospace; font-size: 0.78rem;
-         background: #f0f0f0; padding: 1px 4px; border-radius: 3px; }
-</style>
-</head>
-<body>
-  <span class="badge">DC Hub Free Dev Tier</span>
-  <h1>Get your free dev key</h1>
-  <p class="sub">60 seconds, just your email. No password. No spam. We'll send your key within an hour.</p>
-  <form method="post">
-    <input type="email" name="email" placeholder="you@company.com" required autofocus>
-    <button type="submit">Send me my dev key</button>
-  </form>
-  <ul class="bullets">
-    <li>25 free MCP tool calls/day across 14 paid tools</li>
-    <li>Real-time grid intelligence, market intel, infrastructure data</li>
-    <li>Upgrade to Pro ($49/mo) for unlimited any time</li>
-  </ul>
-  <p class="note">Session: <code>__SESSION_SHORT__</code></p>
-</body>
-</html>
-"""
-
-SUCCESS_HTML = """<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>Got it -- check your inbox</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-  * { box-sizing: border-box; }
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-         max-width: 480px; margin: 0 auto; padding: 4rem 1.5rem;
-         color: #111; background: #fafafa; line-height: 1.55; }
-  h1 { font-size: 1.5rem; margin: 0 0 0.5rem; font-weight: 600; }
-  .check { font-size: 2rem; color: #2e7d32; margin: 0; line-height: 1; }
-  .sub { color: #555; margin: 0.5rem 0 1.5rem; }
-  .email { font-weight: 600; color: #1976d2; }
-  .panel { background: #fff; border: 1px solid #e0e0e0; padding: 1.25rem 1.5rem;
-           border-radius: 8px; margin: 1.5rem 0; }
-  .panel h2 { font-size: 1rem; margin: 0 0 0.5rem; color: #555; font-weight: 600; }
-  .panel p { font-size: 0.92rem; color: #444; margin: 0.4rem 0; }
-  a.btn { display: inline-block; background: #1976d2; color: #fff; padding: 0.65rem 1.2rem;
-          border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 0.92rem;
-          margin-top: 1rem; }
-  a.btn:hover { background: #1565c0; }
-</style>
-</head>
-<body>
-  <p class="check">YES</p>
-  <h1>Got it. Check your inbox in &lt;60 minutes.</h1>
-  <p class="sub">We'll email <span class="email">__EMAIL__</span> your dev key plus a 2-minute walkthrough.</p>
-
-  <div class="panel">
-    <h2>While you wait</h2>
-    <p>You've already tried these tools via your AI assistant: <strong>__TOOLS__</strong></p>
-    <p>The full set of paid tools (14 endpoints) returns real-time data on grid demand, market intel, energy prices, water risk, and renewable infrastructure across all major US ISOs.</p>
-    <a class="btn" href="https://dchub.cloud/ai">See what's included &rarr;</a>
-  </div>
-
-  <p style="font-size: 0.8rem; color: #888; margin-top: 2rem;">
-    Need it now? Upgrade to Pro for $49/mo unlimited at <a href="https://dchub.cloud/pricing">dchub.cloud/pricing</a>.
-  </p>
-</body>
-</html>
-"""
-
-ERROR_HTML = """<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"><title>Something's off</title>
-<style>body{font-family:system-ui;max-width:480px;margin:4rem auto;padding:0 1.5rem;line-height:1.5;}
-h1{font-size:1.3rem;}p{color:#555;}a{color:#1976d2;}</style></head>
-<body><h1>__TITLE__</h1><p>__MESSAGE__</p>
-<p><a href="">Try again &rarr;</a></p></body></html>
-"""
-
+        return False, f"sendgrid: {sendgrid_err}; smtp: {type(e).__name__}: {e}"
 
 def _connect():
     neon = os.environ.get('NEON_DATABASE_URL') or os.environ.get('DATABASE_URL')
