@@ -76,6 +76,52 @@ def record_redeem_attempt(
     import hashlib
     ip = request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip()
     ip_hash = hashlib.sha256(ip.encode("utf-8")).hexdigest()[:16] if ip else None
+
+    # === Resend (primary, phase 102) ===
+    try:
+        import os as _os
+        import json as _json
+        import urllib.request as _ureq
+        _resend_key = _os.environ.get("RESEND_API_KEY", "").strip()
+        if _resend_key:
+            _from = (
+                _os.environ.get("DCHUB_FROM_EMAIL")
+                or _os.environ.get("FROM_EMAIL")
+                or _os.environ.get("MAIL_FROM")
+                or "DC Hub <jonathan@dchub.cloud>"
+            )
+            _payload = _json.dumps({
+                "from": _from,
+                "to": [to_email],
+                "subject": subject,
+                "html": body_html,
+                "text": body_text,
+            }).encode("utf-8")
+            _req = _ureq.Request(
+                "https://api.resend.com/emails",
+                data=_payload,
+                headers={
+                    "Authorization": f"Bearer {_resend_key}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            try:
+                with _ureq.urlopen(_req, timeout=15) as _resp:
+                    _body = _resp.read().decode("utf-8", errors="replace")
+                    if 200 <= _resp.status < 300:
+                        return True, "via:resend"
+                    _errors.append(f"resend:HTTP {_resp.status}: {_body[:300]}")
+            except Exception as _e:
+                _emsg = str(_e)
+                # urllib raises HTTPError for non-2xx; capture body if possible
+                try:
+                    _ebody = _e.read().decode("utf-8", errors="replace")  # type: ignore
+                    _errors.append(f"resend:HTTP {getattr(_e,'code','?')}: {_ebody[:300]}")
+                except Exception:
+                    _errors.append(f"resend:{_emsg[:200]}")
+    except Exception as _e:
+        _errors.append(f"resend:setup-error:{str(_e)[:200]}")
     try:
         with _conn() as c, c.cursor() as cur:
             cur.execute(
