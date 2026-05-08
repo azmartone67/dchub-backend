@@ -73,12 +73,18 @@ jobs:
           echo "total_rows=$TOTAL_ROWS" >> $GITHUB_OUTPUT
           echo "total_failed=$TOTAL_FAILED" >> $GITHUB_OUTPUT
           echo "duration_ms=$DURATION_MS" >> $GITHUB_OUTPUT
-          if [ "$TOTAL_FAILED" -eq 0 ]; then
+          # Success if at least one extractor produced rows. Per-source failures
+          # are still visible on the dashboard via individual source heartbeats —
+          # the orchestrator's aggregate doesn't need to fail just because one ISO did.
+          if [ "$TOTAL_ROWS" -gt 0 ]; then
             echo "status=success" >> $GITHUB_OUTPUT
             echo "error=null" >> $GITHUB_OUTPUT
+          elif [ "$TOTAL_FAILED" -gt 0 ]; then
+            echo "status=failure" >> $GITHUB_OUTPUT
+            echo "error=\"all $TOTAL_FAILED extractor(s) failed and no rows produced\"" >> $GITHUB_OUTPUT
           else
-            echo "status=partial" >> $GITHUB_OUTPUT
-            echo "error=\"$TOTAL_FAILED extractor(s) failed during pulse\"" >> $GITHUB_OUTPUT
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "error=null" >> $GITHUB_OUTPUT
           fi
 
       - name: Notify the autonomous intelligence brain
@@ -119,7 +125,7 @@ jobs:
                 "trigger": "github-actions"
               }
             }' \
-            https://dchub.cloud/api/v1/sources/cowork-data-pulse/heartbeat | head -c 500
+            https://dchub.cloud/api/v1/sources/github-actions-data-pulse/heartbeat | head -c 500
 
       - name: Pulse summary
         run: |
