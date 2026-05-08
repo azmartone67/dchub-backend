@@ -116,7 +116,7 @@ PUBLIC_PAGES = [
     ("markets_index", "page", "/markets",                       "200_html",            "p1"),
     ("markets_chicago","page","/markets/chicago",               "200_html",            "p1"),
     ("markets_dallas","page", "/markets/dallas",                "200_html",            "p1"),
-    ("markets_nova",  "page", "/markets/nova",                  "200_html",            "p1"),
+    ("markets_nova",  "page", "/markets/northern-virginia",                  "200_html",            "p1"),
     ("ai_deals",      "page", "/ai-deals",                      "200_html",            "p1"),
     ("press",         "page", "/press",                         "200_html",            "p2"),
     ("news",          "page", "/news",                          "200_html",            "p2"),

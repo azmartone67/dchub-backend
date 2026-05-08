@@ -90,14 +90,14 @@ ENTERPRISE_CHANGES = """
 LINE 9572: /api/brain/ask             → @require_plan('enterprise')  (add decorator)
 LINE 9596: /api/brain/market/<market>  → @require_plan('enterprise')  (add decorator)
 LINE 9612: /api/brain/operator/<op>    → @require_plan('enterprise')  (add decorator)
-LINE 1180: /api/v1/grid/status         → @require_plan('enterprise')  (add decorator)
-LINE 1099: /api/v1/grid/caiso/fuelmix  → @require_plan('enterprise')  (add decorator)
-LINE 1151: /api/v1/grid/caiso/demand   → @require_plan('enterprise')  (add decorator)
-LINE 5966: /api/v1/gas-pipelines       → @require_plan('enterprise')
-LINE 2592: /api/v1/oilgas/wells        → @require_plan('enterprise')  (add decorator)
-LINE 2694: /api/v1/oilgas/operators    → @require_plan('enterprise')  (add decorator)
-LINE 2786: /api/v1/oilgas/search       → @require_plan('enterprise')  (add decorator)
-# Land & Power routes (in land_power_routes.py) → @require_plan('enterprise')
+LINE 1180: /api/v1/grid/status         → @require_plan('pro')  (add decorator)
+LINE 1099: /api/v1/grid/caiso/fuelmix  → @require_plan('pro')  (add decorator)
+LINE 1151: /api/v1/grid/caiso/demand   → @require_plan('pro')  (add decorator)
+LINE 5966: /api/v1/gas-pipelines       → @require_plan('pro')
+LINE 2592: /api/v1/oilgas/wells        → @require_plan('pro')  (add decorator)
+LINE 2694: /api/v1/oilgas/operators    → @require_plan('pro')  (add decorator)
+LINE 2786: /api/v1/oilgas/search       → @require_plan('pro')  (add decorator)
+# Land & Power routes (in land_power_routes.py) → @require_plan('pro')
 """
 
 # ═══════════════════════════════════════════════════════════════
