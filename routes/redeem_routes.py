@@ -10,7 +10,172 @@ Routes:
 import os
 import re
 import datetime
+import secrets
+import logging as _redeem_logging
+_logger = _redeem_logging.getLogger("redeem")
 from flask import Blueprint, request, Response
+
+
+
+# === phase 99b: actually create a dev key + send via SendGrid ============
+def _generate_dev_key():
+    """Returns a new dev key string like 'dchub_dev_<32hex>'."""
+    return f"dchub_dev_{secrets.token_hex(16)}"
+
+
+def _persist_dev_key(conn, email, api_key, session_id, source="redeem"):
+    """Insert into the api_keys table. Returns (success: bool, error: str)."""
+    try:
+        cur = conn.cursor()
+        # Try common table names — first one that works wins
+        for table_name in ("api_keys", "dev_keys", "mcp_keys", "developer_keys"):
+            try:
+                cur.execute(
+                    f"INSERT INTO {table_name} (api_key, email, tier, source, session_id, created_at) "
+                    f"VALUES (%s, %s, %s, %s, %s, NOW()) "
+                    f"ON CONFLICT (api_key) DO NOTHING",
+                    (api_key, email, "developer", source, session_id),
+                )
+                conn.commit()
+                return True, None
+            except Exception as e:
+                conn.rollback()
+                err = str(e)
+                if "does not exist" in err.lower():
+                    continue  # try next table name
+                else:
+                    # column mismatch or constraint issue — try minimal insert
+                    try:
+                        cur.execute(
+                            f"INSERT INTO {table_name} (api_key, email) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                            (api_key, email),
+                        )
+                        conn.commit()
+                        return True, None
+                    except Exception as e2:
+                        conn.rollback()
+                        err = f"{type(e).__name__}: {e}; minimal_insert_also_failed: {type(e2).__name__}: {e2}"
+                        continue
+        return False, f"no api_keys table found"
+    except Exception as e:
+        try: conn.rollback()
+        except Exception: pass
+        return False, f"{type(e).__name__}: {e}"
+
+
+def _send_dev_key_email(email, api_key, tools_tried):
+    """Send via SendGrid HTTP API. Returns (ok: bool, error_str: Optional[str])."""
+    import os, json
+    import urllib.request
+    import urllib.error
+
+    sendgrid_key = os.environ.get("SENDGRID_API_KEY")
+    if not sendgrid_key:
+        return False, "SENDGRID_API_KEY not configured"
+
+    from_email = os.environ.get("DCHUB_FROM_EMAIL", "noreply@dchub.cloud")
+    from_name = os.environ.get("DCHUB_FROM_NAME", "DC Hub")
+
+    tools_display = ", ".join(tools_tried[:5]) if tools_tried else "paid MCP tools"
+
+    subject = "🔓 Your DC Hub dev key is ready"
+
+    install_block = (
+        '{\n'
+        '  "mcpServers": {\n'
+        '    "dchub": {\n'
+        '      "command": "npx",\n'
+        '      "args": ["-y", "mcp-remote", "https://dchub.cloud/mcp"],\n'
+        f'      "env": {{ "DCHUB_API_KEY": "{api_key}" }}\n'
+        '    }\n'
+        '  }\n'
+        '}'
+    )
+
+    html = f"""<!DOCTYPE html>
+<html><body style="font-family: -apple-system, system-ui, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px;">
+<h2 style="color: #0a6b22;">🔓 Your DC Hub dev key is ready</h2>
+<p>Welcome! Here's your free developer API key — unlocks 50 facility lookups, real-time grid data for 7 US ISOs, fiber intel, M&A deals, and 650+ GW pipeline.</p>
+<div style="background: #f5f5f5; padding: 16px; border-radius: 8px; font-family: monospace; font-size: 14px; word-break: break-all; margin: 16px 0;">
+  <strong>API key:</strong><br><code>{api_key}</code>
+</div>
+<h3>How to use it</h3>
+<p>You tried: <em>{tools_display}</em>. Now those tools will return full data when you include this key.</p>
+<h4>Claude Desktop / Cursor / Cline (MCP)</h4>
+<p>Edit your MCP config and add:</p>
+<pre style="background: #1a1a1a; color: #f0f0f0; padding: 14px; border-radius: 6px; overflow-x: auto; font-size: 12px;">{install_block}</pre>
+<h4>Direct API call</h4>
+<pre style="background: #1a1a1a; color: #f0f0f0; padding: 14px; border-radius: 6px; font-size: 12px;">curl -H "Authorization: Bearer {api_key}" https://dchub.cloud/api/v1/grid-intelligence?iso=ERCOT</pre>
+<h3>What you've unlocked</h3>
+<ul>
+<li>50 facility lookups across 12,500+ data centers</li>
+<li>Real-time grid data: PJM, ERCOT, CAISO, NYISO, MISO, SPP, ISONE</li>
+<li>Fiber connectivity intelligence + carrier maps</li>
+<li>1,800+ M&A deals indexed</li>
+<li>650+ GW construction pipeline</li>
+<li>SEC EDGAR filings for 17 hyperscaler/REIT/power companies</li>
+</ul>
+<p style="color: #888; margin-top: 32px; font-size: 13px;">Need more? Upgrade to Pro at <a href="https://dchub.cloud/pricing">https://dchub.cloud/pricing</a> for $49/mo unlimited access. Reply to this email if you have questions.</p>
+<p style="color: #888; font-size: 12px;">— The DC Hub team</p>
+</body></html>"""
+
+    text = f"""Your DC Hub dev key is ready.
+
+API KEY: {api_key}
+
+You tried: {tools_display}.
+
+Add to Claude Desktop / Cursor / Cline:
+{install_block}
+
+Direct API:
+curl -H "Authorization: Bearer {api_key}" https://dchub.cloud/api/v1/grid-intelligence?iso=ERCOT
+
+What's unlocked:
+- 50 facility lookups across 12,500+ data centers
+- Real-time grid data for 7 US ISOs
+- Fiber connectivity intelligence
+- 1,800+ M&A deals
+- 650+ GW construction pipeline
+- SEC EDGAR filings for 17 hyperscaler/REIT companies
+
+Need more? Upgrade to Pro at https://dchub.cloud/pricing — $49/mo unlimited.
+
+— The DC Hub team
+"""
+
+    payload = {
+        "personalizations": [{"to": [{"email": email}]}],
+        "from": {"email": from_email, "name": from_name},
+        "subject": subject,
+        "content": [
+            {"type": "text/plain", "value": text},
+            {"type": "text/html", "value": html},
+        ],
+    }
+    req = urllib.request.Request(
+        "https://api.sendgrid.com/v3/mail/send",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {sendgrid_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            if 200 <= resp.status < 300:
+                return True, None
+            return False, f"SendGrid HTTP {resp.status}"
+    except urllib.error.HTTPError as e:
+        body = ""
+        try: body = e.read().decode("utf-8")[:500]
+        except Exception: pass
+        return False, f"SendGrid HTTP {e.code}: {body}"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+# === end phase 99b helpers ============================================
 
 redeem_bp = Blueprint('redeem', __name__)
 
