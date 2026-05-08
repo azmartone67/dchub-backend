@@ -235,6 +235,70 @@ def email_test():
     ), (200 if ok else 500)
 
 
+
+
+@redeem_diagnostic_bp.route("/env-snoop", methods=["GET"])
+def env_snoop():
+    """List all env var NAMES (not values) matching email/smtp/resend patterns.
+
+    Reveals exactly what env vars Railway has exposed to the running process.
+    If you set RESEND_API_KEY but it's named RESEND_KEY here, this shows it.
+
+    Safe — only returns NAMES, never values.
+    """
+    import os as _os
+    import re as _re
+
+    # Patterns to match (case-insensitive)
+    patterns = [
+        r'.*resend.*',
+        r'.*sendgrid.*',
+        r'.*smtp.*',
+        r'.*mail.*',
+        r'.*email.*',
+        r'.*postmark.*',
+        r'.*mailgun.*',
+        r'.*ses.*',
+        r'.*from.*addr.*',
+        r'.*dchub.*',  # any dchub-prefixed config
+    ]
+
+    matched = []
+    for name in sorted(_os.environ.keys()):
+        for pat in patterns:
+            if _re.match(pat, name, _re.IGNORECASE):
+                # Only return name + first 4 chars + length, never full value
+                value = _os.environ[name]
+                preview = ""
+                if value:
+                    if len(value) > 8:
+                        preview = value[:4] + "..." + value[-2:] + f" ({len(value)} chars)"
+                    else:
+                        preview = "[set, " + str(len(value)) + " chars]"
+                matched.append({
+                    "name": name,
+                    "preview": preview,
+                    "set": bool(value),
+                })
+                break
+
+    # Also include the count of total env vars (safety check)
+    total_env = len(_os.environ)
+
+    return jsonify(
+        matched_count=len(matched),
+        total_env_vars=total_env,
+        matched_vars=matched,
+        note="Names + safe previews only — values are never returned in full.",
+        looking_for=[
+            "RESEND_API_KEY",
+            "SMTP_USER (or SMTP_USERNAME, EMAIL_USER, MAIL_USER)",
+            "SMTP_PASS (or SMTP_PASSWORD, EMAIL_PASS, MAIL_PASS)",
+            "DCHUB_FROM_EMAIL (or FROM_EMAIL, MAIL_FROM)",
+        ]
+    ), 200
+
+
 @redeem_diagnostic_bp.route("/recent", methods=["GET"])
 def recent():
     """Last 20 redeem attempts across all emails (admin view)."""
