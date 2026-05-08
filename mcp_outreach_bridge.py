@@ -209,7 +209,7 @@ def queue_keyed_user_nurture():
               <li>Grid + fiber intel: <code>get_grid_intelligence</code>, <code>get_fiber_intel</code></li>
               <li>AI-formatted recommendations: <code>get_dchub_recommendation</code></li>
             </ul>
-            <p><a href="https://dchub.cloud/ai#pricing"
+            <p><a href="https://dchub.cloud/pricing"
               style="display:inline-block;padding:10px 18px;background:#0066cc;color:white;
               border-radius:6px;text-decoration:none">Upgrade to Pro →</a></p>
             <p style="color:#888;font-size:12px">Reply if you'd rather chat about Enterprise pricing or a custom integration.</p>

@@ -318,7 +318,7 @@ def dev_signup():
                     "is_new":      False,
                     "header":      "X-API-Key",
                     "docs":        "https://dchub.cloud/ai",
-                    "upgrade_url": "https://dchub.cloud/ai#pricing",
+                    "upgrade_url": "https://dchub.cloud/pricing",
                 }), 200
             cur.execute(
                 """INSERT INTO mcp_dev_keys
@@ -336,7 +336,7 @@ def dev_signup():
         "is_new":      True,
         "header":      "X-API-Key",
         "docs":        "https://dchub.cloud/ai",
-        "upgrade_url": "https://dchub.cloud/ai#pricing",
+        "upgrade_url": "https://dchub.cloud/pricing",
     }), 200
 
 

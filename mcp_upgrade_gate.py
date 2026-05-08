@@ -32,7 +32,7 @@ PAID_ONLY_TOOLS = {
 }
 
 FREE_DAILY_LIMIT = int(os.environ.get("MCP_FREE_DAILY_LIMIT", "100"))
-UPGRADE_URL      = os.environ.get("DCHUB_UPGRADE_URL", "https://dchub.cloud/ai#pricing")
+UPGRADE_URL      = os.environ.get("DCHUB_UPGRADE_URL", "https://dchub.cloud/pricing")
 SIGNUP_URL       = os.environ.get("DCHUB_SIGNUP_URL",  "https://dchub.cloud/ai")
 
 PLATFORM_MARKERS = [

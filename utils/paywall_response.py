@@ -149,7 +149,7 @@ def _build_human_message(tool_name, call_count, current_tier, partial_data_summa
 
     # Tier 1 — standard preview (calls 1-2)
     return (
-        f"🔓 **You've hit a Pro feature.** Get full `{tool_name}` data + 6 more ISOs grid intel "
+        f"🔓 **This is a SAMPLE PREVIEW — not your actual query result. The free tier shows one pre-canned record.** Get full `{tool_name}` data + 6 more ISOs grid intel "
         f"+ fiber routes for **$49/mo**.\n\n"
         f"**[Start 7-day free trial →]({pricing_url})** — no credit card required.\n\n"
         f"_Free tier shows partial data. Upgrade for live, complete results._"

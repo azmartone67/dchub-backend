@@ -105,7 +105,7 @@ SUCCESS_HTML = """<!DOCTYPE html>
   </div>
 
   <p style="font-size: 0.8rem; color: #888; margin-top: 2rem;">
-    Need it now? Upgrade to Pro for $49/mo unlimited at <a href="https://dchub.cloud/ai#pricing">dchub.cloud/ai#pricing</a>.
+    Need it now? Upgrade to Pro for $49/mo unlimited at <a href="https://dchub.cloud/pricing">dchub.cloud/pricing</a>.
   </p>
 </body>
 </html>
