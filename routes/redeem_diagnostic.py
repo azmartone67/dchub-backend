@@ -203,6 +203,37 @@ def health():
     ), 200
 
 
+
+
+@redeem_diagnostic_bp.route("/email-test", methods=["GET", "POST"])
+def email_test():
+    """Trigger a test email send without going through the redeem form.
+
+    Usage:  curl 'https://dchub.cloud/api/v1/redeem/diagnostic/email-test?to=you@example.com'
+
+    Returns the actual SendGrid + SMTP responses so you can see what's
+    failing. NEVER creates a real key — just exercises the email path.
+    """
+    from flask import request as _req
+    test_email = _req.args.get("to") or (_req.get_json(silent=True) or {}).get("to") or "test@example.com"
+
+    # Import the email-send helper from redeem_routes
+    try:
+        from routes.redeem_routes import _p99_send_email
+    except ImportError as e:
+        return jsonify(error=f"could not import _p99_send_email: {e}"), 500
+
+    fake_key = "dch_live_DIAGNOSTIC_TEST_DO_NOT_USE"
+    ok, info = _p99_send_email(test_email, fake_key, ["test_tool"])
+
+    return jsonify(
+        to=test_email,
+        ok=ok,
+        info=info,
+        note="This bypasses the redeem form and tests email delivery directly.",
+    ), (200 if ok else 500)
+
+
 @redeem_diagnostic_bp.route("/recent", methods=["GET"])
 def recent():
     """Last 20 redeem attempts across all emails (admin view)."""

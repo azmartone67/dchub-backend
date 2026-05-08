@@ -124,15 +124,33 @@ def _p99_send_email(email, api_key, tools_tried):
             from email.mime.text import MIMEText
             msg = MIMEMultipart("alternative")
             msg["Subject"] = subject
-            msg["From"] = from_email if "@" in from_email else smtp_user
+            # phase 99i: GoDaddy strict — From must match authenticated user
+            msg["From"] = f"DC Hub <{smtp_user}>" if "@" in smtp_user else smtp_user
+            msg["Reply-To"] = from_email if "@" in from_email else smtp_user
             msg["To"] = email
             msg.attach(MIMEText(text, "plain"))
             msg.attach(MIMEText(html, "html"))
-            with smtplib.SMTP(smtp_host, smtp_port, timeout=10) as srv:
-                srv.starttls()
-                srv.login(smtp_user, smtp_pass)
-                srv.send_message(msg)
-            return True, f"via:smtp (sg_failed: {sg_err})"
+            import io as _p99_io
+            _p99_smtp_log = _p99_io.StringIO()
+            try:
+                with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as srv:
+                    # Capture SMTP conversation for debugging
+                    import sys as _p99_sys
+                    _orig_stderr = _p99_sys.stderr
+                    _p99_sys.stderr = _p99_smtp_log
+                    try:
+                        srv.set_debuglevel(1)
+                        srv.ehlo()
+                        srv.starttls()
+                        srv.ehlo()
+                        srv.login(smtp_user, smtp_pass)
+                        srv.send_message(msg)
+                    finally:
+                        _p99_sys.stderr = _orig_stderr
+                return True, f"via:smtp (sg_failed: {sg_err})"
+            except Exception as _smtp_e:
+                _conv = _p99_smtp_log.getvalue()[-500:]
+                return False, f"sendgrid:{sg_err}; smtp:{type(_smtp_e).__name__}: {_smtp_e}; conv={_conv!r}"
         except Exception as e:
             return False, f"sendgrid:{sg_err}; smtp:{type(e).__name__}: {e}"
 
