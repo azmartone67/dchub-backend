@@ -1,0 +1,135 @@
+"""
+dchub_paywall.py — AI-agent-friendly paywall response builder.
+
+Drop-in module. Import from any tool handler that returns a paywall:
+
+    from dchub_paywall import build_paywall_response
+    return build_paywall_response(
+        tool_name="get_grid_intelligence",
+        tier_required="developer",
+        preview_data={"iso": "PJM", "demand_mw": 142000},
+        full_count=24,
+    )
+
+Returns a dict shaped for MCP tool responses: content[].text format.
+Critically, the redeem URL is at the TOP of the human-visible text so
+AI agents (Claude Desktop, Cursor, Cline, Continue) surface it clickably
+to users.
+
+Phase 98b — conversion fix.
+"""
+
+import json
+import os
+from typing import Any, Optional
+
+
+REDEEM_BASE = os.environ.get(
+    "DCHUB_REDEEM_BASE",
+    "https://dchub.cloud/api/v1/redeem/",
+)
+
+
+def build_paywall_response(
+    tool_name: str,
+    tier_required: str = "developer",
+    preview_data: Optional[Any] = None,
+    full_count: Optional[int] = None,
+    custom_unlock_message: Optional[str] = None,
+) -> dict:
+    """Build a paywall response that AI agents render to humans.
+
+    Returns dict with:
+      content: list of MCP content items (text-first)
+      _meta:   structured fields for AI agents that parse beyond text
+              (trial_preview, tier_required, redeem_url, tool_name)
+    """
+    # Attribution params let us measure conversion per-tool
+    redeem_url = (
+        f"{REDEEM_BASE}?source=mcp&tool={tool_name}&tier={tier_required}"
+    )
+
+    # Track the paywall hit so we can compute paywall->click conversion
+    try:
+        _track_paywall_hit(tool_name, tier_required)
+    except Exception:
+        pass
+
+    parts: list[str] = []
+
+    # 1. The hook — emoji-led, action-oriented, URL prominent
+    parts.append(
+        f"\U0001F513 **Unlock the full result with a free dev key (60 sec to claim):**"
+    )
+    parts.append("")
+    parts.append(f"\U0001F449 {redeem_url}")
+    parts.append("")
+
+    # 2. Preview data if available — gives the user something
+    if preview_data is not None:
+        full_count_str = f" of {full_count}" if full_count else ""
+        parts.append(f"**Preview** (showing 1{full_count_str}):")
+        try:
+            preview_json = json.dumps(preview_data, indent=2, default=str)
+            if len(preview_json) > 600:
+                preview_json = preview_json[:580] + "\n  ...truncated"
+            parts.append("```json")
+            parts.append(preview_json)
+            parts.append("```")
+        except Exception:
+            parts.append(str(preview_data)[:400])
+        parts.append("")
+
+    # 3. The benefit — concrete, scoped, no-cc
+    if custom_unlock_message:
+        parts.append(custom_unlock_message)
+    else:
+        parts.append("With a free dev key, this tool returns the full result.")
+        parts.append("Plus you unlock:")
+        parts.append("- 50 facility lookups across 12,500+ data centers")
+        parts.append("- Real-time grid data for 7 US ISOs")
+        parts.append("- Fiber connectivity intelligence")
+        parts.append("- M&A deal tracking (1,800+ deals)")
+        parts.append("- 650+ GW construction pipeline")
+        parts.append("")
+    parts.append("**No credit card.** Just email + verification.")
+
+    text = "\n".join(parts)
+
+    return {
+        "content": [{"type": "text", "text": text}],
+        "_meta": {
+            "trial_preview": True,
+            "tier_required": tier_required,
+            "redeem_url": redeem_url,
+            "tool_name": tool_name,
+            "phase98_v2": True,  # marker for instrumentation
+        },
+    }
+
+
+def _track_paywall_hit(tool_name: str, tier_required: str) -> None:
+    """Best-effort: insert a paywall_hit row into redeem_funnel_events."""
+    try:
+        import psycopg2 as _pg
+        dsn = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
+        if not dsn:
+            return
+        with _pg.connect(dsn) as c, c.cursor() as cur:
+            cur.execute(
+                """INSERT INTO redeem_funnel_events
+                       (event_type, source, tool, tier, metadata)
+                   VALUES ('paywall_hit', 'mcp', %s, %s, %s::jsonb)""",
+                (tool_name, tier_required, json.dumps({"trigger": "build_paywall_response"})),
+            )
+            c.commit()
+    except Exception:
+        pass
+
+
+def is_paywall_response(d: dict) -> bool:
+    """Helper: detect if a response is a paywall (used by self-heal probes)."""
+    if not isinstance(d, dict):
+        return False
+    meta = d.get("_meta", {}) if isinstance(d.get("_meta"), dict) else {}
+    return meta.get("trial_preview") is True or meta.get("paid_only") is True
