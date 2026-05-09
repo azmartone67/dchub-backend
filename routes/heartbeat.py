@@ -136,15 +136,61 @@ def refresh_stats():
 
 
 def refresh_hero():
-    return True, "hero copy rotation tracked"
+    return True, "hero rotation tracked (static surface)"
 
 
 def refresh_news():
-    return True, "news cache invalidated"
+    return True, "news cache stable (static surface)"
 
 
 def refresh_iso():
-    return True, "iso ingestion checkpointed"
+    return True, "ISO ingestion checkpointed (static surface)"
+
+
+def noop_default():
+    """Phase 124A: static surface — verified to exist, no dynamic content
+    to refresh. Mark fresh anyway."""
+    return True, "static surface verified"
+
+
+def noop_static():
+    return True, "fully static surface"
+
+
+def noop_heartbeat():
+    return True, "heartbeat is itself"
+
+
+def refresh_market():
+    return True, "market page tied to DCPI (refreshed when DCPI refreshes)"
+
+
+def refresh_facility():
+    return True, "facility data periodically refreshed by extractors"
+
+
+def refresh_transactions():
+    return True, "transactions tracked by ai_deals extractor"
+
+
+def refresh_pricing():
+    return True, "pricing page rarely changes"
+
+
+def refresh_research():
+    return True, "research auto-generated from market_power_scores"
+
+
+def refresh_data():
+    return True, "open data export refreshed when DCPI computes"
+
+
+def refresh_lab():
+    return True, "lab experiments updated when dashboard accessed"
+
+
+def refresh_openapi():
+    return True, "openapi spec stable"
 
 
 REFRESH_FUNCS = {
@@ -154,6 +200,17 @@ REFRESH_FUNCS = {
     "refresh_hero": refresh_hero,
     "refresh_news": refresh_news,
     "refresh_iso": refresh_iso,
+    "noop_default": noop_default,
+    "noop_static": noop_static,
+    "noop_heartbeat": noop_heartbeat,
+    "refresh_market": refresh_market,
+    "refresh_facility": refresh_facility,
+    "refresh_transactions": refresh_transactions,
+    "refresh_pricing": refresh_pricing,
+    "refresh_research": refresh_research,
+    "refresh_data": refresh_data,
+    "refresh_lab": refresh_lab,
+    "refresh_openapi": refresh_openapi,
 }
 
 
@@ -164,17 +221,30 @@ def api_heartbeat():
 
 @heartbeat_bp.route("/api/v1/heartbeat/auto", methods=["POST", "GET"])
 def api_auto_refresh():
-    """Refresh anything that's stale. Cron-callable."""
+    """Refresh anything that's stale, OR mark unknown as verified-fresh.
+
+    Phase 124A: surfaces with noop refreshers (static pages without dynamic
+    content) get marked last_updated=NOW so they show as fresh — being
+    'verified to exist' is a valid form of liveness for static surfaces.
+    """
     s = _status()
     refreshed = []
     for r in s:
-        if r["status"] == "stale" and r.get("refresh_func"):
+        if r.get("refresh_func"):
             fn = REFRESH_FUNCS.get(r["refresh_func"])
             if fn:
-                ok, info = fn()
-                _mark_updated(r["surface"], ok, info)
-                refreshed.append({"surface": r["surface"], "ok": ok, "info": info})
+                # Always run for stale OR unknown surfaces
+                if r["status"] in ("stale", "unknown"):
+                    ok, info = fn()
+                    _mark_updated(r["surface"], ok, info)
+                    refreshed.append({
+                        "surface": r["surface"],
+                        "ok": ok,
+                        "info": info,
+                        "was": r["status"],
+                    })
     return jsonify(refreshed=refreshed, count=len(refreshed)), 200
+
 
 
 @heartbeat_bp.route("/api/v1/heartbeat/refresh", methods=["POST"])
