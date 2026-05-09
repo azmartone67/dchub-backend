@@ -1344,3 +1344,26 @@ EIA monthly data, and DC Hub's grid-feed extractors.</p>
 <h2>Contact</h2>
 <p>Press inquiries: jonathan@dchub.cloud</p>
 </body></html>""", mimetype="text/html")
+
+# === Phase 117b: CF-allowlisted aliases for public DCPI pages ===
+@dcpi_bp.route("/api/v1/dcpi/page", methods=["GET"])
+def public_dashboard_alias():
+    return public_dashboard()
+
+@dcpi_bp.route("/api/v1/dcpi/page/<slug>", methods=["GET"])
+def public_market_page_alias(slug):
+    return public_market_page(slug)
+
+@dcpi_bp.route("/api/v1/dcpi/og/<slug>", methods=["GET"])
+@dcpi_bp.route("/api/v1/dcpi/og/<slug>.svg", methods=["GET"])
+def og_card_alias(slug):
+    return og_card(slug)
+
+@dcpi_bp.route("/api/v1/dcpi/embed/<slug>", methods=["GET"])
+def embed_widget_alias(slug):
+    return embed_widget(slug)
+
+@dcpi_bp.route("/api/v1/dcpi/press", methods=["GET"])
+def press_kit_alias():
+    return press_kit()
+
