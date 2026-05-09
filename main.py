@@ -1,3 +1,4 @@
+from routes.leaf_fall import leaf_fall_bp
 from routes.variants import variants_bp
 from routes.freshness_universal import freshness_universal_bp
 from routes.heartbeat import heartbeat_bp
@@ -17722,3 +17723,6 @@ app.register_blueprint(freshness_universal_bp)
 
 # auto-registered: variants_bp
 app.register_blueprint(variants_bp)
+
+# auto-registered: leaf_fall_bp
+app.register_blueprint(leaf_fall_bp)
