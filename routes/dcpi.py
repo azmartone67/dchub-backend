@@ -948,6 +948,49 @@ buttons.forEach(b => b.addEventListener('click', () => {
 </script>
 
 
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<div id="dcpi-chart-section" style="margin:3rem 0;background:#11121a;border:1px solid #1f2030;border-radius:14px;padding:1.5rem;">
+  <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:1rem;font-family:Inter,sans-serif;">
+    <span style="width:4px;height:12px;background:#6366f1;border-radius:2px;"></span>
+    <span style="font-size:0.78rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#9ca3af;">📈 30-day Excess Power · Top 3 BUILD markets</span>
+  </div>
+  <div style="position:relative;height:280px;"><canvas id="dcpi-history-chart"></canvas></div>
+</div>
+<script>
+(function(){
+  if (!document.getElementById('dcpi-history-chart')) return;
+  fetch('/api/v1/dcpi/history').then(r=>r.json()).then(d=>{
+    const series = d.series || {};
+    const top3 = ['cheyenne-wy','rural-spp','williston-nd'];
+    const colors = ['#10b981','#a855f7','#6366f1'];
+    const datasets = top3.map((slug,i)=>{
+      const s = series[slug]; if (!s) return null;
+      return { label: s.name, data: s.data.map(p=>({x:p.day,y:p.excess})),
+               borderColor: colors[i], backgroundColor: colors[i]+'22',
+               borderWidth: 2.5, tension: 0.35, pointRadius: 0 };
+    }).filter(Boolean);
+    if (!datasets.length) {
+      document.getElementById('dcpi-chart-section').style.display = 'none';
+      return;
+    }
+    new Chart(document.getElementById('dcpi-history-chart'), {
+      type: 'line', data: { datasets },
+      options: { responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: '#9ca3af' } } },
+        scales: {
+          x: { type: 'time', time: { unit: 'day' }, ticks: { color: '#9ca3af' }, grid: { color: '#1f2030' } },
+          y: { ticks: { color: '#9ca3af' }, grid: { color: '#1f2030' }, suggestedMin: 0, suggestedMax: 100 }
+        }
+      }
+    });
+  }).catch(e=>{
+    console.error('[DCPI chart] error', e);
+    document.getElementById('dcpi-chart-section').style.display = 'none';
+  });
+})();
+</script>
+
 <div id="ask-the-index" style="position:fixed;bottom:1.5rem;right:1.5rem;width:400px;max-width:calc(100vw - 3rem);background:#11121a;border:1px solid #2a2c3e;border-radius:14px;padding:1.1rem;font-family:Inter,system-ui;color:white;box-shadow:0 16px 48px rgba(0,0,0,0.5);z-index:1000;">
   <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.6rem;">
     <span style="display:inline-block;width:8px;height:8px;background:#10b981;border-radius:50%;animation:pulse 1.4s ease-in-out infinite;"></span>
@@ -1349,6 +1392,36 @@ def public_market_page(slug):
     risks = s.get("top_risks_json") or []
     opps = s.get("top_opportunities_json") or []
     return render_template_string(DCPI_MARKET_TEMPLATE, s=s, risks=risks, opps=opps)
+
+
+
+@dcpi_bp.route("/api/v1/dcpi/history", methods=["GET"])
+def api_history():
+    """Return per-day score history for top BUILD markets, last 30 days."""
+    _ensure_tables()
+    with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""
+            SELECT market_slug, market_name,
+                   DATE_TRUNC('day', computed_at) AS day,
+                   AVG(excess_power_score) AS excess,
+                   AVG(constraint_score) AS constraint
+            FROM market_power_scores
+            WHERE computed_at > NOW() - INTERVAL '30 days'
+            GROUP BY market_slug, market_name, DATE_TRUNC('day', computed_at)
+            ORDER BY market_slug, day
+        """)
+        rows = cur.fetchall()
+    series = {}
+    for r in rows:
+        slug = r["market_slug"]
+        if slug not in series:
+            series[slug] = {"name": r["market_name"], "data": []}
+        series[slug]["data"].append({
+            "day": r["day"].isoformat()[:10] if r.get("day") else None,
+            "excess": float(r["excess"] or 0),
+            "constraint": float(r["constraint"] or 0),
+        })
+    return jsonify(series=series, count=len(series)), 200
 
 
 @dcpi_bp.route("/dcpi/og/<slug>.svg", methods=["GET"])
