@@ -63,30 +63,33 @@ def _ensure_table():
 
 @freshness_universal_bp.route("/api/v1/heartbeat/discover", methods=["POST", "GET"])
 def discover():
-    """Walk url_map and register every public GET route."""
+    """Walk url_map and register every public GET route. Phase 117D: batched."""
     _ensure_table()
     seen = []
-    skipped = []
-    with _conn() as c, c.cursor() as cur:
-        for r in current_app.url_map.iter_rules():
-            rule = r.rule
-            if "static" in rule or "<path:" in rule.lower(): continue
-            if "GET" not in r.methods: continue
-            hours, fn = _classify(rule)
-            try:
-                cur.execute("""
+    rows = []
+    for r in current_app.url_map.iter_rules():
+        rule = r.rule
+        if "static" in rule or "<path:" in rule.lower(): continue
+        if "GET" not in r.methods: continue
+        hours, fn = _classify(rule)
+        rows.append((rule, hours, "unknown", fn))
+        seen.append({"rule": rule, "stale_hours": hours, "refresh_func": fn})
+    if rows:
+        try:
+            from psycopg2.extras import execute_values
+            with _conn() as c, c.cursor() as cur:
+                execute_values(cur, """
                     INSERT INTO freshness_checks (surface, stale_after_hours, status, refresh_func)
-                    VALUES (%s, %s, 'unknown', %s)
+                    VALUES %s
                     ON CONFLICT (surface) DO UPDATE SET
                        stale_after_hours = EXCLUDED.stale_after_hours,
                        refresh_func = EXCLUDED.refresh_func
-                """, (rule, hours, fn))
-                seen.append({"rule": rule, "stale_hours": hours, "refresh_func": fn})
-            except Exception as e:
-                skipped.append({"rule": rule, "err": str(e)[:120]})
-        c.commit()
-    return jsonify(registered=len(seen), skipped=len(skipped),
-                   sample=seen[:30]), 200
+                """, rows, page_size=200)
+                c.commit()
+        except Exception as e:
+            return jsonify(error=f"{type(e).__name__}: {str(e)[:200]}", registered=0), 500
+    return jsonify(registered=len(rows), sample=seen[:30]), 200
+
 
 
 @freshness_universal_bp.route("/api/v1/heartbeat/inventory", methods=["GET"])
