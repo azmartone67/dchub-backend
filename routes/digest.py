@@ -213,3 +213,9 @@ def _ensure_subscribers():
             subscribed_at TIMESTAMPTZ DEFAULT NOW(), unsubscribed_at TIMESTAMPTZ)""")
         c.commit()
 
+# === Phase 126A: /api/v1/digest/page is the CF-allowlisted alias for /digest ===
+@digest_bp.route("/api/v1/digest/page", methods=["GET"])
+@digest_bp.route("/api/v1/digest/today/page", methods=["GET"])
+def digest_today_page_alias():
+    return digest_today_page()
+
