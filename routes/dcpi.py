@@ -510,91 +510,421 @@ DCPI_INDEX_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>DCPI — Data Center Power Index | DC Hub</title>
+<title>DCPI · Data Center Power Index | DC Hub</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="DCPI tracks power availability across 30+ U.S. data center markets in real time. The contrarian Excess Power Score surfaces stranded capacity buyers don't know exists.">
+<meta name="description" content="DCPI tracks power availability across {{ count }}+ U.S. data center markets in real time. The Excess Power Score surfaces stranded capacity nobody else publishes.">
 <meta property="og:title" content="DCPI — The Data Center Power Index">
-<meta property="og:description" content="Real-time power availability across 30+ U.S. markets. Find excess capacity hidden in plain sight.">
+<meta property="og:description" content="Real-time power availability across {{ count }}+ U.S. markets. Find the excess capacity hidden in plain sight.">
 <meta property="og:image" content="https://dchub.cloud/dcpi/og.svg">
 <meta property="og:url" content="https://dchub.cloud/dcpi">
 <meta name="twitter:card" content="summary_large_image">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
-:root { --bg:#0a0a12; --card:#11121a; --bd:#1f2030; --tx:#fff; --tx2:#9ca3af; --acc:#6366f1;
-        --green:#10b981; --orange:#f59e0b; --red:#ef4444; }
+:root {
+  --bg:        #0a0a12;
+  --bg2:       #0f1119;
+  --bg3:       #181a25;
+  --card:      #11121a;
+  --card-hi:   #1a1c28;
+  --bd:        #1f2030;
+  --bd-hi:     #2a2c3e;
+  --tx:        #fff;
+  --tx2:       #9ca3af;
+  --tx3:       #6b7280;
+  --acc:       #6366f1;
+  --acc-light: #818cf8;
+  --acc-vivid: #a855f7;
+  --green:     #10b981;
+  --orange:    #f59e0b;
+  --red:       #ef4444;
+  --gradient:  linear-gradient(135deg,#6366f1 0%,#a855f7 100%);
+}
 * { box-sizing: border-box; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-       background: var(--bg); color: var(--tx); margin: 0; padding: 0; line-height: 1.55; }
-.wrap { max-width: 1280px; margin: 0 auto; padding: 2rem 1.5rem; }
-header { border-bottom: 1px solid var(--bd); padding-bottom: 1.25rem; margin-bottom: 1.5rem; }
-header h1 { font-size: 2rem; margin: 0 0 0.4rem; font-weight: 700; letter-spacing: -0.01em; }
-header .sub { color: var(--tx2); margin: 0; font-size: 0.95rem; }
-.toggle { display: inline-flex; gap: 0; margin: 1.25rem 0 0.75rem; border: 1px solid var(--bd); border-radius: 8px; overflow: hidden; }
-.toggle button { background: transparent; color: var(--tx2); border: 0; padding: 0.55rem 1rem; cursor: pointer; font-weight: 600; font-size: 0.85rem; }
-.toggle button.active { background: var(--acc); color: white; }
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 1rem; }
-.card { background: var(--card); border: 1px solid var(--bd); border-radius: 10px; padding: 1.1rem 1.25rem; transition: transform 0.1s; cursor: pointer; }
-.card:hover { transform: translateY(-2px); border-color: var(--acc); }
-.card h3 { margin: 0 0 0.3rem; font-size: 1rem; font-weight: 600; }
-.card .iso { color: var(--tx2); font-size: 0.78rem; margin-bottom: 0.7rem; }
-.score { font-size: 2rem; font-weight: 800; line-height: 1; letter-spacing: -0.02em; }
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--tx);
+  margin: 0;
+  padding: 0;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+code, pre, .mono { font-family: 'JetBrains Mono', monospace; }
+
+/* ===== TOP NAV ===== */
+.top-nav {
+  border-bottom: 1px solid var(--bd);
+  background: rgba(10,10,18,0.85);
+  backdrop-filter: blur(8px);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+.top-nav-inner {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 1rem 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+}
+.logo {
+  font-weight: 800;
+  font-size: 1.05rem;
+  color: var(--tx);
+  text-decoration: none;
+  letter-spacing: -0.01em;
+}
+.logo span { color: var(--acc); }
+.nav-links { display: flex; gap: 1.5rem; flex-wrap: wrap; }
+.nav-links a {
+  color: var(--tx2);
+  text-decoration: none;
+  font-size: 0.92rem;
+  font-weight: 500;
+  position: relative;
+}
+.nav-links a:hover { color: var(--tx); }
+.nav-links a.active { color: var(--tx); }
+.nav-links a sup {
+  color: var(--green);
+  font-size: 0.55rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  margin-left: 0.2rem;
+  vertical-align: super;
+}
+
+/* ===== STATUS PULSE ===== */
+.status-strip {
+  background: var(--bg2);
+  border-bottom: 1px solid var(--bd);
+  padding: 0.55rem 1.5rem;
+  text-align: center;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.78rem;
+  color: var(--tx2);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.pulse {
+  display: inline-block;
+  width: 8px; height: 8px;
+  background: var(--green);
+  border-radius: 50%;
+  margin-right: 0.5rem;
+  animation: pulse 1.6s ease-in-out infinite;
+  vertical-align: middle;
+}
+@keyframes pulse { 50% { opacity: 0.3; transform: scale(0.85); } }
+
+.wrap { max-width: 1280px; margin: 0 auto; padding: 3rem 1.5rem; }
+
+/* ===== HERO ===== */
+.hero { margin-bottom: 3rem; }
+.hero h1 {
+  font-size: clamp(2.4rem, 5vw, 3.6rem);
+  margin: 0 0 1rem;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  line-height: 1.05;
+}
+.hero h1 .accent {
+  background: var(--gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.hero .lede {
+  color: var(--tx2);
+  font-size: 1.1rem;
+  max-width: 720px;
+  margin: 0 0 1.5rem;
+}
+
+/* ===== STATS ROW ===== */
+.stats-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+  margin: 2rem 0 3rem;
+  padding: 1.5rem;
+  background: var(--card);
+  border: 1px solid var(--bd);
+  border-radius: 12px;
+}
+.stat .num {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 2rem;
+  font-weight: 700;
+  color: var(--tx);
+  letter-spacing: -0.02em;
+}
+.stat .label {
+  color: var(--tx2);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-top: 0.3rem;
+}
+
+/* ===== SECTION HEADER ===== */
+.section-h {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 3rem 0 1rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--tx2);
+}
+.section-h .pip { width: 4px; height: 12px; background: var(--acc); border-radius: 2px; }
+h2 {
+  font-size: 1.6rem;
+  font-weight: 700;
+  margin: 0 0 1rem;
+  letter-spacing: -0.015em;
+}
+
+/* ===== TOGGLE ===== */
+.toggle {
+  display: inline-flex;
+  background: var(--card);
+  border: 1px solid var(--bd);
+  border-radius: 10px;
+  overflow: hidden;
+  margin: 0 0 1.5rem;
+}
+.toggle button {
+  background: transparent;
+  color: var(--tx2);
+  border: 0;
+  padding: 0.7rem 1.25rem;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.85rem;
+  font-family: inherit;
+  transition: all 0.15s;
+}
+.toggle button.active {
+  background: var(--gradient);
+  color: white;
+}
+
+/* ===== GRID ===== */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1rem;
+}
+.card {
+  background: var(--card);
+  border: 1px solid var(--bd);
+  border-radius: 12px;
+  padding: 1.4rem 1.5rem;
+  transition: all 0.18s ease;
+  cursor: pointer;
+  position: relative;
+  overflow: hidden;
+}
+.card:hover {
+  transform: translateY(-3px);
+  border-color: var(--bd-hi);
+  background: var(--card-hi);
+  box-shadow: 0 12px 32px rgba(99,102,241,0.10);
+}
+.card:hover::before {
+  opacity: 1;
+}
+.card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, rgba(99,102,241,0.07), transparent 60%);
+  opacity: 0;
+  transition: opacity 0.18s;
+  pointer-events: none;
+}
+.card .market-name {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin: 0 0 0.25rem;
+  letter-spacing: -0.01em;
+}
+.card .iso {
+  color: var(--tx2);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  margin-bottom: 1rem;
+}
+.score {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 2.6rem;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.04em;
+}
 .score.green { color: var(--green); }
 .score.orange { color: var(--orange); }
 .score.red { color: var(--red); }
-.label { color: var(--tx2); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; margin-top: 0.3rem; }
-.verdict { display: inline-block; padding: 0.18rem 0.55rem; border-radius: 4px; font-size: 0.7rem; font-weight: 700; margin-top: 0.6rem; }
-.verdict.BUILD { background: rgba(16,185,129,0.15); color: var(--green); }
-.verdict.CAUTION { background: rgba(245,158,11,0.15); color: var(--orange); }
-.verdict.AVOID { background: rgba(239,68,68,0.15); color: var(--red); }
-.ttp { font-size: 0.78rem; color: var(--tx2); margin-top: 0.45rem; }
-footer { border-top: 1px solid var(--bd); margin-top: 2rem; padding-top: 1.25rem; color: var(--tx2); font-size: 0.82rem; }
-.cta { background: linear-gradient(135deg,#6366f1 0%,#a855f7 100%); padding: 1.5rem; border-radius: 12px; margin: 2rem 0; }
-.cta h2 { margin: 0 0 0.4rem; font-size: 1.25rem; }
-.cta p { margin: 0 0 1rem; color: rgba(255,255,255,0.85); font-size: 0.92rem; }
-.cta a { display: inline-block; background: white; color: var(--acc); padding: 0.6rem 1rem; border-radius: 6px; text-decoration: none; font-weight: 700; font-size: 0.88rem; }
+.label {
+  color: var(--tx2);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-top: 0.4rem;
+  font-weight: 600;
+}
+.verdict {
+  display: inline-block;
+  padding: 0.22rem 0.7rem;
+  border-radius: 5px;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  margin-top: 0.9rem;
+}
+.verdict.BUILD   { background: rgba(16,185,129,0.18); color: var(--green); }
+.verdict.CAUTION { background: rgba(245,158,11,0.18); color: var(--orange); }
+.verdict.AVOID   { background: rgba(239,68,68,0.18); color: var(--red); }
+.ttp {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.78rem;
+  color: var(--tx2);
+  margin-top: 0.55rem;
+}
+
+/* ===== CTA ===== */
+.cta-banner {
+  background: var(--gradient);
+  padding: 2rem 2.25rem;
+  border-radius: 14px;
+  margin: 3rem 0 2rem;
+  position: relative;
+  overflow: hidden;
+}
+.cta-banner::after {
+  content: '';
+  position: absolute;
+  right: -40px; bottom: -40px;
+  width: 200px; height: 200px;
+  background: radial-gradient(circle, rgba(255,255,255,0.15), transparent 70%);
+  pointer-events: none;
+}
+.cta-banner h2 { margin: 0 0 0.4rem; font-size: 1.4rem; color: white; }
+.cta-banner p {
+  margin: 0 0 1.1rem;
+  color: rgba(255,255,255,0.88);
+  font-size: 0.95rem;
+  max-width: 540px;
+}
+.cta-banner a.btn {
+  display: inline-block;
+  background: white;
+  color: var(--acc);
+  padding: 0.7rem 1.3rem;
+  border-radius: 7px;
+  text-decoration: none;
+  font-weight: 700;
+  font-size: 0.92rem;
+  transition: transform 0.1s;
+}
+.cta-banner a.btn:hover { transform: translateY(-1px); }
+
+footer {
+  border-top: 1px solid var(--bd);
+  margin-top: 3rem;
+  padding: 2rem 0 1rem;
+  color: var(--tx3);
+  font-size: 0.84rem;
+}
+footer a { color: var(--tx2); }
+footer a:hover { color: var(--acc-light); }
+
+@media (max-width: 600px) {
+  .nav-links { display: none; }
+}
 </style>
 </head>
 <body>
-<div class="wrap">
-  <header>
-    <h1>DCPI <span style="font-size:1rem;color:var(--tx2);font-weight:500;">— Data Center Power Index</span></h1>
-    <p class="sub">Real-time power availability across {{ count }} U.S. data center markets. Updated daily.</p>
-  </header>
+<nav class="top-nav">
+  <div class="top-nav-inner">
+    <a class="logo" href="/">DC <span>Hub</span></a>
+    <div class="nav-links">
+      <a href="/">Home</a>
+      <a href="/markets">Markets</a>
+      <a href="/dcpi" class="active">DCPI<sup>NEW</sup></a>
+      <a href="/land-power">Land &amp; Power</a>
+      <a href="/ai">AI Platform</a>
+      <a href="/news">News</a>
+      <a href="/pricing">Pricing</a>
+    </div>
+  </div>
+</nav>
 
+<div class="status-strip">
+  <span class="pulse"></span>LIVE · {{ count }} MARKETS SCORED · UPDATED DAILY 06:00 UTC · FREE FOR PRESS CITATION
+</div>
+
+<div class="wrap">
+  <section class="hero">
+    <h1>The <span class="accent">Data Center Power Index</span></h1>
+    <p class="lede">Real-time power availability across {{ count }} U.S. data center markets. Two scores per market: <strong>Excess Power</strong> (where buyers don't know to look) and <strong>Constraint</strong> (where the queue is dead). The contrarian metric the incumbents won't publish.</p>
+  </section>
+
+  <div class="stats-row">
+    <div class="stat"><div class="num">{{ count }}</div><div class="label">Markets Scored</div></div>
+    <div class="stat"><div class="num">8</div><div class="label">Inputs per Score</div></div>
+    <div class="stat"><div class="num">06:00 UTC</div><div class="label">Daily Refresh</div></div>
+    <div class="stat"><div class="num">FREE</div><div class="label">Press &amp; Citation</div></div>
+  </div>
+
+  <div class="section-h"><span class="pip"></span>📊 Index View</div>
   <div class="toggle" role="tablist">
-    <button class="active" data-mode="excess">Excess Power (Opportunity)</button>
-    <button data-mode="constraint">Constraint (Avoid)</button>
+    <button class="active" data-mode="excess">Excess Power · Opportunity</button>
+    <button data-mode="constraint">Constraint · Avoid</button>
   </div>
 
   <div class="grid" id="grid">
     {% for s in scores %}
     <a href="/dcpi/{{ s.market_slug }}" style="text-decoration:none;color:inherit;">
     <div class="card" data-excess="{{ s.excess_power_score }}" data-constraint="{{ s.constraint_score }}">
-      <h3>{{ s.market_name }}</h3>
+      <div class="market-name">{{ s.market_name }}</div>
       <div class="iso">{{ s.iso }} · {{ s.state }}</div>
       <div class="score-block excess-view">
         <div class="score {{ 'green' if s.excess_power_score>=65 else 'orange' if s.excess_power_score>=40 else 'red' }}">{{ s.excess_power_score }}</div>
-        <div class="label">Excess Power Score</div>
+        <div class="label">Excess Power</div>
       </div>
       <div class="score-block constraint-view" style="display:none">
         <div class="score {{ 'red' if s.constraint_score>=70 else 'orange' if s.constraint_score>=45 else 'green' }}">{{ s.constraint_score }}</div>
-        <div class="label">Constraint Score</div>
+        <div class="label">Constraint</div>
       </div>
       <div class="verdict {{ s.verdict }}">{{ s.verdict }}</div>
-      <div class="ttp">~{{ s.time_to_power_months|round(0)|int }} months to power</div>
+      <div class="ttp">~{{ s.time_to_power_months|round(0)|int }}mo to power</div>
     </div>
     </a>
     {% endfor %}
   </div>
 
-  <div class="cta">
-    <h2>Pro: county-level scoring + alerts + PDF export</h2>
-    <p>Drill down to specific counties within each market. Get notified when a market's score moves &gt;5 points. Export branded PDF reports for your buyers. $199/mo.</p>
-    <a href="/pricing">Upgrade →</a>
+  <div class="section-h"><span class="pip"></span>🔓 Pro Access</div>
+  <div class="cta-banner">
+    <h2>Drill to county level. Get alerts. Export branded PDFs.</h2>
+    <p>Pro shows scores at the county level so you can pinpoint where the headroom actually lives. Plus alert when any market moves &gt;5 points and one-click PDF export for your buyers. $199/mo.</p>
+    <a class="btn" href="/pricing">Upgrade to Pro →</a>
   </div>
 
+  <div class="section-h"><span class="pip"></span>📋 Methodology</div>
+  <p style="color:var(--tx2);font-size:0.92rem;max-width:720px;">
+    <strong>Constraint Score</strong> combines queue wait time, reserve margin proximity to NERC floor, demand-growth YoY, and 30-day grid-emergency frequency.
+    <strong style="color:var(--acc-light);">Excess Power Score</strong> is the contrarian metric: reserve-margin headroom, generation additions queued &lt;12mo, renewable curtailment volume, queue approval rate, stranded interconnection at retiring plants, and behind-the-meter industrial generation. Updated daily from ISO public filings + DC Hub's grid extractors.
+  </p>
+
   <footer>
-    <p>Methodology: Constraint Score combines queue wait time, reserve margin, demand growth, and grid emergencies. Excess Power Score combines reserve headroom, generation additions, renewable curtailment, queue approval rate, stranded capacity, and behind-the-meter industrial generation. Updated daily from ISO public filings + DC Hub's grid feeds.</p>
-    <p>This is a free preview. Full methodology + raw data via <a style="color:var(--acc);" href="/api-docs">API</a>. Press inquiries: <a style="color:var(--acc);" href="/dcpi/press">press kit</a>.</p>
+    <p>This is the free preview. Full methodology + raw data via <a href="/api-docs">API</a>. Press inquiries: <a href="/dcpi/press">press kit</a>.</p>
+    <p>© 2026 DC Hub · Data Center Intelligence Platform · <a href="/about">About</a> · <a href="/pricing">Pricing</a> · <a href="/openapi.json">OpenAPI</a></p>
   </footer>
 </div>
 
@@ -606,13 +936,12 @@ buttons.forEach(b => b.addEventListener('click', () => {
   const mode = b.dataset.mode;
   document.querySelectorAll('.excess-view').forEach(v => v.style.display = mode==='excess'?'block':'none');
   document.querySelectorAll('.constraint-view').forEach(v => v.style.display = mode==='constraint'?'block':'none');
-  // Re-sort cards
   const grid = document.getElementById('grid');
   const cards = Array.from(grid.children);
   cards.sort((a,b) => {
     const ea = parseFloat(a.querySelector('.card').dataset[mode]);
     const eb = parseFloat(b.querySelector('.card').dataset[mode]);
-    return mode === 'constraint' ? eb - ea : eb - ea;
+    return eb - ea;
   });
   cards.forEach(c => grid.appendChild(c));
 }));
@@ -625,94 +954,279 @@ DCPI_MARKET_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>{{ s.market_name }} — DCPI {{ s.excess_power_score }} | DC Hub</title>
+<title>{{ s.market_name }} · DCPI {{ s.excess_power_score }} | DC Hub</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta property="og:title" content="DCPI {{ s.market_name }}: Excess {{ s.excess_power_score }} · Constraint {{ s.constraint_score }}">
-<meta property="og:description" content="{{ s.verdict }} · ~{{ s.time_to_power_months|round(0)|int }} months to power. Live data from DC Hub.">
+<meta property="og:title" content="DCPI {{ s.market_name }} · Excess {{ s.excess_power_score }} · Constraint {{ s.constraint_score }}">
+<meta property="og:description" content="{{ s.verdict }} · ~{{ s.time_to_power_months|round(0)|int }} months to power. Updated daily.">
 <meta property="og:image" content="https://dchub.cloud/dcpi/og/{{ s.market_slug }}.svg">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
-:root { --bg:#0a0a12; --card:#11121a; --bd:#1f2030; --tx:#fff; --tx2:#9ca3af; --acc:#6366f1;
-        --green:#10b981; --orange:#f59e0b; --red:#ef4444; }
-body { font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif; background: var(--bg); color: var(--tx); margin: 0; padding: 0; line-height: 1.6; }
-.wrap { max-width: 980px; margin: 0 auto; padding: 2rem 1.5rem; }
-.crumbs { color: var(--tx2); font-size: 0.85rem; margin-bottom: 0.75rem; }
-.crumbs a { color: var(--acc); text-decoration: none; }
-h1 { font-size: 2.2rem; margin: 0 0 0.4rem; }
-.sub { color: var(--tx2); margin: 0 0 1.5rem; }
-.scoreboard { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 2rem 0; }
-.sb { background: var(--card); border: 1px solid var(--bd); border-radius: 10px; padding: 1.5rem; }
-.sb .v { font-size: 3.5rem; font-weight: 800; line-height: 1; letter-spacing: -0.02em; }
-.sb .l { color: var(--tx2); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; margin-top: 0.4rem; }
+:root {
+  --bg:#0a0a12; --bg2:#0f1119; --card:#11121a; --bd:#1f2030; --bd-hi:#2a2c3e;
+  --tx:#fff; --tx2:#9ca3af; --tx3:#6b7280;
+  --acc:#6366f1; --acc-light:#818cf8; --acc-vivid:#a855f7;
+  --green:#10b981; --orange:#f59e0b; --red:#ef4444;
+  --gradient:linear-gradient(135deg,#6366f1 0%,#a855f7 100%);
+}
+* { box-sizing: border-box; }
+body {
+  font-family: 'Inter', -apple-system, system-ui, sans-serif;
+  background: var(--bg); color: var(--tx); margin: 0; padding: 0;
+  line-height: 1.55; -webkit-font-smoothing: antialiased;
+}
+.mono, code { font-family: 'JetBrains Mono', monospace; }
+
+.top-nav {
+  border-bottom: 1px solid var(--bd);
+  background: rgba(10,10,18,0.85);
+  backdrop-filter: blur(8px);
+  position: sticky; top: 0; z-index: 100;
+}
+.top-nav-inner {
+  max-width: 1080px; margin: 0 auto; padding: 1rem 1.5rem;
+  display: flex; align-items: center; justify-content: space-between; gap: 1.5rem;
+}
+.logo { font-weight: 800; font-size: 1.05rem; color: var(--tx); text-decoration: none; }
+.logo span { color: var(--acc); }
+.nav-links { display: flex; gap: 1.5rem; flex-wrap: wrap; }
+.nav-links a { color: var(--tx2); text-decoration: none; font-size: 0.92rem; font-weight: 500; }
+.nav-links a:hover { color: var(--tx); }
+.nav-links a.active { color: var(--tx); }
+
+.wrap { max-width: 1080px; margin: 0 auto; padding: 2.5rem 1.5rem; }
+.crumbs {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.78rem; color: var(--tx3); margin-bottom: 1rem;
+}
+.crumbs a { color: var(--acc-light); text-decoration: none; }
+.crumbs a:hover { color: var(--tx); }
+
+h1 {
+  font-size: clamp(2.2rem, 5vw, 3.2rem);
+  margin: 0 0 0.4rem;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  line-height: 1.05;
+}
+.subtitle {
+  color: var(--tx2);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.9rem;
+  margin: 0 0 2rem;
+}
+
+.verdict-banner {
+  padding: 1.1rem 1.5rem;
+  border-radius: 10px;
+  margin: 2rem 0;
+  font-weight: 700;
+  font-size: 1rem;
+  border: 1px solid;
+}
+.verdict-banner.BUILD   { background: rgba(16,185,129,0.10); border-color: var(--green); color: var(--green); }
+.verdict-banner.CAUTION { background: rgba(245,158,11,0.10); border-color: var(--orange); color: var(--orange); }
+.verdict-banner.AVOID   { background: rgba(239,68,68,0.10); border-color: var(--red); color: var(--red); }
+
+.scoreboard {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1rem;
+  margin: 2rem 0;
+}
+.sb {
+  background: var(--card);
+  border: 1px solid var(--bd);
+  border-radius: 12px;
+  padding: 1.75rem;
+  position: relative;
+  overflow: hidden;
+}
+.sb::after {
+  content: '';
+  position: absolute; inset: 0;
+  background: linear-gradient(135deg, rgba(99,102,241,0.05), transparent 60%);
+  pointer-events: none;
+}
+.sb .v {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: clamp(3.5rem, 8vw, 5.5rem);
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.03em;
+}
+.sb .l {
+  color: var(--tx2);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-top: 0.6rem;
+  font-weight: 600;
+}
 .green { color: var(--green); }
 .orange { color: var(--orange); }
 .red { color: var(--red); }
-.section { background: var(--card); border: 1px solid var(--bd); border-radius: 10px; padding: 1.5rem; margin: 1rem 0; }
-.section h2 { margin: 0 0 0.75rem; font-size: 1.05rem; }
+
+.section-h {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 2.5rem 0 1rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--tx2);
+}
+.section-h .pip { width: 4px; height: 12px; background: var(--acc); border-radius: 2px; }
+
+.section {
+  background: var(--card);
+  border: 1px solid var(--bd);
+  border-radius: 12px;
+  padding: 1.75rem;
+  margin: 1rem 0;
+}
+.section h2 {
+  margin: 0 0 1rem;
+  font-size: 1.2rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
 .section ul { padding-left: 1.2rem; margin: 0; }
-.section li { margin: 0.4rem 0; color: #ddd; font-size: 0.92rem; }
-.verdict-banner { padding: 1rem 1.25rem; border-radius: 8px; margin: 1rem 0; font-weight: 700; font-size: 1rem; }
-.verdict-banner.BUILD { background: rgba(16,185,129,0.15); border: 1px solid var(--green); color: var(--green); }
-.verdict-banner.CAUTION { background: rgba(245,158,11,0.15); border: 1px solid var(--orange); color: var(--orange); }
-.verdict-banner.AVOID { background: rgba(239,68,68,0.15); border: 1px solid var(--red); color: var(--red); }
-.metrics { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px,1fr)); gap: 0.75rem; }
-.metric { background: var(--bg); border: 1px solid var(--bd); border-radius: 6px; padding: 0.7rem 0.9rem; }
-.metric .v { font-size: 1.2rem; font-weight: 700; }
-.metric .l { color: var(--tx2); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; margin-top: 0.2rem; }
-.cta-pro { background: linear-gradient(135deg,#6366f1,#a855f7); padding: 1.5rem; border-radius: 10px; margin: 1.5rem 0; }
-.cta-pro h2 { margin: 0 0 0.4rem; font-size: 1.1rem; color: white; }
-.cta-pro p { margin: 0 0 0.8rem; color: rgba(255,255,255,0.88); font-size: 0.9rem; }
-.cta-pro a { background: white; color: #6366f1; padding: 0.5rem 0.9rem; border-radius: 5px; text-decoration: none; font-weight: 700; font-size: 0.85rem; }
+.section li {
+  margin: 0.5rem 0;
+  color: #ddd;
+  font-size: 0.95rem;
+}
+
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px,1fr));
+  gap: 0.85rem;
+}
+.metric {
+  background: var(--bg2);
+  border: 1px solid var(--bd);
+  border-radius: 8px;
+  padding: 0.9rem 1.1rem;
+  transition: border-color 0.15s;
+}
+.metric:hover { border-color: var(--bd-hi); }
+.metric .v {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 1.35rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.metric .l {
+  color: var(--tx2);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-top: 0.3rem;
+  font-weight: 600;
+}
+
+.cta-pro {
+  background: var(--gradient);
+  padding: 2rem 2.25rem;
+  border-radius: 14px;
+  margin: 2rem 0;
+  position: relative;
+  overflow: hidden;
+}
+.cta-pro::after {
+  content: '';
+  position: absolute;
+  right: -40px; bottom: -40px;
+  width: 200px; height: 200px;
+  background: radial-gradient(circle, rgba(255,255,255,0.15), transparent 70%);
+  pointer-events: none;
+}
+.cta-pro h2 { margin: 0 0 0.5rem; font-size: 1.3rem; color: white; }
+.cta-pro p {
+  margin: 0 0 1.1rem;
+  color: rgba(255,255,255,0.88);
+  font-size: 0.94rem;
+}
+.cta-pro a {
+  display: inline-block;
+  background: white; color: var(--acc);
+  padding: 0.65rem 1.2rem; border-radius: 6px;
+  text-decoration: none; font-weight: 700;
+  font-size: 0.9rem;
+}
+
+@media (max-width: 600px) {
+  .nav-links { display: none; }
+}
 </style>
 </head>
 <body>
+
+<nav class="top-nav">
+  <div class="top-nav-inner">
+    <a class="logo" href="/">DC <span>Hub</span></a>
+    <div class="nav-links">
+      <a href="/">Home</a>
+      <a href="/markets">Markets</a>
+      <a href="/dcpi" class="active">DCPI</a>
+      <a href="/land-power">Land &amp; Power</a>
+      <a href="/ai">AI Platform</a>
+      <a href="/news">News</a>
+      <a href="/pricing">Pricing</a>
+    </div>
+  </div>
+</nav>
+
 <div class="wrap">
-  <div class="crumbs"><a href="/dcpi">DCPI</a> · <a href="/markets">Markets</a> · {{ s.market_name }}</div>
+  <div class="crumbs"><a href="/dcpi">DCPI</a> / <a href="/markets">Markets</a> / {{ s.market_name }}</div>
   <h1>{{ s.market_name }}</h1>
-  <p class="sub">{{ s.iso }} · {{ s.state }} · Updated {{ s.computed_at[:10] }}</p>
+  <p class="subtitle">{{ s.iso }} · {{ s.state }} · UPDATED {{ s.computed_at[:10] }}</p>
 
   <div class="verdict-banner {{ s.verdict }}">
-    {% if s.verdict == 'BUILD' %}BUILD HERE — Excess capacity available, manageable constraints
-    {% elif s.verdict == 'CAUTION' %}CAUTION — Mixed signals, due-diligence required
-    {% else %}AVOID FOR NEW BUILDS — Severe constraints, multi-year wait{% endif %}
+    {% if s.verdict == 'BUILD' %}🟢 BUILD HERE — Excess capacity available, manageable constraints
+    {% elif s.verdict == 'CAUTION' %}🟡 CAUTION — Mixed signals, due-diligence required
+    {% else %}🔴 AVOID FOR NEW BUILDS — Severe constraints, multi-year wait{% endif %}
   </div>
 
   <div class="scoreboard">
     <div class="sb">
       <div class="v {{ 'green' if s.excess_power_score>=65 else 'orange' if s.excess_power_score>=40 else 'red' }}">{{ s.excess_power_score }}</div>
-      <div class="l">Excess Power Score</div>
+      <div class="l">Excess Power Score · Opportunity</div>
     </div>
     <div class="sb">
       <div class="v {{ 'red' if s.constraint_score>=70 else 'orange' if s.constraint_score>=45 else 'green' }}">{{ s.constraint_score }}</div>
-      <div class="l">Constraint Score</div>
+      <div class="l">Constraint Score · Avoid</div>
     </div>
   </div>
 
+  <div class="section-h"><span class="pip"></span>🌟 Top Opportunities</div>
   <div class="section">
-    <h2>Top Opportunities</h2>
     <ul>{% for o in opps %}<li>{{ o }}</li>{% endfor %}</ul>
   </div>
 
+  <div class="section-h"><span class="pip"></span>⚠️ Top Risks</div>
   <div class="section">
-    <h2>Top Risks</h2>
     <ul>{% for r in risks %}<li>{{ r }}</li>{% endfor %}</ul>
   </div>
 
+  <div class="section-h"><span class="pip"></span>📊 Underlying Metrics</div>
   <div class="section">
-    <h2>Underlying Metrics</h2>
     <div class="metrics">
-      <div class="metric"><div class="v">{{ s.queue_wait_months|round(0)|int }}mo</div><div class="l">Queue Wait</div></div>
+      <div class="metric"><div class="v">{{ s.queue_wait_months|round(0)|int }} mo</div><div class="l">Queue Wait</div></div>
       <div class="metric"><div class="v">{{ s.reserve_margin_pct|round(1) }}%</div><div class="l">Reserve Margin</div></div>
       <div class="metric"><div class="v">{{ (s.gen_additions_12mo_mw or 0)|round(0)|int }} MW</div><div class="l">Generation Additions &lt;12mo</div></div>
       <div class="metric"><div class="v">{{ (s.curtailment_pct or 0)|round(1) }}%</div><div class="l">Renewable Curtailment</div></div>
       <div class="metric"><div class="v">{{ (s.stranded_capacity_mw or 0)|round(0)|int }} MW</div><div class="l">Stranded Capacity</div></div>
-      <div class="metric"><div class="v">{{ s.time_to_power_months|round(0)|int }}mo</div><div class="l">Est. Time to Power</div></div>
+      <div class="metric"><div class="v">{{ s.time_to_power_months|round(0)|int }} mo</div><div class="l">Est. Time to Power</div></div>
     </div>
   </div>
 
   <div class="cta-pro">
-    <h2>Want county-level breakdown for {{ s.market_name }}?</h2>
-    <p>Pro shows the score at the county level so you can pinpoint which sub-markets have the headroom. Plus alerts when this market moves &gt;5 points and PDF export.</p>
-    <a href="/pricing">Get Pro — $199/mo</a>
+    <h2>Drill into {{ s.market_name }} at the county level.</h2>
+    <p>Pro shows the score at the county level so you can pinpoint which sub-markets have the headroom. Plus alerts when {{ s.market_name }} moves &gt;5 points and PDF export for your buyers.</p>
+    <a href="/pricing">Get Pro · $199/mo →</a>
   </div>
 </div>
 </body>
