@@ -1424,6 +1424,66 @@ def api_history():
     return jsonify(series=series, count=len(series)), 200
 
 
+
+@dcpi_bp.route("/api/v1/dcpi/trending", methods=["GET"])
+def api_trending():
+    """Top 5 weekly movers, formatted for ticker display."""
+    _ensure_tables()
+    with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""
+            WITH latest AS (
+              SELECT DISTINCT ON (market_slug) market_slug, market_name, excess_power_score AS now_e
+              FROM market_power_scores ORDER BY market_slug, computed_at DESC
+            ),
+            week_ago AS (
+              SELECT DISTINCT ON (market_slug) market_slug, excess_power_score AS prev_e
+              FROM market_power_scores
+              WHERE computed_at < NOW() - INTERVAL '7 days'
+              ORDER BY market_slug, computed_at DESC
+            )
+            SELECT l.market_slug, l.market_name, l.now_e,
+                   COALESCE(l.now_e - w.prev_e, 0) AS delta_7d
+            FROM latest l LEFT JOIN week_ago w ON l.market_slug=w.market_slug
+            ORDER BY ABS(COALESCE(l.now_e - w.prev_e, 0)) DESC LIMIT 5
+        """)
+        rows = cur.fetchall()
+    return jsonify(trending=rows, count=len(rows)), 200
+
+
+@dcpi_bp.route("/dcpi/ticker.html", methods=["GET"])
+@dcpi_bp.route("/api/v1/dcpi/ticker.html", methods=["GET"])
+def ticker_widget():
+    """Embeddable horizontal ticker widget. Drop in any iframe."""
+    html = """<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+body{margin:0;padding:0;font-family:-apple-system,sans-serif;background:#0a0a12;color:#fff;overflow:hidden}
+.ticker{display:flex;align-items:center;height:48px;border-top:1px solid #1f2030;border-bottom:1px solid #1f2030;animation:scroll 40s linear infinite}
+.item{flex:0 0 auto;display:flex;align-items:center;gap:0.5rem;padding:0 1.5rem;border-right:1px solid #1f2030;white-space:nowrap}
+.lbl{font-size:0.7rem;color:#9ca3af;text-transform:uppercase;letter-spacing:0.08em}
+.market{font-weight:600;font-size:0.92rem}
+.score{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:0.92rem}
+.up{color:#10b981}.down{color:#ef4444}
+.brand{flex:0 0 auto;background:linear-gradient(135deg,#6366f1,#a855f7);padding:0 1.25rem;height:48px;display:flex;align-items:center;font-weight:700;font-size:0.85rem;letter-spacing:0.08em;text-transform:uppercase}
+@keyframes scroll{0%{transform:translateX(0)}100%{transform:translateX(-100%)}}
+</style></head><body>
+<div style="display:flex;align-items:center;height:48px;background:#0a0a12">
+<div class="brand">DCPI · Live</div>
+<div class="ticker" id="t"></div>
+</div>
+<script>
+fetch('/api/v1/dcpi/trending').then(r=>r.json()).then(d=>{
+  const html = (d.trending||[]).map(t=>{
+    const dir = t.delta_7d>0?'up':'down', arrow=t.delta_7d>0?'▲':'▼';
+    return '<div class=item><span class=lbl>'+arrow+'</span><a href="https://dchub.cloud/dcpi/'+t.market_slug+'" target="_blank" style="color:#fff;text-decoration:none"><span class=market>'+t.market_name+'</span></a><span class="score '+dir+'">'+t.now_e.toFixed(1)+' ('+(t.delta_7d>0?'+':'')+t.delta_7d.toFixed(1)+')</span></div>';
+  }).join('');
+  document.getElementById('t').innerHTML = html + html;  // double for seamless scroll
+});
+</script></body></html>"""
+    resp = Response(html, mimetype="text/html")
+    resp.headers["X-Frame-Options"] = "ALLOWALL"
+    resp.headers["Cache-Control"] = "public, max-age=300, must-revalidate"
+    return resp
+
+
 @dcpi_bp.route("/dcpi/og/<slug>.svg", methods=["GET"])
 @dcpi_bp.route("/dcpi/og/<slug>", methods=["GET"])
 def og_card(slug):
