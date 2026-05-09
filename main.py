@@ -1,3 +1,4 @@
+from routes.seedlings import seedlings_bp
 from routes.leaf_fall import leaf_fall_bp
 from routes.variants import variants_bp
 from routes.freshness_universal import freshness_universal_bp
@@ -17726,3 +17727,6 @@ app.register_blueprint(variants_bp)
 
 # auto-registered: leaf_fall_bp
 app.register_blueprint(leaf_fall_bp)
+
+# auto-registered: seedlings_bp
+app.register_blueprint(seedlings_bp)
