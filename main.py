@@ -1,3 +1,4 @@
+from routes.outreach import outreach_bp
 # phase69_gating_rollout -- gating.js + data-gate attrs added
 from dotenv import load_dotenv
 from internal_auth import is_valid_internal_key, get_internal_key_for_client
@@ -17698,3 +17699,6 @@ app.register_blueprint(qa_patterns_bp)
 
 # phase 108: register DCPI blueprint
 app.register_blueprint(dcpi_bp)
+
+# phase 109B: register outreach
+app.register_blueprint(outreach_bp)
