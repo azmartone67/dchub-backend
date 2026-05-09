@@ -1,3 +1,4 @@
+from routes.open_data import open_data_bp
 from routes.lab import lab_bp
 from routes.seedlings import seedlings_bp
 from routes.leaf_fall import leaf_fall_bp
@@ -17734,3 +17735,6 @@ app.register_blueprint(seedlings_bp)
 
 # auto-registered: lab_bp
 app.register_blueprint(lab_bp)
+
+# auto-registered: open_data_bp
+app.register_blueprint(open_data_bp)
