@@ -1,0 +1,12 @@
+name: Press Release Auto-Scan
+on:
+  schedule:
+    - cron: '0 13 * * *'   # daily 13:00 UTC
+  workflow_dispatch: {}
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          curl -sS -X POST "https://dchub.cloud/api/v1/press/scan" \
+            | python3 -m json.tool

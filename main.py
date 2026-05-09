@@ -1,3 +1,4 @@
+from routes.press_queue import press_queue_bp
 from routes.digest import digest_bp
 from routes.dcpi_ask import dcpi_ask_bp
 from routes.open_data import open_data_bp
@@ -17746,3 +17747,6 @@ app.register_blueprint(dcpi_ask_bp)
 
 # auto-registered: digest_bp
 app.register_blueprint(digest_bp)
+
+# auto-registered: press_queue_bp
+app.register_blueprint(press_queue_bp)
