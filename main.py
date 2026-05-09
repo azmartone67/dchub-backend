@@ -1,3 +1,4 @@
+from routes.digest import digest_bp
 from routes.dcpi_ask import dcpi_ask_bp
 from routes.open_data import open_data_bp
 from routes.lab import lab_bp
@@ -17742,3 +17743,6 @@ app.register_blueprint(open_data_bp)
 
 # phase 118: register Ask the Index
 app.register_blueprint(dcpi_ask_bp)
+
+# auto-registered: digest_bp
+app.register_blueprint(digest_bp)

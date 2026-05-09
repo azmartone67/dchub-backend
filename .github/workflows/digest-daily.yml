@@ -1,0 +1,13 @@
+name: Daily Digest
+on:
+  schedule:
+    - cron: '0 14 * * 1-5'  # Mon-Fri 14:00 UTC
+  workflow_dispatch: {}
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          curl -sS -X POST "https://dchub.cloud/api/v1/digest/send?dry=0" \
+            -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" \
+            | python3 -m json.tool
