@@ -1,3 +1,4 @@
+from routes.dcpi_digest import dcpi_digest_bp
 from routes.dcpi_mcp import dcpi_mcp_bp
 from routes.outreach import outreach_bp
 # phase69_gating_rollout -- gating.js + data-gate attrs added
@@ -17706,3 +17707,6 @@ app.register_blueprint(outreach_bp)
 
 # phase 109D: register DCPI MCP tools
 app.register_blueprint(dcpi_mcp_bp)
+
+# phase 109E: register DCPI digest
+app.register_blueprint(dcpi_digest_bp)
