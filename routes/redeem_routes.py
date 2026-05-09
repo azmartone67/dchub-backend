@@ -90,31 +90,31 @@ def _p99_send_email(email, api_key, tools_tried):
 
     errors = []
 
-    # === 1. Resend (primary) ===
+    # === 1. Resend (primary) — phase 109A: requests + full browser headers ===
     resend_key = (_os.environ.get("RESEND_API_KEY") or "").strip()
     if resend_key:
         try:
-            payload = {"from": from_email, "to": [email], "subject": subject,
-                       "text": text, "html": html}
-            req = _ur.Request("https://api.resend.com/emails",
-                data=_j.dumps(payload).encode("utf-8"),
-                headers={"Authorization": f"Bearer {resend_key}",
-                         "Content-Type": "application/json"},
-                method="POST")
-            try:
-                with _ur.urlopen(req, timeout=15) as resp:
-                    body = resp.read().decode("utf-8", errors="replace")
-                    if 200 <= resp.status < 300:
-                        return True, f"via:resend (id={body[:120]})"
-                    errors.append(f"resend:HTTP {resp.status}: {body[:300]}")
-            except _ue.HTTPError as e:
-                try: ebody = e.read().decode("utf-8", errors="replace")
-                except Exception: ebody = "(no body)"
-                errors.append(f"resend:HTTP {e.code}: {ebody[:300]}")
-            except Exception as e:
-                errors.append(f"resend:{type(e).__name__}: {str(e)[:200]}")
+            import requests as _rq
+            payload = {"from": from_email, "to": [email],
+                       "subject": subject, "text": text, "html": html}
+            r = _rq.post(
+                "https://api.resend.com/emails",
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {resend_key}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "User-Agent": "Mozilla/5.0 (compatible; DCHub/1.0; +https://dchub.cloud)",
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Accept-Encoding": "gzip, deflate, br",
+                },
+                timeout=15,
+            )
+            if 200 <= r.status_code < 300:
+                return True, f"via:resend (id={r.text[:120]})"
+            errors.append(f"resend:HTTP {r.status_code}: {r.text[:300]}")
         except Exception as e:
-            errors.append(f"resend:setup-error:{type(e).__name__}: {str(e)[:200]}")
+            errors.append(f"resend:{type(e).__name__}: {str(e)[:200]}")
     else:
         errors.append("resend:RESEND_API_KEY not set")
 
