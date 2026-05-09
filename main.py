@@ -1057,7 +1057,6 @@ try:
     from routes.grid_card_routes import grid_card_bp
     from routes.social_posts_routes import social_posts_bp
     app.register_blueprint(observability_bp)
-    app.register_blueprint(qa_patterns_bp)
     app.register_blueprint(gating_bp)  # phase68_gating_bp
     register_jinja_filter(app)  # phase68_gating_bp
     app.register_blueprint(redeem_bp)  # phase63b_redeem_bp
@@ -17693,3 +17692,5 @@ try:
 except Exception:
     pass
 
+# phase 102d: register qa_patterns blueprint at module scope (was misplaced)
+app.register_blueprint(qa_patterns_bp)

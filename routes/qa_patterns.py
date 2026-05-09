@@ -64,7 +64,7 @@ def register_fix(name):
     return deco
 
 @register_fix("fix_csp_add_directive")
-def fix_csp_add_directive(directive="style-src-elem", url="https://fonts.googleapis.com", **_):
+def fix_csp_add_directive(directive="style-src-elem https://fonts.googleapis.com", url="https://fonts.googleapis.com", **_):
     return _open_pr_with_python_patch(
         title=f"qa-autofix: add {url} to CSP {directive}",
         body=f"Auto-opened by qa_patterns. Adds `{url}` to `{directive}` in main.py.",
@@ -243,7 +243,7 @@ def _heuristic_suggest(pattern):
         m_url = re.search(r"(https?://[^\s'\"]+)", detail)
         m_dir = re.search(r"directive:\s*[\"']([^\"']+)[\"']", detail)
         return {"fix_func_name": "fix_csp_add_directive",
-            "fix_args_json": {"directive": (m_dir.group(1).split(" ")[0] if m_dir else "style-src-elem"),
+            "fix_args_json": {"directive": (m_dir.group(1).split(" ")[0] if m_dir else "style-src-elem https://fonts.googleapis.com"),
                               "url": (m_url.group(1) if m_url else "https://fonts.googleapis.com")}}
     if "placeholder leak" in detail or "__$" in detail:
         return {"fix_func_name": "fix_placeholder_replace",
