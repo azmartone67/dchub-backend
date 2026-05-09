@@ -51,27 +51,54 @@ def list_seedlings():
 
 @seedlings_bp.route("/api/v1/seedlings/sow", methods=["POST", "GET"])
 def sow():
-    """Scan data tables for new entities not yet covered by existing pages."""
+    """Scan data tables for new entities not yet covered by existing pages.
+    Phase 117C: gracefully handle missing tables — DC Hub deployments vary."""
     _ensure()
     sown = []
+    sources_tried = []
     try:
         with _conn() as c, c.cursor() as cur:
-            # Look for cities mentioned in news that aren't in existing markets
-            cur.execute("""
-                SELECT DISTINCT location_city, COUNT(*) AS mentions
-                  FROM industry_news
-                 WHERE location_city IS NOT NULL
-                   AND created_at > NOW() - INTERVAL '14 days'
-                 GROUP BY location_city
+            # Probe which news/source tables exist in this deployment
+            cur.execute("""SELECT table_name FROM information_schema.tables
+                           WHERE table_schema='public'
+                             AND table_name IN ('industry_news','news_articles','news','press_releases')""")
+            existing = {r[0] for r in cur.fetchall()}
+            sources_tried = list(existing)
+
+            news_table = None
+            for candidate in ('industry_news', 'news_articles', 'news', 'press_releases'):
+                if candidate in existing:
+                    news_table = candidate
+                    break
+
+            if not news_table:
+                return jsonify(sown=[], count=0, sources_tried=sources_tried,
+                               note="no news table found in this deployment; nothing to sow"), 200
+
+            # Probe column names too — schemas vary
+            cur.execute(f"""SELECT column_name FROM information_schema.columns
+                           WHERE table_name='{news_table}'""")
+            cols = {r[0] for r in cur.fetchall()}
+            city_col = next((c for c in ('location_city','city','market_city','location') if c in cols), None)
+            time_col = next((c for c in ('created_at','published_at','date','timestamp') if c in cols), None)
+
+            if not city_col or not time_col:
+                return jsonify(sown=[], count=0, sources_tried=[news_table],
+                               note=f"{news_table} lacks city/time columns ({city_col=}, {time_col=})"), 200
+
+            cur.execute(f"""
+                SELECT DISTINCT {city_col}, COUNT(*) AS mentions
+                  FROM {news_table}
+                 WHERE {city_col} IS NOT NULL
+                   AND {time_col} > NOW() - INTERVAL '14 days'
+                 GROUP BY {city_col}
                 HAVING COUNT(*) >= 3
                  LIMIT 50
             """)
             for city, mentions in cur.fetchall():
                 if not city: continue
-                slug = city.lower().replace(' ','-').replace(',','').replace('.','')
-                cur.execute("""
-                    SELECT 1 FROM market_power_scores WHERE market_slug=%s LIMIT 1
-                """, (slug,))
+                slug = str(city).lower().replace(' ','-').replace(',','').replace('.','')
+                cur.execute("""SELECT 1 FROM market_power_scores WHERE market_slug=%s LIMIT 1""", (slug,))
                 if cur.fetchone(): continue
                 cur.execute("""
                     INSERT INTO page_seedlings (slug, page_type, seed_data, source_signals,
@@ -81,16 +108,17 @@ def sow():
                       maturity_score = page_seedlings.maturity_score + 1,
                       last_observed_at = NOW()
                     RETURNING id, slug
-                """, (slug,
-                      json.dumps({"name": city, "type": "market", "first_seen": "news"}),
-                      json.dumps({"news_mentions_14d": mentions}),
+                """, (slug, json.dumps({"name": city, "type": "market", "first_seen": news_table}),
+                      json.dumps({"news_mentions_14d": mentions, "source": news_table}),
                       min(mentions/3.0, 5)))
                 row = cur.fetchone()
                 if row: sown.append({"id": row[0], "slug": row[1], "mentions": mentions})
             c.commit()
     except Exception as e:
-        return jsonify(error=f"{type(e).__name__}: {str(e)[:200]}", sown=sown), 500
-    return jsonify(sown=sown, count=len(sown)), 200
+        return jsonify(error=f"{type(e).__name__}: {str(e)[:200]}",
+                       sown=sown, sources_tried=sources_tried), 200
+    return jsonify(sown=sown, count=len(sown), sources_tried=sources_tried), 200
+
 
 
 @seedlings_bp.route("/api/v1/seedlings/promote/<int:sid>", methods=["POST"])
