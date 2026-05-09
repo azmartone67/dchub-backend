@@ -63,17 +63,17 @@ def _ensure_table():
 
 @freshness_universal_bp.route("/api/v1/heartbeat/discover", methods=["POST", "GET"])
 def discover():
-    """Walk url_map and register every public GET route. Phase 117D: batched."""
+    """Walk url_map and register every public GET route. Phase 119A: dedupe."""
     _ensure_table()
-    seen = []
-    rows = []
+    seen_surfaces = {}  # surface -> (rule, hours, refresh_func)
     for r in current_app.url_map.iter_rules():
         rule = r.rule
         if "static" in rule or "<path:" in rule.lower(): continue
         if "GET" not in r.methods: continue
+        if rule in seen_surfaces: continue   # dedupe
         hours, fn = _classify(rule)
-        rows.append((rule, hours, "unknown", fn))
-        seen.append({"rule": rule, "stale_hours": hours, "refresh_func": fn})
+        seen_surfaces[rule] = (rule, hours, "unknown", fn)
+    rows = list(seen_surfaces.values())
     if rows:
         try:
             from psycopg2.extras import execute_values
@@ -88,7 +88,8 @@ def discover():
                 c.commit()
         except Exception as e:
             return jsonify(error=f"{type(e).__name__}: {str(e)[:200]}", registered=0), 500
-    return jsonify(registered=len(rows), sample=seen[:30]), 200
+    return jsonify(registered=len(rows),
+                   sample=[{"rule": r[0], "stale_hours": r[1], "refresh_func": r[3]} for r in rows[:30]]), 200
 
 
 
