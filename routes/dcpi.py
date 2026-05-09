@@ -1354,7 +1354,7 @@ def public_market_page(slug):
 @dcpi_bp.route("/dcpi/og/<slug>.svg", methods=["GET"])
 @dcpi_bp.route("/dcpi/og/<slug>", methods=["GET"])
 def og_card(slug):
-    """1200x630 SVG for LinkedIn/X cards."""
+    """1200x630 SVG for LinkedIn/X cards. Phase 121C: fixed layout."""
     _ensure_tables()
     with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("""SELECT * FROM market_power_scores WHERE market_slug = %s
@@ -1362,8 +1362,13 @@ def og_card(slug):
         s = cur.fetchone()
     if not s: return Response("not found", status=404)
 
-    excess_color = "#10b981" if (s["excess_power_score"] or 0) >= 65 else \
-                   "#f59e0b" if (s["excess_power_score"] or 0) >= 40 else "#ef4444"
+    excess_score = int(s["excess_power_score"] or 0)
+    constraint_score = int(s["constraint_score"] or 0)
+    ttp = int(s["time_to_power_months"] or 0)
+    excess_color = ("#10b981" if excess_score >= 65 else
+                    "#f59e0b" if excess_score >= 40 else "#ef4444")
+    verdict_color = {"BUILD": "#10b981", "CAUTION": "#f59e0b", "AVOID": "#ef4444"}.get(s["verdict"], "#9ca3af")
+
     svg = f"""<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
   <defs>
@@ -1371,24 +1376,50 @@ def og_card(slug):
       <stop offset="0" stop-color="#0a0a12"/>
       <stop offset="1" stop-color="#1a1a2e"/>
     </linearGradient>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#6366f1"/>
+      <stop offset="1" stop-color="#a855f7"/>
+    </linearGradient>
   </defs>
   <rect width="1200" height="630" fill="url(#bg)"/>
-  <text x="60" y="100" font-family="-apple-system, sans-serif" font-size="28" font-weight="600" fill="#9ca3af">DCPI · DC Hub Power Index</text>
-  <text x="60" y="200" font-family="-apple-system, sans-serif" font-size="80" font-weight="800" fill="white">{s['market_name']}</text>
-  <text x="60" y="240" font-family="-apple-system, sans-serif" font-size="24" fill="#9ca3af">{s['iso']} · {s['state']}</text>
 
-  <text x="60" y="360" font-family="-apple-system, sans-serif" font-size="20" fill="#9ca3af">EXCESS POWER SCORE</text>
-  <text x="60" y="470" font-family="-apple-system, sans-serif" font-size="180" font-weight="800" fill="{excess_color}">{int(s['excess_power_score'] or 0)}</text>
+  <!-- Brand strip top -->
+  <rect x="0" y="0" width="1200" height="6" fill="url(#brand)"/>
 
-  <text x="700" y="360" font-family="-apple-system, sans-serif" font-size="20" fill="#9ca3af">CONSTRAINT</text>
-  <text x="700" y="430" font-family="-apple-system, sans-serif" font-size="80" font-weight="700" fill="#9ca3af">{int(s['constraint_score'] or 0)}</text>
+  <!-- Header -->
+  <text x="60" y="80" font-family="-apple-system, sans-serif" font-size="22" font-weight="700"
+        fill="#9ca3af" letter-spacing="2">DCPI · DC HUB POWER INDEX</text>
 
-  <text x="700" y="490" font-family="-apple-system, sans-serif" font-size="20" fill="#9ca3af">~{int(s['time_to_power_months'] or 0)}mo TO POWER</text>
+  <!-- Market name + region -->
+  <text x="60" y="180" font-family="-apple-system, sans-serif" font-size="76" font-weight="800"
+        fill="white" letter-spacing="-1">{s['market_name']}</text>
+  <text x="60" y="220" font-family="-apple-system, sans-serif" font-size="22"
+        fill="#9ca3af">{s['iso']} · {s['state']}</text>
 
-  <text x="60" y="580" font-family="-apple-system, sans-serif" font-size="22" font-weight="700" fill="{excess_color}">VERDICT: {s['verdict']}</text>
-  <text x="60" y="610" font-family="-apple-system, sans-serif" font-size="16" fill="#6b7280">dchub.cloud/dcpi/{slug}</text>
+  <!-- Excess Power, left column -->
+  <text x="60" y="320" font-family="-apple-system, sans-serif" font-size="18" font-weight="600"
+        fill="#9ca3af" letter-spacing="2">EXCESS POWER SCORE</text>
+  <text x="60" y="500" font-family="-apple-system, sans-serif" font-size="180" font-weight="800"
+        fill="{excess_color}" letter-spacing="-6">{excess_score}</text>
+
+  <!-- Constraint, right column -->
+  <text x="700" y="320" font-family="-apple-system, sans-serif" font-size="18" font-weight="600"
+        fill="#9ca3af" letter-spacing="2">CONSTRAINT</text>
+  <text x="700" y="450" font-family="-apple-system, sans-serif" font-size="120" font-weight="700"
+        fill="#9ca3af" letter-spacing="-3">{constraint_score}</text>
+  <text x="700" y="495" font-family="-apple-system, sans-serif" font-size="20" font-weight="600"
+        fill="#9ca3af" letter-spacing="2">~{ttp}mo TO POWER</text>
+
+  <!-- Verdict bottom -->
+  <text x="60" y="565" font-family="-apple-system, sans-serif" font-size="26" font-weight="800"
+        fill="{verdict_color}" letter-spacing="3">VERDICT: {s['verdict']}</text>
+
+  <!-- URL bottom right -->
+  <text x="1140" y="600" font-family="-apple-system, sans-serif" font-size="16"
+        fill="#6b7280" text-anchor="end">dchub.cloud/dcpi/{slug}</text>
 </svg>"""
-    return Response(svg, mimetype="image/svg+xml")
+    return Response(svg, mimetype="image/svg+xml",
+                    headers={"Cache-Control": "public, max-age=600, must-revalidate"})
 
 
 @dcpi_bp.route("/dcpi/press", methods=["GET"])
