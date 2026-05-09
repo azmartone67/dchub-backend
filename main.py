@@ -1,3 +1,4 @@
+from routes.freshness_universal import freshness_universal_bp
 from routes.heartbeat import heartbeat_bp
 from routes.dcpi_digest import dcpi_digest_bp
 from routes.dcpi_mcp import dcpi_mcp_bp
@@ -17714,3 +17715,6 @@ app.register_blueprint(dcpi_digest_bp)
 
 # phase 109F: register heartbeat
 app.register_blueprint(heartbeat_bp)
+
+# auto-registered: freshness_universal_bp
+app.register_blueprint(freshness_universal_bp)
