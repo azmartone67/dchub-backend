@@ -1,0 +1,14 @@
+name: DCPI Daily Recompute
+on:
+  schedule:
+    - cron: '0 6 * * *'   # 06:00 UTC daily
+  workflow_dispatch: {}
+jobs:
+  recompute:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger DCPI recompute
+        run: |
+          curl -sS -X POST "https://dchub.cloud/api/v1/dcpi/recompute" \
+            -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" \
+            | python3 -m json.tool

@@ -17645,6 +17645,7 @@ from routes.extractor_brain import extractor_brain_bp
 from routes.redeem_tracking import redeem_tracking_bp
 from routes.redeem_diagnostic import redeem_diagnostic_bp
 from routes.qa_patterns import qa_patterns_bp
+from routes.dcpi import dcpi_bp
 from routes.site_qa import site_qa_bp
 app.register_blueprint(admin_ai_deals_bp)
 app.register_blueprint(news_digests_read_bp)
@@ -17694,3 +17695,6 @@ except Exception:
 
 # phase 102d: register qa_patterns blueprint at module scope (was misplaced)
 app.register_blueprint(qa_patterns_bp)
+
+# phase 108: register DCPI blueprint
+app.register_blueprint(dcpi_bp)
