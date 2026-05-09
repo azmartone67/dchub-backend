@@ -1,3 +1,4 @@
+import datetime
 """Phase 115 — open data + research. The gift to the world.
 
   GET /data                         landing page
@@ -113,22 +114,130 @@ def research_market(slug):
     opps = (r.get("top_opportunities_json") or [])
     risk_html = "".join(f"<li>{x}</li>" for x in risks)
     opps_html = "".join(f"<li>{x}</li>" for x in opps)
-    return Response(f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+    excess = r.get("excess_power_score") or 0
+    constraint = r.get("constraint_score") or 0
+    excess_color = "#10b981" if excess >= 65 else "#f59e0b" if excess >= 40 else "#ef4444"
+    constraint_color = "#ef4444" if constraint >= 70 else "#f59e0b" if constraint >= 45 else "#10b981"
+    verdict = r.get("verdict") or "?"
+    verdict_color = {"BUILD": "#10b981", "CAUTION": "#f59e0b", "AVOID": "#ef4444"}.get(verdict, "#9ca3af")
+    return Response(f"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
 <title>{r['market_name']} · DC Hub Research</title>
-<style>body{{font-family:Georgia,serif;max-width:720px;margin:2rem auto;padding:2rem;line-height:1.7;color:#222}}
-h1{{font-size:2.2rem;margin:0 0 0.4rem}}h2{{font-size:1.2rem;margin:1.5rem 0 0.5rem}}
-.meta{{color:#666;font-size:0.85rem;margin:0 0 1.5rem}}
-.score-block{{background:#f5f5f7;padding:1rem;border-radius:6px;margin:1rem 0}}
-.score-block strong{{font-size:1.5rem;display:block}}.cite{{color:#666;font-size:0.85rem;margin-top:2rem;border-top:1px solid #ddd;padding-top:1rem}}</style></head>
-<body><h1>{r['market_name']}: A Power Market Report</h1>
-<p class="meta">{r['iso']} · {r['state']} · DC Hub · {datetime.datetime.utcnow().strftime("%B %Y")}</p>
-<div class="score-block"><strong>Excess Power Score: {r['excess_power_score']}</strong>Constraint Score: {r['constraint_score']} · Verdict: <strong>{r['verdict']}</strong> · Time-to-power: ~{int(r['time_to_power_months'] or 0)} months</div>
-<h2>Top Opportunities</h2><ul>{opps_html}</ul>
-<h2>Top Risks</h2><ul>{risk_html}</ul>
-<p class="cite">Cite as: DC Hub Power Index Research, {r['market_name']}, dchub.cloud/research/{slug}, accessed {datetime.date.today().isoformat()}.</p>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta property="og:title" content="DCPI Research · {r['market_name']}">
+<meta property="og:description" content="Excess Power {excess} · Constraint {constraint} · Verdict {verdict}. Updated {r['computed_at'].isoformat()[:10] if r.get('computed_at') else 'today'}.">
+<meta property="og:image" content="https://dchub.cloud/api/v1/dcpi/og/{slug}.svg">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root {{
+  --bg:#0a0a12; --card:#11121a; --bd:#1f2030; --bd-hi:#2a2c3e;
+  --tx:#fff; --tx2:#9ca3af; --tx3:#6b7280;
+  --acc:#6366f1; --acc-light:#818cf8;
+  --green:#10b981; --orange:#f59e0b; --red:#ef4444;
+  --gradient:linear-gradient(135deg,#6366f1 0%,#a855f7 100%);
+}}
+*{{box-sizing:border-box}}
+body{{font-family:'Inter',-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--tx);margin:0;padding:0;line-height:1.7;-webkit-font-smoothing:antialiased}}
+code,.mono{{font-family:'JetBrains Mono',monospace}}
+.top-nav{{border-bottom:1px solid var(--bd);background:rgba(10,10,18,0.85);backdrop-filter:blur(8px);position:sticky;top:0;z-index:100}}
+.top-nav-inner{{max-width:880px;margin:0 auto;padding:1rem 1.5rem;display:flex;align-items:center;justify-content:space-between;gap:1.5rem}}
+.logo{{font-weight:800;font-size:1.05rem;color:var(--tx);text-decoration:none}}
+.logo span{{color:var(--acc)}}
+.nav-links{{display:flex;gap:1.5rem;flex-wrap:wrap}}
+.nav-links a{{color:var(--tx2);text-decoration:none;font-size:0.92rem;font-weight:500}}
+.nav-links a:hover{{color:var(--tx)}}
+.wrap{{max-width:880px;margin:0 auto;padding:3rem 1.5rem}}
+.crumbs{{font-family:'JetBrains Mono',monospace;font-size:0.78rem;color:var(--tx3);margin-bottom:1.5rem}}
+.crumbs a{{color:var(--acc-light);text-decoration:none}}
+.crumbs a:hover{{color:var(--tx)}}
+h1{{font-size:clamp(2.4rem,5vw,3.4rem);margin:0 0 0.4rem;font-weight:800;letter-spacing:-0.025em;line-height:1.05}}
+.subtitle{{color:var(--tx2);font-family:'JetBrains Mono',monospace;font-size:0.92rem;margin:0 0 2.5rem;text-transform:uppercase;letter-spacing:0.06em}}
+.scoreboard{{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin:2rem 0}}
+.sb{{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:1.75rem;position:relative;overflow:hidden}}
+.sb::after{{content:'';position:absolute;inset:0;background:linear-gradient(135deg,rgba(99,102,241,0.06),transparent 60%);pointer-events:none}}
+.sb .v{{font-family:'JetBrains Mono',monospace;font-size:clamp(3rem,7vw,5rem);font-weight:800;line-height:1;letter-spacing:-0.03em}}
+.sb .l{{color:var(--tx2);font-size:0.78rem;text-transform:uppercase;letter-spacing:0.08em;margin-top:0.6rem;font-weight:600}}
+.verdict-banner{{padding:1.1rem 1.5rem;border-radius:10px;margin:2rem 0;font-weight:700;font-size:1rem;border:1px solid}}
+.section-h{{display:flex;align-items:center;gap:0.6rem;margin:2.5rem 0 1rem;font-size:0.78rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:var(--tx2)}}
+.section-h .pip{{width:4px;height:14px;background:var(--acc);border-radius:2px}}
+.section{{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:1.5rem 1.75rem}}
+.section ul{{padding-left:1.4rem;margin:0}}
+.section li{{margin:0.5rem 0;color:#ddd;font-size:0.95rem}}
+.cite{{color:var(--tx3);font-size:0.85rem;margin-top:3rem;border-top:1px solid var(--bd);padding-top:1.5rem;font-family:'JetBrains Mono',monospace}}
+.cite strong{{color:var(--tx2)}}
+.share{{margin-top:1.5rem;padding:1.25rem;background:var(--card);border:1px solid var(--bd);border-radius:10px}}
+.share .l{{color:var(--tx2);font-size:0.74rem;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.5rem}}
+.share img{{max-width:100%;border-radius:6px;border:1px solid var(--bd-hi)}}
+@media(max-width:600px){{.scoreboard{{grid-template-columns:1fr}}.nav-links{{display:none}}}}
+</style>
+</head><body>
+<nav class="top-nav">
+  <div class="top-nav-inner">
+    <a class="logo" href="/">DC <span>Hub</span></a>
+    <div class="nav-links">
+      <a href="/api/v1/dcpi/page">DCPI</a>
+      <a href="/api/v1/research">Research</a>
+      <a href="/api/v1/data">Open Data</a>
+      <a href="/pricing">Pricing</a>
+    </div>
+  </div>
+</nav>
+<div class="wrap">
+  <div class="crumbs"><a href="/api/v1/research">Research</a> / <a href="/api/v1/dcpi/page/{slug}">{r['market_name']}</a> / Power Market Report</div>
+  <h1>{r['market_name']}: A Power Market Report</h1>
+  <p class="subtitle">{r['iso']} · {r['state']} · DC Hub Power Index · {r['computed_at'].strftime("%B %Y") if r.get('computed_at') else 'May 2026'}</p>
+
+  <div class="verdict-banner" style="background:rgba({hex_to_rgb(verdict_color)},0.10);border-color:{verdict_color};color:{verdict_color};">
+    {'🟢 BUILD HERE — Excess capacity available, manageable constraints.' if verdict=='BUILD' else
+     '🟡 CAUTION — Mixed signals, due-diligence required.' if verdict=='CAUTION' else
+     '🔴 AVOID FOR NEW BUILDS — Severe constraints, multi-year wait.'}
+  </div>
+
+  <div class="scoreboard">
+    <div class="sb">
+      <div class="v" style="color:{excess_color}">{int(excess)}</div>
+      <div class="l">Excess Power Score · Opportunity</div>
+    </div>
+    <div class="sb">
+      <div class="v" style="color:{constraint_color}">{int(constraint)}</div>
+      <div class="l">Constraint Score · Avoid</div>
+    </div>
+  </div>
+
+  <div class="section-h"><span class="pip"></span>🌟 Top Opportunities</div>
+  <div class="section"><ul>{opps_html}</ul></div>
+
+  <div class="section-h"><span class="pip"></span>⚠️ Top Risks</div>
+  <div class="section"><ul>{risk_html}</ul></div>
+
+  <div class="section-h"><span class="pip"></span>📋 Methodology</div>
+  <div class="section">
+    <p style="margin:0;color:#ddd;font-size:0.94rem;line-height:1.7">
+      <strong>Excess Power Score</strong> ({int(excess)}/100) combines reserve-margin headroom, generation additions queued &lt;12 months, renewable curtailment volume, queue approval rate, stranded interconnection at retiring plants, and behind-the-meter industrial generation.
+      <br><br>
+      <strong>Constraint Score</strong> ({int(constraint)}/100) combines queue wait time, reserve margin proximity to NERC floor (13%), demand-growth YoY, and 30-day grid-emergency frequency.
+      <br><br>
+      <strong>Time-to-power</strong> (~{int(r.get('time_to_power_months') or 0)} months) is the ISO's median interconnection-queue wait time adjusted for reserve-margin headroom (faster fast-track when reserves are abundant).
+      <br><br>
+      Daily refresh from ISO public filings + DC Hub's grid-feed extractors. Free for press citation.
+    </p>
+  </div>
+
+  <div class="share">
+    <div class="l">Embed in your article</div>
+    <img src="/api/v1/dcpi/og/{slug}.svg" alt="DCPI {r['market_name']}" />
+  </div>
+
+  <p class="cite"><strong>Cite as:</strong> DC Hub Power Index Research, {r['market_name']}, https://dchub.cloud/research/{slug}, accessed {datetime.date.today().isoformat()}.</p>
+</div>
 </body></html>""", mimetype="text/html")
 
-# === Phase 117A: CF-allowlisted aliases under /api/v1/* ===
+
+def hex_to_rgb(hx):
+    hx = hx.lstrip("#")
+    return f"{int(hx[0:2],16)},{int(hx[2:4],16)},{int(hx[4:6],16)}"
+
+
+
 @open_data_bp.route("/api/v1/data", methods=["GET"])
 def data_landing_alias():
     return data_landing()
