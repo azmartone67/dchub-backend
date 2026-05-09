@@ -1,0 +1,12 @@
+name: Heartbeat Auto-Refresh
+on:
+  schedule:
+    - cron: '*/30 * * * *'   # every 30 minutes
+  workflow_dispatch: {}
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          curl -sS -X POST "https://dchub.cloud/api/v1/heartbeat/auto" \
+            | python3 -m json.tool
