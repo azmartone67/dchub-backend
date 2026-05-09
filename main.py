@@ -1,3 +1,4 @@
+from routes.lab import lab_bp
 from routes.seedlings import seedlings_bp
 from routes.leaf_fall import leaf_fall_bp
 from routes.variants import variants_bp
@@ -17730,3 +17731,6 @@ app.register_blueprint(leaf_fall_bp)
 
 # auto-registered: seedlings_bp
 app.register_blueprint(seedlings_bp)
+
+# auto-registered: lab_bp
+app.register_blueprint(lab_bp)
