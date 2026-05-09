@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Seed initial A/B variants for /dcpi. Idempotent."""
+"""Seed initial A/B variants for /dcpi. Idempotent. Phase 127A: proper UA."""
 import os, json, urllib.request
 
 API = os.environ.get("DCHUB_API_BASE", "https://dchub.cloud")
@@ -22,11 +22,15 @@ for v in VARIANTS:
     req = urllib.request.Request(
         API + "/api/v1/variants",
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "Mozilla/5.0 (compatible; DCHub-Seed/1.0; +https://dchub.cloud)",
+        },
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=10) as r:
+        with urllib.request.urlopen(req, timeout=15) as r:
             label = v["label"]
             surface = v["surface"]
             print("  [{0}] {1}/{2}".format(r.status, surface, label))
