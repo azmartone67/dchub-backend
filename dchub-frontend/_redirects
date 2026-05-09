@@ -90,17 +90,17 @@
 # /markets/eastern-pennsylvania — now has its own page
 
 # === phase 120: clean URLs → /api/v1/* aliases (CF worker only forwards /api/*) ===
-/dcpi                       /api/v1/dcpi/page                  200
-/dcpi/                      /api/v1/dcpi/page                  200
-/dcpi/og/:slug.svg          /api/v1/dcpi/og/:slug.svg          200
-/dcpi/og/:slug              /api/v1/dcpi/og/:slug              200
-/dcpi/embed/:slug           /api/v1/dcpi/embed/:slug           200
-/dcpi/press                 /api/v1/dcpi/press                 200
-/dcpi/:slug                 /api/v1/dcpi/page/:slug            200
-/data                       /api/v1/data                       200
-/data/dcpi-current.json     /api/v1/data/dcpi-current.json     200
-/data/dcpi-history.csv      /api/v1/data/dcpi-history.csv      200
-/research                   /api/v1/research                   200
-/research/:slug             /api/v1/research/:slug             200
-/heartbeat                  /api/v1/heartbeat/page             200
-/lab                        /api/v1/lab/page                   200
+/dcpi                       /api/v1/dcpi/page                  302
+/dcpi/                      /api/v1/dcpi/page                  302
+/dcpi/og/:slug.svg          /api/v1/dcpi/og/:slug.svg          302
+/dcpi/og/:slug              /api/v1/dcpi/og/:slug              302
+/dcpi/embed/:slug           /api/v1/dcpi/embed/:slug           302
+/dcpi/press                 /api/v1/dcpi/press                 302
+/dcpi/:slug                 /api/v1/dcpi/page/:slug            302
+/data                       /api/v1/data                       302
+/data/dcpi-current.json     /api/v1/data/dcpi-current.json     302
+/data/dcpi-history.csv      /api/v1/data/dcpi-history.csv      302
+/research                   /api/v1/research                   302
+/research/:slug             /api/v1/research/:slug             302
+/heartbeat                  /api/v1/heartbeat/page             302
+/lab                        /api/v1/lab/page                   302
