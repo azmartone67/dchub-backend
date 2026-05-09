@@ -39,27 +39,50 @@ def _ensure_outreach_log():
 
 
 def _high_intent_targets(limit=200):
-    """Pull the high-intent paywalled users from the last 30 days, grouped
-    by email, with their tool history."""
+    """Phase 117B: pull from mcp_dev_keys + redeem_attempts joined to
+    mcp_upgrade_signals to find users we actually have emails for. Order by
+    paywall_hit_count from upgrade_signals if we can match by session_id,
+    else by key creation order."""
     with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        # Source A: dev key holders we already have
         cur.execute("""
             SELECT
-                user_email AS email,
-                COUNT(*)   AS hit_count,
-                ARRAY_AGG(DISTINCT tool_requested) AS tools,
-                MAX(tool_requested) AS last_tool,
-                MAX(created_at) AS last_hit_at
-            FROM mcp_upgrade_signals
-            WHERE user_email IS NOT NULL
-              AND user_email != ''
-              AND created_at > NOW() - INTERVAL '30 days'
-              AND tier_required IN ('pro','enterprise','paid','developer')
-            GROUP BY user_email
-            HAVING COUNT(*) >= 1
-            ORDER BY hit_count DESC
+                k.email,
+                COUNT(s.id) AS hit_count,
+                ARRAY_AGG(DISTINCT s.tool_requested) FILTER (WHERE s.tool_requested IS NOT NULL) AS tools,
+                MAX(s.tool_requested) AS last_tool,
+                MAX(COALESCE(s.created_at, k.created_at)) AS last_hit_at
+            FROM mcp_dev_keys k
+            LEFT JOIN mcp_upgrade_signals s
+                ON s.user_email = k.email
+            WHERE k.email IS NOT NULL AND k.email != ''
+              AND k.tier IN ('free','paid','enterprise')
+              AND k.created_at > NOW() - INTERVAL '60 days'
+            GROUP BY k.email
+            ORDER BY COUNT(s.id) DESC NULLS LAST, MAX(k.created_at) DESC
             LIMIT %s
         """, (limit,))
-        return cur.fetchall()
+        primary = cur.fetchall()
+
+        # Source B: emails captured from redeem_attempts even if no key persisted
+        cur.execute("""
+            SELECT
+                ra.email,
+                0 AS hit_count,
+                ARRAY[]::text[] AS tools,
+                NULL AS last_tool,
+                MAX(ra.attempted_at) AS last_hit_at
+            FROM redeem_attempts ra
+            WHERE ra.email IS NOT NULL AND ra.email != ''
+              AND ra.attempted_at > NOW() - INTERVAL '30 days'
+              AND NOT EXISTS (SELECT 1 FROM mcp_dev_keys k WHERE k.email = ra.email)
+            GROUP BY ra.email
+            ORDER BY MAX(ra.attempted_at) DESC
+            LIMIT %s
+        """, (max(0, limit - len(primary)),))
+        secondary = cur.fetchall()
+
+        return list(primary) + list(secondary)
 
 
 def _existing_or_new_key(email: str):
