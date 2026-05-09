@@ -947,41 +947,81 @@ buttons.forEach(b => b.addEventListener('click', () => {
 }));
 </script>
 
-<div id="ask-the-index" style="position:fixed;bottom:1.5rem;right:1.5rem;width:380px;max-width:calc(100vw - 3rem);background:#11121a;border:1px solid #2a2c3e;border-radius:14px;padding:1.1rem;font-family:Inter,system-ui;color:white;box-shadow:0 12px 40px rgba(0,0,0,0.4);z-index:1000;">
+
+<div id="ask-the-index" style="position:fixed;bottom:1.5rem;right:1.5rem;width:400px;max-width:calc(100vw - 3rem);background:#11121a;border:1px solid #2a2c3e;border-radius:14px;padding:1.1rem;font-family:Inter,system-ui;color:white;box-shadow:0 16px 48px rgba(0,0,0,0.5);z-index:1000;">
   <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.6rem;">
     <span style="display:inline-block;width:8px;height:8px;background:#10b981;border-radius:50%;animation:pulse 1.4s ease-in-out infinite;"></span>
     <strong style="font-size:0.78rem;letter-spacing:0.06em;text-transform:uppercase;color:#9ca3af;">Ask the Index</strong>
   </div>
-  <div id="ask-out" style="font-size:0.88rem;line-height:1.55;min-height:60px;color:#ddd;margin-bottom:0.6rem;max-height:240px;overflow-y:auto;">
-    Ask anything about U.S. data center power markets — try: <em>show me markets above 70 excess within 300 miles of Atlanta</em>
+  <div id="ask-out" style="font-size:0.88rem;line-height:1.55;min-height:80px;color:#ddd;margin-bottom:0.6rem;max-height:340px;overflow-y:auto;padding:0.4rem 0;">
+    Ask anything about U.S. data center power markets — try: <em style="color:#a5b4fc">show me markets above 70 excess within 300 miles of Atlanta</em>
   </div>
-  <textarea id="ask-q" placeholder="e.g. where can I get 100MW within 12 months?" style="width:100%;background:#0a0a12;border:1px solid #1f2030;color:white;padding:0.6rem 0.8rem;border-radius:6px;font-family:inherit;font-size:0.88rem;min-height:54px;resize:none;"></textarea>
-  <button id="ask-go" style="width:100%;margin-top:0.5rem;background:linear-gradient(135deg,#6366f1,#a855f7);color:white;border:0;padding:0.55rem;border-radius:6px;font-weight:700;font-size:0.85rem;cursor:pointer;">Ask DCPI →</button>
+  <textarea id="ask-q" placeholder="e.g. where can I get 100MW within 12 months?" style="width:100%;background:#0a0a12;border:1px solid #1f2030;color:white;padding:0.6rem 0.8rem;border-radius:6px;font-family:inherit;font-size:0.88rem;min-height:54px;resize:none;outline:none;"></textarea>
+  <button id="ask-go" style="width:100%;margin-top:0.5rem;background:linear-gradient(135deg,#6366f1,#a855f7);color:white;border:0;padding:0.6rem;border-radius:6px;font-weight:700;font-size:0.88rem;cursor:pointer;">Ask DCPI →</button>
 </div>
 <script>
 (function(){
-  var go = document.getElementById('ask-go');
-  var q = document.getElementById('ask-q');
-  var out = document.getElementById('ask-out');
-  if (!go) return;
-  go.addEventListener('click', async function(){
-    var question = q.value.trim();
-    if (!question) return;
-    out.innerHTML = '<em style="color:#9ca3af;">Thinking…</em>';
-    go.disabled = true;
-    try {
-      var r = await fetch('/api/v1/dcpi/ask?q=' + encodeURIComponent(question));
-      var d = await r.json();
-      out.innerHTML = (d.answer || 'No answer.').replace(/\n/g, '<br>');
-    } catch(e) {
-      out.innerHTML = '<span style="color:#ef4444;">Error: ' + e + '</span>';
-    } finally {
-      go.disabled = false;
+  function bind(){
+    var go = document.getElementById('ask-go');
+    var q = document.getElementById('ask-q');
+    var out = document.getElementById('ask-out');
+    if (!go || !q || !out) {
+      console.error('[Ask DCPI] DOM elements not found', {go: !!go, q: !!q, out: !!out});
+      return;
     }
-  });
-  q.addEventListener('keydown', function(e){
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { go.click(); }
-  });
+    console.log('[Ask DCPI] handlers bound');
+
+    function showError(msg){
+      out.innerHTML = '<span style="color:#ef4444;">' + msg + '</span>';
+    }
+
+    async function send(){
+      var question = (q.value || '').trim();
+      if (!question) { q.focus(); return; }
+      out.innerHTML = '<em style="color:#9ca3af;">Thinking…</em>';
+      go.disabled = true;
+      go.style.opacity = '0.6';
+      try {
+        var resp = await fetch('/api/v1/dcpi/ask?q=' + encodeURIComponent(question), {
+          method: 'GET',
+          headers: { 'Accept': 'application/json' },
+          credentials: 'same-origin'
+        });
+        if (!resp.ok) {
+          showError('HTTP ' + resp.status + ': ' + (await resp.text()).slice(0, 200));
+          return;
+        }
+        var data = await resp.json();
+        if (data.error) {
+          showError(data.error);
+          return;
+        }
+        var answer = (data.answer || 'No answer.')
+          .replace(/\\n/g, '<br>')
+          .replace(/\[([^\]]+)\]/g, '<strong style="color:#a5b4fc">[$1]</strong>');
+        out.innerHTML = answer;
+      } catch(e) {
+        console.error('[Ask DCPI] fetch error', e);
+        showError('Error: ' + (e && e.message ? e.message : e));
+      } finally {
+        go.disabled = false;
+        go.style.opacity = '1';
+      }
+    }
+
+    go.addEventListener('click', send);
+    q.addEventListener('keydown', function(e){
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        send();
+      }
+    });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', bind);
+  } else {
+    bind();
+  }
 })();
 </script>
 
