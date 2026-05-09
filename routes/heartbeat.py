@@ -221,29 +221,28 @@ def api_heartbeat():
 
 @heartbeat_bp.route("/api/v1/heartbeat/auto", methods=["POST", "GET"])
 def api_auto_refresh():
-    """Refresh anything that's stale, OR mark unknown as verified-fresh.
-
-    Phase 124A: surfaces with noop refreshers (static pages without dynamic
-    content) get marked last_updated=NOW so they show as fresh — being
-    'verified to exist' is a valid form of liveness for static surfaces.
+    """Phase 126C: batched — process at most 50 surfaces per call to stay
+    well under the CF worker 30s timeout. Cron calls every 30 min, so even
+    if 856 surfaces take ~17 calls to fully cover, we touch all of them
+    within ~9 hours. Surfaces are processed oldest-first.
     """
+    from flask import request as _req
+    BATCH = int(_req.args.get("batch", "50"))
     s = _status()
+    # Sort by oldest last_updated first (None = never refreshed = highest priority)
+    s.sort(key=lambda r: (r.get("last_updated") or "0000-00-00"))
     refreshed = []
     for r in s:
-        if r.get("refresh_func"):
-            fn = REFRESH_FUNCS.get(r["refresh_func"])
-            if fn:
-                # Always run for stale OR unknown surfaces
-                if r["status"] in ("stale", "unknown"):
-                    ok, info = fn()
-                    _mark_updated(r["surface"], ok, info)
-                    refreshed.append({
-                        "surface": r["surface"],
-                        "ok": ok,
-                        "info": info,
-                        "was": r["status"],
-                    })
-    return jsonify(refreshed=refreshed, count=len(refreshed)), 200
+        if len(refreshed) >= BATCH: break
+        if not r.get("refresh_func"): continue
+        if r["status"] not in ("stale", "unknown"): continue
+        fn = REFRESH_FUNCS.get(r["refresh_func"])
+        if not fn: continue
+        ok, info = fn()
+        _mark_updated(r["surface"], ok, info)
+        refreshed.append({"surface": r["surface"], "ok": ok, "info": str(info)[:80], "was": r["status"]})
+    return jsonify(refreshed=refreshed, count=len(refreshed),
+                   batch_size=BATCH, total_surfaces=len(s)), 200
 
 
 
