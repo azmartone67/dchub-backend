@@ -187,3 +187,29 @@ def digest_send():
     except Exception as e:
         return jsonify(error=str(e), sent=sent, failed=failed), 500
     return jsonify(sent=sent, failed=failed, recipient_count=len(emails)), 200
+
+@digest_bp.route("/api/v1/digest/subscribe", methods=["POST"])
+def subscribe():
+    """Sign someone up for the daily digest."""
+    from flask import request
+    body = request.get_json(silent=True) or {}
+    email = (body.get("email") or request.form.get("email") or "").strip().lower()
+    if not email or "@" not in email:
+        return jsonify(error="valid email required"), 400
+    _ensure_subscribers()
+    with _conn() as c, c.cursor() as cur:
+        cur.execute("""INSERT INTO digest_subscribers (email, source, subscribed_at)
+            VALUES (%s, 'dcpi-form', NOW())
+            ON CONFLICT (email) DO UPDATE SET subscribed_at = NOW(), unsubscribed_at = NULL
+            RETURNING id""", (email,))
+        sid = cur.fetchone()[0]; c.commit()
+    return jsonify(ok=True, subscriber_id=sid), 200
+
+
+def _ensure_subscribers():
+    with _conn() as c, c.cursor() as cur:
+        cur.execute("""CREATE TABLE IF NOT EXISTS digest_subscribers (
+            id SERIAL PRIMARY KEY, email TEXT UNIQUE NOT NULL, source TEXT,
+            subscribed_at TIMESTAMPTZ DEFAULT NOW(), unsubscribed_at TIMESTAMPTZ)""")
+        c.commit()
+

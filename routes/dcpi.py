@@ -991,6 +991,51 @@ buttons.forEach(b => b.addEventListener('click', () => {
 })();
 </script>
 
+
+<div id="dcpi-subscribe" style="margin:3rem 0;background:linear-gradient(135deg,rgba(99,102,241,0.10),rgba(168,85,247,0.06));border:1px solid #2a2c3e;border-radius:14px;padding:1.5rem;">
+  <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:0.6rem;font-family:Inter,sans-serif;">
+    <span style="width:4px;height:12px;background:#6366f1;border-radius:2px;"></span>
+    <span style="font-size:0.78rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#9ca3af;">📬 Daily DCPI Brief</span>
+  </div>
+  <h3 style="margin:0 0 0.4rem;font-size:1.2rem;font-weight:700;font-family:Inter,sans-serif;">Wake up to the DC market.</h3>
+  <p style="margin:0 0 1rem;color:#9ca3af;font-size:0.92rem;font-family:Inter,sans-serif;">Top 5 BUILD markets, biggest movers, news count — emailed Mon–Fri at 14:00 UTC. Free.</p>
+  <form id="dcpi-sub-form" style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+    <input type="email" id="dcpi-sub-email" placeholder="you@company.com" required
+      style="flex:1;min-width:220px;background:#0a0a12;border:1px solid #1f2030;color:white;padding:0.7rem 1rem;border-radius:6px;font-family:Inter,sans-serif;font-size:0.92rem;outline:none;">
+    <button type="submit" id="dcpi-sub-go"
+      style="background:linear-gradient(135deg,#6366f1,#a855f7);color:white;border:0;padding:0.7rem 1.3rem;border-radius:6px;font-weight:700;font-size:0.9rem;cursor:pointer;font-family:Inter,sans-serif;">Subscribe →</button>
+  </form>
+  <div id="dcpi-sub-msg" style="margin-top:0.6rem;font-size:0.85rem;color:#9ca3af;font-family:Inter,sans-serif;"></div>
+</div>
+<script>
+(function(){
+  const f = document.getElementById('dcpi-sub-form'); if (!f) return;
+  f.addEventListener('submit', async function(e){
+    e.preventDefault();
+    const em = document.getElementById('dcpi-sub-email').value.trim();
+    const msg = document.getElementById('dcpi-sub-msg');
+    const btn = document.getElementById('dcpi-sub-go');
+    btn.disabled = true;
+    msg.textContent = 'Subscribing...';
+    try {
+      const r = await fetch('/api/v1/digest/subscribe', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({email: em})
+      });
+      const d = await r.json();
+      if (d.ok) {
+        msg.innerHTML = '<span style="color:#10b981">✓ You\'re in. First brief lands tomorrow at 14:00 UTC.</span>';
+        document.getElementById('dcpi-sub-email').value = '';
+      } else {
+        msg.innerHTML = '<span style="color:#ef4444">' + (d.error || 'error') + '</span>';
+      }
+    } catch (e) {
+      msg.innerHTML = '<span style="color:#ef4444">Error: ' + e + '</span>';
+    } finally { btn.disabled = false; }
+  });
+})();
+</script>
+
 <div id="ask-the-index" style="position:fixed;bottom:1.5rem;right:1.5rem;width:400px;max-width:calc(100vw - 3rem);background:#11121a;border:1px solid #2a2c3e;border-radius:14px;padding:1.1rem;font-family:Inter,system-ui;color:white;box-shadow:0 16px 48px rgba(0,0,0,0.5);z-index:1000;">
   <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.6rem;">
     <span style="display:inline-block;width:8px;height:8px;background:#10b981;border-radius:50%;animation:pulse 1.4s ease-in-out infinite;"></span>
