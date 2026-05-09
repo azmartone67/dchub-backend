@@ -127,3 +127,25 @@ h1{{font-size:2.2rem;margin:0 0 0.4rem}}h2{{font-size:1.2rem;margin:1.5rem 0 0.5
 <h2>Top Risks</h2><ul>{risk_html}</ul>
 <p class="cite">Cite as: DC Hub Power Index Research, {r['market_name']}, dchub.cloud/research/{slug}, accessed {datetime.date.today().isoformat()}.</p>
 </body></html>""", mimetype="text/html")
+
+# === Phase 117A: CF-allowlisted aliases under /api/v1/* ===
+@open_data_bp.route("/api/v1/data", methods=["GET"])
+def data_landing_alias():
+    return data_landing()
+
+@open_data_bp.route("/api/v1/data/dcpi-history.csv", methods=["GET"])
+def dcpi_history_csv_alias():
+    return dcpi_history_csv()
+
+@open_data_bp.route("/api/v1/data/dcpi-current.json", methods=["GET"])
+def dcpi_current_json_alias():
+    return dcpi_current_json()
+
+@open_data_bp.route("/api/v1/research", methods=["GET"])
+def research_landing_alias():
+    return research_landing()
+
+@open_data_bp.route("/api/v1/research/<slug>", methods=["GET"])
+def research_market_alias(slug):
+    return research_market(slug)
+

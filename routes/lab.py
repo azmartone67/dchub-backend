@@ -125,3 +125,9 @@ def decide(eid):
         r = cur.fetchone(); c.commit()
     if not r: return jsonify(error="not found"), 404
     return jsonify(id=eid, decision=decision), 200
+
+# === Phase 117A: /api/v1/lab/page is the CF-allowlisted alias for /lab ===
+@lab_bp.route("/api/v1/lab/page", methods=["GET"])
+def lab_dashboard_alias():
+    return lab_dashboard()
+

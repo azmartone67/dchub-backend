@@ -227,3 +227,9 @@ h1 .heart{display:inline-block;width:14px;height:14px;background:var(--green);bo
 <div class="win">{r.get('last_refresh_info','') or ''}</div></div>'''
     HTML += "</div></div></body></html>"
     return HTML
+
+# === Phase 117A: /api/v1/heartbeat/page is CF-allowlisted ===
+@heartbeat_bp.route("/api/v1/heartbeat/page", methods=["GET"])
+def heartbeat_page_alias():
+    return heartbeat_page()
+
