@@ -17660,6 +17660,18 @@ from routes.redeem_diagnostic import redeem_diagnostic_bp
 from routes.qa_patterns import qa_patterns_bp
 from routes.dcpi import dcpi_bp
 from routes.site_qa import site_qa_bp
+
+try:
+    from routes._freshness import freshness_dict_from_url
+except Exception:
+    def freshness_dict_from_url():
+        return {
+            "iso_ingest_age_seconds": None,
+            "news_age_seconds": None,
+            "testimonials_age_seconds": None,
+            "stats_snapshot_age_seconds": None,
+        }
+
 app.register_blueprint(admin_ai_deals_bp)
 app.register_blueprint(news_digests_read_bp)
 app.register_blueprint(sources_bp)
@@ -17750,3 +17762,16 @@ app.register_blueprint(digest_bp)
 
 # auto-registered: press_queue_bp
 app.register_blueprint(press_queue_bp)
+
+# === Brain v2 · Layer 3 freshness fields ===
+try:
+    from flask import jsonify as _bv2_jsonify
+    @app.route("/api/health/freshness", methods=["GET"])
+    def _bv2_health_freshness():
+        return _bv2_jsonify(freshness_dict_from_url())
+    @app.route("/api/v1/health/freshness", methods=["GET"])
+    def _bv2_health_freshness_v1():
+        return _bv2_jsonify(freshness_dict_from_url())
+except (NameError, ImportError):
+    pass
+
