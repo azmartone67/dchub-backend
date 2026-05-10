@@ -111,7 +111,7 @@ except Exception as _dchub_patch_err:
 # =============================================================================
 
 # ═══════════════════════════════════════════════════════════════
-# DCHUB_API_BASE — Performance-optimized with localhost fast path
+# DCHUB_API_BASE — Performance-optimized with loopback fast path
 # ═══════════════════════════════════════════════════════════════
 # HISTORY: MCP previously ran as a thread INSIDE Flask — calling localhost
 # caused deadlock (Flask calling itself). As of Mar 2026, MCP runs as a

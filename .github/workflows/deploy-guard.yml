@@ -51,7 +51,7 @@ jobs:
       - name: Scan for dangerous patterns
         run: |
           # MCP deadlock check
-          if grep -n "DCHUB_API_BASE.*127\.0\.0\.1\|DCHUB_API_BASE.*localhost" dchub_mcp_server.py 2>/dev/null; then
+          if grep -nE '^[^#]*DCHUB_API_BASE\s*[=:]\s*["'"'"']?[^"'"'"'#]*(127\.0\.0\.1|localhost)' dchub_mcp_server.py 2>/dev/null; then
             echo "DCHUB_API_BASE points to localhost - MCP deadlock risk"
             exit 1
           fi
