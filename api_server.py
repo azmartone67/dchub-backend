@@ -3137,6 +3137,7 @@ if __name__ == '__main__':
 # returns a 200 no-op so the cron tail-log stays green and we can wire the
 # real entry function in a follow-up without breaking anything.
 from datetime import datetime as _dchub_refresh_dt
+from routes._freshness import freshness_dict_from_url
 
 def _dchub_try_run(*candidates):
     """Try each (module, attr) pair until one resolves and returns its result."""
