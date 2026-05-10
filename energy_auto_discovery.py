@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 from internal_auth import is_valid_internal_key, get_internal_key_for_client
+from routes._freshness import freshness_dict_from_url
 
 logger = logging.getLogger('energy_discovery')
 

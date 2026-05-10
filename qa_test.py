@@ -23,7 +23,6 @@ import argparse
 import urllib.request
 import urllib.error
 from datetime import datetime
-from routes._freshness import freshness_dict_from_url
 
 # ── Targets ──────────────────────────────────────────────────────────────────
 TARGETS = {
