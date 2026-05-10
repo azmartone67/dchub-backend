@@ -7746,12 +7746,53 @@ def list_markets():
 
             row = c.fetchone()
             if row and row[0] > 0:
+                # Pipeline MW — facilities in construction/planned/permitting
+                c.execute(f"""
+                    SELECT COALESCE(SUM(power_mw), 0)
+                    FROM discovered_facilities
+                    WHERE ({where_clause})
+                    {country_guard}
+                    {RAILWAY_EXCLUSION}
+                    AND status IN ('construction','planned','permitting','Under Construction','Planned','Construction','planned/proposed')
+                """, params)
+                pipeline_mw_total = round((c.fetchone() or [0])[0], 1)
+
+                # Avg $/kWh — EIA price for this market's dominant state
+                avg_kwh_price_usd = None
+                try:
+                    c.execute(f"""
+                        SELECT state, COUNT(*) AS cnt
+                        FROM discovered_facilities
+                        WHERE ({where_clause})
+                        {country_guard}
+                        {RAILWAY_EXCLUSION}
+                        AND state IS NOT NULL AND state != ''
+                        GROUP BY state
+                        ORDER BY cnt DESC
+                        LIMIT 1
+                    """, params)
+                    top = c.fetchone()
+                    if top and top[0]:
+                        c.execute("""
+                            SELECT AVG(price_cents_kwh) / 100.0
+                            FROM eia_electricity_rates
+                            WHERE state = %s AND sector = 'ALL'
+                              AND retrieved_at > NOW() - INTERVAL '365 days'
+                        """, (top[0],))
+                        kr = c.fetchone()
+                        if kr and kr[0] is not None:
+                            avg_kwh_price_usd = round(float(kr[0]), 4)
+                except Exception:
+                    pass
+
                 markets.append({
                     'id': market_key,
                     'name': market_key.replace('_', ' ').title(),
                     'cities': cities[:5],  # Top 5 cities
                     'facility_count': row[0],
-                    'total_power_mw': round(row[1], 1)
+                    'total_power_mw': round(row[1], 1),
+                    'pipeline_mw_total': pipeline_mw_total,
+                    'avg_kwh_price_usd': avg_kwh_price_usd,
                 })
 
         # Sort by facility count
