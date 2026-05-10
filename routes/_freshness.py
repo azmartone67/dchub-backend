@@ -117,3 +117,60 @@ def freshness_dict_from_url(database_url: str | None = None) -> dict:
             "iso_ingest_age_seconds", "news_age_seconds",
             "testimonials_age_seconds", "stats_snapshot_age_seconds",
         ]}
+
+
+def introspect_freshness_candidates():
+    """List tables in the public schema that look like ingestion sources,
+    with each's MAX(timestamp) where a timestamp column is detectable.
+    """
+    import os
+    url = os.environ.get("DATABASE_URL")
+    out = {"tables": [], "error": None}
+    if not url:
+        out["error"] = "DATABASE_URL not set"
+        return out
+    try:
+        import psycopg2
+        conn = psycopg2.connect(url, connect_timeout=5)
+        try:
+            with conn.cursor() as cur:
+                # Find candidate tables (anything that looks like a snapshot/ingest/news/testimonial)
+                cur.execute("""
+                    SELECT table_name FROM information_schema.tables
+                    WHERE table_schema = 'public'
+                      AND table_name ~* '(iso|news|test|stats|grid|article|eia|snap|capture|ingest|fetch|publi|monitor|heartbeat)'
+                    ORDER BY table_name
+                    LIMIT 50;
+                """)
+                table_names = [r[0] for r in cur.fetchall()]
+
+                for t in table_names:
+                    # Find any timestamp column
+                    cur.execute("""
+                        SELECT column_name FROM information_schema.columns
+                        WHERE table_schema='public' AND table_name=%s
+                          AND data_type IN ('timestamp without time zone','timestamp with time zone','date')
+                        ORDER BY ordinal_position
+                        LIMIT 5;
+                    """, (t,))
+                    cols = [r[0] for r in cur.fetchall()]
+                    entry = {"table": t, "timestamp_columns": cols, "max_ts": None, "row_count": None}
+                    # Get row count + max timestamp on first candidate column
+                    try:
+                        cur.execute(f"SELECT COUNT(*) FROM {t};")
+                        entry["row_count"] = cur.fetchone()[0]
+                    except Exception:
+                        pass
+                    if cols:
+                        try:
+                            cur.execute(f"SELECT MAX({cols[0]}) FROM {t};")
+                            v = cur.fetchone()[0]
+                            entry["max_ts"] = v.isoformat() if v else None
+                        except Exception as e:
+                            entry["max_ts_error"] = str(e)[:100]
+                    out["tables"].append(entry)
+        finally:
+            conn.close()
+    except Exception as e:
+        out["error"] = str(e)
+    return out
