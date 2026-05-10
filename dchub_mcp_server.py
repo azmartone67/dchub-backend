@@ -162,6 +162,7 @@ except ImportError:
 import psycopg2
 import psycopg2.extras
 from mcp_upgrade_gate import gated, gate_tool_call
+from routes._freshness import freshness_dict_from_url
 
 def _get_connection():
     """Get a direct Neon database connection for MCP tools."""
