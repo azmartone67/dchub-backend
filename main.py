@@ -17662,7 +17662,7 @@ from routes.dcpi import dcpi_bp
 from routes.site_qa import site_qa_bp
 
 try:
-    from routes._freshness import freshness_dict_from_url, introspect_freshness_candidates
+    from routes._freshness import freshness_dict_from_url, introspect_freshness_candidates, diag_for_brain_v2
 except Exception:
     def freshness_dict_from_url():
         return {
@@ -17781,6 +17781,15 @@ try:
     def _bv2_freshness_tables():
         from flask import jsonify
         return jsonify(introspect_freshness_candidates())
+except (NameError, ImportError):
+    pass
+
+# === Brain v2 · one-shot diagnostic ===
+try:
+    from flask import jsonify as _bv2_diag_jsonify
+    @app.route("/api/health/diag", methods=["GET"])
+    def _bv2_diag():
+        return _bv2_diag_jsonify(diag_for_brain_v2())
 except (NameError, ImportError):
     pass
 
