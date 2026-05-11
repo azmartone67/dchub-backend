@@ -1,0 +1,152 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>DCPI Methodology · How DC Hub scores data center markets</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="The Data Center Power Index methodology — peer-reviewable scoring framework covering 132 markets across 12 countries. Components, weights, data sources, refresh cadence, and limitations.">
+<meta property="og:title" content="DCPI Methodology · DC Hub">
+<meta property="og:description" content="Open methodology for the Data Center Power Index: 132 markets, 4 components, weekly refresh, transparent scoring.">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<style id="bg">html,body{background:rgb(5,8,16)!important;margin:0!important;padding:0!important;color-scheme:dark!important}</style>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;700;800&display=swap">
+<style>
+  :root{--bg:rgb(5,8,16);--card:#11121a;--bd:#1f2030;--tx:#e8eef8;--tx2:#9eb5d8;--acc:#5aa3ff;--purple:#a78bfa}
+  html,body{background:var(--bg);color:var(--tx);margin:0;padding:0;font-family:'Instrument Sans',system-ui,sans-serif;line-height:1.7}
+  .wrap{max-width:820px;margin:0 auto;padding:48px 24px}
+  .eyebrow{font-size:13px;color:var(--acc);text-transform:uppercase;letter-spacing:.15em;font-weight:700;margin:0 0 12px}
+  h1{font-weight:800;font-size:48px;margin:0 0 16px;letter-spacing:-0.02em;line-height:1.1}
+  .lede{color:var(--tx2);font-size:20px;margin:0 0 32px}
+  h2{font-weight:800;font-size:28px;margin:48px 0 16px;letter-spacing:-0.01em}
+  h3{font-weight:700;font-size:18px;margin:24px 0 8px;color:var(--acc)}
+  p{margin:0 0 16px;color:#cbd5e1}
+  table{width:100%;border-collapse:collapse;margin:16px 0 24px}
+  th,td{padding:12px 16px;border-bottom:1px solid var(--bd);text-align:left;font-size:15px}
+  th{color:var(--tx2);font-weight:600;font-size:13px;text-transform:uppercase;letter-spacing:.05em}
+  .component{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:24px;margin:0 0 16px}
+  .weight{display:inline-block;background:rgba(90,163,255,.15);color:var(--acc);padding:4px 10px;border-radius:6px;font-size:13px;font-weight:700;margin-right:8px}
+  .formula{background:var(--card);border-left:3px solid var(--acc);padding:16px;font-family:'JetBrains Mono',monospace;font-size:14px;margin:16px 0;border-radius:0 8px 8px 0}
+  .cite-box{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:24px;margin:32px 0}
+  .cite-box pre{margin:0;font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--tx);background:rgba(255,255,255,.03);padding:12px;border-radius:6px;overflow-x:auto;white-space:pre-wrap}
+  .cite-box .copy-btn{background:var(--acc);color:#000;border:none;padding:8px 16px;border-radius:6px;font-weight:700;cursor:pointer;font-family:inherit;font-size:13px;margin-top:8px}
+  a{color:var(--acc)}
+</style>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Dataset",
+  "name": "Data Center Power Index v2",
+  "alternateName": "DCPI v2",
+  "description": "Open scoring framework for 132 global data center markets, covering grid headroom, pipeline velocity, energy cost efficiency, and facility density.",
+  "url": "https://dchub.cloud/dcpi",
+  "sameAs": [
+    "https://dchub.cloud/dcpi/methodology",
+    "https://dchub.cloud/api/v1/data/dcpi-current.json"
+  ],
+  "creator": {
+    "@type": "Organization",
+    "name": "DC Hub",
+    "url": "https://dchub.cloud"
+  },
+  "datePublished": "2026-05-11",
+  "dateModified": "2026-05-11",
+  "license": "https://dchub.cloud/terms",
+  "keywords": ["data center", "power index", "DCPI", "data center markets", "grid headroom", "pipeline MW", "energy pricing"],
+  "spatialCoverage": "Global, 12+ countries",
+  "distribution": [
+    {"@type":"DataDownload","encodingFormat":"application/json","contentUrl":"https://dchub.cloud/api/v1/data/dcpi-current.json"},
+    {"@type":"DataDownload","encodingFormat":"text/csv","contentUrl":"https://dchub.cloud/api/v1/data/dcpi-history.csv"}
+  ],
+  "variableMeasured": [
+    {"@type":"PropertyValue","name":"Grid Headroom","unitText":"score 0-100","description":"Available power capacity"},
+    {"@type":"PropertyValue","name":"Pipeline Velocity","unitText":"ratio","description":"Pipeline MW / operational MW"},
+    {"@type":"PropertyValue","name":"Energy Efficiency","unitText":"score 0-100","description":"$/kWh inverse"},
+    {"@type":"PropertyValue","name":"Facility Density","unitText":"score 0-100","description":"Log facility count"}
+  ]
+}
+</script>
+</head>
+<body>
+  <div id="nav-mount"></div>
+  <div class="wrap">
+    <div class="eyebrow">DC HUB · METHODOLOGY</div>
+    <h1>DCPI Methodology v2</h1>
+    <p class="lede">The Data Center Power Index is a transparent, reproducible scoring framework for global data center markets. This document describes the scoring components, weights, data sources, refresh cadence, and known limitations.</p>
+
+    <h2>Coverage</h2>
+    <p>DCPI v2 scores <strong>132 markets across 12+ countries</strong>. Markets are defined as metropolitan areas with ≥3 verified data center facilities. The market universe is updated weekly from DC Hub's facility database (21,000+ verified records).</p>
+
+    <h2>Scoring Components</h2>
+
+    <div class="component">
+      <h3><span class="weight">40%</span>Grid Headroom</h3>
+      <p>Available power capacity per market relative to current draw. Calculated from EIA RTO sub-balancing-authority data (60+ zones across 7 US ISOs), national TSO data for international markets, and SEC EIA-861 capacity filings.</p>
+      <div class="formula">grid_headroom_score = 100 × (1 - current_demand / nameplate_capacity) × congestion_factor</div>
+    </div>
+
+    <div class="component">
+      <h3><span class="weight">25%</span>Pipeline Velocity</h3>
+      <p>Pace of new construction relative to existing operational capacity. Counts facilities in permitting, construction, and planned status. Higher score = faster pipeline growth.</p>
+      <div class="formula">pipeline_velocity = (pipeline_mw / operational_mw) × normalization_factor</div>
+    </div>
+
+    <div class="component">
+      <h3><span class="weight">20%</span>Energy Cost Efficiency</h3>
+      <p>Inverse of average $/kWh in the market. Lower energy costs = higher score. Sourced from EIA retail electricity rates by state (US) and equivalent national datasets internationally.</p>
+      <div class="formula">energy_efficiency = 100 × (max_market_kwh - market_kwh) / (max_market_kwh - min_market_kwh)</div>
+    </div>
+
+    <div class="component">
+      <h3><span class="weight">15%</span>Facility Density</h3>
+      <p>Number of operational facilities per market. Proxies for ecosystem maturity, fiber/peering availability, and competitive supply.</p>
+      <div class="formula">density_score = log10(facility_count + 1) × 25</div>
+    </div>
+
+    <h2>Data Sources</h2>
+    <table>
+      <thead><tr><th>Source</th><th>Cadence</th><th>Coverage</th></tr></thead>
+      <tbody>
+        <tr><td>EIA RTO / Sub-BA</td><td>hourly</td><td>7 US ISOs + 60+ zones</td></tr>
+        <tr><td>EIA Retail Electricity</td><td>monthly</td><td>All 50 states</td></tr>
+        <tr><td>DC Hub Facility DB</td><td>daily</td><td>21,000+ facilities, 12+ countries</td></tr>
+        <tr><td>Permit & Construction</td><td>weekly</td><td>50 states + 6 EU jurisdictions</td></tr>
+        <tr><td>News & M&A Signals</td><td>hourly</td><td>200+ source feeds</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Refresh Cadence</h2>
+    <p>Scores recompute daily at 06:00 UTC. Raw component data refreshes per its source cadence (above). Historical scores are preserved for trend analysis (90-day rolling window publicly, full history with Enterprise plan).</p>
+
+    <h2>Limitations</h2>
+    <p>DCPI is a relative ranking, not an absolute measure of market quality. International markets currently use proxy data for energy pricing (full $/kWh requires Pro+ in-region partners). Grid headroom for non-US zones uses national TSO aggregates, not sub-regional LMP. Pipeline data depends on public permit/announcement disclosure; private builds may be undercounted.</p>
+
+    <h2>Cite DCPI</h2>
+    <div class="cite-box">
+      <h3 style="margin-top:0;color:var(--tx)">APA Format</h3>
+      <pre id="apa">DC Hub. (2026). Data Center Power Index v2 [Data set]. Retrieved May 11, 2026, from https://dchub.cloud/dcpi</pre>
+      <button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('apa').textContent)">Copy APA</button>
+
+      <h3 style="color:var(--tx)">BibTeX</h3>
+      <pre id="bibtex">@misc{dchub_dcpi_v2_2026,
+  author       = {{DC Hub}},
+  title        = {Data Center Power Index v2},
+  year         = {2026},
+  url          = {https://dchub.cloud/dcpi},
+  note         = {Scoring 132 data center markets across 12+ countries}
+}</pre>
+      <button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('bibtex').textContent)">Copy BibTeX</button>
+
+      <h3 style="color:var(--tx)">Permanent data URLs</h3>
+      <p style="margin:8px 0">For stable citation, use versioned URLs:</p>
+      <ul style="margin:0;padding-left:24px">
+        <li><a href="/api/v1/data/dcpi-current.json"><code>/api/v1/data/dcpi-current.json</code></a> — latest scores</li>
+        <li><a href="/api/v1/data/dcpi-history.csv"><code>/api/v1/data/dcpi-history.csv</code></a> — full history (90d free, full Enterprise)</li>
+      </ul>
+    </div>
+
+    <h2>Peer Review &amp; Feedback</h2>
+    <p>DCPI methodology is open for academic and industry peer review. Email <a href="mailto:dcpi@dchub.cloud">dcpi@dchub.cloud</a> with critique, alternate weighting proposals, or coverage suggestions. We publish substantive feedback in our methodology changelog.</p>
+
+    <p style="color:var(--tx2);font-size:14px;margin-top:48px;border-top:1px solid var(--bd);padding-top:24px">
+      Version 2.0 · Published May 11, 2026 · <a href="/dcpi">Open DCPI →</a> · <a href="/dcpi-v2/">Launch announcement →</a>
+    </p>
+  </div>
+  <script src="/js/dchub-nav.js" defer></script>
+</body></html>
