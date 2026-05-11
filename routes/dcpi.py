@@ -1089,6 +1089,7 @@ buttons.forEach(b => b.addEventListener('click', () => {
 
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 <div id="dcpi-chart-section" style="margin:3rem 0;background:#11121a;border:1px solid #1f2030;border-radius:14px;padding:1.5rem;">
   <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:1rem;font-family:Inter,sans-serif;">
     <span style="width:4px;height:12px;background:#6366f1;border-radius:2px;"></span>
