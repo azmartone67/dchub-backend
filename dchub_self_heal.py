@@ -1014,14 +1014,14 @@ def fix_enforce_publish_gate():
 
 
 def fix_recompute_verdict_diff():
-    """Phase 233 STRICT verdict matrix — BUILD/AVOID require BOTH non-zero scores.
-       diff = excess - constraint
-       BUILD: excess >= 35 AND constraint >= 5 AND diff >= 25  (real pipeline pressure low, real excess)
-       AVOID: constraint >= 35 AND excess >= 5 AND (-diff) >= 25
-       NODATA: constraint = 0 AND excess = 0
-       LOW_SIGNAL: constraint = 0 XOR excess = 0 (only one side has data)
+    """Phase 234 STRICT matrix — BUILD/AVOID require BOTH non-zero scores.
+       BUILD: excess >= 35 AND constraint >= 5 AND diff >= 25
+       AVOID: constraint >= 35 AND excess >= 5 AND -diff >= 25
+       NODATA: both = 0
+       LOW_SIGNAL: only one side zero
        CAUTION: otherwise."""
-    if not DATABASE_URL: return False, "no DATABASE_URL"
+    if not DATABASE_URL:
+        return False, "no DATABASE_URL"
     try:
         with _conn() as c, c.cursor() as cur:
             cur.execute("""
@@ -1029,8 +1029,8 @@ def fix_recompute_verdict_diff():
                     CASE
                         WHEN COALESCE(constraint_score,0) = 0
                              AND COALESCE(excess_power_score,0) = 0 THEN 'NODATA'
-                        WHEN COALESCE(constraint_score,0) = 0 OR COALESCE(excess_power_score,0) = 0
-                             THEN 'LOW_SIGNAL'
+                        WHEN COALESCE(constraint_score,0) = 0
+                             OR COALESCE(excess_power_score,0) = 0 THEN 'LOW_SIGNAL'
                         WHEN COALESCE(excess_power_score,0) >= 35
                              AND COALESCE(constraint_score,0) >= 5
                              AND COALESCE(excess_power_score,0) - COALESCE(constraint_score,0) >= 25
@@ -1051,7 +1051,7 @@ def fix_recompute_verdict_diff():
             """)
             dist = cur.fetchall()
             c.commit()
-            return True, f"recomputed {n} verdicts → " + " ".join(f"{v}={n2}" for v, n2 in dist)
+            return True, f"recomputed {n} verdicts -> " + " ".join(f"{v}={n2}" for v, n2 in dist)
     except Exception as e:
         return False, str(e)[:400]
 
