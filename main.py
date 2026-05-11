@@ -7862,7 +7862,7 @@ def list_markets():
                 GROUP BY LOWER(city), city, state
 
 
-                HAVING COUNT(*) >= 5
+                HAVING COUNT(*) >= 3
 
 
                 ORDER BY n DESC
