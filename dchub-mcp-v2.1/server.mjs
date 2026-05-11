@@ -197,6 +197,24 @@ function applyTierGate(toolName, params, tier) {
 }
 
 // ── trackedTool: wrap each srv.tool registration ───────────────────────────
+
+// Phase 254: fetch rich paywall response from backend
+async function fetchUpgradePrompt(tool, userId) {
+  try {
+    const url = `https://dchub.cloud/api/v1/mcp/upgrade-prompt?tool=${encodeURIComponent(tool)}&user_id=${encodeURIComponent(userId || 'anon')}`;
+    const r = await fetch(url, { headers: { "User-Agent": "DCHub-MCP/2.1" }, signal: AbortSignal.timeout(5000) });
+    if (!r.ok) throw new Error("non-200");
+    return await r.json();
+  } catch (e) {
+    return {
+      tier_required: "pro",
+      tool,
+      agent_friendly_message: `This tool requires a Pro plan. Upgrade at https://dchub.cloud/pricing?utm_source=mcp&utm_tool=${tool}`,
+      upgrade_url: `https://dchub.cloud/pricing?utm_source=mcp&utm_tool=${tool}`,
+    };
+  }
+}
+
 function trackedTool(srv, name, description, schema, handler) {
   srv.tool(name, description, schema, async (args) => {
     const c = getCtx();

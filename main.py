@@ -19037,82 +19037,70 @@ def _mcp_upgrade_prompt():
 
 @app.route("/api/v1/mcp/conversion-funnel", methods=["GET"])
 def _mcp_conversion_funnel():
-    """Step-by-step conversion funnel observability."""
+    """Step-by-step conversion funnel with per-query isolation so one
+       missing table doesn't 503 the whole endpoint."""
     import os, psycopg2
     from flask import jsonify
     DATABASE_URL = os.environ.get("DATABASE_URL")
     if not DATABASE_URL:
         return jsonify({"error": "no DATABASE_URL"}), 500
 
-    funnel = {}
-    try:
-        with psycopg2.connect(DATABASE_URL, connect_timeout=8) as conn:
-            with conn.cursor() as cur:
-                # Step 1: tool calls
-                cur.execute("""
-                    SELECT COUNT(*) FROM mcp_tool_calls
-                    WHERE created_at > NOW() - INTERVAL '7 days';
-                """)
-                try: funnel["1_tool_calls_7d"] = cur.fetchone()[0]
-                except Exception: funnel["1_tool_calls_7d"] = "no mcp_tool_calls table"
-
-            with conn.cursor() as cur:
-                # Step 2: paywall hits (upgrade_signals)
-                cur.execute("""
-                    SELECT COUNT(*) FROM mcp_upgrade_signals
-                    WHERE created_at > NOW() - INTERVAL '7 days';
-                """)
-                try: funnel["2_paywall_hits_7d"] = cur.fetchone()[0]
-                except Exception: funnel["2_paywall_hits_7d"] = "no mcp_upgrade_signals table"
-
-            with conn.cursor() as cur:
-                # Step 3: upgrade_url clicks (tracked via utm_source=mcp landing)
-                cur.execute("""
-                    SELECT COUNT(*) FROM page_views
-                    WHERE url LIKE '%utm_source=mcp%'
-                      AND created_at > NOW() - INTERVAL '7 days';
-                """)
-                try: funnel["3_upgrade_clicks_7d"] = cur.fetchone()[0]
-                except Exception: funnel["3_upgrade_clicks_7d"] = "no page_views table or none tracked"
-
-            with conn.cursor() as cur:
-                # Step 4: checkouts started
-                cur.execute("""
-                    SELECT COUNT(*) FROM stripe_checkout_sessions
-                    WHERE created_at > NOW() - INTERVAL '7 days';
-                """)
-                try: funnel["4_checkouts_started_7d"] = cur.fetchone()[0]
-                except Exception: funnel["4_checkouts_started_7d"] = "no stripe_checkout_sessions"
-
-            with conn.cursor() as cur:
-                # Step 5: conversions (paid keys created)
-                cur.execute("""
-                    SELECT COUNT(*) FROM dev_keys
-                    WHERE tier IN ('pro', 'paid', 'enterprise')
-                      AND created_at > NOW() - INTERVAL '30 days';
-                """)
-                try: funnel["5_conversions_30d"] = cur.fetchone()[0]
-                except Exception: funnel["5_conversions_30d"] = "no dev_keys"
-
-        # Compute drop-off rates
-        steps = list(funnel.values())
-        rates = {}
-        for i in range(len(steps) - 1):
+    def safe_count(sql):
+        try:
+            conn = psycopg2.connect(DATABASE_URL, connect_timeout=5)
             try:
-                a = steps[i]; b = steps[i+1]
-                if isinstance(a, int) and isinstance(b, int) and a > 0:
-                    rates[f"step_{i+1}_to_{i+2}"] = f"{(b/a*100):.1f}%"
-            except Exception:
-                continue
-        funnel["conversion_rates"] = rates
-        return jsonify(funnel)
-    except Exception as e:
-        return jsonify({"error": str(e)[:300]}), 500
+                with conn.cursor() as cur:
+                    cur.execute(sql)
+                    r = cur.fetchone()
+                    return int(r[0]) if r else 0
+            finally:
+                conn.close()
+        except Exception as e:
+            return {"_error": str(e)[:100]}
+
+    funnel = {
+        "1_tool_calls_7d":      safe_count("SELECT COUNT(*) FROM mcp_tool_calls WHERE created_at > NOW() - INTERVAL '7 days'"),
+        "2_paywall_hits_7d":    safe_count("SELECT COUNT(*) FROM mcp_upgrade_signals WHERE created_at > NOW() - INTERVAL '7 days'"),
+        "3_upgrade_clicks_7d":  safe_count("SELECT COUNT(*) FROM page_views WHERE url LIKE '%utm_source=mcp%' AND created_at > NOW() - INTERVAL '7 days'"),
+        "4_checkouts_started_7d": safe_count("SELECT COUNT(*) FROM stripe_checkout_sessions WHERE created_at > NOW() - INTERVAL '7 days'"),
+        "5_conversions_30d":    safe_count("SELECT COUNT(*) FROM dev_keys WHERE tier IN ('pro','paid','enterprise') AND created_at > NOW() - INTERVAL '30 days'"),
+        "5b_total_paid_keys":   safe_count("SELECT COUNT(*) FROM dev_keys WHERE tier IN ('pro','paid','enterprise')"),
+    }
+
+    # Compute drop-off rates for ints only
+    rates = {}
+    keys = list(funnel.keys())
+    for i in range(len(keys) - 1):
+        a, b = funnel[keys[i]], funnel[keys[i+1]]
+        if isinstance(a, int) and isinstance(b, int) and a > 0:
+            rates[f"{keys[i]} → {keys[i+1]}"] = f"{(b/a*100):.2f}%"
+    funnel["conversion_rates"] = rates
+    funnel["leak_diagnosis"] = _diagnose_funnel_leak(funnel)
+    return jsonify(funnel)
+
+
+def _diagnose_funnel_leak(funnel):
+    """Where is the biggest drop-off? Tell the user clearly."""
+    steps = [("paywall_hits", funnel.get("2_paywall_hits_7d")),
+             ("upgrade_clicks", funnel.get("3_upgrade_clicks_7d")),
+             ("checkouts", funnel.get("4_checkouts_started_7d")),
+             ("conversions", funnel.get("5_conversions_30d"))]
+    diagnosis = []
+    prev_label, prev_val = steps[0]
+    for label, val in steps[1:]:
+        if isinstance(prev_val, int) and isinstance(val, int):
+            if prev_val > 0 and val == 0:
+                diagnosis.append(f"100% drop-off at {prev_label}→{label}: fix this step first")
+            elif prev_val > 0 and val / prev_val < 0.05:
+                diagnosis.append(f"95%+ drop-off at {prev_label}→{label}: investigate UX/tracking")
+        prev_label, prev_val = label, val
+    return diagnosis or ["No clear leak — funnel looks healthy"]
 
 
 @app.route("/api/v1/mcp/power-users", methods=["GET"])
 def _mcp_power_users():
-    """Top N free users by upgrade signals — the email outreach pool."""
+    """Top free users by upgrade signals. Schema-tolerant: introspects
+       mcp_upgrade_signals + dev_keys columns and adapts the join."""
     import os, psycopg2
     from flask import jsonify, request
     DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -19124,39 +19112,97 @@ def _mcp_power_users():
         limit = 50
 
     try:
-        with psycopg2.connect(DATABASE_URL, connect_timeout=8) as conn, conn.cursor() as cur:
-            cur.execute("""
-                SELECT
-                    s.user_id,
-                    COUNT(*) AS signal_count,
-                    array_agg(DISTINCT s.tool ORDER BY s.tool) AS tools_blocked,
-                    MIN(s.created_at) AS first_signal,
-                    MAX(s.created_at) AS most_recent,
-                    k.email AS email,
-                    k.tier AS current_tier
+        conn = psycopg2.connect(DATABASE_URL, connect_timeout=8)
+        # Introspect available columns
+        sig_cols, key_cols = set(), set()
+        with conn.cursor() as cur:
+            cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='mcp_upgrade_signals'")
+            sig_cols = {r[0] for r in cur.fetchall()}
+            cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='dev_keys'")
+            key_cols = {r[0] for r in cur.fetchall()}
+
+        if not sig_cols:
+            return jsonify({"error": "mcp_upgrade_signals table not found", "users": []})
+
+        # Pick the right column names
+        user_col_sig = "user_id" if "user_id" in sig_cols else ("api_key" if "api_key" in sig_cols else None)
+        user_col_key = "user_id" if "user_id" in key_cols else ("api_key" if "api_key" in key_cols else None)
+        tool_col    = "tool" if "tool" in sig_cols else ("tool_name" if "tool_name" in sig_cols else None)
+        ts_col      = "created_at" if "created_at" in sig_cols else ("ts" if "ts" in sig_cols else None)
+        email_col   = "email" if "email" in key_cols else None
+        tier_col    = "tier" if "tier" in key_cols else ("plan" if "plan" in key_cols else None)
+
+        if not user_col_sig or not tool_col or not ts_col:
+            return jsonify({
+                "error": "required columns missing",
+                "available_columns": {"mcp_upgrade_signals": sorted(sig_cols), "dev_keys": sorted(key_cols)},
+                "users": []
+            })
+
+        # Build query — join optional
+        if user_col_key and email_col and tier_col:
+            sql = f"""
+                SELECT s.{user_col_sig} AS uid,
+                       COUNT(*) AS sig_count,
+                       array_agg(DISTINCT s.{tool_col} ORDER BY s.{tool_col}) AS tools,
+                       MIN(s.{ts_col}) AS first_signal,
+                       MAX(s.{ts_col}) AS most_recent,
+                       MAX(k.{email_col}) AS email,
+                       MAX(k.{tier_col}) AS tier
                 FROM mcp_upgrade_signals s
-                LEFT JOIN dev_keys k ON k.user_id = s.user_id
-                WHERE s.created_at > NOW() - INTERVAL '30 days'
-                  AND COALESCE(k.tier, 'free') = 'free'
-                GROUP BY s.user_id, k.email, k.tier
-                HAVING COUNT(*) >= 5
-                ORDER BY signal_count DESC
-                LIMIT %s;
-            """, (limit,))
+                LEFT JOIN dev_keys k ON k.{user_col_key} = s.{user_col_sig}
+                WHERE s.{ts_col} > NOW() - INTERVAL '30 days'
+                  AND COALESCE(k.{tier_col}, 'free') = 'free'
+                GROUP BY s.{user_col_sig}
+                HAVING COUNT(*) >= 3
+                ORDER BY sig_count DESC LIMIT %s
+            """
+        else:
+            sql = f"""
+                SELECT s.{user_col_sig} AS uid,
+                       COUNT(*) AS sig_count,
+                       array_agg(DISTINCT s.{tool_col} ORDER BY s.{tool_col}) AS tools,
+                       MIN(s.{ts_col}) AS first_signal,
+                       MAX(s.{ts_col}) AS most_recent
+                FROM mcp_upgrade_signals s
+                WHERE s.{ts_col} > NOW() - INTERVAL '30 days'
+                GROUP BY s.{user_col_sig}
+                HAVING COUNT(*) >= 3
+                ORDER BY sig_count DESC LIMIT %s
+            """
+
+        with conn.cursor() as cur:
+            cur.execute(sql, (limit,))
             rows = cur.fetchall()
-            users = [{
+
+        users = []
+        for r in rows:
+            entry = {
                 "user_id": r[0],
                 "signal_count": r[1],
-                "tools_blocked": r[2],
+                "tools_blocked": list(r[2]) if r[2] else [],
                 "first_signal": r[3].isoformat() if r[3] else None,
                 "most_recent": r[4].isoformat() if r[4] else None,
-                "email": r[5],
-                "current_tier": r[6],
-                "outreach_score": min(100, int((r[1] / 50) * 100)),
-            } for r in rows]
-        return jsonify({"total": len(users), "users": users})
+                "outreach_score": min(100, int((r[1] / 20) * 100)),
+            }
+            if len(r) > 5:
+                entry["email"] = r[5]
+                entry["current_tier"] = r[6]
+            users.append(entry)
+
+        conn.close()
+        return jsonify({
+            "total": len(users),
+            "users": users,
+            "schema_used": {
+                "user_id_col": user_col_sig,
+                "tool_col": tool_col,
+                "ts_col": ts_col,
+                "joined_with_dev_keys": bool(user_col_key and email_col),
+            }
+        })
     except Exception as e:
-        return jsonify({"error": str(e)[:300]}), 500
+        return jsonify({"error": str(e)[:300], "users": []}), 500
 
 
 # ============================================================================
