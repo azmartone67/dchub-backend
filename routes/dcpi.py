@@ -29,6 +29,20 @@ import psycopg2.extras
 
 
 # Phase 223: defensive round helper
+
+
+# Phase 225: decorator that returns the fallback page on ANY exception
+from functools import wraps
+def _safe_dcpi_page(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:
+            return _phase225_dcpi_error_page(str(e))
+    return wrapper
+
+
 def _safe_round(v, digits=1):
     """Safely round a value that might be None or non-numeric."""
     if v is None: return 0.0
@@ -353,9 +367,9 @@ def gather_metrics_for_market(market: tuple) -> dict:
             # Try interconnection queue
             cur.execute("""
                 SELECT
-                  AVG(EXTRACT(EPOCH FROM (NOW() - submitted_at)) / 2628000.0) AS avg_wait_months,
+                  COALESCE(AVG(EXTRACT(EPOCH FROM (NOW(), 0) - submitted_at)) / 2628000.0) AS avg_wait_months,
                   COUNT(*) AS queue_count,
-                  SUM(capacity_mw) AS queue_total_mw
+                  COALESCE(SUM(capacity_mw), 0) AS queue_total_mw
                 FROM interconnection_queue
                 WHERE iso = %s AND status IN ('active','pending','study')
             """, (iso,))
@@ -1537,6 +1551,7 @@ h1 {
 </html>"""
 
 
+@_safe_dcpi_page
 @dcpi_bp.route("/dcpi", methods=["GET"])
 def public_dashboard():
     _ensure_tables()
@@ -1585,8 +1600,8 @@ def api_history():
         cur.execute("""
             SELECT market_slug, market_name,
                    DATE_TRUNC('day', computed_at) AS day,
-                   AVG(excess_power_score) AS excess,
-                   AVG(constraint_score) AS constraint
+                   COALESCE(AVG(excess_power_score), 0) AS excess,
+                   COALESCE(AVG(constraint_score), 0) AS constraint
             FROM market_power_scores
             WHERE computed_at > NOW() - INTERVAL '30 days'
             GROUP BY market_slug, market_name, DATE_TRUNC('day', computed_at)
@@ -1822,7 +1837,7 @@ def lite_recompute():
                         SELECT COUNT(*),
                                COALESCE(SUM(power_mw), 0),
                                COALESCE(SUM(power_mw) FILTER (WHERE status IN ('construction','planned','permitting','Under Construction','Planned')), 0),
-                               MAX(state)
+                               COALESCE(MAX(state), 0)
                         FROM discovered_facilities
                         WHERE LOWER(city) = %s OR LOWER(city) LIKE %s;
                     """, (slug.replace("-", " "), '%' + slug.replace("-", " ") + '%'))
@@ -1833,7 +1848,7 @@ def lite_recompute():
 
                     # $/kWh from state
                     cur.execute("""
-                        SELECT AVG(price_cents_kwh)/100.0 FROM eia_electricity_rates
+                        SELECT COALESCE(AVG(price_cents_kwh), 0)/100.0 FROM eia_electricity_rates
                         WHERE state=%s AND sector='ALL'
                           AND retrieved_at > NOW() - INTERVAL '365 days';
                     """, (state,))
@@ -1909,3 +1924,39 @@ def _phase215_ensure_unique():
 
 try: _phase215_ensure_unique()
 except: pass
+
+
+# ============================================================================
+# Phase 225: graceful failure — never show JSON error on user-facing pages
+# ============================================================================
+
+DCPI_FALLBACK_HTML = """<!doctype html><html><head>
+<title>DC Hub Power Index · Recomputing</title>
+<meta charset="utf-8"><meta http-equiv="refresh" content="30">
+<style>html,body{background:rgb(5,8,16);color:#e8eef8;margin:0;padding:60px 20px;font-family:'Instrument Sans',system-ui;text-align:center;line-height:1.6}
+h1{font-weight:800;font-size:36px;margin:0 0 12px}
+.sub{color:#9eb5d8;font-size:18px;max-width:560px;margin:0 auto 32px}
+.spinner{width:32px;height:32px;margin:0 auto 24px;border:3px solid rgba(90,163,255,.2);border-top-color:#5aa3ff;border-radius:50%;animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+a{color:#5aa3ff;text-decoration:none}
+</style></head><body>
+<div class="spinner"></div>
+<h1>DCPI is recomputing</h1>
+<p class="sub">The Data Center Power Index updates daily. Today's scoring is in progress — refresh in a moment, or browse <a href="/markets/">all markets</a> meanwhile.</p>
+<p style="color:#5aa3ff"><a href="/dcpi/methodology">View methodology →</a></p>
+</body></html>"""
+
+def _phase225_dcpi_error_page(err=""):
+    """Returns the recomputing-message HTML so users never see raw JSON errors."""
+    import logging
+    if err: logging.warning(f"[dcpi-fallback] {err}")
+    return DCPI_FALLBACK_HTML, 200, {"Content-Type": "text/html; charset=utf-8"}
+
+
+# Wrap the dcpi_bp blueprint errorhandler
+try:
+    @dcpi_bp.errorhandler(Exception)
+    def _phase225_dcpi_bp_error_handler(e):
+        return _phase225_dcpi_error_page(str(e))
+except Exception:
+    pass
