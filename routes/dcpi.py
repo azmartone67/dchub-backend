@@ -167,45 +167,77 @@ _MARKETS_HARDCODED = [
 
 # Phase 214: try dynamic 132-market list first, fall back to hardcoded 30
 def _load_markets_dynamic():
+    """Phase 215: direct Postgres query — no internal API auth dance.
+    Returns list matching the structure of _MARKETS_HARDCODED.
+    """
+    import os, psycopg2
     try:
-        import os, urllib.request, json
-        base = os.environ.get("DCHUB_INTERNAL_API", "http://localhost:8000")
-        ent_key = os.environ.get("DCHUB_ENT_KEY", "ent_internal_dcpi")
-        req = urllib.request.Request(
-            f"{base}/api/v1/markets/list",
-            headers={"X-API-Key": ent_key, "User-Agent": "dcpi-loader/2.0"}
-        )
-        with urllib.request.urlopen(req, timeout=12) as r:
-            data = json.loads(r.read().decode("utf-8"))
-        markets_raw = data.get("data") or []
-        # Each entry needs to match the original MARKETS structure
-        # — adapt based on actual hardcoded shape
-        if not markets_raw:
+        url = os.environ.get("DATABASE_URL")
+        if not url:
             return None
-        # If hardcoded MARKETS is list of strings (slugs), return list of slugs
-        if isinstance(_MARKETS_HARDCODED, list) and _MARKETS_HARDCODED and isinstance(_MARKETS_HARDCODED[0], str):
-            return [m["id"] for m in markets_raw if m.get("id")]
-        # If list of dicts, return matching dict structure
-        if isinstance(_MARKETS_HARDCODED, list) and _MARKETS_HARDCODED and isinstance(_MARKETS_HARDCODED[0], dict):
+        conn = psycopg2.connect(url, connect_timeout=8)
+        with conn.cursor() as cur:
+            # All US cities with >=3 facilities + dominant state
+            cur.execute("""
+                WITH city_stats AS (
+                    SELECT
+                        LOWER(city) AS slug,
+                        city AS name,
+                        state,
+                        COUNT(*) AS facility_count,
+                        COALESCE(SUM(power_mw), 0) AS op_mw,
+                        COALESCE(SUM(power_mw) FILTER (WHERE status IN ('construction','planned','permitting','Under Construction','Planned')), 0) AS pipeline_mw
+                    FROM discovered_facilities
+                    WHERE city IS NOT NULL AND city != ''
+                      AND state IS NOT NULL AND state != ''
+                      AND LENGTH(state) = 2
+                      AND state ~ '^[A-Z]{2}$'
+                      AND (country = 'US' OR country = 'USA')
+                    GROUP BY LOWER(city), city, state
+                    HAVING COUNT(*) >= 3
+                )
+                SELECT slug, name, state, facility_count, op_mw, pipeline_mw
+                FROM city_stats
+                ORDER BY facility_count DESC
+                LIMIT 200;
+            """)
+            rows = cur.fetchall()
+        conn.close()
+
+        if not rows:
+            return None
+
+        # Adapt to the hardcoded MARKETS structure (list of dicts)
+        if isinstance(_MARKETS_HARDCODED, list) and _MARKETS_HARDCODED:
             sample = _MARKETS_HARDCODED[0]
-            keys = list(sample.keys())
-            out = []
-            for m in markets_raw:
-                d = {}
-                for k in keys:
-                    if k == "slug": d[k] = m.get("id")
-                    elif k == "name": d[k] = m.get("name")
-                    elif k == "cities": d[k] = m.get("cities", [m.get("name")])
-                    elif k == "state": d[k] = m.get("state")
-                    elif k == "country": d[k] = m.get("country", "US")
-                    else: d[k] = m.get(k)
-                out.append(d)
-            return out
+            if isinstance(sample, dict):
+                keys = list(sample.keys())
+                # Map our DB rows to the same dict shape
+                out = []
+                for r in rows:
+                    slug, name, state, fac, op_mw, pipe_mw = r
+                    d = {}
+                    for k in keys:
+                        if k == "slug": d[k] = slug.replace(" ", "-").replace(",", "")
+                        elif k == "name": d[k] = name
+                        elif k == "state": d[k] = state
+                        elif k == "country": d[k] = "US"
+                        elif k == "cities": d[k] = [name]
+                        elif k in ("facility_count", "fac"): d[k] = int(fac)
+                        elif k in ("operational_mw", "op_mw", "total_mw"): d[k] = float(op_mw)
+                        elif k in ("pipeline_mw", "pipeline_mw_total"): d[k] = float(pipe_mw)
+                        else: d[k] = sample.get(k)  # default from hardcoded
+                    out.append(d)
+                return out
+            elif isinstance(sample, str):
+                # List of slug strings
+                return [r[0].replace(" ", "-").replace(",", "") for r in rows]
         return None
     except Exception as e:
         import logging
-        logging.warning(f"_load_markets_dynamic failed: {e}")
+        logging.warning(f"_load_markets_dynamic direct DB failed: {e}")
         return None
+
 
 MARKETS = _load_markets_dynamic() or _MARKETS_HARDCODED
 
@@ -1750,3 +1782,119 @@ def embed_widget_alias(slug):
 def press_kit_alias():
     return press_kit()
 
+
+
+# === Phase 215: lite recompute — score ALL markets using available data ===
+@dcpi_bp.route("/api/v1/dcpi/lite-recompute", methods=["POST"])
+def lite_recompute():
+    """Computes lite DCPI scores for ALL markets in MARKETS.
+    Uses only facility count + pipeline MW + state $/kWh — no grid stress data.
+    Marks results with tier_required='lite-pro' so we can distinguish from full scoring."""
+    import psycopg2, os, math
+    try:
+        admin_key = request.headers.get("X-Admin-Key", "")
+        if admin_key != os.environ.get("DCHUB_ADMIN_KEY", ""):
+            return jsonify({"error": "unauthorized"}), 401
+
+        url = os.environ.get("DATABASE_URL")
+        conn = psycopg2.connect(url, connect_timeout=8)
+        scored = 0
+        errors = 0
+        with conn.cursor() as cur:
+            for m in MARKETS:
+                try:
+                    slug = m.get("slug") if isinstance(m, dict) else m
+                    name = m.get("name") if isinstance(m, dict) else slug.replace("-", " ").title()
+                    if not slug: continue
+                    # Pull facility stats
+                    cur.execute("""
+                        SELECT COUNT(*),
+                               COALESCE(SUM(power_mw), 0),
+                               COALESCE(SUM(power_mw) FILTER (WHERE status IN ('construction','planned','permitting','Under Construction','Planned')), 0),
+                               MAX(state)
+                        FROM discovered_facilities
+                        WHERE LOWER(city) = %s OR LOWER(city) LIKE %s;
+                    """, (slug.replace("-", " "), '%' + slug.replace("-", " ") + '%'))
+                    row = cur.fetchone()
+                    if not row: continue
+                    fac, op_mw, pipe_mw, state = row
+                    if not fac: continue
+
+                    # $/kWh from state
+                    cur.execute("""
+                        SELECT AVG(price_cents_kwh)/100.0 FROM eia_electricity_rates
+                        WHERE state=%s AND sector='ALL'
+                          AND retrieved_at > NOW() - INTERVAL '365 days';
+                    """, (state,))
+                    kr = cur.fetchone()
+                    kwh = float(kr[0]) if kr and kr[0] else None
+
+                    # Lite scoring (0-100 scale):
+                    # constraint_score: high pipeline ratio → constrained
+                    # excess_power_score: low pipeline + cheap kWh → opportunity
+                    pipe_ratio = (pipe_mw / op_mw) if op_mw > 0 else 0
+                    constraint = min(100, pipe_ratio * 150)  # >0.67 ratio → max constraint
+                    excess = 0
+                    if kwh:
+                        # Cheaper → higher excess opportunity
+                        excess = max(0, min(100, (0.30 - kwh) * 333))  # $0.08 → 73, $0.20 → 33
+                    if pipe_mw < 50 and op_mw > 100:
+                        excess = max(excess, 60)  # underbuilt market
+
+                    verdict = "BUILD" if excess > 50 and constraint < 60 else ("AVOID" if constraint > 75 else "CAUTION")
+
+                    cur.execute("""
+                        INSERT INTO market_power_scores
+                        (market_slug, market_name, latitude, longitude,
+                         constraint_score, excess_power_score, time_to_power_months,
+                         verdict, tier_required, computed_at)
+                        VALUES (%s, %s, NULL, NULL, %s, %s, NULL, %s, 'lite-pro', NOW())
+                        ON CONFLICT (market_slug) DO UPDATE SET
+                          constraint_score = EXCLUDED.constraint_score,
+                          excess_power_score = EXCLUDED.excess_power_score,
+                          verdict = EXCLUDED.verdict,
+                          tier_required = EXCLUDED.tier_required,
+                          computed_at = NOW();
+                    """, (slug, name, constraint, excess, verdict))
+                    scored += 1
+                except Exception as e:
+                    errors += 1
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            "ok": True,
+            "markets_scored": scored,
+            "errors": errors,
+            "total_markets": len(MARKETS),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# Phase 215: ensure UNIQUE on market_slug for upsert
+def _phase215_ensure_unique():
+    import os, psycopg2
+    try:
+        conn = psycopg2.connect(os.environ.get("DATABASE_URL"), connect_timeout=5)
+        with conn.cursor() as cur:
+            cur.execute("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_constraint
+                        WHERE conname = 'market_power_scores_slug_key'
+                    ) THEN
+                        ALTER TABLE market_power_scores
+                            ADD CONSTRAINT market_power_scores_slug_key UNIQUE (market_slug);
+                    END IF;
+                END $$;
+            """)
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        import logging
+        logging.warning(f"phase215 unique constraint err: {e}")
+
+try: _phase215_ensure_unique()
+except: pass
