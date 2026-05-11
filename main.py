@@ -17702,6 +17702,16 @@ from routes.qa_patterns import qa_patterns_bp
 from routes.dcpi import dcpi_bp
 from routes.site_qa import site_qa_bp
 
+# Phase 195: skip URLs with empty path params (e.g. /grid//card, /facilities//infra)
+def _phase195_url_ok(u):
+    """Reject URLs with empty path segments or trailing empty params."""
+    if not u: return False
+    if "//" in u.split("://", 1)[-1]: return False  # double-slash in path
+    if u.endswith("/") and "/" in u[8:]: return True  # trailing slash OK
+    return True
+
+
+
 try:
     from routes._freshness import freshness_dict_from_url, introspect_freshness_candidates, diag_for_brain_v2
 except Exception:
