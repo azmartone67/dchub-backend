@@ -17986,3 +17986,18 @@ try:
 except NameError:
     pass
 
+# === Phase 208: direct announcement publish endpoint ===
+try:
+    @app.route("/api/v1/media/announcement", methods=["POST"])
+    def _v1_media_publish():
+        from flask import request, jsonify
+        try:
+            from dchub_media import publish_announcement
+        except ImportError:
+            return jsonify({"error": "dchub_media unavailable"}), 503
+        data = request.get_json(silent=True) or {}
+        result = publish_announcement(data)
+        return jsonify(result), (200 if result.get("ok") else 500)
+except NameError:
+    pass
+
