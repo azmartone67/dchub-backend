@@ -179,7 +179,7 @@ def run_daily(api_base: str = DCHUB_API_BASE) -> dict:
 
 
 def aggregate_announcements(limit_per_source=20):
-    """Phase 234: queries use REAL column names verified via Chrome audit."""
+    """Phase 232: guaranteed 5-category aggregator with hard fallbacks + error surfacing."""
     global _agg_errors
     _agg_errors = {}
     import os, psycopg2
@@ -194,10 +194,11 @@ def aggregate_announcements(limit_per_source=20):
         return items
 
     queries = [
+        # Phase 233: rewritten with REAL column names (verified via Chrome audit)
         ("news",
          """SELECT title,
-                   COALESCE(source_url, '') AS url,
-                   COALESCE(description, body, '') AS summary,
+                   COALESCE(source_url, url, '') AS url,
+                   COALESCE(description, body, summary, '') AS summary,
                    COALESCE(source, '') AS source,
                    COALESCE(published_date, created_at, NOW()) AS ts
             FROM news
@@ -207,7 +208,7 @@ def aggregate_announcements(limit_per_source=20):
         ("press_release",
          """SELECT title,
                    COALESCE(source_url, '/news/' || slug || '/', '') AS url,
-                   COALESCE(summary, subheadline, '') AS summary,
+                   COALESCE(summary, subheadline, body, '') AS summary,
                    COALESCE(source, 'DC Hub') AS source,
                    COALESCE(published_date, date, created_at, NOW()) AS ts
             FROM press_releases
@@ -238,10 +239,13 @@ def aggregate_announcements(limit_per_source=20):
          (limit_per_source,)),
         ("alert",
          """SELECT
-               (market_name || ' DCPI ' || verdict) AS title,
+               (market_name || ' DCPI ' ||
+                CASE WHEN verdict='BUILD' THEN '🚀 BUILD'
+                     WHEN verdict='AVOID' THEN '🚨 AVOID'
+                     ELSE '👁️ ' || verdict END) AS title,
                '/dcpi#' || market_slug AS url,
                ('Constraint ' || COALESCE(constraint_score,0)::text ||
-                ' Excess ' || COALESCE(excess_power_score,0)::text) AS summary,
+                ' · Excess ' || COALESCE(excess_power_score,0)::text) AS summary,
                'DCPI Engine' AS source,
                computed_at AS ts
             FROM market_power_scores
@@ -268,6 +272,7 @@ def aggregate_announcements(limit_per_source=20):
                         "ts": row[4].isoformat() if hasattr(row[4], "isoformat") else str(row[4]),
                     })
         except Exception as e:
+            # Don't let one bad table kill the feed — but DO record the error
             conn.rollback()
             try:
                 _agg_errors[category] = str(e)[:300]
@@ -278,7 +283,8 @@ def aggregate_announcements(limit_per_source=20):
             continue
 
     conn.close()
-    items.sort(key=lambda x: x.get("ts", ""), reverse=True)
+    # Sort all by ts descending
+    items.sort(key=lambda x: x.get("ts",""), reverse=True)
     return items
 
 
