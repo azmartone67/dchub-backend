@@ -80,3 +80,8 @@ INSTALL-AND-SHIP-iteration2.sh
 0[1-4]-*.py
 admin_press_route_DEPRECATED.py.bak
 dchub-cron-v2.1.js
+qa-headless-results.json
+qa-csp-results.json
+qa-asset-results.json
+qa-stale-results.json
+qa-state/

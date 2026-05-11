@@ -17863,3 +17863,20 @@ try:
 except NameError:
     pass
 
+# === Phase 193: dchub-media unified feed ===
+try:
+    from dchub_media import aggregate_announcements as _agg_feed
+    @app.route("/api/v1/media/feed", methods=["GET"])
+    def _v1_media_feed():
+        from flask import jsonify, request
+        try: limit = int(request.args.get("limit", 50))
+        except: limit = 50
+        cat = request.args.get("filter", "").lower()
+        data = _agg_feed(limit_per_source=20)
+        if cat and cat != "all":
+            data["items"] = [i for i in data["items"] if i.get("category") == cat]
+            data["count"] = len(data["items"])
+        return jsonify(data)
+except (ImportError, NameError):
+    pass
+
