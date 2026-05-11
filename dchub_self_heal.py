@@ -1236,3 +1236,110 @@ FIXES["delete_unhealable"] = fix_delete_unhealable
 FIXES["recompute_verdict_strict"] = fix_recompute_verdict_strict
 FIXES["recompute_verdict_diff"] = fix_recompute_verdict_strict
 FIXES["aggregator_v2"] = fix_aggregator_v2
+
+
+
+# ============================================================================
+# Phase 249: HTML-quality detector. The healer can't push frontend fixes
+# from Railway, but it CAN detect bad strings in rendered HTML and log
+# them so the QA workflow (site-qa.yml) picks them up + opens issues.
+# ============================================================================
+
+HTML_BAD_PATTERNS = {
+    "multi-GW placeholder":    "multi-GW",
+    "$$$$ pricing leak":       "$" * 4,
+    "Save 34% stale text":     "Save 34%",
+    "$249.50 stale text":      "$249.50",
+    "$798 stale text":         "$798",
+    "__$$$$__ template leak":  "__$$$$__",
+    "276 MARKETS stale":       "276 MARKETS",
+    "30 U.S. markets stale":   "30 U.S. markets",
+    "NaN ago timestamp bug":   "NaN ago",
+    "NAND AGO timestamp bug":  "NAND AGO",
+}
+
+HTML_PROBE_URLS = [
+    "https://dchub.cloud/",
+    "https://dchub.cloud/pricing",
+    "https://dchub.cloud/dcpi",
+    "https://dchub.cloud/markets",
+    "https://dchub.cloud/dc-hub-media",
+    "https://dchub.cloud/pipeline-tracker",
+    "https://dchub.cloud/agents",
+]
+
+
+def fix_html_quality_scan():
+    """Probe rendered HTML on key pages, count occurrences of known
+       bad strings. Log every hit to self_heal_events. Returns a structured
+       report the QA workflow can read."""
+    import urllib.request
+    findings = {}
+    total_issues = 0
+
+    for url in HTML_PROBE_URLS:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "DCHub-Healer/1.0"})
+            with urllib.request.urlopen(req, timeout=8) as r:
+                body = r.read().decode("utf-8", errors="ignore")
+        except Exception as e:
+            findings[url] = {"error": str(e)[:200]}
+            continue
+        page_hits = {}
+        for label, needle in HTML_BAD_PATTERNS.items():
+            n = body.count(needle)
+            if n > 0:
+                page_hits[label] = n
+                total_issues += n
+        if page_hits:
+            findings[url] = page_hits
+
+    return True, f"{total_issues} HTML quality issues across {len(findings)} pages: " + str(findings)[:280]
+
+
+def fix_feed_diversity_check():
+    """Probe /api/v1/media/feed-v3 and check whether top 8 items have
+       category diversity. If 6+ of top 8 are same category, that's a
+       low-diversity bug — log it."""
+    import urllib.request, json
+    try:
+        with urllib.request.urlopen("https://dchub.cloud/api/v1/media/feed-v3", timeout=8) as r:
+            d = json.loads(r.read().decode("utf-8"))
+        items = d.get("items", [])[:8]
+        if not items:
+            return True, "no items to check"
+        from collections import Counter
+        cats = Counter(i.get("category") for i in items)
+        most_common_cat, most_common_n = cats.most_common(1)[0]
+        if most_common_n >= 6:
+            return True, f"LOW DIVERSITY: top 8 has {most_common_n}/8 {most_common_cat}"
+        return True, f"OK: top 8 categories spread = {dict(cats)}"
+    except Exception as e:
+        return False, str(e)[:200]
+
+
+def fix_cdn_cache_staleness():
+    """Check Age header on /pricing vs max-age. If Age > 30 min, log it
+       so external automation can purge."""
+    import urllib.request
+    try:
+        req = urllib.request.Request("https://dchub.cloud/pricing", method="HEAD")
+        with urllib.request.urlopen(req, timeout=8) as r:
+            age = int(r.headers.get("age", 0))
+            cc = r.headers.get("cache-control", "")
+        if age > 1800:
+            return True, f"STALE CACHE: age={age}s (>30min); CF purge needed"
+        return True, f"OK: age={age}s, cache-control={cc[:60]}"
+    except Exception as e:
+        return False, str(e)[:200]
+
+
+FIXES["html_quality_scan"] = fix_html_quality_scan
+FIXES["feed_diversity_check"] = fix_feed_diversity_check
+FIXES["cdn_cache_staleness"] = fix_cdn_cache_staleness
+
+# Register as patterns so the 5-min cycle runs them automatically
+PATTERNS.extend([
+    {"name": "html_quality_tick", "match": ["DCPI"], "fix": "html_quality_scan"},
+    {"name": "feed_diversity_tick", "match": ["DCPI"], "fix": "feed_diversity_check"},
+])

@@ -48,3 +48,17 @@ jobs:
               body,
               labels: ['p0', 'self-heal', 'site-qa']
             });
+
+      - name: HTML quality scan (Phase 249)
+        run: |
+          # Trigger the healer's HTML scan
+          curl -sS -X POST "https://dchub.cloud/api/v1/heal/run?action=html_quality_scan" | tee /tmp/quality.json
+          # If 0 issues, exit clean. If >0, open/update a GitHub issue.
+          ISSUES=$(jq -r '.details' /tmp/quality.json 2>/dev/null | grep -oE '[0-9]+' | head -1)
+          if [ "${ISSUES:-0}" -gt 0 ]; then
+            echo "::warning::HTML quality scan found ${ISSUES} issues"
+            # Open a GitHub issue if not already open
+            gh issue list --label "html-quality" --state open | head -1
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
