@@ -18235,8 +18235,77 @@ def _heal_force():
     """Trigger an immediate heal cycle (idempotent, lock-protected)."""
     try:
         import dchub_self_heal
-        result = dchub_self_heal.heal_cycle()
+        result = dchub_self_heal.heal_cycle_blocking(max_wait_seconds=45)
         return jsonify({"ok": True, "result": result})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)[:300]}), 500
 # === /Phase 227 ===
+
+
+# === Phase 228: media feed diagnostics ===
+@app.route("/api/v1/media/diagnose", methods=["GET"])
+def _media_diagnose():
+    import os, psycopg2
+    DATABASE_URL = os.environ.get("DATABASE_URL")
+    if not DATABASE_URL:
+        return jsonify({"error": "no DATABASE_URL"}), 500
+
+    probes = [
+        ("news",
+         "SELECT COUNT(*) FROM news WHERE published_at > NOW() - INTERVAL '14 days'"),
+        ("press_releases_table",
+         "SELECT COUNT(*) FROM press_releases"),
+        ("announcements_feed_press",
+         "SELECT COUNT(*) FROM announcements_feed WHERE category IN ('press','press_release','daily_brief')"),
+        ("ai_testimonials",
+         "SELECT COUNT(*) FROM ai_testimonials"),
+        ("market_power_scores_recent",
+         "SELECT COUNT(*) FROM market_power_scores WHERE computed_at > NOW() - INTERVAL '7 days'"),
+        ("market_power_scores_build",
+         "SELECT COUNT(*) FROM market_power_scores WHERE verdict = 'BUILD' AND computed_at > NOW() - INTERVAL '7 days'"),
+        ("market_power_scores_avoid",
+         "SELECT COUNT(*) FROM market_power_scores WHERE verdict = 'AVOID' AND computed_at > NOW() - INTERVAL '7 days'"),
+        ("market_power_scores_hi_constraint",
+         "SELECT COUNT(*) FROM market_power_scores WHERE constraint_score >= 80 AND computed_at > NOW() - INTERVAL '7 days'"),
+        ("market_power_scores_hi_excess",
+         "SELECT COUNT(*) FROM market_power_scores WHERE excess_power_score >= 80 AND computed_at > NOW() - INTERVAL '7 days'"),
+    ]
+
+    schema_probes = [
+        ("press_releases.columns",
+         "SELECT column_name FROM information_schema.columns WHERE table_name='press_releases' ORDER BY ordinal_position"),
+        ("ai_testimonials.columns",
+         "SELECT column_name FROM information_schema.columns WHERE table_name='ai_testimonials' ORDER BY ordinal_position"),
+        ("market_power_scores.verdicts",
+         "SELECT verdict, COUNT(*) FROM market_power_scores GROUP BY verdict ORDER BY COUNT(*) DESC"),
+    ]
+
+    out = {"counts": {}, "errors": {}, "schema": {}}
+    try:
+        conn = psycopg2.connect(DATABASE_URL, connect_timeout=8)
+    except Exception as e:
+        return jsonify({"error": f"db connect: {e}"}), 500
+
+    for name, sql in probes:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql)
+                r = cur.fetchone()
+                out["counts"][name] = r[0] if r else None
+        except Exception as e:
+            conn.rollback()
+            out["errors"][name] = str(e)[:200]
+
+    for name, sql in schema_probes:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql)
+                rows = cur.fetchall()
+                out["schema"][name] = [list(r) for r in rows]
+        except Exception as e:
+            conn.rollback()
+            out["schema"][name] = f"error: {str(e)[:200]}"
+
+    conn.close()
+    return jsonify(out)
+# === /Phase 228 ===
