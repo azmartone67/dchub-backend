@@ -28,6 +28,16 @@ import psycopg2
 import psycopg2.extras
 
 
+# Phase 223: defensive round helper
+def _safe_round(v, digits=1):
+    """Safely round a value that might be None or non-numeric."""
+    if v is None: return 0.0
+    try: return round(float(v), digits)
+    except (TypeError, ValueError): return 0.0
+
+
+
+
 # === Phase 213: dynamic market list (use /api/v1/markets/list for full 132) ===
 def _dcpi_dynamic_markets():
     """Returns list of market dicts {slug, name, cities, state, country}.
@@ -264,7 +274,7 @@ def compute_constraint_score(metrics: dict) -> float:
     s_emerg = _clip(emergencies * 20, 0, 100)
     s_demand = _clip((demand_yoy / 12.0) * 100, 0, 100)
 
-    return round(0.4*s_wait + 0.25*s_reserve + 0.20*s_emerg + 0.15*s_demand, 1)
+    return round((0.4*s_wait + 0.25*s_reserve + 0.20*s_emerg + 0.15*s_demand) or 0, 1)
 
 
 def compute_excess_power_score(metrics: dict) -> float:
@@ -312,7 +322,7 @@ def estimate_time_to_power(metrics: dict) -> float:
     if headroom >= 20: adj = 0.6
     elif headroom >= 16: adj = 0.8
     elif headroom < 10: adj = 1.4
-    return round(queue_wait * adj, 1)
+    return round((queue_wait * adj) or 0, 1)
 
 
 # ---------------------------------------------------------------------------
