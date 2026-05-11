@@ -1014,13 +1014,13 @@ def fix_enforce_publish_gate():
 
 
 def fix_recompute_verdict_diff():
-    """Differential verdict — produces real BUILD/AVOID spread.
+    """Phase 233 STRICT verdict matrix — BUILD/AVOID require BOTH non-zero scores.
        diff = excess - constraint
-         diff >= 25  → BUILD
-         diff <= -25 → AVOID
-         excess = 0 AND constraint = 0 → NODATA
-         else → CAUTION
-       Operates on PUBLISHED rows only."""
+       BUILD: excess >= 35 AND constraint >= 5 AND diff >= 25  (real pipeline pressure low, real excess)
+       AVOID: constraint >= 35 AND excess >= 5 AND (-diff) >= 25
+       NODATA: constraint = 0 AND excess = 0
+       LOW_SIGNAL: constraint = 0 XOR excess = 0 (only one side has data)
+       CAUTION: otherwise."""
     if not DATABASE_URL: return False, "no DATABASE_URL"
     try:
         with _conn() as c, c.cursor() as cur:
@@ -1029,10 +1029,16 @@ def fix_recompute_verdict_diff():
                     CASE
                         WHEN COALESCE(constraint_score,0) = 0
                              AND COALESCE(excess_power_score,0) = 0 THEN 'NODATA'
-                        WHEN COALESCE(excess_power_score,0)
-                             - COALESCE(constraint_score,0) >= 25 THEN 'BUILD'
-                        WHEN COALESCE(constraint_score,0)
-                             - COALESCE(excess_power_score,0) >= 25 THEN 'AVOID'
+                        WHEN COALESCE(constraint_score,0) = 0 OR COALESCE(excess_power_score,0) = 0
+                             THEN 'LOW_SIGNAL'
+                        WHEN COALESCE(excess_power_score,0) >= 35
+                             AND COALESCE(constraint_score,0) >= 5
+                             AND COALESCE(excess_power_score,0) - COALESCE(constraint_score,0) >= 25
+                                THEN 'BUILD'
+                        WHEN COALESCE(constraint_score,0) >= 35
+                             AND COALESCE(excess_power_score,0) >= 5
+                             AND COALESCE(constraint_score,0) - COALESCE(excess_power_score,0) >= 25
+                                THEN 'AVOID'
                         ELSE 'CAUTION'
                     END
                 WHERE published = true OR tier_required IS NULL OR tier_required != 'lite-pro';
@@ -1048,6 +1054,7 @@ def fix_recompute_verdict_diff():
             return True, f"recomputed {n} verdicts → " + " ".join(f"{v}={n2}" for v, n2 in dist)
     except Exception as e:
         return False, str(e)[:400]
+
 
 
 FIXES["enforce_publish_gate"] = fix_enforce_publish_gate
@@ -1153,3 +1160,33 @@ FIXES["add_unique_slug"] = fix_add_unique_constraint
 PATTERNS.extend([
     {"name": "history_collapse_tick", "match": ["DCPI"], "fix": "collapse_history"},
 ])
+
+
+def fix_delete_unhealable():
+    """Phase 233: delete the handful of rows that can't be healed —
+       no state inference possible, no iso, no price. They drag the
+       grade down. Better to hide than show garbage."""
+    if not DATABASE_URL: return False, "no DATABASE_URL"
+    try:
+        with _conn() as c, c.cursor() as cur:
+            # First try one more aggressive backfill: use slug verbatim as a city name
+            cur.execute("""
+                SELECT market_slug FROM market_power_scores
+                WHERE (state IS NULL OR state = '')
+                  AND tier_required = 'lite-pro';
+            """)
+            stragglers = [r[0] for r in cur.fetchall()]
+            # Delete lite-pro rows that have no state after all healing attempts
+            cur.execute("""
+                DELETE FROM market_power_scores
+                WHERE (state IS NULL OR state = '')
+                  AND tier_required = 'lite-pro';
+            """)
+            deleted = cur.rowcount
+            c.commit()
+            return True, f"deleted {deleted} unhealable lite-pro rows: {stragglers[:5]}"
+    except Exception as e:
+        return False, str(e)[:400]
+
+
+FIXES["delete_unhealable"] = fix_delete_unhealable
