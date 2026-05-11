@@ -12,6 +12,15 @@ import logging
 import datetime
 import io
 
+
+# Phase 232: surface per-source errors so /api/v1/media/diagnose can show them
+_agg_errors = {}
+
+def get_aggregator_errors():
+    """Return the last-run errors per source category. Read-only."""
+    return dict(_agg_errors)
+
+
 log = logging.getLogger('dchub_media')
 DCHUB_API_BASE = os.environ.get("DCHUB_API_BASE", "https://dchub.cloud")
 
@@ -170,7 +179,9 @@ def run_daily(api_base: str = DCHUB_API_BASE) -> dict:
 
 
 def aggregate_announcements(limit_per_source=20):
-    """Phase 227: guaranteed 5-category aggregator with hard fallbacks."""
+    """Phase 232: guaranteed 5-category aggregator with hard fallbacks + error surfacing."""
+    global _agg_errors
+    _agg_errors = {}
     import os, psycopg2
     from datetime import datetime
     DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -247,9 +258,10 @@ def aggregate_announcements(limit_per_source=20):
                         "ts": row[4].isoformat() if hasattr(row[4], "isoformat") else str(row[4]),
                     })
         except Exception as e:
-            # Don't let one bad table kill the feed
+            # Don't let one bad table kill the feed — but DO record the error
             conn.rollback()
             try:
+                _agg_errors[category] = str(e)[:300]
                 import logging
                 logging.warning("aggregate %s failed: %s", category, str(e)[:200])
             except Exception:

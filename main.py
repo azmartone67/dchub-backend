@@ -18306,6 +18306,14 @@ def _media_diagnose():
             conn.rollback()
             out["schema"][name] = f"error: {str(e)[:200]}"
 
+    # Phase 232: include aggregator errors
+    try:
+        import dchub_media
+        if hasattr(dchub_media, "get_aggregator_errors"):
+            dchub_media.aggregate_announcements()  # trigger a run so errors populate
+            out["aggregator_errors"] = dchub_media.get_aggregator_errors()
+    except Exception as _e:
+        out["aggregator_errors"] = {"_meta_error": str(_e)[:200]}
     conn.close()
     return jsonify(out)
 # === /Phase 228 ===
@@ -18365,3 +18373,218 @@ def _dcpi_quality():
     except Exception as e:
         return jsonify({"error": str(e)[:200]}), 500
 # === /Phase 230 ===
+
+
+# === Phase 232: explicit heal action runner ===
+@app.route("/api/v1/heal/run", methods=["POST", "GET"])
+def _heal_run_action():
+    """Run a specific heal action by name. Bypasses pattern dispatch.
+    Usage:  GET /api/v1/heal/run?action=collapse_history
+    """
+    from flask import request, jsonify
+    try:
+        import dchub_self_heal
+    except ImportError:
+        return jsonify({"error": "self_heal module not loaded"}), 500
+    action = request.args.get("action") or (request.json or {}).get("action") if request.is_json else request.args.get("action")
+    if not action:
+        return jsonify({
+            "error": "missing 'action' parameter",
+            "available": sorted(list(dchub_self_heal.FIXES.keys())),
+        }), 400
+    fn = dchub_self_heal.FIXES.get(action)
+    if fn is None:
+        return jsonify({
+            "error": f"unknown action '{action}'",
+            "available": sorted(list(dchub_self_heal.FIXES.keys())),
+        }), 404
+    try:
+        ok, details = fn()
+        return jsonify({"action": action, "ok": ok, "details": details})
+    except Exception as e:
+        import traceback
+        return jsonify({"action": action, "ok": False, "error": str(e)[:400],
+                        "trace": traceback.format_exc()[:1200]}), 500
+# === /Phase 232.A ===
+
+
+# === Phase 232: deep self-diagnosis ===
+@app.route("/api/v1/health/deep", methods=["GET"])
+def _health_deep():
+    """12-point structural self-check. Returns pass/fail per check + overall grade."""
+    import os, psycopg2
+    from flask import jsonify
+    DATABASE_URL = os.environ.get("DATABASE_URL")
+    if not DATABASE_URL:
+        return jsonify({"error": "no DATABASE_URL"}), 500
+
+    checks = []
+    def add(name, ok, details=""):
+        checks.append({"check": name, "ok": bool(ok), "details": str(details)[:300]})
+
+    try:
+        conn = psycopg2.connect(DATABASE_URL, connect_timeout=8)
+    except Exception as e:
+        return jsonify({"error": f"db connect: {e}"}), 500
+
+    with conn.cursor() as cur:
+        # 1. one row per slug?
+        try:
+            cur.execute("""
+                SELECT COUNT(*) FROM (
+                  SELECT market_slug FROM market_power_scores
+                  GROUP BY market_slug HAVING COUNT(*) > 1
+                ) x;
+            """)
+            n_dup_slugs = cur.fetchone()[0]
+            add("market_power_scores: one row per slug", n_dup_slugs == 0,
+                f"{n_dup_slugs} slugs have duplicate rows")
+        except Exception as e: add("market_power_scores: one row per slug", False, str(e))
+
+        # 2. total markets in expected range (200-400)
+        try:
+            cur.execute("SELECT COUNT(*) FROM market_power_scores;")
+            n_markets = cur.fetchone()[0]
+            add("market count 200-400", 200 <= n_markets <= 400, f"have {n_markets}")
+        except Exception as e: add("market count 200-400", False, str(e))
+
+        # 3. all rows have iso
+        try:
+            cur.execute("SELECT COUNT(*) FROM market_power_scores WHERE iso IS NULL OR iso = '' OR iso = 'UNK';")
+            n_no_iso = cur.fetchone()[0]
+            add("all rows have iso", n_no_iso == 0, f"{n_no_iso} rows missing iso")
+        except Exception as e: add("all rows have iso", False, str(e))
+
+        # 4. all rows have state
+        try:
+            cur.execute("SELECT COUNT(*) FROM market_power_scores WHERE state IS NULL OR state = '';")
+            n_no_state = cur.fetchone()[0]
+            add("all rows have state", n_no_state == 0, f"{n_no_state} rows missing state")
+        except Exception as e: add("all rows have state", False, str(e))
+
+        # 5. all rows have avg_kwh_cents
+        try:
+            cur.execute("SELECT COUNT(*) FROM market_power_scores WHERE avg_kwh_cents IS NULL OR avg_kwh_cents = 0;")
+            n_no_price = cur.fetchone()[0]
+            add("all rows have kWh price", n_no_price < 50, f"{n_no_price} rows missing price")
+        except Exception as e: add("all rows have kWh price", False, str(e))
+
+        # 6. verdict spread is sane
+        try:
+            cur.execute("""
+                SELECT verdict, COUNT(*) FROM market_power_scores
+                WHERE published = true GROUP BY verdict;
+            """)
+            spread = dict(cur.fetchall())
+            total = sum(spread.values())
+            build_pct = (spread.get("BUILD", 0) / total * 100) if total else 0
+            avoid_pct = (spread.get("AVOID", 0) / total * 100) if total else 0
+            sane = (5 <= build_pct <= 50) and (5 <= avoid_pct <= 50)
+            add("verdict spread is sane", sane, f"BUILD={build_pct:.0f}% AVOID={avoid_pct:.0f}% {spread}")
+        except Exception as e: add("verdict spread is sane", False, str(e))
+
+        # 7. ai_testimonials has rows
+        try:
+            cur.execute("SELECT COUNT(*) FROM ai_testimonials;")
+            n_test = cur.fetchone()[0]
+            add("ai_testimonials populated", n_test >= 3, f"{n_test} rows")
+        except Exception as e: add("ai_testimonials populated", False, str(e))
+
+        # 8. press_releases has rows
+        try:
+            cur.execute("SELECT COUNT(*) FROM press_releases;")
+            n_pr = cur.fetchone()[0]
+            add("press_releases populated", n_pr >= 1, f"{n_pr} rows")
+        except Exception as e: add("press_releases populated", False, str(e))
+
+        # 9. news fresh (last 14 days)
+        try:
+            cur.execute("SELECT COUNT(*) FROM news WHERE published_at > NOW() - INTERVAL '14 days';")
+            n_news = cur.fetchone()[0]
+            add("news fresh (14d)", n_news >= 5, f"{n_news} recent")
+        except Exception as e: add("news fresh (14d)", False, str(e))
+
+        # 10. self_heal_events recent activity
+        try:
+            cur.execute("SELECT COUNT(*) FROM self_heal_events WHERE ts > NOW() - INTERVAL '1 hour';")
+            n_heal = cur.fetchone()[0]
+            add("healer alive (events in last hr)", n_heal >= 1, f"{n_heal} events")
+        except Exception as e: add("healer alive (events in last hr)", False, str(e))
+
+        # 11. eia_electricity_rates fresh
+        try:
+            cur.execute("SELECT COUNT(*) FROM eia_electricity_rates WHERE retrieved_at > NOW() - INTERVAL '90 days';")
+            n_eia = cur.fetchone()[0]
+            add("eia rates fresh (90d)", n_eia >= 30, f"{n_eia} fresh rates")
+        except Exception as e: add("eia rates fresh (90d)", False, str(e))
+
+        # 12. UNIQUE constraint exists
+        try:
+            cur.execute("""
+                SELECT COUNT(*) FROM information_schema.table_constraints
+                WHERE table_name='market_power_scores' AND constraint_type='UNIQUE';
+            """)
+            n_uniq = cur.fetchone()[0]
+            add("UNIQUE constraint on market_slug", n_uniq >= 1, f"{n_uniq} unique constraints")
+        except Exception as e: add("UNIQUE constraint on market_slug", False, str(e))
+
+    conn.close()
+    passed = sum(1 for c in checks if c["ok"])
+    total = len(checks)
+    grade = "A" if passed == total else "B" if passed >= total*0.9 else "C" if passed >= total*0.75 else "D" if passed >= total*0.5 else "F"
+    return jsonify({
+        "grade": grade,
+        "passed": passed,
+        "total": total,
+        "pct": round(passed/total*100, 1),
+        "checks": checks,
+    })
+# === /Phase 232.B ===
+
+
+# === Phase 232: enriched markets list with DCPI + pricing ===
+@app.route("/api/v1/markets/list-rich", methods=["GET"])
+def _markets_list_rich():
+    """Returns markets with avg_kwh_cents + dcpi verdict + scores per market.
+    Tier-gated like /api/v1/markets/list."""
+    import os, psycopg2
+    from flask import jsonify, request
+    DATABASE_URL = os.environ.get("DATABASE_URL")
+    if not DATABASE_URL: return jsonify({"error": "no DATABASE_URL"}), 500
+    try:
+        limit = min(int(request.args.get("limit", 100)), 500)
+    except Exception:
+        limit = 100
+    try:
+        with psycopg2.connect(DATABASE_URL, connect_timeout=8) as conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT m.market_slug, m.market_name, m.state, m.iso,
+                       m.constraint_score, m.excess_power_score, m.verdict,
+                       m.avg_kwh_cents, m.quality_score, m.tier_required,
+                       m.computed_at
+                FROM market_power_scores m
+                WHERE m.published = true
+                ORDER BY m.excess_power_score DESC NULLS LAST
+                LIMIT %s;
+            """, (limit,))
+            rows = cur.fetchall()
+        return jsonify({
+            "markets": [{
+                "slug": r[0],
+                "name": r[1],
+                "state": r[2],
+                "iso": r[3],
+                "constraint_score": float(r[4]) if r[4] is not None else None,
+                "excess_power_score": float(r[5]) if r[5] is not None else None,
+                "verdict": r[6],
+                "avg_kwh_cents": float(r[7]) if r[7] is not None else None,
+                "quality_score": r[8],
+                "tier_required": r[9],
+                "computed_at": r[10].isoformat() if r[10] else None,
+            } for r in rows],
+            "total": len(rows),
+            "note": "filtered to published=true; sub-credible markets hidden",
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)[:300]}), 500
+# === /Phase 232.E ===

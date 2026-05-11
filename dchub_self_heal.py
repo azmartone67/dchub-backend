@@ -685,11 +685,86 @@ def fix_dedupe_market_slugs():
 
 
 def fix_populate_iso_state():
-    """Backfill iso column (and state if column exists) on market_power_scores."""
+    """Phase 232: smarter state inference.
+    Backfill state from (1) market_name "City, ST", (2) slug suffix -xx,
+    (3) US city → state dictionary for ambiguous slugs. Then iso from state."""
     if not DATABASE_URL: return False, "no DATABASE_URL"
+
+    # Common US city → state for slugs that lack the suffix
+    SLUG_HINTS = {
+        "albany":"NY","albuquerque":"NM","allen":"TX","alpharetta":"GA",
+        "altoona":"IA","amherst":"NY","anchorage":"AK","andover":"MA",
+        "asheville":"NC","ashburn":"VA","aurora":"CO","atlanta":"GA",
+        "auburn":"AL","austin":"TX","akron":"OH","baltimore":"MD",
+        "baton-rouge":"LA","beaverton":"OR","bellevue":"NE","beltsville":"MD",
+        "bend":"OR","bethlehem":"PA","billerica":"MA","billings":"MT",
+        "birmingham":"AL","bloomington":"IN","boardman":"OR","boca-raton":"FL",
+        "boise":"ID","boston":"MA","bothell":"WA","bozeman":"MT",
+        "brentwood":"TN","bristow":"VA","bridgewater":"NJ","brooklyn":"NY",
+        "brooklyn-park":"MN","buffalo":"NY","burlington":"VT","canton":"OH",
+        "carlstadt":"NJ","carrollton":"TX","casper":"WY","cedar-falls":"IA",
+        "cedar-knolls":"NJ","centennial":"CO","chandler":"AZ","chantilly":"VA",
+        "charlotte":"NC","chaska":"MN","chattanooga":"TN","cheyenne":"WY",
+        "chicago":"IL","cincinnati":"OH","cleveland":"OH","clifton":"NJ",
+        "coeur-d-alene":"ID","collegeville":"PA","colorado-springs":"CO",
+        "columbus":"OH","commack":"NY","council-bluffs":"IA","culpeper":"VA",
+        "dallas":"TX","denver":"CO","des-moines":"IA","detroit":"MI",
+        "doral":"FL","douglasville":"GA","dublin":"OH","dulles":"VA",
+        "duluth":"MN","durham":"NC","east-wenatchee":"WA","east-windsor":"NJ",
+        "eagle-mountain":"UT","eden-prairie":"MN","edison":"NJ","el-paso":"TX",
+        "el-segundo":"CA","elk-grove":"IL","elk-grove-village":"IL",
+        "ellendale":"ND","emeryville":"CA","englewood":"CO","eugene":"OR",
+        "fargo":"ND","fort-lauderdale":"FL","fort-worth":"TX","franklin":"TN",
+        "franklin-park":"IL","fremont":"CA","gainesville":"VA","garden-city":"NY",
+        "garland":"TX","gilbert":"AZ","goodyear":"AZ","grand-forks":"ND",
+        "grand-rapids":"MI","greenville":"SC","hammond":"IN","hartford":"CT",
+        "hawthorne":"NY","haymarket":"VA","hayward":"CA","henderson":"NV",
+        "hermiston":"OR","herndon":"VA","hillsboro":"OR","honolulu":"HI",
+        "houston":"TX","huntsville":"AL","indianapolis":"IN","irvine":"CA",
+        "irving":"TX","itasca":"IL","ivel":"KY","jacksonville":"FL",
+        "jersey-city":"NJ","kapolei":"HI","kansas-city":"MO","katy":"TX",
+        "kings-mountain":"NC","lakeland":"FL","lansing":"MI","laredo":"TX",
+        "las-vegas":"NV","latham":"NY","laurel":"MD","lebanon":"IN",
+        "leesburg":"VA","lenexa":"KS","lenoir":"NC","lincoln":"NE",
+        "lindon":"UT","linthicum-heights":"MD","lisle":"IL","lithia-springs":"GA",
+        "little-rock":"AR","lockport":"NY","los-angeles":"CA","los-lunas":"NM",
+        "louisville":"CO","lynnwood":"WA","madison":"WI","manassas":"VA",
+        "manchester":"NH","marietta":"GA","marlborough":"MA","mason-city":"IA",
+        "mccarran":"NV","mclean":"VA","mcallen":"TX","medford":"OR","memphis":"TN",
+        "mesa":"AZ","miami":"FL","miamisburg":"OH","midlothian":"TX",
+        "milpitas":"CA","milwaukee":"WI","minneapolis":"MN","minnetonka":"MN",
+        "modesto":"CA","montgomery":"AL","morrisville":"NC","moses-lake":"WA",
+        "mount-pleasant":"WI","mount-prospect":"IL","myrtle-beach":"SC",
+        "nashville":"TN","needham":"MA","new-albany":"OH","new-york":"NY",
+        "newark":"NJ","niagara-falls":"NY","norcross":"GA","norfolk":"VA",
+        "north-bergen":"NJ","north-kansas-city":"MO","north-las-vegas":"NV",
+        "northern-virginia":"VA","northlake":"IL","oak-brook":"IL",
+        "oklahoma-city":"OK","olathe":"KS","omaha":"NE","orangeburg":"NY",
+        "orlando":"FL","overland-park":"KS","palo-alto":"CA","papillion":"NE",
+        "philadelphia":"PA","phoenix":"AZ","piscataway":"NJ","pittsburgh":"PA",
+        "plano":"TX","portland":"ME","providence":"RI","puyallup":"WA",
+        "quincy":"WA","raleigh":"NC","rancho-cordova":"CA","reading":"PA",
+        "red-oak":"TX","reno":"NV","reston":"VA","richardson":"TX",
+        "richland-parish":"LA","richmond":"VA","rochester":"NY","sacramento":"CA",
+        "saint-louis":"MO","san-antonio":"TX","san-diego":"CA","san-francisco":"CA",
+        "san-jose":"CA","sandston":"VA","santa-ana":"CA","santa-clara":"CA",
+        "scottsdale":"AZ","seattle":"WA","secaucus":"NJ","shakopee":"MN",
+        "sheridan":"WY","shreveport":"LA","silicon-valley":"CA","silver-spring":"MD",
+        "sioux-city":"IA","sioux-falls":"SD","somerville":"MA","south-bend":"IN",
+        "south-burlington":"VT","south-charleston":"WV","south-west-jordan":"UT",
+        "southfield":"MI","spokane":"WA","springfield":"MA","st-louis":"MO",
+        "stamford":"CT","staten-island":"NY","sterling":"VA","stockton":"CA",
+        "sunnyvale":"CA","suwanee":"GA","sweetwater":"TX","syracuse":"NY",
+        "tacoma":"WA","tampa":"FL","tempe":"AZ","the-dalles":"OR",
+        "the-woodlands":"TX","troy":"MI","trumbull":"CT","tucson":"AZ",
+        "tukwila":"WA","tulsa":"OK","upper-michigan":"MI","vernal":"UT",
+        "vienna":"VA","virginia-beach":"VA","waltham":"MA","washington":"DC",
+        "waterbury":"CT","weehawken":"NJ","west-chester":"OH","west-des-moines":"IA",
+        "west-jordan":"UT","wilmington":"DE","wood-dale":"IL",
+    }
+
     try:
         with _conn() as c, c.cursor() as cur:
-            # Ensure iso column exists
             cur.execute("""
                 DO $$ BEGIN
                     BEGIN ALTER TABLE market_power_scores ADD COLUMN iso TEXT;
@@ -700,31 +775,39 @@ def fix_populate_iso_state():
             """)
             c.commit()
 
-            # Pull all rows that need iso/state
-            cur.execute("""
-                SELECT market_slug, market_name
-                FROM market_power_scores
-                WHERE (iso IS NULL OR state IS NULL)
-                  AND market_name IS NOT NULL;
-            """)
+            cur.execute("SELECT market_slug, market_name, state, iso FROM market_power_scores;")
             rows = cur.fetchall()
-            updates = 0
-            for slug, name in rows:
-                state = _extract_state_from_name(name)
+            updates_state = updates_iso = 0
+            for slug, name, cur_state, cur_iso in rows:
+                # Already filled?
+                if cur_state and cur_iso and cur_iso != "UNK": continue
+                # Try market_name first
+                state = cur_state or _extract_state_from_name(name)
+                # Fall back to slug suffix
+                if not state and slug:
+                    import re as _re
+                    m = _re.search(r"-([a-z]{2})$", slug.lower())
+                    if m and m.group(1).upper() in US_STATE_ISO:
+                        state = m.group(1).upper()
+                # Fall back to dict
+                if not state:
+                    state = SLUG_HINTS.get((slug or "").lower())
                 if not state: continue
-                iso = US_STATE_ISO.get(state)
-                if not iso: continue
+                iso = US_STATE_ISO.get(state, "UNK")
                 cur.execute("""
                     UPDATE market_power_scores
-                    SET iso = COALESCE(iso, %s),
-                        state = COALESCE(state, %s)
+                    SET state = COALESCE(state, %s),
+                        iso = CASE WHEN iso IS NULL OR iso = '' OR iso = 'UNK' THEN %s ELSE iso END
                     WHERE market_slug = %s;
-                """, (iso, state, slug))
-                updates += cur.rowcount
+                """, (state, iso, slug))
+                if cur.rowcount > 0:
+                    if not cur_state: updates_state += 1
+                    if not cur_iso or cur_iso == "UNK": updates_iso += 1
             c.commit()
-            return True, f"backfilled iso/state on {updates} rows"
+            return True, f"state filled on {updates_state} rows; iso filled on {updates_iso} rows"
     except Exception as e:
         return False, str(e)[:400]
+
 
 
 def fix_nodata_verdicts():
