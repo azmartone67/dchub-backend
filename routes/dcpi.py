@@ -27,6 +27,44 @@ from flask import Blueprint, request, jsonify, Response, render_template_string
 import psycopg2
 import psycopg2.extras
 
+
+# === Phase 213: dynamic market list (use /api/v1/markets/list for full 132) ===
+def _dcpi_dynamic_markets():
+    """Returns list of market dicts {slug, name, cities, state, country}.
+    Pulls from internal markets API. Falls back to MARKET_ALIASES if API fails.
+    """
+    import os, urllib.request, json
+    try:
+        base = os.environ.get("DCHUB_INTERNAL_API", "http://localhost:8000")
+        # Use enterprise key to bypass tier-gate
+        ent_key = os.environ.get("DCHUB_ENT_KEY", "ent_internal_dcpi_scorer")
+        req = urllib.request.Request(
+            f"{base}/api/v1/markets/list",
+            headers={"X-API-Key": ent_key, "User-Agent": "dcpi-scorer/2.0"}
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        markets_raw = data.get("data") or data.get("markets") or []
+        out = []
+        for m in markets_raw:
+            out.append({
+                "slug": m.get("id"),
+                "name": m.get("name"),
+                "cities": m.get("cities") or [m.get("name")],
+                "state": m.get("state"),
+                "country": m.get("country", "US"),
+                "facility_count": m.get("facility_count", 0),
+                "pipeline_mw": m.get("pipeline_mw_total", 0),
+                "operational_mw": m.get("total_power_mw", 0),
+                "avg_kwh_usd": m.get("avg_kwh_price_usd"),
+            })
+        return out
+    except Exception as e:
+        import logging
+        logging.warning(f"_dcpi_dynamic_markets fetch failed: {e}")
+        return None
+
+
 dcpi_bp = Blueprint("dcpi", __name__)
 
 # ---------------------------------------------------------------------------
@@ -366,7 +404,7 @@ def recompute_all_scores(source: str = "manual") -> dict:
         run_id = cur.fetchone()[0]
         c.commit()
 
-    for m in MARKETS:
+    for m in (_dcpi_dynamic_markets() or MARKETS):
         slug, name, state, iso, lat, lon = m
         try:
             metrics = gather_metrics_for_market(m)
@@ -1113,6 +1151,12 @@ buttons.forEach(b => b.addEventListener('click', () => {
 })();
 </script>
 
+
+<div style="background:#11121a;border:1px solid #1f2030;border-radius:12px;padding:20px;margin:32px auto;max-width:760px;font-family:system-ui">
+  <div style="font-size:12px;color:#9eb5d8;text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px">Cite this index</div>
+  <code style="display:block;background:rgba(255,255,255,.03);padding:12px;border-radius:6px;color:#e8eef8;font-size:13px;margin-bottom:8px">DC Hub. (2026). Data Center Power Index v2. https://dchub.cloud/dcpi</code>
+  <a href="/dcpi/methodology" style="color:#5aa3ff;font-size:14px;text-decoration:none">View methodology + BibTeX →</a>
+</div>
 </body>
 </html>"""
 
@@ -1395,6 +1439,12 @@ h1 {
     <p>Pro shows the score at the county level so you can pinpoint which sub-markets have the headroom. Plus alerts when {{ s.market_name }} moves &gt;5 points and PDF export for your buyers.</p>
     <a href="/pricing">Get Pro · $199/mo →</a>
   </div>
+</div>
+
+<div style="background:#11121a;border:1px solid #1f2030;border-radius:12px;padding:20px;margin:32px auto;max-width:760px;font-family:system-ui">
+  <div style="font-size:12px;color:#9eb5d8;text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px">Cite this index</div>
+  <code style="display:block;background:rgba(255,255,255,.03);padding:12px;border-radius:6px;color:#e8eef8;font-size:13px;margin-bottom:8px">DC Hub. (2026). Data Center Power Index v2. https://dchub.cloud/dcpi</code>
+  <a href="/dcpi/methodology" style="color:#5aa3ff;font-size:14px;text-decoration:none">View methodology + BibTeX →</a>
 </div>
 </body>
 </html>"""
