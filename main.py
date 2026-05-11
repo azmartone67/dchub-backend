@@ -7766,7 +7766,7 @@ def list_markets():
                     'name': market_key.replace('_', ' ').title(),
                     'cities': cities[:5],
                     'facility_count': row[0],
-                    'total_power_mw': round(row[1], 1),
+                    'total_power_mw': round(row[1] or 0, 1),
                     'pipeline_mw_total': pipeline_mw,
                     'avg_kwh_price_usd': avg_kwh,
                 })
@@ -7804,8 +7804,8 @@ def list_markets():
                 markets.append({
                     'id': slug, 'name': city.title(), 'cities': [city],
                     'facility_count': n,
-                    'total_power_mw': round(float(op_mw), 1),
-                    'pipeline_mw_total': round(float(pipe_mw), 1),
+                    'total_power_mw': round(float(op_mw or 0), 1),
+                    'pipeline_mw_total': round(float(pipe_mw or 0), 1),
                     'avg_kwh_price_usd': kwh,
                     'auto_discovered': True, 'state': state, 'country': 'US',
                 })
@@ -7831,8 +7831,8 @@ def list_markets():
                 markets.append({
                     'id': slug, 'name': city.title(), 'cities': [city],
                     'facility_count': n,
-                    'total_power_mw': round(float(op_mw), 1),
-                    'pipeline_mw_total': round(float(pipe_mw), 1),
+                    'total_power_mw': round(float(op_mw or 0), 1),
+                    'pipeline_mw_total': round(float(pipe_mw or 0), 1),
                     'avg_kwh_price_usd': None,
                     'auto_discovered': True, 'international': True, 'country': country,
                 })
