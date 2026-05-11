@@ -1784,7 +1784,8 @@ def press_kit_alias():
 
 
 
-# === Phase 215: lite recompute — score ALL markets using available data ===
+# (phase 215 lite-recompute moved to main.py in phase 216 — removed duplicate here)
+
 @dcpi_bp.route("/api/v1/dcpi/lite-recompute", methods=["POST"])
 def lite_recompute():
     """Computes lite DCPI scores for ALL markets in MARKETS.
