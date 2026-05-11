@@ -7795,6 +7795,173 @@ def list_markets():
                     'avg_kwh_price_usd': avg_kwh_price_usd,
                 })
 
+
+        # phase 203: dynamic market growth — auto-discover cities not in MARKET_ALIASES
+
+
+        try:
+
+
+            # Set of cities already covered by aliases
+
+
+            existing_cities = set()
+
+
+            for v in MARKET_ALIASES.values():
+
+
+                for city in v:
+
+
+                    if isinstance(city, str) and len(city) > 2:
+
+
+                        existing_cities.add(city.lower())
+
+
+            # Find untapped cities with ≥5 facilities
+
+
+            c.execute('''
+
+
+                SELECT
+
+
+                    LOWER(city) AS city_l,
+
+
+                    city,
+
+
+                    state,
+
+
+                    COUNT(*) AS n,
+
+
+                    COALESCE(SUM(power_mw), 0) AS total_mw,
+
+
+                    COALESCE(SUM(power_mw) FILTER (WHERE status IN ('construction','planned','permitting','Under Construction','Planned')), 0) AS pipeline_mw
+
+
+                FROM discovered_facilities
+
+
+                WHERE city IS NOT NULL AND city != ''
+
+
+                  AND (country = 'US' OR country = 'USA' OR country IS NULL OR country = '')
+
+
+                  AND LOWER(city) NOT IN %s
+
+
+                GROUP BY LOWER(city), city, state
+
+
+                HAVING COUNT(*) >= 5
+
+
+                ORDER BY n DESC
+
+
+                LIMIT 50;
+
+
+            ''', (tuple(existing_cities) if existing_cities else ('__none__',),))
+
+
+            for row in c.fetchall():
+
+
+                city_l, city, state, n, op_mw, pipe_mw = row
+
+
+                slug = city_l.replace(' ', '-').replace('/', '-').replace(',', '')
+
+
+                # Get the dominant state's $/kWh average
+
+
+                kwh = None
+
+
+                try:
+
+
+                    c.execute('''
+
+
+                        SELECT AVG(price_cents_kwh)/100.0 FROM eia_electricity_rates
+
+
+                        WHERE state=%s AND sector='ALL'
+
+
+                          AND retrieved_at > NOW() - INTERVAL '365 days';
+
+
+                    ''', (state,))
+
+
+                    kr = c.fetchone()
+
+
+                    if kr and kr[0] is not None:
+
+
+                        kwh = round(float(kr[0]), 4)
+
+
+                except Exception:
+
+
+                    pass
+
+
+                markets.append({
+
+
+                    'id': slug,
+
+
+                    'name': (city or '?').title(),
+
+
+                    'cities': [city],
+
+
+                    'facility_count': n,
+
+
+                    'total_power_mw': round(float(op_mw), 1),
+
+
+                    'pipeline_mw_total': round(float(pipe_mw), 1),
+
+
+                    'avg_kwh_price_usd': kwh,
+
+
+                    'auto_discovered': True,
+
+
+                    'state': state,
+
+
+                })
+
+
+        except Exception as _e:
+
+
+            import logging as _log; _log.getLogger('markets').warning(f'auto-discovery err: {_e}')
+
+
+
         # Sort by facility count
         markets.sort(key=lambda x: x['facility_count'], reverse=True)
 
@@ -17918,6 +18085,34 @@ try:
                 return jsonify(run_daily())
         except Exception as e:
             return jsonify({"error": str(e)}), 500
+except NameError:
+    pass
+
+# === Phase 203: ISO zone aggregator ===
+try:
+    @app.route("/api/v1/iso/zones", methods=["GET"])
+    def _v1_iso_zones():
+        """Aggregate zone-level LMP data from frontend snapshot files."""
+        from flask import jsonify, request
+        import urllib.request, json
+        iso_filter = request.args.get("iso", "").lower()
+        out = {"zones": [], "count": 0, "source": "eia-rto-region-data"}
+        iso_list = ["caiso", "ercot", "pjm", "miso", "nyiso", "isone", "spp"]
+        if iso_filter and iso_filter in iso_list:
+            iso_list = [iso_filter]
+        for iso in iso_list:
+            url = f"https://dchub.cloud/iso/{iso}/zones.json"
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "dchub-iso-aggregator/1.0"})
+                with urllib.request.urlopen(req, timeout=8) as r:
+                    summary = json.loads(r.read().decode("utf-8", errors="replace"))
+                for z in summary.get("zones", []):
+                    out["zones"].append({**z, "iso": iso, "fetched_at": summary.get("fetched_at")})
+            except Exception as e:
+                # Quietly skip if a zones.json doesn't exist yet
+                pass
+        out["count"] = len(out["zones"])
+        return jsonify(out)
 except NameError:
     pass
 
