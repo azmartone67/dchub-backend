@@ -18063,3 +18063,81 @@ try:
 except NameError:
     pass
 
+# === Phase 216: DCPI lite-recompute (top-level for reliability) ===
+try:
+    @app.route("/api/v1/dcpi/lite-recompute", methods=["POST"])
+    def _v216_dcpi_lite_recompute():
+        """Compute lite DCPI scores for all markets in the DB.
+        No admin key required (idempotent, read-only-ish via INSERT ON CONFLICT)."""
+        from flask import jsonify
+        import os, psycopg2
+        try:
+            conn = psycopg2.connect(os.environ.get("DATABASE_URL"), connect_timeout=8)
+            scored = 0
+            errors = 0
+            with conn.cursor() as cur:
+                # Ensure unique constraint exists
+                try:
+                    cur.execute("""
+                        DO $$
+                        BEGIN
+                            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'market_power_scores_slug_key') THEN
+                                ALTER TABLE market_power_scores ADD CONSTRAINT market_power_scores_slug_key UNIQUE (market_slug);
+                            END IF;
+                        END $$;
+                    """)
+                    conn.commit()
+                except Exception: pass
+                # Pull all US markets w/ >= 3 facilities + their state
+                cur.execute("""
+                    SELECT LOWER(city), city, state,
+                           COUNT(*) AS fac,
+                           COALESCE(SUM(power_mw), 0) AS op_mw,
+                           COALESCE(SUM(power_mw) FILTER (WHERE status IN ('construction','planned','permitting','Under Construction','Planned')), 0) AS pipe_mw
+                    FROM discovered_facilities
+                    WHERE city IS NOT NULL AND city != ''
+                      AND state IS NOT NULL AND LENGTH(state) = 2 AND state ~ '^[A-Z]{2}$'
+                      AND (country = 'US' OR country = 'USA')
+                    GROUP BY LOWER(city), city, state
+                    HAVING COUNT(*) >= 3
+                    LIMIT 200;
+                """)
+                rows = cur.fetchall()
+                for r in rows:
+                    try:
+                        slug_l, name, state, fac, op_mw, pipe_mw = r
+                        slug = slug_l.replace(" ", "-").replace(",", "")
+                        # $/kWh from state
+                        cur.execute("SELECT AVG(price_cents_kwh)/100.0 FROM eia_electricity_rates WHERE state=%s AND sector='ALL' AND retrieved_at > NOW() - INTERVAL '365 days';", (state,))
+                        kr = cur.fetchone()
+                        kwh = float(kr[0]) if kr and kr[0] else None
+                        # Lite scoring
+                        pipe_ratio = (pipe_mw / op_mw) if op_mw > 0 else 0
+                        constraint = min(100, pipe_ratio * 150)
+                        excess = 0
+                        if kwh:
+                            excess = max(0, min(100, (0.30 - kwh) * 333))
+                        if pipe_mw < 50 and op_mw > 100:
+                            excess = max(excess, 60)
+                        verdict = "BUILD" if excess > 50 and constraint < 60 else ("AVOID" if constraint > 75 else "CAUTION")
+                        cur.execute("""
+                            INSERT INTO market_power_scores
+                            (market_slug, market_name, constraint_score, excess_power_score, verdict, tier_required, computed_at)
+                            VALUES (%s, %s, %s, %s, %s, 'lite-pro', NOW())
+                            ON CONFLICT (market_slug) DO UPDATE SET
+                              constraint_score = EXCLUDED.constraint_score,
+                              excess_power_score = EXCLUDED.excess_power_score,
+                              verdict = EXCLUDED.verdict,
+                              computed_at = NOW();
+                        """, (slug, name, constraint, excess, verdict))
+                        scored += 1
+                    except Exception:
+                        errors += 1
+            conn.commit()
+            conn.close()
+            return jsonify({"ok": True, "markets_scored": scored, "errors": errors, "candidate_count": len(rows)})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+except NameError:
+    pass
+
