@@ -1274,7 +1274,7 @@ def list_markets():
                 'name': market_key.replace('_', ' ').title(),
                 'cities': cities[:5],  # Top 5 cities
                 'facility_count': row[0],
-                'total_power_mw': round(row[1], 1)
+                'total_power_mw': round(row[1] or 0, 1)
             })
     
     conn.close()
@@ -1339,7 +1339,7 @@ def get_market_stats(market):
         LIMIT 10
     """, params)
     
-    top_providers = [{'name': r[0], 'facilities': r[1], 'power_mw': round(r[2], 1)} for r in c.fetchall()]
+    top_providers = [{'name': r[0], 'facilities': r[1], 'power_mw': round(r[2] or 0, 1)} for r in c.fetchall()]
     
     # By status
     c.execute(f"""
@@ -1728,7 +1728,7 @@ def get_stats():
     stats['total_facilities'] = c.fetchone()[0]
     
     c.execute("SELECT COALESCE(SUM(power_mw), 0) FROM facilities")
-    stats['total_power_mw'] = round(c.fetchone()[0], 1)
+    stats['total_power_mw'] = round(c.fetchone()[0] or 0, 1)
     
     c.execute("SELECT COUNT(*) FROM announcements")
     stats['total_announcements'] = c.fetchone()[0]

@@ -709,7 +709,7 @@ def get_learning_status():
         ''')
         top_lessons = [{
             'channel': r[0], 'type': r[1], 'lesson': r[2],
-            'confidence': round(r[3], 3), 'applied': r[4], 'since': r[5]
+            'confidence': round(r[3] or 0, 3), 'applied': r[4], 'since': r[5]
         } for r in cursor.fetchall()]
         
         cursor.execute('''
@@ -718,8 +718,8 @@ def get_learning_status():
             ORDER BY score DESC
         ''')
         channel_rankings = [{
-            'channel': r[0], 'score': round(r[1], 1), 'trend': r[2],
-            'success_rate': round(r[3], 3), 'organic_signals': r[4], 'attempts': r[5]
+            'channel': r[0], 'score': round(r[1] or 0, 1), 'trend': r[2],
+            'success_rate': round(r[3] or 0, 3), 'organic_signals': r[4], 'attempts': r[5]
         } for r in cursor.fetchall()]
         
         cursor.execute('''
@@ -729,7 +729,7 @@ def get_learning_status():
         ''')
         pitch_variants = [{
             'platform': r[0], 'pitch': r[1][:100] + '...' if len(r[1]) > 100 else r[1],
-            'times_used': r[2], 'organic_after': r[3], 'effectiveness': round(r[4], 3)
+            'times_used': r[2], 'organic_after': r[3], 'effectiveness': round(r[4] or 0, 3)
         } for r in cursor.fetchall()]
         
         cursor.execute('SELECT COUNT(*) FROM outreach_learning_log')

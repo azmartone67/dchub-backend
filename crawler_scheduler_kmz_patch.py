@@ -54,7 +54,7 @@ def run_kmz_discovery(app=None):
         results = _kmz_instance.run_discovery_cycle()
 
         new_routes = results.get('total_new_routes', 0)
-        new_km     = round(results.get('total_new_km', 0), 1)
+        new_km     = round(results.get('total_new_km', 0, 0) or 0, 1)
         duration   = results.get('cycle_duration_seconds', 0)
 
         logger.info(

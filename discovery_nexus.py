@@ -425,7 +425,7 @@ class NexusDatabase:
         stats['total_facilities'] = c.fetchone()[0]
         
         c.execute("SELECT COALESCE(SUM(power_mw), 0) FROM facilities")
-        stats['total_power_mw'] = round(c.fetchone()[0], 1)
+        stats['total_power_mw'] = round(c.fetchone()[0] or 0, 1)
         
         c.execute("SELECT COALESCE(SUM(sqft), 0) FROM facilities")
         stats['total_sqft'] = c.fetchone()[0]

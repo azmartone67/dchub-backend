@@ -7967,7 +7967,7 @@ def get_market_stats(market):
             LIMIT 10
         """, params)
 
-        top_providers = [{'name': r[0], 'facilities': r[1], 'power_mw': round(r[2], 1)} for r in c.fetchall()]
+        top_providers = [{'name': r[0], 'facilities': r[1], 'power_mw': round(r[2] or 0, 1)} for r in c.fetchall()]
 
         # By status
         c.execute(f"""
@@ -9014,7 +9014,7 @@ def facilities_by_market():
             LIMIT %s
         """, (limit,))
         rows = c.fetchall()
-        data = [{'market': r[0], 'count': r[1], 'total_mw': round(r[2], 1)} for r in rows]
+        data = [{'market': r[0], 'count': r[1], 'total_mw': round(r[2] or 0, 1)} for r in rows]
         return jsonify({'success': True, 'data': data})
     except Exception as e:
         logger.error(f"by-market error: {e}")
@@ -9045,7 +9045,7 @@ def facilities_by_provider():
             LIMIT %s
         """, (limit,))
         rows = c.fetchall()
-        data = [{'provider': r[0], 'count': r[1], 'total_mw': round(r[2], 1)} for r in rows]
+        data = [{'provider': r[0], 'count': r[1], 'total_mw': round(r[2] or 0, 1)} for r in rows]
         return jsonify({'success': True, 'data': data})
     except Exception as e:
         logger.error(f"by-provider error: {e}")

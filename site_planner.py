@@ -476,7 +476,7 @@ def estimate_queue_depth(iso_name, substation_voltage_kv):
         return {
             'queue_mw': int(result['total_queue_mw']),
             'project_count': int(result['project_count']),
-            'avg_age_years': round(result.get('avg_age_years', 0), 1),
+            'avg_age_years': round(result.get('avg_age_years', 0, 0) or 0, 1),
             'source': 'database',
         }
     
@@ -1228,7 +1228,7 @@ def find_major_pipelines(lat, lng, radius_miles=50):
             'operator': p.get('operator', 'Unknown'),
             'capacity_mdth_per_day': p.get('capacity_mdth', 0),
             'states_served': p.get('states_served', ''),
-            'distance_miles': round(p.get('distance_miles', 0), 1),
+            'distance_miles': round(p.get('distance_miles', 0, 0) or 0, 1),
         } for p in result],
         'count': len(result),
     }

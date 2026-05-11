@@ -353,7 +353,7 @@ def indexing_status(token):
                     'clicks': row.get('clicks', 0),
                     'impressions': row.get('impressions', 0),
                     'ctr': round(row.get('ctr', 0) * 100, 2),
-                    'position': round(row.get('position', 0), 1)
+                    'position': round(row.get('position', 0, 0) or 0, 1)
                 }
                 pages.append(page_data)
                 total_clicks += page_data['clicks']

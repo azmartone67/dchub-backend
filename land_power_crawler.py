@@ -1161,13 +1161,13 @@ def register_land_power_routes(app, get_db, require_admin):
             for r in cur.fetchall():
                 profiles.append({
                     "market": r[0], "state": r[1],
-                    "substations": r[2], "avg_voltage_kv": round(r[3], 1),
-                    "transmission_lines": r[4], "transmission_miles": round(r[5], 1),
+                    "substations": r[2], "avg_voltage_kv": round(r[3] or 0, 1),
+                    "transmission_lines": r[4], "transmission_miles": round(r[5] or 0, 1),
                     "gas_pipelines": r[6], "power_plants": r[7],
-                    "total_mw": round(r[8], 1),
-                    "solar_mw": round(r[9], 1), "wind_mw": round(r[10], 1),
-                    "natural_gas_mw": round(r[11], 1), "nuclear_mw": round(r[12], 1),
-                    "renewable_pct": round(r[13], 1),
+                    "total_mw": round(r[8] or 0, 1),
+                    "solar_mw": round(r[9] or 0, 1), "wind_mw": round(r[10] or 0, 1),
+                    "natural_gas_mw": round(r[11] or 0, 1), "nuclear_mw": round(r[12] or 0, 1),
+                    "renewable_pct": round(r[13] or 0, 1),
                     "power_readiness_score": r[14],
                     "last_updated": str(r[15]),
                 })

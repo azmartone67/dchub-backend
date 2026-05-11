@@ -773,7 +773,7 @@ def _run_kmz_discovery():
         logger.info("📡 KMZ Discovery: starting scheduled cycle (v4.0)")
         results = _kmz_instance.run_discovery_cycle()
         new_routes = results.get('total_new_routes', 0)
-        new_km     = round(results.get('total_new_km', 0), 1)
+        new_km     = round(results.get('total_new_km', 0, 0) or 0, 1)
         duration   = results.get('cycle_duration_seconds', 0)
         logger.info(f"📡 KMZ Discovery: ✅ complete — {new_routes} new routes, {new_km} km, {duration}s")
     except Exception as e:

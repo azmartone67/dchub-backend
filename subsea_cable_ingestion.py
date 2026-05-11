@@ -544,7 +544,7 @@ def register_subsea_routes(app, get_db):
                     'point_id': row[0], 'name': row[1], 'country': row[2],
                     'country_code': row[3], 'lat': row[4], 'lng': row[5],
                     'cable_count': row[6], 'is_major_hub': row[7],
-                    'distance_km': round(row[8], 1) if row[8] else None,
+                    'distance_km': round(row[8] or 0, 1) if row[8] else None,
                 })
 
             return jsonify({

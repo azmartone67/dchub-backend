@@ -300,8 +300,8 @@ def _plant_key(plant: dict) -> str:
     """Generate a unique key for deduplication."""
     name = (plant.get("name") or "unknown").lower().strip()
     state = (plant.get("state") or "XX").upper()
-    lat = round(plant.get("latitude", 0), 3)
-    lng = round(plant.get("longitude", 0), 3)
+    lat = round(plant.get("latitude", 0, 0) or 0, 3)
+    lng = round(plant.get("longitude", 0, 0) or 0, 3)
     return f"{state}:{name}:{lat}:{lng}"
 
 
