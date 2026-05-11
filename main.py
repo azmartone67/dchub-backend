@@ -18852,30 +18852,73 @@ def _heal_findings():
             findings[d] = {"ok": ok, "details": details}
         except Exception as e:
             findings[d] = {"ok": False, "error": str(e)[:200]}
+
+    # Prefer structured findings if available
+    actionable = []
+    if hasattr(h, "get_last_html_findings"):
+        try:
+            raw = h.get_last_html_findings()
+            for url, hits in raw.items():
+                if isinstance(hits, dict):
+                    for label, n in hits.items():
+                        actionable.append({"url": url, "issue": label, "count": int(n)})
+        except Exception:
+            pass
+    # Fallback to string parser
+    if not actionable:
+        actionable = _extract_frontend_issues(findings)
+
     return jsonify({
         "findings": findings,
-        "actionable_frontend_issues": _extract_frontend_issues(findings),
+        "actionable_frontend_issues": actionable,
         "cache_needs_purge": "STALE" in str(findings.get("cdn_cache_staleness", {}).get("details", "")),
     })
 
 
 def _extract_frontend_issues(findings):
-    """Parse html_quality_scan output into a structured action list."""
+    """Parse html_quality_scan output into a structured action list.
+    The detector logs: 'N HTML quality issues across M pages: {url: {label: count, ...}, ...}'
+    We need to find the OUTER {...} dict, not the first inner one."""
     out = []
     qs = findings.get("html_quality_scan", {})
     details = qs.get("details", "")
-    if "issues across" in details:
-        # The detector logs: "N HTML quality issues across M pages: {...}"
-        import re, ast as _ast
-        m = re.search(r"\{[^}]+\}", details)
-        if m:
-            try:
-                d = _ast.literal_eval(m.group(0))
-                for url, hits in d.items():
-                    if isinstance(hits, dict):
-                        for label, n in hits.items():
-                            out.append({"url": url, "issue": label, "count": n})
-            except Exception:
-                pass
+    if "issues across" not in details:
+        return out
+    # Strategy: find the part AFTER "pages: " — that's the dict literal
+    import re, ast as _ast
+    marker = "pages: "
+    idx = details.find(marker)
+    if idx < 0:
+        return out
+    dict_str = details[idx + len(marker):].strip()
+    # The string may have been truncated to 280 chars — handle gracefully
+    # Try to find balanced braces
+    try:
+        # Use ast.literal_eval which is safe and handles nested dicts
+        # But if truncated, we need to fix the JSON
+        depth = 0
+        end = len(dict_str)
+        for i, ch in enumerate(dict_str):
+            if ch == "{": depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        truncated = dict_str[:end]
+        d = _ast.literal_eval(truncated)
+        for url, hits in d.items():
+            if isinstance(hits, dict):
+                for label, n in hits.items():
+                    out.append({"url": url, "issue": label, "count": int(n)})
+            elif isinstance(hits, str) and "error" in hits.lower():
+                out.append({"url": url, "issue": "probe_error", "count": 1})
+    except Exception as e:
+        # Last resort: extract patterns directly via regex
+        for m in re.finditer(r"'(https?://[^']+)':\s*\{([^}]+)\}", dict_str):
+            url = m.group(1)
+            inner = m.group(2)
+            for mm in re.finditer(r"'([^']+)':\s*(\d+)", inner):
+                out.append({"url": url, "issue": mm.group(1), "count": int(mm.group(2))})
     return out
 

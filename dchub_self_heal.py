@@ -1279,7 +1279,7 @@ def fix_html_quality_scan():
 
     for url in HTML_PROBE_URLS:
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "DCHub-Healer/1.0"})
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"})
             with urllib.request.urlopen(req, timeout=8) as r:
                 body = r.read().decode("utf-8", errors="ignore")
         except Exception as e:
@@ -1294,6 +1294,8 @@ def fix_html_quality_scan():
         if page_hits:
             findings[url] = page_hits
 
+    global _last_html_findings
+    _last_html_findings = findings
     return True, f"{total_issues} HTML quality issues across {len(findings)} pages: " + str(findings)[:280]
 
 
@@ -1302,8 +1304,13 @@ def fix_feed_diversity_check():
        category diversity. If 6+ of top 8 are same category, that's a
        low-diversity bug — log it."""
     import urllib.request, json
+    BROWSER_UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+                  'AppleWebKit/537.36 (KHTML, like Gecko) '
+                  'Chrome/120.0.0.0 Safari/537.36')
     try:
-        with urllib.request.urlopen("https://dchub.cloud/api/v1/media/feed-v3", timeout=8) as r:
+        req = urllib.request.Request("https://dchub.cloud/api/v1/media/feed-v3",
+                                     headers={"User-Agent": BROWSER_UA})
+        with urllib.request.urlopen(req, timeout=8) as r:
             d = json.loads(r.read().decode("utf-8"))
         items = d.get("items", [])[:8]
         if not items:
@@ -1322,8 +1329,12 @@ def fix_cdn_cache_staleness():
     """Check Age header on /pricing vs max-age. If Age > 30 min, log it
        so external automation can purge."""
     import urllib.request
+    BROWSER_UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+                  'AppleWebKit/537.36 (KHTML, like Gecko) '
+                  'Chrome/120.0.0.0 Safari/537.36')
     try:
-        req = urllib.request.Request("https://dchub.cloud/pricing", method="HEAD")
+        req = urllib.request.Request("https://dchub.cloud/pricing", method="HEAD",
+                                     headers={"User-Agent": BROWSER_UA})
         with urllib.request.urlopen(req, timeout=8) as r:
             age = int(r.headers.get("age", 0))
             cc = r.headers.get("cache-control", "")
@@ -1343,3 +1354,12 @@ PATTERNS.extend([
     {"name": "html_quality_tick", "match": ["DCPI"], "fix": "html_quality_scan"},
     {"name": "feed_diversity_tick", "match": ["DCPI"], "fix": "feed_diversity_check"},
 ])
+
+
+
+# Phase 251: structured findings that don't require string parsing
+_last_html_findings = {}
+
+def get_last_html_findings():
+    """Returns the structured findings dict from the most recent html_quality_scan."""
+    return dict(_last_html_findings)
