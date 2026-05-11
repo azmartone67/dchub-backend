@@ -7710,271 +7710,141 @@ def create_portal_session():
 
 @app.route('/api/v1/markets/list', methods=['GET'])
 def list_markets():
-    """List all available markets with basic stats"""
+    """List all available markets — curated + auto-discovered US + international."""
     conn = get_db()
     try:
         c = conn.cursor()
-
         markets = []
 
+        # ── 1. Curated markets from MARKET_ALIASES ─────────────────
         for market_key, cities in MARKET_ALIASES.items():
-            # Skip state-level aliases
             if len(market_key) <= 2 or market_key in ['la', 'sf', 'nj', 'nyc', 'dfw', 'nova']:
                 continue
-
-            # Build city conditions — all US markets, guard against ISO code collisions
-            conditions = []
-            params = []
+            conditions, params = [], []
             for city in cities:
                 if len(city) == 2 and city.isupper():
-                    conditions.append('state = %s')
-                    params.append(city)
+                    conditions.append('state = %s'); params.append(city)
                 else:
-                    conditions.append('city ILIKE %s')
-                    params.append(f'%{city}%')
-
+                    conditions.append('city ILIKE %s'); params.append(f'%{city}%')
             where_clause = ' OR '.join(conditions)
             country_guard = "AND (country = 'US' OR country = 'USA' OR country IS NULL OR country = '')"
-
             c.execute(f"""
                 SELECT COUNT(*) as count, COALESCE(SUM(power_mw), 0) as total_power
                 FROM discovered_facilities
-                WHERE ({where_clause})
-                {country_guard}
-                {RAILWAY_EXCLUSION}
+                WHERE ({where_clause}) {country_guard} {RAILWAY_EXCLUSION}
             """, params)
-
             row = c.fetchone()
             if row and row[0] > 0:
-                # Pipeline MW — facilities in construction/planned/permitting
+                # Pipeline MW
                 c.execute(f"""
                     SELECT COALESCE(SUM(power_mw), 0)
                     FROM discovered_facilities
-                    WHERE ({where_clause})
-                    {country_guard}
-                    {RAILWAY_EXCLUSION}
-                    AND status IN ('construction','planned','permitting','Under Construction','Planned','Construction','planned/proposed')
+                    WHERE ({where_clause}) {country_guard} {RAILWAY_EXCLUSION}
+                    AND status IN ('construction','planned','permitting','Under Construction','Planned')
                 """, params)
-                pipeline_mw_total = round((c.fetchone() or [0])[0], 1)
-
-                # Avg $/kWh — EIA price for this market's dominant state
-                avg_kwh_price_usd = None
+                pipeline_mw = round((c.fetchone() or [0])[0], 1)
+                # $/kWh from dominant state
+                avg_kwh = None
                 try:
                     c.execute(f"""
-                        SELECT state, COUNT(*) AS cnt
-                        FROM discovered_facilities
-                        WHERE ({where_clause})
-                        {country_guard}
-                        {RAILWAY_EXCLUSION}
+                        SELECT state, COUNT(*) AS cnt FROM discovered_facilities
+                        WHERE ({where_clause}) {country_guard} {RAILWAY_EXCLUSION}
                         AND state IS NOT NULL AND state != ''
-                        GROUP BY state
-                        ORDER BY cnt DESC
-                        LIMIT 1
+                        GROUP BY state ORDER BY cnt DESC LIMIT 1
                     """, params)
                     top = c.fetchone()
                     if top and top[0]:
                         c.execute("""
-                            SELECT AVG(price_cents_kwh) / 100.0
-                            FROM eia_electricity_rates
-                            WHERE state = %s AND sector = 'ALL'
-                              AND retrieved_at > NOW() - INTERVAL '365 days'
+                            SELECT AVG(price_cents_kwh)/100.0 FROM eia_electricity_rates
+                            WHERE state=%s AND sector='ALL' AND retrieved_at > NOW() - INTERVAL '365 days'
                         """, (top[0],))
                         kr = c.fetchone()
-                        if kr and kr[0] is not None:
-                            avg_kwh_price_usd = round(float(kr[0]), 4)
-                except Exception:
-                    pass
-
+                        if kr and kr[0] is not None: avg_kwh = round(float(kr[0]), 4)
+                except: pass
                 markets.append({
                     'id': market_key,
                     'name': market_key.replace('_', ' ').title(),
-                    'cities': cities[:5],  # Top 5 cities
+                    'cities': cities[:5],
                     'facility_count': row[0],
                     'total_power_mw': round(row[1], 1),
-                    'pipeline_mw_total': pipeline_mw_total,
-                    'avg_kwh_price_usd': avg_kwh_price_usd,
+                    'pipeline_mw_total': pipeline_mw,
+                    'avg_kwh_price_usd': avg_kwh,
                 })
 
-
-        # phase 203: dynamic market growth — auto-discover cities not in MARKET_ALIASES
-
-
+        # ── 2. US auto-discovered (require valid state, threshold 3) ──
+        existing = set()
+        for v in MARKET_ALIASES.values():
+            for city in v:
+                if isinstance(city, str) and len(city) > 2:
+                    existing.add(city.lower())
         try:
-
-
-            # Set of cities already covered by aliases
-
-
-            existing_cities = set()
-
-
-            for v in MARKET_ALIASES.values():
-
-
-                for city in v:
-
-
-                    if isinstance(city, str) and len(city) > 2:
-
-
-                        existing_cities.add(city.lower())
-
-
-            # Find untapped cities with ≥5 facilities
-
-
-            c.execute('''
-
-
-                SELECT
-
-
-                    LOWER(city) AS city_l,
-
-
-                    city,
-
-
-                    state,
-
-
-                    COUNT(*) AS n,
-
-
-                    COALESCE(SUM(power_mw), 0) AS total_mw,
-
-
-                    COALESCE(SUM(power_mw) FILTER (WHERE status IN ('construction','planned','permitting','Under Construction','Planned')), 0) AS pipeline_mw
-
-
+            c.execute("""
+                SELECT LOWER(city), city, state, COUNT(*) AS n,
+                       COALESCE(SUM(power_mw), 0) AS total_mw,
+                       COALESCE(SUM(power_mw) FILTER (WHERE status IN ('construction','planned','permitting','Under Construction','Planned')), 0) AS pipeline_mw
                 FROM discovered_facilities
-
-
                 WHERE city IS NOT NULL AND city != ''
-
-
-                  AND (country = 'US' OR country = 'USA' OR country IS NULL OR country = '')
-
-
+                  AND state IS NOT NULL AND state != ''
+                  AND LENGTH(state) = 2 AND state ~ '^[A-Z]{2}$'
+                  AND (country = 'US' OR country = 'USA')
                   AND LOWER(city) NOT IN %s
-
-
                 GROUP BY LOWER(city), city, state
-
-
                 HAVING COUNT(*) >= 3
-
-
-                ORDER BY n DESC
-
-
-                LIMIT 50;
-
-
-            ''', (tuple(existing_cities) if existing_cities else ('__none__',),))
-
-
+                ORDER BY n DESC LIMIT 60;
+            """, (tuple(existing) if existing else ('__none__',),))
             for row in c.fetchall():
-
-
                 city_l, city, state, n, op_mw, pipe_mw = row
-
-
                 slug = city_l.replace(' ', '-').replace('/', '-').replace(',', '')
-
-
-                # Get the dominant state's $/kWh average
-
-
                 kwh = None
-
-
                 try:
-
-
-                    c.execute('''
-
-
-                        SELECT AVG(price_cents_kwh)/100.0 FROM eia_electricity_rates
-
-
-                        WHERE state=%s AND sector='ALL'
-
-
-                          AND retrieved_at > NOW() - INTERVAL '365 days';
-
-
-                    ''', (state,))
-
-
+                    c.execute("SELECT AVG(price_cents_kwh)/100.0 FROM eia_electricity_rates WHERE state=%s AND sector='ALL' AND retrieved_at > NOW() - INTERVAL '365 days'", (state,))
                     kr = c.fetchone()
-
-
-                    if kr and kr[0] is not None:
-
-
-                        kwh = round(float(kr[0]), 4)
-
-
-                except Exception:
-
-
-                    pass
-
-
+                    if kr and kr[0] is not None: kwh = round(float(kr[0]), 4)
+                except: pass
                 markets.append({
-
-
-                    'id': slug,
-
-
-                    'name': (city or '?').title(),
-
-
-                    'cities': [city],
-
-
+                    'id': slug, 'name': city.title(), 'cities': [city],
                     'facility_count': n,
-
-
                     'total_power_mw': round(float(op_mw), 1),
-
-
                     'pipeline_mw_total': round(float(pipe_mw), 1),
-
-
                     'avg_kwh_price_usd': kwh,
-
-
-                    'auto_discovered': True,
-
-
-                    'state': state,
-
-
+                    'auto_discovered': True, 'state': state, 'country': 'US',
                 })
-
-
         except Exception as _e:
+            import logging as _l; _l.getLogger('markets').warning(f'us auto err: {_e}')
 
-
-            import logging as _log; _log.getLogger('markets').warning(f'auto-discovery err: {_e}')
-
-
-
-        # Sort by facility count
-        markets.sort(key=lambda x: x['facility_count'], reverse=True)
-
-        return jsonify({
-            'success': True,
-            'count': len(markets),
-            'data': markets
-        })
-    finally:
+        # ── 3. International auto-discovered ──
         try:
-            conn.close()
-        except Exception:
-            pass
+            c.execute("""
+                SELECT LOWER(city), city, country, COUNT(*) AS n,
+                       COALESCE(SUM(power_mw), 0) AS total_mw,
+                       COALESCE(SUM(power_mw) FILTER (WHERE status IN ('construction','planned','permitting','Under Construction','Planned')), 0) AS pipeline_mw
+                FROM discovered_facilities
+                WHERE city IS NOT NULL AND city != ''
+                  AND country IS NOT NULL AND country NOT IN ('US', 'USA', '')
+                GROUP BY LOWER(city), city, country
+                HAVING COUNT(*) >= 3
+                ORDER BY n DESC LIMIT 40;
+            """)
+            for row in c.fetchall():
+                city_l, city, country, n, op_mw, pipe_mw = row
+                slug = (city_l + '-' + (country or '').lower()).replace(' ', '-').replace('/', '-').replace(',', '')
+                markets.append({
+                    'id': slug, 'name': city.title(), 'cities': [city],
+                    'facility_count': n,
+                    'total_power_mw': round(float(op_mw), 1),
+                    'pipeline_mw_total': round(float(pipe_mw), 1),
+                    'avg_kwh_price_usd': None,
+                    'auto_discovered': True, 'international': True, 'country': country,
+                })
+        except Exception as _e:
+            import logging as _l; _l.getLogger('markets').warning(f'intl auto err: {_e}')
+
+        markets.sort(key=lambda x: x['facility_count'], reverse=True)
+        return jsonify({'count': len(markets), 'data': markets})
+    finally:
+        try: conn.close()
+        except: pass
+
 
 @app.route('/api/v1/markets/<market>', methods=['GET'])
 @require_plan('pro')
