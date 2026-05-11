@@ -7840,7 +7840,46 @@ def list_markets():
             import logging as _l; _l.getLogger('markets').warning(f'intl auto err: {_e}')
 
         markets.sort(key=lambda x: x['facility_count'], reverse=True)
-        return jsonify({'count': len(markets), 'data': markets})
+
+        # === Phase 210: tier-gating ===
+        from flask import request as _req
+        api_key = _req.headers.get('X-API-Key') or _req.headers.get('Authorization', '').replace('Bearer ', '')
+        tier = 'free'
+        if api_key:
+            try:
+                # validate_api_key returns plan name or None
+                from main import validate_api_key as _vk
+                plan = _vk(api_key)
+                if plan: tier = plan.lower()
+            except Exception: pass
+
+        TIER_LIMITS = {
+            'free': 20,
+            'developer': 50,
+            'pro': 200,
+            'enterprise': 500,
+        }
+        limit = TIER_LIMITS.get(tier, 20)
+        total = len(markets)
+        markets_visible = markets[:limit]
+        locked = total - len(markets_visible)
+
+        # For free tier, also redact sensitive fields on international + auto
+        if tier == 'free':
+            for m in markets_visible:
+                if m.get('auto_discovered') or m.get('international'):
+                    # Keep name + facility count, redact $/kWh + pipeline
+                    m.pop('avg_kwh_price_usd', None)
+                    m.pop('pipeline_mw_total', None)
+
+        return jsonify({
+            'count': len(markets_visible),
+            'total': total,
+            'tier': tier,
+            'locked': locked,
+            'upgrade_url': 'https://dchub.cloud/pricing' if locked > 0 else None,
+            'data': markets_visible,
+        })
     finally:
         try: conn.close()
         except: pass
