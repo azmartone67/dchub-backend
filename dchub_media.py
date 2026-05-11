@@ -197,20 +197,20 @@ def aggregate_announcements(limit_per_source=20):
         # (category, sql, columns)
         ("news",
          """SELECT title, COALESCE(url,'') AS url, COALESCE(summary,'') AS summary,
-                   COALESCE(source,'') AS source, COALESCE(published_at, NOW()) AS ts
+                   COALESCE(source,'') AS source, COALESCE(published_at) AS ts
             FROM news
             WHERE published_at > NOW() - INTERVAL '14 days'
             ORDER BY published_at DESC LIMIT %s""",
          (limit_per_source,)),
         ("press_release",
          """SELECT title, COALESCE(url,'') AS url, COALESCE(body,'') AS summary,
-                   'DC Hub' AS source, COALESCE(published_at, NOW()) AS ts
+                   'DC Hub' AS source, COALESCE(published_at) AS ts
             FROM press_releases
             ORDER BY published_at DESC LIMIT %s""",
          (limit_per_source,)),
         ("press",
          """SELECT title, COALESCE(url,'') AS url, COALESCE(summary,'') AS summary,
-                   COALESCE(source,'') AS source, COALESCE(published_at, NOW()) AS ts
+                   COALESCE(source,'') AS source, COALESCE(published_at) AS ts
             FROM announcements_feed
             WHERE category IN ('press','press_release','daily_brief')
             ORDER BY published_at DESC LIMIT %s""",
@@ -417,7 +417,7 @@ def aggregate_announcements_v2(limit_per_source=20):
                    COALESCE(source_url, '') AS url,
                    COALESCE(description, body, '') AS summary,
                    COALESCE(source, '') AS source,
-                   COALESCE(published_date, created_at, NOW()) AS ts
+                   COALESCE(published_date, created_at) AS ts
             FROM news
             WHERE published_date > NOW() - INTERVAL '14 days'
             ORDER BY published_date DESC LIMIT %s""",
@@ -427,7 +427,7 @@ def aggregate_announcements_v2(limit_per_source=20):
                    COALESCE(source_url, '/news/' || slug || '/', '') AS url,
                    COALESCE(summary, subheadline, '') AS summary,
                    COALESCE(source, 'DC Hub') AS source,
-                   COALESCE(published_date, date, created_at, NOW()) AS ts
+                   COALESCE(published_date, date, created_at) AS ts
             FROM press_releases
             ORDER BY COALESCE(published_date, date, created_at) DESC NULLS LAST
             LIMIT %s""",
@@ -437,7 +437,7 @@ def aggregate_announcements_v2(limit_per_source=20):
                    COALESCE(url, '') AS url,
                    COALESCE(body, '') AS summary,
                    COALESCE(source, '') AS source,
-                   COALESCE(published_at, NOW()) AS ts
+                   COALESCE(published_at) AS ts
             FROM announcements_feed
             WHERE category IN ('press','press_release','daily_brief')
             ORDER BY published_at DESC LIMIT %s""",
@@ -447,7 +447,7 @@ def aggregate_announcements_v2(limit_per_source=20):
                    COALESCE(url, '') AS url,
                    quote AS summary,
                    COALESCE(NULLIF(source,''), platform, agent_name, 'AI Industry') AS source,
-                   COALESCE(approved_at, created_at, NOW()) AS ts
+                   COALESCE(approved_at, created_at) AS ts
             FROM ai_testimonials
             WHERE COALESCE(approved, true) = true
             ORDER BY COALESCE(approved_at, created_at) DESC NULLS LAST
@@ -489,7 +489,19 @@ def aggregate_announcements_v2(limit_per_source=20):
             continue
 
     conn.close()
-    items.sort(key=lambda x: x.get("ts", ""), reverse=True)
+    # Phase 248: interleave categories so top of feed shows variety
+    items.sort(key=lambda x: x.get("ts", "") or "", reverse=True)
+    from collections import defaultdict
+    by_cat = defaultdict(list)
+    for it in items:
+        by_cat[it.get("category", "other")].append(it)
+    cat_order = ["alert", "news", "press_release", "testimonial", "press", "other"]
+    interleaved = []
+    while any(by_cat.values()):
+        for cat in cat_order:
+            if by_cat.get(cat):
+                interleaved.append(by_cat[cat].pop(0))
+    items = interleaved
     return items
 
 
@@ -603,7 +615,7 @@ def aggregate_announcements_v3(limit_per_source=20):
                    COALESCE(url, '') AS url,
                    quote AS summary,
                    COALESCE(NULLIF(source,''), platform, agent_name, 'AI Industry') AS source,
-                   COALESCE(approved_at, created_at, NOW()) AS ts
+                   COALESCE(approved_at, created_at) AS ts
             FROM ai_testimonials
             WHERE COALESCE(approved, true) = true
               AND agent_name IS NOT NULL AND agent_name != 'unknown'
@@ -648,7 +660,19 @@ def aggregate_announcements_v3(limit_per_source=20):
             continue
 
     conn.close()
-    items.sort(key=lambda x: x.get("ts", ""), reverse=True)
+    # Phase 248: interleave categories so top of feed shows variety
+    items.sort(key=lambda x: x.get("ts", "") or "", reverse=True)
+    from collections import defaultdict
+    by_cat = defaultdict(list)
+    for it in items:
+        by_cat[it.get("category", "other")].append(it)
+    cat_order = ["alert", "news", "press_release", "testimonial", "press", "other"]
+    interleaved = []
+    while any(by_cat.values()):
+        for cat in cat_order:
+            if by_cat.get(cat):
+                interleaved.append(by_cat[cat].pop(0))
+    items = interleaved
     # Stash errors so the diagnose endpoint can surface them
     try:
         global _agg_errors
