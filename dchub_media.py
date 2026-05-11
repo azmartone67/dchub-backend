@@ -71,7 +71,7 @@ class Generator:
         avg = c.us_avg_kwh(markets)
 
         lines = [f"📊 DC Hub Daily · {date}", ""]
-        lines.append(f"Top moves across {len(markets)} US data center markets:")
+        lines.append(f"Top moves across {len(markets)} US + international data center markets:")
         lines.append("")
         if top_pipe:
             lines.append("🏗️ PIPELINE GROWTH")
