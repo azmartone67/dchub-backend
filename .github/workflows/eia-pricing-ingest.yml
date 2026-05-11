@@ -1,0 +1,47 @@
+name: EIA Pricing Ingest — eia_electricity_rates
+
+on:
+  schedule:
+    - cron: "23 6 * * *"      # daily 06:23 UTC (off-peak)
+  workflow_dispatch: {}
+  repository_dispatch:
+    types: [iso-ingest, brain-v2-stale-iso, eia-pricing]
+
+permissions:
+  contents: read
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.12" }
+
+      - name: Install deps
+        run: pip install psycopg2-binary requests
+
+      - name: Run EIA pricing discovery
+        env:
+          EIA_API_KEY: ${{ secrets.EIA_API_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ -f scripts/eia_pricing_discovery.py ]; then
+            python3 scripts/eia_pricing_discovery.py
+          elif [ -f eia_api.py ]; then
+            python3 eia_api.py
+          else
+            echo "no EIA pricing script found"; exit 1
+          fi
+
+      - name: Confirm new rows
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          python3 -c "
+          import os, psycopg2
+          c = psycopg2.connect(os.environ['DATABASE_URL']).cursor()
+          c.execute('SELECT COUNT(*), MAX(retrieved_at) FROM eia_electricity_rates;')
+          print(c.fetchone())
+          "
