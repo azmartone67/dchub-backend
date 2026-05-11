@@ -130,7 +130,7 @@ def _ensure_tables():
 # ---------------------------------------------------------------------------
 # Market universe — extend as we go
 # ---------------------------------------------------------------------------
-MARKETS = [
+_MARKETS_HARDCODED = [
     # (slug, display name, state, ISO, lat, lon)
     ("northern-virginia",   "Northern Virginia",      "VA", "PJM",   38.95, -77.45),
     ("dallas-fort-worth",   "Dallas–Fort Worth",      "TX", "ERCOT", 32.78, -96.80),
@@ -164,6 +164,51 @@ MARKETS = [
     ("rural-spp",           "Rural SPP",              "KS", "SPP",   38.50, -98.50),
     ("upper-michigan",      "Upper Peninsula MI",     "MI", "MISO",  46.50, -87.50),
 ]
+
+# Phase 214: try dynamic 132-market list first, fall back to hardcoded 30
+def _load_markets_dynamic():
+    try:
+        import os, urllib.request, json
+        base = os.environ.get("DCHUB_INTERNAL_API", "http://localhost:8000")
+        ent_key = os.environ.get("DCHUB_ENT_KEY", "ent_internal_dcpi")
+        req = urllib.request.Request(
+            f"{base}/api/v1/markets/list",
+            headers={"X-API-Key": ent_key, "User-Agent": "dcpi-loader/2.0"}
+        )
+        with urllib.request.urlopen(req, timeout=12) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        markets_raw = data.get("data") or []
+        # Each entry needs to match the original MARKETS structure
+        # — adapt based on actual hardcoded shape
+        if not markets_raw:
+            return None
+        # If hardcoded MARKETS is list of strings (slugs), return list of slugs
+        if isinstance(_MARKETS_HARDCODED, list) and _MARKETS_HARDCODED and isinstance(_MARKETS_HARDCODED[0], str):
+            return [m["id"] for m in markets_raw if m.get("id")]
+        # If list of dicts, return matching dict structure
+        if isinstance(_MARKETS_HARDCODED, list) and _MARKETS_HARDCODED and isinstance(_MARKETS_HARDCODED[0], dict):
+            sample = _MARKETS_HARDCODED[0]
+            keys = list(sample.keys())
+            out = []
+            for m in markets_raw:
+                d = {}
+                for k in keys:
+                    if k == "slug": d[k] = m.get("id")
+                    elif k == "name": d[k] = m.get("name")
+                    elif k == "cities": d[k] = m.get("cities", [m.get("name")])
+                    elif k == "state": d[k] = m.get("state")
+                    elif k == "country": d[k] = m.get("country", "US")
+                    else: d[k] = m.get(k)
+                out.append(d)
+            return out
+        return None
+    except Exception as e:
+        import logging
+        logging.warning(f"_load_markets_dynamic failed: {e}")
+        return None
+
+MARKETS = _load_markets_dynamic() or _MARKETS_HARDCODED
+
 
 
 # ---------------------------------------------------------------------------
