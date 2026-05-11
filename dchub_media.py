@@ -291,6 +291,38 @@ def aggregate_announcements(limit_per_source: int = 20) -> dict:
         log.warning(f"aggregator failed: {e}")
         debug["fatal"] = str(e)
 
+
+            # phase 225: DCPI movers as alerts (biggest score changes)
+            try:
+                debug["queries_tried"].append("dcpi-movers")
+                cur.execute("""
+                    SELECT market_slug, market_name, constraint_score, excess_power_score,
+                           verdict, computed_at
+                    FROM market_power_scores
+                    WHERE computed_at > NOW() - INTERVAL '7 days'
+                      AND excess_power_score IS NOT NULL
+                    ORDER BY ABS(excess_power_score - 50) DESC
+                    LIMIT 10;
+                """)
+                rows = cur.fetchall()
+                if rows:
+                    debug["queries_succeeded"].append(f"dcpi-movers ({len(rows)} alerts)")
+                    for r in rows:
+                        slug, name, c_score, e_score, verdict, ts = r
+                        title_prefix = "🚨 ALERT" if verdict == "AVOID" else "🚀 BUILD" if verdict == "BUILD" else "👁️ CAUTION"
+                        items.append({
+                            "id": f"dcpi-{slug}",
+                            "category": "alert",
+                            "title": f"{title_prefix}: {name} DCPI {verdict.lower()} verdict",
+                            "date": str(ts) if ts else "",
+                            "source": "DCPI Engine",
+                            "url": f"/dcpi/{slug}",
+                            "excerpt": f"Constraint: {c_score or 0:.0f} · Excess Power: {e_score or 0:.0f}",
+                        })
+            except Exception as e:
+                log.debug(f"dcpi-movers err: {e}")
+                conn.rollback()
+
     items.sort(key=lambda i: i.get("date", ""), reverse=True)
     counts = {}
     for it in items:
