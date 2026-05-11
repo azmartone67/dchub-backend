@@ -18783,3 +18783,99 @@ def _admin_schema_introspect():
 def _phase239_marker():
     from flask import jsonify
     return jsonify({"phase": 239, "ok": True})
+
+
+# ============================================================================
+# Phase 250: MASTER HEALER endpoints
+# ============================================================================
+
+@app.route("/api/v1/heal/master-cycle", methods=["POST", "GET"])
+def _heal_master_cycle():
+    """Run EVERY fix in dependency order. The autonomous loop's main button."""
+    from flask import jsonify
+    try:
+        import dchub_self_heal as h
+    except ImportError:
+        return jsonify({"error": "self_heal not loaded"}), 500
+    # Dependency order: state first, then iso, then price, then gate, then verdict
+    ORDER = [
+        "populate_iso_state",
+        "delete_unhealable",
+        "sql_coalesce_market_scores",
+        "enforce_publish_gate",
+        "collapse_history",
+        "dedupe_market_slugs",
+        "add_unique_slug",
+        "recompute_verdict_strict",
+        "nodata_verdicts",
+        "backfill_press_releases",
+        "backfill_testimonials",
+        "html_quality_scan",
+        "feed_diversity_check",
+        "cdn_cache_staleness",
+    ]
+    results = []
+    for action in ORDER:
+        fn = h.FIXES.get(action)
+        if fn is None:
+            results.append({"action": action, "ok": False, "skipped": "not registered"})
+            continue
+        try:
+            ok, details = fn()
+            results.append({"action": action, "ok": ok, "details": str(details)[:300]})
+        except Exception as e:
+            results.append({"action": action, "ok": False, "error": str(e)[:300]})
+    summary = {
+        "total": len(results),
+        "succeeded": sum(1 for r in results if r.get("ok")),
+        "failed": sum(1 for r in results if not r.get("ok")),
+        "results": results,
+    }
+    return jsonify(summary)
+
+
+@app.route("/api/v1/heal/findings", methods=["GET"])
+def _heal_findings():
+    """Current snapshot of detected issues — what frontend/CI should act on."""
+    from flask import jsonify
+    try:
+        import dchub_self_heal as h
+    except ImportError:
+        return jsonify({"error": "self_heal not loaded"}), 500
+    findings = {}
+    detectors = ["html_quality_scan", "feed_diversity_check", "cdn_cache_staleness"]
+    for d in detectors:
+        fn = h.FIXES.get(d)
+        if fn is None: continue
+        try:
+            ok, details = fn()
+            findings[d] = {"ok": ok, "details": details}
+        except Exception as e:
+            findings[d] = {"ok": False, "error": str(e)[:200]}
+    return jsonify({
+        "findings": findings,
+        "actionable_frontend_issues": _extract_frontend_issues(findings),
+        "cache_needs_purge": "STALE" in str(findings.get("cdn_cache_staleness", {}).get("details", "")),
+    })
+
+
+def _extract_frontend_issues(findings):
+    """Parse html_quality_scan output into a structured action list."""
+    out = []
+    qs = findings.get("html_quality_scan", {})
+    details = qs.get("details", "")
+    if "issues across" in details:
+        # The detector logs: "N HTML quality issues across M pages: {...}"
+        import re, ast as _ast
+        m = re.search(r"\{[^}]+\}", details)
+        if m:
+            try:
+                d = _ast.literal_eval(m.group(0))
+                for url, hits in d.items():
+                    if isinstance(hits, dict):
+                        for label, n in hits.items():
+                            out.append({"url": url, "issue": label, "count": n})
+            except Exception:
+                pass
+    return out
+
