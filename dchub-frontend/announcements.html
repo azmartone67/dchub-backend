@@ -352,7 +352,7 @@ a:hover { color: #22d3ee; }
     }
 
     async function fetchPipeline() {
-        const endpoints = ['/api/v1/pipeline', '/api/autopilot/capacity-pipeline'];
+        const endpoints = ['/api/v1/media/feed-v3', '/api/autopilot/capacity-pipeline'];
         for (const ep of endpoints) {
             const data = await fetchJSON(API_BASE + ep);
             if (!data) continue;
