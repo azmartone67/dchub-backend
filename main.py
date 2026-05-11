@@ -17880,3 +17880,34 @@ try:
 except (ImportError, NameError):
     pass
 
+# === Phase 194: synchronous daily preview ===
+try:
+    @app.route("/api/cron/daily/preview", methods=["GET"])
+    def _v1_daily_preview():
+        from flask import jsonify, request
+        try:
+            from dchub_media import run_daily
+            # Default: dry-run (compose only, don't post to LinkedIn)
+            dry_run = request.args.get("post", "").lower() != "true"
+            if dry_run:
+                # Compose without publishing
+                from dchub_media import Aggregator, Generator
+                a = Aggregator(); g = Generator()
+                payload = a.today_payload()
+                text = g.compose_linkedin_text(payload)
+                image = g.generate_chart_png(payload)
+                return jsonify({
+                    "dry_run": True,
+                    "date": payload["date"],
+                    "text": text,
+                    "text_chars": len(text),
+                    "image_bytes": len(image) if image else 0,
+                    "markets_count": len(payload.get("markets") or []),
+                })
+            else:
+                return jsonify(run_daily())
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+except NameError:
+    pass
+

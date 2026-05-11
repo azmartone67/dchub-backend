@@ -166,48 +166,106 @@ def run_daily(api_base: str = DCHUB_API_BASE) -> dict:
 
 
 def aggregate_announcements(limit_per_source: int = 20) -> dict:
-    """Pulls news + press + testimonials into unified feed."""
+    """Pulls news + press + testimonials into unified feed.
+
+    Tries multiple table names per category for resilience to schema changes.
+    """
     import os
     items = []
+    debug = {"queries_tried": [], "queries_succeeded": []}
+
     try:
         import psycopg2
-        conn = psycopg2.connect(os.environ.get("DATABASE_URL"), connect_timeout=8)
+        url = os.environ.get("DATABASE_URL")
+        if not url:
+            return {"items": [], "count": 0, "categories": {}, "debug": {"error": "no DATABASE_URL"}}
+        conn = psycopg2.connect(url, connect_timeout=8)
         with conn.cursor() as cur:
-            # News
+
+            # News — try multiple table/column patterns
+            news_candidates = [
+                ("news", "SELECT id, title, published_date, source, url, summary FROM news ORDER BY published_date DESC NULLS LAST LIMIT %s"),
+                ("news_articles", "SELECT id, title, published_at, source, url, summary FROM news_articles ORDER BY published_at DESC NULLS LAST LIMIT %s"),
+                ("articles", "SELECT id, title, published_at, source, url, excerpt FROM articles ORDER BY published_at DESC NULLS LAST LIMIT %s"),
+            ]
+            for table_name, sql in news_candidates:
+                try:
+                    debug["queries_tried"].append(f"news:{table_name}")
+                    cur.execute(sql, (limit_per_source,))
+                    rows = cur.fetchall()
+                    if rows:
+                        debug["queries_succeeded"].append(f"news:{table_name} ({len(rows)} rows)")
+                        for r in rows:
+                            items.append({
+                                "id": f"news-{r[0]}", "category": "news",
+                                "title": r[1] or "", "date": str(r[2]) if r[2] else "",
+                                "source": r[3] or "", "url": r[4] or "",
+                                "excerpt": (r[5] or "")[:200],
+                            })
+                        break  # first success wins
+                except Exception as e:
+                    log.debug(f"news {table_name} err: {e}")
+                    conn.rollback()
+
+            # Press releases
+            press_candidates = [
+                ("press_releases", "SELECT id, title, date, slug, meta_description, category FROM press_releases ORDER BY date DESC LIMIT %s"),
+                ("press", "SELECT id, title, published_at, slug, summary, type FROM press ORDER BY published_at DESC NULLS LAST LIMIT %s"),
+                ("announcements", "SELECT id, title, created_at, slug, body, category FROM announcements ORDER BY created_at DESC LIMIT %s"),
+            ]
+            for table_name, sql in press_candidates:
+                try:
+                    debug["queries_tried"].append(f"press:{table_name}")
+                    cur.execute(sql, (limit_per_source,))
+                    rows = cur.fetchall()
+                    if rows:
+                        debug["queries_succeeded"].append(f"press:{table_name} ({len(rows)} rows)")
+                        for r in rows:
+                            items.append({
+                                "id": f"press-{r[0]}", "category": "press",
+                                "title": r[1] or "", "date": str(r[2]) if r[2] else "",
+                                "source": "DC Hub",
+                                "url": f"/news/{r[3]}" if r[3] else "/announcements",
+                                "excerpt": (r[4] or "")[:200],
+                            })
+                        break
+                except Exception as e:
+                    log.debug(f"press {table_name} err: {e}")
+                    conn.rollback()
+
+            # Testimonials (we confirmed ai_testimonials exists with 1198 rows)
             try:
-                cur.execute(f"SELECT id, title, published_date, source, url, summary FROM news ORDER BY published_date DESC NULLS LAST LIMIT {int(limit_per_source)};")
-                for r in cur.fetchall():
-                    items.append({"id": f"news-{r[0]}", "category": "news",
-                                   "title": r[1] or "", "date": str(r[2]) if r[2] else "",
-                                   "source": r[3] or "", "url": r[4] or "",
-                                   "excerpt": (r[5] or "")[:200]})
+                debug["queries_tried"].append("testimonials:ai_testimonials")
+                cur.execute("""
+                    SELECT id, quote, source_name, created_at
+                    FROM ai_testimonials
+                    WHERE created_at > NOW() - INTERVAL '180 days'
+                    ORDER BY created_at DESC
+                    LIMIT 5;
+                """)
+                rows = cur.fetchall()
+                if rows:
+                    debug["queries_succeeded"].append(f"testimonials:ai_testimonials ({len(rows)} rows)")
+                    for r in rows:
+                        items.append({
+                            "id": f"testimonial-{r[0]}", "category": "testimonial",
+                            "title": f"AI Testimonial · {r[2] or 'AI agent'}",
+                            "date": str(r[3]) if r[3] else "",
+                            "source": r[2] or "AI", "url": "/testimonials",
+                            "excerpt": (r[1] or "")[:280],
+                        })
             except Exception as e:
-                log.warning(f"news q: {e}")
-            # Press
-            try:
-                cur.execute(f"SELECT id, title, date, slug, meta_description, category FROM press_releases ORDER BY date DESC LIMIT {int(limit_per_source)};")
-                for r in cur.fetchall():
-                    items.append({"id": f"press-{r[0]}", "category": "press",
-                                   "title": r[1] or "", "date": str(r[2]) if r[2] else "",
-                                   "source": "DC Hub", "url": f"/news/{r[3]}" if r[3] else "/announcements",
-                                   "excerpt": (r[4] or "")[:200]})
-            except Exception as e:
-                log.warning(f"press q: {e}")
-            # Testimonials (most recent 5)
-            try:
-                cur.execute("SELECT id, quote, source_name, created_at FROM ai_testimonials WHERE created_at > NOW() - INTERVAL '90 days' ORDER BY created_at DESC LIMIT 5;")
-                for r in cur.fetchall():
-                    items.append({"id": f"testimonial-{r[0]}", "category": "testimonial",
-                                   "title": f"AI Testimonial · {r[2] or 'AI agent'}",
-                                   "date": str(r[3]) if r[3] else "",
-                                   "source": r[2] or "AI", "url": "/testimonials",
-                                   "excerpt": (r[1] or "")[:280]})
-            except Exception as e:
-                log.warning(f"testimonials q: {e}")
+                log.warning(f"testimonials err: {e}")
+                conn.rollback()
+
         conn.close()
     except Exception as e:
         log.warning(f"aggregator failed: {e}")
+        debug["fatal"] = str(e)
+
     items.sort(key=lambda i: i.get("date", ""), reverse=True)
     counts = {}
-    for it in items: counts[it["category"]] = counts.get(it["category"], 0) + 1
-    return {"items": items, "count": len(items), "categories": counts}
+    for it in items:
+        counts[it["category"]] = counts.get(it["category"], 0) + 1
+    return {"items": items, "count": len(items), "categories": counts, "debug": debug}
+

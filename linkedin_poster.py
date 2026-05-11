@@ -232,7 +232,37 @@ def _get_valid_token():
 
 # ── Posting ──────────────────────────────────────────────────
 
-def post_to_linkedin(text, link_url=None, link_title=None, link_desc=None):
+def post_to_linkedin(text, link_url=None, link_title=None, link_desc=None, image_bytes=None):
+
+    # Phase 194: optional image upload (UGC POST media asset flow)
+    _image_urn = None
+    if image_bytes is not None:
+        try:
+            import os, requests
+            _token = os.environ.get("LINKEDIN_ACCESS_TOKEN", "").strip()
+            _company = os.environ.get("LINKEDIN_COMPANY_ID", "").strip()
+            if _token and _company:
+                _author = f"urn:li:organization:{_company}"
+                _h = {"Authorization": f"Bearer {_token}", "X-Restli-Protocol-Version": "2.0.0"}
+                # Register upload
+                _reg = requests.post(
+                    "https://api.linkedin.com/v2/assets?action=registerUpload",
+                    headers={**_h, "Content-Type": "application/json"},
+                    json={"registerUploadRequest": {
+                        "recipes": ["urn:li:digitalmediaRecipe:feedshare-image"],
+                        "owner": _author,
+                        "serviceRelationships": [{"relationshipType":"OWNER","identifier":"urn:li:userGeneratedContent"}],
+                    }},
+                    timeout=15,
+                )
+                if _reg.status_code in (200, 201):
+                    _rj = _reg.json()["value"]
+                    _upload_url = _rj["uploadMechanism"]["com.linkedin.digitalmedia.uploading.MediaUploadHttpRequest"]["uploadUrl"]
+                    _image_urn = _rj["asset"]
+                    requests.put(_upload_url, headers={"Authorization": f"Bearer {_token}"}, data=image_bytes, timeout=30)
+        except Exception as _e:
+            import logging as _l; _l.getLogger("linkedin").warning(f"phase194 image upload err: {_e}")
+
     """Post content to the DC Hub LinkedIn company page.
     
     Returns: (success: bool, result: dict)
