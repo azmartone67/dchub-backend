@@ -1257,6 +1257,28 @@ buttons.forEach(b => b.addEventListener('click', () => {
   <code style="display:block;background:rgba(255,255,255,.03);padding:12px;border-radius:6px;color:#e8eef8;font-size:13px;margin-bottom:8px">DC Hub. (2026). Data Center Power Index v2. https://dchub.cloud/dcpi</code>
   <a href="/dcpi/methodology" style="color:#5aa3ff;font-size:14px;text-decoration:none">View methodology + BibTeX →</a>
 </div>
+<script>
+// Phase 241: live DCPI market count
+(function(){
+  fetch('/api/v1/dcpi/live-count')
+    .then(r => r.json())
+    .then(d => {
+      const n = d.published || d.total || 280;
+      // Find any element containing "280+ MARKETS" or hardcoded number, replace with live count
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      let node;
+      while (node = walker.nextNode()) {
+        if (/\b(280\+?|276)\s*MARKETS/.test(node.nodeValue)) {
+          node.nodeValue = node.nodeValue.replace(/\b(280\+?|276)\s*MARKETS/, n + ' MARKETS');
+        }
+        if (/\b(280\+?|276)\s+U\.S\./.test(node.nodeValue)) {
+          node.nodeValue = node.nodeValue.replace(/\b(280\+?|276)\s+U\.S\./, n + ' U.S.');
+        }
+      }
+    })
+    .catch(() => {});
+})();
+</script>
 </body>
 </html>"""
 
