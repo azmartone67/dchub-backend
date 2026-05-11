@@ -976,3 +976,97 @@ PATTERNS.extend([
     {"name": "credibility_gate_tick", "match": ["DCPI"], "fix": "enforce_publish_gate"},
     {"name": "verdict_diff_tick",     "match": ["DCPI"], "fix": "recompute_verdict_diff"},
 ])
+
+
+# ============================================================================
+# Phase 231: collapse market_power_scores to latest-per-slug
+# ============================================================================
+
+def fix_collapse_history():
+    """Keep only the most-recent row per market_slug. Archive rest to *_history."""
+    if not DATABASE_URL: return False, "no DATABASE_URL"
+    try:
+        with _conn() as c, c.cursor() as cur:
+            # Ensure history table exists
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS market_power_scores_history (
+                    LIKE market_power_scores INCLUDING ALL
+                );
+            """)
+            c.commit()
+
+            # Count before
+            cur.execute("SELECT COUNT(*) FROM market_power_scores;")
+            before = cur.fetchone()[0]
+
+            # Archive everything that isn't the latest computed_at per slug
+            cur.execute("""
+                INSERT INTO market_power_scores_history
+                SELECT * FROM market_power_scores m
+                WHERE m.computed_at < (
+                    SELECT MAX(computed_at) FROM market_power_scores m2
+                    WHERE m2.market_slug = m.market_slug
+                );
+            """)
+            archived = cur.rowcount
+
+            # Delete archived rows from live table
+            cur.execute("""
+                DELETE FROM market_power_scores m
+                WHERE m.computed_at < (
+                    SELECT MAX(computed_at) FROM market_power_scores m2
+                    WHERE m2.market_slug = m.market_slug
+                );
+            """)
+            deleted = cur.rowcount
+
+            # Also dedupe rows with same slug AND same computed_at (just keep one)
+            cur.execute("""
+                DELETE FROM market_power_scores a
+                USING market_power_scores b
+                WHERE a.ctid < b.ctid
+                  AND a.market_slug = b.market_slug
+                  AND a.computed_at = b.computed_at;
+            """)
+            also_deleted = cur.rowcount
+
+            cur.execute("SELECT COUNT(*) FROM market_power_scores;")
+            after = cur.fetchone()[0]
+
+            c.commit()
+            return True, f"before={before} archived={archived} deleted={deleted+also_deleted} after={after}"
+    except Exception as e:
+        return False, str(e)[:400]
+
+
+def fix_add_unique_constraint():
+    """Add UNIQUE constraint on market_slug. Idempotent."""
+    if not DATABASE_URL: return False, "no DATABASE_URL"
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                DO $$ BEGIN
+                    BEGIN
+                        ALTER TABLE market_power_scores
+                        ADD CONSTRAINT market_power_scores_slug_unique
+                        UNIQUE (market_slug);
+                    EXCEPTION
+                        WHEN duplicate_object THEN NULL;
+                        WHEN unique_violation THEN
+                            RAISE NOTICE 'still has duplicates - run collapse_history first';
+                    END;
+                END $$;
+            """)
+            c.commit()
+            return True, "unique constraint ensured on market_slug"
+    except Exception as e:
+        return False, str(e)[:400]
+
+
+FIXES["collapse_history"] = fix_collapse_history
+FIXES["add_unique_slug"] = fix_add_unique_constraint
+
+# Run collapse every cycle (idempotent, fast after first run)
+PATTERNS.extend([
+    {"name": "history_collapse_tick", "match": ["DCPI"], "fix": "collapse_history"},
+])

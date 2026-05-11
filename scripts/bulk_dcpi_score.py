@@ -147,7 +147,15 @@ def main():
                      constraint_score, excess_power_score,
                      verdict, tier_required, computed_at,
                      iso, state)
-                    VALUES (%s, %s, NULL, NULL, %s, %s, %s, 'lite-pro', NOW(), %s, %s);
+                    VALUES (%s, %s, NULL, NULL, %s, %s, %s, 'lite-pro', NOW(), %s, %s)
+                    ON CONFLICT (market_slug) DO UPDATE SET
+                        market_name = EXCLUDED.market_name,
+                        constraint_score = EXCLUDED.constraint_score,
+                        excess_power_score = EXCLUDED.excess_power_score,
+                        verdict = EXCLUDED.verdict,
+                        computed_at = NOW(),
+                        iso = EXCLUDED.iso,
+                        state = EXCLUDED.state;
                 """, (slug, f"{name}, {state}", constraint, excess, verdict, iso, state))
 
                 scored += 1
