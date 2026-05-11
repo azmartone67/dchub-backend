@@ -194,48 +194,34 @@ def aggregate_announcements(limit_per_source=20):
         return items
 
     queries = [
-        # Phase 233: rewritten with REAL column names (verified via Chrome audit)
+        # (category, sql, columns)
         ("news",
-         """SELECT title,
-                   COALESCE(source_url, url, '') AS url,
-                   COALESCE(description, body, summary, '') AS summary,
-                   COALESCE(source, '') AS source,
-                   COALESCE(published_date, created_at, NOW()) AS ts
+         """SELECT title, COALESCE(url,'') AS url, COALESCE(summary,'') AS summary,
+                   COALESCE(source,'') AS source, COALESCE(published_at, NOW()) AS ts
             FROM news
-            WHERE published_date > NOW() - INTERVAL '14 days'
-            ORDER BY published_date DESC LIMIT %s""",
+            WHERE published_at > NOW() - INTERVAL '14 days'
+            ORDER BY published_at DESC LIMIT %s""",
          (limit_per_source,)),
         ("press_release",
-         """SELECT title,
-                   COALESCE(source_url, '/news/' || slug || '/', '') AS url,
-                   COALESCE(summary, subheadline, body, '') AS summary,
-                   COALESCE(source, 'DC Hub') AS source,
-                   COALESCE(published_date, date, created_at, NOW()) AS ts
+         """SELECT title, COALESCE(url,'') AS url, COALESCE(body,'') AS summary,
+                   'DC Hub' AS source, COALESCE(published_at, NOW()) AS ts
             FROM press_releases
-            ORDER BY COALESCE(published_date, date, created_at) DESC NULLS LAST
-            LIMIT %s""",
+            ORDER BY published_at DESC LIMIT %s""",
          (limit_per_source,)),
         ("press",
-         """SELECT title,
-                   COALESCE(url, '') AS url,
-                   COALESCE(body, '') AS summary,
-                   COALESCE(source, '') AS source,
-                   COALESCE(published_at, NOW()) AS ts
+         """SELECT title, COALESCE(url,'') AS url, COALESCE(summary,'') AS summary,
+                   COALESCE(source,'') AS source, COALESCE(published_at, NOW()) AS ts
             FROM announcements_feed
             WHERE category IN ('press','press_release','daily_brief')
             ORDER BY published_at DESC LIMIT %s""",
          (limit_per_source,)),
         ("testimonial",
-         """SELECT
-               COALESCE(NULLIF(agent_name,''), 'AI Testimonial') AS title,
-               COALESCE(url, '') AS url,
-               quote AS summary,
-               COALESCE(NULLIF(source,''), platform, agent_name, 'AI Industry') AS source,
-               COALESCE(approved_at, created_at, NOW()) AS ts
+         """SELECT COALESCE(title, quote) AS title, COALESCE(url,'') AS url,
+                   COALESCE(quote, body, '') AS summary,
+                   COALESCE(author, source, 'AI Industry') AS source,
+                   COALESCE(created_at, NOW()) AS ts
             FROM ai_testimonials
-            WHERE COALESCE(approved, true) = true
-            ORDER BY COALESCE(approved_at, created_at) DESC NULLS LAST
-            LIMIT %s""",
+            ORDER BY created_at DESC LIMIT %s""",
          (limit_per_source,)),
         ("alert",
          """SELECT
@@ -249,9 +235,9 @@ def aggregate_announcements(limit_per_source=20):
                'DCPI Engine' AS source,
                computed_at AS ts
             FROM market_power_scores
-            WHERE published = true
-              AND computed_at > NOW() - INTERVAL '7 days'
-              AND verdict IN ('BUILD','AVOID')
+            WHERE computed_at > NOW() - INTERVAL '7 days'
+              AND (verdict = 'BUILD' OR verdict = 'AVOID'
+                   OR constraint_score >= 80 OR excess_power_score >= 80)
             ORDER BY computed_at DESC LIMIT %s""",
          (limit_per_source,)),
     ]
