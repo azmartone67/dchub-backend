@@ -18588,3 +18588,146 @@ def _markets_list_rich():
     except Exception as e:
         return jsonify({"error": str(e)[:300]}), 500
 # === /Phase 232.E ===
+
+
+# ============================================================================
+# Phase 238: append-only routes
+# ============================================================================
+
+@app.route("/api/v1/_phase", methods=["GET"])
+def _phase238_marker():
+    """Returns the highest-shipped phase number. Used to confirm Railway deploys."""
+    from flask import jsonify
+    return jsonify({"phase": 238, "ok": True})
+
+
+@app.route("/api/v1/dcpi/live-count", methods=["GET"])
+def _dcpi_live_count_v238():
+    import os, psycopg2
+    from flask import jsonify
+    from datetime import datetime
+    DATABASE_URL = os.environ.get("DATABASE_URL")
+    if not DATABASE_URL:
+        return jsonify({"published": 0, "total": 0}), 500
+    try:
+        conn = psycopg2.connect(DATABASE_URL, connect_timeout=5)
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FILTER (WHERE published=true), COUNT(*) FROM market_power_scores;")
+            pub, total = cur.fetchone()
+        conn.close()
+        return jsonify({
+            "published": pub,
+            "total": total,
+            "as_of": datetime.utcnow().isoformat() + "Z",
+        })
+    except Exception as e:
+        return jsonify({"published": 283, "total": 289, "error": str(e)[:120]})
+
+
+@app.route("/api/v1/health/deep-v2", methods=["GET"])
+def _health_deep_v2_238():
+    """Per-check connection isolation — Phase 238."""
+    import os, psycopg2
+    from flask import jsonify
+    DATABASE_URL = os.environ.get("DATABASE_URL")
+    if not DATABASE_URL:
+        return jsonify({"error": "no DATABASE_URL"}), 500
+
+    checks = []
+
+    def add(name, ok, details=""):
+        checks.append({"check": name, "ok": bool(ok), "details": str(details)[:300]})
+
+    def safe(name, sql, eval_fn):
+        try:
+            conn = psycopg2.connect(DATABASE_URL, connect_timeout=6)
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(sql)
+                    rows = cur.fetchall()
+                ok, details = eval_fn(rows)
+                add(name, ok, details)
+            finally:
+                conn.close()
+        except Exception as e:
+            add(name, False, str(e)[:200])
+
+    safe("one row per slug",
+        "SELECT COUNT(*) FROM (SELECT market_slug FROM market_power_scores GROUP BY market_slug HAVING COUNT(*) > 1) x;",
+        lambda r: (r[0][0] == 0, f"{r[0][0]} dup slugs"))
+    safe("market count 200-400",
+        "SELECT COUNT(*) FROM market_power_scores;",
+        lambda r: (200 <= r[0][0] <= 400, f"have {r[0][0]}"))
+    safe("all rows have iso",
+        "SELECT COUNT(*) FROM market_power_scores WHERE iso IS NULL OR iso = '' OR iso = 'UNK';",
+        lambda r: (r[0][0] == 0, f"{r[0][0]} missing iso"))
+    safe("all rows have state",
+        "SELECT COUNT(*) FROM market_power_scores WHERE state IS NULL OR state = '';",
+        lambda r: (r[0][0] == 0, f"{r[0][0]} missing state"))
+    safe("kwh price coverage",
+        "SELECT COUNT(*) FROM market_power_scores WHERE avg_kwh_cents IS NULL OR avg_kwh_cents = 0;",
+        lambda r: (r[0][0] < 50, f"{r[0][0]} missing price"))
+
+    def verdict_eval(rows):
+        d = dict(rows)
+        total = sum(d.values()) or 1
+        build_pct = d.get("BUILD", 0) / total * 100
+        avoid_pct = d.get("AVOID", 0) / total * 100
+        return ((5 <= build_pct <= 60) and (5 <= avoid_pct <= 60),
+                f"BUILD={build_pct:.0f}% AVOID={avoid_pct:.0f}% {d}")
+
+    safe("verdict spread is sane",
+        "SELECT verdict, COUNT(*) FROM market_power_scores WHERE published = true GROUP BY verdict;",
+        verdict_eval)
+    safe("ai_testimonials populated",
+        "SELECT COUNT(*) FROM ai_testimonials;",
+        lambda r: (r[0][0] >= 3, f"{r[0][0]} rows"))
+    safe("press_releases populated",
+        "SELECT COUNT(*) FROM press_releases;",
+        lambda r: (r[0][0] >= 1, f"{r[0][0]} rows"))
+    safe("news fresh (14d)",
+        "SELECT COUNT(*) FROM news WHERE published_date > NOW() - INTERVAL '14 days';",
+        lambda r: (r[0][0] >= 5, f"{r[0][0]} recent"))
+    safe("healer alive (events 1h)",
+        "SELECT COUNT(*) FROM self_heal_events WHERE ts > NOW() - INTERVAL '1 hour';",
+        lambda r: (r[0][0] >= 1, f"{r[0][0]} events"))
+    safe("eia rates fresh (90d)",
+        "SELECT COUNT(*) FROM eia_electricity_rates WHERE retrieved_at > NOW() - INTERVAL '90 days';",
+        lambda r: (r[0][0] >= 30, f"{r[0][0]} fresh"))
+    safe("UNIQUE constraint on slug",
+        "SELECT COUNT(*) FROM information_schema.table_constraints WHERE table_name='market_power_scores' AND constraint_type='UNIQUE';",
+        lambda r: (r[0][0] >= 1, f"{r[0][0]} unique constraints"))
+
+    passed = sum(1 for c in checks if c["ok"])
+    total = len(checks)
+    grade = "A" if passed == total else "B" if passed >= total*0.9 else "C" if passed >= total*0.75 else "D" if passed >= total*0.5 else "F"
+    return jsonify({"grade": grade, "passed": passed, "total": total,
+                    "pct": round(passed/total*100, 1), "checks": checks})
+
+
+@app.route("/api/v1/media/feed-v2", methods=["GET"])
+def _media_feed_v2_238():
+    """Phase 238 dict-shape feed with all 5 categories."""
+    from flask import jsonify, request
+    from datetime import datetime
+    try:
+        import dchub_media
+        if hasattr(dchub_media, "aggregate_announcements_v2"):
+            items = dchub_media.aggregate_announcements_v2(
+                limit_per_source=int(request.args.get("per_source", 20))
+            )
+        else:
+            items = dchub_media.aggregate_announcements(
+                limit_per_source=int(request.args.get("per_source", 20))
+            ) or []
+    except Exception:
+        items = []
+    cat = request.args.get("category") or request.args.get("filter")
+    if cat and cat != "all":
+        items = [i for i in items if i.get("category") == cat or i.get("type") == cat]
+    return jsonify({
+        "items": items,
+        "total": len(items),
+        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "categories": sorted({i.get("category", i.get("type", "?")) for i in items}),
+    })

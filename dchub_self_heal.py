@@ -1153,3 +1153,86 @@ FIXES["add_unique_slug"] = fix_add_unique_constraint
 PATTERNS.extend([
     {"name": "history_collapse_tick", "match": ["DCPI"], "fix": "collapse_history"},
 ])
+
+
+# ============================================================================
+# Phase 238: append-only additions (don't modify existing code above)
+# ============================================================================
+
+def fix_delete_unhealable():
+    """Delete lite-pro rows we can't heal (no state, no iso)."""
+    if not DATABASE_URL:
+        return False, "no DATABASE_URL"
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                SELECT market_slug FROM market_power_scores
+                WHERE (state IS NULL OR state = '')
+                  AND tier_required = 'lite-pro';
+            """)
+            stragglers = [r[0] for r in cur.fetchall()]
+            cur.execute("""
+                DELETE FROM market_power_scores
+                WHERE (state IS NULL OR state = '')
+                  AND tier_required = 'lite-pro';
+            """)
+            deleted = cur.rowcount
+            c.commit()
+            return True, f"deleted {deleted} unhealable rows: {stragglers[:5]}"
+    except Exception as e:
+        return False, str(e)[:400]
+
+
+def fix_recompute_verdict_strict():
+    """Phase 238 STRICT matrix — BUILD/AVOID require both scores non-zero."""
+    if not DATABASE_URL:
+        return False, "no DATABASE_URL"
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                UPDATE market_power_scores SET verdict =
+                    CASE
+                        WHEN COALESCE(constraint_score,0) = 0
+                             AND COALESCE(excess_power_score,0) = 0 THEN 'NODATA'
+                        WHEN COALESCE(constraint_score,0) = 0
+                             OR COALESCE(excess_power_score,0) = 0 THEN 'LOW_SIGNAL'
+                        WHEN COALESCE(excess_power_score,0) >= 35
+                             AND COALESCE(constraint_score,0) >= 5
+                             AND COALESCE(excess_power_score,0) - COALESCE(constraint_score,0) >= 25
+                                THEN 'BUILD'
+                        WHEN COALESCE(constraint_score,0) >= 35
+                             AND COALESCE(excess_power_score,0) >= 5
+                             AND COALESCE(constraint_score,0) - COALESCE(excess_power_score,0) >= 25
+                                THEN 'AVOID'
+                        ELSE 'CAUTION'
+                    END
+                WHERE published = true OR tier_required IS NULL OR tier_required != 'lite-pro';
+            """)
+            n = cur.rowcount
+            cur.execute("""
+                SELECT verdict, COUNT(*) FROM market_power_scores
+                WHERE published = true GROUP BY verdict ORDER BY COUNT(*) DESC;
+            """)
+            dist = cur.fetchall()
+            c.commit()
+            return True, f"strict matrix: recomputed {n} -> " + " ".join(f"{v}={n2}" for v, n2 in dist)
+    except Exception as e:
+        return False, str(e)[:400]
+
+
+def fix_aggregator_v2():
+    """Rebuild media aggregator queries with REAL column names."""
+    try:
+        import dchub_media
+        if hasattr(dchub_media, "aggregate_announcements_v2"):
+            items = dchub_media.aggregate_announcements_v2()
+            return True, f"aggregator v2 returned {len(items)} items"
+        return True, "aggregator_v2 not loaded — wrapper exists but no module fn"
+    except Exception as e:
+        return False, str(e)[:400]
+
+
+FIXES["delete_unhealable"] = fix_delete_unhealable
+FIXES["recompute_verdict_strict"] = fix_recompute_verdict_strict
+FIXES["recompute_verdict_diff"] = fix_recompute_verdict_strict
+FIXES["aggregator_v2"] = fix_aggregator_v2

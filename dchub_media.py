@@ -391,3 +391,103 @@ def maybe_publish_press_release(payload: dict, threshold: float = 15.0) -> list[
         })
         results.append(result)
     return results
+
+
+# ============================================================================
+# Phase 238: aggregate_announcements_v2 — column-correct
+# ============================================================================
+
+def aggregate_announcements_v2(limit_per_source=20):
+    """Verified column names via Chrome /api/v1/media/diagnose."""
+    import os, psycopg2
+    from datetime import datetime
+    DATABASE_URL = os.environ.get("DATABASE_URL")
+    items = []
+    errors = {}
+    if not DATABASE_URL:
+        return items
+    try:
+        conn = psycopg2.connect(DATABASE_URL, connect_timeout=8)
+    except Exception:
+        return items
+
+    queries = [
+        ("news",
+         """SELECT title,
+                   COALESCE(source_url, '') AS url,
+                   COALESCE(description, body, '') AS summary,
+                   COALESCE(source, '') AS source,
+                   COALESCE(published_date, created_at, NOW()) AS ts
+            FROM news
+            WHERE published_date > NOW() - INTERVAL '14 days'
+            ORDER BY published_date DESC LIMIT %s""",
+         (limit_per_source,)),
+        ("press_release",
+         """SELECT title,
+                   COALESCE(source_url, '/news/' || slug || '/', '') AS url,
+                   COALESCE(summary, subheadline, '') AS summary,
+                   COALESCE(source, 'DC Hub') AS source,
+                   COALESCE(published_date, date, created_at, NOW()) AS ts
+            FROM press_releases
+            ORDER BY COALESCE(published_date, date, created_at) DESC NULLS LAST
+            LIMIT %s""",
+         (limit_per_source,)),
+        ("press",
+         """SELECT title,
+                   COALESCE(url, '') AS url,
+                   COALESCE(body, '') AS summary,
+                   COALESCE(source, '') AS source,
+                   COALESCE(published_at, NOW()) AS ts
+            FROM announcements_feed
+            WHERE category IN ('press','press_release','daily_brief')
+            ORDER BY published_at DESC LIMIT %s""",
+         (limit_per_source,)),
+        ("testimonial",
+         """SELECT COALESCE(NULLIF(agent_name,''), 'AI Testimonial') AS title,
+                   COALESCE(url, '') AS url,
+                   quote AS summary,
+                   COALESCE(NULLIF(source,''), platform, agent_name, 'AI Industry') AS source,
+                   COALESCE(approved_at, created_at, NOW()) AS ts
+            FROM ai_testimonials
+            WHERE COALESCE(approved, true) = true
+            ORDER BY COALESCE(approved_at, created_at) DESC NULLS LAST
+            LIMIT %s""",
+         (limit_per_source,)),
+        ("alert",
+         """SELECT (market_name || ' DCPI ' || verdict) AS title,
+                   '/dcpi#' || market_slug AS url,
+                   ('Constraint ' || COALESCE(constraint_score,0)::text ||
+                    ' Excess ' || COALESCE(excess_power_score,0)::text) AS summary,
+                   'DCPI Engine' AS source,
+                   computed_at AS ts
+            FROM market_power_scores
+            WHERE published = true
+              AND computed_at > NOW() - INTERVAL '7 days'
+              AND verdict IN ('BUILD','AVOID')
+            ORDER BY computed_at DESC LIMIT %s""",
+         (limit_per_source,)),
+    ]
+
+    for category, sql, params in queries:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                for row in cur.fetchall():
+                    items.append({
+                        "category": category,
+                        "type": category,
+                        "title": row[0] or "(untitled)",
+                        "url": row[1] or "",
+                        "summary": (row[2] or "")[:500],
+                        "source": row[3] or "",
+                        "published_at": row[4].isoformat() if hasattr(row[4], "isoformat") else str(row[4]),
+                        "ts": row[4].isoformat() if hasattr(row[4], "isoformat") else str(row[4]),
+                    })
+        except Exception as e:
+            conn.rollback()
+            errors[category] = str(e)[:300]
+            continue
+
+    conn.close()
+    items.sort(key=lambda x: x.get("ts", ""), reverse=True)
+    return items
