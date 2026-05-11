@@ -491,3 +491,168 @@ def aggregate_announcements_v2(limit_per_source=20):
     conn.close()
     items.sort(key=lambda x: x.get("ts", ""), reverse=True)
     return items
+
+
+# ============================================================================
+# Phase 239: column-aware aggregator (introspects schemas at runtime)
+# ============================================================================
+
+def _table_cols(cur, table):
+    cur.execute("""
+        SELECT column_name FROM information_schema.columns
+        WHERE table_name = %s ORDER BY ordinal_position;
+    """, (table,))
+    return {r[0] for r in cur.fetchall()}
+
+
+def _pick_col(cols, *candidates):
+    """Return first column name from candidates that exists in cols, or NULL."""
+    for c in candidates:
+        if c in cols:
+            return c
+    return None
+
+
+def aggregate_announcements_v3(limit_per_source=20):
+    """Phase 239: column-aware. Introspects each table's actual columns,
+    builds queries with COALESCE over whichever columns exist."""
+    import os, psycopg2
+    DATABASE_URL = os.environ.get("DATABASE_URL")
+    items = []
+    errors = {}
+    if not DATABASE_URL:
+        return items
+    try:
+        conn = psycopg2.connect(DATABASE_URL, connect_timeout=8)
+    except Exception:
+        return items
+
+    with conn.cursor() as cur:
+        # Introspect all relevant tables
+        news_cols = _table_cols(cur, 'news')
+        pr_cols   = _table_cols(cur, 'press_releases')
+        af_cols   = _table_cols(cur, 'announcements_feed')
+        tt_cols   = _table_cols(cur, 'ai_testimonials')
+        mps_cols  = _table_cols(cur, 'market_power_scores')
+
+    queries = []
+
+    # news — pick best title/url/summary/source/date columns
+    if news_cols and 'title' in news_cols:
+        title = 'title'
+        url_c = _pick_col(news_cols, 'source_url', 'url', 'link') or "''::text"
+        body_c = _pick_col(news_cols, 'description', 'body', 'summary', 'snippet') or "''::text"
+        src_c  = _pick_col(news_cols, 'source', 'publisher', 'site') or "''::text"
+        date_c = _pick_col(news_cols, 'published_date', 'published_at', 'created_at', 'date') or 'NOW()'
+        url_expr  = url_c if url_c.endswith("::text") else f"COALESCE({url_c}, '')"
+        body_expr = body_c if body_c.endswith("::text") else f"COALESCE({body_c}, '')"
+        src_expr  = src_c  if src_c.endswith("::text")  else f"COALESCE({src_c}, '')"
+        queries.append(("news",
+            f"""SELECT {title} AS title, {url_expr} AS url, {body_expr} AS summary,
+                  {src_expr} AS source, {date_c} AS ts
+            FROM news
+            {f"WHERE {date_c} > NOW() - INTERVAL '14 days'" if date_c != 'NOW()' else ''}
+            ORDER BY {date_c} DESC NULLS LAST LIMIT %s""",
+            (limit_per_source,)))
+
+    # press_releases — known schema from Chrome audit
+    if pr_cols:
+        title = 'title' if 'title' in pr_cols else None
+        if title:
+            url_expr = ("COALESCE(source_url, '/news/' || slug || '/', '')"
+                        if 'source_url' in pr_cols and 'slug' in pr_cols
+                        else "''")
+            body_expr = "COALESCE("
+            for c in ['summary', 'subheadline', 'body', 'meta_description']:
+                if c in pr_cols: body_expr += f"{c}, "
+            body_expr = body_expr.rstrip(', ') + ", '')" if body_expr.endswith("(") else body_expr.rstrip(", ") + ", '')"
+            if body_expr == "COALESCE, '')": body_expr = "''"
+            date_c = _pick_col(pr_cols, 'published_date', 'date', 'created_at') or 'NOW()'
+            src_expr = "'DC Hub'" if 'source' not in pr_cols else "COALESCE(source, 'DC Hub')"
+            queries.append(("press_release",
+                f"""SELECT {title} AS title, {url_expr} AS url, {body_expr} AS summary,
+                       {src_expr} AS source, {date_c} AS ts
+                FROM press_releases
+                ORDER BY {date_c} DESC NULLS LAST LIMIT %s""",
+                (limit_per_source,)))
+
+    # announcements_feed
+    if af_cols and 'title' in af_cols:
+        url_c   = _pick_col(af_cols, 'url', 'source_url', 'link') or "''::text"
+        body_c  = _pick_col(af_cols, 'body', 'summary', 'description') or "''::text"
+        src_c   = _pick_col(af_cols, 'source', 'publisher') or "''::text"
+        date_c  = _pick_col(af_cols, 'published_at', 'published_date', 'created_at') or 'NOW()'
+        url_expr  = url_c if url_c.endswith("::text") else f"COALESCE({url_c}, '')"
+        body_expr = body_c if body_c.endswith("::text") else f"COALESCE({body_c}, '')"
+        src_expr  = src_c if src_c.endswith("::text") else f"COALESCE({src_c}, '')"
+        cat_filter = ""
+        if 'category' in af_cols:
+            cat_filter = "WHERE category IN ('press','press_release','daily_brief')"
+        queries.append(("press",
+            f"""SELECT title, {url_expr} AS url, {body_expr} AS summary,
+                  {src_expr} AS source, {date_c} AS ts
+            FROM announcements_feed
+            {cat_filter}
+            ORDER BY {date_c} DESC NULLS LAST LIMIT %s""",
+            (limit_per_source,)))
+
+    # ai_testimonials — same as v2, known to work
+    if tt_cols and 'quote' in tt_cols:
+        queries.append(("testimonial",
+            """SELECT COALESCE(NULLIF(agent_name,''), NULLIF(platform,''), 'AI Testimonial') AS title,
+                   COALESCE(url, '') AS url,
+                   quote AS summary,
+                   COALESCE(NULLIF(source,''), platform, agent_name, 'AI Industry') AS source,
+                   COALESCE(approved_at, created_at, NOW()) AS ts
+            FROM ai_testimonials
+            WHERE COALESCE(approved, true) = true
+              AND agent_name IS NOT NULL AND agent_name != 'unknown'
+            ORDER BY COALESCE(approved_at, created_at) DESC NULLS LAST
+            LIMIT %s""",
+            (limit_per_source,)))
+
+    # alerts from market_power_scores
+    if mps_cols and 'verdict' in mps_cols:
+        queries.append(("alert",
+            """SELECT (market_name || ' DCPI ' || verdict) AS title,
+                   '/dcpi#' || market_slug AS url,
+                   ('Constraint ' || COALESCE(constraint_score,0)::text ||
+                    ' Excess ' || COALESCE(excess_power_score,0)::text) AS summary,
+                   'DCPI Engine' AS source,
+                   computed_at AS ts
+            FROM market_power_scores
+            WHERE published = true
+              AND computed_at > NOW() - INTERVAL '7 days'
+              AND verdict IN ('BUILD','AVOID')
+            ORDER BY computed_at DESC LIMIT %s""",
+            (limit_per_source,)))
+
+    for category, sql, params in queries:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                for row in cur.fetchall():
+                    items.append({
+                        "category": category,
+                        "type": category,
+                        "title": row[0] or "(untitled)",
+                        "url": row[1] or "",
+                        "summary": (row[2] or "")[:500],
+                        "source": row[3] or "",
+                        "published_at": row[4].isoformat() if hasattr(row[4], "isoformat") else str(row[4]),
+                        "ts": row[4].isoformat() if hasattr(row[4], "isoformat") else str(row[4]),
+                    })
+        except Exception as e:
+            conn.rollback()
+            errors[category] = str(e)[:300]
+            continue
+
+    conn.close()
+    items.sort(key=lambda x: x.get("ts", ""), reverse=True)
+    # Stash errors so the diagnose endpoint can surface them
+    try:
+        global _agg_errors
+        _agg_errors = errors
+    except Exception:
+        pass
+    return items

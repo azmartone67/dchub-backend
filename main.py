@@ -18731,3 +18731,55 @@ def _media_feed_v2_238():
         "generated_at": datetime.utcnow().isoformat() + "Z",
         "categories": sorted({i.get("category", i.get("type", "?")) for i in items}),
     })
+
+
+# ============================================================================
+# Phase 239: column-aware media feed + schema introspection
+# ============================================================================
+
+@app.route("/api/v1/media/feed-v3", methods=["GET"])
+def _media_feed_v3():
+    from flask import jsonify, request
+    from datetime import datetime
+    try:
+        import dchub_media
+        items = dchub_media.aggregate_announcements_v3(
+            limit_per_source=int(request.args.get("per_source", 20))
+        ) if hasattr(dchub_media, "aggregate_announcements_v3") else []
+    except Exception as e:
+        items = []
+    cat = request.args.get("category") or request.args.get("filter")
+    if cat and cat != "all":
+        items = [i for i in items if i.get("category") == cat]
+    return jsonify({
+        "items": items, "total": len(items),
+        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "categories": sorted({i.get("category", "?") for i in items}),
+    })
+
+
+@app.route("/api/v1/admin/schema", methods=["GET"])
+def _admin_schema_introspect():
+    """Returns column lists for any table. Used to debug aggregator failures."""
+    import os, psycopg2
+    from flask import jsonify, request
+    DATABASE_URL = os.environ.get("DATABASE_URL")
+    table = request.args.get("table", "").strip()
+    if not DATABASE_URL or not table:
+        return jsonify({"error": "missing DATABASE_URL or ?table="}), 400
+    try:
+        with psycopg2.connect(DATABASE_URL, connect_timeout=6) as conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT column_name, data_type FROM information_schema.columns
+                WHERE table_name = %s ORDER BY ordinal_position;
+            """, (table,))
+            cols = [{"name": r[0], "type": r[1]} for r in cur.fetchall()]
+        return jsonify({"table": table, "columns": cols, "count": len(cols)})
+    except Exception as e:
+        return jsonify({"error": str(e)[:200]}), 500
+
+
+@app.route("/api/v1/_phase", methods=["GET"])
+def _phase239_marker():
+    from flask import jsonify
+    return jsonify({"phase": 239, "ok": True})
