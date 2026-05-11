@@ -17892,7 +17892,7 @@ except (ImportError, NameError):
 
 # === Phase 194: synchronous daily preview ===
 try:
-    @app.route("/api/cron/daily/preview", methods=["GET"])
+    @app.route("/api/cron/daily/preview", methods=["GET", "POST"])
     def _v1_daily_preview():
         from flask import jsonify, request
         try:
