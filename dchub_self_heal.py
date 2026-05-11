@@ -582,3 +582,250 @@ def detect(body, status):
         if "alert" in missing:
             hits.append(("media_missing_alert", "relax_verdict"))
     return hits
+
+
+# ============================================================================
+# Phase 229: DCPI data integrity heal actions
+# ============================================================================
+
+# US state → primary ISO/RTO mapping. Not exhaustive (some states split).
+US_STATE_ISO = {
+    "AL":"SERC","AK":"AK","AR":"MISO","AZ":"WECC","CA":"CAISO","CO":"WECC",
+    "CT":"ISONE","DE":"PJM","FL":"FRCC","GA":"SERC","HI":"HECO","IA":"MISO",
+    "ID":"WECC","IL":"PJM","IN":"PJM","KS":"SPP","KY":"PJM","LA":"MISO",
+    "MA":"ISONE","MD":"PJM","ME":"ISONE","MI":"MISO","MN":"MISO","MO":"SPP",
+    "MS":"MISO","MT":"WECC","NC":"SERC","ND":"MISO","NE":"SPP","NH":"ISONE",
+    "NJ":"PJM","NM":"WECC","NV":"WECC","NY":"NYISO","OH":"PJM","OK":"SPP",
+    "OR":"WECC","PA":"PJM","RI":"ISONE","SC":"SERC","SD":"SPP","TN":"TVA",
+    "TX":"ERCOT","UT":"WECC","VA":"PJM","VT":"ISONE","WA":"WECC","WI":"MISO",
+    "WV":"PJM","WY":"WECC","DC":"PJM",
+}
+
+
+def _slug_root(slug):
+    """Normalize a slug for dedup matching."""
+    import re
+    s = (slug or "").lower().strip()
+    s = re.sub(r"[^a-z0-9]+", "-", s)
+    s = re.sub(r"-+", "-", s).strip("-")
+    # Common collisions
+    s = s.replace("saint-", "st-")
+    s = s.replace("st.-", "st-")
+    s = s.replace("st--", "st-")
+    return s
+
+
+def _extract_state_from_name(market_name):
+    """Pull the 2-letter state code from 'City, ST' or fallback."""
+    import re
+    if not market_name: return None
+    m = re.search(r",\s*([A-Z]{2})", market_name)
+    return m.group(1) if m else None
+
+
+def fix_dedupe_market_slugs():
+    """Delete duplicate market_power_scores rows for the same (city, state).
+    Keep the one with iso filled, then highest computed_at."""
+    if not DATABASE_URL: return False, "no DATABASE_URL"
+    try:
+        with _conn() as c, c.cursor() as cur:
+            # Find groups of slugs that resolve to the same root
+            cur.execute("""
+                SELECT market_slug, market_name, tier_required,
+                       (SELECT COUNT(*) FROM market_power_scores s2
+                        WHERE s2.market_slug = s.market_slug) AS n_rows
+                FROM (SELECT DISTINCT market_slug, market_name, tier_required
+                      FROM market_power_scores) s
+                ORDER BY market_slug;
+            """)
+            rows = cur.fetchall()
+
+            # Group by (normalized_root, state)
+            from collections import defaultdict
+            groups = defaultdict(list)
+            for slug, name, tier, _n in rows:
+                root = _slug_root(slug)
+                state = _extract_state_from_name(name) or ""
+                # Strip state suffix from root for cross-match
+                root_no_state = root
+                for st in US_STATE_ISO:
+                    suffix = f"-{st.lower()}"
+                    if root_no_state.endswith(suffix):
+                        root_no_state = root_no_state[:-len(suffix)]
+                        break
+                key = (root_no_state, state)
+                groups[key].append((slug, name, tier))
+
+            deleted_slugs = []
+            for (root, state), members in groups.items():
+                if len(members) <= 1: continue
+                # Prefer: full-scored tier > slug WITH state suffix > most recent
+                def score(m):
+                    slug, name, tier = m
+                    s = 0
+                    if tier != 'lite-pro': s += 100   # full scoring wins
+                    if state and slug.endswith(f"-{state.lower()}"): s += 10
+                    if "," in (name or ""): s += 5   # name has ", ST"
+                    return s
+                members_sorted = sorted(members, key=score, reverse=True)
+                keeper = members_sorted[0][0]
+                for slug, _name, _tier in members_sorted[1:]:
+                    if slug == keeper: continue
+                    cur.execute(
+                        "DELETE FROM market_power_scores WHERE market_slug = %s AND tier_required = 'lite-pro';",
+                        (slug,)
+                    )
+                    if cur.rowcount > 0:
+                        deleted_slugs.append(slug)
+
+            c.commit()
+            return True, f"deduped {len(deleted_slugs)} slugs (kept curated): {deleted_slugs[:10]}"
+    except Exception as e:
+        return False, str(e)[:400]
+
+
+def fix_populate_iso_state():
+    """Backfill iso column (and state if column exists) on market_power_scores."""
+    if not DATABASE_URL: return False, "no DATABASE_URL"
+    try:
+        with _conn() as c, c.cursor() as cur:
+            # Ensure iso column exists
+            cur.execute("""
+                DO $$ BEGIN
+                    BEGIN ALTER TABLE market_power_scores ADD COLUMN iso TEXT;
+                    EXCEPTION WHEN duplicate_column THEN END;
+                    BEGIN ALTER TABLE market_power_scores ADD COLUMN state TEXT;
+                    EXCEPTION WHEN duplicate_column THEN END;
+                END $$;
+            """)
+            c.commit()
+
+            # Pull all rows that need iso/state
+            cur.execute("""
+                SELECT market_slug, market_name
+                FROM market_power_scores
+                WHERE (iso IS NULL OR state IS NULL)
+                  AND market_name IS NOT NULL;
+            """)
+            rows = cur.fetchall()
+            updates = 0
+            for slug, name in rows:
+                state = _extract_state_from_name(name)
+                if not state: continue
+                iso = US_STATE_ISO.get(state)
+                if not iso: continue
+                cur.execute("""
+                    UPDATE market_power_scores
+                    SET iso = COALESCE(iso, %s),
+                        state = COALESCE(state, %s)
+                    WHERE market_slug = %s;
+                """, (iso, state, slug))
+                updates += cur.rowcount
+            c.commit()
+            return True, f"backfilled iso/state on {updates} rows"
+    except Exception as e:
+        return False, str(e)[:400]
+
+
+def fix_nodata_verdicts():
+    """Markets with 0/0 (no signal) should be NODATA not BUILD."""
+    if not DATABASE_URL: return False, "no DATABASE_URL"
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                UPDATE market_power_scores
+                SET verdict = 'NODATA'
+                WHERE COALESCE(constraint_score, 0) = 0
+                  AND COALESCE(excess_power_score, 0) = 0
+                  AND verdict != 'NODATA';
+            """)
+            n = cur.rowcount
+            c.commit()
+            return True, f"flagged {n} zero-signal rows as NODATA"
+    except Exception as e:
+        return False, str(e)[:400]
+
+
+def fix_repair_verdict_matrix():
+    """Re-apply a clean verdict matrix.
+
+    The matrix:
+      excess >= 60 AND constraint <= 40  → BUILD
+      excess >= 50 AND constraint <= 50  → BUILD
+      constraint >= 70 AND excess <= 40  → AVOID
+      constraint >= 60 AND excess <= 30  → AVOID
+      0 < excess < 0.1 AND 0 < constraint < 0.1 → NODATA
+      both = 0 → NODATA (handled above)
+      else → CAUTION
+    """
+    if not DATABASE_URL: return False, "no DATABASE_URL"
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                UPDATE market_power_scores SET verdict =
+                    CASE
+                        WHEN COALESCE(constraint_score,0) = 0
+                             AND COALESCE(excess_power_score,0) = 0 THEN 'NODATA'
+                        WHEN COALESCE(excess_power_score,0) >= 60
+                             AND COALESCE(constraint_score,100) <= 40 THEN 'BUILD'
+                        WHEN COALESCE(excess_power_score,0) >= 50
+                             AND COALESCE(constraint_score,100) <= 50 THEN 'BUILD'
+                        WHEN COALESCE(constraint_score,0) >= 70
+                             AND COALESCE(excess_power_score,100) <= 40 THEN 'AVOID'
+                        WHEN COALESCE(constraint_score,0) >= 60
+                             AND COALESCE(excess_power_score,100) <= 30 THEN 'AVOID'
+                        ELSE 'CAUTION'
+                    END
+                WHERE computed_at > NOW() - INTERVAL '30 days';
+            """)
+            n = cur.rowcount
+            # Get distribution
+            cur.execute("""
+                SELECT verdict, COUNT(*) FROM market_power_scores
+                WHERE computed_at > NOW() - INTERVAL '30 days'
+                GROUP BY verdict ORDER BY COUNT(*) DESC;
+            """)
+            dist = cur.fetchall()
+            c.commit()
+            return True, f"recomputed {n} verdicts → " + " ".join(f"{v}={n2}" for v, n2 in dist)
+    except Exception as e:
+        return False, str(e)[:400]
+
+
+# Register Phase 229 fixes
+FIXES["dedupe_market_slugs"] = fix_dedupe_market_slugs
+FIXES["populate_iso_state"] = fix_populate_iso_state
+FIXES["nodata_verdicts"] = fix_nodata_verdicts
+FIXES["repair_verdict_matrix"] = fix_repair_verdict_matrix
+
+
+# Add Phase 229 patterns: detect "None · None" and duplicate slug indicators in /dcpi
+PATTERNS.extend([
+    {"name": "dcpi_none_iso_state", "match": ["None &middot; None"], "fix": "populate_iso_state"},
+    {"name": "dcpi_none_iso_state_alt", "match": ["None · None"], "fix": "populate_iso_state"},
+])
+
+
+# Augment detector with a duplicate-slug check
+_phase228_detect = detect
+
+def detect(body, status):
+    hits = _phase228_detect(body, status)
+    # If /dcpi shows same city slug twice with different scores
+    if '/dcpi/' in body:
+        import re
+        slugs = re.findall(r'/dcpi/([a-z0-9\-\.]+)', body)
+        # Look for slug roots that appear more than once (after normalization)
+        from collections import Counter
+        roots = Counter(_slug_root(s) for s in slugs if s)
+        dupes = [r for r, n in roots.items() if n > 4]   # appears more than twice per view (excess + constraint = 2 views)
+        if dupes:
+            hits.append(("dcpi_duplicate_slugs", "dedupe_market_slugs"))
+            hits.append(("dcpi_duplicate_slugs_fix2", "repair_verdict_matrix"))
+        # Look for "None · None" labels — fold into iso backfill
+        if "None &middot; None" in body or "None · None" in body:
+            hits.append(("dcpi_none_iso_label", "populate_iso_state"))
+        # NODATA cleanup
+        if ">BUILD<" in body and ">0.0<" in body:
+            hits.append(("dcpi_zero_build", "nodata_verdicts"))
+    return hits
