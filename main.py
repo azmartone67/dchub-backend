@@ -18842,9 +18842,10 @@ def _heal_findings():
         import dchub_self_heal as h
     except ImportError:
         return jsonify({"error": "self_heal not loaded"}), 500
+
+    # Run detectors to populate findings + the stash
     findings = {}
-    detectors = ["html_quality_scan", "feed_diversity_check", "cdn_cache_staleness"]
-    for d in detectors:
+    for d in ["html_quality_scan", "feed_diversity_check", "cdn_cache_staleness"]:
         fn = h.FIXES.get(d)
         if fn is None: continue
         try:
@@ -18853,17 +18854,18 @@ def _heal_findings():
         except Exception as e:
             findings[d] = {"ok": False, "error": str(e)[:200]}
 
-    # Prefer structured findings if available
+    # Prefer structured findings stash (no string parsing)
     actionable = []
-    if hasattr(h, "get_last_html_findings"):
-        try:
+    try:
+        if hasattr(h, "get_last_html_findings"):
             raw = h.get_last_html_findings()
-            for url, hits in raw.items():
+            for url, hits in (raw or {}).items():
                 if isinstance(hits, dict):
                     for label, n in hits.items():
-                        actionable.append({"url": url, "issue": label, "count": int(n)})
-        except Exception:
-            pass
+                        if isinstance(n, int):
+                            actionable.append({"url": url, "issue": label, "count": n})
+    except Exception:
+        pass
     # Fallback to string parser
     if not actionable:
         actionable = _extract_frontend_issues(findings)

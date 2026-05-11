@@ -1270,17 +1270,21 @@ HTML_PROBE_URLS = [
 
 
 def fix_html_quality_scan():
-    """Probe rendered HTML on key pages, count occurrences of known
-       bad strings. Log every hit to self_heal_events. Returns a structured
-       report the QA workflow can read."""
+    """Probe rendered HTML on key pages with full browser headers.
+       Stash structured findings in _last_html_findings."""
     import urllib.request
+    HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "identity",
+    }
     findings = {}
     total_issues = 0
-
     for url in HTML_PROBE_URLS:
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"})
-            with urllib.request.urlopen(req, timeout=8) as r:
+            req = urllib.request.Request(url, headers=HEADERS)
+            with urllib.request.urlopen(req, timeout=10) as r:
                 body = r.read().decode("utf-8", errors="ignore")
         except Exception as e:
             findings[url] = {"error": str(e)[:200]}
@@ -1300,23 +1304,26 @@ def fix_html_quality_scan():
 
 
 def fix_feed_diversity_check():
-    """Probe /api/v1/media/feed-v3 and check whether top 8 items have
-       category diversity. If 6+ of top 8 are same category, that's a
-       low-diversity bug — log it."""
+    """Probe /api/v1/media/feed-v3 with full browser headers (CF bot defense bypass)."""
     import urllib.request, json
-    BROWSER_UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
-                  'AppleWebKit/537.36 (KHTML, like Gecko) '
-                  'Chrome/120.0.0.0 Safari/537.36')
+    HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "identity",
+        "Cache-Control": "no-cache",
+    }
     try:
-        req = urllib.request.Request("https://dchub.cloud/api/v1/media/feed-v3",
-                                     headers={"User-Agent": BROWSER_UA})
-        with urllib.request.urlopen(req, timeout=8) as r:
+        req = urllib.request.Request("https://dchub.cloud/api/v1/media/feed-v3", headers=HEADERS)
+        with urllib.request.urlopen(req, timeout=10) as r:
             d = json.loads(r.read().decode("utf-8"))
         items = d.get("items", [])[:8]
         if not items:
             return True, "no items to check"
         from collections import Counter
         cats = Counter(i.get("category") for i in items)
+        if not cats:
+            return True, "no categories detected"
         most_common_cat, most_common_n = cats.most_common(1)[0]
         if most_common_n >= 6:
             return True, f"LOW DIVERSITY: top 8 has {most_common_n}/8 {most_common_cat}"
@@ -1326,16 +1333,17 @@ def fix_feed_diversity_check():
 
 
 def fix_cdn_cache_staleness():
-    """Check Age header on /pricing vs max-age. If Age > 30 min, log it
-       so external automation can purge."""
+    """HEAD /pricing with full browser headers, check Age vs max-age."""
     import urllib.request
-    BROWSER_UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
-                  'AppleWebKit/537.36 (KHTML, like Gecko) '
-                  'Chrome/120.0.0.0 Safari/537.36')
+    HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "identity",
+    }
     try:
-        req = urllib.request.Request("https://dchub.cloud/pricing", method="HEAD",
-                                     headers={"User-Agent": BROWSER_UA})
-        with urllib.request.urlopen(req, timeout=8) as r:
+        req = urllib.request.Request("https://dchub.cloud/pricing", method="HEAD", headers=HEADERS)
+        with urllib.request.urlopen(req, timeout=10) as r:
             age = int(r.headers.get("age", 0))
             cc = r.headers.get("cache-control", "")
         if age > 1800:
