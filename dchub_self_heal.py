@@ -829,3 +829,150 @@ def detect(body, status):
         if ">BUILD<" in body and ">0.0<" in body:
             hits.append(("dcpi_zero_build", "nodata_verdicts"))
     return hits
+
+
+# ============================================================================
+# Phase 230: credibility gate + differential verdict
+# ============================================================================
+
+def fix_enforce_publish_gate():
+    """Compute quality_score per row; set published = (quality_score >= 60).
+    Quality components:
+      +25 iso filled (not NULL, not 'UNK')
+      +25 fresh EIA kWh price for the state (<= 365 days old)
+      +20 city has >= 5 facilities OR operational_mw >= 100
+      +15 constraint_score > 0
+      +15 excess_power_score > 0
+    """
+    if not DATABASE_URL: return False, "no DATABASE_URL"
+    try:
+        with _conn() as c, c.cursor() as cur:
+            # Ensure columns exist
+            cur.execute("""
+                DO $$ BEGIN
+                    BEGIN ALTER TABLE market_power_scores ADD COLUMN published BOOLEAN DEFAULT false;
+                    EXCEPTION WHEN duplicate_column THEN END;
+                    BEGIN ALTER TABLE market_power_scores ADD COLUMN quality_score INTEGER DEFAULT 0;
+                    EXCEPTION WHEN duplicate_column THEN END;
+                    BEGIN ALTER TABLE market_power_scores ADD COLUMN avg_kwh_cents NUMERIC(6,3);
+                    EXCEPTION WHEN duplicate_column THEN END;
+                END $$;
+            """)
+            c.commit()
+
+            # Backfill avg_kwh_cents from eia rates (per state)
+            cur.execute("""
+                UPDATE market_power_scores m
+                SET avg_kwh_cents = sub.price
+                FROM (
+                    SELECT state, AVG(price_cents_kwh) AS price
+                    FROM eia_electricity_rates
+                    WHERE sector = 'ALL'
+                      AND retrieved_at > NOW() - INTERVAL '365 days'
+                    GROUP BY state
+                ) sub
+                WHERE m.state = sub.state
+                  AND (m.avg_kwh_cents IS NULL OR m.avg_kwh_cents = 0);
+            """)
+            priced = cur.rowcount
+
+            # Compute quality_score
+            cur.execute("""
+                UPDATE market_power_scores m
+                SET quality_score = (
+                    CASE WHEN m.iso IS NOT NULL AND m.iso != 'UNK' AND m.iso != '' THEN 25 ELSE 0 END
+                  + CASE WHEN m.avg_kwh_cents IS NOT NULL AND m.avg_kwh_cents > 0 THEN 25 ELSE 0 END
+                  + CASE WHEN (
+                        SELECT COUNT(*) FROM discovered_facilities f
+                        WHERE LOWER(f.city) = LOWER(SPLIT_PART(m.market_name, ',', 1))
+                          AND f.state = m.state
+                    ) >= 5
+                    OR (
+                        SELECT COALESCE(SUM(power_mw),0) FROM discovered_facilities f
+                        WHERE LOWER(f.city) = LOWER(SPLIT_PART(m.market_name, ',', 1))
+                          AND f.state = m.state
+                    ) >= 100
+                    THEN 20 ELSE 0 END
+                  + CASE WHEN COALESCE(m.constraint_score,0) > 0 THEN 15 ELSE 0 END
+                  + CASE WHEN COALESCE(m.excess_power_score,0) > 0 THEN 15 ELSE 0 END
+                );
+            """)
+
+            # Curated/full-scored rows always publish (handcrafted, trust them)
+            cur.execute("""
+                UPDATE market_power_scores
+                SET quality_score = GREATEST(quality_score, 80),
+                    published = true
+                WHERE tier_required IS NULL OR tier_required != 'lite-pro';
+            """)
+
+            # Lite-pro rows: publish iff quality_score >= 60
+            cur.execute("""
+                UPDATE market_power_scores
+                SET published = (quality_score >= 60)
+                WHERE tier_required = 'lite-pro';
+            """)
+
+            # Stats
+            cur.execute("""
+                SELECT
+                    COUNT(*) FILTER (WHERE published = true)  AS pub,
+                    COUNT(*) FILTER (WHERE published = false) AS unpub,
+                    ROUND(AVG(quality_score)::numeric, 1)     AS avg_q,
+                    COUNT(*) FILTER (WHERE quality_score >= 80) AS hi
+                FROM market_power_scores;
+            """)
+            pub, unpub, avg_q, hi = cur.fetchone()
+            c.commit()
+            return True, (f"priced {priced}; published {pub} / hidden {unpub}; "
+                          f"avg_quality {avg_q}; hi-quality {hi}")
+    except Exception as e:
+        return False, str(e)[:400]
+
+
+def fix_recompute_verdict_diff():
+    """Differential verdict — produces real BUILD/AVOID spread.
+       diff = excess - constraint
+         diff >= 25  → BUILD
+         diff <= -25 → AVOID
+         excess = 0 AND constraint = 0 → NODATA
+         else → CAUTION
+       Operates on PUBLISHED rows only."""
+    if not DATABASE_URL: return False, "no DATABASE_URL"
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                UPDATE market_power_scores SET verdict =
+                    CASE
+                        WHEN COALESCE(constraint_score,0) = 0
+                             AND COALESCE(excess_power_score,0) = 0 THEN 'NODATA'
+                        WHEN COALESCE(excess_power_score,0)
+                             - COALESCE(constraint_score,0) >= 25 THEN 'BUILD'
+                        WHEN COALESCE(constraint_score,0)
+                             - COALESCE(excess_power_score,0) >= 25 THEN 'AVOID'
+                        ELSE 'CAUTION'
+                    END
+                WHERE published = true OR tier_required IS NULL OR tier_required != 'lite-pro';
+            """)
+            n = cur.rowcount
+            cur.execute("""
+                SELECT verdict, COUNT(*) FROM market_power_scores
+                WHERE published = true
+                GROUP BY verdict ORDER BY COUNT(*) DESC;
+            """)
+            dist = cur.fetchall()
+            c.commit()
+            return True, f"recomputed {n} verdicts → " + " ".join(f"{v}={n2}" for v, n2 in dist)
+    except Exception as e:
+        return False, str(e)[:400]
+
+
+FIXES["enforce_publish_gate"] = fix_enforce_publish_gate
+FIXES["recompute_verdict_diff"] = fix_recompute_verdict_diff
+
+
+# Patterns: dispatch on every cycle (gate is idempotent)
+PATTERNS.extend([
+    {"name": "credibility_gate_tick", "match": ["DCPI"], "fix": "enforce_publish_gate"},
+    {"name": "verdict_diff_tick",     "match": ["DCPI"], "fix": "recompute_verdict_diff"},
+])

@@ -18309,3 +18309,59 @@ def _media_diagnose():
     conn.close()
     return jsonify(out)
 # === /Phase 228 ===
+
+
+# === Phase 230: credibility gate visibility ===
+@app.route("/api/v1/dcpi/quality", methods=["GET"])
+def _dcpi_quality():
+    """Public proof-of-filter. Shows how many markets pass the gate."""
+    import os, psycopg2
+    DATABASE_URL = os.environ.get("DATABASE_URL")
+    if not DATABASE_URL: return jsonify({"error": "no DATABASE_URL"}), 500
+    try:
+        with psycopg2.connect(DATABASE_URL, connect_timeout=8) as conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT
+                  COUNT(*) AS total,
+                  COUNT(*) FILTER (WHERE published = true) AS published,
+                  COUNT(*) FILTER (WHERE published = false) AS hidden,
+                  COUNT(*) FILTER (WHERE quality_score >= 80) AS hi_quality,
+                  COUNT(*) FILTER (WHERE quality_score >= 60) AS pass_gate,
+                  COUNT(*) FILTER (WHERE quality_score < 60) AS fail_gate,
+                  ROUND(AVG(quality_score)::numeric, 1) AS avg_quality
+                FROM market_power_scores;
+            """)
+            r = cur.fetchone()
+            cur.execute("""
+                SELECT verdict, COUNT(*) FROM market_power_scores
+                WHERE published = true GROUP BY verdict ORDER BY COUNT(*) DESC;
+            """)
+            verdicts = [{"verdict": v, "count": n} for v, n in cur.fetchall()]
+            cur.execute("""
+                SELECT
+                  COUNT(*) FILTER (WHERE iso IS NULL OR iso = '' OR iso = 'UNK') AS no_iso,
+                  COUNT(*) FILTER (WHERE avg_kwh_cents IS NULL OR avg_kwh_cents = 0) AS no_price,
+                  COUNT(*) FILTER (WHERE constraint_score = 0 AND excess_power_score = 0) AS no_signal
+                FROM market_power_scores;
+            """)
+            no_iso, no_price, no_signal = cur.fetchone()
+        return jsonify({
+            "total_markets": r[0],
+            "published": r[1],
+            "hidden_below_gate": r[2],
+            "high_quality_80plus": r[3],
+            "pass_gate_60plus": r[4],
+            "fail_gate_below_60": r[5],
+            "avg_quality_score": float(r[6]) if r[6] is not None else None,
+            "verdict_distribution_published": verdicts,
+            "failure_reasons": {
+                "missing_iso": no_iso,
+                "missing_eia_price": no_price,
+                "no_signal": no_signal,
+            },
+            "gate_policy": "publish if quality_score >= 60 OR tier != lite-pro",
+            "philosophy": "fewer markets, higher confidence — credibility > coverage",
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)[:200]}), 500
+# === /Phase 230 ===

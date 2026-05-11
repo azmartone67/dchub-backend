@@ -569,8 +569,7 @@ def api_scores():
                 verdict,
                 top_risks_json, top_opportunities_json,
                 computed_at
-            FROM market_power_scores
-            ORDER BY market_slug, computed_at DESC
+            FROM market_power_scores WHERE published = true ORDER BY market_slug, computed_at DESC
         """)
         rows = cur.fetchall()
     for r in rows:
@@ -608,8 +607,7 @@ def api_movers():
                 SELECT DISTINCT ON (market_slug)
                     market_slug, market_name, excess_power_score AS now_excess,
                     constraint_score AS now_constraint, computed_at
-                FROM market_power_scores
-                ORDER BY market_slug, computed_at DESC
+                FROM market_power_scores WHERE published = true ORDER BY market_slug, computed_at DESC
             ),
             week_ago AS (
                 SELECT DISTINCT ON (market_slug)
@@ -1559,8 +1557,7 @@ def public_dashboard():
     with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("""
             SELECT DISTINCT ON (market_slug) *
-            FROM market_power_scores
-            ORDER BY market_slug, computed_at DESC
+            FROM market_power_scores WHERE published = true ORDER BY market_slug, computed_at DESC
         """)
         rows = cur.fetchall()
     rows.sort(key=lambda r: -(r.get("excess_power_score") or 0))
@@ -1570,8 +1567,7 @@ def public_dashboard():
         except Exception: pass
         with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("""SELECT DISTINCT ON (market_slug) *
-                           FROM market_power_scores
-                           ORDER BY market_slug, computed_at DESC""")
+                           FROM market_power_scores WHERE published = true ORDER BY market_slug, computed_at DESC""")
             rows = cur.fetchall()
         rows.sort(key=lambda r: -(r.get("excess_power_score") or 0))
     return render_template_string(DCPI_INDEX_TEMPLATE, scores=rows, count=len(rows))
@@ -1631,7 +1627,7 @@ def api_trending():
         cur.execute("""
             WITH latest AS (
               SELECT DISTINCT ON (market_slug) market_slug, market_name, excess_power_score AS now_e
-              FROM market_power_scores ORDER BY market_slug, computed_at DESC
+              FROM market_power_scores WHERE published = true ORDER BY market_slug, computed_at DESC
             ),
             week_ago AS (
               SELECT DISTINCT ON (market_slug) market_slug, excess_power_score AS prev_e
