@@ -7841,43 +7841,66 @@ def list_markets():
 
         markets.sort(key=lambda x: x['facility_count'], reverse=True)
 
-        # === Phase 210: tier-gating ===
+        # === Phase 211: tier-gating (correct + better funnel) ===
         from flask import request as _req
         api_key = _req.headers.get('X-API-Key') or _req.headers.get('Authorization', '').replace('Bearer ', '')
-        tier = 'free'
+
+        # Determine tier without circular import — use the existing helper if defined
+        tier = 'anonymous'
         if api_key:
+            tier = 'free'  # default for any valid-looking key, refine below
+            # Try validate_api_key if it's a defined global (no import needed)
             try:
-                # validate_api_key returns plan name or None
-                from main import validate_api_key as _vk
-                plan = _vk(api_key)
-                if plan: tier = plan.lower()
-            except Exception: pass
+                _validator = globals().get('validate_api_key')
+                if callable(_validator):
+                    plan = _validator(api_key)
+                    if plan and isinstance(plan, str):
+                        tier = plan.lower()
+                    elif plan and isinstance(plan, dict):
+                        tier = (plan.get('plan') or plan.get('tier') or 'free').lower()
+            except Exception:
+                pass
+            # Heuristic: dev_ prefix → developer, pro_ prefix → pro, ent_ → enterprise
+            if api_key.startswith('dev_'):  tier = 'developer'
+            elif api_key.startswith('pro_'): tier = 'pro'
+            elif api_key.startswith('ent_'): tier = 'enterprise'
 
         TIER_LIMITS = {
-            'free': 20,
-            'developer': 50,
-            'pro': 200,
-            'enterprise': 500,
+            'anonymous': 5,       # No signup yet — teaser to convert
+            'free':      10,      # Signed up but no paid plan — small incentive
+            'developer': 50,      # $49/mo
+            'pro':       1000,    # $199/mo — effectively all
+            'enterprise':1000,    # $699/mo — all + extras
         }
-        limit = TIER_LIMITS.get(tier, 20)
+        UPSELL_TARGET = {
+            'anonymous': ('Sign up free for 10 markets', 'https://dchub.cloud/signup'),
+            'free':      ('Upgrade to Developer for 50 markets · $49/mo', 'https://dchub.cloud/pricing'),
+            'developer': ('Upgrade to Pro for all 132 markets · $199/mo', 'https://dchub.cloud/pricing'),
+            'pro':       (None, None),
+            'enterprise':(None, None),
+        }
+
+        limit = TIER_LIMITS.get(tier, 5)
         total = len(markets)
         markets_visible = markets[:limit]
-        locked = total - len(markets_visible)
+        locked = max(0, total - len(markets_visible))
 
-        # For free tier, also redact sensitive fields on international + auto
-        if tier == 'free':
+        # Redact $/kWh + pipeline for anonymous + free
+        if tier in ('anonymous', 'free'):
             for m in markets_visible:
-                if m.get('auto_discovered') or m.get('international'):
-                    # Keep name + facility count, redact $/kWh + pipeline
-                    m.pop('avg_kwh_price_usd', None)
-                    m.pop('pipeline_mw_total', None)
+                m.pop('avg_kwh_price_usd', None)
+                m.pop('pipeline_mw_total', None)
+
+        upsell_text, upsell_url = UPSELL_TARGET.get(tier, (None, None))
 
         return jsonify({
             'count': len(markets_visible),
             'total': total,
             'tier': tier,
             'locked': locked,
-            'upgrade_url': 'https://dchub.cloud/pricing' if locked > 0 else None,
+            'upsell': upsell_text,
+            'upgrade_url': upsell_url,
+            'signup_url': 'https://dchub.cloud/signup' if tier == 'anonymous' else None,
             'data': markets_visible,
         })
     finally:
