@@ -1061,6 +1061,16 @@ app = Flask(__name__, static_folder='static', static_url_path='/static')
 
 
 
+
+
+# === Phase 227: in-process self-healer ===
+try:
+    import dchub_self_heal
+    dchub_self_heal.start_scheduler()
+except Exception as _heal_err:
+    import logging
+    logging.warning("self_heal scheduler failed to start: %s", _heal_err)
+# === /Phase 227 ===
 # --- Phase 22 + 23 + 24 blueprints (auto-wired) ---
 try:
     from routes.observability_routes import observability_bp
@@ -18197,3 +18207,36 @@ try:
 except NameError:
     pass
 
+
+
+# === Phase 227: heal endpoints ===
+@app.route("/api/v1/heal/status", methods=["GET"])
+def _heal_status():
+    try:
+        import dchub_self_heal
+        return jsonify(dchub_self_heal.get_status())
+    except Exception as e:
+        return jsonify({"healer": "error", "error": str(e)[:200]}), 500
+
+
+@app.route("/api/v1/heal/log", methods=["GET"])
+def _heal_log():
+    try:
+        import dchub_self_heal
+        from flask import request
+        limit = min(int(request.args.get("limit", 50)), 200)
+        return jsonify({"events": dchub_self_heal.get_recent_events(limit)})
+    except Exception as e:
+        return jsonify({"error": str(e)[:200]}), 500
+
+
+@app.route("/api/v1/heal/force", methods=["POST", "GET"])
+def _heal_force():
+    """Trigger an immediate heal cycle (idempotent, lock-protected)."""
+    try:
+        import dchub_self_heal
+        result = dchub_self_heal.heal_cycle()
+        return jsonify({"ok": True, "result": result})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)[:300]}), 500
+# === /Phase 227 ===

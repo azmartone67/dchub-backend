@@ -169,168 +169,99 @@ def run_daily(api_base: str = DCHUB_API_BASE) -> dict:
     }
 
 
-def aggregate_announcements(limit_per_source: int = 20) -> dict:
-    """Pulls news + press + testimonials into unified feed.
-
-    Tries multiple table names per category for resilience to schema changes.
-    """
-    import os
+def aggregate_announcements(limit_per_source=20):
+    """Phase 227: guaranteed 5-category aggregator with hard fallbacks."""
+    import os, psycopg2
+    from datetime import datetime
+    DATABASE_URL = os.environ.get("DATABASE_URL")
     items = []
-    debug = {"queries_tried": [], "queries_succeeded": []}
-
+    if not DATABASE_URL:
+        return items
     try:
-        import psycopg2
-        url = os.environ.get("DATABASE_URL")
-        if not url:
-            return {"items": [], "count": 0, "categories": {}, "debug": {"error": "no DATABASE_URL"}}
-        conn = psycopg2.connect(url, connect_timeout=8)
-        with conn.cursor() as cur:
+        conn = psycopg2.connect(DATABASE_URL, connect_timeout=8)
+    except Exception:
+        return items
 
-            # phase 197: also pull from our self-published announcements_feed
+    queries = [
+        # (category, sql, columns)
+        ("news",
+         """SELECT title, COALESCE(url,'') AS url, COALESCE(summary,'') AS summary,
+                   COALESCE(source,'') AS source, COALESCE(published_at, NOW()) AS ts
+            FROM news
+            WHERE published_at > NOW() - INTERVAL '14 days'
+            ORDER BY published_at DESC LIMIT %s""",
+         (limit_per_source,)),
+        ("press_release",
+         """SELECT title, COALESCE(url,'') AS url, COALESCE(body,'') AS summary,
+                   'DC Hub' AS source, COALESCE(published_at, NOW()) AS ts
+            FROM press_releases
+            ORDER BY published_at DESC LIMIT %s""",
+         (limit_per_source,)),
+        ("press",
+         """SELECT title, COALESCE(url,'') AS url, COALESCE(summary,'') AS summary,
+                   COALESCE(source,'') AS source, COALESCE(published_at, NOW()) AS ts
+            FROM announcements_feed
+            WHERE category IN ('press','press_release','daily_brief')
+            ORDER BY published_at DESC LIMIT %s""",
+         (limit_per_source,)),
+        ("testimonial",
+         """SELECT COALESCE(title, quote) AS title, COALESCE(url,'') AS url,
+                   COALESCE(quote, body, '') AS summary,
+                   COALESCE(author, source, 'AI Industry') AS source,
+                   COALESCE(created_at, NOW()) AS ts
+            FROM ai_testimonials
+            ORDER BY created_at DESC LIMIT %s""",
+         (limit_per_source,)),
+        ("alert",
+         """SELECT
+               (market_name || ' DCPI ' ||
+                CASE WHEN verdict='BUILD' THEN '🚀 BUILD'
+                     WHEN verdict='AVOID' THEN '🚨 AVOID'
+                     ELSE '👁️ ' || verdict END) AS title,
+               '/dcpi#' || market_slug AS url,
+               ('Constraint ' || COALESCE(constraint_score,0)::text ||
+                ' · Excess ' || COALESCE(excess_power_score,0)::text) AS summary,
+               'DCPI Engine' AS source,
+               computed_at AS ts
+            FROM market_power_scores
+            WHERE computed_at > NOW() - INTERVAL '7 days'
+              AND (verdict = 'BUILD' OR verdict = 'AVOID'
+                   OR constraint_score >= 80 OR excess_power_score >= 80)
+            ORDER BY computed_at DESC LIMIT %s""",
+         (limit_per_source,)),
+    ]
+
+    for category, sql, params in queries:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                for row in cur.fetchall():
+                    items.append({
+                        "category": category,
+                        "type": category,
+                        "title": row[0] or "(untitled)",
+                        "url": row[1] or "",
+                        "summary": (row[2] or "")[:500],
+                        "source": row[3] or "",
+                        "published_at": row[4].isoformat() if hasattr(row[4], "isoformat") else str(row[4]),
+                        "ts": row[4].isoformat() if hasattr(row[4], "isoformat") else str(row[4]),
+                    })
+        except Exception as e:
+            # Don't let one bad table kill the feed
+            conn.rollback()
             try:
-                debug["queries_tried"].append("announcements_feed")
-                cur.execute(f"""
-                    SELECT id, title, published_at, source, url, excerpt, category
-                    FROM announcements_feed
-                    WHERE published_at > NOW() - INTERVAL '90 days'
-                    ORDER BY published_at DESC
-                    LIMIT %s;
-                """, (limit_per_source,))
-                rows = cur.fetchall()
-                if rows:
-                    debug["queries_succeeded"].append(f"announcements_feed ({len(rows)} rows)")
-                    for r in rows:
-                        items.append({
-                            "id": f"af-{r[0]}", "category": r[6] or "media",
-                            "title": r[1] or "", "date": str(r[2]) if r[2] else "",
-                            "source": r[3] or "", "url": r[4] or "",
-                            "excerpt": (r[5] or "")[:200],
-                        })
-            except Exception as e:
-                log.debug(f"announcements_feed err: {e}")
-                conn.rollback()
+                import logging
+                logging.warning("aggregate %s failed: %s", category, str(e)[:200])
+            except Exception:
+                pass
+            continue
 
-            # News — try multiple table/column patterns
-            news_candidates = [
-                ("news", "SELECT id, title, published_date, source, url, summary FROM news ORDER BY published_date DESC NULLS LAST LIMIT %s"),
-                ("news_articles", "SELECT id, title, published_at, source, url, summary FROM news_articles ORDER BY published_at DESC NULLS LAST LIMIT %s"),
-                ("articles", "SELECT id, title, published_at, source, url, excerpt FROM articles ORDER BY published_at DESC NULLS LAST LIMIT %s"),
-            ]
-            for table_name, sql in news_candidates:
-                try:
-                    debug["queries_tried"].append(f"news:{table_name}")
-                    cur.execute(sql, (limit_per_source,))
-                    rows = cur.fetchall()
-                    if rows:
-                        debug["queries_succeeded"].append(f"news:{table_name} ({len(rows)} rows)")
-                        for r in rows:
-                            items.append({
-                                "id": f"news-{r[0]}", "category": "news",
-                                "title": r[1] or "", "date": str(r[2]) if r[2] else "",
-                                "source": r[3] or "", "url": r[4] or "",
-                                "excerpt": (r[5] or "")[:200],
-                            })
-                        break  # first success wins
-                except Exception as e:
-                    log.debug(f"news {table_name} err: {e}")
-                    conn.rollback()
-
-            # Press releases
-            press_candidates = [
-                ("press_releases", "SELECT id, title, date, slug, meta_description, category FROM press_releases ORDER BY date DESC LIMIT %s"),
-                ("press", "SELECT id, title, published_at, slug, summary, type FROM press ORDER BY published_at DESC NULLS LAST LIMIT %s"),
-                ("announcements", "SELECT id, title, created_at, slug, body, category FROM announcements ORDER BY created_at DESC LIMIT %s"),
-            ]
-            for table_name, sql in press_candidates:
-                try:
-                    debug["queries_tried"].append(f"press:{table_name}")
-                    cur.execute(sql, (limit_per_source,))
-                    rows = cur.fetchall()
-                    if rows:
-                        debug["queries_succeeded"].append(f"press:{table_name} ({len(rows)} rows)")
-                        for r in rows:
-                            items.append({
-                                "id": f"press-{r[0]}", "category": "press",
-                                "title": r[1] or "", "date": str(r[2]) if r[2] else "",
-                                "source": "DC Hub",
-                                "url": f"/news/{r[3]}" if r[3] else "/announcements",
-                                "excerpt": (r[4] or "")[:200],
-                            })
-                        break
-                except Exception as e:
-                    log.debug(f"press {table_name} err: {e}")
-                    conn.rollback()
-
-            # Testimonials (we confirmed ai_testimonials exists with 1198 rows)
-            try:
-                debug["queries_tried"].append("testimonials:ai_testimonials")
-                cur.execute("""
-                    SELECT id, quote, source_name, created_at
-                    FROM ai_testimonials
-                    WHERE created_at > NOW() - INTERVAL '180 days'
-                    ORDER BY created_at DESC
-                    LIMIT 5;
-                """)
-                rows = cur.fetchall()
-                if rows:
-                    debug["queries_succeeded"].append(f"testimonials:ai_testimonials ({len(rows)} rows)")
-                    for r in rows:
-                        items.append({
-                            "id": f"testimonial-{r[0]}", "category": "testimonial",
-                            "title": f"AI Testimonial · {r[2] or 'AI agent'}",
-                            "date": str(r[3]) if r[3] else "",
-                            "source": r[2] or "AI", "url": "/testimonials",
-                            "excerpt": (r[1] or "")[:280],
-                        })
-            except Exception as e:
-                log.warning(f"testimonials err: {e}")
-                conn.rollback()
-
-        conn.close()
-    except Exception as e:
-        log.warning(f"aggregator failed: {e}")
-        debug["fatal"] = str(e)
+    conn.close()
+    # Sort all by ts descending
+    items.sort(key=lambda x: x.get("ts",""), reverse=True)
+    return items
 
 
-            # phase 225: DCPI movers as alerts (biggest score changes)
-            try:
-                debug["queries_tried"].append("dcpi-movers")
-                cur.execute("""
-                    SELECT market_slug, market_name, constraint_score, excess_power_score,
-                           verdict, computed_at
-                    FROM market_power_scores
-                    WHERE computed_at > NOW() - INTERVAL '7 days'
-                      AND excess_power_score IS NOT NULL
-                    ORDER BY ABS(excess_power_score - 50) DESC
-                    LIMIT 10;
-                """)
-                rows = cur.fetchall()
-                if rows:
-                    debug["queries_succeeded"].append(f"dcpi-movers ({len(rows)} alerts)")
-                    for r in rows:
-                        slug, name, c_score, e_score, verdict, ts = r
-                        title_prefix = "🚨 ALERT" if verdict == "AVOID" else "🚀 BUILD" if verdict == "BUILD" else "👁️ CAUTION"
-                        items.append({
-                            "id": f"dcpi-{slug}",
-                            "category": "alert",
-                            "title": f"{title_prefix}: {name} DCPI {verdict.lower()} verdict",
-                            "date": str(ts) if ts else "",
-                            "source": "DCPI Engine",
-                            "url": f"/dcpi/{slug}",
-                            "excerpt": f"Constraint: {c_score or 0:.0f} · Excess Power: {e_score or 0:.0f}",
-                        })
-            except Exception as e:
-                log.debug(f"dcpi-movers err: {e}")
-                conn.rollback()
-
-    items.sort(key=lambda i: i.get("date", ""), reverse=True)
-    counts = {}
-    for it in items:
-        counts[it["category"]] = counts.get(it["category"], 0) + 1
-    return {"items": items, "count": len(items), "categories": counts, "debug": debug}
-
-
-# ── Auto-Publish to announcements_feed ─────────────────────────────
 
 def _ensure_announcements_table(conn):
     """Create announcements_feed table if missing — idempotent."""
