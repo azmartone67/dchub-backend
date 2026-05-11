@@ -156,8 +156,12 @@ def run_daily(api_base: str = DCHUB_API_BASE) -> dict:
     image = generator.generate_chart_png(payload)
     log.info(f"dchub_media daily — {len(text)} chars text, {'chart attached' if image else 'no chart'}")
     li_result = publisher.publish_linkedin(text, image)
+    _brief_result = publish_daily_brief(payload, text)
+    _press_results = maybe_publish_press_release(payload)
     return {
         "date": payload["date"],
+        "announcement_publish": _brief_result,
+        "press_releases": _press_results,
         "text_chars": len(text),
         "image_bytes": len(image) if image else 0,
         "linkedin": li_result,
@@ -181,6 +185,30 @@ def aggregate_announcements(limit_per_source: int = 20) -> dict:
             return {"items": [], "count": 0, "categories": {}, "debug": {"error": "no DATABASE_URL"}}
         conn = psycopg2.connect(url, connect_timeout=8)
         with conn.cursor() as cur:
+
+            # phase 197: also pull from our self-published announcements_feed
+            try:
+                debug["queries_tried"].append("announcements_feed")
+                cur.execute(f"""
+                    SELECT id, title, published_at, source, url, excerpt, category
+                    FROM announcements_feed
+                    WHERE published_at > NOW() - INTERVAL '90 days'
+                    ORDER BY published_at DESC
+                    LIMIT %s;
+                """, (limit_per_source,))
+                rows = cur.fetchall()
+                if rows:
+                    debug["queries_succeeded"].append(f"announcements_feed ({len(rows)} rows)")
+                    for r in rows:
+                        items.append({
+                            "id": f"af-{r[0]}", "category": r[6] or "media",
+                            "title": r[1] or "", "date": str(r[2]) if r[2] else "",
+                            "source": r[3] or "", "url": r[4] or "",
+                            "excerpt": (r[5] or "")[:200],
+                        })
+            except Exception as e:
+                log.debug(f"announcements_feed err: {e}")
+                conn.rollback()
 
             # News — try multiple table/column patterns
             news_candidates = [
@@ -269,3 +297,122 @@ def aggregate_announcements(limit_per_source: int = 20) -> dict:
         counts[it["category"]] = counts.get(it["category"], 0) + 1
     return {"items": items, "count": len(items), "categories": counts, "debug": debug}
 
+
+# ── Auto-Publish to announcements_feed ─────────────────────────────
+
+def _ensure_announcements_table(conn):
+    """Create announcements_feed table if missing — idempotent."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS announcements_feed (
+                id SERIAL PRIMARY KEY,
+                category TEXT NOT NULL,
+                title TEXT NOT NULL,
+                excerpt TEXT,
+                url TEXT,
+                source TEXT,
+                published_at TIMESTAMPTZ DEFAULT NOW(),
+                payload JSONB,
+                slug TEXT UNIQUE
+            );
+            CREATE INDEX IF NOT EXISTS announcements_feed_published_idx
+                ON announcements_feed (published_at DESC);
+            CREATE INDEX IF NOT EXISTS announcements_feed_category_idx
+                ON announcements_feed (category);
+        """)
+    conn.commit()
+
+
+def publish_announcement(item: dict) -> dict:
+    """Write a single announcement to the announcements_feed table.
+
+    item shape: {"category", "title", "excerpt", "url", "source", "payload": dict}
+    """
+    import os, json
+    try:
+        import psycopg2
+    except ImportError:
+        return {"ok": False, "error": "psycopg2 missing"}
+    try:
+        conn = psycopg2.connect(os.environ.get("DATABASE_URL"), connect_timeout=8)
+        _ensure_announcements_table(conn)
+        with conn.cursor() as cur:
+            slug = item.get("slug") or f"{item.get('category','misc')}-{datetime.date.today().isoformat()}"
+            cur.execute("""
+                INSERT INTO announcements_feed (category, title, excerpt, url, source, payload, slug)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (slug) DO UPDATE SET
+                    title = EXCLUDED.title,
+                    excerpt = EXCLUDED.excerpt,
+                    url = EXCLUDED.url,
+                    payload = EXCLUDED.payload,
+                    published_at = NOW()
+                RETURNING id;
+            """, (
+                item.get("category", "media"),
+                item.get("title", ""),
+                item.get("excerpt", ""),
+                item.get("url", ""),
+                item.get("source", "DC Hub"),
+                json.dumps(item.get("payload", {}), default=str),
+                slug,
+            ))
+            row_id = cur.fetchone()[0]
+        conn.commit()
+        conn.close()
+        return {"ok": True, "id": row_id, "slug": slug}
+    except Exception as e:
+        log.warning(f"publish_announcement err: {e}")
+        return {"ok": False, "error": str(e)}
+
+
+def publish_daily_brief(payload: dict, text: str) -> dict:
+    """Convenience: persist today's DChub Daily brief as an announcement."""
+    date = payload.get("date") or str(datetime.date.today())
+    return publish_announcement({
+        "category": "daily-brief",
+        "title": f"DC Hub Daily Brief · {date}",
+        "excerpt": text[:280],
+        "url": f"/api/v1/social/posts/{date}",
+        "source": "DC Hub Media",
+        "slug": f"daily-{date}",
+        "payload": {"text": text, "markets_count": len(payload.get("markets") or [])},
+    })
+
+
+def maybe_publish_press_release(payload: dict, threshold: float = 15.0) -> list[dict]:
+    """If any DCPI score moved >threshold WoW, auto-publish a press release.
+
+    Reads the dcpi movers data and emits one press release per significant mover.
+    """
+    import os
+    results = []
+    try:
+        import urllib.request, json as _json
+        with urllib.request.urlopen(
+            f"{DCHUB_API_BASE}/api/v1/dcpi/movers", timeout=10
+        ) as r:
+            movers_data = _json.loads(r.read().decode("utf-8", errors="replace"))
+    except Exception as e:
+        log.warning(f"dcpi/movers fetch err: {e}")
+        return results
+
+    movers = movers_data.get("movers") or movers_data.get("data") or movers_data if isinstance(movers_data, list) else []
+    for m in movers:
+        delta = abs(m.get("delta") or 0)
+        if delta < threshold:
+            continue
+        market = m.get("market") or m.get("name") or ""
+        slug = m.get("slug") or market.lower().replace(" ", "-")
+        direction = "rises" if (m.get("delta") or 0) > 0 else "falls"
+        result = publish_announcement({
+            "category": "press",
+            "title": f"DCPI score for {market} {direction} {delta:.1f} points week-over-week",
+            "excerpt": f"The Data Center Power Index for {market} moved by {m.get('delta'):+.1f} points week-over-week, driven by changes in pipeline announcements, grid headroom, and energy pricing in the market.",
+            "url": f"/news/dcpi-alert-{slug}",
+            "source": "DCPI Alert",
+            "slug": f"dcpi-alert-{slug}-{datetime.date.today().isoformat()}",
+            "payload": {"market": market, "delta": m.get("delta"), "auto_generated": True},
+        })
+        results.append(result)
+    return results
