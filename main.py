@@ -17834,3 +17834,32 @@ try:
 except (NameError, ImportError):
     pass
 
+# === Phase 189: minimal openapi.json for QA test ===
+try:
+    @app.route("/api/v1/openapi.json", methods=["GET"])
+    def _openapi_spec():
+        from flask import jsonify
+        return jsonify({
+            "openapi": "3.0.0",
+            "info": {
+                "title": "DC Hub API",
+                "version": "1.0",
+                "description": "Data center intelligence + market data API",
+                "contact": {"email": "hello@dchub.cloud"},
+            },
+            "servers": [{"url": "https://dchub.cloud"}],
+            "paths": {
+                "/api/health": {"get": {"summary": "Service health"}},
+                "/api/health/freshness": {"get": {"summary": "Data freshness per pipeline"}},
+                "/api/v1/markets/list": {"get": {"summary": "All markets with pipeline + $/kWh"}},
+                "/api/v1/markets/{market}": {"get": {"summary": "Single market detail"}},
+                "/api/v1/markets/compare": {"get": {"summary": "Compare 2-3 markets"}},
+                "/api/v1/grid/snapshot": {"get": {"summary": "Grid snapshot data"}},
+                "/api/v1/dcpi": {"get": {"summary": "Data Center Power Index"}},
+                "/api/press-releases": {"get": {"summary": "Press release feed"}},
+                "/api/v1/news": {"get": {"summary": "News feed"}},
+            },
+        })
+except NameError:
+    pass
+
