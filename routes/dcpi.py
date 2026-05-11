@@ -1028,7 +1028,7 @@ footer a:hover { color: var(--acc-light); }
         <div class="label">Constraint</div>
       </div>
       <div class="verdict {{ s.verdict }}">{{ s.verdict }}</div>
-      <div class="ttp">~{{ s.time_to_power_months|round(0)|int }}mo to power</div>
+      <div class="ttp">~{{ (s.time_to_power_months or 0)|round(0)|int }}mo to power</div>
     </div>
     </a>
     {% endfor %}
@@ -1255,7 +1255,7 @@ DCPI_MARKET_TEMPLATE = """<!DOCTYPE html>
 <title>{{ s.market_name }} · DCPI {{ s.excess_power_score }} | DC Hub</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta property="og:title" content="DCPI {{ s.market_name }} · Excess {{ s.excess_power_score }} · Constraint {{ s.constraint_score }}">
-<meta property="og:description" content="{{ s.verdict }} · ~{{ s.time_to_power_months|round(0)|int }} months to power. Updated daily.">
+<meta property="og:description" content="{{ s.verdict }} · ~{{ (s.time_to_power_months or 0)|round(0)|int }} months to power. Updated daily.">
 <meta property="og:image" content="https://dchub.cloud/dcpi/og/{{ s.market_slug }}.svg">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
@@ -1512,12 +1512,12 @@ h1 {
   <div class="section-h"><span class="pip"></span>📊 Underlying Metrics</div>
   <div class="section">
     <div class="metrics">
-      <div class="metric"><div class="v">{{ s.queue_wait_months|round(0)|int }} mo</div><div class="l">Queue Wait</div></div>
-      <div class="metric"><div class="v">{{ s.reserve_margin_pct|round(1) }}%</div><div class="l">Reserve Margin</div></div>
+      <div class="metric"><div class="v">{{ (s.queue_wait_months or 0)|round(0)|int }} mo</div><div class="l">Queue Wait</div></div>
+      <div class="metric"><div class="v">{{ (s.reserve_margin_pct or 0)|round(1) }}%</div><div class="l">Reserve Margin</div></div>
       <div class="metric"><div class="v">{{ (s.gen_additions_12mo_mw or 0)|round(0)|int }} MW</div><div class="l">Generation Additions &lt;12mo</div></div>
       <div class="metric"><div class="v">{{ (s.curtailment_pct or 0)|round(1) }}%</div><div class="l">Renewable Curtailment</div></div>
       <div class="metric"><div class="v">{{ (s.stranded_capacity_mw or 0)|round(0)|int }} MW</div><div class="l">Stranded Capacity</div></div>
-      <div class="metric"><div class="v">{{ s.time_to_power_months|round(0)|int }} mo</div><div class="l">Est. Time to Power</div></div>
+      <div class="metric"><div class="v">{{ (s.time_to_power_months or 0)|round(0)|int }} mo</div><div class="l">Est. Time to Power</div></div>
     </div>
   </div>
 
