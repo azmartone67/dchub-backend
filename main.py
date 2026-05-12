@@ -19482,8 +19482,8 @@ def _mcp_capture_email():
 # Phase 263: customer lookup — find a user across api_keys, users, mcp_upgrade_signals
 @app.route("/api/v1/admin/customer-lookup", methods=["GET"])
 def _customer_lookup():
-    """Look up a customer by email across all relevant tables.
-       Returns: api_keys + users + mcp_upgrade_signals data."""
+    """Look up a customer by email across api_keys, users, mcp_upgrade_signals.
+       Phase 264: handles both datetime and str column types."""
     import os, psycopg2
     from flask import jsonify, request
     DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -19491,10 +19491,15 @@ def _customer_lookup():
     email = (request.args.get("email") or "").strip().lower()
     if not email: return jsonify({"error": "missing ?email="}), 400
 
+    def safe_iso(v):
+        """Convert datetime or str to ISO string; pass through everything else."""
+        if v is None: return None
+        if hasattr(v, "isoformat"): return v.isoformat()
+        return str(v)
+
     out = {"email": email}
     try:
         with psycopg2.connect(DATABASE_URL, connect_timeout=8) as conn:
-            # 1. users table
             with conn.cursor() as cur:
                 cur.execute("""
                     SELECT id, email, name, company, role, plan, api_calls_today,
@@ -19507,13 +19512,12 @@ def _customer_lookup():
                         "id": row[0], "email": row[1], "name": row[2],
                         "company": row[3], "role": row[4], "plan": row[5],
                         "api_calls_today": row[6], "api_calls_total": row[7],
-                        "created_at": row[8].isoformat() if row[8] else None,
-                        "last_login": row[9].isoformat() if row[9] else None,
+                        "created_at": safe_iso(row[8]),
+                        "last_login": safe_iso(row[9]),
                     }
                 else:
                     out["users"] = None
 
-            # 2. api_keys table — join by user_id
             if out.get("users"):
                 with conn.cursor() as cur:
                     cur.execute("""
@@ -19527,15 +19531,15 @@ def _customer_lookup():
                         keys.append({
                             "id": r[0], "key_prefix": r[1], "name": r[2],
                             "plan": r[3], "rate_limit_tier": r[4],
-                            "is_active": r[5], "last_used_at": r[6].isoformat() if r[6] else None,
+                            "is_active": r[5],
+                            "last_used_at": safe_iso(r[6]),
                             "usage_count": r[7], "calls_today": r[8],
                             "calls_total": r[9],
-                            "created_at": r[10].isoformat() if r[10] else None,
-                            "trial_expires_at": r[11].isoformat() if r[11] else None,
+                            "created_at": safe_iso(r[10]),
+                            "trial_expires_at": safe_iso(r[11]),
                         })
                     out["api_keys"] = keys
 
-            # 3. mcp_upgrade_signals — any signals from this email?
             with conn.cursor() as cur:
                 cur.execute("""
                     SELECT COUNT(*),
@@ -19547,13 +19551,12 @@ def _customer_lookup():
                 """, (email,))
                 r = cur.fetchone()
                 out["mcp_signals"] = {
-                    "total": r[0],
-                    "converted": r[1],
-                    "outreached": r[2],
+                    "total": r[0], "converted": r[1], "outreached": r[2],
                     "tools": list(r[3]) if r[3] else [],
-                    "most_recent": r[4].isoformat() if r[4] else None,
+                    "most_recent": safe_iso(r[4]),
                 }
         return jsonify(out)
     except Exception as e:
-        return jsonify({"error": str(e)[:300]}), 500
+        import traceback
+        return jsonify({"error": str(e)[:300], "trace": traceback.format_exc()[:600]}), 500
 
