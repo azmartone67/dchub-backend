@@ -683,13 +683,21 @@ def api_leaderboard():
     for r in rows:
         if r.get("computed_at"):
             r["computed_at"] = r["computed_at"].isoformat()
+        # Phase 297 (Phase P): add a deterministic reasoning chain so AI
+        # agents and journalists can quote the WHY, not just the score.
+        # Uses score thresholds from derive_verdict() — keeps reasoning
+        # consistent with the verdict logic.
+        r["reasoning"] = _build_reasoning(
+            r.get("verdict"), r.get("excess_power_score") or 0,
+            r.get("constraint_score") or 0, r.get("quality_score") or 0,
+        )
 
     if fmt == "csv":
         import csv, io
         buf = io.StringIO()
         cols = ["rank", "market_slug", "market_name", "iso", "state",
                 "verdict", "excess_power_score", "constraint_score",
-                "quality_score", "computed_at", "url"]
+                "quality_score", "computed_at", "url", "reasoning"]
         w = csv.DictWriter(buf, fieldnames=cols)
         w.writeheader()
         for i, r in enumerate(rows, 1):
@@ -711,6 +719,53 @@ def api_leaderboard():
         "methodology_url": "https://dchub.cloud/dcpi#methodology",
         "citation": "DC Hub Data Center Power Index. https://dchub.cloud/dcpi",
     }
+
+
+# Phase 297 (Phase P): deterministic reasoning chain. Templates the WHY
+# behind each verdict using the underlying scores. No LLM call per market —
+# cheap, consistent, citable. The thresholds mirror the derive_verdict()
+# matrix in this file so reasoning never contradicts the verdict.
+def _build_reasoning(verdict, excess, constraint, quality):
+    e_band = ("strong" if excess >= 65 else "moderate" if excess >= 40
+              else "thin" if excess > 0 else "no_signal")
+    c_band = ("clear" if constraint < 45 else "tight" if constraint < 70
+              else "saturated" if constraint > 0 else "no_signal")
+
+    e_label = {
+        "strong":    f"Excess Power {int(excess)} (strong — stranded capacity + queued additions <12mo)",
+        "moderate":  f"Excess Power {int(excess)} (moderate — some headroom)",
+        "thin":      f"Excess Power {int(excess)} (thin — limited spare capacity)",
+        "no_signal": f"Excess Power {int(excess)} (no signal — insufficient data)",
+    }[e_band]
+    c_label = {
+        "clear":     f"Constraint {int(constraint)} (clear — healthy queue, reserve margin)",
+        "tight":     f"Constraint {int(constraint)} (tight — queue backed up)",
+        "saturated": f"Constraint {int(constraint)} (saturated — near NERC floor or queue dead)",
+        "no_signal": f"Constraint {int(constraint)} (no signal)",
+    }[c_band]
+
+    quality_note = (
+        f"Quality {int(quality)} — high-confidence" if quality >= 80
+        else f"Quality {int(quality)} — moderate-confidence" if quality >= 60
+        else f"Quality {int(quality)} — low-confidence" if quality > 0
+        else "Quality unknown"
+    )
+
+    # Verdict-specific framing
+    if verdict == "BUILD":
+        framing = "Why BUILD: stranded power + cleared queue make this a near-term siting target."
+    elif verdict == "AVOID":
+        framing = "Why AVOID: saturated grid + thin excess. Site selection here forces years of queue wait."
+    elif verdict == "CAUTION":
+        framing = "Why CAUTION: mixed signal. One of (excess, constraint) is unfavorable; diligence required."
+    elif verdict == "LOW_SIGNAL":
+        framing = "Why LOW_SIGNAL: scores too noisy to call. Market is tracked, not yet rated."
+    elif verdict == "NODATA":
+        framing = "Why NODATA: source feed has not yet populated for this market."
+    else:
+        framing = f"Verdict: {verdict}"
+
+    return f"{framing} {e_label}. {c_label}. {quality_note}."
     resp = jsonify(body)
     resp.headers["Cache-Control"] = "public, max-age=300, must-revalidate"
     resp.headers["Access-Control-Allow-Origin"] = "*"  # citable from anywhere

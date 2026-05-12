@@ -623,6 +623,41 @@ def aggregate_announcements_v3(limit_per_source=20):
             LIMIT %s""",
             (limit_per_source,)))
 
+    # Phase 295 (Phase N): pull REAL AI citations from the ai_citations table
+    # populated by seo_agent.py. These are the actual 1,198 citations the
+    # /testimonials page tracks. Without this, dc-hub-media testimonials show
+    # only the mcp-auto synthetic stream (which phase 288 filters out client-side
+    # — leaving an empty Testimonials tab). This block wires real data in.
+    with conn.cursor() as cur:
+        ac_cols = _table_cols(cur, 'ai_citations')
+    if ac_cols and 'platform' in ac_cols:
+        url_col = "COALESCE(cited_url, '')" if 'cited_url' in ac_cols else "''"
+        type_col = "COALESCE(citation_type, '')" if 'citation_type' in ac_cols else "''"
+        query_col = "COALESCE(query, '')" if 'query' in ac_cols else "''"
+        date_col = ("COALESCE(detected_at, created_at)"
+                    if 'detected_at' in ac_cols and 'created_at' in ac_cols
+                    else 'detected_at' if 'detected_at' in ac_cols
+                    else 'created_at' if 'created_at' in ac_cols
+                    else 'NOW()')
+        queries.append(("testimonial",
+            f"""SELECT (platform || ' cited DC Hub') AS title,
+                   {url_col} AS url,
+                   (CASE
+                      WHEN {query_col} != '' AND {type_col} != ''
+                        THEN {query_col} || ' — ' || {type_col}
+                      WHEN {query_col} != '' THEN {query_col}
+                      WHEN {type_col} != ''  THEN {type_col}
+                      ELSE 'AI agent cited DC Hub data'
+                    END) AS summary,
+                   platform AS source,
+                   {date_col} AS ts
+            FROM ai_citations
+            WHERE platform IS NOT NULL AND platform != ''
+              AND platform NOT IN ('mcp-auto', 'mcp_auto')  -- exclude synthetic
+            ORDER BY {date_col} DESC NULLS LAST
+            LIMIT %s""",
+            (limit_per_source,)))
+
     # alerts from market_power_scores
     if mps_cols and 'verdict' in mps_cols:
         queries.append(("alert",

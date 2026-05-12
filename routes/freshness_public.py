@@ -120,14 +120,97 @@ def _aggregate(surfaces):
             "total_surfaces": len(surfaces), "refreshed_last_24h": last_24h}
 
 
+# Phase 296 (Phase O): per-domain SLA targets. Each data domain has a
+# documented refresh target. Surfaces are grouped by domain; SLA-compliance
+# is computed against the worst (oldest) surface in that domain.
+#
+# Hour values are tuned to actual upstream availability:
+#   - ISO grid: 1h (real-time LMP feeds)
+#   - Power retail rates: 168h (EIA monthly, ~lags 30-60d but pulled weekly)
+#   - DCPI: 24h (daily 06:00 UTC recompute, plus emergency triggers)
+#   - News: 1h (60+ source RSS poll)
+#   - M&A: 24h (manual + scraped daily)
+#   - Pipeline: 24h
+#   - Renewables: 168h (NREL slow data)
+#   - Gas: 24h
+DOMAIN_SLA_HOURS = {
+    "iso":       1,      # /api/v1/grid/<iso>
+    "power":     168,    # /api/v1/energy/electricity-rates
+    "renewable": 168,    # /api/renewable/*
+    "dcpi":      24,     # /api/v1/dcpi/live-count
+    "news":      1,      # /api/news/live
+    "mna":       24,     # /api/v1/deals
+    "pipeline":  24,     # /api/v1/pipeline
+    "fiber":     168,    # /api/v1/connectivity/*
+    "gas":       24,     # /api/v1/energy/gas-*
+    "facilities": 24,    # /api/v1/facilities
+}
+
+
+def _domain_of(surface_name: str) -> str:
+    """Map a surface name to one of the SLA domains."""
+    s = (surface_name or "").lower()
+    if "grid" in s or "iso" in s: return "iso"
+    if "renewable" in s or "solar" in s or "wind" in s: return "renewable"
+    if "rate" in s or "energy" in s and "gas" not in s: return "power"
+    if "dcpi" in s: return "dcpi"
+    if "news" in s or "press" in s: return "news"
+    if "deal" in s or "transaction" in s or "m&a" in s: return "mna"
+    if "pipeline" in s and "gas" not in s: return "pipeline"
+    if "fiber" in s or "ix" in s or "connectivity" in s: return "fiber"
+    if "gas" in s: return "gas"
+    if "facility" in s or "facilities" in s: return "facilities"
+    return "other"
+
+
+def _sla_breakdown(surfaces):
+    """Compute per-domain SLA compliance. Returns {domain: {target_h, worst_age_h, status, surfaces_n}}."""
+    by_domain = {}
+    for s in surfaces:
+        d = _domain_of(s.get("surface", ""))
+        by_domain.setdefault(d, []).append(s)
+    out = {}
+    for domain, ss in by_domain.items():
+        target = DOMAIN_SLA_HOURS.get(domain)
+        if target is None:
+            continue  # 'other' bucket — don't report SLA
+        ages = [s.get("age_hours") for s in ss if s.get("age_hours") is not None]
+        worst = max(ages) if ages else None
+        if worst is None:
+            status = "unknown"
+        elif worst <= target:
+            status = "within_sla"
+        elif worst <= target * 2:
+            status = "warning"  # 1-2x the SLA target
+        else:
+            status = "breach"   # >2x the SLA target
+        out[domain] = {
+            "target_hours": target,
+            "worst_age_hours": round(worst, 2) if worst is not None else None,
+            "status": status,
+            "surfaces": len(ss),
+        }
+    return out
+
+
 @freshness_public_bp.route("/api/v1/freshness", methods=["GET"])
 def api_freshness():
     """JSON freshness snapshot. CORS '*'. Cache 60s."""
     surfaces, err = _surfaces_snapshot()
+    # Phase 296 (Phase O): per-domain SLA breakdown — turns the raw surface
+    # list into "is each data domain meeting its refresh target?" — same
+    # signal a status-page would expose. Used by /freshness HTML and by AI
+    # agents to decide whether to trust the data.
+    sla = _sla_breakdown(surfaces)
+    breaches = [d for d, info in sla.items() if info.get("status") == "breach"]
     body = {
         "as_of": datetime.now(timezone.utc).isoformat(),
         "summary": _aggregate(surfaces),
         "dcpi": _dcpi_summary(),
+        "sla_by_domain": sla,                     # phase 296
+        "sla_breaches": breaches,                 # phase 296
+        "sla_overall": "all_within_sla" if not breaches
+                       else f"{len(breaches)}_domains_breached",
         "surfaces": surfaces,
         "citation": "DC Hub freshness signal — public proof-of-self-heal. https://dchub.cloud/freshness",
     }
