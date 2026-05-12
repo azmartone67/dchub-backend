@@ -19427,3 +19427,54 @@ def _mcp_mark_converted():
     except Exception as e:
         return jsonify({"error": str(e)[:300]}), 500
 
+
+# Phase 259: force-add capture-email endpoint (Phase 258 conditional may have skipped)
+@app.route("/api/v1/mcp/capture-email", methods=["POST", "GET"])
+def _mcp_capture_email():
+    """Called by agent when user provides email at paywall.
+       Backfills user_email on signals matching session_id, inserts a new
+       email_captured signal."""
+    import os, psycopg2
+    from flask import request, jsonify
+    DATABASE_URL = os.environ.get("DATABASE_URL")
+    if not DATABASE_URL: return jsonify({"error": "no DATABASE_URL"}), 500
+
+    body = request.get_json(silent=True) or {}
+    email = (body.get("email") or request.args.get("email") or "").strip().lower()
+    session_id = body.get("session_id") or request.args.get("session_id") or ""
+    tool = body.get("tool") or request.args.get("tool") or ""
+
+    if not email or "@" not in email:
+        return jsonify({"error": "valid email required"}), 400
+
+    try:
+        conn = psycopg2.connect(DATABASE_URL, connect_timeout=5)
+        results = {}
+        with conn.cursor() as cur:
+            if session_id:
+                cur.execute("""
+                    UPDATE mcp_upgrade_signals
+                    SET user_email = %s
+                    WHERE session_id = %s
+                      AND (user_email IS NULL OR user_email = '');
+                """, (email, session_id))
+                results["signals_backfilled"] = cur.rowcount
+            cur.execute("""
+                INSERT INTO mcp_upgrade_signals
+                    (session_id, user_email, signal_type, tool_requested,
+                     tier_current, created_at)
+                VALUES (%s, %s, 'email_captured', %s, 'free', NOW());
+            """, (session_id, email, tool or "unknown"))
+            results["new_capture_logged"] = True
+            conn.commit()
+        conn.close()
+        return jsonify({
+            "email": email,
+            "session_id": session_id,
+            "results": results,
+            "message": f"Got it — we'll send a founding-member upgrade link to {email}.",
+            "upgrade_url": f"https://dchub.cloud/pricing?utm_source=mcp&utm_email={email}&utm_tool={tool}#pro-annual",
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)[:300]}), 500
+

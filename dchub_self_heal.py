@@ -1246,7 +1246,7 @@ FIXES["aggregator_v2"] = fix_aggregator_v2
 # ============================================================================
 
 HTML_BAD_PATTERNS = {
-    "multi-GW placeholder":    "multi-GW",
+    "— placeholder":    "—",
     "$$$$ pricing leak":       "$" * 4,
     "Save 34% stale text":     "Save 34%",
     "$249.50 stale text":      "$249.50",
