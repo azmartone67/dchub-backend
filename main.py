@@ -19061,10 +19061,10 @@ def _mcp_conversion_funnel():
     funnel = {
         "1_tool_calls_7d":      safe_count("SELECT COUNT(*) FROM mcp_tool_calls WHERE created_at > NOW() - INTERVAL '7 days'"),
         "2_paywall_hits_7d":    safe_count("SELECT COUNT(*) FROM mcp_upgrade_signals WHERE created_at > NOW() - INTERVAL '7 days'"),
-        "3_upgrade_clicks_7d":  safe_count("SELECT COUNT(*) FROM page_views WHERE url LIKE '%utm_source=mcp%' AND created_at > NOW() - INTERVAL '7 days'"),
-        "4_checkouts_started_7d": safe_count("SELECT COUNT(*) FROM stripe_checkout_sessions WHERE created_at > NOW() - INTERVAL '7 days'"),
-        "5_conversions_30d":    safe_count("SELECT COUNT(*) FROM dev_keys WHERE tier IN ('pro','paid','enterprise') AND created_at > NOW() - INTERVAL '30 days'"),
-        "5b_total_paid_keys":   safe_count("SELECT COUNT(*) FROM dev_keys WHERE tier IN ('pro','paid','enterprise')"),
+        "3_upgrade_clicks_7d":  safe_count("SELECT COUNT(*) FROM page_views WHERE page LIKE '%utm_source=mcp%' AND created_at > NOW() - INTERVAL '7 days'"),
+        "4_checkouts_started_7d": safe_count("SELECT COUNT(*) FROM mcp_upgrade_signals WHERE signal_type = 'checkout_started' AND created_at > NOW() - INTERVAL '7 days'"),
+        "5_conversions_30d":    safe_count("SELECT COUNT(*) FROM mcp_upgrade_signals WHERE tier_current IN ('pro','paid','enterprise') AND created_at > NOW() - INTERVAL '30 days'"),
+        "5b_total_paid_keys":   safe_count("SELECT COUNT(DISTINCT user_email) FROM mcp_upgrade_signals WHERE tier_current IN ('pro','paid','enterprise')"),
     }
 
     # Compute drop-off rates for ints only
@@ -19099,8 +19099,8 @@ def _diagnose_funnel_leak(funnel):
 
 @app.route("/api/v1/mcp/power-users", methods=["GET"])
 def _mcp_power_users():
-    """Top free users by upgrade signals. Schema-tolerant: introspects
-       mcp_upgrade_signals + dev_keys columns and adapts the join."""
+    """Top free users by upgrade signals. Uses REAL columns from
+       mcp_upgrade_signals: user_email, tool_requested, signal_type."""
     import os, psycopg2
     from flask import jsonify, request
     DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -19113,93 +19113,50 @@ def _mcp_power_users():
 
     try:
         conn = psycopg2.connect(DATABASE_URL, connect_timeout=8)
-        # Introspect available columns
-        sig_cols, key_cols = set(), set()
         with conn.cursor() as cur:
-            cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='mcp_upgrade_signals'")
-            sig_cols = {r[0] for r in cur.fetchall()}
-            cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='dev_keys'")
-            key_cols = {r[0] for r in cur.fetchall()}
-
-        if not sig_cols:
-            return jsonify({"error": "mcp_upgrade_signals table not found", "users": []})
-
-        # Pick the right column names
-        user_col_sig = "user_id" if "user_id" in sig_cols else ("api_key" if "api_key" in sig_cols else None)
-        user_col_key = "user_id" if "user_id" in key_cols else ("api_key" if "api_key" in key_cols else None)
-        tool_col    = "tool" if "tool" in sig_cols else ("tool_name" if "tool_name" in sig_cols else None)
-        ts_col      = "created_at" if "created_at" in sig_cols else ("ts" if "ts" in sig_cols else None)
-        email_col   = "email" if "email" in key_cols else None
-        tier_col    = "tier" if "tier" in key_cols else ("plan" if "plan" in key_cols else None)
-
-        if not user_col_sig or not tool_col or not ts_col:
-            return jsonify({
-                "error": "required columns missing",
-                "available_columns": {"mcp_upgrade_signals": sorted(sig_cols), "dev_keys": sorted(key_cols)},
-                "users": []
-            })
-
-        # Build query — join optional
-        if user_col_key and email_col and tier_col:
-            sql = f"""
-                SELECT s.{user_col_sig} AS uid,
-                       COUNT(*) AS sig_count,
-                       array_agg(DISTINCT s.{tool_col} ORDER BY s.{tool_col}) AS tools,
-                       MIN(s.{ts_col}) AS first_signal,
-                       MAX(s.{ts_col}) AS most_recent,
-                       MAX(k.{email_col}) AS email,
-                       MAX(k.{tier_col}) AS tier
-                FROM mcp_upgrade_signals s
-                LEFT JOIN dev_keys k ON k.{user_col_key} = s.{user_col_sig}
-                WHERE s.{ts_col} > NOW() - INTERVAL '30 days'
-                  AND COALESCE(k.{tier_col}, 'free') = 'free'
-                GROUP BY s.{user_col_sig}
+            # Real schema columns confirmed via Phase 254 introspection
+            cur.execute("""
+                SELECT user_email,
+                       COUNT(*) AS signal_count,
+                       array_agg(DISTINCT tool_requested ORDER BY tool_requested) AS tools,
+                       MIN(created_at) AS first_signal,
+                       MAX(created_at) AS most_recent,
+                       array_agg(DISTINCT signal_type) AS signal_types,
+                       MAX(daily_usage) AS peak_usage,
+                       MAX(daily_limit) AS daily_limit,
+                       array_agg(DISTINCT mcp_client) AS clients,
+                       MAX(tier_current) AS current_tier
+                FROM mcp_upgrade_signals
+                WHERE created_at > NOW() - INTERVAL '30 days'
+                  AND user_email IS NOT NULL
+                  AND user_email != ''
+                GROUP BY user_email
                 HAVING COUNT(*) >= 3
-                ORDER BY sig_count DESC LIMIT %s
-            """
-        else:
-            sql = f"""
-                SELECT s.{user_col_sig} AS uid,
-                       COUNT(*) AS sig_count,
-                       array_agg(DISTINCT s.{tool_col} ORDER BY s.{tool_col}) AS tools,
-                       MIN(s.{ts_col}) AS first_signal,
-                       MAX(s.{ts_col}) AS most_recent
-                FROM mcp_upgrade_signals s
-                WHERE s.{ts_col} > NOW() - INTERVAL '30 days'
-                GROUP BY s.{user_col_sig}
-                HAVING COUNT(*) >= 3
-                ORDER BY sig_count DESC LIMIT %s
-            """
-
-        with conn.cursor() as cur:
-            cur.execute(sql, (limit,))
+                ORDER BY COUNT(*) DESC
+                LIMIT %s
+            """, (limit,))
             rows = cur.fetchall()
 
-        users = []
-        for r in rows:
-            entry = {
-                "user_id": r[0],
-                "signal_count": r[1],
-                "tools_blocked": list(r[2]) if r[2] else [],
-                "first_signal": r[3].isoformat() if r[3] else None,
-                "most_recent": r[4].isoformat() if r[4] else None,
-                "outreach_score": min(100, int((r[1] / 20) * 100)),
-            }
-            if len(r) > 5:
-                entry["email"] = r[5]
-                entry["current_tier"] = r[6]
-            users.append(entry)
-
+        users = [{
+            "email": r[0],
+            "signal_count": r[1],
+            "tools_blocked": list(r[2]) if r[2] else [],
+            "first_signal": r[3].isoformat() if r[3] else None,
+            "most_recent": r[4].isoformat() if r[4] else None,
+            "signal_types": list(r[5]) if r[5] else [],
+            "peak_daily_usage": r[6],
+            "daily_limit": r[7],
+            "mcp_clients": list(r[8]) if r[8] else [],
+            "current_tier": r[9] or "free",
+            "outreach_score": min(100, int((r[1] / 10) * 100)),
+        } for r in rows]
         conn.close()
+
+        # Also fetch session-only users (no email yet)
         return jsonify({
             "total": len(users),
             "users": users,
-            "schema_used": {
-                "user_id_col": user_col_sig,
-                "tool_col": tool_col,
-                "ts_col": ts_col,
-                "joined_with_dev_keys": bool(user_col_key and email_col),
-            }
+            "note": "Filtered to email-identified users only. Add session-only count if needed.",
         })
     except Exception as e:
         return jsonify({"error": str(e)[:300], "users": []}), 500
