@@ -102,19 +102,24 @@ probe() {
 }
 
 # ──── ISO / Grid ────
-probe "ISO grid (all)"          "/api/v1/grid"
-probe "ISO grid (PJM)"          "/api/v1/grid?iso=pjm"
-probe "ISO grid (ERCOT)"        "/api/v1/grid?iso=ercot"
-probe "ISO grid (CAISO)"        "/api/v1/grid?iso=caiso"
-probe "ISO grid (MISO)"         "/api/v1/grid?iso=miso"
-probe "ISO grid (NYISO)"        "/api/v1/grid?iso=nyiso"
-probe "ISO grid (SPP)"          "/api/v1/grid?iso=spp"
+# Phase 293: correct path is /api/v1/grid/<iso> (path param), not ?iso= query.
+# /api/v1/grid (no ISO) doesn't exist as a route — skip it.
+probe "ISO grid (PJM)"          "/api/v1/grid/pjm"
+probe "ISO grid (ERCOT)"        "/api/v1/grid/ercot"
+probe "ISO grid (CAISO)"        "/api/v1/grid/caiso"
+probe "ISO grid (MISO)"         "/api/v1/grid/miso"
+probe "ISO grid (NYISO)"        "/api/v1/grid/nyiso"
+probe "ISO grid (SPP)"          "/api/v1/grid/spp"
+probe "Grid intelligence (PJM)" "/api/v1/grid-intelligence/pjm"
 
 # ──── Power / energy ────
 probe "Energy retail rates"     "/api/v1/energy/electricity-rates"
 probe "Energy summary (CA)"     "/api/v1/energy/summary?state=CA"
 probe "Energy summary (TX)"     "/api/v1/energy/summary?state=TX"
-probe "Renewable energy (CA)"   "/api/v1/renewable?state=CA"
+# Phase 293: renewable endpoints live under /api/renewable/*, not /api/v1/renewable
+probe "Renewable solar"         "/api/renewable/solar"
+probe "Renewable wind"          "/api/renewable/wind"
+probe "Renewable combined"      "/api/renewable/combined"
 
 # ──── Fiber / connectivity ────
 probe "Fiber routes (IX)"       "/api/v1/connectivity/ix"
@@ -131,13 +136,19 @@ probe "M&A deals"               "/api/v1/deals?limit=10"
 probe "Construction pipeline"   "/api/v1/pipeline?limit=10"
 
 # ──── News / DCPI ────
-probe "News latest"             "/api/news/latest"
+# Phase 293: real news paths are /api/news, /api/news-feed, /api/news/live
+probe "News (live)"             "/api/news/live"
+probe "News (feed)"             "/api/news-feed"
 probe "DCPI live count"         "/api/v1/dcpi/live-count"
 probe "DCPI quality"            "/api/v1/dcpi/quality"
 probe "DCPI leaderboard"        "/api/v1/dcpi/leaderboard"
 
 # ──── Facilities ────
 probe "Facilities (paged)"      "/api/v1/facilities?limit=10"
+
+# ──── Brain v2 + Outreach (phases 289-290) ────
+probe "Brain v2 status"         "/api/v1/brain/status"
+probe "Outreach status"         "/api/v1/outreach/cap-exceeded/status"
 
 # ─────────────────────────────────────────────────────────────────────
 banner "Summary"
