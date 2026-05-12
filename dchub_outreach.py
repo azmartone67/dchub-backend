@@ -17,6 +17,56 @@ Safety:
   • re-running is idempotent (skips already-emailed customers)
 """
 import os
+# ============================================================================
+# Phase 267: INTERNAL EMAIL EXCLUSIONS — never email these
+# ============================================================================
+
+INTERNAL_EMAIL_PATTERNS = [
+    # Domains
+    "@dchub.cloud",
+    "@arcadianinfra.com",
+    "@martoneadvisors.com",
+    # Specific people (you + family + test accounts)
+    "azmartone@",
+    "nicomartone@",
+    "jonathan.martone@",
+    "jonathanmartone@",
+    # Stripe / generic test patterns
+    "+stripe",
+    "+test",
+    "+dev",
+    "noreply@",
+    "no-reply@",
+    "test@",
+    "demo@",
+]
+
+
+def is_internal_email(email):
+    """Returns True if email matches any internal/test exclusion pattern."""
+    if not email: return True
+    e = email.lower().strip()
+    return any(pat.lower() in e for pat in INTERNAL_EMAIL_PATTERNS)
+
+
+def get_db_excludes():
+    """Pull additional excludes from email_exclude_list table (if exists)."""
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS email_exclude_list (
+                    email TEXT PRIMARY KEY,
+                    reason TEXT,
+                    added_at TIMESTAMPTZ DEFAULT NOW()
+                );
+            """)
+            c.commit()
+            cur.execute("SELECT LOWER(email) FROM email_exclude_list;")
+            return {r[0] for r in cur.fetchall()}
+    except Exception:
+        return set()
+
+
 from datetime import datetime
 from typing import Optional
 
@@ -335,6 +385,14 @@ def build_queue(max_total=50):
         if q["email"] in seen: continue
         seen.add(q["email"])
         deduped.append(q)
+
+    # Phase 267: filter out internal/test emails first
+    db_excludes = get_db_excludes()
+    filtered_internal = [
+        q for q in deduped
+        if not is_internal_email(q["email"]) and q["email"].lower() not in db_excludes
+    ]
+    deduped = filtered_internal
 
     # Filter out anyone already emailed in last 14 days
     ensure_outreach_log_table()

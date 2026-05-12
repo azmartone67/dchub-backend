@@ -19827,3 +19827,68 @@ def _outreach_log():
     except Exception as e:
         return jsonify({"error": str(e)[:300], "events": []}), 500
 
+
+# Phase 267: manage outreach exclusion list
+@app.route("/api/v1/outreach/exclude-list", methods=["GET", "POST", "DELETE"])
+def _outreach_exclude_list():
+    """View, add, or remove emails from the outreach exclusion list."""
+    import os, psycopg2
+    from flask import jsonify, request
+    DATABASE_URL = os.environ.get("DATABASE_URL")
+    if not DATABASE_URL: return jsonify({"error": "no DATABASE_URL"}), 500
+
+    try:
+        with psycopg2.connect(DATABASE_URL, connect_timeout=8) as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS email_exclude_list (
+                        email TEXT PRIMARY KEY,
+                        reason TEXT,
+                        added_at TIMESTAMPTZ DEFAULT NOW()
+                    );
+                """)
+                conn.commit()
+
+            if request.method == "POST":
+                body = request.get_json(silent=True) or {}
+                email = (body.get("email") or request.args.get("email") or "").strip().lower()
+                reason = body.get("reason") or request.args.get("reason") or "manual"
+                if not email or "@" not in email:
+                    return jsonify({"error": "valid email required"}), 400
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO email_exclude_list (email, reason)
+                        VALUES (%s, %s)
+                        ON CONFLICT (email) DO UPDATE SET reason = EXCLUDED.reason, added_at = NOW();
+                    """, (email, reason[:200]))
+                    conn.commit()
+                return jsonify({"added": email, "reason": reason})
+
+            if request.method == "DELETE":
+                email = (request.args.get("email") or "").strip().lower()
+                if not email: return jsonify({"error": "email required"}), 400
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM email_exclude_list WHERE email = %s;", (email,))
+                    n = cur.rowcount
+                    conn.commit()
+                return jsonify({"removed": email, "rows": n})
+
+            # GET — list all
+            with conn.cursor() as cur:
+                cur.execute("SELECT email, reason, added_at FROM email_exclude_list ORDER BY added_at DESC;")
+                rows = cur.fetchall()
+            return jsonify({
+                "total": len(rows),
+                "excluded": [{
+                    "email": r[0], "reason": r[1],
+                    "added_at": r[2].isoformat() if r[2] else None,
+                } for r in rows],
+                "hardcoded_patterns": [
+                    "@dchub.cloud", "@arcadianinfra.com", "@martoneadvisors.com",
+                    "azmartone@", "nicomartone@", "jonathan.martone@",
+                    "+stripe", "+test", "+dev", "noreply@", "no-reply@", "test@", "demo@",
+                ],
+            })
+    except Exception as e:
+        return jsonify({"error": str(e)[:300]}), 500
+
