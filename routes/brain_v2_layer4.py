@@ -256,7 +256,18 @@ def trigger_learn():
         "NAND AGO timestamp bug", "Save 34% stale text",
         "$249.50 stale text", "$798 stale text",
     }
-    novel = [i for i in issues if i.get("issue") not in KNOWN][:BRAIN_MAX_LEARN]
+    # Phase V (2026-05-12): linked-asset findings (issue label starts with
+    # "asset_") can NEVER be fixed by a body-text find/replace — the actual
+    # fix is "remove the broken <link> tag" or "deploy the missing file."
+    # If we let Claude propose a substitution it would either no-op or
+    # mangle the page. So we skip them entirely. master-heal's GH-issue
+    # fallback path still surfaces these to a human.
+    def _is_asset_issue(i):
+        lbl = (i.get("issue") or "")
+        return lbl.startswith("asset_")
+    novel = [i for i in issues
+             if i.get("issue") not in KNOWN
+             and not _is_asset_issue(i)][:BRAIN_MAX_LEARN]
 
     results = []
     for issue in novel:

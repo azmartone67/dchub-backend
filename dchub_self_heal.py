@@ -1552,6 +1552,150 @@ def fix_qa_crawl_full():
 _last_qa_findings = None
 
 
+# ============================================================================
+# Phase V (2026-05-12): linked-asset probe.
+#
+# Trigger: 2026-05-11 user report — /dc-hub-media had a console error
+# 'Refused to apply style from /css/dchub-nav.css because its MIME type
+# (text/html) is not a supported stylesheet MIME type'. The healer had
+# been running every 5 min for weeks and never caught it, because every
+# detector before this only inspected the HTML body of the page itself.
+# A 404 on a referenced stylesheet returns text/html (CF Pages fallback)
+# but the parent page renders fine, so html_quality_scan + jsonld + the
+# QA crawl all reported PASS.
+#
+# This fix closes that gap: for each HTML_PROBE_URL, parse out
+# <link rel="stylesheet" href="…"> and <script src="…"> URLs, HEAD-probe
+# them, and flag any 4xx/5xx response OR any MIME mismatch (CSS served
+# as text/html, JS served as text/html, etc).
+#
+# Architecturally these findings flow into the same actionable list as
+# html_quality_scan so the master-heal cron workflow surfaces them in
+# its GH-issue fallback path. They CANNOT be auto-fixed by FIX_MAP
+# string substitution (the fix is usually "remove the <link> tag" or
+# "deploy the missing file"), so they intentionally bypass that path.
+# ============================================================================
+
+import re as _asset_re
+_LINK_RE   = _asset_re.compile(r'<link\b[^>]*\brel\s*=\s*["\']?stylesheet["\']?[^>]*\bhref\s*=\s*["\']([^"\']+)["\']', _asset_re.I)
+_LINK_RE2  = _asset_re.compile(r'<link\b[^>]*\bhref\s*=\s*["\']([^"\']+)["\'][^>]*\brel\s*=\s*["\']?stylesheet["\']?', _asset_re.I)
+_SCRIPT_RE = _asset_re.compile(r'<script\b[^>]*\bsrc\s*=\s*["\']([^"\']+)["\']', _asset_re.I)
+
+# Inline-fetch patterns: catch `fetch('/api/...')` so we know which API
+# endpoints a page depends on. Used purely for visibility — we don't
+# auto-probe API endpoints here because they're auth-sensitive and a
+# bare HEAD from the healer would lie about gating behaviour.
+_FETCH_RE = _asset_re.compile(r"""fetch\(\s*['"]([^'"]+)['"]""")
+
+# Expected MIME prefixes per file extension. We compare prefixes, not
+# exact strings, because servers append charset (e.g. "text/css; charset=utf-8").
+_EXPECTED_MIME = {
+    ".css": ("text/css",),
+    ".js":  ("text/javascript", "application/javascript", "application/x-javascript"),
+    ".mjs": ("text/javascript", "application/javascript", "application/x-javascript"),
+    ".json": ("application/json", "text/json"),
+}
+
+_last_asset_findings = {}
+
+
+def _normalize_asset_url(href, page_url):
+    """Resolve href relative to its parent page URL. Returns None for
+       data: / mailto: / cross-origin (we only probe same-origin to avoid
+       leaking the healer's identity to third parties)."""
+    from urllib.parse import urljoin, urlparse
+    if not href: return None
+    if href.startswith(("data:", "mailto:", "tel:", "javascript:", "#")):
+        return None
+    absu = urljoin(page_url, href)
+    p = urlparse(absu)
+    parent = urlparse(page_url)
+    # only same-origin so third-party CDN failures don't spam our findings
+    if p.netloc != parent.netloc:
+        return None
+    return absu
+
+
+def fix_linked_asset_scan():
+    """Probe every linked stylesheet + script on every HTML_PROBE_URL.
+       Flag 4xx/5xx responses AND wrong content-type (e.g. CSS served as
+       text/html, which happens when the file is missing and CF Pages
+       returns its HTML 404 page instead)."""
+    import urllib.request, os
+    HEADERS = {
+        "User-Agent": "Mozilla/5.0 (compatible; DCHubHealer/1.0; +https://dchub.cloud/.well-known/ai-agents.json)",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Encoding": "identity",
+    }
+    findings = {}
+    total_issues = 0
+
+    for page_url in HTML_PROBE_URLS:
+        try:
+            req = urllib.request.Request(page_url, headers=HEADERS)
+            with urllib.request.urlopen(req, timeout=10) as r:
+                body = r.read().decode("utf-8", errors="ignore")
+        except Exception as e:
+            findings[page_url] = {"_fetch_error": str(e)[:120]}
+            continue
+
+        # Extract distinct stylesheet + script URLs
+        sheets  = set(_LINK_RE.findall(body)) | set(_LINK_RE2.findall(body))
+        scripts = set(_SCRIPT_RE.findall(body))
+
+        page_hits = {}
+        for raw_href in (sheets | scripts):
+            absu = _normalize_asset_url(raw_href, page_url)
+            if not absu: continue
+            from urllib.parse import urlparse as _p
+            ext = os.path.splitext(_p(absu).path)[1].lower()
+            try:
+                req = urllib.request.Request(absu, method="HEAD", headers=HEADERS)
+                with urllib.request.urlopen(req, timeout=6) as r:
+                    status = r.status
+                    ctype  = (r.headers.get("Content-Type") or "").lower()
+            except urllib.error.HTTPError as he:
+                status = he.code
+                ctype  = (he.headers.get("Content-Type") or "").lower() if he.headers else ""
+            except Exception as e:
+                page_hits[f"asset_unreachable: {raw_href}"] = 1
+                total_issues += 1
+                continue
+
+            if status >= 400:
+                label = f"asset_{status}: {raw_href}"
+                page_hits[label] = 1
+                total_issues += 1
+                continue
+
+            # MIME check — only if we know what to expect for this extension
+            expected = _EXPECTED_MIME.get(ext)
+            if expected and not any(ctype.startswith(e) for e in expected):
+                # text/html on a .css link is the classic "missing file"
+                # signature on Cloudflare Pages.
+                label = f"asset_mime_mismatch: {raw_href} got {ctype[:40] or '(none)'}"
+                page_hits[label] = 1
+                total_issues += 1
+
+        if page_hits:
+            findings[page_url] = page_hits
+
+    global _last_asset_findings
+    _last_asset_findings = findings
+    if total_issues == 0:
+        return True, f"OK: all linked assets reachable + correct MIME across {len(HTML_PROBE_URLS)} probed pages"
+    return True, f"{total_issues} linked-asset issues across {len(findings)} pages: " + str(findings)[:280]
+
+
+def get_last_asset_findings():
+    """Returns the {page_url: {issue_label: count}} dict from the most
+       recent fix_linked_asset_scan() run. Same shape as
+       get_last_html_findings() so /api/v1/heal/findings can merge them
+       into actionable_frontend_issues uniformly."""
+    return dict(_last_asset_findings)
+
+
+FIXES["linked_asset_scan"]    = fix_linked_asset_scan
 FIXES["sitemap_404_check"]    = fix_sitemap_404_check
 FIXES["internal_links_check"] = fix_internal_links_check
 FIXES["jsonld_coverage_check"] = fix_jsonld_coverage_check
@@ -1568,6 +1712,11 @@ PATTERNS.extend([
     {"name": "sitemap_404_tick",      "match": ["DCPI"], "fix": "sitemap_404_check"},
     {"name": "internal_links_tick",   "match": ["DCPI"], "fix": "internal_links_check"},
     {"name": "jsonld_coverage_tick",  "match": ["DCPI"], "fix": "jsonld_coverage_check"},
+    # Phase V (2026-05-12): linked-asset probe — catches the class of
+    # bug where a stylesheet 404s with a text/html body (CF Pages
+    # fallback) which the user reported on 2026-05-11 had been silently
+    # broken for weeks.
+    {"name": "linked_asset_tick",    "match": ["DCPI"], "fix": "linked_asset_scan"},
 ])
 
 
