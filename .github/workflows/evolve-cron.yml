@@ -1,0 +1,135 @@
+name: evolve cron (Phase I/J/K autonomy)
+
+# Drives the three autonomous loops from phase 287-292:
+#   I — Brain v2 Layer 4 self-learning (hourly)
+#   J — Cap-exceeded outreach           (every 6h)
+#   K — Ingestion audit snapshot         (every 6h, offset by 15 min)
+#
+# All three are READ-ONLY against the live site by default. Phase J defaults
+# to send=true here because the cohort is already filtered + cooldown-gated
+# in routes/outreach_cap_exceeded.py (won't re-send within 14 days, won't
+# email internal domains, dry-run when DCHUB_RESEND_API_KEY isn't set).
+#
+# Required secrets (Settings → Secrets and variables → Actions → New repo secret):
+#   DCHUB_ADMIN_KEY   — same value as the env var on Railway (admin gate on
+#                        /api/v1/brain/learn + /api/v1/outreach/cap-exceeded/run)
+#   DCHUB_API_KEY     — your enterprise key (X-API-Key header for the
+#                        ingestion audit; uses the same key the verifier uses)
+
+on:
+  schedule:
+    # Phase I — hourly Brain v2 learning pass
+    - cron: '0 * * * *'
+    # Phase J + K — every 6h, K offset 15 min after J
+    - cron: '0 */6 * * *'
+    - cron: '15 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      phase:
+        description: 'Which phase to run on demand'
+        required: true
+        type: choice
+        options: [all, brain, outreach, audit]
+        default: all
+
+permissions:
+  contents: read
+
+jobs:
+  brain_learn:
+    # Run on the hourly schedule OR manual "all" / "brain"
+    if: github.event.schedule == '0 * * * *' || (github.event_name == 'workflow_dispatch' && (inputs.phase == 'all' || inputs.phase == 'brain'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Brain v2 learn pass
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY secret not set — skipping Phase I"
+            exit 0
+          fi
+          echo "Triggering Brain v2 Layer 4 learn pass…"
+          response=$(curl -sS -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            --max-time 60 \
+            "https://dchub.cloud/api/v1/brain/learn" || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | head -c 1500
+          echo
+          # Summarize for the Actions log
+          echo "$response" | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          if d.get('ok'):
+              print(f\"::notice::Brain v2 learned {len(d.get('results',[]))} attempts, {d.get('accepted_total','?')} proposed total\")
+          else:
+              print(f\"::warning::Brain v2 returned: {d.get('error','unknown')}\")
+          " || true
+
+  outreach_run:
+    # Run on the 0-min 6h cron OR manual "all" / "outreach"
+    if: github.event.schedule == '0 */6 * * *' || (github.event_name == 'workflow_dispatch' && (inputs.phase == 'all' || inputs.phase == 'outreach'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Cap-exceeded outreach run
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY secret not set — skipping Phase J"
+            exit 0
+          fi
+          echo "Triggering cap-exceeded outreach (send=true)…"
+          response=$(curl -sS -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            --max-time 120 \
+            "https://dchub.cloud/api/v1/outreach/cap-exceeded/run?send=true" || echo '{"mode":"error"}')
+          echo "$response" | head -c 1500
+          echo
+          echo "$response" | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          mode = d.get('mode','?')
+          if mode == 'sent':
+              print(f\"::notice::Outreach sent={d.get('sent',0)} of eligible={d.get('eligible_total',0)}\")
+          elif mode == 'dry_run':
+              print(f\"::notice::Outreach DRY-RUN — would_send={d.get('would_send',0)} (set DCHUB_RESEND_API_KEY in Railway to enable delivery)\")
+          else:
+              print(f\"::warning::Outreach mode={mode}\")
+          " || true
+
+  ingestion_audit:
+    # Run on the 15-min 6h cron OR manual "all" / "audit"
+    if: github.event.schedule == '15 */6 * * *' || (github.event_name == 'workflow_dispatch' && (inputs.phase == 'all' || inputs.phase == 'audit'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ingestion audit snapshot
+        env:
+          DCHUB_API_KEY: ${{ secrets.DCHUB_API_KEY }}
+        run: |
+          if [ -z "$DCHUB_API_KEY" ]; then
+            echo "::warning::DCHUB_API_KEY secret not set — running audit without auth (some endpoints will 401)"
+          fi
+          chmod +x scripts/dchub_ingestion_audit.sh
+          bash scripts/dchub_ingestion_audit.sh --json > /tmp/audit.json
+          # Surface a summary in the Actions log
+          cat /tmp/audit.json | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          s = d.get('summary', {})
+          print(f\"::notice::Ingestion audit — total={s.get('total','?')} ok={s.get('ok','?')} gated={s.get('gated','?')} unreachable={s.get('unreachable','?')}\")
+          if s.get('unreachable', 0) > 0:
+              eps = [e for e in d.get('endpoints', []) if str(e.get('status','')).startswith(('4','5')) and e.get('status') not in (401, 403)]
+              print(f\"::warning::Unreachable endpoints: {[e.get('endpoint') for e in eps[:10]]}\")
+          " || true
+      - name: Upload audit snapshot as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ingestion-audit-${{ github.run_number }}
+          path: /tmp/audit.json
+          retention-days: 30
