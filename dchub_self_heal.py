@@ -1806,6 +1806,9 @@ CONTENT_TYPE_PROBES = [
     {"label": "dcpi_returns_html",    "url": "https://dchub.cloud/dcpi",           "expect": "text/html"},
     {"label": "brain_returns_html",   "url": "https://dchub.cloud/brain",          "expect": "text/html"},
     {"label": "digest_returns_html",  "url": "https://dchub.cloud/digest",         "expect": "text/html"},
+    # Phase AA (2026-05-12): new DCPI ISO intelligence endpoints
+    {"label": "iso_comparison_json",  "url": "https://dchub.cloud/api/v1/dcpi/iso-comparison", "expect": "application/json"},
+    {"label": "iso_pjm_deep_dive",    "url": "https://dchub.cloud/api/v1/dcpi/iso/pjm",        "expect": "application/json"},
 ]
 
 _last_api_contract_findings = {}

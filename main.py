@@ -1096,6 +1096,15 @@ try:
     app.register_blueprint(brain_v2_bp)  # phase 289 — Brain v2 Layer 4 self-learning
     app.register_blueprint(brain_v2_public_bp)  # phase 300 — public /brain transparency page
     app.register_blueprint(outreach_cap_bp)  # phase 290 — cap-exceeded outreach engine
+    # Phase BB (2026-05-12): autonomous marketing engine. Generates daily
+    # press releases from DCPI movement, tracks per-piece engagement,
+    # surfaces the marketing pulse to /dc-hub-media.
+    try:
+        from routes.marketing_engine import marketing_bp
+        app.register_blueprint(marketing_bp)
+    except Exception as _me:
+        import logging
+        logging.getLogger(__name__).warning('marketing_engine wiring failed: %s', _me)
 except Exception as _e:
     import logging
     logging.getLogger(__name__).warning('phase22-24 wiring failed: %s', _e)

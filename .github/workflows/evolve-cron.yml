@@ -23,13 +23,17 @@ on:
     # Phase J + K — every 6h, K offset 15 min after J
     - cron: '0 */6 * * *'
     - cron: '15 */6 * * *'
+    # Phase BB (2026-05-12) — daily 13:00 UTC autonomous press release
+    # (09:00 ET, when buyers + journalists check news). Idempotent —
+    # the /auto-generate endpoint no-ops if today already has output.
+    - cron: '0 13 * * *'
   workflow_dispatch:
     inputs:
       phase:
         description: 'Which phase to run on demand'
         required: true
         type: choice
-        options: [all, brain, outreach, audit]
+        options: [all, brain, outreach, audit, marketing]
         default: all
 
 permissions:
@@ -133,3 +137,42 @@ jobs:
           name: ingestion-audit-${{ github.run_number }}
           path: /tmp/audit.json
           retention-days: 30
+
+  # Phase BB (2026-05-12) — autonomous press release.
+  marketing_auto_press:
+    if: github.event.schedule == '0 13 * * *' || (github.event_name == 'workflow_dispatch' && (inputs.phase == 'all' || inputs.phase == 'marketing'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Trigger autonomous press generation
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY secret not set — skipping marketing run"
+            exit 0
+          fi
+          # POST with admin gate. Endpoint is idempotent per-day so
+          # re-runs after a failed deploy are safe.
+          response=$(curl -sS --max-time 60 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" \
+            "https://dchub.cloud/api/v1/marketing/auto-generate" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | head -c 2000
+          echo
+          # Summarize for Actions log
+          echo "$response" | python3 -c "
+          import json, sys
+          try:
+              d = json.load(sys.stdin)
+          except Exception:
+              print('::warning::Marketing endpoint returned non-JSON')
+              sys.exit(0)
+          if d.get('skipped'):
+              print(f\"::notice::Marketing skipped — {d.get('reason','?')}\")
+          elif d.get('generated'):
+              print(f\"::notice::Auto-press generated · slug={d.get('slug')} · title={d.get('title','')[:80]}\")
+          else:
+              print(f\"::warning::Marketing pass failed — {d.get('error','unknown')}\")
+          " || true
