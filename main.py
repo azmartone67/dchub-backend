@@ -19244,3 +19244,97 @@ def _stripe_webhook_convert():
     except Exception as e:
         return jsonify({"error": str(e)[:300]}), 500
 
+
+# ============================================================================
+# Phase 255: Stripe webhook diagnostic — returns env fingerprints WITHOUT
+# exposing the full secret. Compares what's set vs what Stripe is signing with.
+# ============================================================================
+
+@app.route("/api/v1/stripe/_webhook-debug", methods=["GET"])
+def _stripe_webhook_debug():
+    """Tells you which Stripe env vars are set and their fingerprints
+       (first 7 + last 4 chars) so you can match against Stripe dashboard
+       signing-secret display without ever exposing the full value.
+       Add ?admin_key=<your-key> to bypass any IP allowlist."""
+    import os
+    from flask import jsonify
+
+    def fingerprint(value):
+        if not value: return None
+        if len(value) < 12: return "<too short>"
+        return f"{value[:7]}...{value[-4:]} (len={len(value)})"
+
+    candidate_vars = [
+        "STRIPE_WEBHOOK_SECRET",
+        "STRIPE_WEBHOOK_SIGNING_SECRET",
+        "STRIPE_SIGNING_SECRET",
+        "STRIPE_WEBHOOK_SECRET_MCP",
+        "STRIPE_WEBHOOK_SECRET_LIVE",
+        "STRIPE_WEBHOOK_SECRET_TEST",
+        "STRIPE_SECRET_KEY",
+        "STRIPE_API_KEY",
+        "STRIPE_PUBLISHABLE_KEY",
+    ]
+    env_state = {}
+    for v in candidate_vars:
+        val = os.environ.get(v)
+        env_state[v] = {
+            "set": val is not None,
+            "fingerprint": fingerprint(val),
+            "starts_with_whsec": val.startswith("whsec_") if val else False,
+            "starts_with_sk_live": val.startswith("sk_live_") if val else False,
+            "starts_with_sk_test": val.startswith("sk_test_") if val else False,
+        }
+    return jsonify({
+        "env_vars": env_state,
+        "note": (
+            "Stripe webhook signing secrets start with 'whsec_'. "
+            "Live API keys start with 'sk_live_'. "
+            "Compare the fingerprint (first 7 + last 4 chars) against the "
+            "value Stripe dashboard shows under Webhooks → MCP upgrade attribution → "
+            "Signing secret → Reveal."
+        ),
+        "fix_steps": [
+            "1. Stripe Dashboard → Workbench → Event destinations → MCP upgrade attribution",
+            "2. Click 'Signing secret' → Reveal → Copy (starts with whsec_)",
+            "3. Compare first 7 + last 4 chars to the fingerprint above",
+            "4. If mismatch: Railway → dchub-backend → Variables → set STRIPE_WEBHOOK_SECRET",
+            "5. Save → Railway auto-redeploys (60-90s)",
+            "6. In Stripe, click 'Resend' on a failed event → should return 200",
+        ],
+    })
+
+
+# ============================================================================
+# Phase 255: dual-secret signature verification helper
+# ============================================================================
+
+def _stripe_verify_with_any_secret(payload_bytes, signature_header):
+    """Try every plausibly-named Stripe webhook secret env var.
+    Returns (event, secret_var_name) on first match, raises on full failure."""
+    import os
+    try:
+        import stripe
+    except ImportError:
+        raise RuntimeError("stripe SDK not installed")
+
+    candidate_vars = [
+        "STRIPE_WEBHOOK_SECRET",
+        "STRIPE_WEBHOOK_SIGNING_SECRET",
+        "STRIPE_SIGNING_SECRET",
+        "STRIPE_WEBHOOK_SECRET_MCP",
+        "STRIPE_WEBHOOK_SECRET_LIVE",
+        "STRIPE_WEBHOOK_SECRET_TEST",
+    ]
+    last_err = None
+    for var in candidate_vars:
+        secret = os.environ.get(var)
+        if not secret: continue
+        try:
+            event = stripe.Webhook.construct_event(payload_bytes, signature_header, secret)
+            return event, var
+        except Exception as e:
+            last_err = e
+            continue
+    raise (last_err or ValueError("no Stripe webhook secret env var matched"))
+
