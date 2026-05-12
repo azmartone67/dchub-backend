@@ -58,8 +58,33 @@ PRICING_URL = 'https://dchub.cloud/pricing'
 SIGNUP_URL = 'https://dchub.cloud/signup'
 EMAIL_CAPTURE_URL = 'https://dchub.cloud/api/v1/dev-signup-form'
 
+# Phase 276: if a Stripe Payment Link is configured, surface it as the
+# "one-click upgrade" path. AI agents pass this URL to their human, who
+# clicks once and lands on Stripe checkout (no /pricing → choose plan →
+# click upgrade → enter card; that's 4 steps). Empty = fall back to /pricing.
+STRIPE_PRO_LINK = os.environ.get('DCHUB_STRIPE_PRO_LINK', '').strip()
+
 DISCOUNT_CODE_TIER2 = 'TRYDCHUB50'   # 50% off first month
 DISCOUNT_CODE_TIER3 = 'LASTCALL30'   # 30% off, urgency framing
+
+
+def _one_click_upgrade_line(tool_name=None, call_count=0, current_tier='free'):
+    """Phase 276: emit a "one-click upgrade" markdown line if a Stripe
+    Payment Link is configured. Returns '' if not configured so the
+    paywall messages degrade gracefully to the existing /pricing CTA.
+
+    The Stripe link is unmodified — Stripe Payment Links carry their own
+    success/cancel URLs, so we don't append attribution params (they'd
+    silently break checkout). For attribution, the Stripe webhook
+    /stripe/webhook-convert already records conversions back into
+    mcp_upgrade_signals (phase 257).
+    """
+    if not STRIPE_PRO_LINK:
+        return ''
+    return (
+        f"⚡ **One-click upgrade ($49/mo, no /pricing detour):** "
+        f"[{STRIPE_PRO_LINK}]({STRIPE_PRO_LINK})\n\n"
+    )
 
 
 def get_user_call_count(user_id, tool_name, days=7):
@@ -117,6 +142,10 @@ def _build_human_message(tool_name, call_count, current_tier, partial_data_summa
     pricing_url = _attribution_url(PRICING_URL, tool_name, call_count, current_tier)
     signup_url = _attribution_url(SIGNUP_URL, tool_name, call_count, current_tier)
 
+    # Phase 276: prepend a one-click Stripe upgrade line if configured.
+    # Empty string when DCHUB_STRIPE_PRO_LINK is unset — degrades cleanly.
+    quick = _one_click_upgrade_line(tool_name, call_count, current_tier)
+
     # Tier 3 — hard paywall with urgency (calls 6+)
     if call_count >= 6:
         discount_url = _attribution_url(
@@ -126,6 +155,7 @@ def _build_human_message(tool_name, call_count, current_tier, partial_data_summa
         return (
             f"🔒 **Free tier limit reached.** You've used `{tool_name}` {call_count} times "
             f"this week — your free preview is exhausted.\n\n"
+            f"{quick}"
             f"**[Upgrade to Pro now → {discount_url}]({discount_url})** "
             f"Apply code `{DISCOUNT_CODE_TIER3}` for 30% off your first month.\n\n"
             f"_$49/mo unlocks {pretty_tool} + all 7 ISOs grid intel + fiber + queue analytics._"
@@ -140,6 +170,7 @@ def _build_human_message(tool_name, call_count, current_tier, partial_data_summa
         email_url = _attribution_url(EMAIL_CAPTURE_URL, tool_name, call_count, current_tier)
         return (
             f"🎯 **You've hit `{tool_name}` {call_count} times — looks like you need this.**\n\n"
+            f"{quick}"
             f"**Get 50% off your first month** with code `{DISCOUNT_CODE_TIER2}`: "
             f"[Upgrade to Pro →]({discount_url})\n\n"
             f"Not ready? **[Get a 7-day free trial via email →]({email_url})** — "
@@ -151,6 +182,7 @@ def _build_human_message(tool_name, call_count, current_tier, partial_data_summa
     return (
         f"🔓 **This is a SAMPLE PREVIEW — not your actual query result. The free tier shows one pre-canned record.** Get full `{tool_name}` data + 6 more ISOs grid intel "
         f"+ fiber routes for **$49/mo**.\n\n"
+        f"{quick}"
         f"**[Start 7-day free trial →]({pricing_url})** — no credit card required.\n\n"
         f"_Free tier shows partial data. Upgrade for live, complete results._"
     )
@@ -200,6 +232,11 @@ def build_paywall_response(
             else 'preview'
         ),
     }
+    # Phase 276: surface the Stripe one-click URL (if configured) as a
+    # discrete structured field so AI clients can offer it as a button/CTA
+    # without having to parse it out of the markdown human_message.
+    if STRIPE_PRO_LINK:
+        base['one_click_upgrade_url'] = STRIPE_PRO_LINK
     if trial_preview_data is not None:
         base['trial_preview'] = trial_preview_data
     else:
