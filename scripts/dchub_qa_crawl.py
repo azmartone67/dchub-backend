@@ -258,9 +258,22 @@ def collect_internal_links(r: dict) -> set[str]:
     if not is_html(r) or r["status"] != 200:
         return set()
     body = r["body"]
+    # Phase 283: strip <script>/<style> first so JS template literals like
+    # `href="/${a.url}"` and `href="/markets/' + m.slug + '"` don't get
+    # extracted as real hrefs (was generating 5+ false-positive broken-link
+    # findings per page in the QA crawler).
+    scan_body = _SCRIPT_STYLE_RE.sub("", body)
     found = set()
-    for href in _LINK_RE.findall(body):
+    for href in _LINK_RE.findall(scan_body):
         if href.startswith("#") or href.startswith("mailto:") or href.startswith("javascript:"):
+            continue
+        # Phase 283: reject template-literal / concatenation noise
+        # Real paths don't contain $, {, +, ', or whitespace.
+        if any(ch in href for ch in ("${", "{{", "+", "'", "\"")) or " " in href:
+            continue
+        # /cdn-cgi/* is Cloudflare's edge service path (email obfuscation
+        # etc.) — not a real internal route, skip.
+        if href.startswith("/cdn-cgi/"):
             continue
         # resolve relative
         absu = urllib.parse.urljoin(r["url"], href)

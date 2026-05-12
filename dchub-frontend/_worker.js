@@ -1365,6 +1365,7 @@ export default {
         '/enterprise',
         '/health/deep',
         '/.well-known/ai-agents.json',
+        '/digest',  // phase 283: missed in phase 282 — Flask 302 redirect to /news (phase 280)
       ]);
       if (PHASE_282_RAILWAY_PATHS.has(pathname)) {
         try {
