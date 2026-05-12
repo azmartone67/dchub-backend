@@ -19478,3 +19478,82 @@ def _mcp_capture_email():
     except Exception as e:
         return jsonify({"error": str(e)[:300]}), 500
 
+
+# Phase 263: customer lookup — find a user across api_keys, users, mcp_upgrade_signals
+@app.route("/api/v1/admin/customer-lookup", methods=["GET"])
+def _customer_lookup():
+    """Look up a customer by email across all relevant tables.
+       Returns: api_keys + users + mcp_upgrade_signals data."""
+    import os, psycopg2
+    from flask import jsonify, request
+    DATABASE_URL = os.environ.get("DATABASE_URL")
+    if not DATABASE_URL: return jsonify({"error": "no DATABASE_URL"}), 500
+    email = (request.args.get("email") or "").strip().lower()
+    if not email: return jsonify({"error": "missing ?email="}), 400
+
+    out = {"email": email}
+    try:
+        with psycopg2.connect(DATABASE_URL, connect_timeout=8) as conn:
+            # 1. users table
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT id, email, name, company, role, plan, api_calls_today,
+                           api_calls_total, created_at, last_login
+                    FROM users WHERE LOWER(email) = %s LIMIT 1;
+                """, (email,))
+                row = cur.fetchone()
+                if row:
+                    out["users"] = {
+                        "id": row[0], "email": row[1], "name": row[2],
+                        "company": row[3], "role": row[4], "plan": row[5],
+                        "api_calls_today": row[6], "api_calls_total": row[7],
+                        "created_at": row[8].isoformat() if row[8] else None,
+                        "last_login": row[9].isoformat() if row[9] else None,
+                    }
+                else:
+                    out["users"] = None
+
+            # 2. api_keys table — join by user_id
+            if out.get("users"):
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT id, key_prefix, name, plan, rate_limit_tier,
+                               is_active_bool, last_used_at, usage_count,
+                               calls_today, calls_total, created_at, trial_expires_at
+                        FROM api_keys WHERE user_id::text = %s;
+                    """, (str(out["users"]["id"]),))
+                    keys = []
+                    for r in cur.fetchall():
+                        keys.append({
+                            "id": r[0], "key_prefix": r[1], "name": r[2],
+                            "plan": r[3], "rate_limit_tier": r[4],
+                            "is_active": r[5], "last_used_at": r[6].isoformat() if r[6] else None,
+                            "usage_count": r[7], "calls_today": r[8],
+                            "calls_total": r[9],
+                            "created_at": r[10].isoformat() if r[10] else None,
+                            "trial_expires_at": r[11].isoformat() if r[11] else None,
+                        })
+                    out["api_keys"] = keys
+
+            # 3. mcp_upgrade_signals — any signals from this email?
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT COUNT(*),
+                           COUNT(*) FILTER (WHERE converted = true),
+                           COUNT(*) FILTER (WHERE outreach_sent = true),
+                           array_agg(DISTINCT tool_requested ORDER BY tool_requested) AS tools,
+                           MAX(created_at) AS most_recent
+                    FROM mcp_upgrade_signals WHERE user_email = %s;
+                """, (email,))
+                r = cur.fetchone()
+                out["mcp_signals"] = {
+                    "total": r[0],
+                    "converted": r[1],
+                    "outreached": r[2],
+                    "tools": list(r[3]) if r[3] else [],
+                    "most_recent": r[4].isoformat() if r[4] else None,
+                }
+        return jsonify(out)
+    except Exception as e:
+        return jsonify({"error": str(e)[:300]}), 500
+
