@@ -719,6 +719,15 @@ def api_leaderboard():
 
 # phase 267: OEmbed discovery — journalists / Substack / Medium can paste
 # https://dchub.cloud/dcpi and get a live ticker widget back.
+# phase 270 hardening: validate URL host so this can't be used as an open
+# OEmbed redirector against other domains, and whitelist slug charset so
+# user-controllable input can't break out of the iframe attributes.
+import re as _oembed_re
+import urllib.parse as _oembed_url
+_OEMBED_ALLOWED_HOSTS = {"dchub.cloud", "www.dchub.cloud"}
+_OEMBED_SLUG_RE = _oembed_re.compile(r"^[a-z0-9][a-z0-9_-]{0,80}$")
+
+
 @dcpi_bp.route("/api/v1/dcpi/oembed", methods=["GET"])
 def api_oembed():
     """OEmbed 1.0 provider for the DCPI page + per-market pages.
@@ -731,10 +740,25 @@ def api_oembed():
     if fmt not in ("json",):
         return jsonify(error="only format=json supported"), 501
 
+    # phase 270: validate the URL points at us before resolving anything.
+    # Without this check the endpoint would happily build OEmbed payloads for
+    # arbitrary domains, which would make us an open redirector for embed
+    # crawlers.
+    try:
+        parsed = _oembed_url.urlparse(target)
+    except Exception:
+        parsed = None
+    if not parsed or parsed.scheme not in ("http", "https") or parsed.netloc.lower() not in _OEMBED_ALLOWED_HOSTS:
+        return jsonify(error="url must point to dchub.cloud"), 400
+
     # Parse target — accept /dcpi or /dcpi/<slug>
     slug = None
-    if "/dcpi/" in target:
-        slug = target.rsplit("/dcpi/", 1)[-1].split("?")[0].split("#")[0].strip("/")
+    path = parsed.path or ""
+    if "/dcpi/" in path:
+        slug_raw = path.rsplit("/dcpi/", 1)[-1].strip("/")
+        # whitelist: only lowercase alnum/_/- slugs of reasonable length
+        if _OEMBED_SLUG_RE.match(slug_raw):
+            slug = slug_raw
     is_market = bool(slug and slug not in ("ticker.html", "press"))
 
     if is_market:

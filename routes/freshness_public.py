@@ -23,7 +23,13 @@ Read-only. No writes. No auth. Heavy CDN caching is intentional (60s).
 from __future__ import annotations
 import os
 from datetime import datetime, timezone, timedelta
+from html import escape as _h
 from flask import Blueprint, jsonify, Response
+
+# phase 270 hardening: only these status values map to a CSS class; anything
+# else gets rendered as "unknown". Defense-in-depth even though the DB writers
+# today only produce these three.
+_STATUS_WHITELIST = {"fresh", "stale", "unknown"}
 
 freshness_public_bp = Blueprint("freshness_public", __name__)
 
@@ -254,16 +260,20 @@ def freshness_page():
 
     fresh_class = "green" if summary["stale"] == 0 else ("orange" if summary["fresh"] > summary["stale"] else "red")
 
+    # phase 270 hardening: HTML-escape every field that comes from the DB.
+    # `status` is whitelisted to known values so it can't break out of the
+    # CSS class attribute; everything else uses html.escape().
     rows = []
     for s in surfaces[:80]:
         age = "—" if s["age_hours"] is None else (f"{int(s['age_hours']*60)}m" if s["age_hours"] < 1 else f"{int(s['age_hours'])}h")
         info = (s["info"] or "")[:90]
+        status = s["status"] if s["status"] in _STATUS_WHITELIST else "unknown"
         rows.append(
-            f'<tr><td class="mono">{s["surface"]}</td>'
-            f'<td><span class="status {s["status"]}">{s["status"]}</span></td>'
-            f'<td class="mono">{age}</td>'
-            f'<td class="mono">{s["stale_after_hours"]}h</td>'
-            f'<td>{info}</td></tr>'
+            f'<tr><td class="mono">{_h(str(s["surface"]))}</td>'
+            f'<td><span class="status {status}">{status}</span></td>'
+            f'<td class="mono">{_h(age)}</td>'
+            f'<td class="mono">{int(s["stale_after_hours"] or 24)}h</td>'
+            f'<td>{_h(info)}</td></tr>'
         )
     html = (_FRESHNESS_HTML
             .replace("{{refreshed_24h}}", str(summary["refreshed_last_24h"]))
