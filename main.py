@@ -5622,9 +5622,19 @@ def add_security_headers(response):
     response.headers['X-XSS-Protection'] = '1; mode=block'
     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
 
-    # Smart caching based on content type
+    # Smart caching based on content type.
+    # Phase S follow-up (2026-05-12): NEVER set a long cache TTL on an
+    # error response. Before this guard, a transient Railway 404 (e.g.
+    # blueprint registered after the request) would get
+    # max-age=300/3600 and stick in the Cloudflare edge for an hour —
+    # which is what caused the /digest 404 to outlive its underlying
+    # cause (cf-cache-status: HIT, age=1771 in live probe 2026-05-12).
+    # Error responses must be force-revalidated so the fix lands the
+    # moment Railway recovers.
     path = request.path.lower()
-    if path.startswith('/static/js/') or path.startswith('/static/css/'):
+    if response.status_code >= 400:
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    elif path.startswith('/static/js/') or path.startswith('/static/css/'):
         response.headers['Cache-Control'] = 'public, max-age=86400, stale-while-revalidate=604800'
     elif path.endswith(('.png', '.jpg', '.jpeg', '.gif', '.ico', '.webp', '.svg')):
         response.headers['Cache-Control'] = 'public, max-age=604800, immutable'
