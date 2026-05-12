@@ -719,6 +719,14 @@ def api_leaderboard():
         "methodology_url": "https://dchub.cloud/dcpi#methodology",
         "citation": "DC Hub Data Center Power Index. https://dchub.cloud/dcpi",
     }
+    # Phase 299 (fix PR #21 regression): restore the response wrapper that
+    # was accidentally dropped. Without these lines the Flask handler returns
+    # None → Flask falls back to a generic HTML error page → CDN caches it
+    # → leaderboard endpoint broken for every consumer.
+    resp = jsonify(body)
+    resp.headers["Cache-Control"] = "public, max-age=300, must-revalidate"
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    return resp, 200
 
 
 # Phase 297 (Phase P): deterministic reasoning chain. Templates the WHY
