@@ -254,8 +254,15 @@ def aggregate_announcements(limit_per_source=20):
                         "url": row[1] or "",
                         "summary": (row[2] or "")[:500],
                         "source": row[3] or "",
-                        "published_at": row[4].isoformat() if hasattr(row[4], "isoformat") else str(row[4]),
-                        "ts": row[4].isoformat() if hasattr(row[4], "isoformat") else str(row[4]),
+                        # Phase S follow-up (2026-05-12): null timestamps were being
+                        # str()-formatted as the literal string "None", which then sorted
+                        # ALPHABETICALLY ABOVE every real ISO timestamp under reverse=True
+                        # ('N' > '2' in codepoint order). The feed was surfacing items with
+                        # null published_date at the TOP, making the site look like it was
+                        # serving 61-day-old press releases. Store None as None; the sort
+                        # below coerces None → '' which sorts to the BOTTOM under desc.
+                        "published_at": (row[4].isoformat() if hasattr(row[4], "isoformat") else None),
+                        "ts":           (row[4].isoformat() if hasattr(row[4], "isoformat") else None),
                     })
         except Exception as e:
             # Don't let one bad table kill the feed — but DO record the error
@@ -270,7 +277,10 @@ def aggregate_announcements(limit_per_source=20):
 
     conn.close()
     # Sort all by ts descending
-    items.sort(key=lambda x: x.get("ts",""), reverse=True)
+    # Phase S follow-up (2026-05-12): coerce None ts → '' for sort. With
+    # reverse=True descending, '' sorts to the END so undated items don't
+    # masquerade as freshest content.
+    items.sort(key=lambda x: x.get("ts") or "", reverse=True)
     return items
 
 
@@ -480,8 +490,15 @@ def aggregate_announcements_v2(limit_per_source=20):
                         "url": row[1] or "",
                         "summary": (row[2] or "")[:500],
                         "source": row[3] or "",
-                        "published_at": row[4].isoformat() if hasattr(row[4], "isoformat") else str(row[4]),
-                        "ts": row[4].isoformat() if hasattr(row[4], "isoformat") else str(row[4]),
+                        # Phase S follow-up (2026-05-12): null timestamps were being
+                        # str()-formatted as the literal string "None", which then sorted
+                        # ALPHABETICALLY ABOVE every real ISO timestamp under reverse=True
+                        # ('N' > '2' in codepoint order). The feed was surfacing items with
+                        # null published_date at the TOP, making the site look like it was
+                        # serving 61-day-old press releases. Store None as None; the sort
+                        # below coerces None → '' which sorts to the BOTTOM under desc.
+                        "published_at": (row[4].isoformat() if hasattr(row[4], "isoformat") else None),
+                        "ts":           (row[4].isoformat() if hasattr(row[4], "isoformat") else None),
                     })
         except Exception as e:
             conn.rollback()
@@ -665,8 +682,15 @@ def aggregate_announcements_v3(limit_per_source=20):
                         "url": row[1] or "",
                         "summary": (row[2] or "")[:500],
                         "source": row[3] or "",
-                        "published_at": row[4].isoformat() if hasattr(row[4], "isoformat") else str(row[4]),
-                        "ts": row[4].isoformat() if hasattr(row[4], "isoformat") else str(row[4]),
+                        # Phase S follow-up (2026-05-12): null timestamps were being
+                        # str()-formatted as the literal string "None", which then sorted
+                        # ALPHABETICALLY ABOVE every real ISO timestamp under reverse=True
+                        # ('N' > '2' in codepoint order). The feed was surfacing items with
+                        # null published_date at the TOP, making the site look like it was
+                        # serving 61-day-old press releases. Store None as None; the sort
+                        # below coerces None → '' which sorts to the BOTTOM under desc.
+                        "published_at": (row[4].isoformat() if hasattr(row[4], "isoformat") else None),
+                        "ts":           (row[4].isoformat() if hasattr(row[4], "isoformat") else None),
                     })
         except Exception as e:
             conn.rollback()

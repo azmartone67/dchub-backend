@@ -73,12 +73,40 @@ BRAIN_MODEL = os.environ.get("DCHUB_BRAIN_MODEL", "claude-sonnet-4-5")
 BRAIN_MAX_LEARN = int(os.environ.get("DCHUB_BRAIN_MAX_LEARN", "3"))
 ADMIN_KEY = os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY")
 
-# In-memory state. Production should back this with a small table, but
-# for the initial framework an in-memory ring buffer is enough — the
-# master-heal cron polls every 5 min and is the only consumer.
-_proposed_fixes: list[dict] = []   # last N validated suggestions
-_learning_log: list[dict] = []     # last N learning attempts (all outcomes)
+# Phase S (2026-05-12): in-memory state is now a FALLBACK only. The
+# durable copy lives in Postgres via routes.brain_v2_store, which:
+#   - Survives Railway deploys (the old in-memory state reset every push,
+#     which meant the 2-cycle approval gate could never trigger more
+#     than once per deploy window).
+#   - Is shared across gunicorn workers (the old per-worker state meant
+#     proposals from worker A were invisible to worker B; identical
+#     proposals just re-incremented two separate counters that never
+#     reached the approval threshold).
+#   - Tracks issue persistence so the brain can prioritize the bugs
+#     master-heal's FIX_MAP couldn't auto-fix (the "learn from errors
+#     it misses" worklist).
+#
+# When DATABASE_URL is unset (e.g. local dev), every store call returns
+# a fail-soft sentinel and the in-memory lists keep the old behaviour
+# so the brain never crashes the heal cycle.
+_proposed_fixes: list[dict] = []   # in-memory fallback only
+_learning_log: list[dict] = []     # in-memory fallback only
 _MAX_BUFFER = 50
+
+try:
+    from routes import brain_v2_store as _store
+    _STORE_OK = _store.init_schema()
+    if _STORE_OK:
+        print("[brain_v2_layer4] Phase S: durable state ENABLED via brain_v2_store",
+              flush=True)
+    else:
+        print("[brain_v2_layer4] Phase S: store init failed, using in-memory fallback",
+              flush=True)
+except Exception as _store_err:
+    _store = None
+    _STORE_OK = False
+    print(f"[brain_v2_layer4] Phase S: store import failed ({_store_err}), "
+          "using in-memory fallback", flush=True)
 
 
 def _require_admin(fn):
@@ -93,7 +121,12 @@ def _require_admin(fn):
 
 
 def _log(entry: dict) -> None:
+    """Append to learning log. Writes durable copy via store when available;
+       always writes in-memory copy for back-compat with existing tests."""
     entry["t"] = datetime.now(timezone.utc).isoformat()
+    if _STORE_OK:
+        try: _store.log_event(entry)
+        except Exception: pass
     _learning_log.append(entry)
     if len(_learning_log) > _MAX_BUFFER:
         _learning_log.pop(0)
@@ -265,9 +298,51 @@ def trigger_learn():
     def _is_asset_issue(i):
         lbl = (i.get("issue") or "")
         return lbl.startswith("asset_")
-    novel = [i for i in issues
-             if i.get("issue") not in KNOWN
-             and not _is_asset_issue(i)][:BRAIN_MAX_LEARN]
+
+    # Phase S (2026-05-12): "learn from errors it misses" — track every
+    # issue's persistence in Postgres, then prioritize the most-stuck
+    # ones (high seen_count, no successful proposal yet) for this learn
+    # pass. Was: just take the first N novel issues. Now: pick from a
+    # worklist where the brain's repeated failures bubble up.
+    for i in issues:
+        if _is_asset_issue(i) or i.get("issue") in KNOWN:
+            continue
+        if _STORE_OK:
+            try:
+                _store.bump_persistence(
+                    issue_label=i.get("issue") or "",
+                    url=i.get("url") or "",
+                )
+            except Exception:
+                pass
+
+    # Build the candidate set: novel issues from the current findings...
+    novel_candidates = [i for i in issues
+                        if i.get("issue") not in KNOWN
+                        and not _is_asset_issue(i)]
+
+    # ...prioritized by persistence (most-stuck first). When the store is
+    # unavailable we fall back to "first N in feed order" which matches
+    # the pre-Phase-S behaviour.
+    if _STORE_OK:
+        try:
+            stuck = _store.most_persistent_unfixed(min_count=2,
+                                                    limit=BRAIN_MAX_LEARN * 3)
+            stuck_keys = {(s.get("issue_label"), s.get("url") or "")
+                          for s in stuck}
+            def _stuck_score(i):
+                key = (i.get("issue"), i.get("url") or "")
+                if key not in stuck_keys: return (0, 0)
+                # match seen_count back from the worklist row
+                for s in stuck:
+                    if (s.get("issue_label"), s.get("url") or "") == key:
+                        return (1, int(s.get("seen_count", 0)))
+                return (1, 0)
+            novel_candidates.sort(key=_stuck_score, reverse=True)
+        except Exception as e:
+            print(f"[brain_v2_layer4] persistence sort failed: {e}", flush=True)
+
+    novel = novel_candidates[:BRAIN_MAX_LEARN]
 
     results = []
     for issue in novel:
@@ -308,44 +383,87 @@ def trigger_learn():
         # consumes approved entries — single-shot Claude hallucinations stay
         # in the queue but never get auto-applied. Real recurring bugs cross
         # the threshold within 2 hourly cycles and become eligible.
-        existing = next((e for e in _proposed_fixes
-                         if e.get("find") == find and e.get("replace") == replace), None)
-        if existing:
-            existing["approval_count"] = existing.get("approval_count", 1) + 1
-            existing["last_seen_at"] = datetime.now(timezone.utc).isoformat()
-            existing["approved"] = existing["approval_count"] >= 2
-            _log({"issue": issue.get("issue"), "outcome": "approval_count_incremented",
-                  "count": existing["approval_count"], "approved": existing["approved"]})
-            results.append({"issue": issue.get("issue"), "outcome": "reproposed",
-                            "approval_count": existing["approval_count"],
-                            "approved": existing["approved"]})
-        else:
-            entry = {
-                "issue_label": issue.get("issue"),
-                "find": find,
-                "replace": replace,
-                "rationale": rationale,
-                "source_url": issue.get("url"),
-                "proposed_at": datetime.now(timezone.utc).isoformat(),
-                "last_seen_at": datetime.now(timezone.utc).isoformat(),
-                "model": BRAIN_MODEL,
-                "approval_count": 1,        # phase 300
-                "approved": False,          # phase 300 — flips at count >= 2
-            }
-            _proposed_fixes.append(entry)
-            if len(_proposed_fixes) > _MAX_BUFFER:
-                _proposed_fixes.pop(0)
-            _log({"issue": issue.get("issue"), "outcome": "proposed", "find": find[:80]})
-            results.append({"issue": issue.get("issue"), "outcome": "proposed",
-                            "find": find[:60], "rationale": rationale[:120],
-                            "approval_count": 1, "approved": False})
+        #
+        # Phase S (2026-05-12): the (find, replace) lookup now goes against
+        # the Postgres store via upsert_proposal(), which is atomic and
+        # shared across all gunicorn workers. The in-memory list mirror is
+        # kept for back-compat with anything that inspects _proposed_fixes
+        # directly.
+        proposal_entry = {
+            "issue_label": issue.get("issue"),
+            "find": find,
+            "replace": replace,
+            "rationale": rationale,
+            "source_url": issue.get("url"),
+            "model": BRAIN_MODEL,
+        }
+        stored_row = None
+        if _STORE_OK:
+            try:
+                stored_row = _store.upsert_proposal(proposal_entry)
+            except Exception as e:
+                print(f"[brain_v2_layer4] upsert_proposal failed: {e}", flush=True)
+                stored_row = None
 
+        if stored_row:
+            count = int(stored_row.get("approval_count", 1))
+            approved = bool(stored_row.get("approved"))
+            outcome = "approval_count_incremented" if count > 1 else "proposed"
+            _log({"issue": issue.get("issue"), "outcome": outcome,
+                  "find": find[:80], "count": count, "approved": approved})
+            if _STORE_OK:
+                try:
+                    _store.set_persistence_outcome(
+                        issue.get("issue") or "",
+                        issue.get("url") or "",
+                        outcome)
+                except Exception:
+                    pass
+            results.append({"issue": issue.get("issue"), "outcome": outcome,
+                            "find": find[:60], "rationale": rationale[:120],
+                            "approval_count": count, "approved": approved})
+        else:
+            # Store unavailable — use the legacy in-memory path so the
+            # heal cycle still works on local dev or during a transient
+            # DB outage.
+            existing = next((e for e in _proposed_fixes
+                             if e.get("find") == find
+                             and e.get("replace") == replace), None)
+            if existing:
+                existing["approval_count"] = existing.get("approval_count", 1) + 1
+                existing["last_seen_at"] = datetime.now(timezone.utc).isoformat()
+                existing["approved"] = existing["approval_count"] >= 2
+                _log({"issue": issue.get("issue"),
+                      "outcome": "approval_count_incremented",
+                      "count": existing["approval_count"],
+                      "approved": existing["approved"]})
+                results.append({"issue": issue.get("issue"),
+                                "outcome": "reproposed",
+                                "approval_count": existing["approval_count"],
+                                "approved": existing["approved"]})
+            else:
+                entry = {**proposal_entry,
+                         "proposed_at": datetime.now(timezone.utc).isoformat(),
+                         "last_seen_at": datetime.now(timezone.utc).isoformat(),
+                         "approval_count": 1, "approved": False}
+                _proposed_fixes.append(entry)
+                if len(_proposed_fixes) > _MAX_BUFFER:
+                    _proposed_fixes.pop(0)
+                _log({"issue": issue.get("issue"), "outcome": "proposed",
+                      "find": find[:80]})
+                results.append({"issue": issue.get("issue"), "outcome": "proposed",
+                                "find": find[:60], "rationale": rationale[:120],
+                                "approval_count": 1, "approved": False})
+
+    accepted_total = (_store.count_proposals() if _STORE_OK
+                      else len(_proposed_fixes))
     return jsonify(
         ok=True,
         cycle_at=datetime.now(timezone.utc).isoformat(),
         novel_count=len(novel),
         results=results,
-        accepted_total=len(_proposed_fixes),
+        accepted_total=accepted_total,
+        store_backed=_STORE_OK,
     ), 200
 
 
@@ -358,8 +476,26 @@ def proposed_fixes():
     this filter to avoid auto-applying single-shot Claude hallucinations.
     Without the filter, returns everything so the QA dashboard can show
     both pending + approved.
+
+    Phase S (2026-05-12): read from Postgres store when available so the
+    workflow sees proposals from every gunicorn worker, not just the one
+    that happens to handle the poll. In-memory fallback covers local dev.
     """
     approved_only = request.args.get("approved", "").lower() in ("true", "1", "yes")
+    if _STORE_OK:
+        try:
+            proposals = _store.list_proposals(approved_only=approved_only, limit=200)
+            return jsonify(
+                as_of=datetime.now(timezone.utc).isoformat(),
+                count=len(proposals),
+                filter={"approved_only": approved_only},
+                store_backed=True,
+                proposals=proposals,
+            ), 200
+        except Exception as e:
+            print(f"[brain_v2_layer4] proposed-fixes store read failed: {e}",
+                  flush=True)
+            # fall through to in-memory
     proposals = _proposed_fixes
     if approved_only:
         proposals = [p for p in proposals if p.get("approved")]
@@ -367,6 +503,7 @@ def proposed_fixes():
         as_of=datetime.now(timezone.utc).isoformat(),
         count=len(proposals),
         filter={"approved_only": approved_only},
+        store_backed=False,
         proposals=list(reversed(proposals)),  # newest first
     ), 200
 
@@ -375,24 +512,77 @@ def proposed_fixes():
 @_require_admin
 def learning_log():
     """Recent learning attempts + outcomes (for the QA dashboard)."""
+    if _STORE_OK:
+        try:
+            log = _store.list_log(limit=200)
+            return jsonify(
+                as_of=datetime.now(timezone.utc).isoformat(),
+                count=len(log),
+                store_backed=True,
+                log=log,
+            ), 200
+        except Exception:
+            pass
     return jsonify(
         as_of=datetime.now(timezone.utc).isoformat(),
         count=len(_learning_log),
+        store_backed=False,
         log=list(reversed(_learning_log)),
+    ), 200
+
+
+@brain_v2_bp.get("/api/v1/brain/persistence")
+def persistence_worklist():
+    """Phase S (2026-05-12): public view of the brain's stuck-issue worklist.
+
+    Returns the issues the healer has surfaced repeatedly that the brain
+    has NOT yet produced a successful proposal for. The /brain dashboard
+    can show this so the team can see exactly what the system is stuck on.
+    """
+    if not _STORE_OK:
+        return jsonify(
+            as_of=datetime.now(timezone.utc).isoformat(),
+            store_backed=False,
+            count=0,
+            items=[],
+            hint="DATABASE_URL not set — persistence tracking unavailable",
+        ), 200
+    try:
+        min_count = int(request.args.get("min_count", "2"))
+    except ValueError:
+        min_count = 2
+    items = _store.most_persistent_unfixed(min_count=min_count, limit=50)
+    return jsonify(
+        as_of=datetime.now(timezone.utc).isoformat(),
+        store_backed=True,
+        min_count=min_count,
+        count=len(items),
+        items=items,
     ), 200
 
 
 @brain_v2_bp.get("/api/v1/brain/status")
 def brain_status():
     """Public health check — proves the layer is loaded + reports activation."""
+    if _STORE_OK:
+        try:
+            pf_count = _store.count_proposals()
+            log_count = _store.count_log()
+        except Exception:
+            pf_count = len(_proposed_fixes)
+            log_count = len(_learning_log)
+    else:
+        pf_count = len(_proposed_fixes)
+        log_count = len(_learning_log)
     return jsonify(
         layer=4,
         loaded=True,
         active=bool(ANTHROPIC_API_KEY),
         model=BRAIN_MODEL,
         max_learn_per_cycle=BRAIN_MAX_LEARN,
-        proposed_fixes_count=len(_proposed_fixes),
-        learning_log_count=len(_learning_log),
+        store_backed=_STORE_OK,
+        proposed_fixes_count=pf_count,
+        learning_log_count=log_count,
         hint=(None if ANTHROPIC_API_KEY
               else "Set ANTHROPIC_API_KEY in Railway env to activate"),
     ), 200

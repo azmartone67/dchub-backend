@@ -25,22 +25,43 @@ brain_v2_public_bp = Blueprint("brain_v2_public", __name__)
 
 def _get_state():
     """Pull current Brain v2 state from the layer-4 module. Defensive — if
-    the module isn't loaded for any reason, returns sensible defaults."""
+    the module isn't loaded for any reason, returns sensible defaults.
+
+    Phase S (2026-05-12): prefer the Postgres store when available so the
+    /brain page shows the full cross-worker, cross-deploy history instead
+    of just the per-worker in-memory snapshot the layer4 module happens
+    to hold. Falls back to in-memory if the store is offline."""
     try:
         from routes.brain_v2_layer4 import (
             _proposed_fixes, _learning_log,
             ANTHROPIC_API_KEY, BRAIN_MODEL,
+            _STORE_OK,
         )
-        return {
-            "loaded": True,
-            "active": bool(ANTHROPIC_API_KEY),
-            "model": BRAIN_MODEL,
-            "proposed": list(_proposed_fixes),
-            "log": list(_learning_log),
-        }
     except Exception as e:
         return {"loaded": False, "active": False, "model": "?",
-                "proposed": [], "log": [], "error": str(e)[:200]}
+                "proposed": [], "log": [], "persistence": [],
+                "error": str(e)[:200]}
+
+    proposed = list(_proposed_fixes)
+    log = list(_learning_log)
+    persistence: list = []
+    if _STORE_OK:
+        try:
+            from routes import brain_v2_store as _store
+            proposed = _store.list_proposals(limit=200)
+            log = _store.list_log(limit=200)
+            persistence = _store.most_persistent_unfixed(min_count=2, limit=20)
+        except Exception:
+            pass
+    return {
+        "loaded": True,
+        "active": bool(ANTHROPIC_API_KEY),
+        "model": BRAIN_MODEL,
+        "store_backed": bool(_STORE_OK),
+        "proposed": proposed,
+        "log": log,
+        "persistence": persistence,
+    }
 
 
 def _color_for(item: dict) -> str:
@@ -138,6 +159,14 @@ h1 .grad{background:var(--gradient);-webkit-background-clip:text;background-clip
   </div>
 
   <div class="section">
+    <h2 class="section-title">Stuck-issue worklist</h2>
+    <p style="color:var(--tx2);font-size:14px;margin:-6px 0 14px">Issues the healer has seen many cycles AND that have NOT yet produced a successful proposal. The brain prioritizes these on the next learn pass — this is the "learn from errors it misses" surface.</p>
+    <div style="background:var(--card);border:1px solid var(--bd);border-radius:10px;overflow:hidden;">
+{{persistence_html}}
+    </div>
+  </div>
+
+  <div class="section">
     <h2 class="section-title">Learning log</h2>
     <div style="background:var(--card);border:1px solid var(--bd);border-radius:10px;overflow:hidden;">
 {{log_html}}
@@ -214,16 +243,46 @@ def brain_page():
             cls = ("ok" if outcome.startswith("proposed") or outcome == "approval_count_incremented"
                    else "err" if "fail" in outcome or "error" in outcome or "refused" in outcome
                    else "warn")
+            # Phase S: store rows use "issue_label", legacy in-memory uses
+            # "issue" — accept either.
+            issue_lbl = (entry.get("issue_label")
+                         or entry.get("issue") or "?")[:60]
             log_rows.append(
                 f'<div class="log-row">'
                 f'<span class="log-time">{_h((entry.get("t") or "")[:19])}</span>'
-                f'<span class="log-issue">{_h((entry.get("issue") or "?")[:60])}</span>'
+                f'<span class="log-issue">{_h(issue_lbl)}</span>'
                 f'<span class="log-outcome {cls}">{_h(outcome)}</span>'
                 f'</div>'
             )
         log_html = "\n".join(log_rows)
     else:
         log_html = '<div class="empty">No learning attempts logged yet.</div>'
+
+    # Phase S (2026-05-12): render the stuck-issue worklist. Items come
+    # from brain_v2_store.most_persistent_unfixed via _get_state(). Empty
+    # state copy explains what users should expect when everything is
+    # already proposed — that's the goal state, not a bug.
+    persistence_items = state.get("persistence") or []
+    if persistence_items:
+        prows = []
+        for it in persistence_items:
+            seen = int(it.get("seen_count", 0))
+            url = _h(it.get("url") or "")
+            label = _h(it.get("issue_label") or "?")
+            last_o = _h((it.get("last_outcome") or "untried")[:60])
+            last_seen = _h((it.get("last_seen_at") or "")[:19])
+            prows.append(
+                f'<div class="log-row">'
+                f'<span class="log-time">{last_seen}</span>'
+                f'<span class="log-issue">{label} · <code>{url}</code></span>'
+                f'<span class="log-outcome warn">seen ×{seen} · {last_o}</span>'
+                f'</div>'
+            )
+        persistence_html = "\n".join(prows)
+    elif state.get("store_backed"):
+        persistence_html = '<div class="empty">No stuck issues — every detected pattern has produced a proposal or been auto-fixed.</div>'
+    else:
+        persistence_html = '<div class="empty">Persistence tracking is only available when the Postgres store is online.</div>'
 
     html = (_BRAIN_PAGE_TEMPLATE
             .replace("{{status_text}}", _h(status_text))
@@ -233,6 +292,7 @@ def brain_page():
             .replace("{{pending_count}}", str(pending_count))
             .replace("{{log_count}}", str(len(state["log"])))
             .replace("{{proposals_html}}", proposals_html)
+            .replace("{{persistence_html}}", persistence_html)
             .replace("{{log_html}}", log_html)
             .replace("{{as_of}}", datetime.now(timezone.utc).isoformat()))
     resp = Response(html, mimetype="text/html")
