@@ -58,18 +58,30 @@ PRICING_URL = 'https://dchub.cloud/pricing'
 SIGNUP_URL = 'https://dchub.cloud/signup'
 EMAIL_CAPTURE_URL = 'https://dchub.cloud/api/v1/dev-signup-form'
 
-# Phase 276: if a Stripe Payment Link is configured, surface it as the
+# Phase 276/281: if a Stripe Payment Link is configured, surface it as the
 # "one-click upgrade" path. AI agents pass this URL to their human, who
 # clicks once and lands on Stripe checkout (no /pricing → choose plan →
 # click upgrade → enter card; that's 4 steps). Empty = fall back to /pricing.
-STRIPE_PRO_LINK = os.environ.get('DCHUB_STRIPE_PRO_LINK', '').strip()
+#
+# Variable name normalized phase 281: the upgrade target for free dev keys
+# is the Developer tier ($49/mo, "For AI Agent Builders" per the pricing
+# page), NOT Pro ($199/mo). DCHUB_STRIPE_PRO_LINK still accepted as a
+# fallback so existing deploys don't break — but DCHUB_STRIPE_DEVELOPER_LINK
+# is the canonical name.
+STRIPE_DEVELOPER_LINK = (
+    os.environ.get('DCHUB_STRIPE_DEVELOPER_LINK')
+    or os.environ.get('DCHUB_STRIPE_PRO_LINK')  # phase 276 legacy name
+    or ''
+).strip()
+# Back-compat alias for any external code that imported the old name
+STRIPE_PRO_LINK = STRIPE_DEVELOPER_LINK
 
 DISCOUNT_CODE_TIER2 = 'TRYDCHUB50'   # 50% off first month
 DISCOUNT_CODE_TIER3 = 'LASTCALL30'   # 30% off, urgency framing
 
 
 def _one_click_upgrade_line(tool_name=None, call_count=0, current_tier='free'):
-    """Phase 276: emit a "one-click upgrade" markdown line if a Stripe
+    """Phase 276/281: emit a "one-click upgrade" markdown line if a Stripe
     Payment Link is configured. Returns '' if not configured so the
     paywall messages degrade gracefully to the existing /pricing CTA.
 
@@ -78,12 +90,15 @@ def _one_click_upgrade_line(tool_name=None, call_count=0, current_tier='free'):
     silently break checkout). For attribution, the Stripe webhook
     /stripe/webhook-convert already records conversions back into
     mcp_upgrade_signals (phase 257).
+
+    Phase 281: target is the Developer tier ($49/mo) — that's the
+    "For AI Agent Builders" tier per the live pricing page.
     """
-    if not STRIPE_PRO_LINK:
+    if not STRIPE_DEVELOPER_LINK:
         return ''
     return (
-        f"⚡ **One-click upgrade ($49/mo, no /pricing detour):** "
-        f"[{STRIPE_PRO_LINK}]({STRIPE_PRO_LINK})\n\n"
+        f"⚡ **One-click upgrade to Developer ($49/mo, 1,000 calls/day):** "
+        f"[{STRIPE_DEVELOPER_LINK}]({STRIPE_DEVELOPER_LINK})\n\n"
     )
 
 
@@ -156,9 +171,9 @@ def _build_human_message(tool_name, call_count, current_tier, partial_data_summa
             f"🔒 **Free tier limit reached.** You've used `{tool_name}` {call_count} times "
             f"this week — your free preview is exhausted.\n\n"
             f"{quick}"
-            f"**[Upgrade to Pro now → {discount_url}]({discount_url})** "
+            f"**[Upgrade to Developer now → {discount_url}]({discount_url})** "
             f"Apply code `{DISCOUNT_CODE_TIER3}` for 30% off your first month.\n\n"
-            f"_$49/mo unlocks {pretty_tool} + all 7 ISOs grid intel + fiber + queue analytics._"
+            f"_$49/mo unlocks {pretty_tool} + 1,000 calls/day, all 7 ISOs grid intel + fiber + queue analytics._"
         )
 
     # Tier 2 — discount + email capture (calls 3-5)
@@ -172,10 +187,10 @@ def _build_human_message(tool_name, call_count, current_tier, partial_data_summa
             f"🎯 **You've hit `{tool_name}` {call_count} times — looks like you need this.**\n\n"
             f"{quick}"
             f"**Get 50% off your first month** with code `{DISCOUNT_CODE_TIER2}`: "
-            f"[Upgrade to Pro →]({discount_url})\n\n"
+            f"[Upgrade to Developer →]({discount_url})\n\n"
             f"Not ready? **[Get a 7-day free trial via email →]({email_url})** — "
-            f"no credit card, full Pro access for a week.\n\n"
-            f"_Pro unlocks: {pretty_tool}, all 7 ISO grid intel, fiber routes, queue analytics, API access._"
+            f"no credit card, full Developer access for a week.\n\n"
+            f"_Developer unlocks: {pretty_tool}, 1,000 calls/day, all 7 ISO grid intel, fiber routes, queue analytics, API access._"
         )
 
     # Tier 1 — standard preview (calls 1-2)
@@ -235,8 +250,10 @@ def build_paywall_response(
     # Phase 276: surface the Stripe one-click URL (if configured) as a
     # discrete structured field so AI clients can offer it as a button/CTA
     # without having to parse it out of the markdown human_message.
-    if STRIPE_PRO_LINK:
-        base['one_click_upgrade_url'] = STRIPE_PRO_LINK
+    if STRIPE_DEVELOPER_LINK:
+        base['one_click_upgrade_url'] = STRIPE_DEVELOPER_LINK
+        base['one_click_upgrade_tier'] = 'developer'  # phase 281
+        base['one_click_upgrade_price'] = '$49/mo'    # phase 281
     if trial_preview_data is not None:
         base['trial_preview'] = trial_preview_data
     else:

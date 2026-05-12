@@ -27,18 +27,26 @@ const INTERNAL_KEY  = process.env.DCHUB_INTERNAL_KEY  || 'dchub-internal-sync-20
 const PORT          = parseInt(process.env.PORT || '3100', 10);
 const UPGRADE_URL   = process.env.DCHUB_UPGRADE_URL   || 'https://dchub.cloud/ai#pricing';
 const SIGNUP_URL    = process.env.DCHUB_SIGNUP_URL    || 'https://dchub.cloud/ai';
-// Phase 276: optional Stripe Payment Link for one-click upgrades from inside
-// the MCP paywall. If unset, the messages fall back to the existing
+// Phase 276/281: optional Stripe Payment Link for one-click upgrades from
+// inside the MCP paywall. If unset, the messages fall back to the existing
 // UPGRADE_URL (pricing page) — no functional change.
-const STRIPE_PRO_LINK = (process.env.DCHUB_STRIPE_PRO_LINK || '').trim();
+//
+// Phase 281: the upgrade target is the Developer tier ($49/mo, "For AI Agent
+// Builders" per the pricing page), NOT Pro ($199/mo). DCHUB_STRIPE_PRO_LINK
+// still accepted as a back-compat alias.
+const STRIPE_DEVELOPER_LINK = (
+  process.env.DCHUB_STRIPE_DEVELOPER_LINK ||
+  process.env.DCHUB_STRIPE_PRO_LINK ||  // phase 276 legacy name
+  ''
+).trim();
 const KEY_CACHE_TTL = parseInt(process.env.DCHUB_KEY_CACHE_TTL_MS || '300000', 10); // 5 min
 
-// Phase 276: emit a "one-click upgrade" markdown line if a Stripe Payment
+// Phase 276/281: emit a "one-click upgrade" markdown line if a Stripe Payment
 // Link is configured. Empty string when unconfigured so existing messages
 // degrade cleanly.
 function oneClickUpgradeLine() {
-  if (!STRIPE_PRO_LINK) return '';
-  return `\u{26A1} **One-click upgrade ($49/mo, no /pricing detour):** [${STRIPE_PRO_LINK}](${STRIPE_PRO_LINK})\n\n`;
+  if (!STRIPE_DEVELOPER_LINK) return '';
+  return `\u{26A1} **One-click upgrade to Developer ($49/mo, 1,000 calls/day):** [${STRIPE_DEVELOPER_LINK}](${STRIPE_DEVELOPER_LINK})\n\n`;
 }
 
 // ── Per-request context (api_key, platform, tier, session_id) ───────────────
@@ -239,7 +247,7 @@ You've used **${gate.dailyUsed}/${gate.dailyCap}** of today's free calls to \`${
 ${_quick}1. **Wait it out.** Limit resets in a few hours.
 2. **Upgrade now — 50% off first month with \`TRYDCHUB50\`.**
 
-\u{1F449} **[Upgrade to Pro](${UPGRADE_URL})** — $49/mo, unlimited calls to \`${name}\`, \`get_grid_intelligence\`, \`get_fiber_intel\`, plus the paid-only tools (\`analyze_site\`, \`compare_sites\`, \`get_dchub_recommendation\`).
+\u{1F449} **[Upgrade to Developer](${UPGRADE_URL})** — $49/mo, 1,000 calls/day, unlimited \`${name}\`, \`get_grid_intelligence\`, \`get_fiber_intel\`, plus the paid-only tools (\`analyze_site\`, \`compare_sites\`, \`get_dchub_recommendation\`).
 
 If you're scoring more than ~10 markets/day, the math favors upgrading.`;
         return {
@@ -265,16 +273,16 @@ If you're scoring more than ~10 markets/day, the math favors upgrading.`;
         const _quick = oneClickUpgradeLine();  // phase 276
         const _mdKeyed = `## \u{1F512} \`${name}\` requires a paid plan
 
-You're on **free tier** with a dev key — this tool is gated to **Pro** ($49/mo).
+You're on **free tier** with a dev key — this tool is gated to **Developer** ($49/mo).
 
-${_quick}### What Pro unlocks
+${_quick}### What Developer unlocks
 - \`analyze_site\` — full power, fiber, risk, climate scoring for any location
 - \`compare_sites\` — side-by-side comparison across markets
 - \`get_dchub_recommendation\` — AI-formatted location recommendations
 - **Unlimited** \`get_grid_intelligence\` + \`get_fiber_intel\` (free tier: 10/day each)
-- Uncapped result sizes on all other free-tier tools
+- 1,000 calls/day across the whole MCP surface (free tier: 100/day)
 
-\u{1F449} **[Upgrade to Pro](${UPGRADE_URL})**
+\u{1F449} **[Upgrade to Developer](${UPGRADE_URL})**
 
 Free tier still covers: \`search_facilities\`, \`get_facility\`, \`list_transactions\`, \`get_news\`, \`get_market_intel\`, \`get_pipeline\`, \`get_grid_data\`, \`get_water_risk\`, plus **10/day** of \`get_grid_intelligence\` and \`get_fiber_intel\`.`;
 
@@ -310,8 +318,8 @@ curl -X POST https://dchub.cloud/api/v1/dev-signup \\
   -d '{"email":"YOUR_EMAIL"}'
 \`\`\`
 
-### Or skip straight to Pro
-${_quick}\u{1F449} **[Upgrade to Pro](${UPGRADE_URL})** — $49/mo. Full result sizes + all paid tools: \`${name}\`, \`analyze_site\`, \`compare_sites\`, \`get_dchub_recommendation\`, and unlimited \`get_grid_intelligence\` + \`get_fiber_intel\`.`;
+### Or skip straight to Developer
+${_quick}\u{1F449} **[Upgrade to Developer](${UPGRADE_URL})** — $49/mo, 1,000 calls/day. Full result sizes + all paid tools: \`${name}\`, \`analyze_site\`, \`compare_sites\`, \`get_dchub_recommendation\`, and unlimited \`get_grid_intelligence\` + \`get_fiber_intel\`.`;
         return {
           content: [{ type: 'text', text: _isKeyed ? _mdKeyed : _mdAnon }],
           structuredContent: {
