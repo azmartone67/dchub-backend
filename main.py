@@ -1826,6 +1826,80 @@ def handle_well_known():
         return Response("Contact: mailto:security@dchub.cloud\nPreferred-Languages: en\nCanonical: https://dchub.cloud/.well-known/security.txt\nPolicy: https://dchub.cloud/terms\nExpires: 2027-01-01T00:00:00.000Z", mimetype="text/plain")
     if path == '/.well-known/mcp-registry-auth':
         return Response("v=MCPv1; k=ed25519; p=8LE9YOct4SKYuIJT8JGMK6z9lhfPMbCM5pQCp5FTRBg=", mimetype="text/plain")
+    # Phase 280: /.well-known/ai-agents.json — the discovery file the QA
+    # crawler flagged as broken (linked from another page but returning 404).
+    # Modeled on the existing agent.json + mcp.json but with the richer
+    # auth/claim/tier surface that phases 275-277 added, so AI agents
+    # discovering this file can self-serve onto the free tier in one curl.
+    if path == '/.well-known/ai-agents.json':
+        import json as _j2
+        return Response(_j2.dumps({
+            "schema_version": "1",
+            "name": "DC Hub",
+            "description": (
+                "Live data-center, energy, and grid intelligence. 20,000+ facilities "
+                "in 140+ countries, 369 GW pipeline, real-time DCPI scoring for "
+                "US power markets. Designed for AI agents to discover, cite, and act on."
+            ),
+            "homepage": "https://dchub.cloud",
+            "documentation": "https://dchub.cloud/for-ai.html",
+            "freshness_url": "https://dchub.cloud/freshness",
+            "dataset_url": "https://dchub.cloud/dcpi",
+            "interfaces": {
+                "mcp": {
+                    "url": "https://dchub.cloud/mcp",
+                    "transport": "streamable-http",
+                    "discovery": "https://dchub.cloud/.well-known/mcp.json"
+                },
+                "rest": {
+                    "base": "https://dchub.cloud/api/v1",
+                    "openapi": "https://dchub.cloud/openapi.json"
+                }
+            },
+            "authentication": {
+                "schemes": ["api_key"],
+                "header": "X-API-Key",
+                "tiers": ["free", "pro", "enterprise"],
+                "free_tier": {
+                    "daily_calls": 100,
+                    "daily_caps": {
+                        "get_grid_intelligence": 10,
+                        "get_fiber_intel": 10
+                    },
+                    "paid_only_tools": [
+                        "analyze_site", "compare_sites", "get_dchub_recommendation"
+                    ]
+                },
+                "claim_endpoint": {
+                    "method": "POST",
+                    "url": "https://dchub.cloud/api/v1/keys/claim",
+                    "rate_limit": "1 key per IP per 24h",
+                    "email_required": False,
+                    "description": (
+                        "Programmatic dev-key issuance for AI agents. Returns a "
+                        "free-tier api_key in one POST, no email verification."
+                    )
+                },
+                "email_signup": "https://dchub.cloud/api/v1/dev-signup",
+                "upgrade_url": "https://dchub.cloud/pricing",
+                "enterprise_contact": "https://dchub.cloud/enterprise"
+            },
+            "data_freshness": {
+                "machine_readable": "https://dchub.cloud/api/v1/freshness",
+                "human_readable": "https://dchub.cloud/freshness",
+                "heal_findings":  "https://dchub.cloud/api/v1/heal/findings"
+            },
+            "machine_indexes": {
+                "ai_txt":     "https://dchub.cloud/ai.txt",
+                "llms_txt":   "https://dchub.cloud/llms.txt",
+                "llms_full":  "https://dchub.cloud/llms-full.txt",
+                "sitemap":    "https://dchub.cloud/sitemap.xml"
+            },
+            "contact": "api@dchub.cloud",
+            "license": "Free for AI citation; data subject to https://dchub.cloud/terms",
+            "last_updated": "2026-05-12"
+        }, ensure_ascii=False), status=200,
+           content_type="application/json; charset=utf-8")
 
 APP_VERSION = '2.5.7'
 STARTUP_COMPLETE = False
@@ -1856,6 +1930,16 @@ except Exception as e:
 @app.route('/health')
 def health_check():
     return {'status': 'ok'}, 200
+
+# Phase 280: /digest -> /news 302. The QA crawler flagged /digest as a
+# broken internal link (returning 404) — it's referenced from
+# index.html, landing/index.html, ai-integrations.html, agent-dashboard.html.
+# The dchub-frontend/digest.html exists in the static repo but the
+# Cloudflare Pages worker proxies everything to Railway, so Flask
+# needs to handle the path. /news is the canonical news+digest stream.
+@app.route('/digest')
+def digest_redirect():
+    return redirect('/news', code=302)
 
 # phase 269: /health/deep alias — mirror /api/v1/health/deep at the unprefixed
 # URL the audit and external monitors expect (matches /health ↔ /api/v1/health).
