@@ -19560,3 +19560,199 @@ def _customer_lookup():
         import traceback
         return jsonify({"error": str(e)[:300], "trace": traceback.format_exc()[:600]}), 500
 
+
+# Phase 265: churn risk endpoint — surfaces paying customers at risk of cancel
+@app.route("/api/v1/admin/churn-risk", methods=["GET"])
+def _admin_churn_risk():
+    """Returns paying customers with low/zero usage — at risk of cancel.
+    Optional ?days=N to set inactivity threshold (default 7).
+    Optional ?plan=developer or ?plan=pro to filter."""
+    import os, psycopg2
+    from flask import jsonify, request
+    DATABASE_URL = os.environ.get("DATABASE_URL")
+    if not DATABASE_URL: return jsonify({"error": "no DATABASE_URL"}), 500
+    try: days = max(1, min(int(request.args.get("days", 7)), 90))
+    except: days = 7
+    plan_filter = request.args.get("plan", "").strip().lower()
+
+    def safe_iso(v):
+        if v is None: return None
+        if hasattr(v, "isoformat"): return v.isoformat()
+        return str(v)
+
+    try:
+        with psycopg2.connect(DATABASE_URL, connect_timeout=8) as conn, conn.cursor() as cur:
+            sql = """
+                SELECT u.email, u.name, u.company, u.plan AS user_plan,
+                       u.created_at AS user_created,
+                       k.id AS key_id, k.key_prefix, k.name AS key_name,
+                       k.plan AS key_plan, k.rate_limit_tier,
+                       k.created_at AS key_created, k.last_used_at,
+                       k.calls_today, k.calls_total, k.usage_count,
+                       k.is_active_bool
+                FROM users u
+                LEFT JOIN api_keys k ON k.user_id::text = u.id::text
+                WHERE u.plan IN ('developer', 'pro', 'paid', 'enterprise')
+                  AND COALESCE(k.is_active_bool, true) = true
+            """
+            if plan_filter in ('developer', 'pro', 'paid', 'enterprise'):
+                sql += f" AND u.plan = %s"
+                cur.execute(sql, (plan_filter,))
+            else:
+                cur.execute(sql)
+            rows = cur.fetchall()
+
+        import datetime
+        now = datetime.datetime.utcnow()
+        at_risk = []
+        for r in rows:
+            email, name, company, user_plan, user_created = r[0:5]
+            key_id, key_prefix, key_name = r[5:8]
+            key_plan, rate_tier, key_created, last_used = r[8:12]
+            calls_today, calls_total, usage_count, is_active = r[12:16]
+
+            # Risk classification
+            risk_score = 0
+            risk_reasons = []
+
+            if (calls_total or 0) == 0:
+                risk_score += 60
+                risk_reasons.append("zero_total_calls")
+
+            if last_used:
+                try:
+                    last_used_dt = last_used if hasattr(last_used, "year") else datetime.datetime.fromisoformat(str(last_used).replace("Z",""))
+                    days_inactive = (now - last_used_dt).days
+                except Exception:
+                    days_inactive = None
+                if days_inactive is not None and days_inactive > days:
+                    risk_score += min(40, days_inactive)
+                    risk_reasons.append(f"inactive_{days_inactive}d")
+            else:
+                risk_score += 30
+                risk_reasons.append("never_used_key")
+
+            if (calls_today or 0) == 0:
+                risk_score += 10
+                risk_reasons.append("zero_calls_today")
+
+            if risk_score >= 50:
+                at_risk.append({
+                    "email": email,
+                    "name": name,
+                    "company": company,
+                    "plan": user_plan or key_plan,
+                    "key_name": key_name,
+                    "key_prefix": key_prefix,
+                    "calls_total": calls_total or 0,
+                    "calls_today": calls_today or 0,
+                    "last_used_at": safe_iso(last_used),
+                    "user_created": safe_iso(user_created),
+                    "key_created": safe_iso(key_created),
+                    "risk_score": risk_score,
+                    "risk_reasons": risk_reasons,
+                })
+
+        at_risk.sort(key=lambda x: x["risk_score"], reverse=True)
+        return jsonify({
+            "threshold_days": days,
+            "total_at_risk": len(at_risk),
+            "customers": at_risk,
+        })
+    except Exception as e:
+        import traceback
+        return jsonify({"error": str(e)[:300], "trace": traceback.format_exc()[:600]}), 500
+
+
+@app.route("/api/v1/admin/welcome-sequence", methods=["GET"])
+def _admin_welcome_sequence():
+    """Returns NEW paying customers who joined in last N days (default 7).
+    Split into 'first_call_made' vs 'still_zero_calls' — second list needs
+    immediate welcome+nudge."""
+    import os, psycopg2
+    from flask import jsonify, request
+    DATABASE_URL = os.environ.get("DATABASE_URL")
+    if not DATABASE_URL: return jsonify({"error": "no DATABASE_URL"}), 500
+    try: days = max(1, min(int(request.args.get("days", 7)), 30))
+    except: days = 7
+
+    def safe_iso(v):
+        if v is None: return None
+        if hasattr(v, "isoformat"): return v.isoformat()
+        return str(v)
+
+    try:
+        with psycopg2.connect(DATABASE_URL, connect_timeout=8) as conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT u.email, u.name, u.plan,
+                       u.created_at AS user_created,
+                       k.calls_total, k.last_used_at, k.name AS key_name,
+                       k.created_at AS key_created
+                FROM users u
+                LEFT JOIN api_keys k ON k.user_id::text = u.id::text
+                WHERE u.plan IN ('developer', 'pro', 'paid', 'enterprise')
+                ORDER BY u.created_at DESC LIMIT 100;
+            """)
+            rows = cur.fetchall()
+
+        from datetime import datetime as DT, timedelta
+        cutoff = DT.utcnow() - timedelta(days=days)
+        first_call_made = []
+        still_zero = []
+        for r in rows:
+            user_created = r[3]
+            try:
+                created_dt = user_created if hasattr(user_created, "year") else DT.fromisoformat(str(user_created).replace("Z",""))
+            except: continue
+            if created_dt < cutoff: continue
+            entry = {
+                "email": r[0], "name": r[1], "plan": r[2],
+                "user_created": safe_iso(user_created),
+                "calls_total": r[4] or 0,
+                "last_used_at": safe_iso(r[5]),
+                "key_name": r[6],
+                "key_created": safe_iso(r[7]),
+            }
+            if (r[4] or 0) > 0: first_call_made.append(entry)
+            else: still_zero.append(entry)
+
+        return jsonify({
+            "threshold_days": days,
+            "first_call_made_count": len(first_call_made),
+            "still_zero_calls_count": len(still_zero),
+            "first_call_made": first_call_made,
+            "still_zero_calls": still_zero,
+            "action_required": "Send welcome+onboarding email to 'still_zero_calls' users",
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)[:300]}), 500
+
+
+@app.route("/api/v1/admin/tag-customer", methods=["POST"])
+def _admin_tag_customer():
+    """Updates api_keys.name with a tag for the user. Lets us mark
+    founder-touched, refunded, VIP, etc. for tracking."""
+    import os, psycopg2
+    from flask import jsonify, request
+    DATABASE_URL = os.environ.get("DATABASE_URL")
+    if not DATABASE_URL: return jsonify({"error": "no DATABASE_URL"}), 500
+    body = request.get_json(silent=True) or {}
+    email = (body.get("email") or request.args.get("email") or "").strip().lower()
+    tag   = (body.get("tag")   or request.args.get("tag")   or "").strip()
+    if not email or not tag:
+        return jsonify({"error": "need email + tag"}), 400
+    try:
+        with psycopg2.connect(DATABASE_URL, connect_timeout=5) as conn, conn.cursor() as cur:
+            cur.execute("""
+                UPDATE api_keys
+                SET name = COALESCE(name, '') ||
+                           CASE WHEN COALESCE(name,'') = '' THEN %s ELSE ' | ' || %s END
+                WHERE user_id::text IN (SELECT id::text FROM users WHERE LOWER(email) = %s)
+                  AND POSITION(%s IN COALESCE(name,'')) = 0;
+            """, (tag, tag, email, tag))
+            n = cur.rowcount
+            conn.commit()
+        return jsonify({"email": email, "tag": tag, "keys_tagged": n})
+    except Exception as e:
+        return jsonify({"error": str(e)[:300]}), 500
+

@@ -1,0 +1,54 @@
+name: churn watcher (weekly at-risk customer email)
+
+on:
+  schedule:
+    - cron: '0 14 * * MON'  # Mondays 14:00 UTC = 7am PT
+  workflow_dispatch:
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fetch churn-risk + welcome lists
+        run: |
+          CHURN=$(curl -sS "https://dchub.cloud/api/v1/admin/churn-risk?days=7")
+          WELCOME=$(curl -sS "https://dchub.cloud/api/v1/admin/welcome-sequence?days=7")
+          echo "$CHURN" > /tmp/churn.json
+          echo "$WELCOME" > /tmp/welcome.json
+          AT_RISK=$(echo "$CHURN" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('total_at_risk',0))")
+          NEW_NEEDS_WELCOME=$(echo "$WELCOME" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('still_zero_calls_count',0))")
+          echo "::notice::AT_RISK=$AT_RISK NEW_NEEDS_WELCOME=$NEW_NEEDS_WELCOME"
+
+          if [ "${AT_RISK:-0}" -gt 0 ] || [ "${NEW_NEEDS_WELCOME:-0}" -gt 0 ]; then
+            python3 <<'PYEOF'
+          import json, os
+          churn = json.load(open('/tmp/churn.json'))
+          welcome = json.load(open('/tmp/welcome.json'))
+          lines = ["DC Hub Churn Watcher — Weekly Summary\n"]
+          lines.append(f"## {churn.get('total_at_risk',0)} customers at churn risk (>7d inactive or zero calls):\n")
+          for c in churn.get('customers', [])[:10]:
+              lines.append(f"  • {c.get('email')} ({c.get('plan')}) — risk {c.get('risk_score')}, reasons: {c.get('risk_reasons')}")
+          lines.append(f"\n## {welcome.get('still_zero_calls_count',0)} new customers need welcome:\n")
+          for c in welcome.get('still_zero_calls', [])[:10]:
+              lines.append(f"  • {c.get('email')} ({c.get('plan')}) — signed up {c.get('user_created','?')[:10]}")
+          print('\n'.join(lines))
+          PYEOF
+          fi
+
+      - name: Open GitHub issue if action needed
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          AT_RISK=$(cat /tmp/churn.json | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('total_at_risk',0))")
+          if [ "${AT_RISK:-0}" -gt 0 ]; then
+            # Only open if no open issue exists
+            EXISTING=$(gh issue list --label "churn-watch" --state open --json number --jq 'length')
+            if [ "${EXISTING:-0}" = "0" ]; then
+              gh issue create \
+                --title "Churn watch: ${AT_RISK} customers at risk this week" \
+                --label "churn-watch" \
+                --body "$(cat /tmp/churn.json | jq -r '.customers[] | "- " + .email + " — " + (.risk_score|tostring) + " risk — " + (.risk_reasons|join(\", \"))' | head -10)"
+            fi
+          fi
