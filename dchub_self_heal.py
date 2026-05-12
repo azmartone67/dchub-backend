@@ -1790,6 +1790,24 @@ API_CONTRACT_PROBES = [
     },
 ]
 
+# Phase Z+ (2026-05-12): content-type contract probes. The
+# /api/v1/qa/dashboard "daily" failure traced to /daily → /digest/today
+# returning JSON instead of HTML — every prior detector missed it
+# because the body parsed as valid JSON. Add probes that follow
+# redirects and assert the FINAL content-type matches the page's
+# documented contract.
+#
+# These are separate from API_CONTRACT_PROBES because they don't parse
+# the body — they only need the response headers + redirect chain.
+CONTENT_TYPE_PROBES = [
+    # (label, url, expected content-type prefix, must_render_html_marker)
+    {"label": "daily_returns_html",   "url": "https://dchub.cloud/daily",          "expect": "text/html"},
+    {"label": "news_returns_html",    "url": "https://dchub.cloud/news",           "expect": "text/html"},
+    {"label": "dcpi_returns_html",    "url": "https://dchub.cloud/dcpi",           "expect": "text/html"},
+    {"label": "brain_returns_html",   "url": "https://dchub.cloud/brain",          "expect": "text/html"},
+    {"label": "digest_returns_html",  "url": "https://dchub.cloud/digest",         "expect": "text/html"},
+]
+
 _last_api_contract_findings = {}
 
 
@@ -1850,11 +1868,43 @@ def fix_api_contract_scan():
             }
             total_violations += 1
 
+    # Phase Z+ (2026-05-12): content-type contract layer. Follow redirects
+    # and assert the FINAL response Content-Type matches the page contract.
+    # This catches the class of bug where /daily 302'd to a JSON endpoint
+    # — every page-level test passed (HTTP 200) but the response was
+    # semantically wrong (JSON where HTML was expected).
+    from urllib.request import Request as _UrlReq2, urlopen as _urlopen2
+    from urllib.error import HTTPError as _HTTPError2
+    for probe in CONTENT_TYPE_PROBES:
+        url = probe["url"]
+        expect = probe["expect"]
+        try:
+            req = _UrlReq2(url, headers=HEADERS)
+            with _urlopen2(req, timeout=10) as r:  # urlopen auto-follows redirects
+                ctype = (r.headers.get("Content-Type") or "").lower()
+                final_url = r.url
+        except _HTTPError2 as he:
+            ctype = ""
+            final_url = url
+            findings[url] = {f"api_contract_status_{he.code}: {probe['label']}": 1}
+            total_violations += 1
+            continue
+        except Exception as e:
+            findings[url] = {f"api_contract_unreachable: {probe['label']}": 1}
+            total_violations += 1
+            continue
+        if not ctype.startswith(expect):
+            label = (f"api_contract_wrong_content_type: {probe['label']} — "
+                     f"expected {expect}, got {ctype[:40]} (final: {final_url[:80]})")
+            findings[url] = {label: 1}
+            total_violations += 1
+
     global _last_api_contract_findings
     _last_api_contract_findings = findings
     if total_violations == 0:
-        return True, f"OK: {len(API_CONTRACT_PROBES)} API contracts honored"
-    return True, (f"{total_violations} API contract violations across "
+        return True, (f"OK: {len(API_CONTRACT_PROBES)} API + "
+                      f"{len(CONTENT_TYPE_PROBES)} content-type contracts honored")
+    return True, (f"{total_violations} contract violations across "
                   f"{len(findings)} endpoints: " + str(findings)[:280])
 
 
