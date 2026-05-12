@@ -1348,6 +1348,57 @@ export default {
       }
     }
 
+    // ══════════════════════════════════════════════════════════════
+    // Phase 282 — hard-guaranteed proxy for backend-served routes
+    // that aren't under /api/* (so they aren't caught by the generic
+    // API proxy at the bottom of fetch()). These paths exist on
+    // Railway/Flask but were previously falling through to Pages
+    // and 404'ing because Pages doesn't have them.
+    //
+    // Matches /freshness, /enterprise, /health/deep, and
+    // /.well-known/ai-agents.json (the phases 268, 272, 269, 280
+    // additions). Mirrors the /mcp passthrough pattern above.
+    // ══════════════════════════════════════════════════════════════
+    {
+      const PHASE_282_RAILWAY_PATHS = new Set([
+        '/freshness',
+        '/enterprise',
+        '/health/deep',
+        '/.well-known/ai-agents.json',
+      ]);
+      if (PHASE_282_RAILWAY_PATHS.has(pathname)) {
+        try {
+          const fwdHeaders = new Headers(request.headers);
+          fwdHeaders.delete('host');
+          fwdHeaders.delete('cf-connecting-ip');
+          fwdHeaders.delete('cf-ray');
+          fwdHeaders.delete('cf-visitor');
+          fwdHeaders.delete('x-forwarded-proto');
+          const upstream = await fetch(`${RAILWAY_BACKEND}${pathname}${url.search}`, {
+            method:   request.method,
+            headers:  fwdHeaders,
+            body:     (request.method === 'GET' || request.method === 'HEAD') ? undefined : request.body,
+            redirect: 'manual',
+          });
+          const h = new Headers(upstream.headers);
+          h.set('X-DC-Worker-Version', WORKER_VERSION);
+          h.set('x-dc-hub-backend',    'railway');
+          h.set('x-dc-hub-source',     'worker-phase282-passthrough');
+          h.delete('cf-cache-status');
+          return new Response(upstream.body, {
+            status:     upstream.status,
+            statusText: upstream.statusText,
+            headers:    h,
+          });
+        } catch (e) {
+          return new Response(
+            JSON.stringify({ error: 'phase282 proxy failed', path: pathname, detail: e && e.message ? e.message : String(e) }),
+            { status: 502, headers: { 'Content-Type': 'application/json', 'X-DC-Worker-Version': WORKER_VERSION, 'x-dc-hub-source': 'worker-phase282-error' } }
+          );
+        }
+      }
+    }
+
     // ── Social bot OG tags ──
     const userAgent = request.headers.get('user-agent') || '';
     if (isSocialBot(userAgent) && !pathname.startsWith('/api/') && pathname !== '/mcp' && pathname !== '/mcp/') {
