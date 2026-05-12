@@ -17518,24 +17518,94 @@ def api_v1_energy_renewable():
 
 @app.route('/api/v1/energy/summary', methods=['GET'])
 def cf_stub_energy_summary():
-    """Cloudflare Worker failover: energy overview (source: eia_retail_rates)."""
+    """Energy retail-rate overview (source: eia_retail_rates).
+
+    Phase EE+ (2026-05-12): honor ?state= and ?sector= filters. The
+    pre-fix version ignored every query param and always returned the
+    national aggregate (avg 11.85 ¢/kWh across all 62 states). User
+    reported "https://dchub.cloud/markets/atlanta pricing is still
+    missing on all reports" — root cause was every market page
+    receiving the same national average, which market-page.js then
+    couldn't parse into Atlanta-specific copy.
+
+    Query params:
+      state    optional 2-letter code (GA, CA, TX, IL, VA, ...).
+               Returns rates for that state; states_covered = 1.
+      sector   optional 'industrial' | 'commercial' | 'residential' |
+               'all'. Default 'all' (matches legacy aggregate). The
+               eia_retail_rates table has these sector strings; market
+               pages want industrial.
+
+    Also broadens the response so the frontend can render named bands
+    without a second roundtrip: returns industrial + commercial +
+    residential rates in one payload when no sector filter is given.
+    """
+    from flask import request as _req
+    state = (_req.args.get('state') or '').strip().upper()
+    sector = (_req.args.get('sector') or '').strip().lower()
     try:
         conn = get_pg_connection()
         cur = conn.cursor()
-        cur.execute("""
-            SELECT AVG(rate_cents_kwh), MIN(rate_cents_kwh), MAX(rate_cents_kwh),
-                   COUNT(DISTINCT state), MAX(period)
-            FROM eia_retail_rates WHERE rate_cents_kwh > 0
-        """)
-        row = cur.fetchone()
+        # Build the WHERE clause defensively
+        where = ["rate_cents_kwh > 0"]
+        params = []
+        if state and len(state) <= 3:
+            where.append("UPPER(state) = %s")
+            params.append(state)
+        if sector and sector != 'all':
+            where.append("LOWER(sector) = %s")
+            params.append(sector)
+        where_sql = " AND ".join(where)
+
+        # Headline aggregate (filter-aware)
+        cur.execute(f"""
+            SELECT AVG(rate_cents_kwh), MIN(rate_cents_kwh),
+                   MAX(rate_cents_kwh), COUNT(DISTINCT state), MAX(period)
+            FROM eia_retail_rates WHERE {where_sql}
+        """, params)
+        row = cur.fetchone() or (0, 0, 0, 0, "")
+
+        # Per-sector breakdown when a state is provided — gives the market
+        # page everything it needs in one shot.
+        by_sector = {}
+        if state and len(state) <= 3:
+            cur.execute("""
+                SELECT LOWER(sector), AVG(rate_cents_kwh), MAX(period)
+                FROM eia_retail_rates
+                WHERE rate_cents_kwh > 0 AND UPPER(state) = %s
+                GROUP BY LOWER(sector)
+            """, (state,))
+            for r in cur.fetchall():
+                by_sector[r[0] or 'unknown'] = {
+                    "avg_cents_kwh": round(float(r[1] or 0), 2),
+                    "latest_period": r[2] or "",
+                }
+
         return_pg_connection(conn)
-        return jsonify({"success": True, "retail_rates": {
-            "avg_cents_kwh":  round(float(row[0] or 0), 2),
-            "min_cents_kwh":  round(float(row[1] or 0), 2),
-            "max_cents_kwh":  round(float(row[2] or 0), 2),
-            "states_covered": int(row[3] or 0),
-            "latest_period":  row[4] or ""
-        }})
+
+        out = {
+            "success": True,
+            "filter": {"state": state or None, "sector": sector or "all"},
+            "retail_rates": {
+                "avg_cents_kwh":  round(float(row[0] or 0), 2),
+                "min_cents_kwh":  round(float(row[1] or 0), 2),
+                "max_cents_kwh":  round(float(row[2] or 0), 2),
+                "states_covered": int(row[3] or 0),
+                "latest_period":  row[4] or "",
+            },
+            # Flat shorthand fields so market-page.js can read directly
+            # without diving into retail_rates. avg_rate_kwh is in $/kWh
+            # (industry-standard unit), retail_rate_kwh mirrors it for
+            # legacy callers.
+            "avg_rate_kwh":         round(float(row[0] or 0) / 100.0, 4),
+            "retail_rate_kwh":      round(float(row[0] or 0) / 100.0, 4),
+            "industrial_rate_kwh": (round(by_sector.get('industrial', {}).get('avg_cents_kwh', 0) / 100.0, 4)
+                                    if by_sector.get('industrial') else
+                                    round(float(row[0] or 0) / 100.0, 4)),
+        }
+        if by_sector:
+            out["by_sector"] = by_sector
+        return jsonify(out)
     except Exception as e:
         try:
             if conn: return_pg_connection(conn)

@@ -1772,6 +1772,26 @@ API_CONTRACT_PROBES = [
         ),
     },
     {
+        # Phase EE+ (2026-05-12): guard that /energy/summary honors ?state=
+        # filter. Pre-fix, EVERY state returned the same national aggregate
+        # (avg 11.85 ¢/kWh, states_covered 62), causing market-page.js to
+        # render identical pricing on every market page. Test: ask for GA
+        # specifically and assert the response says states_covered <= 5
+        # (just GA + any null-state rows) — NOT 62.
+        "label": "energy_summary_state_filter_honored",
+        "url":   "https://dchub.cloud/api/v1/energy/summary?state=GA",
+        "validator": lambda d: (
+            (True, "ok") if (
+                d.get("success") is True
+                and int(d.get("retail_rates", {}).get("states_covered", 99)) <= 5
+                and (d.get("filter", {}) or {}).get("state") == "GA"
+            ) else (False,
+                    f"state filter not honored: states_covered="
+                    f"{d.get('retail_rates',{}).get('states_covered','?')} "
+                    f"filter.state={d.get('filter',{}).get('state','?')}")
+        ),
+    },
+    {
         "label": "paywall_response_includes_human_message",
         # Use a known-gated endpoint that requires a non-existent plan.
         # /api/v1/markets/compare is still Pro-gated, and the 403 must
