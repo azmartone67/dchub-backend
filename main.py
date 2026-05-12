@@ -18964,6 +18964,9 @@ def _heal_findings():
     findings = {}
     # Phase 279: added sitemap_404_check, internal_links_check, jsonld_coverage_check
     # to surface the new light-weight QA signals alongside the existing ones.
+    # Phase V (2026-05-12): added linked_asset_scan so 4xx/MIME-mismatch
+    # on referenced CSS+JS surfaces in the same actionable_frontend_issues
+    # list that master-heal's GH-issue path watches.
     detectors = [
         "html_quality_scan",
         "feed_diversity_check",
@@ -18971,6 +18974,7 @@ def _heal_findings():
         "sitemap_404_check",
         "internal_links_check",
         "jsonld_coverage_check",
+        "linked_asset_scan",
     ]
     for d in detectors:
         fn = h.FIXES.get(d)
@@ -18986,6 +18990,23 @@ def _heal_findings():
     try:
         if hasattr(h, "get_last_html_findings"):
             raw = h.get_last_html_findings()
+            for url, hits in (raw or {}).items():
+                if isinstance(hits, dict):
+                    for label, n in hits.items():
+                        if isinstance(n, int):
+                            actionable.append({"url": url, "issue": label, "count": n})
+    except Exception:
+        pass
+    # Phase V (2026-05-12): merge in linked-asset findings. These items
+    # follow the same {url: {label: count}} shape as html findings, so
+    # the actionable list stays uniform — but their `issue` labels start
+    # with "asset_" so the master-heal FIX_MAP won't try to string-replace
+    # them (no FIX_MAP key starts with "asset_"), which is correct: the
+    # fix for a broken <link> is to remove or re-deploy the asset, not a
+    # body substitution.
+    try:
+        if hasattr(h, "get_last_asset_findings"):
+            raw = h.get_last_asset_findings()
             for url, hits in (raw or {}).items():
                 if isinstance(hits, dict):
                     for label, n in hits.items():
