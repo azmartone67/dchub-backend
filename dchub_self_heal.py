@@ -1245,17 +1245,43 @@ FIXES["aggregator_v2"] = fix_aggregator_v2
 # them so the QA workflow (site-qa.yml) picks them up + opens issues.
 # ============================================================================
 
+# phase 273: healer detection accuracy fix.
+#
+# Previously every entry was a literal substring matched with body.count().
+# This gave catastrophic false-positive rates on the em-dash pattern: every
+# `<title>DC Hub — Data Center Intelligence</title>`, every OG/Twitter meta
+# title, every "Open Platform — Free" CTA, every CSS comment, and every
+# design-system banner ("DC HUB — GLACIER DESIGN SYSTEM") counted as a
+# "placeholder." Live audit found 55 reported issues across 7 pages but
+# only 5 real placeholders — a 91% false-positive rate, which makes the
+# /heal/findings output untrustworthy and unactionable.
+#
+# Fix: each pattern is now either a literal substring (count = body.count())
+# OR a compiled regex (count = len(regex.findall())). The em-dash detector
+# is now a regex that requires the em-dash to be the *sole text content*
+# of an HTML tag (i.e. `>—<` with only optional whitespace/nbsp around it),
+# which is what an actual placeholder data cell looks like.
+#
+# Also dropped the obsolete "276 MARKETS" pattern: that was a hardcode flag
+# from when /dcpi shipped a literal "276 MARKETS" string; phase 241 moved
+# it to a Jinja `{{ count }}` template variable, so any current match is
+# just the dynamic count rendering correctly.
+import re as _hp_re
+
 HTML_BAD_PATTERNS = {
-    "— placeholder":    "—",
-    "$$$$ pricing leak":       "$" * 4,
-    "Save 34% stale text":     "Save 34%",
-    "$249.50 stale text":      "$249.50",
-    "$798 stale text":         "$798",
-    "__$$$$__ template leak":  "__$$$$__",
-    "276 MARKETS stale":       "276 MARKETS",
-    "30 U.S. markets stale":   "30 U.S. markets",
-    "NaN ago timestamp bug":   "NaN ago",
-    "NAND AGO timestamp bug":  "NAND AGO",
+    # name                       -> str (literal) | re.Pattern (regex)
+    "— placeholder":              _hp_re.compile(r">[\s ]*—[\s ]*<"),
+    "$$$$ pricing leak":          "$" * 4,
+    "Save 34% stale text":        "Save 34%",
+    "$249.50 stale text":         "$249.50",
+    "$798 stale text":            "$798",
+    "__$$$$__ template leak":     "__$$$$__",
+    "30 U.S. markets stale":      "30 U.S. markets",
+    "NaN ago timestamp bug":      "NaN ago",
+    "NAND AGO timestamp bug":     "NAND AGO",
+    # phase 273: detect aria-busy="true" that's never resolved by JS —
+    # i.e. KPI cells that load with a loading marker but never get filled.
+    "stuck aria-busy":            _hp_re.compile(r'aria-busy="true"[^>]*>\s*[—\-]\s*<'),
 }
 
 HTML_PROBE_URLS = [
@@ -1289,9 +1315,16 @@ def fix_html_quality_scan():
         except Exception as e:
             findings[url] = {"error": str(e)[:200]}
             continue
+        # phase 273: each pattern is either a str (literal substring) or a
+        # compiled regex. Strip <script> and <style> blocks before scanning
+        # so JS string literals and CSS comments don't generate false hits.
+        scan_body = _hp_re.sub(r"<(script|style)[\s\S]*?</\1>", "", body)
         page_hits = {}
         for label, needle in HTML_BAD_PATTERNS.items():
-            n = body.count(needle)
+            if hasattr(needle, "findall"):  # re.Pattern
+                n = len(needle.findall(scan_body))
+            else:
+                n = scan_body.count(needle)
             if n > 0:
                 page_hits[label] = n
                 total_issues += n
