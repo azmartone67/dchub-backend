@@ -289,6 +289,21 @@ def build_paywall_response(
             # legacy Stripe link and the old (worse) funnel still works.
             pass
 
+    # Phase DD+ Play 4 (2026-05-12): if the caller didn't supply real
+    # trial_preview_data, try to synthesize one anonymized demo row for
+    # the tool. Lets the AI agent quote a concrete data point to its
+    # user as proof-of-value, instead of just saying "blocked, upgrade."
+    # Demo rows carry _demo: true so clients can render them differently.
+    # See routes/mcp_conversion_plays.py demo_row_for() for the catalog.
+    if trial_preview_data is None:
+        try:
+            from routes.mcp_conversion_plays import demo_row_for
+            demo = demo_row_for(tool_name)
+            if demo:
+                base['demo_row'] = demo
+        except Exception:
+            pass
+
     if trial_preview_data is not None:
         base['trial_preview'] = trial_preview_data
     else:

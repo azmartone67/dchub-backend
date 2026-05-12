@@ -1106,6 +1106,15 @@ try:
     except Exception as _pe:
         import logging
         logging.getLogger(__name__).warning('pair_code wiring failed: %s', _pe)
+    # Phase DD+ (2026-05-12): conversion plays 3-6 — top-up, demo
+    # unlock, email trial, affiliate attribution. See
+    # routes/mcp_conversion_plays.py.
+    try:
+        from routes.mcp_conversion_plays import conversion_bp
+        app.register_blueprint(conversion_bp)
+    except Exception as _ce:
+        import logging
+        logging.getLogger(__name__).warning('mcp_conversion_plays wiring failed: %s', _ce)
 except Exception as _e:
     import logging
     logging.getLogger(__name__).warning('phase22-24 wiring failed: %s', _e)
@@ -6816,24 +6825,28 @@ def stripe_webhook():
         try:
             handle_checkout_completed(data)
 
-            # Phase DD (2026-05-12): pair-code redemption path.
-            # If the checkout was initiated from a /redeem/<code> page,
-            # Stripe forwards the pair-code as `client_reference_id`.
-            # Promote the originating API key's tier so the agent's next
-            # call unlocks WITHOUT requiring the human to find + paste a
-            # new key. This is the single largest conversion lever in
-            # the MCP funnel.
+            # Phase DD (2026-05-12): pair-code + top-up redemption path.
+            # The /redeem/<code> page (pair-code) and /topup/<token> page
+            # (Phase DD+ play 3) both forward their identifier via
+            # Stripe's `client_reference_id`:
+            #   DCM-XXXX  → flip API key tier free → developer
+            #   tu-XXXX   → credit N one-time call credits for today
+            # Wrapped in try/except so a redemption error never breaks
+            # subscription creation / welcome email / admin alerts.
             try:
-                pair_code = (data.get('client_reference_id') or '').strip()
-                if pair_code and pair_code.upper().startswith('DCM-'):
+                ref = (data.get('client_reference_id') or '').strip()
+                if ref.upper().startswith('DCM-'):
                     from routes.pair_code import redeem_pair_code
                     pc_result = redeem_pair_code(
-                        pair_code.upper(),
-                        stripe_session_id=data.get('id'),
-                    )
+                        ref.upper(), stripe_session_id=data.get('id'))
                     print(f"💳 Pair-code redemption: {pc_result}")
+                elif ref.lower().startswith('tu-'):
+                    from routes.mcp_conversion_plays import redeem_topup_token
+                    tu_result = redeem_topup_token(
+                        ref, stripe_session_id=data.get('id'))
+                    print(f"💸 Top-up redemption: {tu_result}")
             except Exception as _pce:
-                print(f"⚠️ Pair-code redemption error (non-fatal): {_pce}")
+                print(f"⚠️ Conversion-play redemption error (non-fatal): {_pce}")
 
             customer_email = (
                 data.get('customer_email') or

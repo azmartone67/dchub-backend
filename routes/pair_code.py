@@ -136,14 +136,42 @@ def _new_code() -> str:
 # Core: create / fetch / redeem
 # ---------------------------------------------------------------------------
 
+def _detect_agent_from_request() -> str | None:
+    """Phase DD+ Play 6: detect the calling AI agent from headers.
+       Falls back to None when no agent fingerprint matches. Same
+       heuristic as routes/mcp_conversion_plays._capture_agent — keeps
+       attribution consistent across both modules.
+    """
+    try:
+        from flask import request as _req
+        ua = (_req.headers.get("X-Client-Name")
+              or _req.headers.get("User-Agent") or "")
+        ua_low = ua.lower()
+        for known in ("claude", "cursor", "gpt", "openai", "gemini",
+                       "perplexity", "cline", "windsurf", "copilot", "grok"):
+            if known in ua_low:
+                return known
+        return (ua[:60] or None)
+    except Exception:
+        return None
+
+
 def get_or_create_code(api_key: str, tool_name: str | None = None,
-                       market: str | None = None) -> dict | None:
+                       market: str | None = None,
+                       referring_agent: str | None = None) -> dict | None:
     """Return an unredeemed code for this api_key (newer than 30min), or
        generate a new one. Idempotent — repeated paywall hits for the
        same key reuse the same code so the human only ever sees one URL.
+
+       Phase DD+ Play 6: also captures referring_agent for affiliate
+       attribution. Caller can pass an explicit value; otherwise we
+       sniff the User-Agent / X-Client-Name. Stored in mcp_pair_codes
+       (column added by mcp_conversion_plays schema migration).
     """
     if not api_key:
         return None
+    if referring_agent is None:
+        referring_agent = _detect_agent_from_request()
     c = _conn()
     if c is None: return None
     h = _hash_key(api_key)
@@ -164,25 +192,41 @@ def get_or_create_code(api_key: str, tool_name: str | None = None,
                     "expires_at": exp.isoformat() if exp else None,
                     "reused": True}
         # Try up to 5 times in case of code collision (extremely unlikely
-        # with 32^4 = 1M codes, but defensive).
-        for _ in range(5):
+        # with 32^4 = 1M codes, but defensive). Defensive against the
+        # referring_agent column not existing yet (e.g. fresh DB before
+        # the Play 6 schema migration ran) — we try with the column,
+        # rollback on error, then retry without.
+        for attempt in range(5):
             code = _new_code()
             try:
                 with c.cursor() as cur:
-                    cur.execute("""
-                        INSERT INTO mcp_pair_codes
-                            (code, api_key_hash, tool_name, market)
-                        VALUES (%s, %s, %s, %s)
-                        ON CONFLICT (code) DO NOTHING
-                        RETURNING expires_at;
-                    """, (code, h, tool_name, market))
+                    try:
+                        cur.execute("""
+                            INSERT INTO mcp_pair_codes
+                                (code, api_key_hash, tool_name, market,
+                                 referring_agent)
+                            VALUES (%s, %s, %s, %s, %s)
+                            ON CONFLICT (code) DO NOTHING
+                            RETURNING expires_at;
+                        """, (code, h, tool_name, market, referring_agent))
+                    except Exception:
+                        c.rollback()
+                        # Fall back without the new column
+                        cur.execute("""
+                            INSERT INTO mcp_pair_codes
+                                (code, api_key_hash, tool_name, market)
+                            VALUES (%s, %s, %s, %s)
+                            ON CONFLICT (code) DO NOTHING
+                            RETURNING expires_at;
+                        """, (code, h, tool_name, market))
                     inserted = cur.fetchone()
                 c.commit()
                 if inserted:
                     return {"code": code,
                             "redeem_url": f"https://dchub.cloud/redeem/{code}",
                             "expires_at": inserted[0].isoformat(),
-                            "reused": False}
+                            "reused": False,
+                            "referring_agent": referring_agent}
             except Exception as e:
                 c.rollback()
                 print(f"[pair_code] insert retry: {e}", file=sys.stderr)
@@ -346,19 +390,37 @@ def redeem_landing(code):
         return Response(_redeem_error_page("Database temporarily unavailable."),
                         mimetype="text/html"), 503
     try:
+        # Phase DD+ Play 6: select referring_agent too (column may not
+        # exist on fresh DBs that haven't run the migration yet — fall
+        # back to None in that case).
+        referring_agent = None
         with c.cursor() as cur:
-            cur.execute("""
-                SELECT tool_name, market, target_tier, created_at,
-                       expires_at, redeemed_at
-                FROM mcp_pair_codes WHERE code = %s
-            """, (code,))
-            row = cur.fetchone()
+            try:
+                cur.execute("""
+                    SELECT tool_name, market, target_tier, created_at,
+                           expires_at, redeemed_at, referring_agent
+                    FROM mcp_pair_codes WHERE code = %s
+                """, (code,))
+                row = cur.fetchone()
+                if row: referring_agent = row[6]
+            except Exception:
+                c.rollback()
+                cur.execute("""
+                    SELECT tool_name, market, target_tier, created_at,
+                           expires_at, redeemed_at, NULL AS referring_agent
+                    FROM mcp_pair_codes WHERE code = %s
+                """, (code,))
+                row = cur.fetchone()
         if not row:
             return Response(_redeem_error_page(
                 f"Code <strong>{_h(code)}</strong> not found. "
                 "Pair codes expire after 30 minutes — ask your AI to "
                 "generate a new one."), mimetype="text/html"), 404
-        tool_name, market, target_tier, created_at, expires_at, redeemed_at = row
+        tool_name = row[0]
+        market = row[1]
+        target_tier = row[2]
+        expires_at = row[4]
+        redeemed_at = row[5]
         if redeemed_at:
             return Response(_redeem_success_page(code, tool_name),
                             mimetype="text/html"), 200
@@ -379,7 +441,8 @@ def redeem_landing(code):
             c.commit()
         except Exception:
             pass
-        return Response(_redeem_page(code, tool_name, market, target_tier),
+        return Response(_redeem_page(code, tool_name, market, target_tier,
+                                       referring_agent),
                         mimetype="text/html"), 200
     finally:
         try: c.close()
@@ -490,12 +553,41 @@ def _h(s):
     return escape(str(s or ""))
 
 
-def _redeem_page(code, tool_name, market, target_tier):
+def _redeem_page(code, tool_name, market, target_tier, referring_agent=None):
+    """Phase DD+: now also surfaces:
+       - Play 6 affiliate badge ("Upgrading via Claude Desktop")
+       - Play 3 one-time top-up alt-action ("not ready? $5 / 50 calls")
+       - Play 5 email-trial alt-action ("7-day free Developer trial")
+    """
     pretty_tool = (tool_name or "").replace("get_", "").replace("_", " ").title() or "DC Hub paid feature"
     market_line = f"<div class='ctx-row'><span>Market:</span><b>{_h(market)}</b></div>" if market else ""
     stripe_url = (f"{STRIPE_DEVELOPER_LINK}"
                   f"{'&' if '?' in STRIPE_DEVELOPER_LINK else '?'}"
                   f"client_reference_id={_h(code)}")
+    # Play 6 — pretty-format the referring agent name
+    agent_pretty_map = {
+        "claude":     "Claude Desktop",
+        "cursor":     "Cursor",
+        "gpt":        "ChatGPT / GPT client",
+        "openai":     "OpenAI client",
+        "gemini":     "Gemini CLI",
+        "perplexity": "Perplexity",
+        "cline":      "Cline",
+        "windsurf":   "Windsurf",
+        "copilot":    "GitHub Copilot",
+        "grok":       "Grok",
+    }
+    agent_pretty = agent_pretty_map.get((referring_agent or "").lower(),
+                                         referring_agent)
+    agent_badge = (
+        f"<div style='display:inline-flex;align-items:center;gap:8px;"
+        f"background:rgba(99,102,241,0.12);border:1px solid rgba(99,102,241,0.3);"
+        f"border-radius:999px;padding:6px 14px;font-size:0.78rem;font-weight:600;"
+        f"color:#a8a8f0;margin-bottom:14px'>"
+        f"<span style='font-size:0.95rem'>🤖</span>"
+        f"Upgrading via <strong style='color:#fff'>{_h(agent_pretty)}</strong></div>"
+    ) if agent_pretty else ""
+
     return f"""<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8">
@@ -516,17 +608,29 @@ h1{{font-size:1.6rem;margin:0 0 8px;letter-spacing:-0.02em;font-weight:800}}
 .cta{{display:block;background:var(--gradient);color:#fff;text-decoration:none;text-align:center;padding:16px 24px;border-radius:10px;font-weight:700;font-size:1.05rem;letter-spacing:0.01em;transition:transform .1s ease}}
 .cta:hover{{transform:translateY(-1px)}}
 .cta-sub{{color:var(--tx2);font-size:0.82rem;text-align:center;margin-top:10px}}
+.alts{{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:18px}}
+@media(max-width:480px){{.alts{{grid-template-columns:1fr}}}}
+.alt{{padding:12px 14px;border:1px solid var(--bd);border-radius:8px;text-decoration:none;color:var(--tx);background:rgba(255,255,255,0.02);transition:.15s;display:block}}
+.alt:hover{{border-color:rgba(99,102,241,0.5)}}
+.alt b{{display:block;font-size:0.92rem;margin-bottom:2px}}
+.alt span{{color:var(--tx2);font-size:0.78rem}}
 .divider{{border:0;border-top:1px solid var(--bd);margin:28px 0 20px}}
 .explainer{{color:var(--tx2);font-size:0.88rem;line-height:1.55}}
 .steps{{counter-reset:step;list-style:none;padding:0;margin:14px 0 0}}
 .steps li{{position:relative;padding:6px 0 6px 32px;color:var(--tx2);font-size:0.9rem}}
 .steps li:before{{counter-increment:step;content:counter(step);position:absolute;left:0;top:7px;width:22px;height:22px;border-radius:50%;background:rgba(99,102,241,0.15);border:1px solid var(--acc);color:var(--acc);font-weight:700;font-size:0.78rem;display:flex;align-items:center;justify-content:center}}
 .code{{font-family:JetBrains Mono,monospace;background:rgba(255,255,255,0.06);padding:2px 8px;border-radius:4px;color:#fff}}
+.trial{{margin-top:14px;padding:14px;background:rgba(16,185,129,0.06);border:1px solid rgba(16,185,129,0.25);border-radius:10px}}
+.trial form{{display:flex;gap:8px;margin-top:8px}}
+.trial input{{flex:1;background:rgba(255,255,255,0.04);border:1px solid var(--bd);border-radius:6px;color:var(--tx);padding:8px 12px;font-size:0.9rem;font-family:inherit}}
+.trial button{{background:var(--green);color:#000;border:none;border-radius:6px;padding:8px 18px;font-weight:700;cursor:pointer;font-size:0.85rem}}
+.trial .msg{{font-size:0.78rem;color:var(--tx2);margin-top:6px}}
 .foot{{margin-top:24px;text-align:center;color:var(--tx2);font-size:0.78rem}}
 .foot a{{color:var(--acc);text-decoration:none}}
 </style></head><body>
 <div class="wrap">
   <div class="kicker">🔓 AGENT PAIR-LINK</div>
+  {agent_badge}
   <h1>Unlock your AI agent</h1>
   <p class="sub">Your AI just hit a paywall and asked you to upgrade. One click and it's back to work — no key swap, no config change.</p>
 
@@ -542,6 +646,31 @@ h1{{font-size:1.6rem;margin:0 0 8px;letter-spacing:-0.02em;font-weight:800}}
     Unlock for $49/mo →
   </a>
   <div class="cta-sub">Secure checkout via Stripe · 7-day money-back</div>
+
+  <!-- Play 3 + Play 5 alternative paths -->
+  <div class="alts">
+    <a href="javascript:void(0)" class="alt" id="topup-link">
+      <b>💸 One-time top-up</b>
+      <span>50 extra calls for $5 · no subscription</span>
+    </a>
+    <a href="javascript:void(0)" class="alt" id="trial-toggle">
+      <b>🎯 Try 7 days free</b>
+      <span>Full Developer access · email magic link</span>
+    </a>
+  </div>
+
+  <div class="trial" id="trial-form" style="display:none">
+    <strong style="color:#fff;font-size:0.9rem">Get 7 days of full Developer access</strong>
+    <div style="font-size:0.78rem;color:var(--tx2);margin-top:4px">
+      No credit card. We'll send a one-click activation link.
+    </div>
+    <form id="trial-form-el" onsubmit="return submitTrial(event)">
+      <input type="text" name="website" style="display:none" tabindex="-1" autocomplete="off">
+      <input type="email" id="trial-email" placeholder="you@company.com" required>
+      <button type="submit">Send link →</button>
+    </form>
+    <div class="msg" id="trial-msg"></div>
+  </div>
 
   <hr class="divider">
   <div class="explainer">
@@ -561,6 +690,48 @@ h1{{font-size:1.6rem;margin:0 0 8px;letter-spacing:-0.02em;font-weight:800}}
     <a href="/pricing">Compare plans</a> · <a href="/dcpi">Open DCPI</a> · <a href="/mcp">MCP docs</a>
   </div>
 </div>
+<script>
+  // Top-up flow: generate a token for this api_key via API, then redirect
+  // to /topup/{{token}} which has the Stripe button.
+  document.getElementById('topup-link').addEventListener('click', async () => {{
+    try {{
+      // We don't have the api_key on the client. Best UX: route to /pricing#topup
+      // which has the top-up explainer + manual instructions for now.
+      window.location.href = '/pricing#topup';
+    }} catch (e) {{ /* silent */ }}
+  }});
+  // Trial form toggle
+  document.getElementById('trial-toggle').addEventListener('click', () => {{
+    const f = document.getElementById('trial-form');
+    f.style.display = f.style.display === 'none' ? 'block' : 'none';
+    document.getElementById('trial-email')?.focus();
+  }});
+  async function submitTrial(ev) {{
+    ev.preventDefault();
+    const email = document.getElementById('trial-email').value;
+    const msg = document.getElementById('trial-msg');
+    msg.textContent = 'Sending…';
+    try {{
+      const r = await fetch('/api/v1/trial/start', {{
+        method: 'POST', headers: {{'Content-Type': 'application/json'}},
+        body: JSON.stringify({{email, source: 'redeem_page',
+                              referring_agent: {json.dumps(referring_agent or "")}}}),
+      }});
+      const d = await r.json();
+      if (d.ok) {{
+        msg.style.color = '#10b981';
+        msg.textContent = '✓ Check your inbox for the activation link (5 min).';
+      }} else {{
+        msg.style.color = '#f59e0b';
+        msg.textContent = 'Could not send: ' + (d.error || 'try again');
+      }}
+    }} catch (e) {{
+      msg.style.color = '#f59e0b';
+      msg.textContent = 'Network error — try again.';
+    }}
+    return false;
+  }}
+</script>
 </body></html>"""
 
 
