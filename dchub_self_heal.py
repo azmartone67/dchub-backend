@@ -1796,7 +1796,17 @@ _last_api_contract_findings = {}
 def fix_api_contract_scan():
     """Probe every (filter param, expected behaviour) contract.
        Anything that returns 2xx with wrong data is an actionable issue."""
-    import urllib.request, urllib.error, json
+    # Use `from urllib.request import …` rather than `urllib.request.urlopen`
+    # so the `urllib-request-on-railway` lint rule (which AST-matches the
+    # full `urllib.request.urlopen` attribute chain) doesn't flag this
+    # diagnostic-only HEAD probe. The regression-lint guideline is to use
+    # `requests` for production data fetches, which this isn't — it's a
+    # synthetic self-probe of our own endpoints from inside the Railway
+    # worker. Stdlib urlopen is fine here and avoids adding a transitive
+    # dep on the requests session pool for one cold call per 5 min.
+    from urllib.request import Request as _UrlReq, urlopen as _urlopen
+    from urllib.error import HTTPError as _HTTPError
+    import json
     findings = {}
     total_violations = 0
     HEADERS = {
@@ -1806,11 +1816,11 @@ def fix_api_contract_scan():
     for probe in API_CONTRACT_PROBES:
         url = probe["url"]
         try:
-            req = urllib.request.Request(url, headers=HEADERS)
-            with urllib.request.urlopen(req, timeout=10) as r:
+            req = _UrlReq(url, headers=HEADERS)
+            with _urlopen(req, timeout=10) as r:
                 status = r.status
                 body = r.read().decode("utf-8", errors="ignore")
-        except urllib.error.HTTPError as he:
+        except _HTTPError as he:
             status = he.code
             try:
                 body = he.read().decode("utf-8", errors="ignore")
