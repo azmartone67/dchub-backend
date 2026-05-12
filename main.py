@@ -1081,6 +1081,8 @@ try:
     from routes.social_posts_routes import social_posts_bp
     from routes.freshness_public import freshness_public_bp  # phase 268_public_freshness
     from routes.enterprise import enterprise_bp  # phase 272_enterprise_contact
+    from routes.brain_v2_layer4 import brain_v2_bp  # phase 289_self_learning
+    from routes.outreach_cap_exceeded import outreach_cap_bp  # phase 290_outreach
     app.register_blueprint(observability_bp)
     app.register_blueprint(gating_bp)  # phase68_gating_bp
     register_jinja_filter(app)  # phase68_gating_bp
@@ -1090,6 +1092,8 @@ try:
     app.register_blueprint(social_posts_bp)
     app.register_blueprint(freshness_public_bp)  # phase 268 — public /freshness + /api/v1/freshness
     app.register_blueprint(enterprise_bp)  # phase 272 — /enterprise + /api/v1/enterprise/contact
+    app.register_blueprint(brain_v2_bp)  # phase 289 — Brain v2 Layer 4 self-learning
+    app.register_blueprint(outreach_cap_bp)  # phase 290 — cap-exceeded outreach engine
 except Exception as _e:
     import logging
     logging.getLogger(__name__).warning('phase22-24 wiring failed: %s', _e)
