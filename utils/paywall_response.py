@@ -254,6 +254,41 @@ def build_paywall_response(
         base['one_click_upgrade_url'] = STRIPE_DEVELOPER_LINK
         base['one_click_upgrade_tier'] = 'developer'  # phase 281
         base['one_click_upgrade_price'] = '$49/mo'    # phase 281
+
+    # Phase DD (2026-05-12): inject a pair-code + redeem URL when the
+    # caller's api_key is known. This closes the agent→human handoff
+    # that's keeping MCP conversion at 0.012%. Agent gets the redeem URL,
+    # passes it to its human, who clicks ONE link to upgrade THIS key
+    # (no copy-paste, no config swap). Strip pair-code generation on
+    # any error — the response still has the legacy /pricing CTA so
+    # nothing regresses.
+    if user_id:
+        try:
+            from routes.pair_code import get_or_create_code
+            pc = get_or_create_code(user_id, tool_name=tool_name)
+            if pc and pc.get("code"):
+                base['pair_code'] = pc['code']
+                base['pair_redeem_url'] = pc['redeem_url']
+                base['pair_expires_at'] = pc.get('expires_at')
+                base['pair_stripe_url'] = pc.get(
+                    'redeem_url',
+                    f"https://dchub.cloud/redeem/{pc['code']}",
+                )
+                # Prepend the magic-link line to human_message so the
+                # AI surfaces it first when it relays to the user.
+                magic_line = (
+                    f"🔗 **Tell your human: visit https://dchub.cloud/redeem/"
+                    f"{pc['code']} to unlock this in one click.** "
+                    f"Code expires in 30 minutes.\n\n"
+                )
+                if isinstance(base.get('human_message'), str):
+                    base['human_message'] = magic_line + base['human_message']
+        except Exception as _pce:
+            # Pair-code generation is best-effort. If the DB is down or
+            # the routes import fails, the paywall still returns the
+            # legacy Stripe link and the old (worse) funnel still works.
+            pass
+
     if trial_preview_data is not None:
         base['trial_preview'] = trial_preview_data
     else:

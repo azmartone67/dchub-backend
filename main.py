@@ -1096,6 +1096,16 @@ try:
     app.register_blueprint(brain_v2_bp)  # phase 289 — Brain v2 Layer 4 self-learning
     app.register_blueprint(brain_v2_public_bp)  # phase 300 — public /brain transparency page
     app.register_blueprint(outreach_cap_bp)  # phase 290 — cap-exceeded outreach engine
+    # Phase DD (2026-05-12): pair-code conversion flow. Closes the
+    # agent→human handoff that's keeping MCP conversion at 0.012%.
+    # Adds /redeem/<code> + /api/v1/mcp/pair-code/* + funnel
+    # diagnostics. See routes/pair_code.py for the full design.
+    try:
+        from routes.pair_code import pair_code_bp
+        app.register_blueprint(pair_code_bp)
+    except Exception as _pe:
+        import logging
+        logging.getLogger(__name__).warning('pair_code wiring failed: %s', _pe)
 except Exception as _e:
     import logging
     logging.getLogger(__name__).warning('phase22-24 wiring failed: %s', _e)
@@ -6805,6 +6815,25 @@ def stripe_webhook():
     if event_type == 'checkout.session.completed':
         try:
             handle_checkout_completed(data)
+
+            # Phase DD (2026-05-12): pair-code redemption path.
+            # If the checkout was initiated from a /redeem/<code> page,
+            # Stripe forwards the pair-code as `client_reference_id`.
+            # Promote the originating API key's tier so the agent's next
+            # call unlocks WITHOUT requiring the human to find + paste a
+            # new key. This is the single largest conversion lever in
+            # the MCP funnel.
+            try:
+                pair_code = (data.get('client_reference_id') or '').strip()
+                if pair_code and pair_code.upper().startswith('DCM-'):
+                    from routes.pair_code import redeem_pair_code
+                    pc_result = redeem_pair_code(
+                        pair_code.upper(),
+                        stripe_session_id=data.get('id'),
+                    )
+                    print(f"💳 Pair-code redemption: {pc_result}")
+            except Exception as _pce:
+                print(f"⚠️ Pair-code redemption error (non-fatal): {_pce}")
 
             customer_email = (
                 data.get('customer_email') or

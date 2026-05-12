@@ -1806,6 +1806,8 @@ CONTENT_TYPE_PROBES = [
     {"label": "dcpi_returns_html",    "url": "https://dchub.cloud/dcpi",           "expect": "text/html"},
     {"label": "brain_returns_html",   "url": "https://dchub.cloud/brain",          "expect": "text/html"},
     {"label": "digest_returns_html",  "url": "https://dchub.cloud/digest",         "expect": "text/html"},
+    # Phase DD (2026-05-12): pair-code conversion funnel endpoints
+    {"label": "funnel_diagnostics_json", "url": "https://dchub.cloud/api/v1/mcp/funnel/diagnostics", "expect": "application/json"},
 ]
 
 _last_api_contract_findings = {}
