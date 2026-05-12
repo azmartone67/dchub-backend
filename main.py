@@ -19061,7 +19061,7 @@ def _mcp_conversion_funnel():
     funnel = {
         "1_tool_calls_7d":      safe_count("SELECT COUNT(*) FROM mcp_tool_calls WHERE created_at > NOW() - INTERVAL '7 days'"),
         "2_paywall_hits_7d":    safe_count("SELECT COUNT(*) FROM mcp_upgrade_signals WHERE created_at > NOW() - INTERVAL '7 days'"),
-        "3_upgrade_clicks_7d":  safe_count("SELECT COUNT(*) FROM page_views WHERE page LIKE '%utm_source=mcp%' AND created_at > NOW() - INTERVAL '7 days'"),
+        "3_upgrade_clicks_7d":  safe_count("SELECT COUNT(*) FROM page_views WHERE page LIKE '%utm_source=mcp%' AND view_time > NOW() - INTERVAL '7 days'"),
         "4_checkouts_started_7d": safe_count("SELECT COUNT(*) FROM mcp_upgrade_signals WHERE signal_type = 'checkout_started' AND created_at > NOW() - INTERVAL '7 days'"),
         "5_conversions_30d":    safe_count("SELECT COUNT(*) FROM mcp_upgrade_signals WHERE tier_current IN ('pro','paid','enterprise') AND created_at > NOW() - INTERVAL '30 days'"),
         "5b_total_paid_keys":   safe_count("SELECT COUNT(DISTINCT user_email) FROM mcp_upgrade_signals WHERE tier_current IN ('pro','paid','enterprise')"),
@@ -19099,22 +19099,18 @@ def _diagnose_funnel_leak(funnel):
 
 @app.route("/api/v1/mcp/power-users", methods=["GET"])
 def _mcp_power_users():
-    """Top free users by upgrade signals. Uses REAL columns from
-       mcp_upgrade_signals: user_email, tool_requested, signal_type."""
+    """Top free users by upgrade signals. Identified users only — filter
+       out already-converted and already-outreached. The actionable list."""
     import os, psycopg2
     from flask import jsonify, request
     DATABASE_URL = os.environ.get("DATABASE_URL")
-    if not DATABASE_URL:
-        return jsonify({"error": "no DATABASE_URL"}), 500
+    if not DATABASE_URL: return jsonify({"error": "no DATABASE_URL"}), 500
     try:
         limit = min(int(request.args.get("limit", 50)), 200)
-    except Exception:
-        limit = 50
+    except Exception: limit = 50
 
     try:
-        conn = psycopg2.connect(DATABASE_URL, connect_timeout=8)
-        with conn.cursor() as cur:
-            # Real schema columns confirmed via Phase 254 introspection
+        with psycopg2.connect(DATABASE_URL, connect_timeout=8) as conn, conn.cursor() as cur:
             cur.execute("""
                 SELECT user_email,
                        COUNT(*) AS signal_count,
@@ -19125,14 +19121,17 @@ def _mcp_power_users():
                        MAX(daily_usage) AS peak_usage,
                        MAX(daily_limit) AS daily_limit,
                        array_agg(DISTINCT mcp_client) AS clients,
-                       MAX(tier_current) AS current_tier
+                       MAX(tier_current) AS current_tier,
+                       bool_or(outreach_sent) AS already_outreached,
+                       bool_or(converted) AS already_converted
                 FROM mcp_upgrade_signals
                 WHERE created_at > NOW() - INTERVAL '30 days'
                   AND user_email IS NOT NULL
                   AND user_email != ''
+                  AND COALESCE(converted, false) = false
                 GROUP BY user_email
-                HAVING COUNT(*) >= 3
-                ORDER BY COUNT(*) DESC
+                HAVING COUNT(*) >= 1
+                ORDER BY signal_count DESC, MAX(created_at) DESC
                 LIMIT %s
             """, (limit,))
             rows = cur.fetchall()
@@ -19146,18 +19145,14 @@ def _mcp_power_users():
             "signal_types": list(r[5]) if r[5] else [],
             "peak_daily_usage": r[6],
             "daily_limit": r[7],
-            "mcp_clients": list(r[8]) if r[8] else [],
+            "mcp_clients": [c for c in (r[8] or []) if c],
             "current_tier": r[9] or "free",
-            "outreach_score": min(100, int((r[1] / 10) * 100)),
+            "already_outreached": bool(r[10]),
+            "already_converted": bool(r[11]),
+            "outreach_score": min(100, int((r[1] / 5) * 100)),
+            "ready_to_email": not bool(r[10]) and not bool(r[11]),
         } for r in rows]
-        conn.close()
-
-        # Also fetch session-only users (no email yet)
-        return jsonify({
-            "total": len(users),
-            "users": users,
-            "note": "Filtered to email-identified users only. Add session-only count if needed.",
-        })
+        return jsonify({"total": len(users), "users": users})
     except Exception as e:
         return jsonify({"error": str(e)[:300], "users": []}), 500
 
@@ -19168,38 +19163,63 @@ def _mcp_power_users():
 
 @app.route("/api/v1/stripe/webhook-convert", methods=["POST"])
 def _stripe_webhook_convert():
-    """Listens for checkout.session.completed events. Instantly upgrades
-       the user's dev_key tier so their next MCP call works at the new tier."""
+    """checkout.session.completed handler:
+       1. Upgrade users.plan
+       2. Upgrade api_keys.plan + api_keys.rate_limit_tier
+       3. Mark mcp_upgrade_signals.converted = true
+       4. Return summary"""
     import os, json
     from flask import request, jsonify
-    # In production: verify the Stripe signature. Skipping for clarity here.
     try:
         payload = request.get_json(force=True) or {}
         evt_type = payload.get("type", "")
-        if evt_type != "checkout.session.completed":
+        if evt_type not in ("checkout.session.completed", "customer.subscription.updated", "customer.subscription.created"):
             return jsonify({"ignored": evt_type})
         session = payload.get("data", {}).get("object", {})
-        user_id = (session.get("metadata") or {}).get("user_id")
-        email   = session.get("customer_email")
+        email   = (session.get("customer_email") or
+                   session.get("customer_details", {}).get("email") or
+                   (session.get("metadata") or {}).get("email"))
         plan    = (session.get("metadata") or {}).get("plan", "pro")
+        user_id = (session.get("metadata") or {}).get("user_id")
 
         DATABASE_URL = os.environ.get("DATABASE_URL")
         if not DATABASE_URL:
             return jsonify({"error": "no DATABASE_URL"}), 500
         import psycopg2
-        with psycopg2.connect(DATABASE_URL, connect_timeout=8) as conn, conn.cursor() as cur:
-            # Upgrade tier — by user_id if available, else by email
+        with psycopg2.connect(DATABASE_URL, connect_timeout=8) as conn:
+            results = {}
+            # 1. Upgrade users.plan
+            if email:
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE users SET plan = %s WHERE email = %s;", (plan, email))
+                    results["users_updated"] = cur.rowcount
+            # 2. Upgrade api_keys (both plan + rate_limit_tier)
             if user_id:
-                cur.execute("UPDATE dev_keys SET tier = %s, upgraded_at = NOW() WHERE user_id = %s;",
-                            (plan, user_id))
-            elif email:
-                cur.execute("UPDATE dev_keys SET tier = %s, upgraded_at = NOW() WHERE email = %s;",
-                            (plan, email))
-            n = cur.rowcount
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE api_keys SET plan = %s, rate_limit_tier = %s WHERE user_id = %s;",
+                                (plan, plan, user_id))
+                    results["api_keys_by_userid"] = cur.rowcount
+            if email:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        UPDATE api_keys SET plan = %s, rate_limit_tier = %s
+                        WHERE user_id IN (SELECT id::text FROM users WHERE email = %s);
+                    """, (plan, plan, email))
+                    results["api_keys_by_email"] = cur.rowcount
+            # 3. Flip mcp_upgrade_signals.converted = true
+            if email:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        UPDATE mcp_upgrade_signals
+                        SET converted = true, converted_at = NOW()
+                        WHERE user_email = %s AND COALESCE(converted, false) = false;
+                    """, (email,))
+                    results["signals_marked_converted"] = cur.rowcount
             conn.commit()
-        return jsonify({"upgraded_keys": n, "plan": plan, "user_id": user_id, "email": email})
+        return jsonify({"event": evt_type, "plan": plan, "email": email, "user_id": user_id, "results": results})
     except Exception as e:
-        return jsonify({"error": str(e)[:300]}), 500
+        import traceback
+        return jsonify({"error": str(e)[:300], "trace": traceback.format_exc()[:600]}), 500
 
 
 # ============================================================================
@@ -19294,4 +19314,103 @@ def _stripe_verify_with_any_secret(payload_bytes, signature_header):
             last_err = e
             continue
     raise (last_err or ValueError("no Stripe webhook secret env var matched"))
+
+
+# ============================================================================
+# Phase 257: identify-vs-anonymous breakdown + outreach tracking endpoints
+# ============================================================================
+
+@app.route("/api/v1/mcp/email-distribution", methods=["GET"])
+def _mcp_email_distribution():
+    """How much of the 8K signal pool is identified (has email) vs
+       anonymous (only session_id/IP)? Tells us where to focus outreach."""
+    import os, psycopg2
+    from flask import jsonify
+    DATABASE_URL = os.environ.get("DATABASE_URL")
+    if not DATABASE_URL: return jsonify({"error": "no DATABASE_URL"}), 500
+    try:
+        with psycopg2.connect(DATABASE_URL, connect_timeout=8) as conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT
+                    COUNT(*) AS total_signals_30d,
+                    COUNT(*) FILTER (WHERE user_email IS NOT NULL AND user_email != '') AS with_email,
+                    COUNT(*) FILTER (WHERE user_email IS NULL OR user_email = '') AS anonymous,
+                    COUNT(DISTINCT user_email) FILTER (WHERE user_email IS NOT NULL AND user_email != '') AS unique_emails,
+                    COUNT(DISTINCT session_id) AS unique_sessions,
+                    COUNT(DISTINCT ip_address) AS unique_ips,
+                    COUNT(*) FILTER (WHERE converted = true) AS converted_count,
+                    COUNT(*) FILTER (WHERE outreach_sent = true) AS already_outreached
+                FROM mcp_upgrade_signals
+                WHERE created_at > NOW() - INTERVAL '30 days';
+            """)
+            r = cur.fetchone()
+        return jsonify({
+            "total_signals_30d": r[0],
+            "with_email":        r[1],
+            "anonymous":         r[2],
+            "email_capture_rate": f"{(r[1]/r[0]*100):.1f}%" if r[0] else "0%",
+            "unique_emails":     r[3],
+            "unique_sessions":   r[4],
+            "unique_ips":        r[5],
+            "converted_count":   r[6],
+            "already_outreached": r[7],
+            "addressable_outreach_pool": max(0, r[3] - r[7] - r[6]),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)[:300]}), 500
+
+
+@app.route("/api/v1/mcp/mark-outreach-sent", methods=["POST"])
+def _mcp_mark_outreach_sent():
+    """Call after sending an outreach email. Prevents duplicate sends."""
+    import os, psycopg2
+    from flask import jsonify, request
+    DATABASE_URL = os.environ.get("DATABASE_URL")
+    if not DATABASE_URL: return jsonify({"error": "no DATABASE_URL"}), 500
+    body = request.get_json(force=True) or {}
+    email = body.get("email") or request.args.get("email")
+    if not email: return jsonify({"error": "missing email"}), 400
+    notes = body.get("notes", "")
+    try:
+        with psycopg2.connect(DATABASE_URL, connect_timeout=5) as conn, conn.cursor() as cur:
+            cur.execute("""
+                UPDATE mcp_upgrade_signals
+                SET outreach_sent = true,
+                    outreach_sent_at = NOW(),
+                    notes = COALESCE(notes,'') || E'\n[outreach] ' || %s
+                WHERE user_email = %s
+                  AND COALESCE(outreach_sent, false) = false;
+            """, (notes, email))
+            n = cur.rowcount
+            conn.commit()
+        return jsonify({"email": email, "rows_marked": n})
+    except Exception as e:
+        return jsonify({"error": str(e)[:300]}), 500
+
+
+@app.route("/api/v1/mcp/mark-converted", methods=["POST"])
+def _mcp_mark_converted():
+    """Flip converted=true on all the user's outstanding signals.
+       Called by Stripe webhook on checkout.session.completed."""
+    import os, psycopg2
+    from flask import jsonify, request
+    DATABASE_URL = os.environ.get("DATABASE_URL")
+    if not DATABASE_URL: return jsonify({"error": "no DATABASE_URL"}), 500
+    body = request.get_json(force=True) or {}
+    email = body.get("email") or request.args.get("email")
+    if not email: return jsonify({"error": "missing email"}), 400
+    try:
+        with psycopg2.connect(DATABASE_URL, connect_timeout=5) as conn, conn.cursor() as cur:
+            cur.execute("""
+                UPDATE mcp_upgrade_signals
+                SET converted = true,
+                    converted_at = NOW()
+                WHERE user_email = %s
+                  AND COALESCE(converted, false) = false;
+            """, (email,))
+            n = cur.rowcount
+            conn.commit()
+        return jsonify({"email": email, "signals_marked_converted": n})
+    except Exception as e:
+        return jsonify({"error": str(e)[:300]}), 500
 
