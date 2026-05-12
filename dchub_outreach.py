@@ -119,6 +119,10 @@ def already_outreached_recently(email, days=14):
 
 def send_via_resend(to_email, subject, html_body, text_body=None, reply_to="jonathan@dchub.cloud"):
     """Send email via Resend API. Returns (ok, response_text, resend_id)."""
+    # P268_INTERNAL_HARD_BLOCK — last line of defense
+    if is_internal_email(to_email):
+        print(f"  [BLOCKED] internal/test address — refusing to send to {to_email}")
+        return {"blocked": True, "reason": "internal_email_pattern", "email": to_email}
     import requests
     api_key = os.environ.get("RESEND_API_KEY")
     if not api_key:
@@ -397,6 +401,17 @@ def build_queue(max_total=50):
     # Filter out anyone already emailed in last 14 days
     ensure_outreach_log_table()
     filtered = [q for q in deduped if not already_outreached_recently(q["email"], 14)]
+    # P268_BUILD_QUEUE_FILTER — strip internal/test/db-excluded emails before returning
+    try:
+        _db_excl = get_db_excludes()
+    except Exception:
+        _db_excl = set()
+    filtered = [
+        _q for _q in filtered
+        if not is_internal_email(_q.get("email", ""))
+        and (_q.get("email", "").lower() not in _db_excl)
+    ]
+
     return filtered[:max_total], None
 
 
