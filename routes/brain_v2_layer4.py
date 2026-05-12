@@ -297,7 +297,10 @@ def trigger_learn():
     # fallback path still surfaces these to a human.
     def _is_asset_issue(i):
         lbl = (i.get("issue") or "")
-        return lbl.startswith("asset_")
+        # Phase Z (2026-05-12): api_contract_* labels also need backend
+        # code changes (filter logic, gate removal, response shape fix),
+        # not body substitution. Group them with asset_* for filtering.
+        return lbl.startswith("asset_") or lbl.startswith("api_contract_")
 
     # Phase S (2026-05-12): "learn from errors it misses" — track every
     # issue's persistence in Postgres, then prioritize the most-stuck
