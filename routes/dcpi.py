@@ -1047,6 +1047,48 @@ h2 {
   color: white;
 }
 
+/* phase 271: verdict filter tabs — Actionable (BUILD/CAUTION/AVOID) is the
+   default view; Monitoring (LOW_SIGNAL) is the noisy long tail; All shows
+   everything. Designed to mirror .toggle visual language. */
+.verdict-tabs {
+  display: inline-flex;
+  background: var(--card);
+  border: 1px solid var(--bd);
+  border-radius: 10px;
+  overflow: hidden;
+  margin: 0 0 1rem;
+}
+.verdict-tabs button {
+  background: transparent;
+  color: var(--tx2);
+  border: 0;
+  padding: 0.6rem 1.15rem;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.82rem;
+  font-family: inherit;
+  transition: all 0.15s;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.verdict-tabs button.active {
+  background: var(--gradient);
+  color: white;
+}
+.verdict-tabs button .count {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.72rem;
+  padding: 0.12rem 0.45rem;
+  border-radius: 99px;
+  background: rgba(255,255,255,0.08);
+  color: inherit;
+}
+.verdict-tabs button.active .count {
+  background: rgba(255,255,255,0.22);
+}
+.hidden-by-verdict { display: none !important; }
+
 /* ===== GRID ===== */
 .grid {
   display: grid;
@@ -1216,14 +1258,33 @@ footer a:hover { color: var(--acc-light); }
   </div>
 
   <div class="section-h"><span class="pip"></span>📊 Index View</div>
-  <div class="toggle" role="tablist">
+
+  <!-- phase 271: verdict tabs — Actionable is default so credibility-grade
+       verdicts get visual primacy; Monitoring keeps LOW_SIGNAL covered but
+       demoted; All preserves the full-coverage claim. Counts are accurate
+       to the rendered DOM. -->
+  <div class="verdict-tabs" role="tablist" aria-label="Filter markets by verdict">
+    <button class="vt active" data-verdict-filter="actionable" role="tab" aria-selected="true">
+      Actionable <span class="count">{{ count_actionable }}</span>
+    </button>
+    <button class="vt" data-verdict-filter="monitoring" role="tab" aria-selected="false">
+      Monitoring <span class="count">{{ count_low_signal }}</span>
+    </button>
+    <button class="vt" data-verdict-filter="all" role="tab" aria-selected="false">
+      All <span class="count">{{ count }}</span>
+    </button>
+  </div>
+
+  <div class="toggle" role="tablist" aria-label="Switch score axis">
     <button class="active" data-mode="excess">Excess Power · Opportunity</button>
     <button data-mode="constraint">Constraint · Avoid</button>
   </div>
 
   <div class="grid" id="grid">
     {% for s in scores %}
-    <a href="/dcpi/{{ s.market_slug }}" style="text-decoration:none;color:inherit;">
+    <a href="/dcpi/{{ s.market_slug }}" style="text-decoration:none;color:inherit;"
+       class="card-link {% if s.verdict == 'LOW_SIGNAL' %}hidden-by-verdict{% endif %}"
+       data-verdict="{{ s.verdict }}">
     <div class="card" data-excess="{{ s.excess_power_score }}" data-constraint="{{ s.constraint_score }}">
       <div class="market-name">{{ s.market_name }}</div>
       <div class="iso">{{ s.iso }} · {{ s.state }}</div>
@@ -1278,6 +1339,31 @@ buttons.forEach(b => b.addEventListener('click', () => {
   });
   cards.forEach(c => grid.appendChild(c));
 }));
+
+// phase 271: verdict-tab filter — Actionable / Monitoring / All
+// Server has already pre-hidden LOW_SIGNAL on the initial DOM via the
+// `hidden-by-verdict` class so the default view loads correctly even
+// before JS executes. This script handles user clicks.
+(function(){
+  const tabs = document.querySelectorAll('.verdict-tabs button');
+  if (!tabs.length) return;
+  function apply(filter){
+    document.querySelectorAll('.card-link').forEach(el => {
+      const v = el.getAttribute('data-verdict') || '';
+      const isLow = v === 'LOW_SIGNAL';
+      let hide = false;
+      if (filter === 'actionable') hide = isLow;
+      else if (filter === 'monitoring') hide = !isLow;
+      // 'all' — hide nothing
+      el.classList.toggle('hidden-by-verdict', hide);
+    });
+  }
+  tabs.forEach(b => b.addEventListener('click', () => {
+    tabs.forEach(x => { x.classList.remove('active'); x.setAttribute('aria-selected','false'); });
+    b.classList.add('active'); b.setAttribute('aria-selected','true');
+    apply(b.getAttribute('data-verdict-filter'));
+  }));
+})();
 </script>
 
 
@@ -1788,7 +1874,20 @@ def public_dashboard():
                            FROM market_power_scores WHERE published = true ORDER BY market_slug, computed_at DESC""")
             rows = cur.fetchall()
         rows.sort(key=lambda r: -(r.get("excess_power_score") or 0))
-    return render_template_string(DCPI_INDEX_TEMPLATE, scores=rows, count=len(rows))
+    # phase 271: surface verdict counts so the LOW_SIGNAL "Monitoring" tab can
+    # show a count badge, and the page's "Actionable" default isn't an opaque
+    # filter. Actionable = BUILD + CAUTION + AVOID (decision-grade); monitoring
+    # = LOW_SIGNAL (covered but no actionable signal yet).
+    _ACTIONABLE = {"BUILD", "CAUTION", "AVOID"}
+    count_actionable = sum(1 for r in rows if (r.get("verdict") or "") in _ACTIONABLE)
+    count_low_signal = sum(1 for r in rows if (r.get("verdict") or "") == "LOW_SIGNAL")
+    return render_template_string(
+        DCPI_INDEX_TEMPLATE,
+        scores=rows,
+        count=len(rows),
+        count_actionable=count_actionable,
+        count_low_signal=count_low_signal,
+    )
 
 
 @dcpi_bp.route("/dcpi/<slug>", methods=["GET"])
