@@ -729,6 +729,228 @@ def api_leaderboard():
     return resp, 200
 
 
+# ============================================================================
+# Phase AA (2026-05-12): ISO Intelligence Layer
+#
+# User asked: "what can we do strengthen our DCPI index, more ISO
+# intelligence?" The market_power_scores table already carries deep
+# per-market data we never surface — queue_wait_months, queue_capacity_mw,
+# reserve_margin_pct, gen_additions_12mo_mw, curtailment_pct,
+# stranded_capacity_mw, emergency_count_30d, avg_kwh_cents. Aggregating
+# these per-ISO turns DCPI from "market scorecard" into "ISO power-supply
+# diagnostic" — exactly the depth buyers + journalists + AI agents need
+# to make ISO-level decisions (which ISO is easiest to enter? cheapest?
+# fastest interconnect?).
+#
+# Two new endpoints:
+#   GET /api/v1/dcpi/iso/<code>       — one ISO deep-dive
+#   GET /api/v1/dcpi/iso-comparison   — all ISOs ranked side-by-side
+# ============================================================================
+
+_ISO_NAMES = {
+    "PJM":   "PJM Interconnection (mid-Atlantic + Ohio Valley)",
+    "ERCOT": "Electric Reliability Council of Texas",
+    "CAISO": "California ISO",
+    "NYISO": "New York ISO",
+    "ISONE": "ISO New England",
+    "ISO-NE": "ISO New England",
+    "MISO":  "Midcontinent ISO",
+    "SPP":   "Southwest Power Pool",
+    "WECC":  "Western Electricity Coordinating Council (non-CAISO)",
+    "IESO":  "Independent Electricity System Operator (Ontario)",
+}
+
+
+def _aggregate_iso_stats(iso_code: str | None = None):
+    """Compute per-ISO aggregate stats from market_power_scores. When
+       iso_code is given, return one ISO; otherwise return all ISOs
+       ranked. Uses DISTINCT ON to take the latest snapshot per market
+       so a market that's been recomputed several times doesn't skew
+       the avg."""
+    where_iso = ""
+    params = []
+    if iso_code:
+        where_iso = "AND UPPER(iso) = %s"
+        params.append(iso_code.upper())
+
+    # DISTINCT ON (market_slug) — most recent row per market
+    sql = f"""
+        WITH latest AS (
+            SELECT DISTINCT ON (market_slug)
+                market_slug, market_name, iso, state,
+                excess_power_score, constraint_score, quality_score,
+                queue_wait_months, queue_capacity_mw,
+                reserve_margin_pct, gen_additions_12mo_mw,
+                curtailment_pct, stranded_capacity_mw,
+                emergency_count_30d, avg_kwh_cents,
+                verdict, computed_at
+            FROM market_power_scores
+            WHERE published = true {where_iso}
+            ORDER BY market_slug, computed_at DESC
+        )
+        SELECT
+            COALESCE(iso, 'UNKNOWN') AS iso,
+            COUNT(*) AS market_count,
+            AVG(excess_power_score) AS avg_excess,
+            AVG(constraint_score) AS avg_constraint,
+            AVG(quality_score) AS avg_quality,
+            AVG(NULLIF(queue_wait_months, 0)) AS avg_queue_wait_months,
+            SUM(COALESCE(queue_capacity_mw, 0)) AS total_queue_capacity_mw,
+            AVG(NULLIF(reserve_margin_pct, 0)) AS avg_reserve_margin_pct,
+            SUM(COALESCE(gen_additions_12mo_mw, 0)) AS total_gen_additions_12mo_mw,
+            AVG(NULLIF(curtailment_pct, 0)) AS avg_curtailment_pct,
+            SUM(COALESCE(stranded_capacity_mw, 0)) AS total_stranded_capacity_mw,
+            SUM(COALESCE(emergency_count_30d, 0)) AS sum_emergency_30d,
+            AVG(NULLIF(avg_kwh_cents, 0)) AS avg_kwh_cents,
+            SUM(CASE WHEN verdict = 'BUILD'      THEN 1 ELSE 0 END) AS build_count,
+            SUM(CASE WHEN verdict = 'CAUTION'    THEN 1 ELSE 0 END) AS caution_count,
+            SUM(CASE WHEN verdict = 'AVOID'      THEN 1 ELSE 0 END) AS avoid_count,
+            SUM(CASE WHEN verdict = 'LOW_SIGNAL' THEN 1 ELSE 0 END) AS low_signal_count,
+            MAX(computed_at) AS latest_computed_at
+        FROM latest
+        GROUP BY iso
+        ORDER BY market_count DESC
+    """
+    with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(sql, params)
+        return [dict(r) for r in cur.fetchall()]
+
+
+def _iso_top_markets(iso_code: str, verdict_filter: str, limit: int = 5):
+    """Top markets in an ISO by verdict. BUILD ranked by excess_power_score
+       DESC; AVOID ranked by constraint_score DESC."""
+    order_col = "excess_power_score" if verdict_filter == "BUILD" else "constraint_score"
+    sql = f"""
+        SELECT DISTINCT ON (market_slug)
+            market_slug, market_name, state,
+            excess_power_score, constraint_score, quality_score, verdict,
+            queue_wait_months, avg_kwh_cents,
+            ('https://dchub.cloud/dcpi/' || market_slug) AS url
+        FROM market_power_scores
+        WHERE published = true
+          AND UPPER(iso) = %s
+          AND verdict = %s
+        ORDER BY market_slug, computed_at DESC
+    """
+    with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(sql, (iso_code.upper(), verdict_filter))
+        rows = [dict(r) for r in cur.fetchall()]
+    # Sort by the ranking column, descending
+    rows.sort(key=lambda r: -(r.get(order_col) or 0))
+    return rows[:limit]
+
+
+def _normalize_iso_row(r: dict) -> dict:
+    """Round floats + serialize datetimes + add narrative labels."""
+    out = dict(r)
+    for k, v in r.items():
+        if hasattr(v, "isoformat"):
+            out[k] = v.isoformat()
+        elif isinstance(v, (int,)) or v is None:
+            out[k] = v
+        else:
+            try:
+                fv = float(v)
+                # 1 decimal place for percentages, 2 for prices, 0 for counts
+                if k.endswith("_pct") or k.startswith("avg_") and k != "avg_kwh_cents":
+                    out[k] = round(fv, 1)
+                elif k == "avg_kwh_cents":
+                    out[k] = round(fv, 2)
+                else:
+                    out[k] = round(fv, 1)
+            except (TypeError, ValueError):
+                out[k] = v
+    # Friendly ISO name
+    out["iso_name"] = _ISO_NAMES.get(str(r.get("iso") or "").upper(), r.get("iso"))
+    return out
+
+
+@dcpi_bp.route("/api/v1/dcpi/iso/<iso_code>", methods=["GET"])
+def api_iso_deep_dive(iso_code):
+    """Deep-dive per ISO. Aggregates queue depth, avg cost, curtailment,
+       reserve margin, etc. and surfaces the top BUILD + AVOID markets.
+
+       Citable: machine surface for AI agents asking "what's the state of
+       MISO grid right now?" — single fetch returns the whole picture.
+    """
+    _ensure_tables()
+    iso_code = (iso_code or "").upper().strip()
+    if not iso_code:
+        return jsonify(error="iso_code_required"), 400
+
+    rows = _aggregate_iso_stats(iso_code)
+    if not rows:
+        return jsonify(
+            error="iso_not_found",
+            iso=iso_code,
+            hint="Try one of: " + ", ".join(sorted(_ISO_NAMES.keys())),
+        ), 404
+
+    iso_stats = _normalize_iso_row(rows[0])
+    top_build = [_normalize_iso_row(r) for r in _iso_top_markets(iso_code, "BUILD", 5)]
+    top_avoid = [_normalize_iso_row(r) for r in _iso_top_markets(iso_code, "AVOID", 5)]
+
+    body = {
+        "iso": iso_code,
+        "iso_name": _ISO_NAMES.get(iso_code, iso_code),
+        "as_of": iso_stats.get("latest_computed_at"),
+        "stats": iso_stats,
+        "top_build_markets": top_build,
+        "top_avoid_markets": top_avoid,
+        "methodology_url": "https://dchub.cloud/dcpi#methodology",
+        "citation": (f"DC Hub DCPI · {iso_code} ISO intelligence. "
+                      f"https://dchub.cloud/dcpi/iso/{iso_code.lower()}"),
+    }
+    resp = jsonify(body)
+    resp.headers["Cache-Control"] = "public, max-age=300, must-revalidate"
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    return resp, 200
+
+
+@dcpi_bp.route("/api/v1/dcpi/iso-comparison", methods=["GET"])
+def api_iso_comparison():
+    """Side-by-side ISO comparison. Ranks every ISO across the same set
+       of dimensions so a buyer can answer "which ISO has the most queue
+       capacity coming online? cheapest power? best build verdicts?"
+       in a single chart.
+
+       This is the headline new view of DCPI++ — moves the index from
+       "276 market scorecards" to "8 ISO diagnostics + 276 underlying
+       markets" so the same data answers a strategic question alongside
+       the tactical one.
+    """
+    _ensure_tables()
+    rows = [_normalize_iso_row(r) for r in _aggregate_iso_stats()]
+
+    body = {
+        "as_of": max((r.get("latest_computed_at") or "" for r in rows), default=None),
+        "count": len(rows),
+        "isos": rows,
+        "rankings": {
+            # Build a sortable "best for X" view — handy for journalists.
+            "fastest_interconnect": sorted(
+                [r for r in rows if r.get("avg_queue_wait_months") is not None],
+                key=lambda r: r["avg_queue_wait_months"])[:5],
+            "cheapest_power": sorted(
+                [r for r in rows if r.get("avg_kwh_cents") is not None],
+                key=lambda r: r["avg_kwh_cents"])[:5],
+            "most_build_verdicts": sorted(
+                rows, key=lambda r: -(r.get("build_count") or 0))[:5],
+            "highest_excess_capacity": sorted(
+                rows, key=lambda r: -(r.get("avg_excess") or 0))[:5],
+            "most_curtailment_risk": sorted(
+                [r for r in rows if r.get("avg_curtailment_pct") is not None],
+                key=lambda r: -(r["avg_curtailment_pct"]))[:5],
+        },
+        "methodology_url": "https://dchub.cloud/dcpi#methodology",
+        "citation": "DC Hub DCPI · ISO comparison. https://dchub.cloud/dcpi/iso-comparison",
+    }
+    resp = jsonify(body)
+    resp.headers["Cache-Control"] = "public, max-age=300, must-revalidate"
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    return resp, 200
+
+
 # Phase 297 (Phase P): deterministic reasoning chain. Templates the WHY
 # behind each verdict using the underlying scores. No LLM call per market —
 # cheap, consistent, citable. The thresholds mirror the derive_verdict()
@@ -1365,6 +1587,52 @@ footer a:hover { color: var(--acc-light); }
     </a>
     {% endfor %}
   </div>
+
+  <!-- Phase AA (2026-05-12): ISO Intelligence panel — surfaces the
+       per-ISO aggregate data we always had but never exposed. Each
+       chip is a click-to-deep-dive into /dcpi/iso/<code>. Free preview;
+       deep ISO comparison + alerts are Pro. -->
+  <div class="section-h"><span class="pip"></span>🌐 ISO Intelligence (NEW)</div>
+  <p style="color:var(--tx2);font-size:0.95rem;max-width:780px;margin-bottom:14px;">
+    Eight North-American ISOs ranked across queue depth, average power cost, build verdicts, and curtailment risk. Click any ISO for the full diagnostic.
+  </p>
+  <div id="iso-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-bottom:24px;">
+    <div style="grid-column:1/-1;color:var(--tx2);font-size:0.85rem;padding:14px;text-align:center;border:1px dashed rgba(255,255,255,0.06);border-radius:10px;">Loading ISO intelligence…</div>
+  </div>
+  <script>
+    // Phase AA: render ISO comparison chips from /api/v1/dcpi/iso-comparison.
+    // Fail-soft — banner stays as loading if the endpoint is down.
+    fetch('/api/v1/dcpi/iso-comparison').then(r => r.json()).then(data => {
+      const grid = document.getElementById('iso-grid');
+      const isos = (data && data.isos) || [];
+      if (!isos.length) { grid.innerHTML = '<div style="grid-column:1/-1;color:var(--tx2);font-size:0.85rem;padding:14px;text-align:center;">ISO data is being recomputed — check back shortly.</div>'; return; }
+      grid.innerHTML = isos.map(iso => {
+        const queue = iso.avg_queue_wait_months != null ? iso.avg_queue_wait_months.toFixed(0) + 'mo' : '—';
+        const cost  = iso.avg_kwh_cents != null ? '$' + (iso.avg_kwh_cents/100).toFixed(3) + '/kWh' : '—';
+        const build = iso.build_count || 0;
+        const total = iso.market_count || 0;
+        const buildPct = total ? Math.round(100*build/total) : 0;
+        const escapeIso = (iso.iso || '').toLowerCase().replace(/[^a-z0-9-]/g,'');
+        return `<a href="/api/v1/dcpi/iso/${escapeIso}" style="text-decoration:none;color:inherit;display:block;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:14px 16px;transition:.15s;"
+                  onmouseover="this.style.borderColor='rgba(99,102,241,0.4)'" onmouseout="this.style.borderColor='rgba(255,255,255,0.08)'">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;">
+            <div style="font-weight:700;font-size:1.1rem;color:#fff">${iso.iso || '?'}</div>
+            <div style="font-size:0.75rem;color:var(--tx2);">${total} markets</div>
+          </div>
+          <div style="font-size:0.78rem;color:var(--tx2);margin-bottom:10px;line-height:1.35;">${iso.iso_name || ''}</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:0.82rem;">
+            <div><span style="color:var(--tx2)">Queue wait:</span> <b>${queue}</b></div>
+            <div><span style="color:var(--tx2)">Avg cost:</span> <b>${cost}</b></div>
+            <div><span style="color:var(--tx2)">BUILD verdicts:</span> <b style="color:#10b981">${build} (${buildPct}%)</b></div>
+            <div><span style="color:var(--tx2)">Emergencies/30d:</span> <b>${iso.sum_emergency_30d || 0}</b></div>
+          </div>
+        </a>`;
+      }).join('');
+    }).catch(e => {
+      const grid = document.getElementById('iso-grid');
+      if (grid) grid.innerHTML = '<div style="grid-column:1/-1;color:var(--tx2);font-size:0.85rem;padding:14px;text-align:center;">ISO intelligence temporarily offline.</div>';
+    });
+  </script>
 
   <div class="section-h"><span class="pip"></span>🔓 Pro Access</div>
   <div class="cta-banner">

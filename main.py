@@ -1115,6 +1115,15 @@ try:
     except Exception as _ce:
         import logging
         logging.getLogger(__name__).warning('mcp_conversion_plays wiring failed: %s', _ce)
+    # Phase BB (2026-05-12): autonomous marketing engine. Generates daily
+    # press releases from DCPI movement, tracks per-piece engagement,
+    # surfaces the marketing pulse to /dc-hub-media.
+    try:
+        from routes.marketing_engine import marketing_bp
+        app.register_blueprint(marketing_bp)
+    except Exception as _me:
+        import logging
+        logging.getLogger(__name__).warning('marketing_engine wiring failed: %s', _me)
 except Exception as _e:
     import logging
     logging.getLogger(__name__).warning('phase22-24 wiring failed: %s', _e)
