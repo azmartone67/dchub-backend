@@ -1096,6 +1096,25 @@ try:
     app.register_blueprint(brain_v2_bp)  # phase 289 — Brain v2 Layer 4 self-learning
     app.register_blueprint(brain_v2_public_bp)  # phase 300 — public /brain transparency page
     app.register_blueprint(outreach_cap_bp)  # phase 290 — cap-exceeded outreach engine
+    # Phase DD (2026-05-12): pair-code conversion flow. Closes the
+    # agent→human handoff that's keeping MCP conversion at 0.012%.
+    # Adds /redeem/<code> + /api/v1/mcp/pair-code/* + funnel
+    # diagnostics. See routes/pair_code.py for the full design.
+    try:
+        from routes.pair_code import pair_code_bp
+        app.register_blueprint(pair_code_bp)
+    except Exception as _pe:
+        import logging
+        logging.getLogger(__name__).warning('pair_code wiring failed: %s', _pe)
+    # Phase DD+ (2026-05-12): conversion plays 3-6 — top-up, demo
+    # unlock, email trial, affiliate attribution. See
+    # routes/mcp_conversion_plays.py.
+    try:
+        from routes.mcp_conversion_plays import conversion_bp
+        app.register_blueprint(conversion_bp)
+    except Exception as _ce:
+        import logging
+        logging.getLogger(__name__).warning('mcp_conversion_plays wiring failed: %s', _ce)
     # Phase BB (2026-05-12): autonomous marketing engine. Generates daily
     # press releases from DCPI movement, tracks per-piece engagement,
     # surfaces the marketing pulse to /dc-hub-media.
@@ -6814,6 +6833,29 @@ def stripe_webhook():
     if event_type == 'checkout.session.completed':
         try:
             handle_checkout_completed(data)
+
+            # Phase DD (2026-05-12): pair-code + top-up redemption path.
+            # The /redeem/<code> page (pair-code) and /topup/<token> page
+            # (Phase DD+ play 3) both forward their identifier via
+            # Stripe's `client_reference_id`:
+            #   DCM-XXXX  → flip API key tier free → developer
+            #   tu-XXXX   → credit N one-time call credits for today
+            # Wrapped in try/except so a redemption error never breaks
+            # subscription creation / welcome email / admin alerts.
+            try:
+                ref = (data.get('client_reference_id') or '').strip()
+                if ref.upper().startswith('DCM-'):
+                    from routes.pair_code import redeem_pair_code
+                    pc_result = redeem_pair_code(
+                        ref.upper(), stripe_session_id=data.get('id'))
+                    print(f"💳 Pair-code redemption: {pc_result}")
+                elif ref.lower().startswith('tu-'):
+                    from routes.mcp_conversion_plays import redeem_topup_token
+                    tu_result = redeem_topup_token(
+                        ref, stripe_session_id=data.get('id'))
+                    print(f"💸 Top-up redemption: {tu_result}")
+            except Exception as _pce:
+                print(f"⚠️ Conversion-play redemption error (non-fatal): {_pce}")
 
             customer_email = (
                 data.get('customer_email') or
