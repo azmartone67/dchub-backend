@@ -1245,17 +1245,43 @@ FIXES["aggregator_v2"] = fix_aggregator_v2
 # them so the QA workflow (site-qa.yml) picks them up + opens issues.
 # ============================================================================
 
+# phase 273: healer detection accuracy fix.
+#
+# Previously every entry was a literal substring matched with body.count().
+# This gave catastrophic false-positive rates on the em-dash pattern: every
+# `<title>DC Hub — Data Center Intelligence</title>`, every OG/Twitter meta
+# title, every "Open Platform — Free" CTA, every CSS comment, and every
+# design-system banner ("DC HUB — GLACIER DESIGN SYSTEM") counted as a
+# "placeholder." Live audit found 55 reported issues across 7 pages but
+# only 5 real placeholders — a 91% false-positive rate, which makes the
+# /heal/findings output untrustworthy and unactionable.
+#
+# Fix: each pattern is now either a literal substring (count = body.count())
+# OR a compiled regex (count = len(regex.findall())). The em-dash detector
+# is now a regex that requires the em-dash to be the *sole text content*
+# of an HTML tag (i.e. `>—<` with only optional whitespace/nbsp around it),
+# which is what an actual placeholder data cell looks like.
+#
+# Also dropped the obsolete "276 MARKETS" pattern: that was a hardcode flag
+# from when /dcpi shipped a literal "276 MARKETS" string; phase 241 moved
+# it to a Jinja `{{ count }}` template variable, so any current match is
+# just the dynamic count rendering correctly.
+import re as _hp_re
+
 HTML_BAD_PATTERNS = {
-    "— placeholder":    "—",
-    "$$$$ pricing leak":       "$" * 4,
-    "Save 34% stale text":     "Save 34%",
-    "$249.50 stale text":      "$249.50",
-    "$798 stale text":         "$798",
-    "__$$$$__ template leak":  "__$$$$__",
-    "276 MARKETS stale":       "276 MARKETS",
-    "30 U.S. markets stale":   "30 U.S. markets",
-    "NaN ago timestamp bug":   "NaN ago",
-    "NAND AGO timestamp bug":  "NAND AGO",
+    # name                       -> str (literal) | re.Pattern (regex)
+    "— placeholder":              _hp_re.compile(r">[\s ]*—[\s ]*<"),
+    "$$$$ pricing leak":          "$" * 4,
+    "Save 34% stale text":        "Save 34%",
+    "$249.50 stale text":         "$249.50",
+    "$798 stale text":            "$798",
+    "__$$$$__ template leak":     "__$$$$__",
+    "30 U.S. markets stale":      "30 U.S. markets",
+    "NaN ago timestamp bug":      "NaN ago",
+    "NAND AGO timestamp bug":     "NAND AGO",
+    # phase 273: detect aria-busy="true" that's never resolved by JS —
+    # i.e. KPI cells that load with a loading marker but never get filled.
+    "stuck aria-busy":            _hp_re.compile(r'aria-busy="true"[^>]*>\s*[—\-]\s*<'),
 }
 
 HTML_PROBE_URLS = [
@@ -1289,9 +1315,16 @@ def fix_html_quality_scan():
         except Exception as e:
             findings[url] = {"error": str(e)[:200]}
             continue
+        # phase 273: each pattern is either a str (literal substring) or a
+        # compiled regex. Strip <script> and <style> blocks before scanning
+        # so JS string literals and CSS comments don't generate false hits.
+        scan_body = _hp_re.sub(r"<(script|style)[\s\S]*?</\1>", "", body)
         page_hits = {}
         for label, needle in HTML_BAD_PATTERNS.items():
-            n = body.count(needle)
+            if hasattr(needle, "findall"):  # re.Pattern
+                n = len(needle.findall(scan_body))
+            else:
+                n = scan_body.count(needle)
             if n > 0:
                 page_hits[label] = n
                 total_issues += n
@@ -1357,10 +1390,170 @@ FIXES["html_quality_scan"] = fix_html_quality_scan
 FIXES["feed_diversity_check"] = fix_feed_diversity_check
 FIXES["cdn_cache_staleness"] = fix_cdn_cache_staleness
 
+
+# ============================================================================
+# Phase 279: light-weight QA detectors that fit inside the 5-min heal cycle.
+# Heavy crawls live in scripts/dchub_qa_crawl.py and run on-demand via
+# /api/v1/heal/qa-crawl (registered separately). These tight checks below
+# don't need a full crawl — they spot-check the highest-leverage signals.
+# ============================================================================
+
+def _qa_headers():
+    return {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "identity",
+    }
+
+
+def fix_sitemap_404_check():
+    """Fetch /sitemap.xml, HEAD-probe each <loc>, flag any 404.
+       Catches the case where the auto-generated sitemap drifts from the
+       routes that actually exist (Google interprets this as a broken site).
+    """
+    import urllib.request
+    try:
+        req = urllib.request.Request("https://dchub.cloud/sitemap.xml",
+                                     headers=_qa_headers())
+        with urllib.request.urlopen(req, timeout=10) as r:
+            body = r.read().decode("utf-8", errors="ignore")
+        locs = _hp_re.findall(r"<loc>([^<]+)</loc>", body)
+    except Exception as e:
+        return False, f"sitemap fetch failed: {str(e)[:150]}"
+
+    broken = []
+    # Sample up to 25 URLs — keeps the 5-min cycle tight even on big sitemaps
+    sample = locs[:25] if len(locs) > 25 else locs
+    for url in sample:
+        try:
+            req = urllib.request.Request(url, method="HEAD", headers=_qa_headers())
+            with urllib.request.urlopen(req, timeout=6) as r:
+                code = r.status
+        except Exception as e:
+            code = getattr(e, "code", 0) or 0
+        if code in (0, 404) or code >= 500:
+            broken.append((url.replace("https://dchub.cloud", ""), code))
+
+    if broken:
+        return True, f"SITEMAP 404s: {len(broken)} of {len(sample)} sampled — {broken[:5]}"
+    return True, f"OK: 0/{len(sample)} sitemap URLs return 4xx/5xx"
+
+
+def fix_internal_links_check():
+    """Spot-check the homepage's outbound internal links for 404s.
+       Catches the class of bug where the marketing page links to a route
+       that was renamed or never built (e.g. /integrations/<vendor>/).
+    """
+    import urllib.request
+    try:
+        req = urllib.request.Request("https://dchub.cloud/", headers=_qa_headers())
+        with urllib.request.urlopen(req, timeout=10) as r:
+            body = r.read().decode("utf-8", errors="ignore")
+    except Exception as e:
+        return False, f"homepage fetch failed: {str(e)[:150]}"
+
+    # Strip script/style blocks first — JS template literals like
+    # `href="/markets/' + m.slug + '"` would otherwise be matched as a real
+    # href by the loose regex below.
+    scan_body = _hp_re.sub(r"<(script|style)[\s\S]*?</\1>", "", body)
+    # Real paths don't contain quotes, +, or whitespace
+    hrefs = _hp_re.findall(r'href="(/[A-Za-z0-9_./\-]+)"', scan_body)
+    seen = set()
+    uniq = [h for h in hrefs if not (h in seen or seen.add(h))]
+    sample = uniq[:30]
+    broken = []
+    for path in sample:
+        url = f"https://dchub.cloud{path}"
+        try:
+            req = urllib.request.Request(url, method="HEAD", headers=_qa_headers())
+            with urllib.request.urlopen(req, timeout=6) as r:
+                code = r.status
+        except Exception as e:
+            code = getattr(e, "code", 0) or 0
+        if code in (0, 404) or code >= 500:
+            broken.append((path, code))
+
+    if broken:
+        return True, f"BROKEN LINKS: {len(broken)} of {len(sample)} homepage hrefs — {broken[:5]}"
+    return True, f"OK: 0/{len(sample)} homepage internal links broken"
+
+
+def fix_jsonld_coverage_check():
+    """Probe key revenue-relevant pages for schema.org JSON-LD presence.
+       Pages without it can't be cited by LLMs as authoritative datasets —
+       biggest funnel leak for the AI-citation pipeline.
+    """
+    import urllib.request
+    pages = ["/", "/pricing", "/dcpi", "/markets", "/news", "/for-ai.html"]
+    missing = []
+    for path in pages:
+        try:
+            req = urllib.request.Request(f"https://dchub.cloud{path}",
+                                         headers=_qa_headers())
+            with urllib.request.urlopen(req, timeout=8) as r:
+                body = r.read().decode("utf-8", errors="ignore")
+        except Exception:
+            continue
+        if 'application/ld+json' not in body:
+            missing.append(path)
+    if missing:
+        return True, f"NO JSON-LD: {missing}"
+    return True, "OK: every probed page has schema.org JSON-LD"
+
+
+def fix_qa_crawl_full():
+    """Run the full QA crawler (scripts/dchub_qa_crawl.py) and stash the
+       findings. Heavier — call on-demand via /api/v1/heal/qa-crawl, not
+       on every 5-min cycle.
+    """
+    import subprocess, os, json
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "scripts", "dchub_qa_crawl.py")
+    if not os.path.exists(script):
+        return False, "scripts/dchub_qa_crawl.py not present"
+    try:
+        proc = subprocess.run(
+            ["python3", script, "--json"],
+            capture_output=True, text=True, timeout=60,
+            env={**os.environ},
+        )
+    except subprocess.TimeoutExpired:
+        return False, "qa_crawl timed out after 60s"
+    if proc.returncode != 0:
+        return False, f"qa_crawl exited {proc.returncode}: {proc.stderr[:200]}"
+    try:
+        data = json.loads(proc.stdout)
+    except Exception as e:
+        return False, f"qa_crawl output not JSON: {e}"
+    global _last_qa_findings
+    _last_qa_findings = data
+    s = data.get("summary", {})
+    return True, (f"{s.get('pages_scanned')} URLs scanned; "
+                  f"by_severity={s.get('by_severity')}; "
+                  f"top={s.get('top_codes', [])[:5]}")
+
+
+# Make sure the heavy crawl can be retrieved by an admin endpoint
+_last_qa_findings = None
+
+
+FIXES["sitemap_404_check"]    = fix_sitemap_404_check
+FIXES["internal_links_check"] = fix_internal_links_check
+FIXES["jsonld_coverage_check"] = fix_jsonld_coverage_check
+FIXES["qa_crawl_full"]         = fix_qa_crawl_full
+
+
 # Register as patterns so the 5-min cycle runs them automatically
 PATTERNS.extend([
-    {"name": "html_quality_tick", "match": ["DCPI"], "fix": "html_quality_scan"},
+    {"name": "html_quality_tick",   "match": ["DCPI"], "fix": "html_quality_scan"},
     {"name": "feed_diversity_tick", "match": ["DCPI"], "fix": "feed_diversity_check"},
+    # Phase 279: light QA checks added to the 5-min cycle. Heavy crawl
+    # (qa_crawl_full) is on-demand only — kept out of PATTERNS so it
+    # doesn't fire automatically.
+    {"name": "sitemap_404_tick",      "match": ["DCPI"], "fix": "sitemap_404_check"},
+    {"name": "internal_links_tick",   "match": ["DCPI"], "fix": "internal_links_check"},
+    {"name": "jsonld_coverage_tick",  "match": ["DCPI"], "fix": "jsonld_coverage_check"},
 ])
 
 
@@ -1371,3 +1564,9 @@ _last_html_findings = {}
 def get_last_html_findings():
     """Returns the structured findings dict from the most recent html_quality_scan."""
     return dict(_last_html_findings)
+
+
+# Phase 279: heavy QA crawl results, populated by qa_crawl_full on demand
+def get_last_qa_findings():
+    """Returns the full QA crawler output from the most recent qa_crawl_full run."""
+    return _last_qa_findings or {}

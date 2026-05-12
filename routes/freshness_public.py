@@ -1,0 +1,292 @@
+"""Phase 268 — public /freshness surface.
+
+Why this exists
+---------------
+The internal /heartbeat ops dashboard exists, but no *public* page proves
+that dchub.cloud refreshes itself faster than DC Hawk / DC Byte /
+datacenters.com (which the disruption audit confirmed don't even have
+freshness signals — DCH has no AI surface, DCB's "MCP" is a WordPress 404,
+datacenters.com rate-limits LLM crawlers entirely).
+
+This module ships:
+
+  • GET /freshness            — public HTML pitch page with live freshness
+                                stats, intended for journalists / LLMs /
+                                competitive deck citations.
+  • GET /api/v1/freshness     — JSON companion. CORS '*' so anyone can poll.
+
+Both pull from the same data the internal heartbeat already maintains:
+the `heartbeat_surfaces` rows + DCPI quality summary.
+
+Read-only. No writes. No auth. Heavy CDN caching is intentional (60s).
+"""
+from __future__ import annotations
+import os
+from datetime import datetime, timezone, timedelta
+from html import escape as _h
+from flask import Blueprint, jsonify, Response
+
+# phase 270 hardening: only these status values map to a CSS class; anything
+# else gets rendered as "unknown". Defense-in-depth even though the DB writers
+# today only produce these three.
+_STATUS_WHITELIST = {"fresh", "stale", "unknown"}
+
+freshness_public_bp = Blueprint("freshness_public", __name__)
+
+
+def _conn():
+    import psycopg2
+    return psycopg2.connect(os.environ.get("DATABASE_URL"))
+
+
+def _surfaces_snapshot():
+    """Return list of surfaces with status (fresh/stale/unknown) + age."""
+    rows = []
+    try:
+        import psycopg2.extras
+        with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT name AS surface,
+                       last_updated,
+                       stale_after_hours,
+                       last_refresh_info
+                FROM heartbeat_surfaces
+                ORDER BY last_updated DESC NULLS LAST
+            """)
+            rows = cur.fetchall()
+    except Exception as e:
+        return [], str(e)
+    now = datetime.now(timezone.utc)
+    out = []
+    for r in rows:
+        lu = r.get("last_updated")
+        if lu and getattr(lu, "tzinfo", None) is None:
+            lu = lu.replace(tzinfo=timezone.utc)
+        age_h = ((now - lu).total_seconds() / 3600.0) if lu else None
+        stale_after = r.get("stale_after_hours") or 24
+        status = "unknown" if age_h is None else ("fresh" if age_h <= stale_after else "stale")
+        out.append({
+            "surface": r["surface"],
+            "last_updated": lu.isoformat() if lu else None,
+            "age_hours": round(age_h, 2) if age_h is not None else None,
+            "stale_after_hours": stale_after,
+            "status": status,
+            "info": r.get("last_refresh_info"),
+        })
+    return out, None
+
+
+def _dcpi_summary():
+    """Last DCPI computed_at + total published markets."""
+    try:
+        import psycopg2.extras
+        with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT COUNT(*) AS published, MAX(computed_at) AS last_computed
+                FROM (
+                  SELECT DISTINCT ON (market_slug) market_slug, computed_at
+                  FROM market_power_scores WHERE published = true
+                  ORDER BY market_slug, computed_at DESC
+                ) t
+            """)
+            r = cur.fetchone() or {}
+        last = r.get("last_computed")
+        if last and getattr(last, "tzinfo", None) is None:
+            last = last.replace(tzinfo=timezone.utc)
+        age_min = ((datetime.now(timezone.utc) - last).total_seconds() / 60.0) if last else None
+        return {
+            "published_markets": int(r.get("published") or 0),
+            "last_computed_at": last.isoformat() if last else None,
+            "age_minutes": round(age_min, 1) if age_min is not None else None,
+        }
+    except Exception as e:
+        return {"error": str(e)[:160]}
+
+
+def _aggregate(surfaces):
+    fresh = sum(1 for s in surfaces if s["status"] == "fresh")
+    stale = sum(1 for s in surfaces if s["status"] == "stale")
+    unknown = sum(1 for s in surfaces if s["status"] == "unknown")
+    last_24h = 0
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    for s in surfaces:
+        if s["last_updated"]:
+            try:
+                if datetime.fromisoformat(s["last_updated"].replace("Z", "+00:00")) >= cutoff:
+                    last_24h += 1
+            except Exception:
+                pass
+    return {"fresh": fresh, "stale": stale, "unknown": unknown,
+            "total_surfaces": len(surfaces), "refreshed_last_24h": last_24h}
+
+
+@freshness_public_bp.route("/api/v1/freshness", methods=["GET"])
+def api_freshness():
+    """JSON freshness snapshot. CORS '*'. Cache 60s."""
+    surfaces, err = _surfaces_snapshot()
+    body = {
+        "as_of": datetime.now(timezone.utc).isoformat(),
+        "summary": _aggregate(surfaces),
+        "dcpi": _dcpi_summary(),
+        "surfaces": surfaces,
+        "citation": "DC Hub freshness signal — public proof-of-self-heal. https://dchub.cloud/freshness",
+    }
+    if err:
+        body["surfaces_error"] = err
+    resp = jsonify(body)
+    resp.headers["Cache-Control"] = "public, max-age=60, must-revalidate"
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    return resp, 200
+
+
+_FRESHNESS_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>DC Hub · Freshness — live proof of self-healing data</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Live freshness signal for DC Hub. {{fresh}} of {{total}} data surfaces refreshed in the last 24 hours. DCPI recomputed {{dcpi_age}} ago.">
+<meta name="robots" content="index,follow,max-snippet:-1">
+<link rel="canonical" href="https://dchub.cloud/freshness">
+<meta property="og:title" content="DC Hub · Live Data Freshness">
+<meta property="og:description" content="{{fresh}} of {{total}} data surfaces refreshed in last 24h. DCPI: {{dcpi_age}} ago.">
+<meta property="og:url" content="https://dchub.cloud/freshness">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "DataFeed",
+  "name": "DC Hub freshness feed",
+  "description": "Live freshness signal across all DC Hub data surfaces. {{fresh}} of {{total}} surfaces refreshed in the last 24h.",
+  "url": "https://dchub.cloud/freshness",
+  "isAccessibleForFree": true,
+  "publisher": {"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"},
+  "distribution": {"@type": "DataDownload", "encodingFormat": "application/json", "contentUrl": "https://dchub.cloud/api/v1/freshness"}
+}
+</script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#0a0a12;--bg2:#0f1119;--card:#11121a;--bd:#1f2030;--tx:#fff;--tx2:#9ca3af;--tx3:#6b7280;--green:#10b981;--red:#ef4444;--orange:#f59e0b;--acc:#6366f1;--gradient:linear-gradient(135deg,#6366f1 0%,#a855f7 100%);}
+*{box-sizing:border-box}
+body{font-family:Inter,system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--tx);margin:0;line-height:1.55;-webkit-font-smoothing:antialiased;}
+.wrap{max-width:1100px;margin:0 auto;padding:3rem 1.5rem;}
+.eyebrow{font-family:'JetBrains Mono',monospace;font-size:0.75rem;color:var(--acc);text-transform:uppercase;letter-spacing:0.12em;margin-bottom:0.6rem;}
+h1{font-size:2.6rem;margin:0 0 0.6rem;font-weight:800;letter-spacing:-0.025em;line-height:1.1;}
+h1 .live{display:inline-block;width:14px;height:14px;background:var(--green);border-radius:50%;margin-right:0.6rem;animation:pulse 1.4s ease-in-out infinite;vertical-align:middle;}
+@keyframes pulse{50%{opacity:0.3;transform:scale(0.85);}}
+.lede{color:var(--tx2);font-size:1.1rem;max-width:760px;margin:0 0 2.4rem;}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1rem;margin:2rem 0 2.6rem;}
+.kpi{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:1.3rem 1.4rem;}
+.kpi .v{font-family:'JetBrains Mono',monospace;font-size:2.1rem;font-weight:800;line-height:1;}
+.kpi .v.green{color:var(--green);}.kpi .v.red{color:var(--red);}.kpi .v.orange{color:var(--orange);}
+.kpi .l{color:var(--tx2);font-size:0.78rem;margin-top:0.55rem;text-transform:uppercase;letter-spacing:0.08em;}
+.kpi .sub{color:var(--tx3);font-size:0.78rem;margin-top:0.35rem;}
+.section-title{font-size:1.15rem;font-weight:700;margin:2.4rem 0 1rem;letter-spacing:-0.01em;}
+table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--bd);border-radius:10px;overflow:hidden;font-size:0.9rem;}
+th,td{text-align:left;padding:0.7rem 1rem;border-bottom:1px solid var(--bd);}
+th{background:var(--bg2);color:var(--tx2);font-weight:600;font-size:0.74rem;text-transform:uppercase;letter-spacing:0.08em;}
+tr:last-child td{border-bottom:none;}
+td.mono{font-family:'JetBrains Mono',monospace;font-size:0.86rem;}
+.status{display:inline-block;padding:2px 8px;border-radius:99px;font-size:0.7rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;}
+.status.fresh{background:rgba(16,185,129,0.15);color:var(--green);}
+.status.stale{background:rgba(239,68,68,0.15);color:var(--red);}
+.status.unknown{background:rgba(156,163,175,0.15);color:var(--tx2);}
+.cite{margin-top:3rem;padding:1.2rem 1.4rem;background:var(--bg2);border:1px solid var(--bd);border-radius:10px;color:var(--tx2);font-size:0.88rem;}
+.cite code{background:#11121a;padding:2px 6px;border-radius:4px;color:var(--tx);font-family:'JetBrains Mono',monospace;font-size:0.84rem;}
+a{color:var(--acc);text-decoration:none;border-bottom:1px dotted rgba(99,102,241,0.5);}
+a:hover{color:#fff;border-bottom-color:#fff;}
+.foot{margin-top:3rem;color:var(--tx3);font-size:0.8rem;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="eyebrow">Live · proof of self-heal</div>
+  <h1><span class="live"></span>Data freshness, in public</h1>
+  <p class="lede">
+    DC Hub's data is recomputed and self-healed continuously. Every public surface
+    on this site reports its own freshness here, in real time. Compare against any
+    other data-center intelligence source — most don't publish this at all.
+  </p>
+
+  <div class="kpis">
+    <div class="kpi"><div class="v green">{{refreshed_24h}}</div><div class="l">Refreshed in last 24h</div><div class="sub">across {{total}} surfaces</div></div>
+    <div class="kpi"><div class="v {{dcpi_class}}">{{dcpi_age}}</div><div class="l">DCPI last computed</div><div class="sub">{{dcpi_published}} markets published</div></div>
+    <div class="kpi"><div class="v {{fresh_class}}">{{fresh}}/{{total}}</div><div class="l">Currently fresh</div><div class="sub">{{stale}} stale · {{unknown}} unknown</div></div>
+    <div class="kpi"><div class="v">JSON</div><div class="l">Machine-readable</div><div class="sub"><a href="/api/v1/freshness">/api/v1/freshness</a></div></div>
+  </div>
+
+  <div class="section-title">Per-surface freshness</div>
+  <table>
+    <thead><tr><th>Surface</th><th>Status</th><th>Age</th><th>Stale after</th><th>Last note</th></tr></thead>
+    <tbody>
+{{rows_html}}
+    </tbody>
+  </table>
+
+  <div class="cite">
+    <strong>Cite this signal:</strong>
+    <code>DC Hub freshness — https://dchub.cloud/freshness</code><br>
+    Machine surface: <code>GET https://dchub.cloud/api/v1/freshness</code> (CORS open, 60s cache).<br>
+    Methodology: <a href="/dcpi#methodology">/dcpi#methodology</a> · <a href="/audit/">site audit</a>
+  </div>
+
+  <p class="foot">As of {{as_of}}. This page is rendered fresh on every load.
+  Healer detection findings: <a href="/api/v1/heal/findings">/api/v1/heal/findings</a>.</p>
+</div>
+</body>
+</html>"""
+
+
+@freshness_public_bp.route("/freshness", methods=["GET"])
+def freshness_page():
+    surfaces, _err = _surfaces_snapshot()
+    summary = _aggregate(surfaces)
+    dcpi = _dcpi_summary()
+
+    dcpi_age_min = dcpi.get("age_minutes")
+    if dcpi_age_min is None:
+        dcpi_age = "—"
+        dcpi_class = "orange"
+    elif dcpi_age_min < 60:
+        dcpi_age = f"{int(dcpi_age_min)}m"
+        dcpi_class = "green"
+    elif dcpi_age_min < 1440:
+        dcpi_age = f"{int(dcpi_age_min/60)}h"
+        dcpi_class = "green" if dcpi_age_min < 360 else "orange"
+    else:
+        dcpi_age = f"{int(dcpi_age_min/1440)}d"
+        dcpi_class = "red"
+
+    fresh_class = "green" if summary["stale"] == 0 else ("orange" if summary["fresh"] > summary["stale"] else "red")
+
+    # phase 270 hardening: HTML-escape every field that comes from the DB.
+    # `status` is whitelisted to known values so it can't break out of the
+    # CSS class attribute; everything else uses html.escape().
+    rows = []
+    for s in surfaces[:80]:
+        age = "—" if s["age_hours"] is None else (f"{int(s['age_hours']*60)}m" if s["age_hours"] < 1 else f"{int(s['age_hours'])}h")
+        info = (s["info"] or "")[:90]
+        status = s["status"] if s["status"] in _STATUS_WHITELIST else "unknown"
+        rows.append(
+            f'<tr><td class="mono">{_h(str(s["surface"]))}</td>'
+            f'<td><span class="status {status}">{status}</span></td>'
+            f'<td class="mono">{_h(age)}</td>'
+            f'<td class="mono">{int(s["stale_after_hours"] or 24)}h</td>'
+            f'<td>{_h(info)}</td></tr>'
+        )
+    html = (_FRESHNESS_HTML
+            .replace("{{refreshed_24h}}", str(summary["refreshed_last_24h"]))
+            .replace("{{fresh}}", str(summary["fresh"]))
+            .replace("{{stale}}", str(summary["stale"]))
+            .replace("{{unknown}}", str(summary["unknown"]))
+            .replace("{{total}}", str(summary["total_surfaces"]))
+            .replace("{{dcpi_age}}", dcpi_age)
+            .replace("{{dcpi_class}}", dcpi_class)
+            .replace("{{dcpi_published}}", str(dcpi.get("published_markets", 0)))
+            .replace("{{fresh_class}}", fresh_class)
+            .replace("{{rows_html}}", "\n".join(rows))
+            .replace("{{as_of}}", datetime.now(timezone.utc).isoformat()))
+    resp = Response(html, mimetype="text/html")
+    resp.headers["Cache-Control"] = "public, max-age=60, must-revalidate"
+    return resp

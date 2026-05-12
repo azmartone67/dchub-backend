@@ -1079,6 +1079,8 @@ try:
     from routes.grid_public_routes import grid_public_bp
     from routes.grid_card_routes import grid_card_bp
     from routes.social_posts_routes import social_posts_bp
+    from routes.freshness_public import freshness_public_bp  # phase 268_public_freshness
+    from routes.enterprise import enterprise_bp  # phase 272_enterprise_contact
     app.register_blueprint(observability_bp)
     app.register_blueprint(gating_bp)  # phase68_gating_bp
     register_jinja_filter(app)  # phase68_gating_bp
@@ -1086,6 +1088,8 @@ try:
     app.register_blueprint(grid_public_bp)
     app.register_blueprint(grid_card_bp)
     app.register_blueprint(social_posts_bp)
+    app.register_blueprint(freshness_public_bp)  # phase 268 — public /freshness + /api/v1/freshness
+    app.register_blueprint(enterprise_bp)  # phase 272 — /enterprise + /api/v1/enterprise/contact
 except Exception as _e:
     import logging
     logging.getLogger(__name__).warning('phase22-24 wiring failed: %s', _e)
@@ -1822,6 +1826,80 @@ def handle_well_known():
         return Response("Contact: mailto:security@dchub.cloud\nPreferred-Languages: en\nCanonical: https://dchub.cloud/.well-known/security.txt\nPolicy: https://dchub.cloud/terms\nExpires: 2027-01-01T00:00:00.000Z", mimetype="text/plain")
     if path == '/.well-known/mcp-registry-auth':
         return Response("v=MCPv1; k=ed25519; p=8LE9YOct4SKYuIJT8JGMK6z9lhfPMbCM5pQCp5FTRBg=", mimetype="text/plain")
+    # Phase 280: /.well-known/ai-agents.json — the discovery file the QA
+    # crawler flagged as broken (linked from another page but returning 404).
+    # Modeled on the existing agent.json + mcp.json but with the richer
+    # auth/claim/tier surface that phases 275-277 added, so AI agents
+    # discovering this file can self-serve onto the free tier in one curl.
+    if path == '/.well-known/ai-agents.json':
+        import json as _j2
+        return Response(_j2.dumps({
+            "schema_version": "1",
+            "name": "DC Hub",
+            "description": (
+                "Live data-center, energy, and grid intelligence. 20,000+ facilities "
+                "in 140+ countries, 369 GW pipeline, real-time DCPI scoring for "
+                "US power markets. Designed for AI agents to discover, cite, and act on."
+            ),
+            "homepage": "https://dchub.cloud",
+            "documentation": "https://dchub.cloud/for-ai.html",
+            "freshness_url": "https://dchub.cloud/freshness",
+            "dataset_url": "https://dchub.cloud/dcpi",
+            "interfaces": {
+                "mcp": {
+                    "url": "https://dchub.cloud/mcp",
+                    "transport": "streamable-http",
+                    "discovery": "https://dchub.cloud/.well-known/mcp.json"
+                },
+                "rest": {
+                    "base": "https://dchub.cloud/api/v1",
+                    "openapi": "https://dchub.cloud/openapi.json"
+                }
+            },
+            "authentication": {
+                "schemes": ["api_key"],
+                "header": "X-API-Key",
+                "tiers": ["free", "pro", "enterprise"],
+                "free_tier": {
+                    "daily_calls": 100,
+                    "daily_caps": {
+                        "get_grid_intelligence": 10,
+                        "get_fiber_intel": 10
+                    },
+                    "paid_only_tools": [
+                        "analyze_site", "compare_sites", "get_dchub_recommendation"
+                    ]
+                },
+                "claim_endpoint": {
+                    "method": "POST",
+                    "url": "https://dchub.cloud/api/v1/keys/claim",
+                    "rate_limit": "1 key per IP per 24h",
+                    "email_required": False,
+                    "description": (
+                        "Programmatic dev-key issuance for AI agents. Returns a "
+                        "free-tier api_key in one POST, no email verification."
+                    )
+                },
+                "email_signup": "https://dchub.cloud/api/v1/dev-signup",
+                "upgrade_url": "https://dchub.cloud/pricing",
+                "enterprise_contact": "https://dchub.cloud/enterprise"
+            },
+            "data_freshness": {
+                "machine_readable": "https://dchub.cloud/api/v1/freshness",
+                "human_readable": "https://dchub.cloud/freshness",
+                "heal_findings":  "https://dchub.cloud/api/v1/heal/findings"
+            },
+            "machine_indexes": {
+                "ai_txt":     "https://dchub.cloud/ai.txt",
+                "llms_txt":   "https://dchub.cloud/llms.txt",
+                "llms_full":  "https://dchub.cloud/llms-full.txt",
+                "sitemap":    "https://dchub.cloud/sitemap.xml"
+            },
+            "contact": "api@dchub.cloud",
+            "license": "Free for AI citation; data subject to https://dchub.cloud/terms",
+            "last_updated": "2026-05-12"
+        }, ensure_ascii=False), status=200,
+           content_type="application/json; charset=utf-8")
 
 APP_VERSION = '2.5.7'
 STARTUP_COMPLETE = False
@@ -1852,6 +1930,29 @@ except Exception as e:
 @app.route('/health')
 def health_check():
     return {'status': 'ok'}, 200
+
+# Phase 280: /digest -> /news 302. The QA crawler flagged /digest as a
+# broken internal link (returning 404) — it's referenced from
+# index.html, landing/index.html, ai-integrations.html, agent-dashboard.html.
+# The dchub-frontend/digest.html exists in the static repo but the
+# Cloudflare Pages worker proxies everything to Railway, so Flask
+# needs to handle the path. /news is the canonical news+digest stream.
+@app.route('/digest')
+def digest_redirect():
+    return redirect('/news', code=302)
+
+# phase 269: /health/deep alias — mirror /api/v1/health/deep at the unprefixed
+# URL the audit and external monitors expect (matches /health ↔ /api/v1/health).
+@app.route('/health/deep')
+def health_deep_alias():
+    try:
+        # Forward to the canonical handler — defined later in main.py at line ~18414
+        return _health_deep()  # noqa: F821 — symbol exists by request-time
+    except NameError:
+        # Fallback if the canonical handler hasn't been registered yet at import time
+        from flask import jsonify
+        return jsonify(error="deep_health_unavailable",
+                       canonical="/api/v1/health/deep"), 503
 
 @app.route('/.well-known/health')
 def well_known_health():
@@ -18845,7 +18946,17 @@ def _heal_findings():
 
     # Run detectors to populate findings + the stash
     findings = {}
-    for d in ["html_quality_scan", "feed_diversity_check", "cdn_cache_staleness"]:
+    # Phase 279: added sitemap_404_check, internal_links_check, jsonld_coverage_check
+    # to surface the new light-weight QA signals alongside the existing ones.
+    detectors = [
+        "html_quality_scan",
+        "feed_diversity_check",
+        "cdn_cache_staleness",
+        "sitemap_404_check",
+        "internal_links_check",
+        "jsonld_coverage_check",
+    ]
+    for d in detectors:
         fn = h.FIXES.get(d)
         if fn is None: continue
         try:
@@ -18875,6 +18986,55 @@ def _heal_findings():
         "actionable_frontend_issues": actionable,
         "cache_needs_purge": "STALE" in str(findings.get("cdn_cache_staleness", {}).get("details", "")),
     })
+
+
+# Phase 279: on-demand heavy QA crawler endpoint. Runs the full
+# scripts/dchub_qa_crawl.py crawler (~14s for 73 URLs) and returns the
+# structured findings JSON. Admin-gated via DCHUB_ADMIN_KEY because the
+# crawler hits every page on the sitemap — fine on its own but should not
+# be public-facing as a DOS-amplification vector.
+@app.route("/api/v1/heal/qa-crawl", methods=["POST", "GET"])
+def _heal_qa_crawl():
+    from flask import jsonify
+    import os
+    expected = os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY")
+    provided = (request.headers.get("X-Admin-Key")
+                or request.args.get("admin_key"))
+    if expected and provided != expected:
+        return jsonify(error="unauthorized",
+                       hint="X-Admin-Key header required"), 401
+    try:
+        import dchub_self_heal as h
+    except ImportError:
+        return jsonify(error="self_heal not loaded"), 500
+
+    fn = h.FIXES.get("qa_crawl_full")
+    if fn is None:
+        return jsonify(error="qa_crawl_full fix not registered"), 500
+    try:
+        ok, summary = fn()
+    except Exception as e:
+        return jsonify(error=str(e)[:300]), 500
+
+    payload = {"ok": ok, "summary": summary}
+    if hasattr(h, "get_last_qa_findings"):
+        full = h.get_last_qa_findings() or {}
+        # Trim to the useful fields — full per-URL list can be 100KB+
+        payload["scanned_at"] = full.get("ran_at")
+        payload["base"]       = full.get("base")
+        payload["severity"]   = full.get("summary", {}).get("by_severity", {})
+        payload["top_codes"]  = full.get("summary", {}).get("top_codes", [])
+        payload["pages_summary"] = full.get("summary_pages_only", {})
+        payload["apis_summary"]  = full.get("summary_apis_only", {})
+        # Critical + high findings inline
+        problems = []
+        for row in (full.get("pages", []) + full.get("apis", [])):
+            for sev, code, msg in row.get("findings", []):
+                if sev in ("critical", "high"):
+                    problems.append({"sev": sev, "code": code, "msg": msg,
+                                     "url": row.get("url")})
+        payload["critical_and_high"] = problems
+    return jsonify(payload)
 
 
 def _extract_frontend_issues(findings):

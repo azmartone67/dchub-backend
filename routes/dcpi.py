@@ -629,6 +629,174 @@ def api_movers():
     return jsonify(movers=rows), 200
 
 
+# phase 267: public, machine-readable leaderboard so the DCPI is citable
+#            without scraping the HTML page.
+@dcpi_bp.route("/api/v1/dcpi/leaderboard", methods=["GET"])
+def api_leaderboard():
+    """Public ranked DCPI leaderboard.
+
+    Query params:
+        verdict  optional filter: BUILD | CAUTION | AVOID | LOW_SIGNAL
+                 (default: exclude LOW_SIGNAL to surface actionable markets)
+        limit    int, default 25, max 100
+        format   json (default) | csv
+
+    Returns ranked markets by excess_power_score (descending) with each
+    market's verdict, quality, constraint, and freshness timestamp. JSON-LD
+    Dataset markup on /dcpi points here as the canonical machine surface.
+    """
+    _ensure_tables()
+    verdict = (request.args.get("verdict") or "").upper().strip() or None
+    try:
+        limit = min(int(request.args.get("limit", 25)), 100)
+    except (TypeError, ValueError):
+        limit = 25
+    fmt = (request.args.get("format") or "json").lower()
+
+    # Default: exclude LOW_SIGNAL (high-noise) markets so the leaderboard
+    # surfaces only verdicts a buyer/journalist/AI can act on. Pass
+    # ?verdict=LOW_SIGNAL explicitly to include them.
+    where_verdict = ""
+    params = []
+    if verdict:
+        where_verdict = "AND verdict = %s"
+        params.append(verdict)
+    else:
+        where_verdict = "AND verdict <> 'LOW_SIGNAL'"
+
+    sql = f"""
+        SELECT DISTINCT ON (market_slug)
+            market_slug, market_name, iso, state,
+            excess_power_score, constraint_score, quality_score,
+            verdict, computed_at,
+            ('https://dchub.cloud/dcpi/' || market_slug) AS url
+        FROM market_power_scores
+        WHERE published = true {where_verdict}
+        ORDER BY market_slug, computed_at DESC
+    """
+    with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(sql, params)
+        rows = cur.fetchall()
+
+    rows.sort(key=lambda r: -(r.get("excess_power_score") or 0))
+    rows = rows[:limit]
+    for r in rows:
+        if r.get("computed_at"):
+            r["computed_at"] = r["computed_at"].isoformat()
+
+    if fmt == "csv":
+        import csv, io
+        buf = io.StringIO()
+        cols = ["rank", "market_slug", "market_name", "iso", "state",
+                "verdict", "excess_power_score", "constraint_score",
+                "quality_score", "computed_at", "url"]
+        w = csv.DictWriter(buf, fieldnames=cols)
+        w.writeheader()
+        for i, r in enumerate(rows, 1):
+            row = {k: r.get(k) for k in cols}
+            row["rank"] = i
+            w.writerow(row)
+        resp = Response(buf.getvalue(), mimetype="text/csv")
+        resp.headers["Content-Disposition"] = 'attachment; filename="dcpi-leaderboard.csv"'
+        resp.headers["Cache-Control"] = "public, max-age=300, must-revalidate"
+        return resp
+
+    body = {
+        "as_of": rows[0]["computed_at"] if rows else None,
+        "count": len(rows),
+        "filter": {"verdict": verdict, "excludes_low_signal": verdict is None},
+        "leaderboard": [
+            {"rank": i, **r} for i, r in enumerate(rows, 1)
+        ],
+        "methodology_url": "https://dchub.cloud/dcpi#methodology",
+        "citation": "DC Hub Data Center Power Index. https://dchub.cloud/dcpi",
+    }
+    resp = jsonify(body)
+    resp.headers["Cache-Control"] = "public, max-age=300, must-revalidate"
+    resp.headers["Access-Control-Allow-Origin"] = "*"  # citable from anywhere
+    return resp, 200
+
+
+# phase 267: OEmbed discovery — journalists / Substack / Medium can paste
+# https://dchub.cloud/dcpi and get a live ticker widget back.
+# phase 270 hardening: validate URL host so this can't be used as an open
+# OEmbed redirector against other domains, and whitelist slug charset so
+# user-controllable input can't break out of the iframe attributes.
+import re as _oembed_re
+import urllib.parse as _oembed_url
+_OEMBED_ALLOWED_HOSTS = {"dchub.cloud", "www.dchub.cloud"}
+_OEMBED_SLUG_RE = _oembed_re.compile(r"^[a-z0-9][a-z0-9_-]{0,80}$")
+
+
+@dcpi_bp.route("/api/v1/dcpi/oembed", methods=["GET"])
+def api_oembed():
+    """OEmbed 1.0 provider for the DCPI page + per-market pages.
+
+    Resolves the URL → an embeddable ticker (or per-market card) so external
+    publishers (Substack, Medium, news CMSes) can cite DCPI inline.
+    """
+    target = request.args.get("url", "").strip()
+    fmt = (request.args.get("format") or "json").lower()
+    if fmt not in ("json",):
+        return jsonify(error="only format=json supported"), 501
+
+    # phase 270: validate the URL points at us before resolving anything.
+    # Without this check the endpoint would happily build OEmbed payloads for
+    # arbitrary domains, which would make us an open redirector for embed
+    # crawlers.
+    try:
+        parsed = _oembed_url.urlparse(target)
+    except Exception:
+        parsed = None
+    if not parsed or parsed.scheme not in ("http", "https") or parsed.netloc.lower() not in _OEMBED_ALLOWED_HOSTS:
+        return jsonify(error="url must point to dchub.cloud"), 400
+
+    # Parse target — accept /dcpi or /dcpi/<slug>
+    slug = None
+    path = parsed.path or ""
+    if "/dcpi/" in path:
+        slug_raw = path.rsplit("/dcpi/", 1)[-1].strip("/")
+        # whitelist: only lowercase alnum/_/- slugs of reasonable length
+        if _OEMBED_SLUG_RE.match(slug_raw):
+            slug = slug_raw
+    is_market = bool(slug and slug not in ("ticker.html", "press"))
+
+    if is_market:
+        embed_html = (
+            f'<iframe src="https://dchub.cloud/api/v1/dcpi/embed/{slug}" '
+            f'width="600" height="240" frameborder="0" '
+            f'style="border:1px solid #1f2030;border-radius:8px;max-width:100%;" '
+            f'title="DCPI · {slug}"></iframe>'
+        )
+        body = {
+            "version": "1.0", "type": "rich",
+            "provider_name": "DC Hub",
+            "provider_url": "https://dchub.cloud",
+            "title": f"DCPI · {slug}",
+            "html": embed_html, "width": 600, "height": 240,
+            "cache_age": 300,
+        }
+    else:
+        embed_html = (
+            '<iframe src="https://dchub.cloud/dcpi/ticker.html" '
+            'width="100%" height="48" frameborder="0" '
+            'style="border:0;max-width:100%;" '
+            'title="DCPI · Live Ticker"></iframe>'
+        )
+        body = {
+            "version": "1.0", "type": "rich",
+            "provider_name": "DC Hub",
+            "provider_url": "https://dchub.cloud",
+            "title": "Data Center Power Index — Live",
+            "html": embed_html, "width": 1280, "height": 48,
+            "cache_age": 300,
+        }
+    resp = jsonify(body)
+    resp.headers["Cache-Control"] = "public, max-age=300, must-revalidate"
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    return resp, 200
+
+
 @dcpi_bp.route("/api/v1/dcpi/recompute", methods=["POST"])
 def api_recompute():
     # Accept only with admin token; simple shared-secret check
@@ -655,6 +823,34 @@ DCPI_INDEX_TEMPLATE = """<!DOCTYPE html>
 <meta property="og:image" content="https://dchub.cloud/dcpi/og.svg">
 <meta property="og:url" content="https://dchub.cloud/dcpi">
 <meta name="twitter:card" content="summary_large_image">
+<meta name="robots" content="index,follow,max-snippet:-1,max-image-preview:large">
+<link rel="canonical" href="https://dchub.cloud/dcpi">
+<link rel="alternate" type="application/json+oembed" href="https://dchub.cloud/api/v1/dcpi/oembed?url=https%3A%2F%2Fdchub.cloud%2Fdcpi" title="DCPI OEmbed">
+<!-- phase 267: schema.org Dataset markup so DCPI is citable by LLMs and search engines -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Dataset",
+  "name": "Data Center Power Index (DCPI)",
+  "alternateName": "DCPI",
+  "description": "Real-time power-availability scoring across {{ count }} U.S. data center markets. Combines ISO grid constraint signals, retail electricity prices, and interconnection-queue pressure into a 0–100 Excess Power Score with an actionable BUILD / CAUTION / AVOID / LOW_SIGNAL verdict per market. Recomputed continuously.",
+  "url": "https://dchub.cloud/dcpi",
+  "sameAs": "https://dchub.cloud/dcpi",
+  "creator": {"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"},
+  "publisher": {"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"},
+  "keywords": "data center, power index, grid intelligence, market capacity, hyperscale, AI infrastructure, ISO, ERCOT, PJM, MISO, CAISO",
+  "license": "https://dchub.cloud/dcpi#methodology",
+  "isAccessibleForFree": true,
+  "spatialCoverage": {"@type": "Place", "name": "United States"},
+  "temporalCoverage": "2024-01-01/..",
+  "distribution": [
+    {"@type": "DataDownload", "encodingFormat": "application/json", "contentUrl": "https://dchub.cloud/api/v1/dcpi/scores", "name": "All market scores (current)"},
+    {"@type": "DataDownload", "encodingFormat": "application/json", "contentUrl": "https://dchub.cloud/api/v1/dcpi/leaderboard", "name": "Ranked leaderboard (top markets)"},
+    {"@type": "DataDownload", "encodingFormat": "application/json", "contentUrl": "https://dchub.cloud/api/v1/dcpi/history", "name": "30-day score history per market"}
+  ],
+  "citation": "DC Hub Data Center Power Index. https://dchub.cloud/dcpi"
+}
+</script>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
 :root {
@@ -851,6 +1047,48 @@ h2 {
   color: white;
 }
 
+/* phase 271: verdict filter tabs — Actionable (BUILD/CAUTION/AVOID) is the
+   default view; Monitoring (LOW_SIGNAL) is the noisy long tail; All shows
+   everything. Designed to mirror .toggle visual language. */
+.verdict-tabs {
+  display: inline-flex;
+  background: var(--card);
+  border: 1px solid var(--bd);
+  border-radius: 10px;
+  overflow: hidden;
+  margin: 0 0 1rem;
+}
+.verdict-tabs button {
+  background: transparent;
+  color: var(--tx2);
+  border: 0;
+  padding: 0.6rem 1.15rem;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.82rem;
+  font-family: inherit;
+  transition: all 0.15s;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.verdict-tabs button.active {
+  background: var(--gradient);
+  color: white;
+}
+.verdict-tabs button .count {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.72rem;
+  padding: 0.12rem 0.45rem;
+  border-radius: 99px;
+  background: rgba(255,255,255,0.08);
+  color: inherit;
+}
+.verdict-tabs button.active .count {
+  background: rgba(255,255,255,0.22);
+}
+.hidden-by-verdict { display: none !important; }
+
 /* ===== GRID ===== */
 .grid {
   display: grid;
@@ -1020,14 +1258,33 @@ footer a:hover { color: var(--acc-light); }
   </div>
 
   <div class="section-h"><span class="pip"></span>📊 Index View</div>
-  <div class="toggle" role="tablist">
+
+  <!-- phase 271: verdict tabs — Actionable is default so credibility-grade
+       verdicts get visual primacy; Monitoring keeps LOW_SIGNAL covered but
+       demoted; All preserves the full-coverage claim. Counts are accurate
+       to the rendered DOM. -->
+  <div class="verdict-tabs" role="tablist" aria-label="Filter markets by verdict">
+    <button class="vt active" data-verdict-filter="actionable" role="tab" aria-selected="true">
+      Actionable <span class="count">{{ count_actionable }}</span>
+    </button>
+    <button class="vt" data-verdict-filter="monitoring" role="tab" aria-selected="false">
+      Monitoring <span class="count">{{ count_low_signal }}</span>
+    </button>
+    <button class="vt" data-verdict-filter="all" role="tab" aria-selected="false">
+      All <span class="count">{{ count }}</span>
+    </button>
+  </div>
+
+  <div class="toggle" role="tablist" aria-label="Switch score axis">
     <button class="active" data-mode="excess">Excess Power · Opportunity</button>
     <button data-mode="constraint">Constraint · Avoid</button>
   </div>
 
   <div class="grid" id="grid">
     {% for s in scores %}
-    <a href="/dcpi/{{ s.market_slug }}" style="text-decoration:none;color:inherit;">
+    <a href="/dcpi/{{ s.market_slug }}" style="text-decoration:none;color:inherit;"
+       class="card-link {% if s.verdict == 'LOW_SIGNAL' %}hidden-by-verdict{% endif %}"
+       data-verdict="{{ s.verdict }}">
     <div class="card" data-excess="{{ s.excess_power_score }}" data-constraint="{{ s.constraint_score }}">
       <div class="market-name">{{ s.market_name }}</div>
       <div class="iso">{{ s.iso }} · {{ s.state }}</div>
@@ -1082,6 +1339,31 @@ buttons.forEach(b => b.addEventListener('click', () => {
   });
   cards.forEach(c => grid.appendChild(c));
 }));
+
+// phase 271: verdict-tab filter — Actionable / Monitoring / All
+// Server has already pre-hidden LOW_SIGNAL on the initial DOM via the
+// `hidden-by-verdict` class so the default view loads correctly even
+// before JS executes. This script handles user clicks.
+(function(){
+  const tabs = document.querySelectorAll('.verdict-tabs button');
+  if (!tabs.length) return;
+  function apply(filter){
+    document.querySelectorAll('.card-link').forEach(el => {
+      const v = el.getAttribute('data-verdict') || '';
+      const isLow = v === 'LOW_SIGNAL';
+      let hide = false;
+      if (filter === 'actionable') hide = isLow;
+      else if (filter === 'monitoring') hide = !isLow;
+      // 'all' — hide nothing
+      el.classList.toggle('hidden-by-verdict', hide);
+    });
+  }
+  tabs.forEach(b => b.addEventListener('click', () => {
+    tabs.forEach(x => { x.classList.remove('active'); x.setAttribute('aria-selected','false'); });
+    b.classList.add('active'); b.setAttribute('aria-selected','true');
+    apply(b.getAttribute('data-verdict-filter'));
+  }));
+})();
 </script>
 
 
@@ -1592,7 +1874,20 @@ def public_dashboard():
                            FROM market_power_scores WHERE published = true ORDER BY market_slug, computed_at DESC""")
             rows = cur.fetchall()
         rows.sort(key=lambda r: -(r.get("excess_power_score") or 0))
-    return render_template_string(DCPI_INDEX_TEMPLATE, scores=rows, count=len(rows))
+    # phase 271: surface verdict counts so the LOW_SIGNAL "Monitoring" tab can
+    # show a count badge, and the page's "Actionable" default isn't an opaque
+    # filter. Actionable = BUILD + CAUTION + AVOID (decision-grade); monitoring
+    # = LOW_SIGNAL (covered but no actionable signal yet).
+    _ACTIONABLE = {"BUILD", "CAUTION", "AVOID"}
+    count_actionable = sum(1 for r in rows if (r.get("verdict") or "") in _ACTIONABLE)
+    count_low_signal = sum(1 for r in rows if (r.get("verdict") or "") == "LOW_SIGNAL")
+    return render_template_string(
+        DCPI_INDEX_TEMPLATE,
+        scores=rows,
+        count=len(rows),
+        count_actionable=count_actionable,
+        count_low_signal=count_low_signal,
+    )
 
 
 @dcpi_bp.route("/dcpi/<slug>", methods=["GET"])

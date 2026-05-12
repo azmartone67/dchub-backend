@@ -27,7 +27,27 @@ const INTERNAL_KEY  = process.env.DCHUB_INTERNAL_KEY  || 'dchub-internal-sync-20
 const PORT          = parseInt(process.env.PORT || '3100', 10);
 const UPGRADE_URL   = process.env.DCHUB_UPGRADE_URL   || 'https://dchub.cloud/ai#pricing';
 const SIGNUP_URL    = process.env.DCHUB_SIGNUP_URL    || 'https://dchub.cloud/ai';
+// Phase 276/281: optional Stripe Payment Link for one-click upgrades from
+// inside the MCP paywall. If unset, the messages fall back to the existing
+// UPGRADE_URL (pricing page) — no functional change.
+//
+// Phase 281: the upgrade target is the Developer tier ($49/mo, "For AI Agent
+// Builders" per the pricing page), NOT Pro ($199/mo). DCHUB_STRIPE_PRO_LINK
+// still accepted as a back-compat alias.
+const STRIPE_DEVELOPER_LINK = (
+  process.env.DCHUB_STRIPE_DEVELOPER_LINK ||
+  process.env.DCHUB_STRIPE_PRO_LINK ||  // phase 276 legacy name
+  ''
+).trim();
 const KEY_CACHE_TTL = parseInt(process.env.DCHUB_KEY_CACHE_TTL_MS || '300000', 10); // 5 min
+
+// Phase 276/281: emit a "one-click upgrade" markdown line if a Stripe Payment
+// Link is configured. Empty string when unconfigured so existing messages
+// degrade cleanly.
+function oneClickUpgradeLine() {
+  if (!STRIPE_DEVELOPER_LINK) return '';
+  return `\u{26A1} **One-click upgrade to Developer ($49/mo, 1,000 calls/day):** [${STRIPE_DEVELOPER_LINK}](${STRIPE_DEVELOPER_LINK})\n\n`;
+}
 
 // ── Per-request context (api_key, platform, tier, session_id) ───────────────
 const ctx = new AsyncLocalStorage();
@@ -137,17 +157,64 @@ const FREE_TIER_LIMITS = {
   get_news:           { max_limit: 20 },
   get_infrastructure: { max_limit: 25 },
 };
+
+// Phase 274: free-tier daily call caps on selected previously-paid-only tools.
+// The funnel showed 99–101 distinct free users hitting these tools ~22 times
+// each (clearly a real workflow). Hard-walling on call #1 was killing
+// conversion: 0.012% paid-conversion rate over 8,167 paywall hits in 7d.
+// Letting them complete small workflows (10/day each) creates upgrade pull
+// from real-use frustration instead of from immediate denial. After cap,
+// the existing paid_only paywall fires.
+const FREE_TIER_DAILY_CAPS = {
+  get_grid_intelligence: 10,
+  get_fiber_intel:       10,
+};
+
 const PAID_ONLY_TOOLS = new Set([
   'analyze_site',
   'compare_sites',
-  'get_grid_intelligence',
+  // 'get_grid_intelligence',  // phase 274: moved to FREE_TIER_DAILY_CAPS (10/day)
   'get_dchub_recommendation',
-  'get_fiber_intel',
+  // 'get_fiber_intel',         // phase 274: moved to FREE_TIER_DAILY_CAPS (10/day)
 ]);
 
-function applyTierGate(toolName, params, tier) {
+// Phase 274: fetch today's call count for a given (api_key, tool) so we can
+// enforce per-day caps. Fail-soft: any error → assume quota intact (count=0)
+// so a transient backend blip doesn't break legitimate users.
+async function usageToday(api_key, tool) {
+  if (!api_key || !tool) return 0;
+  try {
+    const u = new URL('/api/v1/mcp/usage-today', API_BASE);
+    u.searchParams.set('api_key', api_key);
+    u.searchParams.set('tool', tool);
+    const resp = await fetch(u.toString(), {
+      headers: { 'X-Internal-Key': INTERNAL_KEY },
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!resp.ok) return 0;
+    const data = await resp.json();
+    return Number(data?.count) || 0;
+  } catch (err) {
+    console.error('[usageToday] failed:', err.message);
+    return 0;
+  }
+}
+
+// Returns { allowed, params, capped, dailyCap, dailyUsed } — async because
+// the daily-cap branch needs a usage lookup.
+async function applyTierGate(toolName, params, tier, api_key) {
   if (tier === 'paid' || tier === 'enterprise') return { allowed: true, params };
   if (PAID_ONLY_TOOLS.has(toolName)) return { allowed: false };
+
+  // Daily cap check for free tier
+  const dailyCap = FREE_TIER_DAILY_CAPS[toolName];
+  if (dailyCap && tier === 'free') {
+    const used = await usageToday(api_key, toolName);
+    if (used >= dailyCap) {
+      return { allowed: false, dailyCapExceeded: true, dailyCap, dailyUsed: used };
+    }
+  }
+
   const lim = FREE_TIER_LIMITS[toolName];
   if (lim && Number(params?.limit) > lim.max_limit) {
     return { allowed: true, params: { ...params, limit: lim.max_limit }, capped: lim.max_limit };
@@ -163,45 +230,96 @@ function trackedTool(srv, name, description, schema, handler) {
     let status = 'ok';
     const tier = c.tier || 'free';
     try {
-      const gate = applyTierGate(name, args, tier);
+      const gate = await applyTierGate(name, args, tier, c.api_key);
+
+      // Phase 274: daily-cap-exceeded gets its own friendlier message —
+      // user has clearly been using the tool, so the paywall framing is
+      // "you've earned this" not "you're locked out."
+      if (!gate.allowed && gate.dailyCapExceeded) {
+        status = 'blocked_daily_cap';
+        const _quick = oneClickUpgradeLine();
+        const _md = `## \u{23F1}\u{FE0F} Daily free-tier limit reached for \`${name}\`
+
+You've used **${gate.dailyUsed}/${gate.dailyCap}** of today's free calls to \`${name}\`. Resets at **00:00 UTC**.
+
+### You're clearly using this for real work. Two paths forward:
+
+${_quick}1. **Wait it out.** Limit resets in a few hours.
+2. **Upgrade now — 50% off first month with \`TRYDCHUB50\`.**
+
+\u{1F449} **[Upgrade to Developer](${UPGRADE_URL})** — $49/mo, 1,000 calls/day, unlimited \`${name}\`, \`get_grid_intelligence\`, \`get_fiber_intel\`, plus the paid-only tools (\`analyze_site\`, \`compare_sites\`, \`get_dchub_recommendation\`).
+
+If you're scoring more than ~10 markets/day, the math favors upgrading.`;
+        return {
+          content: [{ type: 'text', text: _md }],
+          structuredContent: {
+            error: 'daily_cap_exceeded',
+            tool: name,
+            current_tier: tier,
+            daily_used: gate.dailyUsed,
+            daily_cap: gate.dailyCap,
+            resets_at: 'next 00:00 UTC',
+            upgrade_url: UPGRADE_URL,
+            ...(STRIPE_PRO_LINK ? { one_click_upgrade_url: STRIPE_PRO_LINK } : {}),
+            discount_code: 'TRYDCHUB50',
+          },
+        };
+      }
 
       if (!gate.allowed) {
         status = 'blocked_paid_only';
         // Markdown-formatted response — renders as real prose in Claude/Cursor/most MCP UIs.
         const _isKeyed = !!c.api_key;
+        const _quick = oneClickUpgradeLine();  // phase 276
         const _mdKeyed = `## \u{1F512} \`${name}\` requires a paid plan
 
-You're on **free tier** with a dev key — this tool is gated to **Pro** ($49/mo).
+You're on **free tier** with a dev key — this tool is gated to **Developer** ($49/mo).
 
-### What Pro unlocks
+${_quick}### What Developer unlocks
 - \`analyze_site\` — full power, fiber, risk, climate scoring for any location
 - \`compare_sites\` — side-by-side comparison across markets
-- \`get_grid_intelligence\` — real-time US ISO data (PJM, ERCOT, CAISO, MISO, NYISO, SPP)
-- \`get_fiber_intel\` — dark fiber routes + carrier networks
 - \`get_dchub_recommendation\` — AI-formatted location recommendations
-- Uncapped result sizes on all free-tier tools
+- **Unlimited** \`get_grid_intelligence\` + \`get_fiber_intel\` (free tier: 10/day each)
+- 1,000 calls/day across the whole MCP surface (free tier: 100/day)
 
-\u{1F449} **[Upgrade to Pro](${UPGRADE_URL})**
+\u{1F449} **[Upgrade to Developer](${UPGRADE_URL})**
 
-Free tier still covers: \`search_facilities\`, \`get_facility\`, \`list_transactions\`, \`get_news\`, \`get_market_intel\`, \`get_pipeline\`, \`get_grid_data\`, \`get_water_risk\`.`;
+Free tier still covers: \`search_facilities\`, \`get_facility\`, \`list_transactions\`, \`get_news\`, \`get_market_intel\`, \`get_pipeline\`, \`get_grid_data\`, \`get_water_risk\`, plus **10/day** of \`get_grid_intelligence\` and \`get_fiber_intel\`.`;
+
+        // Phase 277: anonymous AI agents get an immediate self-serve path.
+        // /api/v1/keys/claim issues a free key in one curl, no email required —
+        // the AI agent (or its human) can run the curl, parse the api_key from
+        // the JSON, set it on the MCP client config, and retry. The old
+        // /dev-signup (email-verified) is still listed below as the path
+        // that lifts the per-IP rate limit.
         const _mdAnon = `## \u{1F512} \`${name}\` is a paid feature
 
-### Get a free dev key in 30 seconds (no credit card)
+### Get a free dev key in one curl — no email, no browser (AI-agent friendly)
 
+\`\`\`bash
+curl -s -X POST https://dchub.cloud/api/v1/keys/claim \\
+  -H "Content-Type: application/json" \\
+  -d '{"client_name":"my-agent","intended_use":"score build sites"}'
+\`\`\`
+
+Returns JSON with an \`api_key\` (\`dch_live_...\`) you drop into your MCP client config under \`X-API-Key\`. Rate-limited to 1 key per IP per 24h.
+
+Free tier covers **100 calls/day** across:
+- \`search_facilities\`, \`get_facility\`, \`list_transactions\`
+- \`get_news\`, \`get_market_intel\`, \`get_pipeline\`
+- \`get_grid_data\`, \`get_water_risk\`, \`get_renewable_energy\`, \`get_tax_incentives\`
+- \`get_infrastructure\`, \`get_energy_prices\`, \`get_intelligence_index\`
+- **10/day** of \`get_grid_intelligence\` and \`get_fiber_intel\`
+
+### Or verify email for higher rate limits
 \`\`\`bash
 curl -X POST https://dchub.cloud/api/v1/dev-signup \\
   -H "Content-Type: application/json" \\
   -d '{"email":"YOUR_EMAIL"}'
 \`\`\`
 
-That returns an \`X-API-Key\` you drop into your MCP client config. Free tier covers **100 calls/day** across:
-- \`search_facilities\`, \`get_facility\`, \`list_transactions\`
-- \`get_news\`, \`get_market_intel\`, \`get_pipeline\`
-- \`get_grid_data\`, \`get_water_risk\`, \`get_renewable_energy\`, \`get_tax_incentives\`
-- \`get_infrastructure\`, \`get_energy_prices\`, \`get_intelligence_index\`
-
-### Or skip straight to Pro
-\u{1F449} **[Upgrade to Pro](${UPGRADE_URL})** — $49/mo. Full result sizes + all paid tools: \`${name}\`, \`analyze_site\`, \`compare_sites\`, \`get_grid_intelligence\`, \`get_fiber_intel\`, \`get_dchub_recommendation\`.`;
+### Or skip straight to Developer
+${_quick}\u{1F449} **[Upgrade to Developer](${UPGRADE_URL})** — $49/mo, 1,000 calls/day. Full result sizes + all paid tools: \`${name}\`, \`analyze_site\`, \`compare_sites\`, \`get_dchub_recommendation\`, and unlimited \`get_grid_intelligence\` + \`get_fiber_intel\`.`;
         return {
           content: [{ type: 'text', text: _isKeyed ? _mdKeyed : _mdAnon }],
           structuredContent: {
@@ -210,6 +328,11 @@ That returns an \`X-API-Key\` you drop into your MCP client config. Free tier co
             current_tier: tier,
             upgrade_url: UPGRADE_URL,
             signup_url: _isKeyed ? null : SIGNUP_URL,
+            // Phase 275 + 277: programmatic claim path for AI agents.
+            ...(_isKeyed ? {} : { claim_key_url: 'https://dchub.cloud/api/v1/keys/claim',
+                                  claim_key_method: 'POST' }),
+            // Phase 276: one-click upgrade if configured.
+            ...(STRIPE_PRO_LINK ? { one_click_upgrade_url: STRIPE_PRO_LINK } : {}),
           },
         };
       }
