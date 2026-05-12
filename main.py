@@ -1855,6 +1855,19 @@ except Exception as e:
 def health_check():
     return {'status': 'ok'}, 200
 
+# phase 269: /health/deep alias — mirror /api/v1/health/deep at the unprefixed
+# URL the audit and external monitors expect (matches /health ↔ /api/v1/health).
+@app.route('/health/deep')
+def health_deep_alias():
+    try:
+        # Forward to the canonical handler — defined later in main.py at line ~18414
+        return _health_deep()  # noqa: F821 — symbol exists by request-time
+    except NameError:
+        # Fallback if the canonical handler hasn't been registered yet at import time
+        from flask import jsonify
+        return jsonify(error="deep_health_unavailable",
+                       canonical="/api/v1/health/deep"), 503
+
 @app.route('/.well-known/health')
 def well_known_health():
     return {'status': 'ok'}, 200
