@@ -1082,6 +1082,7 @@ try:
     from routes.freshness_public import freshness_public_bp  # phase 268_public_freshness
     from routes.enterprise import enterprise_bp  # phase 272_enterprise_contact
     from routes.brain_v2_layer4 import brain_v2_bp  # phase 289_self_learning
+    from routes.brain_v2_public import brain_v2_public_bp  # phase 300_public_brain
     from routes.outreach_cap_exceeded import outreach_cap_bp  # phase 290_outreach
     app.register_blueprint(observability_bp)
     app.register_blueprint(gating_bp)  # phase68_gating_bp
@@ -1093,6 +1094,7 @@ try:
     app.register_blueprint(freshness_public_bp)  # phase 268 — public /freshness + /api/v1/freshness
     app.register_blueprint(enterprise_bp)  # phase 272 — /enterprise + /api/v1/enterprise/contact
     app.register_blueprint(brain_v2_bp)  # phase 289 — Brain v2 Layer 4 self-learning
+    app.register_blueprint(brain_v2_public_bp)  # phase 300 — public /brain transparency page
     app.register_blueprint(outreach_cap_bp)  # phase 290 — cap-exceeded outreach engine
 except Exception as _e:
     import logging

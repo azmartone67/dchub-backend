@@ -158,29 +158,51 @@ def _call_claude(prompt: str, system: str) -> tuple[str | None, str | None]:
 
 
 _LEARN_SYSTEM = (
-    "You are the Brain v2 self-learning module for DC Hub. The healer "
-    "has detected a frontend issue (stale text, placeholder leak, etc.) "
-    "and the existing FIX_MAP has no entry for it. Your job: propose a "
-    "single (find, replace) text substitution that fixes the issue "
-    "without breaking surrounding markup.\n\n"
+    "You are the Brain v2 self-learning module for DC Hub. The HTML quality "
+    "healer has detected a placeholder/stale-text issue on a page and the "
+    "existing FIX_MAP has no entry for it. Your job: propose a single "
+    "(find, replace) text substitution that fixes ONLY the actual data-cell "
+    "placeholder, not stylistic typography elsewhere on the page.\n\n"
+    "CRITICAL CONTEXT — em-dashes are tricky:\n"
+    "  - Em-dashes inside `<td>—</td>` or `<div class=\"v\">—</div>` ARE "
+    "    placeholders (a data cell that didn't populate). These should be fixed.\n"
+    "  - Em-dashes inside meta descriptions, titles, alt text, or sentences "
+    "    like 'DC Hub Media — the autonomous feed' ARE INTENTIONAL TYPOGRAPHY. "
+    "    DO NOT propose replacing these. Refuse with rationale='intentional_typography'.\n"
+    "  - If you can't isolate a specific placeholder cell, refuse — don't guess.\n\n"
+    "Output STRICTLY a JSON object:\n"
+    "  {\"find\": \"...\", \"replace\": \"...\", \"rationale\": \"...\"}\n\n"
     "Rules:\n"
-    "  - Output STRICTLY a JSON object: {\"find\": \"...\", \"replace\": \"...\", \"rationale\": \"...\"}\n"
-    "  - `find` must be a literal substring at least 3 chars long that "
-    "appears verbatim in the snippet.\n"
+    "  - `find` must be a literal substring at least 5 chars long that appears "
+    "    verbatim in the snippet AND is unambiguously a placeholder (cell-like context).\n"
+    "  - `find` must include enough surrounding HTML context (the parent tag) "
+    "    so the substitution can't accidentally match similar patterns elsewhere.\n"
     "  - `replace` should not introduce new HTML tags unless the original had them.\n"
     "  - `rationale` is a one-sentence explanation a human can verify in 5s.\n"
-    "  - If you can't propose a safe fix, return {\"find\": \"\", \"replace\": \"\", "
-    "\"rationale\": \"refused: <why>\"}.\n"
+    "  - When in doubt, refuse: {\"find\": \"\", \"replace\": \"\", "
+    "    \"rationale\": \"refused: <why>\"}. Refusing is better than guessing.\n"
 )
 
 
 def _build_prompt(issue: dict, snippet: str) -> str:
+    # Phase 300 (Phase R-2): include the issue label, count, page URL, AND
+    # explicit guidance about scoping the find to a data-cell context (not
+    # the broader page). Previously the prompt just said "find the pattern"
+    # and Claude picked the FIRST em-dash on the page (usually in the meta
+    # description) — leading to typography-mangling proposals.
     return (
         f"Issue label: {issue.get('issue','?')}\n"
         f"URL: {issue.get('url','?')}\n"
-        f"Count: {issue.get('count','?')}\n\n"
+        f"Healer reports this pattern appears {issue.get('count','?')} time(s) on the page.\n\n"
+        "Your task: find an UNAMBIGUOUS placeholder (a data-cell context — "
+        "the em-dash is the sole text content of a `<td>`, `<span class=\"v\">`, "
+        "`<div class=\"...kpi...\">`, or similar leaf element). NOT em-dashes "
+        "in titles, meta descriptions, alt text, or prose.\n\n"
+        "If you cannot isolate a placeholder cell (e.g. the only em-dashes on "
+        "the page are in `<title>` or `content=\"...\"` attribute values), "
+        "return refused.\n\n"
         f"HTML snippet (raw):\n```html\n{snippet[:1500]}\n```\n\n"
-        "Propose a safe find/replace for THIS specific pattern."
+        "Propose a fix or refuse — JSON only."
     )
 
 
@@ -269,22 +291,43 @@ def trigger_learn():
                   "find": find[:80], "replace": replace[:80]})
             results.append({"issue": issue.get("issue"), "outcome": f"validation: {reason}"})
             continue
-        # Accept the proposal
-        entry = {
-            "issue_label": issue.get("issue"),
-            "find": find,
-            "replace": replace,
-            "rationale": rationale,
-            "source_url": issue.get("url"),
-            "proposed_at": datetime.now(timezone.utc).isoformat(),
-            "model": BRAIN_MODEL,
-        }
-        _proposed_fixes.append(entry)
-        if len(_proposed_fixes) > _MAX_BUFFER:
-            _proposed_fixes.pop(0)
-        _log({"issue": issue.get("issue"), "outcome": "proposed", "find": find[:80]})
-        results.append({"issue": issue.get("issue"), "outcome": "proposed",
-                        "find": find[:60], "rationale": rationale[:120]})
+        # Phase 300 (Phase R-3): 2-cycle approval gate. If the exact same
+        # (find, replace) pair has been proposed before, increment its
+        # approval_count and flip to approved=true at >= 2. master-heal only
+        # consumes approved entries — single-shot Claude hallucinations stay
+        # in the queue but never get auto-applied. Real recurring bugs cross
+        # the threshold within 2 hourly cycles and become eligible.
+        existing = next((e for e in _proposed_fixes
+                         if e.get("find") == find and e.get("replace") == replace), None)
+        if existing:
+            existing["approval_count"] = existing.get("approval_count", 1) + 1
+            existing["last_seen_at"] = datetime.now(timezone.utc).isoformat()
+            existing["approved"] = existing["approval_count"] >= 2
+            _log({"issue": issue.get("issue"), "outcome": "approval_count_incremented",
+                  "count": existing["approval_count"], "approved": existing["approved"]})
+            results.append({"issue": issue.get("issue"), "outcome": "reproposed",
+                            "approval_count": existing["approval_count"],
+                            "approved": existing["approved"]})
+        else:
+            entry = {
+                "issue_label": issue.get("issue"),
+                "find": find,
+                "replace": replace,
+                "rationale": rationale,
+                "source_url": issue.get("url"),
+                "proposed_at": datetime.now(timezone.utc).isoformat(),
+                "last_seen_at": datetime.now(timezone.utc).isoformat(),
+                "model": BRAIN_MODEL,
+                "approval_count": 1,        # phase 300
+                "approved": False,          # phase 300 — flips at count >= 2
+            }
+            _proposed_fixes.append(entry)
+            if len(_proposed_fixes) > _MAX_BUFFER:
+                _proposed_fixes.pop(0)
+            _log({"issue": issue.get("issue"), "outcome": "proposed", "find": find[:80]})
+            results.append({"issue": issue.get("issue"), "outcome": "proposed",
+                            "find": find[:60], "rationale": rationale[:120],
+                            "approval_count": 1, "approved": False})
 
     return jsonify(
         ok=True,
@@ -297,11 +340,23 @@ def trigger_learn():
 
 @brain_v2_bp.get("/api/v1/brain/proposed-fixes")
 def proposed_fixes():
-    """Master-heal workflow polls this to merge novel patterns into FIX_MAP."""
+    """Master-heal workflow polls this to merge novel patterns into FIX_MAP.
+
+    Phase 300 (Phase R-3): supports ?approved=true to return ONLY proposals
+    that have crossed the 2-cycle approval threshold. master-heal.yml uses
+    this filter to avoid auto-applying single-shot Claude hallucinations.
+    Without the filter, returns everything so the QA dashboard can show
+    both pending + approved.
+    """
+    approved_only = request.args.get("approved", "").lower() in ("true", "1", "yes")
+    proposals = _proposed_fixes
+    if approved_only:
+        proposals = [p for p in proposals if p.get("approved")]
     return jsonify(
         as_of=datetime.now(timezone.utc).isoformat(),
-        count=len(_proposed_fixes),
-        proposals=list(reversed(_proposed_fixes)),  # newest first
+        count=len(proposals),
+        filter={"approved_only": approved_only},
+        proposals=list(reversed(proposals)),  # newest first
     ), 200
 
 

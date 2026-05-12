@@ -1315,10 +1315,24 @@ def fix_html_quality_scan():
         except Exception as e:
             findings[url] = {"error": str(e)[:200]}
             continue
-        # phase 273: each pattern is either a str (literal substring) or a
-        # compiled regex. Strip <script> and <style> blocks before scanning
-        # so JS string literals and CSS comments don't generate false hits.
+        # phase 273 + 300 (Phase R-1): strip parts of the document that
+        # should NOT contribute to "visible quality" checks.
+        #   - <script>/<style>: JS strings, CSS comments (phase 273)
+        #   - <head> meta/og/twitter/canonical/link tag content (phase 300):
+        #     these contain prose like 'DC Hub Media — the autonomous feed'
+        #     where em-dashes are intentional typography, not placeholders.
+        #     Brain v2's first false-positive proposal traced back here.
+        #   - HTML attribute VALUES inside body (phase 300): an em-dash
+        #     inside alt="…" or title="…" is intentional text, not a cell.
         scan_body = _hp_re.sub(r"<(script|style)[\s\S]*?</\1>", "", body)
+        # Strip <head>...</head> entirely — its content is metadata, never
+        # rendered as visible page text
+        scan_body = _hp_re.sub(r"<head\b[\s\S]*?</head>", "", scan_body, flags=_hp_re.I)
+        # Strip attribute VALUES (everything between =" and ") on remaining tags
+        # so em-dashes in alt/title/data-* attributes don't trigger placeholder
+        # detection. Captures the equals-quoted-string in tags.
+        scan_body = _hp_re.sub(r'\s+[a-zA-Z_:][\w:.-]*\s*=\s*"[^"]*"', '', scan_body)
+        scan_body = _hp_re.sub(r"\s+[a-zA-Z_:][\w:.-]*\s*=\s*'[^']*'", '', scan_body)
         page_hits = {}
         for label, needle in HTML_BAD_PATTERNS.items():
             if hasattr(needle, "findall"):  # re.Pattern
