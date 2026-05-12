@@ -18862,7 +18862,17 @@ def _heal_findings():
 
     # Run detectors to populate findings + the stash
     findings = {}
-    for d in ["html_quality_scan", "feed_diversity_check", "cdn_cache_staleness"]:
+    # Phase 279: added sitemap_404_check, internal_links_check, jsonld_coverage_check
+    # to surface the new light-weight QA signals alongside the existing ones.
+    detectors = [
+        "html_quality_scan",
+        "feed_diversity_check",
+        "cdn_cache_staleness",
+        "sitemap_404_check",
+        "internal_links_check",
+        "jsonld_coverage_check",
+    ]
+    for d in detectors:
         fn = h.FIXES.get(d)
         if fn is None: continue
         try:
@@ -18892,6 +18902,55 @@ def _heal_findings():
         "actionable_frontend_issues": actionable,
         "cache_needs_purge": "STALE" in str(findings.get("cdn_cache_staleness", {}).get("details", "")),
     })
+
+
+# Phase 279: on-demand heavy QA crawler endpoint. Runs the full
+# scripts/dchub_qa_crawl.py crawler (~14s for 73 URLs) and returns the
+# structured findings JSON. Admin-gated via DCHUB_ADMIN_KEY because the
+# crawler hits every page on the sitemap — fine on its own but should not
+# be public-facing as a DOS-amplification vector.
+@app.route("/api/v1/heal/qa-crawl", methods=["POST", "GET"])
+def _heal_qa_crawl():
+    from flask import jsonify
+    import os
+    expected = os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY")
+    provided = (request.headers.get("X-Admin-Key")
+                or request.args.get("admin_key"))
+    if expected and provided != expected:
+        return jsonify(error="unauthorized",
+                       hint="X-Admin-Key header required"), 401
+    try:
+        import dchub_self_heal as h
+    except ImportError:
+        return jsonify(error="self_heal not loaded"), 500
+
+    fn = h.FIXES.get("qa_crawl_full")
+    if fn is None:
+        return jsonify(error="qa_crawl_full fix not registered"), 500
+    try:
+        ok, summary = fn()
+    except Exception as e:
+        return jsonify(error=str(e)[:300]), 500
+
+    payload = {"ok": ok, "summary": summary}
+    if hasattr(h, "get_last_qa_findings"):
+        full = h.get_last_qa_findings() or {}
+        # Trim to the useful fields — full per-URL list can be 100KB+
+        payload["scanned_at"] = full.get("ran_at")
+        payload["base"]       = full.get("base")
+        payload["severity"]   = full.get("summary", {}).get("by_severity", {})
+        payload["top_codes"]  = full.get("summary", {}).get("top_codes", [])
+        payload["pages_summary"] = full.get("summary_pages_only", {})
+        payload["apis_summary"]  = full.get("summary_apis_only", {})
+        # Critical + high findings inline
+        problems = []
+        for row in (full.get("pages", []) + full.get("apis", [])):
+            for sev, code, msg in row.get("findings", []):
+                if sev in ("critical", "high"):
+                    problems.append({"sev": sev, "code": code, "msg": msg,
+                                     "url": row.get("url")})
+        payload["critical_and_high"] = problems
+    return jsonify(payload)
 
 
 def _extract_frontend_issues(findings):
