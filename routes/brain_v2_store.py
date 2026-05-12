@@ -253,12 +253,18 @@ def log_event(entry: dict) -> bool:
                  "approval_count", "approved", "t"}
         extra = {k: v for k, v in entry.items() if k not in known}
         with c, c.cursor() as cur:
+            # ON CONFLICT DO NOTHING is a defensive no-op here — the table
+            # has only a BIGSERIAL PK and no unique constraints, so a
+            # conflict can't actually fire. Added to satisfy the
+            # regression-lint `insert-no-on-conflict` rule that guards
+            # against accidentally re-inserting rows with explicit PKs.
             cur.execute(
                 """
                 INSERT INTO brain_learning_log
                     (t, issue_label, outcome, find, replace,
                      approval_count, approved, extra)
-                VALUES (COALESCE(%s, NOW()), %s, %s, %s, %s, %s, %s, %s);
+                VALUES (COALESCE(%s, NOW()), %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT DO NOTHING;
                 """,
                 (entry.get("t"),
                  entry.get("issue") or entry.get("issue_label"),
