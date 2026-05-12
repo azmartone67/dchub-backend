@@ -1695,7 +1695,168 @@ def get_last_asset_findings():
     return dict(_last_asset_findings)
 
 
+# ============================================================================
+# Phase Z (2026-05-12): API contract probes — what the brain has been missing.
+#
+# Trigger: 2026-05-12 user reports: "markets continues to struggle as well,
+# power costs won't show in details," "DCHUB Media still serving old
+# testimonials," and "main markets site seems to have improved but still
+# needs work." Investigation found THREE coupled API contract violations
+# none of the prior detectors could catch:
+#
+#   1. /api/v1/markets/<slug>            — gated with @require_plan('pro'),
+#                                          returned 403 to anonymous market
+#                                          page → no headline KPIs render
+#   2. /api/v1/facilities?city=<city>    — endpoint silently ignored the
+#                                          `city` filter on the free path,
+#                                          returned random top-confidence
+#                                          facilities (Hampton, Las Cruces
+#                                          instead of Chicago facilities)
+#   3. /api/v1/gdci?market=<slug>        — endpoint had no filter logic at
+#                                          all; always returned global top-50
+#                                          ignoring the param
+#
+# All three pages RENDER without errors — the HTML is syntactically clean.
+# Every prior healer (html_quality_scan, jsonld, linked_asset_scan, the QA
+# crawler) returned PASS. The data was just wrong.
+#
+# This probe asserts API contract semantics: when you call X with filter Y,
+# you must get data matching filter Y back. Any contract violation
+# surfaces as an actionable_frontend_issue with the `api_contract_` prefix
+# (excluded from FIX_MAP body-substitution + Brain learning since the
+# fix is always a backend code change).
+# ============================================================================
+
+API_CONTRACT_PROBES = [
+    # Each probe is (label, url, validator_fn, expected_failure_msg).
+    # validator_fn receives the parsed JSON dict and returns (ok: bool, why: str).
+    {
+        "label": "markets_chicago_returns_stats",
+        "url":   "https://dchub.cloud/api/v1/markets/chicago",
+        "validator": lambda d: (
+            (True, "ok") if (d.get("success") is True
+                              and isinstance(d.get("stats"), dict)
+                              and (d["stats"].get("total_power_mw") or 0) > 0)
+            else (False, f"missing/empty stats.total_power_mw; got success={d.get('success')}")
+        ),
+    },
+    {
+        "label": "facilities_city_filter_honored",
+        "url":   "https://dchub.cloud/api/v1/facilities?city=Chicago&limit=5",
+        "validator": lambda d: (
+            (True, "ok") if all(
+                (f.get("city") or "").lower().find("chicago") != -1
+                or (f.get("state") in ("IL",))
+                for f in (d.get("data") or [])[:3]
+            ) and len(d.get("data") or []) > 0
+            else (False, f"non-Chicago rows leaked through: "
+                        f"{[(f.get('city'), f.get('state')) for f in (d.get('data') or [])[:3]]}")
+        ),
+    },
+    {
+        "label": "gdci_market_filter_honored",
+        "url":   "https://dchub.cloud/api/v1/gdci?market=chicago",
+        "validator": lambda d: (
+            (True, "ok") if (
+                isinstance(d.get("data"), list)
+                and (d.get("filter", {}) or {}).get("market") == "chicago"
+            ) else (False, f"market filter not echoed in response.filter: got {d.get('filter')}")
+        ),
+    },
+    {
+        "label": "ai_usage_live_returns_data",
+        "url":   "https://dchub.cloud/api/v1/media/ai-usage-live?hours=24",
+        "validator": lambda d: (
+            (True, "ok") if (d.get("live") is True and int(d.get("tool_calls") or 0) > 0)
+            else (False, f"live={d.get('live')} tool_calls={d.get('tool_calls')}")
+        ),
+    },
+    {
+        "label": "paywall_response_includes_human_message",
+        # Use a known-gated endpoint that requires a non-existent plan.
+        # /api/v1/markets/compare is still Pro-gated, and the 403 must
+        # carry the rich envelope post-Phase-X.
+        "url":   "https://dchub.cloud/api/v1/markets/compare?markets=chicago,ashburn",
+        "validator": lambda d: (
+            (True, "ok") if (
+                isinstance(d.get("human_message"), str)
+                and len(d["human_message"]) > 50
+                and (d.get("one_click_upgrade_url") or "").startswith("https://")
+            ) else (False,
+                    f"paywall missing rich envelope: "
+                    f"human_message={'YES' if d.get('human_message') else 'NO'}, "
+                    f"one_click_upgrade_url={'YES' if d.get('one_click_upgrade_url') else 'NO'}")
+        ),
+    },
+]
+
+_last_api_contract_findings = {}
+
+
+def fix_api_contract_scan():
+    """Probe every (filter param, expected behaviour) contract.
+       Anything that returns 2xx with wrong data is an actionable issue."""
+    import urllib.request, urllib.error, json
+    findings = {}
+    total_violations = 0
+    HEADERS = {
+        "User-Agent": "Mozilla/5.0 (compatible; DCHubHealer/1.0; +https://dchub.cloud/.well-known/ai-agents.json)",
+        "Accept": "application/json",
+    }
+    for probe in API_CONTRACT_PROBES:
+        url = probe["url"]
+        try:
+            req = urllib.request.Request(url, headers=HEADERS)
+            with urllib.request.urlopen(req, timeout=10) as r:
+                status = r.status
+                body = r.read().decode("utf-8", errors="ignore")
+        except urllib.error.HTTPError as he:
+            status = he.code
+            try:
+                body = he.read().decode("utf-8", errors="ignore")
+            except Exception:
+                body = ""
+        except Exception as e:
+            findings[url] = {f"api_contract_unreachable: {probe['label']}": 1,
+                             "_error": str(e)[:120]}
+            total_violations += 1
+            continue
+        # Attempt to parse JSON; if the endpoint returns HTML it's already
+        # a contract violation (every probed endpoint MUST return JSON).
+        try:
+            data = json.loads(body)
+        except Exception:
+            findings[url] = {f"api_contract_non_json: {probe['label']}": 1}
+            total_violations += 1
+            continue
+        # Run the validator
+        try:
+            ok, why = probe["validator"](data)
+        except Exception as e:
+            ok, why = False, f"validator_crashed: {str(e)[:80]}"
+        if not ok:
+            findings[url] = {
+                f"api_contract_violation: {probe['label']} — {why[:120]}": 1
+            }
+            total_violations += 1
+
+    global _last_api_contract_findings
+    _last_api_contract_findings = findings
+    if total_violations == 0:
+        return True, f"OK: {len(API_CONTRACT_PROBES)} API contracts honored"
+    return True, (f"{total_violations} API contract violations across "
+                  f"{len(findings)} endpoints: " + str(findings)[:280])
+
+
+def get_last_api_contract_findings():
+    """Returns the {url: {label: count}} dict from the most recent run.
+       Same shape as get_last_html_findings() so /api/v1/heal/findings
+       can merge it into actionable_frontend_issues uniformly."""
+    return dict(_last_api_contract_findings)
+
+
 FIXES["linked_asset_scan"]    = fix_linked_asset_scan
+FIXES["api_contract_scan"]    = fix_api_contract_scan
 FIXES["sitemap_404_check"]    = fix_sitemap_404_check
 FIXES["internal_links_check"] = fix_internal_links_check
 FIXES["jsonld_coverage_check"] = fix_jsonld_coverage_check
@@ -1717,6 +1878,12 @@ PATTERNS.extend([
     # fallback) which the user reported on 2026-05-11 had been silently
     # broken for weeks.
     {"name": "linked_asset_tick",    "match": ["DCPI"], "fix": "linked_asset_scan"},
+    # Phase Z (2026-05-12): API contract probes — catches the class of
+    # bug where an endpoint returns 200 with syntactically-correct JSON
+    # but ignores filter params or omits expected fields. The user
+    # reported three of these on 2026-05-12 (markets/<slug> 403,
+    # facilities?city filter ignored, gdci?market filter ignored).
+    {"name": "api_contract_tick",    "match": ["DCPI"], "fix": "api_contract_scan"},
 ])
 
 

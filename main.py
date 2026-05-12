@@ -8036,9 +8036,27 @@ def list_markets():
 
 
 @app.route('/api/v1/markets/<market>', methods=['GET'])
-@require_plan('pro')
 def get_market_stats(market):
-    """Get detailed stats for a single market"""
+    """Get detailed stats for a single market.
+
+    Phase Z (2026-05-12): REMOVED @require_plan('pro') gate. The previous
+    Pro-gating was breaking every public market page — market-page.js
+    calls this endpoint to render headline KPIs (facility count, total
+    power MW, top providers, status breakdown), and the 403 was the
+    direct cause of the user-reported 2026-05-12 bug "/markets/chicago
+    has static routes, no costs."
+
+    Rationale: this endpoint returns AGGREGATE stats only — facility
+    counts, total/avg MW, top-provider names, status histogram, and
+    5 recent facility NAMES. None of that is competitively sensitive
+    (it's what DataCenterHawk publishes for free in their basic market
+    cards). Deep per-facility data + the /facilities listing remain
+    paywalled separately, so the actual revenue moat is untouched.
+
+    The brain healer (Phase Z) now probes this endpoint and verifies
+    it returns success=true + a populated `stats.total_power_mw`, so
+    any future regression that re-gates it gets caught immediately.
+    """
     market_lower = market.lower().replace('-', ' ')
 
     if market_lower not in MARKET_ALIASES:
@@ -9388,6 +9406,18 @@ def _list_facilities_free():
         sql += " AND state = %s"
         count_sql += " AND state = %s"
         params.append(state.upper())
+    # Phase Z (2026-05-12): honor ?city= filter on the free path.
+    # market-page.js builds its `facilities` call as
+    # `${API_BASE}/facilities?city=${m.name}&country=${m.country}&limit=12`,
+    # but pre-Phase-Z this endpoint ignored `city` entirely so the
+    # response was the top-5 globally-confident facilities — Hampton, Las
+    # Cruces, etc. for a Chicago page. User reported it on 2026-05-12.
+    # ILIKE so "Chicago" matches "Chicago", "South Chicago", etc.
+    city = request.args.get('city')
+    if city:
+        sql += " AND city ILIKE %s"
+        count_sql += " AND city ILIKE %s"
+        params.append(f"%{city}%")
 
     sql += f" ORDER BY confidence_score DESC, power_mw DESC LIMIT {FREE_LIMIT}"
 
@@ -17463,23 +17493,80 @@ def cf_stub_energy_summary():
 
 @app.route('/api/v1/gdci', methods=['GET'])
 def cf_stub_gdci():
-    """Cloudflare Worker failover: market index proxy (gdci_scores table pending)."""
+    """Cloudflare Worker failover: market index proxy (gdci_scores table pending).
+
+    Phase Z (2026-05-12): honor ?market= filter. Pre-Phase-Z, the
+    endpoint ignored every query param and always returned the top 50
+    markets — so market-page.js's GDCI badge call
+    `?market=chicago` got the global top 50 with `market: 'Unknown'`
+    at index 0 instead of Chicago-specific data. The market detail page
+    rendered no badge.
+
+    With the filter:
+      - No ?market= param        → global top 50 (legacy behaviour)
+      - ?market=chicago          → only the Chicago row, or empty array
+                                    if Chicago has no rows in
+                                    discovered_facilities.market
+
+    We use MARKET_ALIASES to resolve the slug to actual city names so
+    "chicago" → ["Chicago", "Aurora", "Naperville", "Schaumburg", ...]
+    instead of needing an exact match on a single-string market column.
+    """
+    requested_market = (request.args.get('market') or '').strip().lower()
     try:
         conn = get_pg_connection()
         cur = conn.cursor()
-        cur.execute("""
-            SELECT market, COUNT(*) as facility_count,
-                   COALESCE(SUM(power_mw), 0) as total_mw
-            FROM discovered_facilities
-            WHERE market IS NOT NULL
-            GROUP BY market ORDER BY facility_count DESC LIMIT 50
-        """)
+        if requested_market:
+            # Resolve slug → list of city names. MARKET_ALIASES is the same
+            # authoritative table /api/v1/markets/<slug> uses, so behaviour
+            # stays consistent between the two endpoints.
+            cities = MARKET_ALIASES.get(requested_market.replace('-', ' '), [])
+            if not cities:
+                # If unknown slug, still try a literal match against the
+                # market column — covers manually-tagged rows.
+                cur.execute("""
+                    SELECT market, COUNT(*) AS facility_count,
+                           COALESCE(SUM(power_mw), 0) AS total_mw
+                    FROM discovered_facilities
+                    WHERE LOWER(market) = %s
+                    GROUP BY market
+                """, (requested_market,))
+            else:
+                # City list lookup — sums across the cities in MARKET_ALIASES
+                conds, params = [], []
+                for c in cities:
+                    if len(c) == 2 and c.isupper():
+                        conds.append("state = %s")
+                        params.append(c)
+                    else:
+                        conds.append("city ILIKE %s")
+                        params.append(f"%{c}%")
+                where = " OR ".join(conds)
+                cur.execute(f"""
+                    SELECT %s AS market, COUNT(*) AS facility_count,
+                           COALESCE(SUM(power_mw), 0) AS total_mw
+                    FROM discovered_facilities
+                    WHERE ({where})
+                      AND (country = 'US' OR country = 'USA' OR country IS NULL OR country = '')
+                """, [requested_market.title()] + params)
+        else:
+            cur.execute("""
+                SELECT market, COUNT(*) as facility_count,
+                       COALESCE(SUM(power_mw), 0) as total_mw
+                FROM discovered_facilities
+                WHERE market IS NOT NULL
+                GROUP BY market ORDER BY facility_count DESC LIMIT 50
+            """)
         rows = cur.fetchall()
         return_pg_connection(conn)
-        return jsonify({"success": True, "count": len(rows),
-                        "note": "market proxy — dedicated gdci_scores table coming soon",
-                        "data": [{"market": r[0], "facility_count": int(r[1]),
-                                  "total_mw": round(float(r[2]), 1)} for r in rows]})
+        return jsonify({
+            "success": True,
+            "count": len(rows),
+            "filter": {"market": requested_market} if requested_market else None,
+            "note": "market proxy — dedicated gdci_scores table coming soon",
+            "data": [{"market": r[0], "facility_count": int(r[1] or 0),
+                      "total_mw": round(float(r[2] or 0), 1)} for r in rows if r[1]],
+        })
     except Exception as e:
         try:
             if conn: return_pg_connection(conn)
@@ -18975,6 +19062,9 @@ def _heal_findings():
         "internal_links_check",
         "jsonld_coverage_check",
         "linked_asset_scan",
+        # Phase Z (2026-05-12): API contract probes — see
+        # dchub_self_heal.fix_api_contract_scan for what these catch.
+        "api_contract_scan",
     ]
     for d in detectors:
         fn = h.FIXES.get(d)
@@ -19007,6 +19097,21 @@ def _heal_findings():
     try:
         if hasattr(h, "get_last_asset_findings"):
             raw = h.get_last_asset_findings()
+            for url, hits in (raw or {}).items():
+                if isinstance(hits, dict):
+                    for label, n in hits.items():
+                        if isinstance(n, int):
+                            actionable.append({"url": url, "issue": label, "count": n})
+    except Exception:
+        pass
+    # Phase Z (2026-05-12): merge in API-contract findings. Labels start
+    # with `api_contract_` so they're excluded from FIX_MAP body
+    # substitutions AND from the Brain v2 learn loop (the fix is always
+    # a backend code change). master-heal's GH-issue path still
+    # surfaces them to a human after the 90s retry window.
+    try:
+        if hasattr(h, "get_last_api_contract_findings"):
+            raw = h.get_last_api_contract_findings()
             for url, hits in (raw or {}).items():
                 if isinstance(hits, dict):
                     for label, n in hits.items():
