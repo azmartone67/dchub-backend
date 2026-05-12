@@ -1,0 +1,43 @@
+name: outreach daily (autonomous customer email dispatch)
+
+on:
+  schedule:
+    - cron: '0 16 * * *'  # 16:00 UTC = 9am PT daily
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'dry_run? (true = preview only, false = SEND emails)'
+        required: false
+        default: 'true'
+      limit:
+        description: 'max emails per dispatch'
+        required: false
+        default: '10'
+
+jobs:
+  outreach:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Dispatch outreach
+        env:
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
+          LIMIT: ${{ github.event.inputs.limit || '10' }}
+        run: |
+          R=$(curl -sS --max-time 30 -X POST \
+            "https://dchub.cloud/api/v1/outreach/dispatch?dry_run=${DRY_RUN}&limit=${LIMIT}")
+          echo "$R" | python3 -c "
+          import sys, json
+          d = json.loads(sys.stdin.read())
+          sent = len(d.get('sent', []))
+          previews = len(d.get('previews', []))
+          errors = len(d.get('errors', []))
+          print(f'dry_run={d.get(\"dry_run\")} queue_size={d.get(\"queue_size\")}')
+          print(f'sent={sent} previews={previews} errors={errors}')
+          for s in d.get('sent', [])[:5]:
+              print(f'  ✓ {s.get(\"email\")} ({s.get(\"template_key\")}): {s.get(\"subject\")}')
+          for s in d.get('previews', [])[:5]:
+              print(f'  📋 {s.get(\"email\")} ({s.get(\"template_key\")}): {s.get(\"subject\")}')
+          for e in d.get('errors', [])[:5]:
+              print(f'  ✗ {e.get(\"email\")}: {e.get(\"reason\")}')
+          "

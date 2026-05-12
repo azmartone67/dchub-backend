@@ -19756,3 +19756,74 @@ def _admin_tag_customer():
     except Exception as e:
         return jsonify({"error": str(e)[:300]}), 500
 
+
+# ============================================================================
+# Phase 266: autonomous customer outreach engine
+# ============================================================================
+
+@app.route("/api/v1/outreach/queue", methods=["GET"])
+def _outreach_queue():
+    """Returns who'd be emailed next (dry-run preview)."""
+    from flask import jsonify, request
+    try:
+        import dchub_outreach
+    except ImportError:
+        return jsonify({"error": "dchub_outreach module not loaded"}), 500
+    try:
+        limit = min(int(request.args.get("limit", 20)), 100)
+    except Exception:
+        limit = 20
+    queue, err = dchub_outreach.build_queue(max_total=limit * 3)
+    if err: return jsonify({"error": err, "queue": []}), 500
+    return jsonify({
+        "queue_size": len(queue),
+        "limit_applied": limit,
+        "queue": queue[:limit],
+    })
+
+
+@app.route("/api/v1/outreach/dispatch", methods=["POST", "GET"])
+def _outreach_dispatch():
+    """Send outreach emails. dry_run=true by default (returns previews only).
+    POST with ?dry_run=false&limit=N to actually send."""
+    from flask import jsonify, request
+    try:
+        import dchub_outreach
+    except ImportError:
+        return jsonify({"error": "dchub_outreach module not loaded"}), 500
+    dry_run = request.args.get("dry_run", "true").lower() not in ("false","0","no","off")
+    try:
+        limit = min(int(request.args.get("limit", 10)), 50)
+    except Exception:
+        limit = 10
+    out = dchub_outreach.dispatch(dry_run=dry_run, limit=limit)
+    return jsonify(out)
+
+
+@app.route("/api/v1/outreach/log", methods=["GET"])
+def _outreach_log():
+    """Last N email sends — audit trail."""
+    import os, psycopg2
+    from flask import jsonify, request
+    DATABASE_URL = os.environ.get("DATABASE_URL")
+    if not DATABASE_URL: return jsonify({"error": "no DATABASE_URL"}), 500
+    try: limit = min(int(request.args.get("limit", 50)), 500)
+    except: limit = 50
+    try:
+        with psycopg2.connect(DATABASE_URL, connect_timeout=8) as conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, email, subject, template_key, sent_at,
+                       success, resend_id, dry_run, response_body
+                FROM email_outreach_log
+                ORDER BY sent_at DESC LIMIT %s;
+            """, (limit,))
+            rows = cur.fetchall()
+        return jsonify({"total": len(rows), "events": [{
+            "id": r[0], "email": r[1], "subject": r[2], "template_key": r[3],
+            "sent_at": r[4].isoformat() if r[4] else None,
+            "success": r[5], "resend_id": r[6], "dry_run": r[7],
+            "response_body": (r[8] or "")[:200],
+        } for r in rows]})
+    except Exception as e:
+        return jsonify({"error": str(e)[:300], "events": []}), 500
+
