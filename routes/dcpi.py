@@ -629,6 +629,150 @@ def api_movers():
     return jsonify(movers=rows), 200
 
 
+# phase 267: public, machine-readable leaderboard so the DCPI is citable
+#            without scraping the HTML page.
+@dcpi_bp.route("/api/v1/dcpi/leaderboard", methods=["GET"])
+def api_leaderboard():
+    """Public ranked DCPI leaderboard.
+
+    Query params:
+        verdict  optional filter: BUILD | CAUTION | AVOID | LOW_SIGNAL
+                 (default: exclude LOW_SIGNAL to surface actionable markets)
+        limit    int, default 25, max 100
+        format   json (default) | csv
+
+    Returns ranked markets by excess_power_score (descending) with each
+    market's verdict, quality, constraint, and freshness timestamp. JSON-LD
+    Dataset markup on /dcpi points here as the canonical machine surface.
+    """
+    _ensure_tables()
+    verdict = (request.args.get("verdict") or "").upper().strip() or None
+    try:
+        limit = min(int(request.args.get("limit", 25)), 100)
+    except (TypeError, ValueError):
+        limit = 25
+    fmt = (request.args.get("format") or "json").lower()
+
+    # Default: exclude LOW_SIGNAL (high-noise) markets so the leaderboard
+    # surfaces only verdicts a buyer/journalist/AI can act on. Pass
+    # ?verdict=LOW_SIGNAL explicitly to include them.
+    where_verdict = ""
+    params = []
+    if verdict:
+        where_verdict = "AND verdict = %s"
+        params.append(verdict)
+    else:
+        where_verdict = "AND verdict <> 'LOW_SIGNAL'"
+
+    sql = f"""
+        SELECT DISTINCT ON (market_slug)
+            market_slug, market_name, iso, state,
+            excess_power_score, constraint_score, quality_score,
+            verdict, computed_at,
+            ('https://dchub.cloud/dcpi/' || market_slug) AS url
+        FROM market_power_scores
+        WHERE published = true {where_verdict}
+        ORDER BY market_slug, computed_at DESC
+    """
+    with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(sql, params)
+        rows = cur.fetchall()
+
+    rows.sort(key=lambda r: -(r.get("excess_power_score") or 0))
+    rows = rows[:limit]
+    for r in rows:
+        if r.get("computed_at"):
+            r["computed_at"] = r["computed_at"].isoformat()
+
+    if fmt == "csv":
+        import csv, io
+        buf = io.StringIO()
+        cols = ["rank", "market_slug", "market_name", "iso", "state",
+                "verdict", "excess_power_score", "constraint_score",
+                "quality_score", "computed_at", "url"]
+        w = csv.DictWriter(buf, fieldnames=cols)
+        w.writeheader()
+        for i, r in enumerate(rows, 1):
+            row = {k: r.get(k) for k in cols}
+            row["rank"] = i
+            w.writerow(row)
+        resp = Response(buf.getvalue(), mimetype="text/csv")
+        resp.headers["Content-Disposition"] = 'attachment; filename="dcpi-leaderboard.csv"'
+        resp.headers["Cache-Control"] = "public, max-age=300, must-revalidate"
+        return resp
+
+    body = {
+        "as_of": rows[0]["computed_at"] if rows else None,
+        "count": len(rows),
+        "filter": {"verdict": verdict, "excludes_low_signal": verdict is None},
+        "leaderboard": [
+            {"rank": i, **r} for i, r in enumerate(rows, 1)
+        ],
+        "methodology_url": "https://dchub.cloud/dcpi#methodology",
+        "citation": "DC Hub Data Center Power Index. https://dchub.cloud/dcpi",
+    }
+    resp = jsonify(body)
+    resp.headers["Cache-Control"] = "public, max-age=300, must-revalidate"
+    resp.headers["Access-Control-Allow-Origin"] = "*"  # citable from anywhere
+    return resp, 200
+
+
+# phase 267: OEmbed discovery — journalists / Substack / Medium can paste
+# https://dchub.cloud/dcpi and get a live ticker widget back.
+@dcpi_bp.route("/api/v1/dcpi/oembed", methods=["GET"])
+def api_oembed():
+    """OEmbed 1.0 provider for the DCPI page + per-market pages.
+
+    Resolves the URL → an embeddable ticker (or per-market card) so external
+    publishers (Substack, Medium, news CMSes) can cite DCPI inline.
+    """
+    target = request.args.get("url", "").strip()
+    fmt = (request.args.get("format") or "json").lower()
+    if fmt not in ("json",):
+        return jsonify(error="only format=json supported"), 501
+
+    # Parse target — accept /dcpi or /dcpi/<slug>
+    slug = None
+    if "/dcpi/" in target:
+        slug = target.rsplit("/dcpi/", 1)[-1].split("?")[0].split("#")[0].strip("/")
+    is_market = bool(slug and slug not in ("ticker.html", "press"))
+
+    if is_market:
+        embed_html = (
+            f'<iframe src="https://dchub.cloud/api/v1/dcpi/embed/{slug}" '
+            f'width="600" height="240" frameborder="0" '
+            f'style="border:1px solid #1f2030;border-radius:8px;max-width:100%;" '
+            f'title="DCPI · {slug}"></iframe>'
+        )
+        body = {
+            "version": "1.0", "type": "rich",
+            "provider_name": "DC Hub",
+            "provider_url": "https://dchub.cloud",
+            "title": f"DCPI · {slug}",
+            "html": embed_html, "width": 600, "height": 240,
+            "cache_age": 300,
+        }
+    else:
+        embed_html = (
+            '<iframe src="https://dchub.cloud/dcpi/ticker.html" '
+            'width="100%" height="48" frameborder="0" '
+            'style="border:0;max-width:100%;" '
+            'title="DCPI · Live Ticker"></iframe>'
+        )
+        body = {
+            "version": "1.0", "type": "rich",
+            "provider_name": "DC Hub",
+            "provider_url": "https://dchub.cloud",
+            "title": "Data Center Power Index — Live",
+            "html": embed_html, "width": 1280, "height": 48,
+            "cache_age": 300,
+        }
+    resp = jsonify(body)
+    resp.headers["Cache-Control"] = "public, max-age=300, must-revalidate"
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    return resp, 200
+
+
 @dcpi_bp.route("/api/v1/dcpi/recompute", methods=["POST"])
 def api_recompute():
     # Accept only with admin token; simple shared-secret check
@@ -655,6 +799,34 @@ DCPI_INDEX_TEMPLATE = """<!DOCTYPE html>
 <meta property="og:image" content="https://dchub.cloud/dcpi/og.svg">
 <meta property="og:url" content="https://dchub.cloud/dcpi">
 <meta name="twitter:card" content="summary_large_image">
+<meta name="robots" content="index,follow,max-snippet:-1,max-image-preview:large">
+<link rel="canonical" href="https://dchub.cloud/dcpi">
+<link rel="alternate" type="application/json+oembed" href="https://dchub.cloud/api/v1/dcpi/oembed?url=https%3A%2F%2Fdchub.cloud%2Fdcpi" title="DCPI OEmbed">
+<!-- phase 267: schema.org Dataset markup so DCPI is citable by LLMs and search engines -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Dataset",
+  "name": "Data Center Power Index (DCPI)",
+  "alternateName": "DCPI",
+  "description": "Real-time power-availability scoring across {{ count }} U.S. data center markets. Combines ISO grid constraint signals, retail electricity prices, and interconnection-queue pressure into a 0–100 Excess Power Score with an actionable BUILD / CAUTION / AVOID / LOW_SIGNAL verdict per market. Recomputed continuously.",
+  "url": "https://dchub.cloud/dcpi",
+  "sameAs": "https://dchub.cloud/dcpi",
+  "creator": {"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"},
+  "publisher": {"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"},
+  "keywords": "data center, power index, grid intelligence, market capacity, hyperscale, AI infrastructure, ISO, ERCOT, PJM, MISO, CAISO",
+  "license": "https://dchub.cloud/dcpi#methodology",
+  "isAccessibleForFree": true,
+  "spatialCoverage": {"@type": "Place", "name": "United States"},
+  "temporalCoverage": "2024-01-01/..",
+  "distribution": [
+    {"@type": "DataDownload", "encodingFormat": "application/json", "contentUrl": "https://dchub.cloud/api/v1/dcpi/scores", "name": "All market scores (current)"},
+    {"@type": "DataDownload", "encodingFormat": "application/json", "contentUrl": "https://dchub.cloud/api/v1/dcpi/leaderboard", "name": "Ranked leaderboard (top markets)"},
+    {"@type": "DataDownload", "encodingFormat": "application/json", "contentUrl": "https://dchub.cloud/api/v1/dcpi/history", "name": "30-day score history per market"}
+  ],
+  "citation": "DC Hub Data Center Power Index. https://dchub.cloud/dcpi"
+}
+</script>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
 :root {
