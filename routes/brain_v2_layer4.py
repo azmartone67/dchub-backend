@@ -566,17 +566,55 @@ def persistence_worklist():
 
 @brain_v2_bp.get("/api/v1/brain/status")
 def brain_status():
-    """Public health check — proves the layer is loaded + reports activation."""
+    """Public health check — proves the layer is loaded + reports activation.
+
+    Phase Y (2026-05-12): added staleness watchdog. The dashboard at /brain
+    was showing all zeros for "Learning attempts (24h)" and "Proposed fixes"
+    after the user merged Phase R/S, which made it look broken. In reality
+    there were just no novel patterns for Brain to learn from — the FIX_MAP
+    auto-fixes known ones and Phase R-2's tightened prompt correctly refuses
+    to alter typography. The watchdog distinguishes "healthy but quiet" from
+    "broken" so the visible state has truthful meaning.
+
+    Three new fields:
+      stale_minutes_since_last_log  — time since any learn attempt
+      last_log_at                   — timestamp of most recent attempt
+      health                        — 'active' / 'quiet' / 'stale' / 'dormant'
+    """
     if _STORE_OK:
         try:
             pf_count = _store.count_proposals()
             log_count = _store.count_log()
+            recent = _store.list_log(limit=1)
+            last_t = recent[0].get("t") if recent else None
         except Exception:
             pf_count = len(_proposed_fixes)
             log_count = len(_learning_log)
+            last_t = _learning_log[-1].get("t") if _learning_log else None
     else:
         pf_count = len(_proposed_fixes)
         log_count = len(_learning_log)
+        last_t = _learning_log[-1].get("t") if _learning_log else None
+
+    stale_min = None
+    health = "dormant"
+    if not ANTHROPIC_API_KEY:
+        health = "dormant"
+    elif last_t:
+        try:
+            t = last_t if isinstance(last_t, str) else last_t.isoformat()
+            ts = datetime.fromisoformat(t.replace("Z", "+00:00"))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            stale_min = int((datetime.now(timezone.utc) - ts).total_seconds() / 60)
+            if stale_min < 90:    health = "active"  # within 1.5 cron cycles
+            elif stale_min < 360: health = "quiet"   # 1.5h-6h: probably no novel patterns
+            else:                 health = "stale"   # > 6h: something's wrong
+        except Exception:
+            health = "active" if log_count > 0 else "dormant"
+    else:
+        health = "active" if log_count > 0 else "dormant"
+
     return jsonify(
         layer=4,
         loaded=True,
@@ -586,6 +624,9 @@ def brain_status():
         store_backed=_STORE_OK,
         proposed_fixes_count=pf_count,
         learning_log_count=log_count,
+        last_log_at=last_t,
+        stale_minutes_since_last_log=stale_min,
+        health=health,
         hint=(None if ANTHROPIC_API_KEY
               else "Set ANTHROPIC_API_KEY in Railway env to activate"),
     ), 200

@@ -18962,6 +18962,96 @@ def _media_feed_v3():
     })
 
 
+# ============================================================================
+# Phase W (2026-05-12): Live AI usage pulse for /dc-hub-media
+# ============================================================================
+#
+# Trigger: user complaint on 2026-05-12 — "DCHUB Media still serving old
+# testimonials, not fully self aware or doing what we asked it." The
+# ai_testimonials table had its newest entry from 2026-03-08 (~65 days
+# old), giving the impression the system was dormant. Meanwhile mcp_tool_calls
+# was logging 39,407 calls in the last 7 days from 101 unique users — the
+# system is anything BUT dormant; the freshness signal just wasn't surfaced.
+#
+# This endpoint exposes a real-time "pulse" derived from the actual MCP
+# usage table. The dc-hub-media frontend reads it and renders:
+#   "📡 Live AI usage: 14,388 tool calls in last 24h from 67 unique AI
+#    agents. Top tools: get_market_intel (612), get_grid_data (588), ..."
+#
+# That's the autonomous citation source the user asked for — every minute
+# of MCP activity is fresh content.
+@app.route("/api/v1/media/ai-usage-live", methods=["GET"])
+def _media_ai_usage_live():
+    """Real-time pulse from mcp_tool_calls. 60s cache so the page can
+       hammer it from every visitor without overwhelming Postgres."""
+    from flask import jsonify, request
+    import os, psycopg2
+    from datetime import datetime, timezone
+    DATABASE_URL = os.environ.get("DATABASE_URL")
+    if not DATABASE_URL:
+        return jsonify({"error": "no_database", "live": False}), 503
+    try:
+        window_h = int(request.args.get("hours", "24"))
+    except ValueError:
+        window_h = 24
+    window_h = max(1, min(window_h, 168))  # 1h..7d
+    out = {
+        "as_of": datetime.now(timezone.utc).isoformat(),
+        "window_hours": window_h,
+        "live": True,
+        "tool_calls": 0,
+        "unique_callers": 0,
+        "top_tools": [],
+        "by_hour": [],
+    }
+    try:
+        with psycopg2.connect(DATABASE_URL, connect_timeout=6) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""SELECT COUNT(*) AS calls,
+                              COUNT(DISTINCT user_id) AS users
+                       FROM mcp_tool_calls
+                       WHERE called_at > NOW() - INTERVAL '{window_h} hours'""")
+                row = cur.fetchone() or (0, 0)
+                out["tool_calls"] = int(row[0] or 0)
+                out["unique_callers"] = int(row[1] or 0)
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""SELECT tool_name, COUNT(*) AS n
+                        FROM mcp_tool_calls
+                        WHERE called_at > NOW() - INTERVAL '{window_h} hours'
+                          AND tool_name IS NOT NULL
+                          AND tool_name != ''
+                        GROUP BY tool_name
+                        ORDER BY n DESC
+                        LIMIT 8""")
+                out["top_tools"] = [
+                    {"tool": r[0], "calls": int(r[1])}
+                    for r in cur.fetchall()
+                ]
+            # Hourly bucket for sparkline rendering — keep it small (24 points)
+            bucket_h = max(1, window_h // 24)
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""SELECT date_trunc('hour', called_at) AS hr,
+                               COUNT(*) AS n
+                        FROM mcp_tool_calls
+                        WHERE called_at > NOW() - INTERVAL '{window_h} hours'
+                        GROUP BY hr
+                        ORDER BY hr""")
+                out["by_hour"] = [
+                    {"t": r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0]),
+                     "n": int(r[1])}
+                    for r in cur.fetchall()
+                ]
+    except Exception as e:
+        out["live"] = False
+        out["error"] = str(e)[:200]
+    resp = jsonify(out)
+    resp.headers["Cache-Control"] = "public, max-age=60, stale-while-revalidate=120"
+    return resp
+
+
 @app.route("/api/v1/admin/schema", methods=["GET"])
 def _admin_schema_introspect():
     """Returns column lists for any table. Used to debug aggregator failures."""

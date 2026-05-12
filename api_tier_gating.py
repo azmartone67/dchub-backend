@@ -566,27 +566,22 @@ def require_plan(min_plan='pro'):
 
                 # ── STEP 4: No auth at all ─────────────────────────────
                 if not auth_method:
-                    return jsonify({
-                        'success': False,
-                        'error': 'plan_required',
-                        'message': f'This endpoint requires a {min_plan.title()} plan or higher.',
-                        'plans': _build_gate_plans(),
-                        'signup_url': SIGNUP_URL,
-                        'pricing_url': PRICING_URL,
-                        'free_alternative': _get_free_alternative(request.path),
-                    }), 403, {'Cache-Control': 'private, no-store, max-age=0', 'Surrogate-Control': 'no-store', 'Pragma': 'no-cache'}
+                    return jsonify(_rich_gate_response(
+                        path=request.path,
+                        min_plan=min_plan,
+                        current_tier='free',
+                        error_code='plan_required',
+                    )), 403, {'Cache-Control': 'private, no-store, max-age=0', 'Surrogate-Control': 'no-store', 'Pragma': 'no-cache'}
 
                 # ── STEP 5: Check tier level ───────────────────────────
                 if not user_has_access(user_plan, min_plan):
-                    return jsonify({
-                        'success': False,
-                        'error': 'plan_upgrade_required',
-                        'message': f'This endpoint requires {min_plan.title()} plan. You are on {user_plan.title()}.',
-                        'current_plan': user_plan,
-                        'required_plan': min_plan,
-                        'upgrade_url': 'https://dchub.cloud/pricing',
-                        'free_alternative': _get_free_alternative(request.path),
-                    }), 403, {'Cache-Control': 'private, no-store, max-age=0', 'Surrogate-Control': 'no-store', 'Pragma': 'no-cache'}
+                    return jsonify(_rich_gate_response(
+                        path=request.path,
+                        min_plan=min_plan,
+                        current_tier=user_plan,
+                        error_code='plan_upgrade_required',
+                        user_id=getattr(request, 'api_key_info', {}).get('key') if hasattr(request, 'api_key_info') else None,
+                    )), 403, {'Cache-Control': 'private, no-store, max-age=0', 'Surrogate-Control': 'no-store', 'Pragma': 'no-cache'}
 
                 # ── STEP 6: Authorized — add headers and proceed ───────
                 plan_limit = TIER_RATE_LIMITS.get(user_plan, 100)
@@ -613,6 +608,107 @@ def require_plan(min_plan='pro'):
 
         return decorated
     return decorator
+
+
+# ═══════════════════════════════════════════════════════════════
+# Phase X (2026-05-12): rich paywall response for REST endpoints
+# ═══════════════════════════════════════════════════════════════
+#
+# Trigger: MCP funnel showed 8,172 upgrade signals in 7 days but only 1
+# conversion in 30 days. Root cause: the inline paywall response above
+# omits every field that drives conversion — no human_message markdown,
+# no one_click_upgrade_url Stripe link, no call-count escalation,
+# no discount codes. MCP tool responses (which DO use
+# build_paywall_response) get the full conversion-optimized envelope,
+# but REST endpoints get a minimal `{error, plans, pricing_url}`.
+# Many MCP tools internally call the REST endpoints, so the dumb
+# paywall was overriding the rich one for the most common call path.
+#
+# This wrapper composes build_paywall_response() (the canonical
+# conversion-optimized envelope) into the legacy gate shape. We keep
+# the legacy fields (`success`, `error`, `plans`, `pricing_url`,
+# `signup_url`, `free_alternative`) for back-compat with any client
+# that depends on them, AND we add the missing rich fields
+# (`human_message`, `one_click_upgrade_url`, `upgrade_url` with
+# attribution, `tier_signal`).
+#
+# Net effect: every 403 from /api/v1/pipeline, /api/v1/grid-intelligence,
+# /api/v1/fiber-intel, etc. now carries the same conversion language
+# the MCP tools do. AI agents render it; humans see the Stripe link;
+# the funnel actually closes.
+def _path_to_tool_name(path: str) -> str:
+    """Derive a stable tool-name slug from a REST path. Used by
+       build_paywall_response for tier escalation + attribution params.
+
+       Examples:
+         /api/v1/pipeline?market=ashburn         → 'pipeline'
+         /api/v1/grid-intelligence                → 'grid_intelligence'
+         /api/v1/fiber/metro/ashburn              → 'fiber_metro'
+         /api/v1/markets/chicago                  → 'markets_chicago'
+    """
+    if not path: return 'unknown'
+    p = path.split('?', 1)[0].rstrip('/')
+    # strip /api/v1/ prefix and replace path separators with underscores
+    if p.startswith('/api/v1/'):
+        p = p[len('/api/v1/'):]
+    elif p.startswith('/api/'):
+        p = p[len('/api/'):]
+    # /pipeline → pipeline; /fiber/metro/ashburn → fiber_metro (drop value tail)
+    parts = [seg for seg in p.split('/') if seg]
+    # drop trailing path-parameter values (e.g. specific market slug)
+    if len(parts) > 1 and len(parts[-1]) < 30 and any(c.islower() for c in parts[-1]):
+        # heuristic: last segment is a value if previous is a noun like "metro"
+        if parts[-2] in ('metro', 'state', 'country', 'market', 'id'):
+            parts = parts[:-1]
+    name = '_'.join(parts).replace('-', '_')
+    return name or 'unknown'
+
+
+def _rich_gate_response(path: str, min_plan: str,
+                        current_tier: str = 'free',
+                        error_code: str = 'plan_required',
+                        user_id: str | None = None) -> dict:
+    """Compose build_paywall_response() with the legacy gate envelope.
+       Returns a single dict ready for jsonify()."""
+    try:
+        from utils.paywall_response import build_paywall_response
+    except Exception:
+        build_paywall_response = None
+
+    tool_name = _path_to_tool_name(path)
+    base = {
+        'success': False,
+        'error': error_code,
+        'message': f'This endpoint requires a {min_plan.title()} plan or higher.',
+        'plans': _build_gate_plans(),
+        'signup_url': SIGNUP_URL,
+        'pricing_url': PRICING_URL,
+        'free_alternative': _get_free_alternative(path),
+        'current_plan': current_tier,
+        'required_plan': min_plan,
+        'tool': tool_name,
+    }
+
+    # Merge in the rich conversion fields. If paywall_response import
+    # ever breaks, the legacy envelope still goes out.
+    if build_paywall_response is not None:
+        try:
+            rich = build_paywall_response(
+                tool_name=tool_name,
+                user_id=user_id,
+                current_tier=current_tier,
+                error_code=error_code,
+            )
+            # Rich envelope wins for fields it sets; legacy fields fill
+            # anything the rich envelope omits.
+            for k, v in rich.items():
+                if k == 'error':
+                    continue  # keep legacy error_code
+                base[k] = v
+        except Exception as e:
+            base['_paywall_build_error'] = str(e)[:200]
+
+    return base
 
 
 def _get_free_alternative(path):
