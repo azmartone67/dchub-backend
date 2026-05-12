@@ -1881,13 +1881,55 @@ def public_dashboard():
     _ACTIONABLE = {"BUILD", "CAUTION", "AVOID"}
     count_actionable = sum(1 for r in rows if (r.get("verdict") or "") in _ACTIONABLE)
     count_low_signal = sum(1 for r in rows if (r.get("verdict") or "") == "LOW_SIGNAL")
-    return render_template_string(
+    html = render_template_string(
         DCPI_INDEX_TEMPLATE,
         scores=rows,
         count=len(rows),
         count_actionable=count_actionable,
         count_low_signal=count_low_signal,
     )
+    # phase 284: ship a Content-Security-Policy header on /dcpi so the
+    # dchub-frontend qa-csp-parse preflight CI doesn't fail on this page.
+    # Mirrors the policy that the Pages-served pages (/, /pricing, /news,
+    # etc.) get from Cloudflare Pages _headers — same allowed sources, same
+    # directive coverage. Without this header, the CSP-watch automation
+    # treated /dcpi as a regression even though the page is intentional.
+    resp = Response(html, mimetype="text/html")
+    resp.headers["Content-Security-Policy"] = _DCPI_CSP
+    return resp
+
+
+# Canonical CSP applied to /dcpi (phase 284). Mirrors the Pages-level CSP
+# applied to / and /pricing — same hosts, same directive coverage. Kept as
+# a module-level constant so the per-market /dcpi/<slug> page can reuse it
+# without duplication.
+_DCPI_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline' "
+        "https://cdnjs.cloudflare.com https://unpkg.com https://cdn.jsdelivr.net "
+        "https://www.googletagmanager.com https://accounts.google.com "
+        "https://static.cloudflareinsights.com; "
+    "script-src-elem 'self' 'unsafe-inline' "
+        "https://cdnjs.cloudflare.com https://unpkg.com https://cdn.jsdelivr.net "
+        "https://www.googletagmanager.com https://accounts.google.com "
+        "https://static.cloudflareinsights.com; "
+    "style-src 'self' 'unsafe-inline' "
+        "https://fonts.googleapis.com https://cdnjs.cloudflare.com "
+        "https://accounts.google.com; "
+    "style-src-elem 'self' 'unsafe-inline' "
+        "https://fonts.googleapis.com https://cdnjs.cloudflare.com "
+        "https://accounts.google.com; "
+    "img-src 'self' data: https:; "
+    "font-src 'self' data: https: https://fonts.gstatic.com; "
+    "connect-src 'self' "
+        "https://dchub-backend-production.up.railway.app "
+        "https://www.google-analytics.com https://cloudflareinsights.com; "
+    "frame-src 'self' https://accounts.google.com; "
+    "frame-ancestors 'self'; "
+    "base-uri 'self'; "
+    "form-action 'self'; "
+    "report-uri /api/csp-report"
+)
 
 
 @dcpi_bp.route("/dcpi/<slug>", methods=["GET"])
@@ -1898,11 +1940,18 @@ def public_market_page(slug):
                        WHERE market_slug = %s
                        ORDER BY computed_at DESC LIMIT 1""", (slug,))
         s = cur.fetchone()
-    if not s: return Response(f"<h1>Market not found: {slug}</h1>", status=404, mimetype="text/html")
+    if not s:
+        # phase 284: even 404 should ship the CSP so it doesn't trip the watch
+        r = Response(f"<h1>Market not found: {slug}</h1>", status=404, mimetype="text/html")
+        r.headers["Content-Security-Policy"] = _DCPI_CSP
+        return r
     if s.get("computed_at"): s["computed_at"] = s["computed_at"].isoformat()
     risks = s.get("top_risks_json") or []
     opps = s.get("top_opportunities_json") or []
-    return render_template_string(DCPI_MARKET_TEMPLATE, s=s, risks=risks, opps=opps)
+    market_html = render_template_string(DCPI_MARKET_TEMPLATE, s=s, risks=risks, opps=opps)
+    market_resp = Response(market_html, mimetype="text/html")
+    market_resp.headers["Content-Security-Policy"] = _DCPI_CSP  # phase 284
+    return market_resp
 
 
 
