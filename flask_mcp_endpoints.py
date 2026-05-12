@@ -193,6 +193,162 @@ def mcp_usage_today():
         return jsonify({"count": 0, "error": str(e)[:160], "fail_soft": True}), 200
 
 
+# ── POST /api/v1/keys/claim ────────────────────────────────────────────────
+# Phase 275: programmatic dev-key claim — no email verification required.
+#
+# Why this exists
+# ---------------
+# The disruption audit confirmed: AI agents (Claude in IDE, Cursor, Cline,
+# autonomous agents) cannot complete the existing redeem flow because it
+# requires a human to verify an email. So the practical anonymous → key
+# conversion path is broken for the audience your funnel is *aimed at*.
+#
+# This endpoint creates a free-tier dev key with one POST. The trade is:
+#   • No email = no humanity proof = IP-based rate limit instead (1/24h)
+#   • Marked metadata.source='claim_api', metadata.unverified=true so
+#     abusive cohorts can be bulk-revoked by source filter later
+#   • Same 100/day quota as email-verified free tier; same 10/day cap on
+#     grid_intelligence + fiber_intel (phase 274)
+#   • Same paid-only walls on analyze_site, compare_sites, etc.
+#
+# Net effect: an AI agent can claim a key in one curl, use the free tier
+# immediately, and (if its human operator wants more) upgrade to Pro via
+# Stripe later. Email verification becomes an optional upgrade path
+# ("verify to lift the per-IP rate limit") instead of a hard gate.
+
+import re as _kc_re
+
+@mcp_bp.post("/api/v1/keys/claim")
+def claim_key():
+    """Public: claim a free dev key without email. Rate-limited by IP.
+
+    Body (all optional, used for telemetry only):
+        {"client_name": "claude-code", "intended_use": "score build sites"}
+
+    Returns 200 with api_key on success, 429 if this IP already claimed
+    one in the last 24h. Never returns an error that requires a retry
+    decision — if anything backend-side fails, returns 503 with a
+    short human-readable hint pointing at the email-verified path.
+    """
+    body = request.get_json(silent=True) or {}
+    client_name = (str(body.get("client_name") or ""))[:80]
+    intended_use = (str(body.get("intended_use") or ""))[:400]
+
+    # Real IP behind Cloudflare / Railway proxy. Trust the first hop in XFF.
+    ip = (request.headers.get("X-Forwarded-For", request.remote_addr or "")
+          .split(",")[0].strip())[:64]
+    ua = (request.headers.get("User-Agent") or "")[:300]
+
+    # Cheap sanity check on the source IP — should look like an IP
+    if ip and not _kc_re.match(r"^[\d:.]{3,45}$", ip):
+        ip = ip[:64]  # keep but flag in metadata
+
+    # Per-IP rate limit: 1 key per 24h. Looks at metadata->>'ip' filter
+    # over recent rows. Cheap query because the index on created_at + the
+    # JSON filter together keep the scan tight.
+    try:
+        with _pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """SELECT created_at, api_key
+                     FROM mcp_dev_keys
+                    WHERE metadata->>'source' = 'claim_api'
+                      AND metadata->>'ip' = %s
+                      AND created_at > NOW() - INTERVAL '24 hours'
+                    ORDER BY created_at DESC
+                    LIMIT 1""",
+                (ip,),
+            )
+            existing = cur.fetchone()
+        if existing:
+            # Compute seconds until the 24h window expires
+            existing_at = existing[0]
+            from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+            if existing_at and getattr(existing_at, "tzinfo", None) is None:
+                existing_at = existing_at.replace(tzinfo=_tz.utc)
+            retry_after = max(
+                1,
+                int(((existing_at + _td(hours=24)) - _dt.now(_tz.utc)).total_seconds())
+            ) if existing_at else 3600
+            resp = jsonify(
+                ok=False,
+                error="ip_rate_limited",
+                retry_after_seconds=retry_after,
+                message=(
+                    "This IP already claimed a free key in the last 24h. "
+                    "Retry after the window expires, or verify your email "
+                    "at /api/v1/dev-signup to remove the IP rate limit."
+                ),
+                verify_email_url="https://dchub.cloud/api/v1/dev-signup",
+            )
+            resp.headers["Retry-After"] = str(retry_after)
+            return resp, 429
+    except Exception as e:
+        # If the lookup fails, don't block — claim through (better to
+        # accidentally issue an extra key than to break legit users).
+        try:
+            import logging as _lg
+            _lg.getLogger(__name__).warning("claim_key rate-check failed: %s", e)
+        except Exception:
+            pass
+
+    # Mint the key
+    api_key = "dch_live_" + secrets.token_hex(16)
+    developer_id = "dev_" + secrets.token_hex(8)
+    claim_id = "clm_" + secrets.token_hex(8)
+    metadata = {
+        "source": "claim_api",
+        "unverified": True,
+        "ip": ip,
+        "user_agent": ua,
+        "client_name": client_name or None,
+        "intended_use": intended_use or None,
+        "claim_id": claim_id,
+        "claimed_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    try:
+        with _pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO mcp_dev_keys
+                     (api_key, developer_id, email, tier, status, metadata)
+                   VALUES (%s, %s, %s, 'free', 'active', %s::jsonb)""",
+                (api_key, developer_id, None, json.dumps(metadata)),
+            )
+    except Exception as e:
+        return jsonify(
+            ok=False,
+            error="storage_failed",
+            message=(
+                f"We couldn't issue a key right now. Try the email-verified "
+                f"path at https://dchub.cloud/api/v1/dev-signup ({str(e)[:120]})."
+            ),
+        ), 503
+
+    return jsonify(
+        ok=True,
+        api_key=api_key,
+        developer_id=developer_id,
+        tier="free",
+        claim_id=claim_id,
+        unverified=True,
+        usage_instructions=(
+            "Pass this key as X-API-Key header on requests to dchub.cloud/api/v1/* "
+            "or in your MCP client config when connecting to dchub.cloud/mcp."
+        ),
+        free_tier_summary={
+            "daily_calls": 100,
+            "daily_caps": {"get_grid_intelligence": 10, "get_fiber_intel": 10},
+            "paid_only_tools": ["analyze_site", "compare_sites", "get_dchub_recommendation"],
+        },
+        rate_limit_note=(
+            "This key was claimed without email verification. The /api/v1/keys/claim "
+            "endpoint is rate-limited to 1 key per IP per 24h. To lift that limit, "
+            "verify an email at /api/v1/dev-signup later."
+        ),
+        upgrade_url="https://dchub.cloud/pricing",
+    ), 200
+
+
 # ── POST /api/v1/mcp/track ─────────────────────────────────────────────────
 
 @mcp_bp.post("/api/v1/mcp/track")
