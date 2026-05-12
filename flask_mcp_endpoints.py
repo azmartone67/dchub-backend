@@ -144,6 +144,55 @@ def validate_key():
     }), 200
 
 
+# ── GET /api/v1/mcp/usage-today ────────────────────────────────────────────
+# Phase 274: per-key per-tool daily usage so server.mjs can enforce daily
+# caps on specific free-tier tools (e.g. get_grid_intelligence, get_fiber_intel
+# at 10/day each). Counts only successful (status='ok') calls so blocked or
+# errored attempts don't burn through the user's quota.
+#
+# Internal-only (X-Internal-Key) because exposing real call counts publicly
+# would let a free user infer when others are competing for shared quota.
+#
+# Fail-soft contract: if anything goes wrong (table missing, DB blip, bad
+# input), return count=0. Caller (server.mjs) defaults to allowing the call
+# on the assumption that quota is intact — losing one billable enforcement
+# event is preferable to breaking the user's tool call over a transient bug.
+
+@mcp_bp.get("/api/v1/mcp/usage-today")
+@_require_internal
+def mcp_usage_today():
+    api_key = (request.args.get("api_key") or "").strip()
+    tool    = (request.args.get("tool") or "").strip()
+    if not api_key or not tool:
+        return jsonify({"count": 0, "error": "api_key and tool required"}), 200
+    try:
+        with _pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """SELECT COUNT(*)::int
+                     FROM mcp_call_log
+                    WHERE api_key   = %s
+                      AND tool      = %s
+                      AND status    = 'ok'
+                      AND timestamp >= DATE_TRUNC('day', NOW() AT TIME ZONE 'UTC')""",
+                (api_key, tool),
+            )
+            n = (cur.fetchone() or [0])[0]
+        return jsonify({
+            "count": int(n or 0),
+            "tool": tool,
+            "as_of": "today_utc",
+        }), 200
+    except Exception as e:
+        # Fail-soft: return 0 so the caller doesn't accidentally block
+        # legitimate users on a transient DB error.
+        try:
+            import logging as _lg
+            _lg.getLogger(__name__).warning("mcp_usage_today error: %s", e)
+        except Exception:
+            pass
+        return jsonify({"count": 0, "error": str(e)[:160], "fail_soft": True}), 200
+
+
 # ── POST /api/v1/mcp/track ─────────────────────────────────────────────────
 
 @mcp_bp.post("/api/v1/mcp/track")

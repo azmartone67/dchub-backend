@@ -137,17 +137,64 @@ const FREE_TIER_LIMITS = {
   get_news:           { max_limit: 20 },
   get_infrastructure: { max_limit: 25 },
 };
+
+// Phase 274: free-tier daily call caps on selected previously-paid-only tools.
+// The funnel showed 99–101 distinct free users hitting these tools ~22 times
+// each (clearly a real workflow). Hard-walling on call #1 was killing
+// conversion: 0.012% paid-conversion rate over 8,167 paywall hits in 7d.
+// Letting them complete small workflows (10/day each) creates upgrade pull
+// from real-use frustration instead of from immediate denial. After cap,
+// the existing paid_only paywall fires.
+const FREE_TIER_DAILY_CAPS = {
+  get_grid_intelligence: 10,
+  get_fiber_intel:       10,
+};
+
 const PAID_ONLY_TOOLS = new Set([
   'analyze_site',
   'compare_sites',
-  'get_grid_intelligence',
+  // 'get_grid_intelligence',  // phase 274: moved to FREE_TIER_DAILY_CAPS (10/day)
   'get_dchub_recommendation',
-  'get_fiber_intel',
+  // 'get_fiber_intel',         // phase 274: moved to FREE_TIER_DAILY_CAPS (10/day)
 ]);
 
-function applyTierGate(toolName, params, tier) {
+// Phase 274: fetch today's call count for a given (api_key, tool) so we can
+// enforce per-day caps. Fail-soft: any error → assume quota intact (count=0)
+// so a transient backend blip doesn't break legitimate users.
+async function usageToday(api_key, tool) {
+  if (!api_key || !tool) return 0;
+  try {
+    const u = new URL('/api/v1/mcp/usage-today', API_BASE);
+    u.searchParams.set('api_key', api_key);
+    u.searchParams.set('tool', tool);
+    const resp = await fetch(u.toString(), {
+      headers: { 'X-Internal-Key': INTERNAL_KEY },
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!resp.ok) return 0;
+    const data = await resp.json();
+    return Number(data?.count) || 0;
+  } catch (err) {
+    console.error('[usageToday] failed:', err.message);
+    return 0;
+  }
+}
+
+// Returns { allowed, params, capped, dailyCap, dailyUsed } — async because
+// the daily-cap branch needs a usage lookup.
+async function applyTierGate(toolName, params, tier, api_key) {
   if (tier === 'paid' || tier === 'enterprise') return { allowed: true, params };
   if (PAID_ONLY_TOOLS.has(toolName)) return { allowed: false };
+
+  // Daily cap check for free tier
+  const dailyCap = FREE_TIER_DAILY_CAPS[toolName];
+  if (dailyCap && tier === 'free') {
+    const used = await usageToday(api_key, toolName);
+    if (used >= dailyCap) {
+      return { allowed: false, dailyCapExceeded: true, dailyCap, dailyUsed: used };
+    }
+  }
+
   const lim = FREE_TIER_LIMITS[toolName];
   if (lim && Number(params?.limit) > lim.max_limit) {
     return { allowed: true, params: { ...params, limit: lim.max_limit }, capped: lim.max_limit };
@@ -163,7 +210,39 @@ function trackedTool(srv, name, description, schema, handler) {
     let status = 'ok';
     const tier = c.tier || 'free';
     try {
-      const gate = applyTierGate(name, args, tier);
+      const gate = await applyTierGate(name, args, tier, c.api_key);
+
+      // Phase 274: daily-cap-exceeded gets its own friendlier message —
+      // user has clearly been using the tool, so the paywall framing is
+      // "you've earned this" not "you're locked out."
+      if (!gate.allowed && gate.dailyCapExceeded) {
+        status = 'blocked_daily_cap';
+        const _md = `## \u{23F1}\u{FE0F} Daily free-tier limit reached for \`${name}\`
+
+You've used **${gate.dailyUsed}/${gate.dailyCap}** of today's free calls to \`${name}\`. Resets at **00:00 UTC**.
+
+### You're clearly using this for real work. Two paths forward:
+
+1. **Wait it out.** Limit resets in a few hours.
+2. **Upgrade now — 50% off first month with \`TRYDCHUB50\`.**
+
+\u{1F449} **[Upgrade to Pro](${UPGRADE_URL})** — $49/mo, unlimited calls to \`${name}\`, \`get_grid_intelligence\`, \`get_fiber_intel\`, plus the paid-only tools (\`analyze_site\`, \`compare_sites\`, \`get_dchub_recommendation\`).
+
+If you're scoring more than ~10 markets/day, the math favors upgrading.`;
+        return {
+          content: [{ type: 'text', text: _md }],
+          structuredContent: {
+            error: 'daily_cap_exceeded',
+            tool: name,
+            current_tier: tier,
+            daily_used: gate.dailyUsed,
+            daily_cap: gate.dailyCap,
+            resets_at: 'next 00:00 UTC',
+            upgrade_url: UPGRADE_URL,
+            discount_code: 'TRYDCHUB50',
+          },
+        };
+      }
 
       if (!gate.allowed) {
         status = 'blocked_paid_only';
@@ -176,14 +255,13 @@ You're on **free tier** with a dev key — this tool is gated to **Pro** ($49/mo
 ### What Pro unlocks
 - \`analyze_site\` — full power, fiber, risk, climate scoring for any location
 - \`compare_sites\` — side-by-side comparison across markets
-- \`get_grid_intelligence\` — real-time US ISO data (PJM, ERCOT, CAISO, MISO, NYISO, SPP)
-- \`get_fiber_intel\` — dark fiber routes + carrier networks
 - \`get_dchub_recommendation\` — AI-formatted location recommendations
-- Uncapped result sizes on all free-tier tools
+- **Unlimited** \`get_grid_intelligence\` + \`get_fiber_intel\` (free tier: 10/day each)
+- Uncapped result sizes on all other free-tier tools
 
 \u{1F449} **[Upgrade to Pro](${UPGRADE_URL})**
 
-Free tier still covers: \`search_facilities\`, \`get_facility\`, \`list_transactions\`, \`get_news\`, \`get_market_intel\`, \`get_pipeline\`, \`get_grid_data\`, \`get_water_risk\`.`;
+Free tier still covers: \`search_facilities\`, \`get_facility\`, \`list_transactions\`, \`get_news\`, \`get_market_intel\`, \`get_pipeline\`, \`get_grid_data\`, \`get_water_risk\`, plus **10/day** of \`get_grid_intelligence\` and \`get_fiber_intel\`.`;
         const _mdAnon = `## \u{1F512} \`${name}\` is a paid feature
 
 ### Get a free dev key in 30 seconds (no credit card)
@@ -199,9 +277,10 @@ That returns an \`X-API-Key\` you drop into your MCP client config. Free tier co
 - \`get_news\`, \`get_market_intel\`, \`get_pipeline\`
 - \`get_grid_data\`, \`get_water_risk\`, \`get_renewable_energy\`, \`get_tax_incentives\`
 - \`get_infrastructure\`, \`get_energy_prices\`, \`get_intelligence_index\`
+- **10/day** of \`get_grid_intelligence\` and \`get_fiber_intel\` (new — was paid-only)
 
 ### Or skip straight to Pro
-\u{1F449} **[Upgrade to Pro](${UPGRADE_URL})** — $49/mo. Full result sizes + all paid tools: \`${name}\`, \`analyze_site\`, \`compare_sites\`, \`get_grid_intelligence\`, \`get_fiber_intel\`, \`get_dchub_recommendation\`.`;
+\u{1F449} **[Upgrade to Pro](${UPGRADE_URL})** — $49/mo. Full result sizes + all paid tools: \`${name}\`, \`analyze_site\`, \`compare_sites\`, \`get_dchub_recommendation\`, and unlimited \`get_grid_intelligence\` + \`get_fiber_intel\`.`;
         return {
           content: [{ type: 'text', text: _isKeyed ? _mdKeyed : _mdAnon }],
           structuredContent: {
