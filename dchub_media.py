@@ -609,9 +609,20 @@ def aggregate_announcements_v3(limit_per_source=20):
             (limit_per_source,)))
 
     # ai_testimonials — same as v2, known to work
+    # Phase 299 (Phase N corrected): exclude mcp-auto synthetic entries at
+    # SQL level. Previously the 20 most-recent mcp-auto entries shadowed
+    # the real Gemini/ChatGPT/Claude/Perplexity citations (which are older
+    # in this table). The /api/v1/testimonials endpoint returns 1,198 real
+    # entries from this same table — we just need to filter the synthetics.
+    # PR #21 added a parallel ai_citations query but that table is empty in
+    # prod; the actual citation data lives here in ai_testimonials.
     if tt_cols and 'quote' in tt_cols:
+        # Build the source-exclusion clause defensively based on actual columns
+        source_filter = "AND TRUE"
+        if 'source' in tt_cols:
+            source_filter = "AND (source IS NULL OR source NOT IN ('mcp-auto', 'mcp_auto'))"
         queries.append(("testimonial",
-            """SELECT COALESCE(NULLIF(agent_name,''), NULLIF(platform,''), 'AI Testimonial') AS title,
+            f"""SELECT COALESCE(NULLIF(agent_name,''), NULLIF(platform,''), 'AI Testimonial') AS title,
                    COALESCE(url, '') AS url,
                    quote AS summary,
                    COALESCE(NULLIF(source,''), platform, agent_name, 'AI Industry') AS source,
@@ -619,42 +630,10 @@ def aggregate_announcements_v3(limit_per_source=20):
             FROM ai_testimonials
             WHERE COALESCE(approved, true) = true
               AND agent_name IS NOT NULL AND agent_name != 'unknown'
+              AND agent_name != 'Claude'  -- phase 299: filter synthetic mcp-auto title
+              {source_filter}
+              AND quote IS NOT NULL AND length(quote) > 10  -- real citations have substantive quotes
             ORDER BY COALESCE(approved_at, created_at) DESC NULLS LAST
-            LIMIT %s""",
-            (limit_per_source,)))
-
-    # Phase 295 (Phase N): pull REAL AI citations from the ai_citations table
-    # populated by seo_agent.py. These are the actual 1,198 citations the
-    # /testimonials page tracks. Without this, dc-hub-media testimonials show
-    # only the mcp-auto synthetic stream (which phase 288 filters out client-side
-    # — leaving an empty Testimonials tab). This block wires real data in.
-    with conn.cursor() as cur:
-        ac_cols = _table_cols(cur, 'ai_citations')
-    if ac_cols and 'platform' in ac_cols:
-        url_col = "COALESCE(cited_url, '')" if 'cited_url' in ac_cols else "''"
-        type_col = "COALESCE(citation_type, '')" if 'citation_type' in ac_cols else "''"
-        query_col = "COALESCE(query, '')" if 'query' in ac_cols else "''"
-        date_col = ("COALESCE(detected_at, created_at)"
-                    if 'detected_at' in ac_cols and 'created_at' in ac_cols
-                    else 'detected_at' if 'detected_at' in ac_cols
-                    else 'created_at' if 'created_at' in ac_cols
-                    else 'NOW()')
-        queries.append(("testimonial",
-            f"""SELECT (platform || ' cited DC Hub') AS title,
-                   {url_col} AS url,
-                   (CASE
-                      WHEN {query_col} != '' AND {type_col} != ''
-                        THEN {query_col} || ' — ' || {type_col}
-                      WHEN {query_col} != '' THEN {query_col}
-                      WHEN {type_col} != ''  THEN {type_col}
-                      ELSE 'AI agent cited DC Hub data'
-                    END) AS summary,
-                   platform AS source,
-                   {date_col} AS ts
-            FROM ai_citations
-            WHERE platform IS NOT NULL AND platform != ''
-              AND platform NOT IN ('mcp-auto', 'mcp_auto')  -- exclude synthetic
-            ORDER BY {date_col} DESC NULLS LAST
             LIMIT %s""",
             (limit_per_source,)))
 
