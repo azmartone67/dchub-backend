@@ -19004,14 +19004,28 @@ def _media_ai_usage_live():
         "top_tools": [],
         "by_hour": [],
     }
+    # Phase W follow-up (2026-05-12): live probe of the deployed endpoint
+    # revealed the production mcp_tool_calls schema has NO `user_id`
+    # column and the timestamp column is `created_at`, not `called_at`.
+    # Actual columns (verified via /api/v1/admin/schema): id, tool_name,
+    # platform, client_name, params, success, response_time_ms,
+    # ip_address, user_agent, created_at.
+    #
+    # Unique-caller heuristic: AI agents usually identify themselves via
+    # `client_name` (e.g. "Claude Desktop", "Cursor"). When that's empty
+    # we fall back to `platform`, then to `ip_address`. This counts
+    # "distinct calling identities" which is what the freshness widget
+    # is actually trying to convey.
     try:
         with psycopg2.connect(DATABASE_URL, connect_timeout=6) as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     f"""SELECT COUNT(*) AS calls,
-                              COUNT(DISTINCT user_id) AS users
+                              COUNT(DISTINCT COALESCE(NULLIF(client_name, ''),
+                                                       NULLIF(platform, ''),
+                                                       ip_address)) AS users
                        FROM mcp_tool_calls
-                       WHERE called_at > NOW() - INTERVAL '{window_h} hours'""")
+                       WHERE created_at > NOW() - INTERVAL '{window_h} hours'""")
                 row = cur.fetchone() or (0, 0)
                 out["tool_calls"] = int(row[0] or 0)
                 out["unique_callers"] = int(row[1] or 0)
@@ -19019,7 +19033,7 @@ def _media_ai_usage_live():
                 cur.execute(
                     f"""SELECT tool_name, COUNT(*) AS n
                         FROM mcp_tool_calls
-                        WHERE called_at > NOW() - INTERVAL '{window_h} hours'
+                        WHERE created_at > NOW() - INTERVAL '{window_h} hours'
                           AND tool_name IS NOT NULL
                           AND tool_name != ''
                         GROUP BY tool_name
@@ -19033,10 +19047,10 @@ def _media_ai_usage_live():
             bucket_h = max(1, window_h // 24)
             with conn.cursor() as cur:
                 cur.execute(
-                    f"""SELECT date_trunc('hour', called_at) AS hr,
+                    f"""SELECT date_trunc('hour', created_at) AS hr,
                                COUNT(*) AS n
                         FROM mcp_tool_calls
-                        WHERE called_at > NOW() - INTERVAL '{window_h} hours'
+                        WHERE created_at > NOW() - INTERVAL '{window_h} hours'
                         GROUP BY hr
                         ORDER BY hr""")
                 out["by_hour"] = [
