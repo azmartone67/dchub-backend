@@ -27,13 +27,17 @@ on:
     # (09:00 ET, when buyers + journalists check news). Idempotent —
     # the /auto-generate endpoint no-ops if today already has output.
     - cron: '0 13 * * *'
+    # Phase EE (2026-05-12) — 30 min after the press release lands,
+    # email today's LinkedIn-ready post to DCHUB_LINKEDIN_EMAIL_TO.
+    # Idempotent: skips if today's post already has linkedin_sent_at.
+    - cron: '30 13 * * *'
   workflow_dispatch:
     inputs:
       phase:
         description: 'Which phase to run on demand'
         required: true
         type: choice
-        options: [all, brain, outreach, audit, marketing]
+        options: [all, brain, outreach, audit, marketing, linkedin]
         default: all
 
 permissions:
@@ -175,4 +179,37 @@ jobs:
               print(f\"::notice::Auto-press generated · slug={d.get('slug')} · title={d.get('title','')[:80]}\")
           else:
               print(f\"::warning::Marketing pass failed — {d.get('error','unknown')}\")
+          " || true
+
+  # Phase EE (2026-05-12) — daily LinkedIn email (30 min after press release).
+  marketing_linkedin_email:
+    if: github.event.schedule == '30 13 * * *' || (github.event_name == 'workflow_dispatch' && (inputs.phase == 'all' || inputs.phase == 'linkedin'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Send today's LinkedIn-ready post email
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY secret not set — skipping LinkedIn email"
+            exit 0
+          fi
+          response=$(curl -sS --max-time 30 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "https://dchub.cloud/api/v1/marketing/linkedin/send-daily-email" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | head -c 1500
+          echo
+          echo "$response" | python3 -c "
+          import json, sys
+          try: d = json.load(sys.stdin)
+          except Exception:
+              print('::warning::LinkedIn email endpoint returned non-JSON'); sys.exit(0)
+          if d.get('skipped'):
+              print(f\"::notice::LinkedIn skipped — {d.get('reason','?')}\")
+          elif d.get('sent'):
+              print(f\"::notice::LinkedIn email sent to {d.get('to')} for slug={d.get('slug')}\")
+          else:
+              print(f\"::warning::LinkedIn email failed — {d.get('error','unknown')}\")
           " || true

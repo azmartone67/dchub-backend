@@ -92,10 +92,29 @@ CREATE TABLE IF NOT EXISTS auto_press_releases (
     title           TEXT,
     body            TEXT,
     word_count      INTEGER,
-    validation_ok   BOOLEAN DEFAULT TRUE
+    validation_ok   BOOLEAN DEFAULT TRUE,
+    -- Phase EE (2026-05-12): LinkedIn-optimized post for daily
+    -- distribution. Claude generates this alongside the long-form
+    -- press release. Different format: 1200-1500 chars, hook + bullets
+    -- + hashtags + one URL.
+    linkedin_post   TEXT,
+    linkedin_sent_at TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS auto_press_generated_for_idx
     ON auto_press_releases(generated_for DESC);
+-- Idempotent column add for installations that have the table from
+-- an earlier deploy:
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables
+               WHERE table_name = 'auto_press_releases')
+       AND NOT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name = 'auto_press_releases'
+                         AND column_name = 'linkedin_post') THEN
+        ALTER TABLE auto_press_releases
+            ADD COLUMN linkedin_post TEXT,
+            ADD COLUMN linkedin_sent_at TIMESTAMPTZ;
+    END IF;
+END $$;
 
 -- Engagement: per-piece view + click counters. Updated by the public
 -- /track endpoint (pixel) and the public /pulse aggregator.
@@ -265,24 +284,39 @@ def _collect_signals() -> dict:
 # 2. CLAUDE GENERATION
 # ---------------------------------------------------------------------------
 
-_MARKETING_SYSTEM = """You are the autonomous press team at DC Hub, a data-center intelligence platform tracking 280+ US/global markets, 7 ISOs, and 20,000+ facilities. You publish a short daily press release distilling the single most newsworthy story of the last 24 hours of platform activity.
+_MARKETING_SYSTEM = """You are the autonomous press team at DC Hub, a data-center intelligence platform tracking 280+ US/global markets, 7 ISOs, and 20,000+ facilities. You publish two coupled outputs daily, both distilling the single most newsworthy story of the last 24 hours of platform activity:
 
-The press release MUST:
-1. Be FACTUAL — only use numbers and names provided in the signal payload. Never invent specific markets, scores, MW, or company names.
-2. Be 200-400 words, headline + 3-4 short paragraphs.
-3. Lead with the most concrete data point (e.g. "[Market], [STATE] climbed [N] points in the DCPI Excess Power index").
-4. Include a self-citation: "Source: DC Hub Data Center Power Index (https://dchub.cloud/dcpi). Updated daily."
-5. End with a Press / Investor Contact line: "Press inquiries: press@dchub.cloud · DC Hub MCP API: https://dchub.cloud/mcp"
+A) A SHORT PRESS RELEASE (long-form, web/AI-citable)
+B) A LINKEDIN POST (short-form, distribution-ready)
+
+BOTH outputs MUST:
+- Be FACTUAL — only use numbers and names provided in the signal payload. Never invent specific markets, scores, MW, or company names.
+- Lead with the most concrete data point (e.g. "[Market], [STATE] climbed [N] points in the DCPI Excess Power index").
+
+The PRESS RELEASE additionally MUST:
+- Be 200-400 words with Markdown-lite formatting: use `##` for section headings, `-` for bullets, `**bold**` for emphasis. Use 2-3 sections (e.g. "## Highlights", "## What it means", "## Methodology").
+- Include a self-citation paragraph: "Source: DC Hub Data Center Power Index (https://dchub.cloud/dcpi). Updated daily."
+- End with: "Press inquiries: press@dchub.cloud · DC Hub MCP API: https://dchub.cloud/mcp"
+
+The LINKEDIN POST additionally MUST:
+- Be 900-1500 characters total (LinkedIn sweet spot).
+- Start with a HOOK line (a single bold-claim sentence) on its own line.
+- Use 3-5 short paragraphs OR a bullet list with line breaks.
+- Reference 1-2 specific data points from the signal payload.
+- End with exactly ONE URL: https://dchub.cloud/news/<slug>  (use the slug you generated above).
+- End with 3-5 hashtags, e.g. #DataCenter #DCPI #Infrastructure #AI #ColocationMarket.
+- NO em-dashes (LinkedIn flags them); use commas or periods.
 
 Output STRICT JSON only, no preamble:
 {
   "topic": "dcpi_mover" | "iso_intelligence" | "ai_adoption" | "new_facility",
   "title": "...",
   "subheadline": "...",
-  "body": "...",     // 200-400 words, plain text with \\n paragraph breaks
+  "body": "...",     // 200-400 words press release, Markdown-lite, \\n paragraphs
   "slug": "auto-YYYY-MM-DD-short-keywords",  // URL-safe, < 80 chars
   "meta_description": "...",   // < 160 chars
-  "schema_keywords": ["data center", "power index", "..."]
+  "schema_keywords": ["data center", "power index", "..."],
+  "linkedin_post": "..."   // 900-1500 chars, hook + body + url + hashtags
 }"""
 
 
@@ -382,21 +416,48 @@ def _write_release(rel: dict, signals: dict, topic: str) -> tuple[int | None, st
                 today, today,
             ))
             press_id = cur.fetchone()[0]
-        # 2. auto_press_releases — audit trail of autonomous output
+        # 2. auto_press_releases — audit trail of autonomous output.
+        # Phase EE (2026-05-12): also persists the Claude-generated
+        # linkedin_post for daily distribution. Defensive against the
+        # column not yet existing on older deploys (the schema migration
+        # in init_schema is idempotent but may not have fired yet) —
+        # try the full insert first, fall back to legacy insert without
+        # linkedin_post on column-missing error.
+        linkedin_post = (rel.get("linkedin_post") or "")[:5000] or None
         with c.cursor() as cur:
-            cur.execute("""
-                INSERT INTO auto_press_releases
-                    (press_release_id, slug, generated_for, source_topic,
-                     source_data, model, title, body, word_count, validation_ok)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, true)
-                ON CONFLICT (slug) DO NOTHING;
-            """, (
-                press_id, rel["slug"], today, topic,
-                json.dumps(signals)[:8000],
-                MARKETING_MODEL,
-                rel["title"][:300],
-                rel["body"], len(rel["body"].split()),
-            ))
+            try:
+                cur.execute("""
+                    INSERT INTO auto_press_releases
+                        (press_release_id, slug, generated_for, source_topic,
+                         source_data, model, title, body, word_count,
+                         validation_ok, linkedin_post)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, true, %s)
+                    ON CONFLICT (slug) DO NOTHING;
+                """, (
+                    press_id, rel["slug"], today, topic,
+                    json.dumps(signals)[:8000],
+                    MARKETING_MODEL,
+                    rel["title"][:300],
+                    rel["body"], len(rel["body"].split()),
+                    linkedin_post,
+                ))
+            except Exception:
+                c.rollback()
+                # Legacy fallback for installations missing the column.
+                cur.execute("""
+                    INSERT INTO auto_press_releases
+                        (press_release_id, slug, generated_for, source_topic,
+                         source_data, model, title, body, word_count,
+                         validation_ok)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, true)
+                    ON CONFLICT (slug) DO NOTHING;
+                """, (
+                    press_id, rel["slug"], today, topic,
+                    json.dumps(signals)[:8000],
+                    MARKETING_MODEL,
+                    rel["title"][:300],
+                    rel["body"], len(rel["body"].split()),
+                ))
         # BUG FIX (2026-05-12): psycopg2 connections default to autocommit=False.
         # Without this explicit commit, BOTH INSERTs above are rolled back when
         # the `finally: c.close()` block fires. Live evidence: today's first
@@ -611,3 +672,204 @@ def engagement_summary():
     finally:
         try: c.close()
         except Exception: pass
+
+
+# ---------------------------------------------------------------------------
+# Phase EE (2026-05-12): LinkedIn daily distribution endpoints
+# ---------------------------------------------------------------------------
+
+@marketing_bp.get("/api/v1/marketing/linkedin/<slug>")
+def linkedin_post_for(slug):
+    """Returns the Claude-generated LinkedIn post + one-click share URL
+       for a specific auto-press slug. Designed so the user can:
+         1. GET this endpoint
+         2. Copy the `post` text
+         3. Click `share_url` (already pre-fills the LinkedIn post box)
+         4. Paste the body, click Post.
+       OR — automate via LinkedIn API if the user sets up OAuth.
+    """
+    from urllib.parse import quote
+    c = _conn()
+    if c is None: return jsonify(ok=False, error="no_database"), 503
+    try:
+        with c.cursor() as cur:
+            try:
+                cur.execute("""SELECT title, slug, linkedin_post, linkedin_sent_at,
+                                       generated_at
+                               FROM auto_press_releases WHERE slug = %s""",
+                            (slug,))
+            except Exception:
+                c.rollback()
+                return jsonify(ok=False, error="linkedin_post column missing — "
+                               "re-run init_schema or wait for next deploy"), 503
+            row = cur.fetchone()
+        if not row:
+            return jsonify(ok=False, error="slug_not_found", slug=slug), 404
+        title, slug, post, sent_at, generated_at = row
+        canonical = f"https://dchub.cloud/news/{slug}"
+        # LinkedIn share URL — prefills the share dialog with the URL.
+        # Users paste the body text into the post box.
+        share_url = "https://www.linkedin.com/sharing/share-offsite/?url=" + quote(canonical)
+        return jsonify(
+            ok=True,
+            slug=slug,
+            title=title,
+            post=post,                                 # paste this body
+            article_url=canonical,                     # the link being shared
+            linkedin_share_url=share_url,              # opens LinkedIn share dialog
+            generated_at=generated_at.isoformat() if generated_at else None,
+            already_sent=bool(sent_at),
+            sent_at=sent_at.isoformat() if sent_at else None,
+            usage_hint=("1. Open `linkedin_share_url` in a new tab. "
+                        "2. Copy `post` body text. "
+                        "3. Paste into LinkedIn's share dialog. "
+                        "4. Click Post."),
+        ), 200
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)[:200]), 500
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+@marketing_bp.get("/api/v1/marketing/linkedin/latest")
+def linkedin_post_latest():
+    """Returns today's freshest auto-press LinkedIn post + share URL.
+       Convenience alias — the daily cron + email helper hit this."""
+    c = _conn()
+    if c is None: return jsonify(ok=False, error="no_database"), 503
+    try:
+        with c.cursor() as cur:
+            try:
+                cur.execute("""SELECT slug FROM auto_press_releases
+                               WHERE linkedin_post IS NOT NULL
+                                 AND linkedin_post != ''
+                               ORDER BY generated_at DESC LIMIT 1""")
+            except Exception:
+                c.rollback()
+                return jsonify(ok=False, error="linkedin_post column missing"), 503
+            row = cur.fetchone()
+        if not row:
+            return jsonify(ok=False,
+                           error="no_linkedin_posts_yet",
+                           hint=("Wait for next 13:00 UTC auto-press, or "
+                                 "trigger manually via "
+                                 "POST /api/v1/marketing/auto-generate")), 404
+    finally:
+        try: c.close()
+        except Exception: pass
+    # Delegate to the per-slug endpoint
+    return linkedin_post_for(row[0])
+
+
+@marketing_bp.post("/api/v1/marketing/linkedin/send-daily-email")
+@_require_admin
+def linkedin_send_daily_email():
+    """Admin-gated: emails today's LinkedIn-ready post + share URL to
+       a configured recipient. Cron fires this at 13:30 UTC daily — 30
+       min after the auto-press generation so the post exists.
+
+       Env vars:
+         DCHUB_LINKEDIN_EMAIL_TO   — recipient (defaults to press@dchub.cloud)
+         DCHUB_RESEND_API_KEY      — Resend API key (mandatory)
+
+       The recipient gets a one-click-paste email with:
+         - the press release headline + URL
+         - the full LinkedIn post body
+         - a "Share on LinkedIn now" button (linkedin_share_url)
+    """
+    to_addr = (os.environ.get("DCHUB_LINKEDIN_EMAIL_TO")
+               or "press@dchub.cloud").strip()
+    if not RESEND_API_KEY:
+        return jsonify(ok=False, error="DCHUB_RESEND_API_KEY not configured"), 503
+
+    c = _conn()
+    if c is None: return jsonify(ok=False, error="no_database"), 503
+    try:
+        with c.cursor() as cur:
+            cur.execute("""SELECT id, slug, title, linkedin_post, linkedin_sent_at
+                           FROM auto_press_releases
+                           WHERE linkedin_post IS NOT NULL
+                             AND linkedin_post != ''
+                             AND generated_at > NOW() - INTERVAL '36 hours'
+                           ORDER BY generated_at DESC LIMIT 1""")
+            row = cur.fetchone()
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    if not row:
+        return jsonify(ok=False, error="no_recent_linkedin_post"), 404
+    apr_id, slug, title, post, sent_at = row
+    if sent_at:
+        return jsonify(ok=True, skipped=True, reason="already_sent_today",
+                       sent_at=sent_at.isoformat()), 200
+
+    from urllib.parse import quote
+    canonical = f"https://dchub.cloud/news/{slug}"
+    share_url = "https://www.linkedin.com/sharing/share-offsite/?url=" + quote(canonical)
+    html_email = f"""<div style="font-family:system-ui,sans-serif;max-width:600px;margin:0 auto;padding:24px">
+<div style="font-size:11px;letter-spacing:1.5px;color:#8b6fff;font-weight:800;text-transform:uppercase;margin-bottom:6px">📰 Today's auto-press · LinkedIn ready</div>
+<h1 style="font-size:22px;margin:0 0 14px;line-height:1.3">{title}</h1>
+<p style="color:#555;font-size:14px;margin:0 0 20px">
+  Auto-generated daily brief published at <a href="{canonical}">{canonical}</a>
+</p>
+
+<div style="background:#f6f7fb;border-left:3px solid #8b6fff;border-radius:6px;padding:18px 20px;margin:0 0 20px;white-space:pre-wrap;font-family:Inter,-apple-system,sans-serif;font-size:14.5px;line-height:1.6">{html_escape(post or '')}</div>
+
+<a href="{share_url}" style="display:inline-block;background:#0a66c2;color:#fff;text-decoration:none;padding:12px 24px;border-radius:8px;font-weight:700;margin-bottom:12px">Open LinkedIn share dialog →</a>
+<p style="color:#555;font-size:13px;margin:8px 0 0">
+  <strong>How to post:</strong> click the button above, paste the body text from the box, click Post on LinkedIn. ~10 seconds total.
+</p>
+
+<hr style="border:none;border-top:1px solid #ddd;margin:32px 0">
+<p style="color:#999;font-size:12px;margin:0">
+  This email is sent daily by the DC Hub autonomous marketing engine.
+  Configure recipient via DCHUB_LINKEDIN_EMAIL_TO. Disable by removing the
+  marketing_linkedin cron job in evolve-cron.yml.
+</p>
+</div>"""
+
+    # Send via Resend
+    from urllib.request import Request, urlopen
+    payload = json.dumps({
+        "from":    "DC Hub <noreply@dchub.cloud>",
+        "to":      [to_addr],
+        "subject": f"📰 Today's LinkedIn post — {title[:60]}",
+        "html":    html_email,
+    }).encode()
+    req = Request("https://api.resend.com/emails", data=payload, headers={
+        "Content-Type":  "application/json",
+        "Authorization": f"Bearer {RESEND_API_KEY}",
+    })
+    try:
+        with urlopen(req, timeout=15) as r:
+            resp_text = r.read().decode("utf-8", errors="ignore")
+            sent_ok = (r.status == 200)
+    except Exception as e:
+        return jsonify(ok=False, error=f"resend_failed: {str(e)[:200]}"), 502
+
+    if not sent_ok:
+        return jsonify(ok=False, error="resend_non_200",
+                       detail=resp_text[:300]), 502
+
+    # Mark sent so a duplicate cron run is a no-op
+    c = _conn()
+    if c is not None:
+        try:
+            with c, c.cursor() as cur:
+                cur.execute("""UPDATE auto_press_releases
+                               SET linkedin_sent_at = NOW()
+                               WHERE id = %s""", (apr_id,))
+        finally:
+            try: c.close()
+            except Exception: pass
+
+    return jsonify(ok=True, sent=True, to=to_addr, slug=slug,
+                   article_url=canonical), 200
+
+
+# Tiny HTML-escape helper for the email template (avoids stdlib import noise)
+def html_escape(s):
+    from html import escape
+    return escape(s or "")
