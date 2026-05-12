@@ -397,6 +397,14 @@ def _write_release(rel: dict, signals: dict, topic: str) -> tuple[int | None, st
                 rel["title"][:300],
                 rel["body"], len(rel["body"].split()),
             ))
+        # BUG FIX (2026-05-12): psycopg2 connections default to autocommit=False.
+        # Without this explicit commit, BOTH INSERTs above are rolled back when
+        # the `finally: c.close()` block fires. Live evidence: today's first
+        # auto-press run returned press_release_id=16 (the sequence advanced)
+        # but no row 16 ever appeared in production. The press_releases table
+        # showed only ids 1-14. RETURNING returns the would-be id even when
+        # the transaction will roll back.
+        c.commit()
         return press_id, None
     except Exception as e:
         print(f"[marketing_engine] write failed: {e}", file=sys.stderr)
@@ -460,7 +468,7 @@ def auto_generate():
         press_release_id=press_id,
         slug=rel["slug"],
         title=rel["title"],
-        url=f"https://dchub.cloud/press/releases/{rel['slug']}",
+        url=f"https://dchub.cloud/news/{rel['slug']}",
         signals_used=signals,
     ), 201
 
@@ -497,7 +505,7 @@ def marketing_pulse():
                     "slug": row[0], "title": row[1],
                     "generated_at": row[2].isoformat() if row[2] else None,
                     "topic": row[3],
-                    "url": f"https://dchub.cloud/press/releases/{row[0]}",
+                    "url": f"https://dchub.cloud/news/{row[0]}",
                 }
         with c.cursor() as cur:
             cur.execute("""SELECT event_type, COUNT(*) FROM press_engagement
