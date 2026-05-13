@@ -505,7 +505,22 @@ def recompute_all_scores(source: str = "manual") -> dict:
         run_id = cur.fetchone()[0]
         c.commit()
 
-    for m in (_dcpi_dynamic_markets() or MARKETS):
+    # Phase QQ+3 (2026-05-13): use MARKETS only (canonical 6-tuple shape).
+    # Previously: `_dcpi_dynamic_markets() or MARKETS`. The dynamic helper
+    # returns 9-key dicts (slug, name, cities, state, country, facility_count,
+    # pipeline_mw, operational_mw, avg_kwh_usd), but the unpack on the next
+    # line expects 6 tuple positions (slug, name, state, iso, lat, lon).
+    # When the dynamic call succeeded, every iteration threw ValueError out
+    # of the for-loop (it's OUTSIDE the try/except below), bubbled up to
+    # api_recompute, and either 500'd or produced spurious values that the
+    # downstream INSERT silently rejected. End result: market_power_scores
+    # hadn't been updated in 45h despite the daily cron firing successfully
+    # — the truth endpoint /api/v1/system/loops caught it as dcpi_recompute
+    # stale=45.1h.
+    #
+    # MARKETS itself is `_load_markets_dynamic() or _MARKETS_HARDCODED` —
+    # both of those return 6-tuples, so unpacking is safe.
+    for m in MARKETS:
         slug, name, state, iso, lat, lon = m
         try:
             metrics = gather_metrics_for_market(m)
