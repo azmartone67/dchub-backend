@@ -27,25 +27,49 @@ def _yesterday():
 
 
 def _isone_urls():
-    """Phase GG (2026-05-13): refreshed URL list. ISO-NE deprecated the
-       `/transform/csv/sysload` endpoint and intermittently breaks
-       `/transform/csv/genfuelmix`. Use the current web-services /JSON
-       endpoints first, then fall back to EIA EBA + legacy paths."""
+    """Phase QQ+9 (2026-05-13): re-probed every URL live. Findings:
+      webservices.iso-ne.com/api/v1.1/genfuelmix/current.json → 401
+          (endpoint EXISTS but requires HTTP Basic auth; ISO-NE
+          requires free registration to get credentials)
+      www.iso-ne.com/ws/wsclient                              → 500
+      www.iso-ne.com/transform/csv/genfuelmix                 → 403
+      www.iso-ne.com/static-assets/.../*.json                 → 404
+      www.eia.gov/electricity/data/eia930/...                 → 301/503
+      api.eia.gov/v2/...?api_key=$EIA_API_KEY                 → 200 JSON ✓
+
+    Primary is api.eia.gov v2 (needs EIA_API_KEY env var). If the user
+    also sets ISONE_USERNAME + ISONE_PASSWORD env vars (free reg on
+    iso-ne.com), we hit webservices.iso-ne.com FIRST with Basic auth —
+    that gives 5-min granular data vs EIA's hourly. Without either,
+    ISONE returns 0 metrics gracefully.
+    """
+    import os
     today = _today()
     yest  = _yesterday()
-    return [
-        # Current ISO-NE web services — public read endpoints
-        "https://webservices.iso-ne.com/api/v1.1/genfuelmix/current",
-        "https://www.iso-ne.com/ws/wsclient?_nstmp_formDate=&_nstmp_chartName=genfuelmix",
-        # Static archive (sometimes mirrors current day)
+    eia_key = os.environ.get("EIA_API_KEY", "")
+    isone_user = os.environ.get("ISONE_USERNAME", "")
+    isone_pass = os.environ.get("ISONE_PASSWORD", "")
+    urls = []
+    if isone_user and isone_pass:
+        from urllib.parse import quote as _q
+        urls.append(
+            f"https://{_q(isone_user)}:{_q(isone_pass)}@webservices.iso-ne.com"
+            "/api/v1.1/genfuelmix/current.json"
+        )
+    # Primary public fallback — EIA v2 with API key
+    urls.append(
+        f"https://api.eia.gov/v2/electricity/rto/fuel-type-data/data/?api_key={eia_key}&frequency=hourly&data[0]=value&facets[respondent][]=ISNE&sort[0][column]=period&sort[0][direction]=desc&length=12"
+    )
+    urls.append(
+        f"https://api.eia.gov/v2/electricity/rto/region-data/data/?api_key={eia_key}&frequency=hourly&data[0]=value&facets[respondent][]=ISNE&sort[0][column]=period&sort[0][direction]=desc&length=24"
+    )
+    # Legacy iso-ne.com paths kept LAST (all 404/403/500 in 2026 but
+    # harmless to try in case they come back).
+    urls.extend([
         f"https://www.iso-ne.com/transform/csv/genfuelmix?start={today}",
         f"https://www.iso-ne.com/transform/csv/genfuelmix?start={yest}",
-        # EIA EBA fallback — works for ISO-NE without auth
-        "https://www.eia.gov/electricity/data/eia930/api/region/ISNE/fuel-type-data",
-        # Legacy paths kept last
-        "https://www.iso-ne.com/static-assets/documents/2024/01/genfuelmix.csv",
-        f"https://www.iso-ne.com/transform/csv/sysload?start={today}",
-    ]
+    ])
+    return urls
 
 
 def run_extraction():

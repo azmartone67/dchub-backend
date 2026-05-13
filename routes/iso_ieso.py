@@ -29,16 +29,23 @@ SOURCE_ID = "iso-ieso-realtime"
 
 def _ieso_urls():
     """Ordered URL list — first working response wins. IESO publishes
-       these CSVs hourly with predictable filenames."""
+       these CSVs hourly with predictable filenames.
+
+       Phase QQ+9 (2026-05-13): switched http:// → https://. Direct probe
+       confirmed every http:// URL returns a 302 redirect to the https://
+       version; urllib doesn't follow these by default so the loop counted
+       them all as failures and the orchestrator reported IESO dead. The
+       https:// hostname returns 200 + 5460 bytes of real CSV in ~620ms.
+    """
     return [
         # IESO public reports — hourly generation by fuel type
-        "http://reports.ieso.ca/public/GenOutputbyFuelHourly/PUB_GenOutputbyFuelHourly.csv",
+        "https://reports.ieso.ca/public/GenOutputbyFuelHourly/PUB_GenOutputbyFuelHourly.csv",
         # Day-ahead market summary (alternative)
-        "http://reports.ieso.ca/public/RealtimeMktTotals/PUB_RealtimeMktTotals.csv",
+        "https://reports.ieso.ca/public/RealtimeMktTotals/PUB_RealtimeMktTotals.csv",
         # IESO Dataset 7 — Hourly Generator Output and Capability
-        "http://reports.ieso.ca/public/GenOutputCapability/PUB_GenOutputCapability.csv",
+        "https://reports.ieso.ca/public/GenOutputCapability/PUB_GenOutputCapability.csv",
         # Adequacy report (rolling 7 days)
-        "http://reports.ieso.ca/public/Adequacy/PUB_Adequacy.csv",
+        "https://reports.ieso.ca/public/Adequacy/PUB_Adequacy.csv",
     ]
 
 
