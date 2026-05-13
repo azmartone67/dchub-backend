@@ -44,6 +44,27 @@ SURFACES = [
     {"name": "hero_copy",         "stale_hours": 7*24, "refresh_func": "refresh_hero"},
     {"name": "news_cache",        "stale_hours": 6,   "refresh_func": "refresh_news"},
     {"name": "iso_metrics",       "stale_hours": 2,   "refresh_func": "refresh_iso"},
+    # Phase QQ+8 (2026-05-13): per-ISO heartbeat surfaces. Previously
+    # only the aggregate "iso_metrics" was tracked, hiding which
+    # individual ISOs were producing data. After PR #41 (Phase HH) the
+    # platform tracks 11 grid operators, but the autonomous-intelligence
+    # dashboard kept showing "ISOs Reporting: 3" because only the 3
+    # fastest (CAISO/ERCOT/NYISO) actually persisted rows per cron run
+    # — the other 8 silently 502'd at Railway's 15s edge. Adding a
+    # per-ISO surface lets the dashboard accurately render each one's
+    # state and lets the babysitter retry stale individual ISOs
+    # instead of the whole orchestrator.
+    {"name": "iso_ercot",  "stale_hours": 2, "refresh_func": "refresh_iso"},
+    {"name": "iso_caiso",  "stale_hours": 2, "refresh_func": "refresh_iso"},
+    {"name": "iso_nyiso",  "stale_hours": 2, "refresh_func": "refresh_iso"},
+    {"name": "iso_miso",   "stale_hours": 2, "refresh_func": "refresh_iso"},
+    {"name": "iso_pjm",    "stale_hours": 2, "refresh_func": "refresh_iso"},
+    {"name": "iso_spp",    "stale_hours": 2, "refresh_func": "refresh_iso"},
+    {"name": "iso_isone",  "stale_hours": 2, "refresh_func": "refresh_iso"},
+    {"name": "iso_ieso",   "stale_hours": 2, "refresh_func": "refresh_iso"},
+    {"name": "iso_aeso",   "stale_hours": 2, "refresh_func": "refresh_iso"},
+    {"name": "iso_tva",    "stale_hours": 2, "refresh_func": "refresh_iso"},
+    {"name": "iso_bpa",    "stale_hours": 2, "refresh_func": "refresh_iso"},
 ]
 
 
