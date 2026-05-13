@@ -663,12 +663,24 @@ def marketing_pulse():
     return resp, 200
 
 
-@marketing_bp.post("/api/v1/marketing/track")
+@marketing_bp.route("/api/v1/marketing/track", methods=["GET", "POST"])
 def track_event():
     """Pixel-style engagement tracking. Public, rate-limit-friendly.
-       Accepts `slug`, `event_type` (`view` | `click_out` | `stripe_click`)."""
-    slug = (request.json.get("slug") if request.is_json else request.args.get("slug")) or ""
-    event_type = (request.json.get("event_type") if request.is_json else request.args.get("event_type")) or "view"
+       Accepts `slug`, `event_type` (`view` | `click_out` | `stripe_click`).
+
+       Phase MM (2026-05-13): added GET so `<img src=".../track?slug=X&event_type=view">`
+       pixel tags work — historically engagement was 0 in production
+       because POST-only required JS+CORS+JSON body, which the /news/<slug>
+       static templates can't emit. With GET, a 1×1 image pixel suffices.
+       """
+    # Pull slug/event_type from JSON body if present, else from query string.
+    if request.method == "POST" and request.is_json:
+        payload = request.get_json(silent=True) or {}
+        slug = payload.get("slug") or request.args.get("slug") or ""
+        event_type = payload.get("event_type") or request.args.get("event_type") or "view"
+    else:
+        slug = request.args.get("slug") or ""
+        event_type = request.args.get("event_type") or "view"
     if not slug or event_type not in ("view", "click_out", "stripe_click"):
         return jsonify(ok=False, error="bad_request"), 400
     c = _conn()
@@ -692,12 +704,36 @@ def track_event():
                   (request.headers.get("Referer") or "")[:500],
                   (request.headers.get("User-Agent") or "")[:300],
                   ip_hash))
+        # Phase MM: for GET requests, return a 1×1 transparent gif so an
+        # <img> pixel tag renders cleanly (no broken-image icon). POSTs
+        # still get the JSON ack so JS-based callers see stored=true.
+        if request.method == "GET":
+            return _PIXEL_GIF, 200, {
+                "Content-Type": "image/gif",
+                "Cache-Control": "no-store, must-revalidate",
+                "Content-Length": str(len(_PIXEL_GIF)),
+            }
         return jsonify(ok=True, stored=True), 200
     except Exception as e:
+        # Still return the pixel on GET-error so the <img> doesn't show
+        # a broken icon. The DB write is the only thing that can fail.
+        if request.method == "GET":
+            return _PIXEL_GIF, 200, {"Content-Type": "image/gif"}
         return jsonify(ok=False, error=str(e)[:200]), 200
     finally:
         try: c.close()
         except Exception: pass
+
+
+# 1×1 transparent GIF — minimal valid bytes. Used as the response body
+# for GET /track so the <img> pixel tag renders cleanly.
+_PIXEL_GIF = bytes([
+    0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00,
+    0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21,
+    0xF9, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x2C, 0x00, 0x00,
+    0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x02, 0x44,
+    0x01, 0x00, 0x3B,
+])
 
 
 @marketing_bp.get("/api/v1/marketing/engagement")
