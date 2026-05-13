@@ -387,44 +387,181 @@ def _empty_spine():
 # These are the platforms users would have to verbally tell their AI
 # to "use the DC Hub MCP" — making us first-class in their plugin
 # directory closes that loop.
+#
+# Phase FF+ (2026-05-12): expanded with REAL patterns observed in
+# production User-Agent / client_name / platform strings. The first
+# pass only matched simple bare keywords ("claude", "cursor") but
+# actual fingerprints in mcp_tool_calls look like:
+#   "Claude/1.0 (Anthropic)"      → caught by "claude"
+#   "anthropic-ai/sdk@0.31.0"     → MISSED (no "claude" substring)
+#   "openai/python-client v1.45"  → MISSED (no "gpt")
+#   "google-genai/0.5"            → MISSED (no "gemini")
+#   "python-requests/2.31"        → unidentifiable third-party (legitimate)
+#   "Mozilla/5.0 ..."             → browser direct hits — not an AI agent
+#
+# Each vendor entry now has `patterns` (substrings to match
+# case-insensitively, OR-d) so we catch SDK identifiers + product
+# names + common variants.
 _VENDOR_DIRECTORY = {
-    "claude":     {"vendor": "Anthropic", "product": "Claude Desktop / Claude Code",
+    "anthropic":  {"vendor": "Anthropic", "product": "Claude / Claude Code",
+                   "patterns": ["claude", "anthropic"],
                    "pitch_email": "developers@anthropic.com",
                    "mcp_directory": "https://github.com/modelcontextprotocol/servers"},
     "cursor":     {"vendor": "Cursor (Anysphere)", "product": "Cursor IDE",
+                   "patterns": ["cursor"],
                    "pitch_email": "partnerships@cursor.so",
                    "mcp_directory": "https://docs.cursor.com/context/mcp"},
-    "gemini":     {"vendor": "Google", "product": "Gemini / Gemini Code Assist",
+    "google":     {"vendor": "Google", "product": "Gemini / Code Assist",
+                   "patterns": ["gemini", "google-genai", "google-ai",
+                                "google-generativeai"],
                    "pitch_email": "ai-developer-relations@google.com",
                    "mcp_directory": "https://ai.google.dev/gemini-api/docs"},
+    "openai":     {"vendor": "OpenAI", "product": "ChatGPT / GPT API",
+                   "patterns": ["gpt", "openai", "chatgpt"],
+                   "pitch_email": "platform-partnerships@openai.com",
+                   "mcp_directory": "https://platform.openai.com/docs"},
     "perplexity": {"vendor": "Perplexity", "product": "Perplexity AI",
+                   "patterns": ["perplexity"],
                    "pitch_email": "support@perplexity.ai",
                    "mcp_directory": ""},
     "cline":      {"vendor": "Cline", "product": "Cline IDE Extension",
+                   "patterns": ["cline"],
                    "pitch_email": "support@cline.bot",
                    "mcp_directory": "https://github.com/cline/cline/wiki/MCP-Servers"},
     "windsurf":   {"vendor": "Codeium", "product": "Windsurf IDE",
+                   "patterns": ["windsurf", "codeium"],
                    "pitch_email": "support@codeium.com",
                    "mcp_directory": ""},
     "copilot":    {"vendor": "GitHub / Microsoft", "product": "GitHub Copilot",
+                   "patterns": ["copilot", "github copilot"],
                    "pitch_email": "partnerships@github.com",
                    "mcp_directory": ""},
-    "grok":       {"vendor": "xAI", "product": "Grok",
+    "xai":        {"vendor": "xAI", "product": "Grok",
+                   "patterns": ["grok", "xai", "x-ai"],
                    "pitch_email": "partnerships@x.ai",
                    "mcp_directory": ""},
-    "gpt":        {"vendor": "OpenAI", "product": "ChatGPT / GPT API",
-                   "pitch_email": "platform-partnerships@openai.com",
-                   "mcp_directory": "https://platform.openai.com/docs"},
+    "meta":       {"vendor": "Meta", "product": "Meta AI / Llama",
+                   "patterns": ["meta-ai", "meta_ai", "llama", "meta.ai"],
+                   "pitch_email": "developers@meta.com",
+                   "mcp_directory": ""},
+    "mistral":    {"vendor": "Mistral AI", "product": "Mistral / Le Chat",
+                   "patterns": ["mistral", "le chat"],
+                   "pitch_email": "partnerships@mistral.ai",
+                   "mcp_directory": ""},
+    "huggingface": {"vendor": "Hugging Face", "product": "HF Inference / Chat",
+                   "patterns": ["huggingface", "hugging-face", "hf-inference"],
+                   "pitch_email": "partnerships@huggingface.co",
+                   "mcp_directory": ""},
+    "poe":        {"vendor": "Quora", "product": "Poe",
+                   "patterns": ["poe", "poe.com"],
+                   "pitch_email": "partnerships@poe.com",
+                   "mcp_directory": ""},
+    "openrouter": {"vendor": "OpenRouter", "product": "OpenRouter",
+                   "patterns": ["openrouter"],
+                   "pitch_email": "team@openrouter.ai",
+                   "mcp_directory": ""},
+    "phind":      {"vendor": "Phind", "product": "Phind Search",
+                   "patterns": ["phind"],
+                   "pitch_email": "support@phind.com",
+                   "mcp_directory": ""},
+    "you":        {"vendor": "You.com", "product": "You.com Search",
+                   "patterns": ["you.com", "youcom"],
+                   "pitch_email": "press@you.com",
+                   "mcp_directory": ""},
 }
 
 
 def _detect_vendor(name_or_ua: str) -> dict | None:
+    """Find a known vendor by substring match against the fingerprint.
+       Returns None if no known match. Callers can fall back to
+       'unknown_<truncated_fingerprint>' to still surface unmatched
+       traffic in the leaderboard."""
     if not name_or_ua: return None
     low = name_or_ua.lower()
     for key, meta in _VENDOR_DIRECTORY.items():
-        if key in low:
-            return {"key": key, **meta}
+        patterns = meta.get("patterns") or [key]
+        for p in patterns:
+            if p in low:
+                # Build a cleaned dict matching the legacy shape (no `patterns`
+                # in the return) so callers don't have to know about the new
+                # field structure.
+                out = {k: v for k, v in meta.items() if k != "patterns"}
+                return {"key": key, **out}
     return None
+
+
+def _label_unknown_fingerprint(fp: str) -> dict:
+    """Fallback for fingerprints that don't match any known vendor.
+       Still surface them in the leaderboard so we can SEE the traffic
+       we're missing, and tune the vendor dict in the next iteration."""
+    # Sanitize the fingerprint into a short, safe label
+    safe = (fp or "anonymous")[:60].strip()
+    return {
+        "key": "unknown",
+        "vendor": "Unknown / unidentified",
+        "product": f"Unidentified client: {safe}",
+        "pitch_email": "",
+        "mcp_directory": "",
+    }
+
+
+@media_hub_bp.get("/api/v1/admin/mcp/fingerprints")
+def admin_mcp_fingerprints():
+    """Admin-gated: dumps the top 30 distinct (client_name, platform,
+       user_agent) tuples observed in mcp_tool_calls over the last 7d
+       along with call counts. Lets the operator see EXACTLY what
+       fingerprints production traffic is sending so the vendor
+       detection dict can be tuned.
+
+       Built in response to Phase FF-2 returning 0 vendors despite
+       2,054 unique callers in 7d — clearly the detection patterns
+       weren't matching real strings.
+    """
+    auth_err = _require_admin()
+    if auth_err: return auth_err
+    c = _conn()
+    if c is None: return jsonify(error="no_database"), 503
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                SELECT
+                    COALESCE(client_name, '')                          AS client_name,
+                    COALESCE(platform, '')                             AS platform,
+                    SUBSTRING(COALESCE(user_agent, '') FROM 1 FOR 120) AS user_agent,
+                    COUNT(*)                                            AS calls,
+                    COUNT(DISTINCT ip_address)                          AS unique_ips,
+                    MAX(created_at)                                     AS last_seen
+                FROM mcp_tool_calls
+                WHERE created_at > NOW() - INTERVAL '7 days'
+                GROUP BY 1, 2, 3
+                ORDER BY calls DESC
+                LIMIT 30
+            """)
+            rows = cur.fetchall()
+        out = []
+        for cn, pl, ua, calls, ips, last in rows:
+            # Pre-compute what _detect_vendor would say
+            combined = (cn or "") + " " + (pl or "") + " " + (ua or "")
+            vendor = _detect_vendor(combined)
+            out.append({
+                "client_name": cn or None,
+                "platform":    pl or None,
+                "user_agent":  ua or None,
+                "calls_7d":    int(calls or 0),
+                "unique_ips":  int(ips or 0),
+                "last_seen":   last.isoformat() if last else None,
+                "detected_vendor": vendor.get("vendor") if vendor else None,
+                "detected_key":    vendor.get("key") if vendor else None,
+            })
+        return jsonify(
+            as_of=datetime.now(timezone.utc).isoformat(),
+            window_days=7,
+            count=len(out),
+            rows=out,
+        ), 200
+    finally:
+        try: c.close()
+        except Exception: pass
 
 
 @media_hub_bp.get("/api/v1/outreach/agents/vendors")
@@ -466,18 +603,45 @@ def agent_vendor_telemetry():
         try: c.close()
         except Exception: pass
 
-    # Bucket rows by detected vendor
+    # Bucket rows by detected vendor.
+    # Phase FF+ (2026-05-12): also bucket UNKNOWN fingerprints so we
+    # surface every active agent in the leaderboard, not just the ones
+    # whose User-Agent matches our vendor dictionary. Each unknown
+    # fingerprint becomes its own bucket keyed `unknown:<fingerprint>`
+    # so the operator can see which traffic to add patterns for next.
+    # Skip obvious non-agent traffic (browsers, curl, etc.) to keep
+    # the leaderboard signal-to-noise high.
+    _NON_AGENT_PATTERNS = (
+        "mozilla/", "chrome/", "safari/", "edge/",   # browsers
+        "curl/", "wget/", "httpie/", "postman",       # CLI/tools
+        "python-requests", "python-urllib",            # generic SDK
+        "ruby", "node-fetch", "axios",                 # generic
+        "github-actions", "monitoring", "uptime",      # ops
+        "dchubbot", "dchub-qa", "dchub-self",          # our own probes
+    )
+    def _is_non_agent(fp: str) -> bool:
+        low = (fp or "").lower()
+        return any(p in low for p in _NON_AGENT_PATTERNS)
+
     by_vendor: dict[str, dict] = {}
     for fp, calls, ips, last_seen, tools in rows:
         vendor = _detect_vendor(fp or "")
-        if not vendor: continue
-        key = vendor["key"]
+        if not vendor:
+            if _is_non_agent(fp or ""):
+                continue  # browsers / curl / our own probes — skip
+            vendor = _label_unknown_fingerprint(fp or "")
+            # Key by the FP so each distinct unknown agent gets its
+            # own row in the leaderboard (rather than collapsing all
+            # into one "unknown" bucket).
+            key = "unknown:" + ((fp or "anonymous")[:40])
+        else:
+            key = vendor["key"]
         b = by_vendor.setdefault(key, {
             "vendor_key": key,
             "vendor": vendor["vendor"],
             "product": vendor["product"],
-            "pitch_email": vendor["pitch_email"],
-            "mcp_directory_url": vendor["mcp_directory"],
+            "pitch_email": vendor.get("pitch_email", ""),
+            "mcp_directory_url": vendor.get("mcp_directory", ""),
             "calls_7d": 0, "unique_ips_7d": 0,
             "last_seen": None,
             "top_tools": set(),
@@ -819,9 +983,21 @@ def _ingest_mcp_derived() -> dict:
                 ORDER BY calls DESC LIMIT 25
             """)
             agg = cur.fetchall()
+        # Phase FF+ (2026-05-12): use the same loose detection +
+        # non-agent skip-list as the vendor-telemetry endpoint. Skip
+        # browser/curl/probe traffic; capture KNOWN vendors precisely;
+        # synthesize entries for UNKNOWN agents so they still surface.
+        _NON_AGENT = ("mozilla/", "chrome/", "safari/", "curl/", "wget/",
+                       "python-requests", "python-urllib", "github-actions",
+                       "dchubbot", "dchub-qa", "dchub-self", "uptime")
         for fp, calls, ips, last_seen, tools in agg:
-            vendor = _detect_vendor(fp or "")
-            if not vendor: continue
+            fp_str = fp or ""
+            fp_low = fp_str.lower()
+            if any(p in fp_low for p in _NON_AGENT):
+                continue
+            vendor = _detect_vendor(fp_str)
+            if not vendor:
+                vendor = _label_unknown_fingerprint(fp_str)
             tools_str = ", ".join((t or "?") for t in (tools or [])[:3])
             ext_id = f"{vendor['key']}_{(last_seen.strftime('%Y%m%d') if last_seen else 'na')}"
             quote = (f"{vendor['product']} queried DC Hub MCP {int(calls):,} times "
