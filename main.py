@@ -17537,6 +17537,14 @@ def cf_stub_energy_summary():
     receiving the same national average, which market-page.js then
     couldn't parse into Atlanta-specific copy.
 
+    Phase II (2026-05-13): tier-gated. Specific retail rates are now a
+    paid feature (developer/pro/enterprise). Anonymous + free callers
+    get a redacted envelope with `gated: true` so the frontend can
+    render a paywall card; SEO still sees a section title with a
+    national-range hint instead of nothing. Tier detection is shared
+    with the map/L&P paywall via `map_tier_gating._detect_caller_tier`,
+    so an X-API-Key linked to a paid plan unlocks immediately.
+
     Query params:
       state    optional 2-letter code (GA, CA, TX, IL, VA, ...).
                Returns rates for that state; states_covered = 1.
@@ -17553,6 +17561,64 @@ def cf_stub_energy_summary():
     state_raw = (_req.args.get('state') or '').strip()
     state = state_raw.upper()
     sector = (_req.args.get('sector') or '').strip().lower()
+
+    # ── Tier gate ───────────────────────────────────────────────────
+    # Energy pricing is a paid feature. Free/anonymous get a redacted
+    # envelope; developer/pro/enterprise get the full data. Tier
+    # detection reuses the map paywall's helper so a single X-API-Key
+    # works across the whole site.
+    _paid_access = True
+    _caller_tier = "internal"
+    try:
+        from map_tier_gating import _detect_caller_tier
+        # Pass our JWT decoder if available so JWT-cookie callers also unlock.
+        _decode = globals().get("_decode_jwt_token") or globals().get("decode_jwt")
+        _caller_tier, _ = _detect_caller_tier(decode_jwt_func=_decode)
+        _caller_tier = (_caller_tier or "anonymous").lower()
+        _paid_access = _caller_tier in {"developer", "pro", "enterprise", "founding", "internal"}
+    except Exception as _e:
+        # Fail-open by intent? No — fail-closed for unknown callers,
+        # but log so we can spot a regression. Internal MCP calls
+        # always include X-Internal-Key so they still pass above.
+        logger.warning(f"energy-gate: tier-detect failed ({_e}); defaulting anonymous")
+        _caller_tier, _paid_access = "anonymous", False
+
+    if not _paid_access:
+        # SEO-friendly redacted payload. We return the state echo + a
+        # national-range hint so crawlers still see *something*
+        # contextual, but no specific avg/min/max for the requested
+        # state. Frontend detects `gated: true` and renders a paywall
+        # card with upgrade CTA.
+        resp = jsonify({
+            "success": True,
+            "gated": True,
+            "reason": "paid_tier_required",
+            "min_tier": "developer",
+            "upgrade_url": "/pricing",
+            "caller_tier": _caller_tier,
+            "filter": {"state": state or None, "sector": sector or "all"},
+            # Hint range — US retail rates span roughly 6-25 ¢/kWh.
+            # Helps SEO + gives a sense of scale without leaking the
+            # specific state number we just looked up.
+            "retail_rates": {
+                "avg_cents_kwh": None,
+                "min_cents_kwh": None,
+                "max_cents_kwh": None,
+                "states_covered": 0,
+                "latest_period": "",
+                "range_hint_cents_kwh": "6-25",
+            },
+            "avg_rate_kwh": None,
+            "retail_rate_kwh": None,
+            "industrial_rate_kwh": None,
+            "message": "Sign in with a developer/pro/enterprise key to unlock state-specific retail rates.",
+        })
+        # Don't let CF cache this gated response and serve it to paid
+        # users. Vary lets us still cache per-key if we ever flip CF
+        # cache rules on; private+no-cache is the belt.
+        resp.headers["Cache-Control"] = "private, no-cache, max-age=0"
+        resp.headers["Vary"] = "Authorization, X-API-Key, Cookie"
+        return resp, 200
 
     # Phase EE++ (2026-05-12): eia_retail_rates.state stores FULL STATE
     # NAMES ("Georgia", "California"), not two-letter codes. Live probe
@@ -17637,7 +17703,14 @@ def cf_stub_energy_summary():
         }
         if by_sector:
             out["by_sector"] = by_sector
-        return jsonify(out)
+        # Echo the tier we unlocked for so the frontend can show a
+        # tiny "Enterprise data" badge if it wants.
+        out["caller_tier"] = _caller_tier
+        resp = jsonify(out)
+        # Vary on auth headers so CF cache keeps paid responses
+        # separate from anyone who hits the URL anonymously after.
+        resp.headers["Vary"] = "Authorization, X-API-Key, Cookie"
+        return resp
     except Exception as e:
         try:
             if conn: return_pg_connection(conn)
