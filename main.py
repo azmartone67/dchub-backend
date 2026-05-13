@@ -3307,7 +3307,24 @@ def _log_mcp_analytics(rpc_method, rpc_params, platform, client_name, duration_m
         pass
 
     # Auto-capture MCP tool calls as testimonials (v2 — dedup, better quotes, auto-approve)
-    if rpc_method == 'tools/call' and success:
+    #
+    # Phase FF (2026-05-13): added identity gate. Previously this path ran
+    # for ANY successful tools/call, including ones where client_name was
+    # the literal default string 'unknown' (set at line 4238 when the
+    # session never sent an MCP `initialize` with proper clientInfo).
+    # That produced 35 garbage rows like "unknown searched DC Hub for…"
+    # which broke the public testimonial wall. Now we require BOTH a
+    # real client_name AND a real platform — anonymous traffic still
+    # gets MCP service, it just doesn't get auto-promoted as social
+    # proof. Real agents (ChatGPT, Claude, Gemini, Copilot, etc.) send
+    # clientInfo on initialize so they pass this gate cleanly.
+    _is_anon_mcp = (
+        not client_name
+        or str(client_name).lower() in ('unknown', 'anonymous', 'ai agent via mcp', '')
+        or not platform
+        or str(platform).lower() in ('unknown', 'anonymous', '')
+    )
+    if rpc_method == 'tools/call' and success and not _is_anon_mcp:
         try:
             import hashlib as _hl
             tool_name = rpc_params.get('name', 'unknown') if rpc_params else 'unknown'
@@ -13293,7 +13310,18 @@ def ai_cite():
 
 @app.route('/api/v1/testimonials', methods=['GET'])
 def get_testimonials():  # v2 neon-backed
-    """Public endpoint -- returns approved AI agent testimonials"""
+    """Public endpoint -- returns approved AI agent testimonials.
+
+    Phase FF (2026-05-13): added quality filter. Before this, 35/50 (70%)
+    of returned rows were MCP search-log spam — quote was literally
+    'unknown searched DC Hub for data center facilities — searching for
+    "AWS Amazon data center", state: MI'. The auto-capture path at
+    main.py:3310 was inserting any tools/call as a "testimonial" even
+    when client_name == 'unknown'. That polluted the public wall and
+    made dchub look like its testimonial feed was bot-generated noise
+    (because it was). Filter rules below match the /live endpoint at
+    routes/dchub_media_hub.py:1060-1064 — keep them in sync.
+    """
     limit = request.args.get('limit', 50, type=int)
     category = request.args.get('category')
     featured_only = request.args.get('featured', '').lower() == 'true'
@@ -13302,7 +13330,17 @@ def get_testimonials():  # v2 neon-backed
         conn = get_pg_connection()
         c = conn.cursor()
 
-        query = "SELECT id, platform, agent_name, quote, context, query, category, featured, created_at FROM ai_testimonials WHERE approved = TRUE"
+        query = (
+            "SELECT id, platform, agent_name, quote, context, query, category, featured, created_at "
+            "FROM ai_testimonials "
+            "WHERE approved = TRUE "
+            # Phase FF quality gate — drop MCP search-log spam
+            "  AND COALESCE(agent_name, '') NOT IN ('', 'unknown', 'anonymous', 'AI Agent via MCP') "
+            "  AND COALESCE(platform, '')   NOT IN ('', 'unknown', 'anonymous') "
+            "  AND COALESCE(source, '')     NOT IN ('mcp-auto', 'mcp_auto') "
+            "  AND quote IS NOT NULL AND length(quote) > 30 "
+            "  AND quote NOT ILIKE '%% searched DC Hub for data center facilities%%' "
+        )
         params = []
 
         if featured_only:
