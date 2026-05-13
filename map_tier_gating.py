@@ -97,7 +97,18 @@ def _detect_caller_tier(decode_jwt_func=None):
     if auth_header.startswith('Bearer ') and not auth_header[7:].startswith('dchub_'):
         token = auth_header[7:].strip()
     if not token:
-        token = request.cookies.get('auth_token') or request.cookies.get('token')
+        # Phase QQ+13 (2026-05-13): also check `dchub_token` cookie.
+        # routes/auth_routes.py sets this cookie on login (lines 277,
+        # 597) and every OTHER backend tier-check reads it
+        # (api_tier_gating, paywall_middleware, main.py). This function
+        # was the lone holdout, so every logged-in web-UI user got
+        # treated as anonymous → markets/list returned 5 free markets,
+        # energy returned the gated paywall card, etc. User reported
+        # "Atlanta gated with Developer option, I am an enterprise
+        # user" — this is the fix.
+        token = (request.cookies.get('auth_token') or
+                 request.cookies.get('token') or
+                 request.cookies.get('dchub_token'))
 
     if token and decode_jwt_func:
         try:
