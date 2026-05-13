@@ -1331,6 +1331,22 @@ def fix_html_quality_scan():
         # Strip attribute VALUES (everything between =" and ") on remaining tags
         # so em-dashes in alt/title/data-* attributes don't trigger placeholder
         # detection. Captures the equals-quoted-string in tags.
+        # Phase FF+ (2026-05-12): strip JS-populated loading placeholders
+        # BEFORE the attribute-strip step, so we can match elements by id/class.
+        # These are intentional "—" cells that get filled by client-side fetch:
+        #   <div class="n" id="spine-*">—</div>     ← Phase FF live spine
+        #   <div class="n" id="stat-*">—</div>      ← Phase BB stat tiles
+        #   <span class="count" id="c-*">0</span>   ← filter chip counters
+        #   <b id="s-*">0</b>                       ← sidebar counters
+        # Without this, every Phase FF + Phase BB page false-positives on em-dash.
+        scan_body = _hp_re.sub(
+            r'<(?:div|span|b|h\d)\b[^>]*\bid\s*=\s*[\'"](?:spine-|stat-|c-|s-)[^\'"]*[\'"][^>]*>[\s\S]*?</(?:div|span|b|h\d)>',
+            '', scan_body, flags=_hp_re.I)
+        # Also strip elements whose class contains 'loading' / 'skeleton' /
+        # 'placeholder' / 'big-num' (DC Hub's known loading-state markers).
+        scan_body = _hp_re.sub(
+            r'<(?:div|span|b)\b[^>]*\bclass\s*=\s*[\'"][^\'"]*(?:loading|skeleton|placeholder|big-num)[^\'"]*[\'"][^>]*>[\s\S]*?</(?:div|span|b)>',
+            '', scan_body, flags=_hp_re.I)
         scan_body = _hp_re.sub(r'\s+[a-zA-Z_:][\w:.-]*\s*=\s*"[^"]*"', '', scan_body)
         scan_body = _hp_re.sub(r"\s+[a-zA-Z_:][\w:.-]*\s*=\s*'[^']*'", '', scan_body)
         page_hits = {}
