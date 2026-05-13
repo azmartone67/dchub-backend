@@ -15,30 +15,32 @@ except ImportError:
 iso_spp_bp = Blueprint("iso_spp", __name__, url_prefix="/api/v1/iso/spp")
 SOURCE_ID = "iso-spp-realtime"
 
-# Phase GG (2026-05-13): updated URL list. Previous URLs were
-# returning URLErr (the www.spp.org/Real-time-Market path 404s).
-# SPP rotates their public endpoints frequently; ordered most-likely-
-# working first.
-SPP_URLS = [
-    # SPP portal file browser — current real-time fuel mix downloads
-    "https://portal.spp.org/file-browser-api/download/rtbm-fuel-mix",
-    "https://portal.spp.org/file-browser-api/download/RTBM-FUEL-MIX-MORE-7-DAYS?path=/RTBM-FUEL-MIX-MORE-7-DAYS-LATEST.csv",
-    # Marketplace chart API (older but sometimes still mirrors)
-    "https://marketplace.spp.org/chart-api/fuel-mix-rtbm-genmix/asChart",
-    "https://marketplace.spp.org/chart-api/fuel-mix-rtbm-genmix/asChart?type=json",
-    "https://marketplace.spp.org/file-browser-api/download/rtbm-fuel-mix",
-    # EIA EBA fallback — works without auth for SPP fuel-type aggregates
-    "https://www.eia.gov/electricity/data/eia930/api/region/SWPP/fuel-type-data",
-    # Legacy paths (kept last so newer endpoints try first)
-    "https://www.spp.org/Real-time-Market",
-]
+# Phase QQ+9 (2026-05-13): probed SPP's public endpoints live. The old
+# portal.spp.org/file-browser-api/... paths now 404 (SPP rotated). The
+# new marketplace.spp.org/chart-api/gen-mix/asChart returns 200 with
+# real JSON ~4KB per probe. portal.spp.org PublicAPI paths all serve
+# the React SPA shell (609 bytes of HTML, not data).
+def _spp_urls():
+    import os
+    eia_key = os.environ.get("EIA_API_KEY", "")
+    return [
+        # Marketplace chart-api — CONFIRMED working 2026-05-13 (200, ~4KB JSON)
+        "https://marketplace.spp.org/chart-api/gen-mix/asChart",
+        "https://marketplace.spp.org/chart-api/gen-mix/asChart?type=json",
+        # Same chart-api with the fuel-mix-rtbm slug as alt
+        "https://marketplace.spp.org/chart-api/fuel-mix-rtbm-genmix/asChart",
+        # EIA v2 API with key (works when EIA_API_KEY is set on Railway)
+        f"https://api.eia.gov/v2/electricity/rto/fuel-type-data/data/?api_key={eia_key}&frequency=hourly&data[0]=value&facets[respondent][]=SWPP&sort[0][column]=period&sort[0][direction]=desc&length=12",
+    ]
+
+SPP_URLS = _spp_urls()  # kept for back-compat; call _spp_urls() directly to pick up env changes
 
 
 def run_extraction():
     started = time.time()
     summary = {"iso": "SPP", "metrics_extracted": 0, "rows_inserted": 0}
     try:
-        text, url = fetch_first_working(SPP_URLS, ua="dchub-iso-spp/1.0")
+        text, url = fetch_first_working(_spp_urls(), ua="dchub-iso-spp/1.0")
         summary["fetched_url"] = url
         summary["html_size"] = len(text)
         metrics = parse_json_numeric(text)

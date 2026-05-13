@@ -27,13 +27,28 @@ SOURCE_ID = "iso-tva-realtime"
 
 
 def _tva_urls():
+    """Phase QQ+9 (2026-05-13): refreshed URL list. Probed each candidate
+    live:
+      www.eia.gov/electricity/data/eia930/...  → 301/503 (legacy mirror dead)
+      www.tva.com/api/Power/UpdateInsightsData → 403 (now blocked)
+      www.tva.com/api/cdn/totalcurrentpower... → 403 (blocked)
+      api.eia.gov/v2/...?api_key=...            → 200 JSON when EIA_API_KEY env set
+
+    The api.eia.gov v2 endpoint is the canonical source for TVA fuel mix
+    via the EBA region 'TVA'. Requires a free API key from eia.gov; set
+    EIA_API_KEY env var on Railway. Without the key the endpoint returns
+    403 and we fall through, which is fine — the orchestrator just
+    reports 0 rows for TVA.
+    """
+    import os
+    eia_key = os.environ.get("EIA_API_KEY", "")
     return [
-        # EIA EBA — primary source for TVA hourly fuel mix (no auth)
+        # EIA v2 — primary (api_key required; otherwise 403 → next URL)
+        f"https://api.eia.gov/v2/electricity/rto/fuel-type-data/data/?api_key={eia_key}&frequency=hourly&data[0]=value&facets[respondent][]=TVA&sort[0][column]=period&sort[0][direction]=desc&length=12",
+        # EIA v2 region-data variant (different aggregation)
+        f"https://api.eia.gov/v2/electricity/rto/region-data/data/?api_key={eia_key}&frequency=hourly&data[0]=value&facets[respondent][]=TVA&sort[0][column]=period&sort[0][direction]=desc&length=24",
+        # Legacy EIA mirror — keeps returning 301/503 in 2026 but harmless to try last
         "https://www.eia.gov/electricity/data/eia930/api/region/TVA/fuel-type-data",
-        # Alt EIA v2 API path
-        "https://api.eia.gov/v2/electricity/rto/fuel-type-data/data/?frequency=hourly&data[0]=value&facets[respondent][]=TVA&sort[0][column]=period&sort[0][direction]=desc&offset=0&length=12",
-        # TVA OASIS / public reports (sometimes mirror EIA)
-        "https://www.tva.com/api/Power/UpdateInsightsData",
     ]
 
 

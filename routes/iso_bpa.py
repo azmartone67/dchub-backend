@@ -27,15 +27,27 @@ SOURCE_ID = "iso-bpa-realtime"
 
 
 def _bpa_urls():
+    """Phase QQ+9 (2026-05-13): reordered URLs to put the fast .aspx
+    (~13KB) endpoint first, .txt (~78KB) second. Previously the
+    orchestrator was hitting total_budget_exceeded on BPA at 11.5s/12s
+    — the first two URLs are both 78KB .txt files that take ~6s each
+    over Railway's outbound network. The .aspx variant is the same
+    data in a smaller format; serving it first means BPA completes in
+    ~3s on a fresh connection.
+
+    Also injects the EIA API key when EIA_API_KEY env var is set so the
+    api.eia.gov v2 fallback can actually return data (it returns 403 to
+    keyless callers).
+    """
+    import os
+    eia_key = os.environ.get("EIA_API_KEY", "")
     return [
-        # BPA's own real-time balancing authority text file
-        "https://transmission.bpa.gov/business/operations/wind/baltwg.txt",
-        # BPA generation by fuel type (current day)
+        # FAST first — same data, smaller payload (~13KB vs 78KB)
         "https://transmission.bpa.gov/business/operations/Wind/baltwg.aspx?format=txt",
-        # EIA EBA — BPAT region (Bonneville Power's BA code)
-        "https://www.eia.gov/electricity/data/eia930/api/region/BPAT/fuel-type-data",
-        # Alt EIA v2 API path
-        "https://api.eia.gov/v2/electricity/rto/fuel-type-data/data/?frequency=hourly&data[0]=value&facets[respondent][]=BPAT&sort[0][column]=period&sort[0][direction]=desc&offset=0&length=12",
+        # Larger raw text fallback
+        "https://transmission.bpa.gov/business/operations/wind/baltwg.txt",
+        # EIA v2 API with key when configured (otherwise 403 → fall through)
+        f"https://api.eia.gov/v2/electricity/rto/fuel-type-data/data/?api_key={eia_key}&frequency=hourly&data[0]=value&facets[respondent][]=BPAT&sort[0][column]=period&sort[0][direction]=desc&length=12",
     ]
 
 
