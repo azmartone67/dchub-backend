@@ -862,6 +862,144 @@ def auto_generate():
     ), 201
 
 
+@marketing_bp.post("/api/v1/marketing/publish-now")
+@_require_admin
+def publish_now():
+    """Phase FF+6 (2026-05-13): one-shot verification endpoint.
+
+    Useful when tokens (LinkedIn / X) just got set on Railway and we
+    want to confirm publishing works without waiting 6h for the
+    auto-publisher loop to tick. Picks the most-recent auto_press_release,
+    backfills its social_media_posts rows if not already present, and
+    immediately calls the LinkedIn + X publishers.
+
+    Returns one block per channel with success/error. No automatic
+    retry — the auto-publisher handles long-term reliability; this is
+    purely "did the credentials work."
+
+    Query params:
+        slug   — override which press release to publish (defaults
+                  to most-recent auto-press)
+        only   — 'linkedin' or 'twitter' to test a single channel
+    """
+    import os as _os
+    only = (request.args.get("only") or "").strip().lower()
+
+    c = _conn()
+    if c is None:
+        return jsonify(ok=False, error="no_database"), 503
+    try:
+        with c.cursor() as cur:
+            slug = request.args.get("slug")
+            if slug:
+                cur.execute("""
+                    SELECT id, title, subheadline, body, meta_description, slug
+                    FROM press_releases WHERE slug = %s LIMIT 1
+                """, (slug,))
+            else:
+                cur.execute("""
+                    SELECT pr.id, pr.title, pr.subheadline, pr.body,
+                           pr.meta_description, pr.slug
+                    FROM press_releases pr
+                    JOIN auto_press_releases apr ON apr.press_release_id = pr.id
+                    ORDER BY apr.generated_for DESC, pr.id DESC
+                    LIMIT 1
+                """)
+            row = cur.fetchone()
+            if not row:
+                return jsonify(ok=False, error="no_press_release_found"), 404
+            press_id, title, sub, body, meta_desc, real_slug = row
+            rel = {
+                "title": title, "subheadline": sub, "body": body or "",
+                "meta_description": meta_desc or sub or title,
+                "slug": real_slug,
+            }
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    # Backfill distribution rows if missing — no-ops if already there
+    # via the UNIQUE INDEX on (press_release_id, platform).
+    try:
+        _queue_distribution_posts(rel, press_id,
+                                  date.today().isoformat())
+    except Exception as e:
+        return jsonify(ok=False, error=f"backfill_failed: {e}"), 500
+
+    # Fetch the queued rows back so we can call the channel-specific
+    # publishers with the actual stored content.
+    c = _conn()
+    posts: dict = {}
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                SELECT platform, content, id
+                FROM social_media_posts
+                WHERE press_release_id = %s
+                  AND platform IN ('linkedin', 'twitter')
+            """, (press_id,))
+            for plat, content, post_id in (cur.fetchall() or []):
+                posts[plat] = {"content": content, "post_id": post_id}
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    out = {"slug": real_slug, "press_release_id": press_id, "results": {}}
+
+    # LinkedIn
+    if (not only or only == "linkedin") and "linkedin" in posts:
+        li_token = _os.environ.get("LINKEDIN_ACCESS_TOKEN", "")
+        if not li_token:
+            out["results"]["linkedin"] = {"ok": False,
+                                          "error": "LINKEDIN_ACCESS_TOKEN not set"}
+        else:
+            try:
+                from content_publisher import _post_to_linkedin
+                ok, result = _post_to_linkedin(posts["linkedin"]["content"],
+                                                li_token)
+                out["results"]["linkedin"] = {"ok": ok, "result": result}
+                if ok:
+                    _mark_published(posts["linkedin"]["post_id"], "linkedin")
+            except Exception as e:
+                out["results"]["linkedin"] = {"ok": False,
+                                              "error": f"exception: {e}"}
+
+    # Twitter / X
+    if (not only or only == "twitter") and "twitter" in posts:
+        try:
+            from content_publisher import _post_to_twitter
+            ok, result = _post_to_twitter(posts["twitter"]["content"])
+            out["results"]["twitter"] = {"ok": ok, "result": result}
+            if ok:
+                _mark_published(posts["twitter"]["post_id"], "twitter")
+        except Exception as e:
+            out["results"]["twitter"] = {"ok": False,
+                                          "error": f"exception: {e}"}
+
+    return jsonify(ok=True, **out), 200
+
+
+def _mark_published(post_id: int, platform: str) -> None:
+    """Update social_media_posts.status after a successful publish.
+    Mirrors the update content_publisher's auto-publisher does so the
+    next 6h tick doesn't re-publish the same row."""
+    c = _conn()
+    if c is None: return
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                UPDATE social_media_posts
+                SET status = %s, published_at = NOW(), publish_platform = %s
+                WHERE id = %s
+            """, ("published", platform, post_id))
+        c.commit()
+    except Exception as e:
+        print(f"[publish-now] mark_published failed: {e}", file=sys.stderr)
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
 @marketing_bp.get("/api/v1/marketing/pulse")
 def marketing_pulse():
     """Public marketing-pulse metrics: recent auto-press, engagement,
