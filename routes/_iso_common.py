@@ -155,6 +155,101 @@ def health_for_iso(iso, source_id):
     }
 
 
+def scrub_url(url):
+    """Phase QQ+10 (2026-05-13): redact known-secret query params before
+    returning a URL to a client.
+
+    Discovered when shipping QQ+9 — EIA_API_KEY was being embedded in
+    api.eia.gov/v2 URLs and then echoed back in /extract responses
+    (`fetched_url` field). Any caller could read the key from a public
+    endpoint. We now scrub before storing.
+
+    Redacted params: api_key, key, token, password, auth (and
+    username/password embedded as userinfo in the netloc, e.g.
+    https://user:pass@host/...).
+    """
+    if not url or not isinstance(url, str):
+        return url
+    try:
+        from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+        parts = urlsplit(url)
+        # Scrub userinfo (https://user:pass@host/...)
+        netloc = parts.netloc
+        if "@" in netloc:
+            netloc = "***:***@" + netloc.split("@", 1)[1]
+        # Scrub secret query params
+        SECRET_KEYS = {"api_key", "apikey", "key", "token", "auth",
+                       "password", "secret", "admin_key"}
+        qs = parse_qsl(parts.query, keep_blank_values=True)
+        scrubbed = [(k, ("***" if k.lower() in SECRET_KEYS else v))
+                    for k, v in qs]
+        new_query = urlencode(scrubbed, doseq=True)
+        return urlunsplit((parts.scheme, netloc, parts.path, new_query, parts.fragment))
+    except Exception:
+        # Failsafe: if URL parsing fails, return host-only so we never
+        # leak the full string.
+        try:
+            return url.split("?", 1)[0]
+        except Exception:
+            return "(scrubbed)"
+
+
+def parse_eia_v2_fuel_mix(json_text, prefix="fuel_"):
+    """Phase QQ+10 (2026-05-13): parse api.eia.gov/v2/electricity/rto/
+    fuel-type-data + region-data responses.
+
+    EIA v2 shape:
+      {
+        "response": {
+          "data": [
+            {"period": "2026-05-13T08", "respondent": "TVA",
+             "fueltype": "NG", "value": 12345.6, ...},
+            {"period": "2026-05-13T08", "respondent": "TVA",
+             "fueltype": "NUC", "value": 6789.1, ...},
+            ...
+          ]
+        }
+      }
+
+    region-data variant uses "type" instead of "fueltype" (NG, D for
+    demand, etc). We accept either field.
+
+    Returns a metrics dict keyed by `{prefix}{fueltype.lower()}` with the
+    LATEST-period value per fuel type. Data is sorted desc by period
+    upstream, so we take the first-seen value per fuel type.
+    """
+    try:
+        d = json.loads(json_text)
+    except (TypeError, ValueError):
+        return {}
+    rows = (d.get("response") or {}).get("data") or []
+    if not rows:
+        return {}
+    metrics = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        fuel = (row.get("fueltype") or row.get("type") or
+                row.get("type-name") or "").strip()
+        if not fuel:
+            continue
+        # First-seen wins (rows arrive sorted desc by period)
+        key = f"{prefix}{fuel.lower().replace(' ', '_')}"
+        if key in metrics:
+            continue
+        val = row.get("value")
+        if val is None:
+            continue
+        try:
+            num = float(val)
+        except (TypeError, ValueError):
+            continue
+        if num == 0:
+            continue
+        metrics[key] = {"value": num, "unit": row.get("value-units") or "MW"}
+    return metrics
+
+
 def parse_csv_numeric_columns(csv_text, prefix="", skip_cols=None):
     """Take last row of CSV, emit metrics for any numeric column.
 

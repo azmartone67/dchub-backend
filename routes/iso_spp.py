@@ -3,6 +3,7 @@ import time
 from flask import Blueprint, jsonify
 from routes._iso_common import (
     fetch_first_working, parse_json_numeric, parse_csv_numeric_columns,
+    parse_eia_v2_fuel_mix, scrub_url,
     persist_metrics, latest_for_iso, health_for_iso,
 )
 
@@ -41,9 +42,15 @@ def run_extraction():
     summary = {"iso": "SPP", "metrics_extracted": 0, "rows_inserted": 0}
     try:
         text, url = fetch_first_working(_spp_urls(), ua="dchub-iso-spp/1.0")
-        summary["fetched_url"] = url
+        # Phase QQ+10: scrub api_key from echoed URL
+        summary["fetched_url"] = scrub_url(url)
         summary["html_size"] = len(text)
-        metrics = parse_json_numeric(text)
+        # Phase QQ+10: EIA v2 parser when URL is api.eia.gov v2
+        metrics = {}
+        if "api.eia.gov/v2/" in url:
+            metrics = parse_eia_v2_fuel_mix(text, prefix="fuel_")
+        if not metrics:
+            metrics = parse_json_numeric(text)
         if not metrics:
             metrics = parse_csv_numeric_columns(text, prefix="fuel_")
         summary["metrics_extracted"] = len(metrics)
