@@ -26,7 +26,7 @@ def conn():
         c.close()
 
 
-def fetch_first_working(urls, timeout=20, ua="dchub-iso/1.0"):
+def fetch_first_working(urls, timeout=6, ua="dchub-iso/1.0", total_budget=12):
     """Try URLs in order. Returns (text, working_url) or raises.
 
     Phase GG+ (2026-05-13): added HTML-shell detection. Some ISOs
@@ -45,10 +45,31 @@ def fetch_first_working(urls, timeout=20, ua="dchub-iso/1.0"):
     `.csv`/`.json` or includes `format=csv` / `download=true` —
     explicit "give me data" signals. Otherwise we accept the response
     and let the parser try.
+
+    Phase QQ+8 (2026-05-13): TWO timeout fixes to stop 502s on the new
+    ISOs (PJM/IESO/AESO/TVA/BPA), which all 502'd at exactly 15s.
+      1. Per-URL `timeout` dropped 20s → 6s. With 4 URLs per ISO the
+         old worst-case was 80s; Railway gunicorn killed any request
+         over 15s with a 502.
+      2. New `total_budget` (default 12s) — cumulative elapsed time
+         across all URL attempts. Even if every URL is slow, we exit
+         before the orchestrator per-future budget (12s) and Railway's
+         edge (~15s). Better to fail fast (and let the orchestrator
+         move on) than to 502 the whole endpoint.
     """
-    import re as _re
+    import re as _re, time as _time
     last = None
-    for url in urls:
+    started = _time.time()
+    for i, url in enumerate(urls):
+        # Phase QQ+8: bail if cumulative elapsed has consumed the budget
+        elapsed = _time.time() - started
+        remaining = total_budget - elapsed
+        if remaining <= 0.5:  # less than 500ms left — not worth trying
+            raise RuntimeError(
+                f"total_budget_exceeded: {elapsed:.1f}s/{total_budget}s "
+                f"after {i} of {len(urls)} URLs; last_error={last}")
+        # Cap per-URL timeout by remaining budget so we never overshoot
+        per_url_timeout = min(timeout, max(1.0, remaining - 0.5))
         try:
             # Set Accept-Encoding: identity so we get raw bytes (no gzip)
             req = urllib.request.Request(url, headers={
@@ -56,7 +77,7 @@ def fetch_first_working(urls, timeout=20, ua="dchub-iso/1.0"):
                 "Accept": "application/json, text/csv, */*;q=0.5",
                 "Accept-Encoding": "identity",
             })
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with urllib.request.urlopen(req, timeout=per_url_timeout) as resp:
                 if 200 <= resp.status < 300:
                     text = resp.read().decode("utf-8", errors="replace")
                     # Heuristic: if the URL signaled "give me data" but
@@ -75,7 +96,7 @@ def fetch_first_working(urls, timeout=20, ua="dchub-iso/1.0"):
         except urllib.error.HTTPError as e:
             last = f"{url}: HTTP {e.code}"
         except (urllib.error.URLError, OSError) as e:
-            last = f"{url}: {type(e).__name__}: {e}"
+            last = f"{url}: {type(e).__name__}: {str(e)[:80]}"
     raise RuntimeError(f"all URLs failed; last={last}")
 
 
