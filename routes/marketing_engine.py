@@ -625,11 +625,22 @@ def _queue_distribution_posts(rel: dict, press_id: int, today: str) -> None:
             except Exception:
                 c.rollback()
             try:
+                # Phase FF+8 (2026-05-13): plain (non-partial) UNIQUE index.
+                # Was partial with `WHERE press_release_id IS NOT NULL` —
+                # but Postgres won't match `ON CONFLICT (a,b) DO NOTHING`
+                # against a partial index unless the INSERT repeats the
+                # same WHERE predicate. That broke publish-now with
+                # "no unique or exclusion constraint matching the ON
+                # CONFLICT specification". Plain index is fine here:
+                # NULL != NULL by default, so old rows with NULL
+                # press_release_id don't conflict with each other, and
+                # the new distribution rows always have a non-NULL
+                # press_release_id so the unique-per-channel guarantee
+                # we actually want still holds.
                 cur.execute("""
                     CREATE UNIQUE INDEX IF NOT EXISTS
                         social_media_posts_press_release_platform_idx
-                    ON social_media_posts(press_release_id, platform)
-                    WHERE press_release_id IS NOT NULL;
+                    ON social_media_posts(press_release_id, platform);
                 """)
             except Exception:
                 c.rollback()
