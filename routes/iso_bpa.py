@@ -28,27 +28,26 @@ SOURCE_ID = "iso-bpa-realtime"
 
 
 def _bpa_urls():
-    """Phase QQ+9 (2026-05-13): reordered URLs to put the fast .aspx
-    (~13KB) endpoint first, .txt (~78KB) second. Previously the
-    orchestrator was hitting total_budget_exceeded on BPA at 11.5s/12s
-    — the first two URLs are both 78KB .txt files that take ~6s each
-    over Railway's outbound network. The .aspx variant is the same
-    data in a smaller format; serving it first means BPA completes in
-    ~3s on a fresh connection.
+    """Phase QQ+11 (2026-05-13): reordered AGAIN. Live orchestrator
+    probe (post-QQ+9) shows transmission.bpa.gov takes ~6s/URL from
+    Railway's us-west2 region — even the small .aspx variant. Two
+    consecutive BPA URLs eat the 12s budget. Meanwhile api.eia.gov v2
+    responds in ~800ms (verified via TVA + ISONE on the same Railway
+    region). Now that EIA_API_KEY is set in env, leading with EIA v2
+    gives BPA the same first-attempt success TVA/ISONE get.
 
-    Also injects the EIA API key when EIA_API_KEY env var is set so the
-    api.eia.gov v2 fallback can actually return data (it returns 403 to
-    keyless callers).
+    Fallbacks remain transmission.bpa.gov in case EIA upstream goes
+    down — but the primary path is now EIA.
     """
     import os
     eia_key = os.environ.get("EIA_API_KEY", "")
     return [
-        # FAST first — same data, smaller payload (~13KB vs 78KB)
-        "https://transmission.bpa.gov/business/operations/Wind/baltwg.aspx?format=txt",
-        # Larger raw text fallback
-        "https://transmission.bpa.gov/business/operations/wind/baltwg.txt",
-        # EIA v2 API with key when configured (otherwise 403 → fall through)
+        # PRIMARY: api.eia.gov v2 BPAT region (fast from Railway, ~800ms)
         f"https://api.eia.gov/v2/electricity/rto/fuel-type-data/data/?api_key={eia_key}&frequency=hourly&data[0]=value&facets[respondent][]=BPAT&sort[0][column]=period&sort[0][direction]=desc&length=12",
+        # Fallback 1: small .aspx variant (~13KB)
+        "https://transmission.bpa.gov/business/operations/Wind/baltwg.aspx?format=txt",
+        # Fallback 2: larger raw text
+        "https://transmission.bpa.gov/business/operations/wind/baltwg.txt",
     ]
 
 
