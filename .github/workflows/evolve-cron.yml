@@ -68,7 +68,7 @@ jobs:
           response=$(curl -sS -X POST \
             -H "X-Admin-Key: $ADMIN_KEY" \
             --max-time 60 \
-            "https://dchub.cloud/api/v1/brain/learn" || echo '{"ok":false,"error":"curl_fail"}')
+            "https://dchub-backend-production.up.railway.app/api/v1/brain/learn" || echo '{"ok":false,"error":"curl_fail"}')
           echo "$response" | head -c 1500
           echo
           # Summarize for the Actions log
@@ -99,7 +99,7 @@ jobs:
           response=$(curl -sS -X POST \
             -H "X-Admin-Key: $ADMIN_KEY" \
             --max-time 120 \
-            "https://dchub.cloud/api/v1/outreach/cap-exceeded/run?send=true" || echo '{"mode":"error"}')
+            "https://dchub-backend-production.up.railway.app/api/v1/outreach/cap-exceeded/run?send=true" || echo '{"mode":"error"}')
           echo "$response" | head -c 1500
           echo
           echo "$response" | python3 -c "
@@ -167,7 +167,7 @@ jobs:
           response=$(curl -sS --max-time 60 -X POST \
             -H "X-Admin-Key: $ADMIN_KEY" \
             -H "Content-Type: application/json" \
-            "https://dchub.cloud/api/v1/marketing/auto-generate" \
+            "https://dchub-backend-production.up.railway.app/api/v1/marketing/auto-generate" \
             || echo '{"ok":false,"error":"curl_fail"}')
           echo "$response" | head -c 2000
           echo
@@ -203,7 +203,7 @@ jobs:
           fi
           response=$(curl -sS --max-time 30 -X POST \
             -H "X-Admin-Key: $ADMIN_KEY" \
-            "https://dchub.cloud/api/v1/marketing/linkedin/send-daily-email" \
+            "https://dchub-backend-production.up.railway.app/api/v1/marketing/linkedin/send-daily-email" \
             || echo '{"ok":false,"error":"curl_fail"}')
           echo "$response" | head -c 1500
           echo
@@ -236,7 +236,7 @@ jobs:
           fi
           response=$(curl -sS --max-time 60 -X POST \
             -H "X-Admin-Key: $ADMIN_KEY" \
-            "https://dchub.cloud/api/v1/testimonials/ingest" \
+            "https://dchub-backend-production.up.railway.app/api/v1/testimonials/ingest" \
             || echo '{"ok":false,"error":"curl_fail"}')
           echo "$response" | head -c 2000
           echo
@@ -267,7 +267,7 @@ jobs:
           fi
           response=$(curl -sS --max-time 30 -X POST \
             -H "X-Admin-Key: $ADMIN_KEY" \
-            "https://dchub.cloud/api/v1/outreach/agents/email-digest" \
+            "https://dchub-backend-production.up.railway.app/api/v1/outreach/agents/email-digest" \
             || echo '{"ok":false,"error":"curl_fail"}')
           echo "$response" | head -c 1500
           echo
