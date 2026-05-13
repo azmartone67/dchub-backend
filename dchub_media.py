@@ -365,10 +365,19 @@ def publish_daily_brief(payload: dict, text: str) -> dict:
     })
 
 
-def maybe_publish_press_release(payload: dict, threshold: float = 15.0) -> list[dict]:
+def maybe_publish_press_release(payload: dict, threshold: float = 3.0) -> list[dict]:
     """If any DCPI score moved >threshold WoW, auto-publish a press release.
 
     Reads the dcpi movers data and emits one press release per significant mover.
+
+    Phase LL (2026-05-13): threshold dropped from 15.0 → 3.0. DCPI excess-
+    power scores are bounded roughly [-80, +80], and weekly shifts of 15+
+    points are extremely rare (1-2/year). That meant this gate effectively
+    never fired — user reported "1 auto-press in 30 days" when the cron is
+    supposed to fire daily. A 3-point threshold catches 5-10 real movers
+    per week (still meaningful, rare enough to avoid noise) and gives the
+    /dc-hub-media feed concrete daily events. Callers wanting the old
+    rarely-fire behaviour can still pass threshold=15.0 explicitly.
     """
     import os
     results = []
