@@ -611,6 +611,122 @@ def mcp_funnel():
     return jsonify(out), 200
 
 
+# ── GET /api/v1/mcp/timeseries — Hourly traffic series for the dashboard ──
+#
+# Phase JJ (2026-05-13): the existing /funnel returns rolling 7d/30d
+# aggregates which wobble ±N every refresh thanks to rolling-window
+# math, making it impossible to tell at a glance whether MCP traffic
+# is actually growing or declining. This endpoint returns proper
+# hourly buckets so the dashboard can show a trend line.
+
+@mcp_bp.get("/api/v1/mcp/timeseries")
+def mcp_timeseries():
+    """Hourly MCP traffic + gate-fire series for the last N hours.
+
+    Query params:
+      hours          int, default 168 (7d), max 720 (30d)
+      bucket         'hour' (default) | 'day'
+
+    Response shape:
+      {
+        "bucket": "hour" | "day",
+        "from_iso": "2026-05-06T00:00:00Z",
+        "to_iso":   "2026-05-13T00:00:00Z",
+        "series": [
+          {"ts": "...", "tool_calls": N, "upgrade_signals": M, "gate_fires": M},
+          ...
+        ],
+        "totals":  {"tool_calls": ..., "upgrade_signals": ..., "conversion_rate_pct": ...}
+      }
+
+    Public-readable like /funnel — no admin key required. Aggregates only,
+    no PII. Heavily indexed by (created_at) so the query is fast.
+    """
+    try:
+        hours = max(1, min(int(request.args.get("hours", 168)), 720))
+    except (TypeError, ValueError):
+        hours = 168
+    bucket = (request.args.get("bucket") or "hour").lower()
+    if bucket not in ("hour", "day"):
+        bucket = "hour"
+
+    out: dict = {"bucket": bucket, "hours": hours}
+    try:
+        with _pool.connection() as conn, conn.cursor() as cur:
+            # Window bounds — return as ISO so frontends can use Date.parse.
+            cur.execute("SELECT NOW() - (%s || ' hours')::INTERVAL, NOW()", (hours,))
+            from_ts, to_ts = cur.fetchone()
+            out["from_iso"] = from_ts.isoformat()
+            out["to_iso"] = to_ts.isoformat()
+
+            # Bucket function — date_trunc gives us aligned bins regardless
+            # of when the call landed within the hour.
+            trunc = f"date_trunc('{bucket}', created_at)"
+
+            # Tool calls per bucket
+            cur.execute(f"""
+                SELECT {trunc} AS bin, COUNT(*) AS n
+                FROM mcp_tool_calls
+                WHERE created_at >= NOW() - (%s || ' hours')::INTERVAL
+                GROUP BY bin ORDER BY bin
+            """, (hours,))
+            calls_by_bin = {r[0].isoformat(): int(r[1]) for r in cur.fetchall()}
+
+            # Upgrade signals per bucket (= gate fires that emitted an
+            # upgrade prompt). This is the key conversion-funnel input.
+            cur.execute(f"""
+                SELECT {trunc} AS bin, COUNT(*) AS n
+                FROM mcp_upgrade_signals
+                WHERE created_at >= NOW() - (%s || ' hours')::INTERVAL
+                GROUP BY bin ORDER BY bin
+            """, (hours,))
+            signals_by_bin = {r[0].isoformat(): int(r[1]) for r in cur.fetchall()}
+
+            # Conversions per bucket (paying customers; 30d-style)
+            cur.execute(f"""
+                SELECT {trunc} AS bin, COUNT(*) AS n
+                FROM mcp_conversions
+                WHERE created_at >= NOW() - (%s || ' hours')::INTERVAL
+                GROUP BY bin ORDER BY bin
+            """, (hours,))
+            conv_by_bin = {r[0].isoformat(): int(r[1]) for r in cur.fetchall()}
+
+            # Merge into a single ordered series. Use the union of bin
+            # keys so a quiet hour still shows up as a zero row (avoids
+            # confusing "gaps" in the chart).
+            all_bins = sorted(set(calls_by_bin) | set(signals_by_bin) | set(conv_by_bin))
+            series = [
+                {
+                    "ts": b,
+                    "tool_calls":      calls_by_bin.get(b, 0),
+                    "upgrade_signals": signals_by_bin.get(b, 0),
+                    "conversions":     conv_by_bin.get(b, 0),
+                }
+                for b in all_bins
+            ]
+            out["series"] = series
+
+            # Totals + the conversion rate the dashboard actually cares
+            # about — signals are the right denominator, not raw calls,
+            # because un-gated free-tier calls can't possibly convert.
+            total_calls = sum(calls_by_bin.values())
+            total_signals = sum(signals_by_bin.values())
+            total_conv = sum(conv_by_bin.values())
+            out["totals"] = {
+                "tool_calls":      total_calls,
+                "upgrade_signals": total_signals,
+                "conversions":     total_conv,
+                "conversion_rate_pct": (
+                    round((total_conv / total_signals) * 100.0, 3)
+                    if total_signals > 0 else None
+                ),
+            }
+    except Exception as e:
+        out["error"] = str(e)
+        return jsonify(out), 500
+    return jsonify(out), 200
+
+
 # ── GET /api/v1/mcp/dashboard — Serve the dashboard HTML through Flask ────
 
 @mcp_bp.get("/api/v1/mcp/dashboard")

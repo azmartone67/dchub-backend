@@ -313,10 +313,78 @@ _rl = _RateLimiter()
 
 PRICING_URL = "https://dchub.cloud/pricing"
 
-def _cta_gated(tool: str, current: Tier, required: Tier) -> str:
-    return (f"🔒 '{tool}' requires a {TIER_NAME[required]} license "
-            f"(you're on {TIER_NAME[current]}). "
-            f"Upgrade → {PRICING_URL}?utm_source=mcp&utm_tool={tool}")
+# Per-tier monthly pricing (for inclusion in CTAs — gives MCP clients
+# concrete numbers to relay to the human instead of just "upgrade").
+TIER_PRICE = {
+    Tier.DEVELOPER:  "$49/mo",
+    Tier.PRO:        "$199/mo",
+    Tier.ENTERPRISE: "Contact sales",
+}
+
+# Per-tool value teasers. Each entry: (one-line "what you'd unlock", optional
+# data-shape hint). The CTA includes this so the MCP client can relay
+# something concrete — "Atlanta industrial rates ~7-12¢/kWh, paywalled" is
+# 100x more compelling than "tool errored, upgrade needed".
+#
+# Phase JJ (2026-05-13): added to lift conversion from 0.03% gate→pay. The
+# previous _cta_gated text said "requires a Developer license" — pure jargon
+# that AI clients couldn't turn into actionable text for the human user.
+TOOL_TEASER = {
+    "get_energy_prices":      "US retail rates span 6–25¢/kWh; this returns the exact ¢/kWh for your state with industrial/commercial/residential breakdown.",
+    "get_market_intel":       "supply/demand MW, pricing per kW/mo, vacancy %, and absorption for 60+ global DC markets.",
+    "get_grid_data":          "live ISO demand, peak, reserve margin, fuel mix, and interconnection queue for ERCOT/PJM/CAISO/etc.",
+    "get_grid_intelligence":  "the same grid telemetry plus DC-specific scoring: interconnection-queue MW, headroom %, and renewable mix.",
+    "get_grid_headroom":      "available transmission/substation headroom in MW around a lat/lon, with 50km radius constraint scoring.",
+    "get_renewable_energy":   "solar + wind capacity layers with project-level MW, COD, and PPA prices.",
+    "get_water_risk":         "WRI Aqueduct water-stress + drought + flood risk scores for any lat/lon, with utility-specific water rate.",
+    "get_tax_incentives":     "state-level sales-tax abatements, property-tax exemptions, and incentive program ROI estimates.",
+    "get_pipeline":           "540+ active DC projects globally — operator, capacity, status, ETA, preleased %.",
+    "get_infrastructure":     "substations, transmission lines, gas pipelines, and power plants within 50km of any site.",
+    "get_fiber_intel":        "3,200+ long-haul routes — carriers, latency, lit/dark availability, IX presence.",
+    "list_transactions":      "$324B+ DC M&A history — buyer, seller, MW, $/kW, date, region.",
+    "analyze_site":           "composite site-score for any lat/lon: power, fiber, water, tax, climate, latency to top markets.",
+    "compare_sites":          "side-by-side scoring across up to 5 candidate sites with weighted rankings.",
+    "get_colocation_score":   "DCPI sub-score breakdown for any market — what's driving the rank.",
+    "get_geothermal_potential":"DOE Play Fairway resource scores + estimated MWe for greenfield geothermal.",
+    "get_microgrid_viability":"on-site solar/storage/CHP feasibility with NPV across utility-rate scenarios.",
+    "get_intelligence_index": "DCPI index for 280+ markets — score, rank, weekly delta, top movers.",
+    "get_backup_status":      "live backup/disaster-recovery telemetry for tracked facilities.",
+}
+
+
+def _cta_gated(tool: str, current: Tier, required: Tier, args: Optional[Dict] = None) -> str:
+    """Value-first upgrade message. Designed so MCP clients (Claude
+    Desktop, Cursor, etc.) can relay a useful, conversion-friendly
+    string to the human — not jargon like "license required".
+
+    Phase JJ (2026-05-13): rewritten. Old text was 35 words of error-
+    code framing; new text leads with the *specific value* and the
+    *concrete price* so the human sees the deal, not the wall.
+    """
+    teaser = TOOL_TEASER.get(tool, f"premium intelligence from `{tool}`")
+    price = TIER_PRICE.get(required, "see pricing")
+
+    # Inline arg-context when we got it — turns "energy prices" into
+    # "energy prices for GA" which the AI client can repeat verbatim.
+    ctx = ""
+    if args:
+        # Only echo small, safe scalar args. No dumping nested payloads.
+        bits = []
+        for k in ("state", "iso", "market", "country", "city"):
+            v = args.get(k)
+            if v and isinstance(v, (str, int)) and len(str(v)) <= 32:
+                bits.append(f"{k}={v}")
+        if bits:
+            ctx = f" (you asked for {', '.join(bits)})"
+
+    url = (f"{PRICING_URL}?utm_source=mcp&utm_tool={tool}"
+           f"{('&utm_term=' + str(args.get('state') or args.get('iso') or args.get('market'))) if args else ''}")
+
+    return (f"🔓 **{tool}**{ctx} returns: {teaser} "
+            f"Available on {TIER_NAME[required]} ({price}) and above — "
+            f"you're currently on {TIER_NAME[current]}. "
+            f"Start here: {url}")
+
 
 def _cta_truncated(shown: int, total: int) -> str:
     return (f"📊 Showing {shown} of {total} results (Free tier). "
@@ -331,13 +399,24 @@ def _cta_redacted(tool: str) -> str:
 # MAIN API: _gate() and _finalize()
 # ═══════════════════════════════════════════════════════════════
 
-def _gate(tool_name: str, api_key: Optional[str] = None) -> Optional[str]:
+def _gate(tool_name: str, api_key: Optional[str] = None,
+          args: Optional[Dict] = None) -> Optional[str]:
     """
     Call at the TOP of every @mcp.tool handler.
     Returns JSON error string if blocked, None if access granted.
 
+    Phase JJ (2026-05-13): now accepts the tool's call args so the
+    blocked-response can echo "state=GA" / "market=atlanta" / "iso=PJM"
+    back to the caller — gives MCP clients (Claude Desktop, Cursor)
+    something concrete to relay to the human, dramatically lifting
+    the gate→upgrade conversion rate.
+
+    Tool handlers can opt-in by passing locals() or a kwargs dict;
+    calling without args still works (backward compatible).
+
     Usage:
-        block = _gate("list_transactions", api_key)
+        block = _gate("list_transactions", api_key)            # legacy
+        block = _gate("get_energy_prices", api_key, locals())   # better
         if block: return block
     """
     tier = resolve_tier(api_key)
@@ -345,12 +424,21 @@ def _gate(tool_name: str, api_key: Optional[str] = None) -> Optional[str]:
 
     # Tier check
     if tier < required:
+        teaser = TOOL_TEASER.get(tool_name)
+        price = TIER_PRICE.get(required, "")
         return json.dumps({
             "success": False,
             "error": "upgrade_required",
-            "message": _cta_gated(tool_name, tier, required),
+            "message": _cta_gated(tool_name, tier, required, args=args),
             "current_tier": TIER_NAME[tier],
             "required_tier": TIER_NAME[required],
+            "required_tier_price": price,
+            # Machine-readable teaser so MCP clients can render a card
+            # instead of just dumping the message. Surfaced separately
+            # from the message so structured renderers don't have to
+            # parse natural language.
+            "teaser": teaser,
+            "echo_args": _safe_echo_args(args),
             "upgrade_url": f"{PRICING_URL}?utm_source=mcp&utm_tool={tool_name}",
         })
 
@@ -362,10 +450,27 @@ def _gate(tool_name: str, api_key: Optional[str] = None) -> Optional[str]:
             "success": False,
             "error": "rate_limited",
             "message": msg,
+            "current_tier": TIER_NAME[tier],
             "upgrade_url": f"{PRICING_URL}?utm_source=mcp&utm_medium=ratelimit",
         })
 
     return None  # Access granted
+
+
+def _safe_echo_args(args: Optional[Dict]) -> Dict:
+    """Strip out non-scalar / oversized args so we can safely echo a
+    summary of what the caller asked for back to them."""
+    if not args or not isinstance(args, dict):
+        return {}
+    keep = {}
+    for k in ("state", "iso", "market", "country", "city", "data_type",
+             "lat", "lon", "radius_km", "limit", "slug"):
+        v = args.get(k)
+        if v is None:
+            continue
+        if isinstance(v, (str, int, float, bool)) and len(str(v)) <= 64:
+            keep[k] = v
+    return keep
 
 
 def _finalize(result_json: str, tool_name: str, api_key: Optional[str] = None) -> str:
@@ -502,9 +607,17 @@ class GatekeeperMiddleware:
 # CONVENIENCE: gate + finalize using thread-local key
 # ═══════════════════════════════════════════════════════════════
 
-def gate(tool_name: str) -> Optional[str]:
-    """Gate check using the API key from the current HTTP request."""
-    return _gate(tool_name, get_current_api_key())
+def gate(tool_name: str, args: Optional[Dict] = None) -> Optional[str]:
+    """Gate check using the API key from the current HTTP request.
+
+    Phase JJ (2026-05-13): optional `args` so each tool handler can pass
+    locals() and unlock a far better upgrade message — e.g.
+    `gate("get_energy_prices", {"state": state, "iso": iso})` so the
+    upgrade CTA returned to free callers can echo their query
+    ("you asked for state=GA"). Backwards-compatible: omitting args
+    behaves exactly as before.
+    """
+    return _gate(tool_name, get_current_api_key(), args=args)
 
 def finalize(result_json: str, tool_name: str) -> str:
     """Finalize response using the API key from the current HTTP request."""
