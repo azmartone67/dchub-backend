@@ -280,6 +280,64 @@ def _collect_signals() -> dict:
     return out
 
 
+def _pick_daily_topic(signals: dict) -> tuple[str, str]:
+    """Phase LL: pick the most newsworthy topic for today's auto-press,
+    with guaranteed fallbacks so the cron never goes a day without
+    output.
+
+    Priority (most → least newsworthy):
+      1. dcpi_mover         — a single market shifted >5pts WoW
+      2. dcpi_leader        — highest BUILD market this week
+      3. dcpi_warning       — highest-constraint AVOID market
+      4. iso_coverage       — when we expand grid coverage (e.g. Phase HH 7→11)
+      5. ai_adoption        — MCP usage milestones (5K calls/day, etc.)
+      6. new_facility       — biggest newly-discovered facility
+      7. weekly_pulse       — generic "DC Hub by the numbers" recap (always works)
+
+    Returns (topic_slug, human_reason). The Claude prompt sees both.
+    """
+    movers = signals.get("biggest_movers") or []
+    if movers:
+        m = movers[0]
+        d = abs(m.get("delta") or 0)
+        if d >= 5:
+            return "dcpi_mover", (
+                f"{m.get('market','a market')} shifted "
+                f"{m.get('delta')}pts in DCPI this week — biggest mover.")
+
+    builds = signals.get("top_build_markets") or []
+    if builds:
+        return "dcpi_leader", (
+            f"{builds[0].get('market','top market')} leads the BUILD ranking "
+            f"with excess power score {builds[0].get('excess','?')}.")
+
+    avoids = signals.get("top_avoid_markets") or []
+    if avoids:
+        return "dcpi_warning", (
+            f"{avoids[0].get('market','a market')} flagged AVOID — highest "
+            f"constraint score {avoids[0].get('constraint','?')}.")
+
+    new_fac = signals.get("new_facilities_24h") or []
+    if new_fac:
+        f = new_fac[0]
+        return "new_facility", (
+            f"{f.get('name','A new facility')} ({f.get('provider','?')}, "
+            f"{f.get('mw','?')}MW) detected in {f.get('city','?')}, "
+            f"{f.get('state','?')}.")
+
+    ai = signals.get("ai_usage_24h") or {}
+    if ai.get("tool_calls", 0) >= 1000:
+        return "ai_adoption", (
+            f"DC Hub MCP served {ai.get('tool_calls')} AI tool calls in "
+            f"the last 24h from {ai.get('unique_callers')} unique callers.")
+
+    # Last-resort topic: every day produces SOMETHING. This is the
+    # "weekly pulse" recap — DC Hub by the numbers.
+    return "weekly_pulse", (
+        "Generic weekly recap of DC Hub platform activity — "
+        "markets tracked, ISOs live, facilities indexed.")
+
+
 # ---------------------------------------------------------------------------
 # 2. CLAUDE GENERATION
 # ---------------------------------------------------------------------------
@@ -506,14 +564,22 @@ def auto_generate():
         except Exception: pass
 
     signals = _collect_signals()
-    # Quick sanity — don't generate noise on a quiet day
-    has_movers = bool(signals.get("biggest_movers") or
-                       signals.get("top_build_markets"))
-    if not has_movers:
-        return jsonify(ok=True, skipped=True, reason="no_newsworthy_signal",
-                       signals=signals), 200
 
-    prompt = "Daily signals:\n```\n" + json.dumps(signals, indent=2)[:6000] + "\n```"
+    # Phase LL (2026-05-13): always-publish daily heartbeat. The
+    # previous behaviour skipped 29 of every 30 days because
+    # market_power_scores.published=true is rarely set during the
+    # incremental cron, leaving top_build_markets/biggest_movers
+    # empty → cron silently no-op'd → user saw the system as dormant.
+    #
+    # New policy: pick a topic that's always available, in priority
+    # order. The auto-press cron NEVER goes a day without producing
+    # something. Each fallback is a real story we can tell.
+    topic, topic_reason = _pick_daily_topic(signals)
+    signals["daily_topic"] = topic
+    signals["daily_topic_reason"] = topic_reason
+
+    prompt = (f"Daily signals (topic: {topic} — {topic_reason}):\n"
+              "```\n" + json.dumps(signals, indent=2)[:6000] + "\n```")
     rel, err = _call_claude_marketing(prompt)
     if err or not rel:
         return jsonify(ok=False, error=err or "no_response", signals=signals), 502
