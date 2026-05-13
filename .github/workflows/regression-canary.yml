@@ -1,0 +1,145 @@
+name: regression canary (Phase RR)
+# Hourly probe of the bug classes that bit us in the previous sprint.
+# Each check encodes ONE class of regression we caught the hard way —
+# the goal is to detect that exact class within 60 min the next time
+# instead of relying on a human to notice. On failure, opens a
+# GitHub issue with the failing probe in the title.
+#
+# Probes:
+#   1. /heartbeat HTML returns 200 (caught PR #35's CF-Worker fix)
+#   2. /api/v1/system/loops overall != "critical" (caught PR #52, #53, #54)
+#   3. /api/v1/media/feed-v3 returns >= 50 items (caught PR #46-48)
+#   4. /api/v1/dcpi/movers returns >= 1 mover (caught PR #54)
+#   5. /api/v1/marketing/pulse returns auto_press_7d >= 1 (caught LL)
+#   6. /api/v1/energy/summary?state=GA returns either retail_rates OR gated:true
+#      (caught the PR #34 EE+ regression AND validates Phase II gate)
+#   7. /markets/atlanta page renders SEO shell with market-slug meta tag
+#   8. /markets/ashburn resolves to /markets/northern-virginia (caught QQ)
+
+on:
+  schedule:
+    - cron: '15 * * * *'   # hourly at :15
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues:   write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Run regression probes
+        id: probes
+        run: |
+          set +e
+          fail=0
+          report=""
+
+          # ── 1. /heartbeat returns 200 ────────────────────────────
+          s=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
+              "https://dchub.cloud/heartbeat")
+          if [ "$s" != "200" ]; then
+            fail=1; report="${report}1. /heartbeat HTTP=$s (expected 200)\n"
+          fi
+
+          # ── 2. /api/v1/system/loops overall != critical ──────────
+          curl -s --max-time 10 "https://dchub.cloud/api/v1/system/loops" \
+            -o /tmp/loops.json
+          overall=$(python3 -c "import json; print(json.load(open('/tmp/loops.json')).get('overall',''))")
+          if [ "$overall" = "critical" ]; then
+            fail=1
+            errors=$(python3 -c "
+          import json
+          d = json.load(open('/tmp/loops.json'))
+          for l in d.get('loops', []):
+              if l.get('status') == 'dead' and l.get('error'):
+                  print(f\"   - {l.get('name')}: {l.get('error')[:160]}\")
+          ")
+            report="${report}2. /api/v1/system/loops overall=critical\n${errors}\n"
+          fi
+
+          # ── 3. feed-v3 returns >= 50 items ───────────────────────
+          curl -s --max-time 10 "https://dchub.cloud/api/v1/media/feed-v3" \
+            -o /tmp/feed.json
+          n=$(python3 -c "import json; print(len(json.load(open('/tmp/feed.json')).get('items',[])))")
+          if [ "$n" -lt 50 ]; then
+            fail=1; report="${report}3. feed-v3 items=$n (expected >= 50)\n"
+          fi
+
+          # ── 4. DCPI movers returns >= 1 ──────────────────────────
+          n_mov=$(curl -s --max-time 10 "https://dchub.cloud/api/v1/dcpi/movers" | \
+                  python3 -c "import sys, json; d=json.load(sys.stdin); print(len(d.get('movers') or d.get('data') or []))" 2>/dev/null || echo 0)
+          if [ "$n_mov" -lt 1 ]; then
+            fail=1; report="${report}4. /api/v1/dcpi/movers movers=$n_mov (expected >= 1)\n"
+          fi
+
+          # ── 5. marketing pulse auto_press_7d >= 1 ────────────────
+          n_press=$(curl -s --max-time 10 "https://dchub.cloud/api/v1/marketing/pulse" | \
+                    python3 -c "import sys, json; print(json.load(sys.stdin).get('auto_press_7d', 0))" 2>/dev/null || echo 0)
+          if [ "$n_press" -lt 1 ]; then
+            fail=1; report="${report}5. auto_press_7d=$n_press (expected >= 1 — daily heartbeat broken)\n"
+          fi
+
+          # ── 6. energy/summary returns either rates OR gated:true ─
+          curl -s --max-time 10 "https://dchub.cloud/api/v1/energy/summary?state=GA" \
+            -o /tmp/energy.json
+          ok=$(python3 -c "
+          import json
+          d = json.load(open('/tmp/energy.json'))
+          # Either gated (Phase II) OR has retail_rates with avg
+          if d.get('gated') is True:
+              print('ok-gated')
+          elif (d.get('retail_rates') or {}).get('avg_cents_kwh') is not None:
+              print('ok-rates')
+          else:
+              print('fail')
+          ")
+          if [ "$ok" = "fail" ]; then
+            fail=1; report="${report}6. energy/summary?state=GA: neither gated nor returning rates\n"
+          fi
+
+          # ── 7. /markets/atlanta renders SEO shell ────────────────
+          if ! curl -s --max-time 10 "https://dchub.cloud/markets/atlanta" | \
+               grep -q '<meta name="market-slug" content="atlanta"'; then
+            fail=1; report="${report}7. /markets/atlanta missing market-slug meta tag\n"
+          fi
+
+          # ── 8. /markets/ashburn redirects correctly ──────────────
+          final=$(curl -sL -o /dev/null -w "%{url_effective}" --max-time 10 \
+                  "https://dchub.cloud/markets/ashburn")
+          case "$final" in
+            *northern-virginia*)
+              : ;;
+            *)
+              fail=1; report="${report}8. /markets/ashburn final=$final (expected northern-virginia)\n" ;;
+          esac
+
+          echo "fail=$fail" >> $GITHUB_OUTPUT
+          {
+            echo "report<<EOF"
+            printf "$report"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+          echo "──── REGRESSION CANARY REPORT ────"
+          if [ "$fail" -eq 0 ]; then
+            echo "all 8 probes passed"
+          else
+            printf "FAILURES:\n$report"
+          fi
+          exit $fail
+
+      - name: Open issue on regression
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create \
+            --title "[regression-canary] $(date -u +%Y-%m-%dT%H:%M)" \
+            --body "Hourly regression canary failed. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          ${{ steps.probes.outputs.report }}
+
+          See .github/workflows/regression-canary.yml for the probe definitions." \
+            --label "regression-canary" || true

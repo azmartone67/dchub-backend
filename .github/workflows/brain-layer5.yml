@@ -1,0 +1,59 @@
+name: brain layer 5 (Phase RR-3)
+# Layer 5 propose-code cron. Runs every 6h.
+# For every chronic-stale loop in /api/v1/system/loops, calls Claude
+# with the loop's source-code window and stores a structured (file,
+# search, replace) proposal in brain_proposed_code_fixes.
+#
+# **Never auto-applies.** A human reviews each proposal at /brain.
+# This is the conservative-by-design escalation Phase RR commits to:
+# more autonomy in DETECTING and PROPOSING fixes, never giving up the
+# human checkpoint at merge.
+#
+# Anthropic billed call ≈ once per chronic-stale loop per run, capped
+# at 5 loops/run (the rest are real-time and have no source files).
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'   # every 6 hours
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  propose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fire Layer 5
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping Layer 5"
+            exit 0
+          fi
+          response=$(curl -sS --max-time 120 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" \
+            "https://dchub.cloud/api/v1/brain/learn-code" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | head -c 4000
+          echo
+          echo "$response" | python3 -c "
+          import json, sys
+          try:
+              d = json.load(sys.stdin)
+              if d.get('skipped'):
+                  print('layer5: no chronic-stale loops — skipped')
+              else:
+                  results = d.get('results') or []
+                  prop = sum(1 for r in results if r.get('outcome') == 'proposed')
+                  ref  = sum(1 for r in results if r.get('outcome') == 'refused')
+                  err  = len(results) - prop - ref
+                  print(f'layer5: targets={d.get(\"targets_processed\",0)} '
+                        f'proposed={prop} refused={ref} other={err}')
+          except Exception as e:
+              print(f'layer5-parse-failed: {e}')
+          "

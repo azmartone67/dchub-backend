@@ -1083,6 +1083,9 @@ try:
     from routes.enterprise import enterprise_bp  # phase 272_enterprise_contact
     from routes.brain_v2_layer4 import brain_v2_bp  # phase 289_self_learning
     from routes.brain_v2_public import brain_v2_public_bp  # phase 300_public_brain
+    # Phase RR-3 (2026-05-13): code-level proposal engine for chronic-stale
+    # autonomous loops. Imports Layer 4's Anthropic client; never auto-applies.
+    from routes.brain_v2_layer5 import brain_v2_layer5_bp
     from routes.outreach_cap_exceeded import outreach_cap_bp  # phase 290_outreach
     app.register_blueprint(observability_bp)
     app.register_blueprint(gating_bp)  # phase68_gating_bp
@@ -1095,6 +1098,7 @@ try:
     app.register_blueprint(enterprise_bp)  # phase 272 — /enterprise + /api/v1/enterprise/contact
     app.register_blueprint(brain_v2_bp)  # phase 289 — Brain v2 Layer 4 self-learning
     app.register_blueprint(brain_v2_public_bp)  # phase 300 — public /brain transparency page
+    app.register_blueprint(brain_v2_layer5_bp)  # phase RR-3 — code-level proposals
     app.register_blueprint(outreach_cap_bp)  # phase 290 — cap-exceeded outreach engine
     # Phase DD (2026-05-12): pair-code conversion flow. Closes the
     # agent→human handoff that's keeping MCP conversion at 0.012%.
