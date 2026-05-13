@@ -90,26 +90,75 @@ def _safe_query(cur, sql: str, params: tuple = ()) -> Any:
 
     Each loop probe is wrapped so a single missing table or schema
     mismatch never takes down the whole endpoint. Errors are logged
-    but the loop reports as 'dead' rather than 500-ing the response."""
+    but the loop reports as 'dead' rather than 500-ing the response.
+
+    Phase QQ (2026-05-13): probes ALSO now record their last SQL
+    error via _last_err so the response can surface it per-loop —
+    previously a typo or aborted-transaction state silently turned
+    every loop into "dead" with no diagnostic. _last_err is a single-
+    item dict module-global; the probe sets it via _err() and the
+    caller reads it after each probe.
+    """
     try:
         cur.execute(sql, params)
         return cur.fetchone()
     except Exception as e:
-        print(f"[system_loops] query failed: {e} :: {sql[:80]}",
+        msg = f"{type(e).__name__}: {str(e)[:160]}"
+        _err(msg)
+        print(f"[system_loops] query failed: {msg} :: {sql[:80]}",
               file=sys.stderr)
+        # CRITICAL: a failed cur.execute leaves the transaction in
+        # ABORTED state. Without rollback, EVERY subsequent query in
+        # this connection raises InFailedSqlTransaction and the rest
+        # of the probes report dead even though their tables are fine.
+        # That's the root cause of why 6 of 7 loops showed dead in
+        # the first /api/v1/system/loops response — one query failed,
+        # everything after silently rolled.
+        try:
+            cur.connection.rollback()
+        except Exception:
+            pass
         return None
+
+
+# Per-probe last error — module global, single-slot. Each probe
+# clears it before executing and reads it after, so the loop dict
+# can carry an "error" field when the probe couldn't get its data.
+_LAST_ERR: dict = {"msg": None}
+def _err(msg: str | None):
+    _LAST_ERR["msg"] = msg
+def _take_err() -> str | None:
+    e = _LAST_ERR["msg"]
+    _LAST_ERR["msg"] = None
+    return e
+
+
+def _two_query_probe(cur, max_sql: str, count_sql: str, count_params: tuple = ()) -> tuple:
+    """Phase QQ (2026-05-13): every probe used to be ONE compound query
+    with MAX + multiple FILTER aggregates. If any column was misnamed
+    OR the connection's transaction was already aborted, the entire
+    query failed silently and the probe reported (None, 0, 0, ...) —
+    which classifies as "dead" even when the underlying table is fine.
+
+    Splitting into two separate simple queries (one MAX, one COUNT
+    with WHERE) means a single query failure no longer cascades and
+    the per-query rollback in _safe_query keeps the connection
+    usable for downstream probes."""
+    last_row = _safe_query(cur, max_sql)
+    last = last_row[0] if last_row else None
+    count_row = _safe_query(cur, count_sql, count_params)
+    count = int(count_row[0]) if count_row else 0
+    return last, count
 
 
 def _probe_brain_learn(cur) -> dict:
     """Brain v2 Layer 4 hourly pass. We measure liveness by the most
     recent entry in brain_learning_log (refused, proposed, etc. all
     count — what matters is that the loop is running)."""
-    row = _safe_query(cur, """
-        SELECT MAX(t),
-               COUNT(*) FILTER (WHERE t > NOW() - INTERVAL '24 hours')
-        FROM brain_learning_log
-    """)
-    last, count = (row or (None, 0))
+    _err(None)
+    last, count = _two_query_probe(cur,
+        "SELECT MAX(t) FROM brain_learning_log",
+        "SELECT COUNT(*) FROM brain_learning_log WHERE t > NOW() - INTERVAL '24 hours'")
     age = _hours_since(last)
     return {
         "name": "brain_learn",
@@ -117,20 +166,18 @@ def _probe_brain_learn(cur) -> dict:
         "last_event_at": last.isoformat() if last else None,
         "age_hours": round(age, 2) if age is not None else None,
         "status": _classify(age, 1.0),
-        "output_24h": int(count or 0),
+        "output_24h": count,
+        "error": _take_err(),
         "note": "Hourly brain Layer 4 attempts (any outcome — proposed/refused/api_error all signal 'running')",
     }
 
 
 def _probe_auto_press(cur) -> dict:
-    """Daily 13:00 UTC autonomous press generation. Output_24h should
-    be exactly 1 most days (the cron is idempotent per-day)."""
-    row = _safe_query(cur, """
-        SELECT MAX(generated_at),
-               COUNT(*) FILTER (WHERE generated_at > NOW() - INTERVAL '7 days')
-        FROM auto_press_releases
-    """)
-    last, count_7d = (row or (None, 0))
+    """Daily 13:00 UTC autonomous press generation."""
+    _err(None)
+    last, count_7d = _two_query_probe(cur,
+        "SELECT MAX(generated_at) FROM auto_press_releases",
+        "SELECT COUNT(*) FROM auto_press_releases WHERE generated_at > NOW() - INTERVAL '7 days'")
     age = _hours_since(last)
     return {
         "name": "auto_press_daily",
@@ -138,22 +185,18 @@ def _probe_auto_press(cur) -> dict:
         "last_event_at": last.isoformat() if last else None,
         "age_hours": round(age, 2) if age is not None else None,
         "status": _classify(age, 24.0),
-        "output_7d": int(count_7d or 0),
-        "note": "Fires daily at 13:00 UTC. Phase LL (PR #45) made it always-publish via topic fallbacks; 7d count should hit ≥7 after one full week.",
+        "output_7d": count_7d,
+        "error": _take_err(),
+        "note": "Fires daily at 13:00 UTC. Phase LL (PR #45) made it always-publish via topic fallbacks.",
     }
 
 
 def _probe_testimonial_ingest(cur) -> dict:
-    """Every-6h HN/Reddit/MCP citation ingest. Output_24h counts NEW
-    rows in ai_testimonials_auto in last 24h."""
-    row = _safe_query(cur, """
-        SELECT MAX(COALESCE(posted_at, created_at)),
-               COUNT(*) FILTER (
-                 WHERE COALESCE(posted_at, created_at) > NOW() - INTERVAL '24 hours'
-               )
-        FROM ai_testimonials_auto
-    """)
-    last, count_24h = (row or (None, 0))
+    """Every-6h HN/Reddit/MCP citation ingest."""
+    _err(None)
+    last, count_24h = _two_query_probe(cur,
+        "SELECT MAX(COALESCE(posted_at, created_at)) FROM ai_testimonials_auto",
+        "SELECT COUNT(*) FROM ai_testimonials_auto WHERE COALESCE(posted_at, created_at) > NOW() - INTERVAL '24 hours'")
     age = _hours_since(last)
     return {
         "name": "testimonial_ingest",
@@ -161,22 +204,22 @@ def _probe_testimonial_ingest(cur) -> dict:
         "last_event_at": last.isoformat() if last else None,
         "age_hours": round(age, 2) if age is not None else None,
         "status": _classify(age, 6.0),
-        "output_24h": int(count_24h or 0),
-        "note": "Phase MM wired ai_testimonials_auto into feed-v3 (PR #48). New rows here = the every-6h ingest is finding fresh HN/Reddit mentions.",
+        "output_24h": count_24h,
+        "error": _take_err(),
+        "note": "Phase MM wired ai_testimonials_auto into feed-v3. 0 here may mean no fresh HN/Reddit dchub mentions (legit) OR cron not firing.",
     }
 
 
 def _probe_dcpi_recompute(cur) -> dict:
-    """Daily 06:00 UTC market score refresh. Liveness = newest row in
-    market_power_scores."""
-    row = _safe_query(cur, """
-        SELECT MAX(computed_at),
-               COUNT(DISTINCT market_slug) FILTER (
-                 WHERE computed_at > NOW() - INTERVAL '7 days'
-               )
-        FROM market_power_scores
-    """)
-    last, markets_7d = (row or (None, 0))
+    """Daily 06:00 UTC market score refresh."""
+    _err(None)
+    last_row = _safe_query(cur,
+        "SELECT MAX(computed_at) FROM market_power_scores")
+    last = last_row[0] if last_row else None
+    # Second query: distinct markets scored in last 7 days
+    count_row = _safe_query(cur,
+        "SELECT COUNT(DISTINCT market_slug) FROM market_power_scores WHERE computed_at > NOW() - INTERVAL '7 days'")
+    markets_7d = int(count_row[0]) if count_row else 0
     age = _hours_since(last)
     return {
         "name": "dcpi_recompute",
@@ -184,51 +227,52 @@ def _probe_dcpi_recompute(cur) -> dict:
         "last_event_at": last.isoformat() if last else None,
         "age_hours": round(age, 2) if age is not None else None,
         "status": _classify(age, 24.0),
-        "markets_scored_7d": int(markets_7d or 0),
+        "markets_scored_7d": markets_7d,
+        "error": _take_err(),
         "note": "Daily 06:00 UTC. Phase LL relies on this — auto-press fallback chain reads top BUILD/AVOID markets from here.",
     }
 
 
 def _probe_engagement_track(cur) -> dict:
-    """Real-time press-engagement pixel writes. Phase MM (PR #46 + #32)
-    wired the tracking pixel. Any non-zero count_24h proves the GET
-    /track pixel + the frontend sendBeacon are both functioning."""
-    row = _safe_query(cur, """
-        SELECT MAX(t),
-               COUNT(*) FILTER (WHERE t > NOW() - INTERVAL '24 hours'),
-               COUNT(*) FILTER (WHERE event_type = 'view'
-                                AND t > NOW() - INTERVAL '24 hours'),
-               COUNT(*) FILTER (WHERE event_type = 'click_out'
-                                AND t > NOW() - INTERVAL '24 hours')
-        FROM press_engagement
-    """)
-    last, total_24h, views_24h, clicks_24h = (row or (None, 0, 0, 0))
+    """Real-time press-engagement pixel writes."""
+    _err(None)
+    last_row = _safe_query(cur, "SELECT MAX(t) FROM press_engagement")
+    last = last_row[0] if last_row else None
+    total_row = _safe_query(cur,
+        "SELECT COUNT(*) FROM press_engagement WHERE t > NOW() - INTERVAL '24 hours'")
+    total_24h = int(total_row[0]) if total_row else 0
+    views_row = _safe_query(cur,
+        "SELECT COUNT(*) FROM press_engagement WHERE event_type = 'view' AND t > NOW() - INTERVAL '24 hours'")
+    views_24h = int(views_row[0]) if views_row else 0
+    clicks_row = _safe_query(cur,
+        "SELECT COUNT(*) FROM press_engagement WHERE event_type = 'click_out' AND t > NOW() - INTERVAL '24 hours'")
+    clicks_24h = int(clicks_row[0]) if clicks_row else 0
     age = _hours_since(last)
-    # Cadence is "any visitor visit" — so we use 12h as a reasonable
-    # "if nothing fired in 12h, something's wrong" threshold.
     return {
         "name": "engagement_track",
         "cadence_hours": 12.0,
         "last_event_at": last.isoformat() if last else None,
         "age_hours": round(age, 2) if age is not None else None,
         "status": _classify(age, 12.0),
-        "output_24h": int(total_24h or 0),
-        "views_24h": int(views_24h or 0),
-        "click_outs_24h": int(clicks_24h or 0),
-        "note": "Frontend tracking pixel fires on /dc-hub-media page load + click_out on auto-press cards. 0 here after PR #32 deployed = pixel not reaching backend.",
+        "output_24h": total_24h,
+        "views_24h": views_24h,
+        "click_outs_24h": clicks_24h,
+        "error": _take_err(),
+        "note": "Frontend tracking pixel fires on /dc-hub-media page load + click_out on auto-press cards.",
     }
 
 
 def _probe_mcp_traffic(cur) -> dict:
-    """MCP tool-call ingest. Real-time per request. ~5k/day in prod is
-    the established baseline."""
-    row = _safe_query(cur, """
-        SELECT MAX(created_at),
-               COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '1 hour'),
-               COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '24 hours')
-        FROM mcp_tool_calls
-    """)
-    last, count_1h, count_24h = (row or (None, 0, 0))
+    """MCP tool-call ingest. Real-time per request. ~5k/day baseline."""
+    _err(None)
+    last_row = _safe_query(cur, "SELECT MAX(created_at) FROM mcp_tool_calls")
+    last = last_row[0] if last_row else None
+    c1h_row = _safe_query(cur,
+        "SELECT COUNT(*) FROM mcp_tool_calls WHERE created_at > NOW() - INTERVAL '1 hour'")
+    count_1h = int(c1h_row[0]) if c1h_row else 0
+    c24h_row = _safe_query(cur,
+        "SELECT COUNT(*) FROM mcp_tool_calls WHERE created_at > NOW() - INTERVAL '24 hours'")
+    count_24h = int(c24h_row[0]) if c24h_row else 0
     age = _hours_since(last)
     return {
         "name": "mcp_traffic",
@@ -236,25 +280,39 @@ def _probe_mcp_traffic(cur) -> dict:
         "last_event_at": last.isoformat() if last else None,
         "age_hours": round(age, 2) if age is not None else None,
         "status": _classify(age, 1.0),
-        "calls_1h": int(count_1h or 0),
-        "calls_24h": int(count_24h or 0),
+        "calls_1h": count_1h,
+        "calls_24h": count_24h,
+        "error": _take_err(),
         "note": "Baseline ~200/hr, ~5000/day. Hourly count well under that = MCP traffic falling off OR ingest broken.",
     }
 
 
 def _probe_iso_extract(cur) -> dict:
-    """Periodic grid-data refresh. We don't have a single canonical
-    table here so use the heartbeat's iso_metrics checkpoint instead
-    (already maintained by the orchestrator). Falls back to the
-    market_power_scores newest computed_at if heartbeat missing."""
-    # Try heartbeat_surfaces table (per routes/heartbeat.py)
-    row = _safe_query(cur, """
-        SELECT last_updated
-        FROM heartbeat_surfaces
-        WHERE name = 'iso_metrics'
-        ORDER BY last_updated DESC LIMIT 1
-    """)
-    last = row[0] if row else None
+    """ISO orchestrator liveness. Phase QQ fix: heartbeat is in-memory
+    state in routes/heartbeat.py (no `heartbeat_surfaces` table), so
+    import the _status() function directly and look up the 'iso_metrics'
+    surface — same pattern Phase OO uses in brain_v2_layer4 to read
+    heartbeat from inside another route handler."""
+    last = None
+    try:
+        from routes.heartbeat import _status as _hb_status
+        rows = _hb_status()
+        for r in rows or []:
+            if r.get("surface") == "iso_metrics":
+                la = r.get("last_updated")
+                # _status() may return either a datetime or an ISO string
+                # depending on internal representation; handle both.
+                if isinstance(la, str):
+                    try:
+                        last = datetime.fromisoformat(la.replace("Z", "+00:00"))
+                    except Exception:
+                        last = None
+                else:
+                    last = la
+                break
+    except Exception as e:
+        _err(f"heartbeat-import: {type(e).__name__}: {str(e)[:120]}")
+
     age = _hours_since(last)
     return {
         "name": "iso_extract",
@@ -262,7 +320,8 @@ def _probe_iso_extract(cur) -> dict:
         "last_event_at": last.isoformat() if last else None,
         "age_hours": round(age, 2) if age is not None else None,
         "status": _classify(age, 6.0),
-        "note": "ISO orchestrator (Phase HH+ parallel fan-out) writes to iso_metrics checkpoint. Stale = upstream EIA/ISO sources slow OR CF Worker edge timeout (known issue, not crash).",
+        "error": _take_err(),
+        "note": "Phase HH+ parallel fan-out writes the iso_metrics heartbeat checkpoint. Stale = upstream EIA/ISO sources slow OR CF Worker edge timeout.",
     }
 
 
