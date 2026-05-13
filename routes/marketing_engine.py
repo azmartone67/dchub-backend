@@ -534,6 +534,28 @@ def _write_release(rel: dict, signals: dict, topic: str) -> tuple[int | None, st
         # showed only ids 1-14. RETURNING returns the would-be id even when
         # the transaction will roll back.
         c.commit()
+
+        # Phase FF+3 (2026-05-13): distribution layer. Each new press
+        # release fans out to:
+        #   1. social_media_posts (LinkedIn row, status='approved') —
+        #      picked up by content_publisher._auto_publish_loop every
+        #      6h, posted via LinkedIn /v2/ugcPosts API.
+        #   2. social_media_posts (Twitter row, status='approved') —
+        #      picked up by the X auto-publisher (added in this PR).
+        #   3. MCP signup list email — Resend digest with link.
+        # All three run in SEPARATE transactions / network calls. A
+        # failure in any one does not affect the press release or the
+        # other channels. The press release already committed above.
+        try:
+            _queue_distribution_posts(rel, press_id, today)
+        except Exception as dist_err:
+            print(f"[marketing_engine] distribution queue failed: {dist_err}",
+                  file=sys.stderr)
+        try:
+            _notify_mcp_subscribers(rel, press_id)
+        except Exception as mail_err:
+            print(f"[marketing_engine] mcp digest mail failed: {mail_err}",
+                  file=sys.stderr)
         return press_id, None
     except Exception as e:
         print(f"[marketing_engine] write failed: {e}", file=sys.stderr)
@@ -541,6 +563,236 @@ def _write_release(rel: dict, signals: dict, topic: str) -> tuple[int | None, st
     finally:
         try: c.close()
         except Exception: pass
+
+
+# ---------------------------------------------------------------------------
+# Phase FF+3 — distribution helpers
+#
+# These run AFTER the press release commits. They run in their own
+# transactions / network calls. They are best-effort — failures are
+# logged but never propagated to the caller. The press release is the
+# product; distribution is the delivery layer.
+# ---------------------------------------------------------------------------
+
+def _format_linkedin_post(rel: dict) -> str:
+    """Compose the LinkedIn share. Prefers Claude's hand-written
+    linkedin_post field if present (PR EE), else builds one from
+    title + subheadline + URL."""
+    if rel.get("linkedin_post"):
+        return rel["linkedin_post"][:2900]  # LinkedIn share limit is 3000
+    title = (rel.get("title") or "").strip()
+    sub   = (rel.get("subheadline") or rel.get("meta_description") or "").strip()
+    slug  = rel.get("slug", "")
+    url   = f"https://dchub.cloud/news/{slug}"
+    parts = [title]
+    if sub: parts.append(sub)
+    parts.append(f"Full release → {url}")
+    parts.append("#datacenter #infrastructure #DCHub")
+    return "\n\n".join(parts)[:2900]
+
+
+def _format_twitter_post(rel: dict) -> str:
+    """X/Twitter post: 280 chars max, prioritize headline + URL.
+    The URL counts as 23 chars regardless of actual length (t.co
+    auto-wraps), so we have ~250 chars for the message body."""
+    title = (rel.get("title") or "").strip()
+    slug  = rel.get("slug", "")
+    url   = f"https://dchub.cloud/news/{slug}"
+    # Title might be long; truncate cleanly at a word boundary.
+    max_title = 230
+    if len(title) > max_title:
+        title = title[:max_title].rsplit(" ", 1)[0] + "…"
+    return f"{title}\n\n{url}"
+
+
+def _queue_distribution_posts(rel: dict, press_id: int, today: str) -> None:
+    """Insert one row per channel into social_media_posts so the
+    content_publisher auto-publishers pick them up. Idempotent —
+    dedup on (platform, press_release_id) so retries after a
+    partial-failed cron don't double-queue."""
+    c = _conn()
+    if c is None: return
+    try:
+        with c.cursor() as cur:
+            # Defensive ALTER: ensure press_release_id column exists.
+            # This pattern follows the existing init_schema idempotent
+            # ALTER blocks elsewhere in this module.
+            try:
+                cur.execute("""
+                    ALTER TABLE social_media_posts
+                    ADD COLUMN IF NOT EXISTS press_release_id INTEGER;
+                """)
+            except Exception:
+                c.rollback()
+            try:
+                cur.execute("""
+                    CREATE UNIQUE INDEX IF NOT EXISTS
+                        social_media_posts_press_release_platform_idx
+                    ON social_media_posts(press_release_id, platform)
+                    WHERE press_release_id IS NOT NULL;
+                """)
+            except Exception:
+                c.rollback()
+
+            # LinkedIn + Twitter rows. Platform / status are parameterized
+            # rather than inline quoted literals so the regression-lint
+            # regex `INSERT INTO ... [^;"']*` traverses the entire SQL
+            # string and sees the ON CONFLICT clause — same pattern as
+            # the source + category parameterization in _write_release.
+            li_text = _format_linkedin_post(rel)
+            cur.execute("""
+                INSERT INTO social_media_posts
+                    (platform, content, status, press_release_id, created_at)
+                VALUES (%s, %s, %s, %s, NOW())
+                ON CONFLICT (press_release_id, platform) DO NOTHING
+            """, ("linkedin", li_text, "approved", press_id))
+
+            tw_text = _format_twitter_post(rel)
+            cur.execute("""
+                INSERT INTO social_media_posts
+                    (platform, content, status, press_release_id, created_at)
+                VALUES (%s, %s, %s, %s, NOW())
+                ON CONFLICT (press_release_id, platform) DO NOTHING
+            """, ("twitter", tw_text, "approved", press_id))
+        c.commit()
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+def _notify_mcp_subscribers(rel: dict, press_id: int) -> None:
+    """Email the dchub signups list when a new press release lands.
+
+    Targets the `signups` table (created via /api/v1/signup) which is
+    the public newsletter list — distinct from `api_keys` (paid users).
+    Reuses the Resend pattern from linkedin_send_daily_email but with
+    a different template + segmenting. Idempotent — checks
+    auto_press_releases.notified_at before sending.
+    """
+    if not RESEND_API_KEY:
+        return  # No mail provider configured — skip silently.
+
+    c = _conn()
+    if c is None: return
+    sent_to = 0
+    try:
+        # 1. Idempotency: skip if already notified for this slug.
+        with c.cursor() as cur:
+            try:
+                cur.execute("""
+                    ALTER TABLE auto_press_releases
+                    ADD COLUMN IF NOT EXISTS notified_at TIMESTAMPTZ;
+                """)
+                c.commit()
+            except Exception:
+                c.rollback()
+            cur.execute("""
+                SELECT notified_at FROM auto_press_releases
+                WHERE slug = %s LIMIT 1
+            """, (rel["slug"],))
+            row = cur.fetchone()
+            if row and row[0]:
+                return  # Already notified.
+
+            # 2. Fetch the list. Cap at 500/run to avoid Resend rate
+            # limits. The signups table can legitimately be larger
+            # than that; we batch over consecutive press releases.
+            cur.execute("""
+                SELECT email FROM signups
+                WHERE COALESCE(unsubscribed, false) = false
+                  AND email IS NOT NULL
+                  AND email NOT ILIKE '%@example.%'
+                  AND email NOT ILIKE 'test%@%'
+                ORDER BY created_at DESC
+                LIMIT 500
+            """)
+            recipients = [r[0] for r in cur.fetchall() if r and r[0]]
+
+        if not recipients:
+            return
+
+        # 3. Build the digest email. Plain HTML with link to the
+        # press release. Resend uses the same sender/key as the
+        # daily LinkedIn email path.
+        sender = os.environ.get("DCHUB_RESEND_FROM",
+                                "DC Hub <press@dchub.cloud>")
+        subject = f"📡 DC Hub Press: {rel.get('title','')[:80]}"
+        slug = rel.get("slug", "")
+        url = f"https://dchub.cloud/news/{slug}"
+        title = (rel.get("title") or "").strip()
+        sub = (rel.get("subheadline") or rel.get("meta_description") or "").strip()
+        html_body = f"""<!doctype html><html><body style="font-family:-apple-system,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#1a1a1a">
+<div style="font-size:11px;color:#888;letter-spacing:.05em;text-transform:uppercase;margin-bottom:8px">Daily Press Release · DC Hub</div>
+<h2 style="margin:0 0 12px;font-size:22px;line-height:1.3">{_html_escape(title)}</h2>
+<p style="color:#555;margin:0 0 24px;font-size:15px;line-height:1.5">{_html_escape(sub)}</p>
+<p style="margin:24px 0"><a href="{url}" style="background:#1976d2;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:600;display:inline-block">Read the full release →</a></p>
+<hr style="border:0;border-top:1px solid #eee;margin:32px 0">
+<p style="font-size:12px;color:#888">You're receiving this because you signed up at dchub.cloud. <a href="https://dchub.cloud/unsubscribe" style="color:#888">Unsubscribe</a> · <a href="https://dchub.cloud" style="color:#888">dchub.cloud</a></p>
+</body></html>"""
+
+        # 4. Resend batch send: one POST with `to: [array]` is one
+        # email per recipient (Resend handles fan-out). Use BCC pattern
+        # via separate sends to keep recipient privacy. To stay under
+        # the 10 req/sec limit, batch in groups of 50 with a small
+        # sleep between batches.
+        # Uses `requests` per regression-lint rule [urllib-request-on-railway]
+        # — Railway egress sometimes returns CF 1010 on urllib's default
+        # UA, and requests has a saner default + connection pooling.
+        import requests as _rq, time as _time
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {RESEND_API_KEY}",
+            "User-Agent": "dchub-backend/1.0 (+https://dchub.cloud)",
+            "Accept": "application/json",
+        }
+        batch_size = 50
+        for i in range(0, len(recipients), batch_size):
+            batch = recipients[i:i+batch_size]
+            for to_addr in batch:
+                try:
+                    resp = _rq.post(
+                        "https://api.resend.com/emails",
+                        json={
+                            "from": sender,
+                            "to": [to_addr],
+                            "subject": subject,
+                            "html": html_body,
+                        },
+                        headers=headers,
+                        timeout=15,
+                    )
+                    if resp.status_code in (200, 201, 202):
+                        sent_to += 1
+                    else:
+                        print(f"[mcp_digest] send to {to_addr} failed: "
+                              f"{resp.status_code} {resp.text[:200]}",
+                              file=sys.stderr)
+                except Exception as e:
+                    # Don't let one failed address kill the batch.
+                    print(f"[mcp_digest] send to {to_addr} failed: {e}",
+                          file=sys.stderr)
+            if i + batch_size < len(recipients):
+                _time.sleep(1.0)  # Rate-limit cushion.
+
+        # 5. Mark notified.
+        if sent_to > 0:
+            with c.cursor() as cur:
+                cur.execute("""
+                    UPDATE auto_press_releases
+                    SET notified_at = NOW()
+                    WHERE slug = %s
+                """, (rel["slug"],))
+            c.commit()
+        print(f"[mcp_digest] sent {sent_to}/{len(recipients)} for {rel.get('slug')}")
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+def _html_escape(s: str) -> str:
+    return (str(s or "")
+            .replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
 
 
 # ---------------------------------------------------------------------------

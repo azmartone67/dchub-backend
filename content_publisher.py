@@ -221,6 +221,62 @@ def _post_to_linkedin(content_text, access_token):
         return True, resp.json().get('id', 'posted')
     return False, f"LinkedIn API error {resp.status_code}: {resp.text[:300]}"
 
+
+def _post_to_twitter(content_text):
+    """Post to DC Hub X/Twitter account.
+
+    Phase FF+3 (2026-05-13): added X/Twitter publish path.
+    Uses the v2 tweets endpoint with OAuth 2.0 bearer token. Requires:
+        TWITTER_BEARER_TOKEN   — user-context OAuth 2.0 token (needs
+                                  tweet.write scope, not just read).
+    OR for OAuth 1.0a User Context (preferred for posting on behalf
+    of @dchubcloud), set all four:
+        TWITTER_API_KEY, TWITTER_API_SECRET,
+        TWITTER_ACCESS_TOKEN, TWITTER_ACCESS_SECRET
+    The OAuth 1.0a path uses requests_oauthlib if available; falls
+    back to OAuth 2.0 bearer if only the simpler token is set.
+    """
+    # Try OAuth 1.0a first (the path the X dev platform recommends
+    # for posting from a confirmed account).
+    api_key = os.environ.get('TWITTER_API_KEY', '')
+    api_sec = os.environ.get('TWITTER_API_SECRET', '')
+    acc_tok = os.environ.get('TWITTER_ACCESS_TOKEN', '')
+    acc_sec = os.environ.get('TWITTER_ACCESS_SECRET', '')
+    if all([api_key, api_sec, acc_tok, acc_sec]):
+        try:
+            from requests_oauthlib import OAuth1
+            auth = OAuth1(api_key, api_sec, acc_tok, acc_sec)
+            resp = requests.post(
+                'https://api.twitter.com/2/tweets',
+                json={'text': content_text[:280]},
+                auth=auth,
+                timeout=15,
+            )
+            if resp.status_code in (200, 201):
+                data = resp.json().get('data', {})
+                return True, data.get('id', 'posted')
+            return False, f"X API error {resp.status_code}: {resp.text[:300]}"
+        except ImportError:
+            # requests_oauthlib isn't installed — fall through to bearer.
+            pass
+        except Exception as e:
+            return False, f"X OAuth1 error: {str(e)[:200]}"
+
+    bearer = os.environ.get('TWITTER_BEARER_TOKEN', '')
+    if not bearer:
+        return False, "no_twitter_credentials"
+    resp = requests.post(
+        'https://api.twitter.com/2/tweets',
+        json={'text': content_text[:280]},
+        headers={'Authorization': f'Bearer {bearer}',
+                 'Content-Type': 'application/json'},
+        timeout=15,
+    )
+    if resp.status_code in (200, 201):
+        data = resp.json().get('data', {})
+        return True, data.get('id', 'posted')
+    return False, f"X API error {resp.status_code}: {resp.text[:300]}"
+
 @content_bp.route('/api/admin/publish/linkedin', methods=['POST'])
 def publish_linkedin():
     if not _check_admin(request):
@@ -308,9 +364,78 @@ def start_auto_publisher():
     t = threading.Thread(target=_auto_publish_loop, daemon=True, name="linkedin-auto-publisher")
     t.start()
 
+
+_twitter_publisher_running = False
+
+def start_twitter_publisher():
+    """Phase FF+3 (2026-05-13): parallel auto-publisher for X/Twitter.
+    Same shape as the LinkedIn loop. Runs every 6h, max 2/day, gated
+    on TWITTER_BEARER_TOKEN OR the OAuth1 quad."""
+    global _twitter_publisher_running
+    if _twitter_publisher_running:
+        return
+    _twitter_publisher_running = True
+
+    def _twitter_loop():
+        logger.info("X/Twitter auto-publisher started (every 6h, max 2/day)")
+        while True:
+            try:
+                time.sleep(6 * 3600)
+                bearer = os.environ.get('TWITTER_BEARER_TOKEN', '')
+                oauth1 = all([os.environ.get(k, '') for k in
+                              ('TWITTER_API_KEY', 'TWITTER_API_SECRET',
+                               'TWITTER_ACCESS_TOKEN', 'TWITTER_ACCESS_SECRET')])
+                if not (bearer or oauth1):
+                    logger.debug("Twitter auto-publisher: no credentials, skipping")
+                    continue
+                conn = _get_db()
+                cur = conn.cursor()
+                today = datetime.utcnow().strftime('%Y-%m-%d')
+                cur.execute("SELECT COUNT(*) FROM social_media_posts WHERE status = 'published' AND publish_platform = 'twitter' AND published_at LIKE %s", (today + '%',))
+                pub_today = cur.fetchone()[0]
+                if pub_today >= 2:
+                    logger.info(f"Twitter auto-publisher: already {pub_today} today, skipping")
+                    conn.close()
+                    continue
+                cur.execute("SELECT id, content FROM social_media_posts WHERE status = 'approved' AND platform = 'twitter' ORDER BY created_at ASC LIMIT 1")
+                row = cur.fetchone()
+                if not row:
+                    logger.debug("Twitter auto-publisher: no approved Twitter posts")
+                    conn.close()
+                    continue
+                post_id = row['id']
+                content_text = row['content']
+                success, result = _post_to_twitter(content_text)
+                now = datetime.utcnow().isoformat() + 'Z'
+                if success:
+                    cur.execute("UPDATE social_media_posts SET status = 'published', posted_at = %s, published_at = %s, publish_platform = 'twitter' WHERE id = %s", (now, now, post_id))
+                    conn.commit()
+                    logger.info(f"Auto-published post {post_id} to X")
+                else:
+                    logger.warning(f"Twitter auto-publish failed for {post_id}: {result}")
+                conn.close()
+            except Exception as e:
+                logger.error(f"Twitter auto-publisher error: {e}")
+
+    t = threading.Thread(target=_twitter_loop, daemon=True,
+                         name="twitter-auto-publisher")
+    t.start()
+
 def register_content_publisher(app):
     init_content_tables()
     app.register_blueprint(content_bp)
+    # Phase FF+3 (2026-05-13): start both auto-publishers. Each is
+    # idempotent on _running flags, so multi-worker boots are safe.
+    # Each gate themselves on the relevant env var so unconfigured
+    # channels just log a debug and skip.
+    try:
+        start_auto_publisher()       # LinkedIn
+    except Exception as e:
+        logger.warning(f"LinkedIn auto-publisher failed to start: {e}")
+    try:
+        start_twitter_publisher()    # X/Twitter
+    except Exception as e:
+        logger.warning(f"Twitter auto-publisher failed to start: {e}")
     logger.info("Content Publishing Pipeline registered")
     logger.info("   GET  /api/admin/content/stats")
     logger.info("   GET  /api/admin/content-queue")
@@ -318,4 +443,4 @@ def register_content_publisher(app):
     logger.info("   POST /api/admin/content/<id>/reject")
     logger.info("   POST /api/admin/content/<id>/edit")
     logger.info("   POST /api/admin/publish/linkedin")
-    logger.info("   Auto-publisher: every 6h, max 2/day")
+    logger.info("   Auto-publishers: LinkedIn + X/Twitter (every 6h, max 2/day)")

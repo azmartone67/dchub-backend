@@ -6,9 +6,23 @@ on:
 jobs:
   recompute:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Trigger DCPI recompute
+        # Phase FF+3 (2026-05-13): hit Railway directly. The previous URL
+        # `https://dchub.cloud/api/v1/dcpi/recompute` routes through CF
+        # Worker which has a 15s timeout — but recompute scores 276
+        # markets and takes 30-60s. The Worker silently aborted the
+        # request, returned to the workflow with success conclusion, and
+        # the underlying DB update never happened. Result: system_loops
+        # probe showed dcpi_recompute stale at 57h despite the workflow
+        # firing daily. Same fix pattern as PR #62 for brain_learn.
         run: |
-          curl -sS -X POST "https://dchub.cloud/api/v1/dcpi/recompute" \
+          if [ -z "${{ secrets.DCHUB_ADMIN_KEY }}" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY secret missing — skipping"
+            exit 0
+          fi
+          curl -sS -X POST --max-time 120 \
+            "https://dchub-backend-production.up.railway.app/api/v1/dcpi/recompute" \
             -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" \
             | python3 -m json.tool
