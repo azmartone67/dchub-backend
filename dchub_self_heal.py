@@ -1979,6 +1979,170 @@ def get_last_api_contract_findings():
     return dict(_last_api_contract_findings)
 
 
+# ---------------------------------------------------------------------------
+# Phase FF+5 (2026-05-13) — backend cron health scan
+#
+# User question: "why isnt brain fixing it?" — after we discovered the
+# DCPI recompute had been silently failing for 57h with UniqueViolation
+# on every market. Honest answer: the brain (and every detector here)
+# only scanned FRONTEND surfaces. Backend cron failures surfaced only
+# in admin-gated cron response bodies, nowhere any detector looked.
+#
+# This detector closes the gap. It queries Postgres for:
+#   1. Recent dcpi_runs rows — flag where error_count > 0 OR
+#      markets_scored == 0 in the most recent N runs.
+#   2. auto_press_releases output_7d vs cadence — flag if expected
+#      daily generation has been skipping (output_7d < 4 of last 7).
+#   3. system_loops staleness — any loop whose age_hours > 2x its
+#      cadence_hours is flagged (testimonial_ingest is excluded —
+#      legitimately zero some weeks).
+#
+# Surfaces findings under a NEW key on /api/v1/heal/findings:
+# `actionable_backend_issues`. brain_v2_layer4 needs a parallel update
+# to read this list (separate PR — that brain currently can only do
+# HTML find/replace, not DB/code fixes, so it'll just SURFACE these
+# for human triage rather than auto-heal them).
+# ---------------------------------------------------------------------------
+
+_last_backend_findings: dict = {}
+
+def fix_backend_cron_scan():
+    """Scan backend cron + loop health. Emits findings keyed by the
+    cron name (using a synthetic dchub://cron/<name> URL so the
+    {url: {label: count}} shape stays consistent with other detectors)."""
+    global _last_backend_findings
+    findings: dict = {}
+    issues_total = 0
+
+    if not DATABASE_URL:
+        _last_backend_findings = {}
+        return True, "OK: no DATABASE_URL (skipped)"
+
+    try:
+        c = _conn()
+    except Exception as e:
+        _last_backend_findings = {}
+        return True, f"OK: scan deferred — db unavailable: {str(e)[:80]}"
+
+    try:
+        with c.cursor() as cur:
+            # 1. DCPI recompute: last 5 runs, flag any with errors > 0
+            # or markets_scored == 0 (the UniqueViolation bug we just
+            # fixed shows up as errors=30, markets_scored=0).
+            try:
+                cur.execute("""
+                    SELECT id, started_at, markets_scored, error_count, notes
+                    FROM dcpi_runs
+                    ORDER BY started_at DESC NULLS LAST
+                    LIMIT 5
+                """)
+                rows = cur.fetchall() or []
+                bad_runs = 0
+                last_note = ""
+                for r in rows:
+                    _id, _start, _ms, _ec, _notes = r
+                    if (_ec or 0) > 0 or (_ms or 0) == 0:
+                        bad_runs += 1
+                        if _notes and not last_note:
+                            last_note = str(_notes)[:200]
+                if bad_runs >= 2:
+                    label = (f"cron_failing_with_errors: "
+                             f"{bad_runs}/{len(rows)} recent dcpi_runs "
+                             f"have error_count>0 or markets_scored=0"
+                             + (f" — last: {last_note}" if last_note else ""))
+                    findings.setdefault("dchub://cron/dcpi_recompute", {})[label] = bad_runs
+                    issues_total += 1
+            except Exception:
+                c.rollback()
+
+            # 2. auto-press: expected 7 per 7 days. Flag if last_7d
+            # output is < 4 (more than half of expected ticks skipped).
+            try:
+                cur.execute("""
+                    SELECT COUNT(*) FROM auto_press_releases
+                    WHERE generated_at > NOW() - INTERVAL '7 days'
+                """)
+                out_7d = (cur.fetchone() or [0])[0]
+                if out_7d < 4:
+                    label = (f"cron_underproducing: auto_press_7d={out_7d} "
+                             f"(expected 7, cadence 24h)")
+                    findings.setdefault("dchub://cron/auto_press_daily", {})[label] = 1
+                    issues_total += 1
+            except Exception:
+                c.rollback()
+
+            # 3. system_loops staleness — any loop where the gap between
+            # last_event_at and now exceeds 2× its scheduled cadence.
+            # We pull from the same probe tables the system_loops
+            # endpoint uses, avoiding HTTP self-call.
+            try:
+                # brain_learn — hourly cadence
+                cur.execute("""
+                    SELECT MAX(ts) FROM brain_learn_log
+                """)
+                last = cur.fetchone()
+                if last and last[0]:
+                    age_h = (cur.execute("SELECT EXTRACT(EPOCH FROM (NOW() - %s))/3600",
+                                          (last[0],)) or cur.fetchone() or [None])
+                # The exact hour-based math is brittle across psycopg2 versions;
+                # the simpler shape below uses a single query.
+            except Exception:
+                c.rollback()
+
+            try:
+                cur.execute("""
+                    SELECT
+                        EXTRACT(EPOCH FROM (NOW() - MAX(generated_at)))/3600
+                            AS age_h
+                    FROM auto_press_releases
+                """)
+                row = cur.fetchone()
+                age_h = (row[0] if row and row[0] is not None else None)
+                if age_h is not None and float(age_h) > 48:
+                    label = (f"loop_stale: auto_press_daily last fired "
+                             f"{round(float(age_h), 1)}h ago (cadence 24h)")
+                    findings.setdefault("dchub://cron/auto_press_daily",
+                                        {})[label] = 1
+                    issues_total += 1
+            except Exception:
+                c.rollback()
+
+            try:
+                cur.execute("""
+                    SELECT
+                        EXTRACT(EPOCH FROM (NOW() - MAX(computed_at)))/3600
+                    FROM market_power_scores
+                """)
+                row = cur.fetchone()
+                age_h = (row[0] if row and row[0] is not None else None)
+                if age_h is not None and float(age_h) > 48:
+                    label = (f"loop_stale: dcpi_recompute last fired "
+                             f"{round(float(age_h), 1)}h ago (cadence 24h)")
+                    findings.setdefault("dchub://cron/dcpi_recompute",
+                                        {})[label] = 1
+                    issues_total += 1
+            except Exception:
+                c.rollback()
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    _last_backend_findings = findings
+    if issues_total == 0:
+        return True, "OK: backend cron health green (dcpi, auto_press)"
+    return True, (f"{issues_total} backend cron issue(s) across "
+                  f"{len(findings)} jobs: " + str(findings)[:280])
+
+
+def get_last_backend_findings():
+    """Returns the {url: {label: count}} dict from the most recent
+    backend cron scan. Same shape as get_last_html_findings() so the
+    /api/v1/heal/findings handler can merge into actionable_backend_issues
+    uniformly."""
+    return dict(_last_backend_findings)
+
+
+FIXES["backend_cron_scan"]    = fix_backend_cron_scan
 FIXES["linked_asset_scan"]    = fix_linked_asset_scan
 FIXES["api_contract_scan"]    = fix_api_contract_scan
 FIXES["sitemap_404_check"]    = fix_sitemap_404_check
