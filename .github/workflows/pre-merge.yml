@@ -54,3 +54,22 @@ jobs:
             S=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "https://dchub.cloud$path")
             echo "$path -> $S"
           done
+
+  # Phase PP (2026-05-13): pure-function unit tests on the hot paths
+  # that have shipped regressions this week. Tests use source-extraction
+  # so they don't need Flask, the DB, or any network — sub-second on CI.
+  # Adding more tests over time will shift these from a smoke-screen
+  # toward a real safety net; today this covers brain v2 safety,
+  # marketing topic picker, schema-aware feed query, MCP arg sanitizer,
+  # and the system-loops classifier.
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Install pytest
+        run: python3 -m pip install pytest
+      - name: Run pure-function tests
+        run: python3 -m pytest tests/ -v --tb=short
