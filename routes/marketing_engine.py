@@ -963,9 +963,17 @@ def linkedin_send_daily_email():
         "subject": f"📰 Today's LinkedIn post — {title[:60]}",
         "html":    html_email,
     }).encode()
+    # Phase QQ+18 (2026-05-13): explicit User-Agent. Resend is behind
+    # Cloudflare and their WAF returns "error code: 1010" (access
+    # denied) to bare urllib User-Agent strings ("Python-urllib/3.x").
+    # Setting any realistic UA gets through. The earlier 403 from
+    # Resend was actually a Cloudflare WAF rejection — confirmed by
+    # the literal "error code: 1010" body Resend never sets.
     req = Request("https://api.resend.com/emails", data=payload, headers={
         "Content-Type":  "application/json",
         "Authorization": f"Bearer {RESEND_API_KEY}",
+        "User-Agent":    "dchub-backend/1.0 (+https://dchub.cloud)",
+        "Accept":        "application/json",
     })
     resp_text = ""
     sent_ok = False
