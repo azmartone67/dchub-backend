@@ -17571,19 +17571,30 @@ def cf_stub_energy_summary():
     # envelope; developer/pro/enterprise get the full data. Tier
     # detection reuses the map paywall's helper so a single X-API-Key
     # works across the whole site.
+    #
+    # Phase QQ+4 (2026-05-13): pass an INLINE JWT decoder rather than
+    # rely on `globals().get("_decode_jwt_token")`. main.py doesn't
+    # define that name, so the lookup was silently returning None →
+    # JWT-cookie callers (the entire logged-in web UI) were dropping
+    # to anonymous → markets-page pricing gated for everyone. The
+    # inline decoder uses the same jwt.decode(JWT_SECRET) pattern
+    # already used at lines 4800 and 6042 in this file.
+    def _energy_decode_jwt(_t):
+        try:
+            import jwt as _jwt_mod
+            return _jwt_mod.decode(_t, JWT_SECRET, algorithms=['HS256'])
+        except Exception:
+            return None
+
     _paid_access = True
     _caller_tier = "internal"
     try:
         from map_tier_gating import _detect_caller_tier
-        # Pass our JWT decoder if available so JWT-cookie callers also unlock.
-        _decode = globals().get("_decode_jwt_token") or globals().get("decode_jwt")
-        _caller_tier, _ = _detect_caller_tier(decode_jwt_func=_decode)
+        _caller_tier, _ = _detect_caller_tier(decode_jwt_func=_energy_decode_jwt)
         _caller_tier = (_caller_tier or "anonymous").lower()
         _paid_access = _caller_tier in {"developer", "pro", "enterprise", "founding", "internal"}
     except Exception as _e:
-        # Fail-open by intent? No — fail-closed for unknown callers,
-        # but log so we can spot a regression. Internal MCP calls
-        # always include X-Internal-Key so they still pass above.
+        # Fail-closed for unknown callers; log so a regression surfaces.
         logger.warning(f"energy-gate: tier-detect failed ({_e}); defaulting anonymous")
         _caller_tier, _paid_access = "anonymous", False
 
@@ -17711,8 +17722,23 @@ def cf_stub_energy_summary():
         # tiny "Enterprise data" badge if it wants.
         out["caller_tier"] = _caller_tier
         resp = jsonify(out)
-        # Vary on auth headers so CF cache keeps paid responses
-        # separate from anyone who hits the URL anonymously after.
+        # Phase QQ+4 (2026-05-13): force Cache-Control: private on the
+        # PAID response. User reported pricing numbers flashing on the
+        # markets page then disappearing — root cause was Cloudflare
+        # caching the anonymous (gated) response at the edge and
+        # serving it to paid users.
+        #
+        # Vary: Authorization is set below but Cloudflare DOES NOT
+        # honor Vary except for Accept-Encoding (per their docs). The
+        # cache key is URL-only, so the first request to populate the
+        # cache wins for 10 minutes — anonymous response cached →
+        # paid users see gated.
+        #
+        # Fix: mark this branch private so CF can never cache it.
+        # Costs ~1s per request (no edge hit) but guarantees paid
+        # users always see real data. Energy endpoint hit rate is
+        # modest; backend can absorb the load.
+        resp.headers["Cache-Control"] = "private, no-cache, max-age=0"
         resp.headers["Vary"] = "Authorization, X-API-Key, Cookie"
         return resp
     except Exception as e:
