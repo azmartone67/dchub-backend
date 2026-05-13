@@ -34,11 +34,18 @@ def extract_all():
     started = time.time()
     results = []
 
+    # Phase GG (2026-05-13): added PJM — until now DC Hub advertised
+    # "7 ISOs" but only registered 6 here. PJM is the largest US ISO
+    # (~150 GW peak) covering mid-Atlantic + Ohio Valley. The
+    # autonomous intelligence dashboard reported "3 ISOs reporting"
+    # because MISO/SPP/ISONE had 0 rows or errored; with PJM added +
+    # SPP/ISONE URL refreshes (same phase), full 7-ISO coverage.
     extractors = [
         ("iso_ercot", "ERCOT"),
         ("iso_caiso", "CAISO"),
         ("iso_nyiso", "NYISO"),
         ("iso_miso",  "MISO"),
+        ("iso_pjm",   "PJM"),     # ← Phase GG
         ("iso_spp",   "SPP"),
         ("iso_isone", "ISONE"),
     ]
@@ -86,7 +93,8 @@ def extract_all():
 def health():
     return jsonify(
         status="ok",
-        registered_isos=["ERCOT", "CAISO", "NYISO", "MISO", "SPP", "ISONE"],
+        registered_isos=["ERCOT", "CAISO", "NYISO", "MISO", "PJM", "SPP", "ISONE"],
         endpoint="/api/v1/iso/all/extract",
+        iso_count=7,
         future_isos=[],
     ), 200
