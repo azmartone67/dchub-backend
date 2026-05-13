@@ -17541,17 +17541,38 @@ def cf_stub_energy_summary():
     residential rates in one payload when no sector filter is given.
     """
     from flask import request as _req
-    state = (_req.args.get('state') or '').strip().upper()
+    state_raw = (_req.args.get('state') or '').strip()
+    state = state_raw.upper()
     sector = (_req.args.get('sector') or '').strip().lower()
+
+    # Phase EE++ (2026-05-12): eia_retail_rates.state stores FULL STATE
+    # NAMES ("Georgia", "California"), not two-letter codes. Live probe
+    # after the first state-filter fix showed states_covered=0 for every
+    # query because UPPER('Georgia') ≠ 'GA'. Translate the code → name
+    # via the existing get_state_name() helper before querying.
+    state_name = ""
+    if state and len(state) <= 3:
+        try:
+            from location_names import get_state_name
+            state_name = get_state_name(state, 'US') or ""
+        except Exception:
+            state_name = ""
+
     try:
         conn = get_pg_connection()
         cur = conn.cursor()
-        # Build the WHERE clause defensively
+        # Build the WHERE clause defensively. Match state by EITHER the
+        # original code OR the resolved full name OR a case-insensitive
+        # partial — works regardless of how the upstream ingest writes the
+        # column.
         where = ["rate_cents_kwh > 0"]
         params = []
         if state and len(state) <= 3:
-            where.append("UPPER(state) = %s")
-            params.append(state)
+            # Match: full name (e.g. "Georgia"), full name upper-cased,
+            # the bare code (in case ingest used codes), and an ILIKE
+            # fallback for prefix variants ("Ga.", "Georgia, USA").
+            where.append("(state = %s OR UPPER(state) = %s OR UPPER(state) = %s OR state ILIKE %s)")
+            params.extend([state_name, (state_name or '').upper(), state, f"{state_name}%"])
         if sector and sector != 'all':
             where.append("LOWER(sector) = %s")
             params.append(sector)
@@ -17572,9 +17593,11 @@ def cf_stub_energy_summary():
             cur.execute("""
                 SELECT LOWER(sector), AVG(rate_cents_kwh), MAX(period)
                 FROM eia_retail_rates
-                WHERE rate_cents_kwh > 0 AND UPPER(state) = %s
+                WHERE rate_cents_kwh > 0
+                  AND (state = %s OR UPPER(state) = %s OR UPPER(state) = %s
+                       OR state ILIKE %s)
                 GROUP BY LOWER(sector)
-            """, (state,))
+            """, (state_name, (state_name or '').upper(), state, f"{state_name}%"))
             for r in cur.fetchall():
                 by_sector[r[0] or 'unknown'] = {
                     "avg_cents_kwh": round(float(r[1] or 0), 2),
