@@ -15,10 +15,21 @@ except ImportError:
 iso_spp_bp = Blueprint("iso_spp", __name__, url_prefix="/api/v1/iso/spp")
 SOURCE_ID = "iso-spp-realtime"
 
+# Phase GG (2026-05-13): updated URL list. Previous URLs were
+# returning URLErr (the www.spp.org/Real-time-Market path 404s).
+# SPP rotates their public endpoints frequently; ordered most-likely-
+# working first.
 SPP_URLS = [
+    # SPP portal file browser — current real-time fuel mix downloads
+    "https://portal.spp.org/file-browser-api/download/rtbm-fuel-mix",
+    "https://portal.spp.org/file-browser-api/download/RTBM-FUEL-MIX-MORE-7-DAYS?path=/RTBM-FUEL-MIX-MORE-7-DAYS-LATEST.csv",
+    # Marketplace chart API (older but sometimes still mirrors)
     "https://marketplace.spp.org/chart-api/fuel-mix-rtbm-genmix/asChart",
     "https://marketplace.spp.org/chart-api/fuel-mix-rtbm-genmix/asChart?type=json",
     "https://marketplace.spp.org/file-browser-api/download/rtbm-fuel-mix",
+    # EIA EBA fallback — works without auth for SPP fuel-type aggregates
+    "https://www.eia.gov/electricity/data/eia930/api/region/SWPP/fuel-type-data",
+    # Legacy paths (kept last so newer endpoints try first)
     "https://www.spp.org/Real-time-Market",
 ]
 

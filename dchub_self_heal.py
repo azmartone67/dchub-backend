@@ -1851,6 +1851,19 @@ CONTENT_TYPE_PROBES = [
     {"label": "media_aggregate_json",        "url": "https://dchub.cloud/api/v1/media/aggregate",         "expect": "application/json"},
     {"label": "testimonials_live_json",      "url": "https://dchub.cloud/api/v1/testimonials/live",       "expect": "application/json"},
     {"label": "agent_vendor_telemetry_json", "url": "https://dchub.cloud/api/v1/outreach/agents/vendors", "expect": "application/json"},
+    # Phase GG (2026-05-13): per-ISO ingestion health for all 7 ISOs.
+    # Each endpoint reports the most recent heartbeat from its extractor.
+    # The brain catches a regression within 5 min if any ISO health
+    # endpoint flips to non-200 (e.g. extractor URL goes 404).
+    {"label": "iso_ercot_health",     "url": "https://dchub.cloud/api/v1/iso/ercot/health", "expect": "application/json"},
+    {"label": "iso_caiso_health",     "url": "https://dchub.cloud/api/v1/iso/caiso/health", "expect": "application/json"},
+    {"label": "iso_nyiso_health",     "url": "https://dchub.cloud/api/v1/iso/nyiso/health", "expect": "application/json"},
+    {"label": "iso_miso_health",      "url": "https://dchub.cloud/api/v1/iso/miso/health",  "expect": "application/json"},
+    {"label": "iso_pjm_health",       "url": "https://dchub.cloud/api/v1/iso/pjm/health",   "expect": "application/json"},
+    {"label": "iso_spp_health",       "url": "https://dchub.cloud/api/v1/iso/spp/health",   "expect": "application/json"},
+    {"label": "iso_isone_health",     "url": "https://dchub.cloud/api/v1/iso/isone/health", "expect": "application/json"},
+    # Orchestrator health — verifies all 7 are registered
+    {"label": "iso_orchestrator_health", "url": "https://dchub.cloud/api/v1/iso/all/health", "expect": "application/json"},
 ]
 
 _last_api_contract_findings = {}

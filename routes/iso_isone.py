@@ -27,13 +27,24 @@ def _yesterday():
 
 
 def _isone_urls():
+    """Phase GG (2026-05-13): refreshed URL list. ISO-NE deprecated the
+       `/transform/csv/sysload` endpoint and intermittently breaks
+       `/transform/csv/genfuelmix`. Use the current web-services /JSON
+       endpoints first, then fall back to EIA EBA + legacy paths."""
     today = _today()
-    yest = _yesterday()
+    yest  = _yesterday()
     return [
+        # Current ISO-NE web services — public read endpoints
+        "https://webservices.iso-ne.com/api/v1.1/genfuelmix/current",
+        "https://www.iso-ne.com/ws/wsclient?_nstmp_formDate=&_nstmp_chartName=genfuelmix",
+        # Static archive (sometimes mirrors current day)
         f"https://www.iso-ne.com/transform/csv/genfuelmix?start={today}",
         f"https://www.iso-ne.com/transform/csv/genfuelmix?start={yest}",
+        # EIA EBA fallback — works for ISO-NE without auth
+        "https://www.eia.gov/electricity/data/eia930/api/region/ISNE/fuel-type-data",
+        # Legacy paths kept last
         "https://www.iso-ne.com/static-assets/documents/2024/01/genfuelmix.csv",
-        "https://www.iso-ne.com/transform/csv/sysload?start=" + today,
+        f"https://www.iso-ne.com/transform/csv/sysload?start={today}",
     ]
 
 

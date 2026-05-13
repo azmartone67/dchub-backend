@@ -18159,6 +18159,7 @@ from routes.iso_orchestrator import iso_orchestrator_bp
 from routes.iso_miso import iso_miso_bp
 from routes.iso_spp import iso_spp_bp
 from routes.iso_isone import iso_isone_bp
+from routes.iso_pjm import iso_pjm_bp  # Phase GG (2026-05-13) — 7th ISO
 from routes.grid_snapshot import grid_snapshot_bp
 from routes.sec_edgar import sec_edgar_bp
 from routes.extractor_brain import extractor_brain_bp
@@ -18199,6 +18200,7 @@ app.register_blueprint(iso_orchestrator_bp)
 app.register_blueprint(iso_miso_bp)
 app.register_blueprint(iso_spp_bp)
 app.register_blueprint(iso_isone_bp)
+app.register_blueprint(iso_pjm_bp)  # Phase GG (2026-05-13) — 7th ISO
 app.register_blueprint(grid_snapshot_bp)
 app.register_blueprint(sec_edgar_bp)
 app.register_blueprint(extractor_brain_bp)
