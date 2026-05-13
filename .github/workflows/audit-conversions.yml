@@ -1,11 +1,9 @@
 name: audit-mcp-conversions (manual)
-# One-off helper. Fetches the 10 most-recent mcp_conversions rows via the
-# admin endpoint, using the GitHub Actions secret DCHUB_ADMIN_KEY, and
-# dumps the JSON into the Actions log so you don't have to find the key
-# value locally.
-#
-# Trigger from CLI:  gh workflow run audit-conversions.yml
-# Then read result:  gh run view --log <run-id>
+# One-off helper. Fetches /api/v1/admin/mcp/conversions via the admin
+# endpoint using DCHUB_ADMIN_KEY GitHub Actions secret, and dumps result
+# into the Actions log. Also probes /api/v1/brain/status (no auth needed
+# to check live) and /api/v1/brain/learn (admin-gated) as parity checks
+# to detect whether the secret value matches what Railway expects.
 
 on:
   workflow_dispatch:
@@ -15,14 +13,36 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - name: Fetch + summarize conversions
+      - name: Parity check — does the same admin key work elsewhere?
         env:
           ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
         run: |
           if [ -z "$ADMIN_KEY" ]; then
-            echo "::error::DCHUB_ADMIN_KEY secret not set in this repo"
+            echo "::error::DCHUB_ADMIN_KEY secret not set"
             exit 1
           fi
+          echo "Secret length: ${#ADMIN_KEY} chars"
+          echo
+          echo "=== Test 1: /api/v1/brain/status (no auth — should always 200) ==="
+          curl -sS --max-time 10 "https://dchub.cloud/api/v1/brain/status" \
+            | python3 -c "import json,sys; d=json.load(sys.stdin); print('  active:', d.get('active'), '· loaded:', d.get('loaded'), '· model:', d.get('model'))"
+          echo
+          echo "=== Test 2: /api/v1/brain/learning-log (admin-gated like our target) ==="
+          response=$(curl -sS --max-time 10 \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "https://dchub.cloud/api/v1/brain/learning-log")
+          echo "$response" | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          if d.get('error'):
+              print(f\"  REJECTED — {d.get('error')}\")
+              print('  → The secret value in GH Actions does NOT match Railway')
+          else:
+              print(f\"  ACCEPTED — log_count={d.get('count','?')}\")
+              print('  → The secret IS correct; check why /admin/mcp/conversions differs')
+          "
+          echo
+          echo "=== Test 3: /api/v1/admin/mcp/conversions (the target) ==="
           response=$(curl -sS --max-time 30 \
             -H "X-Admin-Key: $ADMIN_KEY" \
             "https://dchub.cloud/api/v1/admin/mcp/conversions?limit=10")
