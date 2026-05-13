@@ -61,6 +61,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import time
 from datetime import datetime, timezone
 from functools import wraps
@@ -643,26 +644,84 @@ def persistence_worklist():
     Returns the issues the healer has surfaced repeatedly that the brain
     has NOT yet produced a successful proposal for. The /brain dashboard
     can show this so the team can see exactly what the system is stuck on.
+
+    Phase OO (2026-05-13): augmented with heartbeat-derived stale-surface
+    items. Heartbeat tracks 856 surfaces (every API + page) with explicit
+    cap_h freshness windows. When a surface goes past its cap it's a
+    high-signal issue the brain SHOULD be working on — far more
+    actionable than the em-dash placeholder findings the healer
+    surfaces. Heartbeat items are emitted alongside (not instead of) the
+    healer findings so the brain has both signals.
     """
-    if not _STORE_OK:
-        return jsonify(
-            as_of=datetime.now(timezone.utc).isoformat(),
-            store_backed=False,
-            count=0,
-            items=[],
-            hint="DATABASE_URL not set — persistence tracking unavailable",
-        ), 200
-    try:
-        min_count = int(request.args.get("min_count", "2"))
-    except ValueError:
+    persistence_items = []
+    if _STORE_OK:
+        try:
+            min_count = int(request.args.get("min_count", "2"))
+        except ValueError:
+            min_count = 2
+        persistence_items = _store.most_persistent_unfixed(
+            min_count=min_count, limit=50)
+    else:
         min_count = 2
-    items = _store.most_persistent_unfixed(min_count=min_count, limit=50)
+
+    # Phase OO: fold in heartbeat-stale surfaces. We import the status
+    # function directly rather than going out over HTTP — avoids the
+    # self-call edge case where the brain endpoint hangs waiting on
+    # its own server.
+    heartbeat_items = []
+    try:
+        from routes.heartbeat import _status as _hb_status
+        rows = _hb_status()
+        # Convert each stale surface into the same item shape as
+        # persistence rows so the dashboard renders them uniformly.
+        now_iso = datetime.now(timezone.utc).isoformat()
+        for r in rows or []:
+            age = r.get("age_hours")
+            cap = r.get("stale_after_hours") or 0
+            if not isinstance(age, (int, float)) or not cap:
+                continue
+            if age <= cap:
+                continue  # fresh — skip
+            # Severity proxy: how many cycles past cap. seen_count
+            # convention is "how many times the healer has noticed
+            # this", and the brain prioritizes higher seen_count first.
+            cycles_past = max(2, int(age / max(cap, 1)))
+            heartbeat_items.append({
+                "issue_label": "stale_surface",
+                "url": r.get("surface", "?"),
+                "seen_count": cycles_past,
+                "first_seen_at": r.get("last_updated") or now_iso,
+                "last_seen_at": now_iso,
+                "last_outcome": (
+                    f"untried · {age:.1f}h old, cap {cap}h"
+                    if isinstance(age, (int, float)) else "untried"
+                ),
+                # Carry the heartbeat's own refresh hint so a future
+                # repair pathway can call /api/v1/heartbeat/refresh.
+                "refresh_func": r.get("refresh_func"),
+                "source": "heartbeat",
+            })
+        # Sort by cycles_past descending so the most-stale leads.
+        heartbeat_items.sort(key=lambda x: -x["seen_count"])
+        # Cap so a totally cold deploy doesn't dump 856 rows.
+        heartbeat_items = heartbeat_items[:25]
+    except Exception as e:
+        # Heartbeat is supplementary — never fail the endpoint over it.
+        print(f"[brain_v2_layer4] heartbeat fold-in failed: {e}",
+              file=sys.stderr)
+
+    items = list(persistence_items) + heartbeat_items
     return jsonify(
         as_of=datetime.now(timezone.utc).isoformat(),
-        store_backed=True,
+        store_backed=_STORE_OK,
         min_count=min_count,
         count=len(items),
         items=items,
+        persistence_count=len(persistence_items),
+        heartbeat_stale_count=len(heartbeat_items),
+        hint=(None if _STORE_OK else
+              "DATABASE_URL not set — persistence tracking unavailable; "
+              "heartbeat items still included"),
     ), 200
 
 
