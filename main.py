@@ -19237,6 +19237,81 @@ def _phase239_marker():
     return jsonify({"phase": 239, "ok": True})
 
 
+# Phase audit (2026-05-12): admin-gated peek at recent mcp_conversions rows.
+# Built in response to user reporting "I notice we gave another conversion
+# but don't see it hit our Stripe account yet" — the /api/v1/mcp/funnel
+# widget showed conversions_30d=2 but they couldn't find the corresponding
+# payments in Stripe. This endpoint surfaces the rows so we can attribute
+# each conversion to its actual source (Stripe webhook, manual insert,
+# test event, etc.). Emails are partially masked unless ?unmask=1 with
+# the admin key.
+@app.route("/api/v1/admin/mcp/conversions", methods=["GET"])
+def _admin_mcp_conversions_peek():
+    """Returns the N most-recent mcp_conversions rows. Admin-gated."""
+    import os, psycopg2
+    from flask import jsonify, request
+    expected = os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY")
+    provided = (request.headers.get("X-Admin-Key")
+                or request.args.get("admin_key"))
+    if expected and provided != expected:
+        return jsonify(error="unauthorized",
+                       hint="X-Admin-Key header required"), 401
+    try:
+        limit = max(1, min(int(request.args.get("limit", 10)), 50))
+    except ValueError:
+        limit = 10
+    unmask = request.args.get("unmask", "").lower() in ("1", "true", "yes")
+    DATABASE_URL = os.environ.get("DATABASE_URL")
+    if not DATABASE_URL:
+        return jsonify(error="no_database"), 503
+    try:
+        with psycopg2.connect(DATABASE_URL, connect_timeout=6) as conn, \
+             conn.cursor() as cur:
+            # First, get the column list — schema may vary across deploys
+            cur.execute("""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name = 'mcp_conversions'
+                ORDER BY ordinal_position
+            """)
+            cols = [r[0] for r in cur.fetchall()]
+            if not cols:
+                return jsonify(error="table_not_found",
+                               table="mcp_conversions"), 404
+            # Pull recent rows
+            order_col = "created_at" if "created_at" in cols else "id"
+            cur.execute(f"""
+                SELECT {', '.join(cols)}
+                FROM mcp_conversions
+                ORDER BY {order_col} DESC NULLS LAST
+                LIMIT %s
+            """, (limit,))
+            rows = []
+            for raw in cur.fetchall():
+                row = dict(zip(cols, raw))
+                # Stringify datetimes
+                for k, v in list(row.items()):
+                    if hasattr(v, "isoformat"):
+                        row[k] = v.isoformat()
+                # Mask email unless caller opted in
+                if not unmask and row.get("user_email"):
+                    email = row["user_email"]
+                    if "@" in email:
+                        local, _, domain = email.partition("@")
+                        row["user_email"] = (local[:2] + "***@" + domain
+                                             if len(local) > 2
+                                             else "***@" + domain)
+                rows.append(row)
+        return jsonify({
+            "count": len(rows),
+            "rows": rows,
+            "columns": cols,
+            "unmasked": unmask,
+            "hint": "Pass ?unmask=1 + X-Admin-Key header to see full emails.",
+        }), 200
+    except Exception as e:
+        return jsonify(error=str(e)[:300]), 500
+
+
 # ============================================================================
 # Phase 250: MASTER HEALER endpoints
 # ============================================================================
