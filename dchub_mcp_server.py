@@ -776,8 +776,8 @@ async def get_market_intel(
         JSON with market metrics, trends, and top operators.
     
     """
-    # ── Auth gate ──
-    _block = gate("get_market_intel")
+    # ── Auth gate ── Phase JJ: pass args for value-framed CTA
+    _block = gate("get_market_intel", {"market": market, "metric": metric, "period": period})
     if _block: return _block
 
     if not market:
@@ -1252,8 +1252,8 @@ async def get_grid_data(
         JSON with grid metrics for the specified ISO and time period.
     
     """
-    # ── Auth gate ──
-    _block = gate("get_grid_data")
+    # ── Auth gate ── Phase JJ: pass args for value-framed CTA
+    _block = gate("get_grid_data", {"iso": iso})
     if _block: return _block
 
     if not iso:
@@ -1818,8 +1818,8 @@ async def get_energy_prices(
         JSON with pricing data, rates, and grid operational status.
     
     """
-    # ── Auth gate ──
-    _block = gate("get_energy_prices")
+    # ── Auth gate ── Phase JJ: pass args for value-framed CTA
+    _block = gate("get_energy_prices", {"data_type": data_type, "state": state, "iso": iso})
     if _block: return _block
 
     _track("get_energy_prices", {"data_type": data_type, "state": state, "iso": iso})
@@ -1956,8 +1956,8 @@ async def get_renewable_energy(
         JSON with renewable energy installations, capacity, and location data.
     
     """
-    # ── Auth gate ──
-    _block = gate("get_renewable_energy")
+    # ── Auth gate ── Phase JJ: pass args for value-framed CTA
+    _block = gate("get_renewable_energy", {"energy_type": energy_type, "state": state})
     if _block: return _block
 
     _track("get_renewable_energy", {"energy_type": energy_type, "state": state})
@@ -2794,8 +2794,8 @@ async def get_water_risk(lat: float = 0, lon: float = 0, state: str = "") -> str
         JSON with water stress level, withdrawal data, and cooling system recommendations.
     
     """
-    # ── Auth gate ──
-    _block = gate("get_water_risk")
+    # ── Auth gate ── Phase JJ: pass args for value-framed CTA
+    _block = gate("get_water_risk", {"lat": lat, "lon": lon, "state": state})
     if _block: return _block
 
     conn = None
