@@ -1,0 +1,29 @@
+name: LinkedIn whoami (manual debug)
+
+# Phase FF+9 (2026-05-13): one-shot diagnostic for LinkedIn token issues.
+# Calls /api/v1/marketing/linkedin/whoami and prints what Railway has
+# stored + what LinkedIn says about it. No token value is ever logged.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  whoami:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Fetch LinkedIn whoami
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::error::DCHUB_ADMIN_KEY secret not set"
+            exit 1
+          fi
+          curl -sS --max-time 30 \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "https://dchub-backend-production.up.railway.app/api/v1/marketing/linkedin/whoami" \
+            | python3 -m json.tool
