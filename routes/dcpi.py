@@ -531,6 +531,17 @@ def recompute_all_scores(source: str = "manual") -> dict:
             risks, opps = derive_top_signals(m, metrics, c_score, e_score)
 
             with _conn() as c, c.cursor() as cur:
+                # Phase FF+4 (2026-05-13): UPSERT, not INSERT. Production
+                # has a UNIQUE constraint `market_power_scores_slug_key`
+                # on (market_slug) that _ensure_tables doesn't define
+                # but exists in the live DB (added via manual migration).
+                # The previous plain INSERT raised UniqueViolation on
+                # every market after the first run — markets_scored=0,
+                # errors=30, loop probe showed stale at 57h. Now we
+                # upsert: keep one canonical row per market, refresh
+                # all metric columns + computed_at on each recompute.
+                # Identifier columns (slug/name/state/iso/lat/lon) are
+                # treated as stable — they don't change between runs.
                 cur.execute("""
                     INSERT INTO market_power_scores (
                         market_slug, market_name, state, iso, latitude, longitude,
@@ -541,6 +552,26 @@ def recompute_all_scores(source: str = "manual") -> dict:
                         top_risks_json, top_opportunities_json, verdict, computed_at
                     )
                     VALUES (%s,%s,%s,%s,%s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s, %s, %s,%s,%s, NOW())
+                    ON CONFLICT (market_slug) DO UPDATE SET
+                        market_name             = EXCLUDED.market_name,
+                        state                   = EXCLUDED.state,
+                        iso                     = EXCLUDED.iso,
+                        latitude                = EXCLUDED.latitude,
+                        longitude               = EXCLUDED.longitude,
+                        constraint_score        = EXCLUDED.constraint_score,
+                        excess_power_score      = EXCLUDED.excess_power_score,
+                        time_to_power_months    = EXCLUDED.time_to_power_months,
+                        queue_capacity_mw       = EXCLUDED.queue_capacity_mw,
+                        queue_wait_months       = EXCLUDED.queue_wait_months,
+                        reserve_margin_pct      = EXCLUDED.reserve_margin_pct,
+                        gen_additions_12mo_mw   = EXCLUDED.gen_additions_12mo_mw,
+                        curtailment_pct         = EXCLUDED.curtailment_pct,
+                        stranded_capacity_mw    = EXCLUDED.stranded_capacity_mw,
+                        emergency_count_30d     = EXCLUDED.emergency_count_30d,
+                        top_risks_json          = EXCLUDED.top_risks_json,
+                        top_opportunities_json  = EXCLUDED.top_opportunities_json,
+                        verdict                 = EXCLUDED.verdict,
+                        computed_at             = NOW()
                 """, (
                     slug, name, state, iso, lat, lon,
                     c_score, e_score, ttp,
