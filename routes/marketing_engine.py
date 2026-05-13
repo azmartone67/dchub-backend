@@ -634,23 +634,26 @@ def _queue_distribution_posts(rel: dict, press_id: int, today: str) -> None:
             except Exception:
                 c.rollback()
 
-            # LinkedIn row
+            # LinkedIn + Twitter rows. Platform / status are parameterized
+            # rather than inline quoted literals so the regression-lint
+            # regex `INSERT INTO ... [^;"']*` traverses the entire SQL
+            # string and sees the ON CONFLICT clause — same pattern as
+            # the source + category parameterization in _write_release.
             li_text = _format_linkedin_post(rel)
             cur.execute("""
                 INSERT INTO social_media_posts
                     (platform, content, status, press_release_id, created_at)
-                VALUES ('linkedin', %s, 'approved', %s, NOW())
-                ON CONFLICT DO NOTHING
-            """, (li_text, press_id))
+                VALUES (%s, %s, %s, %s, NOW())
+                ON CONFLICT (press_release_id, platform) DO NOTHING
+            """, ("linkedin", li_text, "approved", press_id))
 
-            # Twitter / X row
             tw_text = _format_twitter_post(rel)
             cur.execute("""
                 INSERT INTO social_media_posts
                     (platform, content, status, press_release_id, created_at)
-                VALUES ('twitter', %s, 'approved', %s, NOW())
-                ON CONFLICT DO NOTHING
-            """, (tw_text, press_id))
+                VALUES (%s, %s, %s, %s, NOW())
+                ON CONFLICT (press_release_id, platform) DO NOTHING
+            """, ("twitter", tw_text, "approved", press_id))
         c.commit()
     finally:
         try: c.close()
@@ -732,32 +735,39 @@ def _notify_mcp_subscribers(rel: dict, press_id: int) -> None:
         # via separate sends to keep recipient privacy. To stay under
         # the 10 req/sec limit, batch in groups of 50 with a small
         # sleep between batches.
-        import json as _json, urllib.request, urllib.error, time as _time
+        # Uses `requests` per regression-lint rule [urllib-request-on-railway]
+        # — Railway egress sometimes returns CF 1010 on urllib's default
+        # UA, and requests has a saner default + connection pooling.
+        import requests as _rq, time as _time
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {RESEND_API_KEY}",
+            "User-Agent": "dchub-backend/1.0 (+https://dchub.cloud)",
+            "Accept": "application/json",
+        }
         batch_size = 50
         for i in range(0, len(recipients), batch_size):
             batch = recipients[i:i+batch_size]
             for to_addr in batch:
-                req = urllib.request.Request(
-                    "https://api.resend.com/emails",
-                    data=_json.dumps({
-                        "from": sender,
-                        "to": [to_addr],
-                        "subject": subject,
-                        "html": html_body,
-                    }).encode("utf-8"),
-                    headers={
-                        "Content-Type": "application/json",
-                        "Authorization": f"Bearer {RESEND_API_KEY}",
-                        "User-Agent": "dchub-backend/1.0 (+https://dchub.cloud)",
-                        "Accept": "application/json",
-                    },
-                    method="POST",
-                )
                 try:
-                    with urllib.request.urlopen(req, timeout=15) as resp:
-                        if resp.status in (200, 201, 202):
-                            sent_to += 1
-                except (urllib.error.HTTPError, urllib.error.URLError) as e:
+                    resp = _rq.post(
+                        "https://api.resend.com/emails",
+                        json={
+                            "from": sender,
+                            "to": [to_addr],
+                            "subject": subject,
+                            "html": html_body,
+                        },
+                        headers=headers,
+                        timeout=15,
+                    )
+                    if resp.status_code in (200, 201, 202):
+                        sent_to += 1
+                    else:
+                        print(f"[mcp_digest] send to {to_addr} failed: "
+                              f"{resp.status_code} {resp.text[:200]}",
+                              file=sys.stderr)
+                except Exception as e:
                     # Don't let one failed address kill the batch.
                     print(f"[mcp_digest] send to {to_addr} failed: {e}",
                           file=sys.stderr)
