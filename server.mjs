@@ -359,15 +359,21 @@ ${_quick}\u{1F449} **[Upgrade to Developer](${UPGRADE_URL})** — $49/mo, 1,000 
       status = 'error';
       throw err;
     } finally {
-      // Fire-and-forget telemetry — never block the user response on it
+      // Fire-and-forget telemetry — never block the user response on it.
+      // Phase FF++ (2026-05-12): include client_name + client_version from
+      // the initialize handshake so flask_mcp_endpoints.py:390 has a real
+      // vendor identifier to insert into mcp_tool_calls.client_name
+      // (instead of falling back to the transport's session UUID).
       trackToolCall({
-        timestamp:   new Date().toISOString(),
-        tool:        name,
-        params:      args,
-        platform:    c.platform || 'unknown',
-        api_key:     c.api_key || null,
+        timestamp:      new Date().toISOString(),
+        tool:           name,
+        params:         args,
+        platform:       c.platform || 'unknown',
+        api_key:        c.api_key || null,
         tier,
-        session_id:  c.session_id || null,
+        session_id:     c.session_id || null,
+        client_name:    c.client_name    || null,
+        client_version: c.client_version || null,
         status,
         duration_ms: Date.now() - t0,
       }).catch(() => {});
@@ -519,9 +525,21 @@ app.post('/mcp', async (req, res) => {
 
     const body = req.body;
     if (body?.method === 'initialize') {
-      const platform   = detectPlatform(userAgent);
-      const validation = await validateKey(apiKey);
-      const tier       = validation.valid ? validation.tier : 'free';
+      // Phase FF++ (2026-05-12): capture clientInfo.name + .version from
+      // the MCP `initialize` handshake. Without this, every session in
+      // mcp_tool_calls.client_name showed up as the transport's auto-
+      // generated session UUID instead of the actual client identity
+      // ("claude-desktop", "cursor-ai", etc.). Per the MCP spec
+      // (modelcontextprotocol.io), `initialize.params.clientInfo` is the
+      // canonical vendor self-identification — clients MUST send it.
+      const platform     = detectPlatform(userAgent);
+      const validation   = await validateKey(apiKey);
+      const tier         = validation.valid ? validation.tier : 'free';
+      const clientInfo   = (body?.params?.clientInfo) || {};
+      const clientName   = (typeof clientInfo.name    === 'string' && clientInfo.name.trim())
+                            ? clientInfo.name.trim().slice(0, 200) : null;
+      const clientVer    = (typeof clientInfo.version === 'string' && clientInfo.version.trim())
+                            ? clientInfo.version.trim().slice(0, 60)  : null;
 
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
@@ -533,8 +551,10 @@ app.post('/mcp', async (req, res) => {
             tier,
             developer_id: validation.developer_id,
             email: validation.email,
+            client_name:    clientName,    // ← Phase FF++ — vendor self-id
+            client_version: clientVer,
           });
-          console.log(`[MCP] init sid=${sid.slice(0,8)} platform=${platform} tier=${tier} key=${apiKey ? apiKey.slice(0,6) + '…' : 'none'} active=${sessions.size}`);
+          console.log(`[MCP] init sid=${sid.slice(0,8)} platform=${platform} tier=${tier} client=${clientName||'(none)'}@${clientVer||'?'} key=${apiKey ? apiKey.slice(0,6) + '…' : 'none'} active=${sessions.size}`);
         },
       });
       transport.onclose = () => {
@@ -544,7 +564,9 @@ app.post('/mcp', async (req, res) => {
       const mcpServer = createServer();
       await mcpServer.connect(transport);
 
-      return ctx.run({ api_key: apiKey, platform, tier, session_id: null }, async () => {
+      return ctx.run({ api_key: apiKey, platform, tier, session_id: null,
+                        client_name: clientName, client_version: clientVer },
+                      async () => {
         await transport.handleRequest(req, res, body);
       });
     }

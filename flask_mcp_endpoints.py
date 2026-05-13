@@ -379,6 +379,17 @@ def track_tool_call():
         if _db_lt:
             _c_lt = _db_lt.cursor()
             _params_str = params if isinstance(params, str) else (json.dumps(params or {}) if params is not None else '{}')
+            # Phase FF++ (2026-05-12): DROPPED the session_id fallback in
+            # client_name. Previously, when upstream MCP server (server.mjs)
+            # didn't pass client_name (which was always — it didn't
+            # capture clientInfo.name from the initialize handshake), this
+            # line fell back to body.session_id, which is the MCP
+            # transport's auto-generated UUID. That polluted every row in
+            # mcp_tool_calls with anonymous UUIDs and made vendor
+            # detection impossible.
+            #
+            # Now: prefer real client_name → client → 'unknown'. Never
+            # leak transport plumbing IDs into analytics.
             _c_lt.execute(
                 """INSERT INTO mcp_tool_calls
                        (tool_name, platform, client_name, params, success,
@@ -387,7 +398,7 @@ def track_tool_call():
                 (
                     str(tool)[:200],
                     (str(body.get('platform') or 'mcp-worker'))[:80],
-                    (str(body.get('client_name') or body.get('client') or body.get('session_id') or 'unknown'))[:200],
+                    (str(body.get('client_name') or body.get('client') or 'unknown'))[:200],
                     (_params_str or '{}')[:4000],
                     bool((body.get('status') in (None, 'ok', 'success', 200, True)) or body.get('success', True)),
                     int((body.get('duration_ms') or body.get('response_time_ms') or 0) or 0),
