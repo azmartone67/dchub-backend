@@ -571,6 +571,14 @@ def aggregate_announcements_v3(limit_per_source=20):
         pr_cols   = _table_cols(cur, 'press_releases')
         af_cols   = _table_cols(cur, 'announcements_feed')
         tt_cols   = _table_cols(cur, 'ai_testimonials')
+        # Phase MM (hotfix 2026-05-13): introspect ai_testimonials_auto
+        # here while `cur` is in scope. Previously the lookup was
+        # deferred to the testimonials query builder below, which lives
+        # OUTSIDE this `with` block — `cur` was closed, _table_cols
+        # raised, the outer broad except returned items=[] for the
+        # whole feed. /dc-hub-media went blank for ~minutes between
+        # PR #46 deploying and this fix.
+        tta_cols  = _table_cols(cur, 'ai_testimonials_auto')
         mps_cols  = _table_cols(cur, 'market_power_scores')
 
     queries = []
@@ -698,8 +706,8 @@ def aggregate_announcements_v3(limit_per_source=20):
     # producing fresh rows. Auto-ingested rows are quote-filtered for
     # "dchub" mentions at ingest time (see routes/dchub_media_hub.py), so
     # surfacing them without manual approval is safe in this signal-only
-    # context.
-    tta_cols = _table_cols(cur, 'ai_testimonials_auto')
+    # context. (tta_cols was introspected up at the start of the
+    # function inside the `with conn.cursor() as cur:` block.)
     if tt_cols and 'quote' in tt_cols:
         # Build the source-exclusion clause defensively based on actual columns
         source_filter = "AND TRUE"
