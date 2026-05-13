@@ -1,0 +1,51 @@
+name: audit-mcp-conversions (manual)
+# One-off helper. Fetches the 10 most-recent mcp_conversions rows via the
+# admin endpoint, using the GitHub Actions secret DCHUB_ADMIN_KEY, and
+# dumps the JSON into the Actions log so you don't have to find the key
+# value locally.
+#
+# Trigger from CLI:  gh workflow run audit-conversions.yml
+# Then read result:  gh run view --log <run-id>
+
+on:
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Fetch + summarize conversions
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::error::DCHUB_ADMIN_KEY secret not set in this repo"
+            exit 1
+          fi
+          response=$(curl -sS --max-time 30 \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "https://dchub.cloud/api/v1/admin/mcp/conversions?limit=10")
+          echo "=== RAW JSON ==="
+          echo "$response"
+          echo
+          echo "=== SUMMARY ==="
+          echo "$response" | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          if d.get('error'):
+              print(f\"::error::Endpoint returned: {d.get('error')}\")
+              sys.exit(0)
+          rows = d.get('rows') or []
+          print(f'Total rows: {len(rows)}')
+          print()
+          for i, r in enumerate(rows, 1):
+              print(f'--- row {i} ---')
+              for k in ('id', 'created_at', 'user_email', 'stripe_customer_id',
+                        'stripe_subscription_id', 'plan_from', 'plan_to',
+                        'mrr_cents', 'source', 'stage', 'attribution_signal_id'):
+                  v = r.get(k)
+                  if v is not None:
+                      print(f'  {k:30s} {v}')
+              print()
+          " || true
