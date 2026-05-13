@@ -943,9 +943,22 @@ def linkedin_send_daily_email():
 </div>"""
 
     # Send via Resend
+    #
+    # Phase QQ+17 (2026-05-13): two changes after observing the live 403:
+    #   1. Read the Resend error response BODY on HTTPError so the
+    #      operator sees the actual reason (domain unverified vs bad
+    #      key vs bad payload). Previously we returned only the
+    #      stringified urllib exception which dropped Resend's message.
+    #   2. Sender is configurable via DCHUB_RESEND_FROM env var so we
+    #      can fall back to onboarding@resend.dev (Resend's universally-
+    #      verified sandbox sender) without a code change when the
+    #      dchub.cloud domain isn't yet verified in the Resend dashboard.
     from urllib.request import Request, urlopen
+    from urllib.error import HTTPError
+    sender = os.environ.get("DCHUB_RESEND_FROM",
+                            "DC Hub <noreply@dchub.cloud>")
     payload = json.dumps({
-        "from":    "DC Hub <noreply@dchub.cloud>",
+        "from":    sender,
         "to":      [to_addr],
         "subject": f"📰 Today's LinkedIn post — {title[:60]}",
         "html":    html_email,
@@ -954,10 +967,29 @@ def linkedin_send_daily_email():
         "Content-Type":  "application/json",
         "Authorization": f"Bearer {RESEND_API_KEY}",
     })
+    resp_text = ""
+    sent_ok = False
     try:
         with urlopen(req, timeout=15) as r:
             resp_text = r.read().decode("utf-8", errors="ignore")
             sent_ok = (r.status == 200)
+    except HTTPError as he:
+        # CAPTURE the response body — that's where Resend explains
+        # what's wrong (domain not verified, invalid recipient, etc).
+        body = ""
+        try:
+            body = he.read().decode("utf-8", errors="ignore")
+        except Exception:
+            pass
+        return jsonify(
+            ok=False,
+            error=f"resend_http_{he.code}",
+            sender=sender,
+            resend_response=body[:500],
+            hint=("If 'domain is not verified', verify dchub.cloud at "
+                  "https://resend.com/domains OR set DCHUB_RESEND_FROM "
+                  "env var to 'onboarding@resend.dev' for testing."),
+        ), 502
     except Exception as e:
         return jsonify(ok=False, error=f"resend_failed: {str(e)[:200]}"), 502
 
