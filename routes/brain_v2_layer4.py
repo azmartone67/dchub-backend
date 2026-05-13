@@ -356,20 +356,46 @@ def trigger_learn():
                        hint="Configure in Railway env to activate Layer 4"), 503
 
     # 1. Get current healer findings
+    #
+    # Phase QQ+15 (2026-05-13): switched from urllib network calls to
+    # Flask's in-process test_client. The old code hit
+    # http://127.0.0.1:8080/api/v1/heal/findings — but Railway uses
+    # the $PORT env var (NOT 8080), so the loopback failed instantly.
+    # Then it fell back to https://dchub.cloud/.../heal/findings which
+    # bounces back through the CF Worker → got 403'd by the rate
+    # limiter / Worker security rules when called from Railway's
+    # outbound IP. Net effect: every hourly brain_learn cron returned
+    # 502 with "can't reach /heal/findings: HTTP Error 403", which
+    # explains why the brain had 0 proposed fixes for 18+ hours.
+    #
+    # Flask test_client invokes the route handler in-process — no
+    # network, no port discovery, no CF Worker, no rate limiter. The
+    # request gets a real Flask context and runs the actual handler
+    # so the response is identical to a real HTTP call.
+    findings = {}
     try:
-        import urllib.request
-        with urllib.request.urlopen("http://127.0.0.1:8080/api/v1/heal/findings",
-                                    timeout=15) as r:
-            findings = json.loads(r.read().decode("utf-8"))
-    except Exception:
-        # Fallback to live URL (works in dev)
+        from flask import current_app
+        with current_app.test_client() as _client:
+            _resp = _client.get("/api/v1/heal/findings")
+            if _resp.status_code == 200:
+                findings = _resp.get_json() or {}
+            else:
+                # Test-client failure — last-resort fall back to public URL
+                # (will probably 403 from Railway IP, but log it cleanly).
+                raise RuntimeError(f"test_client returned {_resp.status_code}")
+    except Exception as e:
+        # Final fallback: try the public URL anyway. If even this fails,
+        # the brain reports 502 with the original error.
         try:
             import urllib.request
-            with urllib.request.urlopen("https://dchub.cloud/api/v1/heal/findings",
-                                        timeout=15) as r:
+            with urllib.request.urlopen(
+                    "https://dchub.cloud/api/v1/heal/findings",
+                    timeout=15) as r:
                 findings = json.loads(r.read().decode("utf-8"))
-        except Exception as e:
-            return jsonify(ok=False, error=f"can't reach /heal/findings: {e}"), 502
+        except Exception as e2:
+            return jsonify(ok=False,
+                           error=f"can't reach /heal/findings: "
+                                 f"test_client={e}; public={e2}"), 502
 
     issues = findings.get("actionable_frontend_issues", [])
     # Filter: only patterns NOT already in the known FIX_MAP. We hardcode
