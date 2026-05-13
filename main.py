@@ -19555,6 +19555,13 @@ def _heal_findings():
         # Phase Z (2026-05-12): API contract probes — see
         # dchub_self_heal.fix_api_contract_scan for what these catch.
         "api_contract_scan",
+        # Phase FF+5 (2026-05-13): backend cron health. Without this,
+        # the brain (and every other consumer of /heal/findings) was
+        # blind to backend cron failures — that's how the DCPI
+        # UniqueViolation bug sat for 57h. Surfaces stale loops +
+        # cron runs with non-zero error_count as
+        # `actionable_backend_issues` for human/CI triage.
+        "backend_cron_scan",
     ]
     for d in detectors:
         fn = h.FIXES.get(d)
@@ -19613,9 +19620,30 @@ def _heal_findings():
     if not actionable:
         actionable = _extract_frontend_issues(findings)
 
+    # Phase FF+5 (2026-05-13): merge backend cron findings under a
+    # SEPARATE key. brain_v2_layer4 currently only reads
+    # actionable_frontend_issues and only knows how to do HTML body
+    # find/replace — pointing it at backend issues would just produce
+    # garbage HTML edits. So we surface backend issues as their own
+    # list. The user-facing brain dashboard, master-heal's GH-issue
+    # path, and any future code-fix brain can pick them up here.
+    actionable_backend = []
+    try:
+        if hasattr(h, "get_last_backend_findings"):
+            raw = h.get_last_backend_findings()
+            for src, hits in (raw or {}).items():
+                if isinstance(hits, dict):
+                    for label, n in hits.items():
+                        if isinstance(n, int):
+                            actionable_backend.append(
+                                {"url": src, "issue": label, "count": n})
+    except Exception:
+        pass
+
     return jsonify({
         "findings": findings,
         "actionable_frontend_issues": actionable,
+        "actionable_backend_issues": actionable_backend,
         "cache_needs_purge": "STALE" in str(findings.get("cdn_cache_staleness", {}).get("details", "")),
     })
 
