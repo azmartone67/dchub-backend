@@ -1862,7 +1862,13 @@ CONTENT_TYPE_PROBES = [
     {"label": "iso_pjm_health",       "url": "https://dchub.cloud/api/v1/iso/pjm/health",   "expect": "application/json"},
     {"label": "iso_spp_health",       "url": "https://dchub.cloud/api/v1/iso/spp/health",   "expect": "application/json"},
     {"label": "iso_isone_health",     "url": "https://dchub.cloud/api/v1/iso/isone/health", "expect": "application/json"},
-    # Orchestrator health — verifies all 7 are registered
+    # Phase HH (2026-05-13): 4 new grid-operator health endpoints
+    # IESO (Ontario), AESO (Alberta), TVA (Tennessee Valley), BPA (Pacific NW)
+    {"label": "iso_ieso_health",      "url": "https://dchub.cloud/api/v1/iso/ieso/health",  "expect": "application/json"},
+    {"label": "iso_aeso_health",      "url": "https://dchub.cloud/api/v1/iso/aeso/health",  "expect": "application/json"},
+    {"label": "iso_tva_health",       "url": "https://dchub.cloud/api/v1/iso/tva/health",   "expect": "application/json"},
+    {"label": "iso_bpa_health",       "url": "https://dchub.cloud/api/v1/iso/bpa/health",   "expect": "application/json"},
+    # Orchestrator health — verifies all 11 are registered post-Phase HH
     {"label": "iso_orchestrator_health", "url": "https://dchub.cloud/api/v1/iso/all/health", "expect": "application/json"},
 ]
 

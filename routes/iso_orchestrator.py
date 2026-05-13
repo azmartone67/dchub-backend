@@ -36,10 +36,17 @@ def extract_all():
 
     # Phase GG (2026-05-13): added PJM — until now DC Hub advertised
     # "7 ISOs" but only registered 6 here. PJM is the largest US ISO
-    # (~150 GW peak) covering mid-Atlantic + Ohio Valley. The
-    # autonomous intelligence dashboard reported "3 ISOs reporting"
-    # because MISO/SPP/ISONE had 0 rows or errored; with PJM added +
-    # SPP/ISONE URL refreshes (same phase), full 7-ISO coverage.
+    # (~150 GW peak) covering mid-Atlantic + Ohio Valley.
+    #
+    # Phase HH (2026-05-13): expanded coverage 7 → 11 grid operators.
+    # The 4 new entries are NOT all traditional ISOs:
+    #   IESO  — Independent Electricity System Operator (Ontario)
+    #   AESO  — Alberta Electric System Operator
+    #   TVA   — Tennessee Valley Authority (vertically-integrated US fed utility)
+    #   BPA   — Bonneville Power Administration (Pacific NW federal PMA)
+    # All four have major data-center build-out + public hourly fuel-mix
+    # data (or EIA EBA fallback for TVA/BPA). Together they close the
+    # biggest North American DC-market coverage gaps.
     extractors = [
         ("iso_ercot", "ERCOT"),
         ("iso_caiso", "CAISO"),
@@ -48,6 +55,10 @@ def extract_all():
         ("iso_pjm",   "PJM"),     # ← Phase GG
         ("iso_spp",   "SPP"),
         ("iso_isone", "ISONE"),
+        ("iso_ieso",  "IESO"),    # ← Phase HH — Ontario
+        ("iso_aeso",  "AESO"),    # ← Phase HH — Alberta
+        ("iso_tva",   "TVA"),     # ← Phase HH — Tennessee Valley
+        ("iso_bpa",   "BPA"),     # ← Phase HH — Pacific NW
     ]
 
     for module_name, label in extractors:
@@ -93,8 +104,9 @@ def extract_all():
 def health():
     return jsonify(
         status="ok",
-        registered_isos=["ERCOT", "CAISO", "NYISO", "MISO", "PJM", "SPP", "ISONE"],
+        registered_isos=["ERCOT", "CAISO", "NYISO", "MISO", "PJM", "SPP", "ISONE",
+                          "IESO", "AESO", "TVA", "BPA"],
         endpoint="/api/v1/iso/all/extract",
-        iso_count=7,
-        future_isos=[],
+        iso_count=11,
+        future_isos=["ESO (UK)", "AEMO (AU)", "EirGrid (IE)"],
     ), 200

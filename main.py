@@ -18160,6 +18160,11 @@ from routes.iso_miso import iso_miso_bp
 from routes.iso_spp import iso_spp_bp
 from routes.iso_isone import iso_isone_bp
 from routes.iso_pjm import iso_pjm_bp  # Phase GG (2026-05-13) — 7th ISO
+# Phase HH (2026-05-13) — 4 more grid operators: 7 → 11 coverage
+from routes.iso_ieso import iso_ieso_bp  # Ontario
+from routes.iso_aeso import iso_aeso_bp  # Alberta
+from routes.iso_tva  import iso_tva_bp   # Tennessee Valley Authority
+from routes.iso_bpa  import iso_bpa_bp   # Bonneville Power Administration
 from routes.grid_snapshot import grid_snapshot_bp
 from routes.sec_edgar import sec_edgar_bp
 from routes.extractor_brain import extractor_brain_bp
@@ -18201,6 +18206,11 @@ app.register_blueprint(iso_miso_bp)
 app.register_blueprint(iso_spp_bp)
 app.register_blueprint(iso_isone_bp)
 app.register_blueprint(iso_pjm_bp)  # Phase GG (2026-05-13) — 7th ISO
+# Phase HH (2026-05-13) — 4 more grid operators: 7 → 11 coverage
+app.register_blueprint(iso_ieso_bp)  # Ontario
+app.register_blueprint(iso_aeso_bp)  # Alberta
+app.register_blueprint(iso_tva_bp)   # Tennessee Valley Authority
+app.register_blueprint(iso_bpa_bp)   # Bonneville Power Administration
 app.register_blueprint(grid_snapshot_bp)
 app.register_blueprint(sec_edgar_bp)
 app.register_blueprint(extractor_brain_bp)
