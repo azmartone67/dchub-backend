@@ -880,6 +880,83 @@ def auto_generate():
     ), 201
 
 
+@marketing_bp.get("/api/v1/marketing/linkedin/whoami")
+@_require_admin
+def linkedin_whoami():
+    """Phase FF+9 (2026-05-13): debug helper for LinkedIn token issues.
+
+    Reports what Railway has stored AND what LinkedIn says about it.
+    Doesn't expose the token — only length + first-4 + last-4 chars
+    so you can verify Railway picked up the new value.
+
+    Calls LinkedIn /v2/userinfo (the safest auth check — works with any
+    valid token regardless of scope). If userinfo succeeds but
+    /v2/ugcPosts still 401s, the token is valid but lacks the
+    `w_organization_social` scope needed for org-page posts.
+    """
+    import os as _os
+    import requests as _rq
+    tok = _os.environ.get("LINKEDIN_ACCESS_TOKEN", "")
+    if not tok:
+        return jsonify(ok=False, error="LINKEDIN_ACCESS_TOKEN not set"), 500
+
+    masked = {
+        "length": len(tok),
+        "starts_with": tok[:6] if len(tok) >= 6 else tok,
+        "ends_with":   tok[-4:] if len(tok) >= 8 else "",
+        "has_bearer_prefix": tok.lower().startswith("bearer "),
+        "has_trailing_whitespace": tok != tok.strip(),
+    }
+
+    # /v2/userinfo — basic auth check (OpenID Connect)
+    userinfo_status = None
+    userinfo_body = None
+    try:
+        r = _rq.get("https://api.linkedin.com/v2/userinfo",
+                    headers={"Authorization": f"Bearer {tok.strip()}"},
+                    timeout=10)
+        userinfo_status = r.status_code
+        userinfo_body = r.text[:500]
+    except Exception as e:
+        userinfo_body = f"network error: {e}"
+
+    # /v2/me — older endpoint, works with r_liteprofile or r_basicprofile
+    me_status = None
+    me_body = None
+    try:
+        r = _rq.get("https://api.linkedin.com/v2/me",
+                    headers={"Authorization": f"Bearer {tok.strip()}"},
+                    timeout=10)
+        me_status = r.status_code
+        me_body = r.text[:500]
+    except Exception as e:
+        me_body = f"network error: {e}"
+
+    # Diagnosis logic
+    diagnosis = []
+    if masked["has_bearer_prefix"]:
+        diagnosis.append("Token includes 'Bearer ' prefix — remove it; the code adds Bearer itself.")
+    if masked["has_trailing_whitespace"]:
+        diagnosis.append("Token has leading/trailing whitespace — re-set without spaces.")
+    if masked["length"] < 100:
+        diagnosis.append(f"Token is suspiciously short ({masked['length']} chars). Real LinkedIn tokens are ~400-700 chars.")
+    if userinfo_status == 401:
+        diagnosis.append("LinkedIn /v2/userinfo also returns 401 — token is genuinely invalid (expired, revoked, or wrong app).")
+    elif userinfo_status == 200:
+        diagnosis.append("Token IS valid (/v2/userinfo returned 200). The /v2/ugcPosts 401 means missing scope `w_organization_social` — regenerate the token with that scope checked.")
+    if not diagnosis:
+        diagnosis.append("No obvious format issues. Compare what's stored vs what you generated.")
+
+    return jsonify(
+        ok=True,
+        masked=masked,
+        userinfo={"status": userinfo_status, "body": userinfo_body},
+        me={"status": me_status, "body": me_body},
+        diagnosis=diagnosis,
+        org_id_in_use=_os.environ.get("LINKEDIN_ORG_ID", "110894959 (default)"),
+    ), 200
+
+
 @marketing_bp.post("/api/v1/marketing/publish-now")
 @_require_admin
 def publish_now():
