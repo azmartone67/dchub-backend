@@ -1,12 +1,18 @@
 """
 iso_orchestrator.py — fan out to all ISO extractors in one call.
 
-POST /api/v1/iso/all/extract — runs every ISO extractor sequentially,
-returns per-ISO results. Future cron only needs ONE URL to refresh
-the entire grid coverage.
+POST /api/v1/iso/all/extract — runs every ISO extractor in parallel
+via a thread pool, returns per-ISO results. Future cron only needs
+ONE URL to refresh the entire grid coverage.
+
+Phase HH+ (2026-05-13): switched from sequential to parallel fan-out.
+At 11 ISOs × ~3-5s each, sequential = 30-55s which blew through CF
+Worker's 15s edge timeout. ThreadPool brings wall time down to
+roughly max(per-ISO) + epsilon (~5-8s typical).
 """
 
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from flask import Blueprint, jsonify
 
 try:
@@ -17,6 +23,11 @@ except ImportError:
 
 iso_orchestrator_bp = Blueprint("iso_orchestrator", __name__, url_prefix="/api/v1/iso/all")
 SOURCE_ID = "iso-orchestrator"
+
+# Per-ISO hard ceiling so one slow upstream can't starve the whole batch.
+# Most ISOs respond in <5s; 12s leaves headroom for EIA EBA which can be
+# sluggish, while still keeping wall time well under CF Worker's 15s.
+_PER_ISO_TIMEOUT_S = 12
 
 
 def _run_one(extractor_module_name, iso_label):
@@ -61,8 +72,28 @@ def extract_all():
         ("iso_bpa",   "BPA"),     # ← Phase HH — Pacific NW
     ]
 
-    for module_name, label in extractors:
-        results.append(_run_one(module_name, label))
+    # Phase HH+: parallel fan-out (ThreadPool). I/O-bound network work,
+    # GIL is fine. max_workers = len(extractors) so every ISO gets its
+    # own thread — they're all just sitting in requests.get() most of
+    # the time. Per-future timeout prevents any one stall from blocking
+    # the orchestrator past CF Worker's edge limit.
+    with ThreadPoolExecutor(max_workers=max(len(extractors), 4)) as pool:
+        future_to_label = {
+            pool.submit(_run_one, mod_name, label): (mod_name, label)
+            for mod_name, label in extractors
+        }
+        for fut in as_completed(future_to_label, timeout=None):
+            mod_name, label = future_to_label[fut]
+            try:
+                results.append(fut.result(timeout=_PER_ISO_TIMEOUT_S))
+            except Exception as e:
+                # TimeoutError or any propagated extractor failure that
+                # somehow escaped _run_one's try/except.
+                results.append({
+                    "iso": label,
+                    "status": "timeout" if "Timeout" in type(e).__name__ else "error",
+                    "error": f"{type(e).__name__}: {e}",
+                })
 
     elapsed_ms = int((time.time() - started) * 1000)
     total_rows = sum(r.get("rows_inserted", 0) for r in results)
