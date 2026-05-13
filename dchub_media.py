@@ -614,7 +614,40 @@ def aggregate_announcements_v3(limit_per_source=20):
                 ORDER BY {date_c} DESC NULLS LAST LIMIT %s""",
                 (limit_per_source,)))
 
-    # announcements_feed
+    # announcements_feed + high-relevance news → press
+    #
+    # Phase MM (2026-05-13): the "press" category was nearly empty (2 items
+    # total in production) because the only writer to announcements_feed
+    # with category='press' was maybe_publish_press_release, which fires
+    # rarely. Meanwhile the news table has 100s of relevant industry
+    # articles (DCD, DCK, Reuters via RSS ingest). UNION the
+    # high-relevance subset of news into the press feed so industry
+    # coverage flows naturally without a new ingester. Relevance >= 0.5
+    # keeps generic cloud-FinOps stuff out; this surfaces DC-specific
+    # reporting.
+    news_press_arm = ""
+    if news_cols and 'title' in news_cols:
+        news_url = _pick_col(news_cols, 'url', 'source_url', 'link') or "''::text"
+        news_body = _pick_col(news_cols, 'summary', 'description', 'body') or "''::text"
+        news_src = _pick_col(news_cols, 'source', 'publisher') or "''::text"
+        news_date = _pick_col(news_cols, 'published_at', 'published_date', 'created_at') or 'NOW()'
+        news_url_e  = news_url if news_url.endswith("::text") else f"COALESCE({news_url}, '')"
+        news_body_e = news_body if news_body.endswith("::text") else f"COALESCE({news_body}, '')"
+        news_src_e  = news_src if news_src.endswith("::text") else f"COALESCE({news_src}, '')"
+        # Relevance gate when the column exists — keep DC-specific.
+        rel_filter = ""
+        if 'relevance_score' in news_cols:
+            rel_filter = "AND COALESCE(relevance_score, 0) >= 0.5"
+        news_press_arm = f"""
+            UNION ALL
+            SELECT title, {news_url_e} AS url, {news_body_e} AS summary,
+                   {news_src_e} AS source, {news_date} AS ts
+            FROM news
+            WHERE title IS NOT NULL
+              {rel_filter}
+              AND {news_date} > NOW() - INTERVAL '30 days'
+        """
+
     if af_cols and 'title' in af_cols:
         url_c   = _pick_col(af_cols, 'url', 'source_url', 'link') or "''::text"
         body_c  = _pick_col(af_cols, 'body', 'summary', 'description') or "''::text"
@@ -627,11 +660,25 @@ def aggregate_announcements_v3(limit_per_source=20):
         if 'category' in af_cols:
             cat_filter = "WHERE category IN ('press','press_release','daily_brief')"
         queries.append(("press",
-            f"""SELECT title, {url_expr} AS url, {body_expr} AS summary,
-                  {src_expr} AS source, {date_c} AS ts
-            FROM announcements_feed
-            {cat_filter}
-            ORDER BY {date_c} DESC NULLS LAST LIMIT %s""",
+            f"""SELECT * FROM (
+                SELECT title, {url_expr} AS url, {body_expr} AS summary,
+                       {src_expr} AS source, {date_c} AS ts
+                FROM announcements_feed
+                {cat_filter}
+                {news_press_arm}
+            ) combined_press
+            ORDER BY ts DESC NULLS LAST LIMIT %s""",
+            (limit_per_source,)))
+    elif news_press_arm:
+        # No announcements_feed in this deployment — fall back to news-only.
+        queries.append(("press",
+            f"""SELECT title, {news_url_e} AS url, {news_body_e} AS summary,
+                       {news_src_e} AS source, {news_date} AS ts
+            FROM news
+            WHERE title IS NOT NULL
+              {rel_filter}
+              AND {news_date} > NOW() - INTERVAL '30 days'
+            ORDER BY {news_date} DESC LIMIT %s""",
             (limit_per_source,)))
 
     # ai_testimonials — same as v2, known to work
@@ -642,24 +689,58 @@ def aggregate_announcements_v3(limit_per_source=20):
     # entries from this same table — we just need to filter the synthetics.
     # PR #21 added a parallel ai_citations query but that table is empty in
     # prod; the actual citation data lives here in ai_testimonials.
+    #
+    # Phase MM (2026-05-13): UNION with ai_testimonials_auto so the every-6h
+    # ingest cron (HackerNews + Reddit + MCP-derived) actually surfaces in
+    # the feed. Pre-Phase-MM, auto-ingested rows landed in
+    # ai_testimonials_auto with approved=false and were never read by
+    # feed-v3 → testimonials looked 65 days stale even though the cron was
+    # producing fresh rows. Auto-ingested rows are quote-filtered for
+    # "dchub" mentions at ingest time (see routes/dchub_media_hub.py), so
+    # surfacing them without manual approval is safe in this signal-only
+    # context.
+    tta_cols = _table_cols(cur, 'ai_testimonials_auto')
     if tt_cols and 'quote' in tt_cols:
         # Build the source-exclusion clause defensively based on actual columns
         source_filter = "AND TRUE"
         if 'source' in tt_cols:
             source_filter = "AND (source IS NULL OR source NOT IN ('mcp-auto', 'mcp_auto'))"
-        queries.append(("testimonial",
-            f"""SELECT COALESCE(NULLIF(agent_name,''), NULLIF(platform,''), 'AI Testimonial') AS title,
+
+        # Build the auto-table arm conditionally — only if the table + key
+        # cols exist (avoids hard-fail in earlier-schema deployments).
+        auto_arm = ""
+        if tta_cols and 'quote' in tta_cols:
+            auto_arm = """
+            UNION ALL
+            SELECT COALESCE(NULLIF(agent_name,''), NULLIF(platform,''), 'AI Testimonial') AS title,
                    COALESCE(url, '') AS url,
                    quote AS summary,
-                   COALESCE(NULLIF(source,''), platform, agent_name, 'AI Industry') AS source,
-                   COALESCE(approved_at, created_at) AS ts
-            FROM ai_testimonials
-            WHERE COALESCE(approved, true) = true
-              AND agent_name IS NOT NULL AND agent_name != 'unknown'
-              AND agent_name != 'Claude'  -- phase 299: filter synthetic mcp-auto title
-              {source_filter}
-              AND quote IS NOT NULL AND length(quote) > 10  -- real citations have substantive quotes
-            ORDER BY COALESCE(approved_at, created_at) DESC NULLS LAST
+                   COALESCE(NULLIF(platform,''), NULLIF(source,''), 'AI Industry') AS source,
+                   COALESCE(posted_at, created_at) AS ts
+            FROM ai_testimonials_auto
+            WHERE quote IS NOT NULL
+              AND length(quote) > 30
+              -- Quote-content filter: only show rows that actually mention
+              -- DC Hub. The ingester already enforces this but defensive.
+              AND (quote ILIKE '%%dchub%%' OR quote ILIKE '%%dc hub%%' OR quote ILIKE '%%dchub.cloud%%')
+            """
+
+        queries.append(("testimonial",
+            f"""SELECT * FROM (
+                SELECT COALESCE(NULLIF(agent_name,''), NULLIF(platform,''), 'AI Testimonial') AS title,
+                       COALESCE(url, '') AS url,
+                       quote AS summary,
+                       COALESCE(NULLIF(source,''), platform, agent_name, 'AI Industry') AS source,
+                       COALESCE(approved_at, created_at) AS ts
+                FROM ai_testimonials
+                WHERE COALESCE(approved, true) = true
+                  AND agent_name IS NOT NULL AND agent_name != 'unknown'
+                  AND agent_name != 'Claude'
+                  {source_filter}
+                  AND quote IS NOT NULL AND length(quote) > 10
+                {auto_arm}
+            ) combined
+            ORDER BY ts DESC NULLS LAST
             LIMIT %s""",
             (limit_per_source,)))
 
