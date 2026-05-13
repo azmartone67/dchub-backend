@@ -18246,6 +18246,9 @@ from routes.redeem_diagnostic import redeem_diagnostic_bp
 from routes.qa_patterns import qa_patterns_bp
 from routes.dcpi import dcpi_bp
 from routes.site_qa import site_qa_bp
+# Phase PP (2026-05-13) — single truth endpoint for autonomous loops.
+# Replaces 4 contradictory dashboards with one /api/v1/system/loops.
+from routes.system_loops import system_loops_bp
 
 # Phase 195: skip URLs with empty path params (e.g. /grid//card, /facilities//infra)
 def _phase195_url_ok(u):
@@ -18290,6 +18293,8 @@ app.register_blueprint(extractor_brain_bp)
 app.register_blueprint(redeem_tracking_bp)
 app.register_blueprint(redeem_diagnostic_bp)
 app.register_blueprint(site_qa_bp)
+# Phase PP (2026-05-13) — single truth endpoint for the autonomous loops.
+app.register_blueprint(system_loops_bp)
 register_search_routes(app)
 
 
