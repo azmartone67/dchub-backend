@@ -714,43 +714,50 @@ def aggregate_announcements_v3(limit_per_source=20):
         if 'source' in tt_cols:
             source_filter = "AND (source IS NULL OR source NOT IN ('mcp-auto', 'mcp_auto'))"
 
-        # Build the auto-table arm conditionally — only if the table + key
-        # cols exist (avoids hard-fail in earlier-schema deployments).
-        auto_arm = ""
-        if tta_cols and 'quote' in tta_cols:
-            auto_arm = """
-            UNION ALL
-            SELECT COALESCE(NULLIF(agent_name,''), NULLIF(platform,''), 'AI Testimonial') AS title,
+        # Original single-arm query (always emitted — known to work in prod
+        # and returned 20 testimonials before Phase MM).
+        orig_sql = f"""SELECT COALESCE(NULLIF(agent_name,''), NULLIF(platform,''), 'AI Testimonial') AS title,
                    COALESCE(url, '') AS url,
                    quote AS summary,
-                   COALESCE(NULLIF(platform,''), NULLIF(source,''), 'AI Industry') AS source,
-                   COALESCE(posted_at, created_at) AS ts
-            FROM ai_testimonials_auto
-            WHERE quote IS NOT NULL
-              AND length(quote) > 30
-              -- Quote-content filter: only show rows that actually mention
-              -- DC Hub. The ingester already enforces this but defensive.
-              AND (quote ILIKE '%%dchub%%' OR quote ILIKE '%%dc hub%%' OR quote ILIKE '%%dchub.cloud%%')
-            """
+                   COALESCE(NULLIF(source,''), platform, agent_name, 'AI Industry') AS source,
+                   COALESCE(approved_at, created_at) AS ts
+            FROM ai_testimonials
+            WHERE COALESCE(approved, true) = true
+              AND agent_name IS NOT NULL AND agent_name != 'unknown'
+              AND agent_name != 'Claude'
+              {source_filter}
+              AND quote IS NOT NULL AND length(quote) > 10
+            ORDER BY COALESCE(approved_at, created_at) DESC NULLS LAST
+            LIMIT %s"""
 
-        queries.append(("testimonial",
-            f"""SELECT * FROM (
-                SELECT COALESCE(NULLIF(agent_name,''), NULLIF(platform,''), 'AI Testimonial') AS title,
-                       COALESCE(url, '') AS url,
+        queries.append(("testimonial", orig_sql, (limit_per_source,)))
+
+        # Phase MM (2026-05-13, post-hotfix): emit the auto-ingested arm
+        # as a SEPARATE query (not a UNION). Keeps the original working
+        # query untouched — if the auto query has any schema mismatch
+        # it fails alone, doesn't poison the testimonials feed. Items
+        # from both queries land in the same `testimonial` category,
+        # de-duped by URL in the consumer if needed.
+        if tta_cols and 'quote' in tta_cols:
+            # Defensively pick whichever timestamp column actually exists.
+            tta_ts = 'posted_at' if 'posted_at' in tta_cols else ('created_at' if 'created_at' in tta_cols else 'NOW()')
+            tta_url = 'url' if 'url' in tta_cols else "''::text"
+            tta_platform = 'platform' if 'platform' in tta_cols else "''::text"
+            tta_source = 'source' if 'source' in tta_cols else "''::text"
+            tta_agent = 'agent_name' if 'agent_name' in tta_cols else "''::text"
+            queries.append(("testimonial",
+                f"""SELECT COALESCE(NULLIF({tta_agent},''), NULLIF({tta_platform},''), 'AI Mention') AS title,
+                       COALESCE({tta_url}, '') AS url,
                        quote AS summary,
-                       COALESCE(NULLIF(source,''), platform, agent_name, 'AI Industry') AS source,
-                       COALESCE(approved_at, created_at) AS ts
-                FROM ai_testimonials
-                WHERE COALESCE(approved, true) = true
-                  AND agent_name IS NOT NULL AND agent_name != 'unknown'
-                  AND agent_name != 'Claude'
-                  {source_filter}
-                  AND quote IS NOT NULL AND length(quote) > 10
-                {auto_arm}
-            ) combined
-            ORDER BY ts DESC NULLS LAST
-            LIMIT %s""",
-            (limit_per_source,)))
+                       COALESCE(NULLIF({tta_platform},''), NULLIF({tta_source},''), 'AI Industry') AS source,
+                       {tta_ts} AS ts
+                FROM ai_testimonials_auto
+                WHERE quote IS NOT NULL
+                  AND length(quote) > 30
+                  AND (quote ILIKE %s OR quote ILIKE %s OR quote ILIKE %s)
+                ORDER BY {tta_ts} DESC NULLS LAST
+                LIMIT %s""",
+                ('%dchub%', '%dc hub%', '%dchub.cloud%', limit_per_source)))
 
     # alerts from market_power_scores
     if mps_cols and 'verdict' in mps_cols:
