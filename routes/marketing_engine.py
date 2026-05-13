@@ -52,6 +52,16 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 MARKETING_MODEL = os.environ.get("DCHUB_MARKETING_MODEL", "claude-sonnet-4-5")
 ADMIN_KEY = os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY")
 DATABASE_URL = os.environ.get("DATABASE_URL")
+# Phase QQ+16 (2026-05-13): module-level RESEND_API_KEY. The
+# linkedin_send_daily_email handler references this name unqualified,
+# but the constant was never declared at module scope — every cron
+# fire raised NameError("name 'RESEND_API_KEY' is not defined") and
+# the LinkedIn email for today's DCPI press release (Cheyenne, WY
+# Tops DCPI Excess Power Index) never went out. Defining it here
+# matches the existing pattern used by ANTHROPIC_API_KEY / ADMIN_KEY
+# above. When Railway has DCHUB_RESEND_API_KEY set, this becomes the
+# Bearer token in the Resend API call.
+RESEND_API_KEY = os.environ.get("DCHUB_RESEND_API_KEY", "")
 
 
 def _require_admin(fn):
