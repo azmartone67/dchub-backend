@@ -31,13 +31,19 @@ on:
     # email today's LinkedIn-ready post to DCHUB_LINKEDIN_EMAIL_TO.
     # Idempotent: skips if today's post already has linkedin_sent_at.
     - cron: '30 13 * * *'
+    # Phase FF (2026-05-12) — testimonial ingestion every 6h (15 min
+    # offset from ingestion_audit so they don't collide).
+    - cron: '45 */6 * * *'
+    # Phase FF — agent vendor outreach digest, weekly Monday 14:00 UTC
+    # (after the press + LinkedIn fire). Idempotent.
+    - cron: '0 14 * * 1'
   workflow_dispatch:
     inputs:
       phase:
         description: 'Which phase to run on demand'
         required: true
         type: choice
-        options: [all, brain, outreach, audit, marketing, linkedin]
+        options: [all, brain, outreach, audit, marketing, linkedin, testimonials, agent_vendor]
         default: all
 
 permissions:
@@ -212,4 +218,68 @@ jobs:
               print(f\"::notice::LinkedIn email sent to {d.get('to')} for slug={d.get('slug')}\")
           else:
               print(f\"::warning::LinkedIn email failed — {d.get('error','unknown')}\")
+          " || true
+
+  # Phase FF (2026-05-12) — testimonial ingestion (HackerNews + Reddit + MCP-derived).
+  testimonials_ingest:
+    if: github.event.schedule == '45 */6 * * *' || (github.event_name == 'workflow_dispatch' && (inputs.phase == 'all' || inputs.phase == 'testimonials'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Run testimonial ingestion sources
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping testimonial ingest"
+            exit 0
+          fi
+          response=$(curl -sS --max-time 60 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "https://dchub.cloud/api/v1/testimonials/ingest" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | head -c 2000
+          echo
+          echo "$response" | python3 -c "
+          import json, sys
+          try: d = json.load(sys.stdin)
+          except Exception:
+              print('::warning::Testimonials ingest returned non-JSON'); sys.exit(0)
+          if d.get('ok'):
+              print(f\"::notice::Testimonials ingest — total_new={d.get('total_new',0)}\")
+          else:
+              print(f\"::warning::Testimonials ingest failed — {d.get('error','unknown')}\")
+          " || true
+
+  # Phase FF — weekly agent vendor outreach digest (Monday 14:00 UTC).
+  agent_vendor_digest:
+    if: github.event.schedule == '0 14 * * 1' || (github.event_name == 'workflow_dispatch' && (inputs.phase == 'all' || inputs.phase == 'agent_vendor'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Send agent vendor outreach digest
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping agent vendor digest"
+            exit 0
+          fi
+          response=$(curl -sS --max-time 30 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "https://dchub.cloud/api/v1/outreach/agents/email-digest" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | head -c 1500
+          echo
+          echo "$response" | python3 -c "
+          import json, sys
+          try: d = json.load(sys.stdin)
+          except Exception:
+              print('::warning::Agent vendor digest returned non-JSON'); sys.exit(0)
+          if d.get('skipped'):
+              print(f\"::notice::Agent vendor digest skipped — {d.get('reason','?')}\")
+          elif d.get('sent'):
+              print(f\"::notice::Agent vendor digest sent to {d.get('to')} ({d.get('vendor_count',0)} vendors)\")
+          else:
+              print(f\"::warning::Agent vendor digest failed — {d.get('error','unknown')}\")
           " || true

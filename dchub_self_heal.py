@@ -1831,6 +1831,10 @@ CONTENT_TYPE_PROBES = [
     # Phase AA (2026-05-12): new DCPI ISO intelligence endpoints
     {"label": "iso_comparison_json",  "url": "https://dchub.cloud/api/v1/dcpi/iso-comparison", "expect": "application/json"},
     {"label": "iso_pjm_deep_dive",    "url": "https://dchub.cloud/api/v1/dcpi/iso/pjm",        "expect": "application/json"},
+    # Phase FF (2026-05-12): media hub + testimonial + vendor outreach endpoints
+    {"label": "media_aggregate_json",        "url": "https://dchub.cloud/api/v1/media/aggregate",         "expect": "application/json"},
+    {"label": "testimonials_live_json",      "url": "https://dchub.cloud/api/v1/testimonials/live",       "expect": "application/json"},
+    {"label": "agent_vendor_telemetry_json", "url": "https://dchub.cloud/api/v1/outreach/agents/vendors", "expect": "application/json"},
 ]
 
 _last_api_contract_findings = {}
