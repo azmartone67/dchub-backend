@@ -1,0 +1,54 @@
+name: loops babysit (Phase RR)
+# Cron babysitter for the seven autonomous loops surveyed by
+# /api/v1/system/loops. Every 15 min, POSTs to /loops/babysit which
+# in turn fires the refresh endpoint for every stale or dead loop.
+#
+# This is the first system component that AUTOMATICALLY heals loops
+# the truth endpoint flagged. Previously a stale loop sat in the
+# dashboard until a human noticed and ran the refresh manually.
+#
+# Required secret: DCHUB_ADMIN_KEY (already used by other Phase B
+# crons in this repo).
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'   # every 15 minutes
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  babysit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Fire babysitter
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping babysit"
+            exit 0
+          fi
+          response=$(curl -sS --max-time 60 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" \
+            "https://dchub.cloud/api/v1/system/loops/babysit" \
+            || echo '{"summary":{"fired":0,"failed":1},"error":"curl_fail"}')
+          echo "$response" | head -c 4000
+          echo
+          # Surface a one-line summary in the Actions log
+          echo "$response" | python3 -c "
+          import json, sys
+          try:
+              d = json.load(sys.stdin)
+              s = d.get('summary') or {}
+              print(f\"babysit-summary :: fired={s.get('fired',0)} "
+                    f\"no_action={s.get('no_action',0)} "
+                    f\"no_hook={s.get('no_hook',0)} "
+                    f\"failed={s.get('failed',0)}\")
+          except Exception as e:
+              print(f'babysit-parse-failed: {e}')
+          "

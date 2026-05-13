@@ -373,6 +373,135 @@ def _probe_iso_extract(cur) -> dict:
     }
 
 
+# ──────────────────────────────────────────────────────────────────
+# Phase RR (2026-05-13): cron babysitter map
+#
+# Each loop can be 'healed' by firing its known refresh endpoint.
+# When the truth endpoint reports a loop as stale/dead, the babysitter
+# POSTs to the corresponding URL with the admin key. Idempotent —
+# loops already alive or idle are skipped.
+#
+# Real-time loops (engagement_track, mcp_traffic) have no refresh hook
+# because they're driven by user traffic / SDK clients, not by a cron
+# we control. They remain in the truth endpoint for observability but
+# the babysitter passes them by.
+# ──────────────────────────────────────────────────────────────────
+
+LOOP_REFRESH: dict = {
+    "brain_learn":         ("POST", "/api/v1/brain/learn"),
+    "auto_press_daily":    ("POST", "/api/v1/marketing/auto-generate"),
+    "testimonial_ingest":  ("POST", "/api/v1/testimonials/ingest"),
+    "dcpi_recompute":      ("POST", "/api/v1/dcpi/recompute"),
+    "iso_extract":         ("POST", "/api/v1/iso/all/extract"),
+}
+
+
+def _gather_loops_internal() -> list:
+    """Run all probes — pure internal call, no HTTP roundtrip. Used by
+    the babysitter so it doesn't have to re-fetch the public endpoint."""
+    c = _conn()
+    if c is None:
+        return []
+    probes = [_probe_brain_learn, _probe_auto_press, _probe_testimonial_ingest,
+              _probe_dcpi_recompute, _probe_engagement_track,
+              _probe_mcp_traffic, _probe_iso_extract]
+    out = []
+    try:
+        with c.cursor() as cur:
+            for p in probes:
+                try:
+                    out.append(p(cur))
+                except Exception as e:
+                    out.append({"name": p.__name__.replace("_probe_", ""),
+                                "status": "dead", "error": str(e)[:200]})
+    finally:
+        try: c.close()
+        except Exception: pass
+    return out
+
+
+@system_loops_bp.post("/api/v1/system/loops/babysit")
+def babysit_loops():
+    """Phase RR (2026-05-13): cron-fired babysitter.
+
+    For every loop reported as 'stale' or 'dead' by the probes, POST
+    to its known refresh endpoint. Returns a per-loop summary of what
+    was fired, skipped, or failed.
+
+    Admin-gated: the GH workflow holds the only key. Idempotent: a
+    loop already in alive/idle status is recorded as 'no_action'.
+
+    Self-healing semantic: this is the first system component that
+    AUTOMATICALLY closes loops the truth endpoint flagged. Previously
+    a stale loop sat in the dashboard until a human noticed and POSTed
+    /api/v1/dcpi/recompute manually. Now the babysitter does that
+    within ≤15 min of the loop crossing its stale threshold.
+    """
+    expected = os.environ.get("DCHUB_ADMIN_KEY")
+    if expected and request.headers.get("X-Admin-Key") != expected:
+        return jsonify(error="unauthorized"), 401
+
+    loops = _gather_loops_internal()
+    actions = []
+    healthy = {"alive", "idle"}
+    admin_key = os.environ.get("DCHUB_ADMIN_KEY", "")
+
+    # Determine self-URL for internal fan-out. Railway sets
+    # RAILWAY_PUBLIC_DOMAIN; falls back to the canonical hostname.
+    self_host = (os.environ.get("RAILWAY_PUBLIC_DOMAIN") or
+                 "dchub-backend-production.up.railway.app")
+
+    import urllib.request, urllib.error
+    for l in loops:
+        name = l.get("name", "?")
+        status = l.get("status", "dead")
+        if status in healthy:
+            actions.append({"loop": name, "status": status,
+                            "action": "no_action_needed"})
+            continue
+        refresh = LOOP_REFRESH.get(name)
+        if not refresh:
+            actions.append({"loop": name, "status": status,
+                            "action": "no_refresh_hook",
+                            "note": "real-time loop (engagement/mcp) — no cron to fire"})
+            continue
+        method, path = refresh
+        url = f"https://{self_host}{path}"
+        req = urllib.request.Request(url, method=method)
+        req.add_header("X-Admin-Key", admin_key)
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                code = r.status
+                body = r.read(800).decode("utf-8", errors="replace")
+            actions.append({
+                "loop": name, "status_before": status, "action": "fired",
+                "method": method, "url": path,
+                "http": code, "body_preview": body[:200],
+            })
+        except urllib.error.HTTPError as e:
+            actions.append({"loop": name, "status_before": status,
+                            "action": "fire_http_error",
+                            "method": method, "url": path,
+                            "http": e.code, "error": str(e)[:200]})
+        except Exception as e:
+            actions.append({"loop": name, "status_before": status,
+                            "action": "fire_failed",
+                            "method": method, "url": path,
+                            "error": f"{type(e).__name__}: {str(e)[:160]}"})
+
+    summary = {
+        "fired": sum(1 for a in actions if a.get("action") == "fired"),
+        "no_action": sum(1 for a in actions if a.get("action") == "no_action_needed"),
+        "no_hook":  sum(1 for a in actions if a.get("action") == "no_refresh_hook"),
+        "failed":   sum(1 for a in actions if a.get("action", "").startswith("fire_")),
+    }
+    return jsonify(
+        as_of=datetime.now(timezone.utc).isoformat(),
+        summary=summary,
+        actions=actions,
+    ), 200
+
+
 @system_loops_bp.get("/api/v1/system/loops")
 def system_loops():
     """The truth endpoint: one JSON that answers 'are the autonomous
