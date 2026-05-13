@@ -1,0 +1,69 @@
+name: Publish-now verification (manual)
+
+# Phase FF+7 (2026-05-13): one-shot verification that LinkedIn +
+# X/Twitter tokens are correctly configured on Railway. Triggers
+# /api/v1/marketing/publish-now (PR #71) and reports per-channel
+# success. Manual-only — never run on a schedule, because the
+# auto-publisher loop is the production path.
+
+on:
+  workflow_dispatch:
+    inputs:
+      slug:
+        description: 'Press release slug (blank = most recent auto-press)'
+        required: false
+        type: string
+      only:
+        description: 'Limit to one channel'
+        required: false
+        type: choice
+        options: ['', 'linkedin', 'twitter']
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  publish_now:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Fire publish-now
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          SLUG: ${{ inputs.slug }}
+          ONLY: ${{ inputs.only }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::error::DCHUB_ADMIN_KEY secret not set"
+            exit 1
+          fi
+          qs=""
+          if [ -n "$SLUG" ]; then qs="?slug=${SLUG}"; fi
+          if [ -n "$ONLY" ]; then
+            if [ -z "$qs" ]; then qs="?only=${ONLY}"; else qs="${qs}&only=${ONLY}"; fi
+          fi
+          echo "POST .../publish-now${qs}"
+          response=$(curl -sS --max-time 60 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" \
+            "https://dchub-backend-production.up.railway.app/api/v1/marketing/publish-now${qs}" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | python3 -m json.tool
+          # Set step output for quick scanning in the Actions UI
+          echo "$response" | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          slug = d.get('slug', '?')
+          for chan, r in (d.get('results') or {}).items():
+              ok = r.get('ok')
+              mark = '✓' if ok else '✗'
+              detail = r.get('result') or r.get('error', 'no detail')
+              if ok:
+                  print(f'::notice::{mark} {chan} published · slug={slug} · result={detail}')
+              else:
+                  print(f'::warning::{mark} {chan} FAILED · slug={slug} · {detail}')
+          if not d.get('ok'):
+              print(f'::error::publish-now returned ok=false · error={d.get(\"error\")}')
+              sys.exit(1)
+          "
