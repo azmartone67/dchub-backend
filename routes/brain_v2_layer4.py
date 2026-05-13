@@ -133,8 +133,24 @@ def _log(entry: dict) -> None:
 
 
 def _validate_proposal(find: str, replace: str) -> tuple[bool, str]:
-    """Reject obviously-unsafe fix suggestions. Returns (ok, reason)."""
-    if not find or len(find) < 3:
+    """Reject obviously-unsafe fix suggestions. Returns (ok, reason).
+
+    Phase NN (2026-05-13): bumped the find_too_short floor from 3 → 8
+    chars. The brain dashboard showed every learning attempt failing
+    with find_too_short — Claude was returning bare em-dashes (1-3
+    chars) that, even if accepted, would have nuked typography across
+    the page. Real placeholder fixes target leaf elements like
+    `<td>—</td>` (9 chars) or `<div class="v">—</div>` (24 chars), so
+    8 is a safe minimum that filters single-char hallucinations
+    without rejecting legitimate proposals. Auto-expansion (see
+    _auto_expand_find below) tries to rescue short finds before this
+    validator sees them.
+    """
+    if not find:
+        # Empty find = explicit refusal per the prompt contract.
+        # Logged as "refused" in the learning loop, not validation_fail.
+        return False, "refused"
+    if len(find) < 8:
         return False, "find_too_short"
     if find == replace:
         return False, "noop"
@@ -150,6 +166,70 @@ def _validate_proposal(find: str, replace: str) -> tuple[bool, str]:
     if len(replace) > len(find) + 200:
         return False, "replace_too_long"
     return True, "ok"
+
+
+def _auto_expand_find(find: str, snippet: str) -> str:
+    """Phase NN (2026-05-13): rescue a short find by expanding to the
+    enclosing HTML LEAF element — but ONLY when the find is the sole
+    non-whitespace content of that element.
+
+    Earlier draft of this helper grabbed the first textual match — which
+    on /dc-hub-media meant it picked up the H1 typography em-dash
+    ('DC Hub Media — the autonomous feed') instead of the actual
+    placeholder div. That would be a regression: auto-expand turns the
+    correct refusal into a typography-mangling fix.
+
+    Leaf-only heuristic: scan every occurrence of `find` in the snippet,
+    find the enclosing element bounds, and keep the candidate only if
+    everything between the open and close tags is just whitespace +
+    `find` itself. That guarantees we're expanding a placeholder cell,
+    not a sentence with prose around the find string.
+    """
+    if not find or not snippet:
+        return find
+    if len(find) >= 16:
+        return find  # already specific enough, leave alone
+
+    LEFT_CAP, RIGHT_CAP = 240, 240
+    # Walk all occurrences (most pages have em-dashes in multiple
+    # places — prose AND placeholders).
+    cursor = 0
+    while True:
+        idx = snippet.find(find, cursor)
+        if idx < 0:
+            return find  # exhausted; no leaf-only context found
+        cursor = idx + len(find)
+        # Bound the candidate to the enclosing tag.
+        left_start = max(0, idx - LEFT_CAP)
+        right_end = min(len(snippet), idx + len(find) + RIGHT_CAP)
+        lt_open_start = snippet.rfind("<", left_start, idx)
+        if lt_open_start < 0:
+            continue
+        # The open tag ends at the next `>` after lt_open_start
+        open_tag_end = snippet.find(">", lt_open_start, idx)
+        if open_tag_end < 0:
+            continue
+        # Find the matching close tag — the next `</…>` after the find.
+        close_tag_start = snippet.find("</", idx + len(find), right_end)
+        if close_tag_start < 0:
+            continue
+        close_tag_end = snippet.find(">", close_tag_start, right_end)
+        if close_tag_end < 0:
+            continue
+        # The element's text content is everything between open_tag_end+1
+        # and close_tag_start. Require that to be ONLY whitespace + the
+        # original find — i.e., a leaf placeholder, not prose.
+        inner = snippet[open_tag_end + 1:close_tag_start]
+        if inner.strip() != find.strip():
+            continue
+        expanded = snippet[lt_open_start:close_tag_end + 1]
+        low = expanded.lower()
+        if "<script" in low or "<style" in low:
+            continue
+        if 8 <= len(expanded) <= 240:
+            return expanded
+    # Unreachable, but Python flow-analysis safety
+    return find
 
 
 def _call_claude(prompt: str, system: str) -> tuple[str | None, str | None]:
@@ -206,14 +286,24 @@ _LEARN_SYSTEM = (
     "Output STRICTLY a JSON object:\n"
     "  {\"find\": \"...\", \"replace\": \"...\", \"rationale\": \"...\"}\n\n"
     "Rules:\n"
-    "  - `find` must be a literal substring at least 5 chars long that appears "
-    "    verbatim in the snippet AND is unambiguously a placeholder (cell-like context).\n"
+    "  - `find` MUST be at least 8 characters and SHOULD be 12+. Bare em-dashes "
+    "    are too generic — always include the enclosing tag.\n"
+    "  - GOOD find examples (unambiguous, leaf-element-scoped):\n"
+    "      `<td class=\"kpi-val\">—</td>`\n"
+    "      `<span class=\"v\">—</span>`\n"
+    "      `<div class=\"big-num\">—</div>`\n"
+    "      `id=\"stat-total\">—<`     ← attribute-anchored, also fine\n"
+    "  - BAD find examples (auto-rejected):\n"
+    "      `—`              ← 1 char, matches everything\n"
+    "      `>—<`            ← 3 chars, too generic\n"
+    "      `the —`          ← matches prose\n"
     "  - `find` must include enough surrounding HTML context (the parent tag) "
     "    so the substitution can't accidentally match similar patterns elsewhere.\n"
     "  - `replace` should not introduce new HTML tags unless the original had them.\n"
     "  - `rationale` is a one-sentence explanation a human can verify in 5s.\n"
     "  - When in doubt, refuse: {\"find\": \"\", \"replace\": \"\", "
-    "    \"rationale\": \"refused: <why>\"}. Refusing is better than guessing.\n"
+    "    \"rationale\": \"refused: <why>\"}. Empty find is the ONLY way to refuse. "
+    "    A short non-empty find counts as a failed attempt, not a refusal.\n"
 )
 
 
@@ -374,11 +464,23 @@ def trigger_learn():
         find = proposal.get("find", "")
         replace = proposal.get("replace", "")
         rationale = proposal.get("rationale", "")
+        # Phase NN (2026-05-13): rescue short finds by expanding to the
+        # enclosing HTML leaf element. Brain dashboard showed every
+        # learning attempt failing with find_too_short — auto-expansion
+        # turns bare "—" into "<div class=\"v\">—</div>" so legitimate
+        # proposals can clear validation.
+        find_pre_expand = find
+        find = _auto_expand_find(find, snippet)
         ok, reason = _validate_proposal(find, replace)
         if not ok:
-            _log({"issue": issue.get("issue"), "outcome": f"validation_fail: {reason}",
-                  "find": find[:80], "replace": replace[:80]})
-            results.append({"issue": issue.get("issue"), "outcome": f"validation: {reason}"})
+            # Empty-find is the prompt's explicit refusal contract — log
+            # as "refused" so the dashboard doesn't mislabel it as a
+            # validation failure (the brain DID the right thing).
+            outcome_tag = "refused" if reason == "refused" else f"validation_fail: {reason}"
+            _log({"issue": issue.get("issue"), "outcome": outcome_tag,
+                  "find": find[:80], "replace": replace[:80],
+                  "find_pre_expand": find_pre_expand[:40] if find_pre_expand != find else None})
+            results.append({"issue": issue.get("issue"), "outcome": outcome_tag})
             continue
         # Phase 300 (Phase R-3): 2-cycle approval gate. If the exact same
         # (find, replace) pair has been proposed before, increment its
