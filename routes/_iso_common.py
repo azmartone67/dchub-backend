@@ -27,14 +27,51 @@ def conn():
 
 
 def fetch_first_working(urls, timeout=20, ua="dchub-iso/1.0"):
-    """Try URLs in order. Returns (text, working_url) or raises."""
+    """Try URLs in order. Returns (text, working_url) or raises.
+
+    Phase GG+ (2026-05-13): added HTML-shell detection. Some ISOs
+    serve their data feeds through JS SPAs (Dataminer 2 / iso-ne.com
+    `/ws/wsclient`). A GET to these returns 200 + an HTML page that's
+    the SPA shell, not actual data. Previously this counted as a
+    "working URL" and the JSON/CSV parser silently returned 0 metrics.
+    Now we explicitly skip responses that look like HTML when the
+    URL implied JSON/CSV — we sniff the first ~200 bytes for
+    `<!doctype html` or `<html>` or `<head>` patterns and treat as a
+    soft-error so the loop tries the next URL.
+
+    Some endpoints legitimately return text/html (e.g. the SPP
+    /Real-time-Market HTML page is what we WANT to parse for fuel-mix
+    numbers). To handle this, we only skip HTML when the URL ends in
+    `.csv`/`.json` or includes `format=csv` / `download=true` —
+    explicit "give me data" signals. Otherwise we accept the response
+    and let the parser try.
+    """
+    import re as _re
     last = None
     for url in urls:
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": ua})
+            # Set Accept-Encoding: identity so we get raw bytes (no gzip)
+            req = urllib.request.Request(url, headers={
+                "User-Agent": ua,
+                "Accept": "application/json, text/csv, */*;q=0.5",
+                "Accept-Encoding": "identity",
+            })
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 if 200 <= resp.status < 300:
-                    return resp.read().decode("utf-8", errors="replace"), url
+                    text = resp.read().decode("utf-8", errors="replace")
+                    # Heuristic: if the URL signaled "give me data" but
+                    # the response looks like an HTML shell, skip it.
+                    looks_like_html = bool(_re.match(
+                        r'^\s*(?:<!doctype\s+html|<html[\s>]|<head[\s>])',
+                        text[:300], _re.I))
+                    expects_data = any(s in url.lower() for s in
+                                        (".csv", ".json", "format=csv",
+                                         "format=json", "download=true",
+                                         "/api/", "/data/"))
+                    if looks_like_html and expects_data:
+                        last = f"{url}: returned HTML shell (JS SPA), skipping"
+                        continue
+                    return text, url
         except urllib.error.HTTPError as e:
             last = f"{url}: HTTP {e.code}"
         except (urllib.error.URLError, OSError) as e:

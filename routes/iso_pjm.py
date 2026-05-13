@@ -40,17 +40,27 @@ PJM_API_KEY = os.environ.get("DCHUB_PJM_API_KEY", "").strip()
 
 
 def _pjm_urls():
-    """Ordered URL list — first working response wins. Public/free first,
-       then keyed (if PJM_API_KEY is configured), then EIA fallback."""
+    """Ordered URL list — first non-HTML response wins.
+
+    Phase GG+ (2026-05-13): reordered after live test showed
+    dataminer2.pjm.com returns the JS SPA's HTML landing page (200 OK
+    but no data). EIA EBA is the most reliable free endpoint for PJM
+    fuel-mix data and goes FIRST. Dataminer 2 last (kept for the day
+    PJM exposes a proper download path)."""
     urls = [
-        # Dataminer 2 — public real-time generation by fuel type
+        # EIA Form 930 — free, no-auth, returns JSON. Works for ALL 7 ISOs.
+        # Path A: structured fuel-type-data feed
+        "https://www.eia.gov/electricity/data/eia930/api/region/PJM/fuel-type-data",
+        # Path B: alternate EIA endpoint (in case path A migrates)
+        "https://api.eia.gov/v2/electricity/rto/fuel-type-data/data/?frequency=hourly&data[0]=value&facets[respondent][]=PJM&sort[0][column]=period&sort[0][direction]=desc&offset=0&length=12",
+        # PJM API (subscription) — sends key via Ocp-Apim-Subscription-Key
+        # if DCHUB_PJM_API_KEY is set. The fetch helper handles the header.
+        "https://api.pjm.com/api/v1/gen_by_fuel/data?rowCount=24&order=desc&download=true",
+        # Dataminer 2 — only works if the URL returns CSV directly (not
+        # the SPA shell). Kept for future use.
         "https://dataminer2.pjm.com/feed/gen_by_fuel/download?format=csv&period=current",
         "https://dataminer2.pjm.com/feed/gen_by_fuel/data?period=current",
-        # PJM data feeds (sometimes accessible without auth)
-        "https://api.pjm.com/api/v1/gen_by_fuel/data?rowCount=1&order=desc&download=true",
-        # EIA EBA — works for PJM without any auth
-        "https://www.eia.gov/electricity/data/eia930/api/region/PJM/fuel-type-data",
-        # Historical CSV mirror
+        # Legacy HTML page (CSV redirect, sometimes still works)
         "https://www.pjm.com/pub/account/lmpgen/realtime/byfuelmix.csv",
     ]
     return urls
