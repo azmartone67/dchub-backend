@@ -631,12 +631,19 @@ def _queue_distribution_posts(rel: dict, press_id: int, today: str) -> None:
                 # against a partial index unless the INSERT repeats the
                 # same WHERE predicate. That broke publish-now with
                 # "no unique or exclusion constraint matching the ON
-                # CONFLICT specification". Plain index is fine here:
-                # NULL != NULL by default, so old rows with NULL
-                # press_release_id don't conflict with each other, and
-                # the new distribution rows always have a non-NULL
-                # press_release_id so the unique-per-channel guarantee
-                # we actually want still holds.
+                # CONFLICT specification". Plain index is fine: NULL !=
+                # NULL by default, so old rows with NULL press_release_id
+                # don't conflict, and the new distribution rows (always
+                # non-NULL press_release_id) keep the unique-per-channel
+                # guarantee we actually want.
+                #
+                # DROP the old partial index first because CREATE INDEX
+                # IF NOT EXISTS only checks by name — without the DROP,
+                # production keeps the broken partial index forever.
+                cur.execute("""
+                    DROP INDEX IF EXISTS
+                        social_media_posts_press_release_platform_idx;
+                """)
                 cur.execute("""
                     CREATE UNIQUE INDEX IF NOT EXISTS
                         social_media_posts_press_release_platform_idx
