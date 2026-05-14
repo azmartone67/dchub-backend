@@ -2205,6 +2205,7 @@ h1 {
 
   <div class="section-h"><span class="pip"></span>📊 Underlying Metrics</div>
   <div class="section">
+    {% if s._metrics_source == 'iso_baseline' %}<div style="font-size:12px;color:var(--tx2);margin:-4px 0 10px">ISO-baseline estimate — refined as DC Hub's extractors enrich this market.</div>{% endif %}
     <div class="metrics">
       <div class="metric"><div class="v">{{ (s.queue_wait_months or 0)|round(0)|int }} mo</div><div class="l">Queue Wait</div></div>
       <div class="metric"><div class="v">{{ (s.reserve_margin_pct or 0)|round(1) }}%</div><div class="l">Reserve Margin</div></div>
@@ -2359,6 +2360,42 @@ def public_market_page(slug):
         r = Response(f"<h1>Market not found: {slug}</h1>", status=404, mimetype="text/html")
         r.headers["Content-Security-Policy"] = _DCPI_CSP
         return r
+
+    # Phase RR (2026-05-14): backfill lite-scored markets. ~250+ markets
+    # are scored by the LITE path (bulk_dcpi_score / api lite recompute),
+    # which only writes constraint_score + excess_power_score and leaves
+    # every underlying metric at 0/null. Their detail pages rendered a
+    # wall of "0 mo / 0% / 0 MW" — looked broken, surfaced nothing
+    # useful, and gave the brain a "stats empty" signal. When the row's
+    # detail metrics are all empty, re-derive them from
+    # gather_metrics_for_market (one indexed query + ISO-baseline
+    # defaults) so every market shows real directional intelligence.
+    _detail_keys = ("queue_wait_months", "reserve_margin_pct",
+                    "gen_additions_12mo_mw", "curtailment_pct",
+                    "stranded_capacity_mw", "time_to_power_months")
+    if all(not s.get(k) for k in _detail_keys):
+        try:
+            _mkt = (s.get("market_slug"), s.get("market_name"),
+                    s.get("state"), s.get("iso"),
+                    s.get("latitude"), s.get("longitude"))
+            _m = gather_metrics_for_market(_mkt)
+            s["queue_wait_months"]     = _m.get("queue_wait_months")
+            s["reserve_margin_pct"]    = _m.get("reserve_margin_pct")
+            s["gen_additions_12mo_mw"] = _m.get("gen_additions_12mo_mw")
+            s["curtailment_pct"]       = _m.get("curtailment_pct")
+            s["stranded_capacity_mw"]  = _m.get("stranded_capacity_mw")
+            s["time_to_power_months"]  = estimate_time_to_power(_m)
+            if not s.get("top_risks_json") and not s.get("top_opportunities_json"):
+                _r, _o = derive_top_signals(
+                    _mkt, _m,
+                    float(s.get("constraint_score") or 0),
+                    float(s.get("excess_power_score") or 0))
+                s["top_risks_json"] = _r
+                s["top_opportunities_json"] = _o
+            s["_metrics_source"] = "iso_baseline"
+        except Exception:
+            pass  # best-effort — fall back to whatever the row carried
+
     if s.get("computed_at"): s["computed_at"] = s["computed_at"].isoformat()
     risks = s.get("top_risks_json") or []
     opps = s.get("top_opportunities_json") or []
