@@ -990,12 +990,35 @@ def auto_generate():
     press_id, write_err = _write_release(rel, signals, rel.get("topic", "dcpi"))
     if write_err:
         return jsonify(ok=False, error=write_err, proposal=rel), 500
+
+    # Phase LL+2 (2026-05-14): IndexNow ping. Tells Bing/Yandex/Seznam/Naver
+    # within minutes that the new press release URL exists, so they
+    # index it before next normal crawl cycle. Bing's index feeds
+    # ChatGPT search + Perplexity, so this directly accelerates AI
+    # crawler discoverability. Fire-and-forget — never blocks press
+    # release write or response.
+    pinged = None
+    try:
+        from seo_agent import ping_indexnow
+        new_url = f"https://dchub.cloud/news/{rel['slug']}"
+        # Also re-ping the aggregate + media surfaces so the new
+        # entry shows up in their feed crawls too
+        ping_result = ping_indexnow([
+            new_url,
+            "https://dchub.cloud/dc-hub-media",
+            "https://dchub.cloud/api/v1/media/rss",
+        ])
+        pinged = ping_result.get("success") if isinstance(ping_result, dict) else None
+    except Exception as e:
+        print(f"[marketing] IndexNow ping failed (non-fatal): {e}", file=sys.stderr)
+
     return jsonify(
         ok=True, generated=True,
         press_release_id=press_id,
         slug=rel["slug"],
         title=rel["title"],
         url=f"https://dchub.cloud/news/{rel['slug']}",
+        indexnow_pinged=pinged,
         signals_used=signals,
     ), 201
 

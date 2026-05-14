@@ -1389,6 +1389,100 @@ def media_dataset_descriptor():
     return resp
 
 
+@media_hub_bp.get("/api/v1/outreach/agent-card.json")
+def outreach_agent_card():
+    """Phase LL+2 (2026-05-14): comprehensive agent card for AI tool
+    aggregator submissions. One URL that any registry (Glama, Smithery,
+    Toolify, There's An AI, AI Tool Hunt, etc.) can ingest to learn
+    everything about DC Hub.
+
+    Designed as a SUPERSET of the standard MCP server card spec —
+    works for MCP registries AND general AI tool directories.
+    Updated automatically as we add tools/features.
+    """
+    return jsonify({
+        "name": "DC Hub",
+        "slug": "dchub",
+        "tagline": "Live data center industry intelligence for AI agents",
+        "description": (
+            "DC Hub gives AI agents real-time access to data center "
+            "capacity, power, fiber, water risk, ISO grid status, tax "
+            "incentives, and M&A transactions across 20,000+ facilities "
+            "in 140+ countries. The Data Center Power Index (DCPI) "
+            "scores 280+ US markets daily for BUILD/AVOID verdicts. "
+            "MCP server, REST API, and OpenAPI all available."
+        ),
+        "homepage": "https://dchub.cloud",
+        "media_hub":  "https://dchub.cloud/dc-hub-media",
+        "company": {
+            "name": "DC Hub",
+            "founded": 2024,
+            "contact": "press@dchub.cloud",
+        },
+        "category":  ["data_center", "infrastructure", "energy",
+                       "real_estate", "market_intelligence"],
+        "ai_friendly": True,
+        "license":   "Tiered (free dev key + paid pro/enterprise)",
+        "endpoints": {
+            "mcp_server":     "https://dchub.cloud/mcp",
+            "rest_api":       "https://dchub.cloud/api/v1/",
+            "openapi_spec":   "https://dchub.cloud/openapi.json",
+            "mcp_card":       "https://dchub.cloud/.well-known/mcp.json",
+            "ai_plugin":      "https://dchub.cloud/ai-plugin.json",
+            "llms_txt":       "https://dchub.cloud/llms.txt",
+        },
+        "feeds": {
+            "rss":            "https://dchub.cloud/api/v1/media/rss",
+            "json_feed":      "https://dchub.cloud/api/v1/media/feed.json",
+            "dataset":        "https://dchub.cloud/api/v1/media/dataset.json",
+            "discovery":      "https://dchub.cloud/api/v1/media/discovery.json",
+        },
+        "auth": {
+            "method": "X-API-Key header OR dev key via redeem flow",
+            "free_tier": {
+                "rate_limit": "1000 reads/day, 25 paid-tool calls/day",
+                "signup":     "https://dchub.cloud/signup",
+            },
+            "paid_tier": {
+                "price":   "$49/mo Pro · Enterprise custom",
+                "pricing": "https://dchub.cloud/pricing",
+            },
+        },
+        "tool_count_summary": {
+            "free":  "16 tools (search, facilities, news, market intel)",
+            "paid":  "14 tools (grid intelligence, fiber, water, M&A, etc)",
+        },
+        "data_coverage": {
+            "facilities":    "20,000+ in 140+ countries",
+            "us_markets":    "280+ tracked daily via DCPI",
+            "isos":          ["PJM", "MISO", "ERCOT", "CAISO", "NYISO", "ISONE", "SPP"],
+            "deals":         "$324B+ in tracked M&A transactions",
+            "pipeline":      "540+ active construction projects, 369 GW",
+            "updated":       "Continuously (every 5-15 min on dynamic sources)",
+        },
+        "use_cases": [
+            "Site selection: power + fiber + water + tax in one query",
+            "Hyperscale ops: real-time ISO demand + headroom",
+            "Investors: M&A deal flow + capacity pipeline",
+            "Policy + research: standardized DCPI metrics across 280 markets",
+        ],
+        "submission_tracking": {
+            "smithery":          "https://smithery.ai/server/@dchub/nexus",
+            "glama":             "submitted",
+            "anthropic_mcp_dir": "submitted",
+            "indexnow":          "auto-pinged on new press releases",
+        },
+        "ai_manifest_compliance": [
+            "MCP Server Card 1.0",
+            "ai-plugin.json (OpenAI)",
+            "llms.txt",
+            "robots.txt",
+            "Schema.org Dataset",
+        ],
+        "as_of": datetime.now(timezone.utc).isoformat(),
+    }), 200
+
+
 @media_hub_bp.get("/api/v1/media/discovery.json")
 def media_discovery_manifest():
     """One-stop discovery manifest for AI agents. Points at the RSS feed,
