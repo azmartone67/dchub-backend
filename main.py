@@ -3558,6 +3558,11 @@ MCP_FREE_FACILITY_LIMIT = 5          # was 3 — enough to evaluate, not enough 
 # without a deploy (mirrors mcp_upgrade_gate.FREE_DAILY_LIMIT). The old
 # note also lied — said "5 calls/day" while the code enforced 3.
 MCP_FREE_DAILY_LIMIT = int(os.environ.get("MCP_FREE_DAILY_LIMIT", "25"))
+# Phase TT (2026-05-14): the value-moment carrot. A key whose human has
+# shared an email (via POST /api/v1/keys/identify) gets 4x the daily
+# quota — anonymous 25/day, identified 100/day. The gap is what makes
+# the email ask worth answering. Env-tunable like the free limit.
+MCP_IDENTIFIED_DAILY_LIMIT = int(os.environ.get("MCP_IDENTIFIED_DAILY_LIMIT", "100"))
 
 # Tools whose results contain facility arrays to gate
 MCP_FACILITY_TOOLS = {'search_facilities', 'get_facility', 'get_pipeline', 'get_top_operators'}
@@ -3595,13 +3600,20 @@ MCP_RATE_LIMIT_NOTE = (
 _mcp_free_rate_limits = {}
 
 
-def _check_mcp_daily_limit(ip_address):
+def _check_mcp_daily_limit(ip_address, limit=None):
     """
     Check if a free-tier IP has exceeded daily MCP tool call limit.
     Returns (allowed: bool, calls_remaining: int, calls_used: int).
     Persists counts in Neon so limits survive Railway restarts/redeploys.
     Falls back to in-memory if DB is unavailable.
+
+    Phase TT (2026-05-14): `limit` is now a parameter. An email-identified
+    key gets MCP_IDENTIFIED_DAILY_LIMIT (default 100); an anonymous one
+    gets MCP_FREE_DAILY_LIMIT (default 25). The caller decides which to
+    pass — that quota gap IS the carrot for the value-moment email ask.
     """
+    if limit is None:
+        limit = MCP_FREE_DAILY_LIMIT
     from datetime import date
     today = date.today().isoformat()
 
@@ -3632,9 +3644,9 @@ def _check_mcp_daily_limit(ip_address):
             # Purge rows older than 3 days (keep table small)
             cur.execute("DELETE FROM mcp_rate_limits WHERE date < (CURRENT_DATE - INTERVAL '3 days')")
             conn.commit()
-        if used > MCP_FREE_DAILY_LIMIT:
+        if used > limit:
             return False, 0, used
-        return True, MCP_FREE_DAILY_LIMIT - used, used
+        return True, limit - used, used
     except Exception:
         pass  # Fall through to in-memory
 
@@ -3649,11 +3661,45 @@ def _check_mcp_daily_limit(ip_address):
         for k in stale:
             _mcp_free_rate_limits.pop(k, None)
 
-    if entry['count'] >= MCP_FREE_DAILY_LIMIT:
+    if entry['count'] >= limit:
         return False, 0, entry['count']
 
     entry['count'] += 1
-    return True, MCP_FREE_DAILY_LIMIT - entry['count'], entry['count']
+    return True, limit - entry['count'], entry['count']
+
+
+# Phase TT (2026-05-14): is this dev key email-identified? An identified
+# key earns MCP_IDENTIFIED_DAILY_LIMIT. Cached 5 min so the check never
+# adds a DB round-trip to a hot MCP call path.
+_mcp_key_identified_cache = {}  # {api_key: (is_identified: bool, ts: float)}
+
+
+def _mcp_key_is_identified(api_key):
+    """True if the key exists, is active, and has an email on file.
+    Best-effort — any DB trouble returns False, which just means the
+    caller falls back to the lower (free) quota: the safe direction."""
+    if not api_key:
+        return False
+    import time as _t
+    now = _t.time()
+    cached = _mcp_key_identified_cache.get(api_key)
+    if cached and (now - cached[1]) < 300:
+        return cached[0]
+    identified = False
+    try:
+        with pg_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT email FROM mcp_dev_keys WHERE api_key = %s AND status = 'active'",
+                (api_key,))
+            row = cur.fetchone()
+            identified = bool(row and row[0])
+    except Exception:
+        identified = False
+    if len(_mcp_key_identified_cache) > 5000:
+        _mcp_key_identified_cache.clear()
+    _mcp_key_identified_cache[api_key] = (identified, now)
+    return identified
 
 
 def _get_mcp_caller_tier():
@@ -3729,19 +3775,73 @@ def _gate_mcp_result(result_content, tool_name, tier):
     # ── Daily rate limit check (free tier only) ──
     if tier == 'free':
         ip = request.remote_addr or 'unknown'
-        allowed, remaining, used = _check_mcp_daily_limit(ip)
+        # Phase TT (2026-05-14): identified keys (email on file) get 4x
+        # the quota. The wall is the value moment — the FIRST ask is an
+        # email (free, instant, more quota), NOT payment.
+        _api_key = (request.headers.get('X-API-Key', '')
+                    or request.args.get('api_key', ''))
+        _identified = _mcp_key_is_identified(_api_key)
+        _limit = MCP_IDENTIFIED_DAILY_LIMIT if _identified else MCP_FREE_DAILY_LIMIT
+        allowed, remaining, used = _check_mcp_daily_limit(ip, _limit)
+        if not allowed and not _identified:
+            # Hit the wall with an anonymous / no-email key. Lead with
+            # the email ask — free, one API call, 4x the quota.
+            _blk = {
+                "_user_facing_note": MCP_RATE_LIMIT_NOTE,
+                "error": "daily_limit_reached",
+                "message": (
+                    f"You've used all {_limit} free MCP calls for today. "
+                    f"Unlock {MCP_IDENTIFIED_DAILY_LIMIT}/day FREE right now — "
+                    f"just identify your key with an email (no payment, no signup form)."
+                ),
+                "calls_used": used,
+                "daily_limit": _limit,
+                "resets": "midnight UTC",
+                "identify": {
+                    "why": (f"Identify with an email → {MCP_IDENTIFIED_DAILY_LIMIT} calls/day "
+                            f"(up from {MCP_FREE_DAILY_LIMIT}) + a weekly digest of the "
+                            f"markets you query."),
+                    "agent_action": ("If your user shares an email, POST "
+                                     '{"api_key": "<this key>", "email": "<their email>"} '
+                                     "to https://dchub.cloud/api/v1/keys/identify"),
+                    "url": "https://dchub.cloud/api/v1/keys/identify",
+                    "method": "POST",
+                    "cost": "free — email only, no payment",
+                },
+                "upgrade": {
+                    "url": "https://dchub.cloud/pricing#developer",
+                    "checkout": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",
+                    "price": "$49/mo",
+                    "includes": "1,000 calls/day, full facility data, coordinates, power specs, site scoring, grid data",
+                    "note": "Only if you need more than the free identified tier.",
+                },
+            }
+            try:
+                from routes.redeem_tracking import record_funnel_event
+                record_funnel_event(
+                    "identify_shown", tool=tool_name, tier="free",
+                    source="mcp_daily_limit",
+                    user_agent=request.headers.get("User-Agent"),
+                    ip=(request.headers.get("X-Forwarded-For")
+                        or request.remote_addr or ""))
+            except Exception:
+                pass
+            return _inject_agent_claim([{"type": "text", "text": json.dumps(_blk)}])
         if not allowed:
+            # Already identified and STILL hit the (higher) wall — now
+            # the right next step genuinely is the paid Developer plan.
             return _inject_agent_claim([{
                 "type": "text",
                 "text": json.dumps({
                     "_user_facing_note": MCP_RATE_LIMIT_NOTE,
                     "error": "daily_limit_reached",
                     "message": (
-                        f"You've used all {MCP_FREE_DAILY_LIMIT} free MCP calls for today. "
-                        f"Developer plan ($49/mo) gives you 1,000 calls/day with full data."
+                        f"You've used all {_limit} calls for today on the free "
+                        f"identified tier. Developer plan ($49/mo) gives you "
+                        f"1,000 calls/day with full data."
                     ),
                     "calls_used": used,
-                    "daily_limit": MCP_FREE_DAILY_LIMIT,
+                    "daily_limit": _limit,
                     "resets": "midnight UTC",
                     "upgrade": {
                         "url": "https://dchub.cloud/pricing#developer",
