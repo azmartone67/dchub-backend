@@ -556,6 +556,74 @@ def mark_proposal_pr(proposal_id):
         return jsonify(ok=False, error=str(e)[:200]), 500
 
 
+@brain_v2_layer5_bp.post("/api/v1/brain/proposed-code/<int:proposal_id>/mark-merge-outcome")
+def mark_proposal_merge_outcome(proposal_id):
+    """Phase GG#4 (2026-05-14): record what happened AFTER a brain PR
+    merged. The brain-pr-post-merge-guard workflow calls this once
+    Railway has redeployed and /api/health has been probed.
+
+    outcome ∈ {merged_healthy, merged_reverted}
+
+    This is the feedback signal GG#2 (confidence calibration) reads:
+      - merged_healthy  → the brain's fix was good. Trust ↑.
+      - merged_reverted → the brain's fix broke prod + got auto-reverted.
+                          Trust ↓.
+    Over time the merged_healthy ratio per source (loop_name prefix,
+    confidence band) tunes the auto-PR threshold.
+
+    Adds a `merge_outcome` + `merge_outcome_at` column defensively —
+    same idempotent ALTER pattern used elsewhere in this module.
+    """
+    auth_err = _require_admin()
+    if auth_err: return auth_err
+
+    body = request.get_json(silent=True) or {}
+    outcome = (body.get("outcome") or "").strip()
+    detail = (body.get("detail") or "").strip()[:500]
+    if outcome not in ("merged_healthy", "merged_reverted"):
+        return jsonify(ok=False,
+                       error="outcome must be merged_healthy or merged_reverted"), 400
+
+    try:
+        import psycopg2
+        url = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
+        with psycopg2.connect(url, connect_timeout=5) as conn, conn.cursor() as cur:
+            try:
+                cur.execute("""
+                    ALTER TABLE brain_proposed_code_fixes
+                    ADD COLUMN IF NOT EXISTS merge_outcome TEXT;
+                """)
+                cur.execute("""
+                    ALTER TABLE brain_proposed_code_fixes
+                    ADD COLUMN IF NOT EXISTS merge_outcome_at TIMESTAMPTZ;
+                """)
+                cur.execute("""
+                    ALTER TABLE brain_proposed_code_fixes
+                    ADD COLUMN IF NOT EXISTS merge_outcome_detail TEXT;
+                """)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+            cur.execute("""
+                UPDATE brain_proposed_code_fixes
+                SET merge_outcome = %s,
+                    merge_outcome_at = NOW(),
+                    merge_outcome_detail = %s,
+                    status = %s
+                WHERE id = %s
+                RETURNING id
+            """, (outcome, detail,
+                  'merged_healthy' if outcome == 'merged_healthy' else 'reverted',
+                  proposal_id))
+            row = cur.fetchone()
+            conn.commit()
+        if not row:
+            return jsonify(ok=False, error="proposal_not_found"), 404
+        return jsonify(ok=True, proposal_id=proposal_id, outcome=outcome), 200
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)[:200]), 500
+
+
 @brain_v2_layer5_bp.get("/api/v1/brain/proposed-code")
 def proposed_code():
     """Public read of recent Layer 5 proposals. Surfaces on the
