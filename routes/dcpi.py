@@ -2234,9 +2234,53 @@ h1 {
     </div>
   </div>
 
+  <div class="section-h"><span class="pip"></span>📬 Free Market-Movement Alerts</div>
+  <div class="section" id="alert-box">
+    <h2 style="margin-bottom:0.4rem">Get an email when {{ s.market_name }} moves</h2>
+    <p style="color:var(--tx2);font-size:0.92rem;margin:0 0 1rem">
+      DC Hub snapshots {{ s.market_name }} every day. The moment its verdict flips
+      — or its constraint score or time-to-power shifts meaningfully — you get a
+      one-line email. No account, no password, free.</p>
+    <form id="alert-form" style="display:flex;gap:0.5rem;flex-wrap:wrap">
+      <input type="email" id="alert-email" placeholder="you@company.com" required
+        style="flex:1;min-width:220px;background:var(--bg);border:1px solid var(--bd);color:#fff;padding:0.7rem 1rem;border-radius:6px;font-family:Inter,sans-serif;font-size:0.92rem;outline:none">
+      <button type="submit" id="alert-go"
+        style="background:var(--gradient);color:#fff;border:0;padding:0.7rem 1.3rem;border-radius:6px;font-weight:700;font-size:0.9rem;cursor:pointer;font-family:Inter,sans-serif">Alert me →</button>
+    </form>
+    <div id="alert-msg" style="margin-top:0.6rem;font-size:0.85rem;color:var(--tx2)"></div>
+  </div>
+  <script>
+  (function(){
+    var f = document.getElementById('alert-form'); if (!f) return;
+    f.addEventListener('submit', async function(e){
+      e.preventDefault();
+      var em = document.getElementById('alert-email').value.trim();
+      var msg = document.getElementById('alert-msg');
+      var btn = document.getElementById('alert-go');
+      btn.disabled = true; msg.textContent = 'Subscribing…';
+      try {
+        var r = await fetch('/api/v1/alerts/subscribe', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({market:'{{ s.market_slug }}', channel:'email',
+                                destination: em, source:'dcpi_market_page'})
+        });
+        var d = await r.json();
+        if (d.ok) {
+          msg.innerHTML = '<span style="color:var(--green)">✓ Done — you\\'ll get an email the next time {{ s.market_name }} moves.</span>';
+          document.getElementById('alert-email').value = '';
+        } else {
+          msg.innerHTML = '<span style="color:var(--red)">' + (d.error || 'Could not subscribe') + '</span>';
+        }
+      } catch (err) {
+        msg.innerHTML = '<span style="color:var(--red)">Error: ' + err + '</span>';
+      } finally { btn.disabled = false; }
+    });
+  })();
+  </script>
+
   <div class="cta-pro">
     <h2>Drill into {{ s.market_name }} at the county level.</h2>
-    <p>Pro shows the score at the county level so you can pinpoint which sub-markets have the headroom. Plus alerts when {{ s.market_name }} moves &gt;5 points and PDF export for your buyers.</p>
+    <p>Free alerts tell you {{ s.market_name }} moved. Pro tells you <em>where</em> — the score at the county level so you can pinpoint which sub-markets have the headroom, plus PDF export for your buyers.</p>
     <a href="/pricing">Get Pro · $199/mo →</a>
   </div>
 </div>
