@@ -459,14 +459,29 @@ def og_card(style, slug):
 
     pr = _get_press_release(slug)
     if debug:
+        # Try to actually render and capture any exception, so debug
+        # mode shows us WHY the renderer falls through to the fallback.
         from flask import jsonify
+        import traceback as _tb
+        render_err = None
+        if pr is not None:
+            try:
+                fn = STYLE_MAP.get(style, _draw_data_brutal)
+                _ = fn(pr)
+            except Exception as e:
+                render_err = f"{type(e).__name__}: {str(e)[:300]}"
+                tb = _tb.format_exc()
+                render_err += "\n" + tb[-500:]
         return jsonify(
             style=style, slug=slug,
             pr_found=pr is not None,
             pr_title=(pr or {}).get('title'),
             pr_date_str=str((pr or {}).get('date')),
             has_signals=bool((pr or {}).get('signals')),
+            signals_keys=list((pr or {}).get('signals') or {})[:10],
+            top_build_first=(((pr or {}).get('signals') or {}).get('top_build_markets') or [{}])[0],
             todays_style=todays_style(),
+            render_error=render_err,
         )
 
     try:
@@ -476,7 +491,8 @@ def og_card(style, slug):
             fn = STYLE_MAP.get(style, _draw_data_brutal)
             img = fn(pr)
     except Exception as e:
-        print(f"[og_cards] render error for {style}/{slug}: {e}")
+        import traceback as _tb
+        print(f"[og_cards] render error for {style}/{slug}: {e}\n{_tb.format_exc()}")
         img = _draw_fallback(slug)
 
     buf = io.BytesIO()
