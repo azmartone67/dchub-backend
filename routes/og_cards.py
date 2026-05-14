@@ -629,6 +629,99 @@ STYLE_MAP = {
 }
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Phase GG (2026-05-14): smart_style() — DC Hub Media as an independent
+# intelligent worker.
+#
+# todays_style() is a FIXED weekday rotation: it never learns. smart_style()
+# closes the loop — it reads how each form factor has actually performed
+# (click-through on the press releases it ran) and uses epsilon-greedy
+# selection: most of the time it picks the measured best performer, but
+# EXPLORE_RATE of the time it deliberately picks a different one so every
+# form factor keeps accumulating data and one lucky post can't permanently
+# lock out the rest. When there isn't enough engagement data yet, it falls
+# back cleanly to the deterministic weekday rotation.
+#
+# The choice is seeded by the UTC date so it's STABLE within a day (the
+# og:image must not flicker between requests) but adapts day to day.
+# ─────────────────────────────────────────────────────────────────────
+
+import random as _random
+
+_OG_EXPLORE_RATE = float(os.environ.get('DCHUB_OG_EXPLORE_RATE', '0.30'))
+_OG_SMART_MIN_POSTS_PER_STYLE = int(os.environ.get('DCHUB_OG_MIN_POSTS', '2'))
+_OG_SMART_MIN_TOTAL_VIEWS = int(os.environ.get('DCHUB_OG_MIN_VIEWS', '20'))
+
+
+def _style_performance():
+    """Per-form-factor engagement over the last 60 days.
+
+    Returns {style: {'views':int,'clicks':int,'posts':set(slugs)}} — or {}
+    on any DB hiccup. The form factor a press release ran is derived from
+    its publish weekday via DAILY_STYLES (same mapping og_performance uses).
+    Best-effort: never raises.
+    """
+    try:
+        import psycopg2
+        conn = psycopg2.connect(os.environ.get('DATABASE_URL'), connect_timeout=8)
+    except Exception:
+        return {}
+    agg = {}
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute("""
+                SELECT a.slug, a.generated_at, e.event_type, COUNT(e.id)
+                FROM auto_press_releases a
+                LEFT JOIN press_engagement e ON e.slug = a.slug
+                WHERE a.generated_at > NOW() - INTERVAL '60 days'
+                GROUP BY a.slug, a.generated_at, e.event_type
+            """)
+            for slug, gen_at, event_type, n in cur.fetchall():
+                if not gen_at:
+                    continue
+                style = DAILY_STYLES.get(gen_at.weekday(), 'data_brutal')
+                b = agg.setdefault(style, {'views': 0, 'clicks': 0, 'posts': set()})
+                b['posts'].add(slug)
+                if event_type == 'view':
+                    b['views'] += int(n or 0)
+                elif event_type in ('click_out', 'stripe_click'):
+                    b['clicks'] += int(n or 0)
+    except Exception:
+        return {}
+    finally:
+        try: conn.close()
+        except Exception: pass
+    return agg
+
+
+def smart_style():
+    """Performance-aware form-factor pick. Falls back to todays_style()
+    until there's enough engagement data to judge."""
+    try:
+        agg = _style_performance()
+    except Exception:
+        return todays_style()
+
+    eligible = {s: b for s, b in agg.items()
+                if len(b['posts']) >= _OG_SMART_MIN_POSTS_PER_STYLE and b['views'] > 0}
+    total_views = sum(b['views'] for b in agg.values())
+    if len(eligible) < 2 or total_views < _OG_SMART_MIN_TOTAL_VIEWS:
+        # Not enough signal yet — deterministic rotation keeps coverage even.
+        return todays_style()
+
+    # Deterministic-per-day RNG so the card is stable within a UTC day.
+    day = datetime.datetime.utcnow().strftime('%Y-%m-%d')
+    rng = _random.Random('og-smart-' + day)
+    all_styles = list(STYLE_MAP.keys())
+
+    if rng.random() < _OG_EXPLORE_RATE:
+        # Explore — pick uniformly so every form factor keeps gathering data.
+        return rng.choice(all_styles)
+    # Exploit — best measured click-through rate among the eligible cohort.
+    best = max(eligible.items(), key=lambda kv: kv[1]['clicks'] / kv[1]['views'])
+    return best[0]
+
+
 def _draw_fallback(slug):
     """Last-resort card if DB unavailable or generator throws. Never 404 —
     LinkedIn / Twitter aggressively drop link-card previews if og:image
@@ -663,7 +756,12 @@ def og_card(style, slug):
     # what's happening in the lookup pipeline.
     debug = _req.args.get('debug') == '1'
 
-    if style == 'today':
+    # Phase GG (2026-05-14): `today` now resolves through smart_style() —
+    # the performance-aware, self-learning pick. `smart` is an explicit
+    # alias; `rotation` forces the old fixed weekday rotation.
+    if style in ('today', 'smart'):
+        style = smart_style()
+    elif style == 'rotation':
         style = todays_style()
 
     pr = _get_press_release(slug)
@@ -690,6 +788,7 @@ def og_card(style, slug):
             signals_keys=list((pr or {}).get('signals') or {})[:10],
             top_build_first=(((pr or {}).get('signals') or {}).get('top_build_markets') or [{}])[0],
             todays_style=todays_style(),
+            smart_style=smart_style(),
             render_error=render_err,
         )
 
