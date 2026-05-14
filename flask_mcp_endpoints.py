@@ -369,6 +369,38 @@ def track_tool_call():
     if params is not None and not isinstance(params, str):
         params = json.dumps(params, default=str)
 
+    # ── Phase NN (2026-05-14): attribution recovery ──────────────────────
+    # The upstream MCP server (server.mjs) fires this callback WITHOUT
+    # forwarding clientInfo, so client_name is almost always 'unknown'
+    # and platform is the literal 'mcp' — 98.8% of mcp_tool_calls rows
+    # were unattributed. But server.mjs DOES pass session_id, and the
+    # /mcp proxy in main.py persists session_id -> (platform, client_name)
+    # to mcp_sessions on every `initialize` (where clientInfo.name IS
+    # present). Recover real attribution by joining on session_id.
+    _r_platform = str(body.get("platform") or "").strip()
+    _r_client = str(body.get("client_name") or body.get("client") or "").strip()
+    _r_session = body.get("session_id")
+    _GENERIC = ("", "mcp", "mcp-worker", "unknown", "anonymous")
+    if _r_session and (_r_platform.lower() in _GENERIC or _r_client.lower() in _GENERIC):
+        try:
+            with _pool.connection() as _sc_conn, _sc_conn.cursor() as _sc_cur:
+                _sc_cur.execute(
+                    "SELECT platform, client_name FROM mcp_sessions WHERE session_id = %s",
+                    (str(_r_session)[:200],),
+                )
+                _sc_row = _sc_cur.fetchone()
+            if _sc_row:
+                if _sc_row[0] and _sc_row[0].lower() not in _GENERIC \
+                        and _r_platform.lower() in _GENERIC:
+                    _r_platform = _sc_row[0]
+                if _sc_row[1] and _sc_row[1].lower() not in _GENERIC \
+                        and _r_client.lower() in _GENERIC:
+                    _r_client = _sc_row[1]
+        except Exception:
+            # mcp_sessions may not exist yet, or lookup hiccupped — fall
+            # back to whatever the callback gave us. Never block tracking.
+            pass
+
     # phase9j_dual: also write to legacy mcp_tool_calls so the existing
     # /api/v1/usage and /api/v1/data-freshness queries (which read from
     # that table) reflect activity. The 4/30 rewrite of this file moved
@@ -397,8 +429,8 @@ def track_tool_call():
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     str(tool)[:200],
-                    (str(body.get('platform') or 'mcp-worker'))[:80],
-                    (str(body.get('client_name') or body.get('client') or 'unknown'))[:200],
+                    (_r_platform or 'mcp-worker')[:80],
+                    (_r_client or 'unknown')[:200],
                     (_params_str or '{}')[:4000],
                     bool((body.get('status') in (None, 'ok', 'success', 200, True)) or body.get('success', True)),
                     int((body.get('duration_ms') or body.get('response_time_ms') or 0) or 0),
@@ -423,7 +455,7 @@ def track_tool_call():
                    VALUES (%s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s)""",
                 (
                     ts_dt, tool, params,
-                    body.get("platform"),
+                    (_r_platform or body.get("platform")),
                     body.get("api_key"),
                     body.get("tier"),
                     body.get("session_id"),

@@ -3206,6 +3206,92 @@ MCP_PLATFORM_MAP = {
 # Session-to-platform cache: maps MCP session IDs to detected platforms
 _mcp_session_platforms = {}  # {session_id: (platform, client_name, timestamp)}
 
+# Phase NN (2026-05-14): attribution recovery.
+#
+# 98.8% of mcp_tool_calls rows land with platform='mcp' and 99% of
+# mcp_upgrade_signals with mcp_client='mcp' — both completely
+# unattributed. Root cause: the upstream MCP server (server.mjs) fires
+# the /api/v1/mcp/track callback WITHOUT forwarding clientInfo, and the
+# `initialize` handshake is the only place clientInfo.name actually
+# arrives. That handshake DOES flow through this /mcp proxy.
+#
+# Two bugs compounded it:
+#   1. When clientInfo.name was a UUID (some clients send a per-instance
+#      UUID as their name), we stored the UUID verbatim as `platform` —
+#      polluting analytics with hundreds of one-row "platforms".
+#   2. There was no durable session_id -> platform map, so the /track
+#      callback (which DOES carry session_id) had nothing to join on.
+#
+# Fix: _resolve_mcp_platform rejects UUID/empty/junk names, and
+# _persist_mcp_session writes the session_id -> (platform, client_name)
+# mapping to a small mcp_sessions table on every `initialize`. The
+# /track endpoint then recovers real attribution by session_id lookup.
+_UUID_RE = re.compile(
+    r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.I)
+
+
+def _looks_like_uuid(s):
+    return bool(s and _UUID_RE.match(str(s).strip()))
+
+
+def _resolve_mcp_platform(client_name, ua_str=''):
+    """Map clientInfo.name (and/or User-Agent) to a known platform.
+
+    Returns 'unknown' rather than echoing back garbage (UUIDs, empty
+    strings, transport plumbing IDs) so analytics stay clean. A real,
+    non-UUID client name with no marker match is kept as-is.
+    """
+    cn = (client_name or '').strip()
+    cn_l = cn.lower()
+    if cn_l and cn_l not in ('unknown', 'anonymous') and not _looks_like_uuid(cn):
+        for key_str, plat in MCP_PLATFORM_MAP.items():
+            if key_str in cn_l:
+                return plat
+        return cn
+    ua_l = (ua_str or '').lower()
+    if ua_l:
+        for key_str, plat in MCP_PLATFORM_MAP.items():
+            if key_str in ua_l:
+                return plat
+    return 'unknown'
+
+
+def _persist_mcp_session(session_id, platform, client_name):
+    """Best-effort: persist session_id -> platform so the /track callback
+    (fired by the upstream MCP server, which never forwards clientInfo)
+    can recover real attribution by joining on session_id. Never raises.
+    """
+    if not session_id:
+        return
+    try:
+        from db_utils import try_get_db
+        db = try_get_db()
+        if not db:
+            return
+        try:
+            cur = db.cursor()
+            cur.execute('''CREATE TABLE IF NOT EXISTS mcp_sessions (
+                session_id   TEXT PRIMARY KEY,
+                platform     TEXT,
+                client_name  TEXT,
+                first_seen   TIMESTAMPTZ DEFAULT NOW(),
+                last_seen    TIMESTAMPTZ DEFAULT NOW()
+            )''')
+            cur.execute('''INSERT INTO mcp_sessions (session_id, platform, client_name)
+                           VALUES (%s, %s, %s)
+                           ON CONFLICT (session_id) DO UPDATE SET
+                               platform = EXCLUDED.platform,
+                               client_name = EXCLUDED.client_name,
+                               last_seen = NOW()''',
+                        (str(session_id)[:200], (platform or 'unknown')[:80],
+                         (client_name or 'unknown')[:200]))
+            db.commit()
+        finally:
+            try: db.close()
+            except Exception: pass
+    except Exception:
+        pass
+
 def _log_mcp_analytics(rpc_method, rpc_params, platform, client_name, duration_ms, success=True, status_code=None):
     """
     Log MCP traffic to telemetry tables.
@@ -4277,15 +4363,17 @@ def mcp_proxy():
             if rpc_method == 'initialize':
                 client_info = rpc_params.get('clientInfo', {})
                 client_name = client_info.get('name', 'unknown')
-                for key_str, plat in MCP_PLATFORM_MAP.items():
-                    if key_str in client_name.lower():
-                        platform = plat
-                        break
-                else:
-                    platform = client_name
-                # Cache platform for this session
+                ua_str = request.headers.get('User-Agent', '')
+                # Phase NN: reject UUID/empty names — never echo a per-instance
+                # UUID back as `platform`. Falls back to User-Agent, then 'unknown'.
+                platform = _resolve_mcp_platform(client_name, ua_str)
+                if _looks_like_uuid(client_name) or not (client_name or '').strip() \
+                        or client_name.lower() == 'unknown':
+                    client_name = platform
+                # Cache platform for this session (in-memory + durable).
                 if session_id:
                     _mcp_session_platforms[session_id] = (platform, client_name, time.time())
+                    _persist_mcp_session(session_id, platform, client_name)
             else:
                 # For non-initialize calls, look up session cache first
                 if session_id and session_id in _mcp_session_platforms:
