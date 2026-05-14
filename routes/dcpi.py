@@ -2232,7 +2232,13 @@ h1 {
 
 
 @_safe_dcpi_page
-@dcpi_bp.route("/dcpi", methods=["GET"])
+# strict_slashes=False (2026-05-14): Flask's default 404s the trailing-slash
+# variant of a no-slash route. /dcpi/ was returning a hard 404 (and
+# /dcpi/<slug>/ likewise) while /dcpi and /dcpi/<slug> served fine — a
+# silent dead-end for any link or crawler that appended a slash. False
+# alarms from this also fed the healer's dcpi_flaky_404 pattern. Accept
+# both forms.
+@dcpi_bp.route("/dcpi", methods=["GET"], strict_slashes=False)
 def public_dashboard():
     _ensure_tables()
     with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -2309,7 +2315,7 @@ _DCPI_CSP = (
 )
 
 
-@dcpi_bp.route("/dcpi/<slug>", methods=["GET"])
+@dcpi_bp.route("/dcpi/<slug>", methods=["GET"], strict_slashes=False)
 def public_market_page(slug):
     _ensure_tables()
     # Phase JJ (2026-05-14): slug aliasing. The market_power_scores table
@@ -2523,7 +2529,7 @@ def og_card(slug):
                     headers={"Cache-Control": "public, max-age=600, must-revalidate"})
 
 
-@dcpi_bp.route("/dcpi/press", methods=["GET"])
+@dcpi_bp.route("/dcpi/press", methods=["GET"], strict_slashes=False)
 def press_kit():
     return Response("""<!DOCTYPE html><html><head><title>DCPI Press Kit</title>
 <style>body{font-family:system-ui;max-width:780px;margin:2rem auto;padding:2rem;line-height:1.6;color:#222}
