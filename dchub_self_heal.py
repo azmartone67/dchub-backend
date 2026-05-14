@@ -1360,9 +1360,19 @@ def fix_html_quality_scan():
         #   <div class="n" id="stat-*">—</div>      ← Phase BB stat tiles
         #   <span class="count" id="c-*">0</span>   ← filter chip counters
         #   <b id="s-*">0</b>                       ← sidebar counters
+        #   <div class="v" id="kpi-*">—</div>       ← /markets KPI tiles (Phase HH+6)
         # Without this, every Phase FF + Phase BB page false-positives on em-dash.
+        #
+        # Phase HH+6 (2026-05-14): added `kpi-`. The /markets page has
+        # id="kpi-pipeline" + id="kpi-movers" tiles whose JS sets the
+        # value at render time (markets/index.html:183-184). The raw
+        # HTML the scanner fetches (no JS execution) shows the bare "—"
+        # pre-hydration placeholder. Brain v2 was burning every learn
+        # cycle on these — 11 attempts, all "refused" (Claude correctly
+        # won't hallucinate a pipeline-GW number). Same false-positive
+        # class as the spine-/stat- cells, one prefix short.
         scan_body = _hp_re.sub(
-            r'<(?:div|span|b|h\d)\b[^>]*\bid\s*=\s*[\'"](?:spine-|stat-|c-|s-)[^\'"]*[\'"][^>]*>[\s\S]*?</(?:div|span|b|h\d)>',
+            r'<(?:div|span|b|h\d)\b[^>]*\bid\s*=\s*[\'"](?:spine-|stat-|c-|s-|kpi-)[^\'"]*[\'"][^>]*>[\s\S]*?</(?:div|span|b|h\d)>',
             '', scan_body, flags=_hp_re.I)
         # Also strip elements whose class contains 'loading' / 'skeleton' /
         # 'placeholder' / 'big-num' (DC Hub's known loading-state markers).
