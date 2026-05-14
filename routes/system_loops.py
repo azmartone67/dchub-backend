@@ -489,16 +489,55 @@ def babysit_loops():
                             "method": method, "url": path,
                             "error": f"{type(e).__name__}: {str(e)[:160]}"})
 
+    # Phase SS (2026-05-14): escalation — when self-healing isn't enough.
+    # The babysitter fires refresh hooks, but a loop that stays `dead`
+    # across consecutive babysit runs means the refresh isn't recovering
+    # it (cron genuinely dropped, endpoint erroring, upstream dead). We
+    # track a consecutive-dead streak per loop in brain_meta; any loop
+    # dead 2+ runs in a row is surfaced as an `escalation` so the
+    # workflow can open a GH issue. This is the system noticing its own
+    # limb didn't come back — not just blindly re-firing forever.
+    escalations = []
+    try:
+        from routes import brain_v2_store as _bstore
+        for l in loops:
+            _name = l.get("name", "?")
+            _status = l.get("status", "dead")
+            _mkey = f"loop_dead_streak:{_name}"
+            if _status in healthy:
+                _bstore.set_meta(_mkey, "0")
+            elif _status == "dead":
+                try:
+                    _prev = int((_bstore.get_meta(_mkey) or {}).get("value") or 0)
+                except Exception:
+                    _prev = 0
+                _streak = _prev + 1
+                _bstore.set_meta(_mkey, str(_streak))
+                if _streak >= 2:
+                    escalations.append({
+                        "loop": _name,
+                        "consecutive_dead_runs": _streak,
+                        "age_hours": l.get("age_hours"),
+                        "cadence_hours": l.get("cadence_hours"),
+                        "note": l.get("note") or l.get("error"),
+                    })
+            # 'stale' — mid-recovery; leave the streak untouched, the
+            # babysitter just fired a refresh, give it a cycle.
+    except Exception:
+        pass  # brain_meta unavailable — escalation is best-effort
+
     summary = {
         "fired": sum(1 for a in actions if a.get("action") == "fired"),
         "no_action": sum(1 for a in actions if a.get("action") == "no_action_needed"),
         "no_hook":  sum(1 for a in actions if a.get("action") == "no_refresh_hook"),
         "failed":   sum(1 for a in actions if a.get("action", "").startswith("fire_")),
+        "escalations": len(escalations),
     }
     return jsonify(
         as_of=datetime.now(timezone.utc).isoformat(),
         summary=summary,
         actions=actions,
+        escalations=escalations,
     ), 200
 
 
