@@ -2312,11 +2312,42 @@ _DCPI_CSP = (
 @dcpi_bp.route("/dcpi/<slug>", methods=["GET"])
 def public_market_page(slug):
     _ensure_tables()
+    # Phase JJ (2026-05-14): slug aliasing. The market_power_scores table
+    # uses bare slugs (e.g. 'allen' not 'allen-tx'), but external links
+    # often append state suffix because that's the natural-language
+    # form (yesterday's auto-press wrote "Allen, TX ranked #3" which
+    # AI agents parsing the article reasonably resolved to /dcpi/allen-tx).
+    # Try the exact slug first, then strip common suffix patterns.
+    candidates = [slug]
+    # Strip -<state> suffix: 'allen-tx' → 'allen'
+    if "-" in slug and len(slug.rsplit("-", 1)[1]) == 2:
+        candidates.append(slug.rsplit("-", 1)[0])
+    # Strip -texas / -california / etc. (full state names)
+    _STATE_FULL_SUFFIXES = (
+        '-texas', '-california', '-virginia', '-georgia', '-illinois',
+        '-arizona', '-wyoming', '-nevada', '-oregon', '-washington',
+        '-florida', '-ohio', '-michigan', '-newyork', '-new-york',
+    )
+    for suf in _STATE_FULL_SUFFIXES:
+        if slug.endswith(suf):
+            candidates.append(slug[:-len(suf)])
+            break
+
+    s = None
     with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute("""SELECT * FROM market_power_scores
-                       WHERE market_slug = %s
-                       ORDER BY computed_at DESC LIMIT 1""", (slug,))
-        s = cur.fetchone()
+        for cand in candidates:
+            cur.execute("""SELECT * FROM market_power_scores
+                           WHERE market_slug = %s
+                           ORDER BY computed_at DESC LIMIT 1""", (cand,))
+            s = cur.fetchone()
+            if s:
+                # If we matched on an alias (not the original), 301-redirect
+                # to the canonical slug. Preserves SEO equity for inbound
+                # links and ensures Google deduplicates the page.
+                if cand != slug:
+                    from flask import redirect
+                    return redirect(f"/dcpi/{cand}", code=301)
+                break
     if not s:
         # phase 284: even 404 should ship the CSP so it doesn't trip the watch
         r = Response(f"<h1>Market not found: {slug}</h1>", status=404, mimetype="text/html")

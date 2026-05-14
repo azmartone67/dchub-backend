@@ -40,9 +40,13 @@ def _ensure_tables():
 SURFACES = [
     {"name": "dcpi_scores",       "stale_hours": 26,  "refresh_func": "refresh_dcpi"},
     {"name": "testimonials",      "stale_hours": 30*24, "refresh_func": "refresh_testimonials"},
-    {"name": "homepage_stats",    "stale_hours": 1,   "refresh_func": "refresh_stats"},
+    # Phase JJ (2026-05-14): homepage_stats cap 1h → 4h. The refresh_stats
+    # job runs every 6h via newsroom-auto cron; 1h cap was false-amber.
+    {"name": "homepage_stats",    "stale_hours": 4,   "refresh_func": "refresh_stats"},
     {"name": "hero_copy",         "stale_hours": 7*24, "refresh_func": "refresh_hero"},
-    {"name": "news_cache",        "stale_hours": 6,   "refresh_func": "refresh_news"},
+    # Phase JJ: news_cache cap 6h → 8h. Cron is every 6h; 6h cap left
+    # zero jitter budget so the dashboard alternated FRESH/STALE.
+    {"name": "news_cache",        "stale_hours": 8,   "refresh_func": "refresh_news"},
     {"name": "iso_metrics",       "stale_hours": 6,   "refresh_func": "refresh_iso"},  # JJ: 2→6h
     # Phase QQ+8 (2026-05-13): per-ISO heartbeat surfaces. Previously
     # only the aggregate "iso_metrics" was tracked, hiding which
