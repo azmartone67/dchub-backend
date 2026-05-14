@@ -3538,7 +3538,19 @@ def test_auto_capture():
 # Fields free users can see per facility
 MCP_FREE_FIELDS = {'name', 'city', 'state', 'country', 'provider', 'operator', 'status'}
 MCP_FREE_FACILITY_LIMIT = 5          # was 3 — enough to evaluate, not enough to build
-MCP_FREE_DAILY_LIMIT = 3            # 3 free calls/day — tighter gate drives upgrades
+# Phase RR (2026-05-14): free-tier daily call limit.
+# Was hardcoded to 3 ("tighter gate drives upgrades"). The funnel
+# proved that backfired hard: 12,454 paywalls -> 1 redeem click -> 4
+# conversions in 30 days, and daily MCP volume flat-lined at the cap.
+# An AI agent doing real work burns 3 calls before it has seen ANY
+# value, hits the wall, reports "can't access this" to its human, and
+# leaves — no value demonstrated, no conversion. A free tier has to be
+# generous enough for the agent to FEEL the value across a real
+# session; the per-query facility cap (5) and teaser tools still
+# withhold build-grade data. Env-configurable so it can be tuned
+# without a deploy (mirrors mcp_upgrade_gate.FREE_DAILY_LIMIT). The old
+# note also lied — said "5 calls/day" while the code enforced 3.
+MCP_FREE_DAILY_LIMIT = int(os.environ.get("MCP_FREE_DAILY_LIMIT", "25"))
 
 # Tools whose results contain facility arrays to gate
 MCP_FACILITY_TOOLS = {'search_facilities', 'get_facility', 'get_pipeline', 'get_top_operators'}
@@ -3566,7 +3578,10 @@ MCP_USER_NOTES = {
     'get_intelligence_index': "\U0001f4a1 DC Hub free preview \u2014 limited results shown. Full market intelligence, deal data, and pipeline tracking at dchub.cloud/developers",
     'get_site_forecast': "\U0001f4a1 DC Hub free preview \u2014 suitability score shown. Full 2030\u20132050 deployment forecast and scenario analysis requires Pro plan ($199/mo). Upgrade at dchub.cloud/pricing#pro",
 }
-MCP_RATE_LIMIT_NOTE = "\u26a0\ufe0f DC Hub free tier limit reached (5 calls/day). The user can unlock 1,000 calls/day with a Developer key at dchub.cloud/developers"
+MCP_RATE_LIMIT_NOTE = (
+    f"\u26a0\ufe0f DC Hub free tier limit reached ({MCP_FREE_DAILY_LIMIT} calls/day). "
+    f"The user can unlock 1,000 calls/day with a Developer key at dchub.cloud/developers"
+)
 
 # In-memory daily rate limit tracker: {ip_address: {'date': 'YYYY-MM-DD', 'count': N}}
 # In-memory fallback (used when Neon is unavailable)
