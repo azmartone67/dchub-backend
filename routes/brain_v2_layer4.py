@@ -453,6 +453,22 @@ def trigger_learn():
                         if i.get("issue") not in KNOWN
                         and not _is_asset_issue(i)]
 
+    # Phase SS (2026-05-14): drop confirmed false positives. An issue
+    # Claude has REFUSED 3+ times isn't a real fixable placeholder —
+    # re-attempting it just burns the hourly Claude budget. The 11
+    # wasted `refused` cycles on the phantom /markets placeholder are
+    # exactly what this prevents.
+    if _STORE_OK:
+        try:
+            _fp = _store.list_false_positives(min_refused=3)
+            if _fp:
+                novel_candidates = [
+                    i for i in novel_candidates
+                    if (i.get("issue"), i.get("url") or "") not in _fp
+                ]
+        except Exception:
+            pass
+
     # ...prioritized by persistence (most-stuck first). When the store is
     # unavailable we fall back to "first N in feed order" which matches
     # the pre-Phase-S behaviour.
@@ -519,6 +535,16 @@ def trigger_learn():
             _log({"issue": issue.get("issue"), "outcome": outcome_tag,
                   "find": find[:80], "replace": replace[:80],
                   "find_pre_expand": find_pre_expand[:40] if find_pre_expand != find else None})
+            # Phase SS (2026-05-14): a `refused` outcome is Claude saying
+            # "this isn't a real fixable issue" — record it so that after
+            # 3 refusals the brain stops re-attempting it (see the
+            # false-positive filter on novel_candidates above).
+            if reason == "refused" and _STORE_OK:
+                try:
+                    _store.mark_false_positive(issue.get("issue") or "",
+                                               issue.get("url") or "")
+                except Exception:
+                    pass
             results.append({"issue": issue.get("issue"), "outcome": outcome_tag})
             continue
         # Phase 300 (Phase R-3): 2-cycle approval gate. If the exact same
