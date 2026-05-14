@@ -50,7 +50,11 @@ marketing_bp = Blueprint("marketing_engine", __name__)
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 MARKETING_MODEL = os.environ.get("DCHUB_MARKETING_MODEL", "claude-sonnet-4-5")
-ADMIN_KEY = os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY")
+# .strip() — a trailing newline on the Railway env var (dashboards add
+# one when you paste) would make EVERY admin call 401, since the
+# comparison below is exact. Same whitespace footgun fixed for the
+# LinkedIn/X tokens in PR #110.
+ADMIN_KEY = (os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY") or "").strip()
 DATABASE_URL = os.environ.get("DATABASE_URL")
 # Phase QQ+16 (2026-05-13): module-level RESEND_API_KEY. The
 # linkedin_send_daily_email handler references this name unqualified,
@@ -67,7 +71,9 @@ RESEND_API_KEY = os.environ.get("DCHUB_RESEND_API_KEY", "")
 def _require_admin(fn):
     @wraps(fn)
     def w(*a, **kw):
-        provided = request.headers.get("X-Admin-Key") or request.args.get("admin_key")
+        # .strip() the caller's value too — curl/shell vars frequently
+        # carry a trailing newline, which would never match otherwise.
+        provided = (request.headers.get("X-Admin-Key") or request.args.get("admin_key") or "").strip()
         if ADMIN_KEY and provided != ADMIN_KEY:
             return jsonify(error="unauthorized",
                            hint="X-Admin-Key header required"), 401
