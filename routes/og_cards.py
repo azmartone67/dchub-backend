@@ -69,18 +69,21 @@ def _mono(size):
 
 def _get_press_release(slug):
     """Pull press release row + signals JSON from DB. Returns None if
-    no row found OR DB unavailable — caller falls back to brand card."""
+    no row found OR DB unavailable — caller falls back to brand card.
+
+    Phase HH+4 (2026-05-14): normalize `date` to a datetime.date object.
+    COALESCE between TIMESTAMPTZ (published_date) and DATE (date) in
+    Postgres returns the type-promoted result, which psycopg2 sometimes
+    deserializes as TEXT depending on driver version. The renderers
+    all call .strftime() on it — string would AttributeError and
+    every card fell through to the fallback.
+    """
     db = os.environ.get('DATABASE_URL')
     if not db: return None
     try:
         import psycopg2
         conn = psycopg2.connect(db, sslmode='require')
         with conn.cursor() as cur:
-            # Phase HH+1 fix: production rows populate `pr.date`, not
-            # `pr.published_date` — COALESCE handles either. Without
-            # this fix, the SELECT threw UndefinedColumn for every
-            # auto-press row and fell through to the brand fallback
-            # card, defeating the whole rotation.
             cur.execute("""
                 SELECT pr.title, pr.subheadline,
                        COALESCE(pr.published_date, pr.date) AS pr_date,
@@ -99,10 +102,28 @@ def _get_press_release(slug):
                     signals = json.loads(row[3]) if isinstance(row[3], str) else row[3]
                 except Exception:
                     signals = {}
+
+            # Normalize date — psycopg2 might return str, datetime.date, or
+            # datetime.datetime depending on column type promotion.
+            raw_date = row[2]
+            pr_date = None
+            if hasattr(raw_date, 'strftime'):
+                pr_date = raw_date  # already a date/datetime object
+            elif isinstance(raw_date, str):
+                # Parse common formats. Postgres TEXT-cast dates look like
+                # '2026-05-13' or '2026-05-13 12:00:00+00'.
+                for fmt in ('%Y-%m-%d', '%Y-%m-%d %H:%M:%S%z',
+                            '%Y-%m-%d %H:%M:%S', '%Y-%m-%dT%H:%M:%S%z',
+                            '%Y-%m-%dT%H:%M:%S'):
+                    try:
+                        pr_date = datetime.datetime.strptime(raw_date[:25], fmt)
+                        break
+                    except (ValueError, TypeError):
+                        continue
             return {
                 'title': row[0] or slug,
                 'subheadline': row[1] or '',
-                'date': row[2],
+                'date': pr_date,  # always a date/datetime obj or None
                 'signals': signals,
                 'topic': row[4] or '',
             }
@@ -112,6 +133,22 @@ def _get_press_release(slug):
     finally:
         try: conn.close()
         except Exception: pass
+
+
+def _market_name_of(m: dict) -> str:
+    """Extract market name from a top_build_markets entry. Production
+    signals use the key `market`; the original schema design used
+    `market_name`. Support both for back-compat."""
+    return (m.get('market') or m.get('market_name') or '?').strip()
+
+
+def _market_score_of(m: dict) -> float:
+    """Same back-compat shim for excess-power score."""
+    v = m.get('excess')
+    if v is None: v = m.get('excess_power_score')
+    if v is None: v = 0
+    try: return float(v)
+    except (ValueError, TypeError): return 0.0
 
 
 def _wrap(text, max_chars):
@@ -129,12 +166,23 @@ def _wrap(text, max_chars):
 
 
 def _verdict_for(signals: dict, fallback='BUILD'):
-    """Extract the verdict for the top market — used for the colored badge."""
+    """Extract the verdict for the top market — used for the colored badge.
+    If the signals dict doesn't carry an explicit verdict, default to
+    'BUILD' (top_build_markets list contains markets the model flagged
+    as BUILD anyway)."""
     top = (signals.get('top_build_markets') or [])
-    if top and isinstance(top, list):
+    if top and isinstance(top, list) and isinstance(top[0], dict):
         v = top[0].get('verdict', fallback)
         return (v or fallback).upper()
     return fallback
+
+
+def _safe_date_str(pr_date, fmt='%Y-%m-%d'):
+    """Format a date-or-None pr['date'] value. Falls back to UTC today
+    if missing/null so cards never show an empty timestamp line."""
+    if pr_date and hasattr(pr_date, 'strftime'):
+        return pr_date.strftime(fmt)
+    return datetime.datetime.utcnow().strftime(fmt)
 
 
 def _verdict_color(verdict: str):
@@ -156,16 +204,15 @@ def _draw_data_brutal(pr):
     # Top brand bar
     d.rectangle([(0, 0), (W, 60)], fill=ACCENT)
     d.text((40, 16), 'DCHUB · DCPI INDEX', font=_mono(24), fill=BG)
-    date_str = (pr['date'].strftime('%Y-%m-%d')
-                if pr.get('date') else datetime.datetime.utcnow().strftime('%Y-%m-%d'))
-    d.text((W - 220, 16), date_str, font=_mono(24), fill=BG)
+    d.text((W - 220, 16), _safe_date_str(pr.get('date')), font=_mono(24), fill=BG)
 
     # Extract the hero stat from signals
     signals = pr.get('signals', {})
-    top = (signals.get('top_build_markets') or [{}])[0]
-    market_name = top.get('market_name', '').strip()
-    score = top.get('excess_power_score', 0)
-    if not market_name:
+    top = (signals.get('top_build_markets') or [{}])[0] if isinstance(signals, dict) else {}
+    if not isinstance(top, dict): top = {}
+    market_name = _market_name_of(top)
+    score = _market_score_of(top)
+    if market_name == '?':
         # Fall back to parsing the title
         title = pr.get('title', '')
         if ' Tops ' in title:
@@ -248,9 +295,8 @@ def _draw_editorial(pr):
     # CTA
     d.text((80, H - 100), '→  dchub.cloud/news',
            font=_font(28), fill=ACCENT)
-    date_str = (pr['date'].strftime('%B %d, %Y')
-                if pr.get('date') else datetime.datetime.utcnow().strftime('%B %d, %Y'))
-    d.text((80, H - 60), f'DC Hub  ·  {date_str}',
+    d.text((80, H - 60),
+           f'DC Hub  ·  {_safe_date_str(pr.get("date"), "%B %d, %Y")}',
            font=_font(18), fill=DIM)
 
     return img
@@ -269,26 +315,25 @@ def _draw_infographic(pr):
     d.rectangle([(0, 0), (W, 80)], fill=PANEL)
     d.text((60, 26), 'DCPI EXCESS POWER  ·  TOP 5 MARKETS',
            font=_font(28), fill=ACCENT)
-    date_str = (pr['date'].strftime('%Y-%m-%d')
-                if pr.get('date') else datetime.datetime.utcnow().strftime('%Y-%m-%d'))
-    d.text((W - 200, 30), date_str, font=_mono(22), fill=MUTED)
+    d.text((W - 200, 30), _safe_date_str(pr.get('date')),
+           font=_mono(22), fill=MUTED)
 
-    # Pull top 5 from signals
-    signals = pr.get('signals', {})
+    # Pull top 5 from signals (support both production key set + legacy)
+    signals = pr.get('signals', {}) if isinstance(pr.get('signals', {}), dict) else {}
     top_5 = (signals.get('top_build_markets') or [])[:5]
+    top_5 = [m for m in top_5 if isinstance(m, dict)]
     # Pad with placeholders if fewer than 5
     if not top_5:
-        # Heuristic fallback from title — at least show the hero market
         title = pr.get('title', '')
         import re
         score = 0
         m = re.search(r'(\d+\.\d+)', title)
         if m: score = float(m.group(1))
         name = title.split(' Tops ')[0] if ' Tops ' in title else 'Top Market'
-        top_5 = [{'market_name': name, 'excess_power_score': score, 'verdict': 'BUILD'}]
+        top_5 = [{'market': name, 'excess': score, 'verdict': 'BUILD'}]
 
     max_score = max(
-        [m.get('excess_power_score', 0) or 0 for m in top_5] + [1],
+        [_market_score_of(m) for m in top_5] + [1.0],
     )
 
     y_start = 140
@@ -300,8 +345,8 @@ def _draw_infographic(pr):
 
     for i, m in enumerate(top_5):
         y = y_start + i * (bar_h + gap)
-        name = (m.get('market_name') or '?')[:24]
-        score = m.get('excess_power_score', 0) or 0
+        name = _market_name_of(m)[:24]
+        score = _market_score_of(m)
         is_top = (i == 0)
         color = ACCENT if is_top else (90, 130, 200)
 
@@ -333,7 +378,7 @@ def _draw_infographic(pr):
     d.text((76, H - 70), verdict, font=_font(32), fill=BG)
 
     if top_5:
-        first = (top_5[0].get('market_name') or '?')[:30]
+        first = _market_name_of(top_5[0])[:30]
         d.text((240, H - 70), f'{first} ranked #1 nationally',
                font=_font(22), fill=TEXT)
     d.text((240, H - 38), 'dchub.cloud  ·  DC Hub Daily Power Index',
@@ -380,9 +425,8 @@ def _draw_ai_hero(pr):
     # CTA
     d.text((80, H - 80), '→ dchub.cloud/news',
            font=_font(32), fill=TEXT)
-    date_str = (pr['date'].strftime('%B %d, %Y')
-                if pr.get('date') else datetime.datetime.utcnow().strftime('%B %d, %Y'))
-    d.text((80, H - 42), f'DC Hub  ·  {date_str}',
+    d.text((80, H - 42),
+           f'DC Hub  ·  {_safe_date_str(pr.get("date"), "%B %d, %Y")}',
            font=_font(18), fill=TEXT)
 
     return img
