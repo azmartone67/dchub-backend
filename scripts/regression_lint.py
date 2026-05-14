@@ -28,6 +28,7 @@ WHITELIST_TABLES = {
     'mcp_tool_calls', 'observability_metrics', 'daily_anomalies',
     'audit_log', 'alert_history', 'energy_sync_log', 'email_drip_log',
     'ai_outreach_log', 'smoke_test_history', 'pipeline_drafts',
+    'redeem_funnel_events',
 }
 
 
