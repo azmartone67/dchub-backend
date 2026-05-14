@@ -16,9 +16,16 @@ This module ships:
   • GET /api/v1/freshness     — JSON companion. CORS '*' so anyone can poll.
 
 Both pull from the same data the internal heartbeat already maintains:
-the `heartbeat_surfaces` rows + DCPI quality summary.
+the `freshness_checks` rows + DCPI quality summary.
 
 Read-only. No writes. No auth. Heavy CDN caching is intentional (60s).
+
+Phase GG (2026-05-14): fixed a silent bug — this module queried a table
+named `heartbeat_surfaces` that NO code in the repo ever created or
+wrote to (the real table heartbeat.py maintains is `freshness_checks`).
+So `_surfaces_snapshot()` always returned [] + an error and the public
+freshness page — the "proof we don't go stale" pitch page — was itself
+empty. Repointed to the real table.
 """
 from __future__ import annotations
 import os
@@ -46,11 +53,11 @@ def _surfaces_snapshot():
         import psycopg2.extras
         with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("""
-                SELECT name AS surface,
+                SELECT surface,
                        last_updated,
                        stale_after_hours,
                        last_refresh_info
-                FROM heartbeat_surfaces
+                FROM freshness_checks
                 ORDER BY last_updated DESC NULLS LAST
             """)
             rows = cur.fetchall()
