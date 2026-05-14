@@ -1,0 +1,205 @@
+name: Brain v2 Layer 5 — PR opener (Phase GG)
+
+# Phase GG (2026-05-14): the code-PR brain. Reads high-confidence
+# proposals from Layer 5's brain_proposed_code_fixes table, applies
+# each to a feature branch, opens a draft PR for human review.
+#
+# How the loop works:
+#   1. Layer 5 cron (separate workflow) generates proposals for chronic
+#      stale loops + actionable_backend_issues. Stores in DB.
+#   2. THIS workflow runs every 4h. Fetches proposals with confidence
+#      ≥ 0.85 that haven't been PR'd yet.
+#   3. For each proposal: clone the file, apply search→replace, syntax
+#      check, commit on a new branch, push, open a draft PR.
+#   4. Calls back to Layer 5 (mark-pr endpoint) so the same proposal
+#      isn't picked up next tick.
+#   5. PRs are DRAFT — a human reviews + un-drafts + merges. Auto-merge
+#      explicitly forbidden by design. Brain proposes, humans dispose.
+#
+# Required secrets:
+#   DCHUB_ADMIN_KEY   X-Admin-Key for /api/v1/brain/proposed-code/*
+#   GH_PAT (optional) personal access token if GITHUB_TOKEN can't open
+#                      PRs across protected branches; otherwise the
+#                      workflow's own GITHUB_TOKEN is used.
+
+on:
+  schedule:
+    # Every 4 hours, offset by 23 min so it doesn't collide with the
+    # brain_learn hourly cron or the dcpi 06:00 UTC cron.
+    - cron: '23 */4 * * *'
+  workflow_dispatch:
+    inputs:
+      min_confidence:
+        description: 'Minimum proposal confidence to PR (0.0-1.0)'
+        required: false
+        type: string
+        default: '0.85'
+      limit:
+        description: 'Max proposals to process per run'
+        required: false
+        type: string
+        default: '5'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  open-prs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name 'dchub-brain-v2'
+          git config user.email 'brain@dchub.cloud'
+
+      - name: Fetch high-confidence proposals
+        id: fetch
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          MIN_CONF: ${{ inputs.min_confidence || '0.85' }}
+          LIMIT: ${{ inputs.limit || '5' }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::error::DCHUB_ADMIN_KEY not set"
+            exit 1
+          fi
+          curl -sS --max-time 30 \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "https://dchub-backend-production.up.railway.app/api/v1/brain/proposed-code/pending-pr?min_confidence=${MIN_CONF}&limit=${LIMIT}" \
+            > /tmp/proposals.json
+          count=$(python3 -c "import json; print(len(json.load(open('/tmp/proposals.json')).get('items', [])))")
+          echo "count=$count" >> $GITHUB_OUTPUT
+          echo "::notice::Fetched $count pending proposals (min_conf=${MIN_CONF})"
+          if [ "$count" = "0" ]; then
+            echo "Nothing to do — exiting clean."
+          fi
+
+      - name: Apply proposals + open PRs
+        if: steps.fetch.outputs.count != '0'
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          python3 << 'PYEOF'
+          import json, os, subprocess, sys, urllib.request
+
+          proposals = json.load(open('/tmp/proposals.json')).get('items', [])
+          admin_key = os.environ['ADMIN_KEY']
+
+          for p in proposals:
+              pid = p['id']
+              loop_name = p.get('loop_name', 'unknown')
+              file_path = p.get('file_path', '')
+              search = p.get('search_text', '')
+              replace = p.get('replace_text', '')
+              rationale = (p.get('rationale') or '')[:500]
+              confidence = p.get('confidence', 0)
+
+              print(f"\n=== Proposal #{pid} for {loop_name} ===")
+              print(f"  file={file_path}  conf={confidence}")
+
+              # 1. Verify the search text appears in the current file
+              if not os.path.exists(file_path):
+                  print(f"  SKIP — file not found: {file_path}")
+                  continue
+              with open(file_path) as f:
+                  content = f.read()
+              if search not in content:
+                  print(f"  SKIP — search text not found in file (file may have changed since proposal)")
+                  continue
+
+              # 2. Apply the substitution
+              new_content = content.replace(search, replace, 1)
+              with open(file_path, 'w') as f:
+                  f.write(new_content)
+
+              # 3. Syntax check (Python only)
+              if file_path.endswith('.py'):
+                  rc = subprocess.run(['python3', '-c', f'import ast; ast.parse(open({file_path!r}).read())'],
+                                       capture_output=True)
+                  if rc.returncode != 0:
+                      print(f"  SKIP — syntax check failed: {rc.stderr.decode()[:200]}")
+                      # Revert the write
+                      with open(file_path, 'w') as f:
+                          f.write(content)
+                      continue
+
+              # 4. Create branch, commit, push
+              branch = f"brain-v2/auto-{loop_name}-{pid}"
+              subprocess.run(['git', 'checkout', '-b', branch], check=True)
+              subprocess.run(['git', 'add', file_path], check=True)
+              commit_msg = (
+                  f"brain-v2 layer5: proposed fix for {loop_name}\n\n"
+                  f"Auto-proposed by Brain v2 Layer 5 (proposal #{pid}, "
+                  f"confidence {confidence:.2f}).\n\n"
+                  f"Rationale: {rationale}\n\n"
+                  f"This PR is a DRAFT. A human must review the diff + "
+                  f"un-draft + merge. No auto-merge by design.\n\n"
+                  f"Generated by: brain-layer5-pr-opener.yml"
+              )
+              subprocess.run(['git', 'commit', '-m', commit_msg], check=True)
+              subprocess.run(['git', 'push', '-u', 'origin', branch], check=True)
+
+              # 5. Open draft PR
+              pr_body = (
+                  f"## Brain v2 Layer 5 — proposed fix\n\n"
+                  f"**Loop / issue:** `{loop_name}`\n"
+                  f"**File:** `{file_path}`\n"
+                  f"**Confidence:** {confidence:.2f}\n\n"
+                  f"### Rationale\n{rationale}\n\n"
+                  f"### What changes\n"
+                  f"```\nSEARCH:\n{search[:500]}\n\nREPLACE:\n{replace[:500]}\n```\n\n"
+                  f"### Provenance\n"
+                  f"- Proposal ID: {pid}\n"
+                  f"- Auto-opened by brain-layer5-pr-opener.yml\n"
+                  f"- This is a DRAFT. Review the diff, un-draft, then merge.\n"
+                  f"- Auto-merge explicitly disabled — humans are the gate.\n"
+              )
+              # Write body to temp file (GH CLI handles multiline this way)
+              with open('/tmp/pr_body.md', 'w') as f:
+                  f.write(pr_body)
+              pr_result = subprocess.run([
+                  'gh', 'pr', 'create',
+                  '--draft',
+                  '--title', f"brain-v2: proposed fix for {loop_name}",
+                  '--body-file', '/tmp/pr_body.md',
+                  '--label', 'autonomous-brain-layer5',
+              ], capture_output=True, text=True)
+              if pr_result.returncode != 0:
+                  print(f"  PR_CREATE_FAILED: {pr_result.stderr[:300]}")
+                  # Roll back the branch checkout to main
+                  subprocess.run(['git', 'checkout', 'main'], check=False)
+                  continue
+              pr_url = pr_result.stdout.strip()
+              print(f"  ✓ PR opened: {pr_url}")
+
+              # 6. Mark proposal as PR'd in the brain table
+              req_url = (f"https://dchub-backend-production.up.railway.app"
+                         f"/api/v1/brain/proposed-code/{pid}/mark-pr")
+              try:
+                  req = urllib.request.Request(
+                      req_url,
+                      data=json.dumps({"pr_url": pr_url}).encode(),
+                      headers={"X-Admin-Key": admin_key, "Content-Type": "application/json"},
+                      method="POST",
+                  )
+                  with urllib.request.urlopen(req, timeout=15) as r:
+                      pass  # success
+                  print(f"  ✓ marked proposal #{pid} as PR'd in brain DB")
+              except Exception as e:
+                  print(f"  WARNING: mark-pr callback failed: {e}")
+                  # Not fatal — PR is opened, this just means it may
+                  # get re-selected on next tick. Idempotent: next run's
+                  # branch name collides → push fails → workflow skips.
+
+              # Return to main for next iteration
+              subprocess.run(['git', 'checkout', 'main'], check=True)
+          PYEOF
