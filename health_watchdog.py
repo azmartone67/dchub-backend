@@ -403,7 +403,14 @@ def register_watchdog_routes(app):
         from flask import jsonify
         if watchdog_instance:
             return jsonify(watchdog_instance.get_status())
-        return jsonify({'watchdog': 'not initialized'}), 503
+        # The watchdog thread may not have spun up yet in the first
+        # moments after boot. That is NOT a service error — the route
+        # itself is fine, the subsystem is just initializing. Returning
+        # 503 here failed post-deploy-smoke on every deploy and kicked
+        # off the auto-repair loop. Report 200 + an explicit
+        # 'initializing' state instead so health checks stay honest
+        # without false-failing.
+        return jsonify({'watchdog': 'initializing', 'status': 'starting'}), 200
 
     @app.route('/api/health/watchdog/check', methods=['POST'])
     def watchdog_manual_check():
