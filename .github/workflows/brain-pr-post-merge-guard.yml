@@ -1,0 +1,183 @@
+name: Brain PR post-merge guard (Phase GG#4)
+
+# Phase GG#4 (2026-05-14): brain-PR-specific post-merge smoke test +
+# auto-rollback.
+#
+# The generic auto-rollback.yml runs every 15 min against ALL of main.
+# This is the brain-specific fast path: it fires the MOMENT a
+# brain-authored PR (label autonomous-brain-layer5) merges, waits for
+# Railway to redeploy, probes /api/health, and:
+#   - if healthy  → comment ✓ on the PR + mark the proposal merged_healthy
+#   - if broken   → git revert the merge, push, comment ✗ on the PR +
+#                   mark the proposal merged_reverted
+#
+# The mark-merge-outcome callback is the feedback signal GG#2
+# (confidence calibration) reads to tune the auto-PR threshold:
+# a brain source whose merges keep getting reverted loses trust.
+#
+# Why brain-specific (not just relying on auto-rollback.yml):
+#   1. Speed — fires on merge, not up to 15 min later
+#   2. Feedback — only this path tells the brain DB what happened
+#   3. Attribution — comments on the exact brain PR + proposal
+#
+# Required secrets:
+#   DCHUB_ADMIN_KEY   — for the mark-merge-outcome callback
+#   GH_PAT (optional) — if GITHUB_TOKEN can't push reverts to main
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  guard:
+    # Only run for MERGED brain-authored PRs
+    if: >
+      github.event.pull_request.merged == true &&
+      contains(github.event.pull_request.labels.*.name, 'autonomous-brain-layer5')
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 10
+          token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name 'dchub-brain-v2'
+          git config user.email 'brain@dchub.cloud'
+
+      - name: Wait for Railway redeploy
+        run: |
+          echo "Waiting for Railway to pick up the merge (max 5 min)…"
+          for i in $(seq 1 30); do
+            UPTIME=$(curl -s --max-time 8 \
+              "https://dchub-backend-production.up.railway.app/api/health?_cb=$(date +%s)" \
+              | python3 -c "import sys,json; print(json.load(sys.stdin).get('uptime_seconds',9999))" 2>/dev/null || echo 9999)
+            if [ "$UPTIME" -lt 200 ] 2>/dev/null; then
+              echo "Fresh deploy detected (uptime=${UPTIME}s)"
+              # Give it another 15s to fully warm up
+              sleep 15
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::warning::Did not observe a fresh deploy in 5 min — probing anyway"
+
+      - name: Probe /api/health
+        id: probe
+        run: |
+          set +e
+          BODY=$(curl -s --max-time 15 \
+            "https://dchub-backend-production.up.railway.app/api/health?_cb=$(date +%s)")
+          STATUS=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','unknown'))" 2>/dev/null || echo "unreachable")
+          # Also probe a couple of representative live endpoints to catch
+          # subtler breakage than the health endpoint alone would show.
+          DCPI=$(curl -s -o /dev/null -w "%{http_code}" --max-time 12 \
+            "https://dchub.cloud/api/v1/dcpi/scores?limit=1")
+          FINDINGS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20 \
+            "https://dchub-backend-production.up.railway.app/api/v1/heal/findings")
+          echo "status=$STATUS" >> $GITHUB_OUTPUT
+          echo "dcpi_code=$DCPI" >> $GITHUB_OUTPUT
+          echo "findings_code=$FINDINGS" >> $GITHUB_OUTPUT
+          echo "Health status: $STATUS | DCPI: $DCPI | findings: $FINDINGS"
+          # Healthy = status 'healthy' AND both probe endpoints 2xx
+          if [ "$STATUS" = "healthy" ] && [ "$DCPI" -lt 400 ] 2>/dev/null && [ "$FINDINGS" -lt 500 ] 2>/dev/null; then
+            echo "verdict=healthy" >> $GITHUB_OUTPUT
+          else
+            echo "verdict=broken" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Auto-revert on breakage
+        id: revert
+        if: steps.probe.outputs.verdict == 'broken'
+        run: |
+          echo "::warning::Post-merge health check FAILED — reverting the brain PR merge"
+          MERGE_SHA="${{ github.event.pull_request.merge_commit_sha }}"
+          # The merge of a squash PR is a single commit on main; revert it.
+          git revert --no-edit "$MERGE_SHA" || {
+            echo "::error::git revert failed — manual intervention needed"
+            echo "reverted=false" >> $GITHUB_OUTPUT
+            exit 1
+          }
+          git push origin main
+          echo "reverted=true" >> $GITHUB_OUTPUT
+          echo "::notice::Reverted $MERGE_SHA from main"
+
+      - name: Comment outcome on the brain PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const verdict = '${{ steps.probe.outputs.verdict }}';
+            const status  = '${{ steps.probe.outputs.status }}';
+            const dcpi    = '${{ steps.probe.outputs.dcpi_code }}';
+            const findings= '${{ steps.probe.outputs.findings_code }}';
+            const reverted= '${{ steps.revert.outputs.reverted }}';
+            let body;
+            if (verdict === 'healthy') {
+              body = `### ✅ Post-merge health check PASSED\n\n` +
+                `Railway redeployed cleanly after this brain PR merged.\n\n` +
+                `- \`/api/health\`: **${status}**\n` +
+                `- DCPI scores endpoint: HTTP ${dcpi}\n` +
+                `- heal/findings endpoint: HTTP ${findings}\n\n` +
+                `The proposal is being marked \`merged_healthy\` in the brain DB — ` +
+                `this raises the trust score for this proposal source ` +
+                `(feeds GG#2 confidence calibration).`;
+            } else {
+              body = `### ❌ Post-merge health check FAILED — auto-reverted\n\n` +
+                `Railway came back unhealthy after this brain PR merged, so ` +
+                `the merge commit was **automatically reverted from main**.\n\n` +
+                `- \`/api/health\`: **${status}**\n` +
+                `- DCPI scores endpoint: HTTP ${dcpi}\n` +
+                `- heal/findings endpoint: HTTP ${findings}\n` +
+                `- Revert pushed: ${reverted}\n\n` +
+                `The proposal is being marked \`merged_reverted\` in the brain DB — ` +
+                `this lowers the trust score for this proposal source. ` +
+                `The brain spotted a real issue but its fix was wrong; ` +
+                `a human should look at the underlying problem directly.`;
+            }
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body,
+            });
+
+      - name: Mark proposal outcome in brain DB
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping brain DB callback"
+            exit 0
+          fi
+          # Extract the proposal ID from the PR branch name:
+          #   brain-v2/auto-<loop_name>-<pid>
+          BRANCH="${{ github.event.pull_request.head.ref }}"
+          PID=$(echo "$BRANCH" | grep -oE '[0-9]+$' || echo "")
+          if [ -z "$PID" ]; then
+            echo "::warning::Could not parse proposal ID from branch '$BRANCH' — skipping callback"
+            exit 0
+          fi
+          VERDICT="${{ steps.probe.outputs.verdict }}"
+          if [ "$VERDICT" = "healthy" ]; then
+            OUTCOME="merged_healthy"
+          else
+            OUTCOME="merged_reverted"
+          fi
+          DETAIL="status=${{ steps.probe.outputs.status }} dcpi=${{ steps.probe.outputs.dcpi_code }} findings=${{ steps.probe.outputs.findings_code }}"
+          echo "Marking proposal #$PID → $OUTCOME"
+          curl -sS --max-time 30 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{\"outcome\": \"$OUTCOME\", \"detail\": \"$DETAIL\"}" \
+            "https://dchub-backend-production.up.railway.app/api/v1/brain/proposed-code/${PID}/mark-merge-outcome" \
+            | python3 -m json.tool || echo "::warning::mark-merge-outcome callback failed (non-fatal)"
