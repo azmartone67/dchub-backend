@@ -1347,6 +1347,24 @@ def fix_html_quality_scan():
         scan_body = _hp_re.sub(
             r'<(?:div|span|b)\b[^>]*\bclass\s*=\s*[\'"][^\'"]*(?:loading|skeleton|placeholder|big-num)[^\'"]*[\'"][^>]*>[\s\S]*?</(?:div|span|b)>',
             '', scan_body, flags=_hp_re.I)
+        # Phase HH+2 (2026-05-13): strip Phase 70+ gating chips —
+        # .gated-redacted / .gated-pill spans show '—' to anonymous
+        # users by design (Pillow tier gating), not as broken cells.
+        # Brain v2 was wasting every learn cycle trying to "fix" these
+        # legitimate gating placeholders (10 attempts × 24h, 100%
+        # refused / validation_fail). After this filter, those em-dashes
+        # disappear from html_quality_scan, and Brain's worklist surfaces
+        # actual content bugs.
+        scan_body = _hp_re.sub(
+            r'<(?:div|span|b)\b[^>]*\bclass\s*=\s*[\'"][^\'"]*\bgated\b[^\'"]*[\'"][^>]*>[\s\S]*?</(?:div|span|b)>',
+            '', scan_body, flags=_hp_re.I)
+        # Belt-and-suspenders: also strip anything with data-gate or
+        # data-gating-applied attributes (gating.js's marker attrs).
+        # Note: at this point in the pipeline, attribute VALUES haven't
+        # been stripped yet, so the regex still works.
+        scan_body = _hp_re.sub(
+            r'<(?:div|span|b)\b[^>]*\bdata-gat(?:e|ing-applied)\b[^>]*>[\s\S]*?</(?:div|span|b)>',
+            '', scan_body, flags=_hp_re.I)
         scan_body = _hp_re.sub(r'\s+[a-zA-Z_:][\w:.-]*\s*=\s*"[^"]*"', '', scan_body)
         scan_body = _hp_re.sub(r"\s+[a-zA-Z_:][\w:.-]*\s*=\s*'[^']*'", '', scan_body)
         page_hits = {}
