@@ -76,8 +76,14 @@ def _get_press_release(slug):
         import psycopg2
         conn = psycopg2.connect(db, sslmode='require')
         with conn.cursor() as cur:
+            # Phase HH+1 fix: production rows populate `pr.date`, not
+            # `pr.published_date` — COALESCE handles either. Without
+            # this fix, the SELECT threw UndefinedColumn for every
+            # auto-press row and fell through to the brand fallback
+            # card, defeating the whole rotation.
             cur.execute("""
-                SELECT pr.title, pr.subheadline, pr.published_date,
+                SELECT pr.title, pr.subheadline,
+                       COALESCE(pr.published_date, pr.date) AS pr_date,
                        apr.source_data, apr.source_topic
                 FROM press_releases pr
                 LEFT JOIN auto_press_releases apr
