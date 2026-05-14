@@ -37,13 +37,17 @@ on:
     # Phase FF — agent vendor outreach digest, weekly Monday 14:00 UTC
     # (after the press + LinkedIn fire). Idempotent.
     - cron: '0 14 * * 1'
+    # Phase TT Increment 3b (2026-05-14) — weekly market digest to every
+    # identified MCP key, Monday 15:00 UTC (after the agent vendor
+    # digest). Deduped once-per-week per key on mcp_dev_keys.metadata.
+    - cron: '0 15 * * 1'
   workflow_dispatch:
     inputs:
       phase:
         description: 'Which phase to run on demand'
         required: true
         type: choice
-        options: [all, brain, outreach, audit, marketing, linkedin, testimonials, agent_vendor]
+        options: [all, brain, outreach, audit, marketing, linkedin, testimonials, agent_vendor, weekly_digest]
         default: all
 
 permissions:
@@ -299,4 +303,46 @@ jobs:
               print(f\"::notice::Agent vendor digest sent to {d.get('to')} ({d.get('vendor_count',0)} vendors)\")
           else:
               print(f\"::warning::Agent vendor digest failed — {d.get('error','unknown')}\")
+          " || true
+
+  # Phase TT Increment 3b (2026-05-14) — weekly market digest.
+  # Monday 15:00 UTC, after the agent vendor digest. Emails every
+  # identified MCP key a recap of the markets its assistant queried in
+  # the last 7 days, enriched with a fresh energy-rate stat. Deduped
+  # once-per-week per key (mcp_dev_keys.metadata.digest_sent_at), so a
+  # retry after a failed deploy is safe. send=true; the endpoint
+  # no-ops to a dry-run when DCHUB_RESEND_API_KEY isn't set in Railway.
+  weekly_market_digest:
+    if: github.event.schedule == '0 15 * * 1' || (github.event_name == 'workflow_dispatch' && (inputs.phase == 'all' || inputs.phase == 'weekly_digest'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Send weekly market digest
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping weekly digest"
+            exit 0
+          fi
+          response=$(curl -sS --max-time 120 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "https://dchub-backend-production.up.railway.app/api/v1/digest/weekly/run?send=true" \
+            || echo '{"mode":"error","error":"curl_fail"}')
+          echo "$response" | head -c 2000
+          echo
+          echo "$response" | python3 -c "
+          import json, sys
+          try: d = json.load(sys.stdin)
+          except Exception:
+              print('::warning::Weekly digest returned non-JSON'); sys.exit(0)
+          mode = d.get('mode','?')
+          if mode == 'sent':
+              print(f\"::notice::Weekly digest sent={d.get('sent',0)} of eligible={d.get('eligible_total',0)} (dedup_skip={d.get('skipped_dedup',0)}, failed={d.get('send_failed',0)})\")
+          elif mode == 'no_provider':
+              print(f\"::notice::Weekly digest DRY-RUN — eligible={d.get('eligible_total',0)} (set DCHUB_RESEND_API_KEY in Railway to enable delivery)\")
+          elif mode == 'dry_run':
+              print(f\"::notice::Weekly digest dry-run — eligible={d.get('eligible_total',0)}\")
+          else:
+              print(f\"::warning::Weekly digest mode={mode} error={d.get('error','unknown')}\")
           " || true
