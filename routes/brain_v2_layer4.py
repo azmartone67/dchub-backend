@@ -351,6 +351,18 @@ def _fetch_snippet(url: str, max_bytes: int = 6000) -> str:
 @_require_admin
 def trigger_learn():
     """Run one learning pass against /api/v1/heal/findings."""
+    # Phase RR (2026-05-14): heartbeat. Stamp last_run_at on EVERY
+    # invocation — including no-op passes that log nothing because the
+    # healer findings were clean. brain_status reads this to tell
+    # "healthy + quiet" (cron firing, nothing to learn) apart from
+    # "stalled" (cron stopped firing). Before this they were
+    # indistinguishable, so a healthy-quiet brain read as broken.
+    if _STORE_OK:
+        try:
+            _store.set_meta("last_run_at",
+                            datetime.now(timezone.utc).isoformat())
+        except Exception:
+            pass
     if not ANTHROPIC_API_KEY:
         return jsonify(ok=False, error="ANTHROPIC_API_KEY not set",
                        hint="Configure in Railway env to activate Layer 4"), 503
@@ -783,24 +795,81 @@ def brain_status():
         log_count = len(_learning_log)
         last_t = _learning_log[-1].get("t") if _learning_log else None
 
-    stale_min = None
-    health = "dormant"
-    if not ANTHROPIC_API_KEY:
-        health = "dormant"
-    elif last_t:
+    def _age_min(val):
+        """Minutes since an ISO/datetime value, or None."""
+        if not val:
+            return None
         try:
-            t = last_t if isinstance(last_t, str) else last_t.isoformat()
+            t = val if isinstance(val, str) else val.isoformat()
             ts = datetime.fromisoformat(t.replace("Z", "+00:00"))
             if ts.tzinfo is None:
                 ts = ts.replace(tzinfo=timezone.utc)
-            stale_min = int((datetime.now(timezone.utc) - ts).total_seconds() / 60)
-            if stale_min < 90:    health = "active"  # within 1.5 cron cycles
-            elif stale_min < 360: health = "quiet"   # 1.5h-6h: probably no novel patterns
-            else:                 health = "stale"   # > 6h: something's wrong
+            return int((datetime.now(timezone.utc) - ts).total_seconds() / 60)
         except Exception:
-            health = "active" if log_count > 0 else "dormant"
-    else:
+            return None
+
+    stale_min = _age_min(last_t)
+
+    # Phase RR (2026-05-14): the heartbeat. last_run_at is stamped on
+    # EVERY trigger_learn() call (incl. no-op passes). last_log_at only
+    # moves when there's an actual learn attempt to log. Comparing the
+    # two is what tells "healthy + quiet" apart from "stalled".
+    last_run_at = None
+    run_age_min = None
+    if _STORE_OK:
+        try:
+            _m = _store.get_meta("last_run_at")
+            if _m:
+                last_run_at = _m.get("value")
+                run_age_min = _age_min(last_run_at)
+        except Exception:
+            pass
+
+    # Legacy `health` field — kept so the existing /brain dashboard
+    # keeps rendering. The new `verdict` is the truthful one.
+    health = "dormant"
+    if not ANTHROPIC_API_KEY:
+        health = "dormant"
+    elif stale_min is None:
         health = "active" if log_count > 0 else "dormant"
+    elif stale_min < 90:
+        health = "active"
+    elif stale_min < 360:
+        health = "quiet"
+    else:
+        health = "stale"
+
+    # ── verdict: the honest, unambiguous state ──────────────────────
+    # The recurring "why isn't the brain learning?" confusion comes from
+    # the dashboard showing 0/0/0 — which looks like failure but is
+    # almost always success (nothing broken => nothing to propose).
+    # verdict separates the four real states explicitly.
+    if not ANTHROPIC_API_KEY:
+        verdict = "dormant"
+        verdict_detail = ("ANTHROPIC_API_KEY is not set — Layer 4 is off. "
+                          "Set it in Railway env to activate.")
+    elif run_age_min is None or run_age_min > 180:
+        # The learn loop itself hasn't run in 3h+ (cron dropped/broken).
+        # THIS is the real "broken" — and the only state that needs action.
+        verdict = "stalled"
+        _ago = (f"{run_age_min}m ago" if run_age_min is not None
+                else "never recorded")
+        verdict_detail = (f"The learn loop hasn't run since {_ago} — the "
+                          f"hourly brain cron is dropped or erroring. "
+                          f"This is the only state that needs a human.")
+    elif pf_count > 0 or (stale_min is not None and stale_min < 180):
+        verdict = "healthy_working"
+        verdict_detail = (f"Running normally — last pass {run_age_min}m ago, "
+                          f"{pf_count} proposal(s) in flight.")
+    else:
+        # Cron IS firing recently, but no recent learn attempts and no
+        # proposals. That means the healer findings are clean — there is
+        # nothing text-fixable to learn. 0 proposals here is CORRECT.
+        verdict = "healthy_quiet"
+        verdict_detail = (f"Healthy. The learn loop ran {run_age_min}m ago "
+                          f"and found nothing text-fixable — the healer's "
+                          f"findings are clean, so 0 proposals is the "
+                          f"correct result, not a failure.")
 
     return jsonify(
         layer=4,
@@ -813,7 +882,11 @@ def brain_status():
         learning_log_count=log_count,
         last_log_at=last_t,
         stale_minutes_since_last_log=stale_min,
+        last_run_at=last_run_at,
+        minutes_since_last_run=run_age_min,
         health=health,
+        verdict=verdict,
+        verdict_detail=verdict_detail,
         hint=(None if ANTHROPIC_API_KEY
               else "Set ANTHROPIC_API_KEY in Railway env to activate"),
     ), 200

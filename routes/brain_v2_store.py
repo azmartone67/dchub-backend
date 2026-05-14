@@ -130,6 +130,20 @@ CREATE TABLE IF NOT EXISTS brain_issue_persistence (
 );
 CREATE INDEX IF NOT EXISTS brain_persistence_seen_idx
     ON brain_issue_persistence(seen_count DESC);
+
+-- Phase RR (2026-05-14): generic key/value self-state store.
+-- The brain needs to record facts about ITSELF that aren't proposals,
+-- log entries, or issues — first use: `last_run_at`, a heartbeat
+-- stamped on EVERY trigger_learn() call (even no-op passes). That's
+-- what lets brain_status distinguish "healthy + quiet" (cron is
+-- firing, just nothing to learn) from "stalled" (cron stopped firing)
+-- — the two looked identical before, which is why the dashboard kept
+-- reading as broken when the brain was fine.
+CREATE TABLE IF NOT EXISTS brain_meta (
+    key         TEXT PRIMARY KEY,
+    value       TEXT,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 """
 
 
@@ -427,6 +441,60 @@ def most_persistent_unfixed(min_count: int = 3, limit: int = 10,
         print(f"[brain_v2_store] most_persistent_unfixed failed: {e}",
               file=sys.stderr)
         return []
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+# ---------------------------------------------------------------------------
+# Brain self-state (key/value) — Phase RR (2026-05-14)
+# ---------------------------------------------------------------------------
+
+def set_meta(key: str, value: str) -> bool:
+    """Upsert a self-state key. Used for the brain's own heartbeat /
+       awareness facts (e.g. last_run_at). Best-effort — never raises."""
+    if not key:
+        return False
+    c = _conn()
+    if c is None:
+        return False
+    try:
+        with c, c.cursor() as cur:
+            cur.execute(
+                """INSERT INTO brain_meta (key, value, updated_at)
+                   VALUES (%s, %s, NOW())
+                   ON CONFLICT (key) DO UPDATE SET
+                       value = EXCLUDED.value, updated_at = NOW()""",
+                (key, str(value) if value is not None else None),
+            )
+        return True
+    except Exception as e:
+        print(f"[brain_v2_store] set_meta failed: {e}", file=sys.stderr)
+        return False
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+def get_meta(key: str) -> dict | None:
+    """Return {'value': ..., 'updated_at': ...} for a self-state key,
+       or None if unset / DB unavailable."""
+    if not key:
+        return None
+    c = _conn()
+    if c is None:
+        return None
+    try:
+        with c, c.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                "SELECT value, updated_at FROM brain_meta WHERE key = %s",
+                (key,),
+            )
+            row = cur.fetchone()
+            return _normalize_row(row) if row else None
+    except Exception as e:
+        print(f"[brain_v2_store] get_meta failed: {e}", file=sys.stderr)
+        return None
     finally:
         try: c.close()
         except Exception: pass
