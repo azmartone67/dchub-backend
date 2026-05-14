@@ -606,6 +606,101 @@ def mcp_funnel():
             out["paid_tool_demand_30d"] = [
                 {"tool": r[0], "calls": r[1], "users": r[2]} for r in cur.fetchall()
             ]
+
+            # Phase JJ batch 3 (2026-05-14): per-platform funnel breakdown.
+            # 8K upgrade signals × 0.05% conversion is the headline business
+            # problem; we couldn't tell where the drop-off happened because
+            # nobody was aggregating by mcp_client. Schema already had the
+            # column (mcp_analytics_postgres.py:88); this exposes it.
+            #
+            # Each row tells you: per AI platform, how many tool calls,
+            # how many upgrade signals (= they hit a paid tool), and how
+            # many distinct users. Comparing platforms reveals which AI
+            # agents convert humans best (Claude vs ChatGPT vs Cursor etc).
+            try:
+                cur.execute(
+                    """SELECT
+                          COALESCE(NULLIF(LOWER(mcp_client), ''), 'unknown') AS platform,
+                          COUNT(*) AS signals,
+                          COUNT(DISTINCT session_id) AS sessions,
+                          COUNT(DISTINCT ip_address) AS unique_ips,
+                          COUNT(*) FILTER (WHERE converted = TRUE) AS converted
+                       FROM mcp_upgrade_signals
+                       WHERE created_at >= NOW() - INTERVAL '30 days'
+                       GROUP BY platform
+                       ORDER BY signals DESC
+                       LIMIT 20"""
+                )
+                out["signals_by_platform_30d"] = [
+                    {
+                        "platform": r[0],
+                        "signals": r[1],
+                        "sessions": r[2],
+                        "unique_ips": r[3],
+                        "converted": r[4] or 0,
+                        "conv_rate_pct": round((r[4] or 0) / max(r[1], 1) * 100, 3),
+                    }
+                    for r in cur.fetchall()
+                ]
+            except Exception as e:
+                out["signals_by_platform_30d_error"] = str(e)[:120]
+
+            # Per-platform tool-call totals — pairs with signals_by_platform
+            # so we can compute "signal rate" (% of calls that hit a paywall)
+            # per platform. Shows whether some platforms are pinging paid
+            # tools more aggressively than others.
+            try:
+                cur.execute(
+                    """SELECT
+                          COALESCE(NULLIF(LOWER(client_name), ''), 'unknown') AS platform,
+                          COUNT(*) AS calls,
+                          COUNT(DISTINCT ip_address) AS unique_ips
+                       FROM mcp_tool_calls
+                       WHERE created_at >= NOW() - INTERVAL '30 days'
+                       GROUP BY platform
+                       ORDER BY calls DESC
+                       LIMIT 20"""
+                )
+                out["calls_by_platform_30d"] = [
+                    {"platform": r[0], "calls": r[1], "unique_ips": r[2]}
+                    for r in cur.fetchall()
+                ]
+            except Exception as e:
+                out["calls_by_platform_30d_error"] = str(e)[:120]
+
+            # Time-to-conversion median per platform (days from first
+            # upgrade signal to converted=true). Reveals whether some
+            # platforms convert fast vs slow.
+            try:
+                cur.execute(
+                    """WITH per_session AS (
+                         SELECT session_id,
+                                COALESCE(NULLIF(LOWER(mcp_client), ''), 'unknown') AS platform,
+                                MIN(created_at) AS first_signal,
+                                MIN(converted_at) FILTER (WHERE converted = TRUE) AS conv_at
+                         FROM mcp_upgrade_signals
+                         WHERE created_at >= NOW() - INTERVAL '90 days'
+                         GROUP BY session_id, platform
+                       )
+                       SELECT platform,
+                              COUNT(*) FILTER (WHERE conv_at IS NOT NULL) AS converted_sessions,
+                              PERCENTILE_CONT(0.5) WITHIN GROUP (
+                                ORDER BY EXTRACT(EPOCH FROM (conv_at - first_signal))/86400.0
+                              ) FILTER (WHERE conv_at IS NOT NULL) AS median_days_to_convert
+                       FROM per_session
+                       GROUP BY platform
+                       ORDER BY converted_sessions DESC"""
+                )
+                out["time_to_convert_90d"] = [
+                    {
+                        "platform": r[0],
+                        "converted_sessions": r[1] or 0,
+                        "median_days_to_convert": round(float(r[2]), 2) if r[2] is not None else None,
+                    }
+                    for r in cur.fetchall()
+                ]
+            except Exception as e:
+                out["time_to_convert_90d_error"] = str(e)[:120]
     except Exception as e:
         out["error"] = str(e)
     return jsonify(out), 200
