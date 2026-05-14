@@ -226,30 +226,37 @@ def _draw_data_brutal(pr):
         m = re.search(r'(\d+\.\d+)', title)
         if m: score = float(m.group(1))
 
-    # Market name — top-left
-    d.text((60, 130), market_name.upper()[:24], font=_font(60), fill=TEXT)
+    # Phase JJ (2026-05-14): typography polish. Hero number scaled
+    # 200→340pt for fill-the-canvas presence. Market name 60→80pt.
+    # All proportions tightened so the score dominates the composition
+    # — was previously underwhelming with too much dead space.
 
-    # The big number — terminal style
+    # Market name — large kicker
+    d.text((60, 110), market_name.upper()[:20], font=_font(80), fill=TEXT)
+
+    # The big number — terminal style, fills the middle ⅔ of the canvas
     if score:
-        d.text((60, 220), f'{score:.1f}', font=_mono(200), fill=ACCENT)
-        d.text((60, 460), 'EXCESS POWER INDEX  ·  #1 NATIONAL',
-               font=_mono(24), fill=MUTED)
+        # Score: hero-scale, sub-pixel center using vertical alignment.
+        d.text((60, 200), f'{score:.1f}', font=_mono(340), fill=ACCENT)
+        d.text((60, H - 130), 'EXCESS POWER INDEX  ·  #1 NATIONAL',
+               font=_mono(28), fill=MUTED)
     else:
-        # No score → use subheadline truncated
+        # No score → use subheadline as wrap, larger text
         sub = pr.get('subheadline', '')
-        for i, line in enumerate(_wrap(sub, 38)[:4]):
-            d.text((60, 250 + i * 60), line, font=_font(38), fill=TEXT)
+        for i, line in enumerate(_wrap(sub, 30)[:4]):
+            d.text((60, 240 + i * 80), line, font=_font(56), fill=TEXT)
 
-    # Verdict badge (right-bottom)
+    # Verdict badge (bigger, right-bottom). Was 200×60, now 260×84.
     verdict = _verdict_for(signals)
     vcol = _verdict_color(verdict)
-    bw = 200
-    d.rectangle([(W - bw - 40, H - 110), (W - 40, H - 50)], fill=vcol)
-    d.text((W - bw - 20, H - 100), verdict, font=_font(36), fill=BG)
+    bw, bh = 260, 84
+    d.rectangle([(W - bw - 40, H - bh - 50), (W - 40, H - 50)], fill=vcol)
+    # Center text in badge
+    d.text((W - bw - 20, H - bh - 36), verdict, font=_font(44), fill=BG)
 
-    # Footer
+    # Footer — slightly larger
     d.text((60, H - 50), 'dchub.cloud · DC Hub Daily Index',
-           font=_mono(18), fill=MUTED)
+           font=_mono(20), fill=MUTED)
 
     return img
 
@@ -259,45 +266,48 @@ def _draw_data_brutal(pr):
 # ---------------------------------------------------------------------------
 
 def _draw_editorial(pr):
+    """Phase JJ (2026-05-14): polished editorial. Headline grew 58→72pt,
+    sub 24→32pt, CTA 28→36pt. Gradient deepened (darker bottom) for
+    better text contrast. Margins tightened 80→64 to use canvas fully."""
     from PIL import Image, ImageDraw
     img = Image.new('RGB', (W, H), (15, 23, 42))
     d = ImageDraw.Draw(img)
 
-    # Vertical gradient
+    # Deeper gradient for better readability — was flat near top
     for i in range(H):
         t = i / H
-        r = int(15 + (60 - 15) * t)
-        g = int(23 + (40 - 23) * t)
-        b = int(42 + (110 - 42) * t)
+        r = int(10 + (50 - 10) * t)
+        g = int(14 + (30 - 14) * t)
+        b = int(28 + (120 - 28) * t)
         d.line([(0, i), (W, i)], fill=(r, g, b))
 
     # Kicker (top accent label)
-    d.text((80, 80), '◆  DC HUB  ·  DAILY POWER INDEX',
-           font=_font(20), fill=ACCENT2)
+    d.text((64, 70), '◆  DC HUB MEDIA  ·  DAILY POWER INDEX',
+           font=_font(22), fill=ACCENT2)
 
     # Headline — large, word-wrapped, max 3 lines
     title = pr.get('title', '')[:200]
-    lines = _wrap(title, 28)[:3]
-    y = 150
+    lines = _wrap(title, 26)[:3]
+    y = 140
     for line in lines:
-        d.text((80, y), line, font=_font(58), fill=TEXT)
-        y += 72
+        d.text((64, y), line, font=_font(72), fill=TEXT)
+        y += 88
 
-    # Subheadline (smaller, muted, 2 lines max)
+    # Subheadline (bigger, 2 lines max)
     sub = pr.get('subheadline', '')
     if sub:
-        sublines = _wrap(sub, 60)[:2]
-        sy = max(y + 30, 380)
+        sublines = _wrap(sub, 52)[:2]
+        sy = max(y + 36, 420)
         for s in sublines:
-            d.text((80, sy), s, font=_font(24, bold=False), fill=MUTED)
-            sy += 36
+            d.text((64, sy), s, font=_font(28, bold=False), fill=MUTED)
+            sy += 42
 
     # CTA
-    d.text((80, H - 100), '→  dchub.cloud/news',
-           font=_font(28), fill=ACCENT)
-    d.text((80, H - 60),
-           f'DC Hub  ·  {_safe_date_str(pr.get("date"), "%B %d, %Y")}',
-           font=_font(18), fill=DIM)
+    d.text((64, H - 110), '→  dchub.cloud/news',
+           font=_font(36), fill=ACCENT)
+    d.text((64, H - 60),
+           f'DC Hub Media  ·  {_safe_date_str(pr.get("date"), "%B %d, %Y")}',
+           font=_font(20), fill=DIM)
 
     return img
 
@@ -311,12 +321,12 @@ def _draw_infographic(pr):
     img = Image.new('RGB', (W, H), BG)
     d = ImageDraw.Draw(img)
 
-    # Header strip
-    d.rectangle([(0, 0), (W, 80)], fill=PANEL)
-    d.text((60, 26), 'DCPI EXCESS POWER  ·  TOP 5 MARKETS',
-           font=_font(28), fill=ACCENT)
-    d.text((W - 200, 30), _safe_date_str(pr.get('date')),
-           font=_mono(22), fill=MUTED)
+    # Header strip (taller for more typographic weight)
+    d.rectangle([(0, 0), (W, 96)], fill=PANEL)
+    d.text((60, 32), 'DCPI EXCESS POWER  ·  TOP 5 MARKETS',
+           font=_font(34), fill=ACCENT)
+    d.text((W - 220, 36), _safe_date_str(pr.get('date')),
+           font=_mono(26), fill=MUTED)
 
     # Pull top 5 from signals (support both production key set + legacy)
     signals = pr.get('signals', {}) if isinstance(pr.get('signals', {}), dict) else {}
@@ -336,53 +346,56 @@ def _draw_infographic(pr):
         [_market_score_of(m) for m in top_5] + [1.0],
     )
 
-    y_start = 140
-    bar_h = 56
-    gap = 28
-    label_col_x = 360
-    bar_start_x = 380
-    bar_max_x = W - 180
+    # Phase JJ: bigger bars, taller rows, more legible labels.
+    # bar_h 56→72 + gap 28→34 fills the 5-bar chart from ~420px to
+    # ~530px — leaves cleaner vertical breathing at top/bottom.
+    y_start = 138
+    bar_h = 72
+    gap = 22
+    label_col_x = 380
+    bar_start_x = 400
+    bar_max_x = W - 200
 
     for i, m in enumerate(top_5):
         y = y_start + i * (bar_h + gap)
-        name = _market_name_of(m)[:24]
+        name = _market_name_of(m)[:22]
         score = _market_score_of(m)
         is_top = (i == 0)
         color = ACCENT if is_top else (90, 130, 200)
 
-        # Market name (right-aligned in left column)
+        # Market name (right-aligned in left column) — bigger
         try:
-            d.text((label_col_x - 20, y + 14), name,
-                   font=_font(26), fill=TEXT, anchor='rt')
+            d.text((label_col_x - 20, y + 20), name,
+                   font=_font(32), fill=TEXT, anchor='rt')
         except TypeError:
             # Older PIL without anchor support
-            d.text((60, y + 14), name, font=_font(26), fill=TEXT)
+            d.text((60, y + 20), name, font=_font(32), fill=TEXT)
 
         # Bar
         bar_w = int((score / max_score) * (bar_max_x - bar_start_x))
         d.rectangle([(bar_start_x, y), (bar_start_x + bar_w, y + bar_h)],
                     fill=color)
 
-        # Score label at end of bar
-        d.text((bar_start_x + bar_w + 16, y + 16), f'{score:.1f}',
-               font=_font(28), fill=TEXT)
+        # Score label at end of bar — bigger
+        d.text((bar_start_x + bar_w + 18, y + 22), f'{score:.1f}',
+               font=_font(36), fill=TEXT)
 
         # #1 arrow indicator
         if is_top:
-            d.text((W - 80, y + 16), '▲', font=_font(28), fill=GREEN)
+            d.text((W - 90, y + 18), '▲', font=_font(36), fill=GREEN)
 
-    # Verdict + summary at bottom
+    # Verdict + summary at bottom — bigger badge
     verdict = _verdict_for(signals)
     vcol = _verdict_color(verdict)
-    d.rectangle([(60, H - 80), (220, H - 30)], fill=vcol)
-    d.text((76, H - 70), verdict, font=_font(32), fill=BG)
+    d.rectangle([(60, H - 100), (260, H - 30)], fill=vcol)
+    d.text((84, H - 86), verdict, font=_font(44), fill=BG)
 
     if top_5:
         first = _market_name_of(top_5[0])[:30]
-        d.text((240, H - 70), f'{first} ranked #1 nationally',
-               font=_font(22), fill=TEXT)
-    d.text((240, H - 38), 'dchub.cloud  ·  DC Hub Daily Power Index',
-           font=_mono(16), fill=MUTED)
+        d.text((290, H - 86), f'{first}  ·  ranked #1 nationally',
+               font=_font(26), fill=TEXT)
+    d.text((290, H - 48), 'dchub.cloud · DC Hub Media · Daily Power Index',
+           font=_mono(18), fill=MUTED)
 
     return img
 
@@ -393,41 +406,42 @@ def _draw_infographic(pr):
 # ---------------------------------------------------------------------------
 
 def _draw_ai_hero(pr):
-    # TODO Phase HH+1: call CF Workers AI SDXL with prompt derived from
-    # pr.title + pr.topic. For now, render editorial style with a
-    # different gradient so the rotation is visible.
+    """Phase JJ (2026-05-14): typography pass on AI-hero placeholder.
+    Headline 60→78pt with stronger 4px drop shadow. Tighter gradient
+    contrast (deep purple → vivid orange). Phase HH+1 still wires
+    real SDXL via Workers AI — this is the visual fallback."""
     from PIL import Image, ImageDraw
     img = Image.new('RGB', (W, H), (10, 14, 26))
     d = ImageDraw.Draw(img)
 
-    # Dramatic vertical gradient — purple → orange (sunrise)
+    # Dramatic vertical gradient — deep purple → vivid orange (sunrise)
     for i in range(H):
         t = i / H
-        r = int(40 + (255 - 40) * t)
-        g = int(20 + (140 - 20) * t)
-        b = int(80 + (40 - 80) * t)
+        r = int(30 + (255 - 30) * t)
+        g = int(12 + (130 - 12) * t)
+        b = int(70 + (30 - 70) * t)
         d.line([(0, i), (W, i)], fill=(r, g, b))
 
-    # Brand chip
-    d.rectangle([(60, 60), (260, 100)], fill=BG)
-    d.text((76, 70), 'DCHUB · DAILY', font=_mono(20), fill=ACCENT)
+    # Brand chip — larger
+    d.rectangle([(64, 60), (320, 112)], fill=BG)
+    d.text((80, 72), 'DC HUB MEDIA · DAILY', font=_mono(24), fill=ACCENT)
 
-    # Headline
+    # Headline — bigger with thicker drop shadow for legibility
     title = pr.get('title', '')[:120]
-    lines = _wrap(title, 24)[:3]
-    y = 200
+    lines = _wrap(title, 22)[:3]
+    y = 180
     for line in lines:
-        # Drop shadow for legibility on gradient
-        d.text((82, y + 3), line, font=_font(60), fill=(0, 0, 0))
-        d.text((80, y), line, font=_font(60), fill=TEXT)
-        y += 76
+        # 4px drop shadow for high contrast on gradient
+        d.text((84, y + 4), line, font=_font(78), fill=(0, 0, 0))
+        d.text((80, y), line, font=_font(78), fill=TEXT)
+        y += 96
 
-    # CTA
-    d.text((80, H - 80), '→ dchub.cloud/news',
-           font=_font(32), fill=TEXT)
-    d.text((80, H - 42),
-           f'DC Hub  ·  {_safe_date_str(pr.get("date"), "%B %d, %Y")}',
-           font=_font(18), fill=TEXT)
+    # CTA — larger, with shadow
+    d.text((84, H - 76), '→ dchub.cloud/news', font=_font(40), fill=(0, 0, 0))
+    d.text((80, H - 80), '→ dchub.cloud/news', font=_font(40), fill=TEXT)
+    d.text((80, H - 36),
+           f'DC Hub Media  ·  {_safe_date_str(pr.get("date"), "%B %d, %Y")}',
+           font=_font(20), fill=TEXT)
 
     return img
 
