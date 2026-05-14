@@ -111,40 +111,82 @@ jobs:
           for p in proposals:
               pid = p['id']
               loop_name = p.get('loop_name', 'unknown')
-              file_path = p.get('file_path', '')
-              search = p.get('search_text', '')
-              replace = p.get('replace_text', '')
               rationale = (p.get('rationale') or '')[:500]
               confidence = p.get('confidence', 0)
 
+              # Phase GG#3 (2026-05-14): multi-file proposals. The
+              # endpoint now returns a `changes` array — [{file, search,
+              # replace}, ...]. Single-file proposals are a 1-element
+              # array. Legacy rows the endpoint synthesizes the array
+              # from the old columns. So the opener has ONE code path.
+              changes = p.get('changes') or []
+              if not changes:
+                  # Ultra-defensive fallback for any malformed payload
+                  fp = p.get('file_path', '')
+                  if fp:
+                      changes = [{
+                          "file": fp,
+                          "search": p.get('search_text', ''),
+                          "replace": p.get('replace_text', ''),
+                      }]
+              file_path = changes[0].get('file', '') if changes else ''
+
               print(f"\n=== Proposal #{pid} for {loop_name} ===")
-              print(f"  file={file_path}  conf={confidence}")
+              print(f"  files={[c.get('file') for c in changes]}  conf={confidence}")
 
-              # 1. Verify the search text appears in the current file
-              if not os.path.exists(file_path):
-                  print(f"  SKIP — file not found: {file_path}")
-                  continue
-              with open(file_path) as f:
-                  content = f.read()
-              if search not in content:
-                  print(f"  SKIP — search text not found in file (file may have changed since proposal)")
+              if not changes:
+                  print(f"  SKIP — no changes in proposal")
                   continue
 
-              # 2. Apply the substitution
-              new_content = content.replace(search, replace, 1)
-              with open(file_path, 'w') as f:
-                  f.write(new_content)
+              # 1+2. Apply EVERY change. Track originals so we can roll
+              # back ALL of them if any single change fails — never
+              # leave the working tree half-patched.
+              originals = {}        # file → original content
+              applied_ok = True
+              fail_reason = ""
+              for ch in changes:
+                  cf = ch.get('file', '')
+                  cs = ch.get('search', '')
+                  cr = ch.get('replace', '')
+                  if not os.path.exists(cf):
+                      applied_ok = False
+                      fail_reason = f"file not found: {cf}"
+                      break
+                  with open(cf) as f:
+                      cur_content = f.read()
+                  if cf not in originals:
+                      originals[cf] = cur_content
+                  if cs not in cur_content:
+                      applied_ok = False
+                      fail_reason = f"search text not found in {cf} (file changed since proposal)"
+                      break
+                  with open(cf, 'w') as f:
+                      f.write(cur_content.replace(cs, cr, 1))
 
-              # 3. Syntax check (Python only)
-              if file_path.endswith('.py'):
-                  rc = subprocess.run(['python3', '-c', f'import ast; ast.parse(open({file_path!r}).read())'],
-                                       capture_output=True)
-                  if rc.returncode != 0:
-                      print(f"  SKIP — syntax check failed: {rc.stderr.decode()[:200]}")
-                      # Revert the write
-                      with open(file_path, 'w') as f:
-                          f.write(content)
-                      continue
+              def _revert_all():
+                  for of, oc in originals.items():
+                      with open(of, 'w') as f:
+                          f.write(oc)
+
+              if not applied_ok:
+                  print(f"  SKIP — {fail_reason}")
+                  _revert_all()
+                  continue
+
+              # 3. Syntax check EVERY changed .py file
+              syntax_ok = True
+              for cf in originals:
+                  if cf.endswith('.py'):
+                      rc = subprocess.run(
+                          ['python3', '-c', f'import ast; ast.parse(open({cf!r}).read())'],
+                          capture_output=True)
+                      if rc.returncode != 0:
+                          print(f"  SKIP — syntax check failed on {cf}: {rc.stderr.decode()[:200]}")
+                          syntax_ok = False
+                          break
+              if not syntax_ok:
+                  _revert_all()
+                  continue
 
               # 3b. Phase GG#1 (2026-05-14): TEST-RUNNER GATE.
               # Run the pure-function test suite with the patch applied.
@@ -159,9 +201,11 @@ jobs:
               # still useful signal ("the brain spotted something but
               # its fix is wrong"). It just gets labeled tests-failing
               # so the human knows not to merge as-is.
+              # Phase GG#3: run the test gate if ANY changed file is Python.
+              _any_python = any(cf.endswith('.py') for cf in originals)
               test_status = "not_run"
               test_output = ""
-              if file_path.endswith('.py'):
+              if _any_python:
                   print(f"  Running test suite with patch applied...")
                   try:
                       tr = subprocess.run(
@@ -189,10 +233,12 @@ jobs:
               else:
                   test_status = "skipped_non_python"
 
-              # 4. Create branch, commit, push
+              # 4. Create branch, commit, push — stage EVERY changed file
               branch = f"brain-v2/auto-{loop_name}-{pid}"
               subprocess.run(['git', 'checkout', '-b', branch], check=True)
-              subprocess.run(['git', 'add', file_path], check=True)
+              for cf in originals:
+                  subprocess.run(['git', 'add', cf], check=True)
+              _files_line = ", ".join(sorted(originals.keys()))
               _test_line = {
                   "pass": "Test suite: PASS (pytest tests/ green with patch applied).",
                   "fail": "Test suite: FAIL — review the test output in the PR body before merging.",
@@ -201,10 +247,14 @@ jobs:
                   "skipped_non_python": "Test suite: skipped (non-Python file).",
                   "not_run": "Test suite: not run.",
               }.get(test_status, "Test suite: unknown.")
+              _files_count_note = (
+                  f"{len(originals)} file(s): {_files_line}"
+              )
               commit_msg = (
                   f"brain-v2 layer5: proposed fix for {loop_name}\n\n"
                   f"Auto-proposed by Brain v2 Layer 5 (proposal #{pid}, "
                   f"confidence {confidence:.2f}).\n\n"
+                  f"Changes: {_files_count_note}\n\n"
                   f"Rationale: {rationale}\n\n"
                   f"{_test_line}\n\n"
                   f"This PR is a DRAFT. A human must review the diff + "
@@ -226,16 +276,28 @@ jobs:
               _test_block = ""
               if test_status in ("fail", "timeout") and test_output:
                   _test_block = f"\n### Test output (tail)\n```\n{test_output}\n```\n"
+              # Phase GG#3: render every change in the PR body, not just one.
+              _changes_md = ""
+              for _i, _ch in enumerate(changes, 1):
+                  _cf = _ch.get('file', '?')
+                  _cs = (_ch.get('search') or '')[:400]
+                  _cr = (_ch.get('replace') or '')[:400]
+                  _changes_md += (
+                      f"\n**Change {_i}/{len(changes)} — `{_cf}`**\n"
+                      f"```\nSEARCH:\n{_cs}\n\nREPLACE:\n{_cr}\n```\n"
+                  )
+              _multi_note = (
+                  f" (multi-file: {len(changes)} files)" if len(changes) > 1 else ""
+              )
               pr_body = (
-                  f"## Brain v2 Layer 5 — proposed fix\n\n"
+                  f"## Brain v2 Layer 5 — proposed fix{_multi_note}\n\n"
                   f"**Loop / issue:** `{loop_name}`\n"
-                  f"**File:** `{file_path}`\n"
+                  f"**Files changed:** `{_files_line}`\n"
                   f"**Confidence:** {confidence:.2f}\n\n"
                   f"{_test_badge}\n"
                   f"{_test_block}\n"
                   f"### Rationale\n{rationale}\n\n"
-                  f"### What changes\n"
-                  f"```\nSEARCH:\n{search[:500]}\n\nREPLACE:\n{replace[:500]}\n```\n\n"
+                  f"### What changes{_changes_md}\n"
                   f"### Provenance\n"
                   f"- Proposal ID: {pid}\n"
                   f"- Auto-opened by brain-layer5-pr-opener.yml\n"
