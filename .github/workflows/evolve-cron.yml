@@ -149,8 +149,17 @@ jobs:
           retention-days: 30
 
   # Phase BB (2026-05-12) — autonomous press release.
+  # Phase RR (2026-05-14): run on EVERY scheduled tick, not just the
+  # exact '0 13 * * *' string. GitHub Actions routinely delays and
+  # DROPS scheduled runs — gating this job to one specific cron string
+  # meant that whenever GH dropped the 13:00 tick, that day got no post
+  # at all. Result: ~3 posts in 30 days instead of 30. /auto-generate
+  # is idempotent per-day (date+source lookup → no-op), so firing it on
+  # every evolve-cron tick is safe: the first run of the UTC day
+  # generates that day's themed post, every later run cheaply no-ops —
+  # and a transient failure on one tick is simply retried by the next.
   marketing_auto_press:
-    if: github.event.schedule == '0 13 * * *' || (github.event_name == 'workflow_dispatch' && (inputs.phase == 'all' || inputs.phase == 'marketing'))
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.phase == 'all' || inputs.phase == 'marketing'))
     runs-on: ubuntu-latest
     timeout-minutes: 4
     steps:
