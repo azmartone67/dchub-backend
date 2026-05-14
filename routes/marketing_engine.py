@@ -295,14 +295,13 @@ def _pick_daily_topic(signals: dict) -> tuple[str, str]:
     with guaranteed fallbacks so the cron never goes a day without
     output.
 
-    Priority (most → least newsworthy):
-      1. dcpi_mover         — a single market shifted >5pts WoW
-      2. dcpi_leader        — highest BUILD market this week
-      3. dcpi_warning       — highest-constraint AVOID market
-      4. iso_coverage       — when we expand grid coverage (e.g. Phase HH 7→11)
-      5. ai_adoption        — MCP usage milestones (5K calls/day, etc.)
-      6. new_facility       — biggest newly-discovered facility
-      7. weekly_pulse       — generic "DC Hub by the numbers" recap (always works)
+    Phase LL+1 (2026-05-14): expanded topic library 7→14 entries. Auto-
+    press has been underproducing (output_30d=2 vs expected 30) because
+    on most days the high-priority topics (dcpi_mover ≥5pts, etc.)
+    don't trigger — and the weekly_pulse fallback was repetitive enough
+    that validation rejected it as "too similar to yesterday's." With
+    14 topic types and a deterministic day-of-month rotation as the
+    final fallback, every day has a fresh angle to publish.
 
     Returns (topic_slug, human_reason). The Claude prompt sees both.
     """
@@ -341,11 +340,32 @@ def _pick_daily_topic(signals: dict) -> tuple[str, str]:
             f"DC Hub MCP served {ai.get('tool_calls')} AI tool calls in "
             f"the last 24h from {ai.get('unique_callers')} unique callers.")
 
-    # Last-resort topic: every day produces SOMETHING. This is the
-    # "weekly pulse" recap — DC Hub by the numbers.
-    return "weekly_pulse", (
-        "Generic weekly recap of DC Hub platform activity — "
-        "markets tracked, ISOs live, facilities indexed.")
+    # Phase LL+1: deterministic day-of-month rotation across 8 generic
+    # angles. Using day-of-month % 8 means each angle hits ~4× per
+    # month — enough variety that the press release archive doesn't
+    # read as a single template repeating itself.
+    import datetime as _dt
+    day_idx = _dt.date.today().day % 8
+    rotation = [
+        ("iso_grid_pulse", "Today's grid pulse: real-time demand + headroom across 7 US ISOs."),
+        ("water_risk_brief", "Water-stress brief: which DC markets face elevated drought + cooling risk this quarter."),
+        ("fiber_capacity_map", "Fiber infrastructure brief: BEAD allocations + carrier-hotel density by market."),
+        ("interconnection_queue", "Interconnection queue snapshot: largest pending DC loads by ISO."),
+        ("permit_velocity", "Permit-velocity brief: which states are approving DC builds fastest this month."),
+        ("tax_incentive_brief", "Tax incentive brief: jurisdiction-by-jurisdiction comparison for new DC investment."),
+        ("ma_pulse", "M&A pulse: recent data center transactions + valuation trends."),
+        ("methodology_explainer", "Methodology explainer: how DC Hub's DCPI scoring works + what each axis measures."),
+    ]
+    return rotation[day_idx]
+
+
+# Phase LL+1: ultra-safe last-resort topic. If everything else fails
+# AND retry logic exhausts, fall back to this. Always produces a
+# 250-300 word generic "DC Hub today" recap from platform signals.
+_LAST_RESORT_TOPIC = (
+    "platform_pulse",
+    "Generic platform pulse — DC Hub's tracking footprint, today's data freshness, and how to query the dataset.",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -965,28 +985,73 @@ def auto_generate():
 
     signals = _collect_signals()
 
-    # Phase LL (2026-05-13): always-publish daily heartbeat. The
-    # previous behaviour skipped 29 of every 30 days because
-    # market_power_scores.published=true is rarely set during the
-    # incremental cron, leaving top_build_markets/biggest_movers
-    # empty → cron silently no-op'd → user saw the system as dormant.
-    #
-    # New policy: pick a topic that's always available, in priority
-    # order. The auto-press cron NEVER goes a day without producing
-    # something. Each fallback is a real story we can tell.
+    # Phase LL+1 (2026-05-14): retry-with-fallback loop. Auto-press has
+    # been producing 2 releases per 30 days (vs expected 30) because
+    # Claude calls sometimes timeout / return non-JSON / generate output
+    # that fails _validate_release on length or slug format. Before this
+    # retry, a single transient Claude error → no press release for the
+    # entire day. Now we try 3 attempts: primary topic → primary topic
+    # with simpler prompt → last-resort platform_pulse topic.
     topic, topic_reason = _pick_daily_topic(signals)
     signals["daily_topic"] = topic
     signals["daily_topic_reason"] = topic_reason
 
-    prompt = (f"Daily signals (topic: {topic} — {topic_reason}):\n"
-              "```\n" + json.dumps(signals, indent=2)[:6000] + "\n```")
-    rel, err = _call_claude_marketing(prompt)
-    if err or not rel:
-        return jsonify(ok=False, error=err or "no_response", signals=signals), 502
-    ok, why = _validate_release(rel)
-    if not ok:
-        return jsonify(ok=False, error=f"validation_failed: {why}",
-                       proposal=rel), 422
+    rel = None
+    err = None
+    why = None
+    last_attempt_err = None
+
+    for attempt_idx, (att_topic, att_reason, att_simpler) in enumerate([
+        (topic, topic_reason, False),
+        (topic, topic_reason, True),       # second pass with simpler prompt
+        _LAST_RESORT_TOPIC + (True,),      # third pass: platform_pulse, simpler
+    ]):
+        signals["daily_topic"] = att_topic
+        signals["daily_topic_reason"] = att_reason
+
+        if att_simpler:
+            # Simpler prompt = drop most of the signals payload to reduce
+            # context that might confuse Claude. Keep only essentials.
+            mini_signals = {
+                "daily_topic": att_topic,
+                "daily_topic_reason": att_reason,
+                "as_of": signals.get("as_of"),
+                "top_build_markets": (signals.get("top_build_markets") or [])[:3],
+                "ai_usage_24h": signals.get("ai_usage_24h", {}),
+            }
+            prompt = (
+                f"Today's topic: {att_topic} — {att_reason}\n\n"
+                f"Signals (trimmed):\n```\n{json.dumps(mini_signals, indent=2)[:2500]}\n```\n\n"
+                "Generate a publishable press release + LinkedIn post per "
+                "the system prompt. Be concrete, lean on the signal data."
+            )
+        else:
+            prompt = (f"Daily signals (topic: {att_topic} — {att_reason}):\n"
+                      "```\n" + json.dumps(signals, indent=2)[:6000] + "\n```")
+
+        rel, err = _call_claude_marketing(prompt)
+        if err or not rel:
+            last_attempt_err = f"attempt_{attempt_idx+1}: claude_error={err}"
+            print(f"[marketing] {last_attempt_err}", file=sys.stderr)
+            continue
+
+        ok, why = _validate_release(rel)
+        if not ok:
+            last_attempt_err = f"attempt_{attempt_idx+1}: validation_failed={why}"
+            print(f"[marketing] {last_attempt_err}", file=sys.stderr)
+            rel = None
+            continue
+
+        # Got a valid release. Break out of retry loop.
+        break
+
+    if not rel:
+        return jsonify(
+            ok=False, error="all_retries_exhausted",
+            last_error=last_attempt_err,
+            signals=signals,
+        ), 502
+
     press_id, write_err = _write_release(rel, signals, rel.get("topic", "dcpi"))
     if write_err:
         return jsonify(ok=False, error=write_err, proposal=rel), 500
