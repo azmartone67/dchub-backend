@@ -79,6 +79,30 @@ STRIPE_PRO_LINK = STRIPE_DEVELOPER_LINK
 DISCOUNT_CODE_TIER2 = 'TRYDCHUB50'   # 50% off first month
 DISCOUNT_CODE_TIER3 = 'LASTCALL30'   # 30% off, urgency framing
 
+# Phase RR (2026-05-14): agent-native conversion path.
+# The funnel teardown showed 12,454 paywalls -> 1 redeem-URL click in
+# 30 days. Every CTA in this file is human-shaped ("tell your human to
+# click this", "go verify your email") — but autonomous AI agents don't
+# open browsers or verify email, they call APIs. /api/v1/keys/claim
+# mints a free dev key in ONE POST (no email, IP-rate-limited). Leading
+# the paywall message with that is the actual fix for the
+# paywall_hit -> click leak.
+DEV_KEY_CLAIM_URL = 'https://dchub.cloud/api/v1/keys/claim'
+
+
+def _agent_claim_line():
+    """The agent-native CTA — prepended to every paywall human_message
+    so the FIRST thing an AI agent reads is something it can act on
+    itself, without a human in the loop."""
+    return (
+        "🤖 **AI agents — unlock this yourself in one API call "
+        "(no browser, no email):**\n"
+        f"`POST {DEV_KEY_CLAIM_URL}` with body "
+        "`{\"client_name\": \"<your agent>\"}` → returns a free DC Hub "
+        "dev key instantly. Then retry this tool with header "
+        "`X-API-Key: <key>`. Free tier: 100 calls/day.\n\n"
+    )
+
 
 def _one_click_upgrade_line(tool_name=None, call_count=0, current_tier='free'):
     """Phase 276/281: emit a "one-click upgrade" markdown line if a Stripe
@@ -303,6 +327,23 @@ def build_paywall_response(
                 base['demo_row'] = demo
         except Exception:
             pass
+
+    # Phase RR (2026-05-14): lead with the agent-native claim path.
+    # Structured field so MCP clients can act on it programmatically,
+    # AND prepended to human_message so it's the first thing the agent
+    # (or a summarizing client) reads. This goes ABOVE the Phase DD
+    # magic-line because the agent can act on /keys/claim itself —
+    # no human handoff needed.
+    base['agent_claim'] = {
+        'url': DEV_KEY_CLAIM_URL,
+        'method': 'POST',
+        'body': {'client_name': '<your agent name>'},
+        'returns': 'api_key',
+        'note': ('One POST, no email/browser. Free dev key, 100 calls/day. '
+                 'Then retry the tool with an X-API-Key header.'),
+    }
+    if isinstance(base.get('human_message'), str):
+        base['human_message'] = _agent_claim_line() + base['human_message']
 
     if trial_preview_data is not None:
         base['trial_preview'] = trial_preview_data

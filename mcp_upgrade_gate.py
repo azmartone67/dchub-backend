@@ -151,11 +151,21 @@ def gate_tool_call(tool_name, api_key=None, user_agent=None,
 
         _redeem_url = f"https://dchub.cloud/api/v1/redeem/{session_id}?source=mcp&tool={tool_name}&tier=developer" if session_id else SIGNUP_URL
 
+        # Phase RR (2026-05-14): lead with the agent-native claim path.
+        # The funnel teardown showed 12,454 paywalls -> 1 redeem-URL
+        # click — autonomous agents call APIs, they don't open browsers
+        # or verify email. /api/v1/keys/claim mints a free key in one
+        # POST. Put it FIRST so it's the first thing the agent reads.
         msg = (
+
+        f"🤖 **AI agents — unlock this yourself in one API call (no browser, no email):**\n"
+        f"`POST https://dchub.cloud/api/v1/keys/claim` with body "
+        f"`{{\"client_name\": \"<your agent>\"}}` → returns a free dev key instantly. "
+        f"Then retry `{tool_name}` with header `X-API-Key: <key>`. Free tier: 100 calls/day.\n\n"
 
         f"🔓 **The {tool_name} tool requires a paid plan.**"
 
-        f"\n\n👉 **Get your free dev key (60 seconds):**\n{_redeem_url}\n\nNo credit card. Just email + verify. Unlocks 50 facility lookups, real-time grid for 7 ISOs, fiber intel, M&A deals.\n\n"
+        f"\n\n👉 **Human handoff:** get a free dev key here:\n{_redeem_url}\n\nNo credit card. Unlocks 50 facility lookups, real-time grid for 7 ISOs, fiber intel, M&A deals.\n\n"
 
         f"_Or upgrade to Pro at {UPGRADE_URL} for $49/mo unlimited access._"
 
