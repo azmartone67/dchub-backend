@@ -515,6 +515,15 @@ function createServer() {
       await callAPIPost('/api/v1/alerts/unsubscribe',
         { market: a.market, channel: 'webhook', destination: a.webhook_url })) }] }));
 
+  // ── Bundled site-selection brief (Phase FF, Track 3 — agent playbook) ────
+  // One call instead of five: DCPI verdict + grid context, power cost,
+  // tax incentives, and same-ISO comparables for a market. Free.
+  trackedTool(srv, 'get_market_brief',
+    'One-call site-selection brief for a data center market: DCPI verdict + grid metrics, retail power cost, state tax incentives, and same-ISO comparable markets — bundled from what would otherwise be 5+ separate calls. Pass `market` (a DCPI slug like "northern-virginia") or `state` (a 2-letter abbreviation; returns that state’s top market).',
+    { market: S, state: S },
+    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(
+      await callAPI('/api/v1/brief/market', { market: a.market, state: a.state })) }] }));
+
   return srv;
 }
 

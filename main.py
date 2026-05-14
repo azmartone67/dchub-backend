@@ -1146,6 +1146,16 @@ try:
     except Exception as _mae:
         import logging
         logging.getLogger(__name__).warning('market_alerts wiring failed: %s', _mae)
+    # Phase FF (2026-05-14): the bundled site-selection brief — one call
+    # (GET /api/v1/brief/market) returns DCPI verdict + grid context,
+    # power cost, tax incentives, and same-ISO comparables. Exposed to
+    # agents as the get_market_brief MCP tool. See routes/site_brief.py.
+    try:
+        from routes.site_brief import site_brief_bp
+        app.register_blueprint(site_brief_bp)
+    except Exception as _sbe:
+        import logging
+        logging.getLogger(__name__).warning('site_brief wiring failed: %s', _sbe)
     # Phase DD+ (2026-05-12): conversion plays 3-6 — top-up, demo
     # unlock, email trial, affiliate attribution. See
     # routes/mcp_conversion_plays.py.
