@@ -1984,15 +1984,20 @@ except Exception as e:
 def health_check():
     return {'status': 'ok'}, 200
 
-# Phase 280: /digest -> /news 302. The QA crawler flagged /digest as a
-# broken internal link (returning 404) — it's referenced from
-# index.html, landing/index.html, ai-integrations.html, agent-dashboard.html.
-# The dchub-frontend/digest.html exists in the static repo but the
-# Cloudflare Pages worker proxies everything to Railway, so Flask
-# needs to handle the path. /news is the canonical news+digest stream.
-@app.route('/digest')
-def digest_redirect():
-    return redirect('/news', code=302)
+# Phase 280 (2026): /digest -> /news 302 was a band-aid added when
+# /digest 404'd. It has since been SHADOWING the real digest page —
+# routes/digest.py:digest_today_page renders a purpose-built daily
+# morning-brief (top BUILD/AVOID markets, 7d movers, news/deal counts).
+# Because this @app.route('/digest') registered first, the blueprint
+# route never got reached: the genuine page was dead code, and the
+# redirect chain is what got a 404 cached at the CF edge (the
+# api_contract_scan `digest_returns_html` finding).
+#
+# Phase RR (2026-05-14): removed the band-aid. routes/digest.py's
+# _today_summary() wraps its whole DB block in try/except and always
+# returns a valid dict, so digest_today_page can only ever return
+# 200 text/html — safe to un-shadow. /digest now serves real content
+# and reliably satisfies the text/html contract probe.
 
 # phase 269: /health/deep alias — mirror /api/v1/health/deep at the unprefixed
 # URL the audit and external monitors expect (matches /health ↔ /api/v1/health).
