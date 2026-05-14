@@ -349,6 +349,119 @@ def claim_key():
     ), 200
 
 
+# ── POST /api/v1/keys/identify ─────────────────────────────────────────────
+# Phase TT (2026-05-14): value-moment email capture — the missing
+# anonymous -> known stage of the funnel.
+#
+# /keys/claim mints a free key with NO email (frictionless, by design),
+# which is great for adoption but leaves 1,558 agents/week completely
+# anonymous: nothing to convert, nothing to outreach. This endpoint is
+# the capture: once an agent's human shares an email, the agent POSTs
+# it here, the email is tied to the key, and the key unlocks a higher
+# daily quota. Email-FIRST — no payment ask here. The carrot is "4x
+# more free + alerts", which is what actually makes a human do it.
+#
+# Public + idempotent: re-identifying the same key is a no-op confirm.
+# This is the endpoint that finally gives the outreach engine targets
+# (_high_intent_targets queries mcp_dev_keys WHERE email IS NOT NULL).
+
+_IDENT_EMAIL_RE = _kc_re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+@mcp_bp.post("/api/v1/keys/identify")
+def identify_key():
+    """Tie an email to an existing dev key — the value-moment capture.
+
+    Body: {"api_key": "dch_live_...", "email": "user@example.com"}
+    Returns 200 with what the email unlocked, 200+ok:false on bad input
+    (never an error that forces the agent into a retry decision).
+    """
+    body = request.get_json(silent=True) or {}
+    api_key = (str(body.get("api_key") or "")).strip()
+    email = (str(body.get("email") or "")).strip().lower()
+
+    if not api_key:
+        return jsonify(ok=False, error="missing_api_key",
+                       message="Pass the api_key you claimed from /api/v1/keys/claim."), 200
+    if not email or not _IDENT_EMAIL_RE.match(email) or len(email) > 254:
+        return jsonify(ok=False, error="invalid_email",
+                       message="Pass a valid email address to identify this key."), 200
+
+    try:
+        with _pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT email, tier, status FROM mcp_dev_keys WHERE api_key = %s",
+                (api_key,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return jsonify(ok=False, error="unknown_api_key",
+                               message="That key isn't recognized. Claim one at /api/v1/keys/claim."), 200
+            existing_email, tier, status = row[0], row[1], row[2]
+            if status and status != "active":
+                return jsonify(ok=False, error="key_inactive",
+                               message=f"That key is {status}."), 200
+
+            already = bool(existing_email)
+            # Idempotent: re-identifying with the same email is a clean
+            # confirm; a different email re-points the key (humans switch
+            # accounts — last-write-wins is fine for a free key).
+            cur.execute(
+                """UPDATE mcp_dev_keys
+                       SET email = %s,
+                           metadata = COALESCE(metadata, '{}'::jsonb)
+                                      || jsonb_build_object(
+                                           'identified_at', %s::text,
+                                           'identify_source', 'mcp_value_moment')
+                     WHERE api_key = %s""",
+                (email, datetime.now(timezone.utc).isoformat(), api_key),
+            )
+    except Exception as e:
+        # Never hard-fail the agent — it can keep using the key.
+        return jsonify(ok=False, error="storage_failed",
+                       message="Couldn't save that right now — your key still works; try again later.",
+                       detail=str(e)[:120]), 200
+
+    # Funnel event: this is the anonymous -> known conversion we couldn't
+    # see before. Best-effort.
+    try:
+        from routes.redeem_tracking import record_funnel_event
+        record_funnel_event(
+            "email_captured",
+            tier=tier or "free", source="mcp_identify",
+            user_agent=request.headers.get("User-Agent"),
+            ip=(request.headers.get("X-Forwarded-For") or request.remote_addr or ""),
+            metadata={"already_identified": already},
+        )
+    except Exception:
+        pass
+
+    masked = email
+    try:
+        _u, _d = email.split("@", 1)
+        masked = (_u[:3] + "***@" + _d)
+    except Exception:
+        pass
+
+    return jsonify(
+        ok=True,
+        identified=True,
+        already_identified=already,
+        email_masked=masked,
+        unlocked={
+            "daily_calls": int(os.environ.get("MCP_IDENTIFIED_DAILY_LIMIT", "100")),
+            "previous_daily_calls": int(os.environ.get("MCP_FREE_DAILY_LIMIT", "25")),
+            "extras": ["weekly digest of the markets you query",
+                       "alerts when a tracked market moves"],
+        },
+        message=("Email already on file — your key is identified."
+                 if already else
+                 "Identified — this key now gets 100 calls/day (up from 25) "
+                 "plus the weekly market digest."),
+        upgrade_note="Need 1,000/day + full data? Developer plan is $49/mo at https://dchub.cloud/pricing",
+    ), 200
+
+
 # ── POST /api/v1/mcp/track ─────────────────────────────────────────────────
 
 @mcp_bp.post("/api/v1/mcp/track")

@@ -35,10 +35,15 @@ def _conn():
     finally: c.close()
 
 
+# Phase TT (2026-05-14): added `identify_shown` + `email_captured` to the
+# event_type whitelist — the new anonymous->known stage of the funnel
+# (value-moment email capture). The inline CHECK below covers fresh
+# tables; the idempotent ALTER widens the constraint on tables that
+# already exist with the old 6-value list.
 MIGRATION_SQL = """
 CREATE TABLE IF NOT EXISTS redeem_funnel_events (
     id              BIGSERIAL PRIMARY KEY,
-    event_type      TEXT NOT NULL CHECK (event_type IN ('paywall_hit', 'click', 'view', 'submit', 'verified', 'upgrade')),
+    event_type      TEXT NOT NULL CHECK (event_type IN ('paywall_hit', 'click', 'view', 'submit', 'verified', 'upgrade', 'identify_shown', 'email_captured')),
     event_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     source          TEXT,
     tool            TEXT,
@@ -52,6 +57,14 @@ CREATE TABLE IF NOT EXISTS redeem_funnel_events (
 
 CREATE INDEX IF NOT EXISTS ix_redeem_funnel_event_type_at ON redeem_funnel_events (event_type, event_at DESC);
 CREATE INDEX IF NOT EXISTS ix_redeem_funnel_tool ON redeem_funnel_events (tool);
+
+-- Widen the event_type CHECK on already-existing tables. The original
+-- inline CHECK is auto-named redeem_funnel_events_event_type_check;
+-- drop it and re-add the full list under a stable name. Idempotent.
+ALTER TABLE redeem_funnel_events DROP CONSTRAINT IF EXISTS redeem_funnel_events_event_type_check;
+ALTER TABLE redeem_funnel_events DROP CONSTRAINT IF EXISTS redeem_funnel_events_event_type_v2;
+ALTER TABLE redeem_funnel_events ADD CONSTRAINT redeem_funnel_events_event_type_v2
+    CHECK (event_type IN ('paywall_hit', 'click', 'view', 'submit', 'verified', 'upgrade', 'identify_shown', 'email_captured'));
 """
 
 
