@@ -89,7 +89,7 @@ def content_stats():
             stats[status_val] += cur.fetchone()[0]
         cur.execute(f"SELECT COUNT(*) FROM {table} WHERE status = 'published' AND published_at LIKE %s", (today + '%',))
         stats['published_today'] += cur.fetchone()[0]
-    linkedin_connected = bool(os.environ.get('LINKEDIN_ACCESS_TOKEN', ''))
+    linkedin_connected = bool(os.environ.get('LINKEDIN_ACCESS_TOKEN', '').strip())
     conn.close()
     return jsonify({'stats': stats, 'linkedin_connected': linkedin_connected})
 
@@ -209,7 +209,7 @@ def _post_to_linkedin(content_text, access_token, article_url=None,
     tag — buildPressReleaseHtml in _worker.js points that at the
     /api/v1/og/today/<slug>.png dynamic card endpoint.
     """
-    DCHUB_ORG_ID = os.environ.get('LINKEDIN_ORG_ID', '110894959')
+    DCHUB_ORG_ID = (os.environ.get('LINKEDIN_ORG_ID', '110894959') or '110894959').strip()
     headers = {
         'Authorization': f'Bearer {access_token}',
         'Content-Type': 'application/json',
@@ -294,10 +294,13 @@ def _post_to_twitter(content_text):
     """
     # Try OAuth 1.0a first (the path the X dev platform recommends
     # for posting from a confirmed account).
-    api_key = os.environ.get('TWITTER_API_KEY', '')
-    api_sec = os.environ.get('TWITTER_API_SECRET', '')
-    acc_tok = os.environ.get('TWITTER_ACCESS_TOKEN', '')
-    acc_sec = os.environ.get('TWITTER_ACCESS_SECRET', '')
+    # .strip() — env vars pasted via dashboards routinely carry a trailing
+    # newline; an unstripped credential silently fails auth (OAuth1 sig
+    # mismatch / malformed Bearer header).
+    api_key = os.environ.get('TWITTER_API_KEY', '').strip()
+    api_sec = os.environ.get('TWITTER_API_SECRET', '').strip()
+    acc_tok = os.environ.get('TWITTER_ACCESS_TOKEN', '').strip()
+    acc_sec = os.environ.get('TWITTER_ACCESS_SECRET', '').strip()
     if all([api_key, api_sec, acc_tok, acc_sec]):
         try:
             from requests_oauthlib import OAuth1
@@ -341,7 +344,7 @@ def publish_linkedin():
     post_id = data.get('post_id')
     if not post_id:
         return jsonify({'success': False, 'error': 'post_id required'}), 400
-    access_token = os.environ.get('LINKEDIN_ACCESS_TOKEN', '')
+    access_token = os.environ.get('LINKEDIN_ACCESS_TOKEN', '').strip()
     if not access_token:
         return jsonify({'success': False, 'error': 'LINKEDIN_ACCESS_TOKEN not configured'}), 500
     conn = _get_db()
@@ -381,7 +384,7 @@ def start_auto_publisher():
         while True:
             try:
                 time.sleep(6 * 3600)
-                access_token = os.environ.get('LINKEDIN_ACCESS_TOKEN', '')
+                access_token = os.environ.get('LINKEDIN_ACCESS_TOKEN', '').strip()
                 if not access_token:
                     logger.debug("Auto-publisher: No LINKEDIN_ACCESS_TOKEN, skipping")
                     continue

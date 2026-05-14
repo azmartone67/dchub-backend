@@ -1149,9 +1149,11 @@ def linkedin_whoami():
     if masked["length"] < 100:
         diagnosis.append(f"Token is suspiciously short ({masked['length']} chars). Real LinkedIn tokens are ~400-700 chars.")
     if userinfo_status == 401:
-        diagnosis.append("LinkedIn /v2/userinfo also returns 401 — token is genuinely invalid (expired, revoked, or wrong app).")
+        diagnosis.append("LinkedIn /v2/userinfo returns 401 — token is genuinely invalid (expired, revoked, or wrong app). Regenerate it.")
+    elif userinfo_status == 403:
+        diagnosis.append("LinkedIn /v2/userinfo returns 403 ACCESS_DENIED — the token is NOT expired (that would be 401) but is missing the `openid` + `profile` scopes that userinfo needs. This does NOT tell us whether `w_organization_social` (the org-posting scope) is present. Regenerate the token with all three checked — `openid`, `profile`, AND `w_organization_social` — so both this check and actual posting work.")
     elif userinfo_status == 200:
-        diagnosis.append("Token IS valid (/v2/userinfo returned 200). The /v2/ugcPosts 401 means missing scope `w_organization_social` — regenerate the token with that scope checked.")
+        diagnosis.append("Token IS valid (/v2/userinfo returned 200). If a real org post still 401s, the token is missing `w_organization_social` — regenerate with that scope checked.")
     if not diagnosis:
         diagnosis.append("No obvious format issues. Compare what's stored vs what you generated.")
 
@@ -1255,7 +1257,7 @@ def publish_now():
     # card thumbnail. Cache-busted with the slug+date so LinkedIn
     # re-fetches OG on reposts.
     if (not only or only == "linkedin") and "linkedin" in posts:
-        li_token = _os.environ.get("LINKEDIN_ACCESS_TOKEN", "")
+        li_token = _os.environ.get("LINKEDIN_ACCESS_TOKEN", "").strip()
         if not li_token:
             out["results"]["linkedin"] = {"ok": False,
                                           "error": "LINKEDIN_ACCESS_TOKEN not set"}
@@ -1448,7 +1450,7 @@ def repost_now():
                                   "note": "Old share preserved; new post will be added alongside"}
             continue
         if plat == "linkedin":
-            li_token = _os.environ.get("LINKEDIN_ACCESS_TOKEN", "")
+            li_token = _os.environ.get("LINKEDIN_ACCESS_TOKEN", "").strip()
             if not li_token:
                 out_deleted["linkedin"] = {"ok": False, "error": "no token"}
                 continue
@@ -1465,10 +1467,10 @@ def repost_now():
                 from content_publisher import _post_to_twitter  # ensure module loaded
                 import os as _os2, requests as _rq
                 # OAuth1 needed for delete (same creds as post)
-                api_key = _os2.environ.get('TWITTER_API_KEY', '')
-                api_sec = _os2.environ.get('TWITTER_API_SECRET', '')
-                acc_tok = _os2.environ.get('TWITTER_ACCESS_TOKEN', '')
-                acc_sec = _os2.environ.get('TWITTER_ACCESS_SECRET', '')
+                api_key = _os2.environ.get('TWITTER_API_KEY', '').strip()
+                api_sec = _os2.environ.get('TWITTER_API_SECRET', '').strip()
+                acc_tok = _os2.environ.get('TWITTER_ACCESS_TOKEN', '').strip()
+                acc_sec = _os2.environ.get('TWITTER_ACCESS_SECRET', '').strip()
                 if all([api_key, api_sec, acc_tok, acc_sec]):
                     from requests_oauthlib import OAuth1
                     auth = OAuth1(api_key, api_sec, acc_tok, acc_sec)
