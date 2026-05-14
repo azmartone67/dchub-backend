@@ -19816,6 +19816,11 @@ def _heal_findings():
         # cron runs with non-zero error_count as
         # `actionable_backend_issues` for human/CI triage.
         "backend_cron_scan",
+        # Phase SS (2026-05-14): conversion-funnel health. Makes the
+        # healer aware of the upgrade funnel — a critically-leaking
+        # stage (e.g. paywall_hit -> click at 0.008%) now surfaces as
+        # an actionable_backend_issue instead of being invisible.
+        "funnel_health_scan",
     ]
     for d in detectors:
         fn = h.FIXES.get(d)
@@ -19885,6 +19890,21 @@ def _heal_findings():
     try:
         if hasattr(h, "get_last_backend_findings"):
             raw = h.get_last_backend_findings()
+            for src, hits in (raw or {}).items():
+                if isinstance(hits, dict):
+                    for label, n in hits.items():
+                        if isinstance(n, int):
+                            actionable_backend.append(
+                                {"url": src, "issue": label, "count": n})
+    except Exception:
+        pass
+    # Phase SS (2026-05-14): merge funnel-health findings. Same
+    # {url: {label: count}} shape; labels start with `funnel_` so they
+    # land in actionable_backend_issues (a business/code fix, never an
+    # HTML body substitution) and route to the human/CI escalation path.
+    try:
+        if hasattr(h, "get_last_funnel_findings"):
+            raw = h.get_last_funnel_findings()
             for src, hits in (raw or {}).items():
                 if isinstance(hits, dict):
                     for label, n in hits.items():
