@@ -195,31 +195,87 @@ def content_edit(item_id):
     conn.close()
     return jsonify({'success': True})
 
-def _post_to_linkedin(content_text, access_token):
-    """Post to DC Hub LinkedIn Company Page (org ID: 110894959)."""
+def _post_to_linkedin(content_text, access_token, article_url=None,
+                       article_title=None, article_description=None,
+                       article_thumbnail_url=None):
+    """Post to DC Hub LinkedIn Company Page (org ID: 110894959).
+
+    Phase HH (2026-05-13): added optional article params. When supplied,
+    LinkedIn renders a rich link-card preview with thumbnail + title +
+    description (much higher engagement than plain text). Without them,
+    falls back to text-only share (legacy behaviour).
+
+    LinkedIn extracts the link-card image from the URL's og:image meta
+    tag — buildPressReleaseHtml in _worker.js points that at the
+    /api/v1/og/today/<slug>.png dynamic card endpoint.
+    """
     DCHUB_ORG_ID = os.environ.get('LINKEDIN_ORG_ID', '110894959')
     headers = {
         'Authorization': f'Bearer {access_token}',
         'Content-Type': 'application/json',
         'X-Restli-Protocol-Version': '2.0.0',
     }
+    if article_url:
+        # Rich link-card share — LinkedIn scrapes the URL for OG tags
+        # (title, description, image) and renders a click-through card.
+        # We provide hints; LinkedIn uses our values if og:* is missing.
+        media_block = {
+            "status": "READY",
+            "originalUrl": article_url,
+        }
+        if article_title:
+            media_block["title"] = {"text": article_title[:200]}
+        if article_description:
+            media_block["description"] = {"text": article_description[:300]}
+        if article_thumbnail_url:
+            # If we know the exact image, hint at it. LinkedIn still
+            # scrapes the URL for og:image but this can be a tiebreaker.
+            media_block["thumbnails"] = [{"url": article_thumbnail_url}]
+        share_content = {
+            "shareCommentary": {"text": content_text},
+            "shareMediaCategory": "ARTICLE",
+            "media": [media_block],
+        }
+    else:
+        # Text-only fallback
+        share_content = {
+            "shareCommentary": {"text": content_text},
+            "shareMediaCategory": "NONE",
+        }
     post_body = {
         "author": f"urn:li:organization:{DCHUB_ORG_ID}",
         "lifecycleState": "PUBLISHED",
         "specificContent": {
-            "com.linkedin.ugc.ShareContent": {
-                "shareCommentary": {"text": content_text},
-                "shareMediaCategory": "NONE"
-            }
+            "com.linkedin.ugc.ShareContent": share_content
         },
         "visibility": {
             "com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"
         }
     }
-    resp = requests.post('https://api.linkedin.com/v2/ugcPosts', json=post_body, headers=headers, timeout=15)
+    resp = requests.post('https://api.linkedin.com/v2/ugcPosts',
+                          json=post_body, headers=headers, timeout=15)
     if resp.status_code in (200, 201):
         return True, resp.json().get('id', 'posted')
     return False, f"LinkedIn API error {resp.status_code}: {resp.text[:300]}"
+
+
+def _delete_linkedin_share(share_urn, access_token):
+    """Phase HH (2026-05-13): delete a previously-posted share. Used by
+    the /repost-now endpoint when republishing today's press release
+    with a new visual card. LinkedIn requires URL-encoding the URN."""
+    import urllib.parse as _up
+    encoded = _up.quote(share_urn, safe='')
+    resp = requests.delete(
+        f'https://api.linkedin.com/v2/ugcPosts/{encoded}',
+        headers={
+            'Authorization': f'Bearer {access_token}',
+            'X-Restli-Protocol-Version': '2.0.0',
+        },
+        timeout=15,
+    )
+    if resp.status_code in (200, 204):
+        return True, "deleted"
+    return False, f"LinkedIn delete error {resp.status_code}: {resp.text[:300]}"
 
 
 def _post_to_twitter(content_text):

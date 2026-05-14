@@ -1,0 +1,72 @@
+name: Repost now (manual)
+
+# Phase HH (2026-05-13): one-shot trigger for /api/v1/marketing/repost-now.
+# Deletes the existing LinkedIn/X share for a given press release and
+# republishes with the current visual card + Claude-rewritten copy.
+
+on:
+  workflow_dispatch:
+    inputs:
+      slug:
+        description: 'Press release slug (blank = most recent auto-press)'
+        required: false
+        type: string
+      only:
+        description: 'Limit to one channel'
+        required: false
+        type: choice
+        options: ['', 'linkedin', 'twitter']
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  repost:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Fire repost-now
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          SLUG: ${{ inputs.slug }}
+          ONLY: ${{ inputs.only }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::error::DCHUB_ADMIN_KEY secret not set"
+            exit 1
+          fi
+          qs=""
+          [ -n "$SLUG" ] && qs="?slug=${SLUG}"
+          if [ -n "$ONLY" ]; then
+            [ -z "$qs" ] && qs="?only=${ONLY}" || qs="${qs}&only=${ONLY}"
+          fi
+          echo "POST .../repost-now${qs}"
+          response=$(curl -sS --max-time 60 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" \
+            "https://dchub-backend-production.up.railway.app/api/v1/marketing/repost-now${qs}" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | python3 -m json.tool
+
+          echo "$response" | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          slug = d.get('slug', '?')
+          for chan, r in (d.get('deleted') or {}).items():
+              ok = r.get('ok')
+              mark = '✓' if ok else '✗'
+              detail = r.get('msg') or r.get('error', '?')
+              print(f'::notice::{mark} {chan} OLD share deleted · {detail}')
+          for chan, r in (d.get('results') or {}).items():
+              ok = r.get('ok')
+              mark = '✓' if ok else '✗'
+              detail = r.get('result') or r.get('error', '?')
+              if ok:
+                  print(f'::notice::{mark} {chan} NEW share posted · slug={slug} · result={detail}')
+              else:
+                  print(f'::warning::{mark} {chan} NEW share FAILED · slug={slug} · {detail}')
+          if not d.get('ok'):
+              print(f'::error::repost-now returned ok=false · error={d.get(\"error\")}')
+              sys.exit(1)
+          "
