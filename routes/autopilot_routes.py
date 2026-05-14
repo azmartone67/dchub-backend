@@ -477,10 +477,14 @@ def autopilot_detected_transactions():
                         'discovered_at': discovered_at.isoformat() if hasattr(discovered_at, 'isoformat') else str(discovered_at)
                     })
 
+        # Phase GG (2026-05-14): label the data source explicitly. The
+        # seed is used only when the DB genuinely can't supply 5+ deals.
         if len(valid_deals) < 5:
             deals = get_fallback_detected_deals()
+            data_source = 'fallback_seed'
         else:
             deals = valid_deals[:15]
+            data_source = 'live'
 
         total_volume = sum(d.get('value_millions', 0) or 0 for d in deals)
         avg_confidence = sum(d.get('confidence', 0) for d in deals) / max(len(deals), 1)
@@ -489,6 +493,7 @@ def autopilot_detected_transactions():
             'success': True,
             'deals': deals,
             'transactions': deals,
+            'data_source': data_source,
             'stats': {
                 'total_volume': f"${total_volume/1000:.1f}B" if total_volume >= 1000 else f"${total_volume:.0f}M",
                 'deal_count': len(deals),
@@ -499,17 +504,23 @@ def autopilot_detected_transactions():
         })
 
     except Exception as e:
-        logger.error(f"Detected transactions error: {e}")
+        logger.error(f"Detected transactions error — serving labelled seed fallback: {e}")
         fallback = get_fallback_detected_deals()
         total_volume = sum(d.get('value_millions', 0) or 0 for d in fallback)
+        # Phase GG: compute avg_confidence from the fallback rather than
+        # hardcoding 88.0, and surface `degraded` so the error path is
+        # never mistaken for a healthy live response.
+        avg_conf = sum(d.get('confidence', 0) for d in fallback) / max(len(fallback), 1)
         return jsonify({
             'success': True,
             'deals': fallback,
             'transactions': fallback,
+            'data_source': 'fallback_seed',
+            'degraded': True,
             'stats': {
                 'total_volume': f"${total_volume/1000:.1f}B",
                 'deal_count': len(fallback),
-                'avg_confidence': 88.0,
+                'avg_confidence': round(avg_conf * 100, 1),
                 'last_scan': datetime.now().strftime('%I:%M %p'),
                 'source': 'curated'
             }
@@ -575,52 +586,58 @@ def autopilot_capacity_pipeline():
                 'confidence': 0.80 if row[7] == 'medium' else 0.90 if row[7] == 'high' else 0.60
             })
 
-        fallback = get_fallback_pipeline_projects()
-        seen_operators_markets = set()
-        for p in db_projects:
-            key = (p['operator'].lower().split('/')[0].strip(), (p.get('location') or '').lower())
-            seen_operators_markets.add(key)
-        for fp in fallback:
-            key = (fp['operator'].lower().split('/')[0].strip(), fp.get('location', fp.get('market', '')).lower())
-            if key not in seen_operators_markets:
-                db_projects.append(fp)
-                seen_operators_markets.add(key)
+        # Phase GG (2026-05-14): live DB wins COMPLETELY. The old code
+        # ALWAYS merged get_fallback_pipeline_projects() in — even with a
+        # full DB — so every response carried frozen seed projects. Now
+        # the seed is used only when the DB returned nothing.
+        if db_projects:
+            projects = db_projects
+            data_source = 'live'
+        else:
+            projects = get_fallback_pipeline_projects()
+            data_source = 'fallback_seed'
+            logger.warning("autopilot capacity-pipeline: DB returned 0 "
+                           "projects — serving labelled seed fallback")
 
-        projects = sorted(db_projects, key=lambda x: x.get('capacity_mw', 0) or 0, reverse=True)
+        projects = sorted(projects, key=lambda x: x.get('capacity_mw', 0) or 0, reverse=True)
 
         total_mw = sum(p.get('capacity_mw', 0) or 0 for p in projects)
         construction = len([p for p in projects if 'construction' in (p.get('status') or '')])
         announced = len([p for p in projects if p.get('status') == 'announced'])
-        avg_preleased = sum(p.get('preleased', 50) for p in projects) / len(projects) if projects else 50
 
+        # `pre_leased_pct` dropped — it averaged a hardcoded `preleased: 50`
+        # on every DB project (no real prelease source). Don't fabricate it.
         return jsonify({
             'success': True,
             'pipeline': projects,
+            'data_source': data_source,
             'stats': {
                 'total_gw': round(total_mw / 1000, 1),
                 'total_mw': total_mw,
                 'project_count': len(projects),
                 'under_construction': construction,
                 'announced': announced,
-                'pre_leased_pct': round(avg_preleased)
             }
         })
 
     except Exception as e:
-        logger.error(f"Pipeline error: {e}")
+        logger.error(f"Pipeline error — serving labelled seed fallback: {e}")
         fallback_projects = get_fallback_pipeline_projects()
         total_mw = sum(p.get('capacity_mw', 0) for p in fallback_projects)
         construction = len([p for p in fallback_projects if 'construction' in (p.get('status') or '')])
+        # Phase GG: labelled fallback + degraded flag; dropped the
+        # fabricated `pre_leased_pct: 73`.
         return jsonify({
             'success': True,
             'pipeline': fallback_projects,
+            'data_source': 'fallback_seed',
+            'degraded': True,
             'stats': {
                 'total_gw': round(total_mw / 1000, 1),
                 'total_mw': total_mw,
                 'project_count': len(fallback_projects),
                 'under_construction': construction,
                 'announced': len(fallback_projects) - construction,
-                'pre_leased_pct': 73
             }
         })
     finally:
