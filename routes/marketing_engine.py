@@ -1318,16 +1318,29 @@ def repost_now():
 
     out_deleted = {}
 
-    # 1. Delete the existing share on each requested platform
+    # 1. Delete the existing share on each requested platform.
+    # Phase HH+5: defensively ALTER share_urn column. The write-side
+    # helper _remember_share_urn adds this column too, but it only
+    # fires AFTER a successful publish — so a press release published
+    # before the share_urn helper deployed has a row with no column.
+    # Reposting that press release would 500 with "column does not
+    # exist" before the column ever got created.
     c = _conn()
     try:
         with c.cursor() as cur:
+            try:
+                cur.execute("""
+                    ALTER TABLE social_media_posts
+                    ADD COLUMN IF NOT EXISTS share_urn TEXT;
+                """)
+                c.commit()
+            except Exception:
+                c.rollback()
             cur.execute("""
                 SELECT platform, share_urn, id
                 FROM social_media_posts
                 WHERE press_release_id = %s
                   AND platform IN ('linkedin', 'twitter')
-                  AND share_urn IS NOT NULL
             """, (press_id,))
             rows = cur.fetchall() or []
     finally:
@@ -1336,6 +1349,15 @@ def repost_now():
 
     for plat, urn, post_id in rows:
         if only and plat != only:
+            continue
+        if not urn:
+            # Phase HH+5: no stored share_urn — likely a row published
+            # before the share_urn helper shipped. Skip the delete step
+            # for this channel; the reset-and-republish step below will
+            # still queue a fresh post. The old share remains live on
+            # LinkedIn/X (user can delete manually if desired).
+            out_deleted[plat] = {"ok": False, "error": "no_stored_share_urn",
+                                  "note": "Old share preserved; new post will be added alongside"}
             continue
         if plat == "linkedin":
             li_token = _os.environ.get("LINKEDIN_ACCESS_TOKEN", "")
