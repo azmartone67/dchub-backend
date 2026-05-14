@@ -722,6 +722,7 @@ def list_alert_types():
         'types': ALERT_TYPES
     })
 
+# AUTO-REPAIR: duplicate route '/api/v2/alerts' also in main.py:6687 — review and remove one
 @alerts_v2_bp.route('/api/v2/alerts', methods=['GET'])
 @require_auth
 def list_alerts():
@@ -754,6 +755,7 @@ def list_alerts():
         'alerts': alerts,
         'count': len(alerts)
     })
+# AUTO-REPAIR: duplicate route '/api/v2/alerts' also in main.py:6687 — review and remove one
 
 @alerts_v2_bp.route('/api/v2/alerts', methods=['POST'])
 @require_auth
@@ -818,7 +820,7 @@ def create_alert():
         now = datetime.utcnow().isoformat()
         c.execute("""
             INSERT INTO alerts_v2 (user_id, name, alert_type, criteria, email_notify, frequency, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
         """, (
             user_id,
             name or ALERT_TYPES[alert_type]['name'],
@@ -852,6 +854,7 @@ def create_alert():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
     finally:
+# AUTO-REPAIR: duplicate route '/api/v2/alerts/<int:alert_id>' also in main.py:6807 — review and remove one
         conn.close()
 
 @alerts_v2_bp.route('/api/v2/alerts/<int:alert_id>', methods=['GET'])
@@ -895,6 +898,7 @@ def get_alert(alert_id):
     
     return jsonify({
         'success': True,
+# AUTO-REPAIR: duplicate route '/api/v2/alerts/<int:alert_id>' also in main.py:6807 — review and remove one
         'alert': alert
     })
 
@@ -946,6 +950,7 @@ def update_alert(alert_id):
         c.execute(f"UPDATE alerts_v2 SET {', '.join(updates)} WHERE id = %s", params)
         conn.commit()
     
+# AUTO-REPAIR: duplicate route '/api/v2/alerts/<int:alert_id>' also in main.py:6807 — review and remove one
     conn.close()
     
     return jsonify({'success': True, 'updated': alert_id})

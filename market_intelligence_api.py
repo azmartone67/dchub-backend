@@ -698,6 +698,7 @@ def _market_summary(name, data):
 # ROUTES
 # ─────────────────────────────────────────────────────────────
 
+# AUTO-REPAIR: duplicate route '/api/market-intelligence' also in main.py:14470 — review and remove one
 @market_intel_bp.route('/api/market-intelligence', methods=['GET'])
 def get_all_market_intelligence():
     """

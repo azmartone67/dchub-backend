@@ -463,6 +463,7 @@ except ImportError:
 
 # --- Discovery Routes (5) ---
 
+# AUTO-REPAIR: duplicate route '/api/discovery/run' also in discovery_routes.py:479 — review and remove one
 @discovery_bp.route('/api/discovery/run', methods=['POST'])
 def discovery_run():
     """Trigger a facility discovery run across all sources."""
@@ -506,6 +507,7 @@ def discovery_run():
 
     return jsonify(results)
 
+# AUTO-REPAIR: duplicate route '/api/discovery/status' also in discovery_routes.py:523 — review and remove one
 
 @discovery_bp.route('/api/discovery/status', methods=['GET'])
 def discovery_status():
@@ -548,6 +550,7 @@ def discovery_status():
                 conn.close()
             except Exception:
                 pass
+# AUTO-REPAIR: duplicate route '/api/discovery/facilities' also in discovery_routes.py:566 — review and remove one
 
 
 @discovery_bp.route('/api/discovery/facilities', methods=['GET'])
@@ -609,6 +612,7 @@ def discovery_facilities():
             try:
                 conn.close()
             except Exception:
+# AUTO-REPAIR: duplicate route '/api/discovery/sources' also in discovery_routes.py:628 — review and remove one
                 pass
 
 
@@ -618,6 +622,7 @@ def discovery_sources():
     return jsonify({
         'success': True,
         'sources': DISCOVERY_SOURCES,
+# AUTO-REPAIR: duplicate route '/api/discovery/refresh' also in discovery_routes.py:638 — review and remove one
         'target_operators': TARGET_OPERATORS[:20],
     })
 
@@ -625,6 +630,7 @@ def discovery_sources():
 @discovery_bp.route('/api/discovery/refresh', methods=['POST'])
 def discovery_refresh():
     """Alias for /api/discovery/run — triggers all sources."""
+# AUTO-REPAIR: duplicate route '/api/evolution/status' also in discovery_routes.py:646 — review and remove one
     return discovery_run()
 
 
@@ -640,6 +646,7 @@ def evolution_status():
             'message': 'Evolution engine not installed'
         })
     try:
+# AUTO-REPAIR: duplicate route '/api/evolution/run' also in discovery_routes.py:662 — review and remove one
         status = _get_learning_status()
         return jsonify({'success': True, 'available': True, 'status': status})
     except Exception as e:
@@ -651,6 +658,7 @@ def evolution_run():
     """Trigger an evolution learning cycle."""
     if not EVOLUTION_AVAILABLE or not _run_evolution_cycle:
         return jsonify({'success': False, 'message': 'Evolution engine not available'}), 503
+# AUTO-REPAIR: duplicate route '/api/evolution/teach' also in discovery_routes.py:674 — review and remove one
     try:
         result = _run_evolution_cycle()
         return jsonify({'success': True, 'result': result})
@@ -667,6 +675,7 @@ def evolution_teach():
     topic = data.get('topic', '')
     content = data.get('content', '')
     if not topic:
+# AUTO-REPAIR: duplicate route '/api/evolution/knowledge' also in discovery_routes.py:691 — review and remove one
         return jsonify({'success': False, 'error': 'topic required'}), 400
     try:
         result = _teach_topic(topic, content)
@@ -679,6 +688,7 @@ def evolution_teach():
 def evolution_knowledge():
     """Get learned knowledge items."""
     if not EVOLUTION_AVAILABLE or not _evolution_engine:
+# AUTO-REPAIR: duplicate route '/api/evolution/config' also in discovery_routes.py:704 — review and remove one
         return jsonify({'success': False, 'message': 'Evolution engine not available'}), 503
     try:
         engine = _evolution_engine()
@@ -689,6 +699,7 @@ def evolution_knowledge():
 
 
 @discovery_bp.route('/api/evolution/config', methods=['GET'])
+# AUTO-REPAIR: duplicate route '/api/evolution/history' also in discovery_routes.py:715 — review and remove one
 def evolution_config():
     """Get evolution engine configuration."""
     return jsonify({
@@ -703,6 +714,7 @@ def evolution_config():
 def evolution_history():
     """Get evolution cycle history."""
     if not EVOLUTION_AVAILABLE or not _evolution_engine:
+# AUTO-REPAIR: duplicate route '/api/brain/status' also in discovery_routes.py:730 — review and remove one
         return jsonify({'success': False, 'message': 'Evolution engine not available'}), 503
     try:
         engine = _evolution_engine()
@@ -715,6 +727,7 @@ def evolution_history():
 # --- Brain Routes (5) ---
 
 @discovery_bp.route('/api/brain/status', methods=['GET'])
+# AUTO-REPAIR: duplicate route '/api/brain/run' also in discovery_routes.py:743 — review and remove one
 def brain_status():
     """Get autonomous brain status."""
     try:
@@ -727,6 +740,7 @@ def brain_status():
         return jsonify({'success': True, 'available': True, 'degraded': True, 'error': str(e)})
 
 
+# AUTO-REPAIR: duplicate route '/api/brain/learn' also in discovery_routes.py:756 — review and remove one
 @discovery_bp.route('/api/brain/run', methods=['POST'])
 def brain_run():
     """Trigger a brain learning cycle."""
@@ -745,6 +759,7 @@ def brain_run():
 def brain_learn():
     """Feed the brain new data to learn from."""
     data = request.get_json() or {}
+# AUTO-REPAIR: duplicate route '/api/brain/insights' also in discovery_routes.py:775 — review and remove one
     topic = data.get('topic', '')
     content = data.get('content', '')
     if not topic:
@@ -757,6 +772,7 @@ def brain_learn():
         return jsonify({'success': False, 'message': 'Brain module not installed'}), 503
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+# AUTO-REPAIR: duplicate route '/api/brain/config' also in discovery_routes.py:788 — review and remove one
 
 
 @discovery_bp.route('/api/brain/insights', methods=['GET'])

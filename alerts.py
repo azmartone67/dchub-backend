@@ -339,7 +339,7 @@ def create_alert():
     
     cursor.execute('''
         INSERT INTO alerts (user_id, user_email, alert_type, name, config, frequency, is_active)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
     ''', (
         g.user['user_id'],
         g.user['email'],
@@ -362,6 +362,7 @@ def create_alert():
         'message': f'Alert "{data["name"]}" created successfully'
     }), 201
 
+# AUTO-REPAIR: duplicate route '/api/v1/alerts' also in alerts.py:315 — review and remove one
 @alerts_bp.route('/api/v1/alerts', methods=['GET'])
 @require_auth
 def list_alerts():
@@ -419,6 +420,7 @@ def get_alert(alert_id):
     result['history'] = [dict(h) for h in history]
     
     return jsonify(result)
+# AUTO-REPAIR: duplicate route '/api/v1/alerts/<int:alert_id>' also in alerts.py:396 — review and remove one
 
 @alerts_bp.route('/api/v1/alerts/<int:alert_id>', methods=['PUT'])
 @require_auth
@@ -484,6 +486,7 @@ def update_alert(alert_id):
         'success': True,
         'alert': dict(updated),
         'message': 'Alert updated successfully'
+# AUTO-REPAIR: duplicate route '/api/v1/alerts/<int:alert_id>' also in alerts.py:396 — review and remove one
     })
 
 @alerts_bp.route('/api/v1/alerts/<int:alert_id>', methods=['DELETE'])

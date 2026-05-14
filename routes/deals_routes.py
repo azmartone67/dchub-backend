@@ -401,6 +401,7 @@ PIPELINE_DATA = [
 DEALS_CACHE = BoundedCache(max_size=50, ttl=300)
 DEALS_CACHE_DURATION = 300  # 5 minutes cache
 
+# AUTO-REPAIR: duplicate route '/api/deals' also in deals_routes.py:388 — review and remove one
 @deals_bp.route('/api/deals', methods=['GET'])
 @_lazy_protect_data
 def get_deals():
@@ -568,6 +569,7 @@ def get_deals():
             'ai_infra': 'AI Infrastructure'
         }
     })
+# AUTO-REPAIR: duplicate route '/api/v1/transactions' also in deals_routes.py:555 — review and remove one
 
 @deals_bp.route('/api/v1/transactions', methods=['GET'])
 def get_transactions():
@@ -656,6 +658,7 @@ def _get_transactions_free():
 
 # =============================================================================
 # CONSTRUCTION PIPELINE API (v86)
+# AUTO-REPAIR: duplicate route '/api/v1/pipeline' also in deals_routes.py:644 — review and remove one
 # =============================================================================
 
 @deals_bp.route('/api/v1/pipeline', methods=['GET'])
@@ -818,6 +821,7 @@ def get_pipeline():
         },
         'by_quarter': quarters,
         'last_updated': datetime.utcnow().isoformat()
+# AUTO-REPAIR: duplicate route '/api/v1/gas-pipelines' also in deals_routes.py:757 — review and remove one
     })
 
 
@@ -938,6 +942,7 @@ def get_gas_pipelines():
                     'spatial_filter_applied': lat is not None and lng is not None
                 }
             })
+# AUTO-REPAIR: duplicate route '/api/v1/deals' also in deals_routes.py:837 — review and remove one
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
@@ -967,6 +972,7 @@ SAMPLE_MARKETS = [
     {"id": 11, "name": "Sydney", "country": "AU", "region": "APAC", "facilities": 55, "total_mw": 380, "avg_pue": 1.45, "growth": 14.5, "power_cost": 95, "fiber_providers": 15},
     {"id": 12, "name": "São Paulo", "country": "BR", "region": "LATAM", "facilities": 45, "total_mw": 280, "avg_pue": 1.52, "growth": 18.2, "power_cost": 85, "fiber_providers": 12},
     {"id": 13, "name": "Atlanta", "country": "US", "region": "North America", "facilities": 78, "total_mw": 420, "avg_pue": 1.40, "growth": 16.8, "power_cost": 68, "fiber_providers": 24},
+# AUTO-REPAIR: duplicate route '/api/dc-markets' also in deals_routes.py:867 — review and remove one
     {"id": 14, "name": "Seattle", "country": "US", "region": "North America", "facilities": 65, "total_mw": 380, "avg_pue": 1.28, "growth": 12.5, "power_cost": 48, "fiber_providers": 22},
     {"id": 15, "name": "Dublin", "country": "IE", "region": "EMEA", "facilities": 72, "total_mw": 480, "avg_pue": 1.30, "growth": 14.2, "power_cost": 125, "fiber_providers": 18},
     {"id": 16, "name": "Paris", "country": "FR", "region": "EMEA", "facilities": 58, "total_mw": 320, "avg_pue": 1.42, "growth": 10.5, "power_cost": 155, "fiber_providers": 20},
@@ -984,6 +990,7 @@ def get_dc_markets():
         region = REGION_ALIASES.get(region.strip(), region.strip())
         markets = [m for m in markets if m['region'] == region]
     
+# AUTO-REPAIR: duplicate route '/api/markets' also in deals_routes.py:884 — review and remove one
     return jsonify({
         'success': True,
         'markets': markets,
@@ -1016,6 +1023,7 @@ def get_markets():
         conn.close()
     except:
         pass
+# AUTO-REPAIR: duplicate route '/api/pipeline' also in deals_routes.py:912 — review and remove one
     return jsonify({
         'success': True,
         'markets': markets,
@@ -1121,6 +1129,7 @@ def get_public_pipeline():
             'total_mw': round(total_mw, 1),
             'project_count': len(projects),
             'under_construction': construction,
+# AUTO-REPAIR: duplicate route '/api/v1/pipeline/summary' also in deals_routes.py:1014 — review and remove one
             'announced': announced,
             'operational': operational,
             'pre_leased_pct': 73
@@ -1213,6 +1222,7 @@ def get_pipeline_summary():
 
     return jsonify({
         'success': True,
+# AUTO-REPAIR: duplicate route '/api/v1/analytics' also in deals_routes.py:1103 — review and remove one
         'total_gw': round(total_mw / 1000, 1),
         'total_mw': round(total_mw, 1),
         'project_count': project_count,
@@ -1266,6 +1276,7 @@ def _get_pg_news_cat_col():
         _pg_news_cat_col = 'category'
     return _pg_news_cat_col
 
+# AUTO-REPAIR: duplicate route '/api/agent/news' also in deals_routes.py:1157 — review and remove one
 def _pg_news_select():
     """Build SELECT for PG news_articles with correct category column."""
     col = _get_pg_news_cat_col()
@@ -1336,10 +1347,12 @@ def get_agent_news():
             return jsonify({
                 'success': True,
                 'articles': articles,
+# AUTO-REPAIR: duplicate route '/api/news-feed' also in deals_routes.py:1228 — review and remove one
                 'count': len(articles),
                 'total': total,
                 'source': 'postgresql'
             })
+# AUTO-REPAIR: duplicate route '/api/news/live' also in deals_routes.py:1233 — review and remove one
         except Exception as pg_err:
             logger.error(f"News PG read failed: {pg_err}")
             return jsonify({'success': False, 'error': str(pg_err), 'articles': []}), 200
@@ -1391,6 +1404,7 @@ def get_live_news():
                 articles.append(article)
 
             _news_result = {
+# AUTO-REPAIR: duplicate route '/api/news/sync' also in deals_routes.py:1283 — review and remove one
                 'success': True, 'articles': articles, 'count': len(articles),
                 'total': total, 'fetched_at': datetime.utcnow().isoformat(),
                 'source': 'postgresql'
@@ -1407,10 +1421,12 @@ def get_live_news():
 @deals_bp.route('/api/news/sync', methods=['POST'])
 def trigger_news_sync():
     """Manually trigger news sync"""
+# AUTO-REPAIR: duplicate route '/api/v1/news' also in deals_routes.py:1312 — review and remove one
     try:
         from auto_sync import sync_news
         saved = sync_news()
         return jsonify({
+# AUTO-REPAIR: duplicate route '/api/v1/announcements' also in deals_routes.py:1317 — review and remove one
             'success': True,
             'message': f'News sync complete: {saved} new articles saved',
             'synced_at': datetime.utcnow().isoformat()

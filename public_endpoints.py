@@ -76,6 +76,7 @@ def get_version():
 # =============================================================================
 # /api/founding-members — Public, no auth
 # =============================================================================
+# AUTO-REPAIR: duplicate route '/api/founding-members' also in main.py:7236 — review and remove one
 @public_bp.route('/api/founding-members', methods=['GET'])
 def founding_members_status():
     claimed = FOUNDING_CLAIMED
@@ -147,6 +148,7 @@ def public_map_data():
 
 # =============================================================================
 # /api/v1/map — Public facility data for map view, no auth
+# AUTO-REPAIR: duplicate route '/api/v1/map' also in main.py:1802 — review and remove one
 # =============================================================================
 @public_bp.route('/api/v1/map', methods=['GET'])
 def public_map_view():

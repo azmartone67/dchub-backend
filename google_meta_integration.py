@@ -95,7 +95,7 @@ def log_crawler_visit(platform, crawler_name, user_agent, endpoint, ip_address=N
 
             cursor.execute('''
                 INSERT INTO crawler_visits (platform, crawler_name, user_agent, endpoint, ip_address, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             ''', (platform, crawler_name, user_agent, endpoint, ip_address, datetime.now(timezone.utc).isoformat()))
 
             conn.commit()
@@ -323,6 +323,7 @@ def whatsapp_bot_config():
     })
 
 
+# AUTO-REPAIR: duplicate route '/api/crawlers/stats' also in main.py:5451 — review and remove one
 @google_meta_bp.route('/api/crawlers/stats')
 def crawler_stats():
     """Get crawler visit statistics"""

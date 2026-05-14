@@ -188,6 +188,7 @@ def job_discovery():
         return jsonify({'success': False, 'job': 'discovery', 'error': str(e)}), 500
 
 
+# AUTO-REPAIR: duplicate route '/api/jobs/auto-approve' also in facility_auto_approve.py:433 — review and remove one
 @jobs_bp.route('/api/jobs/auto-approve', methods=['POST'])
 def job_auto_approve():
     """Cron: Auto-approve staged discoveries into facilities"""
@@ -450,7 +451,7 @@ def job_autopilot():
                     try:
                         cur.execute("""
                             INSERT INTO deals (id,date,year,buyer,seller,value,type,region,market,source_url,created_at,verified)
-                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),0)
+                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW() ON CONFLICT DO NOTHING,0)
                             ON CONFLICT (id) DO NOTHING
                         """, (did, ddate, dyear, b[:100], 'Undisclosed', v, dtype, None, None, entry.get('link',feed_url)[:500]))
                         if cur.rowcount: saved += 1
@@ -585,6 +586,7 @@ def job_market_report():
         logger.error("JOB market-report: ❌ %s", e)
         return jsonify({'success': False, 'job': 'market-report', 'error': str(e)}), 500
 
+# AUTO-REPAIR: duplicate route '/api/jobs/infrastructure-sync' also in energy_auto_discovery.py:559 — review and remove one
 
 @jobs_bp.route('/api/jobs/infrastructure-sync', methods=['POST'])
 def job_infrastructure_sync():
