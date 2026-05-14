@@ -144,6 +144,23 @@ CREATE TABLE IF NOT EXISTS brain_meta (
     value       TEXT,
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Phase SS (2026-05-14): false-positive memory.
+-- When Claude REFUSES an issue (the empty-find refusal contract — it
+-- couldn't isolate a real fixable placeholder), that's strong evidence
+-- the "issue" isn't real. Without memory, the brain re-attempts the
+-- same non-issue every hour forever — 11 wasted `refused` cycles on the
+-- phantom /markets placeholder is the live example. Each refusal bumps
+-- refused_count here; trigger_learn skips issues past the threshold so
+-- the brain stops chasing ghosts and spends its budget on real bugs.
+CREATE TABLE IF NOT EXISTS brain_false_positives (
+    issue_label    TEXT NOT NULL,
+    url            TEXT NOT NULL DEFAULT '',
+    refused_count  INT NOT NULL DEFAULT 1,
+    first_seen_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT brain_fp_unique UNIQUE (issue_label, url)
+);
 """
 
 
@@ -495,6 +512,64 @@ def get_meta(key: str) -> dict | None:
     except Exception as e:
         print(f"[brain_v2_store] get_meta failed: {e}", file=sys.stderr)
         return None
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+# ---------------------------------------------------------------------------
+# False-positive memory — Phase SS (2026-05-14)
+# ---------------------------------------------------------------------------
+
+def mark_false_positive(issue_label: str, url: str = "") -> int:
+    """Record that Claude REFUSED this (issue_label, url) — i.e. it's
+       very likely not a real fixable issue. Returns the new
+       refused_count. Best-effort; never raises."""
+    if not issue_label:
+        return 0
+    c = _conn()
+    if c is None:
+        return 0
+    try:
+        with c, c.cursor() as cur:
+            cur.execute(
+                """INSERT INTO brain_false_positives
+                       (issue_label, url, refused_count, first_seen_at, last_seen_at)
+                   VALUES (%s, %s, 1, NOW(), NOW())
+                   ON CONFLICT (issue_label, url) DO UPDATE SET
+                       refused_count = brain_false_positives.refused_count + 1,
+                       last_seen_at  = NOW()
+                   RETURNING refused_count""",
+                (issue_label, url or ""),
+            )
+            return int(cur.fetchone()[0])
+    except Exception as e:
+        print(f"[brain_v2_store] mark_false_positive failed: {e}", file=sys.stderr)
+        return 0
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+def list_false_positives(min_refused: int = 3) -> set:
+    """Return a set of (issue_label, url) pairs that have been refused
+       at least `min_refused` times — confirmed non-issues the brain
+       should stop re-attempting. Empty set on DB unavailable (fail
+       open: a DB blip just means the brain tries them again, no harm)."""
+    c = _conn()
+    if c is None:
+        return set()
+    try:
+        with c, c.cursor() as cur:
+            cur.execute(
+                """SELECT issue_label, url FROM brain_false_positives
+                   WHERE refused_count >= %s""",
+                (min_refused,),
+            )
+            return {(r[0], r[1] or "") for r in cur.fetchall()}
+    except Exception as e:
+        print(f"[brain_v2_store] list_false_positives failed: {e}", file=sys.stderr)
+        return set()
     finally:
         try: c.close()
         except Exception: pass
