@@ -103,25 +103,143 @@ _LEARN_CODE_SYSTEM = (
     "lower self-healing layers cannot reach.\n\n"
     "You will receive: (1) the loop name and its last error, (2) source "
     "code from the relevant file(s), (3) recent babysitter action log.\n\n"
-    "Return a STRICT JSON proposal:\n"
-    '  {"file": "path/to/file.py",\n'
-    '   "search": "<exact substring that must appear in the file verbatim>",\n'
-    '   "replace": "<the new code that replaces it>",\n'
-    '   "rationale": "<one or two sentences>",\n'
-    '   "confidence": <0.0..1.0>}\n\n'
+    "Phase GG#3 (2026-05-14): you may now propose a MULTI-FILE fix when "
+    "the bug genuinely spans files (e.g. a caller + its helper). Return "
+    "a STRICT JSON proposal in ONE of two shapes:\n\n"
+    "  SINGLE-FILE (preferred when the fix is one place):\n"
+    '    {"file": "path/to/file.py",\n'
+    '     "search": "<exact substring that must appear verbatim>",\n'
+    '     "replace": "<the new code>",\n'
+    '     "rationale": "<one or two sentences>",\n'
+    '     "confidence": <0.0..1.0>}\n\n'
+    "  MULTI-FILE (only when the bug truly spans files):\n"
+    '    {"changes": [\n'
+    '       {"file": "a.py", "search": "...", "replace": "..."},\n'
+    '       {"file": "b.py", "search": "...", "replace": "..."}\n'
+    '     ],\n'
+    '     "rationale": "<why these changes go together>",\n'
+    '     "confidence": <0.0..1.0>}\n\n'
     "Hard rules:\n"
-    "  - `search` MUST appear verbatim in the file — no fuzzy matches.\n"
-    "  - Include enough context (3-6 lines) in `search` so the substitution "
-    "    is unambiguous; the file likely has multiple similar lines.\n"
-    "  - `replace` must be syntactically valid Python.\n"
-    "  - Do NOT propose changes to imports, decorators, function signatures, "
-    "    or anything outside the body of the loop's handler.\n"
-    "  - If you cannot isolate the bug from the snippet provided, refuse: "
-    '    return {"file":"","search":"","replace":"","rationale":"refused: <why>",'
-    '"confidence":0}. Refusing is better than guessing.\n"'
+    "  - Every `search` MUST appear verbatim in its file — no fuzzy matches.\n"
+    "  - Include enough context (3-6 lines) in each `search` so the "
+    "    substitution is unambiguous; files often have similar lines.\n"
+    "  - Every `replace` must be syntactically valid Python.\n"
+    "  - Do NOT propose changes to imports, decorators, function "
+    "    signatures, or anything outside the body of the loop's handler.\n"
+    "  - PREFER single-file. Only use the multi-file shape when a "
+    "    single-file fix would be incomplete or wrong. Max 4 files.\n"
+    "  - If you cannot isolate the bug from the snippets provided, "
+    'refuse: return {"file":"","search":"","replace":"",'
+    '"rationale":"refused: <why>","confidence":0}. '
+    "Refusing is better than guessing.\n"
     "  - This proposal will NOT be auto-applied. A human reviews it. "
     "    But low-quality refusals waste their time, so be specific.\n"
 )
+
+
+def _normalize_proposal(prop: dict) -> tuple[list, str]:
+    """Phase GG#3: collapse either proposal shape into a canonical
+    `changes` list. Returns (changes, error). On refusal or malformed
+    input, changes is [] and error explains why.
+
+    changes := [{"file": str, "search": str, "replace": str}, ...]
+    """
+    if not isinstance(prop, dict):
+        return [], "not_a_dict"
+
+    # Multi-file shape
+    if "changes" in prop and isinstance(prop["changes"], list):
+        raw = prop["changes"]
+        if len(raw) > 4:
+            return [], f"too_many_files ({len(raw)} > 4)"
+        out = []
+        for i, ch in enumerate(raw):
+            if not isinstance(ch, dict):
+                return [], f"change[{i}]_not_a_dict"
+            f = (ch.get("file") or "").strip()
+            s = (ch.get("search") or "").strip()
+            r = ch.get("replace")
+            if r is None:
+                return [], f"change[{i}]_missing_replace"
+            if not f or not s:
+                # Empty file/search inside a multi-file = explicit refusal
+                return [], "refused"
+            out.append({"file": f, "search": s, "replace": str(r)})
+        if not out:
+            return [], "empty_changes"
+        return out, ""
+
+    # Single-file shape (legacy)
+    f = (prop.get("file") or "").strip()
+    s = (prop.get("search") or "").strip()
+    r = prop.get("replace")
+    if not f or not s:
+        return [], "refused"   # the documented refusal contract
+    if r is None:
+        return [], "missing_replace"
+    return [{"file": f, "search": s, "replace": str(r)}], ""
+
+
+def _validate_and_store_proposal(source_name: str, prop: dict) -> dict:
+    """Phase GG#3: shared normalize → validate-every-change → store
+    pipeline for both learn-code and learn-backend-issues. Returns a
+    result dict (the endpoint adds its own loop/url key + appends).
+
+    - Normalizes single OR multi-file Claude output into a `changes` list
+    - Validates EVERY change's search text appears verbatim in its
+      live file (a hallucinated multi-file proposal is rejected whole —
+      we never apply a partial multi-file fix)
+    - Stores changes_json (full array) + legacy columns (change[0])
+    """
+    changes, norm_err = _normalize_proposal(prop)
+    rationale = (prop.get("rationale") or "").strip()
+    confidence = float(prop.get("confidence", 0) or 0)
+
+    if norm_err == "refused":
+        return {"outcome": "refused", "rationale": rationale[:200]}
+    if norm_err:
+        return {"outcome": f"malformed: {norm_err}",
+                "rationale": rationale[:200]}
+
+    # Validate EVERY change — all-or-nothing. A multi-file proposal
+    # where one search is hallucinated is rejected entirely; applying
+    # a partial multi-file fix would leave the codebase half-changed.
+    for ch in changes:
+        live = _read_window(ch["file"], max_chars=200000)
+        if ch["search"] not in live:
+            return {"outcome": "search_not_found",
+                    "file": ch["file"],
+                    "search_preview": ch["search"][:100],
+                    "file_count": len(changes),
+                    "rationale": rationale[:200]}
+
+    primary = changes[0]
+    try:
+        import psycopg2
+        url = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
+        with psycopg2.connect(url, connect_timeout=5) as conn, conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO brain_proposed_code_fixes
+                    (loop_name, file_path, search_text, replace_text,
+                     rationale, confidence, model, changes_json)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (loop_name, file_path, search_text) DO NOTHING
+                RETURNING id
+            """, (source_name, primary["file"], primary["search"],
+                  primary["replace"], rationale, confidence, BRAIN_MODEL,
+                  json.dumps(changes)))
+            row = cur.fetchone()
+            conn.commit()
+        return {
+            "outcome": "proposed" if row else "duplicate",
+            "id": row[0] if row else None,
+            "file": primary["file"],
+            "file_count": len(changes),
+            "confidence": confidence,
+            "rationale": rationale[:200],
+        }
+    except Exception as e:
+        return {"outcome": f"store_failed: {str(e)[:200]}"}
 
 
 def _read_window(path: str, max_chars: int = 4000) -> str:
@@ -190,6 +308,16 @@ def _init_table() -> bool:
                 );
                 CREATE INDEX IF NOT EXISTS brain_proposed_code_fixes_recent_idx
                   ON brain_proposed_code_fixes(proposed_at DESC);
+            """)
+            # Phase GG#3 (2026-05-14): changes_json holds the full
+            # multi-file change list as [{file,search,replace}, ...].
+            # Single-file proposals also populate it (1-element array)
+            # so the PR-opener has ONE code path. The legacy
+            # file_path/search_text/replace_text columns keep holding
+            # change[0] for dashboard back-compat + the UNIQUE constraint.
+            cur.execute("""
+                ALTER TABLE brain_proposed_code_fixes
+                ADD COLUMN IF NOT EXISTS changes_json JSONB;
             """)
             conn.commit()
         return True
@@ -267,53 +395,11 @@ def learn_code():
             results.append({"loop": name, "outcome": f"parse_fail: {e}"})
             continue
 
-        file_path = (prop.get("file") or "").strip()
-        search = (prop.get("search") or "").strip()
-        replace = (prop.get("replace") or "").strip()
-        rationale = (prop.get("rationale") or "").strip()
-        confidence = float(prop.get("confidence", 0) or 0)
-
-        # Empty file/search = explicit refusal per the prompt contract.
-        if not file_path or not search:
-            results.append({"loop": name, "outcome": "refused",
-                            "rationale": rationale[:200]})
-            continue
-
-        # Defensive: search must actually appear in the live file. Else
-        # the proposal is hallucinated.
-        live = _read_window(file_path, max_chars=200000)
-        if search not in live:
-            results.append({"loop": name, "outcome": "search_not_found",
-                            "file": file_path, "rationale": rationale[:200],
-                            "search_preview": search[:100]})
-            continue
-
-        # Store the proposal — UNIQUE constraint dedupes same proposal
-        # across repeated runs (Layer 5 retries are no-ops on already-
-        # proposed fixes).
-        try:
-            import psycopg2
-            url = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
-            with psycopg2.connect(url, connect_timeout=5) as conn, conn.cursor() as cur:
-                cur.execute("""
-                    INSERT INTO brain_proposed_code_fixes
-                        (loop_name, file_path, search_text, replace_text,
-                         rationale, confidence, model)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (loop_name, file_path, search_text) DO NOTHING
-                    RETURNING id
-                """, (name, file_path, search, replace, rationale,
-                      confidence, BRAIN_MODEL))
-                row = cur.fetchone()
-                conn.commit()
-            results.append({
-                "loop": name, "outcome": "proposed" if row else "duplicate",
-                "id": row[0] if row else None, "file": file_path,
-                "confidence": confidence, "rationale": rationale[:200],
-            })
-        except Exception as e:
-            results.append({"loop": name,
-                            "outcome": f"store_failed: {str(e)[:200]}"})
+        # Phase GG#3: normalize (single OR multi-file) → validate every
+        # change → store. Shared helper used by both learn endpoints.
+        res = _validate_and_store_proposal(name, prop)
+        res["loop"] = name
+        results.append(res)
 
     return jsonify(
         ok=True,
@@ -413,48 +499,11 @@ def learn_backend_issues():
             results.append({"url": url, "outcome": f"parse_fail: {e}"})
             continue
 
-        file_path = (prop.get("file") or "").strip()
-        search = (prop.get("search") or "").strip()
-        replace = (prop.get("replace") or "").strip()
-        rationale = (prop.get("rationale") or "").strip()
-        confidence = float(prop.get("confidence", 0) or 0)
-
-        if not file_path or not search:
-            results.append({"url": url, "outcome": "refused",
-                            "rationale": rationale[:200]})
-            continue
-
-        live = _read_window(file_path, max_chars=200000)
-        if search not in live:
-            results.append({"url": url, "outcome": "search_not_found",
-                            "file": file_path,
-                            "search_preview": search[:100]})
-            continue
-
-        try:
-            import psycopg2
-            db_url = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
-            with psycopg2.connect(db_url, connect_timeout=5) as conn, conn.cursor() as cur:
-                cur.execute("""
-                    INSERT INTO brain_proposed_code_fixes
-                        (loop_name, file_path, search_text, replace_text,
-                         rationale, confidence, model)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (loop_name, file_path, search_text) DO NOTHING
-                    RETURNING id
-                """, (loop_state["name"], file_path, search, replace,
-                      rationale, confidence, BRAIN_MODEL))
-                row = cur.fetchone()
-                conn.commit()
-            results.append({
-                "url": url, "outcome": "proposed" if row else "duplicate",
-                "id": row[0] if row else None, "file": file_path,
-                "confidence": confidence,
-                "rationale": rationale[:200],
-            })
-        except Exception as e:
-            results.append({"url": url,
-                            "outcome": f"store_failed: {str(e)[:200]}"})
+        # Phase GG#3: shared normalize → validate → store pipeline.
+        # Handles single-file AND multi-file proposals identically.
+        res = _validate_and_store_proposal(loop_state["name"], prop)
+        res["url"] = url
+        results.append(res)
 
     return jsonify(
         ok=True,
@@ -616,9 +665,14 @@ def proposed_code_pending_pr():
             # the per-source threshold (SQL can't easily do per-row
             # dynamic thresholds without a CASE the length of the source
             # list — Python is clearer and the row count is tiny).
+            # Phase GG#3: also pull changes_json so the PR-opener can
+            # apply multi-file proposals. Older single-file rows have
+            # changes_json NULL — the opener falls back to the legacy
+            # file_path/search_text/replace_text columns for those.
             cur.execute("""
                 SELECT id, loop_name, file_path, search_text, replace_text,
-                       rationale, confidence, status, proposed_at
+                       rationale, confidence, status, proposed_at,
+                       changes_json
                 FROM brain_proposed_code_fixes
                 WHERE pr_url IS NULL
                   AND COALESCE(status, 'proposed') = 'proposed'
@@ -635,9 +689,24 @@ def proposed_code_pending_pr():
             effective = max(src_threshold, floor_conf)
             if confidence < effective:
                 continue
+            # changes_json is JSONB → psycopg2 returns it already-parsed
+            # (list of dicts) OR as a string depending on driver version.
+            raw_changes = r[9]
+            if isinstance(raw_changes, str):
+                try:
+                    raw_changes = json.loads(raw_changes)
+                except Exception:
+                    raw_changes = None
+            if not raw_changes:
+                # Legacy single-file row → synthesize the canonical shape
+                raw_changes = [{
+                    "file": r[2], "search": r[3], "replace": r[4],
+                }]
             items.append({
                 "id": r[0], "loop_name": loop_name, "file_path": r[2],
                 "search_text": r[3], "replace_text": r[4],
+                "changes": raw_changes,
+                "file_count": len(raw_changes),
                 "rationale": r[5], "confidence": confidence,
                 "status": r[7],
                 "proposed_at": r[8].isoformat() if r[8] else None,
