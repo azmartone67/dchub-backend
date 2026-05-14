@@ -464,12 +464,125 @@ def learn_backend_issues():
     ), 200
 
 
+# ────────────────────────────────────────────────────────────────────
+# Phase GG#2 (2026-05-14): confidence calibration.
+#
+# GG#4 populates merge_outcome ∈ {merged_healthy, merged_reverted} on
+# each proposal after its PR merges + Railway redeploys. This block
+# turns that history into a SELF-TUNING per-source threshold.
+#
+# The intuition: the brain proposes fixes for different "sources"
+# (loop_name — e.g. dcpi_recompute, auto_press_daily). Some sources
+# the brain understands well; others it keeps getting wrong. Rather
+# than a flat 0.85 confidence bar for everything, each source earns
+# its own threshold from its track record:
+#
+#   - source with all merged_healthy → LOWER threshold (trust it more,
+#     let its lower-confidence proposals through to a PR)
+#   - source with reverts            → RAISE threshold (trust it less,
+#     only its most-confident proposals get a PR)
+#
+# Under 3 resolved outcomes for a source → not enough data → base 0.85.
+# ────────────────────────────────────────────────────────────────────
+
+_CALIB_BASE_THRESHOLD = 0.85
+_CALIB_ADJ_RANGE = 0.30          # ±0.15 swing around the base
+_CALIB_MIN_SAMPLES = 3           # need ≥3 resolved outcomes to tune
+_CALIB_FLOOR = 0.70              # never auto-PR below this
+_CALIB_CEIL = 0.99               # effectively "blocked" upper bound
+
+
+def _calibration_stats(cur) -> dict:
+    """Per-source merge-outcome tally + computed threshold. cur is an
+    open psycopg2 cursor. Returns {loop_name: {...}}."""
+    try:
+        cur.execute("""
+            SELECT loop_name,
+                   COUNT(*) FILTER (WHERE merge_outcome = 'merged_healthy')  AS healthy,
+                   COUNT(*) FILTER (WHERE merge_outcome = 'merged_reverted') AS reverted,
+                   COUNT(*) FILTER (WHERE merge_outcome IS NOT NULL)         AS resolved,
+                   COUNT(*)                                                 AS total
+            FROM brain_proposed_code_fixes
+            GROUP BY loop_name
+        """)
+        rows = cur.fetchall()
+    except Exception:
+        # merge_outcome column may not exist yet (no GG#4 callbacks
+        # fired). Degrade gracefully → empty stats → everyone uses base.
+        return {}
+
+    out = {}
+    for loop_name, healthy, reverted, resolved, total in rows:
+        healthy = healthy or 0
+        reverted = reverted or 0
+        resolved = resolved or 0
+        if resolved >= _CALIB_MIN_SAMPLES:
+            trust_ratio = healthy / resolved          # 0.0 .. 1.0
+            # ratio 1.0 → threshold base − 0.15  (more permissive)
+            # ratio 0.5 → threshold base
+            # ratio 0.0 → threshold base + 0.15  (more strict)
+            threshold = _CALIB_BASE_THRESHOLD - (trust_ratio - 0.5) * _CALIB_ADJ_RANGE
+            threshold = max(_CALIB_FLOOR, min(_CALIB_CEIL, threshold))
+            tuned = True
+        else:
+            trust_ratio = None
+            threshold = _CALIB_BASE_THRESHOLD
+            tuned = False
+        out[loop_name] = {
+            "healthy": healthy,
+            "reverted": reverted,
+            "resolved": resolved,
+            "total_proposed": total or 0,
+            "trust_ratio": round(trust_ratio, 3) if trust_ratio is not None else None,
+            "threshold": round(threshold, 3),
+            "tuned": tuned,
+        }
+    return out
+
+
+@brain_v2_layer5_bp.get("/api/v1/brain/calibration")
+def brain_calibration():
+    """Phase GG#2: public read of the per-source confidence calibration.
+    Surfaces on the /brain dashboard so a human can see which proposal
+    sources the brain has earned trust on. No secrets in the response."""
+    try:
+        import psycopg2
+        url = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
+        if not url:
+            return jsonify(as_of=datetime.now(timezone.utc).isoformat(),
+                           base_threshold=_CALIB_BASE_THRESHOLD,
+                           sources={}), 200
+        with psycopg2.connect(url, connect_timeout=5) as conn, conn.cursor() as cur:
+            stats = _calibration_stats(cur)
+        return jsonify(
+            as_of=datetime.now(timezone.utc).isoformat(),
+            base_threshold=_CALIB_BASE_THRESHOLD,
+            min_samples_to_tune=_CALIB_MIN_SAMPLES,
+            floor=_CALIB_FLOOR,
+            ceil=_CALIB_CEIL,
+            sources=stats,
+            note=("Threshold per source self-tunes from merge_outcome "
+                  "history. Sources with a clean merged_healthy record "
+                  "get a lower bar; sources that produced reverts get a "
+                  "higher bar. Under 3 resolved outcomes → base 0.85."),
+        ), 200
+    except Exception as e:
+        return jsonify(error=str(e)[:200], sources={}), 200
+
+
 @brain_v2_layer5_bp.get("/api/v1/brain/proposed-code/pending-pr")
 def proposed_code_pending_pr():
     """Phase GG (2026-05-14): high-confidence proposals that don't yet
     have a PR opened. Consumed by the brain-layer5-pr-opener GH Actions
     workflow which checks out each one's file, applies the search→replace,
     commits to a new branch, and opens a draft PR.
+
+    Phase GG#2 (2026-05-14): the confidence bar is now a SELF-TUNING
+    per-source threshold (see _calibration_stats above), not a flat
+    value. The `min_confidence` query param is still honored but as a
+    FLOOR — a source's tuned threshold can be stricter than it, never
+    looser. So a brand-new untested source uses base 0.85; a source
+    with a clean track record can clear PRs at 0.70.
 
     Admin-gated because the response includes the full code proposal
     (search/replace text — could leak partial source for paid endpoints).
@@ -482,9 +595,6 @@ def proposed_code_pending_pr():
         url = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
         if not url:
             return jsonify(items=[]), 200
-        # Defensively add a pr_url column for tracking. ON CONFLICT
-        # not relevant here — we just want the schema migration to
-        # land before the SELECT.
         with psycopg2.connect(url, connect_timeout=5) as conn, conn.cursor() as cur:
             try:
                 cur.execute("""
@@ -494,29 +604,53 @@ def proposed_code_pending_pr():
                 conn.commit()
             except Exception:
                 conn.rollback()
-            min_conf = float(request.args.get("min_confidence", "0.7"))
+
+            # Phase GG#2: compute per-source tuned thresholds.
+            calib = _calibration_stats(cur)
+            # `min_confidence` query param acts as a hard floor — the
+            # caller can demand stricter, never looser, than calibration.
+            floor_conf = float(request.args.get("min_confidence", "0.0") or 0.0)
             limit = int(request.args.get("limit", "10"))
+
+            # Pull ALL un-PR'd proposed rows, then filter in Python using
+            # the per-source threshold (SQL can't easily do per-row
+            # dynamic thresholds without a CASE the length of the source
+            # list — Python is clearer and the row count is tiny).
             cur.execute("""
                 SELECT id, loop_name, file_path, search_text, replace_text,
                        rationale, confidence, status, proposed_at
                 FROM brain_proposed_code_fixes
-                WHERE confidence >= %s
-                  AND pr_url IS NULL
+                WHERE pr_url IS NULL
                   AND COALESCE(status, 'proposed') = 'proposed'
                 ORDER BY confidence DESC, proposed_at DESC
-                LIMIT %s
-            """, (min_conf, limit))
+            """)
             rows = cur.fetchall()
-        items = [{
-            "id": r[0], "loop_name": r[1], "file_path": r[2],
-            "search_text": r[3], "replace_text": r[4],
-            "rationale": r[5], "confidence": r[6],
-            "status": r[7],
-            "proposed_at": r[8].isoformat() if r[8] else None,
-        } for r in rows]
+
+        items = []
+        for r in rows:
+            loop_name = r[1]
+            confidence = r[6] or 0.0
+            src_threshold = calib.get(loop_name, {}).get(
+                "threshold", _CALIB_BASE_THRESHOLD)
+            effective = max(src_threshold, floor_conf)
+            if confidence < effective:
+                continue
+            items.append({
+                "id": r[0], "loop_name": loop_name, "file_path": r[2],
+                "search_text": r[3], "replace_text": r[4],
+                "rationale": r[5], "confidence": confidence,
+                "status": r[7],
+                "proposed_at": r[8].isoformat() if r[8] else None,
+                "threshold_applied": round(effective, 3),
+                "source_tuned": calib.get(loop_name, {}).get("tuned", False),
+            })
+            if len(items) >= limit:
+                break
+
         return jsonify(
             as_of=datetime.now(timezone.utc).isoformat(),
             count=len(items), items=items,
+            calibration_in_effect={k: v["threshold"] for k, v in calib.items()},
         ), 200
     except Exception as e:
         return jsonify(error=str(e)[:200], items=[]), 200
