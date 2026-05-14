@@ -1146,6 +1146,24 @@ def linkedin_whoami():
     except Exception as e:
         me_body = f"network error: {e}"
 
+    # /v2/organizationAcls — the DEFINITIVE org-posting capability check.
+    # userinfo/me only prove the token can read a profile; they say
+    # nothing about whether auto-press can post to the company page.
+    # 200 here = the token carries org scope (w_organization_social /
+    # rw_organization_admin) and posting WILL work. 403/401 = it won't,
+    # no matter what userinfo says.
+    org_status = None
+    org_body = None
+    try:
+        r = _rq.get("https://api.linkedin.com/v2/organizationAcls?q=roleAssignee",
+                    headers={"Authorization": f"Bearer {tok.strip()}",
+                             "X-Restli-Protocol-Version": "2.0.0"},
+                    timeout=10)
+        org_status = r.status_code
+        org_body = r.text[:500]
+    except Exception as e:
+        org_body = f"network error: {e}"
+
     # Diagnosis logic
     diagnosis = []
     if masked["has_bearer_prefix"]:
@@ -1159,7 +1177,12 @@ def linkedin_whoami():
     elif userinfo_status == 403:
         diagnosis.append("LinkedIn /v2/userinfo returns 403 ACCESS_DENIED — the token is NOT expired (that would be 401) but is missing the `openid` + `profile` scopes that userinfo needs. This does NOT tell us whether `w_organization_social` (the org-posting scope) is present. Regenerate the token with all three checked — `openid`, `profile`, AND `w_organization_social` — so both this check and actual posting work.")
     elif userinfo_status == 200:
-        diagnosis.append("Token IS valid (/v2/userinfo returned 200). If a real org post still 401s, the token is missing `w_organization_social` — regenerate with that scope checked.")
+        diagnosis.append("Token IS valid (/v2/userinfo returned 200).")
+    # The org check is what actually decides whether auto-press works.
+    if org_status == 200:
+        diagnosis.append("✅ POSTING WILL WORK — /v2/organizationAcls returned 200, so the token carries org scope. The userinfo 403 above (if any) is cosmetic; auto-press to the company page is good to go.")
+    elif org_status in (401, 403):
+        diagnosis.append(f"❌ POSTING WILL NOT WORK — /v2/organizationAcls returned {org_status}. The token is missing `w_organization_social`. Regenerating the token alone won't fix this: that scope only appears in the token generator AFTER the 'Community Management API' product is added to the app (linkedin.com/developers → your app → Products tab). Add that product, then regenerate the token with `w_organization_social` checked.")
     if not diagnosis:
         diagnosis.append("No obvious format issues. Compare what's stored vs what you generated.")
 
@@ -1168,6 +1191,7 @@ def linkedin_whoami():
         masked=masked,
         userinfo={"status": userinfo_status, "body": userinfo_body},
         me={"status": me_status, "body": me_body},
+        organization_acls={"status": org_status, "body": org_body},
         diagnosis=diagnosis,
         org_id_in_use=_os.environ.get("LINKEDIN_ORG_ID", "110894959 (default)"),
     ), 200
