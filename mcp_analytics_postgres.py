@@ -245,6 +245,33 @@ def log_upgrade_signal(get_db, signal_type, tool_requested=None,
         conn.commit()
 
         logger.info(f"📈 Upgrade signal #{signal_id}: {signal_type} for {tool_requested or 'general'}")
+
+        # Phase MM (2026-05-14): ALSO record a `paywall_hit` event in
+        # redeem_funnel_events. Until now the two tracking systems were
+        # disconnected: mcp_upgrade_signals had 8000+ rows/30d but
+        # redeem_funnel_events had ZERO paywall_hit rows — so the
+        # /funnel-stats rollup had no top-of-funnel and every conversion
+        # rate it computed was meaningless. This single call connects
+        # them: every upgrade signal is now also the top of the funnel,
+        # so /funnel-stats finally shows where 8000 → 4 leaks.
+        # Best-effort — wrapped so funnel logging can never break the
+        # primary upgrade-signal write above.
+        try:
+            from routes.redeem_tracking import record_funnel_event
+            record_funnel_event(
+                "paywall_hit",
+                tool=tool_requested,
+                tier=tier_current,
+                source="mcp",
+                user_agent=user_agent,
+                ip=ip_address,
+                metadata={"signal_type": signal_type,
+                          "signal_id": signal_id,
+                          "mcp_client": mcp_client},
+            )
+        except Exception as _fe:
+            logger.debug(f"paywall_hit funnel log (non-fatal): {_fe}")
+
         return signal_id
 
     except Exception as e:
