@@ -437,14 +437,38 @@ def _draw_fallback(slug):
     return img
 
 
-@og_cards_bp.route('/api/v1/og/<style>/<path:slug>.png', methods=['GET'])
+@og_cards_bp.route('/api/v1/og/<style>/<slug>.png', methods=['GET'])
 def og_card(style, slug):
     """Generate the PNG. `style=today` resolves to today's rotation.
-    `slug` should match a press_releases.slug row."""
+    `slug` should match a press_releases.slug row.
+
+    Phase HH+2 (2026-05-13): switched from <path:slug> to default
+    <slug> converter. The path converter is greedy and was consuming
+    the trailing '.png' as part of the slug variable, so DB lookups
+    queried for 'auto-...-power.png' instead of 'auto-...-power'.
+    Default string converter (`[^/]+`) handles dots in slug correctly
+    while still treating `.png` as a literal route suffix.
+    """
+    from flask import request as _req
+    # Debug mode: ?debug=1 returns JSON instead of PNG so we can see
+    # what's happening in the lookup pipeline.
+    debug = _req.args.get('debug') == '1'
+
     if style == 'today':
         style = todays_style()
 
     pr = _get_press_release(slug)
+    if debug:
+        from flask import jsonify
+        return jsonify(
+            style=style, slug=slug,
+            pr_found=pr is not None,
+            pr_title=(pr or {}).get('title'),
+            pr_date_str=str((pr or {}).get('date')),
+            has_signals=bool((pr or {}).get('signals')),
+            todays_style=todays_style(),
+        )
+
     try:
         if pr is None:
             img = _draw_fallback(slug)
