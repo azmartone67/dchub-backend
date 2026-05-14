@@ -380,7 +380,8 @@ def set_persistence_outcome(issue_label: str, url: str, outcome: str) -> bool:
         except Exception: pass
 
 
-def most_persistent_unfixed(min_count: int = 3, limit: int = 10) -> list[dict]:
+def most_persistent_unfixed(min_count: int = 3, limit: int = 10,
+                            stale_after_hours: int = 18) -> list[dict]:
     """Return the issues that have been seen many cycles AND haven't yet
        produced a successful proposal. This is the worklist trigger_learn
        prioritizes — issues that the FIX_MAP can't auto-fix and that
@@ -392,6 +393,16 @@ def most_persistent_unfixed(min_count: int = 3, limit: int = 10) -> list[dict]:
          - 'approval_count_incremented' (gate-progress)
        Anything else (no_snippet, api_error, validation_fail, non_json)
        counts as "still stuck" and stays in the worklist.
+
+       Phase RR (2026-05-14): auto-expiry. bump_persistence only touches
+       last_seen_at when the issue is STILL in the healer's findings, so
+       a resolved issue's last_seen_at simply stops advancing. Without a
+       recency filter the worklist showed ghosts forever (e.g. the
+       /markets placeholder sat at seen×9 long after PR #106 fixed the
+       underlying scanner). Only surface issues still actively appearing
+       — last_seen_at within stale_after_hours. trigger_learn runs
+       hourly, so 18h is a generous margin that still clears genuinely
+       resolved issues within a day.
     """
     c = _conn()
     if c is None: return []
@@ -402,13 +413,14 @@ def most_persistent_unfixed(min_count: int = 3, limit: int = 10) -> list[dict]:
                           first_seen_at, last_seen_at, last_outcome
                    FROM brain_issue_persistence
                    WHERE seen_count >= %s
+                     AND last_seen_at > NOW() - (%s * INTERVAL '1 hour')
                      AND (last_outcome IS NULL
                           OR last_outcome NOT IN ('proposed',
                                                   'approval_count_incremented',
                                                   'approved'))
                    ORDER BY seen_count DESC, last_seen_at DESC
                    LIMIT %s""",
-                (min_count, limit),
+                (min_count, stale_after_hours, limit),
             )
             return [_normalize_row(r) for r in cur.fetchall()]
     except Exception as e:
