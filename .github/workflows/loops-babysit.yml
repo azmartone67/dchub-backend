@@ -7,6 +7,10 @@ name: loops babysit (Phase RR)
 # the truth endpoint flagged. Previously a stale loop sat in the
 # dashboard until a human noticed and ran the refresh manually.
 #
+# Phase SS (2026-05-14): added escalation. When a loop stays dead
+# across 2+ babysit runs, the refresh hook clearly isn't recovering it
+# — the workflow now opens a (deduped) GH issue so a human steps in.
+#
 # Required secret: DCHUB_ADMIN_KEY (already used by other Phase B
 # crons in this repo).
 
@@ -17,6 +21,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 jobs:
   babysit:
@@ -37,6 +42,7 @@ jobs:
             -H "Content-Type: application/json" \
             "https://dchub.cloud/api/v1/system/loops/babysit" \
             || echo '{"summary":{"fired":0,"failed":1},"error":"curl_fail"}')
+          echo "$response" > /tmp/babysit.json
           echo "$response" | head -c 4000
           echo
           # Surface a one-line summary in the Actions log
@@ -45,10 +51,58 @@ jobs:
           try:
               d = json.load(sys.stdin)
               s = d.get('summary') or {}
-              print(f\"babysit-summary :: fired={s.get('fired',0)} "
-                    f\"no_action={s.get('no_action',0)} "
-                    f\"no_hook={s.get('no_hook',0)} "
-                    f\"failed={s.get('failed',0)}\")
+              print(f\"babysit-summary :: fired={s.get('fired',0)} \"
+                    f\"no_action={s.get('no_action',0)} \"
+                    f\"no_hook={s.get('no_hook',0)} \"
+                    f\"failed={s.get('failed',0)} \"
+                    f\"escalations={s.get('escalations',0)}\")
           except Exception as e:
               print(f'babysit-parse-failed: {e}')
           "
+
+      # Phase SS (2026-05-14): escalate when self-healing didn't work.
+      # A loop in `escalations` has been dead across 2+ babysit runs —
+      # the refresh hook isn't recovering it, so a human needs to look.
+      # One GH issue per dead loop, deduped by title so a persistent
+      # failure doesn't spam a new issue every 15 minutes.
+      - name: Escalate unrecovered loops
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ESC=$(python3 -c "
+          import json
+          try:
+              d = json.load(open('/tmp/babysit.json'))
+              for e in (d.get('escalations') or []):
+                  note = (e.get('note') or '').replace('|',' ')[:200]
+                  print(f\"{e.get('loop','?')}|{e.get('consecutive_dead_runs','?')}|{e.get('age_hours','?')}|{e.get('cadence_hours','?')}|{note}\")
+          except Exception:
+              pass
+          ")
+          if [ -z "$ESC" ]; then
+            echo "no escalations — all loops recovered or healthy"
+            exit 0
+          fi
+          echo "$ESC" | while IFS='|' read -r loop runs age cadence note; do
+            [ -z "$loop" ] && continue
+            TITLE="[loops-watchdog] '$loop' loop unrecovered after self-heal"
+            EXISTING=$(gh issue list --state open --search "$TITLE in:title" --json number --jq 'length' 2>/dev/null || echo 0)
+            if [ "$EXISTING" != "0" ]; then
+              echo "issue already open for '$loop' — skipping"
+              continue
+            fi
+            gh issue create \
+              --title "$TITLE" \
+              --label "loops-watchdog,self-healing" \
+              --body "The \`$loop\` loop has been **dead** for **$runs consecutive babysit runs**. The refresh hook fired by \`/api/v1/system/loops/babysit\` is not recovering it.
+
+          - age: ${age}h  (cadence: ${cadence}h — a loop is 'dead' when age > 3x cadence)
+          - note: ${note:-none}
+
+          The autonomous babysitter has done what it can; this needs a human. Check the loop's cron workflow and its refresh endpoint.
+
+          _Auto-filed by loops-babysit.yml. Deduped by title — close it once the loop recovers._" \
+              || echo "::warning::gh issue create failed for '$loop'"
+            echo "escalated: $loop ($runs runs dead)"
+          done
