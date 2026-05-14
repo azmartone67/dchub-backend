@@ -8994,6 +8994,77 @@ def energy_discovery_status_inline():
         out['data']['_error'] = type(_e).__name__ + ': ' + str(_e)[:200]
     return jsonify(out)
 
+
+@app.route('/api/v1/energy/eia-ingest/run', methods=['POST'])
+def energy_eia_ingest_run():
+    """Phase LL+4 (2026-05-14): Railway-side EIA pricing ingest.
+
+    Previously eia-pricing-ingest.yml ran scripts/eia_pricing_discovery.py
+    directly in GitHub Actions — but the DATABASE_URL + EIA_API_KEY
+    secrets were never set in GH Actions, so the script always exited
+    with "ERROR: Set DATABASE_URL or NEON_DATABASE_URL". The daily
+    power + natural gas + gas-storage refresh has been dead for weeks.
+
+    Railway HAS those env vars. So the workflow now POSTs here instead,
+    same fix pattern as PR #62 (brain_learn) and PR #83 (dcpi cron).
+
+    Admin-gated. Calls the three fetch_* functions from the script
+    directly (not main() — main() does sys.exit on error which would
+    kill the gunicorn worker). Each fetch is independently caught so
+    one failed source doesn't lose the other two.
+    """
+    import os as _os
+    expected = _os.environ.get("DCHUB_ADMIN_KEY") or _os.environ.get("DCHUB_INTERNAL_KEY")
+    provided = (request.headers.get("X-Admin-Key") or request.args.get("admin_key"))
+    if expected and provided != expected:
+        return jsonify(ok=False, error="unauthorized",
+                       hint="X-Admin-Key header required"), 401
+
+    results = {"electricity_rates": None, "natural_gas_prices": None,
+               "gas_storage": None, "errors": []}
+    conn = None
+    try:
+        import sys as _sys, os as _os2
+        # Make scripts/ importable
+        _scripts_dir = _os2.path.join(_os2.path.dirname(_os2.path.abspath(__file__)), "scripts")
+        if _scripts_dir not in _sys.path:
+            _sys.path.insert(0, _scripts_dir)
+        import eia_pricing_discovery as _eia
+
+        conn = _eia.get_conn()
+        if conn is None:
+            return jsonify(ok=False, error="db_connection_failed",
+                           hint="get_conn() returned None — check DATABASE_URL on Railway"), 503
+
+        for label, fn in [
+            ("electricity_rates", _eia.fetch_electricity_rates),
+            ("natural_gas_prices", _eia.fetch_natural_gas_prices),
+            ("gas_storage", _eia.fetch_gas_storage),
+        ]:
+            try:
+                results[label] = fn(conn)
+            except Exception as e:
+                results["errors"].append(f"{label}: {type(e).__name__}: {str(e)[:200]}")
+
+        total = sum(v for v in (results["electricity_rates"],
+                                results["natural_gas_prices"],
+                                results["gas_storage"]) if isinstance(v, int))
+        return jsonify(
+            ok=True,
+            total_records=total,
+            **results,
+        ), 200
+    except Exception as e:
+        import traceback
+        return jsonify(ok=False, error=str(e)[:300],
+                       traceback=traceback.format_exc()[-500:]), 500
+    finally:
+        try:
+            if conn: conn.close()
+        except Exception:
+            pass
+
+
 @app.route('/api/v1/stats', methods=['GET'])
 def get_stats():
     """Get aggregate statistics"""

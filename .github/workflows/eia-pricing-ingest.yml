@@ -1,4 +1,19 @@
-name: EIA Pricing Ingest — eia_electricity_rates
+name: EIA Pricing Ingest — electricity rates + natural gas + gas storage
+
+# Phase LL+4 (2026-05-14): switched from running the extraction script
+# directly in GitHub Actions to triggering a Railway endpoint.
+#
+# Why: the old workflow ran scripts/eia_pricing_discovery.py here, but
+# the DATABASE_URL + EIA_API_KEY secrets were never set in GitHub
+# Actions — so the script always died with "ERROR: Set DATABASE_URL".
+# (An orphaned dchub-mcp-server gitlink ALSO broke checkout — fixed in
+# PR #93 — but the missing secrets were the deeper issue.) The daily
+# power + natural gas + gas-storage refresh was dead for weeks.
+#
+# Railway HAS those env vars. So we POST to a Railway endpoint instead
+# — same fix pattern as PR #62 (brain_learn) + PR #83 (dcpi cron).
+# The endpoint /api/v1/energy/eia-ingest/run is admin-gated and calls
+# the script's fetch_* functions directly.
 
 on:
   schedule:
@@ -13,35 +28,41 @@ permissions:
 jobs:
   ingest:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
-        with: { python-version: "3.12" }
-
-      - name: Install deps
-        run: pip install psycopg2-binary requests
-
-      - name: Run EIA pricing discovery
+      - name: Trigger EIA pricing ingest on Railway
         env:
-          EIA_API_KEY: ${{ secrets.EIA_API_KEY }}
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
         run: |
-          if [ -f scripts/eia_pricing_discovery.py ]; then
-            python3 scripts/eia_pricing_discovery.py
-          elif [ -f eia_api.py ]; then
-            python3 eia_api.py
-          else
-            echo "no EIA pricing script found"; exit 1
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::error::DCHUB_ADMIN_KEY secret not set"
+            exit 1
           fi
+          echo "Triggering EIA pricing ingest (electricity + gas + storage)…"
+          response=$(curl -sS --max-time 240 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "https://dchub-backend-production.up.railway.app/api/v1/energy/eia-ingest/run" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | python3 -m json.tool
 
-      - name: Confirm new rows
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: |
-          python3 -c "
-          import os, psycopg2
-          c = psycopg2.connect(os.environ['DATABASE_URL']).cursor()
-          c.execute('SELECT COUNT(*), MAX(retrieved_at) FROM eia_electricity_rates;')
-          print(c.fetchone())
+          # Summarize + fail the job if the ingest reported an error
+          echo "$response" | python3 -c "
+          import json, sys
+          try:
+              d = json.load(sys.stdin)
+          except Exception:
+              print('::error::EIA endpoint returned non-JSON')
+              sys.exit(1)
+          if not d.get('ok'):
+              print(f\"::error::EIA ingest failed — {d.get('error','unknown')}\")
+              sys.exit(1)
+          total = d.get('total_records', 0)
+          elec = d.get('electricity_rates')
+          gas  = d.get('natural_gas_prices')
+          stor = d.get('gas_storage')
+          errs = d.get('errors', [])
+          print(f'::notice::EIA ingest OK — {total} records '
+                f'(electricity={elec} gas={gas} storage={stor})')
+          for e in errs:
+              print(f'::warning::partial source failure — {e}')
           "
