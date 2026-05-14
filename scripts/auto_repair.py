@@ -29,28 +29,49 @@ def log(msg):
 
 
 def repair_missing_on_conflict(root='.'):
-    """Pattern (a): add ON CONFLICT DO NOTHING to bare INSERT INTO."""
+    """Pattern (a): add ON CONFLICT DO NOTHING to bare INSERT INTO.
+
+    Keep WHITELIST in sync with scripts/regression_lint.py:WHITELIST_TABLES.
+    """
     WHITELIST = {'mcp_tool_calls', 'observability_metrics', 'daily_anomalies',
                  'audit_log', 'alert_history', 'energy_sync_log', 'email_drip_log',
-                 'ai_outreach_log', 'smoke_test_history'}
+                 'ai_outreach_log', 'smoke_test_history', 'pipeline_drafts',
+                 'redeem_funnel_events'}
     n = 0
     for p in pathlib.Path(root).rglob('*.py'):
         if any(s in str(p) for s in ('.git', 'node_modules', '__pycache__')): continue
         try:
             src = p.read_text()
         except Exception: continue
-        new_src = src
-        for m in re.finditer(r"(INSERT\s+INTO\s+(\w+)[^)]*?\)\s*VALUES\s*\([^)]*?\))", src, re.I):
-            tbl = m.group(2).lower()
+        edits = []  # (start, end, replacement)
+        for m in re.finditer(r"INSERT\s+INTO\s+(\w+)[^)]*?\)\s*VALUES\s*\([^)]*?\)", src, re.I):
+            tbl = m.group(1).lower()
             if tbl in WHITELIST: continue
-            stmt = m.group(1)
-            if 'ON CONFLICT' in stmt.upper(): continue
-            patched_stmt = stmt + ' ON CONFLICT DO NOTHING'
-            new_src = new_src.replace(stmt, patched_stmt, 1)
-        if new_src != src:
-            p.write_text(new_src)
-            n += 1
-            REPAIRS_APPLIED.append(f"missing-on-conflict in {p}")
+            stmt = m.group(0)
+            # The match stops at the VALUES(...) close-paren, so an
+            # existing ON CONFLICT clause lives in the text AFTER the
+            # match. Check BOTH — otherwise we double-append and emit
+            # invalid SQL ("... ON CONFLICT DO NOTHING ON CONFLICT DO
+            # NOTHING"), which is exactly the bug this fixes.
+            tail = src[m.end():m.end() + 60]
+            if 'ON CONFLICT' in stmt.upper() or re.match(r"\s*ON\s+CONFLICT", tail, re.I):
+                continue
+            edits.append((m.start(), m.end(), stmt + ' ON CONFLICT DO NOTHING'))
+        if not edits:
+            continue
+        # Apply right-to-left so earlier offsets stay valid.
+        new_src = src
+        for start, end, repl in reversed(edits):
+            new_src = new_src[:start] + repl + new_src[end:]
+        # Never write output that doesn't parse as Python.
+        try:
+            compile(new_src, str(p), 'exec')
+        except SyntaxError:
+            log(f"skipped {p}: patch would break Python syntax")
+            continue
+        p.write_text(new_src)
+        n += 1
+        REPAIRS_APPLIED.append(f"missing-on-conflict in {p}")
     log(f"repaired missing ON CONFLICT in {n} file(s)")
 
 
