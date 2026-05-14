@@ -29,26 +29,31 @@ def _user_tier(req):
     return tier.lower()
 
 
+# Phase JJ (2026-05-14): in-process TTL cache for _fetch_live.
+# CAISO's upstream API responds in ~10s right at the CF Worker edge
+# timeout. Without caching, every page load eats that latency; with
+# 5min TTL we serve cached on subsequent requests within the window.
+# Simple dict, no Redis required — gunicorn workers each maintain
+# their own cache, which is acceptable for "show some data fast"
+# semantics. Real time-critical paths still hit the API directly.
+_LIVE_CACHE: dict = {}            # iso → (timestamp_epoch, response_dict)
+_LIVE_TTL_SECONDS = 5 * 60        # 5 minutes
+
 def _fetch_live(iso):
     """Internal call to /api/v1/grid/intelligence/<iso>.
 
     Phase II (2026-05-14): three bugs were burning every /grid/<ISO>
-    page to '0 MW' despite the underlying EIA API returning fine:
-
-    1. Hardcoded :8080 — Railway uses $PORT, never 8080. Connection
-       refused → empty {} returned → page rendered with 0s. Same fix
-       pattern as PR #62 (brain_learn) and #68 (dcpi cron URL).
-
-    2. `r.json().get('data', {})` — the /api/v1/grid/intelligence/<iso>
-       endpoint returns fields at TOP LEVEL (demand_mw, demand_24h,
-       generation_mix, headroom), NOT nested under 'data'. The
-       `.get('data', {})` indirection silently returned {} on every
-       call. Fall back to full payload if 'data' key missing.
-
-    3. Public-URL fallback so the function still works when running
-       in a context where 127.0.0.1 isn't reachable.
+    page to '0 MW' despite the underlying EIA API returning fine —
+    see comments below. Phase JJ added the in-process TTL cache.
     """
-    import os as _os
+    import os as _os, time as _time
+
+    # Cache check FIRST — if we have a fresh response, return it
+    now = _time.time()
+    cached = _LIVE_CACHE.get(iso)
+    if cached and (now - cached[0]) < _LIVE_TTL_SECONDS:
+        return cached[1]
+
     port = _os.environ.get('PORT', '8080')
     urls = [
         f'http://127.0.0.1:{port}/api/v1/grid/intelligence/{iso}',
@@ -65,9 +70,18 @@ def _fetch_live(iso):
                     inner = payload if isinstance(payload, dict) else {}
                 # Sanity check: must have at least one real metric
                 if inner.get('demand_mw') or inner.get('current_demand_mw') or inner.get('demand_24h'):
+                    # Store in cache before returning
+                    _LIVE_CACHE[iso] = (now, inner)
+                    # Cap cache size — drop oldest if >100 entries
+                    if len(_LIVE_CACHE) > 100:
+                        oldest_key = min(_LIVE_CACHE, key=lambda k: _LIVE_CACHE[k][0])
+                        _LIVE_CACHE.pop(oldest_key, None)
                     return inner
         except Exception:
             continue
+    # On total miss, return stale cache if present (better than 0 MW)
+    if cached:
+        return cached[1]
     return {}
 
 
