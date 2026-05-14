@@ -1879,6 +1879,13 @@ def handle_well_known():
         return Response("Contact: mailto:security@dchub.cloud\nPreferred-Languages: en\nCanonical: https://dchub.cloud/.well-known/security.txt\nPolicy: https://dchub.cloud/terms\nExpires: 2027-01-01T00:00:00.000Z", mimetype="text/plain")
     if path == '/.well-known/mcp-registry-auth':
         return Response("v=MCPv1; k=ed25519; p=8LE9YOct4SKYuIJT8JGMK6z9lhfPMbCM5pQCp5FTRBg=", mimetype="text/plain")
+    if path == '/.well-known/llms.txt':
+        # Phase SS (2026-05-14): some agents probe /.well-known/llms.txt
+        # per the newer convention. The canonical file is the static
+        # /llms.txt served by CF Pages — 301 to it so there's one source
+        # of truth and crawlers follow the redirect. Without this the
+        # path 404'd at origin and CF turned that into a 403.
+        return redirect('/llms.txt', code=301)
     # Phase 280: /.well-known/ai-agents.json — the discovery file the QA
     # crawler flagged as broken (linked from another page but returning 404).
     # Modeled on the existing agent.json + mcp.json but with the richer
@@ -9204,6 +9211,38 @@ def energy_eia_ingest_run():
                 results[label] = fn(conn)
             except Exception as e:
                 results["errors"].append(f"{label}: {type(e).__name__}: {str(e)[:200]}")
+
+        # Phase SS (2026-05-14): sync eia_electricity_rates -> eia_retail_rates.
+        # The EIA ingest writes eia_electricity_rates (price_cents_kwh), but
+        # ~10 read sites — /api/v1/energy/summary, the MCP energy tools,
+        # grid_intelligence_routes, the market pages — all query
+        # eia_retail_rates (rate_cents_kwh). Nothing kept the two in sync,
+        # so eia_retail_rates went stale to empty and every state's energy
+        # summary returned avg=None / states_covered=0. Full refresh here
+        # makes eia_retail_rates a daily-fresh mirror of the ingest.
+        try:
+            with conn.cursor() as _rc:
+                _rc.execute("""
+                    CREATE TABLE IF NOT EXISTS eia_retail_rates (
+                        state         TEXT,
+                        sector        TEXT,
+                        rate_cents_kwh REAL,
+                        period        TEXT,
+                        retrieved_at  TIMESTAMPTZ DEFAULT NOW()
+                    )
+                """)
+                _rc.execute("DELETE FROM eia_retail_rates")
+                _rc.execute("""
+                    INSERT INTO eia_retail_rates (state, sector, rate_cents_kwh, period, retrieved_at)
+                    SELECT state, sector, price_cents_kwh, period, retrieved_at
+                    FROM eia_electricity_rates
+                """)
+                results["retail_rates_synced"] = _rc.rowcount
+            conn.commit()
+        except Exception as e:
+            try: conn.rollback()
+            except Exception: pass
+            results["errors"].append(f"retail_rates_sync: {type(e).__name__}: {str(e)[:200]}")
 
         total = sum(v for v in (results["electricity_rates"],
                                 results["natural_gas_prices"],
