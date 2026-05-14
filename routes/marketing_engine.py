@@ -989,6 +989,28 @@ def auto_generate():
         try: c.close()
         except Exception: pass
 
+    # Phase TT (2026-05-14): publish window. PR #116 made this run on
+    # every evolve-cron tick (for reliability vs GitHub dropping the
+    # single daily cron) — but that meant the post landed on the first
+    # tick of the UTC day (~midnight UTC = ~5pm PT the day before). The
+    # daily press should land in the morning PT. Skip until
+    # MARKETING_PUBLISH_HOUR_UTC (default 15 = ~8am PDT / 7am PST); the
+    # first tick at/after that generates, later ticks no-op via the
+    # already-generated check above, and a transient failure is retried
+    # by the next tick — same resilience, right time of day.
+    # ?force=1 bypasses for manual runs.
+    _publish_hour = int(os.environ.get("MARKETING_PUBLISH_HOUR_UTC", "15"))
+    _force = (request.args.get("force") or "").lower() in ("1", "true", "yes")
+    _now_hour = datetime.utcnow().hour
+    if not _force and _now_hour < _publish_hour:
+        return jsonify(
+            ok=True, skipped=True, reason="before_publish_window",
+            publish_hour_utc=_publish_hour, current_hour_utc=_now_hour,
+            note=(f"Auto-press publishes at {_publish_hour}:00 UTC (~8am PT). "
+                  f"It's {_now_hour}:00 UTC now — the next tick after the "
+                  f"window opens will generate today's release."),
+        ), 200
+
     signals = _collect_signals()
 
     # Phase LL+1 (2026-05-14): retry-with-fallback loop. Auto-press has
