@@ -1103,3 +1103,339 @@ def testimonials_live():
     )
     resp.headers["Cache-Control"] = "public, max-age=120, stale-while-revalidate=240"
     return resp, 200
+
+
+# ────────────────────────────────────────────────────────────────────
+# Phase KK (2026-05-14) — DC Hub Media discoverability
+#
+# User: "our dchub media site should be getting the word out to other
+# agents and eyeballs... lets make more robust more like a self learning
+# resource for us"
+#
+# This block adds 3 discovery surfaces so AI agents + RSS readers +
+# crawlers can ingest the DC Hub Media stream:
+#
+#   1. /api/v1/media/rss          RSS 2.0 — every news reader + ChatGPT
+#                                 crawler ingests it. The AI ecosystem
+#                                 standard.
+#   2. /api/v1/media/feed.json    JSON Feed 1.1 — the modern format,
+#                                 first-class in many readers + better
+#                                 for AI agents (structured JSON > XML).
+#   3. /api/v1/media/dataset.json Schema.org Dataset descriptor — points
+#                                 crawlers at all our public surfaces so
+#                                 they index us as a data source, not just
+#                                 a website. Used by Google Dataset Search.
+#
+# Each pulls from the same /api/v1/media/aggregate data, transformed into
+# the appropriate format. Cached 5 min at the edge.
+# ────────────────────────────────────────────────────────────────────
+
+
+def _aggregate_for_feeds(limit_per_rail=10):
+    """Internal helper — returns flat list of media items from all rails,
+    sorted by recency. Used by RSS + JSON Feed endpoints below."""
+    c = _conn()
+    if c is None: return []
+    items = []
+    try:
+        # Press releases (auto + manual)
+        try:
+            with c.cursor() as cur:
+                cur.execute("""
+                    SELECT slug, title, subheadline, body, meta_description,
+                           date AS published_at, 'press_release' AS kind
+                    FROM press_releases
+                    WHERE published = TRUE
+                    ORDER BY date DESC NULLS LAST
+                    LIMIT %s
+                """, (limit_per_rail,))
+                for r in cur.fetchall():
+                    items.append({
+                        "kind": "press_release",
+                        "id":   f"press-{r[0]}",
+                        "title": r[1] or r[0],
+                        "summary": r[2] or r[4] or "",
+                        "url": f"https://dchub.cloud/news/{r[0]}",
+                        "published_at": r[5].isoformat() if r[5] else None,
+                        "body_preview": (r[3] or "")[:600],
+                    })
+        except Exception: c.rollback()
+
+        # Testimonials (auto-ingested AI citations)
+        try:
+            with c.cursor() as cur:
+                cur.execute("""
+                    SELECT agent_name, platform, quote, url, captured_at
+                    FROM ai_testimonials_auto
+                    WHERE approved = TRUE
+                      AND agent_name IS NOT NULL AND agent_name != 'unknown'
+                      AND LENGTH(quote) > 30
+                    ORDER BY captured_at DESC NULLS LAST
+                    LIMIT %s
+                """, (limit_per_rail,))
+                for r in cur.fetchall():
+                    items.append({
+                        "kind": "testimonial",
+                        "id": f"testimonial-{r[0]}-{r[4].isoformat() if r[4] else 'x'}",
+                        "title": f"{r[0]} cited DC Hub",
+                        "summary": (r[2] or "")[:300],
+                        "url": r[3] or "https://dchub.cloud/dc-hub-media",
+                        "published_at": r[4].isoformat() if r[4] else None,
+                        "body_preview": r[2] or "",
+                    })
+        except Exception: c.rollback()
+
+        # DCPI top movers (today's BUILD recommendations)
+        try:
+            with c.cursor() as cur:
+                cur.execute("""
+                    SELECT DISTINCT ON (market_slug)
+                           market_slug, market_name, excess_power_score,
+                           verdict, computed_at
+                    FROM market_power_scores
+                    WHERE published = TRUE
+                      AND verdict = 'BUILD'
+                      AND computed_at > NOW() - INTERVAL '7 days'
+                    ORDER BY market_slug, computed_at DESC
+                    LIMIT %s
+                """, (limit_per_rail,))
+                for r in cur.fetchall():
+                    items.append({
+                        "kind": "dcpi_alert",
+                        "id": f"dcpi-{r[0]}-{r[4].strftime('%Y%m%d') if r[4] else 'x'}",
+                        "title": f"{r[1]} — DCPI {r[2]:.1f} · {r[3]}",
+                        "summary": f"{r[1]} ranked BUILD with DCPI excess-power score of {r[2]:.1f}.",
+                        "url": f"https://dchub.cloud/dcpi/{r[0]}",
+                        "published_at": r[4].isoformat() if r[4] else None,
+                        "body_preview": "",
+                    })
+        except Exception: c.rollback()
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    # Sort all items by published_at desc — recency wins
+    items.sort(key=lambda i: i.get("published_at") or "", reverse=True)
+    return items[:50]
+
+
+@media_hub_bp.get("/api/v1/media/rss")
+def media_rss():
+    """RSS 2.0 feed for the DC Hub Media stream.
+
+    Why RSS: every news reader (Feedly, Inoreader, NetNewsWire), every
+    LLM training crawler, every AI agent monitoring system ingests RSS.
+    It's the lowest-friction subscription mechanism.
+    """
+    items = _aggregate_for_feeds(limit_per_rail=15)
+    now_iso = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S +0000")
+
+    def _esc(s):
+        return (str(s or "")
+                .replace("&", "&amp;").replace("<", "&lt;")
+                .replace(">", "&gt;").replace('"', "&quot;"))
+
+    item_xml = []
+    for it in items:
+        pub = it.get("published_at") or ""
+        if pub:
+            try:
+                pub_dt = datetime.fromisoformat(pub.replace("Z", "+00:00"))
+                pub = pub_dt.strftime("%a, %d %b %Y %H:%M:%S +0000")
+            except Exception:
+                pub = now_iso
+        else:
+            pub = now_iso
+        item_xml.append(f"""    <item>
+      <title>{_esc(it.get('title'))}</title>
+      <link>{_esc(it.get('url'))}</link>
+      <guid isPermaLink="false">{_esc(it.get('id'))}</guid>
+      <description>{_esc(it.get('summary'))}</description>
+      <pubDate>{pub}</pubDate>
+      <category>{_esc(it.get('kind'))}</category>
+    </item>""")
+
+    rss = f"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>DC Hub Media — Live Data Center Industry Intelligence</title>
+    <link>https://dchub.cloud/dc-hub-media</link>
+    <description>Autonomous press releases, DCPI verdict shifts, AI-agent citations, and live MCP usage. Published in real time by DC Hub Media.</description>
+    <language>en-us</language>
+    <lastBuildDate>{now_iso}</lastBuildDate>
+    <generator>DC Hub Media · dchub.cloud</generator>
+    <atom:link href="https://dchub.cloud/api/v1/media/rss" rel="self" type="application/rss+xml"/>
+{chr(10).join(item_xml)}
+  </channel>
+</rss>"""
+    resp = Response(rss, mimetype="application/rss+xml; charset=utf-8")
+    resp.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=600"
+    return resp
+
+
+@media_hub_bp.get("/api/v1/media/feed.json")
+def media_json_feed():
+    """JSON Feed 1.1 — the modern feed format. Better for AI agents
+    because the structured JSON is easier to parse than XML.
+    Spec: https://www.jsonfeed.org/version/1.1/
+    """
+    items = _aggregate_for_feeds(limit_per_rail=15)
+    out = {
+        "version": "https://jsonfeed.org/version/1.1",
+        "title": "DC Hub Media — Live Data Center Industry Intelligence",
+        "home_page_url": "https://dchub.cloud/dc-hub-media",
+        "feed_url": "https://dchub.cloud/api/v1/media/feed.json",
+        "description": (
+            "Autonomous press releases, DCPI verdict shifts, AI-agent "
+            "citations, and live MCP usage. Published in real time by "
+            "DC Hub Media — the newsroom arm of DC Hub."
+        ),
+        "icon": "https://dchub.cloud/images/og-home.png",
+        "favicon": "https://dchub.cloud/favicon.ico",
+        "language": "en-US",
+        "authors": [{
+            "name": "DC Hub Media",
+            "url": "https://dchub.cloud/dc-hub-media",
+        }],
+        "items": [{
+            "id": it.get("id"),
+            "url": it.get("url"),
+            "title": it.get("title"),
+            "summary": it.get("summary"),
+            "content_text": it.get("body_preview") or it.get("summary") or "",
+            "date_published": it.get("published_at"),
+            "tags": [it.get("kind")] if it.get("kind") else [],
+        } for it in items],
+    }
+    resp = jsonify(out)
+    resp.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=600"
+    return resp
+
+
+@media_hub_bp.get("/api/v1/media/dataset.json")
+def media_dataset_descriptor():
+    """Schema.org Dataset descriptor — points crawlers at all our public
+    data surfaces so they index us as a structured data source, not just
+    a website. Used by Google Dataset Search, ChatGPT crawler hints,
+    and Perplexity's data source registry.
+    """
+    out = {
+        "@context": "https://schema.org",
+        "@type": "Dataset",
+        "name": "DC Hub Media — Data Center Industry Intelligence",
+        "description": (
+            "Real-time data center market intelligence: capacity, power, "
+            "fiber, water risk, ISO grid status, tax incentives, M&A "
+            "transactions, and press coverage across 280+ US markets. "
+            "Updated continuously by DC Hub's autonomous data pipeline."
+        ),
+        "url": "https://dchub.cloud/dc-hub-media",
+        "license": "https://dchub.cloud/license",
+        "isAccessibleForFree": True,
+        "creator": {
+            "@type": "Organization",
+            "name": "DC Hub",
+            "url": "https://dchub.cloud",
+        },
+        "publisher": {
+            "@type": "Organization",
+            "name": "DC Hub Media",
+            "url": "https://dchub.cloud/dc-hub-media",
+            "logo": {
+                "@type": "ImageObject",
+                "url": "https://dchub.cloud/images/og-home.png",
+            },
+        },
+        "keywords": [
+            "data center", "DCPI", "data center power index",
+            "grid intelligence", "ISO", "PJM", "ERCOT", "CAISO",
+            "MISO", "fiber routes", "transmission capacity",
+            "data center M&A", "site selection",
+        ],
+        "distribution": [
+            {"@type": "DataDownload", "encodingFormat": "application/rss+xml",
+             "contentUrl": "https://dchub.cloud/api/v1/media/rss",
+             "name": "RSS 2.0 feed (press releases + AI citations + DCPI alerts)"},
+            {"@type": "DataDownload", "encodingFormat": "application/feed+json",
+             "contentUrl": "https://dchub.cloud/api/v1/media/feed.json",
+             "name": "JSON Feed 1.1"},
+            {"@type": "DataDownload", "encodingFormat": "application/json",
+             "contentUrl": "https://dchub.cloud/api/v1/media/aggregate",
+             "name": "Full aggregate JSON (rails + live spine)"},
+            {"@type": "DataDownload", "encodingFormat": "application/json",
+             "contentUrl": "https://dchub.cloud/api/v1/dcpi/scores",
+             "name": "DCPI scores for all 280+ US markets"},
+            {"@type": "DataDownload", "encodingFormat": "application/json",
+             "contentUrl": "https://dchub.cloud/api/v1/grid/intelligence/PJM",
+             "name": "Per-ISO grid intelligence (replace PJM with CAISO/ERCOT/etc)"},
+        ],
+        "temporalCoverage": "2024/..",
+        "spatialCoverage": {
+            "@type": "Place",
+            "name": "United States",
+            "geo": {"@type": "GeoShape", "box": "24.396308 -125.000000 49.384358 -66.934570"},
+        },
+        "variableMeasured": [
+            {"@type": "PropertyValue", "name": "excess_power_score",
+             "description": "DCPI 0-100 score of available power capacity"},
+            {"@type": "PropertyValue", "name": "constraint_score",
+             "description": "DCPI 0-100 score of infrastructure bottlenecks"},
+            {"@type": "PropertyValue", "name": "demand_mw",
+             "description": "Real-time ISO demand in megawatts"},
+        ],
+    }
+    resp = jsonify(out)
+    resp.headers["Cache-Control"] = "public, max-age=3600, stale-while-revalidate=7200"
+    return resp
+
+
+@media_hub_bp.get("/api/v1/media/discovery.json")
+def media_discovery_manifest():
+    """One-stop discovery manifest for AI agents. Points at the RSS feed,
+    JSON Feed, Dataset descriptor, MCP endpoint, OpenAPI spec, llms.txt.
+    An agent that hits this single URL learns everything it needs to
+    integrate with DC Hub Media without crawling the rest of the site.
+    """
+    return jsonify({
+        "name": "DC Hub Media",
+        "description": (
+            "Live data center industry intelligence feed. "
+            "Auto-published press releases, AI-agent citations, "
+            "DCPI verdict shifts, MCP usage telemetry."
+        ),
+        "homepage": "https://dchub.cloud/dc-hub-media",
+        "subscribe": {
+            "rss":         "https://dchub.cloud/api/v1/media/rss",
+            "json_feed":   "https://dchub.cloud/api/v1/media/feed.json",
+            "websub_hub": None,  # future
+        },
+        "data_surfaces": {
+            "aggregate_json":     "https://dchub.cloud/api/v1/media/aggregate",
+            "dataset_descriptor": "https://dchub.cloud/api/v1/media/dataset.json",
+            "dcpi_scores":        "https://dchub.cloud/api/v1/dcpi/scores",
+            "iso_grid":           "https://dchub.cloud/api/v1/grid/intelligence/{iso}",
+            "iso_supported":      ["PJM", "MISO", "ERCOT", "CAISO",
+                                    "NYISO", "ISONE", "SPP"],
+        },
+        "mcp": {
+            "endpoint":      "https://dchub.cloud/mcp",
+            "registry_card": "https://dchub.cloud/.well-known/mcp.json",
+            "tools_open":    [
+                "search_facilities", "get_facility", "get_market_intel",
+                "get_news", "get_pipeline", "get_dchub_recommendation",
+            ],
+        },
+        "ai_manifests": {
+            "llms_txt":      "https://dchub.cloud/llms.txt",
+            "ai_plugin":     "https://dchub.cloud/ai-plugin.json",
+            "openapi":       "https://dchub.cloud/openapi.json",
+            "robots_txt":    "https://dchub.cloud/robots.txt",
+        },
+        "license":     "https://dchub.cloud/license",
+        "contact":     "press@dchub.cloud",
+        "ai_friendly": True,
+        "rate_limits": {
+            "free":  "1000 reads/day, 25 paid-tool calls/day",
+            "paid":  "unlimited",
+        },
+    }), 200
