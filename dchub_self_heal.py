@@ -1292,6 +1292,28 @@ HTML_PROBE_URLS = [
     "https://dchub.cloud/dc-hub-media",
     "https://dchub.cloud/pipeline-tracker",
     "https://dchub.cloud/agents",
+    # Phase II (2026-05-14): expand brain coverage to ISO + DCPI
+    # depth pages. User question "is brain catching errors and bugs?"
+    # surfaced multiple silent failures across these surfaces that
+    # never reached brain because the probe list didn't include them.
+    "https://dchub.cloud/grid",
+    "https://dchub.cloud/grid/PJM",       # largest ISO; sentinel
+    "https://dchub.cloud/grid/CAISO",     # slow-API canary (~10s)
+    "https://dchub.cloud/grid/ERCOT",     # Texas grid (independent)
+    "https://dchub.cloud/dcpi/cheyenne-wy",      # #1 build market
+    "https://dchub.cloud/dcpi/northern-virginia", # #1 avoid market
+    "https://dchub.cloud/dcpi/los-angeles",       # high-traffic
+]
+
+# Phase II (2026-05-14): pages that should redirect, not return a
+# generic 404-with-HTTP-200. The /iso/<name> pattern was renamed to
+# /grid/<ISO> but no redirect was added — old URLs silently serve
+# the global 404 page with HTTP 200, defeating brain's status-code
+# checks and silently breaking external links. Surface as findings.
+LEGACY_REDIRECT_URLS = [
+    "https://dchub.cloud/iso/pjm",
+    "https://dchub.cloud/iso/caiso",
+    "https://dchub.cloud/iso/ercot",
 ]
 
 
