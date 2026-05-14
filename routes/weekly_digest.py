@@ -1,5 +1,6 @@
 """
-weekly_digest.py — Phase TT Increment 3b: the weekly market digest.
+weekly_digest.py — Phase TT Increments 3b + 3c: the weekly market digest
+and the escalating payment ask.
 
 The nurture loop, second touch. Increments 1 & 2 capture the email at the
 value moment; Increment 3a (send_identify_welcome) confirms the unlock and
@@ -11,11 +12,18 @@ days, we:
   - pull that key's mcp_call_log rows for the window
   - extract the markets/states it actually queried (from tool params)
   - enrich the top markets with a fresh stat (current retail energy rate)
-  - email the human a short, genuinely-useful recap + a soft upgrade nudge
+  - email the human a short, genuinely-useful recap
 
-This is the "known -> engaged" arm of the funnel. The escalating payment
-ask (Increment 3c) builds on top of this — but 3b stays deliberately
-value-first: a digest someone is glad to get, not a sales email.
+Increment 3c — the escalating payment ask — rides INSIDE that same email
+rather than as a separate send. The digest already lands weekly; 3c just
+makes its call-to-action escalate by engagement signal instead of being a
+static button:
+  - hot   : hit the daily cap 3+ times this week -> strong, specific ask
+  - warm  : heavy volume, or 1-2 cap hits        -> medium, volume-anchored
+  - soft  : everyone else                        -> the gentle nudge
+No extra emails, no separate cadence to cooldown-gate — the ask just
+sharpens as the buy signal does, and the tier is stamped on the key so we
+can measure escalation over time.
 
 Endpoint: POST /api/v1/digest/weekly/run   (admin-gated)
   ?send=true   actually deliver (default: dry-run preview, like the
@@ -47,6 +55,20 @@ ADMIN_KEY = (os.environ.get("DCHUB_ADMIN_KEY")
 RESEND_KEY = os.environ.get("DCHUB_RESEND_API_KEY", "").strip()
 FROM_EMAIL = os.environ.get("DCHUB_RESEND_FROM", "DC Hub <noreply@dchub.cloud>")
 PRICING_URL = "https://dchub.cloud/pricing"
+# Increment 3c — the upgrade link. Prefer a direct Stripe checkout link
+# (same env var the cap-exceeded outreach engine uses) so the "hot" ask
+# goes straight to payment; fall back to the pricing page.
+UPGRADE_URL = (os.environ.get("DCHUB_STRIPE_DEVELOPER_LINK")
+               or os.environ.get("DCHUB_STRIPE_PRO_LINK")
+               or PRICING_URL)
+
+# Increment 3c escalation thresholds (env-overridable).
+#   hot  : hit the daily cap this many times in the window
+#   warm : this many total calls in the window (heavy use, not yet capping)
+HOT_CAP_HITS = int(os.environ.get("DCHUB_DIGEST_HOT_CAP_HITS", "3"))
+WARM_CALLS = int(os.environ.get("DCHUB_DIGEST_WARM_CALLS", "40"))
+# The identified daily limit, for value-anchored copy ("up from 100/day").
+IDENT_LIMIT = int(os.environ.get("MCP_IDENTIFIED_DAILY_LIMIT", "100"))
 
 # Don't email ourselves / test rows.
 _INTERNAL_RE = [re.compile(p, re.I) for p in (
@@ -172,7 +194,9 @@ def _gather_cohort(limit):
     with _conn() as c, c.cursor() as cur:
         cur.execute(
             """SELECT k.api_key, k.email, k.tier, k.metadata,
-                      COUNT(*) AS calls, COUNT(DISTINCT l.tool) AS tools_used
+                      COUNT(*) AS calls, COUNT(DISTINCT l.tool) AS tools_used,
+                      COUNT(*) FILTER (
+                          WHERE l.status = 'blocked_daily_cap') AS cap_hits
                  FROM mcp_dev_keys k
                  JOIN mcp_call_log l ON l.api_key = k.api_key
                 WHERE k.email IS NOT NULL
@@ -185,11 +209,12 @@ def _gather_cohort(limit):
             (MIN_CALLS, limit),
         )
         cohort = {}
-        for api_key, email, tier, meta, calls, tools_used in cur.fetchall():
+        for (api_key, email, tier, meta, calls,
+             tools_used, cap_hits) in cur.fetchall():
             cohort[api_key] = {
                 "api_key": api_key, "email": email, "tier": tier,
                 "metadata": meta or {}, "calls": int(calls),
-                "tools_used": int(tools_used),
+                "tools_used": int(tools_used), "cap_hits": int(cap_hits or 0),
                 "topics": Counter(), "tools": Counter(),
             }
         if not cohort:
@@ -228,6 +253,66 @@ def _recently_digested(meta) -> bool:
         return age_days < DEDUP_DAYS
     except Exception:
         return False
+
+
+def _upgrade_tier(row):
+    """Increment 3c — classify a key's buy signal from the window's activity.
+
+    Returns (tier, reason) where tier is 'hot' | 'warm' | 'soft'. The
+    reason is a short dict the response surfaces for measurement.
+    """
+    cap_hits = row.get("cap_hits", 0)
+    calls = row.get("calls", 0)
+    if cap_hits >= HOT_CAP_HITS:
+        return "hot", {"signal": "cap_hits", "cap_hits": cap_hits}
+    if calls >= WARM_CALLS or cap_hits >= 1:
+        return "warm", {"signal": "volume" if calls >= WARM_CALLS else "cap_hits",
+                        "calls": calls, "cap_hits": cap_hits}
+    return "soft", {"signal": "baseline", "calls": calls}
+
+
+def _cta_block(tier, row, top_markets):
+    """Render the Increment 3c call-to-action, escalated to the tier.
+
+    Value-anchored: every variant references the key's OWN usage (cap
+    hits, weekly volume, or top market) so the ask reads as a natural
+    consequence of how hard they're already leaning on DC Hub.
+    """
+    btn = ('display:inline-block;background:#1976d2;color:#fff;padding:11px 22px;'
+           'border-radius:6px;text-decoration:none;font-weight:600')
+    top_mkt = top_markets[0][0] if top_markets else None
+
+    if tier == "hot":
+        cap_hits = row.get("cap_hits", 0)
+        lead = (f"Your assistant hit the {IDENT_LIMIT}/day limit "
+                f"<strong>{cap_hits} time{'s' if cap_hits != 1 else ''}</strong> "
+                f"this week — every capped call is a question that went "
+                f"unanswered.")
+        pitch = (f"The Developer plan is <strong>1,000 calls/day</strong> "
+                 f"plus full DCPI history and market-movement alerts"
+                 + (f" on the markets you track, like {top_mkt}." if top_mkt
+                    else "."))
+        label = "Lift the limit — Developer, $49/mo &rarr;"
+    elif tier == "warm":
+        calls = row.get("calls", 0)
+        lead = (f"You ran <strong>{calls} queries</strong> this week — "
+                f"you're using DC Hub like a paying desk already.")
+        pitch = (f"Developer is <strong>1,000 calls/day</strong>, full data "
+                 f"depth, and alerts when "
+                 + (f"{top_mkt} moves." if top_mkt else "your markets move."))
+        label = "See the Developer plan &rarr;"
+    else:  # soft
+        lead = ""
+        pitch = ("Need more headroom? The Developer plan is "
+                 "<strong>1,000 calls/day</strong> plus full data and "
+                 "market-movement alerts.")
+        label = "See Developer &rarr;"
+
+    lead_html = (f'<p style="color:#555;font-size:15px;line-height:1.55;'
+                 f'margin:22px 0 6px">{lead}</p>') if lead else ""
+    return f"""{lead_html}
+<p style="color:#555;font-size:15px;line-height:1.55;margin:6px 0 14px">{pitch}</p>
+<p style="margin:0 0 4px"><a href="{UPGRADE_URL}" style="{btn}">{label}</a></p>"""
 
 
 def _build_digest(row, rates):
@@ -271,14 +356,19 @@ def _build_digest(row, rates):
         + (f" across {headline_markets}" if headline_markets else "")
     )
 
+    # Increment 3c — escalate the CTA to the key's buy signal.
+    tier, tier_reason = _upgrade_tier(row)
+    cta_block = _cta_block(tier, row, top_markets)
+
     html = f"""<!doctype html><html><body style="font-family:-apple-system,sans-serif;max-width:560px;margin:0 auto;padding:28px;color:#1a1a1a">
 <div style="font-size:11px;color:#888;letter-spacing:.05em;text-transform:uppercase;margin-bottom:10px">DC Hub &middot; weekly market digest</div>
 <h2 style="margin:0 0 12px;font-size:22px">Your AI assistant ran {row['calls']} DC Hub queries this week</h2>
 <p style="color:#555;font-size:15px;line-height:1.55">Across {row['tools_used']} different tool{'s' if row['tools_used'] != 1 else ''}. Here's what it was researching &mdash; with a fresh data point on the markets that have one.</p>
 {markets_block}
 {tools_block}
-<p style="margin:24px 0"><a href="{PRICING_URL}" style="background:#1976d2;color:#fff;padding:11px 22px;border-radius:6px;text-decoration:none;font-weight:600;display:inline-block">Need 1,000 calls/day + full data? See Developer &rarr;</a></p>
-<hr style="border:0;border-top:1px solid #eee;margin:28px 0">
+<hr style="border:0;border-top:1px solid #eee;margin:24px 0 4px">
+{cta_block}
+<hr style="border:0;border-top:1px solid #eee;margin:24px 0 14px">
 <p style="font-size:12px;color:#888">You're getting this weekly digest because your AI assistant identified its DC Hub key with this email. <a href="https://dchub.cloud" style="color:#888">dchub.cloud</a></p>
 </body></html>"""
 
@@ -288,6 +378,9 @@ def _build_digest(row, rates):
         "top_markets": [{"name": n, "queries": c} for n, c in top_markets],
         "top_tools": [{"tool": t, "calls": c} for t, c in top_tools],
         "calls": row["calls"],
+        "cap_hits": row.get("cap_hits", 0),
+        "upgrade_tier": tier,
+        "upgrade_reason": tier_reason,
     }
 
 
@@ -310,16 +403,20 @@ def _send_email(to_email, subject, html) -> bool:
         return False
 
 
-def _stamp_sent(api_key):
-    """Mark a key digested — only called on a confirmed send."""
+def _stamp_sent(api_key, tier="soft"):
+    """Mark a key digested — only called on a confirmed send. Also stamps
+    the Increment 3c upgrade tier the key was shown, so escalation over
+    time is measurable straight off mcp_dev_keys.metadata."""
     try:
         with _conn() as c, c.cursor() as cur:
             cur.execute(
                 """UPDATE mcp_dev_keys
                       SET metadata = COALESCE(metadata, '{}'::jsonb)
-                                     || jsonb_build_object('digest_sent_at', %s::text)
+                                     || jsonb_build_object(
+                                            'digest_sent_at', %s::text,
+                                            'last_digest_tier', %s::text)
                     WHERE api_key = %s""",
-                (datetime.now(timezone.utc).isoformat(), api_key),
+                (datetime.now(timezone.utc).isoformat(), tier, api_key),
             )
             c.commit()
     except Exception:
@@ -352,6 +449,8 @@ def run_weekly_digest():
     skipped_no_signal = 0
     sent = 0
     send_failed = 0
+    # Increment 3c — how the cohort splits across upgrade-ask tiers.
+    tier_counts = Counter()
 
     # One batched energy lookup for every state that shows up anywhere in
     # the cohort — cheaper than per-key round-trips.
@@ -378,11 +477,12 @@ def run_weekly_digest():
             continue
 
         digest = _build_digest(row, rates)
+        tier_counts[digest["upgrade_tier"]] += 1
 
         if send:
             ok = _send_email(row["email"], digest["subject"], digest["html"])
             if ok:
-                _stamp_sent(api_key)
+                _stamp_sent(api_key, digest["upgrade_tier"])
                 sent += 1
             else:
                 send_failed += 1
@@ -393,6 +493,9 @@ def run_weekly_digest():
                     "tier": row["tier"],
                     "subject": digest["subject"],
                     "calls": digest["calls"],
+                    "cap_hits": digest["cap_hits"],
+                    "upgrade_tier": digest["upgrade_tier"],
+                    "upgrade_reason": digest["upgrade_reason"],
                     "top_markets": digest["top_markets"],
                     "top_tools": digest["top_tools"],
                 })
@@ -412,6 +515,11 @@ def run_weekly_digest():
         skipped_no_signal=skipped_no_signal,
         min_calls=MIN_CALLS,
         dedup_days=DEDUP_DAYS,
+        # Increment 3c — upgrade-ask tier split across the processed cohort.
+        upgrade_tiers={"hot": tier_counts.get("hot", 0),
+                       "warm": tier_counts.get("warm", 0),
+                       "soft": tier_counts.get("soft", 0)},
+        upgrade_url_is_stripe=UPGRADE_URL != PRICING_URL,
         provider_configured=bool(RESEND_KEY),
         dry_run_preview=preview,
     ), 200
@@ -436,9 +544,21 @@ def weekly_digest_health():
                       AND (metadata->>'digest_sent_at')::timestamptz
                           > NOW() - INTERVAL '7 days'""")
             digested_7d = int((cur.fetchone() or [0])[0] or 0)
+            # Increment 3c — what upgrade-ask tier recently-digested keys
+            # were last shown.
+            cur.execute(
+                """SELECT COALESCE(metadata->>'last_digest_tier', 'unknown'),
+                          COUNT(*)
+                     FROM mcp_dev_keys
+                    WHERE (metadata->>'digest_sent_at') IS NOT NULL
+                      AND (metadata->>'digest_sent_at')::timestamptz
+                          > NOW() - INTERVAL '7 days'
+                    GROUP BY 1""")
+            tier_split = {r[0]: int(r[1]) for r in cur.fetchall()}
         return jsonify(status="ok",
                        active_identified_with_recent_activity=active_identified,
                        digested_last_7d=digested_7d,
+                       digested_tier_split=tier_split,
                        provider_configured=bool(RESEND_KEY)), 200
     except Exception as e:
         return jsonify(status="error", error=str(e)[:200]), 200
