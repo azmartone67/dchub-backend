@@ -430,12 +430,18 @@ def get_deals():
             'count': len(limited),
             'total_count': len(cached_data),
             'total_value': sum((d.get('value') or 0) for d in cached_data),
+            'data_source': 'cached',
             'cached': True
         })
     
-    # Start with sample deals
+    # Phase GG (2026-05-14): live DB wins COMPLETELY. The `deals` table
+    # holds 250+ fresh M&A rows; the old code appended every SAMPLE_DEALS
+    # row not already in the DB, permanently injecting a frozen
+    # 2020-2025 seed into every response. Now the seed is an explicit,
+    # labelled fallback — used only when the DB query is empty or errors.
     deals = SAMPLE_DEALS.copy()
-    
+    data_source = 'fallback_seed'
+
     pg_url = os.environ.get('DATABASE_URL', '')
     if pg_url:
         try:
@@ -462,13 +468,16 @@ def get_deals():
                         'value_confirmed': val_m > 0,
                         'mw': row[6], 'type': row[7], 'region': row[8], 'market': row[9]
                     })
-            existing_ids = {d['id'] for d in db_deals}
-            for d in deals:
-                if d['id'] not in existing_ids:
-                    db_deals.append(d)
-            deals = db_deals
+            if db_deals:
+                # Live data present — use it alone. No seed merge: the
+                # `deals` table IS the source of truth.
+                deals = db_deals
+                data_source = 'live'
+            else:
+                logger.warning("Deals PG query returned 0 usable rows — "
+                               "serving labelled seed fallback")
         except Exception as e:
-            logger.warning(f"Deals PG query failed, trying SQLite: {e}")
+            logger.warning(f"Deals PG query failed — serving seed fallback: {e}")
     # SQLite fallback removed — Neon PG is source of truth
 
     
@@ -555,6 +564,7 @@ def get_deals():
         'count': len(limited_deals),
         'total_count': len(deals),
         'total_value': sum((d.get('value') or 0) for d in deals),
+        'data_source': data_source,
         'stats_by_type': stats_by_type,
         'stats_by_year': stats_by_year,
         'deal_types': {
@@ -622,14 +632,15 @@ def _get_transactions_free():
                     if buyer.lower() in ['tbd', 'unknown', 'n/a', ''] or seller.lower() in ['tbd', 'unknown', 'n/a', '']:
                         continue
                     db_deals.append({'id': row[0], 'date': row[1], 'year': row[2], 'buyer': buyer, 'seller': seller, 'value': row[5], 'mw': row[6], 'type': row[7], 'region': row[8], 'market': row[9]})
-            existing_ids = {d['id'] for d in db_deals}
-            for d in deals:
-                if d['id'] not in existing_ids:
-                    db_deals.append(d)
-            deals = db_deals
-            loaded_from_db = True
+            if db_deals:
+                # Live wins completely — no seed merge.
+                deals = db_deals
+                loaded_from_db = True
+            else:
+                logger.warning("Free transactions PG query returned 0 usable "
+                               "rows — serving labelled seed fallback")
         except Exception as e:
-            logger.warning(f"Free transactions PG query failed: {e}")
+            logger.warning(f"Free transactions PG query failed — seed fallback: {e}")
 
     # SQLite fallback removed — Neon PG is source of truth
 
@@ -649,6 +660,7 @@ def _get_transactions_free():
         'count': len(basic_deals),
         'total_matching': total_matching,
         'full_results_available': total_matching > FREE_LIMIT,
+        'data_source': 'live' if loaded_from_db else 'fallback_seed',
         'tier': 'free',
         'upgrade_url': 'https://dchub.cloud/pricing',
         'note': f'Free tier: showing {len(basic_deals)} of {total_matching} transactions with basic fields. Upgrade for full data including deal values, MW capacity, and detailed analytics.'
@@ -687,19 +699,25 @@ def get_pipeline():
     state_filter = (request.args.get('state') or '').strip()
     limit = request.args.get('limit', 200, type=int)
     
+    # Phase GG (2026-05-14): live capacity_pipeline wins COMPLETELY. The
+    # table holds 250+ rows; the old code appended DB rows onto the
+    # PIPELINE_DATA seed, permanently injecting frozen projects. The seed
+    # is now a labelled fallback — used only when the DB is empty/errors.
     pipeline = PIPELINE_DATA.copy()
+    data_source = 'fallback_seed'
 
     try:
         conn = _get_db()
         c = conn.cursor()
         c.execute("""
-            SELECT operator, market, capacity_mw, phase, status, announcement_date, 
+            SELECT operator, market, capacity_mw, phase, status, announcement_date,
                    completion_date, notes, confidence_label
             FROM capacity_pipeline
             WHERE operator != 'Unknown' AND capacity_mw > 0 AND confidence_label IN ('high', 'medium')
             ORDER BY capacity_mw DESC
         """)
-        seen_keys = {(p['company'].lower(), p['project'].lower()) for p in pipeline}
+        db_pipeline = []
+        seen_keys = set()
         for r in c.fetchall():
             operator = r[0] or 'Unknown'
             key = (operator.lower(), (r[7] or operator).lower())
@@ -713,7 +731,7 @@ def get_pipeline():
                 status_norm = 'operational'
             else:
                 status_norm = 'announced'
-            pipeline.append({
+            db_pipeline.append({
                 'company': operator,
                 'project': r[7] or f"{operator} Expansion",
                 'market': r[1] or 'Multiple Markets',
@@ -729,8 +747,14 @@ def get_pipeline():
         except Exception:
             pass
         conn.close()
+        if db_pipeline:
+            pipeline = db_pipeline
+            data_source = 'live'
+        else:
+            logger.warning("capacity_pipeline query returned 0 rows — "
+                           "serving labelled seed fallback")
     except Exception as e:
-        logger.debug(f"capacity_pipeline query: {e}")
+        logger.debug(f"capacity_pipeline query failed — seed fallback: {e}")
     
     # Apply filters
     if status_filter and status_filter != 'all':
@@ -806,6 +830,7 @@ def get_pipeline():
         'pipeline': limited_pipeline,  # Alias for compatibility
         'count': len(limited_pipeline),
         'total_count': len(pipeline),
+        'data_source': data_source,
         'stats': {
             'total_mw': total_mw,
             'total_gw': round(total_mw / 1000, 1),
@@ -984,10 +1009,15 @@ def get_dc_markets():
         region = REGION_ALIASES.get(region.strip(), region.strip())
         markets = [m for m in markets if m['region'] == region]
     
+    # Phase GG (2026-05-14): SAMPLE_MARKETS has fields (avg_pue,
+    # power_cost, fiber_providers) with no live source in the current
+    # schema — labelled `seed` honestly until Phase 4 builds a real
+    # market-aggregation query off the facilities table.
     return jsonify({
         'success': True,
         'markets': markets,
-        'count': len(markets)
+        'count': len(markets),
+        'data_source': 'seed'
     })
 
 @deals_bp.route('/api/markets', methods=['GET'])
@@ -1016,25 +1046,32 @@ def get_markets():
         conn.close()
     except:
         pass
+    # Phase GG (2026-05-14): the seed metros carry a live `facilities_live`
+    # overlay from discovered_facilities, but the rest of each row is
+    # still seed — labelled honestly. Phase 4: real market aggregation.
     return jsonify({
         'success': True,
         'markets': markets,
         'count': len(markets),
+        'data_source': 'seed_with_live_overlay',
         'generated_at': datetime.utcnow().isoformat()
     })
 
 @deals_bp.route('/api/pipeline', methods=['GET'])
 def get_public_pipeline():
     """Public pipeline endpoint - returns construction/planning pipeline with curated + DB data"""
-    projects = []
+    # Phase GG (2026-05-14): live discovered_facilities pipeline wins
+    # COMPLETELY. The old code seeded `projects` from PIPELINE_DATA then
+    # appended DB rows, so the frozen seed was always in the result. Now
+    # the seed is built separately and only used as a labelled fallback.
+    seed_projects = []
     seen_keys = set()
-
     for p in PIPELINE_DATA:
         key = (p['company'].lower(), p['project'].lower())
         if key in seen_keys:
             continue
         seen_keys.add(key)
-        projects.append({
+        seed_projects.append({
             'company': p['company'],
             'project': p['project'],
             'market': p['market'],
@@ -1045,6 +1082,8 @@ def get_public_pipeline():
             'preleased': p.get('preleased', False),
         })
 
+    db_projects = []
+    data_source = 'fallback_seed'
     try:
         conn = _get_db()
         c = conn.cursor()
@@ -1059,13 +1098,14 @@ def get_public_pipeline():
             ORDER BY power_mw DESC NULLS LAST
             LIMIT 500
         """)
+        db_seen = set()
         for r in c.fetchall():
             provider = r[2] or 'Unknown'
             name = r[1] or f"{provider} Facility"
             key = (provider.lower(), name.lower())
-            if key in seen_keys:
+            if key in db_seen:
                 continue
-            seen_keys.add(key)
+            db_seen.add(key)
             status_raw = (r[6] or 'announced').lower().replace(' ', '_')
             if 'construct' in status_raw:
                 status_norm = 'construction'
@@ -1074,7 +1114,7 @@ def get_public_pipeline():
             else:
                 status_norm = 'announced'
             market = f"{r[3]}, {r[4]}" if r[3] and r[4] else (r[4] or r[5] or 'Multiple Markets')
-            projects.append({
+            db_projects.append({
                 'company': provider,
                 'project': name,
                 'market': market,
@@ -1090,7 +1130,15 @@ def get_public_pipeline():
             pass
         conn.close()
     except Exception as e:
-        logger.debug(f"Pipeline facilities query: {e}")
+        logger.debug(f"Pipeline facilities query failed — seed fallback: {e}")
+
+    if db_projects:
+        projects = db_projects
+        data_source = 'live'
+    else:
+        projects = seed_projects
+        logger.warning("public pipeline: discovered_facilities returned 0 "
+                       "rows — serving labelled seed fallback")
 
     projects.sort(key=lambda x: x.get('capacity_mw', 0), reverse=True)
 
@@ -1123,34 +1171,48 @@ def get_public_pipeline():
             'under_construction': construction,
             'announced': announced,
             'operational': operational,
-            'pre_leased_pct': 73
+            # Phase GG (2026-05-14): computed from the projects actually
+            # in hand, not a frozen 73.
+            'pre_leased_pct': round(
+                len([p for p in projects if p.get('preleased')]) / len(projects) * 100
+            ) if projects else 0,
         },
         'by_status': by_status,
+        'data_source': data_source,
         'generated_at': datetime.utcnow().isoformat()
     })
 
 @deals_bp.route('/api/v1/pipeline/summary', methods=['GET'])
 @_lazy_require_plan('pro')
 def get_pipeline_summary():
-    """Pipeline summary -- lightweight stats for the ai-pipeline frontend (requires Pro plan)"""
-    total_mw = 0
-    project_count = 0
-    construction = 0
-    announced = 0
+    """Pipeline summary -- lightweight stats for the ai-pipeline frontend (requires Pro plan)
 
-    seen_keys = set()
-    for p in PIPELINE_DATA:
-        key = (p['company'].lower(), p['project'].lower())
-        if key not in seen_keys:
-            seen_keys.add(key)
-            total_mw += (p.get('capacity') or 0)
-            project_count += 1
-            st = p.get('status', 'announced')
-            if st == 'construction':
-                construction += 1
+    Phase GG (2026-05-14): live DB wins COMPLETELY. The old code summed
+    the PIPELINE_DATA seed totals first then *added* DB rows on top — so
+    every summary was inflated by a frozen seed. Now seed and DB totals
+    are computed separately; the DB totals are served whenever the DB
+    produced any projects, the labelled seed only as a fallback. The
+    fabricated `pre_leased_pct: 73` is dropped — there's no prelease
+    source behind it.
+    """
+    def _seed_totals():
+        tot_mw = pc = con = ann = 0
+        seen = set()
+        for p in PIPELINE_DATA:
+            k = (p['company'].lower(), p['project'].lower())
+            if k in seen:
+                continue
+            seen.add(k)
+            tot_mw += (p.get('capacity') or 0)
+            pc += 1
+            if p.get('status', 'announced') == 'construction':
+                con += 1
             else:
-                announced += 1
+                ann += 1
+        return tot_mw, pc, con, ann
 
+    db_mw = db_pc = db_con = db_ann = 0
+    seen_keys = set()
     try:
         conn = _get_db()
         c = conn.cursor()
@@ -1165,20 +1227,20 @@ def get_pipeline_summary():
             if key in seen_keys:
                 continue
             seen_keys.add(key)
-            total_mw += r[2] or 0
-            project_count += 1
+            db_mw += r[2] or 0
+            db_pc += 1
             st_raw = (r[3] or r[4] or 'announced').lower()
             if 'construct' in st_raw or 'under' in st_raw:
-                construction += 1
+                db_con += 1
             else:
-                announced += 1
+                db_ann += 1
         try:
             conn.rollback()
         except Exception:
             pass
         conn.close()
     except Exception as e:
-        logger.debug(f"Pipeline summary DB query: {e}")
+        logger.debug(f"Pipeline summary capacity_pipeline query: {e}")
 
     try:
         conn2 = _get_db()
@@ -1200,16 +1262,24 @@ def get_pipeline_summary():
             if key in seen_keys:
                 continue
             seen_keys.add(key)
-            total_mw += r[2] or 0
-            project_count += 1
-            st_raw = (r[3] or 'announced').lower()
-            if 'construct' in st_raw:
-                construction += 1
+            db_mw += r[2] or 0
+            db_pc += 1
+            if 'construct' in (r[3] or 'announced').lower():
+                db_con += 1
             else:
-                announced += 1
+                db_ann += 1
         conn2.close()
     except Exception as e:
         logger.debug(f"Pipeline summary facilities query: {e}")
+
+    if db_pc > 0:
+        total_mw, project_count, construction, announced = db_mw, db_pc, db_con, db_ann
+        data_source = 'live'
+    else:
+        total_mw, project_count, construction, announced = _seed_totals()
+        data_source = 'fallback_seed'
+        logger.warning("pipeline summary: DB returned 0 projects — "
+                       "serving labelled seed fallback")
 
     return jsonify({
         'success': True,
@@ -1218,7 +1288,7 @@ def get_pipeline_summary():
         'project_count': project_count,
         'under_construction': construction,
         'announced': announced,
-        'pre_leased_pct': 73,
+        'data_source': data_source,
         'generated_at': datetime.utcnow().isoformat()
     })
 
@@ -1227,9 +1297,13 @@ def get_pipeline_summary():
 @_lazy_protect_data
 def get_analytics():
     """Analytics summary endpoint"""
+    # Phase GG (2026-05-14): labelled `seed` — SAMPLE_MARKETS has no live
+    # source for its per-market analytics fields yet. Phase 4 replaces
+    # this with a real aggregation off the facilities table.
     return jsonify({
         'success': True,
         'markets': SAMPLE_MARKETS,
+        'data_source': 'seed',
         'summary': {
             'total_markets': len(SAMPLE_MARKETS),
             'total_mw': sum((m.get('total_mw') or 0) for m in SAMPLE_MARKETS)
