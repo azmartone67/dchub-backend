@@ -81,6 +81,18 @@ LOOP_SOURCE_FILES: dict = {
     "iso_extract":        ["routes/iso_orchestrator.py", "routes/_iso_common.py"],
 }
 
+# Phase GG (2026-05-14): same idea for actionable_backend_issues
+# surfaced by /heal/findings (added in PR #70). Each issue label
+# starts with `cron_failing_with_errors` / `cron_underproducing` /
+# `loop_stale`, all from dchub_self_heal.fix_backend_cron_scan.
+# Map them to the same source files we'd touch for the corresponding
+# loop. The keys are the synthetic dchub://cron/<name> URLs from
+# the detector — keep in sync with dchub_self_heal.py.
+BACKEND_ISSUE_SOURCE_FILES: dict = {
+    "dchub://cron/dcpi_recompute":   ["routes/dcpi.py"],
+    "dchub://cron/auto_press_daily": ["routes/marketing_engine.py"],
+}
+
 
 _LEARN_CODE_SYSTEM = (
     "You are Brain v2 Layer 5 — the code-fix proposal engine for DC Hub's "
@@ -310,6 +322,238 @@ def learn_code():
         targets_processed=len(targets),
         results=results,
     ), 200
+
+
+# ────────────────────────────────────────────────────────────────────
+# Phase GG (2026-05-14): backend-issue intake. Reads
+# actionable_backend_issues from /heal/findings (added in PR #70 —
+# backend_cron_scan detector). For each issue, fetches the relevant
+# source file and asks Claude for a code-level fix. Same storage
+# table + same hard-rules contract as the loop intake above; this
+# just feeds a different source of issues into the same engine.
+#
+# Use case: when DCPI recompute fails with UniqueViolation 4 days
+# in a row, backend_cron_scan surfaces it, this endpoint proposes
+# a fix (e.g. add ON CONFLICT DO UPDATE), the GH Actions PR opener
+# (brain-layer5-pr-opener.yml) picks up high-confidence proposals
+# and opens a draft PR for human review.
+# ────────────────────────────────────────────────────────────────────
+
+@brain_v2_layer5_bp.post("/api/v1/brain/learn-backend-issues")
+def learn_backend_issues():
+    """Process actionable_backend_issues from /heal/findings and emit
+    code proposals for each. Same storage + contract as learn_code."""
+    auth_err = _require_admin()
+    if auth_err: return auth_err
+
+    if not ANTHROPIC_API_KEY:
+        return jsonify(ok=False, error="no_anthropic_key"), 503
+    if not _init_table():
+        return jsonify(ok=False, error="db_unavailable"), 503
+
+    # Fetch backend issues via the same in-process helper Layer 4 uses.
+    # (No HTTP self-call — Phase 63 fix pattern.)
+    try:
+        from flask import current_app
+        with current_app.test_client() as _c:
+            _r = _c.get("/api/v1/heal/findings")
+            findings_payload = _r.get_json() if _r.status_code == 200 else {}
+    except Exception as e:
+        return jsonify(ok=False, error=f"findings_fetch_failed: {e}"), 500
+
+    backend_issues = findings_payload.get("actionable_backend_issues", []) or []
+    if not backend_issues:
+        return jsonify(ok=True, skipped=True,
+                       reason="no_actionable_backend_issues",
+                       as_of=datetime.now(timezone.utc).isoformat()), 200
+
+    results = []
+    for issue in backend_issues:
+        url = issue.get("url", "")          # e.g. dchub://cron/dcpi_recompute
+        label = issue.get("issue", "")[:300]
+
+        # Map to source files. If we don't have a mapping, skip — better
+        # to refuse than guess at unknown surfaces.
+        source_files = BACKEND_ISSUE_SOURCE_FILES.get(url, [])
+        if not source_files:
+            results.append({"url": url, "outcome": "no_source_map"})
+            continue
+
+        excerpts = {}
+        for fp in source_files[:2]:
+            ex = _read_window(fp, max_chars=4000)
+            if ex:
+                excerpts[fp] = ex
+        if not excerpts:
+            results.append({"url": url, "outcome": "no_readable_source"})
+            continue
+
+        # Synthesize a "loop_state" shape so we can reuse _build_code_prompt
+        loop_state = {
+            "name": url.replace("dchub://cron/", ""),
+            "status": "failing",
+            "error": label,
+            "age_hours": None,
+            "note": f"backend_cron_scan issue: {label[:200]}",
+        }
+        prompt = _build_code_prompt(loop_state, excerpts, babysitter_log=[])
+        text, err = _call_claude(prompt, _LEARN_CODE_SYSTEM)
+        if err or not text:
+            results.append({"url": url, "outcome": f"claude_error: {err}"})
+            continue
+
+        import re
+        m = re.search(r"\{[\s\S]*\}", text)
+        if not m:
+            results.append({"url": url, "outcome": "non_json_response"})
+            continue
+        try:
+            prop = json.loads(m.group(0))
+        except Exception as e:
+            results.append({"url": url, "outcome": f"parse_fail: {e}"})
+            continue
+
+        file_path = (prop.get("file") or "").strip()
+        search = (prop.get("search") or "").strip()
+        replace = (prop.get("replace") or "").strip()
+        rationale = (prop.get("rationale") or "").strip()
+        confidence = float(prop.get("confidence", 0) or 0)
+
+        if not file_path or not search:
+            results.append({"url": url, "outcome": "refused",
+                            "rationale": rationale[:200]})
+            continue
+
+        live = _read_window(file_path, max_chars=200000)
+        if search not in live:
+            results.append({"url": url, "outcome": "search_not_found",
+                            "file": file_path,
+                            "search_preview": search[:100]})
+            continue
+
+        try:
+            import psycopg2
+            db_url = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
+            with psycopg2.connect(db_url, connect_timeout=5) as conn, conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO brain_proposed_code_fixes
+                        (loop_name, file_path, search_text, replace_text,
+                         rationale, confidence, model)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (loop_name, file_path, search_text) DO NOTHING
+                    RETURNING id
+                """, (loop_state["name"], file_path, search, replace,
+                      rationale, confidence, BRAIN_MODEL))
+                row = cur.fetchone()
+                conn.commit()
+            results.append({
+                "url": url, "outcome": "proposed" if row else "duplicate",
+                "id": row[0] if row else None, "file": file_path,
+                "confidence": confidence,
+                "rationale": rationale[:200],
+            })
+        except Exception as e:
+            results.append({"url": url,
+                            "outcome": f"store_failed: {str(e)[:200]}"})
+
+    return jsonify(
+        ok=True,
+        as_of=datetime.now(timezone.utc).isoformat(),
+        issues_examined=len(backend_issues),
+        results=results,
+    ), 200
+
+
+@brain_v2_layer5_bp.get("/api/v1/brain/proposed-code/pending-pr")
+def proposed_code_pending_pr():
+    """Phase GG (2026-05-14): high-confidence proposals that don't yet
+    have a PR opened. Consumed by the brain-layer5-pr-opener GH Actions
+    workflow which checks out each one's file, applies the search→replace,
+    commits to a new branch, and opens a draft PR.
+
+    Admin-gated because the response includes the full code proposal
+    (search/replace text — could leak partial source for paid endpoints).
+    """
+    auth_err = _require_admin()
+    if auth_err: return auth_err
+
+    try:
+        import psycopg2
+        url = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
+        if not url:
+            return jsonify(items=[]), 200
+        # Defensively add a pr_url column for tracking. ON CONFLICT
+        # not relevant here — we just want the schema migration to
+        # land before the SELECT.
+        with psycopg2.connect(url, connect_timeout=5) as conn, conn.cursor() as cur:
+            try:
+                cur.execute("""
+                    ALTER TABLE brain_proposed_code_fixes
+                    ADD COLUMN IF NOT EXISTS pr_url TEXT;
+                """)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+            min_conf = float(request.args.get("min_confidence", "0.7"))
+            limit = int(request.args.get("limit", "10"))
+            cur.execute("""
+                SELECT id, loop_name, file_path, search_text, replace_text,
+                       rationale, confidence, status, proposed_at
+                FROM brain_proposed_code_fixes
+                WHERE confidence >= %s
+                  AND pr_url IS NULL
+                  AND COALESCE(status, 'proposed') = 'proposed'
+                ORDER BY confidence DESC, proposed_at DESC
+                LIMIT %s
+            """, (min_conf, limit))
+            rows = cur.fetchall()
+        items = [{
+            "id": r[0], "loop_name": r[1], "file_path": r[2],
+            "search_text": r[3], "replace_text": r[4],
+            "rationale": r[5], "confidence": r[6],
+            "status": r[7],
+            "proposed_at": r[8].isoformat() if r[8] else None,
+        } for r in rows]
+        return jsonify(
+            as_of=datetime.now(timezone.utc).isoformat(),
+            count=len(items), items=items,
+        ), 200
+    except Exception as e:
+        return jsonify(error=str(e)[:200], items=[]), 200
+
+
+@brain_v2_layer5_bp.post("/api/v1/brain/proposed-code/<int:proposal_id>/mark-pr")
+def mark_proposal_pr(proposal_id):
+    """Phase GG: GH Actions PR opener calls this after successfully
+    opening a draft PR for a proposal, so the same proposal isn't
+    picked up on the next tick.
+    """
+    auth_err = _require_admin()
+    if auth_err: return auth_err
+
+    body = request.get_json(silent=True) or {}
+    pr_url = (body.get("pr_url") or "").strip()
+    if not pr_url:
+        return jsonify(ok=False, error="pr_url required"), 400
+
+    try:
+        import psycopg2
+        url = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
+        with psycopg2.connect(url, connect_timeout=5) as conn, conn.cursor() as cur:
+            cur.execute("""
+                UPDATE brain_proposed_code_fixes
+                SET pr_url = %s,
+                    status = 'pr_opened'
+                WHERE id = %s
+                RETURNING id
+            """, (pr_url, proposal_id))
+            row = cur.fetchone()
+            conn.commit()
+        if not row:
+            return jsonify(ok=False, error="proposal_not_found"), 404
+        return jsonify(ok=True, proposal_id=proposal_id, pr_url=pr_url), 200
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)[:200]), 500
 
 
 @brain_v2_layer5_bp.get("/api/v1/brain/proposed-code")
