@@ -172,6 +172,59 @@ def get_user_from_jwt(token, get_db_conn):
                 except Exception:
                     pass
 
+
+# Phase TT (2026-05-14): map mcp_dev_keys.tier values onto the web
+# user `plan` vocabulary the gate checks (PAID_PLANS). Free keys are
+# intentionally NOT here — a free key is not a paid bypass.
+_PAID_KEY_TIERS = {
+    'pro': 'pro', 'paid': 'pro', 'developer': 'pro',
+    'enterprise': 'enterprise', 'ent': 'enterprise',
+    'founding': 'founding',
+}
+
+
+def _user_from_api_key(api_key, get_db_conn):
+    """Resolve an X-API-Key to a pseudo-user dict IF it's an active
+    paid (pro/enterprise/founding) dev key. Returns None for unknown,
+    inactive, or free-tier keys — the gate then falls through to its
+    normal JWT / free-session logic. Best-effort: any DB error → None."""
+    api_key = (api_key or '').strip()
+    if not api_key:
+        return None
+    conn = None
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT tier, status, email FROM mcp_dev_keys WHERE api_key = %s",
+            (api_key,))
+        row = cur.fetchone()
+        cur.close()
+        if not row:
+            return None
+        tier, status, email = row
+        if status and status != 'active':
+            return None
+        plan = _PAID_KEY_TIERS.get((tier or 'free').lower())
+        if not plan:
+            return None  # free-tier key — not a bypass
+        return {'id': f'apikey:{api_key[:18]}', 'email': email or '',
+                'plan': plan, 'via': 'api_key'}
+    except Exception as e:
+        logger.error(f"API-key auth lookup error: {e}")
+        return None
+    finally:
+        if conn:
+            try:
+                from main import return_pg_connection
+                return_pg_connection(conn)
+            except Exception:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+
 def get_usage(user_id, get_db_conn):
     conn = None
     try:
@@ -261,10 +314,21 @@ def init_free_tier_gate(app, get_db_conn):
         token = request.headers.get('Authorization')
         user = get_user_from_jwt(token, get_db_conn)
 
+        # Phase TT (2026-05-14): also accept a paid API key. The gate
+        # used to honor ONLY a logged-in web JWT, so pro / enterprise
+        # customers hitting the Land & Power surface via X-API-Key got
+        # 401 even with a valid key. An X-API-Key that resolves to a
+        # paid tier is now a first-class auth path.
+        if not user:
+            _api_key = (request.headers.get('X-API-Key')
+                        or request.args.get('api_key'))
+            if _api_key:
+                user = _user_from_api_key(_api_key, get_db_conn)
+
         if not user:
             return jsonify({
                 'error': 'authentication_required',
-                'message': 'Sign in to access the Land & Power map.',
+                'message': 'Sign in (or pass a Pro/Enterprise X-API-Key) to access the Land & Power map.',
                 'login_url': 'https://dchub.cloud/login?redirect=/land-power-map'
             }), 401
 
