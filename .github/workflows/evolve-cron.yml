@@ -51,8 +51,16 @@ permissions:
 
 jobs:
   brain_learn:
-    # Run on the hourly schedule OR manual "all" / "brain"
-    if: github.event.schedule == '0 * * * *' || (github.event_name == 'workflow_dispatch' && (inputs.phase == 'all' || inputs.phase == 'brain'))
+    # Phase RR (2026-05-14): run on EVERY scheduled tick, not just the
+    # exact '0 * * * *' string. Same GitHub-Actions-drops-scheduled-runs
+    # problem fixed for marketing_auto_press in PR #116 — gating on one
+    # cron string meant brain_learn skipped on most evolve-cron runs
+    # (it fired via '0 */6', '15 */6', '30 13', etc.) and was dropped
+    # outright whenever GH skipped the hourly tick. /api/v1/brain/learn
+    # is safe to run often: per-pattern cooldowns + the 2-cycle approval
+    # gate prevent any over-action, and a no-op pass (no learnable
+    # findings) is cheap.
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.phase == 'all' || inputs.phase == 'brain'))
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
