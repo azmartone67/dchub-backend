@@ -94,6 +94,56 @@ def _record_event(event_type, **fields):
         pass
 
 
+def record_funnel_event(event_type, *, tool=None, tier=None, source=None,
+                        user_agent=None, ip=None, redeem_token=None,
+                        metadata=None):
+    """Phase MM (2026-05-14): context-INDEPENDENT funnel event recorder.
+
+    `_record_event` above reads from Flask's `request` object — it only
+    works inside a request handler for /click, /view, /submit. But the
+    BIGGEST funnel stage — `paywall_hit` — happens deep in the MCP
+    gating path (mcp_analytics_postgres.log_upgrade_signal), which has
+    its own request context and none of the redeem-page query params.
+
+    This version takes everything explicitly so the MCP gating layer
+    can log a `paywall_hit` row for EVERY upgrade signal. Until now
+    redeem_funnel_events had zero paywall_hit rows — the funnel had no
+    top, so /funnel-stats conversion rates were meaningless.
+
+    Best-effort — never raises. The caller's primary work (serving the
+    MCP response) must never break because funnel logging hiccupped.
+    """
+    _ensure_table()
+    import hashlib
+    ip_hash = None
+    if ip:
+        ip_clean = str(ip).split(",")[0].strip()
+        if ip_clean:
+            ip_hash = hashlib.sha256(ip_clean.encode("utf-8")).hexdigest()[:16]
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute(
+                """INSERT INTO redeem_funnel_events
+                       (event_type, source, tool, tier, user_agent,
+                        ip_hash, referer, redeem_token, metadata)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                (
+                    event_type,
+                    source,
+                    tool,
+                    tier,
+                    (user_agent or "")[:500],
+                    ip_hash,
+                    None,
+                    redeem_token,
+                    json.dumps(metadata or {}),
+                ),
+            )
+            c.commit()
+    except Exception:
+        pass
+
+
 @redeem_tracking_bp.route("/click", methods=["GET", "POST"])
 def track_click():
     """Fire when redeem URL is opened. Beacon-style — usually a 1px GIF or 204."""
