@@ -29,6 +29,11 @@ WHITELIST_TABLES = {
     'audit_log', 'alert_history', 'energy_sync_log', 'email_drip_log',
     'ai_outreach_log', 'smoke_test_history', 'pipeline_drafts',
     'redeem_funnel_events',
+    # market_power_scores is upserted via an explicit UPDATE-or-INSERT
+    # (the INSERT only runs when the UPDATE matched 0 rows) — not an
+    # accidental bare insert. ON CONFLICT was removed deliberately
+    # because the live table's slug uniqueness wasn't enforceable.
+    'market_power_scores',
 }
 
 

@@ -505,6 +505,26 @@ def recompute_all_scores(source: str = "manual") -> dict:
         run_id = cur.fetchone()[0]
         c.commit()
 
+    # Phase SS (2026-05-14): one-time dedup before scoring. The recompute
+    # had been dying every run with "UniqueViolation on
+    # market_power_scores_slug_key" despite an ON CONFLICT clause — which
+    # only happens when the live table has accumulated DUPLICATE
+    # market_slug rows (so the slug uniqueness the ON CONFLICT relies on
+    # isn't actually enforced). Collapse to the newest row per slug so
+    # reads and the upsert below are sane. Best-effort — never blocks the
+    # recompute; scores stayed frozen at a 3-day-stale snapshot until this.
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                DELETE FROM market_power_scores
+                WHERE id NOT IN (
+                    SELECT MAX(id) FROM market_power_scores GROUP BY market_slug
+                )
+            """)
+            c.commit()
+    except Exception as _dedup_err:
+        print(f"[dcpi] recompute dedup skipped: {_dedup_err}")
+
     # Phase QQ+3 (2026-05-13): use MARKETS only (canonical 6-tuple shape).
     # Previously: `_dcpi_dynamic_markets() or MARKETS`. The dynamic helper
     # returns 9-key dicts (slug, name, cities, state, country, facility_count,
@@ -531,49 +551,21 @@ def recompute_all_scores(source: str = "manual") -> dict:
             risks, opps = derive_top_signals(m, metrics, c_score, e_score)
 
             with _conn() as c, c.cursor() as cur:
-                # Phase FF+4 (2026-05-13): UPSERT, not INSERT. Production
-                # has a UNIQUE constraint `market_power_scores_slug_key`
-                # on (market_slug) that _ensure_tables doesn't define
-                # but exists in the live DB (added via manual migration).
-                # The previous plain INSERT raised UniqueViolation on
-                # every market after the first run — markets_scored=0,
-                # errors=30, loop probe showed stale at 57h. Now we
-                # upsert: keep one canonical row per market, refresh
-                # all metric columns + computed_at on each recompute.
-                # Identifier columns (slug/name/state/iso/lat/lon) are
-                # treated as stable — they don't change between runs.
-                cur.execute("""
-                    INSERT INTO market_power_scores (
-                        market_slug, market_name, state, iso, latitude, longitude,
-                        constraint_score, excess_power_score, time_to_power_months,
-                        queue_capacity_mw, queue_wait_months, reserve_margin_pct,
-                        gen_additions_12mo_mw, curtailment_pct, stranded_capacity_mw,
-                        emergency_count_30d,
-                        top_risks_json, top_opportunities_json, verdict, computed_at
-                    )
-                    VALUES (%s,%s,%s,%s,%s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s, %s, %s,%s,%s, NOW())
-                    ON CONFLICT (market_slug) DO UPDATE SET
-                        market_name             = EXCLUDED.market_name,
-                        state                   = EXCLUDED.state,
-                        iso                     = EXCLUDED.iso,
-                        latitude                = EXCLUDED.latitude,
-                        longitude               = EXCLUDED.longitude,
-                        constraint_score        = EXCLUDED.constraint_score,
-                        excess_power_score      = EXCLUDED.excess_power_score,
-                        time_to_power_months    = EXCLUDED.time_to_power_months,
-                        queue_capacity_mw       = EXCLUDED.queue_capacity_mw,
-                        queue_wait_months       = EXCLUDED.queue_wait_months,
-                        reserve_margin_pct      = EXCLUDED.reserve_margin_pct,
-                        gen_additions_12mo_mw   = EXCLUDED.gen_additions_12mo_mw,
-                        curtailment_pct         = EXCLUDED.curtailment_pct,
-                        stranded_capacity_mw    = EXCLUDED.stranded_capacity_mw,
-                        emergency_count_30d     = EXCLUDED.emergency_count_30d,
-                        top_risks_json          = EXCLUDED.top_risks_json,
-                        top_opportunities_json  = EXCLUDED.top_opportunities_json,
-                        verdict                 = EXCLUDED.verdict,
-                        computed_at             = NOW()
-                """, (
-                    slug, name, state, iso, lat, lon,
+                # Phase SS (2026-05-14): explicit UPDATE-or-INSERT instead
+                # of ON CONFLICT. The Phase FF+4 ON CONFLICT (market_slug)
+                # upsert kept raising "UniqueViolation on
+                # market_power_scores_slug_key" — which can only happen
+                # if the live table has duplicate market_slug rows, i.e.
+                # the constraint the ON CONFLICT arbiter relies on isn't
+                # actually enforceable. The recompute died on every
+                # market and DCPI scores froze 3 days stale.
+                #
+                # UPDATE-or-INSERT depends on NO constraint: it refreshes
+                # every row matching the slug (the dedup pass above keeps
+                # that at one), and only INSERTs when none exist. It
+                # cannot raise UniqueViolation.
+                _vals = (
+                    name, state, iso, lat, lon,
                     c_score, e_score, ttp,
                     metrics.get("queue_capacity_mw"), metrics.get("queue_wait_months"),
                     metrics.get("reserve_margin_pct"),
@@ -581,7 +573,33 @@ def recompute_all_scores(source: str = "manual") -> dict:
                     metrics.get("stranded_capacity_mw"),
                     metrics.get("emergency_count_30d") or 0,
                     json.dumps(risks), json.dumps(opps), verdict,
-                ))
+                )
+                cur.execute("""
+                    UPDATE market_power_scores SET
+                        market_name=%s, state=%s, iso=%s, latitude=%s, longitude=%s,
+                        constraint_score=%s, excess_power_score=%s, time_to_power_months=%s,
+                        queue_capacity_mw=%s, queue_wait_months=%s, reserve_margin_pct=%s,
+                        gen_additions_12mo_mw=%s, curtailment_pct=%s, stranded_capacity_mw=%s,
+                        emergency_count_30d=%s,
+                        top_risks_json=%s, top_opportunities_json=%s, verdict=%s,
+                        computed_at=NOW()
+                    WHERE market_slug=%s
+                """, _vals + (slug,))
+                if cur.rowcount == 0:
+                    # No existing row for this slug — insert a fresh one.
+                    # Safe plain INSERT: the UPDATE just proved 0 rows match.
+                    cur.execute("""
+                        INSERT INTO market_power_scores (
+                            market_name, state, iso, latitude, longitude,
+                            constraint_score, excess_power_score, time_to_power_months,
+                            queue_capacity_mw, queue_wait_months, reserve_margin_pct,
+                            gen_additions_12mo_mw, curtailment_pct, stranded_capacity_mw,
+                            emergency_count_30d,
+                            top_risks_json, top_opportunities_json, verdict,
+                            market_slug, computed_at
+                        )
+                        VALUES (%s,%s,%s,%s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s, %s, %s,%s,%s, %s, NOW())
+                    """, _vals + (slug,))
                 c.commit()
             scored += 1
         except Exception as e:
