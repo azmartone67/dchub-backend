@@ -13218,14 +13218,32 @@ if ENABLE_DISCOVERY_THREADS:
 try:
     from health_watchdog import register_watchdog_routes, init_watchdog
     register_watchdog_routes(app)
-    def _deferred_watchdog():
-        try:
-            init_watchdog(app, check_interval=60, max_failures=3)
-            print("🐕 Health Watchdog: ✅ Running (check every 60s, restart after 3 failures)")
-        except Exception as e:
-            print(f"⚠️ Health Watchdog: Failed to start: {e}")
-    _deferred_bg_threads.append(('Health Watchdog', _deferred_watchdog))
-    print("🐕 Health Watchdog: Routes registered, thread deferred to staggered startup")
+
+    # Init the watchdog EAGERLY — not via _deferred_bg_threads.
+    #
+    # Why this changed (2026-05-14): the watchdog used to be queued in
+    # _deferred_bg_threads, which (a) waits 180s + a 15s-per-task stagger
+    # before launching and (b) runs every task through _memory_guarded,
+    # which SKIPS the task entirely if RSS > 400MB. On this app RSS is
+    # routinely above that at startup, so the watchdog was being
+    # permanently skipped — watchdog_instance stayed None forever and
+    # /api/health/watchdog returned 503 on every request.
+    #
+    # That 503 failed post-deploy-smoke on EVERY push, which triggered
+    # auto-repair.yml, which spawned a garbage 219-file branch each time
+    # (70+ stale auto-repair-* branches accumulated). Gating the
+    # subsystem whose JOB is to react to high memory behind a
+    # high-memory skip was exactly backwards.
+    #
+    # HealthWatchdog.__init__ is trivial (attribute assignment) and
+    # .start() just spawns a daemon thread whose loop sleeps 30s before
+    # its first check — so eager init carries no real startup cost and
+    # the endpoint starts answering 200 immediately.
+    try:
+        init_watchdog(app, check_interval=60, max_failures=3)
+        print("🐕 Health Watchdog: ✅ Running (check every 60s, restart after 3 failures)")
+    except Exception as e:
+        print(f"⚠️ Health Watchdog: Failed to start: {e}")
 except ImportError:
     print("⚠️ Health Watchdog: Not installed")
 
