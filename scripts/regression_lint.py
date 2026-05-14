@@ -34,6 +34,10 @@ WHITELIST_TABLES = {
     # accidental bare insert. ON CONFLICT was removed deliberately
     # because the live table's slug uniqueness wasn't enforceable.
     'market_power_scores',
+    # eia_retail_rates is a full-refresh mirror of eia_electricity_rates
+    # (DELETE + INSERT...SELECT each EIA ingest) — a bulk rebuild, not an
+    # upsert, so ON CONFLICT semantics don't apply.
+    'eia_retail_rates',
 }
 
 
