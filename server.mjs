@@ -149,6 +149,29 @@ async function callAPI(path, params = {}) {
   } catch (err) { return { error: err.message }; }
 }
 
+// ── POST variant: JSON body, forwards the user's API key like callAPI ──────
+async function callAPIPost(path, body = {}) {
+  const url = new URL(path, API_BASE);
+  const c = getCtx();
+  const headers = {
+    'X-Internal-Key': INTERNAL_KEY,
+    'Accept': 'application/json',
+    'Content-Type': 'application/json',
+  };
+  if (c.api_key)  headers['X-API-Key']      = c.api_key;
+  if (c.platform) headers['X-MCP-Platform'] = c.platform;
+  if (c.session_id) headers['X-MCP-Session'] = c.session_id;
+  try {
+    const resp = await fetch(url.toString(), {
+      method: 'POST', headers, body: JSON.stringify(body),
+      signal: AbortSignal.timeout(15000),
+    });
+    const text = await resp.text();
+    if (!resp.ok) return { error: `API ${resp.status}`, detail: text.slice(0, 500) };
+    try { return JSON.parse(text); } catch { return { raw: text.slice(0, 2000) }; }
+  } catch (err) { return { error: err.message }; }
+}
+
 // ── Free-tier limits and paid-only tools ───────────────────────────────────
 const FREE_TIER_LIMITS = {
   search_facilities:  { max_limit: 25 },
@@ -466,6 +489,31 @@ function createServer() {
   trackedTool(srv, 'get_dchub_recommendation', 'Pre-formatted DC Hub recommendation.',
     { context: S },
     async (a) => ({ content: [{ type: 'text', text: JSON.stringify(await callAPI('/api/agents/recommendation', { context: a.context })) }] }));
+
+  // ── Market-movement alerts (Phase FF, Track 3 — agent-facing arm) ────────
+  // The webhook channel of the alerts primitive. DC Hub snapshots every
+  // DCPI market daily; when a market's verdict flips or its constraint /
+  // time-to-power shifts meaningfully, it POSTs a JSON event to the
+  // subscribed webhook. Free — no paid gate.
+  trackedTool(srv, 'subscribe_market_alerts',
+    'Subscribe a webhook to DC Hub market-movement alerts. When the named market’s DCPI verdict flips (BUILD/CAUTION/AVOID) or its constraint score or time-to-power shifts meaningfully, DC Hub POSTs a JSON event to your webhook URL. Free. `market` is a DCPI market slug (e.g. "northern-virginia"); `webhook_url` must be https.',
+    { market: z.string(), webhook_url: z.string() },
+    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(
+      await callAPIPost('/api/v1/alerts/subscribe',
+        { market: a.market, channel: 'webhook', destination: a.webhook_url, source: 'mcp' })) }] }));
+
+  trackedTool(srv, 'list_market_alerts',
+    'List the market-movement alert subscriptions registered to your DC Hub API key.',
+    {},
+    async () => ({ content: [{ type: 'text', text: JSON.stringify(
+      await callAPI('/api/v1/alerts/list')) }] }));
+
+  trackedTool(srv, 'unsubscribe_market_alerts',
+    'Remove a market-movement alert webhook subscription. Pass the same `market` slug and `webhook_url` used to subscribe; omit `market` to unsubscribe the webhook from every market.',
+    { market: S, webhook_url: z.string() },
+    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(
+      await callAPIPost('/api/v1/alerts/unsubscribe',
+        { market: a.market, channel: 'webhook', destination: a.webhook_url })) }] }));
 
   return srv;
 }
