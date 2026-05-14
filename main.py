@@ -9627,6 +9627,100 @@ def get_stats():
             except:
                 pass
 
+# ─── Live per-state facility counts (the /daily infographic spine) ───────
+_DAILY_US_STATE_NAMES = {
+    'AL': 'ALABAMA', 'AK': 'ALASKA', 'AZ': 'ARIZONA', 'AR': 'ARKANSAS',
+    'CA': 'CALIFORNIA', 'CO': 'COLORADO', 'CT': 'CONNECTICUT', 'DE': 'DELAWARE',
+    'DC': 'WASHINGTON DC', 'FL': 'FLORIDA', 'GA': 'GEORGIA', 'HI': 'HAWAII',
+    'ID': 'IDAHO', 'IL': 'ILLINOIS', 'IN': 'INDIANA', 'IA': 'IOWA',
+    'KS': 'KANSAS', 'KY': 'KENTUCKY', 'LA': 'LOUISIANA', 'ME': 'MAINE',
+    'MD': 'MARYLAND', 'MA': 'MASSACHUSETTS', 'MI': 'MICHIGAN', 'MN': 'MINNESOTA',
+    'MS': 'MISSISSIPPI', 'MO': 'MISSOURI', 'MT': 'MONTANA', 'NE': 'NEBRASKA',
+    'NV': 'NEVADA', 'NH': 'NEW HAMPSHIRE', 'NJ': 'NEW JERSEY', 'NM': 'NEW MEXICO',
+    'NY': 'NEW YORK', 'NC': 'NORTH CAROLINA', 'ND': 'NORTH DAKOTA', 'OH': 'OHIO',
+    'OK': 'OKLAHOMA', 'OR': 'OREGON', 'PA': 'PENNSYLVANIA', 'RI': 'RHODE ISLAND',
+    'SC': 'SOUTH CAROLINA', 'SD': 'SOUTH DAKOTA', 'TN': 'TENNESSEE', 'TX': 'TEXAS',
+    'UT': 'UTAH', 'VT': 'VERMONT', 'VA': 'VIRGINIA', 'WA': 'WASHINGTON',
+    'WV': 'WEST VIRGINIA', 'WI': 'WISCONSIN', 'WY': 'WYOMING',
+}
+# Status string -> bucket. Anything unrecognised is simply not counted.
+_DAILY_STATUS_OP = {'operational', 'active', 'live', 'in service', 'online'}
+_DAILY_STATUS_UC = {'under construction', 'construction', 'under_construction',
+                    'expanding', 'pre-construction', 'commissioning'}
+_DAILY_STATUS_ANN = {'announced', 'planned', 'planning', 'approved', 'proposed',
+                     'in development', 'under development', 'permitting',
+                     'development', 'pre-planning'}
+
+
+@app.route('/api/v1/facilities/state-status-counts', methods=['GET'])
+def facilities_state_status_counts():
+    """Real per-US-state facility counts bucketed operational / under
+    construction / announced — one GROUP BY, no rate limit, public.
+
+    This is the live data spine for the /daily infographic. The daily
+    microservice used to scale a static 2026-03-31 seed because it could
+    only afford one rate-limited API call; this endpoint hands it the
+    real per-state distribution in a single hit, so /daily finally
+    tracks new sites as they land instead of re-rendering frozen data.
+    """
+    conn = None
+    try:
+        conn = get_read_db()
+        c = conn.cursor()
+        c.execute("""
+            SELECT UPPER(TRIM(state)) AS st, LOWER(TRIM(status)) AS status, COUNT(*)
+            FROM facilities
+            WHERE country IN ('US', 'USA', 'United States')
+              AND state IS NOT NULL AND TRIM(state) <> ''
+              AND status IS NOT NULL AND TRIM(status) <> ''
+            GROUP BY 1, 2
+        """)
+        rows = c.fetchall()
+        states = {}
+        for st, status, n in rows:
+            name = _DAILY_US_STATE_NAMES.get(st)
+            if not name:
+                continue
+            b = states.setdefault(name, {'name': name, 'op': 0, 'uc': 0, 'ann': 0})
+            n = int(n or 0)
+            if status in _DAILY_STATUS_OP:
+                b['op'] += n
+            elif status in _DAILY_STATUS_UC:
+                b['uc'] += n
+            elif status in _DAILY_STATUS_ANN:
+                b['ann'] += n
+        out = sorted(states.values(),
+                     key=lambda r: r['op'] + r['uc'] + r['ann'], reverse=True)
+        result = {
+            'success': True,
+            'unit': 'facilities',
+            'as_of': datetime.utcnow().strftime('%Y-%m-%d'),
+            'source': 'DC Hub live facilities DB',
+            'states': out,
+            'totals': {'op': sum(r['op'] for r in out),
+                       'uc': sum(r['uc'] for r in out),
+                       'ann': sum(r['ann'] for r in out)},
+            'state_count': len(out),
+            'generated_at': datetime.utcnow().isoformat(),
+        }
+        cache_for_degradation('v1_state_status_counts', result)
+        return jsonify(result)
+    except Exception as e:
+        logger.error("state-status-counts error: %s", e)
+        cached, age = get_degraded_data('v1_state_status_counts')
+        if cached:
+            cached['degraded'] = True
+            cached['cache_age_seconds'] = round(age)
+            return jsonify(cached), 200
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
 # ─── Aggregate endpoints for dashboard charts ────────────────────────────
 
 
