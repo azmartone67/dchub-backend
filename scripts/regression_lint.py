@@ -38,6 +38,10 @@ WHITELIST_TABLES = {
     # (DELETE + INSERT...SELECT each EIA ingest) — a bulk rebuild, not an
     # upsert, so ON CONFLICT semantics don't apply.
     'eia_retail_rates',
+    # mcp_unlock_tokens: every INSERT is a freshly-minted random PK
+    # (secrets.token_urlsafe) gated by a prior SELECT — a conflict is
+    # statistically impossible, ON CONFLICT would be noise.
+    'mcp_unlock_tokens',
 }
 
 

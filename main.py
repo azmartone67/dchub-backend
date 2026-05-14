@@ -1116,6 +1116,15 @@ try:
     except Exception as _pe:
         import logging
         logging.getLogger(__name__).warning('pair_code wiring failed: %s', _pe)
+    # Phase TT (2026-05-14): identity-capture Increment 2 — the
+    # /unlock/<token> magic-link page. The agent-relayed path for
+    # value-moment email capture (the other arm is POST /keys/identify).
+    try:
+        from routes.unlock_page import unlock_page_bp
+        app.register_blueprint(unlock_page_bp)
+    except Exception as _ue:
+        import logging
+        logging.getLogger(__name__).warning('unlock_page wiring failed: %s', _ue)
     # Phase DD+ (2026-05-12): conversion plays 3-6 — top-up, demo
     # unlock, email trial, affiliate attribution. See
     # routes/mcp_conversion_plays.py.
@@ -3702,6 +3711,22 @@ def _mcp_key_is_identified(api_key):
     return identified
 
 
+def _mcp_unlock_link(api_key):
+    """Build the /unlock/<token> magic-link for an agent to relay to its
+    human (identity-capture Increment 2). Returns None when there's no
+    key to identify — the agent should claim one first — or when the
+    token store is unavailable; the response still carries the
+    agent_action POST path, so identify still works without the link."""
+    if not api_key:
+        return None
+    try:
+        from routes.unlock_page import mint_unlock_token
+        tok = mint_unlock_token(api_key)
+        return f"https://dchub.cloud/unlock/{tok}" if tok else None
+    except Exception:
+        return None
+
+
 def _get_mcp_caller_tier():
     """Determine caller's tier from API key. Returns (tier, key_info)."""
     # ── Internal-key bypass (mcpServers config / internal callers) ──────────
@@ -3803,10 +3828,17 @@ def _gate_mcp_result(result_content, tool_name, tier):
                             f"markets you query."),
                     "agent_action": ("If your user shares an email, POST "
                                      '{"api_key": "<this key>", "email": "<their email>"} '
-                                     "to https://dchub.cloud/api/v1/keys/identify"),
+                                     "to https://dchub.cloud/api/v1/keys/identify — OR "
+                                     "just relay the human_link below for them to open."),
                     "url": "https://dchub.cloud/api/v1/keys/identify",
                     "method": "POST",
                     "cost": "free — email only, no payment",
+                    # Phase TT Increment 2: the agent-relayed path. A
+                    # one-field page (no password) — the human opens it,
+                    # enters an email, the key is identified. For agents
+                    # that hand their human a link instead of relaying
+                    # "what's your email?" back through the tool call.
+                    "human_link": _mcp_unlock_link(_api_key),
                 },
                 "upgrade": {
                     "url": "https://dchub.cloud/pricing#developer",
