@@ -86,14 +86,31 @@ def test_ai_adoption_when_traffic_present():
     assert "5000" in reason or "5,000" in reason or "5_000" in reason or "callers" in reason
 
 
-def test_always_falls_back_to_weekly_pulse():
+def test_always_falls_back_to_a_rotation_topic():
     """The single most important test: an empty signals dict still
     produces SOMETHING. This is what fixes the 'no_newsworthy_signal'
-    skip path that bricked the daily heartbeat for 29 of 30 days."""
+    skip path that bricked the daily heartbeat for 29 of 30 days.
+
+    Phase LL+1 (2026-05-14): the final fallback changed from a single
+    static 'weekly_pulse' topic to an 8-entry day-of-month rotation
+    (auto_press was underproducing partly because the static fallback
+    was so repetitive that Claude self-refused / validation rejected
+    it as too similar to prior days). The contract is unchanged in
+    spirit — empty signals ALWAYS yield a valid (topic, reason) tuple
+    — only the specific topic set grew.
+    """
     pick = _pick_daily_topic()
     topic, reason = pick({})
-    assert topic == "weekly_pulse"
+    rotation_topics = {
+        "iso_grid_pulse", "water_risk_brief", "fiber_capacity_map",
+        "interconnection_queue", "permit_velocity", "tax_incentive_brief",
+        "ma_pulse", "methodology_explainer",
+    }
+    assert topic in rotation_topics, f"unexpected fallback topic: {topic}"
     assert reason  # non-empty
+    # Determinism: same day → same topic on repeated calls
+    topic2, _ = pick({})
+    assert topic == topic2, "fallback must be deterministic within a day"
 
 
 def test_priority_order_holds_with_all_signals_present():
