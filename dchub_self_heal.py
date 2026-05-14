@@ -1337,6 +1337,15 @@ def fix_html_quality_scan():
         except Exception as e:
             findings[url] = {"error": str(e)[:200]}
             continue
+        # Phase RR (2026-05-14): strip HTML comments FIRST. Removed-asset
+        # and refactor notes are kept as comments, e.g.
+        #   <!-- Phase T: removed broken <link href="/css/dchub-nav.css"> -->
+        # The regexes below (and linked_asset_scan) would otherwise match
+        # the tags/em-dashes *inside the comment* as if they were live —
+        # producing phantom placeholder + asset_404 findings the brain
+        # then burns learn cycles trying to "fix." Comments are never
+        # rendered, so nothing in them is a real quality issue.
+        scan_body = _hp_re.sub(r"<!--[\s\S]*?-->", "", body)
         # phase 273 + 300 (Phase R-1): strip parts of the document that
         # should NOT contribute to "visible quality" checks.
         #   - <script>/<style>: JS strings, CSS comments (phase 273)
@@ -1346,7 +1355,7 @@ def fix_html_quality_scan():
         #     Brain v2's first false-positive proposal traced back here.
         #   - HTML attribute VALUES inside body (phase 300): an em-dash
         #     inside alt="…" or title="…" is intentional text, not a cell.
-        scan_body = _hp_re.sub(r"<(script|style)[\s\S]*?</\1>", "", body)
+        scan_body = _hp_re.sub(r"<(script|style)[\s\S]*?</\1>", "", scan_body)
         # Strip <head>...</head> entirely — its content is metadata, never
         # rendered as visible page text
         scan_body = _hp_re.sub(r"<head\b[\s\S]*?</head>", "", scan_body, flags=_hp_re.I)
@@ -1704,6 +1713,15 @@ def fix_linked_asset_scan():
         except Exception as e:
             findings[page_url] = {"_fetch_error": str(e)[:120]}
             continue
+
+        # Phase RR (2026-05-14): strip HTML comments before extracting
+        # asset URLs. The frontend keeps removed-asset notes as comments,
+        # e.g. <!-- Phase T: removed broken <link href="/css/dchub-nav.css"> -->
+        # — the regexes below would match the dead href INSIDE the comment,
+        # HEAD-request it, get 404, and report a phantom asset_404. Two
+        # such false positives (/css/dchub-nav.css, dchub-analytics-v70.min.js)
+        # were the only "actionable_frontend_issues" the brain had.
+        body = _asset_re.sub(r"<!--[\s\S]*?-->", "", body)
 
         # Extract distinct stylesheet + script URLs
         sheets  = set(_LINK_RE.findall(body)) | set(_LINK_RE2.findall(body))
