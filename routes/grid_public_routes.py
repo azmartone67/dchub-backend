@@ -30,12 +30,56 @@ def _user_tier(req):
 
 
 def _fetch_live(iso):
-    """Internal call to /api/v1/grid/intelligence/<iso>."""
+    """Internal call to /api/v1/grid/intelligence/<iso>.
+
+    Phase II (2026-05-14): three bugs were burning every /grid/<ISO>
+    page to '0 MW' despite the underlying EIA API returning fine:
+
+    1. Hardcoded :8080 — Railway uses $PORT, never 8080. Connection
+       refused → empty {} returned → page rendered with 0s. Same fix
+       pattern as PR #62 (brain_learn) and #68 (dcpi cron URL).
+
+    2. `r.json().get('data', {})` — the /api/v1/grid/intelligence/<iso>
+       endpoint returns fields at TOP LEVEL (demand_mw, demand_24h,
+       generation_mix, headroom), NOT nested under 'data'. The
+       `.get('data', {})` indirection silently returned {} on every
+       call. Fall back to full payload if 'data' key missing.
+
+    3. Public-URL fallback so the function still works when running
+       in a context where 127.0.0.1 isn't reachable.
+    """
+    import os as _os
+    port = _os.environ.get('PORT', '8080')
+    urls = [
+        f'http://127.0.0.1:{port}/api/v1/grid/intelligence/{iso}',
+        f'https://dchub-backend-production.up.railway.app/api/v1/grid/intelligence/{iso}',
+    ]
+    for u in urls:
+        try:
+            r = requests.get(u, timeout=8)
+            if r.ok:
+                payload = r.json()
+                # Prefer 'data' key if present; fall back to payload itself
+                inner = payload.get('data', None) if isinstance(payload, dict) else None
+                if inner is None or not isinstance(inner, dict) or not inner:
+                    inner = payload if isinstance(payload, dict) else {}
+                # Sanity check: must have at least one real metric
+                if inner.get('demand_mw') or inner.get('current_demand_mw') or inner.get('demand_24h'):
+                    return inner
+        except Exception:
+            continue
+    return {}
+
+
+def _to_int(v):
+    """Defensive int coercion — EIA API returns demand_mw as STRING
+    ('88907') in some response shapes. Without this, format-strings
+    like {demand:,} would emit '88,907' for ints but crash on strings,
+    and arithmetic comparisons would fail silently."""
     try:
-        r = requests.get(f'http://127.0.0.1:8080/api/v1/grid/intelligence/{iso}', timeout=8)
-        return r.json().get('data', {}) if r.ok else {}
-    except Exception:
-        return {}
+        return int(float(v))
+    except (TypeError, ValueError):
+        return 0
 
 
 @grid_public_bp.route('/grid', methods=['GET'])
@@ -51,7 +95,9 @@ def grid_hub():
             'name': meta['name'],
             'states': meta['states'],
             'tagline': meta['tagline'],
-            'demand_mw': live.get('current_demand_mw') if not gated else None,
+            # Phase II: same field-read fix as render_grid_iso_html.
+            # API field is `demand_mw` (not current_demand_mw).
+            'demand_mw': _to_int(live.get('demand_mw') or live.get('current_demand_mw') or 0) if not gated else None,
             'headroom_pct': live.get('headroom_pct') if not gated else None,
             'gen_mix': live.get('generation_mix', {}) if not gated else {},
             'gated': gated,
@@ -218,12 +264,44 @@ def render_grid_hub_html(cards, schema, tier):
 
 
 def render_grid_iso_html(iso, meta, live, schema):
-    """Server-side HTML for /grid/<iso> deep page."""
-    demand = live.get('current_demand_mw', 0) or 0
-    headroom = live.get('headroom_pct', 0) or 0
-    capacity = live.get('total_capacity_mw', 0) or 0
-    gen_mix = live.get('generation_mix', {}) or {}
-    demand_24h = live.get('demand_24h', []) or []
+    """Server-side HTML for /grid/<iso> deep page.
+
+    Phase II (2026-05-14): field-name fix. The previous code read
+    `current_demand_mw` and `total_capacity_mw` — but the underlying
+    /api/v1/grid/intelligence/<iso> API returns `demand_mw` and uses
+    `demand_24h` peak as a capacity proxy. Result: every /grid/<iso>
+    page showed '0 MW' and '0% headroom' in the OG tags + body even
+    though the API was returning correct values like demand_mw=88907.
+
+    Same field-resolution pattern as routes/grid_card_routes.py:50
+    (which renders the OG card PNG and was already doing it right).
+    """
+    # `demand_mw` is the canonical field (string or int from EIA).
+    # Fall back to current_demand_mw for legacy shapes.
+    demand = _to_int(live.get('demand_mw') or live.get('current_demand_mw') or 0)
+
+    # 24h peak as capacity proxy
+    _h24 = live.get('demand_24h', []) or []
+    _peaks = [_to_int(row.get('mw')) for row in _h24 if isinstance(row, dict)]
+    capacity = max(_peaks) if _peaks else _to_int(live.get('total_capacity_mw') or demand)
+
+    # Headroom: percent below 24h peak
+    if capacity > 0 and demand > 0:
+        headroom = max(0.0, (capacity - demand) / capacity * 100.0)
+    else:
+        headroom = float(live.get('headroom_pct', 0) or 0)
+
+    gen_mix_raw = live.get('generation_mix', {}) or {}
+    # The API returns generation_mix as {fuel: {"mw": "N", "period": "..."}}.
+    # Normalize to {fuel: int_mw} for the rendering loop.
+    gen_mix = {}
+    if isinstance(gen_mix_raw, dict):
+        for fuel, val in gen_mix_raw.items():
+            if isinstance(val, dict):
+                gen_mix[fuel] = _to_int(val.get('mw'))
+            else:
+                gen_mix[fuel] = _to_int(val)
+    demand_24h = _h24
 
     fuel_rows = ''
     if isinstance(gen_mix, dict):
