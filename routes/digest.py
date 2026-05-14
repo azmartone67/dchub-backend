@@ -140,7 +140,14 @@ footer a{color:var(--acc)}
 <span class="delta {{ 'up' if r.delta > 0 else 'down' }}">{{ '+' if r.delta > 0 else '' }}{{ r.delta|round(1) }}</span></div>{% endfor %}
 <footer><p>Daily at 14:00 UTC · Free for citation. <a href="/dcpi">Open the index →</a> · <a href="/dcpi/press">Press kit</a></p></footer>
 </div></body></html>'''
-    return Response(render_template_string(HTML, d=d), mimetype="text/html")
+    resp = Response(render_template_string(HTML, d=d), mimetype="text/html")
+    # Phase SS (2026-05-14): short, explicit cache TTL. /digest had a
+    # 404 stuck at the CF edge for an hour (max-age=3600) — cached
+    # during a deploy window when the blueprint wasn't registered yet.
+    # A 5-minute TTL means any transient bad response clears fast
+    # instead of poisoning the page for an hour.
+    resp.headers["Cache-Control"] = "public, max-age=300, must-revalidate"
+    return resp
 
 
 @digest_bp.route("/api/v1/digest/send", methods=["POST"])
