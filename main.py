@@ -1136,6 +1136,16 @@ try:
     except Exception as _wde:
         import logging
         logging.getLogger(__name__).warning('weekly_digest wiring failed: %s', _wde)
+    # Phase FF (2026-05-14): the market-movement alerts primitive — the
+    # shared spine for buyer-facing email alerts + agent-facing webhooks,
+    # and the unfulfilled "alerts when a tracked market moves" promise
+    # from the identity-capture welcome email. See routes/market_alerts.py.
+    try:
+        from routes.market_alerts import market_alerts_bp
+        app.register_blueprint(market_alerts_bp)
+    except Exception as _mae:
+        import logging
+        logging.getLogger(__name__).warning('market_alerts wiring failed: %s', _mae)
     # Phase DD+ (2026-05-12): conversion plays 3-6 — top-up, demo
     # unlock, email trial, affiliate attribution. See
     # routes/mcp_conversion_plays.py.
