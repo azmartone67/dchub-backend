@@ -9524,7 +9524,11 @@ def get_stats():
             cp = c.fetchone()
             stats['curated_pipeline_count'] = cp[0] or 0
             stats['curated_pipeline_gw'] = round((cp[1] or 0) / 1000, 1)
-            stats['curated_pipeline_markets'] = 32
+            # Phase GG (2026-05-14): real distinct-market count — was a
+            # hardcoded 32.
+            c.execute("SELECT COUNT(DISTINCT market) FROM capacity_pipeline "
+                      "WHERE market IS NOT NULL AND market != ''")
+            stats['curated_pipeline_markets'] = c.fetchone()[0] or 0
         except Exception:
             stats['curated_pipeline_count'] = 0
             stats['curated_pipeline_gw'] = 0.0
@@ -9542,11 +9546,35 @@ def get_stats():
         except:
             stats['total_substations'] = 0
 
-        # Infrastructure layer counts — real Neon DB queries (fixed Mar 17 2026)
-        # HIFLD data now lives in substations table (79,755 records from CSV bulk load)
-        # Transmission: no dedicated table yet, keep estimate
-        HIFLD_TRANSMISSION_BASE = 300000
-        stats['total_transmission_lines'] = HIFLD_TRANSMISSION_BASE
+        # Infrastructure layer counts — real Neon DB queries.
+        # Phase GG (2026-05-14): transmission_lines was a hardcoded
+        # estimate (HIFLD_TRANSMISSION_BASE = 300000) with NO query
+        # behind it — the textbook "stale is the enemy" offender. Now:
+        # query a real transmission table if one exists; otherwise keep
+        # a labelled estimate so frontend tiles don't break, but mark
+        # `transmission_lines_source` honestly. The freshness radar
+        # already surfaces `transmission` as a missing data domain, and
+        # a real HIFLD transmission ingest is queued as follow-up work.
+        stats['total_transmission_lines'] = None
+        stats['transmission_lines_source'] = 'unavailable'
+        for _txn_table in ('transmission_lines', 'transmission_segments', 'transmission'):
+            try:
+                c.execute("SELECT to_regclass(%s)", (f'public.{_txn_table}',))
+                if (c.fetchone() or [None])[0]:
+                    c.execute(f"SELECT COUNT(*) FROM {_txn_table}")
+                    _txn_n = (c.fetchone() or [0])[0] or 0
+                    if _txn_n > 0:
+                        stats['total_transmission_lines'] = _txn_n
+                        stats['transmission_lines_source'] = 'live'
+                        break
+            except Exception:
+                pass
+        if stats['total_transmission_lines'] is None:
+            stats['total_transmission_lines'] = 300000
+            stats['transmission_lines_source'] = 'estimate'
+            stats['transmission_lines_note'] = (
+                'Estimate — no transmission-line dataset ingested yet; '
+                'tracked as a missing data domain by the freshness radar.')
         stats['total_substations_hifld'] = stats.get('total_substations', 0)
         try:
             c.execute("SELECT COUNT(*) FROM fiber_routes")
@@ -9595,20 +9623,30 @@ def get_stats():
         except:
             stats['active_subscribers'] = 0
 
+        # Phase GG (2026-05-14): the second arg to each .get() used to be
+        # a plausible frozen number (20000, 673, 79755, 1069, 59, 32851,
+        # 300000) — so if a per-table query silently failed, the
+        # dashboard showed a believable-but-fake count and the failure
+        # was invisible. Defaults are now 0: an honest "we don't have
+        # this right now" instead of a lie. (The keys are virtually
+        # always set by the try/except blocks above; this is
+        # defense-in-depth so a future refactor can't reintroduce a
+        # masking fake number.)
         result = {
             'success': True,
             'data': stats,
             'generated_at': datetime.utcnow().isoformat(),
             'version': 'v92',
             'build': '93',
-            'facilities': stats.get('total_facilities', 20000),
+            'facilities': stats.get('total_facilities', 0),
             'markets': len(stats.get('top_countries', {})),
-            'deals': stats.get('total_announcements', 673),
-            'substations': stats.get('total_substations', 79755),
-            'fiber_routes': stats.get('total_fiber_routes', 1069),
-            'metro_dark_fiber': stats.get('total_metro_dark_fiber', 59),
-            'gas_pipelines': stats.get('total_gas_pipelines', 32851),
-            'transmission_lines': stats.get('total_transmission_lines', 300000),
+            'deals': stats.get('total_announcements', 0),
+            'substations': stats.get('total_substations', 0),
+            'fiber_routes': stats.get('total_fiber_routes', 0),
+            'metro_dark_fiber': stats.get('total_metro_dark_fiber', 0),
+            'gas_pipelines': stats.get('total_gas_pipelines', 0),
+            'transmission_lines': stats.get('total_transmission_lines', 0),
+            'transmission_lines_source': stats.get('transmission_lines_source'),
             'users': stats.get('total_users', 0),
             'new_users_7d': stats.get('new_users_7d', 0),
             'new_users_30d': stats.get('new_users_30d', 0),
