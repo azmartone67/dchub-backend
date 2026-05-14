@@ -227,54 +227,55 @@ def _scale_seed_to_global(global_counts: dict) -> list[dict]:
 
 
 def fetch_snapshot() -> dict:
-    """Pull snapshot. Returns the full dict (renderable by render.py).
+    """Pull a LIVE per-state facility snapshot from the DC Hub backend.
 
-    Rate-limit-conscious: at most ONE external call per refresh.
+    v5 (2026-05-14): genuinely dynamic. Until now this scaled a static
+    2026-03-31 seed to live global totals — the per-state SHAPE never
+    moved, so /daily looked frozen no matter how many new sites landed.
+    The backend now exposes /api/v1/facilities/state-status-counts: real
+    per-US-state operational / under-construction / announced counts in
+    one public GROUP BY — no API key, no rate limit. Pull that directly.
+    The bundled seed remains ONLY as a last-resort fallback.
     """
     import datetime
 
-    if DRY_RUN or not API_KEY:
-        log.warning("DRY_RUN or no DCHUB_API_KEY — using bundled seed.")
+    if DRY_RUN:
+        log.warning("DRY_RUN — using bundled seed.")
         snap = _seed_snapshot()
-        snap["source"] = snap.get("source", "Aterio") + " · seed (no API key)"
+        snap["source"] = snap.get("source", "Aterio") + " · seed (DRY_RUN)"
         return snap
 
     try:
-        with _client() as c:
-            # Single external call: /stats, with retry on 429/5xx.
-            stats = fetch_stats(c)
-            global_counts = _extract_global_status_counts(stats) if stats else None
-
-            if global_counts:
-                log.info(
-                    "live /stats globals: op=%d uc=%d ann=%d",
-                    global_counts["op"], global_counts["uc"], global_counts["ann"],
-                )
-                scaled = _scale_seed_to_global(global_counts)
-                if scaled:
-                    return {
-                        "as_of": datetime.date.today().isoformat(),
-                        "source": (
-                            f"DC Hub /stats (live: {global_counts['op']} op · "
-                            f"{global_counts['uc']} uc · {global_counts['ann']} ann) "
-                            "+ Aterio per-state distribution"
-                        ),
-                        "generated": datetime.datetime.utcnow().isoformat() + "Z",
-                        "states": scaled,
-                        "unit": "facilities",
-                    }
-
-            raise RuntimeError(
-                f"live /stats unusable (stats={bool(stats)} globals={bool(global_counts)}); "
-                "likely rate-limited, retry once daily quota resets"
-            )
+        url = API_BASE.rstrip("/") + "/facilities/state-status-counts"
+        headers = {"User-Agent": "dchub-daily/5.0"}
+        if API_KEY:
+            headers["X-API-Key"] = API_KEY  # optional — endpoint is public
+        r = httpx.get(url, headers=headers, timeout=30.0)
+        r.raise_for_status()
+        d = r.json()
+        states = d.get("states") or []
+        total = sum((s.get("op", 0) or 0) + (s.get("uc", 0) or 0)
+                    + (s.get("ann", 0) or 0) for s in states)
+        if states and total > 0:
+            log.info("live state-status-counts: %d states, %d facilities",
+                     len(states), total)
+            return {
+                "as_of": d.get("as_of") or datetime.date.today().isoformat(),
+                "source": d.get("source", "DC Hub live facilities DB"),
+                "generated": datetime.datetime.utcnow().isoformat() + "Z",
+                "states": states,
+                "unit": "facilities",
+            }
+        raise RuntimeError(
+            f"state-status-counts returned no usable rows "
+            f"(states={len(states)} total={total})")
 
     except Exception as e:  # noqa: BLE001
-        log.error("live API fetch failed, falling back to seed: %s", e)
+        log.error("live state-status-counts failed, falling back to seed: %s", e)
         snap = _seed_snapshot()
         snap["source"] = (
             snap.get("source", "Aterio")
-            + f" · seed (live API failed: {str(e)[:80]})"
+            + f" · seed (live failed: {str(e)[:80]})"
         )
         snap["generated"] = datetime.datetime.utcnow().isoformat() + "Z"
         return snap

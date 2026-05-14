@@ -46,22 +46,62 @@ REFRESH_SECRET = os.environ.get("REFRESH_SECRET", "")
 
 # ---------- helpers ----------------------------------------------------------
 
+# v5 (2026-05-14): in-process cache for the live "today" snapshot so a
+# burst of /generate image requests doesn't re-hit the backend each time.
+_SNAP_CACHE: dict = {"snap": None, "ts": 0.0}
+_SNAP_TTL = 3600  # 1 hour
+
+
 def _data_for(date: datetime.date | None) -> R.RenderData:
+    """Resolve the per-state snapshot to render.
+
+    v5: for "today" (no explicit date — the /daily page default), pull
+    LIVE from the backend's state-status-counts endpoint so the
+    infographic tracks new sites as they land. Cached 1h in-process.
+    Explicit historical dates still read the DB snapshot. The bundled
+    seed is the last-resort fallback only.
+    """
     snap = None
-    if os.environ.get("DATABASE_URL"):
+
+    if date is None:
+        import time as _time
+        now = _time.time()
+        if _SNAP_CACHE["snap"] and (now - _SNAP_CACHE["ts"]) < _SNAP_TTL:
+            snap = _SNAP_CACHE["snap"]
+        else:
+            try:
+                live = _lazy_mcp().fetch_snapshot()
+                if live and live.get("states"):
+                    snap = live
+                    _SNAP_CACHE["snap"] = live
+                    _SNAP_CACHE["ts"] = now
+                    # Warm the DB snapshot too — keeps /share history +
+                    # the R2 pre-render path current without a separate cron.
+                    if os.environ.get("DATABASE_URL"):
+                        try:
+                            _lazy_db().upsert_snapshot(datetime.date.today(), live)
+                        except Exception as e:  # noqa: BLE001
+                            log.warning("snapshot warm-write failed: %s", e)
+            except Exception as e:  # noqa: BLE001
+                log.warning("live snapshot fetch failed: %s", e)
+
+    # Explicit historical date, or the live pull failed: DB snapshot.
+    if not snap and os.environ.get("DATABASE_URL"):
         try:
             snap = _lazy_db().get_snapshot(date)
             if not snap and date is not None:
-                    # v4.5.16: fall back to latest available snapshot before bundled cold-start seed.
-                    # The daily refresh cron may not have written a row for today yet, but the DB
-                    # has older snapshots that are still fresher than the static data.json.
-                    snap = _lazy_db().get_snapshot(None)
+                # The refresh cron may not have written a row for this
+                # date yet — the latest stored snapshot still beats the
+                # static seed.
+                snap = _lazy_db().get_snapshot(None)
         except Exception as e:  # noqa: BLE001
             log.warning("db read failed: %s", e)
+
     if not snap:
         # cold start: fall back to bundled seed
         import json
         snap = json.loads((Path(__file__).parent / "data.json").read_text())
+
     return R.RenderData(
         states=snap["states"],
         as_of=snap.get("as_of", ""),
