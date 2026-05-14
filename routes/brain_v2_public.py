@@ -35,24 +35,42 @@ def _get_state():
         from routes.brain_v2_layer4 import (
             _proposed_fixes, _learning_log,
             ANTHROPIC_API_KEY, BRAIN_MODEL,
-            _STORE_OK,
+            _STORE_OK, compute_brain_verdict, _brain_age_min,
         )
     except Exception as e:
         return {"loaded": False, "active": False, "model": "?",
                 "proposed": [], "log": [], "persistence": [],
+                "verdict": "unknown",
+                "verdict_detail": f"Brain v2 module failed to load: {str(e)[:160]}",
                 "error": str(e)[:200]}
 
     proposed = list(_proposed_fixes)
     log = list(_learning_log)
     persistence: list = []
+    last_run_at = None
     if _STORE_OK:
         try:
             from routes import brain_v2_store as _store
             proposed = _store.list_proposals(limit=200)
             log = _store.list_log(limit=200)
             persistence = _store.most_persistent_unfixed(min_count=2, limit=20)
+            _m = _store.get_meta("last_run_at")
+            last_run_at = _m.get("value") if _m else None
         except Exception:
             pass
+
+    # Phase RR (2026-05-14): compute the same honest verdict the
+    # /api/v1/brain/status API returns, so the dashboard headline tells
+    # the truth ("Healthy — nothing to fix") instead of looking broken
+    # whenever proposals == 0.
+    _last_t = log[-1].get("t") if log else None
+    verdict, verdict_detail = compute_brain_verdict(
+        bool(ANTHROPIC_API_KEY),
+        _brain_age_min(last_run_at),
+        _brain_age_min(_last_t),
+        len(proposed),
+        len(log),
+    )
     return {
         "loaded": True,
         "active": bool(ANTHROPIC_API_KEY),
@@ -61,6 +79,8 @@ def _get_state():
         "proposed": proposed,
         "log": log,
         "persistence": persistence,
+        "verdict": verdict,
+        "verdict_detail": verdict_detail,
     }
 
 
@@ -148,8 +168,10 @@ h1 .grad{background:var(--gradient);-webkit-background-clip:text;background-clip
     <div class="kpi"><div class="v">{{total_proposals}}</div><div class="l">Proposed fixes</div></div>
     <div class="kpi"><div class="v green">{{approved_count}}</div><div class="l">Approved (≥2 cycles)</div></div>
     <div class="kpi"><div class="v amber">{{pending_count}}</div><div class="l">Pending review</div></div>
-    <div class="kpi"><div class="v">{{log_count}}</div><div class="l">Learning attempts (24h)</div></div>
+    <div class="kpi"><div class="v">{{log_count}}</div><div class="l">Learning attempts (logged)</div></div>
   </div>
+
+  {{verdict_banner}}
 
   <div class="section">
     <h2 class="section-title">Recent proposals</h2>
@@ -202,9 +224,44 @@ def brain_page():
 
     approved_count = sum(1 for p in proposals if p.get("approved"))
     pending_count = sum(1 for p in proposals if not p.get("approved"))
-    status_active = state.get("active")
-    status_text = "ACTIVE" if status_active else ("DORMANT" if state.get("loaded") else "OFFLINE")
-    status_class = "green" if status_active else ("amber" if state.get("loaded") else "red")
+
+    # Phase RR (2026-05-14): headline the honest verdict, not a bare
+    # "ACTIVE". "ACTIVE / 0 / 0 / 0" read as failure every time it was
+    # shown — even though 0 proposals is the CORRECT result when the
+    # healer's findings are clean. The verdict says which of the five
+    # real states the brain is in, and the banner explains it in plain
+    # English so nobody has to guess again.
+    verdict = state.get("verdict", "unknown")
+    verdict_detail = state.get("verdict_detail", "")
+    _VERDICT_DISPLAY = {
+        "healthy_quiet":   ("HEALTHY", "green",
+                            "Healthy — quiet because there's nothing to fix"),
+        "healthy_working": ("WORKING", "green",
+                            "Healthy — actively proposing fixes"),
+        "warming_up":      ("WARMING UP", "amber",
+                            "Warming up — first learn pass pending"),
+        "stalled":         ("STALLED", "red",
+                            "Stalled — the learn loop stopped firing"),
+        "dormant":         ("DORMANT", "amber",
+                            "Dormant — ANTHROPIC_API_KEY not set"),
+        "unknown":         ("UNKNOWN", "amber", "State unknown"),
+    }
+    status_text, status_class, verdict_headline = _VERDICT_DISPLAY.get(
+        verdict, ("UNKNOWN", "amber", "State unknown"))
+    _banner_bg = {"green": "rgba(16,185,129,0.10)",
+                  "amber": "rgba(245,158,11,0.10)",
+                  "red": "rgba(239,68,68,0.12)"}.get(status_class, "rgba(245,158,11,0.10)")
+    _banner_bd = {"green": "rgba(16,185,129,0.4)",
+                  "amber": "rgba(245,158,11,0.4)",
+                  "red": "rgba(239,68,68,0.45)"}.get(status_class, "rgba(245,158,11,0.4)")
+    verdict_banner = (
+        f'<div style="background:{_banner_bg};border:1px solid {_banner_bd};'
+        f'border-radius:10px;padding:1rem 1.25rem;margin:0.4rem 0 0.4rem;">'
+        f'<div style="font-weight:700;font-size:0.95rem;margin-bottom:0.25rem;">'
+        f'{_h(verdict_headline)}</div>'
+        f'<div style="color:var(--tx2);font-size:0.9rem;line-height:1.5;">'
+        f'{_h(verdict_detail)}</div></div>'
+    )
 
     # Render proposals (newest first)
     if proposals:
@@ -291,6 +348,7 @@ def brain_page():
             .replace("{{approved_count}}", str(approved_count))
             .replace("{{pending_count}}", str(pending_count))
             .replace("{{log_count}}", str(len(state["log"])))
+            .replace("{{verdict_banner}}", verdict_banner)
             .replace("{{proposals_html}}", proposals_html)
             .replace("{{persistence_html}}", persistence_html)
             .replace("{{log_html}}", log_html)

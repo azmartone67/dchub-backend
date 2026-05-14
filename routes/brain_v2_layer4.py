@@ -763,6 +763,67 @@ def persistence_worklist():
     ), 200
 
 
+def _brain_age_min(val):
+    """Minutes since an ISO/datetime value, or None."""
+    if not val:
+        return None
+    try:
+        t = val if isinstance(val, str) else val.isoformat()
+        ts = datetime.fromisoformat(t.replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return int((datetime.now(timezone.utc) - ts).total_seconds() / 60)
+    except Exception:
+        return None
+
+
+def compute_brain_verdict(has_api_key, run_age_min, stale_min,
+                          pf_count, log_count):
+    """The honest, unambiguous Layer-4 state — shared by
+    /api/v1/brain/status AND the /brain dashboard so both tell the same
+    story. Returns (verdict, verdict_detail).
+
+    The recurring "why isn't the brain learning?" confusion comes from a
+    dashboard showing 0/0/0, which LOOKS like failure but is almost
+    always success: nothing broken => nothing to propose. Crucially,
+    `stalled` fires ONLY on positive evidence (a heartbeat that's
+    genuinely old) — never on the mere absence of the heartbeat field,
+    which is what made the first cut of this verdict cry wolf right
+    after deploy.
+    """
+    if not has_api_key:
+        return ("dormant",
+                "ANTHROPIC_API_KEY is not set — Layer 4 is off. "
+                "Set it in Railway env to activate.")
+    # Positive evidence of a stall: heartbeat exists AND is old.
+    if run_age_min is not None and run_age_min > 180:
+        return ("stalled",
+                f"The learn loop's last run was {run_age_min}m ago — the "
+                f"brain cron is dropped or erroring. This is the only "
+                f"state that needs a human.")
+    # Recent heartbeat — trust it.
+    if run_age_min is not None:
+        if pf_count > 0 or (stale_min is not None and stale_min < 180):
+            return ("healthy_working",
+                    f"Running normally — last pass {run_age_min}m ago, "
+                    f"{pf_count} proposal(s) in flight.")
+        return ("healthy_quiet",
+                f"Healthy. Last pass {run_age_min}m ago found nothing "
+                f"text-fixable — the healer's findings are clean, so 0 "
+                f"proposals is the correct result, not a failure.")
+    # No heartbeat yet. Do NOT cry "stalled" on a brand-new field — fall
+    # back to log history for evidence the brain has been running.
+    if log_count > 0:
+        return ("healthy_quiet",
+                "Healthy. The run-heartbeat is newly added and gets "
+                "stamped on the next learn pass; existing log history "
+                "shows the brain has been running. 0 proposals = clean "
+                "findings, not a failure.")
+    return ("warming_up",
+            "No activity recorded yet — the brain hasn't completed a "
+            "learn pass since deploy. Give it one cron cycle.")
+
+
 @brain_v2_bp.get("/api/v1/brain/status")
 def brain_status():
     """Public health check — proves the layer is loaded + reports activation.
@@ -795,20 +856,7 @@ def brain_status():
         log_count = len(_learning_log)
         last_t = _learning_log[-1].get("t") if _learning_log else None
 
-    def _age_min(val):
-        """Minutes since an ISO/datetime value, or None."""
-        if not val:
-            return None
-        try:
-            t = val if isinstance(val, str) else val.isoformat()
-            ts = datetime.fromisoformat(t.replace("Z", "+00:00"))
-            if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
-            return int((datetime.now(timezone.utc) - ts).total_seconds() / 60)
-        except Exception:
-            return None
-
-    stale_min = _age_min(last_t)
+    stale_min = _brain_age_min(last_t)
 
     # Phase RR (2026-05-14): the heartbeat. last_run_at is stamped on
     # EVERY trigger_learn() call (incl. no-op passes). last_log_at only
@@ -821,12 +869,12 @@ def brain_status():
             _m = _store.get_meta("last_run_at")
             if _m:
                 last_run_at = _m.get("value")
-                run_age_min = _age_min(last_run_at)
+                run_age_min = _brain_age_min(last_run_at)
         except Exception:
             pass
 
-    # Legacy `health` field — kept so the existing /brain dashboard
-    # keeps rendering. The new `verdict` is the truthful one.
+    # Legacy `health` field — kept so older dashboard code keeps
+    # rendering. The new `verdict` is the truthful one.
     health = "dormant"
     if not ANTHROPIC_API_KEY:
         health = "dormant"
@@ -839,37 +887,8 @@ def brain_status():
     else:
         health = "stale"
 
-    # ── verdict: the honest, unambiguous state ──────────────────────
-    # The recurring "why isn't the brain learning?" confusion comes from
-    # the dashboard showing 0/0/0 — which looks like failure but is
-    # almost always success (nothing broken => nothing to propose).
-    # verdict separates the four real states explicitly.
-    if not ANTHROPIC_API_KEY:
-        verdict = "dormant"
-        verdict_detail = ("ANTHROPIC_API_KEY is not set — Layer 4 is off. "
-                          "Set it in Railway env to activate.")
-    elif run_age_min is None or run_age_min > 180:
-        # The learn loop itself hasn't run in 3h+ (cron dropped/broken).
-        # THIS is the real "broken" — and the only state that needs action.
-        verdict = "stalled"
-        _ago = (f"{run_age_min}m ago" if run_age_min is not None
-                else "never recorded")
-        verdict_detail = (f"The learn loop hasn't run since {_ago} — the "
-                          f"hourly brain cron is dropped or erroring. "
-                          f"This is the only state that needs a human.")
-    elif pf_count > 0 or (stale_min is not None and stale_min < 180):
-        verdict = "healthy_working"
-        verdict_detail = (f"Running normally — last pass {run_age_min}m ago, "
-                          f"{pf_count} proposal(s) in flight.")
-    else:
-        # Cron IS firing recently, but no recent learn attempts and no
-        # proposals. That means the healer findings are clean — there is
-        # nothing text-fixable to learn. 0 proposals here is CORRECT.
-        verdict = "healthy_quiet"
-        verdict_detail = (f"Healthy. The learn loop ran {run_age_min}m ago "
-                          f"and found nothing text-fixable — the healer's "
-                          f"findings are clean, so 0 proposals is the "
-                          f"correct result, not a failure.")
+    verdict, verdict_detail = compute_brain_verdict(
+        bool(ANTHROPIC_API_KEY), run_age_min, stale_min, pf_count, log_count)
 
     return jsonify(
         layer=4,
