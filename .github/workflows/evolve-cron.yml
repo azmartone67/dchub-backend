@@ -41,13 +41,18 @@ on:
     # identified MCP key, Monday 15:00 UTC (after the agent vendor
     # digest). Deduped once-per-week per key on mcp_dev_keys.metadata.
     - cron: '0 15 * * 1'
+    # Phase FF (2026-05-14) — market-movement alerts, daily 16:00 UTC.
+    # Snapshots every DCPI market, diffs day-over-day, fans movement out
+    # to email + webhook subscribers. Idempotent: the 20h snapshot-gap
+    # guard means a same-day re-run won't corrupt the diff baseline.
+    - cron: '0 16 * * *'
   workflow_dispatch:
     inputs:
       phase:
         description: 'Which phase to run on demand'
         required: true
         type: choice
-        options: [all, brain, outreach, audit, marketing, linkedin, testimonials, agent_vendor, weekly_digest]
+        options: [all, brain, outreach, audit, marketing, linkedin, testimonials, agent_vendor, weekly_digest, market_alerts]
         default: all
 
 permissions:
@@ -345,4 +350,45 @@ jobs:
               print(f\"::notice::Weekly digest dry-run — eligible={d.get('eligible_total',0)}\")
           else:
               print(f\"::warning::Weekly digest mode={mode} error={d.get('error','unknown')}\")
+          " || true
+
+  # Phase FF (2026-05-14) — market-movement alerts, daily 16:00 UTC.
+  # Snapshots every DCPI-scored market, diffs day-over-day, and fans
+  # detected movement (verdict flips, constraint / time-to-power shifts)
+  # out to email + webhook subscribers. Idempotent — the 20h snapshot-gap
+  # guard keeps the diff baseline clean across same-day re-runs.
+  market_alerts_run:
+    if: github.event.schedule == '0 16 * * *' || (github.event_name == 'workflow_dispatch' && (inputs.phase == 'all' || inputs.phase == 'market_alerts'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Run market-movement alerts
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping market alerts"
+            exit 0
+          fi
+          response=$(curl -sS --max-time 120 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "https://dchub-backend-production.up.railway.app/api/v1/alerts/run?send=true" \
+            || echo '{"mode":"error","error":"curl_fail"}')
+          echo "$response" | head -c 2000
+          echo
+          echo "$response" | python3 -c "
+          import json, sys
+          try: d = json.load(sys.stdin)
+          except Exception:
+              print('::warning::Market alerts returned non-JSON'); sys.exit(0)
+          mode = d.get('mode','?')
+          dv = d.get('deliveries',{})
+          if mode == 'sent':
+              print(f\"::notice::Market alerts — scanned={d.get('markets_scanned',0)} moved={d.get('movements_detected',0)} email={dv.get('email',0)} webhook={dv.get('webhook',0)} failed={dv.get('failed',0)}\")
+          elif mode == 'no_provider':
+              print(f\"::notice::Market alerts — moved={d.get('movements_detected',0)} but DCHUB_RESEND_API_KEY not set (webhooks still fire; email skipped)\")
+          elif mode == 'dry_run':
+              print(f\"::notice::Market alerts dry-run — moved={d.get('movements_detected',0)}\")
+          else:
+              print(f\"::warning::Market alerts mode={mode} error={d.get('error','unknown')}\")
           " || true

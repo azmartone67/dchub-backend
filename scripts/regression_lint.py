@@ -42,6 +42,12 @@ WHITELIST_TABLES = {
     # (secrets.token_urlsafe) gated by a prior SELECT — a conflict is
     # statistically impossible, ON CONFLICT would be noise.
     'mcp_unlock_tokens',
+    # market_movement_snapshots / market_movement_events: append-only
+    # time-series logs (one row per market per detection pass / one row
+    # per detected movement). No natural key to conflict on — they're
+    # history, not state, so ON CONFLICT semantics don't apply.
+    'market_movement_snapshots',
+    'market_movement_events',
 }
 
 
