@@ -604,7 +604,9 @@ def _format_linkedin_post(rel: dict) -> str:
     parts = [title]
     if sub: parts.append(sub)
     parts.append(f"Full release → {url}")
-    parts.append("#datacenter #infrastructure #DCHub")
+    # Phase HH+1: DC Hub Media branding — newsroom byline + tag.
+    parts.append("Published by DC Hub Media — dchub.cloud/dc-hub-media")
+    parts.append("#DCHub #DCHubMedia #datacenter #infrastructure")
     return "\n\n".join(parts)[:2900]
 
 
@@ -631,10 +633,11 @@ def _claude_rewrite_for_linkedin(rel: dict) -> str | None:
     body_preview = body[:1500] if body else sub
 
     prompt = (
-        "You are writing a LinkedIn post promoting a DC Hub press release. "
-        "DC Hub is a data center intelligence platform; the audience is "
-        "infrastructure investors, hyperscale ops leaders, and policy "
-        "wonks who follow grid + power markets.\n\n"
+        "You are writing a LinkedIn post for DC Hub Media — the newsroom "
+        "arm of DC Hub (a data center intelligence platform). The post "
+        "promotes a DC Hub press release. Audience: infrastructure "
+        "investors, hyperscale ops leaders, and policy wonks who follow "
+        "grid + power markets.\n\n"
         "GOAL: a high-engagement LinkedIn post — feed-stopping, "
         "info-dense, 2026 newsroom voice. Optimize for clicks to the URL.\n\n"
         "STRUCTURE (strict):\n"
@@ -647,16 +650,21 @@ def _claude_rewrite_for_linkedin(rel: dict) -> str | None:
         "   At least two bullets should contain a specific number "
         "   (MW, $, %, or rank).\n"
         f"4. CTA: 'Full release → {url}' on its own line.\n"
-        "5. HASHTAGS: 3-4 tags on the last line. Always include "
-        "   #DCHub. Pick 2-3 others from: #datacenter #powergrid "
-        "   #ISO #hyperscale #infrastructure #energy #AI matching "
-        "   the topic.\n\n"
+        "5. BYLINE: 'Published by DC Hub Media — "
+        "   dchub.cloud/dc-hub-media' on its own line. This is the "
+        "   newsroom credit; keep it exact.\n"
+        "6. HASHTAGS: 4-5 tags on the last line. ALWAYS include both "
+        "   #DCHub AND #DCHubMedia. Pick 2-3 others from: #datacenter "
+        "   #powergrid #ISO #hyperscale #infrastructure #energy #AI "
+        "   matching the topic.\n\n"
         "STYLE RULES:\n"
         "- No emojis except optional ⚡ or 📊 on the hook line.\n"
         "- No exclamation marks.\n"
         "- No corporate jargon ('synergies', 'revolutionary', "
         "  'unprecedented' are banned).\n"
         "- Active voice. Past or present tense, not future.\n"
+        "- Refer to the publication as 'DC Hub Media' when crediting; "
+        "  the underlying data source is 'DC Hub'.\n"
         "- 1100-1800 chars total. Hard limit 2900.\n\n"
         "PRESS RELEASE INPUT:\n"
         f"TITLE: {title}\n"
@@ -701,17 +709,20 @@ def _claude_rewrite_for_linkedin(rel: dict) -> str | None:
 
 
 def _format_twitter_post(rel: dict) -> str:
-    """X/Twitter post: 280 chars max, prioritize headline + URL.
+    """X/Twitter post: 280 chars max, prioritize headline + URL + brand.
     The URL counts as 23 chars regardless of actual length (t.co
-    auto-wraps), so we have ~250 chars for the message body."""
+    auto-wraps), so we have ~250 chars for the message body.
+
+    Phase HH+1: include #DCHubMedia hashtag for newsroom branding."""
     title = (rel.get("title") or "").strip()
     slug  = rel.get("slug", "")
     url   = f"https://dchub.cloud/news/{slug}"
-    # Title might be long; truncate cleanly at a word boundary.
-    max_title = 230
+    # Reserve chars for the URL (23) + spacing (2) + hashtags (~25).
+    # Leaves ~230 chars for the headline.
+    max_title = 200
     if len(title) > max_title:
         title = title[:max_title].rsplit(" ", 1)[0] + "…"
-    return f"{title}\n\n{url}"
+    return f"{title}\n\n{url}\n\n#DCHub #DCHubMedia"
 
 
 def _queue_distribution_posts(rel: dict, press_id: int, today: str) -> None:
