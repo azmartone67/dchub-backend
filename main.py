@@ -1078,6 +1078,11 @@ try:
     from routes.redeem_routes import redeem_bp  # phase63b_redeem_bp
     from routes.grid_public_routes import grid_public_bp
     from routes.grid_card_routes import grid_card_bp
+    # Phase HH (2026-05-13): dynamic OG card generator. 1200x630 PNGs
+    # per press release, 4 styles on a day-of-week rotation. Used by
+    # buildPressReleaseHtml in _worker.js for og:image, and by the
+    # LinkedIn / X auto-publishers for link-card previews.
+    from routes.og_cards import register_og_cards
     from routes.social_posts_routes import social_posts_bp
     from routes.freshness_public import freshness_public_bp  # phase 268_public_freshness
     from routes.enterprise import enterprise_bp  # phase 272_enterprise_contact
@@ -1093,6 +1098,7 @@ try:
     app.register_blueprint(redeem_bp)  # phase63b_redeem_bp
     app.register_blueprint(grid_public_bp)
     app.register_blueprint(grid_card_bp)
+    register_og_cards(app)  # phase HH — dynamic press release OG cards
     app.register_blueprint(social_posts_bp)
     app.register_blueprint(freshness_public_bp)  # phase 268 — public /freshness + /api/v1/freshness
     app.register_blueprint(enterprise_bp)  # phase 272 — /enterprise + /api/v1/enterprise/contact
