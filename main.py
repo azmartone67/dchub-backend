@@ -1146,6 +1146,17 @@ try:
     except Exception as _mae:
         import logging
         logging.getLogger(__name__).warning('market_alerts wiring failed: %s', _mae)
+    # Phase GG (2026-05-14): the site-wide data-freshness radar — one
+    # registry (data_domain_freshness) that knows when every data domain
+    # last got fresh data, so staleness can't hide. See
+    # routes/data_freshness_radar.py; the self-heal radar_scan detector
+    # escalates breaches through the Brain.
+    try:
+        from routes.data_freshness_radar import data_freshness_radar_bp
+        app.register_blueprint(data_freshness_radar_bp)
+    except Exception as _dfre:
+        import logging
+        logging.getLogger(__name__).warning('data_freshness_radar wiring failed: %s', _dfre)
     # Phase FF (2026-05-14): the bundled site-selection brief — one call
     # (GET /api/v1/brief/market) returns DCPI verdict + grid context,
     # power cost, tax incentives, and same-ISO comparables. Exposed to
@@ -20117,6 +20128,11 @@ def _heal_findings():
         # stage (e.g. paywall_hit -> click at 0.008%) now surfaces as
         # an actionable_backend_issue instead of being invisible.
         "funnel_health_scan",
+        # Phase GG (2026-05-14): site-wide data-freshness radar. Scans
+        # every data domain's source table and surfaces any breached or
+        # missing-source domain — the meta-detector that makes silent
+        # data staleness (the DCPI-57h failure mode) impossible to hide.
+        "data_freshness_radar",
     ]
     for d in detectors:
         fn = h.FIXES.get(d)
@@ -20201,6 +20217,21 @@ def _heal_findings():
     try:
         if hasattr(h, "get_last_funnel_findings"):
             raw = h.get_last_funnel_findings()
+            for src, hits in (raw or {}).items():
+                if isinstance(hits, dict):
+                    for label, n in hits.items():
+                        if isinstance(n, int):
+                            actionable_backend.append(
+                                {"url": src, "issue": label, "count": n})
+    except Exception:
+        pass
+    # Phase GG (2026-05-14): merge data-freshness radar findings. Same
+    # {url: {label: count}} shape; labels start with `data_` so they
+    # land in actionable_backend_issues and route to the Brain / human
+    # escalation path — a stale data domain now escalates like a dead cron.
+    try:
+        if hasattr(h, "get_last_radar_findings"):
+            raw = h.get_last_radar_findings()
             for src, hits in (raw or {}).items():
                 if isinstance(hits, dict):
                     for label, n in hits.items():

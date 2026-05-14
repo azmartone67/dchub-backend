@@ -2303,8 +2303,67 @@ def get_last_funnel_findings():
     return dict(_last_funnel_findings)
 
 
+# ── Phase GG (2026-05-14): data-freshness radar detector ────────────────
+# The site-wide staleness radar. Without this, a data domain could go
+# quiet for weeks before anyone noticed — the DCPI-57h silent failure
+# was exactly this, just not yet rediscovered for the other domains.
+# This runs routes.data_freshness_radar.scan_domains() and surfaces any
+# breached or missing-source domain as an actionable_backend_issue, so a
+# stale domain self-escalates through the Brain the same way a dead cron
+# does. Stale becomes impossible to hide.
+_last_radar_findings: dict = {}
+
+
+def fix_data_freshness_radar():
+    """Run the data-freshness radar; flag breached / missing-source domains."""
+    global _last_radar_findings
+    _last_radar_findings = {}
+    try:
+        from routes.data_freshness_radar import scan_domains
+    except Exception as e:
+        return True, f"OK: radar module unavailable (skipped) — {str(e)[:100]}"
+    try:
+        results = scan_domains()
+    except Exception as e:
+        return True, f"OK: radar scan errored (skipped) — {str(e)[:120]}"
+
+    issues = 0
+    for r in results:
+        domain = r.get("domain")
+        status = r.get("status")
+        if status == "breach":
+            label = (f"data_stale: '{domain}' — "
+                     f"{r.get('detail') or 'newest row exceeds SLA'}")
+            _last_radar_findings.setdefault(f"dchub://data/{domain}", {})[label] = 1
+            issues += 1
+        elif status == "unknown" and domain != "_radar":
+            # 'unknown' almost always means the source table is missing
+            # (transmission is the known example) or has no usable
+            # timestamp — a real gap, surfaced one notch below a breach.
+            detail = r.get("detail") or "no usable source"
+            if "no source table" in detail or "no usable timestamp" in detail:
+                label = f"data_source_missing: '{domain}' — {detail}"
+                _last_radar_findings.setdefault(
+                    f"dchub://data/{domain}", {})[label] = 1
+                issues += 1
+
+    if issues == 0:
+        return True, (f"OK: data-freshness radar green — "
+                      f"{len(results)} domains scanned")
+    return True, (f"{issues} data-freshness issue(s): "
+                  + str(_last_radar_findings)[:280])
+
+
+def get_last_radar_findings():
+    """{url: {label: count}} from the most recent radar scan — same shape
+    as the other get_last_* helpers so /api/v1/heal/findings merges it
+    into actionable_backend_issues uniformly."""
+    return dict(_last_radar_findings)
+
+
 FIXES["backend_cron_scan"]    = fix_backend_cron_scan
 FIXES["funnel_health_scan"]   = fix_funnel_health_scan
+FIXES["data_freshness_radar"] = fix_data_freshness_radar
 FIXES["linked_asset_scan"]    = fix_linked_asset_scan
 FIXES["api_contract_scan"]    = fix_api_contract_scan
 FIXES["sitemap_404_check"]    = fix_sitemap_404_check
