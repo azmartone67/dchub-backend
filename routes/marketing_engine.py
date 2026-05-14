@@ -1772,6 +1772,105 @@ def marketing_pulse():
     return resp, 200
 
 
+@marketing_bp.get("/api/v1/marketing/og-performance")
+def og_performance():
+    """Phase FF (2026-05-14) — Track 1 / DC Hub Media v2: the measurement
+    loop. Which OG-card form factor actually drives engagement?
+
+    The card a press release got is determined by its publish day —
+    og_cards.DAILY_STYLES[generated_at.weekday()]. Join auto_press_releases
+    to press_engagement, bucket every post + its engagement by the form
+    factor it ran, and rank. Read-only — no new tables, no behavior
+    change; this is the visibility half of the loop (the feedback half —
+    letting performance drive the rotation — is a deliberate follow-up).
+    """
+    try:
+        days = max(7, min(int(request.args.get("days", "30")), 180))
+    except ValueError:
+        days = 30
+
+    # Mirror the live rotation; lazy import so a PIL/og_cards import
+    # hiccup degrades to the known rotation rather than 500-ing.
+    try:
+        from routes.og_cards import DAILY_STYLES
+    except Exception:
+        DAILY_STYLES = {0: 'data_brutal', 1: 'editorial', 2: 'infographic',
+                        3: 'ai_hero', 4: 'data_brutal', 5: 'editorial',
+                        6: 'infographic'}
+
+    out = {
+        "as_of": datetime.now(timezone.utc).isoformat(),
+        "window_days": days,
+        "rotation": {str(k): v for k, v in DAILY_STYLES.items()},
+        "by_form_factor": [],
+        "best_by_click_rate": None,
+        "note": ("Engagement bucketed by the OG-card form factor each post "
+                 "ran. click_rate = (click_outs + stripe_clicks) / views."),
+    }
+    c = _conn()
+    if c is None:
+        return jsonify(out), 200
+    try:
+        with c.cursor() as cur:
+            cur.execute(
+                """SELECT a.slug, a.generated_at, e.event_type, COUNT(e.id)
+                     FROM auto_press_releases a
+                     LEFT JOIN press_engagement e ON e.slug = a.slug
+                    WHERE a.generated_at > NOW() - make_interval(days => %s)
+                    GROUP BY a.slug, a.generated_at, e.event_type""",
+                (days,))
+            rows = cur.fetchall()
+
+        # form_factor -> {posts:set, views, click_outs, stripe_clicks}
+        agg = {}
+        for slug, gen_at, event_type, n in rows:
+            if not gen_at:
+                continue
+            ff = DAILY_STYLES.get(gen_at.weekday(), "data_brutal")
+            b = agg.setdefault(ff, {"posts": set(), "views": 0,
+                                    "click_outs": 0, "stripe_clicks": 0})
+            b["posts"].add(slug)
+            if event_type == "view":
+                b["views"] += int(n or 0)
+            elif event_type == "click_out":
+                b["click_outs"] += int(n or 0)
+            elif event_type == "stripe_click":
+                b["stripe_clicks"] += int(n or 0)
+
+        ranked = []
+        for ff, b in agg.items():
+            posts = len(b["posts"])
+            views = b["views"]
+            clicks = b["click_outs"] + b["stripe_clicks"]
+            ranked.append({
+                "form_factor": ff,
+                "press_count": posts,
+                "views": views,
+                "click_outs": b["click_outs"],
+                "stripe_clicks": b["stripe_clicks"],
+                "views_per_post": round(views / posts, 1) if posts else 0,
+                "click_rate": round(clicks / views, 4) if views else None,
+            })
+        # Sort: highest click_rate first, then views_per_post — Nones last.
+        ranked.sort(key=lambda r: (r["click_rate"] if r["click_rate"] is not None
+                                   else -1, r["views_per_post"]), reverse=True)
+        out["by_form_factor"] = ranked
+        # "Best" needs a meaningful sample — at least 2 posts and some views.
+        for r in ranked:
+            if r["click_rate"] is not None and r["press_count"] >= 2 and r["views"] > 0:
+                out["best_by_click_rate"] = r["form_factor"]
+                break
+    except Exception as e:
+        out["error"] = str(e)[:200]
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    resp = jsonify(out)
+    resp.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=600"
+    return resp, 200
+
+
 @marketing_bp.route("/api/v1/marketing/track", methods=["GET", "POST"])
 def track_event():
     """Pixel-style engagement tracking. Public, rate-limit-friendly.
