@@ -650,14 +650,21 @@ def mcp_funnel():
             # per platform. Shows whether some platforms are pinging paid
             # tools more aggressively than others.
             try:
+                # NOTE: mcp_tool_calls has BOTH a `client_name` and a
+                # `platform` column. Aliasing the COALESCE expression
+                # `AS platform` and then `GROUP BY platform` made Postgres
+                # bind to the real `platform` column, not the alias —
+                # leaving client_name ungrouped → "must appear in GROUP
+                # BY" error. Fix: alias as `client_platform` (no column
+                # collision) and GROUP BY the full expression.
                 cur.execute(
                     """SELECT
-                          COALESCE(NULLIF(LOWER(client_name), ''), 'unknown') AS platform,
+                          COALESCE(NULLIF(LOWER(client_name), ''), 'unknown') AS client_platform,
                           COUNT(*) AS calls,
                           COUNT(DISTINCT ip_address) AS unique_ips
                        FROM mcp_tool_calls
                        WHERE created_at >= NOW() - INTERVAL '30 days'
-                       GROUP BY platform
+                       GROUP BY COALESCE(NULLIF(LOWER(client_name), ''), 'unknown')
                        ORDER BY calls DESC
                        LIMIT 20"""
                 )
