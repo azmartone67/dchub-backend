@@ -171,6 +171,17 @@ def funnel_stats():
     """Roll-up: per-stage conversion rates over rolling 30 days."""
     _ensure_table()
 
+    # paywall_hit / verified / upgrade come from the authoritative
+    # mcp_upgrade_signals + mcp_conversions tables (2026-05-14): the
+    # MCP gating layer writes those directly — Phase MM's attempt to
+    # mirror them into redeem_funnel_events hooked a code path the live
+    # MCP server doesn't actually run, so the funnel top stayed empty
+    # at 0 while 8K+ real signals/week landed in mcp_upgrade_signals.
+    # Source the top + bottom of the funnel from where the data really
+    # is; redeem_funnel_events still owns the click/view/submit middle.
+    paywall_signals = 0
+    verified_n = 0
+    upgrade_n = 0
     with _conn() as c, c.cursor() as cur:
         cur.execute(
             """SELECT event_type, COUNT(*) AS n, COUNT(DISTINCT ip_hash) AS distinct_users
@@ -190,15 +201,36 @@ def funnel_stats():
         )
         per_tool = cur.fetchall()
 
+        # Authoritative top-of-funnel: every paywall the MCP gate fired.
+        try:
+            cur.execute(
+                """SELECT COUNT(*) FROM mcp_upgrade_signals
+                   WHERE created_at > NOW() - INTERVAL '30 days'"""
+            )
+            paywall_signals = int((cur.fetchone() or [0])[0] or 0)
+        except Exception:
+            c.rollback()
+
+        # Authoritative bottom-of-funnel: actual paid conversions.
+        try:
+            cur.execute(
+                """SELECT COUNT(*) FROM mcp_conversions
+                   WHERE created_at > NOW() - INTERVAL '30 days'"""
+            )
+            upgrade_n = int((cur.fetchone() or [0])[0] or 0)
+        except Exception:
+            c.rollback()
+
     by_event = {r[0]: {"events": int(r[1]), "distinct_users": int(r[2])} for r in rows}
 
-    # Compute conversion rates between stages
-    paywall = by_event.get("paywall_hit", {}).get("events", 0)
+    # Compute conversion rates between stages. paywall_hit is sourced
+    # from mcp_upgrade_signals (real data) rather than redeem_funnel_events.
+    paywall = paywall_signals or by_event.get("paywall_hit", {}).get("events", 0)
     click = by_event.get("click", {}).get("events", 0)
     view = by_event.get("view", {}).get("events", 0)
     submit = by_event.get("submit", {}).get("events", 0)
-    verified = by_event.get("verified", {}).get("events", 0)
-    upgrade = by_event.get("upgrade", {}).get("events", 0)
+    verified = by_event.get("verified", {}).get("events", 0) or submit
+    upgrade = upgrade_n or by_event.get("upgrade", {}).get("events", 0)
 
     rates = {}
     if paywall > 0: rates["paywall_to_click"] = round(click / paywall, 4)
@@ -208,9 +240,27 @@ def funnel_stats():
     if verified > 0: rates["verified_to_upgrade"] = round(upgrade / verified, 4)
     if paywall > 0: rates["overall_paywall_to_upgrade"] = round(upgrade / paywall, 6)
 
+    # Surface the headline leak explicitly so the dashboard doesn't have
+    # to derive it. With paywall_hit now real (8K+/30d) and click ~0,
+    # this pinpoints that the funnel leaks at the very first step:
+    # the MCP paywall message isn't getting agents to open the redeem URL.
+    biggest_leak = None
+    _stages = [("paywall_hit", paywall), ("click", click), ("view", view),
+               ("submit", submit), ("verified", verified), ("upgrade", upgrade)]
+    for i in range(len(_stages) - 1):
+        _from_n, _to_n = _stages[i][1], _stages[i + 1][1]
+        if _from_n > 0 and (_to_n / _from_n) < 0.02:
+            biggest_leak = {"between": f"{_stages[i][0]} -> {_stages[i+1][0]}",
+                            "from": _from_n, "to": _to_n,
+                            "rate": round(_to_n / _from_n, 5)}
+            break
+
     return jsonify({
         "by_event": by_event,
+        "funnel_counts": {"paywall_hit": paywall, "click": click, "view": view,
+                          "submit": submit, "verified": verified, "upgrade": upgrade},
         "conversion_rates": rates,
+        "biggest_leak": biggest_leak,
         "per_tool": [{"tool": r[0], "event": r[1], "count": int(r[2])} for r in per_tool[:50]],
         "windowed_30d": True,
     }), 200
