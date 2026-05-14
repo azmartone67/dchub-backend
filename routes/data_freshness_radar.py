@@ -70,6 +70,12 @@ _DOMAINS = [
      ["created_at", "announced_date", "date", "updated_at"],             240),
     ("substations",  ["substations"],
      ["updated_at", "created_at", "retrieved_at"],                       720),
+    # DC Hub Media: the autonomous press worker. If the daily auto-press
+    # stops, the radar flags it and the Brain escalates it — the media
+    # worker is now monitored the same way the data domains are, making
+    # it a true peer to Brain and the ISO loops.
+    ("dc_hub_media", ["auto_press_releases"],
+     ["generated_at", "created_at"],                                     36),
 ]
 
 _IDENT_RE = re.compile(r"^[a-z_][a-z0-9_]*$")  # defense-in-depth on table/col names

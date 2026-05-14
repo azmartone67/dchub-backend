@@ -1772,6 +1772,85 @@ def marketing_pulse():
     return resp, 200
 
 
+@marketing_bp.get("/api/v1/marketing/worker-status")
+def worker_status():
+    """Phase GG (2026-05-14): the unified 'DC Hub Media autonomous worker'
+    health view — presents DC Hub Media as a peer to Brain and the ISO
+    loops. Composes the last autonomous press + cadence, distribution
+    wiring, and the self-learning form-factor pick into one status.
+    Public; safe to poll.
+    """
+    out = {
+        "as_of": datetime.now(timezone.utc).isoformat(),
+        "worker": "dc_hub_media",
+        "autonomous": True,
+        "last_auto_press": None,
+        "auto_press_age_hours": None,
+        "auto_press_7d": 0,
+        "distribution": None,
+        "form_factor": {"smart_pick": None, "rotation_pick": None, "learning": False},
+        "status": "unknown",
+        "notes": [],
+    }
+    c = _conn()
+    if c is not None:
+        try:
+            with c.cursor() as cur:
+                cur.execute("""SELECT slug, title, generated_at,
+                                      EXTRACT(EPOCH FROM (NOW() - generated_at)) / 3600
+                                 FROM auto_press_releases
+                                ORDER BY generated_at DESC LIMIT 1""")
+                row = cur.fetchone()
+                if row:
+                    out["last_auto_press"] = {
+                        "slug": row[0], "title": row[1],
+                        "generated_at": row[2].isoformat() if row[2] else None,
+                        "url": f"https://dchub.cloud/news/{row[0]}",
+                    }
+                    out["auto_press_age_hours"] = (
+                        round(float(row[3]), 1) if row[3] is not None else None)
+                cur.execute("""SELECT COUNT(*) FROM auto_press_releases
+                                WHERE generated_at > NOW() - INTERVAL '7 days'""")
+                out["auto_press_7d"] = int((cur.fetchone() or [0])[0] or 0)
+            with c.cursor() as cur:
+                out["distribution"] = _distribution_status(cur)
+        except Exception as e:
+            out["notes"].append(f"db: {str(e)[:120]}")
+        finally:
+            try: c.close()
+            except Exception: pass
+
+    # The self-learning form-factor pick. smart_pick diverging from the
+    # fixed weekday rotation means the worker has enough engagement data
+    # to be actively optimising — i.e. it's genuinely learning, not just
+    # rotating on a calendar.
+    try:
+        from routes.og_cards import smart_style, todays_style
+        sp, rp = smart_style(), todays_style()
+        out["form_factor"] = {
+            "smart_pick": sp, "rotation_pick": rp, "learning": sp != rp,
+        }
+    except Exception as e:
+        out["notes"].append(f"form_factor: {str(e)[:120]}")
+
+    age = out["auto_press_age_hours"]
+    dist_status = (out["distribution"] or {}).get("status")
+    if age is None:
+        out["status"] = "unknown"
+    elif age > 60:
+        out["status"] = "stale"
+        out["notes"].append(f"last auto-press {age}h ago (cadence 24h)")
+    elif dist_status == "dark":
+        out["status"] = "degraded"
+        out["notes"].append("press generating but distribution is dark — no creds")
+    else:
+        out["status"] = "healthy"
+
+    resp = jsonify(out)
+    resp.headers["Cache-Control"] = "public, max-age=120, stale-while-revalidate=240"
+    return resp, 200
+
+
 @marketing_bp.get("/api/v1/marketing/og-performance")
 def og_performance():
     """Phase FF (2026-05-14) — Track 1 / DC Hub Media v2: the measurement
