@@ -1,16 +1,26 @@
-name: brain layer 5 (Phase RR-3)
-# Layer 5 propose-code cron. Runs every 6h.
-# For every chronic-stale loop in /api/v1/system/loops, calls Claude
-# with the loop's source-code window and stores a structured (file,
-# search, replace) proposal in brain_proposed_code_fixes.
+name: brain layer 5 (Phase RR-3 + GG)
+
+# Layer 5 propose-code cron. Runs every 6h. Two propose passes:
 #
-# **Never auto-applies.** A human reviews each proposal at /brain.
-# This is the conservative-by-design escalation Phase RR commits to:
-# more autonomy in DETECTING and PROPOSING fixes, never giving up the
-# human checkpoint at merge.
+#   1. learn-code           — for every chronic-stale loop in
+#                             /api/v1/system/loops, calls Claude with
+#                             the loop's source-code window and stores
+#                             a (file, search, replace) proposal.
+#   2. learn-backend-issues — Phase GG (PR #89): same, but driven by
+#                             actionable_backend_issues from
+#                             /heal/findings (backend_cron_scan). This
+#                             is how DCPI-UniqueViolation-class bugs get
+#                             a proposed code fix automatically.
 #
-# Anthropic billed call ≈ once per chronic-stale loop per run, capped
-# at 5 loops/run (the rest are real-time and have no source files).
+# **Never auto-applies.** A human reviews each proposal at /brain, or
+# the brain-layer5-pr-opener.yml workflow opens DRAFT PRs from
+# high-confidence proposals (still human-merged).
+#
+# Phase GG (2026-05-14): switched both calls from dchub.cloud → Railway
+# direct. Layer 5's Claude calls take 10-30s; the CF Worker's 15s edge
+# timeout was silently killing them — same bug fixed in PR #62
+# (brain_learn) and PR #83 (dcpi cron). Without this, learn-code
+# returned curl_fail on every run and no proposals were ever generated.
 
 on:
   schedule:
@@ -20,12 +30,15 @@ on:
 permissions:
   contents: read
 
+env:
+  RAILWAY_BASE: https://dchub-backend-production.up.railway.app
+
 jobs:
   propose:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
-      - name: Fire Layer 5
+      - name: Layer 5 — propose for chronic-stale loops
         env:
           ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
         run: |
@@ -34,10 +47,10 @@ jobs:
             echo "::warning::DCHUB_ADMIN_KEY not set — skipping Layer 5"
             exit 0
           fi
-          response=$(curl -sS --max-time 120 -X POST \
+          response=$(curl -sS --max-time 180 -X POST \
             -H "X-Admin-Key: $ADMIN_KEY" \
             -H "Content-Type: application/json" \
-            "https://dchub.cloud/api/v1/brain/learn-code" \
+            "$RAILWAY_BASE/api/v1/brain/learn-code" \
             || echo '{"ok":false,"error":"curl_fail"}')
           echo "$response" | head -c 4000
           echo
@@ -46,14 +59,47 @@ jobs:
           try:
               d = json.load(sys.stdin)
               if d.get('skipped'):
-                  print('layer5: no chronic-stale loops — skipped')
+                  print('::notice::layer5 learn-code: no chronic-stale loops — skipped')
               else:
                   results = d.get('results') or []
                   prop = sum(1 for r in results if r.get('outcome') == 'proposed')
                   ref  = sum(1 for r in results if r.get('outcome') == 'refused')
                   err  = len(results) - prop - ref
-                  print(f'layer5: targets={d.get(\"targets_processed\",0)} '
+                  print(f'::notice::layer5 learn-code: targets={d.get(\"targets_processed\",0)} '
                         f'proposed={prop} refused={ref} other={err}')
           except Exception as e:
-              print(f'layer5-parse-failed: {e}')
+              print(f'::warning::layer5 learn-code parse failed: {e}')
+          "
+
+      - name: Layer 5 — propose for backend cron issues (Phase GG)
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping backend-issue pass"
+            exit 0
+          fi
+          response=$(curl -sS --max-time 180 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" \
+            "$RAILWAY_BASE/api/v1/brain/learn-backend-issues" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | head -c 4000
+          echo
+          echo "$response" | python3 -c "
+          import json, sys
+          try:
+              d = json.load(sys.stdin)
+              if d.get('skipped'):
+                  print('::notice::layer5 backend-issues: no actionable_backend_issues — skipped')
+              else:
+                  results = d.get('results') or []
+                  prop = sum(1 for r in results if r.get('outcome') == 'proposed')
+                  ref  = sum(1 for r in results if r.get('outcome') == 'refused')
+                  other = len(results) - prop - ref
+                  print(f'::notice::layer5 backend-issues: examined={d.get(\"issues_examined\",0)} '
+                        f'proposed={prop} refused={ref} other={other}')
+          except Exception as e:
+              print(f'::warning::layer5 backend-issues parse failed: {e}')
           "
