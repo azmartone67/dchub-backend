@@ -157,6 +157,106 @@ def record_funnel_event(event_type, *, tool=None, tier=None, source=None,
         pass
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Phase TT Increment 3 (2026-05-14): the nurture loop — welcome on capture.
+#
+# Increments 1 & 2 capture the email (via /keys/identify or /unlock).
+# This is the first nurture touch: the moment a key is identified, its
+# human gets a welcome email confirming what they unlocked, setting up
+# the relationship, and planting the soft upgrade seed. It's what makes
+# the "known" stage real — and the anchor the weekly digest + payment
+# ask (Increment 3b/3c) will build on.
+#
+# Fire-and-forget (own daemon thread) so it never adds latency to the
+# capture response. Deduped once-per-key via mcp_dev_keys.metadata.
+# Best-effort: no Resend key, DB blip, send failure — all swallowed.
+# ─────────────────────────────────────────────────────────────────────
+
+def send_identify_welcome(email, api_key=None):
+    """Fire-and-forget welcome email on email-capture. Returns
+    immediately — the actual work runs in a daemon thread."""
+    email = (email or "").strip().lower()
+    if not email:
+        return
+    try:
+        import threading
+        threading.Thread(
+            target=_send_identify_welcome_blocking,
+            args=(email, api_key), daemon=True,
+        ).start()
+    except Exception:
+        pass
+
+
+def _send_identify_welcome_blocking(email, api_key):
+    resend_key = os.environ.get("DCHUB_RESEND_API_KEY", "").strip()
+    if not resend_key:
+        return  # no email provider configured — best-effort, skip quietly
+
+    # Dedup: one welcome per key. A re-identify (idempotent) must not
+    # re-send.
+    if api_key:
+        try:
+            with _conn() as c, c.cursor() as cur:
+                cur.execute(
+                    "SELECT metadata->>'welcome_sent_at' FROM mcp_dev_keys WHERE api_key = %s",
+                    (api_key,))
+                row = cur.fetchone()
+                if row and row[0]:
+                    return
+        except Exception:
+            pass  # dedup check failed — a rare duplicate is harmless
+
+    ident_limit = int(os.environ.get("MCP_IDENTIFIED_DAILY_LIMIT", "100"))
+    free_limit = int(os.environ.get("MCP_FREE_DAILY_LIMIT", "25"))
+    sender = os.environ.get("DCHUB_RESEND_FROM", "DC Hub <noreply@dchub.cloud>")
+    html = f"""<!doctype html><html><body style="font-family:-apple-system,sans-serif;max-width:540px;margin:0 auto;padding:28px;color:#1a1a1a">
+<div style="font-size:11px;color:#888;letter-spacing:.05em;text-transform:uppercase;margin-bottom:10px">DC Hub &middot; key identified</div>
+<h2 style="margin:0 0 12px;font-size:22px">You're in — your DC Hub key is unlocked</h2>
+<p style="color:#555;font-size:15px;line-height:1.55">Your AI assistant's DC Hub key is now tied to this email, which means:</p>
+<ul style="color:#555;font-size:15px;line-height:1.7">
+<li><strong>{ident_limit} MCP calls/day</strong> (up from {free_limit})</li>
+<li>A weekly digest of the data-center markets your assistant queries</li>
+<li>Alerts when a market you've looked at moves</li>
+</ul>
+<p style="color:#555;font-size:15px;line-height:1.55">Nothing else to do — your assistant already has the higher limit. The first market digest lands within a week.</p>
+<p style="margin:22px 0"><a href="https://dchub.cloud/pricing" style="background:#1976d2;color:#fff;padding:11px 22px;border-radius:6px;text-decoration:none;font-weight:600;display:inline-block">Need 1,000/day + full data? See Developer &rarr;</a></p>
+<hr style="border:0;border-top:1px solid #eee;margin:28px 0">
+<p style="font-size:12px;color:#888">You're getting this because your AI assistant identified its DC Hub key with this email. <a href="https://dchub.cloud" style="color:#888">dchub.cloud</a></p>
+</body></html>"""
+
+    sent_ok = False
+    try:
+        import requests as _rq
+        resp = _rq.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {resend_key}",
+                     "Content-Type": "application/json"},
+            json={"from": sender, "to": [email],
+                  "subject": "Your DC Hub key is unlocked — 100 calls/day + market digest",
+                  "html": html},
+            timeout=12,
+        )
+        sent_ok = resp.status_code in (200, 201)
+    except Exception:
+        sent_ok = False
+
+    # Stamp the dedup marker only on a confirmed send, so a transient
+    # failure is retried on the next capture touch rather than lost.
+    if sent_ok and api_key:
+        try:
+            with _conn() as c, c.cursor() as cur:
+                cur.execute(
+                    """UPDATE mcp_dev_keys
+                          SET metadata = COALESCE(metadata, '{}'::jsonb)
+                                         || jsonb_build_object('welcome_sent_at', %s::text)
+                        WHERE api_key = %s""",
+                    (datetime.now(timezone.utc).isoformat(), api_key))
+                c.commit()
+        except Exception:
+            pass
+
+
 @redeem_tracking_bp.route("/click", methods=["GET", "POST"])
 def track_click():
     """Fire when redeem URL is opened. Beacon-style — usually a 1px GIF or 204."""
