@@ -1125,6 +1125,17 @@ try:
     except Exception as _ue:
         import logging
         logging.getLogger(__name__).warning('unlock_page wiring failed: %s', _ue)
+    # Phase TT (2026-05-14): identity-capture Increment 3b — the weekly
+    # market digest. The second nurture touch: once a week, every
+    # identified key with real activity gets a recap of the markets its
+    # assistant queried, enriched with a fresh stat. Makes good on the
+    # "weekly digest" promise from the welcome email (Increment 3a).
+    try:
+        from routes.weekly_digest import weekly_digest_bp
+        app.register_blueprint(weekly_digest_bp)
+    except Exception as _wde:
+        import logging
+        logging.getLogger(__name__).warning('weekly_digest wiring failed: %s', _wde)
     # Phase DD+ (2026-05-12): conversion plays 3-6 — top-up, demo
     # unlock, email trial, affiliate attribution. See
     # routes/mcp_conversion_plays.py.
