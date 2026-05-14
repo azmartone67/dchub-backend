@@ -130,6 +130,37 @@ def probe(path, kind="html", timeout=8):
         return -1, str(e)
 
 
+_TRANSIENT_PROBE_STATUSES = (403, 404, 408, 429, 500, 502, 503, 504)
+
+
+def _urlopen_retry(req, timeout, _opener=None, _allow_retry=True):
+    """urlopen with ONE 2s-backoff retry on transient HTTP status.
+
+    Phase RR (2026-05-14): Cloudflare Pages rebuilds on every committed
+    file (EIA snapshots, auto-press, etc. land every few hours). During
+    the deploy-promotion window, Worker-proxied and static paths briefly
+    return 403/404. A single-shot healer probe landing in that window
+    recorded a hard finding — which then fed Brain v2 learn cycles that
+    burned trying to "fix" a page that was actually fine 2s later.
+
+    The frontend QA brain (qa-brain.py) already got this retry treatment;
+    this brings the backend healer's scanners in line. A genuinely
+    persistent 403/404 still fails the retry and is reported normally —
+    this only filters the deploy-window flake.
+    """
+    import time as _t
+    from urllib.request import urlopen as _default_urlopen
+    from urllib.error import HTTPError as _HE
+    opener = _opener or _default_urlopen
+    try:
+        return opener(req, timeout=timeout)
+    except _HE as he:
+        if _allow_retry and he.code in _TRANSIENT_PROBE_STATUSES:
+            _t.sleep(2)
+            return _urlopen_retry(req, timeout, _opener=opener, _allow_retry=False)
+        raise
+
+
 def detect(body, status):
     """Return list of (pattern_name, fix_name) tuples that match."""
     hits = []
@@ -1332,7 +1363,7 @@ def fix_html_quality_scan():
     for url in HTML_PROBE_URLS:
         try:
             req = urllib.request.Request(url, headers=HEADERS)
-            with urllib.request.urlopen(req, timeout=10) as r:
+            with _urlopen_retry(req, 10) as r:
                 body = r.read().decode("utf-8", errors="ignore")
         except Exception as e:
             findings[url] = {"error": str(e)[:200]}
@@ -1708,7 +1739,7 @@ def fix_linked_asset_scan():
     for page_url in HTML_PROBE_URLS:
         try:
             req = urllib.request.Request(page_url, headers=HEADERS)
-            with urllib.request.urlopen(req, timeout=10) as r:
+            with _urlopen_retry(req, 10) as r:
                 body = r.read().decode("utf-8", errors="ignore")
         except Exception as e:
             findings[page_url] = {"_fetch_error": str(e)[:120]}
@@ -1735,7 +1766,7 @@ def fix_linked_asset_scan():
             ext = os.path.splitext(_p(absu).path)[1].lower()
             try:
                 req = urllib.request.Request(absu, method="HEAD", headers=HEADERS)
-                with urllib.request.urlopen(req, timeout=6) as r:
+                with _urlopen_retry(req, 6) as r:
                     status = r.status
                     ctype  = (r.headers.get("Content-Type") or "").lower()
             except urllib.error.HTTPError as he:
@@ -1967,7 +1998,7 @@ def fix_api_contract_scan():
         url = probe["url"]
         try:
             req = _UrlReq(url, headers=HEADERS)
-            with _urlopen(req, timeout=10) as r:
+            with _urlopen_retry(req, 10, _opener=_urlopen) as r:
                 status = r.status
                 body = r.read().decode("utf-8", errors="ignore")
         except _HTTPError as he:
@@ -2012,7 +2043,8 @@ def fix_api_contract_scan():
         expect = probe["expect"]
         try:
             req = _UrlReq2(url, headers=HEADERS)
-            with _urlopen2(req, timeout=10) as r:  # urlopen auto-follows redirects
+            # _urlopen2 auto-follows redirects; retry wraps transient flakes
+            with _urlopen_retry(req, 10, _opener=_urlopen2) as r:
                 ctype = (r.headers.get("Content-Type") or "").lower()
                 final_url = r.url
         except _HTTPError2 as he:
