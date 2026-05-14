@@ -244,6 +244,15 @@ def unlock(token):
     except Exception:
         pass
 
+    # Phase TT Increment 3: nurture — fire-and-forget welcome email.
+    # Deduped per-key, never blocks. `email` + `api_key` are in scope
+    # from the POST branch above.
+    try:
+        from routes.redeem_tracking import send_identify_welcome
+        send_identify_welcome(email, api_key)
+    except Exception:
+        pass
+
     return _render("Unlocked",
                    '<h1 class="ok">Unlocked &#10003;</h1>'
                    f"<p>Your AI assistant's DC Hub key now gets "

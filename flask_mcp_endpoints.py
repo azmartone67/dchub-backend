@@ -436,6 +436,15 @@ def identify_key():
     except Exception:
         pass
 
+    # Phase TT Increment 3: nurture — fire-and-forget welcome email.
+    # Deduped per-key inside send_identify_welcome, so a re-identify
+    # won't re-send. Never blocks the response.
+    try:
+        from routes.redeem_tracking import send_identify_welcome
+        send_identify_welcome(email, api_key)
+    except Exception:
+        pass
+
     masked = email
     try:
         _u, _d = email.split("@", 1)
