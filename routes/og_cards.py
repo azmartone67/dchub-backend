@@ -405,12 +405,163 @@ def _draw_infographic(pr):
 # editorial for now. Phase HH+1 wires Cloudflare Workers AI.
 # ---------------------------------------------------------------------------
 
+# Phase JJ batch 4 (2026-05-14): real AI hero via Cloudflare Workers AI SDXL.
+# Generates a topical 1024x1024 image from the press release title +
+# topic, then composites the headline + brand chip + CTA on top.
+#
+# Env-gated. If CF_ACCOUNT_ID + CF_API_TOKEN aren't set on Railway, falls
+# back to the gradient placeholder. Per-(slug, day) cached in-process so
+# popular posts don't regenerate (or pay) for every LinkedIn scrape.
+#
+# Requires: CF API token with "Workers AI - Read" permission on the
+# DC Hub account. Generation cost ~$0.0003/image, latency 5-10s.
+
+_AI_IMAGE_CACHE = {}             # (slug, yyyymmdd) → png bytes
+_AI_IMAGE_CACHE_MAX = 50
+
+def _generate_workers_ai_image(prompt: str, slug: str):
+    """Hit Cloudflare Workers AI SDXL endpoint. Returns PNG bytes or None
+    if creds missing / API errored. Result cached per-day."""
+    cache_key = (slug, datetime.datetime.utcnow().strftime('%Y%m%d'))
+    if cache_key in _AI_IMAGE_CACHE:
+        return _AI_IMAGE_CACHE[cache_key]
+
+    account_id = os.environ.get('CF_ACCOUNT_ID', '')
+    api_token  = os.environ.get('CF_API_TOKEN', '')
+    if not (account_id and api_token):
+        return None  # Not configured — caller falls back to gradient
+
+    try:
+        import requests as _rq
+        # SDXL on Workers AI returns binary PNG when format is set right.
+        url = (f"https://api.cloudflare.com/client/v4/accounts/{account_id}"
+               f"/ai/run/@cf/stabilityai/stable-diffusion-xl-base-1.0")
+        resp = _rq.post(
+            url,
+            json={
+                "prompt": prompt[:1500],
+                # Wider aspect to better match our 1200x630 final canvas
+                "width": 1024, "height": 576,
+                "num_steps": 20,           # 20 is the sweet spot for SDXL
+                "guidance": 7.5,
+            },
+            headers={
+                "Authorization": f"Bearer {api_token}",
+                "Content-Type": "application/json",
+            },
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            print(f"[ai_hero] CF Workers AI {resp.status_code}: {resp.text[:200]}")
+            return None
+        png_bytes = resp.content
+        # Sanity check — PNG magic header
+        if not png_bytes.startswith(b'\x89PNG'):
+            return None
+        _AI_IMAGE_CACHE[cache_key] = png_bytes
+        # Cap cache
+        if len(_AI_IMAGE_CACHE) > _AI_IMAGE_CACHE_MAX:
+            oldest = min(_AI_IMAGE_CACHE)
+            _AI_IMAGE_CACHE.pop(oldest, None)
+        return png_bytes
+    except Exception as e:
+        print(f"[ai_hero] generation failed: {e}")
+        return None
+
+
+def _build_sdxl_prompt(pr: dict) -> str:
+    """Compose an SDXL prompt from the press release. Aim for atmospheric,
+    technical, infrastructure-themed images that pair with DC Hub's voice.
+    """
+    title = (pr.get('title') or '').strip()
+    sub   = (pr.get('subheadline') or '').strip()
+    topic = (pr.get('topic') or 'data center infrastructure').strip()
+    # Extract the geographic anchor from title if present
+    geo_hint = ''
+    for state_marker in [', WY', ', TX', ', VA', ', CA', ', AZ', ', GA',
+                         ' WY ', ' TX ', ' VA ', ' CA ']:
+        if state_marker in title:
+            geo_hint = 'mountainous high desert' if 'WY' in state_marker else (
+                'industrial Texas plains' if 'TX' in state_marker else
+                'mid-Atlantic woodland' if 'VA' in state_marker else
+                'California coastal' if 'CA' in state_marker else '')
+            break
+    return (
+        f"Cinematic editorial photograph of a modern data center facility, "
+        f"{geo_hint or 'wide American landscape'}, evening golden-hour light, "
+        f"transmission lines and substations on the horizon, dramatic sky, "
+        f"high contrast, photorealistic, no text, no watermarks, no logos, "
+        f"shot on 35mm, depth of field, hyper-detailed. "
+        f"Theme: {topic[:80]}. Subject: {title[:140]}"
+    )
+
+
 def _draw_ai_hero(pr):
-    """Phase JJ (2026-05-14): typography pass on AI-hero placeholder.
-    Headline 60→78pt with stronger 4px drop shadow. Tighter gradient
-    contrast (deep purple → vivid orange). Phase HH+1 still wires
-    real SDXL via Workers AI — this is the visual fallback."""
+    """Phase JJ (2026-05-14): real AI-generated hero via CF Workers AI
+    SDXL when CF_ACCOUNT_ID + CF_API_TOKEN are set. Falls back to the
+    polished gradient placeholder (batch 2 typography: 78pt headline,
+    4px drop shadow, deep purple → vivid orange gradient).
+    """
     from PIL import Image, ImageDraw
+    slug = pr.get('slug', '')
+    if not slug:
+        # Try to derive a slug from the title for cache keying
+        slug = (pr.get('title') or 'unknown').lower().replace(' ', '-')[:60]
+
+    ai_png = _generate_workers_ai_image(_build_sdxl_prompt(pr), slug)
+    if ai_png:
+        # Real AI image — composite headline overlay
+        from io import BytesIO
+        bg = Image.open(BytesIO(ai_png)).convert('RGB')
+        # SDXL gives us 1024x576; resize/crop to our 1200x630 canvas
+        # while preserving aspect ratio as much as possible.
+        bg = bg.resize((W, int(W * bg.height / bg.width)))
+        # Top-crop or pad to 630
+        if bg.height > H:
+            top = (bg.height - H) // 2
+            bg = bg.crop((0, top, W, top + H))
+        elif bg.height < H:
+            canvas = Image.new('RGB', (W, H), (10, 14, 26))
+            canvas.paste(bg, (0, (H - bg.height) // 2))
+            bg = canvas
+
+        img = bg
+        d = ImageDraw.Draw(img)
+
+        # Bottom gradient overlay for text legibility (60% opacity black
+        # gradient covering bottom half)
+        overlay = Image.new('RGBA', (W, H), (0, 0, 0, 0))
+        odraw = ImageDraw.Draw(overlay)
+        for i in range(H // 2, H):
+            alpha = int(180 * ((i - H // 2) / (H // 2)))
+            odraw.line([(0, i), (W, i)], fill=(0, 0, 0, alpha))
+        img = Image.alpha_composite(img.convert('RGBA'), overlay).convert('RGB')
+        d = ImageDraw.Draw(img)
+
+        # Brand chip (top-left)
+        d.rectangle([(64, 60), (320, 112)], fill=BG)
+        d.text((80, 72), 'DC HUB MEDIA · DAILY', font=_mono(24), fill=ACCENT)
+
+        # Headline at the bottom (3 lines max, with shadow)
+        title = pr.get('title', '')[:120]
+        lines = _wrap(title, 22)[:3]
+        line_height = 76
+        total_height = line_height * len(lines)
+        y_start = H - total_height - 130
+        for line in lines:
+            d.text((84, y_start + 4), line, font=_font(60), fill=(0, 0, 0))
+            d.text((80, y_start), line, font=_font(60), fill=TEXT)
+            y_start += line_height
+
+        d.text((84, H - 76), '→ dchub.cloud/news', font=_font(36), fill=(0, 0, 0))
+        d.text((80, H - 80), '→ dchub.cloud/news', font=_font(36), fill=TEXT)
+        d.text((80, H - 36),
+               f'DC Hub Media  ·  {_safe_date_str(pr.get("date"), "%B %d, %Y")}',
+               font=_font(20), fill=TEXT)
+
+        return img
+
+    # Fallback: gradient placeholder (original Phase JJ batch 2 polish)
     img = Image.new('RGB', (W, H), (10, 14, 26))
     d = ImageDraw.Draw(img)
 
