@@ -2242,7 +2242,69 @@ def get_last_backend_findings():
     return dict(_last_backend_findings)
 
 
+# ── Phase SS (2026-05-14): funnel-health detector ───────────────────────
+# Make the healer aware of the CONVERSION funnel, not just HTML
+# placeholders and cron freshness. The funnel teardown (PR #114) exposed
+# paywall_hit -> click leaking at 0.008% — a business-critical signal the
+# self-healing system was completely blind to. This detector reads the
+# now-real /api/v1/redeem/funnel-stats and surfaces a critically-leaking
+# stage as an actionable_backend_issue, so it escalates to a human the
+# same way a dead cron does.
+_last_funnel_findings: dict = {}
+
+
+def fix_funnel_health_scan():
+    """Probe the redeem/upgrade funnel and flag critical leaks."""
+    global _last_funnel_findings
+    _last_funnel_findings = {}
+    import urllib.request as _ur, json as _json
+    url = "https://dchub.cloud/api/v1/redeem/funnel-stats"
+    try:
+        req = _ur.Request(url, headers={"User-Agent": "DCHubHealer/1.0"})
+        with _urlopen_retry(req, 15) as r:
+            data = _json.loads(r.read().decode("utf-8", errors="ignore"))
+    except Exception as e:
+        return True, f"OK: funnel-stats unreachable (skipped) — {str(e)[:100]}"
+
+    counts = data.get("funnel_counts") or {}
+    paywall = int(counts.get("paywall_hit") or 0)
+    # Need a meaningful top-of-funnel before judging conversion health.
+    if paywall < 100:
+        return True, f"OK: only {paywall} paywall_hit in window — too few to judge"
+
+    issues = 0
+    # 1. The biggest single-stage leak the endpoint already identified.
+    leak = data.get("biggest_leak")
+    if isinstance(leak, dict) and leak.get("rate") is not None and leak["rate"] < 0.02:
+        label = (f"funnel_leak_critical: {leak.get('between','?')} converting "
+                 f"at {leak['rate'] * 100:.3f}% "
+                 f"({leak.get('from')} -> {leak.get('to')})")
+        _last_funnel_findings.setdefault("dchub://funnel/redeem", {})[label] = max(1, paywall)
+        issues += 1
+
+    # 2. Overall paywall -> upgrade conversion floor.
+    overall = (data.get("conversion_rates") or {}).get("overall_paywall_to_upgrade")
+    if overall is not None and overall < 0.005 and paywall >= 500:
+        label = (f"funnel_conversion_critical: overall paywall->upgrade "
+                 f"{overall * 100:.4f}% over {paywall} paywalls (target >0.5%)")
+        _last_funnel_findings.setdefault("dchub://funnel/redeem", {})[label] = paywall
+        issues += 1
+
+    if issues == 0:
+        return True, f"OK: funnel healthy — {paywall} paywall_hit, no critical leak"
+    return True, (f"{issues} funnel health issue(s): "
+                  + str(_last_funnel_findings)[:240])
+
+
+def get_last_funnel_findings():
+    """{url: {label: count}} from the most recent funnel-health scan —
+    same shape as the other get_last_* helpers so /api/v1/heal/findings
+    merges it into actionable_backend_issues uniformly."""
+    return dict(_last_funnel_findings)
+
+
 FIXES["backend_cron_scan"]    = fix_backend_cron_scan
+FIXES["funnel_health_scan"]   = fix_funnel_health_scan
 FIXES["linked_asset_scan"]    = fix_linked_asset_scan
 FIXES["api_contract_scan"]    = fix_api_contract_scan
 FIXES["sitemap_404_check"]    = fix_sitemap_404_check
