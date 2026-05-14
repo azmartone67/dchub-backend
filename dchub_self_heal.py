@@ -11,7 +11,7 @@ Runs INSIDE the Flask process via APScheduler. Every 5 min:
 The site is the living organism. This is its immune system.
 """
 import os, json, time, traceback, logging
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
 
@@ -2315,17 +2315,45 @@ _last_radar_findings: dict = {}
 
 
 def fix_data_freshness_radar():
-    """Run the data-freshness radar; flag breached / missing-source domains."""
+    """Surface breached / missing-source data domains.
+
+    Phase GG (2026-05-14): this READS the radar registry (one fast SELECT)
+    rather than running the full multi-domain scan inline — /heal/findings
+    already runs ~12 detectors synchronously and is timeout-prone, and the
+    scan belongs on its own cron (evolve-cron market_alerts-style). As a
+    self-bootstrap / self-heal safety net it still triggers ONE scan when
+    the registry is empty or its newest row is >2h stale, so the radar
+    stays current even if the dedicated cron is dropped — but at most once
+    every 2h on this path, not on every call.
+    """
     global _last_radar_findings
     _last_radar_findings = {}
     try:
-        from routes.data_freshness_radar import scan_domains
+        from routes.data_freshness_radar import radar_snapshot, scan_domains
     except Exception as e:
         return True, f"OK: radar module unavailable (skipped) — {str(e)[:100]}"
     try:
-        results = scan_domains()
+        results, _summary = radar_snapshot()
+        # Self-bootstrap: scan if the registry is empty or gone stale.
+        needs_scan = not results
+        if results:
+            newest = max((r.get("checked_at") or "" for r in results), default="")
+            if newest:
+                try:
+                    _ts = datetime.fromisoformat(newest.replace("Z", "+00:00"))
+                    if _ts.tzinfo is None:
+                        _ts = _ts.replace(tzinfo=timezone.utc)
+                    age_s = (datetime.now(timezone.utc) - _ts).total_seconds()
+                    needs_scan = age_s > 7200
+                except Exception:
+                    needs_scan = True
+            else:
+                needs_scan = True
+        if needs_scan:
+            scan_domains()
+            results, _summary = radar_snapshot()
     except Exception as e:
-        return True, f"OK: radar scan errored (skipped) — {str(e)[:120]}"
+        return True, f"OK: radar read errored (skipped) — {str(e)[:120]}"
 
     issues = 0
     for r in results:
@@ -2349,7 +2377,7 @@ def fix_data_freshness_radar():
 
     if issues == 0:
         return True, (f"OK: data-freshness radar green — "
-                      f"{len(results)} domains scanned")
+                      f"{len(results)} domains checked")
     return True, (f"{issues} data-freshness issue(s): "
                   + str(_last_radar_findings)[:280])
 

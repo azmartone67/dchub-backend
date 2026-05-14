@@ -46,13 +46,19 @@ on:
     # to email + webhook subscribers. Idempotent: the 20h snapshot-gap
     # guard means a same-day re-run won't corrupt the diff baseline.
     - cron: '0 16 * * *'
+    # Phase GG (2026-05-14) — data-freshness radar scan, every 6h. Walks
+    # every data domain's source table and upserts data_domain_freshness.
+    # The self-heal detector reads this registry (fast); this cron is the
+    # primary writer so the radar stays current without loading the
+    # timeout-prone /heal/findings request path.
+    - cron: '20 */6 * * *'
   workflow_dispatch:
     inputs:
       phase:
         description: 'Which phase to run on demand'
         required: true
         type: choice
-        options: [all, brain, outreach, audit, marketing, linkedin, testimonials, agent_vendor, weekly_digest, market_alerts]
+        options: [all, brain, outreach, audit, marketing, linkedin, testimonials, agent_vendor, weekly_digest, market_alerts, freshness_radar]
         default: all
 
 permissions:
@@ -391,4 +397,44 @@ jobs:
               print(f\"::notice::Market alerts dry-run — moved={d.get('movements_detected',0)}\")
           else:
               print(f\"::warning::Market alerts mode={mode} error={d.get('error','unknown')}\")
+          " || true
+
+  # Phase GG (2026-05-14) — data-freshness radar scan, every 6h. Walks
+  # every data domain's source table, upserts data_domain_freshness, and
+  # surfaces breached / missing-source domains. The self-heal detector
+  # reads this registry; this cron is the primary writer so the radar
+  # stays current without loading the timeout-prone /heal/findings path.
+  freshness_radar:
+    if: github.event.schedule == '20 */6 * * *' || (github.event_name == 'workflow_dispatch' && (inputs.phase == 'all' || inputs.phase == 'freshness_radar'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Run data-freshness radar scan
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping freshness radar"
+            exit 0
+          fi
+          response=$(curl -sS --max-time 90 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "https://dchub-backend-production.up.railway.app/api/v1/freshness/radar/scan" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | head -c 2000
+          echo
+          echo "$response" | python3 -c "
+          import json, sys
+          try: d = json.load(sys.stdin)
+          except Exception:
+              print('::warning::Freshness radar returned non-JSON'); sys.exit(0)
+          if d.get('ok'):
+              br = d.get('breaches', []); un = d.get('unknown', [])
+              msg = f\"scanned={d.get('scanned',0)}\"
+              if br: msg += f\" · BREACH: {','.join(br)}\"
+              if un: msg += f\" · unknown: {','.join(un)}\"
+              lvl = 'warning' if br else 'notice'
+              print(f\"::{lvl}::Freshness radar — {msg}\")
+          else:
+              print(f\"::warning::Freshness radar failed — {d.get('error','unknown')}\")
           " || true
