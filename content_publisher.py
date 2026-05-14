@@ -386,7 +386,20 @@ def start_auto_publisher():
                 time.sleep(6 * 3600)
                 access_token = os.environ.get('LINKEDIN_ACCESS_TOKEN', '').strip()
                 if not access_token:
-                    logger.debug("Auto-publisher: No LINKEDIN_ACCESS_TOKEN, skipping")
+                    # Phase FF (2026-05-14): make the silent skip loud when
+                    # posts are actually piling up undelivered — that's the
+                    # actionable signal, vs. a quiet debug when nothing's queued.
+                    try:
+                        _qc = _get_db(); _qcur = _qc.cursor()
+                        _qcur.execute("SELECT COUNT(*) FROM social_media_posts WHERE status = 'approved'")
+                        _queued = (_qcur.fetchone() or [0])[0]
+                        _qc.close()
+                    except Exception:
+                        _queued = 0
+                    if _queued:
+                        logger.warning("Auto-publisher: %s approved post(s) queued but LINKEDIN_ACCESS_TOKEN not set — LinkedIn distribution is DARK", _queued)
+                    else:
+                        logger.debug("Auto-publisher: No LINKEDIN_ACCESS_TOKEN, skipping")
                     continue
                 conn = _get_db()
                 cur = conn.cursor()
@@ -445,7 +458,19 @@ def start_twitter_publisher():
                               ('TWITTER_API_KEY', 'TWITTER_API_SECRET',
                                'TWITTER_ACCESS_TOKEN', 'TWITTER_ACCESS_SECRET')])
                 if not (bearer or oauth1):
-                    logger.debug("Twitter auto-publisher: no credentials, skipping")
+                    # Phase FF (2026-05-14): loud when X posts are queued
+                    # but undeliverable; quiet when nothing's waiting.
+                    try:
+                        _qc = _get_db(); _qcur = _qc.cursor()
+                        _qcur.execute("SELECT COUNT(*) FROM social_media_posts WHERE status = 'approved' AND platform = 'twitter'")
+                        _queued = (_qcur.fetchone() or [0])[0]
+                        _qc.close()
+                    except Exception:
+                        _queued = 0
+                    if _queued:
+                        logger.warning("Twitter auto-publisher: %s approved X post(s) queued but no credentials set — X distribution is DARK", _queued)
+                    else:
+                        logger.debug("Twitter auto-publisher: no credentials, skipping")
                     continue
                 conn = _get_db()
                 cur = conn.cursor()

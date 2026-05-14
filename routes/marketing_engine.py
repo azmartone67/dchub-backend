@@ -1590,6 +1590,116 @@ def repost_now():
     return jsonify(payload), status
 
 
+# Phase FF (2026-05-14) — Track 1 / DC Hub Media v2: distribution
+# hardening. The auto-publisher loops (content_publisher.py) skip at
+# `logger.debug` level when LINKEDIN_ACCESS_TOKEN / the X creds aren't
+# set on Railway — invisible. Press releases generate fine
+# (`auto_press_7d` counts those) but never get distributed, and nothing
+# surfaces *why*. These helpers make that silent failure loud: an
+# explicit "is distribution wired, and are posts piling up undelivered?"
+# read, exposed both standalone (/distribution/health) and inside the
+# public marketing pulse the /dc-hub-media page renders.
+
+def _linkedin_configured() -> bool:
+    return bool(os.environ.get("LINKEDIN_ACCESS_TOKEN", "").strip())
+
+
+def _twitter_configured() -> bool:
+    if os.environ.get("TWITTER_BEARER_TOKEN", "").strip():
+        return True
+    return all(os.environ.get(k, "").strip() for k in (
+        "TWITTER_API_KEY", "TWITTER_API_SECRET",
+        "TWITTER_ACCESS_TOKEN", "TWITTER_ACCESS_SECRET"))
+
+
+def _distribution_status(cur) -> dict:
+    """Is social distribution actually wired — and is anything stuck?
+
+    `cur` is an open cursor. Best-effort: any query hiccup degrades a
+    field rather than raising, so the caller's response still renders.
+    """
+    li = _linkedin_configured()
+    tw = _twitter_configured()
+    published_7d = {"linkedin": 0, "twitter": 0}
+    queued_unpublished = 0
+    oldest_queued_age_h = None
+    try:
+        cur.execute(
+            """SELECT publish_platform, COUNT(*)
+                 FROM social_media_posts
+                WHERE status = 'published'
+                  AND created_at > NOW() - INTERVAL '7 days'
+                GROUP BY publish_platform""")
+        for plat, n in cur.fetchall():
+            if plat in published_7d:
+                published_7d[plat] = int(n or 0)
+    except Exception:
+        pass
+    try:
+        cur.execute(
+            """SELECT COUNT(*),
+                      EXTRACT(EPOCH FROM (NOW() - MIN(created_at))) / 3600.0
+                 FROM social_media_posts
+                WHERE status = 'approved'""")
+        row = cur.fetchone()
+        if row:
+            queued_unpublished = int(row[0] or 0)
+            oldest_queued_age_h = round(float(row[1]), 1) if row[1] is not None else None
+    except Exception:
+        pass
+
+    # status: dark = posts stuck because creds are missing (the bug the
+    # memory note flags); idle = no creds but nothing waiting; healthy =
+    # creds present; degraded = creds present but a backlog is building.
+    if not li and not tw:
+        status = "dark" if queued_unpublished > 0 else "idle"
+    elif queued_unpublished >= 4:
+        status = "degraded"
+    else:
+        status = "healthy"
+
+    diagnosis = {
+        "dark": (f"{queued_unpublished} approved post(s) are queued but neither "
+                 "LinkedIn nor X is configured — set LINKEDIN_ACCESS_TOKEN and/or "
+                 "the TWITTER_* creds on Railway to start distributing."),
+        "idle": ("No social creds configured — distribution is off. Press "
+                 "releases still generate; they just aren't being posted."),
+        "degraded": (f"{queued_unpublished} approved posts are backing up — "
+                     "the auto-publisher caps at 2/day per platform; check "
+                     "for publish failures."),
+        "healthy": "Distribution is wired and the queue is clear.",
+    }[status]
+
+    return {
+        "status": status,
+        "diagnosis": diagnosis,
+        "linkedin_configured": li,
+        "twitter_configured": tw,
+        "published_7d": published_7d,
+        "queued_unpublished": queued_unpublished,
+        "oldest_queued_age_hours": oldest_queued_age_h,
+    }
+
+
+@marketing_bp.get("/api/v1/marketing/distribution/health")
+def distribution_health():
+    """Explicit distribution-wiring health — makes the auto-publisher's
+    silent env-var skip visible. Public; safe to poll."""
+    c = _conn()
+    if c is None:
+        return jsonify(status="unknown", error="db unavailable"), 200
+    try:
+        with c.cursor() as cur:
+            out = _distribution_status(cur)
+        out["as_of"] = datetime.now(timezone.utc).isoformat()
+        return jsonify(out), 200
+    except Exception as e:
+        return jsonify(status="unknown", error=str(e)[:200]), 200
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
 @marketing_bp.get("/api/v1/marketing/pulse")
 def marketing_pulse():
     """Public marketing-pulse metrics: recent auto-press, engagement,
@@ -1602,6 +1712,7 @@ def marketing_pulse():
         "latest_auto": None,
         "engagement_7d": {"views": 0, "click_outs": 0, "stripe_clicks": 0},
         "ai_callers_7d": 0,
+        "distribution": None,
     }
     c = _conn()
     if c is None: return jsonify(out), 200
@@ -1641,6 +1752,14 @@ def marketing_pulse():
                     FROM mcp_tool_calls
                     WHERE created_at > NOW() - INTERVAL '7 days'""")
                 out["ai_callers_7d"] = int((cur.fetchone() or (0,))[0])
+        except Exception:
+            pass
+        # Distribution wiring — surfaces the auto-publisher's otherwise
+        # silent "no creds, skipping" so /dc-hub-media shows whether the
+        # press releases are actually going anywhere.
+        try:
+            with c.cursor() as cur:
+                out["distribution"] = _distribution_status(cur)
         except Exception:
             pass
     except Exception as e:
