@@ -176,28 +176,150 @@ def get_funnel_leads_csv():
     return resp
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Personalized template — uses per-lead tool affinity to write a
+# targeted subject + body, instead of one-size-fits-all blast.
+# ─────────────────────────────────────────────────────────────────────
+def _tool_value_blurb(tool: str) -> str:
+    """Per-tool one-liner used in the personalized email body."""
+    BLURBS = {
+        "get_market_intel": "supply/demand MW, pricing, vacancy for 60+ global DC markets",
+        "get_grid_data": "real-time ISO demand, peak, reserve margin, fuel mix, queue",
+        "get_grid_intelligence": "interconnection-queue MW, headroom %, renewable mix per ISO",
+        "get_water_risk": "WRI Aqueduct water-stress + drought + flood per lat/lon",
+        "get_energy_prices": "exact ¢/kWh by state with industrial/commercial/residential split",
+        "get_renewable_energy": "solar + wind capacity with project-level MW, COD, PPA prices",
+        "get_fiber_intel": "3,282 long-haul routes — carriers, lit/dark, latency, IX",
+        "analyze_site": "composite site-score for any lat/lon — power, fiber, water, tax",
+        "compare_sites": "side-by-side scoring across up to 5 candidate sites",
+        "get_tax_incentives": "50-state sales-tax abatements + property exemptions",
+        "get_pipeline": "540+ active DC projects — operator, capacity, status, ETA",
+        "list_transactions": "$324B+ M&A history — buyer, seller, MW, $/kW, date",
+        "get_intelligence_index": "DCPI index for 280+ markets — rank, weekly delta, top movers",
+    }
+    return BLURBS.get(tool, f"`{tool}` premium intelligence")
+
+
+def _personalized_email(lead: dict, sender_name: str = "DC Hub") -> tuple[str, str]:
+    """Returns (subject, body_html) personalized for this lead's tool affinity."""
+    tools = lead.get("tools_hit") or []
+    primary_tool = tools[0] if tools else None
+    signals = lead.get("total_signals") or 0
+    blurb = _tool_value_blurb(primary_tool) if primary_tool else "DC Hub intelligence tools"
+
+    if primary_tool:
+        subject = f"You tried {primary_tool} — it's free now"
+    else:
+        subject = "Your DC Hub upgrade signals — we made a change"
+
+    other_tools = tools[1:5] if len(tools) > 1 else []
+    other_list = ""
+    if other_tools:
+        other_list = "<ul style=\"padding-left:20px;color:#374151;font-size:14px\">" + \
+            "".join(f"<li><code>{t}</code> — {_tool_value_blurb(t)}</li>" for t in other_tools) + \
+            "</ul>"
+
+    body_html = f"""
+<html><body style="font-family:-apple-system,Helvetica,sans-serif;max-width:580px;margin:0 auto;padding:24px;color:#111;line-height:1.6">
+<div style="border-bottom:2px solid #3b82f6;padding-bottom:12px;margin-bottom:20px">
+  <div style="font-size:12px;color:#6b7280;text-transform:uppercase;letter-spacing:0.1em;font-weight:600">DC Hub</div>
+  <h1 style="margin:6px 0 0;font-size:22px">Quick note — we lowered the wall</h1>
+</div>
+
+<p>Your MCP client (Claude / Cursor / Windsurf / etc.) called DC Hub's <strong><code>{primary_tool or 'paid tools'}</code></strong> {signals} time{'s' if signals != 1 else ''} in the last 30 days. Each call hit our paywall.</p>
+
+<p><strong>That changes today.</strong> We just moved {primary_tool or 'this tool'} (and 6 others) to the free Identified tier. Your existing API key already has access:</p>
+
+<ul style="padding-left:20px;color:#374151">
+  <li><code>get_market_intel</code> · supply/demand, pricing, vacancy</li>
+  <li><code>get_grid_data</code> · live ISO demand + queue + fuel mix</li>
+  <li><code>get_grid_intelligence</code> · headroom % + renewable mix</li>
+  <li><code>get_fiber_intel</code> · long-haul routes + carriers</li>
+  <li><code>get_water_risk</code>, <code>get_energy_prices</code>, <code>get_renewable_energy</code></li>
+</ul>
+
+<p>200 calls/day. 20 rows per call. No card. No new key.</p>
+
+<p>What I'd ask you to do, today: <strong>retry the question that hit the wall yesterday</strong>. If the data is what you needed, great. If 20 rows isn't enough or you want <code>analyze_site</code> + <code>compare_sites</code> for unlimited site-selection workflows, Developer is $49/mo at <a href="https://dchub.cloud/pricing?utm_source=outreach&amp;utm_campaign=hot_leads&amp;utm_term={primary_tool or 'lead'}" style="color:#3b82f6">dchub.cloud/pricing</a>.</p>
+
+{f"<p>Bonus context — your client also tried:</p>{other_list}" if other_list else ""}
+
+<p>Reply to this email if you want a manual walkthrough or have feedback on what to ship next.</p>
+
+<div style="margin-top:32px;padding-top:18px;border-top:1px solid #e5e7eb;font-size:13px;color:#6b7280">
+  — {sender_name} · <a href="https://dchub.cloud" style="color:#3b82f6;text-decoration:none">dchub.cloud</a> · <a href="https://dchub.cloud/by-the-numbers" style="color:#3b82f6;text-decoration:none">By the Numbers</a> · <a href="https://dchub.cloud/api/v1/subscribers/unsubscribe?email={lead.get('email','')}" style="color:#9ca3af;text-decoration:none">Unsubscribe</a>
+</div>
+</body></html>"""
+    return subject, body_html
+
+
+@funnel_leads_bp.route("/api/v1/admin/funnel-leads/preview", methods=["GET"])
+@_require_admin
+def preview_personalized_emails():
+    """Preview the personalized email for top N hot leads without sending.
+
+    Query params:
+        days, min_signals, limit — same as funnel-leads endpoint.
+    Returns the rendered subject + first 500 chars of body per lead so
+    you can sanity-check before firing.
+    """
+    try:
+        days = min(int(request.args.get("days") or 30), 90)
+        min_signals = max(int(request.args.get("min_signals") or 5), 1)
+        limit = min(int(request.args.get("limit") or 10), 50)
+    except Exception:
+        days, min_signals, limit = 30, 5, 10
+
+    previews = []
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute(_build_lead_query(days, min_signals, limit))
+            for r in cur.fetchall():
+                lead = {
+                    "api_key_id": r[0], "email": r[1], "tier": r[2] or 'free',
+                    "name": r[3], "total_signals": int(r[4] or 0),
+                    "tools_hit": list(r[6]) if r[6] else [],
+                }
+                subject, body = _personalized_email(lead)
+                previews.append({
+                    "email": lead["email"],
+                    "signals": lead["total_signals"],
+                    "primary_tool": (lead["tools_hit"][:1] or [None])[0],
+                    "subject": subject,
+                    "body_preview": body[:600],
+                })
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)[:200]), 500
+    return jsonify(ok=True, days=days, min_signals=min_signals,
+                   previews=previews, count=len(previews)), 200
+
+
 @funnel_leads_bp.route("/api/v1/admin/funnel-leads/broadcast", methods=["POST"])
 @_require_admin
 def broadcast_to_leads():
-    """Fire a targeted email broadcast to the top N hot leads using the
-    existing broadcast infrastructure (routes/broadcast.py).
+    """Fire a targeted email blast to the top N hot leads.
 
     Body JSON:
-        subject       — required
-        body_html     — required
-        cta_link      — optional
-        days          — lookback (default 30)
-        min_signals   — minimum signals (default 5 for targeted; harder
-                        threshold than the dashboard's 3)
-        limit         — max recipients (default 50; protects against
-                        accidental large send)
-        confirm_send  — must be true to actually send (defaults to dry-run)
+        mode               — 'personalized' (default) or 'static'
+        subject, body_html — required if mode='static'; ignored if personalized
+        days               — lookback (default 30)
+        min_signals        — min upgrade signals (default 5)
+        limit              — max recipients (default 50, ceiling 200)
+        confirm_send       — must be true; otherwise dry-run
+
+    Personalized mode generates a per-lead subject + body based on which
+    tools they kept hitting. Static mode uses the passed-in subject/body
+    for all recipients.
     """
     body = request.get_json(silent=True) or {}
-    subject = (body.get("subject") or "").strip()
-    body_html = body.get("body_html") or ""
-    if not subject or not body_html:
-        return jsonify(ok=False, error="subject + body_html required"), 400
+    mode = (body.get("mode") or "personalized").lower()
+    if mode not in ("personalized", "static"):
+        return jsonify(ok=False, error="mode must be 'personalized' or 'static'"), 400
+
+    static_subject = (body.get("subject") or "").strip()
+    static_body = body.get("body_html") or ""
+    if mode == "static" and (not static_subject or not static_body):
+        return jsonify(ok=False, error="static mode requires subject + body_html"), 400
 
     try:
         days = min(int(body.get("days") or 30), 90)
@@ -207,53 +329,61 @@ def broadcast_to_leads():
         days, min_signals, limit = 30, 5, 50
     confirm = bool(body.get("confirm_send"))
 
-    # Resolve emails
-    emails = []
+    leads = []
     try:
         with _conn() as c, c.cursor() as cur:
             cur.execute(_build_lead_query(days, min_signals, limit))
             for r in cur.fetchall():
                 if r[1]:  # email
-                    emails.append({
-                        "email": r[1],
-                        "signals": int(r[4] or 0),
-                        "tools": list(r[6]) if r[6] else [],
+                    leads.append({
+                        "api_key_id": r[0], "email": r[1], "tier": r[2] or 'free',
+                        "name": r[3], "total_signals": int(r[4] or 0),
+                        "tools_hit": list(r[6]) if r[6] else [],
                     })
     except Exception as e:
         return jsonify(ok=False, error=str(e)[:200]), 500
 
-    if not emails:
+    if not leads:
         return jsonify(ok=False, error="no_hot_leads",
                        hint="Lower min_signals or extend days."), 200
 
     if not confirm:
-        return jsonify(ok=True, mode="dry_run",
-                       eligible_count=len(emails),
-                       sample_emails=[e["email"] for e in emails[:5]],
-                       note=(f"Dry-run — would email {len(emails)} hot leads "
-                             "with ≥" + str(min_signals) + " signals in last "
-                             + str(days) + "d. Pass confirm_send: true to "
-                             "actually deliver.")), 200
+        sample = []
+        for lead in leads[:5]:
+            if mode == "personalized":
+                subj, _ = _personalized_email(lead)
+            else:
+                subj = static_subject
+            sample.append({"email": lead["email"], "subject": subj,
+                           "tools": lead["tools_hit"][:3]})
+        return jsonify(ok=True, mode="dry_run", send_mode=mode,
+                       eligible_count=len(leads), sample=sample,
+                       note=(f"Dry-run — would email {len(leads)} hot leads. "
+                             "Pass confirm_send: true to actually deliver. "
+                             f"GET /api/v1/admin/funnel-leads/preview to inspect "
+                             "personalized bodies first.")), 200
 
-    # Real send — hand off to the broadcast endpoint via test_client
-    import json as _json
-    sent = 0; failed = 0; send_errors = []
+    # Real send
     try:
         from routes.broadcast import _send_email
-        for entry in emails:
-            ok, err = _send_email(entry["email"], "", subject, body_html)
-            if ok:
-                sent += 1
-            else:
-                failed += 1
-                if len(send_errors) < 5:
-                    send_errors.append({"email": entry["email"], "error": err})
     except Exception as e:
-        return jsonify(ok=False, error=str(e)[:200]), 500
+        return jsonify(ok=False, error=f"send_helper_unavailable: {e}"), 500
 
-    return jsonify(ok=True, mode="sent",
-                   eligible_count=len(emails),
-                   sent_count=sent,
-                   failed_count=failed,
-                   send_errors_sample=send_errors,
-                   subject=subject), 200
+    sent = 0; failed = 0; errors = []
+    for lead in leads:
+        if mode == "personalized":
+            subj, html = _personalized_email(lead)
+        else:
+            subj, html = static_subject, static_body
+        ok, err = _send_email(lead["email"], lead.get("name") or "", subj, html)
+        if ok:
+            sent += 1
+        else:
+            failed += 1
+            if len(errors) < 5:
+                errors.append({"email": lead["email"], "error": err})
+
+    return jsonify(ok=True, mode="sent", send_mode=mode,
+                   eligible_count=len(leads),
+                   sent_count=sent, failed_count=failed,
+                   errors_sample=errors), 200
