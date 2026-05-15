@@ -204,7 +204,8 @@ def record_proposal_outcome(proposal_id, proposal_kind, still_broken,
                        (proposal_id, proposal_kind, checked_at,
                         still_broken, evidence_url, evidence_note,
                         check_count)
-                   VALUES (%s, %s, NOW(), %s, %s, %s, 1)""",
+                   VALUES (%s, %s, NOW(), %s, %s, %s, 1)
+                   ON CONFLICT DO NOTHING""",
                 (proposal_id, proposal_kind, bool(still_broken),
                  (evidence_url or '')[:300],
                  (evidence_note or '')[:500]))
@@ -226,7 +227,8 @@ def record_model_run(layer, model, outcome, latency_ms=None,
                 """INSERT INTO brain_model_performance
                        (layer, model, latency_ms, outcome,
                         proposal_id, approved, rejected, notes)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                   ON CONFLICT DO NOTHING""",
                 (layer[:40], model[:80], latency_ms,
                  (outcome or '')[:60],
                  proposal_id,
@@ -547,7 +549,8 @@ def probe_outcomes():
                             (proposal_id, proposal_kind, applied_at,
                              checked_at, still_broken, evidence_note,
                              check_count)
-                        VALUES (%s, 'text', %s, NOW(), %s, %s, 1)""",
+                        VALUES (%s, 'text', %s, NOW(), %s, %s, 1)
+                        ON CONFLICT DO NOTHING""",
                         (prop_id, applied_at, bool(still_broken),
                          f"persistence_last={persistence_last.isoformat() if persistence_last else 'none'}"))
                     new_outcomes += 1
@@ -599,6 +602,7 @@ def post_review_decision():
                     (proposal_kind, proposal_id, issue_hash, issue_label,
                      decision, reviewer, reviewer_note)
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT DO NOTHING
                 RETURNING id""",
                 (kind, body.get("proposal_id"), h, issue_label,
                  decision, (body.get("reviewer") or '')[:120],
