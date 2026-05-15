@@ -697,6 +697,82 @@ def api_score_market(slug):
     return jsonify(row), 200
 
 
+# Phase RR (2026-05-15): /api/v1/dcpi/ask — DCPI-flavored Q&A.
+# The /dcpi page's inline "Ask the Index" widget POSTs/GETs here.
+# Before this endpoint existed, the page hit /api/v1/dcpi/ask via GET
+# which 404'd → CF Worker fell through to its 503 fallback. The bug
+# surfaced as "Backend unreachable" 503s on every DCPI agent query.
+#
+# Implementation: proxy to the existing /api/v1/demo/ask endpoint.
+# Same Anthropic tool-loop, same rate limiting, same cache — but
+# accept GET ?q= (the dcpi widget's actual call shape) in addition
+# to the POST body shape demo/ask requires.
+@dcpi_bp.route("/api/v1/dcpi/ask", methods=["GET", "POST", "OPTIONS"])
+def dcpi_ask():
+    if request.method == "OPTIONS":
+        resp = jsonify(ok=True)
+        resp.headers["Access-Control-Allow-Origin"]  = "*"
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        return resp, 204
+    # Normalize the question from either GET ?q= or POST {question}.
+    if request.method == "GET":
+        question = (request.args.get("q") or "").strip()
+    else:
+        body = request.get_json(silent=True) or {}
+        question = (body.get("question") or body.get("q") or "").strip()
+    if not question:
+        return jsonify(ok=False, error="question required (q= query param or body.question)"), 400
+    if len(question) > 400:
+        return jsonify(ok=False, error="question too long (max 400 chars)"), 400
+
+    # Delegate to the demo_ask handler — reuses its rate-limit + cache +
+    # Anthropic tool-loop. The demo handler reads POST JSON, so we forge
+    # a request context with the question normalized into the body.
+    try:
+        from routes.demo import (_ensure_schema, _is_dc_question, _hash_q,
+                                   _cached, _cache_set, _check_and_bump_rate,
+                                   _call_claude_with_tools, _client_ip,
+                                   PER_IP_DAILY)
+        _ensure_schema()
+        if not _is_dc_question(question):
+            return jsonify(
+                ok=True,
+                answer=("I'm the DCPI agent — I answer data center power "
+                        "questions only. Try: 'What's the DCPI for Ashburn?' "
+                        "or 'Compare ERCOT, PJM, and CAISO by excess power.'"),
+                tool_calls=[],
+                note="off-topic; no Claude call burned"), 200
+        qh = _hash_q(question)
+        cached = _cached(qh)
+        if cached:
+            _check_and_bump_rate(_client_ip())
+            return jsonify(ok=True, answer=cached["answer"],
+                           tool_calls=cached["tool_calls"], cached=True), 200
+        used, allowed = _check_and_bump_rate(_client_ip())
+        if not allowed:
+            return jsonify(
+                ok=False, error="rate_limited",
+                used_today=used, limit_per_day=PER_IP_DAILY,
+                hint="Free demo limit hit. Sign up free for unlimited MCP: https://dchub.cloud/signup",
+                signup_url="https://dchub.cloud/signup"), 429
+        answer, tool_calls = _call_claude_with_tools(question)
+        _cache_set(qh, question, answer, tool_calls)
+        return jsonify(
+            ok=True, answer=answer, tool_calls=tool_calls,
+            rate_limit={"used_today": used, "limit_per_day": PER_IP_DAILY},
+            cached=False), 200
+    except ImportError as e:
+        # Demo module not available — fail soft, don't leak the stack.
+        return jsonify(ok=False,
+                       error="dcpi_ask_unavailable",
+                       detail=f"demo backend not configured: {e}"), 503
+    except Exception as e:
+        return jsonify(ok=False,
+                       error="dcpi_ask_internal_error",
+                       detail=str(e)[:200]), 500
+
+
 @dcpi_bp.route("/api/v1/dcpi/movers", methods=["GET"])
 def api_movers():
     _ensure_tables()
@@ -1875,7 +1951,7 @@ buttons.forEach(b => b.addEventListener('click', () => {
       });
       const d = await r.json();
       if (d.ok) {
-        msg.innerHTML = '<span style="color:#10b981">✓ You\'re in. First brief lands tomorrow at 14:00 UTC.</span>';
+        msg.innerHTML = '<span style="color:#10b981">✓ You\\'re in. First brief lands tomorrow at 14:00 UTC.</span>';
         document.getElementById('dcpi-sub-email').value = '';
       } else {
         msg.innerHTML = '<span style="color:#ef4444">' + (d.error || 'error') + '</span>';
@@ -2403,9 +2479,14 @@ _DCPI_CSP = (
         "https://accounts.google.com; "
     "img-src 'self' data: https:; "
     "font-src 'self' data: https: https://fonts.gstatic.com; "
+    # Phase RR (2026-05-15): add stats.g.doubleclick.net for GA4 + plausible
+    # to match the global frontend /_headers CSP. The /dcpi page's CSP was
+    # narrower than the rest of the site, blocking GA4's standard
+    # doubleclick beacon and any plausible.io analytics calls.
     "connect-src 'self' "
         "https://dchub-backend-production.up.railway.app "
-        "https://www.google-analytics.com https://cloudflareinsights.com; "
+        "https://www.google-analytics.com https://stats.g.doubleclick.net "
+        "https://cloudflareinsights.com https://plausible.io; "
     "frame-src 'self' https://accounts.google.com; "
     "frame-ancestors 'self'; "
     "base-uri 'self'; "
