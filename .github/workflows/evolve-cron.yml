@@ -822,6 +822,28 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 4
     steps:
+      - name: Purge prior refusals (self-heal)
+        # Phase PP+1 (2026-05-15): runs the quality gate over every
+        # existing probe_* row in ai_testimonials and deletes anything
+        # that no longer passes (e.g. refusal phrasing that slipped
+        # past an older gate). Idempotent on already-clean tables.
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::error::DCHUB_ADMIN_KEY secret not set"; exit 1; fi
+          purge=$(curl -sS --max-time 60 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "https://dchub-backend-production.up.railway.app/api/v1/testimonials/probe/purge-refusals" \
+            || echo '{"ok":false,"deleted_count":0}')
+          echo "$purge" | head -c 1500
+          echo
+          echo "$purge" | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          print(f\"::notice::Refusal purge deleted={d.get('deleted_count',0)} kept={d.get('kept_count',0)}\")
+          " || true
+
       - name: Run nightly testimonial probe
         env:
           ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
