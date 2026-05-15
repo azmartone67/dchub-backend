@@ -332,12 +332,28 @@ def create_listing():
 
 
 @exclusive_listings_bp.route("/api/v1/admin/listings/<int:lid>",
-                              methods=["PUT", "PATCH"])
+                              methods=["PUT", "PATCH", "DELETE"])
 @_require_admin
-def update_listing(lid):
-    """Partial update. Pass any subset of fields. To promote a draft
-    to pocket: {"status": "pocket"}. To make pocket public: {"status": "public"}."""
+def update_or_delete_listing(lid):
+    """PUT/PATCH = partial update (pass any subset of fields). To promote a draft
+    to pocket: {"status": "pocket"}. To make pocket public: {"status": "public"}.
+    DELETE = remove the listing entirely. Combined into one route to keep the
+    regression-lint duplicate-route guard happy."""
     _ensure_schema()
+
+    # DELETE path
+    if request.method == "DELETE":
+        try:
+            with _conn() as c, c.cursor() as cur:
+                cur.execute("DELETE FROM exclusive_listings WHERE id = %s",
+                            (lid,))
+                n = cur.rowcount
+                c.commit()
+            return jsonify(ok=True, deleted=n), 200
+        except Exception as e:
+            return jsonify(ok=False, error=str(e)[:200]), 200
+
+    # PUT / PATCH path
     body = request.get_json(silent=True) or {}
     SETTABLE = {"title", "summary", "status", "tier_required", "market",
                 "state", "country", "latitude", "longitude", "capacity_mw",
@@ -374,20 +390,6 @@ def update_listing(lid):
         if not row:
             return jsonify(ok=False, error="not_found"), 404
         return jsonify(ok=True, id=row[0], slug=row[1], status=row[2]), 200
-    except Exception as e:
-        return jsonify(ok=False, error=str(e)[:200]), 200
-
-
-@exclusive_listings_bp.route("/api/v1/admin/listings/<int:lid>", methods=["DELETE"])
-@_require_admin
-def delete_listing(lid):
-    _ensure_schema()
-    try:
-        with _conn() as c, c.cursor() as cur:
-            cur.execute("DELETE FROM exclusive_listings WHERE id = %s", (lid,))
-            n = cur.rowcount
-            c.commit()
-        return jsonify(ok=True, deleted=n), 200
     except Exception as e:
         return jsonify(ok=False, error=str(e)[:200]), 200
 
