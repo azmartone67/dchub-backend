@@ -1,0 +1,19 @@
+{
+  "name": "dchub-neon-failover",
+  "version": "1.0.0",
+  "description": "Cloudflare Worker — Neon-direct failover for the 5 most critical DC Hub Railway endpoints",
+  "private": true,
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "dev":    "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail":   "wrangler tail"
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

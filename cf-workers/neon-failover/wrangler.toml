@@ -1,0 +1,42 @@
+# Phase GG (2026-05-15): Cloudflare Worker that talks to Neon directly,
+# providing failover for the 5 most critical read endpoints when Railway
+# is down. Deploy + bind routes in CF dashboard.
+#
+# Deployment:
+#   1. Install Wrangler:    npm install -g wrangler
+#   2. Login:               wrangler login
+#   3. Create Hyperdrive:   wrangler hyperdrive create dchub-neon \
+#                             --connection-string "$NEON_DATABASE_URL"
+#      -> copy the returned `id` into hyperdrive.id below
+#   4. Deploy:              wrangler deploy
+#   5. CF dashboard -> Workers & Pages -> dchub-neon-failover -> Triggers
+#      -> Add 5 routes (one per critical endpoint, see ROUTES below).
+#      Set "Route precedence" so this Worker only fires when the main
+#      proxy returns 5xx/timeout (use CF Workers' "Fallback" trigger
+#      pattern, or chain via the Pages Functions worker).
+#
+# Routes to configure in CF dashboard (zone: dchub.cloud):
+#   dchub.cloud/api/v1/health
+#   dchub.cloud/api/v1/stats
+#   dchub.cloud/api/v1/freshness/radar
+#   dchub.cloud/api/v1/dcpi/scores
+#   dchub.cloud/api/v1/dcpi/scores/*
+#   dchub.cloud/api/v1/facilities/state-status-counts
+
+name = "dchub-neon-failover"
+main = "src/index.js"
+compatibility_date = "2026-05-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Hyperdrive connection — populate the `id` after running
+# `wrangler hyperdrive create dchub-neon --connection-string "$NEON_DATABASE_URL"`
+[[hyperdrive]]
+binding = "NEON_DB"
+id      = "REPLACE_WITH_HYPERDRIVE_ID"
+
+# Origin allowlist — if we ever extend this Worker to proxy POSTs, we'll
+# need this. Read-only for now.
+[vars]
+WORKER_VERSION   = "1.0.0"
+RAILWAY_ORIGIN   = "https://dchub-backend-production.up.railway.app"
+FAILOVER_TIMEOUT_MS = "12000"
