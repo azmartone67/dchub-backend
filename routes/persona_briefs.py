@@ -34,6 +34,23 @@ except Exception:
     def now_iso():
         return datetime.now(timezone.utc).isoformat()
 
+# Phase GG (2026-05-15) Bundle 6F item 19: soft-paywall decorator.
+# Anonymous + identified users still get a useful preview of each persona
+# brief (top 3 items in lists) with a tier-aware upgrade CTA appended.
+# Developer/Pro/Enterprise see full output. Safer than gating with 401
+# because the AI assistant + human can still cite "3 of N items shown".
+try:
+    from util.tier_gate import soft_gate, Tier as RestTier
+    _HAS_SOFT_GATE = True
+except Exception:
+    _HAS_SOFT_GATE = False
+    # No-op stand-in so endpoint decorators below don't crash on import.
+    def soft_gate(*a, **kw):
+        def deco(fn): return fn
+        return deco
+    class RestTier:  # minimal shim
+        DEVELOPER = 2
+
 persona_briefs_bp = Blueprint("persona_briefs", __name__)
 
 
@@ -64,6 +81,10 @@ def _safe(cur, sql, params=()):
 # DEVELOPER BRIEF — "Where should I build?"
 # ─────────────────────────────────────────────────────────────────────
 @persona_briefs_bp.route("/api/v1/brief/developer", methods=["GET"])
+@soft_gate(min_tier=RestTier.DEVELOPER,
+           teaser="full ranked shortlist with operator-level rationale + competing-construction MW + 20-source citation chain",
+           truncate_to=3,
+           truncate_keys=["shortlist", "sources"])
 def developer_brief():
     """Ranked site-selection shortlist with rationale.
 
@@ -183,6 +204,10 @@ def _developer_rationale(verdict, excess, constraint, ttp, deadline):
 # BUYER BRIEF — "What's available to buy?"
 # ─────────────────────────────────────────────────────────────────────
 @persona_briefs_bp.route("/api/v1/brief/buyer", methods=["GET"])
+@soft_gate(min_tier=RestTier.DEVELOPER,
+           teaser="full candidate facility roster + pocket-listing inventory (Pro+) + 10-deal transaction comparable history",
+           truncate_to=3,
+           truncate_keys=["candidate_facilities", "pocket_listings", "recent_comparables"])
 def buyer_brief():
     """On-market + pocket inventory + recent comparables for buyers.
 
@@ -298,6 +323,10 @@ def buyer_brief():
 # INVESTOR BRIEF — "What's this operator's trajectory?"
 # ─────────────────────────────────────────────────────────────────────
 @persona_briefs_bp.route("/api/v1/brief/investor", methods=["GET"])
+@soft_gate(min_tier=RestTier.DEVELOPER,
+           teaser="full operator M&A history + pipeline contribution + 8-peer benchmark + recent news mention chain",
+           truncate_to=3,
+           truncate_keys=["ma_history", "recent_news", "peer_operators"])
 def investor_brief():
     """Operator scorecard: footprint, growth, M&A history, peer comparables.
 
@@ -413,6 +442,10 @@ def investor_brief():
 # POLICY BRIEF — "What's the impact on my state?"
 # ─────────────────────────────────────────────────────────────────────
 @persona_briefs_bp.route("/api/v1/brief/policy", methods=["GET"])
+@soft_gate(min_tier=RestTier.DEVELOPER,
+           teaser="full state-level rollup with all DCPI verdict buckets + complete tax-incentive program list + jobs methodology",
+           truncate_to=3,
+           truncate_keys=["state_incentives", "sources"])
 def policy_brief():
     """State-level rollup for policymakers / regulators.
 
