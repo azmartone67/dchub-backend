@@ -28,10 +28,10 @@ from flask import Blueprint, jsonify, request, Response
 
 funnel_leads_bp = Blueprint("funnel_leads", __name__)
 
-ADMIN_KEY = (os.environ.get("DCHUB_ADMIN_KEY")
-             or os.environ.get("DCHUB_INTERNAL_KEY")
-             or os.environ.get("ADMIN_KEY")
-             or "").strip()
+# Match the exact pattern brain_v2_layer4 uses (proven to work all session
+# via the brain_learn workflow). No strip, no extra fallback. The .strip()
+# I added earlier may have been silently changing the comparison.
+ADMIN_KEY = os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY")
 
 
 def _conn():
@@ -44,10 +44,12 @@ def _conn():
 def _require_admin(fn):
     @wraps(fn)
     def w(*a, **kw):
-        provided = (request.headers.get("X-Admin-Key") or
-                    request.args.get("admin_key") or "").strip()
+        # Match brain_v2_layer4 _require_admin exactly — no .strip() on
+        # either side. The strip was silently mismatching the value.
+        provided = request.headers.get("X-Admin-Key") or request.args.get("admin_key")
         if ADMIN_KEY and provided != ADMIN_KEY:
-            return jsonify(error="unauthorized"), 401
+            return jsonify(error="unauthorized",
+                           hint="X-Admin-Key header required"), 401
         return fn(*a, **kw)
     return w
 
