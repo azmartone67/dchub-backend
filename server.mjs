@@ -193,6 +193,22 @@ const FREE_TIER_DAILY_CAPS = {
   get_fiber_intel:       10,
 };
 
+// Phase GG (2026-05-15): identified-tier caps. Identifying a key (POST
+// /api/v1/keys/identify with an email) is the soft mid-step on the
+// upgrade ladder — it's free, no password, no payment. Before tonight
+// the only reward was lifting the OVERALL daily quota (25 -> 100). Now
+// it also lifts the per-tool caps on the gateway tools — same 2.5×
+// improvement that paid users got, but conditional on a verifiable
+// email. This gives 100+ heavy users (the audit shows ~100 distinct
+// users hammering get_grid_intelligence at 30+ calls/user) a concrete
+// reason to identify — which both (a) un-anonymizes them so we can
+// nurture (PR #133/134's weekly digest) and (b) creates a softer
+// conversion point before the $49/mo ask.
+const IDENTIFIED_TIER_DAILY_CAPS = {
+  get_grid_intelligence: 25,
+  get_fiber_intel:       25,
+};
+
 const PAID_ONLY_TOOLS = new Set([
   'analyze_site',
   'compare_sites',
@@ -223,18 +239,26 @@ async function usageToday(api_key, tool) {
   }
 }
 
-// Returns { allowed, params, capped, dailyCap, dailyUsed } — async because
-// the daily-cap branch needs a usage lookup.
-async function applyTierGate(toolName, params, tier, api_key) {
+// Returns { allowed, params, capped, dailyCap, dailyUsed, tierLevel } —
+// async because the daily-cap branch needs a usage lookup.
+// `identified` (bool) is "free key with an email on file" — gets higher
+// per-tool caps than anonymous-keyed (Phase GG 2026-05-15).
+async function applyTierGate(toolName, params, tier, api_key, identified) {
   if (tier === 'paid' || tier === 'enterprise') return { allowed: true, params };
   if (PAID_ONLY_TOOLS.has(toolName)) return { allowed: false };
 
-  // Daily cap check for free tier
-  const dailyCap = FREE_TIER_DAILY_CAPS[toolName];
+  // Daily cap check for free tier. Identified keys get the higher cap
+  // (free identification = soft mid-rung of the upgrade ladder).
+  const capTable = identified ? IDENTIFIED_TIER_DAILY_CAPS : FREE_TIER_DAILY_CAPS;
+  const dailyCap = capTable[toolName];
   if (dailyCap && tier === 'free') {
     const used = await usageToday(api_key, toolName);
     if (used >= dailyCap) {
-      return { allowed: false, dailyCapExceeded: true, dailyCap, dailyUsed: used };
+      return {
+        allowed: false, dailyCapExceeded: true,
+        dailyCap, dailyUsed: used,
+        tierLevel: identified ? 'free_identified' : 'free_anonymous',
+      };
     }
   }
 
@@ -253,7 +277,7 @@ function trackedTool(srv, name, description, schema, handler) {
     let status = 'ok';
     const tier = c.tier || 'free';
     try {
-      const gate = await applyTierGate(name, args, tier, c.api_key);
+      const gate = await applyTierGate(name, args, tier, c.api_key, !!c.email);
 
       // Phase 274: daily-cap-exceeded gets its own friendlier message —
       // user has clearly been using the tool, so the paywall framing is
@@ -261,27 +285,81 @@ function trackedTool(srv, name, description, schema, handler) {
       if (!gate.allowed && gate.dailyCapExceeded) {
         status = 'blocked_daily_cap';
         const _quick = oneClickUpgradeLine();
+        const _identified = !!c.email;
+        // Phase GG (2026-05-15): tiered cap-exceeded message. The audit
+        // shows ~100 users hitting get_grid_intelligence's per-tool cap
+        // with 0.05% conversion to paid — agents can't "click a Stripe
+        // link" in-protocol, so a single hard CTA leaks the funnel.
+        // Now we offer THREE explicit paths in priority order:
+        //   1. IDENTIFY (free, agent-callable, lifts cap 10 -> 25 if
+        //      not already identified)  — only shown to non-identified
+        //   2. WAIT (no friction, just delayed)
+        //   3. UPGRADE (paid, the actual unlimited path)
+        // Each path is a structured `paths[]` entry agents can parse
+        // and act on without the markdown chrome they tend to gloss over.
+        const _identifyBlock = _identified ? '' : `
+**1️⃣ Free — Identify your key (one curl, no password, agent-callable)**
+
+\`\`\`bash
+curl -X POST https://dchub.cloud/api/v1/keys/identify \\
+  -H "X-API-Key: YOUR_DCHUB_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"email":"you@company.com"}'
+\`\`\`
+
+Lifts your per-tool cap on \`${name}\` **10 → 25/day** immediately, lifts your overall quota **25 → 100/day**, queues a weekly digest of the markets you query, and turns on market-movement alerts. Free, no payment.
+
+`;
         const _md = `## \u{23F1}\u{FE0F} Daily free-tier limit reached for \`${name}\`
 
-You've used **${gate.dailyUsed}/${gate.dailyCap}** of today's free calls to \`${name}\`. Resets at **00:00 UTC**.
+You've used **${gate.dailyUsed}/${gate.dailyCap}** of today's calls to \`${name}\`. Resets at **00:00 UTC**.
 
-### You're clearly using this for real work. Two paths forward:
+### Three paths forward (in order of friction):
+${_identifyBlock}**${_identified ? '1️⃣' : '2️⃣'} Wait it out** — daily cap resets at 00:00 UTC.
 
-${_quick}1. **Wait it out.** Limit resets in a few hours.
-2. **Upgrade now — 50% off first month with \`TRYDCHUB50\`.**
+**${_identified ? '2️⃣' : '3️⃣'} Upgrade to Developer — $49/mo, 50% off first month with \`TRYDCHUB50\`**
 
-\u{1F449} **[Upgrade to Developer](${UPGRADE_URL})** — $49/mo, 1,000 calls/day, unlimited \`${name}\`, \`get_grid_intelligence\`, \`get_fiber_intel\`, plus the paid-only tools (\`analyze_site\`, \`compare_sites\`, \`get_dchub_recommendation\`).
+${_quick}\u{1F449} **[Upgrade now](${UPGRADE_URL})** — 1,000 calls/day, **unlimited** \`${name}\`, \`get_grid_intelligence\`, \`get_fiber_intel\`, plus the paid-only tools (\`analyze_site\`, \`compare_sites\`, \`get_dchub_recommendation\`).
 
 If you're scoring more than ~10 markets/day, the math favors upgrading.`;
+
+        const _paths = [];
+        if (!_identified) {
+          _paths.push({
+            priority: 1, name: 'identify', cost: 'free',
+            agent_callable: true,
+            action: 'POST /api/v1/keys/identify',
+            method: 'POST',
+            url: 'https://dchub.cloud/api/v1/keys/identify',
+            body: { api_key: c.api_key || '<your key>', email: '<email>' },
+            unlocks: `per-tool cap on ${name} 10 -> 25/day, overall 25 -> 100/day, market alerts, weekly digest`,
+          });
+        }
+        _paths.push({
+          priority: _identified ? 1 : 2, name: 'wait', cost: 'time',
+          agent_callable: true,
+          action: 'retry after next 00:00 UTC',
+        });
+        _paths.push({
+          priority: _identified ? 2 : 3, name: 'upgrade', cost: '$49/mo',
+          agent_callable: false,  // requires human at Stripe
+          action: 'human visits checkout',
+          url: STRIPE_PRO_LINK || UPGRADE_URL,
+          unlocks: '1000/day + unlimited per-tool + all paid tools',
+          discount_code: 'TRYDCHUB50',
+        });
+
         return {
           content: [{ type: 'text', text: _md }],
           structuredContent: {
             error: 'daily_cap_exceeded',
             tool: name,
             current_tier: tier,
+            current_identified: _identified,
             daily_used: gate.dailyUsed,
             daily_cap: gate.dailyCap,
             resets_at: 'next 00:00 UTC',
+            paths: _paths,
             upgrade_url: UPGRADE_URL,
             ...(STRIPE_PRO_LINK ? { one_click_upgrade_url: STRIPE_PRO_LINK } : {}),
             discount_code: 'TRYDCHUB50',
