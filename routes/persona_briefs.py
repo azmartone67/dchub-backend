@@ -39,7 +39,10 @@ persona_briefs_bp = Blueprint("persona_briefs", __name__)
 
 def _conn():
     import psycopg2
-    return psycopg2.connect(os.environ.get("DATABASE_URL"), connect_timeout=8)
+    # autocommit so one failed sub-query doesn't poison the rest of the bundle.
+    c = psycopg2.connect(os.environ.get("DATABASE_URL"), connect_timeout=8)
+    c.autocommit = True
+    return c
 
 
 def _as_float(v):
