@@ -68,22 +68,32 @@ TOOL_TIER = {
     "get_dchub_recommendation":Tier.FREE,
     "get_agent_registry":      Tier.FREE,
 
-    # DEVELOPER — core intelligence
+    # IDENTIFIED — Phase MM (2026-05-15) Bundle 9 funnel recovery.
+    # Audit: 0.05% gate→pay conversion. Root cause: 7 high-demand tools
+    # were gated at Developer ($49/mo). 240+ distinct free users hit
+    # these tools daily but bounce at the price wall. Move them to
+    # IDENTIFIED (free + email) with strict caps so the friction drops:
+    # signup → email-only → instant access (capped) → upgrade later
+    # when they want unlimited. Limits: 200 calls/day, 20 rows/call.
+    "get_market_intel":        Tier.IDENTIFIED,  # 2,991 signals/30d
+    "get_grid_data":           Tier.IDENTIFIED,  # 2,655 signals/30d
+    "get_grid_intelligence":   Tier.IDENTIFIED,  # 102 users hit
+    "get_fiber_intel":         Tier.IDENTIFIED,  # 101 users hit
+    "get_water_risk":          Tier.IDENTIFIED,  # 2,608 signals/30d
+    "get_energy_prices":       Tier.IDENTIFIED,  # 2,493 signals/30d
+    "get_renewable_energy":    Tier.IDENTIFIED,  # 2,355 signals/30d
+
+    # DEVELOPER — keep the highest-value site-selection tools as the
+    # paid moat. These convert IDENTIFIED users who get hooked on
+    # the IDENTIFIED-tier tools above.
     "list_transactions":       Tier.DEVELOPER,
     "get_pipeline":            Tier.DEVELOPER,
-    "get_market_intel":        Tier.DEVELOPER,
-    "analyze_site":            Tier.DEVELOPER,
-    "compare_sites":           Tier.DEVELOPER,
+    "analyze_site":            Tier.DEVELOPER,  # 39 free calls, 19 users
+    "compare_sites":           Tier.DEVELOPER,  # 13 free calls, 10 users
     "get_infrastructure":      Tier.DEVELOPER,
-    "get_fiber_intel":         Tier.DEVELOPER,
-    "get_grid_data":           Tier.DEVELOPER,
     "get_grid_headroom":       Tier.DEVELOPER,
-    "get_grid_intelligence":   Tier.DEVELOPER,
-    "get_energy_prices":       Tier.DEVELOPER,
-    "get_renewable_energy":    Tier.DEVELOPER,
     "get_colocation_score":    Tier.DEVELOPER,
     "get_geothermal_potential":Tier.DEVELOPER,
-    "get_water_risk":          Tier.DEVELOPER,
     "get_tax_incentives":      Tier.DEVELOPER,
     "get_microgrid_viability": Tier.DEVELOPER,
     "get_intelligence_index":  Tier.DEVELOPER,
@@ -433,6 +443,12 @@ def _cta_gated(tool: str, current: Tier, required: Tier, args: Optional[Dict] = 
     Phase JJ (2026-05-13): rewritten. Old text was 35 words of error-
     code framing; new text leads with the *specific value* and the
     *concrete price* so the human sees the deal, not the wall.
+
+    Phase MM (2026-05-15) Bundle 9: branch by gap size. Anonymous→
+    IDENTIFIED needs a "sign up free" CTA, NOT a $49/mo pricing link.
+    The mismatch was a big driver of the 0.05% conversion rate —
+    we were asking $49/mo for the FIRST step when the actual first
+    step is just an email.
     """
     teaser = TOOL_TEASER.get(tool, f"premium intelligence from `{tool}`")
     price = TIER_PRICE.get(required, "see pricing")
@@ -450,6 +466,15 @@ def _cta_gated(tool: str, current: Tier, required: Tier, args: Optional[Dict] = 
         if bits:
             ctx = f" (you asked for {', '.join(bits)})"
 
+    # Bundle 9 — right-sized CTA per gap distance.
+    if required == Tier.IDENTIFIED and current == Tier.FREE:
+        signup_url = (f"https://dchub.cloud/signup?next=/onboarding"
+                      f"&utm_source=mcp&utm_tool={tool}")
+        return (f"🔓 **{tool}**{ctx} returns: {teaser} "
+                f"This is FREE — just needs your email so we can rate-limit. "
+                f"30-second signup, no card, 200 calls/day: {signup_url}")
+
+    # Larger jumps (IDENTIFIED→DEV, DEV→PRO, etc.) keep the pricing path
     url = (f"{PRICING_URL}?utm_source=mcp&utm_tool={tool}"
            f"{('&utm_term=' + str(args.get('state') or args.get('iso') or args.get('market'))) if args else ''}")
 

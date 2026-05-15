@@ -19193,6 +19193,13 @@ try:
     app.register_blueprint(open_data_csv_bp)
 except Exception:
     pass
+
+# Phase MM (2026-05-15) Bundle 9: MCP funnel recovery — hot-leads dashboard.
+try:
+    from routes.funnel_leads import funnel_leads_bp
+    app.register_blueprint(funnel_leads_bp)
+except Exception:
+    pass
 try:
     from routes.status_api import status_api_bp
     app.register_blueprint(status_api_bp)
