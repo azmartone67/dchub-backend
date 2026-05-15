@@ -480,12 +480,24 @@ def _cta_gated(tool: str, current: Tier, required: Tier, args: Optional[Dict] = 
             ctx = f" (you asked for {', '.join(bits)})"
 
     # Bundle 9 — right-sized CTA per gap distance.
+    # Phase RR (2026-05-15): lead with the agent-native programmatic path
+    # (POST /api/v1/keys/claim → instant free dev key, no browser, no email)
+    # since agents can't actually click links. Funnel data showed 12 free
+    # keys claimed in 7d via keys/claim and 0 via the redeem URL — agents
+    # strongly prefer programmatic. Only mention the human-signup form as
+    # a fallback for cases where the agent is relaying to a human user.
     if required == Tier.IDENTIFIED and current == Tier.FREE:
         signup_url = (f"https://dchub.cloud/signup?next=/onboarding"
                       f"&utm_source=mcp&utm_tool={tool}")
-        return (f"🔓 **{tool}**{ctx} returns: {teaser} "
-                f"This is FREE — just needs your email so we can rate-limit. "
-                f"30-second signup, no card, 200 calls/day: {signup_url}")
+        return (f"🔓 **{tool}**{ctx} returns: {teaser}\n\n"
+                f"🤖 **AI agents — claim a free dev key in one API call:**\n"
+                f"`POST https://dchub.cloud/api/v1/keys/claim` with body "
+                f"`{{\"client_name\": \"<your agent name>\"}}` → returns "
+                f"`api_key` instantly (no browser, no email, no card). "
+                f"Then retry `{tool}` with header `X-API-Key: <key>`. "
+                f"Free tier: 200 calls/day, full data on identified tools.\n\n"
+                f"👤 **Human user signup (if you're relaying):** {signup_url} "
+                f"— 30 seconds, email only, same 200 calls/day.")
 
     # Larger jumps (IDENTIFIED→DEV, DEV→PRO, etc.) keep the pricing path
     url = (f"{PRICING_URL}?utm_source=mcp&utm_tool={tool}"
