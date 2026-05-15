@@ -19180,6 +19180,18 @@ try:
 except Exception:
     pass
 
+# Phase GG (2026-05-15): Bundle 7 — live demo + public status.
+try:
+    from routes.demo import demo_bp
+    app.register_blueprint(demo_bp)
+except Exception:
+    pass
+try:
+    from routes.status_api import status_api_bp
+    app.register_blueprint(status_api_bp)
+except Exception:
+    pass
+
 # === Brain v2 · Layer 3 freshness fields ===
 try:
     from flask import jsonify as _bv2_jsonify
