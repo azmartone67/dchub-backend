@@ -567,6 +567,32 @@ def trigger_learn():
             "source_url": issue.get("url"),
             "model": BRAIN_MODEL,
         }
+
+        # Phase GG (2026-05-14): Bundle 4B — rejection memory.
+        # Skip if a human reviewer has rejected this issue+find combo
+        # twice already in the last 30 days. Fully opt-in / try-wrapped
+        # so existing Layer 4 logic continues if brain_learning isn't
+        # available.
+        try:
+            from routes.brain_learning import (check_rejection_skip,
+                                                bump_temporal,
+                                                record_model_run,
+                                                issue_hash as _ihash)
+            if check_rejection_skip(issue.get("issue"), find):
+                _log({"issue": issue.get("issue"),
+                      "outcome": "skipped_repeat_rejection",
+                      "find": find[:80],
+                      "rejection_hash": _ihash(issue.get("issue"), find)})
+                # Don't propose; count rejected attempt against model perf.
+                record_model_run("layer4", BRAIN_MODEL,
+                                 outcome="skipped_by_rejection_memory",
+                                 notes=str(issue.get("issue") or '')[:120])
+                continue
+            # Bundle 4C — bump temporal pattern for this issue.
+            bump_temporal(issue.get("issue") or '', issue.get("url") or '')
+        except Exception:
+            pass  # learning module optional
+
         stored_row = None
         if _STORE_OK:
             try:
@@ -574,6 +600,17 @@ def trigger_learn():
             except Exception as e:
                 print(f"[brain_v2_layer4] upsert_proposal failed: {e}", flush=True)
                 stored_row = None
+
+        # Bundle 4D — record this model-call's outcome for model perf tracking.
+        try:
+            from routes.brain_learning import record_model_run
+            record_model_run(
+                "layer4", BRAIN_MODEL,
+                outcome=("proposed" if stored_row else "no_store"),
+                proposal_id=(stored_row.get("id") if stored_row else None),
+                approved=(bool(stored_row.get("approved")) if stored_row else None))
+        except Exception:
+            pass
 
         if stored_row:
             count = int(stored_row.get("approval_count", 1))
