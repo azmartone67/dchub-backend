@@ -635,6 +635,43 @@ function createServer() {
     async (a) => ({ content: [{ type: 'text', text: JSON.stringify(
       await callAPI('/api/v1/brief/market', { market: a.market, state: a.state })) }] }));
 
+  // ── Phase GG (2026-05-14): per-site capacity + ISO snapshot + pocket listings ──
+  // Site capacity report: bundled per-facility view of metadata, capacity
+  // rollup, pipeline, DCPI verdict, peer facilities, and recent news.
+  trackedTool(srv, 'get_site_capacity_report',
+    'One-call per-site capacity report for a data center: site metadata + capacity rollup (operational MW, under-construction MW, planned MW, utilization %) + capacity_pipeline rows for the market + DCPI verdict if the market is scored + peer facilities in same city/state + recent news. Pass `site` as numeric id, slug, or facility name (fuzzy).',
+    { site: z.string() },
+    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(
+      await callAPI(`/api/v1/sites/${encodeURIComponent(a.site || '')}/capacity-report`)) }] }));
+
+  // ISO snapshot: heartbeat freshness + DCPI rollup + pipeline + facilities.
+  trackedTool(srv, 'get_iso_snapshot',
+    'Comprehensive snapshot for one ISO (ERCOT, CAISO, NYISO, MISO, PJM, SPP, ISONE, IESO, AESO, TVA, BPA): heartbeat freshness + DCPI verdict rollup (BUILD/CAUTION/AVOID counts + avg scores) + capacity pipeline + facility footprint. Single-call ISO health check.',
+    { iso: z.string() },
+    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(
+      await callAPI(`/api/v1/iso/${encodeURIComponent(a.iso || '')}/snapshot`)) }] }));
+
+  // ISO head-to-head comparison: all 11 tracked ISOs ranked.
+  trackedTool(srv, 'get_iso_comparison',
+    'Head-to-head comparison across all 11 tracked ISOs (ERCOT, CAISO, NYISO, MISO, PJM, SPP, ISONE, IESO, AESO, TVA, BPA). Each row carries DCPI rollup, pipeline totals, facility count, and heartbeat freshness — ranked by avg excess-power score (best opportunities first).',
+    {},
+    async () => ({ content: [{ type: 'text', text: JSON.stringify(
+      await callAPI('/api/v1/iso/comparison')) }] }));
+
+  // Pocket listings: curated exclusive site access (free = teaser, Pro+ = full).
+  trackedTool(srv, 'get_pocket_listings',
+    'Pocket-listing marketplace: curated exclusive data center sites available off-market. Free tier sees public listings + teaser count of pocket-tier inventory; Pro+ identified tier sees full pocket-listing roster. Optionally filter by `state`, `market`, or `min_mw` (minimum capacity).',
+    { state: S, market: S, min_mw: I, limit: I },
+    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(
+      await callAPI('/api/v1/listings', {
+        state: a.state, market: a.market, min_mw: a.min_mw, limit: a.limit })) }] }));
+
+  trackedTool(srv, 'get_pocket_listing',
+    'Detailed view of a single pocket listing by slug or id — capacity, asking price, contact info (Pro+), full detail JSON. Free tier returns the public teaser only.',
+    { listing: z.string() },
+    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(
+      await callAPI(`/api/v1/listings/${encodeURIComponent(a.listing || '')}`)) }] }));
+
   return srv;
 }
 
@@ -658,7 +695,7 @@ app.get('/health', (req, res) => {
     status: 'healthy',
     server: 'DC Hub MCP',
     version: '2.1.0',
-    tools: 20,
+    tools: 25,
     sessions: sessions.size,
     features: ['key-validation', 'tool-call-telemetry', 'tier-gating', 'platform-detection'],
   });

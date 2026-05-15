@@ -1,5 +1,18 @@
 from routes.press_queue import press_queue_bp
 from routes.digest import digest_bp
+# Phase GG (2026-05-14): per-site capacity, ISO snapshot, pocket listings
+try:
+    from routes.sites_capacity import sites_capacity_bp
+except Exception:
+    sites_capacity_bp = None
+try:
+    from routes.iso_snapshot import iso_snapshot_bp
+except Exception:
+    iso_snapshot_bp = None
+try:
+    from routes.exclusive_listings import exclusive_listings_bp
+except Exception:
+    exclusive_listings_bp = None
 from routes.dcpi_ask import dcpi_ask_bp
 from routes.open_data import open_data_bp
 from routes.lab import lab_bp
@@ -19036,6 +19049,27 @@ app.register_blueprint(digest_bp)
 
 # auto-registered: press_queue_bp
 app.register_blueprint(press_queue_bp)
+
+# Phase GG (2026-05-14): bundled per-site capacity report
+if sites_capacity_bp is not None:
+    try:
+        app.register_blueprint(sites_capacity_bp)
+    except Exception:
+        pass
+
+# Phase GG (2026-05-14): comprehensive ISO snapshot + cross-ISO comparison
+if iso_snapshot_bp is not None:
+    try:
+        app.register_blueprint(iso_snapshot_bp)
+    except Exception:
+        pass
+
+# Phase GG (2026-05-14): pocket-listing marketplace (Pro+ exclusive)
+if exclusive_listings_bp is not None:
+    try:
+        app.register_blueprint(exclusive_listings_bp)
+    except Exception:
+        pass
 
 # === Brain v2 · Layer 3 freshness fields ===
 try:
