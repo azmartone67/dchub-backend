@@ -290,6 +290,104 @@ def _collect_signals() -> dict:
                     for r in cur.fetchall() if r[0]]
         except Exception as e:
             print(f"[marketing_engine] facilities probe failed: {e}", file=sys.stderr)
+
+        # Phase NN (2026-05-15): industry news from the announcements feed.
+        # Lets the picker run an `industry_pulse` topic — DC Hub's commentary
+        # on what's moving in the industry this week. Materially different
+        # from `dcpi_leader` (our own rankings) because the headline is the
+        # third-party event; DC Hub's role is the data overlay.
+        try:
+            with c.cursor() as cur:
+                cur.execute("""
+                    SELECT title, summary, source, category, url
+                    FROM announcements
+                    WHERE published_date >= (NOW() - INTERVAL '48 hours')::text
+                    ORDER BY published_date DESC
+                    LIMIT 8
+                """)
+                out["industry_news_48h"] = [
+                    {"title": r[0], "summary": (r[1] or "")[:300],
+                     "source": r[2], "category": r[3], "url": r[4]}
+                    for r in cur.fetchall() if r[0]]
+        except Exception as e:
+            print(f"[marketing_engine] industry_news probe failed: {e}", file=sys.stderr)
+            out["industry_news_48h"] = []
+
+        # Phase NN: ISO rotation — today's ISO based on day-of-year. Gives
+        # the picker a deterministic "different ISO every day" cadence that
+        # cycles through PJM/MISO/CAISO/ERCOT/SPP/NYISO/ISO-NE on a 7-day
+        # loop. The data pull is best-effort: if any ISO probe table is
+        # missing we fall through with just the ISO name (picker decides
+        # whether the data is rich enough to justify a topic).
+        try:
+            import datetime as _dt
+            ISOS = ["PJM", "MISO", "CAISO", "ERCOT", "SPP", "NYISO", "ISO-NE"]
+            doy = _dt.date.today().timetuple().tm_yday
+            iso_today = ISOS[doy % len(ISOS)]
+            iso_data = {"iso": iso_today, "markets_in_iso": 0,
+                         "avg_excess": None, "avg_constraint": None}
+            with c.cursor() as cur:
+                # Pull a quick footprint from market_power_scores so the
+                # press release has concrete numbers about today's ISO
+                # (count + avg excess/constraint).
+                cur.execute("""
+                    SELECT COUNT(DISTINCT market_slug),
+                           AVG(excess_power_score),
+                           AVG(constraint_score)
+                    FROM (
+                        SELECT DISTINCT ON (market_slug)
+                               market_slug, excess_power_score, constraint_score
+                        FROM market_power_scores
+                        WHERE published = true AND iso = %s
+                        ORDER BY market_slug, computed_at DESC
+                    ) latest
+                """, (iso_today,))
+                row = cur.fetchone() or (0, None, None)
+                iso_data["markets_in_iso"]  = int(row[0] or 0)
+                iso_data["avg_excess"]      = round(float(row[1] or 0), 1) if row[1] is not None else None
+                iso_data["avg_constraint"]  = round(float(row[2] or 0), 1) if row[2] is not None else None
+            out["iso_today"] = iso_data
+        except Exception as e:
+            print(f"[marketing_engine] iso_today probe failed: {e}", file=sys.stderr)
+            out["iso_today"] = {}
+
+        # Phase NN: coverage growth — week-over-week row deltas across the
+        # tables that matter most for "DC Hub is growing" stories. Picker
+        # promotes `coverage_milestone` when ANY metric grew >=10% WoW or
+        # crossed a round number (1k, 10k, 100k, 1M).
+        try:
+            COVERAGE_TABLES = [
+                ("facilities",          "facilities",          "discovered_at"),
+                ("markets_tracked",     "market_power_scores", "computed_at"),
+                ("mcp_developers",      "mcp_dev_keys",        "created_at"),
+                ("mcp_tool_calls",      "mcp_tool_calls",      "created_at"),
+                ("air_permits",         "air_permits",         "issued_date"),
+                ("substations",         "substations",         "updated_at"),
+            ]
+            growth = []
+            with c.cursor() as cur:
+                for label, tbl, tscol in COVERAGE_TABLES:
+                    try:
+                        cur.execute(f"SELECT COUNT(*) FROM {tbl}")
+                        total = int((cur.fetchone() or (0,))[0] or 0)
+                        cur.execute(
+                            f"SELECT COUNT(*) FROM {tbl} WHERE {tscol} > NOW() - INTERVAL '7 days'")
+                        added_7d = int((cur.fetchone() or (0,))[0] or 0)
+                        if total > 0:
+                            pct = round((added_7d / max(total - added_7d, 1)) * 100, 1)
+                            growth.append({
+                                "label": label, "total": total,
+                                "added_7d": added_7d, "pct_wow": pct})
+                    except Exception:
+                        # Table may not exist on this deploy — skip silently
+                        try: c.rollback()
+                        except Exception: pass
+                        continue
+            growth.sort(key=lambda g: (-(g["added_7d"]), -(g["pct_wow"])))
+            out["coverage_growth_7d"] = growth
+        except Exception as e:
+            print(f"[marketing_engine] coverage_growth probe failed: {e}", file=sys.stderr)
+            out["coverage_growth_7d"] = []
     finally:
         try: c.close()
         except Exception: pass
@@ -316,6 +414,78 @@ def _recent_topics(days: int = 3) -> set:
             rows = cur.fetchall()
         c.close()
         return {r[0] for r in rows if r and r[0]}
+    except Exception:
+        return set()
+
+
+# Phase NN (2026-05-15): "sticky" topics where the same MARKET keeps winning
+# (Cheyenne held the BUILD lead 4 days running). For these we widen the
+# dedup window to 7 days so the picker is forced to pivot to a different
+# angle even if the underlying data hasn't moved.
+_STICKY_TOPIC_WINDOWS = {
+    "dcpi_leader": 7,
+    "dcpi_warning": 5,
+    "dcpi_mover":   5,
+}
+
+
+def _topic_recently_ran(topic: str, recent_3d: set) -> bool:
+    """Topic-aware dedup. Most topics use the 3-day set already loaded;
+    sticky topics get an extra DB lookup against their wider window."""
+    if topic in recent_3d:
+        return True
+    win = _STICKY_TOPIC_WINDOWS.get(topic)
+    if not win:
+        return False
+    try:
+        c = _conn()
+        if c is None:
+            return False
+        with c.cursor() as cur:
+            cur.execute(
+                """SELECT 1 FROM auto_press_releases
+                    WHERE source_topic = %s
+                      AND generated_for >= (CURRENT_DATE - INTERVAL '%s days')
+                      AND generated_for < CURRENT_DATE
+                    LIMIT 1""",
+                (topic, win))
+            hit = cur.fetchone() is not None
+        c.close()
+        return hit
+    except Exception:
+        return False
+
+
+# Phase NN (2026-05-15): pull market names from the last N published titles
+# so the picker can refuse to publish about the same market two days in a
+# row, regardless of what topic the picker chose. Belt-and-suspenders for
+# the "Cheyenne 4 days in a row" repeat — even if the dedup window were
+# permissive, this guard catches the actual symptom (repeat market).
+def _recent_market_names(n: int = 2) -> set:
+    """Returns a lowercased set of market name fragments mentioned in the
+    last `n` auto press release titles. Best-effort regex extraction; a
+    miss just means looser variety (fail-open)."""
+    try:
+        c = _conn()
+        if c is None:
+            return set()
+        with c.cursor() as cur:
+            cur.execute(
+                """SELECT title FROM auto_press_releases
+                    WHERE title IS NOT NULL
+                    ORDER BY generated_at DESC NULLS LAST
+                    LIMIT %s""",
+                (n,))
+            titles = [r[0] for r in cur.fetchall() if r and r[0]]
+        c.close()
+        out = set()
+        import re as _re
+        for t in titles:
+            # "Cheyenne, WY ...", "Atlanta Metro ...", "Northern Virginia ..."
+            m = _re.match(r"^([A-Z][a-zA-Z\.\- ]+?)(?:,| Metro|:| - | – | Leads| Tops| Takes)", t)
+            if m:
+                out.add(m.group(1).strip().lower())
+        return out
     except Exception:
         return set()
 
@@ -356,40 +526,111 @@ def _pick_daily_topic(signals: dict) -> tuple[str, str]:
     in the last 3 days, skip them and use the weekday theme instead.
     Fixes the "Cheyenne 4 days in a row" repetition the user spotted.
 
+    Phase NN (2026-05-15): three new topic branches (industry_pulse,
+    iso_focus, coverage_milestone) so the engine can pivot when DCPI
+    rankings stay flat. Sticky topics get a 7-day window via
+    _topic_recently_ran(). Adds a same-MARKET guard so the picker
+    refuses to publish a market that appeared in the last 2 titles
+    even if the topic itself would be allowed.
+
     Returns (topic_slug, human_reason). The Claude prompt sees both.
     """
-    # Defensive: _recent_topics + _theme_for_weekday live at module level
-    # but the test-suite extracts just this function and execs it standalone
-    # (tests/test_marketing_topic_picker.py uses regex extraction). Guard
-    # the helpers so the test environment falls back cleanly.
+    # Defensive: helpers live at module level but the test-suite extracts
+    # just this function and execs it standalone (tests/...). Guard each
+    # helper so the test environment falls back cleanly.
     try:
         recent = _recent_topics(days=3)
     except NameError:
         recent = set()
+    try:
+        recent_markets = _recent_market_names(n=2)
+    except NameError:
+        recent_markets = set()
 
+    def _topic_dedup(t: str) -> bool:
+        try:
+            return _topic_recently_ran(t, recent)
+        except NameError:
+            return t in recent
+
+    def _market_clash(name: str | None) -> bool:
+        """True if `name` overlaps with any market in the last 2 titles.
+        Lowercased substring match catches "Cheyenne, WY" vs "Cheyenne"."""
+        if not name or not recent_markets:
+            return False
+        nm = name.lower()
+        return any(nm.startswith(rm) or rm.startswith(nm) for rm in recent_markets)
+
+    # ── 1. DCPI movers (high bar: |delta| >= 5pts) ──────────────────
     movers = signals.get("biggest_movers") or []
-    if movers and "dcpi_mover" not in recent:
+    if movers and not _topic_dedup("dcpi_mover"):
         m = movers[0]
         d = abs(m.get("delta") or 0)
-        if d >= 5:
+        if d >= 5 and not _market_clash(m.get("market")):
             return "dcpi_mover", (
                 f"{m.get('market','a market')} shifted "
                 f"{m.get('delta')}pts in DCPI this week — biggest mover.")
 
+    # ── 2. Industry pulse — third-party news with DC Hub overlay ────
+    # NEW Phase NN. Promoted ahead of dcpi_leader because (a) the news
+    # is genuinely fresh every day, (b) DC Hub's commentary is what we
+    # uniquely add, (c) it dodges the "same market wins" trap entirely.
+    news = signals.get("industry_news_48h") or []
+    if len(news) >= 3 and not _topic_dedup("industry_pulse"):
+        headlines = "; ".join(f"{n.get('title','')[:80]} ({n.get('source','?')})"
+                              for n in news[:3])
+        return "industry_pulse", (
+            f"Industry pulse — three stories moving the data-center "
+            f"market right now: {headlines}. DC Hub adds the DCPI overlay.")
+
+    # ── 3. ISO focus — rotates through 7 ISOs by day-of-year ────────
+    # NEW Phase NN. Only fires when the picked ISO has >=10 markets
+    # in our coverage (so the press release has substance).
+    iso = signals.get("iso_today") or {}
+    if iso.get("iso") and iso.get("markets_in_iso", 0) >= 10 \
+            and not _topic_dedup("iso_focus"):
+        return "iso_focus", (
+            f"{iso['iso']} grid snapshot: {iso['markets_in_iso']} DC markets "
+            f"tracked in this ISO, average DCPI excess "
+            f"{iso.get('avg_excess','?')}, average constraint "
+            f"{iso.get('avg_constraint','?')}. Today's interconnection + "
+            f"capacity readout for {iso['iso']}.")
+
+    # ── 4. Coverage milestone — when a metric grew >=10% WoW ────────
+    # NEW Phase NN. Materially different from dcpi_leader because the
+    # story is "DC Hub itself grew," not "this market scored highest."
+    growth = signals.get("coverage_growth_7d") or []
+    if growth and not _topic_dedup("coverage_milestone"):
+        big = next((g for g in growth
+                    if g.get("pct_wow", 0) >= 10 or g.get("added_7d", 0) >= 100),
+                   None)
+        if big:
+            return "coverage_milestone", (
+                f"DC Hub coverage now spans {big['total']:,} "
+                f"{big['label']} — added {big['added_7d']:,} in the last "
+                f"7 days (+{big['pct_wow']}% WoW). Other 7d gains: "
+                + ", ".join(f"{g['label']}+{g['added_7d']}"
+                            for g in growth[:3] if g.get("added_7d", 0) > 0))
+
+    # ── 5. DCPI leader (the "Cheyenne" branch — now last-priority) ──
+    # Now gated on _topic_dedup (7-day window) AND _market_clash so
+    # back-to-back Cheyenne is impossible.
     builds = signals.get("top_build_markets") or []
-    if builds and "dcpi_leader" not in recent:
+    if builds and not _topic_dedup("dcpi_leader") \
+            and not _market_clash(builds[0].get("market")):
         return "dcpi_leader", (
             f"{builds[0].get('market','top market')} leads the BUILD ranking "
             f"with excess power score {builds[0].get('excess','?')}.")
 
     avoids = signals.get("top_avoid_markets") or []
-    if avoids and "dcpi_warning" not in recent:
+    if avoids and not _topic_dedup("dcpi_warning") \
+            and not _market_clash(avoids[0].get("market")):
         return "dcpi_warning", (
             f"{avoids[0].get('market','a market')} flagged AVOID — highest "
             f"constraint score {avoids[0].get('constraint','?')}.")
 
     new_fac = signals.get("new_facilities_24h") or []
-    if new_fac and "new_facility" not in recent:
+    if new_fac and not _topic_dedup("new_facility"):
         f = new_fac[0]
         return "new_facility", (
             f"{f.get('name','A new facility')} ({f.get('provider','?')}, "
@@ -397,7 +638,7 @@ def _pick_daily_topic(signals: dict) -> tuple[str, str]:
             f"{f.get('state','?')}.")
 
     ai = signals.get("ai_usage_24h") or {}
-    if ai.get("tool_calls", 0) >= 1000 and "ai_adoption" not in recent:
+    if ai.get("tool_calls", 0) >= 1000 and not _topic_dedup("ai_adoption"):
         return "ai_adoption", (
             f"DC Hub MCP served {ai.get('tool_calls')} AI tool calls in "
             f"the last 24h from {ai.get('unique_callers')} unique callers.")
@@ -407,7 +648,7 @@ def _pick_daily_topic(signals: dict) -> tuple[str, str]:
     # This is the guard that prevents the "Cheyenne 4 days in a row" repeat.
     try:
         theme_topic, theme_reason = _theme_for_weekday()
-        if theme_topic not in recent:
+        if not _topic_dedup(theme_topic):
             return theme_topic, theme_reason
     except NameError:
         pass  # test environment without the helper — fall through to rotation
@@ -469,7 +710,7 @@ The LINKEDIN POST additionally MUST:
 
 Output STRICT JSON only, no preamble:
 {
-  "topic": "dcpi_mover" | "iso_intelligence" | "ai_adoption" | "new_facility",
+  "topic": "dcpi_mover" | "dcpi_leader" | "dcpi_warning" | "iso_focus" | "iso_intelligence" | "industry_pulse" | "coverage_milestone" | "ai_adoption" | "new_facility" | "theme_movers" | "theme_grid_iso" | "theme_ai_infra" | "theme_markets" | "theme_deals" | "theme_methodology",
   "title": "...",
   "subheadline": "...",
   "body": "...",     // 200-400 words press release, Markdown-lite, \\n paragraphs

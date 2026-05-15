@@ -126,3 +126,80 @@ def test_priority_order_holds_with_all_signals_present():
     }
     topic, _ = pick(signals)
     assert topic == "dcpi_mover"
+
+
+# ───────────────────────── Phase NN tests ──────────────────────────
+
+def test_phase_nn_industry_pulse_beats_dcpi_leader():
+    """Phase NN: industry_pulse is promoted ahead of dcpi_leader so that
+    a fresh industry news mix wins over the (often sticky) BUILD #1
+    market. Three news items required."""
+    pick = _pick_daily_topic()
+    signals = {
+        "industry_news_48h": [
+            {"title": "AI Buildout Drives 76% Power Bill Jump",
+             "source": "Bloomberg", "category": "Power", "url": "x"},
+            {"title": "Cerebras Surges 81% on IPO",
+             "source": "Bloomberg", "category": "AI", "url": "x"},
+            {"title": "Federation Architecture for IT-OT",
+             "source": "DCK", "category": "AI", "url": "x"},
+        ],
+        "top_build_markets": [{"market": "Cheyenne", "excess": 69.5}],
+    }
+    topic, _ = pick(signals)
+    assert topic == "industry_pulse"
+
+
+def test_phase_nn_iso_focus_when_data_rich():
+    """ISO focus fires when the rotation ISO has >=10 markets in coverage
+    and DCPI data isn't already dominating."""
+    pick = _pick_daily_topic()
+    signals = {
+        "iso_today": {"iso": "PJM", "markets_in_iso": 42,
+                      "avg_excess": 18.3, "avg_constraint": 35.1},
+        "top_build_markets": [{"market": "Cheyenne", "excess": 69.5}],
+    }
+    topic, _ = pick(signals)
+    assert topic == "iso_focus"
+
+
+def test_phase_nn_coverage_milestone_when_big_weekly_growth():
+    """coverage_milestone fires when any tracked metric grew >=10% WoW
+    OR added >=100 rows in 7 days."""
+    pick = _pick_daily_topic()
+    signals = {
+        "coverage_growth_7d": [
+            {"label": "facilities", "total": 21200,
+             "added_7d": 350, "pct_wow": 1.7},
+            {"label": "mcp_developers", "total": 87,
+             "added_7d": 12, "pct_wow": 16.0},
+        ],
+        "top_build_markets": [{"market": "Cheyenne", "excess": 69.5}],
+    }
+    topic, _ = pick(signals)
+    assert topic == "coverage_milestone"
+
+
+def test_phase_nn_dcpi_leader_still_works_as_last_priority():
+    """When no Phase NN signal fires, the original dcpi_leader branch
+    still picks the BUILD #1 market — backwards compatible."""
+    pick = _pick_daily_topic()
+    signals = {"top_build_markets": [{"market": "Phoenix", "excess": 60}]}
+    topic, reason = pick(signals)
+    assert topic == "dcpi_leader"
+    assert "Phoenix" in reason
+
+
+def test_phase_nn_industry_pulse_needs_three_stories():
+    """One or two news items isn't enough — picker requires >=3 for the
+    industry_pulse pivot (otherwise the press release is thin)."""
+    pick = _pick_daily_topic()
+    signals = {
+        "industry_news_48h": [
+            {"title": "Only one story", "source": "X", "category": "AI", "url": "x"},
+            {"title": "Two stories", "source": "X", "category": "AI", "url": "x"},
+        ],
+        "top_build_markets": [{"market": "Phoenix", "excess": 60}],
+    }
+    topic, _ = pick(signals)
+    assert topic == "dcpi_leader"  # falls through, news threshold not met
