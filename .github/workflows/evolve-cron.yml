@@ -641,6 +641,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
+      - name: Diagnose admin key length
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          echo "::notice::Admin key length: ${#ADMIN_KEY}"
+          # First 4 chars (masked beyond that). Helps verify it's the
+          # expected key vs. a random fallback.
+          echo "::notice::Admin key prefix (first 4): ${ADMIN_KEY:0:4}"
+          # Test the brain endpoint with this same key. If that works,
+          # the key matches Railway's DCHUB_ADMIN_KEY → my funnel_leads
+          # endpoint has a different bug. If that fails too, the secret
+          # itself is wrong.
+          brain_resp=$(curl -sS --max-time 30 -H "X-Admin-Key: $ADMIN_KEY" \
+            -o /dev/null -w "%{http_code}" \
+            "https://dchub-backend-production.up.railway.app/api/v1/brain/status")
+          echo "::notice::brain/status with this admin key: $brain_resp"
+          funnel_resp=$(curl -sS --max-time 30 -H "X-Admin-Key: $ADMIN_KEY" \
+            -o /dev/null -w "%{http_code}" \
+            "https://dchub-backend-production.up.railway.app/api/v1/admin/funnel-leads/preview?limit=1")
+          echo "::notice::funnel-leads/preview with this admin key: $funnel_resp"
       - name: Preview top 10 personalized hot-lead emails
         env:
           ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
