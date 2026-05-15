@@ -623,8 +623,27 @@ def recompute_all_scores(source: str = "manual") -> dict:
 # ---------------------------------------------------------------------------
 @dcpi_bp.route("/api/v1/dcpi/scores", methods=["GET"])
 def api_scores():
+    """List DCPI scores. Query params:
+        sort=excess|constraint|time_to_power  (default excess)
+        sort_by=<same as sort, alt name>
+        verdict=BUILD|CAUTION|AVOID|LOW_SIGNAL  (filter, Phase MM 2026-05-15)
+        iso=<iso_code>  (filter, Phase MM)
+        state=<state_code>  (filter, Phase MM)
+        limit=N  (slice, Phase MM)
+    Phase MM Bundle 9 caught in QA sweep: ?verdict= was being IGNORED —
+    all 276 markets were returned regardless of filter. Fix shipped here.
+    """
     _ensure_tables()
-    sort_by = request.args.get("sort", "excess")  # 'excess' | 'constraint'
+    sort_by = (request.args.get("sort") or request.args.get("sort_by")
+               or "excess").lower().strip()
+    verdict_filter = (request.args.get("verdict") or "").strip().upper() or None
+    iso_filter = (request.args.get("iso") or "").strip().upper() or None
+    state_filter = (request.args.get("state") or "").strip().upper() or None
+    try:
+        limit = int(request.args.get("limit") or 0)
+    except Exception:
+        limit = 0
+
     with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("""
             SELECT DISTINCT ON (market_slug)
@@ -639,11 +658,28 @@ def api_scores():
     for r in rows:
         if r.get("computed_at"):
             r["computed_at"] = r["computed_at"].isoformat()
-    if sort_by == "constraint":
+
+    # Phase MM Bundle 9: apply filters (server-side instead of client-side).
+    if verdict_filter:
+        rows = [r for r in rows if (r.get("verdict") or "").upper() == verdict_filter]
+    if iso_filter:
+        rows = [r for r in rows if (r.get("iso") or "").upper() == iso_filter]
+    if state_filter:
+        rows = [r for r in rows if (r.get("state") or "").upper() == state_filter]
+
+    if sort_by in ("constraint", "constraint_score"):
         rows.sort(key=lambda r: -(r.get("constraint_score") or 0))
+    elif sort_by in ("time_to_power", "time_to_power_months", "ttp"):
+        rows.sort(key=lambda r: (r.get("time_to_power_months") or 1e9))
     else:
         rows.sort(key=lambda r: -(r.get("excess_power_score") or 0))
-    return jsonify(scores=rows, count=len(rows), sort=sort_by), 200
+
+    if limit > 0:
+        rows = rows[:limit]
+
+    return jsonify(scores=rows, count=len(rows),
+                   sort=sort_by,
+                   filters={"verdict": verdict_filter, "iso": iso_filter, "state": state_filter}), 200
 
 
 @dcpi_bp.route("/api/v1/dcpi/scores/<slug>", methods=["GET"])
