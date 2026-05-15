@@ -45,20 +45,20 @@ def test_intentional_dispatch_allowlist_includes_safety_phases():
 
 
 def test_tool_api_mapping_only_lists_known_mcp_tools():
-    """Every tool in _TOOL_API_MAPPING must exist in mcp_gatekeeper.TOOL_MIN_TIER
+    """Every tool in _TOOL_API_MAPPING must exist in mcp_gatekeeper.TOOL_TIER
     or the tier_consistency check will silently skip the entry."""
     from routes.brain_consistency_radar import _TOOL_API_MAPPING
     try:
-        from mcp_gatekeeper import TOOL_MIN_TIER
+        from mcp_gatekeeper import TOOL_TIER
     except Exception:
         # mcp_gatekeeper may fail to import without env — accept that path
         # in the test environment but make a noise.
         import warnings
-        warnings.warn("TOOL_MIN_TIER unavailable in test env; skipping")
+        warnings.warn("TOOL_TIER unavailable in test env; skipping")
         return
     for tool in _TOOL_API_MAPPING:
-        assert tool in TOOL_MIN_TIER, \
-            f"_TOOL_API_MAPPING lists '{tool}' but it's not in TOOL_MIN_TIER"
+        assert tool in TOOL_TIER, \
+            f"_TOOL_API_MAPPING lists '{tool}' but it's not in TOOL_TIER"
 
 
 def test_scan_summary_shape():

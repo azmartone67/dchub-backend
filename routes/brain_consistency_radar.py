@@ -13,7 +13,7 @@ Phase NN/PP/QQ rollouts:
      `_worker.js` source said 4.11.0-qq12 while production headers
      reported 4.8.3 for ~24h.)
 
-  2. TIER INCONSISTENCY — MCP tool tier in `mcp_gatekeeper.TOOL_MIN_TIER`
+  2. TIER INCONSISTENCY — MCP tool tier in `mcp_gatekeeper.TOOL_TIER`
      diverging from the matching web API endpoint's tier decorator.
      (PR #185 fixed energy; pipeline was still inconsistent.)
 
@@ -50,14 +50,32 @@ _WORKER_SOURCE_URL = "https://raw.githubusercontent.com/azmartone67/dchub-fronte
 _WORKER_PROBE_URL  = "https://dchub.cloud/api/v1/dcpi/scores?limit=1"
 
 
+# Mutable holder for the last fetch error so detector messages can echo
+# the real urllib error to the finding's detail field (otherwise we just
+# get a generic "unreachable" and have to grep Railway logs).
+_LAST_FETCH_ERROR: dict[str, str] = {}
+
+
 def _http_get(url: str, timeout: int = 8) -> tuple[Optional[str], Optional[dict]]:
     """Returns (body, headers_dict) or (None, None) on error."""
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "dchub-brain-radar/1.0"})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.read().decode("utf-8", errors="replace"), dict(resp.headers)
+    except urllib.error.HTTPError as e:
+        msg = f"HTTP {e.code} {e.reason}"
+        _LAST_FETCH_ERROR[url] = msg
+        print(f"[brain-radar] {url} {msg}", file=sys.stderr)
+        return None, None
+    except urllib.error.URLError as e:
+        msg = f"URLError: {e.reason}"
+        _LAST_FETCH_ERROR[url] = msg
+        print(f"[brain-radar] {url} {msg}", file=sys.stderr)
+        return None, None
     except Exception as e:
-        print(f"[brain-radar] {url} fetch failed: {e}", file=sys.stderr)
+        msg = f"{type(e).__name__}: {str(e)[:200]}"
+        _LAST_FETCH_ERROR[url] = msg
+        print(f"[brain-radar] {url} {msg}", file=sys.stderr)
         return None, None
 
 
@@ -65,14 +83,20 @@ def check_worker_version_drift() -> list[dict]:
     """Compare _worker.js source's WORKER_VERSION vs the live header
     value. Flag if they diverge."""
     findings = []
-    source_body, _ = _http_get(_WORKER_SOURCE_URL, timeout=8)
+    # Phase RR+1: bumped to 30s timeout — raw.githubusercontent.com can be
+    # slow from Railway's network. Also echoes the actual urllib error in
+    # the finding detail instead of a generic 'unreachable'.
+    source_body, _ = _http_get(_WORKER_SOURCE_URL, timeout=30)
     if not source_body:
+        err = _LAST_FETCH_ERROR.get(_WORKER_SOURCE_URL, "unknown error")
         return [{
             "issue": "worker_source_unreachable",
             "url": _WORKER_SOURCE_URL,
             "count": 1,
-            "detail": "Could not fetch _worker.js source from GitHub. "
-                      "Radar fails closed — re-run later.",
+            "detail": (f"Could not fetch _worker.js source from GitHub "
+                       f"({err}). Radar fails closed — re-run later. "
+                       f"If this persists, check that raw.githubusercontent.com "
+                       f"is reachable from the Railway runtime."),
         }]
     m = re.search(r"const\s+WORKER_VERSION\s*=\s*['\"]([\w\d\.\-]+)['\"]",
                    source_body)
@@ -153,17 +177,17 @@ def check_tier_consistency() -> list[dict]:
     """
     findings: list[dict] = []
     try:
-        from mcp_gatekeeper import TOOL_MIN_TIER, Tier
+        from mcp_gatekeeper import TOOL_TIER, Tier
     except Exception as e:
         return [{
             "issue": "tier_radar_import_failed",
             "url": "mcp_gatekeeper",
             "count": 1,
-            "detail": f"Could not import TOOL_MIN_TIER: {e}",
+            "detail": f"Could not import TOOL_TIER: {e}",
         }]
 
     for tool, web_path in _TOOL_API_MAPPING.items():
-        mcp_tier = TOOL_MIN_TIER.get(tool)
+        mcp_tier = TOOL_TIER.get(tool)
         if mcp_tier is None or mcp_tier.value > Tier.IDENTIFIED.value:
             # MCP gates at DEVELOPER+ — web API gating higher is fine.
             continue
@@ -214,52 +238,86 @@ _INTENTIONAL_DISPATCH_ONLY = {
 }
 
 
+def _parse_workflow_regex(text: str) -> tuple[list[str], set[str]]:
+    """Lightweight regex-based parse of evolve-cron.yml. Returns
+    (phase_options, scheduled_phases). Avoids the PyYAML dependency
+    which isn't always installed on the Railway runtime."""
+    # Extract the workflow_dispatch options list. Pattern matches:
+    #   options: [all, brain, outreach, ..., testimonial_probe]
+    opt_match = re.search(r"options:\s*\[([^\]]+)\]", text)
+    phase_options: list[str] = []
+    if opt_match:
+        phase_options = [o.strip() for o in opt_match.group(1).split(",") if o.strip()]
+
+    # For each job block (between `^  <name>:` lines), find its `if:`
+    # condition. If the condition references `github.event.schedule`
+    # along with a phase option, mark the phase as scheduled.
+    scheduled: set[str] = set()
+    # Crude block split: each job starts at column 2 with a name + colon
+    job_blocks = re.split(r"\n(?=  [a-z_]+:\s*\n)", text)
+    for block in job_blocks:
+        m_name = re.match(r"\s*([a-z_]+):", block)
+        if not m_name:
+            continue
+        job_name = m_name.group(1)
+        # Only care about the `if:` line inside this block
+        if_match = re.search(r"^\s*if:\s*(.+?)(?=\n\s*runs-on|\n\s*steps:|\Z)",
+                              block, re.MULTILINE | re.DOTALL)
+        cond = if_match.group(1) if if_match else ""
+        if "github.event.schedule" not in cond:
+            continue
+        for opt in phase_options:
+            if f"== '{opt}'" in cond or f'== "{opt}"' in cond:
+                scheduled.add(opt)
+        if job_name in phase_options:
+            scheduled.add(job_name)
+    return phase_options, scheduled
+
+
 def check_cron_coverage() -> list[dict]:
     """Parse evolve-cron.yml. For each workflow_dispatch phase option,
     check if any job has a `cron:` trigger that fires it. Flag
-    dispatch-only phases that should have a schedule."""
+    dispatch-only phases that should have a schedule.
+
+    Phase RR+1 (2026-05-15): switched from PyYAML to regex parsing
+    because the Railway container doesn't ship yaml. The workflow's
+    structure is stable enough that regex is reliable; fall back to
+    yaml if available for the rare case it gets installed."""
     findings: list[dict] = []
     if not os.path.exists(_WORKFLOW_FILE):
         return findings
 
     try:
-        import yaml
         with open(_WORKFLOW_FILE, "r") as f:
-            wf = yaml.safe_load(f)
+            text = f.read()
+        try:
+            import yaml  # type: ignore[import-not-found]
+            wf = yaml.safe_load(text)
+            on = wf.get("on") or wf.get(True) or {}
+            dispatch = on.get("workflow_dispatch", {}) if isinstance(on, dict) else {}
+            inputs = (dispatch or {}).get("inputs", {})
+            phase_choice = inputs.get("phase", {})
+            phase_options = phase_choice.get("options", []) or []
+            scheduled_phases: set[str] = set()
+            jobs = wf.get("jobs", {})
+            for job_name, job_def in jobs.items():
+                cond = (job_def or {}).get("if", "") or ""
+                if "github.event.schedule" in cond:
+                    for opt in phase_options:
+                        if f"== '{opt}'" in cond or f'== "{opt}"' in cond:
+                            scheduled_phases.add(opt)
+                    if job_name in phase_options:
+                        scheduled_phases.add(job_name)
+        except ImportError:
+            # No PyYAML on this runtime — fall back to regex parse.
+            phase_options, scheduled_phases = _parse_workflow_regex(text)
     except Exception as e:
         return [{
-            "issue": "cron_radar_yaml_parse_failed",
+            "issue": "cron_radar_parse_failed",
             "url": _WORKFLOW_FILE,
             "count": 1,
-            "detail": f"Could not parse workflow YAML: {e}",
+            "detail": f"Could not parse workflow file: {type(e).__name__}: {e}",
         }]
-
-    on = wf.get("on") or wf.get(True) or {}  # yaml 'on:' key parses as True
-    if not isinstance(on, dict):
-        return findings
-    dispatch = on.get("workflow_dispatch", {})
-    inputs = (dispatch or {}).get("inputs", {})
-    phase_choice = inputs.get("phase", {})
-    phase_options = phase_choice.get("options", []) or []
-
-    # Collect cron strings + which jobs reference them via if-conditions
-    scheduled_phases: set[str] = set()
-    jobs = wf.get("jobs", {})
-    for job_name, job_def in jobs.items():
-        cond = (job_def or {}).get("if", "") or ""
-        # Find any phase mention bound to a scheduled trigger
-        # Match e.g. `inputs.phase == 'marketing_publish_now'` AND
-        # `github.event.schedule == '25 13 * * *'` in the same if expression.
-        if "github.event.schedule" in cond:
-            for opt in phase_options:
-                if f"== '{opt}'" in cond or f'== "{opt}"' in cond:
-                    scheduled_phases.add(opt)
-            # Job has a schedule but no specific phase => the job name
-            # itself is the implicit "phase" — assume phase=job_name is
-            # scheduled (since workflow_dispatch with phase=job_name
-            # also fires).
-            if job_name in phase_options:
-                scheduled_phases.add(job_name)
 
     # Flag phases in workflow_dispatch.options that have no schedule
     # AND aren't on the intentional-allowlist.
