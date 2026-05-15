@@ -384,30 +384,36 @@ def trigger_learn():
     # network, no port discovery, no CF Worker, no rate limiter. The
     # request gets a real Flask context and runs the actual handler
     # so the response is identical to a real HTTP call.
+    # Phase GG (2026-05-15): the public-URL urllib fallback was causing
+    # Railway 502 timeouts on every cron tick — Railway's outbound IP
+    # hits the CF Worker which rate-limits, urllib waits 15s, Railway's
+    # gateway returns 502 before the Flask handler can recover. Result:
+    # the brain heartbeat was 8.7h stale even though the cron fires
+    # hourly. Fix: read the heal cache DIRECTLY from main.py — no
+    # test_client, no urllib, no HTTP at all. The cache is the same one
+    # /heal/findings serves from, so we get identical data with zero
+    # network risk.
     findings = {}
     try:
-        from flask import current_app
-        with current_app.test_client() as _client:
-            _resp = _client.get("/api/v1/heal/findings")
-            if _resp.status_code == 200:
-                findings = _resp.get_json() or {}
-            else:
-                # Test-client failure — last-resort fall back to public URL
-                # (will probably 403 from Railway IP, but log it cleanly).
-                raise RuntimeError(f"test_client returned {_resp.status_code}")
+        from main import _HEAL_FINDINGS_CACHE, _HEAL_FINDINGS_LOCK
+        with _HEAL_FINDINGS_LOCK:
+            cached = _HEAL_FINDINGS_CACHE.get("payload")
+        findings = cached or {}
     except Exception as e:
-        # Final fallback: try the public URL anyway. If even this fails,
-        # the brain reports 502 with the original error.
+        # Cache not importable (very early in boot, or main.py changed).
+        # Fall back to the in-process test_client once — bounded short.
         try:
-            import urllib.request
-            with urllib.request.urlopen(
-                    "https://dchub.cloud/api/v1/heal/findings",
-                    timeout=15) as r:
-                findings = json.loads(r.read().decode("utf-8"))
+            from flask import current_app
+            with current_app.test_client() as _client:
+                _resp = _client.get("/api/v1/heal/findings")
+                if _resp.status_code == 200:
+                    findings = _resp.get_json() or {}
         except Exception as e2:
-            return jsonify(ok=False,
-                           error=f"can't reach /heal/findings: "
-                                 f"test_client={e}; public={e2}"), 502
+            # Give up and proceed with empty findings — heartbeat is the
+            # priority. Next cron tick will retry.
+            print(f"[brain_v2_layer4] findings unavailable: "
+                  f"cache={e}; test_client={e2}", flush=True)
+            findings = {}
 
     issues = findings.get("actionable_frontend_issues", [])
     # Filter: only patterns NOT already in the known FIX_MAP. We hardcode
