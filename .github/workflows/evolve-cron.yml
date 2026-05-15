@@ -72,7 +72,7 @@ on:
         description: 'Which phase to run on demand'
         required: true
         type: choice
-        options: [all, brain, outreach, audit, marketing, linkedin, testimonials, agent_vendor, weekly_digest, market_alerts, freshness_radar, brain_probe_outcomes, weekly_media_digest, marketing_rescue, marketing_publish_now]
+        options: [all, brain, outreach, audit, marketing, linkedin, testimonials, agent_vendor, weekly_digest, market_alerts, freshness_radar, brain_probe_outcomes, weekly_media_digest, marketing_rescue, marketing_publish_now, hot_leads_preview, hot_leads_send_top_5, hot_leads_send_top_50]
         default: all
       dry_run:
         description: 'Dry-run (preview audience + body, do NOT send emails) — DEFAULT TRUE for manual dispatch'
@@ -628,4 +628,94 @@ jobs:
           msg = f\"linkedin={'OK' if li_ok else (li.get('error') or 'fail')[:80]} · twitter={'OK' if tw_ok else (tw.get('error') or 'fail')[:80]}\"
           lvl = 'notice' if (li_ok or tw_ok) else 'warning'
           print(f\"::{lvl}::publish-now — {msg}\")
+          " || true
+
+  # Phase MM (2026-05-15) Bundle 9: hot-leads outreach via workflow_dispatch.
+  # Three options for safety:
+  #   hot_leads_preview      — print top 10 personalized email previews (no send)
+  #   hot_leads_send_top_5   — send to top 5 (min_signals=20) — safest first run
+  #   hot_leads_send_top_50  — send to top 50 (min_signals=5) — full broadcast
+  # Uses the GitHub Actions DCHUB_ADMIN_KEY secret, no local shell env needed.
+  hot_leads_preview:
+    if: github.event_name == 'workflow_dispatch' && inputs.phase == 'hot_leads_preview'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Preview top 10 personalized hot-lead emails
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::error::DCHUB_ADMIN_KEY secret not set in repo settings"; exit 1; fi
+          response=$(curl -sS --max-time 30 -H "X-Admin-Key: $ADMIN_KEY" \
+            "https://dchub-backend-production.up.railway.app/api/v1/admin/funnel-leads/preview?limit=10" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          if not d.get('ok'):
+              print(f'::error::Preview failed: {d.get(\"error\",\"unknown\")}'); sys.exit(1)
+          previews = d.get('previews', [])
+          print(f'::notice::Found {len(previews)} hot leads (min_signals={d.get(\"min_signals\")})')
+          for p in previews:
+              print(f\"  • {p.get('email')} · signals={p.get('signals')} · {p.get('primary_tool')}\")
+              print(f\"    SUBJECT: {p.get('subject')}\")
+          "
+
+  hot_leads_send_top_5:
+    if: github.event_name == 'workflow_dispatch' && inputs.phase == 'hot_leads_send_top_5'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Send personalized email to top 5 hottest leads
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::error::DCHUB_ADMIN_KEY secret not set"; exit 1; fi
+          echo "::notice::Sending to top 5 leads (min_signals=20). This is a real send."
+          response=$(curl -sS --max-time 90 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"mode":"personalized","limit":5,"min_signals":20,"confirm_send":true}' \
+            "https://dchub-backend-production.up.railway.app/api/v1/admin/funnel-leads/broadcast" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | head -c 2500
+          echo
+          echo "$response" | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          if d.get('mode') == 'sent':
+              print(f\"::notice::Top-5 outreach sent={d.get('sent_count',0)} failed={d.get('failed_count',0)} of {d.get('eligible_count',0)} eligible\")
+          else:
+              print(f\"::warning::Top-5 outreach: mode={d.get('mode')} error={d.get('error','none')}\")
+          " || true
+
+  hot_leads_send_top_50:
+    if: github.event_name == 'workflow_dispatch' && inputs.phase == 'hot_leads_send_top_50'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Send personalized email to top 50 hot leads
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::error::DCHUB_ADMIN_KEY secret not set"; exit 1; fi
+          echo "::warning::FULL BROADCAST to top 50 hot leads. This is real email delivery."
+          response=$(curl -sS --max-time 180 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"mode":"personalized","limit":50,"min_signals":5,"confirm_send":true}' \
+            "https://dchub-backend-production.up.railway.app/api/v1/admin/funnel-leads/broadcast" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | head -c 3000
+          echo
+          echo "$response" | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          if d.get('mode') == 'sent':
+              print(f\"::notice::Full hot-leads broadcast sent={d.get('sent_count',0)} failed={d.get('failed_count',0)} of {d.get('eligible_count',0)} eligible\")
+          else:
+              print(f\"::warning::Hot-leads broadcast: mode={d.get('mode')} error={d.get('error','none')}\")
           " || true
