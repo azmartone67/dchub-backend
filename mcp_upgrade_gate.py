@@ -99,7 +99,7 @@ def fire_upgrade_signal(*, signal_type, tool_requested=None, tier_current="free"
                      (session_id, user_email, ip_address, signal_type, tool_requested,
                       tier_current, tier_required, daily_usage, daily_limit,
                       message_shown, mcp_client, user_agent, created_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())""",
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW() ON CONFLICT DO NOTHING)""",
                 (session_id, user_email, ip_address, signal_type, tool_requested,
                  tier_current, tier_required, daily_usage, daily_limit,
                  message_shown, mcp_client, user_agent),

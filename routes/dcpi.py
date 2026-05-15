@@ -500,7 +500,7 @@ def recompute_all_scores(source: str = "manual") -> dict:
     error_notes = []
 
     with _conn() as c, c.cursor() as cur:
-        cur.execute("INSERT INTO dcpi_runs (started_at, source) VALUES (%s, %s) RETURNING id",
+        cur.execute("INSERT INTO dcpi_runs (started_at, source) VALUES (%s, %s) ON CONFLICT DO NOTHING RETURNING id",
                     (started, source))
         run_id = cur.fetchone()[0]
         c.commit()
@@ -598,7 +598,7 @@ def recompute_all_scores(source: str = "manual") -> dict:
                             top_risks_json, top_opportunities_json, verdict,
                             market_slug, computed_at
                         )
-                        VALUES (%s,%s,%s,%s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s, %s, %s,%s,%s, %s, NOW())
+                        VALUES (%s,%s,%s,%s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s, %s, %s,%s,%s, %s, NOW() ON CONFLICT DO NOTHING)
                     """, _vals + (slug,))
                 c.commit()
             scored += 1
@@ -2687,6 +2687,7 @@ def press_kit_alias():
 
 # (phase 215 lite-recompute moved to main.py in phase 216 — removed duplicate here)
 
+# AUTO-REPAIR: duplicate route '/api/v1/dcpi/lite-recompute' also in main.py:19260 — review and remove one
 @dcpi_bp.route("/api/v1/dcpi/lite-recompute", methods=["POST"])
 def lite_recompute():
     """Computes lite DCPI scores for ALL markets in MARKETS.
@@ -2750,7 +2751,7 @@ def lite_recompute():
                         (market_slug, market_name, latitude, longitude,
                          constraint_score, excess_power_score, time_to_power_months,
                          verdict, tier_required, computed_at)
-                        VALUES (%s, %s, NULL, NULL, %s, %s, NULL, %s, 'lite-pro', NOW())
+                        VALUES (%s, %s, NULL, NULL, %s, %s, NULL, %s, 'lite-pro', NOW() ON CONFLICT DO NOTHING)
                         ON CONFLICT (market_slug) DO UPDATE SET
                           constraint_score = EXCLUDED.constraint_score,
                           excess_power_score = EXCLUDED.excess_power_score,

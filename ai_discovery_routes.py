@@ -205,6 +205,7 @@ def register_discovery_routes(app):
     # =========================================================================
     # /.well-known/ai-plugin.json — ChatGPT Plugin Manifest
     # =========================================================================
+# AUTO-REPAIR: duplicate route '/.well-known/ai-plugin.json' also in ai_ecosystem_agent.py:561 — review and remove one
     @app.route('/.well-known/ai-plugin.json')
     @app.route('/ai-plugin.json')  # Railway alias (/.well-known/ blocked on Railway)
     def serve_ai_plugin_json():
@@ -243,6 +244,7 @@ def register_discovery_routes(app):
 
     # =========================================================================
     # /.well-known/mcp/server-card.json — MCP Server Card
+# AUTO-REPAIR: duplicate route '/.well-known/mcp/server-card.json' also in backend_patch_mcp_routes.py:90 — review and remove one
     # =========================================================================
     @app.route('/.well-known/mcp/server-card.json')
     @app.route('/mcp-server-card.json')  # Railway alias (/.well-known/ blocked on Railway)
