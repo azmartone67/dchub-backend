@@ -173,6 +173,8 @@ h1 .grad{background:var(--gradient);-webkit-background-clip:text;background-clip
 
   {{verdict_banner}}
 
+  {{grade_block}}
+
   <div class="section">
     <h2 class="section-title">Recent proposals</h2>
     <div class="card-list">
@@ -263,6 +265,83 @@ def brain_page():
         f'{_h(verdict_detail)}</div></div>'
     )
 
+    # Phase GG (2026-05-15): Bundle 4 — surface the self-assessment letter
+    # grade prominently. Reads /api/v1/brain/self-assessment via the same
+    # process so a missing or errored module is non-fatal. The grade is the
+    # single best human signal for "is the brain actually getting smarter?"
+    # so it deserves dashboard real estate.
+    grade_block = ""
+    try:
+        from flask import current_app
+        with current_app.test_client() as _client:
+            _r = _client.get("/api/v1/brain/self-assessment")
+            if _r.status_code == 200:
+                _sa = _r.get_json() or {}
+                _grade = _sa.get("grade", "I")
+                _rationale = _sa.get("rationale", "")
+                _components = _sa.get("component_scores") or {}
+                _score = _sa.get("weighted_score")
+                # Color palette per letter grade
+                _grade_color = {
+                    "A": ("var(--green)", "rgba(16,185,129,0.12)", "rgba(16,185,129,0.4)"),
+                    "B": ("var(--green)", "rgba(16,185,129,0.10)", "rgba(16,185,129,0.35)"),
+                    "C": ("var(--amber)", "rgba(245,158,11,0.10)", "rgba(245,158,11,0.4)"),
+                    "D": ("var(--red)",   "rgba(239,68,68,0.10)", "rgba(239,68,68,0.4)"),
+                    "F": ("var(--red)",   "rgba(239,68,68,0.14)", "rgba(239,68,68,0.5)"),
+                    "I": ("var(--tx2)",   "rgba(156,163,175,0.08)", "rgba(156,163,175,0.3)"),
+                }.get(_grade, ("var(--tx2)", "rgba(156,163,175,0.08)", "rgba(156,163,175,0.3)"))
+                _gc, _gbg, _gbd = _grade_color
+                _comp_pills = ""
+                _comp_labels = {
+                    "fix_success": "fix success",
+                    "rejection":   "rejection rate",
+                    "cron_health": "cron health",
+                    "volume":      "volume",
+                    "memory":      "memory depth",
+                }
+                for _k, _v in (_components.items() if isinstance(_components, dict) else []):
+                    _lbl = _h(_comp_labels.get(_k, _k))
+                    if _v is None:
+                        _pill_bg = "rgba(156,163,175,0.08)"; _pill_color = "var(--tx3)"; _pill_text = "—"
+                    elif _v >= 3:
+                        _pill_bg = "rgba(16,185,129,0.12)"; _pill_color = "var(--green)"; _pill_text = f"{_v}/4"
+                    elif _v >= 2:
+                        _pill_bg = "rgba(245,158,11,0.12)"; _pill_color = "var(--amber)"; _pill_text = f"{_v}/4"
+                    else:
+                        _pill_bg = "rgba(239,68,68,0.12)"; _pill_color = "var(--red)"; _pill_text = f"{_v}/4"
+                    _comp_pills += (
+                        f'<span style="display:inline-flex;align-items:center;gap:0.35rem;'
+                        f'padding:0.25rem 0.6rem;border-radius:99px;background:{_pill_bg};'
+                        f'color:{_pill_color};font-size:0.74rem;font-weight:600;'
+                        f'margin:0.2rem;">'
+                        f'<span style="opacity:0.75">{_lbl}</span>'
+                        f'<span style="font-family:JetBrains Mono,monospace;font-weight:700">{_pill_text}</span>'
+                        f'</span>')
+                _score_str = (f' · weighted {_score:.2f}/4' if isinstance(_score, (int, float)) else '')
+                grade_block = (
+                    f'<div style="background:{_gbg};border:1px solid {_gbd};'
+                    f'border-radius:10px;padding:1.1rem 1.3rem;margin:0.4rem 0 0.4rem;'
+                    f'display:flex;gap:1.2rem;align-items:center;flex-wrap:wrap;">'
+                    f'<div style="flex:0 0 auto;font-family:JetBrains Mono,monospace;'
+                    f'font-size:3.4rem;font-weight:800;line-height:1;color:{_gc};'
+                    f'min-width:64px;text-align:center;">{_h(_grade)}</div>'
+                    f'<div style="flex:1;min-width:240px;">'
+                    f'<div style="font-size:0.72rem;font-family:JetBrains Mono,monospace;'
+                    f'color:var(--tx2);text-transform:uppercase;letter-spacing:0.1em;'
+                    f'margin-bottom:0.35rem;">Brain self-assessment{_h(_score_str)}</div>'
+                    f'<div style="color:var(--tx);font-size:0.95rem;line-height:1.5;'
+                    f'margin-bottom:0.5rem;">{_h(_rationale)}</div>'
+                    f'<div style="margin-left:-0.2rem;">{_comp_pills}</div>'
+                    f'<a href="/api/v1/brain/self-assessment" style="color:var(--acc-light);'
+                    f'font-size:0.78rem;text-decoration:none;border-bottom:1px dotted '
+                    f'rgba(129,140,248,0.5);margin-top:0.6rem;display:inline-block;">'
+                    f'view full assessment JSON</a>'
+                    f'</div>'
+                    f'</div>'
+                )
+    except Exception:
+        grade_block = ""
+
     # Render proposals (newest first)
     if proposals:
         prop_blocks = []
@@ -349,6 +428,7 @@ def brain_page():
             .replace("{{pending_count}}", str(pending_count))
             .replace("{{log_count}}", str(len(state["log"])))
             .replace("{{verdict_banner}}", verdict_banner)
+            .replace("{{grade_block}}", grade_block)
             .replace("{{proposals_html}}", proposals_html)
             .replace("{{persistence_html}}", persistence_html)
             .replace("{{log_html}}", log_html)
