@@ -28,7 +28,10 @@ from flask import Blueprint, jsonify, request, Response
 
 funnel_leads_bp = Blueprint("funnel_leads", __name__)
 
-ADMIN_KEY = os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("ADMIN_KEY")
+ADMIN_KEY = (os.environ.get("DCHUB_ADMIN_KEY")
+             or os.environ.get("DCHUB_INTERNAL_KEY")
+             or os.environ.get("ADMIN_KEY")
+             or "").strip()
 
 
 def _conn():
