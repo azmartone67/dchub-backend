@@ -13,6 +13,19 @@ try:
     from routes.exclusive_listings import exclusive_listings_bp
 except Exception:
     exclusive_listings_bp = None
+# Phase GG (2026-05-14): agent leverage tools — Bundles 1/2/3
+try:
+    from routes.agent_index import agent_index_bp
+except Exception:
+    agent_index_bp = None
+try:
+    from routes.persona_briefs import persona_briefs_bp
+except Exception:
+    persona_briefs_bp = None
+try:
+    from routes.changes_feed import changes_feed_bp
+except Exception:
+    changes_feed_bp = None
 from routes.dcpi_ask import dcpi_ask_bp
 from routes.open_data import open_data_bp
 from routes.lab import lab_bp
@@ -19068,6 +19081,27 @@ if iso_snapshot_bp is not None:
 if exclusive_listings_bp is not None:
     try:
         app.register_blueprint(exclusive_listings_bp)
+    except Exception:
+        pass
+
+# Phase GG (2026-05-14): agent session warm-up + coverage inventory (Bundle 1)
+if agent_index_bp is not None:
+    try:
+        app.register_blueprint(agent_index_bp)
+    except Exception:
+        pass
+
+# Phase GG (2026-05-14): persona-shaped briefs (Bundle 2)
+if persona_briefs_bp is not None:
+    try:
+        app.register_blueprint(persona_briefs_bp)
+    except Exception:
+        pass
+
+# Phase GG (2026-05-14): cross-domain diff feed (Bundle 3)
+if changes_feed_bp is not None:
+    try:
+        app.register_blueprint(changes_feed_bp)
     except Exception:
         pass
 
