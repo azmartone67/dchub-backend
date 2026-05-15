@@ -722,6 +722,41 @@ function createServer() {
       await callAPI('/api/v1/changes/since', {
         since: a.since, limit: a.limit })) }] }));
 
+  // ── Phase GG (2026-05-14): Bundle 4 — Brain learning loop ──────────────
+  // Brain's letter-grade self-assessment. Agents should check this BEFORE
+  // trusting brain-auto-applied fixes; fall back to deterministic paths
+  // when the grade is C or below.
+  trackedTool(srv, 'get_brain_self_assessment',
+    'Brain\'s letter-grade self-assessment (A/B/C/D/F) with rationale. Returns weighted score across fix-success, human-rejection, cron health, volume, and memory depth. Use this BEFORE trusting brain-auto-applied fixes — fall back to deterministic logic when grade is C or below.',
+    {},
+    async () => ({ content: [{ type: 'text', text: JSON.stringify(
+      await callAPI('/api/v1/brain/self-assessment')) }] }));
+
+  trackedTool(srv, 'get_brain_effectiveness',
+    'Month-over-month brain effectiveness: text+code proposal volume by month, outcome verification rate (did fixes actually work?), human-rejection rate, false-positive memory depth, chronic-stuck-issue count. Answers "is brain learning?".',
+    {},
+    async () => ({ content: [{ type: 'text', text: JSON.stringify(
+      await callAPI('/api/v1/brain/effectiveness')) }] }));
+
+  trackedTool(srv, 'get_brain_outcomes',
+    'Recent post-merge outcome verifications. For each approved brain proposal, did the pattern actually stop appearing? Pass optional `limit` (default 50, max 200).',
+    { limit: I },
+    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(
+      await callAPI('/api/v1/brain/outcomes', { limit: a.limit })) }] }));
+
+  trackedTool(srv, 'get_brain_temporal_patterns',
+    'Issues classified by temporal shape: chronic (always broken), intermittent (sporadic), spiking (>=5 in last 24h), resolved (no occurrence in 7+ days), or unknown. Pass optional `classification` to filter, `limit` (default 50).',
+    { classification: S, limit: I },
+    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(
+      await callAPI('/api/v1/brain/temporal-patterns', {
+        classification: a.classification, limit: a.limit })) }] }));
+
+  trackedTool(srv, 'get_brain_model_performance',
+    'Per-(layer, model) brain performance over last 60 days: runs, approval rate, rejection rate, avg latency, plus a per-layer recommended-model output based on highest approval rate among models with >=10 runs.',
+    {},
+    async () => ({ content: [{ type: 'text', text: JSON.stringify(
+      await callAPI('/api/v1/brain/model-performance')) }] }));
+
   return srv;
 }
 
@@ -745,7 +780,7 @@ app.get('/health', (req, res) => {
     status: 'healthy',
     server: 'DC Hub MCP',
     version: '2.1.0',
-    tools: 32,
+    tools: 37,
     sessions: sessions.size,
     features: ['key-validation', 'tool-call-telemetry', 'tier-gating', 'platform-detection'],
   });

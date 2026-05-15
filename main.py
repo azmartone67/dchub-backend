@@ -19105,6 +19105,14 @@ if changes_feed_bp is not None:
     except Exception:
         pass
 
+# Phase GG (2026-05-14): brain learning loop (Bundle 4: outcomes, rejection
+# memory, temporal classification, model perf, self-assessment).
+try:
+    from routes.brain_learning import brain_learning_bp
+    app.register_blueprint(brain_learning_bp)
+except Exception:
+    pass
+
 # === Brain v2 · Layer 3 freshness fields ===
 try:
     from flask import jsonify as _bv2_jsonify
