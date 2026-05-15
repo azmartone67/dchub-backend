@@ -20899,7 +20899,10 @@ def _mcp_conversion_funnel():
         "5b_total_paid_keys":   safe_count("SELECT COUNT(DISTINCT user_email) FROM mcp_upgrade_signals WHERE tier_current IN ('pro','paid','enterprise')"),
         # Phase QQ — extra context counters so the dashboard tells a fuller story.
         "0_unique_callers_7d":  safe_count("SELECT COUNT(DISTINCT COALESCE(NULLIF(client_name,''),NULLIF(platform,''),ip_address)) FROM mcp_tool_calls WHERE created_at > NOW() - INTERVAL '7 days'"),
-        "2b_unique_paywall_callers_7d": safe_count("SELECT COUNT(DISTINCT COALESCE(NULLIF(user_email,''),NULLIF(mcp_client,''),api_key_hash::text)) FROM mcp_upgrade_signals WHERE created_at > NOW() - INTERVAL '7 days'"),
+        # mcp_upgrade_signals columns (verified): user_email, tool_requested,
+        # signal_type, tier_current, tier_required, mcp_client, message_shown,
+        # created_at. No api_key_hash on this table. Coalesce on what exists.
+        "2b_unique_paywall_callers_7d": safe_count("SELECT COUNT(DISTINCT COALESCE(NULLIF(user_email,''),NULLIF(mcp_client,''),NULLIF(tool_requested,''))) FROM mcp_upgrade_signals WHERE created_at > NOW() - INTERVAL '7 days'"),
         "3a_pair_codes_issued_7d":  safe_count("SELECT COUNT(*) FROM mcp_pair_codes WHERE created_at > NOW() - INTERVAL '7 days'"),
         # Free dev key claims via /api/v1/keys/claim — the agent-native path.
         "3b_free_keys_claimed_7d":  safe_count("SELECT COUNT(*) FROM mcp_dev_keys WHERE created_at > NOW() - INTERVAL '7 days'"),
