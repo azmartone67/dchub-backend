@@ -50,36 +50,35 @@ def _require_admin(fn):
 
 
 def _build_lead_query(days: int = 30, min_signals: int = 3, limit: int = 100):
-    """Join mcp_upgrade_signals with mcp_dev_keys to surface emails."""
+    """Aggregate hot leads from mcp_upgrade_signals.
+
+    Real schema (per mcp_analytics_postgres.py):
+      user_email, tool_requested, tier_current, tier_required, created_at
+    No api_key_id column. Email is directly in the signals table, so no
+    JOIN needed unless we want to enforce tier filtering against
+    mcp_dev_keys — which we do as a LEFT JOIN (anonymous-email signups
+    might not have a key row yet but are still leads)."""
     return f"""
-        WITH signals AS (
-            SELECT api_key_id,
-                   tool_name,
-                   COUNT(*) AS signal_count,
+        WITH rolled AS (
+            SELECT user_email,
+                   COUNT(*) AS total_signals,
                    MAX(created_at) AS last_signal_at,
-                   array_agg(DISTINCT tool_name) AS tools
+                   array_agg(DISTINCT tool_requested ORDER BY tool_requested)
+                     FILTER (WHERE tool_requested IS NOT NULL) AS tools_hit
               FROM mcp_upgrade_signals
              WHERE created_at > NOW() - INTERVAL '{int(days)} days'
-               AND api_key_id IS NOT NULL
-          GROUP BY api_key_id, tool_name
-        ),
-        rolled AS (
-            SELECT api_key_id,
-                   SUM(signal_count) AS total_signals,
-                   MAX(last_signal_at) AS last_at,
-                   array_agg(DISTINCT tool_name ORDER BY tool_name) AS tools_hit
-              FROM signals
-          GROUP BY api_key_id
-            HAVING SUM(signal_count) >= {int(min_signals)}
+               AND user_email IS NOT NULL
+               AND user_email <> ''
+          GROUP BY user_email
+            HAVING COUNT(*) >= {int(min_signals)}
         )
-        SELECT k.id, k.email, k.tier, k.name,
-               r.total_signals, r.last_at, r.tools_hit,
+        SELECT k.id, r.user_email, COALESCE(k.tier, 'free') AS tier, k.name,
+               r.total_signals, r.last_signal_at, r.tools_hit,
                k.created_at AS key_created
           FROM rolled r
-          JOIN mcp_dev_keys k ON k.id = r.api_key_id
+          LEFT JOIN mcp_dev_keys k ON k.email = r.user_email
          WHERE COALESCE(k.tier, 'free') IN ('free', 'identified')
-           AND k.email IS NOT NULL AND k.email <> ''
-      ORDER BY r.total_signals DESC, r.last_at DESC
+      ORDER BY r.total_signals DESC, r.last_signal_at DESC
          LIMIT {int(limit)};
     """
 
@@ -118,21 +117,21 @@ def get_funnel_leads():
                     "key_created_at": r[7].isoformat() if r[7] else None,
                 })
             # Roll-up stats
-            cur.execute(f"""SELECT COUNT(DISTINCT api_key_id),
-                                    SUM(1)::int
+            cur.execute(f"""SELECT COUNT(DISTINCT user_email),
+                                    COUNT(*)::int
                               FROM mcp_upgrade_signals
                              WHERE created_at > NOW() - INTERVAL '{int(days)} days'
-                               AND api_key_id IS NOT NULL""")
+                               AND user_email IS NOT NULL""")
             row = cur.fetchone()
             out["totals"] = {
                 "distinct_users_signaled": int(row[0]) if row and row[0] else 0,
                 "total_signals": int(row[1]) if row and row[1] else 0,
             }
-            cur.execute("""SELECT tool_name, COUNT(*) AS n
+            cur.execute("""SELECT tool_requested, COUNT(*) AS n
                              FROM mcp_upgrade_signals
                             WHERE created_at > NOW() - INTERVAL '30 days'
-                              AND tool_name IS NOT NULL
-                         GROUP BY tool_name ORDER BY n DESC LIMIT 10""")
+                              AND tool_requested IS NOT NULL
+                         GROUP BY tool_requested ORDER BY n DESC LIMIT 10""")
             out["top_tools_30d"] = [
                 {"tool": r[0], "signals": int(r[1])} for r in cur.fetchall()
             ]
