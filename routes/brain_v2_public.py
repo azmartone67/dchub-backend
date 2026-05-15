@@ -30,7 +30,21 @@ def _get_state():
     Phase S (2026-05-12): prefer the Postgres store when available so the
     /brain page shows the full cross-worker, cross-deploy history instead
     of just the per-worker in-memory snapshot the layer4 module happens
-    to hold. Falls back to in-memory if the store is offline."""
+    to hold. Falls back to in-memory if the store is offline.
+
+    Phase MM (2026-05-15): 60-second in-memory cache so the /brain
+    dashboard isn't 3s on every hit. The data is admin-facing + cron-
+    refreshed every hour; 60s staleness is fine, 3s page load isn't.
+    """
+    import time as _time
+    global _STATE_CACHE
+    try:
+        _STATE_CACHE
+    except NameError:
+        _STATE_CACHE = {"payload": None, "ts": 0}
+    if _STATE_CACHE["payload"] and (_time.time() - _STATE_CACHE["ts"]) < 60:
+        return _STATE_CACHE["payload"]
+
     try:
         from routes.brain_v2_layer4 import (
             _proposed_fixes, _learning_log,
@@ -71,7 +85,7 @@ def _get_state():
         len(proposed),
         len(log),
     )
-    return {
+    result = {
         "loaded": True,
         "active": bool(ANTHROPIC_API_KEY),
         "model": BRAIN_MODEL,
@@ -82,6 +96,13 @@ def _get_state():
         "verdict": verdict,
         "verdict_detail": verdict_detail,
     }
+    # Phase MM: cache for 60s — saves 3 DB round-trips on /brain hits.
+    try:
+        _STATE_CACHE["payload"] = result
+        _STATE_CACHE["ts"] = _time.time()
+    except Exception:
+        pass
+    return result
 
 
 def _color_for(item: dict) -> str:
