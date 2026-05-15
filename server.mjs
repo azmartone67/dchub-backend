@@ -593,6 +593,39 @@ function createServer() {
       await callAPIPost('/api/v1/alerts/unsubscribe',
         { market: a.market, channel: 'webhook', destination: a.webhook_url })) }] }));
 
+  // ── DCPI (Data Center Power Index) — DC Hub's moat data ─────────────────
+  // Phase GG (2026-05-15): expose DCPI directly in MCP. Was only reachable
+  // via get_market_brief (bundled) or by scraping the /dcpi pages. Heavy
+  // agents (102 users on get_grid_intelligence) need DCPI as a first-class
+  // signal: BUILD/CAUTION/AVOID verdicts + the four numeric scores
+  // (excess_power, constraint, time_to_power, queue_wait) tell an agent
+  // exactly which markets to advance and which to skip.
+  trackedTool(srv, 'get_dcpi_scores',
+    'DCPI (Data Center Power Index) scores for all tracked markets — DC Hub\'s headline build/avoid signal. Returns each market\'s verdict (BUILD/CAUTION/AVOID), excess power score, constraint score, time-to-power months, ISO, and state. Filter by ISO or verdict; sort by any score.',
+    { iso: S, verdict: S, sort_by: S, limit: I },
+    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(
+      await callAPI('/api/v1/dcpi/scores', {
+        iso: a.iso, verdict: a.verdict, sort_by: a.sort_by, limit: a.limit })) }] }));
+
+  trackedTool(srv, 'get_dcpi_market',
+    'Full DCPI snapshot for one market by slug (e.g. "northern-virginia", "phoenix", "dallas-fort-worth"). Returns the verdict, all four scores, top risks + opportunities, queue wait, reserve margin, curtailment, and the underlying grid metrics. Pairs with get_market_brief when you also need energy cost + tax incentives.',
+    { slug: z.string() },
+    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(
+      await callAPI(`/api/v1/dcpi/scores/${encodeURIComponent(a.slug || '')}`)) }] }));
+
+  trackedTool(srv, 'get_dcpi_movers',
+    'Biggest DCPI movers — markets whose excess-power or constraint score shifted most over the rolling window. Use to spot emerging BUILD opportunities or markets newly flagged AVOID. Returns delta + before/after scores per market.',
+    { window: S, limit: I, direction: S },
+    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(
+      await callAPI('/api/v1/dcpi/movers', {
+        window: a.window, limit: a.limit, direction: a.direction })) }] }));
+
+  trackedTool(srv, 'get_dcpi_iso',
+    'DCPI rolled up to the ISO level — per-ISO aggregate of BUILD/CAUTION/AVOID counts, average excess-power, average constraint, and total tracked markets. Use to compare grid operators (PJM vs ERCOT vs CAISO etc.) at a glance.',
+    { iso: S },
+    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(
+      await callAPI(a.iso ? `/api/v1/dcpi/iso/${encodeURIComponent(a.iso)}` : '/api/v1/dcpi/iso-comparison')) }] }));
+
   // ── Bundled site-selection brief (Phase FF, Track 3 — agent playbook) ────
   // One call instead of five: DCPI verdict + grid context, power cost,
   // tax incentives, and same-ISO comparables for a market. Free.
