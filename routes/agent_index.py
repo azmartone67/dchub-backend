@@ -44,11 +44,17 @@ agent_index_bp = Blueprint("agent_index", __name__)
 
 def _conn():
     import psycopg2
-    return psycopg2.connect(os.environ.get("DATABASE_URL"), connect_timeout=8)
+    # autocommit=True so a single failed query (e.g., missing table) doesn't
+    # abort the whole transaction and poison every subsequent query. Each
+    # _safe_fetchall is independent.
+    c = psycopg2.connect(os.environ.get("DATABASE_URL"), connect_timeout=8)
+    c.autocommit = True
+    return c
 
 
 def _safe_fetchall(cur, sql, params=()):
-    """Run a query, return rows or []. Never raises."""
+    """Run a query, return rows or []. Never raises. With autocommit on the
+    connection a failed query doesn't poison subsequent ones."""
     try:
         cur.execute(sql, params)
         return cur.fetchall()
