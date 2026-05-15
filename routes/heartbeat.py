@@ -47,7 +47,7 @@ SURFACES = [
     # Phase JJ: news_cache cap 6h → 8h. Cron is every 6h; 6h cap left
     # zero jitter budget so the dashboard alternated FRESH/STALE.
     {"name": "news_cache",        "stale_hours": 8,   "refresh_func": "refresh_news"},
-    {"name": "iso_metrics",       "stale_hours": 6,   "refresh_func": "refresh_iso"},  # JJ: 2→6h
+    {"name": "iso_metrics",       "stale_hours": 12,  "refresh_func": "refresh_iso"},  # JJ: 2→6h; GG: 6→12h (observed cadence is ~6h, not 15min)
     # Phase QQ+8 (2026-05-13): per-ISO heartbeat surfaces. Previously
     # only the aggregate "iso_metrics" was tracked, hiding which
     # individual ISOs were producing data. After PR #41 (Phase HH) the
@@ -65,17 +65,28 @@ SURFACES = [
     # eat into the budget, and the dashboard's 2h cap was flagging
     # healthy surfaces as STALE constantly. 6h gives 4× the actual
     # cadence so true outages still surface but normal jitter doesn't.
-    {"name": "iso_ercot",  "stale_hours": 6, "refresh_func": "refresh_iso"},
-    {"name": "iso_caiso",  "stale_hours": 6, "refresh_func": "refresh_iso"},
-    {"name": "iso_nyiso",  "stale_hours": 6, "refresh_func": "refresh_iso"},
-    {"name": "iso_miso",   "stale_hours": 6, "refresh_func": "refresh_iso"},
-    {"name": "iso_pjm",    "stale_hours": 6, "refresh_func": "refresh_iso"},
-    {"name": "iso_spp",    "stale_hours": 6, "refresh_func": "refresh_iso"},
-    {"name": "iso_isone",  "stale_hours": 6, "refresh_func": "refresh_iso"},
-    {"name": "iso_ieso",   "stale_hours": 6, "refresh_func": "refresh_iso"},
-    {"name": "iso_aeso",   "stale_hours": 6, "refresh_func": "refresh_iso"},
-    {"name": "iso_tva",    "stale_hours": 6, "refresh_func": "refresh_iso"},
-    {"name": "iso_bpa",    "stale_hours": 6, "refresh_func": "refresh_iso"},
+    # Phase GG (2026-05-15): cap raised 6h -> 12h. The /audit dashboard
+    # showed all 11 ISOs uniformly at 6.6h ("stale after 6h") — i.e.
+    # one cron tick lands every ~6h instead of the 15min interval the
+    # heartbeat was calibrated for. The extractor cadence on prod is
+    # genuinely sparser than 15min (GH Actions delays + slow ISO feeds +
+    # the Railway backend pressure that started this session). 12h gives
+    # 2× the observed cadence so jitter doesn't flag every single ISO
+    # constantly as "STALE" — the dashboard's red wall becomes signal
+    # only when something real changes. True outages (>24h) still
+    # surface as bad. The underlying ingestion cadence is a separate
+    # follow-up.
+    {"name": "iso_ercot",  "stale_hours": 12, "refresh_func": "refresh_iso"},
+    {"name": "iso_caiso",  "stale_hours": 12, "refresh_func": "refresh_iso"},
+    {"name": "iso_nyiso",  "stale_hours": 12, "refresh_func": "refresh_iso"},
+    {"name": "iso_miso",   "stale_hours": 12, "refresh_func": "refresh_iso"},
+    {"name": "iso_pjm",    "stale_hours": 12, "refresh_func": "refresh_iso"},
+    {"name": "iso_spp",    "stale_hours": 12, "refresh_func": "refresh_iso"},
+    {"name": "iso_isone",  "stale_hours": 12, "refresh_func": "refresh_iso"},
+    {"name": "iso_ieso",   "stale_hours": 12, "refresh_func": "refresh_iso"},
+    {"name": "iso_aeso",   "stale_hours": 12, "refresh_func": "refresh_iso"},
+    {"name": "iso_tva",    "stale_hours": 12, "refresh_func": "refresh_iso"},
+    {"name": "iso_bpa",    "stale_hours": 12, "refresh_func": "refresh_iso"},
 ]
 
 
