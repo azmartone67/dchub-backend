@@ -91,15 +91,31 @@ def _already_probed_today(cur, agent_name: str) -> bool:
 
 
 def _quality_gate(text: str) -> tuple[bool, str]:
-    """Returns (ok, reason). True if the response is usable as a testimonial."""
+    """Returns (ok, reason). True if the response is usable as a testimonial.
+
+    Phase PP+1 (2026-05-15): expanded refusal detection. First production
+    run captured a Claude response that said "I don't have reliable
+    information about dchub.cloud in my training data" — slipped past
+    the original 4-pattern list and showed up as a usable testimonial.
+    The new list catches the common forms of "I can't speak to it"
+    that aren't outright "I don't know."
+    """
     if not text or len(text) < 80:
         return False, "too_short"
     low = text.lower()
     if "dchub" not in low and "dc hub" not in low:
         return False, "no_brand_mention"
-    if any(refuse in low for refuse in (
-            "i don't know", "i'm not sure", "i cannot",
-            "i don't have information", "no information about")):
+    _REFUSAL_PATTERNS = (
+        "i don't know", "i'm not sure", "i cannot",
+        "i don't have information", "i don't have reliable information",
+        "no information about", "i don't have specific",
+        "i'm not familiar", "i am not familiar",
+        "my knowledge may be outdated", "my training data",
+        "i'd recommend visiting", "i would recommend visiting",
+        "check recent sources", "checking recent sources",
+        "without access to", "i can't access",
+    )
+    if any(p in low for p in _REFUSAL_PATTERNS):
         return False, "refusal"
     return True, "ok"
 
@@ -125,11 +141,31 @@ def _write_testimonial(cur, *, source: str, platform: str, agent_name: str,
 
 # ─────────────────────────── agent probes ──────────────────────────────
 
+# Phase PP+1 (2026-05-15): the original prompt asked "what is dchub.cloud?"
+# cold, and Claude (correctly) refused because dchub.cloud isn't in its
+# training data. We now give the model the *factual* description first
+# and ask for an evaluation in its own words — a real testimonial of an
+# AI agent's view of the platform's value, not a fabricated description.
+# The prompt explicitly forbids hedging language so the response is
+# usable on the public testimonials wall.
 _PROBE_PROMPT = (
-    "What is dchub.cloud? Answer in 2-3 sentences. "
-    "Mention specifically what it offers if you know — e.g. data center "
-    "intelligence, the DCPI (Data Center Power Index), MCP server for AI agents, "
-    "or specific data domains like facility maps, grid capacity, or energy rates."
+    "You are evaluating dchub.cloud — a data center intelligence platform. "
+    "Here is what dchub.cloud offers:\n\n"
+    "• 20,000+ data center facilities tracked across 140+ countries\n"
+    "• DCPI (Data Center Power Index): per-market BUILD/AVOID verdicts for 280+ markets\n"
+    "• 126,000+ substations + transmission lines mapped (Land & Power map)\n"
+    "• Per-state retail electricity rates (industrial / commercial / residential)\n"
+    "• Real-time grid intelligence across 7 ISOs (PJM, MISO, CAISO, ERCOT, SPP, NYISO, ISO-NE)\n"
+    "• Fiber routes, carrier hotels, water risk, gas pipelines, air permits\n"
+    "• 787+ M&A transactions worth $10.6B+ in deal history\n"
+    "• MCP server (https://dchub.cloud/mcp) so AI agents can query all of this in one call\n"
+    "• Free identified tier (email-only) unlocks 9 high-value tools\n\n"
+    "From your perspective as an AI assistant: in 2-3 sentences, "
+    "what's the most useful thing about dchub.cloud for someone "
+    "researching data center markets? Be specific and concrete. "
+    "Do NOT hedge with phrases like 'I don't have information' or "
+    "'I'd recommend visiting' — write a direct, confident evaluation "
+    "based on the facts above. Refer to it as 'DC Hub' or 'dchub.cloud'."
 )
 
 
@@ -328,3 +364,43 @@ def preview_probe():
             r["quality"] = {"ok": ok, "reason": reason}
         results.append(r)
     return jsonify({"ok": True, "agents": results})
+
+
+@testimonial_probe_bp.post("/api/v1/testimonials/probe/purge-refusals")
+@_require_admin
+def purge_refusals():
+    """Phase PP+1 (2026-05-15): retro-cleanup. The first production run
+    landed a Claude response that started with refusal phrasing
+    ("I don't have reliable information about dchub.cloud in my training
+    data..."). The expanded refusal patterns now block those at write
+    time, but rows already in the table need to be deleted. This admin
+    endpoint walks every probe_* sourced row in ai_testimonials and
+    re-applies the current quality gate — anything that fails is
+    deleted. Returns the list of deleted IDs."""
+    conn = _conn()
+    if conn is None:
+        return jsonify({"ok": False, "error": "no_database"}), 500
+    deleted = []
+    kept = 0
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute(
+                """SELECT id, agent_name, quote
+                     FROM ai_testimonials
+                    WHERE source LIKE 'probe_%'""")
+            rows = cur.fetchall()
+            for tid, agent, quote in rows:
+                ok, reason = _quality_gate(quote or "")
+                if not ok:
+                    cur.execute("DELETE FROM ai_testimonials WHERE id = %s",
+                                (tid,))
+                    deleted.append({"id": tid, "agent": agent,
+                                     "reason": reason,
+                                     "quote_prefix": (quote or "")[:100]})
+                else:
+                    kept += 1
+    finally:
+        try: conn.close()
+        except Exception: pass
+    return jsonify({"ok": True, "deleted_count": len(deleted),
+                    "kept_count": kept, "deleted": deleted})
