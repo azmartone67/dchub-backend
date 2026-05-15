@@ -736,6 +736,24 @@ def brain_self_assessment():
     trust auto-applied brain fixes vs. fall back to deterministic logic."""
     _ensure_schema()
 
+    # Phase GG Bundle 7: 5-min in-memory cache so /brain dashboard + /status
+    # page don't pay the 1.8s recompute cost on every hit. Cache lives in
+    # module globals (per-worker; acceptable since the recompute is cheap
+    # and stale-by-5-min is fine for a public dashboard).
+    import time as _time
+    global _SA_CACHE
+    try:
+        _SA_CACHE
+    except NameError:
+        _SA_CACHE = {"payload": None, "ts": 0}
+    SA_TTL = 300  # 5 minutes
+    nocache = (request.args.get("nocache") or "").lower() in ("1", "true")
+    if not nocache and _SA_CACHE["payload"] and (_time.time() - _SA_CACHE["ts"]) < SA_TTL:
+        resp = jsonify(_SA_CACHE["payload"])
+        resp.headers["X-DC-Cache"] = "hit"
+        resp.headers["X-DC-Cache-Age"] = str(int(_time.time() - _SA_CACHE["ts"]))
+        return resp, 200
+
     def _safe(cur, sql, params=()):
         try:
             cur.execute(sql, params); return cur.fetchall()
@@ -888,7 +906,16 @@ def brain_self_assessment():
             "brain_status":  "/api/v1/brain/status",
         },
     }
-    return jsonify(attach_sources(payload, sources)), 200
+    final = attach_sources(payload, sources)
+    # Cache for next 5 min (Bundle 7).
+    try:
+        _SA_CACHE["payload"] = final
+        _SA_CACHE["ts"] = _time.time()
+    except Exception:
+        pass
+    resp = jsonify(final)
+    resp.headers["X-DC-Cache"] = "miss"
+    return resp, 200
 
 
 def _build_rationale(letter, metrics, comp):
