@@ -672,6 +672,56 @@ function createServer() {
     async (a) => ({ content: [{ type: 'text', text: JSON.stringify(
       await callAPI(`/api/v1/listings/${encodeURIComponent(a.listing || '')}`)) }] }));
 
+  // ── Phase GG (2026-05-14): agent leverage Bundles 1, 2, 3 ───────────
+  // Bundle 1: session warm-up + negative-space inventory. CALL THESE FIRST.
+  trackedTool(srv, 'get_dchub_index',
+    'CALL FIRST in every session. One-call warm-up: valid enums (ISO codes, DCPI market slugs, verdicts, states), per-domain freshness window, active radar issues, coverage totals, and a drill-deeper map. Saves 5-6 discovery calls and prevents identifier-fumbling.',
+    {},
+    async () => ({ content: [{ type: 'text', text: JSON.stringify(
+      await callAPI('/api/v1/agent/index')) }] }));
+
+  trackedTool(srv, 'get_coverage',
+    'Negative-space inventory: what DC Hub has AND explicitly does NOT track for a given domain. Pass `domain` (facilities, dcpi, pipeline, news, transactions, listings, fiber, water, tax, grid) and optionally `region` (US state or country code). Use BEFORE fishing for data we may not have.',
+    { domain: z.string(), region: S },
+    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(
+      await callAPI('/api/v1/agent/coverage', {
+        domain: a.domain, region: a.region })) }] }));
+
+  // Bundle 2: persona-shaped bundled briefs (one call replaces 6+).
+  trackedTool(srv, 'get_developer_brief',
+    'For data center developers / site selectors: ranked site-selection shortlist with explicit rationale per market. Score = excess_power − constraint × 0.5 − overshoot × 5, +10 for BUILD verdict. Pass `load_mw` (target capacity), optional `state` (2-letter), `deadline_months` (default 36).',
+    { load_mw: z.number().optional(), state: S, deadline_months: z.number().optional() },
+    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(
+      await callAPI('/api/v1/brief/developer', {
+        load_mw: a.load_mw, state: a.state, deadline_months: a.deadline_months })) }] }));
+
+  trackedTool(srv, 'get_buyer_brief',
+    'For buyers / acquirers: candidate facilities matching size criteria + pocket-listing inventory + recent transaction comparables in the same geography. Pass optional `market` slug, `state` (2-letter), `min_mw` (default 50).',
+    { market: S, state: S, min_mw: z.number().optional() },
+    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(
+      await callAPI('/api/v1/brief/buyer', {
+        market: a.market, state: a.state, min_mw: a.min_mw })) }] }));
+
+  trackedTool(srv, 'get_investor_brief',
+    'For investors / analysts: operator scorecard with footprint (facility count + MW + geographic spread), pipeline contribution, M&A history (acquisitions + targets), recent news mentions, and peer comparables. Pass `operator` name (fuzzy matched).',
+    { operator: z.string() },
+    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(
+      await callAPI('/api/v1/brief/investor', { operator: a.operator })) }] }));
+
+  trackedTool(srv, 'get_policy_brief',
+    'For policymakers / regulators: state-level rollup — installed base (facilities + MW + operator diversity), pipeline pressure (planned + under-construction MW), grid stress (DCPI verdict mix + averages), tax-incentive programs, and rough jobs-supported estimate. Pass `state` (2-letter code, required).',
+    { state: z.string() },
+    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(
+      await callAPI('/api/v1/brief/policy', { state: a.state })) }] }));
+
+  // Bundle 3: diff feed — call to see what changed since last session.
+  trackedTool(srv, 'get_changes_since',
+    'Cross-domain diff feed. Returns new pipeline projects, news articles, DCPI re-scores, transactions, pocket listings, and discovered facilities since the timestamp you pass. Pass `since` as ISO-8601 OR shorthand like "24h" / "7d" (defaults to 24h). Cache the response\'s `generated_at` to pass back next session — skip re-pulling everything.',
+    { since: S, limit: I },
+    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(
+      await callAPI('/api/v1/changes/since', {
+        since: a.since, limit: a.limit })) }] }));
+
   return srv;
 }
 
@@ -695,7 +745,7 @@ app.get('/health', (req, res) => {
     status: 'healthy',
     server: 'DC Hub MCP',
     version: '2.1.0',
-    tools: 25,
+    tools: 32,
     sessions: sessions.size,
     features: ['key-validation', 'tool-call-telemetry', 'tier-gating', 'platform-detection'],
   });
