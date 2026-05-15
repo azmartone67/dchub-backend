@@ -26,12 +26,23 @@ logger = logging.getLogger("dchub-mcp-gate")
 # ═══════════════════════════════════════════════════════════════
 
 class Tier(IntEnum):
+    # Phase GG (2026-05-15) — Bundle 5A: IDENTIFIED inserted between FREE
+    # and DEVELOPER. Free user who's signed up + verified email gets 4x
+    # the free limits + access to a few more tools (changes_since, pocket
+    # teaser). Drives 72 free users → email signup → identified upgrade.
     FREE = 0
-    DEVELOPER = 1
-    PRO = 2
-    ENTERPRISE = 3
+    IDENTIFIED = 1
+    DEVELOPER = 2
+    PRO = 3
+    ENTERPRISE = 4
 
-TIER_NAME = {Tier.FREE: "Free", Tier.DEVELOPER: "Developer", Tier.PRO: "Pro", Tier.ENTERPRISE: "Enterprise"}
+TIER_NAME = {
+    Tier.FREE: "Free",
+    Tier.IDENTIFIED: "Identified",
+    Tier.DEVELOPER: "Developer",
+    Tier.PRO: "Pro",
+    Tier.ENTERPRISE: "Enterprise",
+}
 
 # ═══════════════════════════════════════════════════════════════
 # RATE LIMITS
@@ -39,6 +50,7 @@ TIER_NAME = {Tier.FREE: "Free", Tier.DEVELOPER: "Developer", Tier.PRO: "Pro", Ti
 
 LIMITS = {
     Tier.FREE:       {"day": 50,     "minute": 5,   "max_rows": 5,    "cooldown": 2.0},
+    Tier.IDENTIFIED: {"day": 200,    "minute": 15,  "max_rows": 20,   "cooldown": 1.0},
     Tier.DEVELOPER:  {"day": 2000,   "minute": 60,  "max_rows": 100,  "cooldown": 0},
     Tier.PRO:        {"day": 10000,  "minute": 200, "max_rows": 500,  "cooldown": 0},
     Tier.ENTERPRISE: {"day": 100000, "minute": 1000,"max_rows": 10000,"cooldown": 0},
@@ -78,6 +90,46 @@ TOOL_TIER = {
 
     # PRO
     "get_backup_status":       Tier.PRO,
+
+    # ═══════════════════════════════════════════════════════════════
+    # Phase GG (2026-05-15) — Bundle 5A: tier the 25 new tools shipped
+    # across Bundles 1-4. Without these entries, they default to free +
+    # uncapped — meaning anyone can hammer the agent-leverage tools.
+    # ═══════════════════════════════════════════════════════════════
+
+    # Bundle 1 — session warm-up (warmup tools are deliberately FREE)
+    "get_dchub_index":              Tier.FREE,
+    "get_coverage":                 Tier.FREE,
+
+    # Bundle 2 — persona-shaped bundled briefs (1 call = synthesis)
+    "get_developer_brief":          Tier.DEVELOPER,
+    "get_buyer_brief":              Tier.DEVELOPER,
+    "get_investor_brief":           Tier.DEVELOPER,
+    "get_policy_brief":             Tier.DEVELOPER,
+    "get_market_brief":             Tier.DEVELOPER,  # PR #138
+
+    # Bundle 3 — diff feed (rewards email signup)
+    "get_changes_since":            Tier.IDENTIFIED,
+
+    # Phase GG capacity / ISO / listings tools (PR #153)
+    "get_site_capacity_report":     Tier.DEVELOPER,
+    "get_iso_snapshot":             Tier.DEVELOPER,
+    "get_iso_comparison":           Tier.DEVELOPER,
+    "get_pocket_listings":          Tier.IDENTIFIED,  # teaser at free, full at identified+
+    "get_pocket_listing":           Tier.IDENTIFIED,
+
+    # DCPI MCP tools (PR #152)
+    "get_dcpi_scores":              Tier.IDENTIFIED,
+    "get_dcpi_market":              Tier.IDENTIFIED,
+    "get_dcpi_movers":              Tier.DEVELOPER,
+    "get_dcpi_iso":                 Tier.DEVELOPER,
+
+    # Bundle 4 — Brain learning tools (operator-only)
+    "get_brain_self_assessment":    Tier.PRO,
+    "get_brain_effectiveness":      Tier.PRO,
+    "get_brain_outcomes":           Tier.PRO,
+    "get_brain_temporal_patterns":  Tier.PRO,
+    "get_brain_model_performance":  Tier.PRO,
 }
 
 # Fields to REDACT on free tier (show placeholder)
@@ -106,8 +158,10 @@ def _load_keys_from_env():
         if ":" not in pair:
             continue
         key, tier_str = pair.rsplit(":", 1)
-        tier_map = {"free": Tier.FREE, "dev": Tier.DEVELOPER, "developer": Tier.DEVELOPER,
-                     "pro": Tier.PRO, "enterprise": Tier.ENTERPRISE, "ent": Tier.ENTERPRISE}
+        tier_map = {"free": Tier.FREE, "identified": Tier.IDENTIFIED,
+                     "dev": Tier.DEVELOPER, "developer": Tier.DEVELOPER,
+                     "pro": Tier.PRO, "enterprise": Tier.ENTERPRISE, "ent": Tier.ENTERPRISE,
+                     "founding": Tier.PRO}  # founding members get Pro
         tier = tier_map.get(tier_str.lower(), Tier.FREE)
         _key_store[key.strip()] = tier
     if _key_store:
@@ -349,6 +403,25 @@ TOOL_TEASER = {
     "get_microgrid_viability":"on-site solar/storage/CHP feasibility with NPV across utility-rate scenarios.",
     "get_intelligence_index": "DCPI index for 280+ markets — score, rank, weekly delta, top movers.",
     "get_backup_status":      "live backup/disaster-recovery telemetry for tracked facilities.",
+
+    # Phase GG (2026-05-15) — Bundle 5A: teasers for the 25 new tools.
+    # Each teaser is the value-proposition the client should relay when
+    # gating fires. Concrete numbers beat jargon every time.
+    "get_developer_brief":    "ranked site-selection shortlist with rationale per market — score = excess_power − constraint*0.5 − overshoot*5, +10 for BUILD verdict. One call replaces 6+ generic DCPI/grid lookups.",
+    "get_buyer_brief":        "candidate facilities matching size + pocket-listing inventory + transaction comparables. Bundled output saves 4-5 individual calls.",
+    "get_investor_brief":     "operator scorecard: footprint, pipeline contribution, M&A history, recent news, peer comparables. Auto-synthesized.",
+    "get_policy_brief":       "state-level rollup for policymakers: installed base, pipeline pressure, grid stress, tax-incentive programs, jobs estimate.",
+    "get_market_brief":       "one-call site-selection brief: DCPI + grid + power cost + tax incentives + same-ISO comparables.",
+    "get_changes_since":      "cross-domain diff feed since a timestamp — new pipeline projects, news, DCPI re-scores, transactions, listings, facilities. Cache the response to skip re-pulls next session.",
+    "get_site_capacity_report":"per-facility bundled view: metadata + capacity rollup + pipeline + DCPI verdict + peers + news in one call.",
+    "get_iso_snapshot":       "comprehensive ISO snapshot: heartbeat + DCPI rollup + pipeline + facility footprint for any of the 11 tracked ISOs.",
+    "get_iso_comparison":     "head-to-head across all 11 ISOs ranked by avg excess-power — best opportunities first.",
+    "get_pocket_listings":    "off-market data center sites curated by DC Hub — capacity, asking price, direct seller contact. Free tier sees public listings + teaser count of pocket inventory.",
+    "get_pocket_listing":     "detailed pocket-listing view with full contact info and entitlement details.",
+    "get_dcpi_scores":        "DCPI verdicts (BUILD/CAUTION/AVOID) + 4 numeric scores per market — DC Hub's headline build/avoid signal.",
+    "get_dcpi_market":        "full DCPI snapshot for one market — verdict + scores + top risks + opportunities + queue wait.",
+    "get_dcpi_movers":        "biggest DCPI movers over a window — emerging BUILD opportunities + newly-flagged AVOID markets with deltas.",
+    "get_dcpi_iso":           "DCPI rolled to the ISO level — per-ISO BUILD/CAUTION/AVOID counts + avg scores.",
 }
 
 

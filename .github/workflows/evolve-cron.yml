@@ -60,13 +60,19 @@ on:
     # brain self-assessment grade. Runs 15 min before the 06:00 brain_learn
     # tick so outcomes settle before next learn pass.
     - cron: '45 5 * * *'
+    # Phase GG (2026-05-15) — Bundle 5C: DC Hub Weekly Digest broadcast.
+    # Monday 14:00 UTC (after agent vendor digest at the same slot, but
+    # this targets ALL free + identified + newsletter subscribers, not
+    # just MCP key holders). Auto-builds from DCPI movers + ISO comparison
+    # + changes-since + brain self-assessment. Idempotent via 6-day dedup.
+    - cron: '0 14 * * 1'
   workflow_dispatch:
     inputs:
       phase:
         description: 'Which phase to run on demand'
         required: true
         type: choice
-        options: [all, brain, outreach, audit, marketing, linkedin, testimonials, agent_vendor, weekly_digest, market_alerts, freshness_radar, brain_probe_outcomes]
+        options: [all, brain, outreach, audit, marketing, linkedin, testimonials, agent_vendor, weekly_digest, market_alerts, freshness_radar, brain_probe_outcomes, weekly_media_digest]
         default: all
 
 permissions:
@@ -486,4 +492,47 @@ jobs:
               print(f\"::{lvl}::Brain probe-outcomes — {msg}\")
           else:
               print(f\"::warning::Brain probe-outcomes failed — {d.get('error','unknown')}\")
+          " || true
+
+  # Phase GG (2026-05-15) — Bundle 5C: weekly DC Hub Media digest to all
+  # free + identified + newsletter subscribers. Monday 14:00 UTC. The
+  # endpoint auto-builds the body from DCPI movers + ISO comparison +
+  # changes-since + brain self-assessment, then broadcasts via Resend.
+  # Idempotent: 6-day dedup window so a same-week retry is safe.
+  # NOTE: shares the same '0 14 * * 1' cron as agent_vendor_digest above,
+  # which is fine — both run, neither blocks the other.
+  weekly_media_digest:
+    if: github.event.schedule == '0 14 * * 1' || (github.event_name == 'workflow_dispatch' && (inputs.phase == 'all' || inputs.phase == 'weekly_media_digest'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Send weekly DC Hub Media digest broadcast
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping weekly digest"
+            exit 0
+          fi
+          response=$(curl -sS --max-time 120 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" \
+            "https://dchub-backend-production.up.railway.app/api/v1/digest/weekly-auto" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | head -c 2000
+          echo
+          echo "$response" | python3 -c "
+          import json, sys
+          try: d = json.load(sys.stdin)
+          except Exception:
+              print('::warning::Weekly digest returned non-JSON'); sys.exit(0)
+          mode = d.get('mode', '?')
+          if mode == 'sent':
+              print(f\"::notice::Weekly digest sent={d.get('sent_count',0)} of eligible={d.get('eligible_count',0)} failed={d.get('failed_count',0)}\")
+          elif mode == 'no_provider':
+              print(f\"::notice::Weekly digest no_provider — eligible={d.get('eligible_count',0)} (set DCHUB_RESEND_API_KEY in Railway to enable delivery)\")
+          elif mode == 'dry_run':
+              print(f\"::notice::Weekly digest dry-run — eligible={d.get('eligible_count',0)}\")
+          else:
+              print(f\"::warning::Weekly digest mode={mode} error={d.get('error','unknown')}\")
           " || true

@@ -19113,6 +19113,13 @@ try:
 except Exception:
     pass
 
+# Phase GG (2026-05-15): broadcast + newsletter (Bundle 5C).
+try:
+    from routes.broadcast import broadcast_bp
+    app.register_blueprint(broadcast_bp)
+except Exception:
+    pass
+
 # === Brain v2 · Layer 3 freshness fields ===
 try:
     from flask import jsonify as _bv2_jsonify
