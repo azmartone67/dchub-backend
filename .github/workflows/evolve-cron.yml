@@ -52,13 +52,21 @@ on:
     # primary writer so the radar stays current without loading the
     # timeout-prone /heal/findings request path.
     - cron: '20 */6 * * *'
+    # Phase GG (2026-05-15) — Bundle 4 outcome verification, daily 05:45 UTC.
+    # Walks approved brain_proposed_fixes from the last 30 days and records
+    # whether the underlying pattern is still being detected by the healer.
+    # This populates brain_fix_outcomes, which is the headline metric in
+    # /api/v1/brain/effectiveness and the fix_success component of the
+    # brain self-assessment grade. Runs 15 min before the 06:00 brain_learn
+    # tick so outcomes settle before next learn pass.
+    - cron: '45 5 * * *'
   workflow_dispatch:
     inputs:
       phase:
         description: 'Which phase to run on demand'
         required: true
         type: choice
-        options: [all, brain, outreach, audit, marketing, linkedin, testimonials, agent_vendor, weekly_digest, market_alerts, freshness_radar]
+        options: [all, brain, outreach, audit, marketing, linkedin, testimonials, agent_vendor, weekly_digest, market_alerts, freshness_radar, brain_probe_outcomes]
         default: all
 
 permissions:
@@ -437,4 +445,45 @@ jobs:
               print(f\"::{lvl}::Freshness radar — {msg}\")
           else:
               print(f\"::warning::Freshness radar failed — {d.get('error','unknown')}\")
+          " || true
+
+  # Phase GG (2026-05-15) — Bundle 4 outcome verification, daily 05:45 UTC.
+  # Walks approved brain_proposed_fixes from the last 30 days and records
+  # whether the underlying pattern is still being detected by the healer.
+  # Populates brain_fix_outcomes (the headline metric in /brain/effectiveness
+  # and the fix_success component of /brain/self-assessment).
+  brain_probe_outcomes:
+    if: github.event.schedule == '45 5 * * *' || (github.event_name == 'workflow_dispatch' && (inputs.phase == 'all' || inputs.phase == 'brain_probe_outcomes'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Probe brain proposal outcomes
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping brain probe-outcomes"
+            exit 0
+          fi
+          response=$(curl -sS --max-time 60 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "https://dchub-backend-production.up.railway.app/api/v1/brain/probe-outcomes" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | head -c 2000
+          echo
+          echo "$response" | python3 -c "
+          import json, sys
+          try: d = json.load(sys.stdin)
+          except Exception:
+              print('::warning::Brain probe-outcomes returned non-JSON'); sys.exit(0)
+          if d.get('ok'):
+              ck = d.get('candidates_checked', 0)
+              no = d.get('new_outcomes_recorded', 0)
+              er = d.get('errors', [])
+              lvl = 'warning' if er else 'notice'
+              msg = f\"checked={ck} recorded={no}\"
+              if er: msg += f\" · errors={len(er)}: {er[:2]}\"
+              print(f\"::{lvl}::Brain probe-outcomes — {msg}\")
+          else:
+              print(f\"::warning::Brain probe-outcomes failed — {d.get('error','unknown')}\")
           " || true

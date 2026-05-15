@@ -257,10 +257,118 @@ def scan_domains():
                 # Serialise the timestamp for the JSON return.
                 row["last_record_at"] = last_at.isoformat() if last_at else None
                 results.append(row)
+
+            # Phase GG (2026-05-15): Bundle 4 — brain heartbeat watchdog.
+            # The brain learns by running hourly. If brain_meta.last_run_at
+            # goes >120 min stale, the learning loop is silently broken
+            # (this exact failure mode just happened — see PR #158). Flag
+            # it like any other data domain so the radar surfaces it
+            # automatically and self-heal can route it to a human.
+            try:
+                brain_row = _scan_brain_meta(cur, now)
+                if brain_row:
+                    results.append(brain_row)
+            except Exception as e:
+                results.append({"domain": "brain", "status": "unknown",
+                                "detail": f"brain watchdog error: {str(e)[:120]}"})
     finally:
         try: c.close()
         except Exception: pass
     return results
+
+
+def _scan_brain_meta(cur, now):
+    """Brain heartbeat domain. Reads brain_meta.last_run_at and treats it
+    like any other data-freshness row (upserts into data_domain_freshness).
+    SLA = 120 min (2 hours), matching the hourly brain_learn cadence +
+    one missed-tick grace."""
+    SLA_HOURS = 2
+    DOMAIN = "brain"
+    try:
+        cur.execute("SELECT value FROM brain_meta WHERE key = 'last_run_at'")
+        row = cur.fetchone()
+    except Exception as e:
+        # brain_meta table missing — that's a `breach` of "the brain isn't
+        # set up." Surface it loudly.
+        upsert_row = {
+            "domain": DOMAIN, "source_table": "brain_meta",
+            "source_ts_column": "value",
+            "last_record_at": None, "row_count": 0, "sla_hours": SLA_HOURS,
+            "age_hours": None, "status": "unknown",
+            "detail": f"brain_meta unreadable: {str(e)[:120]}",
+        }
+    else:
+        if not row or not row[0]:
+            upsert_row = {
+                "domain": DOMAIN, "source_table": "brain_meta",
+                "source_ts_column": "value",
+                "last_record_at": None, "row_count": 0, "sla_hours": SLA_HOURS,
+                "age_hours": None, "status": "unknown",
+                "detail": "no last_run_at heartbeat yet — brain may be warming up",
+            }
+        else:
+            try:
+                last = datetime.fromisoformat(str(row[0]).replace('Z', '+00:00'))
+                if last.tzinfo is None:
+                    last = last.replace(tzinfo=timezone.utc)
+                age_hours = round((now - last).total_seconds() / 3600.0, 2)
+                # warning = >1x SLA, breach = >2x SLA. Same shape as _classify.
+                if age_hours <= SLA_HOURS:
+                    status = "fresh"
+                    detail = f"heartbeat {age_hours}h old (SLA {SLA_HOURS}h)"
+                elif age_hours <= SLA_HOURS * 2:
+                    status = "warning"
+                    detail = (f"heartbeat {age_hours}h old — exceeds SLA {SLA_HOURS}h. "
+                              "Brain may have missed one or two ticks.")
+                else:
+                    status = "breach"
+                    detail = (f"heartbeat {age_hours}h old — brain is STALLED. "
+                              "Check evolve-cron logs + /api/v1/brain/status.")
+                upsert_row = {
+                    "domain": DOMAIN, "source_table": "brain_meta",
+                    "source_ts_column": "value",
+                    "last_record_at": last, "row_count": 1,
+                    "sla_hours": SLA_HOURS, "age_hours": age_hours,
+                    "status": status, "detail": detail,
+                }
+            except Exception as e:
+                upsert_row = {
+                    "domain": DOMAIN, "source_table": "brain_meta",
+                    "source_ts_column": "value",
+                    "last_record_at": None, "row_count": 0,
+                    "sla_hours": SLA_HOURS, "age_hours": None,
+                    "status": "unknown",
+                    "detail": f"could not parse heartbeat: {str(e)[:120]}",
+                }
+
+    # Upsert like other domains
+    try:
+        cur.execute(
+            """INSERT INTO data_domain_freshness
+                   (domain, source_table, source_ts_column, last_record_at,
+                    row_count, sla_hours, age_hours, status, detail, checked_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+               ON CONFLICT (domain) DO UPDATE SET
+                   source_table     = EXCLUDED.source_table,
+                   source_ts_column = EXCLUDED.source_ts_column,
+                   last_record_at   = EXCLUDED.last_record_at,
+                   row_count        = EXCLUDED.row_count,
+                   sla_hours        = EXCLUDED.sla_hours,
+                   age_hours        = EXCLUDED.age_hours,
+                   status           = EXCLUDED.status,
+                   detail           = EXCLUDED.detail,
+                   checked_at       = NOW()""",
+            (upsert_row["domain"], upsert_row["source_table"],
+             upsert_row["source_ts_column"], upsert_row["last_record_at"],
+             upsert_row["row_count"], upsert_row["sla_hours"],
+             upsert_row["age_hours"], upsert_row["status"],
+             upsert_row["detail"]))
+    except Exception:
+        pass
+    upsert_row["last_record_at"] = (
+        upsert_row["last_record_at"].isoformat()
+        if upsert_row["last_record_at"] else None)
+    return upsert_row
 
 
 def radar_snapshot():
