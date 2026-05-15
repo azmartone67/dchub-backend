@@ -615,6 +615,7 @@ def register_energy_discovery_routes(app):
             return True
         return False
 
+# AUTO-REPAIR: duplicate route '/api/jobs/infrastructure-sync' also in energy_auto_discovery.py:559 — review and remove one
     @app.route('/api/jobs/infrastructure-sync', methods=['POST'])
     def job_infrastructure_sync():
         """Scheduler-triggered full infrastructure sync."""
@@ -629,12 +630,14 @@ def register_energy_discovery_routes(app):
         except Exception as e:
             logger.error(f"Infrastructure sync job failed: {e}")
             return jsonify({'success': False, 'error': str(e)}), 500
+# AUTO-REPAIR: duplicate route '/api/energy-discovery/status' also in energy_auto_discovery.py:574 — review and remove one
 
     @app.route('/api/energy-discovery/status', methods=['GET'])
     def energy_discovery_status():
         """Phase 29 — clean replacement. Returns real DB counts."""
         from flask import jsonify
         data = _phase25_real_counts()
+# AUTO-REPAIR: duplicate route '/api/energy-discovery/health' also in energy_auto_discovery.py:630 — review and remove one
         return jsonify({'success': True, 'data': data})
 
     @app.route('/api/energy-discovery/health', methods=['GET'])
@@ -645,6 +648,7 @@ def register_energy_discovery_routes(app):
         return jsonify({
             'success': True,
             'all_healthy': all_alive,
+# AUTO-REPAIR: duplicate route '/api/energy-discovery/sync-now' also in energy_auto_discovery.py:641 — review and remove one
             'sources': results
         })
 

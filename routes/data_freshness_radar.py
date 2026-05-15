@@ -239,7 +239,7 @@ def scan_domains():
                                (domain, source_table, source_ts_column,
                                 last_record_at, row_count, sla_hours,
                                 age_hours, status, detail, checked_at)
-                           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+                           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW() ON CONFLICT DO NOTHING)
                            ON CONFLICT (domain) DO UPDATE SET
                                source_table     = EXCLUDED.source_table,
                                source_ts_column = EXCLUDED.source_ts_column,

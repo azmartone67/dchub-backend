@@ -414,7 +414,7 @@ def track_api_usage(user_id, api_key_id, endpoint, method, status_code, response
             c.execute("""
                 INSERT INTO api_usage (user_id, api_key_id, endpoint, method, status_code, 
                                        response_time_ms, ip_address, user_agent, timestamp, date)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
             """, (user_id, api_key_id, endpoint, method, status_code, 
                   response_time_ms, ip_address, user_agent, now.isoformat(), date))
             
@@ -716,6 +716,7 @@ monetization_bp = Blueprint('monetization', __name__)
 
 # --- Plans ---
 
+# AUTO-REPAIR: duplicate route '/api/v2/plans' also in api_tier_gating.py:1466 — review and remove one
 @monetization_bp.route('/api/v2/plans', methods=['GET'])
 def list_plans():
     """List available API plans"""
@@ -771,7 +772,7 @@ def get_current_plan():
         # Create user_plans entry
         c.execute("""
             INSERT INTO user_plans (user_id, plan, updated_at)
-            VALUES (%s, %s, %s)
+            VALUES (%s, %s, %s) ON CONFLICT DO NOTHING
         """, (user_id, plan, datetime.utcnow().isoformat()))
         conn.commit()
         
@@ -807,6 +808,7 @@ def get_current_plan():
     })
 
 # --- API Keys ---
+# AUTO-REPAIR: duplicate route '/api/v2/keys' also in api_tier_gating.py:1347 — review and remove one
 
 @monetization_bp.route('/api/v2/keys', methods=['GET'])
 def list_api_keys():
@@ -853,6 +855,7 @@ def list_api_keys():
         'success': True,
         'keys': keys,
         'count': len(keys)
+# AUTO-REPAIR: duplicate route '/api/v2/keys' also in api_tier_gating.py:1347 — review and remove one
     })
 
 @monetization_bp.route('/api/v2/keys', methods=['POST'])
@@ -913,7 +916,7 @@ def create_api_key():
     
     c.execute("""
         INSERT INTO api_keys (user_id, key_hash, key_prefix, name, rate_limit_tier, plan, is_active, created_at)
-        VALUES (%s, %s, %s, %s, %s, %s, 1, %s) RETURNING id
+        VALUES (%s, %s, %s, %s, %s, %s, 1, %s) ON CONFLICT DO NOTHING RETURNING id
     """, (user_id, key_hash, key_prefix, name, plan, plan, now))
     
     row = c.fetchone()
@@ -933,6 +936,7 @@ def create_api_key():
             'plan': plan,
             'created_at': now
         },
+# AUTO-REPAIR: duplicate route '/api/v2/keys/<int:key_id>' also in api_tier_gating.py:1407 — review and remove one
         'message': 'Save this API key - it will not be shown again!'
     }), 201
 
@@ -1026,6 +1030,7 @@ def regenerate_api_key(key_id):
             'created_at': now
         },
         'message': 'API key regenerated. Save this key - it will not be shown again!'
+# AUTO-REPAIR: duplicate route '/api/v2/usage' also in api_tier_gating.py:1426 — review and remove one
     })
 
 # --- Usage Stats ---
