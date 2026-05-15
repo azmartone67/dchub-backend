@@ -75,10 +75,10 @@ on:
         options: [all, brain, outreach, audit, marketing, linkedin, testimonials, agent_vendor, weekly_digest, market_alerts, freshness_radar, brain_probe_outcomes, weekly_media_digest]
         default: all
       dry_run:
-        description: 'Dry-run (preview audience + body, do NOT send emails)'
+        description: 'Dry-run (preview audience + body, do NOT send emails) — DEFAULT TRUE for manual dispatch'
         required: false
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: read
@@ -515,16 +515,29 @@ jobs:
         env:
           ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
           DRY_RUN: ${{ inputs.dry_run }}
+          IS_SCHEDULE: ${{ github.event_name == 'schedule' }}
         run: |
           if [ -z "$ADMIN_KEY" ]; then
             echo "::warning::DCHUB_ADMIN_KEY not set — skipping weekly digest"
             exit 0
           fi
+          # Bundle 6A safety: workflow_dispatch defaults to dry_run unless
+          # explicitly false. Scheduled cron always confirms large audience
+          # (it's the sanctioned weekly send path). Manual dispatches must
+          # pass dry_run=false explicitly to actually deliver.
           URL="https://dchub-backend-production.up.railway.app/api/v1/digest/weekly-auto"
-          if [ "$DRY_RUN" = "true" ]; then
-            URL="${URL}?dry_run=true"
+          QS=""
+          if [ "$IS_SCHEDULE" = "true" ]; then
+            QS="?confirm_large_send=true"
+            echo "::notice::Scheduled cron — auto-confirming large audience"
+          elif [ "$DRY_RUN" = "true" ] || [ -z "$DRY_RUN" ]; then
+            QS="?dry_run=true"
             echo "::notice::Dry-run mode — no emails will be sent."
+          else
+            QS="?confirm_large_send=true"
+            echo "::warning::Manual dispatch with dry_run=false — emails WILL be sent."
           fi
+          URL="${URL}${QS}"
           response=$(curl -sS --max-time 120 -X POST \
             -H "X-Admin-Key: $ADMIN_KEY" \
             -H "Content-Type: application/json" \

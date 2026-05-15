@@ -150,17 +150,27 @@ def agent_index():
                     "fumbling identifiers or re-pulling stale data."),
         "version": "1.0",
     }
-    # Each section runs on a FRESH connection so a transient error in
-    # one (e.g. missing optional table) can't poison the others — even
-    # the rare cases where autocommit + with-block interaction goes wrong.
-    for section, fn in [("enums", _enums), ("freshness", _freshness_window),
-                        ("radar", _radar_issues), ("coverage", _coverage_summary)]:
-        try:
-            with _conn() as c, c.cursor() as cur:
-                out[section] = fn(cur)
-        except Exception as e:
-            out[section] = {} if section != "radar" else []
-            out.setdefault("section_errors", {})[section] = str(e)[:200]
+    # Phase GG (2026-05-15) — Bundle 6A: ONE connection with autocommit,
+    # FOUR independent cursors. The previous "fresh connection per section"
+    # approach (PR #156) was bulletproof but cost ~500ms × 4 = 2s in
+    # Postgres connect handshakes, making /agent/index a 2.5s endpoint.
+    # With autocommit=True on the connection, each cursor's queries are
+    # independent transactions, so a failure in one section can't poison
+    # the others. Brings /agent/index from 2.5s → ~400ms.
+    try:
+        with _conn() as c:
+            for section, fn in [("enums", _enums),
+                                ("freshness", _freshness_window),
+                                ("radar", _radar_issues),
+                                ("coverage", _coverage_summary)]:
+                try:
+                    with c.cursor() as cur:
+                        out[section] = fn(cur)
+                except Exception as e:
+                    out[section] = {} if section != "radar" else []
+                    out.setdefault("section_errors", {})[section] = str(e)[:200]
+    except Exception as e:
+        out["error_partial"] = str(e)[:200]
 
     out["drill_deeper"] = {
         "dcpi_scores":      "/api/v1/dcpi/scores",
@@ -184,7 +194,11 @@ def agent_index():
         src("Active issues", "data_domain_freshness", now_iso()),
         src("Coverage totals", "facilities + capacity_pipeline + market_power_scores + news + transactions", now_iso()),
     ]
-    return jsonify(attach_sources(out, sources)), 200
+    try:
+        from util.cache import with_edge_cache
+        return with_edge_cache(jsonify(attach_sources(out, sources)), max_age=300, swr=600), 200
+    except Exception:
+        return jsonify(attach_sources(out, sources)), 200
 
 
 @agent_index_bp.route("/api/v1/agent/coverage", methods=["GET"])

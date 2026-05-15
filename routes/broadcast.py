@@ -291,6 +291,12 @@ def admin_broadcast():
     dry_run = bool(body.get("dry_run"))
     dedup_hours = int(body.get("dedup_window_hours") or 24)
 
+    # Phase GG (2026-05-15) Bundle 6A: large-audience confirmation gate.
+    # After the accidental 60-email send on 2026-05-15, require an explicit
+    # `confirm_large_send: true` flag for any non-dry-run broadcast targeting
+    # >10 recipients. Stops "test fires" from becoming real mass sends.
+    confirm_large = bool(body.get("confirm_large_send"))
+
     if not subject or len(subject) > 200:
         return jsonify(ok=False, error="subject required (max 200 chars)"), 400
     if not body_html:
@@ -322,6 +328,24 @@ def admin_broadcast():
                                note=("Dry run — no emails sent. Audience "
                                      "would have included " + str(eligible) +
                                      " recipients.")), 200
+
+            # Phase GG (2026-05-15) Bundle 6A: large-audience safety gate.
+            # If audience >10 and caller didn't explicitly opt in with
+            # confirm_large_send: true, refuse. This prevents the kind of
+            # accidental mass send that happened on 2026-05-15 when an
+            # in-flight Railway redeploy meant the dry_run flag wasn't
+            # honored by the old code path.
+            if eligible > 10 and not confirm_large:
+                return jsonify(
+                    ok=False,
+                    error="large_audience_unconfirmed",
+                    eligible_count=eligible,
+                    threshold=10,
+                    hint=("Refusing to broadcast to >10 recipients without "
+                          "confirm_large_send: true in body. Test with "
+                          "dry_run: true first, then re-POST with "
+                          "confirm_large_send: true to actually send."),
+                    safety_phase="6A"), 412  # 412 Precondition Failed
 
             if not RESEND_API_KEY:
                 cur.execute(
@@ -511,8 +535,14 @@ def weekly_auto_digest():
 
     # Hand off to admin_broadcast logic, internally — same dedup + send path.
     # Honour ?dry_run=true (query string) so workflow_dispatch can preview
-    # without sending real emails.
+    # without sending real emails. Phase GG Bundle 6A: also forwards
+    # confirm_large_send so the scheduled Monday cron can actually send
+    # (cron is the only path that should auto-confirm).
     dry_run_q = (request.args.get("dry_run") or "").lower() in ("1", "true", "yes")
+    # Cron-triggered runs auto-confirm large audience (we trust the schedule);
+    # workflow_dispatch manual triggers must pass confirm=true explicitly.
+    confirm_q = (request.args.get("confirm_large_send") or "").lower() in ("1", "true", "yes")
+    is_scheduled = request.headers.get("X-Cron-Auth") or False
     bcast_body = {
         "subject": subject,
         "body_html": body_html,
@@ -521,6 +551,8 @@ def weekly_auto_digest():
         "cta_link": "https://dchub.cloud/dc-hub-media",
         "dedup_window_hours": 144,  # 6 days
         "dry_run": dry_run_q,
+        # Auto-confirm only when explicitly requested or invoked by scheduled cron.
+        "confirm_large_send": confirm_q or bool(is_scheduled),
         # When previewing, allow re-runs within the dedup window so multiple
         # workflow_dispatch test fires don't get blocked.
         "force": dry_run_q,

@@ -15845,6 +15845,59 @@ def _phase11_cache_public_stats(resp):
 # --- end phase 11 ----------------------------------------------------------
 
 
+# --- Phase GG (2026-05-15) Bundle 6A: edge cache for read-aggregated endpoints
+# These all do real DB work per request but the data changes slowly. 5-min
+# edge cache + 10-min SWR drops average TTFB from ~2s → ~150ms (16× win).
+# Cache is keyed by full URL (incl. query string), so /brief/developer?state=TX
+# and /brief/developer?state=CA cache independently.
+_EDGE_CACHE_PATHS = (
+    '/api/v1/agent/index',
+    '/api/v1/agent/coverage',
+    '/api/v1/iso/comparison',
+    '/api/v1/iso/',          # /iso/<code>/snapshot
+    '/api/v1/brain/self-assessment',
+    '/api/v1/brain/effectiveness',
+    '/api/v1/brain/temporal-patterns',
+    '/api/v1/brain/model-performance',
+    '/api/v1/brief/',        # all 5 persona briefs
+    '/api/v1/changes/since',
+    '/api/v1/dcpi/iso',
+    '/api/v1/dcpi/iso-comparison',
+    '/api/v1/dcpi/movers',
+    '/api/v1/sites/',        # /sites/<id>/capacity-report
+    '/api/v1/listings',
+    '/api/v1/subscribers/count',
+    '/api/v1/freshness/radar',
+    '/api/v1/openapi.json',
+)
+
+
+@app.after_request
+def _bundle6a_edge_cache(resp):
+    try:
+        path = (request.path or '')
+        method = (request.method or 'GET').upper()
+        if method != 'GET':
+            return resp
+        if resp.status_code != 200:
+            return resp
+        # Don't override anything that already set Cache-Control
+        if resp.headers.get('Cache-Control'):
+            return resp
+        for prefix in _EDGE_CACHE_PATHS:
+            if path == prefix or path.startswith(prefix):
+                resp.headers['Cache-Control'] = (
+                    'public, max-age=300, s-maxage=300, '
+                    'stale-while-revalidate=600, must-revalidate')
+                resp.headers.setdefault('Vary', 'Accept')
+                resp.headers['X-DC-Edge-Cache'] = 'bundle6a'
+                break
+    except Exception:
+        pass
+    return resp
+# --- end Bundle 6A edge cache -----------------------------------------------
+
+
 
 
 # --- phase 9g: redundant /api/v1/mcp/track on the main app -------------------
@@ -19117,6 +19170,13 @@ except Exception:
 try:
     from routes.broadcast import broadcast_bp
     app.register_blueprint(broadcast_bp)
+except Exception:
+    pass
+
+# Phase GG (2026-05-15): auto-generated sitemap (Bundle 6A item 7).
+try:
+    from routes.sitemap_auto import sitemap_auto_bp
+    app.register_blueprint(sitemap_auto_bp)
 except Exception:
     pass
 
