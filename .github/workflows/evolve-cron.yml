@@ -72,7 +72,7 @@ on:
         description: 'Which phase to run on demand'
         required: true
         type: choice
-        options: [all, brain, outreach, audit, marketing, linkedin, testimonials, agent_vendor, weekly_digest, market_alerts, freshness_radar, brain_probe_outcomes, weekly_media_digest]
+        options: [all, brain, outreach, audit, marketing, linkedin, testimonials, agent_vendor, weekly_digest, market_alerts, freshness_radar, brain_probe_outcomes, weekly_media_digest, marketing_rescue, marketing_publish_now]
         default: all
       dry_run:
         description: 'Dry-run (preview audience + body, do NOT send emails) — DEFAULT TRUE for manual dispatch'
@@ -559,4 +559,73 @@ jobs:
               print(f\"::notice::Weekly digest dry-run — eligible={d.get('eligible_count',0)}\")
           else:
               print(f\"::warning::Weekly digest mode={mode} error={d.get('error','unknown')}\")
+          " || true
+
+  # Phase MM (2026-05-15): manual rescue path for stuck LinkedIn distribution.
+  # When marketing pulse shows linkedin_posts_7d == 0 despite auto_press_7d > 0,
+  # today's release exists but never got queued. This job re-runs auto-generate
+  # with ?requeue=1 to insert missing social_media_posts rows.
+  marketing_rescue:
+    if: github.event_name == 'workflow_dispatch' && (inputs.phase == 'marketing_rescue' || inputs.phase == 'all')
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Force-requeue today's auto-press distribution
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping"; exit 0; fi
+          response=$(curl -sS --max-time 60 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "https://dchub-backend-production.up.railway.app/api/v1/marketing/auto-generate?requeue=1" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | head -c 2000
+          echo
+          echo "$response" | python3 -c "
+          import json, sys
+          try: d = json.load(sys.stdin)
+          except Exception:
+              print('::warning::Marketing rescue non-JSON'); sys.exit(0)
+          mode = d.get('mode', '?')
+          if mode == 'requeued':
+              print(f\"::notice::Marketing rescue requeued today's distribution rows\")
+          elif d.get('skipped'):
+              print(f\"::notice::Marketing rescue skipped — {d.get('reason','already_done')}\")
+          else:
+              print(f\"::warning::Marketing rescue: {d.get('error','unknown')}\")
+          " || true
+
+  # Phase MM (2026-05-15): immediate publish path — calls publish-now to force
+  # LinkedIn + X posts using the most-recent auto-press release. Use after a
+  # rescue when the 6h auto-publisher cadence is too slow.
+  marketing_publish_now:
+    if: github.event_name == 'workflow_dispatch' && (inputs.phase == 'marketing_publish_now' || inputs.phase == 'all')
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Publish today's piece to LinkedIn + X now
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping"; exit 0; fi
+          response=$(curl -sS --max-time 90 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "https://dchub-backend-production.up.railway.app/api/v1/marketing/publish-now" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | head -c 2500
+          echo
+          echo "$response" | python3 -c "
+          import json, sys
+          try: d = json.load(sys.stdin)
+          except Exception:
+              print('::warning::publish-now non-JSON'); sys.exit(0)
+          li = d.get('linkedin') or {}
+          tw = d.get('twitter') or {}
+          li_ok = bool(li.get('success'))
+          tw_ok = bool(tw.get('success'))
+          msg = f\"linkedin={'OK' if li_ok else (li.get('error') or 'fail')[:80]} · twitter={'OK' if tw_ok else (tw.get('error') or 'fail')[:80]}\"
+          lvl = 'notice' if (li_ok or tw_ok) else 'warning'
+          print(f\"::{lvl}::publish-now — {msg}\")
           " || true
