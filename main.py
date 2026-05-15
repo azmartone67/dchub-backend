@@ -20127,16 +20127,26 @@ def _heal_master_cycle():
     return jsonify(summary)
 
 
-@app.route("/api/v1/heal/findings", methods=["GET"])
-def _heal_findings():
-    """Current snapshot of detected issues — what frontend/CI should act on."""
-    from flask import jsonify
+# Phase GG (2026-05-14): /heal/findings async-cache.
+# The endpoint ran ~12 detectors synchronously per call (several making
+# external HTTP probes), which consistently exceeded the CF Worker's
+# fetch timeout — every public hit returned the worker's 503 fallback.
+# Now: serve the cached payload instantly, refresh in a background
+# thread when stale, and only run synchronously on a true cold start.
+_HEAL_FINDINGS_CACHE = {"payload": None, "ts": 0.0}
+_HEAL_FINDINGS_LOCK = threading.Lock()
+_HEAL_FINDINGS_REFRESHING = {"running": False}
+_HEAL_FINDINGS_TTL = int(os.environ.get("DCHUB_HEAL_CACHE_TTL", "300"))  # 5 min
+
+
+def _compute_heal_findings():
+    """Run every detector + build the response dict (NOT jsonify'd). Used
+    both inline on cold start and from the background refresh thread."""
     try:
         import dchub_self_heal as h
     except ImportError:
-        return jsonify({"error": "self_heal not loaded"}), 500
+        return {"error": "self_heal not loaded"}
 
-    # Run detectors to populate findings + the stash
     findings = {}
     # Phase 279: added sitemap_404_check, internal_links_check, jsonld_coverage_check
     # to surface the new light-weight QA signals alongside the existing ones.
@@ -20279,11 +20289,76 @@ def _heal_findings():
     except Exception:
         pass
 
-    return jsonify({
+    return {
         "findings": findings,
         "actionable_frontend_issues": actionable,
         "actionable_backend_issues": actionable_backend,
         "cache_needs_purge": "STALE" in str(findings.get("cdn_cache_staleness", {}).get("details", "")),
+        "computed_at": datetime.utcnow().isoformat(),
+    }
+
+
+def _refresh_heal_findings_async():
+    """Spawn ONE background refresh of /heal/findings — no-op if one is
+    already running."""
+    if _HEAL_FINDINGS_REFRESHING["running"]:
+        return
+    _HEAL_FINDINGS_REFRESHING["running"] = True
+    def _refresh():
+        try:
+            new_payload = _compute_heal_findings()
+            with _HEAL_FINDINGS_LOCK:
+                _HEAL_FINDINGS_CACHE["payload"] = new_payload
+                _HEAL_FINDINGS_CACHE["ts"] = time.time()
+        except Exception as _e:
+            logger.warning("heal/findings refresh failed: %s", _e)
+        finally:
+            _HEAL_FINDINGS_REFRESHING["running"] = False
+    threading.Thread(target=_refresh, daemon=True, name="heal-findings-refresh").start()
+
+
+@app.route("/api/v1/heal/findings", methods=["GET"])
+def _heal_findings():
+    """Current snapshot of detected issues — what frontend/CI should act on.
+
+    Phase GG amend (2026-05-15): NEVER block the request. The Railway
+    logs showed this endpoint taking 42-204s per call — enough to fail
+    health checks, trigger the gunicorn watchdog, and SIGTERM the entire
+    server in a restart loop (which is what brought prod down). The
+    detectors recursively HTTP-crawl pages on this same backend, so a
+    single /heal/findings hit could lock a worker for minutes.
+
+    New behavior:
+      - cache hot + fresh   -> return cache (fast)
+      - cache hot + stale   -> return cache + kick off async refresh
+      - cache cold (1st)    -> return EMPTY skeleton + kick off async refresh
+                                NEVER computes synchronously.
+    The Brain layer 4 cron polls hourly — it'll get useful data on the
+    second call (after the async warm completes), and the server stays
+    responsive throughout."""
+    from flask import jsonify
+    with _HEAL_FINDINGS_LOCK:
+        cached = _HEAL_FINDINGS_CACHE["payload"]
+        age = time.time() - _HEAL_FINDINGS_CACHE["ts"]
+    if cached is not None:
+        if age > _HEAL_FINDINGS_TTL:
+            _refresh_heal_findings_async()
+        resp = dict(cached)
+        resp["_cache_age_seconds"] = round(age, 1)
+        resp["_cached"] = True
+        return jsonify(resp)
+    # Cold start — DO NOT block. Spawn the refresh and return an empty
+    # warming-up skeleton. Subsequent calls land in the fast cache path
+    # once the background thread completes (~60-180s for the first scan).
+    _refresh_heal_findings_async()
+    return jsonify({
+        "findings": {},
+        "actionable_frontend_issues": [],
+        "actionable_backend_issues": [],
+        "cache_needs_purge": False,
+        "_cached": False,
+        "_warming_up": True,
+        "_note": "Detector cache is populating. Retry in 1-3 minutes for full results.",
     })
 
 
