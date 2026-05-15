@@ -19206,6 +19206,23 @@ try:
 except Exception:
     pass
 
+# Phase PP (2026-05-15): active testimonial probe. Fires nightly via the
+# evolve-cron `testimonial_probe` job to keep /api/v1/testimonials fresh.
+try:
+    from routes.testimonial_probe import testimonial_probe_bp
+    app.register_blueprint(testimonial_probe_bp)
+except Exception as _e:
+    print(f"[main] testimonial_probe register failed: {_e}", file=sys.stderr)
+
+# Phase PP (2026-05-15): live site stats for the homepage hero + the new
+# /intelligence unified hub. One JSON endpoint replaces every hardcoded
+# number in the frontend.
+try:
+    from routes.site_stats import site_stats_bp
+    app.register_blueprint(site_stats_bp)
+except Exception as _e:
+    print(f"[main] site_stats register failed: {_e}", file=sys.stderr)
+
 # === Brain v2 · Layer 3 freshness fields ===
 try:
     from flask import jsonify as _bv2_jsonify
@@ -20777,7 +20794,12 @@ def _mcp_conversion_funnel():
     funnel = {
         "1_tool_calls_7d":      safe_count("SELECT COUNT(*) FROM mcp_tool_calls WHERE created_at > NOW() - INTERVAL '7 days'"),
         "2_paywall_hits_7d":    safe_count("SELECT COUNT(*) FROM mcp_upgrade_signals WHERE created_at > NOW() - INTERVAL '7 days'"),
-        "3_upgrade_clicks_7d":  safe_count("SELECT COUNT(*) FROM page_views WHERE page LIKE '%utm_source=mcp%' AND view_time > NOW() - INTERVAL '7 days'"),
+        # Phase PP (2026-05-15): page_views.view_time is stored as TEXT
+        # (ISO-8601 string), not a TIMESTAMP, so a direct `>` comparison
+        # raised "operator does not exist: text > timestamp with time zone"
+        # and the whole upgrade-clicks step came back as an error object.
+        # Cast to timestamptz before comparing.
+        "3_upgrade_clicks_7d":  safe_count("SELECT COUNT(*) FROM page_views WHERE page LIKE '%utm_source=mcp%' AND view_time::timestamptz > NOW() - INTERVAL '7 days'"),
         "4_checkouts_started_7d": safe_count("SELECT COUNT(*) FROM mcp_upgrade_signals WHERE signal_type = 'checkout_started' AND created_at > NOW() - INTERVAL '7 days'"),
         "5_conversions_30d":    safe_count("SELECT COUNT(*) FROM mcp_upgrade_signals WHERE tier_current IN ('pro','paid','enterprise') AND created_at > NOW() - INTERVAL '30 days'"),
         "5b_total_paid_keys":   safe_count("SELECT COUNT(DISTINCT user_email) FROM mcp_upgrade_signals WHERE tier_current IN ('pro','paid','enterprise')"),
