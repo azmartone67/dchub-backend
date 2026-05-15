@@ -510,13 +510,20 @@ def weekly_auto_digest():
     body_html = "\n".join(parts)
 
     # Hand off to admin_broadcast logic, internally — same dedup + send path.
+    # Honour ?dry_run=true (query string) so workflow_dispatch can preview
+    # without sending real emails.
+    dry_run_q = (request.args.get("dry_run") or "").lower() in ("1", "true", "yes")
     bcast_body = {
         "subject": subject,
         "body_html": body_html,
         "target_tiers": ["free", "identified", "newsletter"],
-        "triggered_by": "cron-weekly-digest",
+        "triggered_by": "cron-weekly-digest" + (" (dry-run)" if dry_run_q else ""),
         "cta_link": "https://dchub.cloud/dc-hub-media",
         "dedup_window_hours": 144,  # 6 days
+        "dry_run": dry_run_q,
+        # When previewing, allow re-runs within the dedup window so multiple
+        # workflow_dispatch test fires don't get blocked.
+        "force": dry_run_q,
     }
     # Just forward to admin_broadcast by re-entering via test_client.
     try:
