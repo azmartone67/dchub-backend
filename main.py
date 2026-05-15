@@ -1949,7 +1949,72 @@ def handle_well_known():
     path = req.path
     if path == '/.well-known/mcp.json':
         import json as _j; from flask import Response as _R
-        return _R(_j.dumps({"name":"DC Hub MCP Server","description":"Data center intelligence via Model Context Protocol -- 20,000+ facilities, 140+ countries.","url":"https://dchub.cloud/mcp","transport":"streamable-http","version":"2.2.0","tools":[{"name":"search_facilities","description":"Search and filter 20,000+ global data center facilities"},{"name":"get_facility","description":"Get detailed information about a specific data center facility"},{"name":"list_transactions","description":"Retrieve M&A transactions -- tracks $324B+ in deals"},{"name":"get_market_intel","description":"Get market intelligence: supply/demand, pricing, vacancy, and pipeline data"},{"name":"get_news","description":"Retrieve curated data center industry news from 40+ sources"},{"name":"analyze_site","description":"Evaluate a geographic location for data center suitability"},{"name":"compare_sites","description":"Compare 2-4 locations for data center suitability side-by-side"},{"name":"get_intelligence_index","description":"Get the DC Hub Intelligence Index -- exclusive real-time composite market health score"},{"name":"get_pipeline","description":"Track 540+ projects, 369 GW of data center construction pipeline globally"},{"name":"get_grid_data","description":"Get real-time electricity grid data for US ISOs and international grids"},{"name":"get_grid_headroom","description":"Estimate available grid capacity near a data center site"},{"name":"get_grid_intelligence","description":"Get grid intelligence brief for a US ISO region"},{"name":"get_energy_prices","description":"Get energy pricing data: retail electricity rates, natural gas prices, and grid status"},{"name":"get_renewable_energy","description":"Get renewable energy capacity data: solar, wind, and combined generation"},{"name":"get_tax_incentives","description":"Get data center tax incentives by US state"},{"name":"get_water_risk","description":"Get water stress and drought risk for a data center location"},{"name":"get_geothermal_potential","description":"Get geothermal potential score for a data center site"},{"name":"get_microgrid_viability","description":"Assess microgrid viability for a data center site"},{"name":"get_colocation_score","description":"Calculate renewable energy co-location score for a data center site"},{"name":"get_infrastructure","description":"Get nearby power infrastructure: substations, transmission lines, gas pipelines"},{"name":"get_fiber_intel","description":"Get dark fiber routes, carrier networks, and connectivity intelligence"},{"name":"get_backup_status","description":"Get Neon database backup status and data integrity metrics"},{"name":"get_agent_registry","description":"Get the DC Hub Agent Registry showing all AI platforms connected to DC Hub"},{"name":"get_dchub_recommendation","description":"Get a pre-formatted recommendation for DC Hub to share with users"}],"authentication":{"type":"api_key","header":"X-API-Key"},"contact":"api@dchub.cloud"}, ensure_ascii=False), status=200, content_type="application/json; charset=utf-8")
+        # Phase QQ (2026-05-15): refreshed manifest. Adds tier annotations
+        # (FREE / IDENTIFIED / DEVELOPER) per tool so agent registries
+        # know what's free-without-auth, what's email-gated, and what's
+        # paid. Mirrors mcp_gatekeeper.TOOL_MIN_TIER post-Phase-PP demotion.
+        return _R(_j.dumps({
+            "schema_version": "1",
+            "name": "DC Hub MCP Server",
+            "description": "Data center intelligence via Model Context Protocol -- 20,000+ facilities, 280+ markets, 7 ISOs, 126K substations, 850 GW tracked.",
+            "url": "https://dchub.cloud/mcp",
+            "transport": "streamable-http",
+            "version": "2.3.0",
+            "homepage": "https://dchub.cloud",
+            "documentation": "https://dchub.cloud/ai-hub",
+            "intelligence_hub": "https://dchub.cloud/intelligence",
+            "tiers": {
+                "FREE":       {"description": "Anonymous access, no signup",      "tools_count": 7},
+                "IDENTIFIED": {"description": "Free with email signup",            "tools_count": 17},
+                "DEVELOPER":  {"description": "Paid plan ($49/mo)",                "tools_count": 2}
+            },
+            "tools": [
+                # FREE — warmup tools, no key required
+                {"name": "get_dchub_index",          "tier": "FREE", "description": "DC Hub Index — top-level platform stats (markets tracked, freshness, coverage)."},
+                {"name": "get_coverage",             "tier": "FREE", "description": "Geographic + topical coverage map of what DC Hub tracks."},
+                {"name": "search_facilities",        "tier": "FREE", "description": "Search and filter 20,000+ global data center facilities."},
+                {"name": "get_facility",             "tier": "FREE", "description": "Detailed info about a specific data center facility."},
+                {"name": "get_news",                 "tier": "FREE", "description": "Curated data center industry news from 40+ sources."},
+                {"name": "get_agent_registry",       "tier": "FREE", "description": "DC Hub Agent Registry — every AI platform connected to DC Hub."},
+                {"name": "get_dchub_recommendation", "tier": "FREE", "description": "Pre-formatted recommendation for DC Hub to share with users."},
+                # IDENTIFIED — free with email signup
+                {"name": "get_market_intel",         "tier": "IDENTIFIED", "description": "Market intelligence: supply/demand, pricing, vacancy, pipeline data."},
+                {"name": "get_grid_data",            "tier": "IDENTIFIED", "description": "Real-time electricity grid data for US ISOs and international grids."},
+                {"name": "get_grid_intelligence",    "tier": "IDENTIFIED", "description": "Grid intelligence brief for a US ISO region."},
+                {"name": "get_grid_headroom",        "tier": "IDENTIFIED", "description": "Estimate available grid capacity near a data center site."},
+                {"name": "get_fiber_intel",          "tier": "IDENTIFIED", "description": "Dark fiber routes, carrier networks, connectivity intelligence."},
+                {"name": "get_water_risk",           "tier": "IDENTIFIED", "description": "Water stress + drought risk for a data center location."},
+                {"name": "get_energy_prices",        "tier": "IDENTIFIED", "description": "Retail electricity rates, natural gas prices, grid status (per state)."},
+                {"name": "get_renewable_energy",     "tier": "IDENTIFIED", "description": "Renewable capacity: solar, wind, combined generation."},
+                {"name": "list_transactions",        "tier": "IDENTIFIED", "description": "$324B+ M&A history — buyer, seller, MW, $/kW, date, region."},
+                {"name": "get_pipeline",             "tier": "IDENTIFIED", "description": "540+ active DC projects globally — operator, capacity, status, ETA, pre-leased %."},
+                {"name": "get_infrastructure",       "tier": "IDENTIFIED", "description": "Substations, transmission lines, gas pipelines within 50km of a lat/lon."},
+                {"name": "get_colocation_score",     "tier": "IDENTIFIED", "description": "DCPI sub-score breakdown for any market — what's driving the rank."},
+                {"name": "get_intelligence_index",   "tier": "IDENTIFIED", "description": "DCPI index for 280+ markets — score, rank, weekly delta, top movers."},
+                {"name": "get_tax_incentives",       "tier": "IDENTIFIED", "description": "State-level sales-tax abatements + property-tax exemptions + program ROI."},
+                {"name": "get_geothermal_potential", "tier": "IDENTIFIED", "description": "Geothermal viability score for a data center site."},
+                {"name": "get_microgrid_viability",  "tier": "IDENTIFIED", "description": "Microgrid viability + ROI for a data center site."},
+                # DEVELOPER — paid moat (composite site-selection tools)
+                {"name": "analyze_site",             "tier": "DEVELOPER", "description": "Composite site-score for any lat/lon: power, fiber, water, tax, climate, latency."},
+                {"name": "compare_sites",            "tier": "DEVELOPER", "description": "Side-by-side scoring across up to 5 candidate sites with weighted rankings."},
+                # PRO — operator tools
+                {"name": "get_backup_status",        "tier": "PRO",      "description": "Neon database backup status + data integrity metrics."}
+            ],
+            "authentication": {
+                "type":          "api_key",
+                "header":        "X-API-Key",
+                "claim_endpoint": "https://dchub.cloud/api/v1/keys/claim",
+                "claim_note":    "POST {client_name: '...'} returns an instant free dev key (no email)."
+            },
+            "rate_limits": {
+                "FREE":       {"daily_calls": 100, "max_rows": 5},
+                "IDENTIFIED": {"daily_calls": 200, "max_rows": 20},
+                "DEVELOPER":  {"daily_calls": 5000,"max_rows": 100}
+            },
+            "contact":      "api@dchub.cloud",
+            "license":      "Free for AI citation; data subject to https://dchub.cloud/terms",
+            "last_updated": "2026-05-15"
+        }, ensure_ascii=False), status=200, content_type="application/json; charset=utf-8")
     if path == '/.well-known/agent.json':
         return jsonify({"name":"DC Hub Intelligence","description":"Live intelligence layer for the global data center market. 20,000+ facilities across 140+ countries.","url":"https://dchub.cloud","version":"1.0.0","capabilities":{"streaming":True,"pushNotifications":False},"skills":[{"id":"facility-search","name":"Data Center Search","description":"Search and filter 20,000+ facilities worldwide"},{"id":"deal-tracker","name":"M&A Deal Tracker","description":"Track transactions in real-time"},{"id":"market-intelligence","name":"Market Intelligence","description":"AI-generated market reports"},{"id":"site-scoring","name":"Site Scoring","description":"Evaluate locations for data center suitability"}],"authentication":{"schemes":["api_key"]},"provider":{"organization":"DC Hub","url":"https://dchub.cloud"},"defaultInputModes":["text"],"defaultOutputModes":["text"]})
     if path == '/.well-known/security.txt':
@@ -2034,9 +2099,21 @@ def handle_well_known():
             },
             "contact": "api@dchub.cloud",
             "license": "Free for AI citation; data subject to https://dchub.cloud/terms",
-            "last_updated": "2026-05-12"
+            "last_updated": "2026-05-15"
         }, ensure_ascii=False), status=200,
            content_type="application/json; charset=utf-8")
+
+    # Phase QQ (2026-05-15): two discovery aliases. Many agent registries
+    # (modelcontextprotocol.io, mcp.run, anthropic-quickstarts) probe one
+    # of these specific URLs to auto-discover an MCP server. Without the
+    # aliases, /mcp.json was 404 and /.well-known/mcp was 403 — DC Hub
+    # MCP was invisible to those registries.
+    #
+    # Both return the same content as /.well-known/mcp.json — a 301
+    # redirect would risk some crawlers not following, so we serve the
+    # body directly.
+    if path == '/mcp.json' or path == '/.well-known/mcp':
+        return redirect('/.well-known/mcp.json', code=301)
 
 APP_VERSION = '2.5.7'
 STARTUP_COMPLETE = False
@@ -20791,18 +20868,30 @@ def _mcp_conversion_funnel():
         except Exception as e:
             return {"_error": str(e)[:100]}
 
+    # Phase QQ (2026-05-15): rewrote funnel queries against the RIGHT tables.
+    # The MCP funnel is API-first — agents don't browse, so page_views never
+    # captures the click. The real signals live in:
+    #   • mcp_upgrade_signals  — every paywall fire (server-side, complete)
+    #   • mcp_pair_codes       — every redeem-URL human-visit (redeem_viewed_at)
+    #                            + Stripe-click (stripe_clicked_at)
+    # The old page_views query was always 0 because MCP doesn't write there.
     funnel = {
         "1_tool_calls_7d":      safe_count("SELECT COUNT(*) FROM mcp_tool_calls WHERE created_at > NOW() - INTERVAL '7 days'"),
         "2_paywall_hits_7d":    safe_count("SELECT COUNT(*) FROM mcp_upgrade_signals WHERE created_at > NOW() - INTERVAL '7 days'"),
-        # Phase PP (2026-05-15): page_views.view_time is stored as TEXT
-        # (ISO-8601 string), not a TIMESTAMP, so a direct `>` comparison
-        # raised "operator does not exist: text > timestamp with time zone"
-        # and the whole upgrade-clicks step came back as an error object.
-        # Cast to timestamptz before comparing.
-        "3_upgrade_clicks_7d":  safe_count("SELECT COUNT(*) FROM page_views WHERE page LIKE '%utm_source=mcp%' AND view_time::timestamptz > NOW() - INTERVAL '7 days'"),
-        "4_checkouts_started_7d": safe_count("SELECT COUNT(*) FROM mcp_upgrade_signals WHERE signal_type = 'checkout_started' AND created_at > NOW() - INTERVAL '7 days'"),
+        # Step 3: human actually visited the redeem URL. mcp_pair_codes.redeem_viewed_at
+        # is set by routes/pair_code.py:434-441 on every /redeem/<code> hit.
+        "3_upgrade_clicks_7d":  safe_count("SELECT COUNT(*) FROM mcp_pair_codes WHERE redeem_viewed_at IS NOT NULL AND redeem_viewed_at > NOW() - INTERVAL '7 days'"),
+        # Step 4: clicked the Stripe button on the redeem page.
+        # mcp_pair_codes.stripe_clicked_at is set by /api/v1/mcp/pair-code/<code>/clicked.
+        "4_checkouts_started_7d": safe_count("SELECT COUNT(*) FROM mcp_pair_codes WHERE stripe_clicked_at IS NOT NULL AND stripe_clicked_at > NOW() - INTERVAL '7 days'"),
         "5_conversions_30d":    safe_count("SELECT COUNT(*) FROM mcp_upgrade_signals WHERE tier_current IN ('pro','paid','enterprise') AND created_at > NOW() - INTERVAL '30 days'"),
         "5b_total_paid_keys":   safe_count("SELECT COUNT(DISTINCT user_email) FROM mcp_upgrade_signals WHERE tier_current IN ('pro','paid','enterprise')"),
+        # Phase QQ — extra context counters so the dashboard tells a fuller story.
+        "0_unique_callers_7d":  safe_count("SELECT COUNT(DISTINCT COALESCE(NULLIF(client_name,''),NULLIF(platform,''),ip_address)) FROM mcp_tool_calls WHERE created_at > NOW() - INTERVAL '7 days'"),
+        "2b_unique_paywall_callers_7d": safe_count("SELECT COUNT(DISTINCT COALESCE(NULLIF(user_email,''),NULLIF(mcp_client,''),api_key_hash::text)) FROM mcp_upgrade_signals WHERE created_at > NOW() - INTERVAL '7 days'"),
+        "3a_pair_codes_issued_7d":  safe_count("SELECT COUNT(*) FROM mcp_pair_codes WHERE created_at > NOW() - INTERVAL '7 days'"),
+        # Free dev key claims via /api/v1/keys/claim — the agent-native path.
+        "3b_free_keys_claimed_7d":  safe_count("SELECT COUNT(*) FROM mcp_dev_keys WHERE created_at > NOW() - INTERVAL '7 days'"),
     }
 
     # Compute drop-off rates for ints only
@@ -20818,11 +20907,18 @@ def _mcp_conversion_funnel():
 
 
 def _diagnose_funnel_leak(funnel):
-    """Where is the biggest drop-off? Tell the user clearly."""
-    steps = [("paywall_hits", funnel.get("2_paywall_hits_7d")),
-             ("upgrade_clicks", funnel.get("3_upgrade_clicks_7d")),
-             ("checkouts", funnel.get("4_checkouts_started_7d")),
-             ("conversions", funnel.get("5_conversions_30d"))]
+    """Where is the biggest drop-off? Tell the user clearly.
+
+    Phase QQ (2026-05-15): expanded to include the pair_codes_issued
+    step. The full sequence is now: tool_calls → paywall_hits →
+    pair_codes_issued → upgrade_clicks (redeem URL viewed) →
+    checkouts_started → conversions.
+    """
+    steps = [("paywall_hits",    funnel.get("2_paywall_hits_7d")),
+             ("pair_codes_issued", funnel.get("3a_pair_codes_issued_7d")),
+             ("upgrade_clicks",  funnel.get("3_upgrade_clicks_7d")),
+             ("checkouts",       funnel.get("4_checkouts_started_7d")),
+             ("conversions",     funnel.get("5_conversions_30d"))]
     diagnosis = []
     prev_label, prev_val = steps[0]
     for label, val in steps[1:]:

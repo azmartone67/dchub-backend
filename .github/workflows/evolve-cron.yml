@@ -79,6 +79,12 @@ on:
     # and records the response as a testimonial citation. Runs 6h before
     # any morning content cron so /api/v1/testimonials never goes stale.
     - cron: '30 3 * * *'
+    # Phase QQ (2026-05-15) — auto-publish daily press release at 13:25 UTC.
+    # 25 min after the 13:00 UTC auto-press cron — gives the press release
+    # generation, _write_release, and _queue_distribution_posts enough
+    # runway to land + insert distribution rows before this fires
+    # publish-now to actually push them to LinkedIn + X.
+    - cron: '25 13 * * *'
   workflow_dispatch:
     inputs:
       phase:
@@ -612,8 +618,15 @@ jobs:
   # Phase MM (2026-05-15): immediate publish path — calls publish-now to force
   # LinkedIn + X posts using the most-recent auto-press release. Use after a
   # rescue when the 6h auto-publisher cadence is too slow.
+  #
+  # Phase QQ (2026-05-15): also fires on a 25-min-past-press cron. The
+  # in-process auto-publisher daemon (content_publisher.py) didn't reliably
+  # survive deploys, so published_7d.linkedin = 0 even with 4 generated
+  # releases. This cron makes publishing a workflow-level guarantee.
+  # 25-min offset from the 13:00 UTC press release leaves enough time for
+  # the press to land + queue distribution rows before we try to publish.
   marketing_publish_now:
-    if: github.event_name == 'workflow_dispatch' && (inputs.phase == 'marketing_publish_now' || inputs.phase == 'all')
+    if: github.event.schedule == '25 13 * * *' || (github.event_name == 'workflow_dispatch' && (inputs.phase == 'marketing_publish_now' || inputs.phase == 'all'))
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:

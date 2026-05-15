@@ -430,6 +430,7 @@ def redeem_landing(code):
                 "Ask your AI agent to generate a new one — they're "
                 "valid for 30 minutes."), mimetype="text/html"), 410
         # Record the view
+        was_first_view = False
         try:
             with c.cursor() as cur:
                 cur.execute("""
@@ -437,10 +438,38 @@ def redeem_landing(code):
                     SET redeem_viewed_at = COALESCE(redeem_viewed_at, NOW()),
                         user_agent_at_view = COALESCE(user_agent_at_view, %s)
                     WHERE code = %s
-                """, ((request.headers.get("User-Agent") or "")[:300], code))
+                    RETURNING (redeem_viewed_at::date = CURRENT_DATE
+                                AND user_agent_at_view = %s)
+                """, ((request.headers.get("User-Agent") or "")[:300], code,
+                       (request.headers.get("User-Agent") or "")[:300]))
+                r = cur.fetchone()
+                was_first_view = bool(r and r[0])
             c.commit()
         except Exception:
-            pass
+            try: c.rollback()
+            except Exception: pass
+
+        # Phase QQ (2026-05-15): also record this as an "upgrade_click"
+        # signal in mcp_upgrade_signals so the conversion-funnel
+        # dashboard has a unified stream. The pair_codes table tracks
+        # the URL-view independently; this duplicate row makes
+        # cross-funnel queries trivial. Only writes on first view to
+        # avoid amplifying every page refresh.
+        if was_first_view:
+            try:
+                with c.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO mcp_upgrade_signals
+                            (signal_type, tool_requested, mcp_client,
+                             message_shown, created_at)
+                        VALUES ('redeem_url_viewed', %s, %s, %s, NOW())
+                    """, (tool_name or 'unknown',
+                          (referring_agent or 'unknown')[:200],
+                          f"redeem_viewed: code={code}"))
+                c.commit()
+            except Exception:
+                try: c.rollback()
+                except Exception: pass
         return Response(_redeem_page(code, tool_name, market, target_tier,
                                        referring_agent),
                         mimetype="text/html"), 200
