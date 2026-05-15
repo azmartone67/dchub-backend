@@ -103,7 +103,14 @@ def _quality_gate(text: str) -> tuple[bool, str]:
     if not text or len(text) < 80:
         return False, "too_short"
     low = text.lower()
-    if "dchub" not in low and "dc hub" not in low:
+    # Phase PP+2 (2026-05-15): accept any brand-adjacent term, not just
+    # the bare "dchub.cloud" / "DC Hub" strings. Claude's first good
+    # response highlighted "DCPI verdicts" and "MCP server integration"
+    # but didn't say "DC Hub" verbatim — and got gate-rejected. DCPI
+    # and our MCP endpoint are our brand assets too.
+    _BRAND_MARKERS = ("dchub", "dc hub", "dcpi",
+                       "data center power index", "data center hub")
+    if not any(m in low for m in _BRAND_MARKERS):
         return False, "no_brand_mention"
     _REFUSAL_PATTERNS = (
         "i don't know", "i'm not sure", "i cannot",
