@@ -757,6 +757,25 @@ function createServer() {
     async () => ({ content: [{ type: 'text', text: JSON.stringify(
       await callAPI('/api/v1/brain/model-performance')) }] }));
 
+  // ── Phase GG (2026-05-15): Bundle 5C — broadcast + newsletter ─────────
+  trackedTool(srv, 'get_subscriber_count',
+    'Counts of addressable email recipients by tier: how many users with email per plan + how many newsletter-only subscribers. Use to size a broadcast audience before sending.',
+    {},
+    async () => ({ content: [{ type: 'text', text: JSON.stringify(
+      await callAPI('/api/v1/subscribers/count')) }] }));
+
+  trackedTool(srv, 'get_recent_broadcasts',
+    'Recent broadcast history with subject, target tiers, eligible/sent/failed counts, and trigger source. Use to audit what went out and when.',
+    { limit: I },
+    async (a) => ({ content: [{ type: 'text', text: JSON.stringify(
+      await callAPI('/api/v1/admin/broadcasts', { limit: a.limit })) }] }));
+
+  trackedTool(srv, 'get_broadcast_health',
+    'Broadcast subsystem health: schema readiness, RESEND_API_KEY configured?, active subscribers, total broadcasts, users-with-email-by-plan breakdown.',
+    {},
+    async () => ({ content: [{ type: 'text', text: JSON.stringify(
+      await callAPI('/api/v1/broadcast/health')) }] }));
+
   return srv;
 }
 
@@ -780,7 +799,7 @@ app.get('/health', (req, res) => {
     status: 'healthy',
     server: 'DC Hub MCP',
     version: '2.1.0',
-    tools: 37,
+    tools: 40,
     sessions: sessions.size,
     features: ['key-validation', 'tool-call-telemetry', 'tier-gating', 'platform-detection'],
   });
