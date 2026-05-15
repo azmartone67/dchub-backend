@@ -19186,6 +19186,13 @@ try:
     app.register_blueprint(demo_bp)
 except Exception:
     pass
+
+# Phase MM (2026-05-15): open-data CSV exports with attribution.
+try:
+    from routes.open_data_csv import open_data_csv_bp
+    app.register_blueprint(open_data_csv_bp)
+except Exception:
+    pass
 try:
     from routes.status_api import status_api_bp
     app.register_blueprint(status_api_bp)
