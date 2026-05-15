@@ -52,12 +52,13 @@ def _require_admin(fn):
 def _build_lead_query(days: int = 30, min_signals: int = 3, limit: int = 100):
     """Aggregate hot leads from mcp_upgrade_signals.
 
-    Real schema (per mcp_analytics_postgres.py):
-      user_email, tool_requested, tier_current, tier_required, created_at
-    No api_key_id column. Email is directly in the signals table, so no
-    JOIN needed unless we want to enforce tier filtering against
-    mcp_dev_keys — which we do as a LEFT JOIN (anonymous-email signups
-    might not have a key row yet but are still leads)."""
+    Real schemas (verified 2026-05-15 via the workflow run that returned
+    'column does not exist' twice):
+      mcp_upgrade_signals: user_email, tool_requested, signal_type,
+                            tier_current, tier_required, created_at
+      mcp_dev_keys:        api_key (PK), developer_id, email, tier,
+                            status, metadata, created_at, last_used_at
+    No api_key_id, no k.id, no k.name. LEFT JOIN by email."""
     return f"""
         WITH rolled AS (
             SELECT user_email,
@@ -72,11 +73,17 @@ def _build_lead_query(days: int = 30, min_signals: int = 3, limit: int = 100):
           GROUP BY user_email
             HAVING COUNT(*) >= {int(min_signals)}
         )
-        SELECT k.id, r.user_email, COALESCE(k.tier, 'free') AS tier, k.name,
-               r.total_signals, r.last_signal_at, r.tools_hit,
+        SELECT k.developer_id,
+               r.user_email,
+               COALESCE(k.tier, 'free') AS tier,
+               NULL::text AS name,
+               r.total_signals,
+               r.last_signal_at,
+               r.tools_hit,
                k.created_at AS key_created
           FROM rolled r
           LEFT JOIN mcp_dev_keys k ON k.email = r.user_email
+                                  AND COALESCE(k.status, 'active') = 'active'
          WHERE COALESCE(k.tier, 'free') IN ('free', 'identified')
       ORDER BY r.total_signals DESC, r.last_signal_at DESC
          LIMIT {int(limit)};
@@ -107,7 +114,7 @@ def get_funnel_leads():
             cur.execute(_build_lead_query(days, min_signals, limit))
             for r in cur.fetchall():
                 out["leads"].append({
-                    "api_key_id": r[0],
+                    "developer_id": r[0],
                     "email": r[1],
                     "tier": r[2] or 'free',
                     "name": r[3],
@@ -275,7 +282,7 @@ def preview_personalized_emails():
             cur.execute(_build_lead_query(days, min_signals, limit))
             for r in cur.fetchall():
                 lead = {
-                    "api_key_id": r[0], "email": r[1], "tier": r[2] or 'free',
+                    "developer_id": r[0], "email": r[1], "tier": r[2] or 'free',
                     "name": r[3], "total_signals": int(r[4] or 0),
                     "tools_hit": list(r[6]) if r[6] else [],
                 }
@@ -335,7 +342,7 @@ def broadcast_to_leads():
             for r in cur.fetchall():
                 if r[1]:  # email
                     leads.append({
-                        "api_key_id": r[0], "email": r[1], "tier": r[2] or 'free',
+                        "developer_id": r[0], "email": r[1], "tier": r[2] or 'free',
                         "name": r[3], "total_signals": int(r[4] or 0),
                         "tools_hit": list(r[6]) if r[6] else [],
                     })
