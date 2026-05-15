@@ -142,11 +142,14 @@ def _probe_claude() -> dict:
         return out
     try:
         import urllib.request, urllib.error
+        # claude-3-5-sonnet-20241022 was deprecated by Anthropic, so the
+        # first run returned http_404. claude-haiku-4-5-20251001 is the
+        # cheapest current model — perfect for a 2-3 sentence probe.
         req = urllib.request.Request(
             "https://api.anthropic.com/v1/messages",
             data=json.dumps({
-                "model": "claude-3-5-sonnet-20241022",
-                "max_tokens": 250,
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": 300,
                 "messages": [{"role": "user", "content": _PROBE_PROMPT}],
             }).encode("utf-8"),
             headers={
