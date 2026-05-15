@@ -150,14 +150,17 @@ def agent_index():
                     "fumbling identifiers or re-pulling stale data."),
         "version": "1.0",
     }
-    try:
-        with _conn() as c, c.cursor() as cur:
-            out["enums"] = _enums(cur)
-            out["freshness"] = _freshness_window(cur)
-            out["radar"] = _radar_issues(cur)
-            out["coverage"] = _coverage_summary(cur)
-    except Exception as e:
-        out["error_partial"] = str(e)[:200]
+    # Each section runs on a FRESH connection so a transient error in
+    # one (e.g. missing optional table) can't poison the others — even
+    # the rare cases where autocommit + with-block interaction goes wrong.
+    for section, fn in [("enums", _enums), ("freshness", _freshness_window),
+                        ("radar", _radar_issues), ("coverage", _coverage_summary)]:
+        try:
+            with _conn() as c, c.cursor() as cur:
+                out[section] = fn(cur)
+        except Exception as e:
+            out[section] = {} if section != "radar" else []
+            out.setdefault("section_errors", {})[section] = str(e)[:200]
 
     out["drill_deeper"] = {
         "dcpi_scores":      "/api/v1/dcpi/scores",
