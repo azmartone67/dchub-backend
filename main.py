@@ -18385,7 +18385,15 @@ def cf_stub_energy_summary():
         from map_tier_gating import _detect_caller_tier
         _caller_tier, _ = _detect_caller_tier(decode_jwt_func=_energy_decode_jwt)
         _caller_tier = (_caller_tier or "anonymous").lower()
-        _paid_access = _caller_tier in {"developer", "pro", "enterprise", "founding", "internal"}
+        # Phase QQ (2026-05-15): include "identified" (email-only signup
+        # tier) since Phase PP / PR #169 demoted the MCP get_energy_prices
+        # tool from DEVELOPER to IDENTIFIED. Web API needs to match so
+        # the market page (which reads this endpoint) shows real numbers
+        # to signed-in free users instead of a "$49/mo Developer plan"
+        # paywall that contradicts the MCP tier.
+        _paid_access = _caller_tier in {
+            "identified", "developer", "pro", "enterprise", "founding", "internal"
+        }
     except Exception as _e:
         # Fail-closed for unknown callers; log so a regression surfaces.
         logger.warning(f"energy-gate: tier-detect failed ({_e}); defaulting anonymous")
@@ -18400,9 +18408,12 @@ def cf_stub_energy_summary():
         resp = jsonify({
             "success": True,
             "gated": True,
-            "reason": "paid_tier_required",
-            "min_tier": "developer",
-            "upgrade_url": "/pricing",
+            "reason": "identified_tier_required",
+            # Phase QQ (2026-05-15): retail rates are now FREE with email
+            # signup (was Developer-only) — match the MCP tool tier.
+            "min_tier": "identified",
+            "upgrade_url": "/signup?next=/onboarding&utm_source=market_page",
+            "upgrade_label": "Sign up free (email only)",
             "caller_tier": _caller_tier,
             "filter": {"state": state or None, "sector": sector or "all"},
             # Hint range — US retail rates span roughly 6-25 ¢/kWh.
