@@ -1,0 +1,59 @@
+{
+  "name": "DC Hub MCP Server",
+  "slug": "dchub",
+  "type": "remote-mcp-server",
+  "transport": "streamable-http",
+  "url": "https://dchub.cloud/mcp",
+  "description": "Live data center, grid, and energy intelligence. 20,000+ facilities globally, 280+ markets with composite DCPI scores, 7 ISOs of real-time grid data, EIA retail electricity rates per state, and $324B+ M&A history — all queryable from Claude Desktop with an instant programmatic-auth free tier.",
+  "use_cases": [
+    {
+      "title": "Site selection",
+      "prompt": "Find the best US market for a 200 MW data center build with ≤24-month time-to-power.",
+      "tools_used": ["get_intelligence_index", "get_grid_headroom", "analyze_site"]
+    },
+    {
+      "title": "Market comparison",
+      "prompt": "Compare Atlanta, Northern Virginia, and Cheyenne by excess power, retail rates, water risk, and fiber availability.",
+      "tools_used": ["compare_sites", "get_energy_prices", "get_water_risk"]
+    },
+    {
+      "title": "M&A research",
+      "prompt": "List all data center acquisitions over $1B in the last 12 months, grouped by buyer.",
+      "tools_used": ["list_transactions"]
+    },
+    {
+      "title": "Real-time grid intelligence",
+      "prompt": "What's PJM's current interconnection queue, reserve margin, and average DCPI excess?",
+      "tools_used": ["get_grid_intelligence", "get_grid_data"]
+    }
+  ],
+  "configuration": {
+    "claude_desktop": {
+      "mcpServers": {
+        "dchub": {
+          "url": "https://dchub.cloud/mcp",
+          "transport": "streamable-http",
+          "auth": {
+            "type": "api_key",
+            "header": "X-API-Key",
+            "value": "<your_api_key>"
+          }
+        }
+      }
+    },
+    "claim_free_key": {
+      "method": "POST",
+      "url": "https://dchub.cloud/api/v1/keys/claim",
+      "body": {"client_name": "claude-desktop-<your-name>"},
+      "returns": "{\"api_key\": \"dh_xxx...\", \"tier\": \"identified\", \"daily_calls\": 200}"
+    }
+  },
+  "categories": ["data", "research", "real-estate", "energy", "infrastructure"],
+  "tools_count": 27,
+  "homepage": "https://dchub.cloud",
+  "docs": "https://dchub.cloud/ai-hub",
+  "discovery": "https://dchub.cloud/.well-known/mcp.json",
+  "contact": "api@dchub.cloud",
+  "version": "2.3.0",
+  "last_updated": "2026-05-15"
+}

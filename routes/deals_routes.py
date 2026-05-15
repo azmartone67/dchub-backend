@@ -671,7 +671,13 @@ def _get_transactions_free():
 # =============================================================================
 
 @deals_bp.route('/api/v1/pipeline', methods=['GET'])
-@_lazy_require_plan('pro')
+# Phase RR (2026-05-15): tier consistency with MCP get_pipeline.
+# Phase PP / PR #169 demoted MCP get_pipeline tool DEVELOPER → IDENTIFIED.
+# But this web endpoint was still gated at 'pro', meaning agents using
+# MCP could access pipeline data with just an email key but the same
+# data via web API still threw a $99/mo paywall. Inconsistent UX.
+# Now both web + MCP gate at IDENTIFIED.
+@_lazy_require_plan('identified')
 @_lazy_protect_data
 def get_pipeline():
     """Get construction pipeline data"""

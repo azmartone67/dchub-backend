@@ -19311,6 +19311,19 @@ try:
 except Exception as _e:
     print(f"[main] site_stats register failed: {_e}", file=sys.stderr)
 
+# Phase RR (2026-05-15): Brain v2 consistency radar. Detects three
+# blind spots that surfaced during the NN/PP/QQ rollouts: worker
+# version drift, tier inconsistency between web API and MCP, and
+# workflow_dispatch phases missing scheduled crons. Findings are
+# exposed at /api/v1/brain/consistency-radar and also merged into
+# /api/v1/heal/findings's actionable_backend_issues so the brain
+# layer 5 cron processes them automatically.
+try:
+    from routes.brain_consistency_radar import brain_consistency_radar_bp
+    app.register_blueprint(brain_consistency_radar_bp)
+except Exception as _e:
+    print(f"[main] brain_consistency_radar register failed: {_e}", file=sys.stderr)
+
 # === Brain v2 · Layer 3 freshness fields ===
 try:
     from flask import jsonify as _bv2_jsonify
@@ -20562,6 +20575,22 @@ def _compute_heal_findings():
                                 {"url": src, "issue": label, "count": n})
     except Exception:
         pass
+
+    # Phase RR (2026-05-15): merge consistency-radar findings. Three
+    # new detectors covering worker version drift, web↔MCP tier
+    # inconsistency, and dispatch-only workflow phases. Each finding
+    # already has the {url, issue, count} shape, so we extend directly.
+    try:
+        from routes.brain_consistency_radar import scan_all as _consistency_scan
+        for f in (_consistency_scan() or []):
+            actionable_backend.append({
+                "url":   f.get("url",   "consistency-radar"),
+                "issue": f.get("issue", "unknown"),
+                "count": int(f.get("count", 1)),
+                "detail": f.get("detail"),
+            })
+    except Exception as _e:
+        logger.warning("consistency_radar scan failed: %s", _e)
 
     return {
         "findings": findings,

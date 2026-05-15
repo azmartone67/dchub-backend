@@ -1,0 +1,54 @@
+{
+  "name": "dchub",
+  "displayName": "DC Hub",
+  "url": "https://dchub.cloud/mcp",
+  "transport": "streamable-http",
+  "discovery": "https://dchub.cloud/.well-known/mcp.json",
+  "description": "Live data center intelligence — 20,000+ facilities across 140+ countries, 280+ markets with DCPI (Data Center Power Index) verdicts, 7 ISOs of real-time grid data, 126,000+ substations + transmission lines, per-state retail electricity rates, fiber routes, water risk, gas infrastructure, $324B+ M&A history. Designed for AI agents — programmatic auth via POST /api/v1/keys/claim returns a free dev key instantly.",
+  "homepage": "https://dchub.cloud",
+  "documentation": "https://dchub.cloud/ai-hub",
+  "logo": "https://dchub.cloud/favicon.svg",
+  "tags": [
+    "data-center", "real-estate", "infrastructure", "energy",
+    "grid", "iso", "fiber", "water-risk", "site-selection",
+    "intelligence", "dcpi"
+  ],
+  "categories": ["data", "research", "intelligence"],
+  "authentication": {
+    "type": "api_key",
+    "header": "X-API-Key",
+    "claim_endpoint": {
+      "method": "POST",
+      "url": "https://dchub.cloud/api/v1/keys/claim",
+      "body": {"client_name": "<your agent identifier>"},
+      "description": "Returns a free dev-tier api_key in one POST. No email required."
+    }
+  },
+  "tiers": [
+    {"name": "free",       "price": "$0",        "daily_calls": 100,  "max_rows": 5},
+    {"name": "identified", "price": "free w/ email", "daily_calls": 200,  "max_rows": 20},
+    {"name": "developer",  "price": "$49/mo",    "daily_calls": 5000, "max_rows": 100},
+    {"name": "pro",        "price": "$99/mo",    "daily_calls": "unlimited", "max_rows": "unlimited"},
+    {"name": "enterprise", "price": "custom",    "daily_calls": "unlimited", "max_rows": "unlimited"}
+  ],
+  "tools_count": 27,
+  "free_tools": [
+    "get_dchub_index", "get_coverage", "search_facilities",
+    "get_facility", "get_news", "get_agent_registry",
+    "get_dchub_recommendation"
+  ],
+  "identified_tools": [
+    "get_market_intel", "get_grid_data", "get_grid_intelligence",
+    "get_grid_headroom", "get_fiber_intel", "get_water_risk",
+    "get_energy_prices", "get_renewable_energy", "list_transactions",
+    "get_pipeline", "get_infrastructure", "get_colocation_score",
+    "get_intelligence_index", "get_tax_incentives",
+    "get_geothermal_potential", "get_microgrid_viability"
+  ],
+  "paid_tools": ["analyze_site", "compare_sites", "get_backup_status"],
+  "contact": "api@dchub.cloud",
+  "support": "https://dchub.cloud/contact",
+  "license": "Free for AI citation; data subject to https://dchub.cloud/terms",
+  "version": "2.3.0",
+  "last_updated": "2026-05-15"
+}
