@@ -167,28 +167,20 @@ def _send_email(to_email, to_name, subject, body_html):
     if not RESEND_API_KEY:
         return False, "no_provider"
     try:
-        import urllib.request
-        import urllib.error
-        data = json.dumps({
-            "from": f"{FROM_NAME} <{FROM_EMAIL}>",
-            "to": [to_email],
-            "subject": subject,
-            "html": body_html,
-        }).encode("utf-8")
-        req = urllib.request.Request(
+        import requests
+        r = requests.post(
             "https://api.resend.com/emails",
-            data=data,
-            headers={
-                "Authorization": f"Bearer {RESEND_API_KEY}",
-                "Content-Type": "application/json",
+            json={
+                "from": f"{FROM_NAME} <{FROM_EMAIL}>",
+                "to": [to_email],
+                "subject": subject,
+                "html": body_html,
             },
-            method="POST")
-        with urllib.request.urlopen(req, timeout=10) as r:
-            if r.status < 300:
-                return True, None
-            return False, f"status_{r.status}"
-    except urllib.error.HTTPError as e:
-        return False, f"http_{e.code}"
+            headers={"Authorization": f"Bearer {RESEND_API_KEY}"},
+            timeout=10)
+        if r.status_code < 300:
+            return True, None
+        return False, f"status_{r.status_code}"
     except Exception as e:
         return False, str(e)[:80]
 
@@ -337,11 +329,12 @@ def admin_broadcast():
                            (subject, subject_hash, target_tiers, body_html,
                             cta_link, triggered_by, eligible_count,
                             sent_count, failed_count, mode, finished_at)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, 0, 0, 'no_provider', NOW())
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, 0, 0, %s, NOW())
+                       ON CONFLICT DO NOTHING
                        RETURNING id""",
                     (subject, subject_hash, ','.join(target_tiers),
                      body_html[:65536], cta_link[:500],
-                     triggered_by, eligible))
+                     triggered_by, eligible, "no_provider"))
                 log_id = cur.fetchone()[0]
                 return jsonify(ok=True, mode="no_provider",
                                log_id=log_id,
@@ -353,11 +346,12 @@ def admin_broadcast():
                 """INSERT INTO broadcast_log
                        (subject, subject_hash, target_tiers, body_html,
                         cta_link, triggered_by, eligible_count, mode)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, 'sending')
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                   ON CONFLICT DO NOTHING
                    RETURNING id""",
                 (subject, subject_hash, ','.join(target_tiers),
                  body_html[:65536], cta_link[:500],
-                 triggered_by, eligible))
+                 triggered_by, eligible, "sending"))
             log_id = cur.fetchone()[0]
 
         # Send loop — close txn before per-email HTTP work.
