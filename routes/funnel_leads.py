@@ -28,10 +28,17 @@ from flask import Blueprint, jsonify, request, Response
 
 funnel_leads_bp = Blueprint("funnel_leads", __name__)
 
-# Match the exact pattern brain_v2_layer4 uses (proven to work all session
-# via the brain_learn workflow). No strip, no extra fallback. The .strip()
-# I added earlier may have been silently changing the comparison.
-ADMIN_KEY = os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY")
+# Phase MM (2026-05-15): read ADMIN_KEY PER REQUEST, not at module load.
+# Diagnostic workflow confirmed the same GH Actions secret works against
+# brain_v2_layer4's _require_admin (which has IDENTICAL code) but fails
+# against this module's. Only difference can be that the module-load
+# capture of ADMIN_KEY returned a different value (possibly None from a
+# multi-worker startup race or stale module cache). Read env var fresh
+# every call to dodge the issue entirely.
+def _get_admin_key():
+    return (os.environ.get("DCHUB_ADMIN_KEY")
+            or os.environ.get("DCHUB_INTERNAL_KEY")
+            or os.environ.get("ADMIN_KEY"))
 
 
 def _conn():
@@ -44,12 +51,17 @@ def _conn():
 def _require_admin(fn):
     @wraps(fn)
     def w(*a, **kw):
-        # Match brain_v2_layer4 _require_admin exactly — no .strip() on
-        # either side. The strip was silently mismatching the value.
+        # Read env var FRESH each call — see _get_admin_key() comment.
+        admin = _get_admin_key()
         provided = request.headers.get("X-Admin-Key") or request.args.get("admin_key")
-        if ADMIN_KEY and provided != ADMIN_KEY:
+        if admin and provided != admin:
             return jsonify(error="unauthorized",
-                           hint="X-Admin-Key header required"), 401
+                           hint="X-Admin-Key header required",
+                           debug={"admin_set": bool(admin),
+                                  "admin_len": len(admin) if admin else 0,
+                                  "provided_set": bool(provided),
+                                  "provided_len": len(provided) if provided else 0,
+                                  "match_prefix4": (admin[:4] == (provided or "")[:4]) if admin and provided else False}), 401
         return fn(*a, **kw)
     return w
 
