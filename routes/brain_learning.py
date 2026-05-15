@@ -549,9 +549,9 @@ def probe_outcomes():
                             (proposal_id, proposal_kind, applied_at,
                              checked_at, still_broken, evidence_note,
                              check_count)
-                        VALUES (%s, 'text', %s, NOW(), %s, %s, 1)
+                        VALUES (%s, %s, %s, NOW(), %s, %s, 1)
                         ON CONFLICT DO NOTHING""",
-                        (prop_id, applied_at, bool(still_broken),
+                        (prop_id, "text", applied_at, bool(still_broken),
                          f"persistence_last={persistence_last.isoformat() if persistence_last else 'none'}"))
                     new_outcomes += 1
                 except Exception as e:
