@@ -133,13 +133,13 @@ _DATASETS = {
         "description": "1,000+ data center pipeline projects with operator, market, MW, phase, status, completion date.",
         "query": """
             SELECT operator, market, capacity_mw, phase, status,
-                   completion_date, notes, first_seen
+                   completion_date, notes
               FROM capacity_pipeline
              WHERE capacity_mw IS NOT NULL
              ORDER BY capacity_mw DESC NULLS LAST
              LIMIT 2000""",
         "header": ["operator", "market", "capacity_mw", "phase", "status",
-                   "completion_date", "notes", "first_seen"],
+                   "completion_date", "notes"],
     },
     "isos": {
         "name": "ISO Snapshot Stats",
