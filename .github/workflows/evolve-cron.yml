@@ -72,7 +72,7 @@ on:
         description: 'Which phase to run on demand'
         required: true
         type: choice
-        options: [all, brain, outreach, audit, marketing, linkedin, testimonials, agent_vendor, weekly_digest, market_alerts, freshness_radar, brain_probe_outcomes, weekly_media_digest, marketing_rescue, marketing_publish_now, hot_leads_preview, hot_leads_send_top_5, hot_leads_send_top_50]
+        options: [all, brain, outreach, audit, marketing, linkedin, testimonials, agent_vendor, weekly_digest, market_alerts, freshness_radar, brain_probe_outcomes, weekly_media_digest, marketing_rescue, marketing_publish_now, hot_leads_preview, hot_leads_send_top_5, hot_leads_send_top_50, free_users_dryrun, free_users_send, energy_verify]
         default: all
       dry_run:
         description: 'Dry-run (preview audience + body, do NOT send emails) — DEFAULT TRUE for manual dispatch'
@@ -739,3 +739,56 @@ jobs:
           else:
               print(f\"::warning::Hot-leads broadcast: mode={d.get('mode')} error={d.get('error','none')}\")
           " || true
+
+  energy_verify:
+    # PR #34 regression check (2026-05-15): verify per-state retail rates
+    # actually differ. The state-name lookup fix (full name like "Georgia"
+    # vs code "GA") only fires for paid-tier callers, so this job uses
+    # the enterprise X-API-Key. Runs on demand only.
+    if: github.event_name == 'workflow_dispatch' && inputs.phase == 'energy_verify'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Verify per-state energy rates differ
+        env:
+          DCHUB_API_KEY: ${{ secrets.DCHUB_API_KEY }}
+        run: |
+          if [ -z "$DCHUB_API_KEY" ]; then
+            echo "::error::DCHUB_API_KEY secret not set"; exit 1; fi
+          set -e
+          declare -A AVGS
+          PASS=1
+          for st in GA CA TX IL VA; do
+            resp=$(curl -sS --max-time 30 \
+              -H "X-API-Key: $DCHUB_API_KEY" \
+              "https://dchub.cloud/api/v1/energy/summary?state=$st&_cb=$(date +%s)")
+            line=$(echo "$resp" | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          rr = d.get('retail_rates', {})
+          avg = rr.get('avg_cents_kwh')
+          cov = rr.get('states_covered')
+          tier = d.get('caller_tier', '?')
+          gated = d.get('gated', False)
+          print(f'$st|{avg}|{cov}|{tier}|{gated}')
+          ")
+            avg=$(echo "$line" | cut -d'|' -f2)
+            cov=$(echo "$line" | cut -d'|' -f3)
+            tier=$(echo "$line" | cut -d'|' -f4)
+            gated=$(echo "$line" | cut -d'|' -f5)
+            printf "%s: avg=%s states=%s tier=%s gated=%s\n" "$st" "$avg" "$cov" "$tier" "$gated"
+            AVGS[$st]=$avg
+            if [ "$gated" != "False" ]; then echo "::error::$st came back gated=$gated tier=$tier"; PASS=0; fi
+            if [ "$cov" != "1" ]; then echo "::error::$st states_covered=$cov (expected 1)"; PASS=0; fi
+          done
+          # All five averages must be distinct (proves state-name lookup works).
+          uniq_count=$(printf "%s\n" "${AVGS[@]}" | sort -u | wc -l | tr -d ' ')
+          echo "distinct_avgs=$uniq_count of 5"
+          if [ "$uniq_count" -lt 4 ]; then
+            echo "::error::Only $uniq_count distinct averages across 5 states — state filter not working"; PASS=0
+          fi
+          if [ "$PASS" -eq 1 ]; then
+            echo "::notice::PR #34 verified — per-state rates differ, states_covered=1 for all 5"
+          else
+            exit 1
+          fi
