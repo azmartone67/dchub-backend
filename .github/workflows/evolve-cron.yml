@@ -74,6 +74,11 @@ on:
         type: choice
         options: [all, brain, outreach, audit, marketing, linkedin, testimonials, agent_vendor, weekly_digest, market_alerts, freshness_radar, brain_probe_outcomes, weekly_media_digest]
         default: all
+      dry_run:
+        description: 'Dry-run (preview audience + body, do NOT send emails)'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -509,15 +514,21 @@ jobs:
       - name: Send weekly DC Hub Media digest broadcast
         env:
           ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           if [ -z "$ADMIN_KEY" ]; then
             echo "::warning::DCHUB_ADMIN_KEY not set — skipping weekly digest"
             exit 0
           fi
+          URL="https://dchub-backend-production.up.railway.app/api/v1/digest/weekly-auto"
+          if [ "$DRY_RUN" = "true" ]; then
+            URL="${URL}?dry_run=true"
+            echo "::notice::Dry-run mode — no emails will be sent."
+          fi
           response=$(curl -sS --max-time 120 -X POST \
             -H "X-Admin-Key: $ADMIN_KEY" \
             -H "Content-Type: application/json" \
-            "https://dchub-backend-production.up.railway.app/api/v1/digest/weekly-auto" \
+            "$URL" \
             || echo '{"ok":false,"error":"curl_fail"}')
           echo "$response" | head -c 2000
           echo
