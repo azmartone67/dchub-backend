@@ -83,20 +83,33 @@ TOOL_TIER = {
     "get_energy_prices":       Tier.IDENTIFIED,  # 2,493 signals/30d
     "get_renewable_energy":    Tier.IDENTIFIED,  # 2,355 signals/30d
 
-    # DEVELOPER — keep the highest-value site-selection tools as the
-    # paid moat. These convert IDENTIFIED users who get hooked on
-    # the IDENTIFIED-tier tools above.
-    "list_transactions":       Tier.DEVELOPER,
-    "get_pipeline":            Tier.DEVELOPER,
-    "analyze_site":            Tier.DEVELOPER,  # 39 free calls, 19 users
-    "compare_sites":           Tier.DEVELOPER,  # 13 free calls, 10 users
-    "get_infrastructure":      Tier.DEVELOPER,
-    "get_grid_headroom":       Tier.DEVELOPER,
-    "get_colocation_score":    Tier.DEVELOPER,
-    "get_geothermal_potential":Tier.DEVELOPER,
-    "get_tax_incentives":      Tier.DEVELOPER,
-    "get_microgrid_viability": Tier.DEVELOPER,
-    "get_intelligence_index":  Tier.DEVELOPER,
+    # Phase PP (2026-05-15): demote 9 more tools DEVELOPER → IDENTIFIED to
+    # unblock growth. User's report: "ever since we tweaked things [Bundle 9
+    # tier moves], growth has stopped." Investigation showed traffic is
+    # healthy (38k calls / 7d, 1,245 unique callers) but the DEVELOPER wall
+    # was still blocking the most-requested lookup tools — agents could see
+    # them in the tools list but couldn't actually pull data without a paid
+    # key. Identified-tier (free, email-gated) is the right surface for
+    # data LOOKUP tools; the paid moat narrows to the COMPOSITE site
+    # analysis tools that synthesize the lookups into a recommendation.
+    "list_transactions":       Tier.IDENTIFIED,  # 324B+ M&A history
+    "get_pipeline":            Tier.IDENTIFIED,  # 540+ active projects
+    "get_infrastructure":      Tier.IDENTIFIED,  # substations/transmission/gas
+    "get_grid_headroom":       Tier.IDENTIFIED,  # available MW within 50km
+    "get_colocation_score":    Tier.IDENTIFIED,  # DCPI sub-score breakdown
+    "get_geothermal_potential":Tier.IDENTIFIED,  # niche but high-signal
+    "get_tax_incentives":      Tier.IDENTIFIED,  # state-level abatements
+    "get_microgrid_viability": Tier.IDENTIFIED,  # site-level resilience
+    "get_intelligence_index":  Tier.IDENTIFIED,  # DCPI scores for 280+ markets
+
+    # DEVELOPER — the paid moat is now narrowed to the COMPOSITE
+    # site-selection tools. These are the killer-app workflows that
+    # justify paying: take a lat/lon (or a set of candidate sites) and
+    # return a synthesized recommendation drawing on every IDENTIFIED
+    # tool below. Agents who get hooked on the IDENTIFIED tools convert
+    # when they need site-specific analysis at scale.
+    "analyze_site":            Tier.DEVELOPER,  # composite lat/lon scorer
+    "compare_sites":           Tier.DEVELOPER,  # multi-site ranker (up to 5)
 
     # PRO
     "get_backup_status":       Tier.PRO,

@@ -66,13 +66,26 @@ on:
     # just MCP key holders). Auto-builds from DCPI movers + ISO comparison
     # + changes-since + brain self-assessment. Idempotent via 6-day dedup.
     - cron: '0 14 * * 1'
+    # Phase PP (2026-05-15) — hot-leads outreach, weekly Thursday 17:00 UTC.
+    # Lands 1pm ET — peak business hours mid-week, after Mon/Tue ramp-up
+    # but with enough runway to follow up before Friday. Targets the top
+    # 50 free users by MCP upgrade-signal volume; per-lead personalized
+    # body via /admin/funnel-leads/broadcast with confirm_send=true. The
+    # endpoint enforces a 14-day cooldown so a same-lead repeat is
+    # impossible — duplicate-firing this cron is safe.
+    - cron: '0 17 * * 4'
+    # Phase PP (2026-05-15) — active testimonial probe, daily 03:30 UTC.
+    # Asks Claude (and any other configured agent) "what is dchub.cloud?"
+    # and records the response as a testimonial citation. Runs 6h before
+    # any morning content cron so /api/v1/testimonials never goes stale.
+    - cron: '30 3 * * *'
   workflow_dispatch:
     inputs:
       phase:
         description: 'Which phase to run on demand'
         required: true
         type: choice
-        options: [all, brain, outreach, audit, marketing, linkedin, testimonials, agent_vendor, weekly_digest, market_alerts, freshness_radar, brain_probe_outcomes, weekly_media_digest, marketing_rescue, marketing_publish_now, hot_leads_preview, hot_leads_send_top_5, hot_leads_send_top_50, free_users_dryrun, free_users_send, energy_verify]
+        options: [all, brain, outreach, audit, marketing, linkedin, testimonials, agent_vendor, weekly_digest, market_alerts, freshness_radar, brain_probe_outcomes, weekly_media_digest, marketing_rescue, marketing_publish_now, hot_leads_preview, hot_leads_send_top_5, hot_leads_send_top_50, free_users_dryrun, free_users_send, energy_verify, testimonial_probe]
         default: all
       dry_run:
         description: 'Dry-run (preview audience + body, do NOT send emails) — DEFAULT TRUE for manual dispatch'
@@ -712,7 +725,11 @@ jobs:
           " || true
 
   hot_leads_send_top_50:
-    if: github.event_name == 'workflow_dispatch' && inputs.phase == 'hot_leads_send_top_50'
+    # Phase PP (2026-05-15): also fires on the weekly Thursday 17:00 UTC
+    # schedule. The endpoint's 14-day per-lead cooldown makes the cron
+    # safe to repeat; in practice each week's cohort is a fresh slice
+    # of users whose cooldown window has expired.
+    if: github.event.schedule == '0 17 * * 4' || (github.event_name == 'workflow_dispatch' && inputs.phase == 'hot_leads_send_top_50')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -792,3 +809,37 @@ jobs:
           else
             exit 1
           fi
+
+  testimonial_probe:
+    # Phase PP (2026-05-15): nightly active testimonial probe. Asks Claude
+    # (and any other configured agent — Perplexity/Gemini when keys are
+    # set) "What is dchub.cloud?" and records the response as a testimonial
+    # citation. Fires daily 03:30 UTC, well before any morning content
+    # cron, so /api/v1/testimonials never goes stale. The endpoint is
+    # idempotent: it only writes if today doesn't already have a probe
+    # record for that agent.
+    if: github.event.schedule == '30 3 * * *' || (github.event_name == 'workflow_dispatch' && inputs.phase == 'testimonial_probe')
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Run nightly testimonial probe
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::error::DCHUB_ADMIN_KEY secret not set"; exit 1; fi
+          response=$(curl -sS --max-time 180 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" \
+            "https://dchub-backend-production.up.railway.app/api/v1/testimonials/probe/run" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | head -c 2000
+          echo
+          echo "$response" | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          if d.get('ok'):
+              print(f\"::notice::Testimonial probe captured={d.get('captured',0)} skipped={d.get('skipped',0)} errors={d.get('errors',0)}\")
+          else:
+              print(f\"::warning::Testimonial probe failed: {d.get('error','?')}\")
+          " || true
