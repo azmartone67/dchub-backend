@@ -323,7 +323,7 @@ def generate_api_key(user_id, email, plan='free', name='Default'):
     c = conn.cursor()
     c.execute("""
         INSERT INTO api_keys (key_hash, key_prefix, user_id, email, plan, name, created_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
     """, (key_hash, key_prefix, user_id, email, plan, name, datetime.now(timezone.utc).isoformat()))
     conn.commit()
     conn.close()
@@ -933,7 +933,7 @@ def increment_daily_records(user_key, tier, records_count, endpoint=''):
         cur = conn.cursor()
         cur.execute("""
             INSERT INTO daily_record_usage (user_key, usage_date, records_served, endpoint_hits, tier, last_endpoint, last_access)
-            VALUES (%s, %s, %s, 1, %s, %s, NOW())
+            VALUES (%s, %s, %s, 1, %s, %s, NOW() ON CONFLICT DO NOTHING)
             ON CONFLICT (user_key, usage_date) DO UPDATE SET
                 records_served = daily_record_usage.records_served + %s,
                 endpoint_hits = daily_record_usage.endpoint_hits + 1,
@@ -1366,6 +1366,7 @@ def register_api_key_routes(app):
 
         return jsonify({'success': True, 'keys': keys})
 
+# AUTO-REPAIR: duplicate route '/api/v2/keys' also in api_tier_gating.py:1347 — review and remove one
     @app.route('/api/v2/keys', methods=['POST'])
     def create_api_key():
         """Generate a new API key (requires auth, plan determines tier)."""
