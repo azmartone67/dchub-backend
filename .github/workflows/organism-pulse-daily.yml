@@ -1,0 +1,48 @@
+name: Organism Pulse — daily snapshots
+
+# Phase DDD (2026-05-16): persists daily snapshots for the MCP + Media
+# organisms so the brain detectors have historical trend data to
+# compare against. Without these snapshots, the WoW comparison
+# detectors (mcp_growth_declining, source_of_truth_declining) can't
+# fire — they need at least 2 snapshots to compute a delta.
+#
+# Each POST is admin-key gated and idempotent (ON CONFLICT DO NOTHING
+# on snapshot_date). Re-running on the same day is safe.
+
+on:
+  schedule:
+    - cron: '15 7 * * *'   # 07:15 UTC daily, after DCPI recompute (06:05)
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  RAILWAY_BASE: https://dchub-backend-production.up.railway.app
+
+jobs:
+  pulse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: MCP growth snapshot
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY missing — skipping"; exit 0
+          fi
+          curl -sS --max-time 60 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "$RAILWAY_BASE/api/v1/mcp/growth/snapshot" \
+            | python3 -m json.tool || echo "::warning::mcp growth snapshot failed"
+
+      - name: Media source-of-truth snapshot
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then exit 0; fi
+          curl -sS --max-time 60 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "$RAILWAY_BASE/api/v1/media/source-of-truth/snapshot" \
+            | python3 -m json.tool || echo "::warning::media pulse snapshot failed"
