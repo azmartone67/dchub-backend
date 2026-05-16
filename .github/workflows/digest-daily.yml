@@ -1,7 +1,8 @@
 name: Daily Digest
 on:
   schedule:
-    - cron: '0 14 * * 1-5'  # Mon-Fri 14:00 UTC
+    # Phase VV-1 (2026-05-15): offset by 15min to avoid Mon 14:00 collision.
+    - cron: '15 14 * * 1-5'  # Mon-Fri 14:15 UTC (was 14:00)
   workflow_dispatch: {}
 jobs:
   send:

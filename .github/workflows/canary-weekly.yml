@@ -2,7 +2,9 @@ name: Weekly Replit canary
 
 on:
   schedule:
-    - cron: '0 14 * * 1'
+    # Phase VV-1 (2026-05-15): offset by 5min from 14:00 anchor (evolve-cron)
+    # to avoid the 4-way Monday 14:00 collision that the brain radar flagged.
+    - cron: '5 14 * * 1'
   workflow_dispatch:
 
 jobs:
