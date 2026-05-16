@@ -343,13 +343,46 @@ def check_cron_coverage() -> list[dict]:
 
 # ── public API ─────────────────────────────────────────────────────
 
+def check_csp_drift() -> list[dict]:
+    """Phase TT-2 (2026-05-15) — detect CSP source-of-truth drift.
+
+    The Flask-served /dcpi page hardcodes its CSP because it bypasses
+    CF Pages's /_headers. The hardcoded copy MUST match the canonical
+    source. Drift = real bug (PR #188 fixed 3 live cases including the
+    missing stats.g.doubleclick.net entry).
+    """
+    findings: list[dict] = []
+    try:
+        from util.csp_canonical import verify_csp_matches
+        from routes.dcpi import _DCPI_CSP
+        ok, msg = verify_csp_matches(_DCPI_CSP)
+        # The verifier returns (False, "could not load canonical CSP") in
+        # production where the sibling repo isn't present. That's NOT a
+        # drift finding — it's expected. Only flag actual mismatches.
+        if not ok and not msg.startswith("could not load"):
+            findings.append({
+                "issue": "csp_source_of_truth_drift",
+                "url":   "routes/dcpi.py:_DCPI_CSP",
+                "count": 1,
+                "detail": (f"The /dcpi page's hardcoded CSP has drifted "
+                            f"from dchub-frontend/_headers. {msg}. Bring "
+                            f"them back in sync by copying the canonical "
+                            f"CSP into routes/dcpi.py:_DCPI_CSP."),
+            })
+    except Exception as e:
+        # Don't surface importer failures as drift findings.
+        print(f"[brain-radar] csp drift check skipped: {e}", file=__import__('sys').stderr)
+    return findings
+
+
 def scan_all() -> list[dict]:
     """Run every detector. Return a flat list of finding dicts ready
     to merge into actionable_backend_issues."""
     out: list[dict] = []
     for fn in (check_worker_version_drift,
                check_tier_consistency,
-               check_cron_coverage):
+               check_cron_coverage,
+               check_csp_drift):
         try:
             out.extend(fn() or [])
         except Exception as e:
