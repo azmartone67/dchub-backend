@@ -1,6 +1,12 @@
 # DC Hub - Data Center Intelligence Platform
 # https://dchub.cloud
 # Contact: api@dchub.cloud
+# Tagline: AI-powered. Real-time. Actionable. No BS.
+
+## Brand Positioning
+DC Hub is the live, MCP-native alternative to static data-center research (DCHawk, dcByte, DCK).
+Where competitors ship quarterly PDFs and $25K contracts, DC Hub ships live JSON, free MCP tools,
+and a brain that publishes its own pulse every 60 seconds. Side-by-side comparison at /vs.
 
 ## MCP Server — Direct AI Agent Interconnection
 

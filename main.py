@@ -1956,7 +1956,9 @@ def handle_well_known():
         return _R(_j.dumps({
             "schema_version": "1",
             "name": "DC Hub MCP Server",
-            "description": "Data center intelligence via Model Context Protocol -- 20,000+ facilities, 280+ markets, 7 ISOs, 126K substations, 850 GW tracked.",
+            "description": "AI-powered, real-time data center intelligence via Model Context Protocol -- the live, MCP-native alternative to static PDF research (DCHawk, dcByte, DCK). 20,000+ facilities, 280+ markets, 7 ISOs, 126K substations, 850 GW tracked. Freshness SLAs and source-of-truth scores published live at https://dchub.cloud/intelligence. No quarterly reports, no $25K contracts, no NDAs -- just live JSON.",
+            "tagline":     "AI-powered. Real-time. Actionable. No BS.",
+            "positioning": "The live, MCP-native data center intelligence platform. Where static research (DCHawk, dcByte, DCK) ships quarterly PDFs, DC Hub ships JSON updated every 60 seconds + free MCP tools any AI agent can call.",
             "url": "https://dchub.cloud/mcp",
             "transport": "streamable-http",
             "version": "2.3.0",
@@ -2036,7 +2038,7 @@ def handle_well_known():
             "last_updated": "2026-05-15"
         }, ensure_ascii=False), status=200, content_type="application/json; charset=utf-8")
     if path == '/.well-known/agent.json':
-        return jsonify({"name":"DC Hub Intelligence","description":"Live intelligence layer for the global data center market. 20,000+ facilities across 140+ countries.","url":"https://dchub.cloud","version":"1.0.0","capabilities":{"streaming":True,"pushNotifications":False},"skills":[{"id":"facility-search","name":"Data Center Search","description":"Search and filter 20,000+ facilities worldwide"},{"id":"deal-tracker","name":"M&A Deal Tracker","description":"Track transactions in real-time"},{"id":"market-intelligence","name":"Market Intelligence","description":"AI-generated market reports"},{"id":"site-scoring","name":"Site Scoring","description":"Evaluate locations for data center suitability"}],"authentication":{"schemes":["api_key"]},"provider":{"organization":"DC Hub","url":"https://dchub.cloud"},"defaultInputModes":["text"],"defaultOutputModes":["text"]})
+        return jsonify({"name":"DC Hub Intelligence","description":"AI-powered, real-time intelligence layer for the global data center market. The live, MCP-native alternative to static research (DCHawk, dcByte, DCK). 20,000+ facilities, 280+ markets, freshness SLAs published live.","tagline":"AI-powered. Real-time. Actionable. No BS.","url":"https://dchub.cloud","version":"1.1.0","capabilities":{"streaming":True,"pushNotifications":False},"skills":[{"id":"facility-search","name":"Data Center Search","description":"Search and filter 20,000+ facilities worldwide (live)"},{"id":"deal-tracker","name":"M&A Deal Tracker","description":"1,852+ transactions, browsable + filterable"},{"id":"market-intelligence","name":"Market Intelligence","description":"DCPI scores for 276 markets, recomputed 4x/day"},{"id":"site-scoring","name":"Site Scoring","description":"Composite site-score across power, fiber, water, tax, climate, latency"},{"id":"bs-translator","name":"BS Translator","description":"Industry claims translated -- compare static competitors side-by-side: https://dchub.cloud/vs"}],"authentication":{"schemes":["api_key"]},"provider":{"organization":"DC Hub","url":"https://dchub.cloud"},"defaultInputModes":["text"],"defaultOutputModes":["text"]})
     if path == '/.well-known/security.txt':
         return Response("Contact: mailto:security@dchub.cloud\nPreferred-Languages: en\nCanonical: https://dchub.cloud/.well-known/security.txt\nPolicy: https://dchub.cloud/terms\nExpires: 2027-01-01T00:00:00.000Z", mimetype="text/plain")
     if path == '/.well-known/mcp-registry-auth':
@@ -19489,6 +19491,46 @@ try:
     app.register_blueprint(experiments_bp)
 except Exception as _e:
     print(f"[main] experiments register failed: {_e}", file=sys.stderr)
+
+# Phase NNN (2026-05-16): DCPI Total Power + Being Built. Hero numbers
+# the customer asks for ("total power tracked, how much being built")
+# answered with one /dcpi/totals page + JSON API.
+try:
+    from routes.power_totals import power_totals_bp
+    app.register_blueprint(power_totals_bp)
+    try:
+        from routes.surface_brain import register_surface, Surface
+        register_surface(Surface(
+            surface_id="power_totals",
+            name="Power Totals",
+            description="The /dcpi/totals page — operating MW + pipeline MW across the platform",
+            routes=["/dcpi/totals", "/power-totals", "/api/v1/power/totals"],
+            paid_tools=[],
+            expected_event_types=["view"],
+        ))
+    except Exception: pass
+except Exception as _e:
+    print(f"[main] power_totals register failed: {_e}", file=sys.stderr)
+
+# Phase OOO (2026-05-16): BS Translator / "vs static competitors" page.
+# The brand-positioning surface — translates competitor claims into
+# what DC Hub actually offers (live, free, MCP-native, no BS).
+try:
+    from routes.bs_translator import bs_translator_bp
+    app.register_blueprint(bs_translator_bp)
+    try:
+        from routes.surface_brain import register_surface, Surface
+        register_surface(Surface(
+            surface_id="bs_translator",
+            name="BS Translator",
+            description="/vs page — side-by-side comparison: static competitors vs DC Hub",
+            routes=["/vs", "/bs-translator"],
+            paid_tools=[],
+            expected_event_types=["view", "click_competitor"],
+        ))
+    except Exception: pass
+except Exception as _e:
+    print(f"[main] bs_translator register failed: {_e}", file=sys.stderr)
 
 # Phase TT-1 (2026-05-15): single tier resolver. ONE function answers
 # "what tier is this caller?" — replaces 5 divergent implementations.

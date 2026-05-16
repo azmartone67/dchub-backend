@@ -150,13 +150,20 @@ def _build_spec(app) -> dict:
         "openapi": "3.1.0",
         "info": {
             "title":   "DC Hub API",
-            "version": "2.0.0",
+            "version": "2.1.0",
+            "summary": "AI-powered. Real-time. Actionable. No BS.",
             "description": (
-                "Live data center, energy, and grid intelligence. "
+                "The live, MCP-native data-center intelligence platform. "
+                "Where static research (DCHawk, dcByte, DCK) ships quarterly "
+                "PDFs and $25K contracts, DC Hub ships live JSON, free MCP "
+                "tools, and freshness SLAs published every 60 seconds.\n\n"
                 "20,000+ facilities in 140+ countries, 369 GW pipeline, "
                 "daily-refreshed DCPI scores for 290+ markets, MCP server "
                 "with 28+ tools. Designed for AI agent consumption — claim "
-                "a free dev key at POST /api/v1/keys/claim."
+                "a free dev key at POST /api/v1/keys/claim.\n\n"
+                "Side-by-side comparison with static competitors: "
+                "https://dchub.cloud/vs\n"
+                "Live platform pulse: https://dchub.cloud/intelligence"
             ),
             "contact":     {"email": "hello@dchub.cloud", "url": "https://dchub.cloud"},
             "license":     {"name": "Free for AI citation", "url": "https://dchub.cloud/terms"},
