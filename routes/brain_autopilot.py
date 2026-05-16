@@ -652,6 +652,18 @@ def autopilot_library():
     ), 200
 
 
+# Phase FFF (2026-05-16): in-process heartbeat cache. The compute path
+# below runs ~12 SQL queries + a consistency-radar scan + per-surface
+# health_score (which itself runs 3 queries per surface × 5 surfaces).
+# Live timing was 9.3s. Brain autopilot polls this on EVERY 30-min run,
+# so caching saves 8+ seconds of cron time per cycle AND keeps the
+# heartbeat instant for dashboards/agents.
+import time as _time
+_HEARTBEAT_CACHE = {"payload": None, "ts": 0.0}
+_HEARTBEAT_TTL_S = 60.0   # 1 min — fresh enough for human dashboards,
+                          # infrequent enough to keep cost negligible
+
+
 @brain_autopilot_bp.route("/api/v1/brain/heartbeat", methods=["GET"])
 def brain_heartbeat():
     """ONE endpoint showing the brain's actual proactivity state.
@@ -661,8 +673,22 @@ def brain_heartbeat():
       - Heal cache state (memory + DB age)
       - Autopilot activity (last 24h actions, by outcome)
       - Layer 5 activity (last code-proposal cron run)
+      - Surface organism rollup (count + per-surface health)
       - Overall verdict: alive | warming | blind | dormant
     """
+    # Cache hit: serve instantly (was 9.3s pre-cache)
+    now = _time.time()
+    cached = _HEARTBEAT_CACHE["payload"]
+    if cached is not None and (now - _HEARTBEAT_CACHE["ts"]) < _HEARTBEAT_TTL_S:
+        from flask import jsonify as _j
+        cached_resp = dict(cached)
+        cached_resp["_cache_age_seconds"] = round(now - _HEARTBEAT_CACHE["ts"], 1)
+        cached_resp["_cached"] = True
+        resp = _j(cached_resp)
+        resp.headers["Cache-Control"] = "public, max-age=30"
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        return resp, 200
+
     out: dict = {
         "checked_at": datetime.datetime.utcnow().isoformat() + "Z",
         "verdict":    "unknown",
@@ -812,7 +838,16 @@ def brain_heartbeat():
         verdict_detail = f"{findings_count} open findings, no actions in last 24h yet"
     out["verdict"] = verdict
     out["verdict_detail"] = verdict_detail
-    return jsonify(out), 200
+
+    # Phase FFF: stash for next 60s
+    _HEARTBEAT_CACHE["payload"] = out
+    _HEARTBEAT_CACHE["ts"]      = _time.time()
+
+    from flask import jsonify as _j
+    resp = _j(out)
+    resp.headers["Cache-Control"] = "public, max-age=30"
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    return resp, 200
 
 
 @brain_autopilot_bp.route("/api/v1/brain/autopilot/recent", methods=["GET"])
