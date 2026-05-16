@@ -240,6 +240,14 @@ def _action_media_topic_unaddressed(finding: dict) -> tuple[str | None, dict | N
     return "/api/v1/marketing/auto-generate", {}
 
 
+def _action_surface_health_critical(finding: dict) -> tuple[str | None, dict | None]:
+    """A registered surface dropped below health 40. Per-surface
+    remediation varies (markets needs different fix than land-power);
+    escalate to humans with full per-surface diagnostic at
+    /api/v1/surface/<id>/pulse + /demand-gaps + /growth."""
+    return None, None
+
+
 _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
     "dcpi_partial_recompute": {
         "action":      _action_dcpi_partial_recompute,
@@ -344,6 +352,15 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
         "method":      "POST",
         "use_admin":   True,
         "description": "Hot news topic with no press response — autonomously generate one while the story is fresh",
+    },
+    # Phase EEE — surface brain pattern. Dynamic key
+    # `surface_health_critical:<surface_id>` is handled via the prefix-
+    # match in _lookup_pattern() so all surfaces share this entry.
+    "surface_health_critical": {
+        "action":      _action_surface_health_critical,
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: a registered surface dropped below health 40. Per-surface fix varies — see /api/v1/surface/<id>/pulse",
     },
 }
 
@@ -738,6 +755,34 @@ def brain_heartbeat():
     if c:
         try: c.close()
         except Exception: pass
+
+    # ── Phase EEE: surface brain rollup ──
+    # Each registered surface contributes its health to the central
+    # heartbeat. Aggregate min/max/avg + per-surface list so /alive can
+    # show a per-surface dashboard.
+    try:
+        from routes.surface_brain import SURFACES
+        surface_scores = []
+        for sid, surface in SURFACES.items():
+            try:
+                surface_scores.append({
+                    "surface_id":    sid,
+                    "name":          surface.name,
+                    "health_score":  surface.health_score(),
+                })
+            except Exception as _se:
+                surface_scores.append({"surface_id": sid, "error": str(_se)[:60]})
+        if surface_scores:
+            scores_only = [s["health_score"] for s in surface_scores if "health_score" in s]
+            out["surfaces"] = {
+                "count":            len(surface_scores),
+                "average_health":   round(sum(scores_only) / max(1, len(scores_only)), 1),
+                "min_health":       min(scores_only) if scores_only else None,
+                "max_health":       max(scores_only) if scores_only else None,
+                "per_surface":      surface_scores,
+            }
+    except Exception as _se:
+        out["surfaces"] = {"error": str(_se)[:160]}
 
     # ── Verdict ──
     det = out.get("detector") or {}

@@ -1036,6 +1036,41 @@ def check_media_topic_unaddressed() -> list[dict]:
     return findings
 
 
+# ── Phase EEE (2026-05-16) — surface brain health detector ───────
+# Flags when any registered surface drops below a health threshold.
+# Surface health combines volume + success rate + WoW growth into a
+# 0-100 score. <40 = critical (e.g. no traffic OR mostly failing).
+
+def check_surface_health_critical() -> list[dict]:
+    """Flag any surface whose health_score < 40. The brain learns which
+    pages are dying + escalates per-surface so the right action library
+    fires (markets needs a different fix than land_power)."""
+    findings: list[dict] = []
+    try:
+        from routes.surface_brain import SURFACES
+    except Exception:
+        return findings
+    for sid, surface in SURFACES.items():
+        try:
+            score = surface.health_score()
+        except Exception:
+            continue
+        if score is not None and score < 40:
+            findings.append({
+                "issue":  f"surface_health_critical:{sid}",
+                "url":    f"surface_telemetry: surface_id={sid}",
+                "count":  score,
+                "detail": (f"Surface '{surface.name}' (id={sid}) health is "
+                           f"{score}/100. Likely cause: very low traffic, "
+                           f"high failure rate, or steep WoW decline. Check "
+                           f"/api/v1/surface/{sid}/pulse + /demand-gaps + "
+                           f"/growth for specifics. If the surface is new + "
+                           f"has no beacon yet, the score will be low until "
+                           f"the frontend instrumentation lands."),
+            })
+    return findings
+
+
 def scan_all() -> list[dict]:
     """Run every detector. Return a flat list of finding dicts ready
     to merge into actionable_backend_issues."""
@@ -1054,7 +1089,9 @@ def scan_all() -> list[dict]:
                check_mcp_growth_declining,
                check_mcp_demand_gap,
                check_source_of_truth_declining,
-               check_media_topic_unaddressed):
+               check_media_topic_unaddressed,
+               # Phase EEE surface-brain detector
+               check_surface_health_critical):
         try:
             out.extend(fn() or [])
         except Exception as e:
