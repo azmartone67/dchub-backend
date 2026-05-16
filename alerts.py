@@ -226,36 +226,52 @@ Unsubscribe: https://dchub.cloud/alerts/unsubscribe%sid={alert['id']}
 # =============================================================================
 
 def get_user_from_request():
-    """Extract user info from request (Google OAuth or API key)."""
-    # Check for API key
+    """Extract user info from request (Google OAuth or API key).
+
+    Phase WW (2026-05-15) — migration to single tier resolver.
+    Tries routes.auth_context.get_auth_context() first (the canonical
+    Phase TT-1 resolver). Falls back to the legacy paths if that
+    returns anonymous — preserves behavior for alerts_db API-key
+    sessions and the demo email-from-body fallback. Legacy paths
+    can retire once auth_context covers every shape this saw.
+    """
+    # Phase WW: prefer the canonical resolver.
+    try:
+        from routes.auth_context import get_auth_context
+        ctx = get_auth_context(request)
+        if ctx.tier != "anonymous" and ctx.user_id:
+            return {"user_id": ctx.user_id,
+                    "email":   ctx.email or ""}
+    except Exception:
+        pass  # fall through to legacy
+
+    # Legacy path 1: API key via alerts_db
     api_key = request.headers.get('X-API-Key')
     if api_key:
-        # Validate API key and return user_id
         db = get_alerts_db()
         c = db.cursor()
         user = c.execute('SELECT user_id, email FROM api_keys WHERE key = %s AND is_active = 1', (api_key,)).fetchone()
         if user:
             return {'user_id': user['user_id'], 'email': user['email']}
-    
-    # Check for session (Google OAuth)
+
+    # Legacy path 2: session token in Authorization: Bearer
     auth_header = request.headers.get('Authorization')
     if auth_header and auth_header.startswith('Bearer '):
         token = auth_header[7:]
-        # In production, validate with Google OAuth
-        # For now, decode from token or session
         db = get_alerts_db()
         c = db.cursor()
-        session = c.execute('SELECT user_id, email FROM sessions WHERE token = %s AND expires_at > %s', 
+        session = c.execute('SELECT user_id, email FROM sessions WHERE token = %s AND expires_at > %s',
                             (token, datetime.utcnow())).fetchone()
         if session:
             return {'user_id': session['user_id'], 'email': session['email']}
-    
-    # Demo mode - use email from request body or query
+
+    # Demo mode — email from request body or query.
+    # Kept verbatim because auth_context doesn't yet support this shape.
     email = request.json.get('email') if request.is_json else request.args.get('email')
     if email:
         user_id = hashlib.sha256(email.encode()).hexdigest()[:16]
         return {'user_id': user_id, 'email': email}
-    
+
     return None
 
 def require_auth(f):
