@@ -119,6 +119,7 @@ def query_firms(west, south, east, north, days=1, source='VIIRS_NOAA20_NRT'):
         return {'error': str(e), 'features': [], 'count': 0}
 
 
+# AUTO-REPAIR: duplicate route '/api/v2/risk/active-fires' also in main.py:15019 — review and remove one
 @fire_bp.route('/api/v2/risk/active-fires', methods=['GET'])
 def get_active_fires():
     """

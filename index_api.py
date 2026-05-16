@@ -631,6 +631,7 @@ def admin_config_get():
     if err: return err
     return jsonify({'config':cfg,'count':len(cfg)})
 
+# AUTO-REPAIR: duplicate route '/admin/config' also in index_api.py:627 — review and remove one
 @index_bp.route('/admin/config', methods=['POST'])
 def admin_config_set():
     cfg  = _get_config()
@@ -642,7 +643,7 @@ def admin_config_set():
         conn = get_db()
         cur  = conn.cursor()
         for k,v in data.items():
-            cur.execute("INSERT INTO gdci_config (key,value,updated_at) VALUES (%s,%s,NOW()) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value,updated_at=NOW()", (k,str(v)))
+            cur.execute("INSERT INTO gdci_config (key,value,updated_at) VALUES (%s,%s,NOW() ON CONFLICT DO NOTHING) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value,updated_at=NOW()", (k,str(v)))
         conn.commit(); cur.close()
         global _config_cache,_config_ts,_bulk_cache,_bulk_ts
         _config_cache={}; _config_ts=0; _bulk_cache=None; _bulk_ts=0
