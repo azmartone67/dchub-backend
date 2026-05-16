@@ -323,8 +323,10 @@ def whatsapp_bot_config():
     })
 
 
-@google_meta_bp.route('/api/crawlers/stats')
-def crawler_stats():
+# Phase UU-3 (2026-05-15): removed @google_meta_bp.route — main.py:5728
+# has the canonical /api/crawlers/stats that agent-hub.html expects.
+# Renamed below to _unused_* so the function body remains as git history.
+def _unused_crawler_stats():
     """Get crawler visit statistics"""
     try:
         conn = get_db()

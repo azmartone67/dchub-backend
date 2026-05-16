@@ -1323,157 +1323,10 @@ def _handle_sub_deleted_v2(subscription):
     print(f"❌ Subscription canceled: customer={customer_id}")
 
 
-# ═══════════════════════════════════════════════════════════════
-#  API KEY MANAGEMENT ROUTES
-# ═══════════════════════════════════════════════════════════════
-
-def register_api_key_routes(app):
-    """Register API key management endpoints."""
-
-    def _auth_from_jwt():
-        """Extract user payload from JWT Bearer token. Returns (payload, error_response)."""
-        auth_header = request.headers.get('Authorization')
-        if not auth_header or not auth_header.startswith('Bearer '):
-            return None, (jsonify({'error': 'Auth required'}), 401, {'Cache-Control': 'private, no-store, max-age=0', 'Surrogate-Control': 'no-store', 'Pragma': 'no-cache'})
-        decode_jwt = _get_decode_jwt()
-        if not decode_jwt:
-            return None, (jsonify({'error': 'Auth system not available'}), 503)
-        token = auth_header.split(' ')[1]
-        payload = decode_jwt(token)
-        if not payload:
-            return None, (jsonify({'error': 'Invalid or expired token'}), 401, {'Cache-Control': 'private, no-store, max-age=0', 'Surrogate-Control': 'no-store', 'Pragma': 'no-cache'})
-        return payload, None
-
-    @app.route('/api/v2/keys', methods=['GET'])
-    def list_api_keys():
-        """List user's API keys (requires auth)."""
-        payload, err = _auth_from_jwt()
-        if err:
-            return err
-
-        user_id = payload.get('user_id')
-        conn = get_db()
-        
-        c = conn.cursor()
-        c.execute("""
-            SELECT id, key_prefix, plan, name, calls_today, calls_total, last_used, is_active, created_at
-            FROM api_keys WHERE user_id = %s
-            ORDER BY created_at DESC
-        """, (user_id,))
-        cols = ['id', 'key_prefix', 'plan', 'name', 'calls_today', 'calls_total', 'last_used', 'is_active', 'created_at']
-        keys = [dict(r.items()) if hasattr(r, 'items') else dict(zip(cols, r)) for r in c.fetchall()]
-        conn.close()
-
-        return jsonify({'success': True, 'keys': keys})
-
-    @app.route('/api/v2/keys', methods=['POST'])
-    def create_api_key():
-        """Generate a new API key (requires auth, plan determines tier)."""
-        payload, err = _auth_from_jwt()
-        if err:
-            return err
-
-        user_id = payload.get('user_id')
-        email = payload.get('email', '')
-        plan = get_user_plan(user_id=user_id)
-
-        data = request.get_json() or {}
-        name = data.get('name', 'API Key')
-
-        # Limit: 3 keys for free, 10 for pro, 25 for enterprise
-        limits = {'free': 3, 'founding': 10, 'pro': 10, 'enterprise': 25}
-        conn = get_db()
-        c = conn.cursor()
-        c.execute("SELECT COUNT(*) FROM api_keys WHERE user_id = %s AND is_active = 1", (user_id,))
-        count = c.fetchone()[0]
-        conn.close()
-
-        if count >= limits.get(plan, 3):
-            return jsonify({
-                'error': f'Key limit reached ({limits.get(plan, 3)} keys on {plan} plan)',
-                'upgrade_url': 'https://dchub.cloud/pricing',
-            }), 403, {'Cache-Control': 'private, no-store, max-age=0', 'Surrogate-Control': 'no-store', 'Pragma': 'no-cache'}
-
-        raw_key = generate_api_key(user_id, email, plan, name)
-
-        return jsonify({
-            'success': True,
-            'key': raw_key,
-            'plan': plan,
-            'rate_limit': TIER_RATE_LIMITS.get(plan, 100),
-            'warning': 'Save this key now — it will not be shown again.',
-        })
-
-    @app.route('/api/v2/keys/<int:key_id>', methods=['DELETE'])
-    def revoke_api_key(key_id):
-        """Revoke an API key."""
-        payload, err = _auth_from_jwt()
-        if err:
-            return err
-
-        user_id = payload.get('user_id')
-        conn = get_db()
-        c = conn.cursor()
-        c.execute("UPDATE api_keys SET is_active = 0 WHERE id = %s AND user_id = %s", (key_id, user_id))
-        conn.commit()
-        affected = c.rowcount
-        conn.close()
-
-        if affected:
-            return jsonify({'success': True, 'message': 'API key revoked'})
-        return jsonify({'error': 'Key not found'}), 404, {'Cache-Control': 'private, no-store, max-age=0', 'Surrogate-Control': 'no-store', 'Pragma': 'no-cache'}
-
-    @app.route('/api/v2/usage', methods=['GET'])
-    def get_api_usage():
-        """Get API usage stats for current user."""
-        payload, err = _auth_from_jwt()
-        if err:
-            return err
-
-        user_id = payload.get('user_id')
-        plan = get_user_plan(user_id=user_id)
-
-        conn = get_db()
-        
-        c = conn.cursor()
-        c.execute("""
-            SELECT SUM(calls_today) as today, SUM(calls_total) as total
-            FROM api_keys WHERE user_id = %s AND is_active = 1
-        """, (user_id,))
-        row = c.fetchone()
-        if row and hasattr(row, 'items'):
-            usage = dict(row.items())
-        elif row and not isinstance(row, dict):
-            usage = {'today': row[0], 'total': row[1]}
-        elif row:
-            usage = dict(row)
-        else:
-            usage = {'today': 0, 'total': 0}
-        conn.close()
-
-        limit = TIER_RATE_LIMITS.get(plan, 100)
-
-        return jsonify({
-            'success': True,
-            'plan': plan,
-            'calls_today': usage.get('today') or 0,
-            'calls_total': usage.get('total') or 0,
-            'daily_limit': limit,
-            'remaining_today': max(0, limit - (usage.get('today') or 0)),
-            'usage_pct': round(((usage.get('today') or 0) / limit) * 100, 1) if limit else 0,
-        })
-
-    @app.route('/api/v2/plans', methods=['GET'])
-    def get_plans():
-        """Get all available plans with features and pricing."""
-        return jsonify({
-            'success': True,
-            'plans': PLAN_INFO,
-            'payment_links': {k: v for k, v in PAYMENT_LINKS.items() if v},
-        })
-
-    print("  ✅ API Key management routes registered")
-
+# Phase UU-2 (2026-05-15): removed dead register_api_key_routes() —
+# all 5 @app.route handlers were shadows of routes already registered by
+# api_monetization.monetization_bp. Caller at line 1529 was already
+# stripped in the same PR. See git log for the deleted function body.
 
 # ═══════════════════════════════════════════════════════════════
 #  SHARED DECODE_JWT REFERENCE (set at init time, avoids circular import)
@@ -1525,8 +1378,13 @@ def init_tier_gating(app, decode_jwt_func=None):
     # 3. Register Stripe v2 routes
     register_stripe_v2_routes(app)
 
-    # 4. Register API key management routes
-    register_api_key_routes(app)
+    # 4. (Removed in Phase UU-2, 2026-05-15) — register_api_key_routes()
+    #    used to register /api/v2/keys, /api/v2/usage, /api/v2/plans as
+    #    direct @app.route handlers. These were shadow-duplicates of the
+    #    same paths registered by api_monetization.monetization_bp (the
+    #    canonical blueprint). Shadow registration left Flask non-
+    #    deterministic about which version served a request — fixed by
+    #    deleting register_api_key_routes + this caller. See PR #194.
 
     # 5. Add plan migration for users table
     try:

@@ -145,11 +145,13 @@ def public_map_data():
                 pass
 
 
-# =============================================================================
-# /api/v1/map — Public facility data for map view, no auth
-# =============================================================================
-@public_bp.route('/api/v1/map', methods=['GET'])
-def public_map_view():
+# Phase UU-3 (2026-05-15): removed @public_bp.route('/api/v1/map') below —
+# main.py:1879 has a richer implementation (joins discovered_facilities
+# + facilities, generates slugs, returns 19K rows). Tests confirmed the
+# live endpoint serves main.py's version. The blueprint version was the
+# shadow. Function body kept as `_unused_public_map_view` for reference;
+# delete in next cleanup pass.
+def _unused_public_map_view():
     conn = None
     try:
         from flask import request as req
