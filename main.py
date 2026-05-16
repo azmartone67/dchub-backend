@@ -19391,6 +19391,34 @@ try:
 except Exception as _e:
     print(f"[main] land_power_mcp register failed: {_e}", file=sys.stderr)
 
+# Phase BBB (2026-05-16): cherry-picked from the closed feat/master-paywall
+# stack — 4 new value modules that were genuinely additive (didn't conflict
+# with the brain-cascade rework that landed in #207-#210). Each registers
+# its own routes; site_simulator.py exposes /api/v1/site/simulate-buildout,
+# mcp_tool_catalog.py exposes /mcp/tools + /api/v1/mcp/tools.json,
+# international_ingestion.py exposes /api/v1/intl/ingestion-status + the
+# ENTSO-E adapter, ai_citation_tracker.py exposes /api/v1/ai-citations/*.
+try:
+    from routes.site_simulator import site_simulator_bp
+    app.register_blueprint(site_simulator_bp)
+except Exception as _e:
+    print(f"[main] site_simulator register failed: {_e}", file=sys.stderr)
+try:
+    from routes.mcp_tool_catalog import mcp_tool_catalog_bp
+    app.register_blueprint(mcp_tool_catalog_bp)
+except Exception as _e:
+    print(f"[main] mcp_tool_catalog register failed: {_e}", file=sys.stderr)
+try:
+    from routes.international_ingestion import international_ingestion_bp
+    app.register_blueprint(international_ingestion_bp)
+except Exception as _e:
+    print(f"[main] international_ingestion register failed: {_e}", file=sys.stderr)
+try:
+    from routes.ai_citation_tracker import ai_citation_tracker_bp
+    app.register_blueprint(ai_citation_tracker_bp)
+except Exception as _e:
+    print(f"[main] ai_citation_tracker register failed: {_e}", file=sys.stderr)
+
 # Phase TT-1 (2026-05-15): single tier resolver. ONE function answers
 # "what tier is this caller?" — replaces 5 divergent implementations.
 # Existing callers continue to work; new code uses get_auth_context().
