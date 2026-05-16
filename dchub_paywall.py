@@ -36,6 +36,8 @@ def build_paywall_response(
     preview_data: Optional[Any] = None,
     full_count: Optional[int] = None,
     custom_unlock_message: Optional[str] = None,
+    api_key: Optional[str] = None,
+    session_id: Optional[str] = None,
 ) -> dict:
     """Build a paywall response that AI agents render to humans.
 
@@ -43,11 +45,41 @@ def build_paywall_response(
       content: list of MCP content items (text-first)
       _meta:   structured fields for AI agents that parse beyond text
               (trial_preview, tier_required, redeem_url, tool_name)
+
+    Phase ZZ (2026-05-15): the redeem URL is now generated via
+    routes.pair_code.get_or_create_code() instead of the old
+    /api/v1/redeem/<session_id> pattern. Both endpoints work (HTTP 200),
+    but only /redeem/<code> hits write `mcp_pair_codes.redeem_viewed_at`,
+    which is what the conversion-funnel SQL counts. Sending users to
+    /api/v1/redeem/<session_id> meant their clicks were invisible to
+    the funnel — that explains the 0.007% paywall→click metric.
+
+    Optional new args:
+      api_key: caller's MCP key (if known) — keys the pair code so
+               redemption can promote THIS key directly.
+      session_id: MCP session id — used to key the pair code when no
+                  api_key is available (anonymous MCP callers).
+
+    If neither is provided OR pair-code mint fails, falls back to the
+    legacy REDEEM_BASE URL so the response always has a working link.
     """
-    # Attribution params let us measure conversion per-tool
+    # Attribution params for the fallback path
     redeem_url = (
         f"{REDEEM_BASE}?source=mcp&tool={tool_name}&tier={tier_required}"
     )
+    # Try the canonical pair-code path first
+    try:
+        from routes.pair_code import get_or_create_code
+        _key = api_key or (f"sess:{session_id}" if session_id else None)
+        if _key:
+            _pc = get_or_create_code(_key, tool_name=tool_name)
+            if _pc and _pc.get("redeem_url"):
+                redeem_url = _pc["redeem_url"]
+    except Exception as _e:
+        # Pair-code mint failed — log + use REDEEM_BASE fallback.
+        import sys
+        print(f"[dchub_paywall] pair-code mint failed: {_e}",
+              file=sys.stderr)
 
     # Track the paywall hit so we can compute paywall->click conversion
     try:
