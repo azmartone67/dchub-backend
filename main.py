@@ -19380,6 +19380,17 @@ try:
 except Exception as _e:
     print(f"[main] brain_autopilot register failed: {_e}", file=sys.stderr)
 
+# Phase XX (2026-05-16): Land+Power MCP bridge. /api/v1/land-power/site-analysis
+# powers the new free-tier `find_power_site` MCP tool — the missing link
+# between agent demand (3,380 calls/30d to get_grid_intelligence, 3,212
+# to get_fiber_intel) and the /land-power interactive map flagship.
+# Cached 60s in-process; <200ms p95 because no external HIFLD calls.
+try:
+    from routes.land_power_mcp import land_power_mcp_bp
+    app.register_blueprint(land_power_mcp_bp)
+except Exception as _e:
+    print(f"[main] land_power_mcp register failed: {_e}", file=sys.stderr)
+
 # Phase TT-1 (2026-05-15): single tier resolver. ONE function answers
 # "what tier is this caller?" — replaces 5 divergent implementations.
 # Existing callers continue to work; new code uses get_auth_context().

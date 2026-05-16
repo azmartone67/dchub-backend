@@ -716,6 +716,80 @@ def check_press_repetition() -> list[dict]:
     return findings
 
 
+# ── Phase XX (2026-05-16) — MCP flow stale detector ───────────────
+# Funnel ran at 14,058 upgrade signals : 0 conversions over 30d from
+# the MCP platform. No detector was watching it. This one flags when
+# the 7d signal:conversion ratio crosses thresholds. Reuses the
+# Phase ZZ _db() helper above.
+_MCP_STALE_CRITICAL = 500
+_MCP_STALE_WARN     = 200
+_MCP_STALE_MIN_SIGNALS = 50
+
+
+def check_mcp_conversion_stale() -> list[dict]:
+    """Flag when MCP upgrade_signals:conversions ratio crosses threshold."""
+    conn = _db()
+    if conn is None: return []
+    findings: list[dict] = []
+    try:
+        with conn.cursor() as cur:
+            signals = 0
+            try:
+                cur.execute("SELECT to_regclass('public.mcp_upgrade_signals')")
+                if (cur.fetchone() or [None])[0]:
+                    cur.execute("SELECT COUNT(*) FROM mcp_upgrade_signals "
+                                "WHERE created_at >= NOW() - INTERVAL '7 days'")
+                    signals = int((cur.fetchone() or [0])[0] or 0)
+            except Exception:
+                signals = 0
+            conversions = 0
+            try:
+                cur.execute("SELECT to_regclass('public.mcp_pair_codes')")
+                if (cur.fetchone() or [None])[0]:
+                    cur.execute("SELECT COUNT(*) FROM mcp_pair_codes "
+                                "WHERE redeemed_at IS NOT NULL "
+                                "  AND redeemed_at >= NOW() - INTERVAL '7 days'")
+                    conversions = int((cur.fetchone() or [0])[0] or 0)
+            except Exception:
+                conversions = 0
+
+        if signals < _MCP_STALE_MIN_SIGNALS:
+            return findings
+
+        ratio = signals / max(1, conversions) if conversions > 0 else signals
+        if conversions == 0 and signals >= _MCP_STALE_CRITICAL:
+            findings.append({
+                "issue":  "mcp_conversion_stale_critical",
+                "url":    "mcp_upgrade_signals: 7d window",
+                "count":  signals,
+                "detail": (f"MCP flow stale: {signals} upgrade signals in 7d "
+                           f"but ZERO conversions. The paywall → pair-code → "
+                           f"Stripe pipeline is broken end-to-end or pricing/CTA "
+                           f"is misaligned with demand."),
+            })
+        elif ratio >= _MCP_STALE_CRITICAL:
+            findings.append({
+                "issue":  "mcp_conversion_stale_critical",
+                "url":    "mcp_upgrade_signals: 7d window",
+                "count":  signals,
+                "detail": (f"MCP flow degraded: {signals} signals / {conversions} "
+                           f"conversions over 7d = 1:{int(ratio)} ratio. Industry "
+                           f"benchmark for self-serve B2B AI: 1:100."),
+            })
+        elif ratio >= _MCP_STALE_WARN:
+            findings.append({
+                "issue":  "mcp_conversion_stale_warn",
+                "url":    "mcp_upgrade_signals: 7d window",
+                "count":  signals,
+                "detail": (f"MCP conversion ratio degraded to 1:{int(ratio)} over "
+                           f"7d ({signals} signals / {conversions} conversions)."),
+            })
+    finally:
+        try: conn.close()
+        except Exception: pass
+    return findings
+
+
 def scan_all() -> list[dict]:
     """Run every detector. Return a flat list of finding dicts ready
     to merge into actionable_backend_issues."""
@@ -728,7 +802,8 @@ def scan_all() -> list[dict]:
                check_dcpi_partial_recompute,
                check_discovery_stalled,
                check_iso_metric_dropped,
-               check_press_repetition):
+               check_press_repetition,
+               check_mcp_conversion_stale):
         try:
             out.extend(fn() or [])
         except Exception as e:
