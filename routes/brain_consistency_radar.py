@@ -845,7 +845,12 @@ def check_mcp_growth_declining() -> list[dict]:
 def check_mcp_demand_gap() -> list[dict]:
     """Flag the #1 demand gap: a tool with 50+ paywall signals and 0
     conversions over 7d. Means there's strong agent demand for something
-    we either don't have, paywall too high, or our CTA is broken."""
+    we either don't have, paywall too high, or our CTA is broken.
+
+    Phase DDD-2 (2026-05-16): wrap the inner query separately because
+    mcp_upgrade_signals.tool might not exist OR mcp_pair_codes.tool_name
+    might not — schema varies across deploys. Catch column-missing
+    errors and return empty findings instead of crashing the radar."""
     conn = _db()
     if conn is None: return []
     findings: list[dict] = []
@@ -860,27 +865,32 @@ def check_mcp_demand_gap() -> list[dict]:
                 if not (regs[0] and regs[1]): return findings
             except Exception:
                 return findings
-            cur.execute("""
-                WITH paid_demand AS (
-                  SELECT tool, COUNT(*) AS signals
-                    FROM mcp_upgrade_signals
-                   WHERE created_at >= NOW() - INTERVAL '7 days'
-                     AND tool IS NOT NULL
-                   GROUP BY tool HAVING COUNT(*) >= 50
-                ),
-                converted AS (
-                  SELECT tool_name AS tool, COUNT(*) AS convs
-                    FROM mcp_pair_codes
-                   WHERE redeemed_at IS NOT NULL
-                     AND redeemed_at >= NOW() - INTERVAL '7 days'
-                   GROUP BY tool_name
-                )
-                SELECT p.tool, p.signals
-                  FROM paid_demand p LEFT JOIN converted c USING (tool)
-                 WHERE COALESCE(c.convs, 0) = 0
-                 ORDER BY p.signals DESC LIMIT 1
-            """)
-            r = cur.fetchone()
+            # Inner try — column-missing is the most likely failure mode
+            try:
+                cur.execute("""
+                    WITH paid_demand AS (
+                      SELECT tool, COUNT(*) AS signals
+                        FROM mcp_upgrade_signals
+                       WHERE created_at >= NOW() - INTERVAL '7 days'
+                         AND tool IS NOT NULL
+                       GROUP BY tool HAVING COUNT(*) >= 50
+                    ),
+                    converted AS (
+                      SELECT tool_name AS tool, COUNT(*) AS convs
+                        FROM mcp_pair_codes
+                       WHERE redeemed_at IS NOT NULL
+                         AND redeemed_at >= NOW() - INTERVAL '7 days'
+                       GROUP BY tool_name
+                    )
+                    SELECT p.tool, p.signals
+                      FROM paid_demand p LEFT JOIN converted c USING (tool)
+                     WHERE COALESCE(c.convs, 0) = 0
+                     ORDER BY p.signals DESC LIMIT 1
+                """)
+                r = cur.fetchone()
+            except Exception as _e:
+                print(f"[radar] check_mcp_demand_gap inner query: {_e}")
+                return findings
             if r:
                 tool, sigs = r[0], int(r[1] or 0)
                 findings.append({
@@ -938,8 +948,13 @@ def check_source_of_truth_declining() -> list[dict]:
 
 def check_media_topic_unaddressed() -> list[dict]:
     """Flag when a hot news topic (5+ news items in 24h mentioning a
-    DCPI market) has NO press-release response in 48h. The media organism
-    should be commenting on its own data's relevance to industry events."""
+    DCPI market) has NO press-release response in 48h.
+
+    Phase DDD-2 (2026-05-16): wrap each query separately + bound the
+    market loop (was iterating 280+ markets × per-market news query =
+    560+ queries, any one failing crashed the whole detector). Now:
+    pre-aggregate news mentions in a single query, then intersect with
+    markets in Python. One query instead of N+1."""
     conn = _db()
     if conn is None: return []
     findings: list[dict] = []
@@ -948,49 +963,73 @@ def check_media_topic_unaddressed() -> list[dict]:
             try:
                 cur.execute("""
                     SELECT to_regclass('public.news'),
-                           to_regclass('public.auto_press_releases')
+                           to_regclass('public.auto_press_releases'),
+                           to_regclass('public.market_power_scores')
                 """)
-                regs = cur.fetchone() or [None,None]
-                if not (regs[0] and regs[1]): return findings
+                regs = cur.fetchone() or [None,None,None]
+                if not (regs[0] and regs[1] and regs[2]): return findings
             except Exception:
                 return findings
-            # Look for any market mentioned in 5+ news items in 24h
-            cur.execute("""
-                SELECT title FROM auto_press_releases
-                 WHERE generated_for >= CURRENT_DATE - INTERVAL '2 days'
-                   AND title IS NOT NULL
-            """)
-            recent_press_titles = " ".join(r[0].lower() for r in cur.fetchall() if r and r[0])
 
-            cur.execute("""
-                SELECT DISTINCT ON (market_slug) market_slug, market_name
-                  FROM market_power_scores
-                 WHERE published = true
-                 ORDER BY market_slug, computed_at DESC
-            """)
-            markets = cur.fetchall()
-
-            for slug, name in markets:
-                if not name: continue
-                # Count news mentions of this market name
+            # Recent press titles (one query, lowercased)
+            recent_press_titles = ""
+            try:
                 cur.execute("""
-                    SELECT COUNT(*) FROM news
+                    SELECT title FROM auto_press_releases
+                     WHERE generated_for >= CURRENT_DATE - INTERVAL '2 days'
+                       AND title IS NOT NULL
+                """)
+                recent_press_titles = " ".join(
+                    (r[0] or "").lower() for r in cur.fetchall())
+            except Exception as _e:
+                print(f"[radar] check_media_topic_unaddressed press: {_e}")
+                return findings
+
+            # All recent news text (one query — preferred over N+1)
+            news_text = ""
+            try:
+                cur.execute("""
+                    SELECT LOWER(COALESCE(title,'') || ' ' || COALESCE(summary,'')) AS text
+                      FROM news
                      WHERE published_date >= NOW() - INTERVAL '24 hours'
-                       AND (LOWER(COALESCE(title,'')) LIKE %s
-                            OR LOWER(COALESCE(summary,'')) LIKE %s)
-                """, (f"%{name.lower()}%", f"%{name.lower()}%"))
-                n = int((cur.fetchone() or [0])[0] or 0)
-                if n >= 5 and name.lower() not in recent_press_titles:
-                    findings.append({
-                        "issue":  "media_topic_unaddressed",
-                        "url":    f"news: market={slug}",
-                        "count":  n,
-                        "detail": (f"Hot topic '{name}' has {n} news mentions in "
-                                   f"last 24h but no auto-press response in 48h. "
-                                   f"Trigger /api/v1/marketing/auto-generate with "
-                                   f"topic context for {name}."),
-                    })
-                    if len(findings) >= 3: break  # cap at 3 — don't flood
+                """)
+                news_text = "\n".join(r[0] for r in cur.fetchall() if r and r[0])
+            except Exception as _e:
+                print(f"[radar] check_media_topic_unaddressed news: {_e}")
+                return findings
+
+            if not news_text: return findings  # no news → nothing to check
+
+            # Market list (one query)
+            try:
+                cur.execute("""
+                    SELECT DISTINCT ON (market_slug) market_slug, market_name
+                      FROM market_power_scores
+                     WHERE published = true
+                     ORDER BY market_slug, computed_at DESC
+                """)
+                markets = cur.fetchall()
+            except Exception as _e:
+                print(f"[radar] check_media_topic_unaddressed markets: {_e}")
+                return findings
+
+        # Pure-Python intersection — count market-name occurrences in news
+        for slug, name in markets:
+            if not name: continue
+            nm_low = name.lower()
+            # Cheap substring count
+            n = news_text.count(nm_low)
+            if n >= 5 and nm_low not in recent_press_titles:
+                findings.append({
+                    "issue":  "media_topic_unaddressed",
+                    "url":    f"news: market={slug}",
+                    "count":  n,
+                    "detail": (f"Hot topic '{name}' has {n} news mentions in "
+                               f"last 24h but no auto-press response in 48h. "
+                               f"Trigger /api/v1/marketing/auto-generate with "
+                               f"topic context for {name}."),
+                })
+                if len(findings) >= 3: break  # cap at 3 — don't flood
     finally:
         try: conn.close()
         except Exception: pass
