@@ -452,6 +452,251 @@ def check_csp_drift() -> list[dict]:
     return findings
 
 
+# ── 6. ISO-loop freshness ─────────────────────────────────────────
+#
+# Phase SS (2026-05-15). Every ISO writes to `grid_data` with a unique
+# `iso` value (PJM/MISO/CAISO/ERCOT/SPP/NYISO/ISO-NE/+CAN). The existing
+# data_freshness_radar checks the union (just market_power_scores), so
+# a single ISO loop silently dying (e.g. PJM API returning 500s for 4h)
+# isn't surfaced anywhere until it cascades into stale DCPI scores.
+# This detector watches each ISO independently against a per-source SLA.
+_ISO_FRESHNESS_SLA_HOURS = 2   # ISO loops run every 15-30 min, so 2h = clear miss
+_TRACKED_ISOS = ["PJM", "ERCOT", "CAISO", "MISO", "SPP", "NYISO", "ISO-NE",
+                 "BPA", "AESO", "IESO", "TVA"]
+
+
+def _db():
+    """Local DB conn helper — autocommit so a failed probe doesn't poison
+    follow-up queries within scan_all()."""
+    import os
+    import psycopg2
+    db = os.environ.get("DATABASE_URL")
+    if not db:
+        return None
+    try:
+        c = psycopg2.connect(db, sslmode="require", connect_timeout=5)
+        c.autocommit = True
+        return c
+    except Exception:
+        return None
+
+
+def check_iso_freshness() -> list[dict]:
+    """Per-ISO freshness probe. Reads grid_data MAX(timestamp) grouped by
+    iso and flags any ISO whose latest row is older than SLA hours.
+    Pre-empts the "stale DCPI scores" cascade by catching the upstream
+    loop death at its true source."""
+    findings: list[dict] = []
+    conn = _db()
+    if not conn:
+        return findings
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("SELECT to_regclass('public.grid_data')")
+                if not (cur.fetchone() or [None])[0]:
+                    return findings  # table doesn't exist (test env)
+            except Exception:
+                return findings
+
+            cur.execute("""
+                SELECT iso,
+                       MAX(timestamp)               AS latest_ts,
+                       EXTRACT(EPOCH FROM (NOW() - MAX(timestamp))) / 3600.0
+                                                    AS age_hours,
+                       COUNT(*)                     AS row_count
+                  FROM grid_data
+                 GROUP BY iso
+            """)
+            present = {row[0]: (row[1], float(row[2] or 0), int(row[3] or 0))
+                       for row in cur.fetchall()}
+
+        for iso in _TRACKED_ISOS:
+            info = present.get(iso)
+            if info is None:
+                # Tracked but never written → probably loop never deployed
+                findings.append({
+                    "issue":  "iso_loop_no_data",
+                    "url":    f"grid_data WHERE iso='{iso}'",
+                    "count":  1,
+                    "detail": (f"ISO {iso} has zero rows in grid_data. "
+                               f"Either the loop is not registered, the cron "
+                               f"isn't firing, or the loop is crashing before "
+                               f"its first INSERT. Check routes/iso_{iso.lower().replace('-','')}.py "
+                               f"and the corresponding GH Actions workflow."),
+                })
+                continue
+            _latest, age, rows = info
+            if age > _ISO_FRESHNESS_SLA_HOURS:
+                findings.append({
+                    "issue":  "iso_loop_stale",
+                    "url":    f"grid_data WHERE iso='{iso}'",
+                    "count":  1,
+                    "detail": (f"ISO {iso} hasn't written to grid_data in "
+                               f"{age:.1f}h (SLA: {_ISO_FRESHNESS_SLA_HOURS}h, "
+                               f"row count: {rows}). The loop is either "
+                               f"crashing silently, rate-limited by the ISO "
+                               f"endpoint, or its cron is paused."),
+                })
+    finally:
+        try: conn.close()
+        except Exception: pass
+    return findings
+
+
+# ── 7. MCP tool error-rate spike ──────────────────────────────────
+#
+# Phase SS (2026-05-15). When an MCP tool's backend dependency breaks
+# (e.g. EIA API change, Cloudflare worker quota hit), the tool quietly
+# starts returning errors but every paywall and call-count metric looks
+# fine because requests are still arriving. This detector watches the
+# `status` field on mcp_call_log over the past hour and flags any tool
+# whose error rate crosses 20% with enough volume to matter.
+_MCP_ERROR_RATE_THRESHOLD = 0.20      # 20%
+_MCP_ERROR_MIN_VOLUME     = 10        # ignore noise from low-volume tools
+
+
+def check_mcp_tool_error_rate() -> list[dict]:
+    """Per-tool error rate over the last hour. Pre-empts the "everything
+    works but the user is confused" failure mode where a single tool is
+    silently failing for everyone."""
+    findings: list[dict] = []
+    conn = _db()
+    if not conn:
+        return findings
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("SELECT to_regclass('public.mcp_call_log')")
+                if not (cur.fetchone() or [None])[0]:
+                    return findings
+            except Exception:
+                return findings
+
+            cur.execute("""
+                SELECT tool,
+                       COUNT(*) AS total,
+                       SUM(CASE WHEN status IN ('error', 'fail', 'failed',
+                                                '500', '502', '503', '504')
+                                THEN 1 ELSE 0 END) AS errors
+                  FROM mcp_call_log
+                 WHERE timestamp >= NOW() - INTERVAL '1 hour'
+                   AND tool IS NOT NULL
+                 GROUP BY tool
+                HAVING COUNT(*) >= %s
+                 ORDER BY errors DESC
+            """, (_MCP_ERROR_MIN_VOLUME,))
+            for row in cur.fetchall():
+                tool, total, errs = row[0], int(row[1] or 0), int(row[2] or 0)
+                if total <= 0: continue
+                rate = errs / total
+                if rate >= _MCP_ERROR_RATE_THRESHOLD:
+                    findings.append({
+                        "issue":  "mcp_tool_error_spike",
+                        "url":    f"mcp_call_log: tool={tool}",
+                        "count":  errs,
+                        "detail": (f"Tool '{tool}' has {errs}/{total} errors "
+                                   f"in the last hour ({rate*100:.0f}% error "
+                                   f"rate). Check the backend route it calls "
+                                   f"(see dchub_mcp_server.py:_api_get target) "
+                                   f"and the upstream dependency (EIA, OSM, "
+                                   f"Cloudflare Vectorize, etc.)."),
+                    })
+    finally:
+        try: conn.close()
+        except Exception: pass
+    return findings
+
+
+# ── 8. Traffic anomaly (sudden drop or unusual spike) ─────────────
+#
+# Phase SS (2026-05-15). When the CF Pages worker, the MCP proxy, or
+# the Railway backend drops requests (TLS error, DNS hiccup, rate-limit
+# cascade), the most visible symptom is *missing traffic* — but nothing
+# else throws. This detector compares the last hour's MCP call volume
+# to the same-hour-of-week 7d median and flags drops or spikes ≥ 3×.
+_TRAFFIC_DROP_RATIO  = 0.30   # current < 30% of baseline = drop
+_TRAFFIC_SPIKE_RATIO = 5.0    # current > 5× baseline   = spike
+_TRAFFIC_MIN_BASELINE = 5     # don't divide-by-zero on quiet hours
+
+
+def check_traffic_anomaly() -> list[dict]:
+    """Compares this hour's MCP call volume to last-7-days same-hour
+    median. Surfaces silent outages (drop) and bot/abuse spikes."""
+    findings: list[dict] = []
+    conn = _db()
+    if not conn:
+        return findings
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("SELECT to_regclass('public.mcp_call_log')")
+                if not (cur.fetchone() or [None])[0]:
+                    return findings
+            except Exception:
+                return findings
+
+            # Current: rows in the last 60 min.
+            cur.execute("""
+                SELECT COUNT(*) FROM mcp_call_log
+                 WHERE timestamp >= NOW() - INTERVAL '1 hour'
+            """)
+            current = int((cur.fetchone() or [0])[0] or 0)
+
+            # Baseline: rows in each of the last 7 same-hour-of-week windows.
+            cur.execute("""
+                WITH hourly AS (
+                    SELECT date_trunc('hour', timestamp) AS hr,
+                           COUNT(*)                       AS n
+                      FROM mcp_call_log
+                     WHERE timestamp >= NOW() - INTERVAL '8 days'
+                       AND timestamp <  NOW() - INTERVAL '1 hour'
+                       AND EXTRACT(DOW  FROM timestamp) =
+                           EXTRACT(DOW  FROM NOW())
+                       AND EXTRACT(HOUR FROM timestamp) =
+                           EXTRACT(HOUR FROM NOW())
+                     GROUP BY hr
+                )
+                SELECT COALESCE(
+                    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY n), 0
+                ) AS median_n
+                  FROM hourly
+            """)
+            baseline = float((cur.fetchone() or [0])[0] or 0)
+
+        if baseline < _TRAFFIC_MIN_BASELINE:
+            return findings  # not enough history yet — skip rather than spam
+
+        if current < baseline * _TRAFFIC_DROP_RATIO:
+            findings.append({
+                "issue":  "mcp_traffic_drop",
+                "url":    "mcp_call_log: last 1h",
+                "count":  current,
+                "detail": (f"MCP call volume in the last hour ({current}) is "
+                           f"<{int(_TRAFFIC_DROP_RATIO*100)}% of the 7-day "
+                           f"same-hour median ({baseline:.0f}). Likely causes: "
+                           f"CF Pages worker outage, MCP proxy down, Railway "
+                           f"backend not responding, or DNS/TLS issue. Check "
+                           f"/healthz and CF dashboard."),
+            })
+        elif current > baseline * _TRAFFIC_SPIKE_RATIO:
+            findings.append({
+                "issue":  "mcp_traffic_spike",
+                "url":    "mcp_call_log: last 1h",
+                "count":  current,
+                "detail": (f"MCP call volume in the last hour ({current}) is "
+                           f">{int(_TRAFFIC_SPIKE_RATIO)}× the 7-day same-hour "
+                           f"median ({baseline:.0f}). Likely causes: bot/abuse "
+                           f"campaign, viral citation, runaway client retry "
+                           f"loop, or a new integration going live. Check "
+                           f"mcp_call_log GROUP BY client_name for the source."),
+            })
+    finally:
+        try: conn.close()
+        except Exception: pass
+    return findings
+
+
 def scan_all() -> list[dict]:
     """Run every detector. Return a flat list of finding dicts ready
     to merge into actionable_backend_issues."""
@@ -460,7 +705,10 @@ def scan_all() -> list[dict]:
                check_tier_consistency,
                check_cron_coverage,
                check_cron_collisions,
-               check_csp_drift):
+               check_csp_drift,
+               check_iso_freshness,
+               check_mcp_tool_error_rate,
+               check_traffic_anomaly):
         try:
             out.extend(fn() or [])
         except Exception as e:
