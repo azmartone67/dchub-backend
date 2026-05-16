@@ -256,11 +256,53 @@ def _load_markets_dynamic():
             elif isinstance(sample, str):
                 # List of slug strings
                 return [r[0].replace(" ", "-").replace(",", "") for r in rows]
+            elif isinstance(sample, tuple):
+                # Phase ZZ (2026-05-16) — CRITICAL FIX. _MARKETS_HARDCODED is
+                # a list of 6-tuples (slug, name, state, iso, lat, lon) but
+                # this branch was MISSING, so the function fell through to
+                # `return None` on EVERY call. Result: MARKETS = the 30
+                # hardcoded markets only, never the 200+ dynamic ones; the
+                # daily recompute refreshed only 30 of 276 DCPI markets,
+                # leaving 246 frozen at 3-5 days stale. /api/v1/dcpi/scores
+                # showed median age 5.1 days as a direct consequence. Auto-
+                # press kept writing about Cheyenne because it was one of
+                # the few markets with fresh data.
+                #
+                # Now: emit tuples in the canonical shape. iso is derived
+                # via _state_to_iso() (the common case), lat/lon are None
+                # which gather_metrics_for_market handles gracefully — it
+                # uses state + iso for its lookups, not coordinates.
+                out_tuples = []
+                for r in rows:
+                    slug, name, state, fac, op_mw, pipe_mw = r
+                    clean_slug = slug.replace(" ", "-").replace(",", "")
+                    iso = _state_to_iso(state)
+                    out_tuples.append((clean_slug, name, state, iso, None, None))
+                return out_tuples
         return None
     except Exception as e:
         import logging
         logging.warning(f"_load_markets_dynamic direct DB failed: {e}")
         return None
+
+
+def _state_to_iso(state: str) -> str:
+    """Phase ZZ (2026-05-16): map a US state code to its primary ISO/RTO.
+    Used by _load_markets_dynamic when emitting tuple-shape markets.
+    Not exact (some states span multiple ISOs) — picks the dominant one
+    for data-center siting purposes."""
+    return {
+        "CA":"CAISO","TX":"ERCOT","NY":"NYISO",
+        "MA":"ISONE","NH":"ISONE","VT":"ISONE","ME":"ISONE","CT":"ISONE","RI":"ISONE",
+        "PA":"PJM","NJ":"PJM","DE":"PJM","MD":"PJM","VA":"PJM","WV":"PJM","DC":"PJM",
+        "OH":"PJM","KY":"PJM","NC":"PJM","IN":"PJM","IL":"PJM","MI":"PJM",
+        "MN":"MISO","WI":"MISO","IA":"MISO","ND":"MISO","SD":"MISO","MO":"MISO",
+        "AR":"MISO","LA":"MISO","MS":"MISO",
+        "KS":"SPP","OK":"SPP","NE":"SPP",
+        "AZ":"WECC","NV":"WECC","UT":"WECC","CO":"WECC","NM":"WECC","ID":"WECC",
+        "MT":"WECC","WY":"WECC","WA":"WECC","OR":"WECC",
+        "TN":"TVA","AL":"SOCO","GA":"SOCO","SC":"SOCO","FL":"FRCC",
+    }.get((state or "").upper(), "")
 
 
 MARKETS = _load_markets_dynamic() or _MARKETS_HARDCODED
@@ -492,16 +534,27 @@ def derive_top_signals(market: tuple, metrics: dict, c_score: float, e_score: fl
 # ---------------------------------------------------------------------------
 # Recompute (called by cron + manual)
 # ---------------------------------------------------------------------------
-def recompute_all_scores(source: str = "manual") -> dict:
+def recompute_all_scores(source: str = "manual",
+                          offset: int = 0,
+                          limit: int | None = None) -> dict:
+    """Phase ZZ (2026-05-16): chunked execution. Single-shot recompute of
+    200+ markets exceeded the cron's 120s timeout, so only ~30 markets
+    completed each run. New `offset`+`limit` params let the cron drive
+    the recompute in 3 chunks of ~100 markets, each finishing well under
+    timeout. With no params (offset=0, limit=None), behavior is identical
+    to the old single-shot for back-compat.
+    """
     _ensure_tables()
     started = datetime.datetime.now(datetime.timezone.utc)
     scored = 0
     errors = 0
     error_notes = []
+    chunk_label = (f" chunk[{offset}:{offset + (limit or 0)}]"
+                   if limit else "")
 
     with _conn() as c, c.cursor() as cur:
         cur.execute("INSERT INTO dcpi_runs (started_at, source) VALUES (%s, %s) RETURNING id",
-                    (started, source))
+                    (started, source + chunk_label))
         run_id = cur.fetchone()[0]
         c.commit()
 
@@ -540,7 +593,11 @@ def recompute_all_scores(source: str = "manual") -> dict:
     #
     # MARKETS itself is `_load_markets_dynamic() or _MARKETS_HARDCODED` —
     # both of those return 6-tuples, so unpacking is safe.
-    for m in MARKETS:
+    # Phase ZZ: chunked slice. When the cron passes offset+limit, only
+    # that slice runs in this invocation. Total coverage achieved by
+    # running multiple chunks per cron tick (see dcpi-daily.yml).
+    _slice = MARKETS[offset:(offset + limit)] if limit else MARKETS[offset:]
+    for m in _slice:
         slug, name, state, iso, lat, lon = m
         try:
             metrics = gather_metrics_for_market(m)
@@ -1260,12 +1317,33 @@ def api_oembed():
 
 @dcpi_bp.route("/api/v1/dcpi/recompute", methods=["POST"])
 def api_recompute():
+    """Trigger a DCPI recompute. Phase ZZ (2026-05-16) adds optional
+    chunking params for the GitHub Actions cron, which has a 120s
+    workflow timeout that the full 276-market recompute overruns.
+
+    Query params:
+        offset  start index into MARKETS (default 0)
+        limit   max markets to process in this chunk (default: all)
+        admin_key  shared secret (also accepted via X-Admin-Key header)
+
+    Cron usage (dcpi-daily.yml drives 3 chunks back-to-back):
+        POST /api/v1/dcpi/recompute?offset=0&limit=100
+        POST /api/v1/dcpi/recompute?offset=100&limit=100
+        POST /api/v1/dcpi/recompute?offset=200&limit=100
+    """
     # Accept only with admin token; simple shared-secret check
     expected = os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY")
     provided = request.headers.get("X-Admin-Key") or request.args.get("admin_key")
     if expected and provided != expected:
         return jsonify(error="unauthorized"), 401
-    res = recompute_all_scores(source="api")
+    try:    offset = max(0, int(request.args.get("offset") or 0))
+    except ValueError: offset = 0
+    try:    limit  = int(request.args.get("limit")) if request.args.get("limit") else None
+    except ValueError: limit = None
+    res = recompute_all_scores(source="api", offset=offset, limit=limit)
+    res["total_markets_known"] = len(MARKETS)
+    res["chunk_offset"]        = offset
+    res["chunk_limit"]         = limit
     return jsonify(res), 200
 
 
