@@ -19336,6 +19336,17 @@ try:
 except Exception as _e:
     print(f"[main] brain_consistency_radar register failed: {_e}", file=sys.stderr)
 
+# Phase TT-1 (2026-05-15): single tier resolver. ONE function answers
+# "what tier is this caller?" — replaces 5 divergent implementations.
+# Existing callers continue to work; new code uses get_auth_context().
+# /api/v1/whoami exposes the resolver for end-to-end testing.
+try:
+    from routes.auth_context import auth_context_bp
+    if auth_context_bp is not None:
+        app.register_blueprint(auth_context_bp)
+except Exception as _e:
+    print(f"[main] auth_context register failed: {_e}", file=sys.stderr)
+
 # === Brain v2 · Layer 3 freshness fields ===
 try:
     from flask import jsonify as _bv2_jsonify
