@@ -2457,42 +2457,61 @@ def public_dashboard():
     return resp
 
 
-# Canonical CSP applied to /dcpi (phase 284). Mirrors the Pages-level CSP
-# applied to / and /pricing — same hosts, same directive coverage. Kept as
-# a module-level constant so the per-market /dcpi/<slug> page can reuse it
-# without duplication.
-_DCPI_CSP = (
-    "default-src 'self'; "
-    "script-src 'self' 'unsafe-inline' "
-        "https://cdnjs.cloudflare.com https://unpkg.com https://cdn.jsdelivr.net "
-        "https://www.googletagmanager.com https://accounts.google.com "
-        "https://static.cloudflareinsights.com; "
-    "script-src-elem 'self' 'unsafe-inline' "
-        "https://cdnjs.cloudflare.com https://unpkg.com https://cdn.jsdelivr.net "
-        "https://www.googletagmanager.com https://accounts.google.com "
-        "https://static.cloudflareinsights.com; "
-    "style-src 'self' 'unsafe-inline' "
-        "https://fonts.googleapis.com https://cdnjs.cloudflare.com "
-        "https://accounts.google.com; "
-    "style-src-elem 'self' 'unsafe-inline' "
-        "https://fonts.googleapis.com https://cdnjs.cloudflare.com "
-        "https://accounts.google.com; "
-    "img-src 'self' data: https:; "
-    "font-src 'self' data: https: https://fonts.gstatic.com; "
-    # Phase RR (2026-05-15): add stats.g.doubleclick.net for GA4 + plausible
-    # to match the global frontend /_headers CSP. The /dcpi page's CSP was
-    # narrower than the rest of the site, blocking GA4's standard
-    # doubleclick beacon and any plausible.io analytics calls.
-    "connect-src 'self' "
-        "https://dchub-backend-production.up.railway.app "
-        "https://www.google-analytics.com https://stats.g.doubleclick.net "
-        "https://cloudflareinsights.com https://plausible.io; "
-    "frame-src 'self' https://accounts.google.com; "
-    "frame-ancestors 'self'; "
-    "base-uri 'self'; "
-    "form-action 'self'; "
-    "report-uri /api/csp-report"
-)
+# Phase TT-2 (2026-05-15) — single source of truth for the CSP.
+#
+# Why this exists: /dcpi is served by Flask (this file), not CF Pages.
+# The dchub-frontend/_headers file ONLY applies to Pages-served static
+# assets (/, /pricing, /news, etc.) — it doesn't reach proxied responses.
+# So Flask MUST set the CSP itself, but it must be EXACTLY the same as
+# the Pages CSP to avoid the drift bug (PR #188 fixed three live cases).
+#
+# Sync rule: if you change /_headers in dchub-frontend, also bump this
+# constant. The util/csp_canonical.get_csp() helper (Phase TT-2) tries
+# to fetch /_headers from disk first (when both repos sit side-by-side
+# in dev) and falls back to this hardcoded copy. In production they're
+# separate deploys so the fallback wins.
+try:
+    from util.csp_canonical import get_canonical_csp as _get_canonical_csp
+    _DCPI_CSP = _get_canonical_csp()
+except Exception:
+    # Hardcoded fallback — must match dchub-frontend/_headers exactly.
+    _DCPI_CSP = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' "
+            "https://cdnjs.cloudflare.com https://unpkg.com https://cdn.jsdelivr.net "
+            "https://www.googletagmanager.com https://accounts.google.com "
+            "https://static.cloudflareinsights.com https://plausible.io; "
+        "script-src-elem 'self' 'unsafe-inline' "
+            "https://cdnjs.cloudflare.com https://unpkg.com https://cdn.jsdelivr.net "
+            "https://www.googletagmanager.com https://accounts.google.com "
+            "https://static.cloudflareinsights.com https://plausible.io; "
+        "style-src 'self' 'unsafe-inline' "
+            "https://fonts.googleapis.com https://cdnjs.cloudflare.com "
+            "https://accounts.google.com; "
+        "style-src-elem 'self' 'unsafe-inline' "
+            "https://fonts.googleapis.com https://cdnjs.cloudflare.com "
+            "https://accounts.google.com; "
+        "img-src 'self' data: https:; "
+        "font-src 'self' data: https: https://fonts.gstatic.com; "
+        "connect-src 'self' https://plausible.io "
+            "https://dchub-backend-production.up.railway.app "
+            "https://dchub-backend-production-f7dd.up.railway.app "
+            "https://dchub-api-production.up.railway.app "
+            "https://cdnjs.cloudflare.com https://gateway.ai.cloudflare.com "
+            "https://www.google-analytics.com https://stats.g.doubleclick.net "
+            "https://accounts.google.com https://cloudflareinsights.com "
+            "https://www.google.com https://nominatim.openstreetmap.org "
+            "https://overpass-api.de https://overpass.kumi.systems "
+            "https://overpass.private.coffee https://*.arcgis.com "
+            "https://geo.dot.gov https://*.usgs.gov "
+            "https://carto.nationalmap.gov https://hazards.fema.gov "
+            "https://geodata.epa.gov https://geocoding.geo.census.gov; "
+        "frame-src 'self' https://accounts.google.com; "
+        "frame-ancestors 'self'; "
+        "base-uri 'self'; "
+        "form-action 'self'; "
+        "report-uri /api/csp-report"
+    )
 
 
 @dcpi_bp.route("/dcpi/<slug>", methods=["GET"], strict_slashes=False)
