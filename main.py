@@ -8365,9 +8365,21 @@ def create_portal_session():
 # MARKET COMPARISON ENDPOINTS
 # =============================================================================
 
+# Phase SS (2026-05-15): tier-gate /api/v1/markets/list.
+# The startup tier_gating verifier flagged this endpoint as
+# `🚨 UNGATED: /api/v1/markets/list (tier=free) returned 200 -- should be 401/403`.
+# The LOCKED_GATE_MANIFEST at main.py:16858 declares it as a 'free' tier
+# endpoint — meaning ANY authenticated key (even free tier) should reach
+# it but anonymous callers must not. The handler was missing the gate
+# decorator entirely, so anonymous traffic got 200s.
 @app.route('/api/v1/markets/list', methods=['GET'])
+@require_plan('free')
 def list_markets():
-    """List all available markets — curated + auto-discovered US + international."""
+    """List all available markets — curated + auto-discovered US + international.
+
+    Tier: free (any authenticated API key). Anonymous callers get 401 via
+    the require_plan decorator; rate-limited per-key thereafter.
+    """
     conn = get_db()
     try:
         c = conn.cursor()
