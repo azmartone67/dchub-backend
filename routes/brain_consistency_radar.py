@@ -794,6 +794,209 @@ def check_mcp_conversion_stale() -> list[dict]:
     return findings
 
 
+# ── Phase DDD (2026-05-16) — organism detectors ───────────────────
+# MCP + Media as living organisms means the brain ALSO watches their
+# growth signals — declining call volume, demand gaps not addressed,
+# source-of-truth score dropping, hot topics ignored. Each detector
+# below is a SQL probe against the new snapshot tables from
+# routes/mcp_growth.py + routes/media_pulse.py.
+
+def check_mcp_growth_declining() -> list[dict]:
+    """Flag when 7-day MCP call volume drops >25% week-over-week.
+    Reads mcp_growth_snapshots; needs at least one snapshot from 6-8d ago."""
+    conn = _db()
+    if conn is None: return []
+    findings: list[dict] = []
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("SELECT to_regclass('public.mcp_growth_snapshots')")
+                if not (cur.fetchone() or [None])[0]: return findings
+            except Exception:
+                return findings
+            cur.execute("""
+                SELECT tool_calls_7d, snapshot_date
+                  FROM mcp_growth_snapshots
+                 ORDER BY snapshot_date DESC LIMIT 2
+            """)
+            rows = cur.fetchall()
+            if len(rows) < 2: return findings
+            today_calls = int(rows[0][0] or 0)
+            prev_calls = int(rows[1][0] or 0)
+            if prev_calls < 100: return findings  # too low-volume for trend signal
+            pct = round(100.0 * (today_calls - prev_calls) / prev_calls, 1)
+            if pct <= -25:
+                findings.append({
+                    "issue":  "mcp_growth_declining",
+                    "url":    "mcp_growth_snapshots: latest 2",
+                    "count":  abs(int(pct)),
+                    "detail": (f"MCP call volume dropped {pct}% week-over-week "
+                               f"({prev_calls} → {today_calls}). Investigate: "
+                               f"(1) /api/v1/mcp/funnel for platform changes, "
+                               f"(2) recent paywall changes, (3) CF worker "
+                               f"version drift, (4) outbound MCP catalog updates."),
+                })
+    finally:
+        try: conn.close()
+        except Exception: pass
+    return findings
+
+
+def check_mcp_demand_gap() -> list[dict]:
+    """Flag the #1 demand gap: a tool with 50+ paywall signals and 0
+    conversions over 7d. Means there's strong agent demand for something
+    we either don't have, paywall too high, or our CTA is broken."""
+    conn = _db()
+    if conn is None: return []
+    findings: list[dict] = []
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("""
+                    SELECT to_regclass('public.mcp_upgrade_signals'),
+                           to_regclass('public.mcp_pair_codes')
+                """)
+                regs = cur.fetchone() or [None,None]
+                if not (regs[0] and regs[1]): return findings
+            except Exception:
+                return findings
+            cur.execute("""
+                WITH paid_demand AS (
+                  SELECT tool, COUNT(*) AS signals
+                    FROM mcp_upgrade_signals
+                   WHERE created_at >= NOW() - INTERVAL '7 days'
+                     AND tool IS NOT NULL
+                   GROUP BY tool HAVING COUNT(*) >= 50
+                ),
+                converted AS (
+                  SELECT tool_name AS tool, COUNT(*) AS convs
+                    FROM mcp_pair_codes
+                   WHERE redeemed_at IS NOT NULL
+                     AND redeemed_at >= NOW() - INTERVAL '7 days'
+                   GROUP BY tool_name
+                )
+                SELECT p.tool, p.signals
+                  FROM paid_demand p LEFT JOIN converted c USING (tool)
+                 WHERE COALESCE(c.convs, 0) = 0
+                 ORDER BY p.signals DESC LIMIT 1
+            """)
+            r = cur.fetchone()
+            if r:
+                tool, sigs = r[0], int(r[1] or 0)
+                findings.append({
+                    "issue":  "mcp_demand_gap_unaddressed",
+                    "url":    f"mcp_upgrade_signals: tool={tool}",
+                    "count":  sigs,
+                    "detail": (f"Tool '{tool}' had {sigs} paywall-hit signals in "
+                               f"7d but ZERO conversions. The strongest expressed "
+                               f"demand on the platform; investigate the CTA, the "
+                               f"tier threshold, or build a free-tier preview."),
+                })
+    finally:
+        try: conn.close()
+        except Exception: pass
+    return findings
+
+
+def check_source_of_truth_declining() -> list[dict]:
+    """Flag when our media source-of-truth score drops >15 points week-
+    over-week. Reads media_pulse_snapshots."""
+    conn = _db()
+    if conn is None: return []
+    findings: list[dict] = []
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("SELECT to_regclass('public.media_pulse_snapshots')")
+                if not (cur.fetchone() or [None])[0]: return findings
+            except Exception:
+                return findings
+            cur.execute("""
+                SELECT source_of_truth_score
+                  FROM media_pulse_snapshots
+                 ORDER BY snapshot_date DESC LIMIT 2
+            """)
+            rows = cur.fetchall()
+            if len(rows) < 2: return findings
+            today = int(rows[0][0] or 0)
+            prev  = int(rows[1][0] or 0)
+            if (prev - today) >= 15:
+                findings.append({
+                    "issue":  "source_of_truth_declining",
+                    "url":    "media_pulse_snapshots: latest 2",
+                    "count":  prev - today,
+                    "detail": (f"Source-of-truth score dropped {prev - today}pts "
+                               f"week-over-week ({prev} → {today}). AI citations "
+                               f"or news mentions are softening. Push auto-press "
+                               f"diversification + check share-of-voice trend."),
+                })
+    finally:
+        try: conn.close()
+        except Exception: pass
+    return findings
+
+
+def check_media_topic_unaddressed() -> list[dict]:
+    """Flag when a hot news topic (5+ news items in 24h mentioning a
+    DCPI market) has NO press-release response in 48h. The media organism
+    should be commenting on its own data's relevance to industry events."""
+    conn = _db()
+    if conn is None: return []
+    findings: list[dict] = []
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("""
+                    SELECT to_regclass('public.news'),
+                           to_regclass('public.auto_press_releases')
+                """)
+                regs = cur.fetchone() or [None,None]
+                if not (regs[0] and regs[1]): return findings
+            except Exception:
+                return findings
+            # Look for any market mentioned in 5+ news items in 24h
+            cur.execute("""
+                SELECT title FROM auto_press_releases
+                 WHERE generated_for >= CURRENT_DATE - INTERVAL '2 days'
+                   AND title IS NOT NULL
+            """)
+            recent_press_titles = " ".join(r[0].lower() for r in cur.fetchall() if r and r[0])
+
+            cur.execute("""
+                SELECT DISTINCT ON (market_slug) market_slug, market_name
+                  FROM market_power_scores
+                 WHERE published = true
+                 ORDER BY market_slug, computed_at DESC
+            """)
+            markets = cur.fetchall()
+
+            for slug, name in markets:
+                if not name: continue
+                # Count news mentions of this market name
+                cur.execute("""
+                    SELECT COUNT(*) FROM news
+                     WHERE published_date >= NOW() - INTERVAL '24 hours'
+                       AND (LOWER(COALESCE(title,'')) LIKE %s
+                            OR LOWER(COALESCE(summary,'')) LIKE %s)
+                """, (f"%{name.lower()}%", f"%{name.lower()}%"))
+                n = int((cur.fetchone() or [0])[0] or 0)
+                if n >= 5 and name.lower() not in recent_press_titles:
+                    findings.append({
+                        "issue":  "media_topic_unaddressed",
+                        "url":    f"news: market={slug}",
+                        "count":  n,
+                        "detail": (f"Hot topic '{name}' has {n} news mentions in "
+                                   f"last 24h but no auto-press response in 48h. "
+                                   f"Trigger /api/v1/marketing/auto-generate with "
+                                   f"topic context for {name}."),
+                    })
+                    if len(findings) >= 3: break  # cap at 3 — don't flood
+    finally:
+        try: conn.close()
+        except Exception: pass
+    return findings
+
+
 def scan_all() -> list[dict]:
     """Run every detector. Return a flat list of finding dicts ready
     to merge into actionable_backend_issues."""
@@ -807,7 +1010,12 @@ def scan_all() -> list[dict]:
                check_discovery_stalled,
                check_iso_metric_dropped,
                check_press_repetition,
-               check_mcp_conversion_stale):
+               check_mcp_conversion_stale,
+               # Phase DDD organism detectors
+               check_mcp_growth_declining,
+               check_mcp_demand_gap,
+               check_source_of_truth_declining,
+               check_media_topic_unaddressed):
         try:
             out.extend(fn() or [])
         except Exception as e:

@@ -213,6 +213,33 @@ def _action_worker_source_unreachable(finding: dict) -> tuple[str | None, dict |
     return None, None
 
 
+# ── Phase DDD (2026-05-16) — organism autopilot actions ──────────────
+def _action_mcp_growth_declining(finding: dict) -> tuple[str | None, dict | None]:
+    """MCP volume dropped WoW. No autonomous fix — could be CF outage,
+    paywall change, or upstream issue. Escalate so humans investigate."""
+    return None, None
+
+
+def _action_mcp_demand_gap(finding: dict) -> tuple[str | None, dict | None]:
+    """Top demand-gap tool has 0 conversions on 50+ signals. The autonomous
+    fix is to TRIGGER a fresh snapshot of growth data + ensure a Layer 5
+    proposal exists for the tool. POST /api/v1/mcp/growth/snapshot
+    captures the state for the brain to learn from."""
+    return "/api/v1/mcp/growth/snapshot", {}
+
+
+def _action_source_of_truth_declining(finding: dict) -> tuple[str | None, dict | None]:
+    """SoT score dropped. Autonomous fix: trigger an off-cycle press
+    release to refresh our voice in the conversation."""
+    return "/api/v1/marketing/repost-now?force_topic_rotation=1", {}
+
+
+def _action_media_topic_unaddressed(finding: dict) -> tuple[str | None, dict | None]:
+    """Hot topic in news with no press response. Autonomously trigger
+    auto-generate so we comment on the story while it's still fresh."""
+    return "/api/v1/marketing/auto-generate", {}
+
+
 _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
     "dcpi_partial_recompute": {
         "action":      _action_dcpi_partial_recompute,
@@ -292,6 +319,31 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
         "method":      None,
         "use_admin":   False,
         "description": "Escalation-only: GITHUB_TOKEN env var missing — radar can't fetch private _worker.js source",
+    },
+    # Phase DDD (2026-05-16) — organism patterns.
+    "mcp_growth_declining": {
+        "action":      _action_mcp_growth_declining,
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: MCP volume dropped >25% WoW — likely upstream issue",
+    },
+    "mcp_demand_gap_unaddressed": {
+        "action":      _action_mcp_demand_gap,
+        "method":      "POST",
+        "use_admin":   True,
+        "description": "Persist a fresh growth snapshot so Layer 5 has up-to-date demand-gap data to propose tool changes",
+    },
+    "source_of_truth_declining": {
+        "action":      _action_source_of_truth_declining,
+        "method":      "POST",
+        "use_admin":   True,
+        "description": "Trigger off-cycle press release to refresh our voice in the news conversation",
+    },
+    "media_topic_unaddressed": {
+        "action":      _action_media_topic_unaddressed,
+        "method":      "POST",
+        "use_admin":   True,
+        "description": "Hot news topic with no press response — autonomously generate one while the story is fresh",
     },
 }
 

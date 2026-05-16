@@ -19419,6 +19419,24 @@ try:
 except Exception as _e:
     print(f"[main] ai_citation_tracker register failed: {_e}", file=sys.stderr)
 
+# Phase DDD (2026-05-16): MCP + Media as living organisms.
+# mcp_growth.py exposes /api/v1/mcp/growth + /demand-gaps + snapshot cron.
+# media_pulse.py exposes /api/v1/media/source-of-truth + /topic-pulse.
+# Brain detectors in routes/brain_consistency_radar.py consume the
+# snapshot tables to flag declining health; autopilot patterns in
+# routes/brain_autopilot.py auto-trigger remediations (off-cycle press,
+# growth-snapshot refresh, etc).
+try:
+    from routes.mcp_growth import mcp_growth_bp
+    app.register_blueprint(mcp_growth_bp)
+except Exception as _e:
+    print(f"[main] mcp_growth register failed: {_e}", file=sys.stderr)
+try:
+    from routes.media_pulse import media_pulse_bp
+    app.register_blueprint(media_pulse_bp)
+except Exception as _e:
+    print(f"[main] media_pulse register failed: {_e}", file=sys.stderr)
+
 # Phase TT-1 (2026-05-15): single tier resolver. ONE function answers
 # "what tier is this caller?" — replaces 5 divergent implementations.
 # Existing callers continue to work; new code uses get_auth_context().
