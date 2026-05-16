@@ -270,13 +270,24 @@ def release_lock(c):
 
 
 def heal_cycle():
-    """One full cycle: probe → detect → fix → log."""
+    """One full cycle: probe → detect → fix → log.
+
+    Phase SS (2026-05-15) — added per-fixer cardinality tracking. Prior
+    log line said "31 fixed" per cycle but didn't break down WHICH fixers
+    fired — making it impossible to spot livelock (same fix re-applied
+    forever because the underlying data never settles). The new
+    `by_fixer` counter lets us see e.g. "backfill_press_releases: 25"
+    indicating that ONE fixer is doing 80% of the work and the real
+    drift lives at its target.
+    """
     lock = acquire_lock()
     if lock is None:
         log.info("self_heal: another worker holds lock, skipping")
         return {"skipped": True}
     cycle_id = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
-    summary = {"cycle_id": cycle_id, "probes": 0, "issues": 0, "fixes_ok": 0, "fixes_fail": 0, "events": []}
+    summary = {"cycle_id": cycle_id, "probes": 0, "issues": 0,
+                "fixes_ok": 0, "fixes_fail": 0, "events": [],
+                "by_fixer": {}, "by_pattern": {}}
     try:
         ensure_log_table()
         for path, kind in PROBES:
@@ -287,6 +298,8 @@ def heal_cycle():
                 continue
             for pat_name, fix_name in hits:
                 summary["issues"] += 1
+                summary["by_pattern"][pat_name] = \
+                    summary["by_pattern"].get(pat_name, 0) + 1
                 fix = FIXES.get(fix_name, fix_log_only)
                 try:
                     ok, details = fix()
@@ -294,6 +307,8 @@ def heal_cycle():
                     ok, details = False, traceback.format_exc()[:1000]
                 if ok: summary["fixes_ok"] += 1
                 else: summary["fixes_fail"] += 1
+                summary["by_fixer"][fix_name] = \
+                    summary["by_fixer"].get(fix_name, 0) + 1
                 log_event(cycle_id, path, pat_name, fix_name, ok, details)
                 summary["events"].append({
                     "endpoint": path, "pattern": pat_name,
@@ -301,9 +316,28 @@ def heal_cycle():
                 })
     finally:
         release_lock(lock)
-    log.info("self_heal cycle %s: %s probes, %s issues, %s fixed, %s failed",
+
+    # Phase SS: emit the dominant fixer + pattern alongside the totals.
+    # If 80%+ of fixes come from one fixer/pattern, that's the real drift
+    # we should kill at the source rather than patch every 5 min.
+    top_fix = max(summary["by_fixer"].items(), key=lambda x: x[1],
+                   default=("none", 0))
+    top_pat = max(summary["by_pattern"].items(), key=lambda x: x[1],
+                   default=("none", 0))
+    log.info("self_heal cycle %s: %s probes, %s issues, %s fixed, %s failed "
+             "(top_fixer=%s×%s, top_pattern=%s×%s)",
              cycle_id, summary["probes"], summary["issues"],
-             summary["fixes_ok"], summary["fixes_fail"])
+             summary["fixes_ok"], summary["fixes_fail"],
+             top_fix[0], top_fix[1], top_pat[0], top_pat[1])
+
+    # Flag livelock: any single fixer firing 10+ times in one cycle is
+    # almost certainly a repeated patch-the-symptom situation. Emit a
+    # WARNING log so it shows up in Railway alerting without spamming.
+    if top_fix[1] >= 10:
+        log.warning("self_heal LIVELOCK SUSPECTED: fixer '%s' fired %d "
+                     "times this cycle. Investigate the root drift "
+                     "behind pattern '%s' instead of repeatedly patching.",
+                     top_fix[0], top_fix[1], top_pat[0])
     return summary
 
 

@@ -2013,7 +2013,7 @@ buttons.forEach(b => b.addEventListener('click', () => {
         }
         var answer = (data.answer || 'No answer.')
           .replace(/\\n/g, '<br>')
-          .replace(/\[([^\]]+)\]/g, '<strong style="color:#a5b4fc">[$1]</strong>');
+          .replace(/\\[([^\\]]+)\\]/g, '<strong style="color:#a5b4fc">[$1]</strong>');
         out.innerHTML = answer;
       } catch(e) {
         console.error('[Ask DCPI] fetch error', e);
@@ -2057,11 +2057,11 @@ buttons.forEach(b => b.addEventListener('click', () => {
       const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
       let node;
       while (node = walker.nextNode()) {
-        if (/\b(280\+?|276)\s*MARKETS/.test(node.nodeValue)) {
-          node.nodeValue = node.nodeValue.replace(/\b(280\+?|276)\s*MARKETS/, n + ' MARKETS');
+        if (/\\b(280\\+?|276)\\s*MARKETS/.test(node.nodeValue)) {
+          node.nodeValue = node.nodeValue.replace(/\\b(280\\+?|276)\\s*MARKETS/, n + ' MARKETS');
         }
-        if (/\b(280\+?|276)\s+U\.S\./.test(node.nodeValue)) {
-          node.nodeValue = node.nodeValue.replace(/\b(280\+?|276)\s+U\.S\./, n + ' U.S.');
+        if (/\\b(280\\+?|276)\\s+U\\.S\\./.test(node.nodeValue)) {
+          node.nodeValue = node.nodeValue.replace(/\\b(280\\+?|276)\\s+U\\.S\\./, n + ' U.S.');
         }
       }
     })
