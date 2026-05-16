@@ -369,6 +369,101 @@ def derive_verdict(constraint: float, excess: float) -> str:
     return "AVOID"
 
 
+# ─── Phase SS DCPI v2 components ───────────────────────────────────
+# Two additional 0..100 scores that complement the v1 excess/constraint
+# duo. Computed on demand (no schema change) so v1 consumers keep
+# working unchanged; v2 consumers opt in via /api/v1/dcpi/scores/<slug>/v2
+# and the `recommend_market` MCP tool surfaces them in risk_flags.
+
+def compute_water_risk_score(metrics: dict) -> float:
+    """High = more water stress = worse for cooling-heavy DC builds. 0..100.
+
+    Inputs (any may be missing — degrades to neutral 50):
+        water_stress_index    1..5 USGS scale  (5 = extreme)
+        drought_pct           0..100, % of state area in drought
+        cooling_water_avail   m³/day available for industrial use (optional)
+    """
+    stress  = metrics.get("water_stress_index")
+    drought = metrics.get("drought_pct")
+    avail   = metrics.get("cooling_water_avail")
+
+    parts, weights = [], []
+    if stress is not None:
+        # USGS 1..5 → 0..100 (1=>0, 5=>100)
+        parts.append(_clip(((float(stress) - 1) / 4.0) * 100, 0, 100))
+        weights.append(0.55)
+    if drought is not None:
+        parts.append(_clip(float(drought), 0, 100))
+        weights.append(0.30)
+    if avail is not None:
+        # 100k m³/day = no penalty; <10k m³/day = max penalty.
+        a = float(avail)
+        scarcity = 1.0 - _clip(a / 100_000.0, 0, 1)
+        parts.append(_clip(scarcity * 100, 0, 100))
+        weights.append(0.15)
+
+    if not parts:
+        return 50.0   # neutral — no signal
+    total_w = sum(weights)
+    return round(sum(p * w for p, w in zip(parts, weights)) / total_w, 1)
+
+
+def compute_renewable_arbitrage_score(metrics: dict) -> float:
+    """High = bigger arbitrage opportunity (curtailed clean MWh + low PPA).
+    0..100. Surfaces markets where excess renewable supply is being wasted
+    *and* a buyer can capture it cheaply.
+
+    Inputs (any may be missing — degrades to neutral 50):
+        curtailment_pct           % of renewable gen curtailed last 12mo
+        ppa_rate_cents_kwh        latest signed PPA price ¢/kWh
+        rps_target_pct            state RPS goal (0..100)
+        renewable_share_pct       current renewable share of state gen
+    """
+    curt    = metrics.get("curtailment_pct")
+    ppa     = metrics.get("ppa_rate_cents_kwh")
+    rps     = metrics.get("rps_target_pct")
+    share   = metrics.get("renewable_share_pct")
+
+    parts, weights = [], []
+    if curt is not None:
+        # 10%+ curtailment = max arbitrage opportunity
+        parts.append(_clip((float(curt) / 10.0) * 100, 0, 100))
+        weights.append(0.40)
+    if ppa is not None:
+        # 3¢/kWh = max opportunity, 8¢/kWh = none
+        ppa_f = float(ppa)
+        parts.append(_clip(((8.0 - ppa_f) / 5.0) * 100, 0, 100))
+        weights.append(0.30)
+    if rps is not None and share is not None:
+        # Compliance gap — RPS target minus current share — drives demand
+        gap = max(0.0, float(rps) - float(share))
+        parts.append(_clip((gap / 50.0) * 100, 0, 100))
+        weights.append(0.30)
+    elif rps is not None:
+        parts.append(_clip((float(rps) / 100.0) * 100, 0, 100))
+        weights.append(0.30)
+
+    if not parts:
+        return 50.0
+    total_w = sum(weights)
+    return round(sum(p * w for p, w in zip(parts, weights)) / total_w, 1)
+
+
+def derive_verdict_v2(constraint: float, excess: float,
+                       water_risk: float, renewable_arb: float) -> str:
+    """v2 verdict adds water + arbitrage as tiebreakers, but stays inside
+    the v1 BUILD/CAUTION/AVOID alphabet so downstream consumers don't need
+    to learn a new vocabulary."""
+    v1 = derive_verdict(constraint, excess)
+    # A BUILD market with extreme water risk drops to CAUTION
+    if v1 == "BUILD" and water_risk >= 80:
+        return "CAUTION"
+    # An AVOID market with strong arbitrage + acceptable water becomes CAUTION
+    if v1 == "AVOID" and renewable_arb >= 75 and water_risk <= 50:
+        return "CAUTION"
+    return v1
+
+
 def estimate_time_to_power(metrics: dict) -> float:
     """Months. Uses queue median wait + capacity headroom adjustment."""
     queue_wait = float(metrics.get("queue_wait_months") or 24)
@@ -780,6 +875,93 @@ def api_score_market(slug):
     if not row: return jsonify(error="market not found", slug=slug), 404
     if row.get("computed_at"): row["computed_at"] = row["computed_at"].isoformat()
     return jsonify(row), 200
+
+
+# ─── Phase SS DCPI v2 enrichment endpoint ──────────────────────────
+# Surfaces water_risk + renewable_arbitrage scores for one market.
+# Pulls signal inputs from usgs_water_stress + eia_retail_rates + the
+# existing market_power_scores row, then computes the v2 components on
+# the fly. No schema change; consumers opt in by adding `?v=2` or by
+# hitting this dedicated path.
+@dcpi_bp.route("/api/v1/dcpi/scores/<slug>/v2", methods=["GET"])
+def api_score_market_v2(slug):
+    _ensure_tables()
+    with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""
+            SELECT * FROM market_power_scores
+             WHERE market_slug = %s
+             ORDER BY computed_at DESC LIMIT 1
+        """, (slug,))
+        row = cur.fetchone()
+        if not row:
+            return jsonify(error="market not found", slug=slug), 404
+
+        state = (row.get("state") or "").upper()
+
+        # Pull water + renewable signals from sibling tables (best effort).
+        water_metrics = {}
+        renew_metrics = {"curtailment_pct": row.get("curtailment_pct")}
+        if state:
+            try:
+                cur.execute("""
+                    SELECT AVG(stress_index) AS stress
+                      FROM usgs_water_stress
+                     WHERE UPPER(state) = %s
+                """, (state,))
+                r = cur.fetchone()
+                if r and r.get("stress") is not None:
+                    water_metrics["water_stress_index"] = float(r["stress"])
+            except Exception:
+                pass
+            try:
+                cur.execute("""
+                    SELECT DISTINCT ON (UPPER(state)) rate_cents_kwh
+                      FROM eia_retail_rates
+                     WHERE LOWER(sector) = 'industrial'
+                       AND UPPER(state) = %s
+                     ORDER BY UPPER(state), period DESC
+                """, (state,))
+                r = cur.fetchone()
+                if r and r.get("rate_cents_kwh") is not None:
+                    renew_metrics["ppa_rate_cents_kwh"] = float(r["rate_cents_kwh"])
+            except Exception:
+                pass
+
+    water_risk   = compute_water_risk_score(water_metrics)
+    renewable_a  = compute_renewable_arbitrage_score(renew_metrics)
+    verdict_v2   = derive_verdict_v2(
+        float(row.get("constraint_score") or 0),
+        float(row.get("excess_power_score") or 0),
+        water_risk, renewable_a,
+    )
+
+    if row.get("computed_at"):
+        row["computed_at"] = row["computed_at"].isoformat()
+    return jsonify(
+        market_slug=row["market_slug"],
+        market_name=row["market_name"],
+        state=row.get("state"),
+        iso=row.get("iso"),
+        v1={
+            "constraint_score":     row.get("constraint_score"),
+            "excess_power_score":   row.get("excess_power_score"),
+            "verdict":              row.get("verdict"),
+            "time_to_power_months": row.get("time_to_power_months"),
+        },
+        v2={
+            "water_risk_score":         water_risk,
+            "renewable_arbitrage_score": renewable_a,
+            "verdict_v2":               verdict_v2,
+            "inputs": {
+                "water_stress_index":  water_metrics.get("water_stress_index"),
+                "ppa_rate_cents_kwh":  renew_metrics.get("ppa_rate_cents_kwh"),
+                "curtailment_pct":     renew_metrics.get("curtailment_pct"),
+            },
+            "notes": "v2 verdict downgrades BUILD→CAUTION when water_risk≥80, "
+                     "upgrades AVOID→CAUTION when renewable_arbitrage≥75 and water_risk≤50",
+        },
+        computed_at=row.get("computed_at"),
+    ), 200
 
 
 # ─────────────────────────────────────────────────────────────────────────
