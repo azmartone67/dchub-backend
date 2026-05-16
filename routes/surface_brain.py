@@ -379,7 +379,7 @@ def track_event():
                 INSERT INTO surface_telemetry
                     (surface_id, event_type, event_target, outcome,
                      params, anon_id, referrer, user_agent, ip_hash)
-                VALUES (%s,%s,%s,%s, %s::jsonb, %s,%s,%s,%s)
+                VALUES (%s,%s,%s,%s, %s::jsonb, %s,%s,%s,%s) ON CONFLICT DO NOTHING
             """, (surface_id, event_type, target, outcome,
                   params_str, anon, referrer, ua, ip_h))
         return jsonify(ok=True), 200
@@ -524,7 +524,7 @@ def auto_log(surface_id: str, event_type: str = "view",
                     INSERT INTO surface_telemetry
                         (surface_id, event_type, event_target, outcome,
                          anon_id, user_agent, ip_hash)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING
                 """, (surface_id, event_type, target, outcome,
                       _anon_id(raw_ip, ua), ua, ip_h))
         finally:
