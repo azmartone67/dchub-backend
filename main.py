@@ -8347,20 +8347,24 @@ def create_portal_session():
 # MARKET COMPARISON ENDPOINTS
 # =============================================================================
 
-# Phase SS (2026-05-15): tier-gate /api/v1/markets/list.
-# The startup tier_gating verifier flagged this endpoint as
-# `🚨 UNGATED: /api/v1/markets/list (tier=free) returned 200 -- should be 401/403`.
-# The LOCKED_GATE_MANIFEST at main.py:16858 declares it as a 'free' tier
-# endpoint — meaning ANY authenticated key (even free tier) should reach
-# it but anonymous callers must not. The handler was missing the gate
-# decorator entirely, so anonymous traffic got 200s.
+# Phase WW (2026-05-16): UNGATE /api/v1/markets/list.
+# The site_qa.py PUBLIC_APIS contract at routes/site_qa.py:128-133
+# explicitly declares this endpoint as "public API, no auth required,
+# 200_no_paywall expected" — and that's correct: this returns market
+# NAMES + counts, which is discovery metadata, not premium data. The
+# prior @require_plan('free') decorator (added Phase SS) made the QA
+# test fail with HTTP 403 every run and is removed here. The LOCKED_GATE_MANIFEST
+# entry has also been moved from 'free' → 'public' to match.
+#
+# Comparable endpoints already public anonymously: /api/v1/dcpi/scores,
+# /api/v1/dcpi/leaderboard, /api/v1/stats, /api/v1/news.
 @app.route('/api/v1/markets/list', methods=['GET'])
-@require_plan('free')
 def list_markets():
     """List all available markets — curated + auto-discovered US + international.
 
-    Tier: free (any authenticated API key). Anonymous callers get 401 via
-    the require_plan decorator; rate-limited per-key thereafter.
+    PUBLIC endpoint (no auth). Returns market metadata (names, counts,
+    pipeline MW, $/kWh). Premium per-market intelligence lives in the
+    gated tools like get_market_intel and analyze_site.
     """
     conn = get_db()
     try:
@@ -16854,7 +16858,8 @@ LOCKED_GATE_MANIFEST = {
         '/api/site-score/batch',
     ],
     'free': [
-        '/api/v1/markets/list',
+        # Phase WW (2026-05-16): /api/v1/markets/list moved → 'public'
+        # to match the site_qa.py PUBLIC_APIS contract (200_no_paywall).
         '/api/v1/facilities/stats',
         '/api/dc-markets',
         '/api/markets',
@@ -16876,6 +16881,9 @@ LOCKED_GATE_MANIFEST = {
         '/ai/discovery',
         '/api/ai/discover',
         '/api/ai/cite',
+        # Phase WW (2026-05-16): moved from 'free' tier. The site_qa.py
+        # PUBLIC_APIS contract expects 200 no-paywall — this matches.
+        '/api/v1/markets/list',
     ],
 }
 

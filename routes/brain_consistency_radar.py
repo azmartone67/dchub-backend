@@ -57,9 +57,22 @@ _LAST_FETCH_ERROR: dict[str, str] = {}
 
 
 def _http_get(url: str, timeout: int = 8) -> tuple[Optional[str], Optional[dict]]:
-    """Returns (body, headers_dict) or (None, None) on error."""
+    """Returns (body, headers_dict) or (None, None) on error.
+
+    Phase WW (2026-05-16): when fetching from raw.githubusercontent.com,
+    auto-add the GITHUB_TOKEN bearer header if present. The frontend repo
+    azmartone67/dchub-frontend is private, so anonymous raw fetches 404
+    silently and the worker_version_drift detector mis-reports the radar
+    as 'source unreachable' instead of detecting the actual production
+    drift. With the token we get the real file body and the comparison works.
+    """
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "dchub-brain-radar/1.0"})
+        headers = {"User-Agent": "dchub-brain-radar/1.0"}
+        if "raw.githubusercontent.com" in url:
+            gh_token = os.environ.get("GITHUB_TOKEN") or os.environ.get("BACKEND_PAT")
+            if gh_token:
+                headers["Authorization"] = f"token {gh_token}"
+        req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.read().decode("utf-8", errors="replace"), dict(resp.headers)
     except urllib.error.HTTPError as e:
