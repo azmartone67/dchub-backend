@@ -49,27 +49,34 @@ ADMIN_KEY = (os.environ.get("DCHUB_ADMIN_KEY")
 # threshold — not a contract, just "if the newest row is older than
 # this, something is probably wrong." Tuned to realistic ingest cadence,
 # env-overridable via DCHUB_RADAR_SLA_<DOMAIN>.
+#
+# Phase QQQ (2026-05-16): retuned SLAs after observing weeks of radar
+# data. The previous values caused noise breaches: slow-moving infra
+# (transmission, fiber, gas, substations) doesn't change on a 30-day
+# cadence — bureaucratic data updates quarterly to annually. Facilities
+# discovery is bursty (10 in a quiet week is normal). News bumped from
+# 18h to 24h to match cron one-miss tolerance (cron now every 3h).
 _DOMAINS = [
     ("facilities",   ["facilities"],
-     ["first_seen", "created_at", "updated_at", "last_seen"],            240),
+     ["first_seen", "created_at", "updated_at", "last_seen"],            336),   # 14d (was 10d, bursty discovery)
     ("transmission", ["transmission_lines", "transmission_segments", "transmission"],
-     ["updated_at", "created_at", "retrieved_at"],                       720),
+     ["updated_at", "created_at", "retrieved_at"],                       1440),  # 60d (was 30d, quarterly updates)
     ("fiber",        ["fiber_routes", "metro_dark_fiber"],
-     ["updated_at", "created_at", "retrieved_at"],                       720),
+     ["updated_at", "created_at", "retrieved_at"],                       1440),  # 60d (was 30d, slow-moving)
     ("gas",          ["gas_pipelines"],
-     ["updated_at", "created_at", "retrieved_at"],                       720),
+     ["updated_at", "created_at", "retrieved_at"],                       1440),  # 60d (was 30d, slow-moving)
     ("pipeline",     ["capacity_pipeline"],
-     ["updated_at", "created_at", "expected_cod"],                       96),
+     ["updated_at", "created_at", "expected_cod"],                       168),   # 7d (was 4d, captures weekly)
     ("energy_rates", ["eia_electricity_rates", "eia_retail_rates"],
      ["retrieved_at", "updated_at", "created_at"],                       336),
     ("dcpi",         ["market_power_scores"],
      ["computed_at", "updated_at"],                                      48),
     ("news",         ["news"],
-     ["published_date", "fetched_at", "created_at"],                     18),
+     ["published_date", "fetched_at", "created_at"],                     24),    # was 18h, +6h matches one cron miss
     ("transactions", ["deals", "announcements"],
-     ["created_at", "announced_date", "date", "updated_at"],             240),
+     ["created_at", "announced_date", "date", "updated_at"],             336),   # 14d (was 10d, fits actual cadence)
     ("substations",  ["substations"],
-     ["updated_at", "created_at", "retrieved_at"],                       720),
+     ["updated_at", "created_at", "retrieved_at"],                       1440),  # 60d (was 30d, slow-moving)
     # DC Hub Media: the autonomous press worker. If the daily auto-press
     # stops, the radar flags it and the Brain escalates it — the media
     # worker is now monitored the same way the data domains are, making

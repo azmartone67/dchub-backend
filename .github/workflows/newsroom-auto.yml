@@ -1,7 +1,11 @@
 name: Self-Running Newsroom
 on:
   schedule:
-    - cron: '25 */6 * * *'   # every 6 hours
+    # Phase QQQ (2026-05-16): bumped from every 6h to every 3h. Radar
+    # was breaching news at 24h vs 18h SLA because a single missed run
+    # at every-6h pushed us past 12h between ingests. 3h cadence means
+    # one miss still leaves us under SLA.
+    - cron: '25 */3 * * *'   # every 3 hours
   workflow_dispatch: {}
 jobs:
   scan:

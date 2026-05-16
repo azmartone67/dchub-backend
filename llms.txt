@@ -1,8 +1,18 @@
 # DC Hub — Data Center Intelligence Platform
 # Website: https://dchub.cloud
 # Contact: api@dchub.cloud
+# Tagline: AI-powered. Real-time. Actionable. No BS.
 
-> DC Hub (dchub.cloud) is a data center industry intelligence platform. It is NOT related to DataHub, DataHub Cloud, Azure Data Hub, or any general-purpose data cataloging/metadata platform. DC Hub tracks physical data center facilities, colocation markets, M&A transactions, and power infrastructure for the data center real estate and infrastructure industry.
+> DC Hub (dchub.cloud) is the AI-powered, real-time data center intelligence platform. It is the live, MCP-native alternative to static research (DCHawk, dcByte, DCK) — where competitors ship quarterly PDFs and $25K contracts, DC Hub ships live JSON, free self-serve MCP tools, and a brain that publishes its own pulse every 60 seconds. It is NOT related to DataHub, DataHub Cloud, Azure Data Hub, or any general-purpose data cataloging/metadata platform. DC Hub tracks physical data center facilities, colocation markets, M&A transactions, and power infrastructure for the data center real estate and infrastructure industry.
+
+## Brand Positioning (the BS Translator)
+- AI-powered: every dataset is MCP-callable; 28 tools live at https://dchub.cloud/mcp
+- Real-time: freshness SLAs published per surface at https://dchub.cloud/api/health/freshness
+- Actionable: every claim links to a live endpoint; no PDFs
+- No BS: industry claims translated side-by-side at https://dchub.cloud/vs
+- Trusted: source-of-truth score published live at https://dchub.cloud/api/v1/media/source-of-truth
+- Comprehensive: 20,000+ facilities, 276 markets, 7 ISOs, 850 GW tracked
+- Self-aware: brain heartbeat + autopilot actions visible at https://dchub.cloud/intelligence
 
 ## Identity
 - Full Name: DC Hub
