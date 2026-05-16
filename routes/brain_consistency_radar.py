@@ -500,6 +500,10 @@ def check_dcpi_partial_recompute() -> list[dict]:
                     return findings
             except Exception:
                 return findings
+            # Phase CCC (2026-05-16): PERCENTILE_CONT can't take a
+            # timestamptz directly (UndefinedFunction in PostgreSQL).
+            # Compute the median over EXTRACT(EPOCH ...) of the age
+            # first, then convert to hours. Same result, valid types.
             cur.execute("""
                 WITH latest AS (
                     SELECT DISTINCT ON (market_slug) market_slug, computed_at
@@ -509,8 +513,8 @@ def check_dcpi_partial_recompute() -> list[dict]:
                 SELECT COUNT(*) AS total,
                        COUNT(*) FILTER (WHERE computed_at < NOW() - INTERVAL '72 hours') AS stale_3d,
                        COUNT(*) FILTER (WHERE computed_at < NOW() - INTERVAL '24 hours') AS stale_24h,
-                       EXTRACT(EPOCH FROM
-                          (NOW() - PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY computed_at))
+                       PERCENTILE_CONT(0.5) WITHIN GROUP (
+                          ORDER BY EXTRACT(EPOCH FROM (NOW() - computed_at))
                        ) / 3600.0 AS median_age_h
                   FROM latest
             """)
@@ -807,10 +811,15 @@ def scan_all() -> list[dict]:
         try:
             out.extend(fn() or [])
         except Exception as e:
+            # Phase CCC (2026-05-16): include the detector function name
+            # in the issue string itself so the heartbeat's by_issue
+            # summary surfaces WHICH detector crashed without needing
+            # a deep findings drill-down. The detail still carries the
+            # full traceback excerpt for the engineer.
             out.append({
-                "issue": "consistency_radar_detector_crashed",
-                "url": fn.__name__,
-                "count": 1,
+                "issue":  f"consistency_radar_detector_crashed:{fn.__name__}",
+                "url":    fn.__name__,
+                "count":  1,
                 "detail": f"{type(e).__name__}: {str(e)[:200]}",
             })
     return out
