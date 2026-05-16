@@ -20,7 +20,6 @@ _MODULES = [
     'reveal_endpoints',
     'reveal_cell',
     'search_routes',
-    'self_healing_orchestrator',
     'crawler_scheduler',
     'nlr_intelligence',
     'free_tier_gate',
