@@ -8347,17 +8347,34 @@ def create_portal_session():
 # MARKET COMPARISON ENDPOINTS
 # =============================================================================
 
-# Phase WW (2026-05-16): UNGATE /api/v1/markets/list.
-# The site_qa.py PUBLIC_APIS contract at routes/site_qa.py:128-133
-# explicitly declares this endpoint as "public API, no auth required,
-# 200_no_paywall expected" — and that's correct: this returns market
-# NAMES + counts, which is discovery metadata, not premium data. The
-# prior @require_plan('free') decorator (added Phase SS) made the QA
-# test fail with HTTP 403 every run and is removed here. The LOCKED_GATE_MANIFEST
-# entry has also been moved from 'free' → 'public' to match.
-#
-# Comparable endpoints already public anonymously: /api/v1/dcpi/scores,
-# /api/v1/dcpi/leaderboard, /api/v1/stats, /api/v1/news.
+# Phase YY (2026-05-16): /api/v1/markets without /list is the URL agents
+# guess based on REST conventions (a "markets resource" naturally lives at
+# /api/v1/markets, not /api/v1/markets/list). Used to 404. Now aliases to
+# the list_markets handler via Flask's view_functions dict so both URLs
+# return identical JSON. Eliminates a real footgun the QA scan identified.
+@app.route('/api/v1/markets', methods=['GET'], endpoint='list_markets_alias')
+def list_markets_alias_v1():
+    """Alias for /api/v1/markets/list. Eliminates the URL guessing footgun
+    that surfaced in the QA self-survey ('/api/v1/markets' → 404)."""
+    from flask import current_app as _ca, make_response as _mr
+    target = _ca.view_functions.get("list_markets")
+    if target is None:
+        return jsonify(error="route_not_registered",
+                       canonical="/api/v1/markets/list"), 503
+    out = target()
+    resp = _mr(out)
+    resp.headers["X-Canonical-Path"] = "/api/v1/markets/list"
+    return resp
+
+
+# Phase WW (2026-05-16): /api/v1/markets/list is intentionally PUBLIC
+# (no auth). Returns market metadata (names, counts, pipeline MW, $/kWh)
+# — discovery info, not premium data. Comparable endpoints already public
+# anonymously: /api/v1/dcpi/scores, /api/v1/dcpi/leaderboard,
+# /api/v1/stats, /api/v1/news. The prior @require_plan('free') decorator
+# (Phase SS) was removed because the site_qa.py PUBLIC_APIS contract
+# expects 200 no-paywall. The LOCKED_GATE_MANIFEST entry was also moved
+# from 'free' tier → 'public' to match.
 @app.route('/api/v1/markets/list', methods=['GET'])
 def list_markets():
     """List all available markets — curated + auto-discovered US + international.
@@ -19120,6 +19137,22 @@ except Exception:
 app.register_blueprint(admin_ai_deals_bp)
 app.register_blueprint(news_digests_read_bp)
 app.register_blueprint(sources_bp)
+
+# Phase YY (2026-05-16): three "living being" blueprints — auto-generated
+# OpenAPI spec (replaces the 9-path 795-byte stub) + /alive vital-signs
+# dashboard (proof the system is alive). All additive, all cached.
+try:
+    from routes.openapi_autogen import openapi_autogen_bp
+    app.register_blueprint(openapi_autogen_bp)
+except Exception as _e:
+    print(f"[main] openapi_autogen register failed: {_e}", file=sys.stderr)
+
+try:
+    from routes.alive import alive_bp
+    app.register_blueprint(alive_bp)
+except Exception as _e:
+    print(f"[main] alive register failed: {_e}", file=sys.stderr)
+
 app.register_blueprint(iso_ercot_bp)
 app.register_blueprint(iso_caiso_bp)
 app.register_blueprint(iso_nyiso_bp)
@@ -19388,34 +19421,11 @@ try:
 except (NameError, ImportError):
     pass
 
-# === Phase 189: minimal openapi.json for QA test ===
-try:
-    @app.route("/api/v1/openapi.json", methods=["GET"])
-    def _openapi_spec():
-        from flask import jsonify
-        return jsonify({
-            "openapi": "3.0.0",
-            "info": {
-                "title": "DC Hub API",
-                "version": "1.0",
-                "description": "Data center intelligence + market data API",
-                "contact": {"email": "hello@dchub.cloud"},
-            },
-            "servers": [{"url": "https://dchub.cloud"}],
-            "paths": {
-                "/api/health": {"get": {"summary": "Service health"}},
-                "/api/health/freshness": {"get": {"summary": "Data freshness per pipeline"}},
-                "/api/v1/markets/list": {"get": {"summary": "All markets with pipeline + $/kWh"}},
-                "/api/v1/markets/{market}": {"get": {"summary": "Single market detail"}},
-                "/api/v1/markets/compare": {"get": {"summary": "Compare 2-3 markets"}},
-                "/api/v1/grid/snapshot": {"get": {"summary": "Grid snapshot data"}},
-                "/api/v1/dcpi": {"get": {"summary": "Data Center Power Index"}},
-                "/api/press-releases": {"get": {"summary": "Press release feed"}},
-                "/api/v1/news": {"get": {"summary": "News feed"}},
-            },
-        })
-except NameError:
-    pass
+# Phase YY (2026-05-16): REMOVED the 9-path stub openapi.json (Phase 189
+# vintage). Replaced by routes/openapi_autogen.py which walks app.url_map
+# at request time and emits a real 200+ path OpenAPI 3.1 spec — registered
+# above via openapi_autogen_bp. Keeping this stub-block as a placeholder
+# comment so future searches show where the route used to live.
 
 # === Phase 193: dchub-media unified feed ===
 try:
