@@ -19437,6 +19437,18 @@ try:
 except Exception as _e:
     print(f"[main] media_pulse register failed: {_e}", file=sys.stderr)
 
+# Phase EEE (2026-05-16): Surface Brain — every page becomes its own
+# organism. Generic registry + telemetry table + per-surface pulse /
+# demand-gaps / growth / health-score. POST /api/v1/surface/track is
+# the public beacon ingest. 5 starter surfaces (markets, land_power,
+# map, dcpi, ai_hub) auto-register at module import; adding more is
+# one register_surface() call from anywhere.
+try:
+    from routes.surface_brain import surface_brain_bp
+    app.register_blueprint(surface_brain_bp)
+except Exception as _e:
+    print(f"[main] surface_brain register failed: {_e}", file=sys.stderr)
+
 # Phase TT-1 (2026-05-15): single tier resolver. ONE function answers
 # "what tier is this caller?" — replaces 5 divergent implementations.
 # Existing callers continue to work; new code uses get_auth_context().
