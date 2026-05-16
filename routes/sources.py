@@ -493,12 +493,102 @@ def dashboard():
 
 @sources_bp.route("/health", methods=["GET"])
 def health():
+    """Per-source vital signs — the "I am alive" JSON.
+
+    Phase YY (2026-05-16): expanded from the prior 97-byte stub
+    ({status, sources_registered, most_recent_success}) to a per-source
+    breakdown with status colors, age, error history. Powers /alive
+    and lets any monitoring tool see what's red without a deep dive.
+
+    Query params:
+        compact=1     return only the summary block (no per-source array)
+        only=red      filter per-source to status_color='red'
+        sort=age      sort by age_hours desc (default: status_color then age)
+    """
     _ensure_tables()
+    compact   = request.args.get("compact") == "1"
+    only      = (request.args.get("only") or "").lower()
+    sort_by   = (request.args.get("sort") or "").lower()
+
+    rows: list[dict] = []
+    summary = {"green": 0, "yellow": 0, "red": 0, "never_ran": 0, "disabled": 0}
     with _conn() as c, c.cursor() as cur:
-        cur.execute("SELECT COUNT(*), MAX(last_success_at) FROM source_registry")
-        count, latest = cur.fetchone()
-    return jsonify(
-        status="ok",
-        sources_registered=int(count or 0),
-        most_recent_success=latest.isoformat() if latest else None,
-    ), 200
+        cur.execute("""
+            SELECT id, name, kind, tier, enabled, cadence_seconds,
+                   last_run_at, last_success_at, last_failure_at,
+                   consecutive_failures, total_runs, total_rows_ingested,
+                   target_table
+              FROM source_registry
+             ORDER BY tier ASC, name ASC
+        """)
+        for r in cur.fetchall():
+            (sid, name, kind, tier, enabled, cadence,
+             last_run, last_ok, last_fail, fails, runs, rows_ingested, target) = r
+
+            sla_hours = max(1.0, (cadence or 86400) / 3600.0)
+            now = datetime.now(timezone.utc)
+            age_hours = None
+            if last_ok:
+                age_hours = round((now - last_ok).total_seconds() / 3600.0, 1)
+
+            # Status color resolution
+            if not enabled:
+                color = "gray"; summary["disabled"] += 1
+            elif last_ok is None:
+                color = "gray"; summary["never_ran"] += 1
+            elif age_hours is not None and age_hours <= sla_hours:
+                color = "green"; summary["green"] += 1
+            elif age_hours is not None and age_hours <= sla_hours * 2:
+                color = "yellow"; summary["yellow"] += 1
+            else:
+                color = "red"; summary["red"] += 1
+
+            entry = {
+                "id":                 sid,
+                "name":                name,
+                "kind":                kind,
+                "tier":                tier,
+                "enabled":             enabled,
+                "sla_hours":           round(sla_hours, 1),
+                "age_hours":           age_hours,
+                "status_color":        color,
+                "consecutive_failures": int(fails or 0),
+                "total_runs":          int(runs or 0),
+                "total_rows_ingested": int(rows_ingested or 0),
+                "target_table":        target,
+                "last_success_at":     last_ok.isoformat() if last_ok else None,
+                "last_failure_at":     last_fail.isoformat() if last_fail else None,
+            }
+            if only and color != only:
+                continue
+            rows.append(entry)
+
+    # Sort: red first, then yellow, then green; ties broken by age desc
+    color_rank = {"red": 0, "yellow": 1, "gray": 2, "green": 3}
+    if sort_by == "age":
+        rows.sort(key=lambda x: -(x.get("age_hours") or 0))
+    else:
+        rows.sort(key=lambda x: (color_rank.get(x["status_color"], 9),
+                                 -(x.get("age_hours") or 0)))
+
+    most_recent = None
+    if rows:
+        valid_ts = [r["last_success_at"] for r in rows if r["last_success_at"]]
+        if valid_ts: most_recent = max(valid_ts)
+
+    overall_status = "ok"
+    if summary["red"] > 0:
+        overall_status = "degraded" if summary["red"] < 5 else "critical"
+    elif summary["yellow"] > 3:
+        overall_status = "degraded"
+
+    out = {
+        "status":             overall_status,
+        "sources_registered": sum(summary.values()),
+        "summary":            summary,
+        "most_recent_success": most_recent,
+        "checked_at":         datetime.now(timezone.utc).isoformat(),
+    }
+    if not compact:
+        out["sources"] = rows
+    return jsonify(out), 200

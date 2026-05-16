@@ -734,9 +734,37 @@ def api_scores():
     if limit > 0:
         rows = rows[:limit]
 
-    return jsonify(scores=rows, count=len(rows),
+    # Phase YY (2026-05-16): proper caching. DCPI scores recompute on a
+    # daily cron — there's no reason to hit Neon on every request. The
+    # endpoint was clocking 1.7s for 2 rows pre-fix because the SELECT
+    # DISTINCT ON does a full scan + sort. ETag based on max(computed_at)
+    # so any actual recompute busts the cache; otherwise 304 short-circuits.
+    max_ts = ""
+    if rows:
+        # rows is sorted by either constraint/excess/ttp, not by computed_at,
+        # but each row has its own computed_at; the table-level max is fine.
+        try:
+            max_ts = max((r.get("computed_at") or "") for r in rows)
+        except Exception:
+            max_ts = ""
+    import hashlib as _hl
+    etag_src = f"{len(rows)}|{max_ts}|{verdict_filter}|{iso_filter}|{state_filter}|{sort_by}|{limit}"
+    etag = '"' + _hl.md5(etag_src.encode()).hexdigest()[:16] + '"'
+
+    if_none_match = request.headers.get("If-None-Match", "")
+    if if_none_match and if_none_match == etag:
+        from flask import Response as _Resp
+        resp = _Resp(status=304)
+        resp.headers["ETag"] = etag
+        resp.headers["Cache-Control"] = "public, max-age=120, stale-while-revalidate=300"
+        return resp
+
+    resp = jsonify(scores=rows, count=len(rows),
                    sort=sort_by,
-                   filters={"verdict": verdict_filter, "iso": iso_filter, "state": state_filter}), 200
+                   filters={"verdict": verdict_filter, "iso": iso_filter, "state": state_filter})
+    resp.headers["ETag"] = etag
+    resp.headers["Cache-Control"] = "public, max-age=120, stale-while-revalidate=300"
+    return resp, 200
 
 
 @dcpi_bp.route("/api/v1/dcpi/scores/<slug>", methods=["GET"])
