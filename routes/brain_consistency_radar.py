@@ -194,27 +194,41 @@ def check_tier_consistency() -> list[dict]:
         body, _h = _http_get(f"https://dchub.cloud{web_path}?_=radar", timeout=6)
         if not body:
             continue
-        # Heuristic: anonymous response shape. A `gated: true` field or
-        # explicit "paid_tier_required" or HTTP 403 message in the
-        # payload is the tell.
-        low = body.lower()
-        if ('"gated":true' in low.replace(" ", "")) or \
-           ('paid_tier_required' in low) or \
-           ('upgrade to' in low and 'developer' in low) or \
-           ('"min_tier":"developer"' in low.replace(" ", "")) or \
-           ('"min_tier":"pro"' in low.replace(" ", "")):
+        # Phase WW (2026-05-15): parse JSON and check the STRUCTURED
+        # `min_tier` field rather than substring-matching the message
+        # text. The old heuristic flagged the energy endpoint as drift
+        # because its anonymous message string contained the word
+        # "developer" — even after PR #185 demoted min_tier to identified.
+        # Structured field is the source of truth.
+        try:
+            payload = json.loads(body)
+        except Exception:
+            continue  # non-JSON response — can't reason about tier shape
+        if not isinstance(payload, dict):
+            continue
+        gated = payload.get("gated") is True
+        if not gated:
+            continue
+        # Only flag if the structured min_tier is HIGHER than the MCP tier.
+        web_min_tier = (payload.get("min_tier") or "").lower()
+        WEB_TIER_RANK = {"free": 1, "identified": 2, "developer": 3,
+                          "pro": 4, "enterprise": 5}
+        web_rank = WEB_TIER_RANK.get(web_min_tier, 0)
+        mcp_rank = mcp_tier.value if hasattr(mcp_tier, "value") else 0
+        if web_min_tier and web_rank > mcp_rank:
             findings.append({
                 "issue": "tier_inconsistency_web_higher_than_mcp",
                 "url": web_path,
                 "count": 1,
-                "detail": (f"MCP tool `{tool}` is at IDENTIFIED tier but "
-                           f"the web endpoint `{web_path}` appears gated "
-                           f"at DEVELOPER or higher. Agents using MCP can "
+                "detail": (f"MCP tool `{tool}` is at {mcp_tier.name} but "
+                           f"the web endpoint `{web_path}` gates at "
+                           f"min_tier={web_min_tier}. Agents using MCP can "
                            f"access this data with a free dev key; web "
                            f"users hit a paywall. Fix: align the web API "
                            f"decorator to match the MCP tier."),
                 "tool": tool,
                 "mcp_tier": mcp_tier.name,
+                "web_min_tier": web_min_tier,
             })
     return findings
 

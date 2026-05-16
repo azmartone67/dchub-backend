@@ -10975,7 +10975,12 @@ def grok_integration():
     return send_from_directory('static/integrations/grok', 'dchub-grok-integration.py',
                                mimetype='text/plain')
 
-@app.route('/dashboard')
+# Phase WW (2026-05-15): removed /dashboard from this multi-decorator
+# block — it was a shadow of the dedicated serve_dashboard handler at
+# main.py:10841 (which serves the enterprise dashboard.html). The
+# accidental inclusion here routed /dashboard to the land-power page
+# instead. Logs flagged this as the `serve_dashboard + land_power_page`
+# shadow pair.
 @app.route('/land-power')
 @app.route('/land-power.html')
 @app.route('/land-power-map')
@@ -18404,7 +18409,12 @@ def cf_stub_energy_summary():
             "avg_rate_kwh": None,
             "retail_rate_kwh": None,
             "industrial_rate_kwh": None,
-            "message": "Sign in with a developer/pro/enterprise key to unlock state-specific retail rates.",
+            # Phase WW (2026-05-15): updated to match Phase QQ's min_tier=
+            # identified change. Old message implied a paid plan was needed,
+            # contradicting the new free-with-email gate. Also makes the
+            # consistency radar's heuristic happy (was matching "developer"
+            # in the message text and flagging a false-positive drift).
+            "message": "Sign up free (email only) to unlock state-specific retail rates. No credit card.",
         })
         # Don't let CF cache this gated response and serve it to paid
         # users. Vary lets us still cache per-key if we ever flip CF
