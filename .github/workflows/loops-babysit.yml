@@ -16,7 +16,7 @@ name: loops babysit (Phase RR)
 
 on:
   schedule:
-    - cron: '*/15 * * * *'   # every 15 minutes
+    - cron: '7-59/15 * * * *'   # every 15 minutes
   workflow_dispatch: {}
 
 permissions:

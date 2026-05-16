@@ -430,8 +430,10 @@ def register_auto_approve_routes(app):
             return True
         return False
 
-    @app.route('/api/jobs/auto-approve', methods=['POST'])
-    def job_auto_approve():
+    # Phase XX (2026-05-15): shadow @app.route removed. routes/jobs_routes.py:191
+    # has the canonical /api/jobs/auto-approve via @jobs_bp. Body kept as
+    # reference but never registers (no @app.route decorator anymore).
+    def _shadow_job_auto_approve():
         """Scheduler-triggered auto-approve endpoint."""
         if not _check_admin_auth():
             return jsonify({'error': 'Unauthorized'}), 401

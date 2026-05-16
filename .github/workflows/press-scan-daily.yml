@@ -1,7 +1,7 @@
 name: Press Release Auto-Scan
 on:
   schedule:
-    - cron: '0 13 * * *'   # daily 13:00 UTC
+    - cron: '10 13 * * *'   # daily 13:00 UTC
   workflow_dispatch: {}
 jobs:
   scan:
