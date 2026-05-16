@@ -782,6 +782,259 @@ def api_score_market(slug):
     return jsonify(row), 200
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# Phase SS (2026-05-15): /api/v1/dcpi/recommend — the "where should I build"
+# oracle. Single endpoint that ranks markets against a user's capacity +
+# deadline + constraint envelope and returns ranked picks with narrative
+# justifications. Powers the new MCP tool `recommend_market` — every other
+# tool answers a *what* question; this answers a *which* question, which is
+# the actual decision an operator makes.
+#
+# Inputs (query string OR JSON body):
+#   capacity_mw            float, MW the user needs                  (default 50)
+#   deadline_months        int, months until they need power live    (default 24)
+#   water_stress_max       int 1-5 (USGS), 5 = no constraint         (default 5)
+#   max_retail_rate_cents  float ¢/kWh industrial cap                (default 99)
+#   iso                    optional ISO filter (PJM/ERCOT/...)
+#   states                 optional CSV of state codes
+#   include_avoid          bool — include AVOID-verdict markets       (default false)
+#   top_n                  int, results to return (1-20)             (default 5)
+#
+# Output:
+#   {"ranked_markets": [
+#       {"rank": 1, "market_slug": ..., "market_name": ..., "state": ..., "iso": ...,
+#        "verdict": "BUILD",
+#        "scores": {"composite": 73.2, "excess_power": 84, "constraint": 22,
+#                   "time_to_power_months": 14, "queue_capacity_mw": 1200},
+#        "constraint_check": {"capacity_ok": true, "deadline_ok": true,
+#                             "water_ok": true, "rate_ok": true},
+#        "retail_rate_cents_kwh": 5.2,
+#        "water_stress_state": 2,
+#        "reason": "200 MW queue-free grid headroom in PJM, ...",
+#        "risk_flags": ["high_water_stress", ...]
+#       }, ...],
+#    "criteria_echo": {...inputs as parsed...},
+#    "total_evaluated": 276, "passed_filters": 18, "generated_at": "..."}
+# ─────────────────────────────────────────────────────────────────────────
+@dcpi_bp.route("/api/v1/dcpi/recommend", methods=["GET", "POST", "OPTIONS"])
+def api_dcpi_recommend():
+    if request.method == "OPTIONS":
+        resp = jsonify(ok=True)
+        resp.headers["Access-Control-Allow-Origin"]  = "*"
+        resp.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type,X-API-Key,Authorization"
+        return resp, 200
+
+    _ensure_tables()
+
+    # Parse inputs from JSON body OR query string (MCP tools tend to POST JSON).
+    body = {}
+    if request.method == "POST":
+        try:
+            body = request.get_json(silent=True) or {}
+        except Exception:
+            body = {}
+
+    def _g(name, default=None):
+        if name in body and body[name] not in (None, ""):
+            return body[name]
+        v = request.args.get(name)
+        if v in (None, ""):
+            return default
+        return v
+
+    def _f(v, default):
+        try:    return float(v)
+        except (TypeError, ValueError): return default
+
+    def _i(v, default):
+        try:    return int(float(v))
+        except (TypeError, ValueError): return default
+
+    capacity_mw           = _f(_g("capacity_mw"), 50.0)
+    deadline_months       = _i(_g("deadline_months"), 24)
+    water_stress_max      = _i(_g("water_stress_max"), 5)
+    max_retail_rate_cents = _f(_g("max_retail_rate_cents"), 99.0)
+    iso_filter            = (_g("iso") or "").strip().upper() or None
+    states_csv            = (_g("states") or "").strip()
+    state_set             = {s.strip().upper() for s in states_csv.split(",") if s.strip()} if states_csv else None
+    include_avoid         = str(_g("include_avoid", "false")).lower() in ("1","true","yes","y")
+    top_n                 = max(1, min(20, _i(_g("top_n"), 5)))
+
+    # ── Step 1: pull current DCPI snapshot (one row per market, most recent) ──
+    with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""
+            SELECT DISTINCT ON (market_slug)
+                market_slug, market_name, state, iso, latitude, longitude,
+                constraint_score, excess_power_score, time_to_power_months,
+                queue_capacity_mw, queue_wait_months, reserve_margin_pct,
+                stranded_capacity_mw, curtailment_pct,
+                verdict, top_risks_json, top_opportunities_json,
+                computed_at
+              FROM market_power_scores
+             WHERE published = true
+             ORDER BY market_slug, computed_at DESC
+        """)
+        rows = cur.fetchall()
+
+        # ── Step 2: enrich with retail rates per state (one query) ──
+        state_rates = {}
+        try:
+            cur.execute("""
+                SELECT DISTINCT ON (UPPER(state))
+                       UPPER(state) AS state_code, rate_cents_kwh, period
+                  FROM eia_retail_rates
+                 WHERE LOWER(sector) = 'industrial'
+                 ORDER BY UPPER(state), period DESC
+            """)
+            for r in cur.fetchall():
+                state_rates[r["state_code"]] = _safe_round(r["rate_cents_kwh"], 2)
+        except Exception:
+            pass  # table may not exist in dev; degrade gracefully
+
+        # ── Step 3: enrich with water stress per state (one query) ──
+        state_water = {}
+        try:
+            cur.execute("""
+                SELECT UPPER(state) AS state_code,
+                       AVG(stress_index) AS avg_stress
+                  FROM usgs_water_stress
+                 WHERE stress_index IS NOT NULL
+                 GROUP BY UPPER(state)
+            """)
+            for r in cur.fetchall():
+                # Normalize to a 1-5 scale (1 = low, 5 = extreme).
+                # USGS stress_index is already 1-5 in our schema; clamp defensively.
+                v = r["avg_stress"]
+                if v is None: continue
+                state_water[r["state_code"]] = max(1, min(5, int(round(float(v)))))
+        except Exception:
+            pass
+
+    total_evaluated = len(rows)
+
+    # ── Step 4: filter to candidates that meet hard constraints ──
+    candidates = []
+    for r in rows:
+        verdict = (r.get("verdict") or "").upper()
+        if not include_avoid and verdict == "AVOID":
+            continue
+        if iso_filter and (r.get("iso") or "").upper() != iso_filter:
+            continue
+        if state_set and (r.get("state") or "").upper() not in state_set:
+            continue
+
+        ttp = r.get("time_to_power_months")
+        qcap = r.get("queue_capacity_mw")
+        st = (r.get("state") or "").upper()
+        rate = state_rates.get(st)
+        water = state_water.get(st)
+
+        capacity_ok = (qcap is None) or (float(qcap) >= capacity_mw)
+        deadline_ok = (ttp is None) or (float(ttp) <= deadline_months)
+        water_ok    = (water is None) or (int(water) <= water_stress_max)
+        rate_ok     = (rate is None) or (float(rate) <= max_retail_rate_cents)
+
+        if not (capacity_ok and deadline_ok and water_ok and rate_ok):
+            continue
+
+        # ── Step 5: composite score ──
+        # Same weighting as persona_briefs.py (line 173) — keeps DCPI consistent.
+        excess     = _safe_round(r.get("excess_power_score"), 1)
+        constraint = _safe_round(r.get("constraint_score"), 1)
+        composite  = excess - 0.5 * constraint
+
+        # Penalize markets with no queue capacity signal at all
+        if qcap is None:
+            composite -= 5
+
+        # Bonus for sub-12-month time-to-power (urgency premium)
+        if ttp is not None and float(ttp) <= 12:
+            composite += 8
+        elif ttp is not None and float(ttp) <= 18:
+            composite += 4
+
+        risk_flags = []
+        if water is not None and water >= 4: risk_flags.append("high_water_stress")
+        if rate is not None and rate > 9:    risk_flags.append("high_retail_rate")
+        if ttp is not None and ttp > 36:     risk_flags.append("slow_time_to_power")
+        if qcap is not None and float(qcap) < capacity_mw * 1.5:
+            risk_flags.append("tight_capacity_margin")
+
+        # Narrative reason — extract top opportunity if available
+        ops = r.get("top_opportunities_json") or []
+        if isinstance(ops, str):
+            try: ops = json.loads(ops)
+            except Exception: ops = []
+        top_opp = ""
+        if isinstance(ops, list) and ops:
+            first = ops[0]
+            if isinstance(first, dict):
+                top_opp = first.get("label") or first.get("title") or ""
+            elif isinstance(first, str):
+                top_opp = first
+
+        bits = []
+        if qcap is not None:
+            bits.append(f"{int(qcap)} MW queue capacity in {r.get('iso') or 'grid'}")
+        if ttp is not None:
+            bits.append(f"~{int(ttp)}mo to power")
+        if rate is not None:
+            bits.append(f"{rate}¢/kWh industrial")
+        if water is not None:
+            bits.append(f"water stress {water}/5")
+        if top_opp:
+            bits.append(top_opp)
+        reason = "; ".join(bits) if bits else (verdict or "scored market")
+
+        candidates.append({
+            "market_slug": r["market_slug"],
+            "market_name": r["market_name"],
+            "state":       r.get("state"),
+            "iso":         r.get("iso"),
+            "verdict":     verdict,
+            "scores": {
+                "composite":             round(composite, 1),
+                "excess_power":          excess,
+                "constraint":            constraint,
+                "time_to_power_months":  _safe_round(ttp, 1) if ttp is not None else None,
+                "queue_capacity_mw":     _safe_round(qcap, 0) if qcap is not None else None,
+            },
+            "constraint_check": {
+                "capacity_ok": capacity_ok, "deadline_ok": deadline_ok,
+                "water_ok":    water_ok,    "rate_ok":     rate_ok,
+            },
+            "retail_rate_cents_kwh": rate,
+            "water_stress_state":    water,
+            "reason":                reason,
+            "risk_flags":            risk_flags,
+        })
+
+    # ── Step 6: rank by composite, then take top_n ──
+    candidates.sort(key=lambda c: -c["scores"]["composite"])
+    ranked = candidates[:top_n]
+    for i, c in enumerate(ranked, 1):
+        c["rank"] = i
+
+    return jsonify(
+        ranked_markets=ranked,
+        criteria_echo={
+            "capacity_mw":           capacity_mw,
+            "deadline_months":       deadline_months,
+            "water_stress_max":      water_stress_max,
+            "max_retail_rate_cents": max_retail_rate_cents,
+            "iso":                   iso_filter,
+            "states":                sorted(state_set) if state_set else None,
+            "include_avoid":         include_avoid,
+            "top_n":                 top_n,
+        },
+        total_evaluated=total_evaluated,
+        passed_filters=len(candidates),
+        generated_at=datetime.datetime.utcnow().isoformat() + "Z",
+        methodology="composite = excess_power_score − 0.5 × constraint_score + urgency_bonus; filters: verdict≠AVOID (default), queue ≥ capacity, time_to_power ≤ deadline, water ≤ max, retail ≤ max",
+    ), 200
+
+
 # Phase RR (2026-05-15): /api/v1/dcpi/ask — DCPI-flavored Q&A.
 # The /dcpi page's inline "Ask the Index" widget POSTs/GETs here.
 # Before this endpoint existed, the page hit /api/v1/dcpi/ask via GET
