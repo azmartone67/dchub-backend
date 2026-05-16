@@ -19337,6 +19337,37 @@ try:
 except Exception as _e:
     print(f"[main] site_simulator register failed: {_e}", file=sys.stderr)
 
+# Phase UU (2026-05-16): public MCP tool catalog — HTML at /mcp/tools and
+# JSON at /api/v1/mcp/tools.json. Linkable from external MCP directories
+# and indexable by Perplexity/Gemini/Google for the "what tools does
+# dchub.cloud's MCP server expose" query.
+try:
+    from routes.mcp_tool_catalog import mcp_tool_catalog_bp
+    app.register_blueprint(mcp_tool_catalog_bp)
+except Exception as _e:
+    print(f"[main] mcp_tool_catalog register failed: {_e}", file=sys.stderr)
+
+# Phase UU (2026-05-16): international ingestion adapters (ENTSO-E, JEPX,
+# EMA, NESO). /api/v1/intl/ingestion-status reports per-adapter health.
+# Each adapter degrades gracefully when its env var is absent — adding a
+# single key lights up its bound markets on the next DCPI recompute.
+try:
+    from routes.international_ingestion import international_ingestion_bp
+    app.register_blueprint(international_ingestion_bp)
+except Exception as _e:
+    print(f"[main] international_ingestion register failed: {_e}", file=sys.stderr)
+
+# Phase UU (2026-05-16): AI citation tracker — closes the loop on the
+# "make LLMs recommend us" goal by measuring share-of-voice across
+# Gemini/Perplexity/Claude/Grok on a fixed set of canonical prompts.
+# Snapshot at /api/v1/ai-citations/snapshot, share-of-voice at
+# /api/v1/ai-citations/share-of-voice. Manual seed via /record.
+try:
+    from routes.ai_citation_tracker import ai_citation_tracker_bp
+    app.register_blueprint(ai_citation_tracker_bp)
+except Exception as _e:
+    print(f"[main] ai_citation_tracker register failed: {_e}", file=sys.stderr)
+
 # Phase TT-1 (2026-05-15): single tier resolver. ONE function answers
 # "what tier is this caller?" — replaces 5 divergent implementations.
 # Existing callers continue to work; new code uses get_auth_context().

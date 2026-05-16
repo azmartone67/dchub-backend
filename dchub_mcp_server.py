@@ -3388,6 +3388,45 @@ async def simulate_buildout(
 
 
 # ═══════════════════════════════════════════════════════════
+# compare_markets — side-by-side multi-market diff
+# Phase UU (2026-05-16)
+# ═══════════════════════════════════════════════════════════
+@mcp.tool(
+    name="compare_markets",
+    annotations={"title": "DCPI Market Comparison", "readOnlyHint": True, "openWorldHint": True},
+)
+async def compare_markets(slugs: str) -> str:
+    """
+    Compare 2-5 DCPI markets side-by-side. Returns each market's full
+    score row, retail/water enrichment, plus per-dimension winners
+    (best excess, lowest constraint, fastest TTP, lowest rate, etc.)
+    and a narrative summary.
+
+    Use when: user asks "compare Phoenix vs Northern Virginia",
+    "ranking of [market list]", "which of [X, Y, Z] has the best
+    queue capacity". The fourth leg of the decision-tool family
+    alongside recommend_market (decides), explain_market_move
+    (diagnoses), and get_market_intel (describes).
+
+    Args:
+        slugs: Comma-separated DCPI market slugs, 2-5 entries.
+               Example: "northern-virginia,phoenix,atlanta".
+               Use search_facilities or /api/v1/dcpi/scores to find
+               valid slugs.
+
+    Returns:
+        JSON with `markets[]` (per-market metrics matrix), `winners`
+        (per-dimension best slug), `missing_slugs[]`, narrative summary.
+    """
+    _block = gate("compare_markets", {"slugs": slugs})
+    if _block: return _block
+
+    _track("compare_markets", {"slugs": slugs})
+    result = _api_get("/api/v1/dcpi/compare", params={"slugs": slugs}, retries=1)
+    return finalize(json.dumps(result, indent=2), "compare_markets")
+
+
+# ═══════════════════════════════════════════════════════════
 # KEEPALIVE — Prevent Railway idle shutdown
 # ═══════════════════════════════════════════════════════════
 def _mcp_keepalive():

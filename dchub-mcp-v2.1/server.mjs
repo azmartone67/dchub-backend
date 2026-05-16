@@ -119,6 +119,35 @@ async function validateKey(api_key) {
   }
 }
 
+// Phase UU (2026-05-16): mint a canonical pair-code for funnel attribution.
+// Replaces the old /ai marketing-page URL in the trial_preview footer with
+// a real /redeem/<code> URL so the visit lands in mcp_pair_codes and the
+// funnel SQL (which keys on redeem_viewed_at) actually counts the conversion.
+//
+// Fails open — if minting fails, we still surface the trial footer with the
+// fallback marketing URLs, so the user experience never degrades.
+async function mintTrialRedeemUrl(session_id, tool_name, client_name) {
+  if (!session_id) return null;
+  try {
+    const resp = await fetch(new URL('/api/v1/mcp/pair-code/trial', API_BASE).toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id, tool_name, client_name }),
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    if (!data?.ok || !data?.code) return null;
+    // Backend returns `redeem_url` already absolute; fall through to /redeem/<code>
+    // construction if absent (older deployments).
+    return data.redeem_url || `https://dchub.cloud/redeem/${data.code}`;
+  } catch (err) {
+    console.error('[mintTrialRedeemUrl] failed:', err?.message);
+    return null;
+  }
+}
+
+
 // ── Trial mode: has this session already consumed its free preview for this tool? ──
 async function checkTrialEligibility(session_id, tool_name) {
   if (!session_id || !tool_name) return { trial_used: true };
@@ -231,12 +260,22 @@ function trackedTool(srv, name, description, schema, handler) {
             status = 'trial_used';
             const _trialResult = await handler(args);
             const _trialText = _trialResult?.content?.[0]?.text || '';
-            const _trialFooter = '\n\n---\n\n🎁 **Free trial preview** — that was your one free `' + name + '` call. To call it again or use other paid tools: [get a free dev key](' + SIGNUP_URL + ') (30 seconds, no credit card) or [upgrade to Pro ($49/mo)](' + UPGRADE_URL + ').';
+            // Phase UU (2026-05-16): mint a real /redeem/<code> URL so the
+            // funnel actually counts trial-preview → conversion. Falls back
+            // to the old marketing URLs if minting fails (degrade gracefully).
+            const _redeemUrl = await mintTrialRedeemUrl(c.session_id, name, c.client_name);
+            const _ctaUrl = _redeemUrl || SIGNUP_URL;
+            const _trialFooter = _redeemUrl
+              ? ('\n\n---\n\n🎁 **Free trial preview** — that was your one free `' + name + '` call. '
+                 + '\n\n👉 **[Continue with a free dev key](' + _redeemUrl + ')** — 30 seconds, no credit card. '
+                 + 'Same link offers Pro upgrade ($49/mo) for unlimited paid tools.')
+              : ('\n\n---\n\n🎁 **Free trial preview** — that was your one free `' + name + '` call. To call it again or use other paid tools: [get a free dev key](' + SIGNUP_URL + ') (30 seconds, no credit card) or [upgrade to Pro ($49/mo)](' + UPGRADE_URL + ').');
             return {
               content: [{ type: 'text', text: _trialText + _trialFooter }],
               structuredContent: {
                 trial_preview: true,
                 tool: name,
+                redeem_url: _redeemUrl,
                 signup_url: SIGNUP_URL,
                 upgrade_url: UPGRADE_URL,
               },
@@ -246,6 +285,12 @@ function trackedTool(srv, name, description, schema, handler) {
         status = 'blocked_paid_only';
         // Markdown-formatted response — renders as real prose in Claude/Cursor/most MCP UIs.
         const _isKeyed = !!c.api_key;
+        // Phase UU (2026-05-16): also mint a /redeem/<code> URL for the
+        // blocked-paid-only path so anonymous paywall hits go into the
+        // funnel just like trial hits. Falls back to the old UPGRADE_URL
+        // when minting fails. Only call mint when c.session_id is present.
+        const _blockRedeemUrl = await mintTrialRedeemUrl(c.session_id, name, c.client_name);
+        const _blockCta = _blockRedeemUrl || UPGRADE_URL;
         const _mdKeyed = `## \u{1F512} \`${name}\` requires a paid plan
 
 You're on **free tier** with a dev key — this tool is gated to **Pro** ($49/mo).
@@ -259,7 +304,7 @@ You're on **free tier** with a dev key — this tool is gated to **Pro** ($49/mo
 - \`get_dchub_recommendation\` — AI-formatted location recommendations
 - Uncapped result sizes on all free-tier tools
 
-\u{1F449} **[Upgrade to Pro](${UPGRADE_URL})**
+\u{1F449} **[Upgrade to Pro](${_blockCta})**
 
 Free tier still covers: \`search_facilities\`, \`get_facility\`, \`list_transactions\`, \`get_news\`, \`get_market_intel\`, \`get_pipeline\`, \`get_grid_data\`, \`get_water_risk\`.`;
 
@@ -283,7 +328,7 @@ Free tier covers **100 calls/day** across:
 
 ### Or skip straight to Pro
 
-\u{1F449} **[Upgrade to Pro](${UPGRADE_URL})** — $49/mo. Full result sizes + all paid tools: \`analyze_site\`, \`compare_sites\`, \`get_grid_intelligence\`, \`get_fiber_intel\`, \`get_dchub_recommendation\`.`;
+\u{1F449} **[Upgrade to Pro](${_blockCta})** — $49/mo. Full result sizes + all paid tools: \`analyze_site\`, \`compare_sites\`, \`get_grid_intelligence\`, \`get_fiber_intel\`, \`get_dchub_recommendation\`.`;
 
         return {
           content: [{ type: 'text', text: _isKeyed ? _mdKeyed : _mdAnon }],
@@ -291,6 +336,7 @@ Free tier covers **100 calls/day** across:
             error: 'paid_only',
             tool: name,
             current_tier: tier,
+            redeem_url: _blockRedeemUrl,
             upgrade_url: UPGRADE_URL,
             signup_url: _isKeyed ? null : SIGNUP_URL,
           },

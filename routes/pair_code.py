@@ -313,6 +313,56 @@ def redeem_pair_code(code: str, stripe_session_id: str | None = None) -> dict:
 # Endpoints
 # ---------------------------------------------------------------------------
 
+# Phase UU (2026-05-16): /api/v1/mcp/pair-code/trial — anonymous trial
+# minting. server.mjs (v2.1 Node MCP server) calls this when a trial
+# preview is consumed, so the resulting /redeem/<code> URL is funnel-
+# trackable. Until now, the trial_preview footer pointed at /ai (the
+# marketing page) which the funnel SQL doesn't count — every conversion
+# from the trial path was invisible.
+#
+# No api_key required: derives a stable synthetic key from session_id
+# so repeated trial calls within the same MCP session reuse the same
+# code (the human only sees one URL). The synthetic key is hashed via
+# _hash_key() like any other key and never stored raw.
+@pair_code_bp.post("/api/v1/mcp/pair-code/trial")
+def generate_pair_code_trial():
+    """Mint a pair code for an anonymous trial-preview consumer.
+
+    Inputs (JSON body):
+        session_id:    REQUIRED — the MCP transport session UUID
+        tool_name:     OPTIONAL — which tool triggered the trial
+        client_name:   OPTIONAL — agent fingerprint (claude/cursor/etc)
+
+    Output: {ok, code, redeem_url, expires_at, target_tier}
+    """
+    body = request.get_json(silent=True) or {}
+    session_id = (body.get("session_id") or
+                  request.headers.get("Mcp-Session-Id") or "").strip()
+    if not session_id:
+        return jsonify(ok=False, error="session_id_required",
+                       hint="POST {session_id: '<uuid>'}"), 400
+    tool_name   = body.get("tool_name") or request.args.get("tool")
+    client_name = (body.get("client_name")
+                   or request.headers.get("X-Client-Name")
+                   or _detect_agent_from_request())
+
+    # Synthetic api_key keyed on session_id — never sent to the client,
+    # only used as a stable bucket for the get_or_create_code dedup logic
+    # so repeated paywall hits in the same session reuse the same code.
+    synthetic_key = f"trial:{session_id}"
+    result = get_or_create_code(synthetic_key, tool_name=tool_name,
+                                 market=None,
+                                 referring_agent=client_name)
+    if not result:
+        return jsonify(ok=False, error="generation_failed"), 503
+    result["ok"] = True
+    result["trial"] = True
+    # No stripe_upgrade_url for trial codes — the /redeem page handles
+    # both signup (free dev key) and upgrade (paid) paths from one URL,
+    # which is what makes funnel attribution clean.
+    return jsonify(result), 200
+
+
 @pair_code_bp.post("/api/v1/mcp/pair-code/generate")
 def generate_pair_code():
     """Agent calls this when it hits a paywall. Returns a fresh code

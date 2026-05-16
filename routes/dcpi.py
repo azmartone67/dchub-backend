@@ -532,6 +532,21 @@ def gather_metrics_for_market(market: tuple) -> dict:
     # ingestion lands, this guard is removed and the existing US
     # codepath generalizes.
     if (state or "").upper() in _INTL_COUNTRY_CODES:
+        # Phase UU (2026-05-16): try the international ingestion adapter
+        # registry first. When the env vars (ENTSOE_API_TOKEN, JEPX_API_KEY,
+        # EMA_API_KEY, NESO_API_KEY) are present and the adapter succeeds,
+        # we get real metrics; otherwise fall back to the neutral defaults
+        # that produce LOW_SIGNAL. Either way the recompute never blocks.
+        try:
+            from routes.international_ingestion import fetch_metrics_for_intl_slug
+            live = fetch_metrics_for_intl_slug(slug)
+            if live and isinstance(live, dict):
+                metrics.update(live)
+                metrics["_international"] = True
+                metrics["_data_thin"]     = False
+                return metrics
+        except Exception:
+            pass
         metrics.update({
             "queue_wait_months":       24.0,   # neutral
             "reserve_margin_pct":      15.0,   # neutral
@@ -728,7 +743,46 @@ def recompute_all_scores(source: str = "manual") -> dict:
             c_score = compute_constraint_score(metrics)
             e_score = compute_excess_power_score(metrics)
             ttp = estimate_time_to_power(metrics)
-            verdict = derive_verdict(c_score, e_score)
+            # Phase UU (2026-05-16): v2 verdict adoption. We still compute
+            # the v1 verdict (used as the FLOOR — v2 only narrows/widens by
+            # one band, never crosses BUILD↔AVOID without going through
+            # CAUTION). Inputs to v2 are best-effort: water signals come
+            # from state-level USGS, arbitrage signals from curtailment_pct
+            # (already in metrics). When the inputs are absent v2 returns
+            # neutral 50/50 and derive_verdict_v2 collapses to v1.
+            try:
+                v2_water_metrics = {}
+                v2_arb_metrics = {
+                    "curtailment_pct": metrics.get("curtailment_pct"),
+                }
+                _state = (m[2] or "").upper()
+                if _state and not metrics.get("_international"):
+                    with _conn() as _wc, _wc.cursor() as _wcur:
+                        try:
+                            _wcur.execute(
+                                "SELECT AVG(stress_index) FROM usgs_water_stress "
+                                "WHERE UPPER(state) = %s", (_state,))
+                            _wr = _wcur.fetchone()
+                            if _wr and _wr[0] is not None:
+                                v2_water_metrics["water_stress_index"] = float(_wr[0])
+                        except Exception:
+                            pass
+                        try:
+                            _wcur.execute(
+                                "SELECT rate_cents_kwh FROM eia_retail_rates "
+                                "WHERE UPPER(state) = %s AND LOWER(sector) = 'industrial' "
+                                "ORDER BY period DESC LIMIT 1", (_state,))
+                            _rr = _wcur.fetchone()
+                            if _rr and _rr[0] is not None:
+                                v2_arb_metrics["ppa_rate_cents_kwh"] = float(_rr[0])
+                        except Exception:
+                            pass
+                _water_score = compute_water_risk_score(v2_water_metrics)
+                _arb_score   = compute_renewable_arbitrage_score(v2_arb_metrics)
+                verdict      = derive_verdict_v2(c_score, e_score, _water_score, _arb_score)
+            except Exception:
+                # If anything in v2 breaks, fall back to v1 — never block recompute.
+                verdict = derive_verdict(c_score, e_score)
             risks, opps = derive_top_signals(m, metrics, c_score, e_score)
 
             with _conn() as c, c.cursor() as cur:
@@ -962,6 +1016,143 @@ def api_score_market_v2(slug):
                      "upgrades AVOID→CAUTION when renewable_arbitrage≥75 and water_risk≤50",
         },
         computed_at=row.get("computed_at"),
+    ), 200
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Phase UU (2026-05-16): /api/v1/dcpi/compare — side-by-side multi-market
+# diff. Powers the new MCP tool `compare_markets`. DCHawk's flagship
+# feature; trivial to ship given recommend already does the heavy lift.
+# ─────────────────────────────────────────────────────────────────────────
+@dcpi_bp.route("/api/v1/dcpi/compare", methods=["GET", "OPTIONS"])
+def api_dcpi_compare():
+    if request.method == "OPTIONS":
+        resp = jsonify(ok=True)
+        resp.headers["Access-Control-Allow-Origin"]  = "*"
+        resp.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type,X-API-Key,Authorization"
+        return resp, 200
+
+    _ensure_tables()
+    slugs_csv = (request.args.get("slugs") or "").strip()
+    slugs = [s.strip().lower() for s in slugs_csv.split(",") if s.strip()]
+    if not (2 <= len(slugs) <= 5):
+        return jsonify(error="provide 2-5 slugs comma-separated",
+                       hint="GET /api/v1/dcpi/compare?slugs=northern-virginia,phoenix,atlanta"), 400
+
+    rows = []
+    state_rates = {}
+    state_water = {}
+    with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""
+            SELECT DISTINCT ON (market_slug)
+                market_slug, market_name, state, iso,
+                constraint_score, excess_power_score, time_to_power_months,
+                queue_capacity_mw, queue_wait_months, reserve_margin_pct,
+                curtailment_pct, stranded_capacity_mw,
+                verdict, top_risks_json, top_opportunities_json, computed_at
+              FROM market_power_scores
+             WHERE market_slug = ANY(%s)
+             ORDER BY market_slug, computed_at DESC
+        """, (slugs,))
+        rows = cur.fetchall()
+        found_slugs = {r["market_slug"] for r in rows}
+        missing = [s for s in slugs if s not in found_slugs]
+
+        # Enrich with retail + water per state (one query each)
+        states_needed = list({(r.get("state") or "").upper() for r in rows if r.get("state")})
+        if states_needed:
+            try:
+                cur.execute("""
+                    SELECT DISTINCT ON (UPPER(state))
+                           UPPER(state) AS state_code, rate_cents_kwh
+                      FROM eia_retail_rates
+                     WHERE LOWER(sector) = 'industrial'
+                       AND UPPER(state) = ANY(%s)
+                     ORDER BY UPPER(state), period DESC
+                """, (states_needed,))
+                for r in cur.fetchall():
+                    state_rates[r["state_code"]] = _safe_round(r["rate_cents_kwh"], 2)
+            except Exception:
+                pass
+            try:
+                cur.execute("""
+                    SELECT UPPER(state) AS state_code, AVG(stress_index) AS s
+                      FROM usgs_water_stress
+                     WHERE UPPER(state) = ANY(%s)
+                     GROUP BY UPPER(state)
+                """, (states_needed,))
+                for r in cur.fetchall():
+                    if r["s"] is not None:
+                        state_water[r["state_code"]] = max(1, min(5, int(round(float(r["s"])))))
+            except Exception:
+                pass
+
+    # Build the comparison matrix
+    matrix = []
+    for r in rows:
+        st = (r.get("state") or "").upper()
+        matrix.append({
+            "slug":                 r["market_slug"],
+            "name":                 r["market_name"],
+            "state":                r.get("state"),
+            "iso":                  r.get("iso"),
+            "verdict":              r.get("verdict"),
+            "excess_power_score":   _safe_round(r.get("excess_power_score"), 1),
+            "constraint_score":     _safe_round(r.get("constraint_score"), 1),
+            "time_to_power_months": _safe_round(r.get("time_to_power_months"), 1)
+                                    if r.get("time_to_power_months") is not None else None,
+            "queue_capacity_mw":    _safe_round(r.get("queue_capacity_mw"), 0)
+                                    if r.get("queue_capacity_mw") is not None else None,
+            "queue_wait_months":    _safe_round(r.get("queue_wait_months"), 1)
+                                    if r.get("queue_wait_months") is not None else None,
+            "reserve_margin_pct":   _safe_round(r.get("reserve_margin_pct"), 1)
+                                    if r.get("reserve_margin_pct") is not None else None,
+            "curtailment_pct":      _safe_round(r.get("curtailment_pct"), 1)
+                                    if r.get("curtailment_pct") is not None else None,
+            "stranded_capacity_mw": _safe_round(r.get("stranded_capacity_mw"), 0)
+                                    if r.get("stranded_capacity_mw") is not None else None,
+            "retail_rate_cents_kwh": state_rates.get(st),
+            "water_stress_state":    state_water.get(st),
+        })
+
+    # Compute per-dimension winners (highest excess, lowest constraint, lowest TTP, etc.)
+    winners = {}
+    def _argmax(field):
+        candidates = [m for m in matrix if m.get(field) is not None]
+        return max(candidates, key=lambda m: m[field])["slug"] if candidates else None
+    def _argmin(field):
+        candidates = [m for m in matrix if m.get(field) is not None]
+        return min(candidates, key=lambda m: m[field])["slug"] if candidates else None
+
+    winners["highest_excess_power"]  = _argmax("excess_power_score")
+    winners["lowest_constraint"]     = _argmin("constraint_score")
+    winners["fastest_time_to_power"] = _argmin("time_to_power_months")
+    winners["largest_queue_capacity"] = _argmax("queue_capacity_mw")
+    winners["lowest_retail_rate"]    = _argmin("retail_rate_cents_kwh")
+    winners["lowest_water_stress"]   = _argmin("water_stress_state")
+    winners["highest_curtailment_opportunity"] = _argmax("curtailment_pct")
+
+    # Plain-English summary
+    narrative_bits = [
+        f"Compared {len(matrix)} of {len(slugs)} requested markets."
+        if matrix else f"None of the {len(slugs)} requested slugs returned data."
+    ]
+    if missing:
+        narrative_bits.append(f"Not found: {', '.join(missing)}.")
+    if winners.get("highest_excess_power") and winners.get("fastest_time_to_power"):
+        narrative_bits.append(
+            f"Best on excess power: {winners['highest_excess_power']}. "
+            f"Fastest to power: {winners['fastest_time_to_power']}. "
+            f"Lowest constraint: {winners.get('lowest_constraint')}."
+        )
+
+    return jsonify(
+        markets=matrix,
+        missing_slugs=missing,
+        winners=winners,
+        narrative=" ".join(narrative_bits),
+        generated_at=datetime.datetime.utcnow().isoformat() + "Z",
     ), 200
 
 
