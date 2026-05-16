@@ -178,6 +178,67 @@ def api_tool_manifest():
     return resp, 200
 
 
+# Phase VV (2026-05-16): the .well-known/ path is the de facto MCP server
+# discovery convention emerging in MCP directories (Glama, mcpregistry.io,
+# Cloudflare's MCP catalog). Mirroring the manifest here lets any indexer
+# fetch it without prior knowledge of our /api/v1/ namespace.
+#
+# We serve the SAME manifest as /api/v1/mcp/tools.json — single source of
+# truth in _build_manifest() — but at the standard discovery path. Headers
+# are CORS-open with a 10-min cache so external crawlers don't hammer.
+@mcp_tool_catalog_bp.route("/.well-known/mcp-tools.json", methods=["GET", "OPTIONS"])
+def well_known_mcp_tools():
+    if "OPTIONS" == (__import__("flask").request.method):
+        resp = jsonify(ok=True)
+        resp.headers["Access-Control-Allow-Origin"]  = "*"
+        resp.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
+        return resp, 200
+    manifest = _build_manifest()
+    # Add discovery-path metadata so consumers know they hit the well-known.
+    manifest["_discovery_path"] = "/.well-known/mcp-tools.json"
+    manifest["_canonical_path"] = "/api/v1/mcp/tools.json"
+    manifest["_html_catalog"]   = "https://dchub.cloud/mcp/tools"
+    resp = jsonify(manifest)
+    resp.headers["Cache-Control"]               = "public, max-age=600"
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["X-MCP-Discovery"]             = "v1"
+    return resp, 200
+
+
+# Phase VV (2026-05-16): related well-known paths for MCP server discovery.
+# These point at the canonical MCP endpoint + tool catalog so crawlers
+# that follow the convention can introspect us in one fetch.
+@mcp_tool_catalog_bp.route("/.well-known/mcp-server.json", methods=["GET", "OPTIONS"])
+def well_known_mcp_server():
+    if "OPTIONS" == (__import__("flask").request.method):
+        resp = jsonify(ok=True)
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        return resp, 200
+    descriptor = {
+        "name":         "DC Hub Nexus MCP Server",
+        "version":      "2.2",
+        "vendor":       "DC Hub (dchub.cloud)",
+        "description":  "Data center site selection, market intelligence, infrastructure analysis — 28+ MCP tools backed by the DCPI dataset.",
+        "endpoint":     "https://dchub.cloud/mcp",
+        "transport":    "streamable-http",
+        "auth":         {
+            "type":   "api-key",
+            "header": "X-API-Key",
+            "alt":    "Authorization: Bearer <key>",
+            "claim":  "POST https://dchub.cloud/api/v1/keys/claim with {client_name}",
+        },
+        "tools_manifest":   "https://dchub.cloud/.well-known/mcp-tools.json",
+        "tools_html":       "https://dchub.cloud/mcp/tools",
+        "llms_txt":         "https://dchub.cloud/llms.txt",
+        "openapi":          "https://dchub.cloud/openapi.json",
+        "media_discovery":  "https://dchub.cloud/api/v1/media/discovery.json",
+    }
+    resp = jsonify(descriptor)
+    resp.headers["Cache-Control"]               = "public, max-age=600"
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    return resp, 200
+
+
 @mcp_tool_catalog_bp.route("/mcp/tools", methods=["GET"])
 @mcp_tool_catalog_bp.route("/mcp/tools/", methods=["GET"])
 def html_tool_catalog():

@@ -3400,6 +3400,196 @@ except Exception:
     )
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# Phase VV (2026-05-16): /dcpi/intl — discoverable landing page for the
+# 18 international markets. Until this shipped, the only way to surface
+# the intl markets was via the API. This page gives them an indexable
+# URL that Google/Gemini/Perplexity can pick up for "[country] data center
+# market intelligence" queries.
+# ─────────────────────────────────────────────────────────────────────────
+@dcpi_bp.route("/dcpi/intl", methods=["GET"], strict_slashes=False)
+@dcpi_bp.route("/dcpi/international", methods=["GET"], strict_slashes=False)
+def public_intl_page():
+    _ensure_tables()
+    # Pull current scores for all intl markets (states match _INTL_COUNTRY_CODES)
+    rows_by_slug: dict = {}
+    try:
+        with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT DISTINCT ON (market_slug)
+                       market_slug, market_name, state, iso,
+                       excess_power_score, constraint_score,
+                       time_to_power_months, verdict, computed_at
+                  FROM market_power_scores
+                 WHERE UPPER(state) = ANY(%s)
+                 ORDER BY market_slug, computed_at DESC
+            """, (list(_INTL_COUNTRY_CODES),))
+            for r in cur.fetchall():
+                rows_by_slug[r["market_slug"]] = r
+    except Exception:
+        pass
+
+    # Try to fetch adapter status (best effort — module may be importable but
+    # adapter env may be missing; the status endpoint reports both)
+    adapter_summary = None
+    try:
+        from routes.international_ingestion import _adapter_status
+        adapters = _adapter_status()
+        live = sum(1 for a in adapters if a["key_present"])
+        adapter_summary = {
+            "live": live, "total": len(adapters),
+            "adapters": adapters,
+        }
+    except Exception:
+        pass
+
+    # Country flag (emoji) mapping for visual grouping
+    country_flags = {
+        "GB":"🇬🇧","IE":"🇮🇪","DE":"🇩🇪","NL":"🇳🇱","FR":"🇫🇷",
+        "SG":"🇸🇬","JP":"🇯🇵","IN":"🇮🇳","AU":"🇦🇺","BR":"🇧🇷",
+        "AE":"🇦🇪","ZA":"🇿🇦",
+    }
+    country_names = {
+        "GB":"United Kingdom","IE":"Ireland","DE":"Germany","NL":"Netherlands",
+        "FR":"France","SG":"Singapore","JP":"Japan","IN":"India",
+        "AU":"Australia","BR":"Brazil","AE":"United Arab Emirates","ZA":"South Africa",
+    }
+    # Group _MARKETS_INTERNATIONAL by country
+    by_country: dict = {}
+    for slug, name, state, iso, lat, lon in _MARKETS_INTERNATIONAL:
+        by_country.setdefault(state, []).append({
+            "slug": slug, "name": name, "iso": iso,
+            "lat": lat, "lon": lon,
+            "row": rows_by_slug.get(slug),
+        })
+
+    # Build per-country sections
+    sections = []
+    for cc in sorted(by_country.keys()):
+        flag = country_flags.get(cc, "🏳️")
+        cname = country_names.get(cc, cc)
+        rows_html = []
+        for m in by_country[cc]:
+            r = m["row"] or {}
+            verdict = (r.get("verdict") or "LOW_SIGNAL").upper()
+            verdict_class = {
+                "BUILD":"v-build","CAUTION":"v-caution",
+                "AVOID":"v-avoid","LOW_SIGNAL":"v-low",
+            }.get(verdict, "v-low")
+            excess = r.get("excess_power_score")
+            constraint = r.get("constraint_score")
+            ttp = r.get("time_to_power_months")
+            rows_html.append(
+                f'<tr>'
+                f'<td><a href="/dcpi/{m["slug"]}">{m["name"]}</a></td>'
+                f'<td>{m["iso"]}</td>'
+                f'<td><span class="verdict {verdict_class}">{verdict}</span></td>'
+                f'<td>{excess if excess is not None else "—"}</td>'
+                f'<td>{constraint if constraint is not None else "—"}</td>'
+                f'<td>{int(ttp) if ttp is not None else "—"} mo</td>'
+                f'</tr>'
+            )
+        sections.append(
+            f'<section>'
+            f'<h2>{flag} {cname}</h2>'
+            f'<table><thead><tr><th>Market</th><th>Grid operator</th>'
+            f'<th>Verdict</th><th>Excess Power</th><th>Constraint</th>'
+            f'<th>Time to Power</th></tr></thead>'
+            f'<tbody>{"".join(rows_html)}</tbody></table>'
+            f'</section>'
+        )
+
+    # Adapter status block
+    adapter_block = ""
+    if adapter_summary:
+        adapter_rows = []
+        for a in adapter_summary["adapters"]:
+            status_dot = "🟢" if a["key_present"] else "⚪"
+            adapter_rows.append(
+                f'<li>{status_dot} <strong>{a["adapter"].upper()}</strong> — '
+                f'{a["country"]} '
+                f'({"live" if a["key_present"] else "stubbed: needs " + a["env_var"]})</li>'
+            )
+        adapter_block = (
+            f'<section><h2>Data ingestion status</h2>'
+            f'<p>{adapter_summary["live"]}/{adapter_summary["total"]} adapters live. '
+            f'Markets without a live adapter score at LOW_SIGNAL with neutral '
+            f'verdict — honest about the gap, no fake confidence.</p>'
+            f'<ul class="adapters">{"".join(adapter_rows)}</ul>'
+            f'<p><a href="/api/v1/intl/ingestion-status">JSON status</a></p>'
+            f'</section>'
+        )
+
+    total_markets = len(_MARKETS_INTERNATIONAL)
+    countries = len(by_country)
+
+    html = f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>DC Hub International DCPI — Data Center Power Index across {countries} countries</title>
+<meta name="description" content="DC Hub Data Center Power Index for {total_markets} international markets across {countries} countries: UK, Germany, Netherlands, France, Ireland, Singapore, Japan, India, Australia, Brazil, UAE, South Africa. Live grid data via ENTSO-E, JEPX, EMA, NESO.">
+<meta name="robots" content="index,follow">
+<link rel="canonical" href="https://dchub.cloud/dcpi/intl">
+<meta property="og:title" content="DC Hub International DCPI">
+<meta property="og:description" content="Live Data Center Power Index across {countries} countries — {total_markets} international markets scored daily.">
+<meta property="og:url" content="https://dchub.cloud/dcpi/intl">
+<style>
+  body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+         max-width:1100px;margin:2rem auto;padding:0 1rem;color:#1f2937;line-height:1.55}}
+  h1{{margin:0 0 .5rem;font-size:2rem}}
+  h1 + p{{color:#6b7280;margin:0 0 2rem;font-size:1.05rem}}
+  h2{{margin:2rem 0 .75rem;font-size:1.25rem;display:flex;align-items:center;gap:.5rem}}
+  table{{width:100%;border-collapse:collapse;font-size:.92rem;margin-bottom:1rem}}
+  th,td{{text-align:left;padding:.5rem .65rem;border-bottom:1px solid #f3f4f6}}
+  th{{background:#f9fafb;font-weight:600;color:#374151}}
+  td a{{color:#1e40af;text-decoration:none;font-weight:500}}
+  td a:hover{{text-decoration:underline}}
+  .verdict{{display:inline-block;padding:1px 8px;border-radius:3px;font-size:.72rem;
+             font-weight:600;letter-spacing:.04em}}
+  .v-build{{background:#dcfce7;color:#166534}}
+  .v-caution{{background:#fef3c7;color:#92400e}}
+  .v-avoid{{background:#fee2e2;color:#991b1b}}
+  .v-low{{background:#e5e7eb;color:#374151}}
+  .adapters{{list-style:none;padding:0;font-size:.95rem}}
+  .adapters li{{padding:.25rem 0}}
+  .cta{{background:#0f172a;color:#e2e8f0;padding:1rem 1.25rem;border-radius:6px;margin:1.5rem 0}}
+  .cta code{{background:#1e293b;color:#a7f3d0;padding:1px 6px;border-radius:3px;font-size:.88rem}}
+</style>
+</head>
+<body>
+<h1>International DCPI</h1>
+<p>The Data Center Power Index for <strong>{total_markets} markets</strong> across <strong>{countries} countries</strong>, computed against the same DCPI methodology used for our 270+ US markets.</p>
+
+<div class="cta">
+  <strong>For AI agents:</strong>
+  <code>recommend_market(states="GB,DE,SG", capacity_mw=50, top_n=3)</code> via the
+  <a href="/mcp/tools" style="color:#a7f3d0">MCP server</a> · or
+  <code>GET <a href="/api/v1/dcpi/scores?state=GB" style="color:#a7f3d0">/api/v1/dcpi/scores?state=GB</a></code> for raw data.
+</div>
+
+{adapter_block}
+
+{"".join(sections)}
+
+<section>
+  <h2>Methodology</h2>
+  <p>International markets follow the same DCPI scoring formula as US markets: <code>excess_power_score</code> (0-100, higher = more available capacity, contrarian build signal) and <code>constraint_score</code> (0-100, higher = more impediment). Verdict bands: BUILD, CAUTION, AVOID, LOW_SIGNAL.</p>
+  <p>Markets backed by a live ingestion adapter (ENTSO-E for EU, JEPX for JP, EMA for SG, NESO for GB) score against real grid metrics. Markets without a live adapter default to LOW_SIGNAL with neutral scores until country-specific data is wired.</p>
+</section>
+
+<p style="margin-top:3rem;color:#9ca3af;font-size:.85rem">
+  Part of the <a href="/dcpi">DC Hub DCPI</a> · 290+ markets globally · Updated daily ·
+  <a href="/api/v1/dcpi/scores">Full JSON</a> ·
+  <a href="/mcp/tools">MCP catalog</a>
+</p>
+</body>
+</html>"""
+
+    return Response(html, mimetype="text/html",
+                    headers={"Cache-Control": "public, max-age=600"})
+
+
 @dcpi_bp.route("/dcpi/<slug>", methods=["GET"], strict_slashes=False)
 def public_market_page(slug):
     _ensure_tables()

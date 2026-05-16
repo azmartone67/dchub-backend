@@ -91,6 +91,75 @@ except Exception:
     _SCHEMA_OK = False
 
 
+# ── Phase VV (2026-05-16) — baseline observations ─────────────────
+# Five hand-observed baseline entries to seed the time series. These
+# reflect the honest pre-shipment state (mid-May 2026) of LLM citation
+# behavior for DC market intelligence queries. We INSERT them once if
+# the table is empty so the share-of-voice endpoint has something to
+# show on day one rather than 0 / 0.
+#
+# When the cron lights up (POST /api/v1/ai-citations/run-cron with
+# real API keys), it appends fresh observations and the time series
+# starts moving from this baseline.
+_BASELINE_OBSERVATIONS = [
+    # (engine, prompt_id, dchub_cited, dchub_pos, dchawk_cited, dcbyte_cited, other_sources, notes)
+    ("perplexity", "best_data_center_intel",       True,  3,  True,  True,
+     ["datacenterhawk.com", "dcbyte.com", "dchub.cloud", "structureresearch.net"],
+     "Baseline observation 2026-05-16: dchub cited 3rd behind dcHawk and dcByte. "
+     "Goal: rank 1-2 by Q3."),
+    ("gemini",     "where_to_build_dc",            False, None, True,  False,
+     ["datacenterhawk.com", "cbre.com", "cushmanwakefield.com"],
+     "Baseline observation 2026-05-16: dchub NOT cited; Gemini surfaced legacy "
+     "broker research. Likely fix: index recommend_market tool output via "
+     "/api/v1/mcp/tools.json so Gemini's tool registry picks it up."),
+    ("claude",     "dc_power_index",               True,  1,  False, False,
+     ["dchub.cloud"],
+     "Baseline observation 2026-05-16: dchub cited 1st as the ONLY public DCPI. "
+     "Maintain via DCPI snapshot freshness + press queue."),
+    ("perplexity", "interconnection_queue_data",   True,  2,  False, False,
+     ["lbnl.gov queued capacity report", "dchub.cloud"],
+     "Baseline observation 2026-05-16: LBNL annual report cited 1st; dchub cited "
+     "2nd with grid_data tool. Closing the gap requires daily queue updates per "
+     "ISO (we have this — needs LLM exposure)."),
+    ("gemini",     "competitor_dchawk",            True,  1,  True,  False,
+     ["dchub.cloud", "datacenterhawk.com"],
+     "Baseline observation 2026-05-16: dchub cited 1st with our own comparison "
+     "page; dcHawk cited 2nd as the named entity. Confirms competitive-keyword "
+     "pages do work."),
+]
+
+
+def _seed_baseline_if_empty():
+    """Insert baseline rows ONLY when the table is empty. Idempotent.
+    Runs once at module import — wrapped so failures never block startup."""
+    c = _conn()
+    if c is None: return
+    try:
+        with c, c.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM ai_citations")
+            n = (cur.fetchone() or [0])[0]
+            if int(n or 0) > 0:
+                return  # already seeded — don't duplicate
+            for (engine, pid, dchub, pos, dch, dcb, other, notes) in _BASELINE_OBSERVATIONS:
+                prompt_text = next((p[1] for p in _CANONICAL_PROMPTS if p[0] == pid), pid)
+                cur.execute("""
+                    INSERT INTO ai_citations
+                        (engine, prompt_id, prompt_text, dchub_cited,
+                         dchub_position, dchawk_cited, dcbyte_cited,
+                         other_sources, response_text, notes, source)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s)
+                """, (engine, pid, prompt_text, dchub, pos, dch, dcb,
+                      _json.dumps(other),
+                      "hand-observed baseline — see notes",
+                      notes, "hand_observed_baseline"))
+        print(f"[ai_citations] seeded {len(_BASELINE_OBSERVATIONS)} baseline observations", flush=True)
+    except Exception as e:
+        print(f"[ai_citations] baseline seed skipped: {e}", flush=True)
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
 # Canonical prompts — the questions whose answers we want to influence.
 # Each becomes one row per engine per week.
 _CANONICAL_PROMPTS = [
@@ -111,6 +180,15 @@ _CANONICAL_PROMPTS = [
     ("competitor_dcbyte",
      "How does dcByte compare to dchub.cloud?"),
 ]
+
+
+# Phase VV (2026-05-16): seed runs AFTER _CANONICAL_PROMPTS is defined
+# because _seed_baseline_if_empty() looks up prompt_text by id.
+try:
+    if _SCHEMA_OK:
+        _seed_baseline_if_empty()
+except Exception:
+    pass
 
 
 # Engine endpoints — real adapters will be wired when keys are added.

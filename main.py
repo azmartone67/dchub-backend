@@ -2048,6 +2048,52 @@ def handle_well_known():
         # of truth and crawlers follow the redirect. Without this the
         # path 404'd at origin and CF turned that into a 403.
         return redirect('/llms.txt', code=301)
+    # Phase VV (2026-05-16): two new MCP-discovery paths. Flask drops
+    # dot-prefixed paths so the Blueprint routes in routes/mcp_tool_catalog.py
+    # are unreachable — intercept them here and dispatch into the catalog
+    # module's manifest builder.
+    if path == '/.well-known/mcp-tools.json':
+        try:
+            from routes.mcp_tool_catalog import _build_manifest
+            import json as _jw
+            manifest = _build_manifest()
+            manifest["_discovery_path"] = "/.well-known/mcp-tools.json"
+            manifest["_canonical_path"] = "/api/v1/mcp/tools.json"
+            manifest["_html_catalog"]   = "https://dchub.cloud/mcp/tools"
+            resp = Response(_jw.dumps(manifest, ensure_ascii=False),
+                            mimetype="application/json; charset=utf-8")
+            resp.headers["Cache-Control"]               = "public, max-age=600"
+            resp.headers["Access-Control-Allow-Origin"] = "*"
+            resp.headers["X-MCP-Discovery"]             = "v1"
+            return resp
+        except Exception as _e:
+            return jsonify(error="manifest_unavailable", detail=str(_e)[:200]), 500
+    if path == '/.well-known/mcp-server.json':
+        import json as _jws
+        descriptor = {
+            "name":         "DC Hub Nexus MCP Server",
+            "version":      "2.2",
+            "vendor":       "DC Hub (dchub.cloud)",
+            "description":  "Data center site selection, market intelligence, infrastructure analysis — 28+ MCP tools backed by the DCPI dataset.",
+            "endpoint":     "https://dchub.cloud/mcp",
+            "transport":    "streamable-http",
+            "auth": {
+                "type":   "api-key",
+                "header": "X-API-Key",
+                "alt":    "Authorization: Bearer <key>",
+                "claim":  "POST https://dchub.cloud/api/v1/keys/claim with {client_name}",
+            },
+            "tools_manifest":  "https://dchub.cloud/.well-known/mcp-tools.json",
+            "tools_html":      "https://dchub.cloud/mcp/tools",
+            "llms_txt":        "https://dchub.cloud/llms.txt",
+            "openapi":         "https://dchub.cloud/openapi.json",
+            "media_discovery": "https://dchub.cloud/api/v1/media/discovery.json",
+        }
+        resp = Response(_jws.dumps(descriptor, ensure_ascii=False),
+                        mimetype="application/json; charset=utf-8")
+        resp.headers["Cache-Control"]               = "public, max-age=600"
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        return resp
     # Phase 280: /.well-known/ai-agents.json — the discovery file the QA
     # crawler flagged as broken (linked from another page but returning 404).
     # Modeled on the existing agent.json + mcp.json but with the richer
