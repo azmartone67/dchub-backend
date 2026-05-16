@@ -3262,6 +3262,92 @@ async def find_power_site(
 
 
 # ═══════════════════════════════════════════════════════════
+# recommend_market — the "where should I build" oracle
+# Phase SS (2026-05-15)
+# ═══════════════════════════════════════════════════════════
+@mcp.tool(
+    name="recommend_market",
+    annotations={"title": "DCPI Market Recommender", "readOnlyHint": True, "openWorldHint": True},
+)
+async def recommend_market(
+    capacity_mw: float = 50,
+    deadline_months: int = 24,
+    water_stress_max: int = 5,
+    max_retail_rate_cents: float = 99,
+    iso: str = "",
+    states: str = "",
+    include_avoid: bool = False,
+    top_n: int = 5,
+) -> str:
+    """
+    Rank US data-center markets against a capacity + deadline + constraint
+    envelope and return the top picks with composite scores and narrative
+    justifications. Use when: user asks "where should I build a [N] MW data
+    center", "best market for [N] MW by [date]", "rank markets by build
+    feasibility", or any *which-market* (vs what-market) decision.
+
+    Unlike get_market_intel (which describes one market) or get_grid_data
+    (which dumps ISO metrics), this tool *decides*: it filters all 270+
+    DCPI-scored markets by hard constraints, then ranks the survivors by a
+    composite score (excess_power − 0.5×constraint + urgency bonus) and
+    returns the top N with the *why*.
+
+    Args:
+        capacity_mw:           MW the user needs (default 50). Markets with
+                               queue_capacity_mw < capacity are excluded.
+        deadline_months:       Months until power must be live (default 24).
+                               Markets with time_to_power > deadline excluded.
+        water_stress_max:      USGS water stress cap, 1 (low) to 5 (extreme).
+                               Default 5 = no constraint.
+        max_retail_rate_cents: Industrial ¢/kWh cap (default 99 = no cap).
+        iso:                   Optional ISO filter — PJM, ERCOT, CAISO, MISO,
+                               SPP, NYISO, ISO-NE, WECC, SERC. Empty = any.
+        states:                Optional comma-separated US state codes,
+                               e.g. "VA,PA,OH". Empty = any.
+        include_avoid:         When true, include markets with verdict=AVOID
+                               (default false — those are filtered out).
+        top_n:                 Number of markets to return (1-20, default 5).
+
+    Returns:
+        JSON string with `ranked_markets[]` (each with composite score,
+        constraint check, retail rate, water stress, narrative reason,
+        risk flags), `criteria_echo`, `total_evaluated`, `passed_filters`,
+        and methodology string.
+
+    Example:
+        recommend_market(capacity_mw=200, deadline_months=18,
+                         water_stress_max=3, iso="PJM", top_n=3)
+    """
+    # ── Auth gate ──
+    _block = gate("recommend_market", {
+        "capacity_mw": capacity_mw, "deadline_months": deadline_months,
+        "iso": iso, "states": states,
+    })
+    if _block: return _block
+
+    _track("recommend_market", {
+        "capacity_mw": capacity_mw, "deadline_months": deadline_months,
+        "water_stress_max": water_stress_max,
+        "max_retail_rate_cents": max_retail_rate_cents,
+        "iso": iso, "states": states, "top_n": top_n,
+    })
+
+    params = {
+        "capacity_mw":           capacity_mw,
+        "deadline_months":       deadline_months,
+        "water_stress_max":      water_stress_max,
+        "max_retail_rate_cents": max_retail_rate_cents,
+        "include_avoid":         str(include_avoid).lower(),
+        "top_n":                 top_n,
+    }
+    if iso:    params["iso"]    = iso
+    if states: params["states"] = states
+
+    result = _api_get("/api/v1/dcpi/recommend", params=params, retries=1)
+    return finalize(json.dumps(result, indent=2), "recommend_market")
+
+
+# ═══════════════════════════════════════════════════════════
 # KEEPALIVE — Prevent Railway idle shutdown
 # ═══════════════════════════════════════════════════════════
 def _mcp_keepalive():
