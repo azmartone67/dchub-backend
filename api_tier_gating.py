@@ -956,53 +956,13 @@ def increment_daily_records(user_key, tier, records_count, endpoint=''):
                     pass
 
 
-def get_user_key_from_request():
-    """
-    Extract a stable user identifier from the current request.
-    Priority: user_id (JWT) > API key prefix > IP address.
-    Returns: (user_key, tier)
-    """
-    from flask import request
-    
-    tier = get_request_tier()
-    
-    # Try JWT user_id
-    auth_header = request.headers.get('Authorization', '')
-    if auth_header.startswith('Bearer ') and not auth_header[7:].startswith('dchub_'):
-        decode_jwt = _get_decode_jwt()
-        if decode_jwt:
-            try:
-                payload = decode_jwt(auth_header.split(' ', 1)[1])
-                if payload and payload.get('user_id'):
-                    return f"uid:{payload['user_id']}", tier
-            except Exception:
-                pass
-    
-    # Try API key prefix
-    api_key = request.headers.get('X-API-Key', '') or request.args.get('api_key', '')
-    if not api_key:
-        auth = request.headers.get('Authorization', '')
-        if auth.startswith('Bearer ') and auth[7:].startswith('dchub_'):
-            api_key = auth[7:]
-    if api_key and api_key.startswith('dchub_'):
-        return f"key:{api_key[:16]}", tier
-    
-    # Try session cookies
-    for cookie_name in ('session_token', 'dchub_session', 'dchub_token', 'token'):
-        session_token = request.cookies.get(cookie_name)
-        if session_token:
-            decode_jwt = _get_decode_jwt()
-            if decode_jwt:
-                try:
-                    payload = decode_jwt(session_token)
-                    if payload and payload.get('user_id'):
-                        return f"uid:{payload['user_id']}", tier
-                except Exception:
-                    pass
-    
-    # Fallback: IP address
-    ip = request.remote_addr or 'unknown'
-    return f"ip:{ip}", tier
+# Phase WW (2026-05-15): get_user_key_from_request() removed.
+# No production callers — only references were the function's own
+# definition + the auth_context.py docstring listing it as one of
+# the 5 legacy resolvers. Cross-file grep confirmed zero importers.
+# routes/auth_context.get_auth_context() is the canonical replacement
+# for any future caller that needs "who is this request from".
+# 47 LOC removed.
 
 
 def enforce_page_cap(requested_page, tier):
