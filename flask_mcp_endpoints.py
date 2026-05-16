@@ -243,51 +243,76 @@ def claim_key():
     if ip and not _kc_re.match(r"^[\d:.]{3,45}$", ip):
         ip = ip[:64]  # keep but flag in metadata
 
-    # Per-IP rate limit: 1 key per 24h. Looks at metadata->>'ip' filter
-    # over recent rows. Cheap query because the index on created_at + the
-    # JSON filter together keep the scan tight.
+    # Phase ZZ+1 (2026-05-15) — DEDUPE STRATEGY CHANGE.
+    #
+    # Was: 1 key per IP per 24h. Silently broke shared-IP deployments
+    # (CI/CD runners, corporate proxies, containerized agents). A single
+    # Docker image deployed across 10 GitHub Actions runners would claim
+    # once and then 9 sibling agents got 429s — a major reason the
+    # claim-rate dropped from 12/week to 2/week.
+    #
+    # Now: dedupe by (client_name, ip) tuple. If the SAME client_name
+    # from the SAME IP already claimed within 24h, return the existing
+    # key (idempotent — avoids key proliferation). If a DIFFERENT
+    # client_name claims from the same IP, that's a new agent, mint a
+    # new key. Anonymous claims (no client_name) still fall back to IP
+    # dedup to prevent random-bot key flooding.
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
-            cur.execute(
-                """SELECT created_at, api_key
-                     FROM mcp_dev_keys
-                    WHERE metadata->>'source' = 'claim_api'
-                      AND metadata->>'ip' = %s
-                      AND created_at > NOW() - INTERVAL '24 hours'
-                    ORDER BY created_at DESC
-                    LIMIT 1""",
-                (ip,),
-            )
+            if client_name:
+                # New path: (client_name + ip) tuple — preserves
+                # multi-agent shared-IP deployments
+                cur.execute(
+                    """SELECT created_at, api_key
+                         FROM mcp_dev_keys
+                        WHERE metadata->>'source' = 'claim_api'
+                          AND metadata->>'client_name' = %s
+                          AND metadata->>'ip' = %s
+                          AND created_at > NOW() - INTERVAL '24 hours'
+                        ORDER BY created_at DESC
+                        LIMIT 1""",
+                    (client_name, ip),
+                )
+            else:
+                # Legacy path for anonymous (no client_name) claims —
+                # IP-only dedup, same 24h window
+                cur.execute(
+                    """SELECT created_at, api_key
+                         FROM mcp_dev_keys
+                        WHERE metadata->>'source' = 'claim_api'
+                          AND metadata->>'ip' = %s
+                          AND (metadata->>'client_name' IS NULL
+                               OR metadata->>'client_name' = '')
+                          AND created_at > NOW() - INTERVAL '24 hours'
+                        ORDER BY created_at DESC
+                        LIMIT 1""",
+                    (ip,),
+                )
             existing = cur.fetchone()
         if existing:
-            # Compute seconds until the 24h window expires
-            existing_at = existing[0]
-            from datetime import datetime as _dt, timezone as _tz, timedelta as _td
-            if existing_at and getattr(existing_at, "tzinfo", None) is None:
-                existing_at = existing_at.replace(tzinfo=_tz.utc)
-            retry_after = max(
-                1,
-                int(((existing_at + _td(hours=24)) - _dt.now(_tz.utc)).total_seconds())
-            ) if existing_at else 3600
-            resp = jsonify(
-                ok=False,
-                error="ip_rate_limited",
-                retry_after_seconds=retry_after,
-                message=(
-                    "This IP already claimed a free key in the last 24h. "
-                    "Retry after the window expires, or verify your email "
-                    "at /api/v1/dev-signup to remove the IP rate limit."
-                ),
-                verify_email_url="https://dchub.cloud/api/v1/dev-signup",
-            )
-            resp.headers["Retry-After"] = str(retry_after)
-            return resp, 429
+            # Idempotent: if the SAME client_name (or same anon IP)
+            # claimed recently, return the existing key instead of 429.
+            # Agents that lost track of their key get it back; agents
+            # restarted in CI/CD pipelines reuse their slot. No more
+            # silent 429 walls.
+            existing_at, existing_key = existing[0], existing[1]
+            return jsonify(
+                ok=True,
+                api_key=existing_key,
+                tier="free",
+                daily_calls=100,
+                reused=True,
+                note=(f"Existing key reused for client_name='{client_name or '(anon)'}' "
+                      f"from this IP within the last 24h. This is idempotent — call "
+                      f"again with a different client_name to mint a fresh key for "
+                      f"a different agent on the same machine."),
+            ), 200
     except Exception as e:
         # If the lookup fails, don't block — claim through (better to
         # accidentally issue an extra key than to break legit users).
         try:
             import logging as _lg
-            _lg.getLogger(__name__).warning("claim_key rate-check failed: %s", e)
+            _lg.getLogger(__name__).warning("claim_key dedup-check failed: %s", e)
         except Exception:
             pass
 

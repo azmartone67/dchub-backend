@@ -563,6 +563,24 @@ def _gate(tool_name: str, api_key: Optional[str] = None,
             "teaser": teaser,
             "echo_args": _safe_echo_args(args),
             "upgrade_url": f"{PRICING_URL}?utm_source=mcp&utm_tool={tool_name}",
+            # Phase ZZ+1 (2026-05-15): structured claim-endpoint card so
+            # agents that parse the response programmatically (Cursor,
+            # Claude Code, Cline) can render a "claim free key" button
+            # without parsing natural language. Growth audit identified
+            # this as the highest-leverage MCP discovery win — the
+            # /api/v1/keys/claim endpoint was buried in the message text
+            # and most agents never saw it.
+            "claim_endpoint": {
+                "method": "POST",
+                "url":    "https://dchub.cloud/api/v1/keys/claim",
+                "body":   {"client_name": "<your agent name>"},
+                "header": {"Content-Type": "application/json"},
+                "returns": "{api_key, tier, daily_calls}",
+                "note": ("Claim a free dev key instantly (no email, no "
+                          "browser). Use the returned api_key as X-API-Key "
+                          "header on subsequent calls — lifts daily cap "
+                          "to 100, unlocks tier-FREE tools."),
+            },
         })
 
     # Rate limit check
@@ -575,6 +593,19 @@ def _gate(tool_name: str, api_key: Optional[str] = None,
             "message": msg,
             "current_tier": TIER_NAME[tier],
             "upgrade_url": f"{PRICING_URL}?utm_source=mcp&utm_medium=ratelimit",
+            # Phase ZZ+1: same agent-native claim CTA for rate-limit
+            # responses. The most common case: anonymous caller hits the
+            # FREE-tier daily cap → response now includes the structured
+            # path to claim a higher-cap key.
+            "claim_endpoint": {
+                "method": "POST",
+                "url":    "https://dchub.cloud/api/v1/keys/claim",
+                "body":   {"client_name": "<your agent name>"},
+                "returns": "{api_key, tier, daily_calls}",
+                "note": ("Anonymous calls share a 50/day cap. Claim a free "
+                          "dev key to lift to 100/day with no email. Verify "
+                          "your email at https://dchub.cloud/signup for 200/day."),
+            },
         })
 
     return None  # Access granted
