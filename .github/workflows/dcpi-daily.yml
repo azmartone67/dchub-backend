@@ -6,23 +6,32 @@ on:
 jobs:
   recompute:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
-      - name: Trigger DCPI recompute
-        # Phase FF+3 (2026-05-13): hit Railway directly. The previous URL
-        # `https://dchub.cloud/api/v1/dcpi/recompute` routes through CF
-        # Worker which has a 15s timeout — but recompute scores 276
-        # markets and takes 30-60s. The Worker silently aborted the
-        # request, returned to the workflow with success conclusion, and
-        # the underlying DB update never happened. Result: system_loops
-        # probe showed dcpi_recompute stale at 57h despite the workflow
-        # firing daily. Same fix pattern as PR #62 for brain_learn.
+      - name: Trigger DCPI recompute (chunked)
+        # Phase ZZ (2026-05-16): chunked execution. Pre-fix, the single
+        # POST was timing out (Railway 120s) after processing only ~30 of
+        # 276 markets, leaving 89% of DCPI stale 3-5 days. We now drive
+        # 4 sequential chunks of 100 markets each — well under the
+        # per-request timeout, fully covers the 276-market universe with
+        # headroom for growth, and each chunk writes its own dcpi_runs
+        # row so partial-failure recovery is visible.
+        #
+        # Phase FF+3 (2026-05-13): hits Railway directly. The previous
+        # URL routed through CF Worker (15s timeout) which silently
+        # aborted long requests, returned success conclusion, and the
+        # underlying DB update never happened.
         run: |
           if [ -z "${{ secrets.DCHUB_ADMIN_KEY }}" ]; then
             echo "::warning::DCHUB_ADMIN_KEY secret missing — skipping"
             exit 0
           fi
-          curl -sS -X POST --max-time 120 \
-            "https://dchub-backend-production.up.railway.app/api/v1/dcpi/recompute" \
-            -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" \
-            | python3 -m json.tool
+          BASE="https://dchub-backend-production.up.railway.app/api/v1/dcpi/recompute"
+          for OFFSET in 0 100 200 300; do
+            echo "─── Chunk offset=${OFFSET} limit=100 ──────────────────"
+            curl -sS -X POST --max-time 150 \
+              "${BASE}?offset=${OFFSET}&limit=100" \
+              -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" \
+              | python3 -m json.tool || echo "::warning::chunk offset=${OFFSET} failed"
+            sleep 2
+          done

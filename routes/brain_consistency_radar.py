@@ -465,6 +465,257 @@ def check_csp_drift() -> list[dict]:
     return findings
 
 
+# ─────────────────────────────────────────────────────────────────
+# Phase ZZ (2026-05-16) — four detectors for the cascade the QA sweep
+# surfaced: DCPI 89% stale, discovery dead, ISO metric drop, press
+# repetition. Each is a SQL probe against an existing table, never
+# blocks the radar, fails open on table-missing.
+# ─────────────────────────────────────────────────────────────────
+def _db():
+    """Local DB helper for the Phase ZZ detectors. Autocommit so a
+    failed probe doesn't poison follow-ups inside scan_all()."""
+    import os as _os, psycopg2 as _pg2
+    db = _os.environ.get("DATABASE_URL")
+    if not db: return None
+    try:
+        c = _pg2.connect(db, sslmode="require", connect_timeout=5)
+        c.autocommit = True
+        return c
+    except Exception:
+        return None
+
+
+def check_dcpi_partial_recompute() -> list[dict]:
+    """Flag when DCPI median market-age exceeds 48h. Catches the
+    'load_markets_dynamic returns None → only 30 of 276 markets
+    refresh' regression class. Was silently bleeding for 5 days."""
+    conn = _db()
+    if conn is None: return []
+    findings: list[dict] = []
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("SELECT to_regclass('public.market_power_scores')")
+                if not (cur.fetchone() or [None])[0]:
+                    return findings
+            except Exception:
+                return findings
+            cur.execute("""
+                WITH latest AS (
+                    SELECT DISTINCT ON (market_slug) market_slug, computed_at
+                      FROM market_power_scores
+                     ORDER BY market_slug, computed_at DESC
+                )
+                SELECT COUNT(*) AS total,
+                       COUNT(*) FILTER (WHERE computed_at < NOW() - INTERVAL '72 hours') AS stale_3d,
+                       COUNT(*) FILTER (WHERE computed_at < NOW() - INTERVAL '24 hours') AS stale_24h,
+                       EXTRACT(EPOCH FROM
+                          (NOW() - PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY computed_at))
+                       ) / 3600.0 AS median_age_h
+                  FROM latest
+            """)
+            r = cur.fetchone()
+            if not r: return findings
+            total, stale_3d, stale_24h, median_h = r
+            total = int(total or 0)
+            stale_3d = int(stale_3d or 0)
+            stale_24h = int(stale_24h or 0)
+            median_h = float(median_h or 0)
+            if total < 20: return findings  # not enough data
+            stale_pct = (stale_3d / total) * 100 if total else 0
+            if stale_pct >= 50:
+                findings.append({
+                    "issue":  "dcpi_partial_recompute",
+                    "url":    "market_power_scores: stale-age distribution",
+                    "count":  stale_3d,
+                    "detail": (f"DCPI is stale: {stale_3d}/{total} markets "
+                               f"({stale_pct:.0f}%) haven't recomputed in 72h, "
+                               f"median age {median_h:.1f}h. Daily cron is "
+                               f"likely timing out — verify dcpi-daily.yml "
+                               f"chunking (offset/limit params) is in place "
+                               f"AND _load_markets_dynamic() returns >30 "
+                               f"markets (tuple-shape branch must exist)."),
+                })
+    finally:
+        try: conn.close()
+        except Exception: pass
+    return findings
+
+
+def check_discovery_stalled() -> list[dict]:
+    """Flag when zero new facilities have landed in `discovered_facilities`
+    over the last 7 days. /api/v1/stats.data.new_last_7_days was 0 at the
+    time this was authored — discovery had quietly stopped, undermining
+    the 'living being' positioning."""
+    conn = _db()
+    if conn is None: return []
+    findings: list[dict] = []
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("SELECT to_regclass('public.discovered_facilities')")
+                if not (cur.fetchone() or [None])[0]:
+                    return findings
+            except Exception:
+                return findings
+            # Try a few likely timestamp columns
+            n_7d = None
+            for col in ("created_at", "discovered_at", "first_seen_at", "inserted_at"):
+                try:
+                    cur.execute(f"""
+                        SELECT COUNT(*) FROM discovered_facilities
+                         WHERE {col} >= NOW() - INTERVAL '7 days'
+                    """)
+                    n_7d = int((cur.fetchone() or [0])[0] or 0)
+                    break
+                except Exception:
+                    continue
+        if n_7d is None: return findings
+        if n_7d == 0:
+            findings.append({
+                "issue":  "discovery_stalled_7d",
+                "url":    "discovered_facilities: last 7d INSERTs",
+                "count":  0,
+                "detail": ("Zero new facilities have been added to "
+                           "discovered_facilities in the last 7 days. "
+                           "The /api/v1/stats endpoint advertises 12,553 "
+                           "facilities — if discovery is dead, that "
+                           "number is frozen and the 'living being' "
+                           "positioning starts to drift from reality. "
+                           "Check crawler workflows: dchub-osm-refresh.yml, "
+                           "data-pulse.yml, daily-infra-sync.yml. Likely "
+                           "either the crawler errored out, the API "
+                           "source quota was hit, or the ingest cron "
+                           "stopped firing."),
+            })
+        elif n_7d < 10:
+            findings.append({
+                "issue":  "discovery_anemic_7d",
+                "url":    "discovered_facilities: last 7d INSERTs",
+                "count":  n_7d,
+                "detail": (f"Discovery anemic: only {n_7d} new facilities "
+                           f"in 7 days. Expected rate is 50+/week. Either "
+                           f"crawlers are rate-limited or the upstream "
+                           f"sources have run out of fresh signal."),
+            })
+    finally:
+        try: conn.close()
+        except Exception: pass
+    return findings
+
+
+def check_iso_metric_dropped() -> list[dict]:
+    """Flag when an ISO listed in by_iso has metric_count=0 — meaning
+    the loop registered but the latest ingest wrote nothing. Caught
+    PJM + MISO showing 0 metrics at audit time while CAISO/SPP/NYISO
+    were healthy."""
+    conn = _db()
+    if conn is None: return []
+    findings: list[dict] = []
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("SELECT to_regclass('public.grid_data')")
+                if not (cur.fetchone() or [None])[0]:
+                    return findings
+            except Exception:
+                return findings
+            cur.execute("""
+                SELECT iso, COUNT(*) AS metric_count, MAX(timestamp) AS latest
+                  FROM grid_data
+                 WHERE timestamp >= NOW() - INTERVAL '24 hours'
+                 GROUP BY iso
+            """)
+            recent_rows = {r[0]: (int(r[1] or 0), r[2]) for r in cur.fetchall()}
+
+            cur.execute("SELECT DISTINCT iso FROM grid_data")
+            all_isos = {r[0] for r in cur.fetchall() if r[0]}
+
+        for iso in all_isos:
+            recent = recent_rows.get(iso)
+            if recent is None:
+                findings.append({
+                    "issue":  "iso_metric_count_zero_24h",
+                    "url":    f"grid_data: iso={iso}",
+                    "count":  0,
+                    "detail": (f"ISO {iso} has prior history in grid_data "
+                               f"but ZERO writes in the last 24h. The "
+                               f"loop has stopped. Check the matching "
+                               f"workflow + iso_{iso.lower().replace('-','')}.py "
+                               f"module."),
+                })
+            elif recent[0] < 3:
+                findings.append({
+                    "issue":  "iso_metric_count_dropped",
+                    "url":    f"grid_data: iso={iso}",
+                    "count":  recent[0],
+                    "detail": (f"ISO {iso} wrote only {recent[0]} metric(s) "
+                               f"in 24h (expected 5-15). Loop is partial — "
+                               f"the API call may be erroring on most "
+                               f"metrics while one or two succeed."),
+                })
+    finally:
+        try: conn.close()
+        except Exception: pass
+    return findings
+
+
+def check_press_repetition() -> list[dict]:
+    """Flag when the last 3+ auto-press release titles all reference the
+    same market. The Phase MM/NN dedup logic was supposed to catch this
+    but 4 identical Cheyenne releases shipped May 12-15 — proving the
+    guard didn't fire. This detector closes the loop by alerting when
+    repetition actually occurs in the published output."""
+    conn = _db()
+    if conn is None: return []
+    findings: list[dict] = []
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("SELECT to_regclass('public.auto_press_releases')")
+                if not (cur.fetchone() or [None])[0]:
+                    return findings
+            except Exception:
+                return findings
+            cur.execute("""
+                SELECT title FROM auto_press_releases
+                 WHERE generated_for >= CURRENT_DATE - INTERVAL '5 days'
+                   AND title IS NOT NULL
+                 ORDER BY generated_at DESC NULLS LAST
+                 LIMIT 5
+            """)
+            titles = [r[0] for r in cur.fetchall() if r and r[0]]
+        if len(titles) < 3: return findings
+        # Extract leading market name from each title (same regex as
+        # routes/marketing_engine._recent_market_names)
+        import re as _re
+        markets: list[str] = []
+        for t in titles:
+            m = _re.match(r"^([A-Z][a-zA-Z\.\- ]+?)(?:,| Metro|:| - | – | Leads| Tops| Takes)", t)
+            if m: markets.append(m.group(1).strip().lower())
+        if len(markets) < 3: return findings
+        # If first 3 titles all share the same market → repetition
+        first_three = markets[:3]
+        if len(set(first_three)) == 1:
+            findings.append({
+                "issue":  "auto_press_market_repetition",
+                "url":    "auto_press_releases: last 3 titles",
+                "count":  3,
+                "detail": (f"Auto-press is repeating the same market — "
+                           f"last 3 releases all led with '{first_three[0]}'. "
+                           f"The Phase MM/NN dedup guard (routes/"
+                           f"marketing_engine._market_clash) didn't fire. "
+                           f"Either DCPI freshness is broken (so only one "
+                           f"market refreshes and wins every day), or the "
+                           f"dedup is bypassed via a non-protected topic "
+                           f"branch. Recent titles: {titles[:3]}"),
+            })
+    finally:
+        try: conn.close()
+        except Exception: pass
+    return findings
+
+
 def scan_all() -> list[dict]:
     """Run every detector. Return a flat list of finding dicts ready
     to merge into actionable_backend_issues."""
@@ -473,7 +724,11 @@ def scan_all() -> list[dict]:
                check_tier_consistency,
                check_cron_coverage,
                check_cron_collisions,
-               check_csp_drift):
+               check_csp_drift,
+               check_dcpi_partial_recompute,
+               check_discovery_stalled,
+               check_iso_metric_dropped,
+               check_press_repetition):
         try:
             out.extend(fn() or [])
         except Exception as e:
