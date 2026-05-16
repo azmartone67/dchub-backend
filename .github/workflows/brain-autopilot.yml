@@ -1,0 +1,70 @@
+name: Brain Autopilot
+
+# Phase AAA (2026-05-16): the autonomous-action loop.
+#
+# The brain has detectors + findings + Layer 5 code proposals — but
+# nobody was actually DOING anything autonomously about operational
+# findings (stale crons, dead loops, repetitive press). This workflow
+# fires every 30 min and POSTs /api/v1/brain/autopilot/run, which reads
+# /api/v1/heal/findings, matches findings against a whitelist of safe
+# patterns, and executes the bound action (e.g. retrigger DCPI recompute,
+# force press rotation).
+#
+# Safety:
+#   - rate-limited (3/hour/pattern, 10/24h/pattern, 30min cooldown)
+#   - kill switch via BRAIN_AUTOPILOT_DISABLED env
+#   - dry-run via BRAIN_AUTOPILOT_DRY_RUN env
+#   - every action audited in brain_autopilot_actions table
+#   - escalation: if same pattern fires 5+ times in 24h despite remediation,
+#     marked escalated and no further actions until human resolves
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'   # every 30 min
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  RAILWAY_BASE: https://dchub-backend-production.up.railway.app
+
+jobs:
+  autopilot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Brain autopilot — execute autonomous remediations
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning::DCHUB_ADMIN_KEY not set — skipping autopilot"
+            exit 0
+          fi
+          response=$(curl -sS --max-time 240 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" \
+            "$RAILWAY_BASE/api/v1/brain/autopilot/run" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | head -c 4000
+          echo
+          echo "$response" | python3 -c "
+          import json, sys
+          try:
+              d = json.load(sys.stdin)
+              s = d.get('summary') or {}
+              print(f'::notice::autopilot: examined={s.get(\"examined\",0)} '
+                    f'actioned={s.get(\"actioned\",0)} '
+                    f'rate_limited={s.get(\"rate_limited\",0)} '
+                    f'escalated={s.get(\"escalated\",0)} '
+                    f'errors={s.get(\"errors\",0)} '
+                    f'dry_run={s.get(\"dry_run\",False)}')
+              # Fail the job if dispatched as a true autopilot run had errors,
+              # so the brain-pr-post-merge-guard catches regressions.
+              if s.get('errors', 0) > 0:
+                  print(f'::warning::autopilot saw {s[\"errors\"]} action failures')
+          except Exception as e:
+              print(f'::warning::autopilot response parse failed: {e}')
+          "

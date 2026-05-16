@@ -19328,6 +19328,17 @@ try:
 except Exception as _e:
     print(f"[main] brain_consistency_radar register failed: {_e}", file=sys.stderr)
 
+# Phase AAA (2026-05-16): brain autopilot — the autonomous-action loop.
+# Reads /api/v1/heal/findings, matches actionable_backend_issues against a
+# safe pattern library, executes remediations (rate-limited + idempotent),
+# audits every action. Triggered every 30 min by .github/workflows/brain-
+# autopilot.yml. /api/v1/brain/heartbeat exposes the brain's vital signs.
+try:
+    from routes.brain_autopilot import brain_autopilot_bp
+    app.register_blueprint(brain_autopilot_bp)
+except Exception as _e:
+    print(f"[main] brain_autopilot register failed: {_e}", file=sys.stderr)
+
 # Phase TT-1 (2026-05-15): single tier resolver. ONE function answers
 # "what tier is this caller?" — replaces 5 divergent implementations.
 # Existing callers continue to work; new code uses get_auth_context().
@@ -20435,10 +20446,86 @@ def _heal_master_cycle():
 # fetch timeout — every public hit returned the worker's 503 fallback.
 # Now: serve the cached payload instantly, refresh in a background
 # thread when stale, and only run synchronously on a true cold start.
+#
+# Phase AAA (2026-05-16): added DB-backed persistence. The pure in-memory
+# cache reset on EVERY Railway worker recycle (frequent — minutes), so
+# every /heal/findings request saw `_warming_up: True` forever. Brain
+# Layer 5 cron read that empty payload, found 0 actionable_backend_issues,
+# proposed 0 fixes. Result: the brain looked dead even though the detectors
+# worked. The DB fallback below survives worker restarts so the brain's
+# eyes stay open between refreshes.
 _HEAL_FINDINGS_CACHE = {"payload": None, "ts": 0.0}
 _HEAL_FINDINGS_LOCK = threading.Lock()
 _HEAL_FINDINGS_REFRESHING = {"running": False}
 _HEAL_FINDINGS_TTL = int(os.environ.get("DCHUB_HEAL_CACHE_TTL", "300"))  # 5 min
+
+
+# ── Phase AAA: persistent DB-backed cache helpers ────────────────────
+def _heal_cache_table_init():
+    """Idempotent schema. Stores ONE row per refresh — newest wins."""
+    try:
+        import psycopg2 as _pg2
+        url = os.environ.get("DATABASE_URL")
+        if not url: return False
+        with _pg2.connect(url, sslmode="require", connect_timeout=5) as c, c.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS heal_findings_cache (
+                    id          BIGSERIAL PRIMARY KEY,
+                    payload     JSONB NOT NULL,
+                    computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS ix_heal_findings_cache_recent
+                    ON heal_findings_cache(computed_at DESC);
+            """)
+            c.commit()
+        return True
+    except Exception as _e:
+        logger.warning("heal_findings_cache init: %s", _e)
+        return False
+
+# Run once at import time — best-effort
+try: _heal_cache_table_init()
+except Exception: pass
+
+
+def _heal_cache_db_read():
+    """Return most recent persisted heal_findings_cache row or None.
+    Returns (payload, age_seconds)."""
+    try:
+        import psycopg2 as _pg2
+        url = os.environ.get("DATABASE_URL")
+        if not url: return None, None
+        with _pg2.connect(url, sslmode="require", connect_timeout=5) as c, c.cursor() as cur:
+            cur.execute("""
+                SELECT payload, EXTRACT(EPOCH FROM (NOW() - computed_at))::int AS age_s
+                  FROM heal_findings_cache
+                 ORDER BY computed_at DESC LIMIT 1
+            """)
+            r = cur.fetchone()
+            if not r: return None, None
+            return r[0], int(r[1] or 0)
+    except Exception as _e:
+        logger.warning("heal_findings_cache read: %s", _e)
+        return None, None
+
+
+def _heal_cache_db_write(payload: dict):
+    """Persist a refreshed payload. Prunes rows older than 7 days
+    to keep the table bounded."""
+    try:
+        import psycopg2 as _pg2, json as _json
+        url = os.environ.get("DATABASE_URL")
+        if not url: return
+        with _pg2.connect(url, sslmode="require", connect_timeout=5) as c, c.cursor() as cur:
+            cur.execute(
+                "INSERT INTO heal_findings_cache (payload) VALUES (%s::jsonb)",
+                (_json.dumps(payload, default=str),))
+            cur.execute(
+                "DELETE FROM heal_findings_cache "
+                "WHERE computed_at < NOW() - INTERVAL '7 days'")
+            c.commit()
+    except Exception as _e:
+        logger.warning("heal_findings_cache write: %s", _e)
 
 
 def _compute_heal_findings():
@@ -20618,7 +20705,12 @@ def _compute_heal_findings():
 
 def _refresh_heal_findings_async():
     """Spawn ONE background refresh of /heal/findings — no-op if one is
-    already running."""
+    already running.
+
+    Phase AAA (2026-05-16): refresh now writes to BOTH the in-memory cache
+    AND the heal_findings_cache DB table. The DB write survives Railway
+    worker recycles, so subsequent cold-start workers see real findings
+    instead of the empty warming-up skeleton."""
     if _HEAL_FINDINGS_REFRESHING["running"]:
         return
     _HEAL_FINDINGS_REFRESHING["running"] = True
@@ -20628,6 +20720,9 @@ def _refresh_heal_findings_async():
             with _HEAL_FINDINGS_LOCK:
                 _HEAL_FINDINGS_CACHE["payload"] = new_payload
                 _HEAL_FINDINGS_CACHE["ts"] = time.time()
+            # Persist so future cold-start workers see findings immediately.
+            try: _heal_cache_db_write(new_payload)
+            except Exception as _w: logger.warning("heal_findings db persist: %s", _w)
         except Exception as _e:
             logger.warning("heal/findings refresh failed: %s", _e)
         finally:
@@ -20664,10 +20759,30 @@ def _heal_findings():
         resp = dict(cached)
         resp["_cache_age_seconds"] = round(age, 1)
         resp["_cached"] = True
+        resp["_cache_source"] = "memory"
         return jsonify(resp)
-    # Cold start — DO NOT block. Spawn the refresh and return an empty
-    # warming-up skeleton. Subsequent calls land in the fast cache path
-    # once the background thread completes (~60-180s for the first scan).
+    # Phase AAA (2026-05-16): cold-start path now consults the DB cache
+    # BEFORE returning the warming-up skeleton. Railway worker recycles
+    # blew away the in-memory cache constantly, so every cold-start
+    # request used to return `_warming_up: True` — and the Brain Layer 5
+    # cron always saw 0 findings → never proposed any fixes. With the
+    # DB read, a freshly-recycled worker hands back the LAST background
+    # refresh's payload immediately. The brain's eyes stay open.
+    db_payload, db_age_s = _heal_cache_db_read()
+    if db_payload is not None:
+        # Warm the in-memory cache from DB so subsequent hits on this
+        # worker are fast. Also kick off a refresh if the DB row is stale.
+        with _HEAL_FINDINGS_LOCK:
+            _HEAL_FINDINGS_CACHE["payload"] = db_payload
+            _HEAL_FINDINGS_CACHE["ts"] = time.time() - (db_age_s or 0)
+        if (db_age_s or 0) > _HEAL_FINDINGS_TTL:
+            _refresh_heal_findings_async()
+        resp = dict(db_payload)
+        resp["_cache_age_seconds"] = db_age_s
+        resp["_cached"] = True
+        resp["_cache_source"] = "db"
+        return jsonify(resp)
+    # True cold start — DB has no row yet, kick refresh + skeleton.
     _refresh_heal_findings_async()
     return jsonify({
         "findings": {},
@@ -20676,7 +20791,8 @@ def _heal_findings():
         "cache_needs_purge": False,
         "_cached": False,
         "_warming_up": True,
-        "_note": "Detector cache is populating. Retry in 1-3 minutes for full results.",
+        "_cache_source": "cold-start",
+        "_note": "Detector cache is populating (first-ever run). Retry in 1-3 minutes.",
     })
 
 
