@@ -81,11 +81,24 @@ _SCHEMA_INDEXES = [
 
 
 def _ensure_schema():
+    """Phase CCC-2 (2026-05-16): use autocommit so a single failing
+    ALTER doesn't poison the whole transaction.
+
+    The Phase CCC ALTER-ADD-IF-NOT-EXISTS migration shipped but the
+    column still wasn't being added — root cause: the connection's
+    default (non-autocommit) transaction entered InFailedSqlTransaction
+    on the first ALTER that hit any non-trivial error, blocking every
+    subsequent statement INCLUDING the final commit. With autocommit
+    each ALTER stands alone; success or failure is per-statement."""
     c = _conn()
     if c is None: return False
     try:
-        with c, c.cursor() as cur:
-            cur.execute(_SCHEMA_DDL)
+        c.autocommit = True
+        with c.cursor() as cur:
+            try:
+                cur.execute(_SCHEMA_DDL)
+            except Exception as _ddl_err:
+                print(f"[ai_citations] CREATE TABLE: {_ddl_err}")
             for col_name, col_def in _SCHEMA_COLUMNS:
                 try:
                     cur.execute(
