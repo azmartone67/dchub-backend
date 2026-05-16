@@ -2006,6 +2006,26 @@ def handle_well_known():
                 "claim_endpoint": "https://dchub.cloud/api/v1/keys/claim",
                 "claim_note":    "POST {client_name: '...'} returns an instant free dev key (no email)."
             },
+            # Phase ZZ+1 (2026-05-15): added a copy-paste quick_start so
+            # agents discovering DC Hub via the well-known manifest can
+            # claim a key in one curl. The growth audit found that most
+            # agents never see the claim_endpoint URL because they don't
+            # parse the authentication block — a literal `curl_example`
+            # at top-level is the simplest way to make adoption frictionless.
+            "quick_start": {
+                "title":   "Claim a free dev key in 30 seconds (no email, no browser)",
+                "curl_example": ("curl -X POST https://dchub.cloud/api/v1/keys/claim "
+                                  "-H 'Content-Type: application/json' "
+                                  "-d '{\"client_name\":\"your-agent-name\"}'"),
+                "returns":      "{ok, api_key, tier, daily_calls}",
+                "then":         "Use api_key as `X-API-Key: dch_live_...` on subsequent calls.",
+                "free_tier":    {"daily_calls": 100, "tools": "7 FREE-tier tools"},
+                "identified_tier": {
+                    "daily_calls":      200,
+                    "tools":            "+ 17 IDENTIFIED-tier tools (grid intelligence, market intel, energy prices, pipeline, M&A)",
+                    "how_to_upgrade":   "https://dchub.cloud/signup (60-second email verification)"
+                }
+            },
             "rate_limits": {
                 "FREE":       {"daily_calls": 100, "max_rows": 5},
                 "IDENTIFIED": {"daily_calls": 200, "max_rows": 20},
