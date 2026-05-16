@@ -1071,6 +1071,68 @@ def check_surface_health_critical() -> list[dict]:
     return findings
 
 
+# ── Phase GGG (2026-05-16) — per-tool funnel leak detector ────────
+def check_mcp_funnel_leak() -> list[dict]:
+    """Flag any tool with >50 paywall signals where a single funnel
+    stage drops >95%. Tells us EXACTLY where the conversion engine is
+    broken per tool (vs the aggregate stale-conversion detector which
+    only says 'something is wrong')."""
+    findings: list[dict] = []
+    try:
+        from routes.mcp_funnel import _compute_funnel
+        funnels = _compute_funnel(tool_filter=None, days=14)
+    except Exception:
+        return findings
+    for f in funnels:
+        stages = f.get("stages") or {}
+        if (stages.get("1_paywall_signals") or 0) < 50: continue
+        leak = f.get("biggest_leak") or {}
+        drop = leak.get("drop_pct")
+        stage = leak.get("stage")
+        if drop is None or drop < 95: continue
+        # 95%+ drop on a tool with >50 signals = clear funnel break
+        findings.append({
+            "issue":  f"mcp_funnel_leak:{f['tool']}",
+            "url":    f"mcp_funnel: tool={f['tool']}, stage={stage}",
+            "count":  int(drop),
+            "detail": (f"Tool '{f['tool']}' has a {drop}% drop at stage "
+                       f"'{stage}'. {stages.get('1_paywall_signals')} paywall "
+                       f"signals → {stages.get('5_converted',0)} conversions. "
+                       f"Inspect /api/v1/mcp/conversion-funnel/{f['tool']} for "
+                       f"the per-stage breakdown."),
+        })
+        if len(findings) >= 3: break  # cap — top-3 leaks is plenty
+    return findings
+
+
+# ── Phase LLL (2026-05-16) — enterprise bot identifier ────────────
+def check_enterprise_bot_present() -> list[dict]:
+    """Flag the top whale (>500 calls in 14d, 3+ days) so it surfaces
+    in the heartbeat — humans then decide outreach vs block vs monitor."""
+    findings: list[dict] = []
+    try:
+        from routes.bot_outreach import _compute_whales
+        whales = _compute_whales(min_days=3, min_calls_per_day=100)
+    except Exception:
+        return findings
+    if not whales: return findings
+    top = whales[0]
+    if top.get("total_calls_14d", 0) < 500:
+        return findings  # not significant enough to flag
+    findings.append({
+        "issue":  "enterprise_bot_present",
+        "url":    f"mcp_tool_calls: ip_hash={top.get('ip_hash','?')}",
+        "count":  int(top.get("total_calls_14d", 0)),
+        "detail": (f"High-volume bot identified: {top.get('total_calls_14d')} calls "
+                   f"over {top.get('days_active')} days "
+                   f"({top.get('calls_per_day_avg','?')}/day avg). "
+                   f"Suggested: {top.get('suggested_action','monitor')}. "
+                   f"UA: {(top.get('ua_fingerprint','') or '')[:60]}. "
+                   f"Full whale list at /api/v1/bots/whales."),
+    })
+    return findings
+
+
 def scan_all() -> list[dict]:
     """Run every detector. Return a flat list of finding dicts ready
     to merge into actionable_backend_issues."""
@@ -1091,7 +1153,10 @@ def scan_all() -> list[dict]:
                check_source_of_truth_declining,
                check_media_topic_unaddressed,
                # Phase EEE surface-brain detector
-               check_surface_health_critical):
+               check_surface_health_critical,
+               # Phase GGG/LLL detectors
+               check_mcp_funnel_leak,
+               check_enterprise_bot_present):
         try:
             out.extend(fn() or [])
         except Exception as e:

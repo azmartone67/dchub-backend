@@ -362,6 +362,21 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
         "use_admin":   False,
         "description": "Escalation-only: a registered surface dropped below health 40. Per-surface fix varies — see /api/v1/surface/<id>/pulse",
     },
+    # Phase GGG — per-tool funnel-leak pattern. Dynamic key
+    # `mcp_funnel_leak:<tool>` binds via _lookup_pattern() prefix match.
+    "mcp_funnel_leak": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: a single MCP tool has >95% drop at one funnel stage. See /api/v1/mcp/conversion-funnel/<tool> for the leak location.",
+    },
+    # Phase LLL — enterprise bot present (revenue opportunity).
+    "enterprise_bot_present": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: high-volume bot identified (likely enterprise prospect). Reach out or block — see /api/v1/bots/whales.",
+    },
 }
 
 
@@ -471,6 +486,69 @@ def _record_action(finding: dict, pattern: str, action_path: str | None,
     finally:
         try: c.close()
         except Exception: pass
+
+    # Phase HHH (2026-05-16): real-time webhook escalation. When the
+    # brain marks something escalated (no autonomous remediation possible,
+    # needs a human), POST to BRAIN_ESCALATION_WEBHOOK_URL. Compatible
+    # with Slack incoming-webhook + Discord webhook formats (both accept
+    # {text: "..."} JSON).
+    #
+    # Throttled per-pattern: only fires once per 4h for the same finding-
+    # issue so a critical pattern repeating doesn't flood the channel.
+    # Dry-run + disabled flags respected — same env vars as the rest of
+    # the autopilot.
+    if escalated and not dry_run:
+        try:
+            _maybe_send_webhook(finding, pattern, outcome, error)
+        except Exception as _we:
+            print(f"[autopilot] webhook failed (non-fatal): {_we}")
+
+
+# Phase HHH webhook helpers
+_WEBHOOK_THROTTLE: dict[str, float] = {}   # pattern → last_sent_ts
+_WEBHOOK_THROTTLE_S = 4 * 3600              # 4 hours
+
+
+def _maybe_send_webhook(finding: dict, pattern: str, outcome: str, error: str | None):
+    """Fire-and-forget POST to webhook. Throttled + tolerant of all failures."""
+    import time, urllib.request, urllib.error
+    url = os.environ.get("BRAIN_ESCALATION_WEBHOOK_URL", "").strip()
+    if not url: return  # not configured
+
+    # Throttle per pattern
+    now = time.time()
+    last = _WEBHOOK_THROTTLE.get(pattern, 0)
+    if (now - last) < _WEBHOOK_THROTTLE_S:
+        return
+    _WEBHOOK_THROTTLE[pattern] = now
+
+    issue  = finding.get("issue", "?")
+    count  = finding.get("count", "?")
+    detail = (finding.get("detail") or "")[:600]
+    target = finding.get("url") or finding.get("target") or "-"
+
+    # Compose a message that works in BOTH Slack and Discord
+    text = (
+        f"⚠️ *Brain escalation: `{issue}`*\n"
+        f"Pattern: `{pattern}` · Outcome: `{outcome}`\n"
+        f"Target: `{target}`\n"
+        f"Count: `{count}`\n"
+        f"{detail}\n"
+        f"Inspect: https://dchub.cloud/api/v1/brain/autopilot/recent"
+    )
+    payload = {"text": text}
+
+    try:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            print(f"[autopilot] webhook delivered: HTTP {resp.status} for {issue}")
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as e:
+        print(f"[autopilot] webhook delivery failed: {type(e).__name__}")
 
 
 # ── ENDPOINTS ─────────────────────────────────────────────────────────

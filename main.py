@@ -19449,6 +19449,47 @@ try:
 except Exception as _e:
     print(f"[main] surface_brain register failed: {_e}", file=sys.stderr)
 
+# Phase GGG-MMM (2026-05-16) — master shell: 6 new builds in one go.
+# Each blueprint isolated with its own try/except so any single failure
+# doesn't block app startup. See routes/*.py docstrings for per-phase rationale.
+try:
+    from routes.mcp_funnel import mcp_funnel_bp
+    app.register_blueprint(mcp_funnel_bp)
+except Exception as _e:
+    print(f"[main] mcp_funnel register failed: {_e}", file=sys.stderr)
+try:
+    from routes.transactions_browser import transactions_browser_bp
+    app.register_blueprint(transactions_browser_bp)
+    # Also register a 'transactions' surface so visits flow into surface_brain
+    try:
+        from routes.surface_brain import register_surface, Surface
+        register_surface(Surface(
+            surface_id="transactions",
+            name="Transactions",
+            description="The /transactions browser — 14,500+ data center M&A deals",
+            routes=["/transactions", "/transactions/<id>"],
+            paid_tools=["list_transactions"],
+            expected_event_types=["view", "view_detail", "filter", "search"],
+        ))
+    except Exception: pass
+except Exception as _e:
+    print(f"[main] transactions_browser register failed: {_e}", file=sys.stderr)
+try:
+    from routes.intelligence_dashboard import intelligence_dashboard_bp
+    app.register_blueprint(intelligence_dashboard_bp)
+except Exception as _e:
+    print(f"[main] intelligence_dashboard register failed: {_e}", file=sys.stderr)
+try:
+    from routes.bot_outreach import bot_outreach_bp
+    app.register_blueprint(bot_outreach_bp)
+except Exception as _e:
+    print(f"[main] bot_outreach register failed: {_e}", file=sys.stderr)
+try:
+    from routes.experiments import experiments_bp
+    app.register_blueprint(experiments_bp)
+except Exception as _e:
+    print(f"[main] experiments register failed: {_e}", file=sys.stderr)
+
 # Phase TT-1 (2026-05-15): single tier resolver. ONE function answers
 # "what tier is this caller?" — replaces 5 divergent implementations.
 # Existing callers continue to work; new code uses get_auth_context().
