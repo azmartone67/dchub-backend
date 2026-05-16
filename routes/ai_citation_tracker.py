@@ -61,6 +61,12 @@ CREATE TABLE IF NOT EXISTS ai_citations (
 # returned 500. ALTER TABLE ADD COLUMN IF NOT EXISTS is idempotent
 # and survives any prior partial-schema state.
 _SCHEMA_COLUMNS = [
+    # Phase CCC-3 (2026-05-16): observed_at was in the CREATE TABLE clause
+    # but the pre-existing test-deploy table didn't have it either, and
+    # CREATE TABLE IF NOT EXISTS won't add it. Move it into the ALTER list
+    # so it gets backfilled. id stays in CREATE because it's the primary
+    # key and must exist for the table to be usable at all.
+    ("observed_at",     "TIMESTAMPTZ NOT NULL DEFAULT NOW()"),
     ("engine",          "TEXT NOT NULL DEFAULT 'manual'"),
     ("prompt_id",       "TEXT NOT NULL DEFAULT 'unknown'"),
     ("prompt_text",     "TEXT"),
