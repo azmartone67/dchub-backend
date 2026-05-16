@@ -343,6 +343,69 @@ def check_cron_coverage() -> list[dict]:
 
 # ── public API ─────────────────────────────────────────────────────
 
+def check_cron_collisions() -> list[dict]:
+    """Phase VV-1 (2026-05-15) — detect cron expression collisions across
+    workflow files in BOTH repos.
+
+    Two workflows firing at the exact same minute trigger a thundering-
+    herd against the backend (e.g. 4 workflows curl /api/v1/heal/findings
+    at :00, :15, :30, :45 simultaneously). Audit found 7 colliding
+    expressions: 4 jobs at `0 14 * * 1`, 4 at `0 */6 * * *`, 4 at
+    `*/15 * * * *`, etc. Detector flags every collision so we know
+    which to stagger.
+    """
+    findings: list[dict] = []
+    # Two repo paths: backend (this file's repo) + sibling frontend.
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    candidates = [
+        os.path.join(here, ".github", "workflows"),
+        os.path.join(os.path.dirname(here), "dchub-frontend", ".github", "workflows"),
+    ]
+    cron_to_files: dict[str, list[str]] = {}
+    cron_pattern = re.compile(r"-\s*cron:\s*['\"]?([\w*/\s,-]+?)['\"]?\s*(?:#.*)?$",
+                               re.MULTILINE)
+
+    for workflows_dir in candidates:
+        if not os.path.isdir(workflows_dir):
+            continue
+        try:
+            yml_files = [os.path.join(workflows_dir, f)
+                         for f in os.listdir(workflows_dir)
+                         if f.endswith((".yml", ".yaml"))]
+        except OSError:
+            continue
+        for wf in yml_files:
+            try:
+                with open(wf) as fh:
+                    text = fh.read()
+            except OSError:
+                continue
+            for m in cron_pattern.finditer(text):
+                expr = m.group(1).strip()
+                if not expr or len(expr.split()) != 5:
+                    continue  # malformed — skip
+                cron_to_files.setdefault(expr, []).append(
+                    os.path.relpath(wf, os.path.dirname(here)))
+
+    # Only flag if 2+ workflows share the SAME expression. Same minute
+    # = thundering herd.
+    for expr, files in cron_to_files.items():
+        if len(files) < 2:
+            continue
+        findings.append({
+            "issue": "cron_schedule_collision",
+            "url":   expr,
+            "count": len(files),
+            "detail": (f"{len(files)} workflows share cron `{expr}` — "
+                       f"they fire at the EXACT same minute. Stagger by "
+                       f"offsetting one or more of them. Files: "
+                       f"{', '.join(files[:6])}"),
+            "expr":  expr,
+            "files": files,
+        })
+    return findings
+
+
 def check_csp_drift() -> list[dict]:
     """Phase TT-2 (2026-05-15) — detect CSP source-of-truth drift.
 
@@ -382,6 +445,7 @@ def scan_all() -> list[dict]:
     for fn in (check_worker_version_drift,
                check_tier_consistency,
                check_cron_coverage,
+               check_cron_collisions,
                check_csp_drift):
         try:
             out.extend(fn() or [])

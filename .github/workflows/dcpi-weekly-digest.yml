@@ -1,7 +1,9 @@
 name: DCPI Weekly Digest
 on:
   schedule:
-    - cron: '0 14 * * 1'   # Mondays 14:00 UTC
+    # Phase VV-1 (2026-05-15): offset by 10min from 14:00 anchor to avoid
+    # the 4-way Monday 14:00 collision flagged by brain consistency radar.
+    - cron: '10 14 * * 1'  # Mondays 14:10 UTC (was 14:00)
   workflow_dispatch: {}
 jobs:
   send:
