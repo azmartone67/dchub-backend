@@ -86,16 +86,40 @@ def _compute_funnel(tool_filter: str | None = None, days: int = 14) -> list[dict
                     "biggest_leak":    None,
                 }
 
-                # Stage 1: paywall signals
-                try:
-                    cur.execute("""
-                        SELECT COUNT(*) FROM mcp_upgrade_signals
-                         WHERE tool = %s
-                           AND created_at >= NOW() - INTERVAL '%s days'
-                    """, (tool, days))
-                    entry["stages"]["1_paywall_signals"] = int((cur.fetchone() or [0])[0] or 0)
-                except Exception:
-                    pass
+                # Stage 1: paywall signals. Phase GGG-2 (2026-05-16):
+                # mcp_upgrade_signals.tool is often NULL because upstream
+                # doesn't always pass it. Try `tool` first, then fall back
+                # to `tool_name` (some deploys), then aggregate IS what's
+                # available. If still 0, count call-log rows with non-ok
+                # status (= paywalled) as a derived signal — same intent.
+                got_signals = False
+                for col in ("tool", "tool_name"):
+                    try:
+                        cur.execute(f"""
+                            SELECT COUNT(*) FROM mcp_upgrade_signals
+                             WHERE {col} = %s
+                               AND created_at >= NOW() - INTERVAL '%s days'
+                        """, (tool, days))
+                        n = int((cur.fetchone() or [0])[0] or 0)
+                        if n > 0:
+                            entry["stages"]["1_paywall_signals"] = n
+                            got_signals = True
+                            break
+                    except Exception:
+                        continue
+                # Derived fallback: non-ok call-log entries = signals proxy
+                if not got_signals:
+                    try:
+                        cur.execute("""
+                            SELECT COUNT(*) FROM mcp_call_log
+                             WHERE tool = %s
+                               AND timestamp >= NOW() - INTERVAL '%s days'
+                               AND status NOT IN ('ok','success','200')
+                        """, (tool, days))
+                        entry["stages"]["1_paywall_signals"] = int((cur.fetchone() or [0])[0] or 0)
+                        entry["_signals_source"] = "derived_from_non_ok_call_log"
+                    except Exception:
+                        pass
 
                 # Stages 2-5 from mcp_pair_codes (tool_name column)
                 try:
