@@ -205,8 +205,12 @@ def register_discovery_routes(app):
     # =========================================================================
     # /.well-known/ai-plugin.json — ChatGPT Plugin Manifest
     # =========================================================================
-    @app.route('/.well-known/ai-plugin.json')
-    @app.route('/ai-plugin.json')  # Railway alias (/.well-known/ blocked on Railway)
+    # Phase XX (2026-05-15): removed /.well-known/ai-plugin.json shadow.
+    # ai_ecosystem_agent.py:561 has the canonical version via blueprint.
+    # KEEP /ai-plugin.json as the Railway alias since that's a unique path
+    # (CF Pages serves dot-prefixed paths but Railway used to block; the
+    # bare /ai-plugin.json is the agent-discoverable fallback).
+    @app.route('/ai-plugin.json')  # Railway alias (kept; not a shadow)
     def serve_ai_plugin_json():
         plugin = {
             "schema_version": "v1",

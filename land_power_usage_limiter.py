@@ -265,34 +265,75 @@ def _increment_api_monthly(user_id):
 # =============================================================================
 
 def _get_user_plan_from_request(app):
-    """Extract user plan from JWT or API key in the current request."""
+    """Extract user plan from JWT or API key in the current request.
+
+    Phase XX (2026-05-15) — migrated to delegate through the canonical
+    routes.auth_context.get_auth_context() resolver. The previous
+    implementation had its own JWT decoder, API-key validator, and
+    cookie-session reader — 60+ lines duplicating logic that already
+    lived in 5 other resolvers across the codebase (Phase TT-1 audit).
+
+    Tries auth_context first; falls back to api_tier_gating.get_user_plan
+    for the user_id → plan lookup since auth_context returns tier but
+    not the full plan string (those are slightly different concepts —
+    tier is the rank, plan is the billing label).
+
+    The `app` parameter is retained for backward compatibility but is
+    no longer needed since auth_context reads its own JWT secret from
+    env. Callers don't need to update.
+    """
     from flask import request
-    
+
+    try:
+        from routes.auth_context import get_auth_context
+        ctx = get_auth_context(request)
+        if ctx.tier != "anonymous":
+            # Map tier → plan name. auth_context returns lowercase tier;
+            # land-power code expects the plan string from api_tier_gating.
+            plan = ctx.tier  # tier names already match plan names
+            # Try to resolve the richer plan + email from DB if we have a key
+            try:
+                if ctx.api_key:
+                    from api_tier_gating import validate_api_key
+                    valid, info = validate_api_key(ctx.api_key)
+                    if valid:
+                        return (info.get('user_id') or ctx.user_id,
+                                info.get('email')   or ctx.email,
+                                info.get('plan',   plan))
+            except Exception:
+                pass
+            return ctx.user_id, ctx.email, plan
+    except Exception:
+        pass  # fall through to legacy paths
+
+    # Legacy fallback paths — unchanged below. Kept because auth_context
+    # doesn't currently parse the app-injected DECODE_JWT_FUNC the way
+    # this module does, and we don't want to break web-cookie callers
+    # if auth_context's resolver misses an edge case during the
+    # transition window.
     user_id = None
     email = None
     plan = 'free'
-    
+
     # Check JWT Bearer token
     auth_header = request.headers.get('Authorization', '')
     if auth_header.startswith('Bearer '):
         try:
             token = auth_header.split(' ')[1]
-            # Use the app's decode_jwt
             decode_jwt = app.config.get('DECODE_JWT_FUNC')
             if decode_jwt:
                 payload = decode_jwt(token)
                 if payload:
                     user_id = payload.get('user_id') or payload.get('sub')
                     email = payload.get('email')
-                    # Get plan from DB
                     try:
                         from api_tier_gating import get_user_plan
                         plan = get_user_plan(user_id=user_id)
-                    except:
+                    except Exception:
                         plan = payload.get('plan', 'free')
         except Exception as e:
             logger.debug(f"JWT decode failed: {e}")
-    
+
     # Check API key
     if not user_id:
         api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
@@ -304,9 +345,9 @@ def _get_user_plan_from_request(app):
                     user_id = info.get('user_id', 'apikey_' + api_key[:8])
                     email = info.get('email')
                     plan = info.get('plan', 'free')
-            except:
+            except Exception:
                 pass
-    
+
     # Check cookie/session (for web users)
     if not user_id:
         session_token = request.cookies.get('dchub_session') or request.cookies.get('session')
@@ -321,11 +362,11 @@ def _get_user_plan_from_request(app):
                         try:
                             from api_tier_gating import get_user_plan
                             plan = get_user_plan(user_id=user_id)
-                        except:
+                        except Exception:
                             plan = 'free'
-            except:
+            except Exception:
                 pass
-    
+
     return user_id, email, plan
 
 

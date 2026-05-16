@@ -13,7 +13,7 @@ name: data-pulse
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "3-59/15 * * * *"
   workflow_dispatch: {}  # allow manual trigger from Actions UI
 
 jobs:

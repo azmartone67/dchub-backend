@@ -2,7 +2,7 @@ name: outreach daily (autonomous customer email dispatch)
 
 on:
   schedule:
-    - cron: '0 16 * * *'  # 16:00 UTC = 9am PT daily
+    - cron: '5 16 * * *'  # 16:00 UTC = 9am PT daily
   workflow_dispatch:
     inputs:
       dry_run:

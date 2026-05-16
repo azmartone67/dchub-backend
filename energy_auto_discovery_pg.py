@@ -615,8 +615,9 @@ def register_energy_discovery_routes(app):
             return True
         return False
 
-    @app.route('/api/jobs/infrastructure-sync', methods=['POST'])
-    def job_infrastructure_sync():
+    # Phase XX (2026-05-15): shadow @app.route removed. routes/jobs_routes.py:589
+    # has the canonical /api/jobs/infrastructure-sync via @jobs_bp.
+    def _shadow_job_infrastructure_sync():
         """Scheduler-triggered full infrastructure sync."""
         if not _check_auth():
             return jsonify({'error': 'Unauthorized'}), 401
@@ -630,8 +631,9 @@ def register_energy_discovery_routes(app):
             logger.error(f"Infrastructure sync job failed: {e}")
             return jsonify({'success': False, 'error': str(e)}), 500
 
-    @app.route('/api/energy-discovery/status', methods=['GET'])
-    def energy_discovery_status():
+    # Phase XX (2026-05-15): shadow @app.route removed. routes/energy_discovery_routes.py:217
+    # has the canonical /api/energy-discovery/status via @energy_discovery_bp.
+    def _shadow_energy_discovery_status():
         """Phase 29 — clean replacement. Returns real DB counts."""
         from flask import jsonify
         data = _phase25_real_counts()

@@ -2,7 +2,7 @@ name: site-qa
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "11-59/15 * * * *"
   workflow_dispatch: {}
 
 jobs:
