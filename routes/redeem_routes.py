@@ -242,8 +242,20 @@ SUCCESS_HTML = """<!DOCTYPE html>
     <a class="btn" href="https://dchub.cloud/ai">See what's included &rarr;</a>
   </div>
 
-  <p style="font-size: 0.8rem; color: #888; margin-top: 2rem;">
-    Need it now? Upgrade to Pro for $49/mo unlimited at <a href="https://dchub.cloud/pricing">dchub.cloud/pricing</a>.
+  <!-- Phase ZZ (2026-05-15): direct Stripe link cuts the upgrade
+       path from 3 hops (redeem → pricing → stripe) to 1 hop
+       (redeem → stripe). The DCHUB_STRIPE_DEVELOPER_LINK env var
+       holds the canonical Payment Link from the Stripe Dashboard;
+       falls back to /pricing if unset so the page still works. -->
+  <p style="font-size: 0.85rem; color: #555; margin-top: 1.5rem;
+            background: #f5f9ff; border: 1px solid #c3dafe;
+            padding: 0.8rem 1rem; border-radius: 6px;">
+    <strong>Need it now?</strong> Skip the email wait — upgrade to Developer
+    ($49/mo unlimited) right now: <a href="__STRIPE_DEV_LINK__"
+    style="color:#1976d2;font-weight:600;">checkout in 60 seconds &rarr;</a>
+  </p>
+  <p style="font-size: 0.75rem; color: #888; margin-top: 0.5rem;">
+    Or compare all tiers at <a href="https://dchub.cloud/pricing">dchub.cloud/pricing</a>.
   </p>
 </body>
 </html>
@@ -381,9 +393,16 @@ def phase63_redeem(session_id):
         except Exception:
             pass
         _p99_logger.info(f'redeem session={session_id} email={email} key_ok={_p99_key_ok} email_ok={_p99_email_ok}')
+        # Phase ZZ (2026-05-15): inject the direct Stripe Developer
+        # payment link so the success page can offer one-click upgrade.
+        # Falls back to /pricing when DCHUB_STRIPE_DEVELOPER_LINK is
+        # not configured — the page still works either way.
+        _stripe_dev = os.environ.get('DCHUB_STRIPE_DEVELOPER_LINK',
+                                       'https://dchub.cloud/pricing')
         return Response(
             SUCCESS_HTML.replace('__EMAIL__', email)
-                        .replace('__TOOLS__', tools_display),
+                        .replace('__TOOLS__', tools_display)
+                        .replace('__STRIPE_DEV_LINK__', _stripe_dev),
             mimetype='text/html'
         )
 
