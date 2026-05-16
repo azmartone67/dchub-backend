@@ -49,25 +49,35 @@ def _conn():
 _SCHEMA_DDL = """
 CREATE TABLE IF NOT EXISTS ai_citations (
     id                BIGSERIAL PRIMARY KEY,
-    observed_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    engine            TEXT NOT NULL,           -- gemini / perplexity / claude / grok / copilot / manual
-    prompt_id         TEXT NOT NULL,           -- one of our canonical prompts (see _CANONICAL_PROMPTS)
-    prompt_text       TEXT,                    -- the exact prompt sent
-    dchub_cited       BOOLEAN DEFAULT false,
-    dchub_position    INT,                     -- 1 = first source cited, NULL if not cited
-    dchawk_cited      BOOLEAN DEFAULT false,
-    dcbyte_cited      BOOLEAN DEFAULT false,
-    other_sources     JSONB DEFAULT '[]'::jsonb,
-    response_text     TEXT,                    -- truncated to 4000 chars
-    response_url      TEXT,                    -- when the engine surfaces a perma-link
-    notes             TEXT,                    -- ops notes on manual entries
-    source            TEXT DEFAULT 'cron'      -- cron | manual | backfill
+    observed_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE INDEX IF NOT EXISTS ix_ai_citations_observed
-    ON ai_citations(observed_at DESC);
-CREATE INDEX IF NOT EXISTS ix_ai_citations_engine_prompt
-    ON ai_citations(engine, prompt_id, observed_at DESC);
 """
+
+# Phase CCC (2026-05-16): ALTER-friendly column adds. The original
+# CREATE TABLE-only migration silently no-op'd when the ai_citations
+# table existed in a different shape (a pre-cherry-pick test deploy
+# created the table with fewer columns). Result: live SELECT raised
+# `column "engine" does not exist` and /api/v1/ai-citations/snapshot
+# returned 500. ALTER TABLE ADD COLUMN IF NOT EXISTS is idempotent
+# and survives any prior partial-schema state.
+_SCHEMA_COLUMNS = [
+    ("engine",          "TEXT NOT NULL DEFAULT 'manual'"),
+    ("prompt_id",       "TEXT NOT NULL DEFAULT 'unknown'"),
+    ("prompt_text",     "TEXT"),
+    ("dchub_cited",     "BOOLEAN DEFAULT false"),
+    ("dchub_position",  "INT"),
+    ("dchawk_cited",    "BOOLEAN DEFAULT false"),
+    ("dcbyte_cited",    "BOOLEAN DEFAULT false"),
+    ("other_sources",   "JSONB DEFAULT '[]'::jsonb"),
+    ("response_text",   "TEXT"),
+    ("response_url",    "TEXT"),
+    ("notes",           "TEXT"),
+    ("source",          "TEXT DEFAULT 'cron'"),
+]
+_SCHEMA_INDEXES = [
+    ("ix_ai_citations_observed",       "ai_citations(observed_at DESC)"),
+    ("ix_ai_citations_engine_prompt",  "ai_citations(engine, prompt_id, observed_at DESC)"),
+]
 
 
 def _ensure_schema():
@@ -76,6 +86,17 @@ def _ensure_schema():
     try:
         with c, c.cursor() as cur:
             cur.execute(_SCHEMA_DDL)
+            for col_name, col_def in _SCHEMA_COLUMNS:
+                try:
+                    cur.execute(
+                        f"ALTER TABLE ai_citations ADD COLUMN IF NOT EXISTS {col_name} {col_def}")
+                except Exception as _alter_err:
+                    print(f"[ai_citations] ALTER ADD {col_name}: {_alter_err}")
+            for idx_name, idx_def in _SCHEMA_INDEXES:
+                try:
+                    cur.execute(f"CREATE INDEX IF NOT EXISTS {idx_name} ON {idx_def}")
+                except Exception as _idx_err:
+                    print(f"[ai_citations] CREATE INDEX {idx_name}: {_idx_err}")
         return True
     except Exception as e:
         print(f"[ai_citations] schema init failed: {e}")

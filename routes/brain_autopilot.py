@@ -181,6 +181,38 @@ def _action_seo_sitemap_stale(finding: dict) -> tuple[str | None, dict | None]:
     return "/api/v1/sitemap/regenerate", {}
 
 
+# Phase CCC (2026-05-16): 5 more escalation patterns so the audit log
+# shows the brain RECOGNIZING these findings (vs silently no_action-ing).
+# Counted as escalated so the rate-limit doesn't burn cycles retrying;
+# the human gets a clean view at /autopilot/recent of every flagged
+# pattern and what was/wasn't auto-fixable.
+
+def _action_radar_detector_crashed(finding: dict) -> tuple[str | None, dict | None]:
+    """A detector raised an exception. Escalate — needs code fix."""
+    return None, None
+
+
+def _action_tier_inconsistency(finding: dict) -> tuple[str | None, dict | None]:
+    """MCP↔web tier mismatch. Needs decorator change in source. Escalate."""
+    return None, None
+
+
+def _action_cron_missing_schedule(finding: dict) -> tuple[str | None, dict | None]:
+    """workflow_dispatch-only phase. Needs YAML schedule add. Escalate."""
+    return None, None
+
+
+def _action_cron_schedule_collision(finding: dict) -> tuple[str | None, dict | None]:
+    """Two workflows share the same cron minute. Needs YAML edit. Escalate."""
+    return None, None
+
+
+def _action_worker_source_unreachable(finding: dict) -> tuple[str | None, dict | None]:
+    """raw.githubusercontent.com fetch failed (private repo, no token).
+    Needs GITHUB_TOKEN env var. Escalate."""
+    return None, None
+
+
 _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
     "dcpi_partial_recompute": {
         "action":      _action_dcpi_partial_recompute,
@@ -230,7 +262,52 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
         "use_admin":   True,
         "description": "Retrigger sitemap regeneration",
     },
+    # Phase CCC (2026-05-16): 5 more escalation-only patterns.
+    "consistency_radar_detector_crashed": {
+        "action":      _action_radar_detector_crashed,
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: a brain detector raised — code fix needed (check the detector's SQL)",
+    },
+    "tier_inconsistency_web_higher_than_mcp": {
+        "action":      _action_tier_inconsistency,
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: web endpoint blocks anonymous while MCP allows — needs decorator alignment",
+    },
+    "cron_phase_missing_schedule": {
+        "action":      _action_cron_missing_schedule,
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: workflow_dispatch-only phase needs a cron: schedule added to its .yml",
+    },
+    "cron_schedule_collision": {
+        "action":      _action_cron_schedule_collision,
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: two workflows fire the same minute — stagger one in its .yml",
+    },
+    "worker_source_unreachable": {
+        "action":      _action_worker_source_unreachable,
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: GITHUB_TOKEN env var missing — radar can't fetch private _worker.js source",
+    },
 }
+
+
+# Phase CCC: prefix-match library lookup. Detector crashes have dynamic
+# issue keys like "consistency_radar_detector_crashed:check_xxx" so we
+# also try the bare prefix for autopilot pattern matching.
+def _lookup_pattern(issue: str) -> dict | None:
+    """Direct lookup first, then prefix match (issue.split(':',1)[0])."""
+    if not issue: return None
+    direct = _PATTERN_LIBRARY.get(issue)
+    if direct: return direct
+    base = issue.split(":", 1)[0]
+    if base != issue:
+        return _PATTERN_LIBRARY.get(base)
+    return None
 
 
 # ── Rate limit helpers ────────────────────────────────────────────────
@@ -376,7 +453,7 @@ def autopilot_run():
         for f in issues:
             if not isinstance(f, dict): continue
             issue = f.get("issue") or ""
-            pat = _PATTERN_LIBRARY.get(issue)
+            pat = _lookup_pattern(issue)
             if not pat:
                 summary["no_action"] += 1
                 continue
