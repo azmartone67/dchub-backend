@@ -147,9 +147,34 @@ def gate_tool_call(tool_name, api_key=None, user_agent=None,
 
     if tool_name in PAID_ONLY_TOOLS and tier == "free":
 
-        # phase63_redeem_msg -- include per-session redeem URL
-
-        _redeem_url = f"https://dchub.cloud/api/v1/redeem/{session_id}?source=mcp&tool={tool_name}&tier=developer" if session_id else SIGNUP_URL
+        # Phase YY (2026-05-15): the redeem URL was hardcoded as
+        #     https://dchub.cloud/api/v1/redeem/{session_id}
+        # but the actual handler is /redeem/<code> — keyed on
+        # mcp_pair_codes.code (format "DCM-4F7K"), NOT session_id.
+        # Result: every paywall sent humans to a 404, redeem_viewed_at
+        # never got written, the funnel showed 0.007% paywall→click.
+        # The investigation found this was the leak.
+        #
+        # Fix: mint a real pair code via routes.pair_code.get_or_create_code()
+        # which returns {code, redeem_url, expires_at}. The redeem_url it
+        # generates is the canonical /redeem/<code> that the handler serves.
+        # If no api_key (anonymous caller) or pair-code mint fails, fall
+        # back to the bare signup URL so the message still has SOME working
+        # link.
+        _redeem_url = SIGNUP_URL
+        try:
+            from routes.pair_code import get_or_create_code as _pc
+            # For anonymous MCP callers, use the session_id as the "key"
+            # so the pair code is still uniquely tied to this MCP session.
+            _key = api_key or (f"sess:{session_id}" if session_id else None)
+            if _key:
+                _pc_result = _pc(_key, tool_name=tool_name)
+                if _pc_result and _pc_result.get("redeem_url"):
+                    _redeem_url = _pc_result["redeem_url"]
+        except Exception as _e:
+            # Pair-code mint failed — log + use signup URL fallback.
+            print(f"[upgrade_gate] pair-code mint failed: {_e}",
+                  flush=True)
 
         # Phase RR (2026-05-14): lead with the agent-native claim path.
         # The funnel teardown showed 12,454 paywalls -> 1 redeem-URL

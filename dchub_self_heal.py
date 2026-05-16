@@ -635,14 +635,58 @@ def _detect_media_missing_categories(body):
 # Monkey-patch detect() to add custom logic for media feed
 _orig_detect = detect
 
+
+# Phase YY (2026-05-15) — cache the press_releases + ai_testimonials
+# population state for 5 minutes so we don't hit the DB on every probe
+# cycle. The detection→fix mismatch livelock had this code firing
+# `backfill_press_releases` every 5-min cycle even though the table
+# was populated — the detection only checked the media-feed body, not
+# the table state. Now we precondition on "table is actually empty".
+_TABLE_STATE_CACHE = {"press_releases_empty": None, "testimonials_empty": None,
+                      "ts": 0}
+_TABLE_STATE_TTL = 300  # 5 min
+
+
+def _is_table_empty(table_name: str) -> bool:
+    """Cached check: is the given table empty? Returns False on any
+    DB error (fail-safe — assume non-empty so the backfill doesn't
+    re-fire during transient DB hiccups)."""
+    import time
+    cache_key = f"{table_name}_empty"
+    now = time.time()
+    if (_TABLE_STATE_CACHE.get(cache_key) is not None
+            and now - _TABLE_STATE_CACHE["ts"] < _TABLE_STATE_TTL):
+        return _TABLE_STATE_CACHE[cache_key]
+    if not DATABASE_URL:
+        return False
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute(f"SELECT EXISTS (SELECT 1 FROM {table_name} LIMIT 1);")
+            row = cur.fetchone()
+            is_empty = not (row and row[0])
+        _TABLE_STATE_CACHE[cache_key] = is_empty
+        _TABLE_STATE_CACHE["ts"] = now
+        return is_empty
+    except Exception:
+        # Fail-safe: assume non-empty, suppress the backfill.
+        _TABLE_STATE_CACHE[cache_key] = False
+        _TABLE_STATE_CACHE["ts"] = now
+        return False
+
+
 def detect(body, status):
     hits = _orig_detect(body, status)
-    # If this body looks like the media feed AND is missing categories, dispatch backfills
+    # If this body looks like the media feed AND is missing categories, dispatch backfills.
+    # Phase YY: ONLY fire backfill_press_releases / backfill_testimonials if the
+    # underlying table is actually empty. Detection→fix mismatch was causing the
+    # fixer to fire every 5-min cycle (~30 of the 31 fires/cycle were one of these),
+    # because the fix seeds a DB table but the detection checks the media-feed body.
+    # The cached table-state check eliminates the livelock.
     if '"items"' in body and ('"category"' in body or '"type"' in body):
         missing = _detect_media_missing_categories(body)
-        if "testimonial" in missing:
+        if "testimonial" in missing and _is_table_empty("ai_testimonials"):
             hits.append(("media_missing_testimonial", "backfill_testimonials"))
-        if "press_release" in missing:
+        if "press_release" in missing and _is_table_empty("press_releases"):
             hits.append(("media_missing_press_release", "backfill_press_releases"))
         if "alert" in missing:
             hits.append(("media_missing_alert", "relax_verdict"))
