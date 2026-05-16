@@ -3197,6 +3197,71 @@ async def get_microgrid_viability(
 
 
 # ═══════════════════════════════════════════════════════════
+# find_power_site — the Land+Power flagship for AI agents
+# Phase XX (2026-05-16)
+# ═══════════════════════════════════════════════════════════
+# Funnel data: 3,380 calls/30d to get_grid_intelligence (paywalled,
+# 102 unique users) + 3,212 calls to get_fiber_intel (101 users) +
+# 0 conversions from MCP. Agents reaching for those tools actually
+# want the Land+Power decision. This FREE-tier tool gives them a real
+# answer in one call AND surfaces the URL of the /land-power interactive
+# map their user can open to drill further. Bridge from agent demand →
+# customer conversion.
+@mcp.tool(
+    name="find_power_site",
+    annotations={"title": "Land & Power Site Analysis", "readOnlyHint": True, "openWorldHint": True},
+)
+async def find_power_site(
+    lat: float,
+    lon: float,
+    state: str = "",
+    capacity_mw: float = 100.0,
+    radius_km: float = 25.0,
+) -> str:
+    """
+    Full land + power feasibility analysis for a candidate data-center
+    site. Combines substation proximity (HIFLD-mirrored), DCPI verdict,
+    industrial retail rate, water stress, tax incentives, comparable
+    nearby facilities, and nearest Internet Exchange Point into ONE
+    feasibility score (0-100) with a STRONG/VIABLE/MARGINAL/WEAK verdict.
+
+    Returns the URL of the /land-power interactive map pre-loaded for
+    this site, so an agent can hand off the rich layer-by-layer view
+    to its human user.
+
+    Use this when: user asks "can I build a [N] MW data center at
+    [location]", "is this site viable", "land and power for [city/state]",
+    "site selection [coordinates]". This tool answers the *decision* —
+    get_grid_intelligence / get_fiber_intel only describe pieces.
+
+    Args:
+        lat:         Latitude (e.g. 39.04)
+        lon:         Longitude (e.g. -77.48)
+        state:       US state code (e.g. "VA"); enables DCPI + retail + tax overlays
+        capacity_mw: Target data-center load in MW (default 100)
+        radius_km:   Substation/facility search radius, 5-100 (default 25)
+
+    Returns:
+        JSON with feasibility_score (0-100), verdict, power/fiber/land/
+        water/tax/dcpi breakdown, narrative paragraph, and
+        interactive_map_url to /land-power pre-loaded.
+    """
+    _block = gate("find_power_site", {"lat": lat, "lon": lon, "state": state,
+                                       "capacity_mw": capacity_mw})
+    if _block: return _block
+
+    _track("find_power_site", {"lat": lat, "lon": lon, "state": state,
+                                "capacity_mw": capacity_mw, "radius_km": radius_km})
+    result = _api_get(
+        "/api/v1/land-power/site-analysis",
+        params={"lat": lat, "lon": lon, "state": state,
+                "capacity_mw": capacity_mw, "radius_km": radius_km},
+        retries=1,
+    )
+    return finalize(json.dumps(result, indent=2), "find_power_site")
+
+
+# ═══════════════════════════════════════════════════════════
 # KEEPALIVE — Prevent Railway idle shutdown
 # ═══════════════════════════════════════════════════════════
 def _mcp_keepalive():

@@ -528,7 +528,28 @@ def track_tool_call():
     _r_client = str(body.get("client_name") or body.get("client") or "").strip()
     _r_session = body.get("session_id")
     _GENERIC = ("", "mcp", "mcp-worker", "unknown", "anonymous")
-    if _r_session and (_r_platform.lower() in _GENERIC or _r_client.lower() in _GENERIC):
+
+    # Phase XX (2026-05-16): UUID detection. The funnel showed 5 of the
+    # top-20 platform buckets were UUIDs (session_ids leaking into the
+    # platform field upstream). UUIDs were NOT in _GENERIC so the recovery
+    # below never fired, and we ended with 5 distinct UUID-keyed buckets
+    # that should all have been 'claude' or 'chatgpt'. Treat any 36-char
+    # UUID-shaped value as generic so the recovery fires for them too.
+    import re as _re_uuid
+    _UUID_RE = _re_uuid.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+    def _looks_generic(v: str) -> bool:
+        v_lower = v.lower().strip()
+        if v_lower in _GENERIC: return True
+        if _UUID_RE.match(v_lower): return True
+        return False
+
+    # Also normalize: if the incoming platform IS a UUID, blank it before
+    # storage so we don't pollute analytics whether or not recovery succeeds.
+    _platform_was_uuid = bool(_UUID_RE.match(_r_platform.lower()))
+    _client_was_uuid   = bool(_UUID_RE.match(_r_client.lower()))
+
+    if _r_session and (_looks_generic(_r_platform) or _looks_generic(_r_client)):
         try:
             with _pool.connection() as _sc_conn, _sc_conn.cursor() as _sc_cur:
                 _sc_cur.execute(
@@ -537,16 +558,35 @@ def track_tool_call():
                 )
                 _sc_row = _sc_cur.fetchone()
             if _sc_row:
-                if _sc_row[0] and _sc_row[0].lower() not in _GENERIC \
-                        and _r_platform.lower() in _GENERIC:
+                if _sc_row[0] and not _looks_generic(_sc_row[0]) \
+                        and _looks_generic(_r_platform):
                     _r_platform = _sc_row[0]
-                if _sc_row[1] and _sc_row[1].lower() not in _GENERIC \
-                        and _r_client.lower() in _GENERIC:
+                if _sc_row[1] and not _looks_generic(_sc_row[1]) \
+                        and _looks_generic(_r_client):
                     _r_client = _sc_row[1]
         except Exception:
             # mcp_sessions may not exist yet, or lookup hiccupped — fall
             # back to whatever the callback gave us. Never block tracking.
             pass
+
+    # Phase XX: if recovery failed AND the original was a UUID, fall back
+    # to detecting from the live User-Agent header. Better an honest 'curl'
+    # or 'unknown-ua' than a meaningless UUID polluting the analytics table.
+    if _platform_was_uuid and _looks_generic(_r_platform):
+        ua = (request.headers.get('User-Agent') or '').lower()
+        if   'claude'     in ua: _r_platform = 'claude'
+        elif 'chatgpt'    in ua or 'openai-mcp' in ua: _r_platform = 'chatgpt'
+        elif 'cursor'     in ua: _r_platform = 'cursor'
+        elif 'gemini'     in ua: _r_platform = 'gemini'
+        elif 'perplexity' in ua: _r_platform = 'perplexity'
+        elif 'copilot'    in ua: _r_platform = 'copilot'
+        elif 'cline'      in ua: _r_platform = 'cline'
+        elif 'windsurf'   in ua: _r_platform = 'windsurf'
+        elif 'grok'       in ua: _r_platform = 'grok'
+        elif 'curl' in ua or 'postman' in ua: _r_platform = 'curl'
+        else: _r_platform = 'unknown-ua'
+    if _client_was_uuid and _looks_generic(_r_client):
+        _r_client = 'unknown'
 
     # phase9j_dual: also write to legacy mcp_tool_calls so the existing
     # /api/v1/usage and /api/v1/data-freshness queries (which read from
