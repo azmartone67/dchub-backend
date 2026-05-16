@@ -1,7 +1,12 @@
-name: DCPI Daily Recompute
+name: DCPI Recompute (4x daily)
 on:
   schedule:
-    - cron: '5 6 * * *'   # 06:00 UTC daily
+    # Phase III (2026-05-16): bumped 1x → 4x daily. Pre-fix only 40%
+    # of 280 markets were fresh in 24h (autopilot was also firing
+    # opportunistically). Now: 06:05 / 12:05 / 18:05 / 00:05 UTC.
+    # Each run covers all 280+ markets via the 4-chunk sequence below
+    # (~3 min total). Markets stay fresh within 6h of recompute.
+    - cron: '5 6,12,18,0 * * *'
   workflow_dispatch: {}
 jobs:
   recompute:
