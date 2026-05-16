@@ -41,7 +41,13 @@ def _conn():
 def _fetch_deals(limit: int = 100, offset: int = 0,
                   year: str | None = None, region: str | None = None,
                   buyer: str | None = None, min_mw: int | None = None) -> tuple[list[dict], int]:
-    """Returns (deals, total_count)."""
+    """Returns (deals, total_count).
+
+    Phase JJJ-2 (2026-05-16): defensive query. Initial implementation
+    assumed id+value+mw columns; live revealed only buyer/date/market/
+    region/seller/type are returned by the deals API. The `deals` table
+    schema varies across deploys — defensively SELECT * + extract what
+    we find. Plus explicit error logging so failures surface."""
     c = _conn()
     if c is None: return [], 0
     try:
@@ -58,20 +64,36 @@ def _fetch_deals(limit: int = 100, offset: int = 0,
                 where_clauses.append("(mw IS NULL OR mw >= %s)"); params.append(min_mw)
             where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
-            # Count
-            cur.execute(f"SELECT COUNT(*) FROM deals{where_sql}", params)
-            total = int((cur.fetchone() or {"count":0})["count"] or 0)
+            # Count — use the most-tolerant query
+            try:
+                cur.execute(f"SELECT COUNT(*) AS n FROM deals{where_sql}", params)
+                r = cur.fetchone()
+                total = int((r.get("n") if r else 0) or 0)
+            except Exception as ce:
+                print(f"[transactions_browser] count failed: {ce}")
+                total = 0
 
-            cur.execute(f"""
-                SELECT id, date, year, buyer, seller, value, mw, type, region, market
-                  FROM deals{where_sql}
-                 ORDER BY COALESCE(date, '1970-01-01'::date) DESC
-                 LIMIT %s OFFSET %s
-            """, params + [limit, offset])
-            rows = cur.fetchall()
+            # SELECT * so any column shape works; we extract what we find
+            try:
+                cur.execute(f"""
+                    SELECT * FROM deals{where_sql}
+                     ORDER BY COALESCE(date, '1970-01-01'::date) DESC
+                     LIMIT %s OFFSET %s
+                """, params + [limit, offset])
+                rows = cur.fetchall()
+            except Exception as qe:
+                print(f"[transactions_browser] select failed: {qe}")
+                # Last-resort: drop ORDER BY (date column might not exist)
+                try:
+                    cur.execute(f"SELECT * FROM deals{where_sql} LIMIT %s OFFSET %s",
+                                params + [limit, offset])
+                    rows = cur.fetchall()
+                except Exception as qe2:
+                    print(f"[transactions_browser] fallback select failed: {qe2}")
+                    rows = []
         return rows, total
     except Exception as e:
-        print(f"[transactions_browser] _fetch_deals: {e}")
+        print(f"[transactions_browser] _fetch_deals outer: {e}")
         return [], 0
     finally:
         try: c.close()
