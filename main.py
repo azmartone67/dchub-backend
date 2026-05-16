@@ -6960,8 +6960,12 @@ ALERT_TYPES = {
     'news': 'Market News'
 }
 
+# Phase UU-1 (2026-05-15): removed shadow @app.route('/api/v2/alerts'),
+# kept the legacy /api/alerts. The v2 endpoint is canonically served
+# from alert_system_v2.py (alerts_v2_bp) — the modern blueprint with
+# alert types, delete-by-id, and richer payload. This dual-registration
+# was masking which version Flask served on v2 calls.
 @app.route('/api/alerts', methods=['GET'])
-@app.route('/api/v2/alerts', methods=['GET'])
 @require_auth
 def get_user_alerts():
     """Get all alerts for authenticated user"""
@@ -7006,8 +7010,9 @@ def get_user_alerts():
         except Exception:
             pass
 
+# Phase UU-1 (2026-05-15): same as above — drop the v2 shadow, keep
+# the legacy. alerts_v2_bp is canonical for /api/v2/alerts.
 @app.route('/api/alerts', methods=['POST'])
-@app.route('/api/v2/alerts', methods=['POST'])
 @require_auth
 def create_alert():
     """Create a new alert"""
@@ -7080,8 +7085,8 @@ def create_alert():
         except Exception:
             pass
 
+# Phase UU-1 (2026-05-15): drop v2 shadow — alerts_v2_bp is canonical.
 @app.route('/api/alerts/<int:alert_id>', methods=['DELETE'])
-@app.route('/api/v2/alerts/<int:alert_id>', methods=['DELETE'])
 @require_auth
 def delete_alert(alert_id):
     """Delete an alert"""
@@ -7507,52 +7512,9 @@ def stripe_webhook_test():
 
     return jsonify(checks)
 
-# =============================================================================
-# FOUNDING MEMBER ENDPOINT - Used by dchub-banner.js
-# =============================================================================
-@app.route('/api/founding-members', methods=['GET'])
-def founding_members_status():
-    """Get founding member program status for the promotional banner.
-
-    Returns claimed/remaining counts. Reads from DB if available,
-    otherwise falls back to defaults. Used by dchub-banner.js on homepage.
-    """
-    FOUNDING_TOTAL = 50
-    FOUNDING_PRICE = 99
-    REGULAR_PRICE = 299
-
-    claimed = 3  # Default fallback
-
-    try:
-        conn = get_db()
-        c = conn.cursor()
-        # Count users on the founding plan
-        c.execute("SELECT COUNT(*) FROM users WHERE plan = 'founding'")
-        db_count = c.fetchone()[0]
-        if db_count > 0:
-            claimed = db_count
-    except Exception:
-        pass  # Use fallback
-    finally:
-        try: conn.close()
-        except Exception: pass
-
-    remaining = FOUNDING_TOTAL - claimed
-
-    return jsonify({
-        'success': True,
-        'total': FOUNDING_TOTAL,
-        'claimed': claimed,
-        'remaining': remaining,
-        'percent_claimed': round((claimed / FOUNDING_TOTAL) * 100, 1),
-        'price': FOUNDING_PRICE,
-        'regular_price': REGULAR_PRICE,
-        'savings_percent': round((1 - FOUNDING_PRICE / REGULAR_PRICE) * 100),
-        'active': remaining > 0,
-        'checkout_url': 'https://buy.stripe.com/9B6fZi1cCdjT3ml8i6aZi00'
-    })
-
-logger.info("✅ Founding Members endpoint registered: /api/founding-members")
+# Phase UU-3 (2026-05-15): removed shadow /api/founding-members handler.
+# The canonical version lives in routes/public_endpoints.py via public_bp
+# and is registered in the blueprint init block — same data, cleaner pattern.
 
 def send_welcome_email_sendgrid(to_email, raw_api_key, plan_name='pro', temp_password=None):
     """Send welcome email with API key (and login password for new accounts) via SendGrid"""
