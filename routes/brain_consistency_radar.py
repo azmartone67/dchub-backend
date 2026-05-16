@@ -697,6 +697,198 @@ def check_traffic_anomaly() -> list[dict]:
     return findings
 
 
+# ── 9. MCP tool latency regression ────────────────────────────────
+#
+# Phase TT (2026-05-15). Tools can return 200/OK while degrading 10×
+# slower — the error-rate detector won't catch it, the call-count
+# detector won't catch it, but agents and users feel every millisecond.
+# Most commonly: upstream API rate-limited but retrying, DB pool
+# exhausted, Cloudflare cache miss surge. Compares per-tool avg+p95
+# over the last hour to the same-hour-of-week 7d median.
+_LAT_AVG_MULTIPLIER  = 2.0    # current avg > 2× baseline = regression
+_LAT_P95_MULTIPLIER  = 3.0    # current p95 > 3× baseline = regression
+_LAT_MIN_BASELINE_MS = 50     # ignore tools that are already sub-50ms
+_LAT_MIN_VOLUME      = 10     # need enough samples to be meaningful
+
+
+def check_mcp_latency_regression() -> list[dict]:
+    """Per-tool latency regression detector — catches the "still 200 but
+    10× slower" failure mode that error-rate + traffic detectors miss."""
+    findings: list[dict] = []
+    conn = _db()
+    if not conn:
+        return findings
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("SELECT to_regclass('public.mcp_call_log')")
+                if not (cur.fetchone() or [None])[0]:
+                    return findings
+            except Exception:
+                return findings
+
+            # Current 1h window — avg + p95 per tool
+            cur.execute("""
+                SELECT tool,
+                       COUNT(*)                                                       AS n,
+                       AVG(duration_ms)::int                                          AS avg_ms,
+                       PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY duration_ms)::int AS p95_ms
+                  FROM mcp_call_log
+                 WHERE timestamp >= NOW() - INTERVAL '1 hour'
+                   AND tool IS NOT NULL
+                   AND duration_ms IS NOT NULL
+                   AND duration_ms > 0
+                 GROUP BY tool
+                HAVING COUNT(*) >= %s
+            """, (_LAT_MIN_VOLUME,))
+            current = {row[0]: (int(row[1]), int(row[2] or 0), int(row[3] or 0))
+                       for row in cur.fetchall()}
+
+            if not current:
+                return findings
+
+            # Baseline: last 7 days, SAME hour-of-week, per tool
+            cur.execute("""
+                WITH hourly AS (
+                    SELECT tool,
+                           date_trunc('hour', timestamp) AS hr,
+                           AVG(duration_ms)::int AS avg_ms,
+                           PERCENTILE_CONT(0.95) WITHIN GROUP
+                               (ORDER BY duration_ms)::int AS p95_ms
+                      FROM mcp_call_log
+                     WHERE timestamp >= NOW() - INTERVAL '8 days'
+                       AND timestamp <  NOW() - INTERVAL '1 hour'
+                       AND tool IS NOT NULL
+                       AND duration_ms IS NOT NULL
+                       AND duration_ms > 0
+                       AND EXTRACT(DOW  FROM timestamp) =
+                           EXTRACT(DOW  FROM NOW())
+                       AND EXTRACT(HOUR FROM timestamp) =
+                           EXTRACT(HOUR FROM NOW())
+                     GROUP BY tool, hr
+                )
+                SELECT tool,
+                       PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY avg_ms)::int AS base_avg,
+                       PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY p95_ms)::int AS base_p95
+                  FROM hourly GROUP BY tool
+            """)
+            baseline = {row[0]: (int(row[1] or 0), int(row[2] or 0))
+                        for row in cur.fetchall()}
+
+        for tool, (n, cur_avg, cur_p95) in current.items():
+            base = baseline.get(tool)
+            if not base: continue
+            base_avg, base_p95 = base
+            if base_avg < _LAT_MIN_BASELINE_MS: continue
+
+            avg_ratio = cur_avg / max(1, base_avg)
+            p95_ratio = cur_p95 / max(1, base_p95) if base_p95 > 0 else 0
+
+            if avg_ratio >= _LAT_AVG_MULTIPLIER or p95_ratio >= _LAT_P95_MULTIPLIER:
+                findings.append({
+                    "issue":  "mcp_tool_latency_regression",
+                    "url":    f"mcp_call_log: tool={tool}",
+                    "count":  n,
+                    "detail": (f"Tool '{tool}' latency regressed: "
+                               f"avg {cur_avg}ms vs baseline {base_avg}ms "
+                               f"({avg_ratio:.1f}×), "
+                               f"p95 {cur_p95}ms vs baseline {base_p95}ms "
+                               f"({p95_ratio:.1f}×) over {n} calls in last "
+                               f"1h. Likely causes: upstream rate-limit + "
+                               f"retries, DB pool exhausted, Cloudflare cache "
+                               f"miss surge, or the underlying API is "
+                               f"degraded."),
+                })
+    finally:
+        try: conn.close()
+        except Exception: pass
+    return findings
+
+
+# ── 10. SEO ranking drift ─────────────────────────────────────────
+#
+# Phase TT (2026-05-15). Without Google Search Console API access, we
+# use indexed-page count + sitemap freshness as a cheap proxy for "is
+# Google still indexing us, and is the sitemap they're reading current."
+# Real SEO regressions surface here as: indexed count dropping, sitemap
+# lastmod stale, or any expected /sitemap-*.xml returning 4xx/5xx.
+_SITEMAPS = [
+    "https://dchub.cloud/sitemap-index.xml",
+    "https://dchub.cloud/sitemap.xml",
+    "https://dchub.cloud/sitemap-markets.xml",
+    "https://dchub.cloud/sitemap-facilities.xml",
+    "https://dchub.cloud/sitemap-news.xml",
+]
+_SITEMAP_STALE_DAYS = 7
+_GOOGLE_INDEX_PROBE = "https://www.google.com/search?q=site:dchub.cloud"
+
+
+def check_seo_sitemap_health() -> list[dict]:
+    """Cheap SEO drift detector — checks each sitemap is reachable,
+    lastmod is < SLA days old, and has > 0 <url> entries."""
+    findings: list[dict] = []
+    from datetime import datetime, timezone
+    import re as _re
+    for url in _SITEMAPS:
+        body, headers = _http_get(url, timeout=10)
+        if not body:
+            findings.append({
+                "issue":  "seo_sitemap_unreachable",
+                "url":    url,
+                "count":  1,
+                "detail": (f"Sitemap {url} unreachable "
+                           f"({_LAST_FETCH_ERROR.get(url, 'unknown')}). "
+                           f"Google can't crawl what it can't fetch — "
+                           f"organic traffic will erode within days. "
+                           f"Check Cloudflare Pages routing and worker."),
+            })
+            continue
+        # URL entries
+        url_count = body.count("<url>") + body.count("<sitemap>")
+        if url_count == 0:
+            findings.append({
+                "issue":  "seo_sitemap_empty",
+                "url":    url,
+                "count":  0,
+                "detail": (f"Sitemap {url} returned 200 OK but contains zero "
+                           f"<url> or <sitemap> entries. Generator likely "
+                           f"crashed mid-write. Check sitemap-generation cron."),
+            })
+            continue
+        # lastmod freshness
+        lastmod_matches = _re.findall(r"<lastmod>([^<]+)</lastmod>", body)
+        if lastmod_matches:
+            try:
+                # Take the max lastmod (most recent)
+                lastmods = []
+                for s in lastmod_matches:
+                    s = s.strip()
+                    # Accept YYYY-MM-DD or full ISO
+                    if "T" in s:
+                        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+                    else:
+                        dt = datetime.strptime(s[:10], "%Y-%m-%d")
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    lastmods.append(dt)
+                latest = max(lastmods)
+                age_days = (datetime.now(timezone.utc) - latest).days
+                if age_days > _SITEMAP_STALE_DAYS:
+                    findings.append({
+                        "issue":  "seo_sitemap_stale",
+                        "url":    url,
+                        "count":  age_days,
+                        "detail": (f"Sitemap {url} lastmod is {age_days} days "
+                                   f"old (SLA: {_SITEMAP_STALE_DAYS}d). Google "
+                                   f"will reduce crawl frequency on stale "
+                                   f"sitemaps. Trigger the sitemap "
+                                   f"regeneration cron."),
+                    })
+            except Exception:
+                # Don't surface parser failures as findings.
+                pass
+    return findings
+
+
 def scan_all() -> list[dict]:
     """Run every detector. Return a flat list of finding dicts ready
     to merge into actionable_backend_issues."""
@@ -708,7 +900,9 @@ def scan_all() -> list[dict]:
                check_csp_drift,
                check_iso_freshness,
                check_mcp_tool_error_rate,
-               check_traffic_anomaly):
+               check_traffic_anomaly,
+               check_mcp_latency_regression,
+               check_seo_sitemap_health):
         try:
             out.extend(fn() or [])
         except Exception as e:

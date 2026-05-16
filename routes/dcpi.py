@@ -189,6 +189,65 @@ _MARKETS_HARDCODED = [
     ("upper-michigan",      "Upper Peninsula MI",     "MI", "MISO",  46.50, -87.50),
 ]
 
+
+# ─── Phase TT (2026-05-15) — international DCPI markets ────────────
+# Same tuple shape as _MARKETS_HARDCODED — `state` holds the ISO-2
+# country code, `iso` holds the local grid operator. Until country-
+# specific data ingestion is wired (ENTSO-E for EU, JEPX for JP, EMA
+# for SG, NESO for GB), these markets recompute at LOW_SIGNAL with
+# neutral 50/50 scores. They exist now so the recommend tool can list
+# them, the docs can reference them, and the international-coverage
+# story is true rather than aspirational.
+_MARKETS_INTERNATIONAL = [
+    # GB / UK
+    ("london-uk",            "London",                "GB", "NESO-GB",    51.51,   -0.13),
+    ("slough-uk",            "Slough",                "GB", "NESO-GB",    51.51,   -0.59),
+    ("manchester-uk",        "Manchester",            "GB", "NESO-GB",    53.48,   -2.24),
+    # IE
+    ("dublin-ie",            "Dublin",                "IE", "EirGrid-IE", 53.35,   -6.26),
+    # DE
+    ("frankfurt-de",         "Frankfurt",             "DE", "TenneT-DE",  50.11,    8.68),
+    ("berlin-de",            "Berlin",                "DE", "50Hertz-DE", 52.52,   13.41),
+    # NL
+    ("amsterdam-nl",         "Amsterdam",             "NL", "TenneT-NL",  52.37,    4.90),
+    # FR
+    ("paris-fr",             "Paris",                 "FR", "RTE-FR",     48.86,    2.35),
+    ("marseille-fr",         "Marseille",             "FR", "RTE-FR",     43.30,    5.37),
+    # SG / JP
+    ("singapore",            "Singapore",             "SG", "EMA-SG",      1.35,  103.82),
+    ("tokyo",                "Tokyo",                 "JP", "TEPCO-JP",   35.68,  139.69),
+    ("osaka",                "Osaka",                 "JP", "KEPCO-JP",   34.69,  135.50),
+    # IN / contrarian APAC
+    ("mumbai",               "Mumbai",                "IN", "Maha-IN",    19.07,   72.87),
+    ("hyderabad",            "Hyderabad",             "IN", "Telang-IN",  17.39,   78.49),
+    # AU
+    ("sydney",               "Sydney",                "AU", "AEMO-AU",   -33.87,  151.21),
+    # BR / contrarian LATAM
+    ("sao-paulo",            "São Paulo",             "BR", "ONS-BR",    -23.55,  -46.63),
+    # AE
+    ("dubai",                "Dubai",                 "AE", "DEWA-AE",   25.20,   55.27),
+    # ZA
+    ("johannesburg",         "Johannesburg",          "ZA", "Eskom-ZA",  -26.20,   28.04),
+]
+
+# Combined view — the recompute loop iterates this. US markets keep
+# their existing scoring path; international markets fall through to
+# the LOW_SIGNAL default until country-specific data lands.
+_MARKETS_GLOBAL = list(_MARKETS_HARDCODED) + list(_MARKETS_INTERNATIONAL)
+
+# ISO-2 country codes that should trigger the international codepath
+# (neutral scores, LOW_SIGNAL verdict, "data thin" badge in narrative).
+_INTL_COUNTRY_CODES = {m[2] for m in _MARKETS_INTERNATIONAL}
+
+
+def is_international_market(slug_or_state: str) -> bool:
+    """True if the given slug or state code is one of our international
+    markets. Used by recompute + recommend to fork the data-thin codepath."""
+    s = (slug_or_state or "").strip()
+    if s.upper() in _INTL_COUNTRY_CODES:
+        return True
+    return any(s == m[0] for m in _MARKETS_INTERNATIONAL)
+
 # Phase 214: try dynamic 132-market list first, fall back to hardcoded 30
 def _load_markets_dynamic():
     """Phase 215: direct Postgres query — no internal API auth dance.
@@ -264,6 +323,14 @@ def _load_markets_dynamic():
 
 
 MARKETS = _load_markets_dynamic() or _MARKETS_HARDCODED
+
+# Phase TT (2026-05-15): the recompute loop iterates this. International
+# markets get neutral scores until country-specific data ingestion lands,
+# but they EXIST in market_power_scores so recommend / search /
+# /api/v1/markets/list can reference them. The recompute path detects
+# international markets via _INTL_COUNTRY_CODES and skips the US-only
+# metric gathering.
+MARKETS = MARKETS + _MARKETS_INTERNATIONAL  # noqa: PLW0127 (intentional re-assign)
 
 
 
@@ -455,6 +522,25 @@ def gather_metrics_for_market(market: tuple) -> dict:
         "queue_approval_rate_pct": None,
         "btm_headroom_mw": None,
     }
+
+    # Phase TT (2026-05-15): international markets short-circuit here.
+    # We don't yet ingest ENTSO-E / JEPX / EMA / NESO data, so the US
+    # ISO/queue tables won't return anything meaningful. Returning
+    # neutral defaults gives the recompute path a clean exit and
+    # produces a LOW_SIGNAL verdict in derive_verdict — honest about
+    # the data gap, no fake confidence. When country-specific
+    # ingestion lands, this guard is removed and the existing US
+    # codepath generalizes.
+    if (state or "").upper() in _INTL_COUNTRY_CODES:
+        metrics.update({
+            "queue_wait_months":       24.0,   # neutral
+            "reserve_margin_pct":      15.0,   # neutral
+            "curtailment_pct":         3.0,    # low-ish
+            "demand_growth_yoy_pct":   5.0,    # global DC demand baseline
+            "_international":          True,
+            "_data_thin":              True,
+        })
+        return metrics
 
     # Best-effort enrichment from existing grid_intelligence + queue tables
     try:
@@ -876,6 +962,180 @@ def api_score_market_v2(slug):
                      "upgrades AVOID→CAUTION when renewable_arbitrage≥75 and water_risk≤50",
         },
         computed_at=row.get("computed_at"),
+    ), 200
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Phase TT (2026-05-15): /api/v1/dcpi/explain-move — narrative explainer
+# for *why* a market's DCPI verdict shifted. Reads the score history at
+# the requested time window's endpoints, identifies the largest-moving
+# components, joins news/press from the same window, and returns a
+# plain-English narrative + structured component deltas.
+#
+# Why this is a separate tool: the existing /movers endpoint says *what*
+# moved (sorted by delta); this answers *why* (which underlying metric
+# changed and what news coincided with the move). Most operator
+# decisions hinge on the *why* — a 20pt swing because curtailment
+# doubled is a very different decision than a 20pt swing because the
+# state RPS was repealed.
+# ─────────────────────────────────────────────────────────────────────────
+@dcpi_bp.route("/api/v1/dcpi/explain-move", methods=["GET", "OPTIONS"])
+def api_dcpi_explain_move():
+    if request.method == "OPTIONS":
+        resp = jsonify(ok=True)
+        resp.headers["Access-Control-Allow-Origin"]  = "*"
+        resp.headers["Access-Control-Allow-Methods"] = "GET,OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type,X-API-Key,Authorization"
+        return resp, 200
+
+    _ensure_tables()
+    slug = (request.args.get("slug") or "").strip().lower()
+    if not slug:
+        return jsonify(error="slug required",
+                       hint="GET /api/v1/dcpi/explain-move?slug=northern-virginia"), 400
+    try:
+        window_days = max(1, min(180, int(request.args.get("window_days") or 30)))
+    except ValueError:
+        window_days = 30
+
+    with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        # Latest snapshot
+        cur.execute("""
+            SELECT * FROM market_power_scores
+             WHERE market_slug = %s
+             ORDER BY computed_at DESC LIMIT 1
+        """, (slug,))
+        latest = cur.fetchone()
+        if not latest:
+            return jsonify(error="market not found", slug=slug), 404
+
+        # Snapshot from window_days ago (or earliest available if no row that old)
+        cur.execute("""
+            SELECT * FROM market_power_scores
+             WHERE market_slug = %s
+               AND computed_at <= NOW() - INTERVAL '%s days'
+             ORDER BY computed_at DESC LIMIT 1
+        """, (slug, window_days))
+        prior = cur.fetchone()
+
+        # If no prior in window, grab the *earliest* snapshot for the market.
+        if not prior:
+            cur.execute("""
+                SELECT * FROM market_power_scores
+                 WHERE market_slug = %s
+                 ORDER BY computed_at ASC LIMIT 1
+            """, (slug,))
+            prior = cur.fetchone()
+
+        # Coincident news (best effort — news table may have variable column names)
+        news_items = []
+        try:
+            cur.execute("""
+                SELECT title, source, url, published_date
+                  FROM news
+                 WHERE published_date >= NOW() - INTERVAL '%s days'
+                   AND (
+                       LOWER(title) LIKE %s OR
+                       LOWER(COALESCE(summary,'')) LIKE %s
+                   )
+                 ORDER BY published_date DESC LIMIT 5
+            """, (window_days, f"%{slug.replace('-', ' ')}%",
+                                 f"%{slug.replace('-', ' ')}%"))
+            for r in cur.fetchall():
+                news_items.append({
+                    "title":          r.get("title"),
+                    "source":         r.get("source"),
+                    "url":            r.get("url"),
+                    "published_date": r.get("published_date").isoformat()
+                                      if r.get("published_date") else None,
+                })
+        except Exception:
+            pass
+
+    # ── Compute deltas across the components we care about ──
+    components = [
+        ("excess_power_score",   "Excess Power score",       "pts", False),
+        ("constraint_score",     "Constraint score",          "pts", True),
+        ("time_to_power_months", "Time-to-power",             "mo",  True),
+        ("queue_capacity_mw",    "Queue capacity",            "MW",  False),
+        ("queue_wait_months",    "Queue wait",                "mo",  True),
+        ("reserve_margin_pct",   "Reserve margin",            "%",   False),
+        ("curtailment_pct",      "Renewable curtailment",     "%",   False),
+        ("stranded_capacity_mw", "Stranded capacity",         "MW",  False),
+        ("emergency_count_30d",  "Grid emergencies (30d)",    "ct",  True),
+    ]
+    deltas = []
+    for col, label, unit, lower_is_better in components:
+        now_v = latest.get(col)
+        old_v = prior.get(col) if prior else None
+        if now_v is None or old_v is None:
+            continue
+        try:
+            d = float(now_v) - float(old_v)
+        except (TypeError, ValueError):
+            continue
+        if d == 0:
+            continue
+        direction = "improved" if (
+            (lower_is_better and d < 0) or
+            (not lower_is_better and d > 0)
+        ) else "worsened"
+        deltas.append({
+            "component":  col,
+            "label":      label,
+            "unit":       unit,
+            "before":     _safe_round(old_v, 2),
+            "after":      _safe_round(now_v, 2),
+            "delta":      _safe_round(d, 2),
+            "direction":  direction,
+            "magnitude":  abs(_safe_round(d, 2)),
+        })
+    # Sort by magnitude descending
+    deltas.sort(key=lambda x: -x["magnitude"])
+
+    # Verdict shift
+    old_verdict = (prior or {}).get("verdict") if prior else None
+    new_verdict = latest.get("verdict")
+    verdict_shift = (old_verdict != new_verdict) if (old_verdict and new_verdict) else False
+
+    # ── Build narrative ──
+    bits = []
+    name = latest.get("market_name") or slug
+    if verdict_shift:
+        bits.append(f"{name}'s DCPI verdict shifted from {old_verdict} to {new_verdict} over the last {window_days} days.")
+    else:
+        bits.append(f"{name}'s DCPI verdict held at {new_verdict} over the last {window_days} days.")
+
+    if deltas:
+        top = deltas[:3]
+        bits.append("The biggest movers were: " + "; ".join(
+            f"{d['label']} {d['direction']} by {abs(d['delta'])}{d['unit']} ({d['before']}→{d['after']})"
+            for d in top
+        ) + ".")
+    else:
+        bits.append("Component-level history is too thin to attribute the move precisely.")
+
+    if news_items:
+        bits.append(f"Coincident news ({len(news_items)} items): " +
+                    "; ".join(n["title"] or "(no title)" for n in news_items[:3]) + ".")
+
+    narrative = " ".join(bits)
+
+    return jsonify(
+        market_slug=slug,
+        market_name=name,
+        window_days=window_days,
+        verdict_before=old_verdict,
+        verdict_after=new_verdict,
+        verdict_shifted=verdict_shift,
+        score_deltas=deltas,
+        coincident_news=news_items,
+        narrative=narrative,
+        snapshot_dates={
+            "before": (prior.get("computed_at").isoformat() if prior and prior.get("computed_at") else None),
+            "after":  latest.get("computed_at").isoformat() if latest.get("computed_at") else None,
+        },
+        methodology="Compare latest snapshot to the snapshot ≤ window_days ago (or earliest snapshot if none exists in window). Rank components by absolute delta. Tag direction by whether the metric is lower-is-better (queue wait, emergencies) or higher-is-better (queue capacity, reserve margin). News matched by slug substring in title/summary.",
     ), 200
 
 

@@ -3283,6 +3283,111 @@ async def recommend_market(
 
 
 # ═══════════════════════════════════════════════════════════
+# explain_market_move — DCPI verdict shift narrator
+# Phase TT (2026-05-15)
+# ═══════════════════════════════════════════════════════════
+@mcp.tool(
+    name="explain_market_move",
+    annotations={"title": "DCPI Move Explainer", "readOnlyHint": True, "openWorldHint": True},
+)
+async def explain_market_move(slug: str, window_days: int = 30) -> str:
+    """
+    Explain *why* a DCPI market's verdict or scores moved. Use when: user
+    asks "why did [market] become AVOID", "what happened in [market]",
+    "what drove the DCPI shift in [slug]". Returns the largest component
+    deltas (queue capacity, queue wait, reserve margin, curtailment, etc.)
+    plus coincident news headlines so the *why* is grounded, not guessed.
+
+    Complements recommend_market (which decides) and get_market_intel
+    (which describes). This one diagnoses.
+
+    Args:
+        slug:        DCPI market slug (e.g. "northern-virginia",
+                     "phoenix", "ercot-rural"). Use search_facilities or
+                     get_market_intel to find slugs.
+        window_days: How far back to compare (1-180, default 30).
+
+    Returns:
+        JSON with verdict_before/after, ranked score_deltas (component +
+        before/after + magnitude + direction), coincident_news items
+        from the window, and a plain-English narrative paragraph.
+    """
+    _block = gate("explain_market_move", {"slug": slug, "window_days": window_days})
+    if _block: return _block
+
+    _track("explain_market_move", {"slug": slug, "window_days": window_days})
+    result = _api_get(
+        "/api/v1/dcpi/explain-move",
+        params={"slug": slug, "window_days": window_days},
+        retries=1,
+    )
+    return finalize(json.dumps(result, indent=2), "explain_market_move")
+
+
+# ═══════════════════════════════════════════════════════════
+# simulate_buildout — site cost/time/risk envelope
+# Phase TT (2026-05-15)
+# ═══════════════════════════════════════════════════════════
+@mcp.tool(
+    name="simulate_buildout",
+    annotations={"title": "Site Buildout Simulator", "readOnlyHint": True, "openWorldHint": True},
+)
+async def simulate_buildout(
+    lat: float,
+    lon: float,
+    state: str,
+    capacity_mw: float = 50,
+    redundancy: str = "N+1",
+    duration_years: int = 10,
+) -> str:
+    """
+    Estimate the full 10-year build-and-operate envelope for a data
+    center at a specific site: capex, opex, time-to-power, water/grid/
+    permitting risk, and tax incentive offsets. Use when: user asks
+    "what would it cost to build [N] MW at [location]", "is this site
+    feasible", "compare TCO at site A vs site B".
+
+    The tool aggregates several upstream signals (grid headroom + water
+    risk + retail rates + tax incentives + DCPI verdict) into a single
+    decision-grade envelope. Returns ranges (low/mid/high) not single
+    numbers — site economics are uncertain by definition.
+
+    Args:
+        lat:            Latitude (e.g. 39.04)
+        lon:            Longitude (e.g. -77.48)
+        state:          US state code (e.g. "VA")
+        capacity_mw:    Data center load in MW (default 50)
+        redundancy:     "N", "N+1", "2N", or "2N+1" (default "N+1")
+        duration_years: Operating horizon for opex/TCO (1-30, default 10)
+
+    Returns:
+        JSON with capex_envelope_usd_m, opex_envelope_usd_m_per_yr,
+        time_to_power_months, tco_usd_m, risk_flags[], tax_offset_usd_m,
+        dcpi_verdict, recommendation paragraph, and sensitivity_drivers.
+    """
+    _block = gate("simulate_buildout", {
+        "lat": lat, "lon": lon, "state": state, "capacity_mw": capacity_mw,
+    })
+    if _block: return _block
+
+    _track("simulate_buildout", {
+        "lat": lat, "lon": lon, "state": state, "capacity_mw": capacity_mw,
+        "redundancy": redundancy, "duration_years": duration_years,
+    })
+    result = _api_get(
+        "/api/v1/site/simulate-buildout",
+        params={
+            "lat": lat, "lon": lon, "state": state,
+            "capacity_mw": capacity_mw,
+            "redundancy": redundancy,
+            "duration_years": duration_years,
+        },
+        retries=1,
+    )
+    return finalize(json.dumps(result, indent=2), "simulate_buildout")
+
+
+# ═══════════════════════════════════════════════════════════
 # KEEPALIVE — Prevent Railway idle shutdown
 # ═══════════════════════════════════════════════════════════
 def _mcp_keepalive():

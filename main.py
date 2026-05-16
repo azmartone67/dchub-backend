@@ -19328,6 +19328,15 @@ try:
 except Exception as _e:
     print(f"[main] brain_consistency_radar register failed: {_e}", file=sys.stderr)
 
+# Phase TT (2026-05-15): site simulator — /api/v1/site/simulate-buildout
+# powers the new MCP tool `simulate_buildout`. Aggregates DCPI + water +
+# retail rates + tax incentives into a TCO envelope with sensitivity.
+try:
+    from routes.site_simulator import site_simulator_bp
+    app.register_blueprint(site_simulator_bp)
+except Exception as _e:
+    print(f"[main] site_simulator register failed: {_e}", file=sys.stderr)
+
 # Phase TT-1 (2026-05-15): single tier resolver. ONE function answers
 # "what tier is this caller?" — replaces 5 divergent implementations.
 # Existing callers continue to work; new code uses get_auth_context().
