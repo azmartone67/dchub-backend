@@ -336,7 +336,7 @@ def claim_key():
             cur.execute(
                 """INSERT INTO mcp_dev_keys
                      (api_key, developer_id, email, tier, status, metadata)
-                   VALUES (%s, %s, %s, 'free', 'active', %s::jsonb)""",
+                   VALUES (%s, %s, %s, 'free', 'active', %s::jsonb) ON CONFLICT DO NOTHING""",
                 (api_key, developer_id, None, json.dumps(metadata)),
             )
     except Exception as e:
@@ -599,7 +599,7 @@ def track_tool_call():
                 """INSERT INTO mcp_call_log
                      (timestamp, tool, params, platform, api_key, tier,
                       session_id, status, duration_ms)
-                   VALUES (%s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s)""",
+                   VALUES (%s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING""",
                 (
                     ts_dt, tool, params,
                     (_r_platform or body.get("platform")),
@@ -718,7 +718,7 @@ def dev_signup():
             cur.execute(
                 """INSERT INTO mcp_dev_keys
                      (api_key, developer_id, email, tier, status, metadata)
-                   VALUES (%s, %s, %s, 'free', 'active', %s::jsonb)""",
+                   VALUES (%s, %s, %s, 'free', 'active', %s::jsonb) ON CONFLICT DO NOTHING""",
                 (api_key, developer_id, email, '{"source":"dev-signup-form"}'),
             )
     except Exception as e:
