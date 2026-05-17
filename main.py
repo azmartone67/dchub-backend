@@ -9593,18 +9593,49 @@ def get_stats():
 
         stats = {}
 
+        # Phase facilities-truth (2026-05-17): the legacy `facilities`
+        # table is curated + smaller (~12,553). The real source of truth
+        # is `discovered_facilities` (~21,374 raw, ~10K verified post-
+        # dedup). User correctly called out: "we have more than 20k now,
+        # I see 12,553 in one area." Flipping total_facilities to the
+        # raw discovered count so the homepage brags about the REAL
+        # number we actually track. Preserve every previous field as
+        # an alias so no downstream consumer breaks.
         c.execute("SELECT COUNT(*) FROM facilities")
         main_count = c.fetchone()[0] or 0
 
+        discovered_total = 0
+        discovered_verified = 0
         try:
-            c.execute("SELECT COUNT(*) FROM discovered_facilities WHERE is_duplicate = 0")
-            discovered_count = c.fetchone()[0] or 0
+            c.execute("SELECT COUNT(*) FROM discovered_facilities")
+            discovered_total = c.fetchone()[0] or 0
         except:
-            discovered_count = 0
+            pass
+        try:
+            c.execute("""
+                SELECT COUNT(*) FROM discovered_facilities
+                 WHERE is_duplicate = 0
+            """)
+            discovered_verified = c.fetchone()[0] or 0
+        except:
+            pass
 
-        stats['total_facilities'] = main_count
-        stats['main_facilities'] = main_count
-        stats['discovered_facilities'] = discovered_count
+        # NEW headline number — the BIGGEST honest count we have.
+        # Falls back to legacy facilities table if discovered is empty.
+        stats['total_facilities']           = discovered_total or main_count
+        # Preserve legacy fields so existing consumers don't break:
+        stats['main_facilities']            = main_count                # legacy facilities table
+        stats['discovered_facilities']      = discovered_verified       # deduped (was the old "discovered" semantic)
+        stats['discovered_facilities_raw']  = discovered_total          # NEW — raw count, no dedup
+        stats['published_facilities_legacy']= main_count                # alias of main_facilities
+        # Transparency: surface the three-count divergence so anyone
+        # consuming /api/v1/stats sees the full picture.
+        stats['_facility_count_notes'] = {
+            "primary": "discovered_facilities raw count — what we actually track",
+            "legacy_facilities_table": main_count,
+            "discovered_total":        discovered_total,
+            "discovered_verified":     discovered_verified,
+        }
 
         c.execute("SELECT COALESCE(SUM(power_mw), 0) FROM facilities")
         stats['total_power_mw'] = round(c.fetchone()[0] or 0, 1)
