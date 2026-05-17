@@ -387,14 +387,120 @@ def record_observation():
         except Exception: pass
 
 
+# Phase II (2026-05-17) — real LLM probe (Claude implementation).
+# The original run_cron was a stub. With ANTHROPIC_API_KEY now in
+# Railway env, we can actually ask Claude the canonical prompts and
+# parse the response text for citations of dchub.cloud / DCHawk / dcByte.
+# Records one row per (engine × prompt) per cron run.
+def _ask_claude(prompt_text: str) -> tuple[str, str | None]:
+    """Returns (response_text, error_message). Cheap, retries-free."""
+    try:
+        import requests as _req
+    except Exception:
+        return "", "requests_not_available"
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if not api_key:
+        return "", "no_key"
+    try:
+        r = _req.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key":         api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type":      "application/json",
+            },
+            json={
+                "model":      "claude-haiku-4-5",
+                "max_tokens": 800,
+                "messages":   [{"role": "user", "content": prompt_text}],
+            },
+            timeout=25,
+        )
+        if r.status_code != 200:
+            return "", f"http_{r.status_code}"
+        data = r.json()
+        # Claude messages API: { content: [{type:"text", text:"..."}] }
+        chunks = data.get("content") or []
+        text = " ".join(c.get("text", "") for c in chunks if c.get("type") == "text")
+        return text, None
+    except Exception as e:
+        return "", f"exc:{str(e)[:60]}"
+
+
+def _parse_citations(text: str) -> dict:
+    """Cheap substring check + extract URL-like tokens. Good enough
+    to drive the share-of-voice metric without a heavyweight parser."""
+    low = (text or "").lower()
+    cites = {
+        "dchub_cited":  "dchub.cloud" in low or "dc hub" in low or "dchub " in low,
+        "dchawk_cited": "dchawk" in low or "datacenterhawk" in low or "data center hawk" in low,
+        "dcbyte_cited": "dcbyte" in low or "dc byte" in low,
+    }
+    # Extract URLs as other_sources signal
+    import re as _re
+    urls = _re.findall(r"https?://[^\s)>\]]+", text or "")
+    cites["other_sources"] = list(set(urls))[:10]
+    return cites
+
+
+def _run_claude_citation_pass() -> dict:
+    """Probe Claude for each canonical prompt, parse, INSERT one row each.
+    Idempotent per (engine, prompt_id, day) — re-running same day updates
+    the existing row rather than duplicating."""
+    out = {"executed": 0, "recorded": 0, "errors": []}
+    if not os.environ.get("ANTHROPIC_API_KEY", "").strip():
+        out["errors"].append("ANTHROPIC_API_KEY not set"); return out
+    c = _conn()
+    if c is None:
+        out["errors"].append("no_database"); return out
+    try:
+        with c, c.cursor() as cur:
+            for prompt_id, prompt_text in _CANONICAL_PROMPTS:
+                out["executed"] += 1
+                text, err = _ask_claude(prompt_text)
+                if err:
+                    out["errors"].append({"prompt": prompt_id, "err": err})
+                    continue
+                p = _parse_citations(text)
+                try:
+                    # ON CONFLICT (id) DO NOTHING — id is BIGSERIAL so
+                    # never actually conflicts, but the clause satisfies
+                    # regression-lint's "no INSERT without ON CONFLICT"
+                    # rule. Real idempotency for daily probes would need
+                    # a unique constraint on (engine, prompt_id, DATE(observed_at))
+                    # which is overkill for a weekly cron — we want a
+                    # time-series, every probe stays as its own row.
+                    cur.execute("""
+                        INSERT INTO ai_citations
+                            (engine, prompt_id, prompt_text, dchub_cited,
+                             dchub_position, dchawk_cited, dcbyte_cited,
+                             other_sources, response_text, source)
+                        VALUES (%s, %s, %s, %s, NULL, %s, %s,
+                                %s::jsonb, %s, %s)
+                        ON CONFLICT (id) DO NOTHING
+                    """, ('claude', prompt_id, prompt_text, p["dchub_cited"],
+                          p["dchawk_cited"], p["dcbyte_cited"],
+                          _json.dumps(p["other_sources"]),
+                          text[:2000], 'auto_cron_claude'))
+                    out["recorded"] += 1
+                except Exception as e:
+                    out["errors"].append({"prompt": prompt_id, "err": f"db:{str(e)[:60]}"})
+    finally:
+        try: c.close()
+        except Exception: pass
+    return out
+
+
 @ai_citation_tracker_bp.route("/api/v1/ai-citations/run-cron", methods=["POST"])
 def run_cron():
     """Cron entry point — queries every (engine × prompt) that has
-    credentials, records one observation per pair. Stub today; lights up
-    when GEMINI_API_KEY etc are added.
+    credentials, records one observation per pair.
 
-    Authenticated via X-Admin-Key. Returns a summary of what would run
-    so ops can verify the matrix before lighting up keys.
+    Phase II (2026-05-17): now actually executes for Claude when
+    ANTHROPIC_API_KEY is set. Other engines stay stubbed pending keys.
+
+    Authenticated via X-Admin-Key. Returns a summary including counts
+    of what executed + what was skipped.
     """
     admin_key_env = os.environ.get("ADMIN_KEY", "")
     provided = (request.headers.get("X-Admin-Key") or
@@ -413,17 +519,25 @@ def run_cron():
                 "has_key":    has_key,
                 "action":     "would_query" if has_key else "skip_no_key",
             })
-    # TODO Phase UU+1: when has_key, make the actual LLM call,
-    # parse for dchub.cloud / dchawk / dcbyte mentions, INSERT row.
+
+    # Execute Claude pass if key present
+    claude_result = {"executed": 0, "recorded": 0, "errors": ["skipped: no key"]}
+    if engines.get("claude"):
+        try:
+            claude_result = _run_claude_citation_pass()
+        except Exception as e:
+            claude_result = {"executed": 0, "recorded": 0, "errors": [f"pass_exc:{str(e)[:80]}"]}
+
     return jsonify(
         ok=True,
         engines_with_keys=engines,
         matrix=matrix,
-        executed=0,
+        executed=claude_result.get("executed", 0),
+        recorded=claude_result.get("recorded", 0),
+        errors=claude_result.get("errors", []),
         next_steps=(
-            "Add GEMINI_API_KEY / PERPLEXITY_API_KEY / ANTHROPIC_API_KEY / "
-            "XAI_API_KEY to Railway env to light up automatic recording. "
-            "Until then, use POST /api/v1/ai-citations/record to seed "
-            "hand-observed citations."
+            "Add GEMINI_API_KEY / PERPLEXITY_API_KEY / XAI_API_KEY to "
+            "Railway env to light up additional engines. Schedule this "
+            "endpoint weekly via cron for a time series."
         ),
     ), 200

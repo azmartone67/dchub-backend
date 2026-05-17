@@ -810,6 +810,27 @@ def check_mcp_conversion_stale() -> list[dict]:
                     conversions = int((cur.fetchone() or [0])[0] or 0)
             except Exception:
                 conversions = 0
+            # ── Phase HH (2026-05-17): the conversion-stale detector
+            # historically only counted the legacy mcp_pair_codes flow
+            # (web-form redemption). But Phase DDDDD shipped auto-mint
+            # trial keys that bypass that flow entirely — an agent gets
+            # `dch_trial_xxx` in the paywall response, retries with the
+            # key, and is now a converted user. Those don't touch
+            # mcp_pair_codes. Result: the brain reports "0 conversions
+            # on 15k signals!" while auto-trial usage is actually high.
+            # Count auto-trial keys with call_count > 0 (the agent
+            # actually came back and used the minted key) as conversions
+            # too. This makes the metric a TRUE conversion rate.
+            try:
+                cur.execute("SELECT to_regclass('public.auto_trial_keys')")
+                if (cur.fetchone() or [None])[0]:
+                    cur.execute("""SELECT COUNT(*) FROM auto_trial_keys
+                                    WHERE minted_at >= NOW() - INTERVAL '7 days'
+                                      AND call_count > 0""")
+                    auto_trial_conv = int((cur.fetchone() or [0])[0] or 0)
+                    conversions += auto_trial_conv
+            except Exception:
+                pass
 
         if signals < _MCP_STALE_MIN_SIGNALS:
             return findings
@@ -2422,6 +2443,213 @@ def check_brand_surface_dormant() -> list[dict]:
     return findings
 
 
+# ═══════════════════════════════════════════════════════════════════
+# Phase KK (2026-05-17) — 4 NEW BLIND-SPOT DETECTORS
+#
+# Each closes a category the brain previously had no eyes on:
+#   • check_data_freshness_sla_breach   — datasets stale past their SLA
+#   • check_mcp_tool_sunset_candidate   — tools dying despite past use
+#   • check_ai_citations_stale_v2       — Phase II cron not landing rows
+#   • check_autopilot_verifier_backlog  — Phase FFFFF verifier backlogged
+# ═══════════════════════════════════════════════════════════════════
+
+def check_data_freshness_sla_breach() -> list[dict]:
+    """Fires when a tracked dataset hasn't refreshed within its SLA.
+    Operationalizes the "is the data fresh" question that ops keeps
+    asking manually. Per-dataset SLA (in hours):
+      • dcpi_scores       — 12h  (recompute cron)
+      • discovered_facilities — 24h (discovery cron)
+      • news_items        — 6h   (news pipeline)
+      • ai_citations      — 168h (weekly cron — see Phase II)
+    """
+    findings: list[dict] = []
+    SLAS = [
+        # (table, age_column, max_hours, friendly_label)
+        ("dcpi_scores",          "computed_at",  12,  "DCPI scores"),
+        ("discovered_facilities","discovered_at",24,  "facility discovery"),
+        ("news_items",           "published_at", 6,   "news ingest"),
+        ("ai_citations",         "observed_at",  168, "AI citations (weekly)"),
+    ]
+    c = _db()
+    if c is None: return findings
+    try:
+        with c.cursor() as cur:
+            for tbl, col, sla_hrs, label in SLAS:
+                try:
+                    cur.execute(f"SELECT to_regclass('public.{tbl}')")
+                    if not (cur.fetchone() or [None])[0]:
+                        continue  # table doesn't exist on this deploy
+                    cur.execute(
+                        f"SELECT MAX({col}) FROM {tbl}"
+                    )
+                    last = (cur.fetchone() or [None])[0]
+                    if last is None:
+                        findings.append({
+                            "issue":  "data_freshness_sla_breach",
+                            "url":    f"table:{tbl}",
+                            "count":  1,
+                            "detail": (f"{label} has NO rows yet. SLA: {sla_hrs}h. "
+                                       f"Either the producing cron has never run, "
+                                       f"or the table was recently truncated."),
+                        })
+                        continue
+                    import datetime as _dt
+                    now = _dt.datetime.now(_dt.timezone.utc)
+                    # last may be tz-naive — coerce
+                    if last.tzinfo is None:
+                        last = last.replace(tzinfo=_dt.timezone.utc)
+                    age_h = (now - last).total_seconds() / 3600.0
+                    if age_h > sla_hrs:
+                        findings.append({
+                            "issue":  "data_freshness_sla_breach",
+                            "url":    f"table:{tbl}",
+                            "count":  int(age_h),
+                            "detail": (f"{label} last refreshed {age_h:.1f}h ago "
+                                       f"(SLA: {sla_hrs}h). The cron that produces "
+                                       f"this table has missed at least one window. "
+                                       f"Check Railway logs for the cron's name."),
+                        })
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    finally:
+        try: c.close()
+        except Exception: pass
+    return findings
+
+
+def check_mcp_tool_sunset_candidate() -> list[dict]:
+    """Fires when an MCP tool's 7-day call count is < 5% of its 90-day
+    average. Catches tools that are dying — either deprecation candidates
+    or, more interestingly, tools that USED to be hot and silently broke.
+    Lets us either revive (fix the breakage) or sunset (clean up docs)."""
+    findings: list[dict] = []
+    c = _db()
+    if c is None: return findings
+    try:
+        with c.cursor() as cur:
+            try:
+                cur.execute("SELECT to_regclass('public.mcp_call_log')")
+                if not (cur.fetchone() or [None])[0]:
+                    return findings
+                cur.execute("""
+                    WITH per_tool AS (
+                      SELECT tool,
+                             COUNT(*) FILTER (
+                               WHERE timestamp >= NOW() - INTERVAL '7 days') AS calls_7d,
+                             COUNT(*) FILTER (
+                               WHERE timestamp >= NOW() - INTERVAL '90 days') AS calls_90d
+                        FROM mcp_call_log
+                       WHERE tool IS NOT NULL
+                       GROUP BY tool
+                    )
+                    SELECT tool, calls_7d, calls_90d
+                      FROM per_tool
+                     WHERE calls_90d >= 100        -- had real adoption
+                       AND calls_7d * 13 < calls_90d * 0.05  -- 7d run-rate < 5% of 90d
+                     ORDER BY calls_90d DESC LIMIT 5
+                """)
+                for r in cur.fetchall() or []:
+                    tool, c7, c90 = r[0], int(r[1] or 0), int(r[2] or 0)
+                    findings.append({
+                        "issue":  "mcp_tool_sunset_candidate",
+                        "url":    f"tool:{tool}",
+                        "count":  c7,
+                        "detail": (f"MCP tool `{tool}` had {c90} calls over 90d but "
+                                   f"only {c7} in the last 7d (run-rate dropped >95%). "
+                                   f"Either the tool broke silently (check logs for "
+                                   f"errors), got rate-limited out, or its consumers "
+                                   f"migrated. Investigate before sunsetting."),
+                    })
+            except Exception:
+                pass
+    finally:
+        try: c.close()
+        except Exception: pass
+    return findings
+
+
+def check_ai_citations_stale_v2() -> list[dict]:
+    """Fires when no new ai_citations rows have landed in 7+ days
+    despite ANTHROPIC_API_KEY being set. Phase II shipped the actual
+    Claude probe; this detector ensures the weekly cron is actually
+    firing. If it's silent, we don't know if our source-of-truth score
+    is stable or stale."""
+    findings: list[dict] = []
+    if not os.environ.get("ANTHROPIC_API_KEY", "").strip():
+        return findings  # No key = no expectation
+    c = _db()
+    if c is None: return findings
+    try:
+        with c.cursor() as cur:
+            try:
+                cur.execute("SELECT to_regclass('public.ai_citations')")
+                if not (cur.fetchone() or [None])[0]:
+                    return findings
+                cur.execute("""SELECT COUNT(*) FROM ai_citations
+                                WHERE observed_at >= NOW() - INTERVAL '7 days'
+                                  AND source LIKE 'auto_cron%'""")
+                n = int((cur.fetchone() or [0])[0] or 0)
+                if n == 0:
+                    findings.append({
+                        "issue":  "ai_citations_cron_silent",
+                        "url":    "/api/v1/ai-citations/run-cron",
+                        "count":  1,
+                        "detail": ("ANTHROPIC_API_KEY is set but no auto_cron "
+                                   "citation rows in 7 days. Phase II shipped "
+                                   "the real Claude probe — the WEEKLY CRON to "
+                                   "fire `POST /api/v1/ai-citations/run-cron` "
+                                   "with X-Admin-Key isn't scheduled. Add it to "
+                                   ".github/workflows/evolve-cron.yml so the "
+                                   "share-of-voice metric starts moving."),
+                    })
+            except Exception:
+                pass
+    finally:
+        try: c.close()
+        except Exception: pass
+    return findings
+
+
+def check_autopilot_verifier_backlog() -> list[dict]:
+    """Fires when Phase FFFFF's outcome verifier has > 5 actions
+    fired in the last 48h but not yet verified. Either the verify
+    cron is silent or actions are failing at a higher rate than the
+    verifier can keep up with."""
+    findings: list[dict] = []
+    c = _db()
+    if c is None: return findings
+    try:
+        with c.cursor() as cur:
+            try:
+                cur.execute("SELECT to_regclass('public.autopilot_outcomes')")
+                if not (cur.fetchone() or [None])[0]:
+                    return findings
+                cur.execute("""SELECT COUNT(*) FROM autopilot_outcomes
+                                WHERE fired_at >= NOW() - INTERVAL '48 hours'
+                                  AND verified_at IS NULL""")
+                n = int((cur.fetchone() or [0])[0] or 0)
+                if n >= 5:
+                    findings.append({
+                        "issue":  "autopilot_verifier_backlog",
+                        "url":    "/api/v1/autopilot/verify-pending",
+                        "count":  n,
+                        "detail": (f"{n} autopilot actions have fired in the last "
+                                   f"48h without being verified. Phase FFFFF's "
+                                   f"verify-pending cron may be silent OR actions "
+                                   f"are failing faster than it can drain. Check "
+                                   f"the cron schedule + look at recent verifier "
+                                   f"errors."),
+                    })
+            except Exception:
+                pass
+    finally:
+        try: c.close()
+        except Exception: pass
+    return findings
+
+
 def scan_all() -> list[dict]:
     """Run every detector. Return a flat list of finding dicts ready
     to merge into actionable_backend_issues."""
@@ -2497,7 +2725,12 @@ def scan_all() -> list[dict]:
                # Phase GGGGG schema.org coverage
                check_schema_org_coverage_low,
                # Phase HHHHH external mentions dropoff
-               check_external_mentions_dropoff):
+               check_external_mentions_dropoff,
+               # Phase KK (2026-05-17) — 4 new blind-spot detectors
+               check_data_freshness_sla_breach,
+               check_mcp_tool_sunset_candidate,
+               check_ai_citations_stale_v2,
+               check_autopilot_verifier_backlog):
         try:
             out.extend(fn() or [])
         except Exception as e:

@@ -175,6 +175,27 @@ def _compute_growth() -> dict:
                 out["conversions_7d"] = int((cur.fetchone() or {"n":0})["n"] or 0)
             except Exception:
                 pass
+            # Phase HH (2026-05-17): augment legacy mcp_pair_codes count
+            # with auto_trial_keys actually used (call_count > 0). Phase
+            # DDDDD's auto-mint trial flow generates conversions that
+            # never touch mcp_pair_codes — so the pre-HH dashboard
+            # showed "0 conversions" while the auto-trial pipeline was
+            # quietly working. Both numbers go into conversions_7d so
+            # the brain's stale-conversion detector + this snapshot
+            # measure the SAME thing (any agent that started using a
+            # dchub-issued key in the last 7 days).
+            out["auto_trial_conversions_7d"] = 0
+            try:
+                cur.execute("""
+                    SELECT COUNT(*) AS n FROM auto_trial_keys
+                     WHERE minted_at >= NOW() - INTERVAL '7 days'
+                       AND call_count > 0
+                """)
+                atc = int((cur.fetchone() or {"n":0})["n"] or 0)
+                out["auto_trial_conversions_7d"] = atc
+                out["conversions_7d"] = (out.get("conversions_7d") or 0) + atc
+            except Exception:
+                pass
 
             sigs = out["upgrade_signals_7d"]
             convs = out["conversions_7d"]

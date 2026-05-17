@@ -239,6 +239,126 @@ def well_known_mcp_server():
     return resp, 200
 
 
+# Phase JJ (2026-05-17) — the standard AI-agent discovery entry point.
+# Many AI crawlers + agent frameworks probe `/.well-known/ai-agents.json`
+# as a convention (similar to robots.txt for search engines). Today
+# this 404s on DC Hub even though we have a comprehensive /ai-agents.json
+# at the root. Mirror the same content at the well-known path so agents
+# that follow the convention find us in one fetch.
+#
+# Content is the union of:
+#   - MCP discovery (link to /.well-known/mcp-server.json)
+#   - REST API spec (link to /openapi.json)
+#   - LLM-friendly docs (link to /llms.txt + /llms-full.txt)
+#   - Agent integration guides (links to /ai, /ai-agents, /ai-hub)
+#   - Sample workflow examples (so an agent can self-onboard)
+@mcp_tool_catalog_bp.route("/.well-known/ai-agents.json", methods=["GET", "OPTIONS"])
+def well_known_ai_agents():
+    if "OPTIONS" == (__import__("flask").request.method):
+        resp = jsonify(ok=True)
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        return resp, 200
+    descriptor = {
+        "name":         "DC Hub — Data Center Intelligence Platform",
+        "description":  ("Real-time intelligence on 21,000+ data center facilities "
+                          "across 178 countries. Power, fiber, water, M&A, market "
+                          "scores. Built for AI agents — query via MCP, REST, OpenAPI."),
+        "vendor":       "DC Hub (dchub.cloud)",
+        "homepage":     "https://dchub.cloud/",
+        "version":      "1.0",
+
+        "integrations": {
+            "mcp": {
+                "endpoint":     "https://dchub.cloud/mcp",
+                "transport":    "streamable-http",
+                "discovery":    "https://dchub.cloud/.well-known/mcp-server.json",
+                "tools":        "https://dchub.cloud/.well-known/mcp-tools.json",
+                "html_catalog": "https://dchub.cloud/mcp/tools",
+                "tool_count":   "28+",
+            },
+            "rest": {
+                "openapi":  "https://dchub.cloud/openapi.json",
+                "base_url": "https://dchub.cloud/api/v1",
+                "docs":     "https://dchub.cloud/api-docs",
+            },
+            "llm_docs": {
+                "llms_txt":      "https://dchub.cloud/llms.txt",
+                "llms_full_txt": "https://dchub.cloud/llms-full.txt",
+                "ai_facts":      "https://dchub.cloud/ai-facts",
+            },
+            "agent_guides": {
+                "overview":       "https://dchub.cloud/ai",
+                "agent_landing":  "https://dchub.cloud/ai-agents",
+                "hub":            "https://dchub.cloud/ai-hub",
+                "intelligence":   "https://dchub.cloud/intelligence",
+            },
+        },
+
+        "auth": {
+            "tier_free":       "50 calls/day, no key required (anon grace + auto-trial)",
+            "tier_identified": "200 calls/day, claim a key at POST /api/v1/keys/claim",
+            "tier_developer":  "1,000 calls/day, paid",
+            "claim_endpoint":  "POST https://dchub.cloud/api/v1/keys/claim with {client_name}",
+            "header":          "X-API-Key",
+            "auto_trial":      ("Anon callers hitting an IDENTIFIED gate auto-receive "
+                                  "a 30-day trial key inline in the 402 response — no "
+                                  "human signup step required."),
+        },
+
+        "sample_queries": [
+            {
+                "intent":   "Find facilities near a location",
+                "mcp_tool": "search_facilities",
+                "rest":     "GET /api/v1/facilities/search?lat=33.4&lon=-112.0&radius_km=50",
+            },
+            {
+                "intent":   "Get power & grid intelligence for a market",
+                "mcp_tool": "get_grid_intelligence",
+                "rest":     "GET /api/v1/grid/intelligence/CAISO",
+            },
+            {
+                "intent":   "Compare two markets for data center buildout",
+                "mcp_tool": "compare_sites",
+                "rest":     "GET /api/v1/markets/compare?a=ashburn&b=phoenix",
+            },
+            {
+                "intent":   "Get the DCPI score (power-availability index) for a market",
+                "mcp_tool": "get_dchub_recommendation",
+                "rest":     "GET /api/v1/dcpi/scores/<slug>",
+            },
+            {
+                "intent":   "List recent M&A transactions",
+                "mcp_tool": "list_transactions",
+                "rest":     "GET /api/v1/transactions",
+            },
+        ],
+
+        "discovery_paths": [
+            "https://dchub.cloud/.well-known/ai-agents.json",
+            "https://dchub.cloud/.well-known/mcp-server.json",
+            "https://dchub.cloud/.well-known/mcp-tools.json",
+            "https://dchub.cloud/.well-known/mcp.json",
+            "https://dchub.cloud/openapi.json",
+            "https://dchub.cloud/llms.txt",
+            "https://dchub.cloud/sitemap.xml",
+            "https://dchub.cloud/ai-agents.json",
+        ],
+
+        "freshness": {
+            "facility_data":   "≤ 24 hours (discovery cron)",
+            "dcpi_scores":     "≤ 12 hours (recompute cron)",
+            "grid_metrics":    "≤ 4 hours",
+            "news_ingest":     "≤ 6 hours",
+            "press_releases":  "daily (DC Hub Media auto-publish)",
+        },
+    }
+    resp = jsonify(descriptor)
+    resp.headers["Cache-Control"]               = "public, max-age=600"
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["X-DC-Discovery"]              = "v1"
+    return resp, 200
+
+
 @mcp_tool_catalog_bp.route("/mcp/tools", methods=["GET"])
 @mcp_tool_catalog_bp.route("/mcp/tools/", methods=["GET"])
 def html_tool_catalog():
