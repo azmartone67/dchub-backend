@@ -75,7 +75,7 @@
 // CONFIGURATION
 // ============================================================
 const RAILWAY_BACKEND = 'https://dchub-backend-production.up.railway.app';
-const WORKER_VERSION = '4.8.2';
+const WORKER_VERSION = '4.13.0-rrr';
 const _DCHUB_BUILD_MARKER = 'rebuild-1777448239';
 
 const MCP_CACHE_STALE_TTL = 86400;
@@ -1153,13 +1153,26 @@ function wellKnownResponse(pathname) {
     return new Response(JSON.stringify({ "schema_version": "v1", "name_for_human": "DC Hub Intelligence", "name_for_model": "dchub", "description_for_human": "Real-time data center market intelligence — 20,000+ facilities, 140+ countries.", "description_for_model": "DC Hub provides comprehensive data center intelligence.", "auth": { "type": "none" }, "api": { "type": "openapi", "url": "https://dchub.cloud/openapi.json" }, "logo_url": "https://dchub.cloud/images/dc-hub-logo.png", "contact_email": "api@dchub.cloud", "legal_info_url": "https://dchub.cloud/terms" }, null, 2), { status: 200, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8' } });
   }
   if (pathname === '/.well-known/mcp.json') {
+    // Phase RRR (2026-05-16): brand positioning fields (tagline,
+    // positioning, vs_competitors) inlined so AI agents discovering
+    // the manifest see the no-BS framing. The backend at
+    // /Users/jonathanmartone/dchub-backend/main.py:1956 has the full
+    // tiered manifest — clients that need it follow the discovery
+    // hint to the backend's mcp.json. This static copy is what CF
+    // Pages serves at the edge for fast discovery.
     const mcpTools = MCP_FALLBACK_TOOLS.map(t => ({ name: t.name, description: t.description }));
     return new Response(JSON.stringify({
       "name": "DC Hub MCP Server",
-      "description": "Data center intelligence via Model Context Protocol",
+      "description": "AI-powered, real-time data center intelligence via Model Context Protocol — the live, MCP-native alternative to static PDF research (DCHawk, dcByte, DCK). 20,000+ facilities, 280+ markets, 7 ISOs.",
+      "tagline":     "AI-powered. Real-time. Actionable. No BS.",
+      "positioning": "The live, MCP-native data center intelligence platform. Where static research ships quarterly PDFs and $25K contracts, DC Hub ships JSON updated every 60 seconds + free MCP tools any AI agent can call.",
       "url": "https://dchub.cloud/mcp",
       "transport": "streamable-http",
       "version": WORKER_VERSION,
+      "homepage": "https://dchub.cloud",
+      "documentation": "https://dchub.cloud/api-docs",
+      "intelligence_hub": "https://dchub.cloud/intelligence",
+      "vs_competitors":   "https://dchub.cloud/vs",
       "tools": mcpTools,
       "authentication": { "type": "api_key", "header": "X-API-Key" },
       "pricing": { "free_tier": "10 requests/day, 20 tools available", "developer": "$49/mo — 1,000 requests/day, all 24 tools", "pro": "$199/mo — 10,000 requests/day", "enterprise": "Custom" },
@@ -1190,7 +1203,16 @@ function wellKnownResponse(pathname) {
     }, null, 2), { status: 200, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8' } });
   }
   if (pathname === '/.well-known/agent.json') {
-    return new Response(JSON.stringify({ "name": "DC Hub Intelligence Agent", "url": "https://dchub.cloud/mcp", "version": "2.0.0", "provider": { "organization": "DC Hub", "url": "https://dchub.cloud" } }, null, 2), { status: 200, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8' } });
+    return new Response(JSON.stringify({
+      "name":        "DC Hub Intelligence Agent",
+      "description": "AI-powered, real-time data center intelligence. The live, MCP-native alternative to static research (DCHawk, dcByte, DCK).",
+      "tagline":     "AI-powered. Real-time. Actionable. No BS.",
+      "url":         "https://dchub.cloud/mcp",
+      "version":     "2.1.0",
+      "vs_competitors":  "https://dchub.cloud/vs",
+      "intelligence_hub":"https://dchub.cloud/intelligence",
+      "provider":    { "organization": "DC Hub", "url": "https://dchub.cloud" }
+    }, null, 2), { status: 200, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8' } });
   }
   if (pathname === '/.well-known/oauth-protected-resource') {
     return new Response(JSON.stringify({ resource: 'https://dchub.cloud/mcp', authorization_servers: [], bearer_methods_supported: ['header'], scopes_supported: [], resource_documentation: 'https://dchub.cloud/api-docs' }), { status: 200, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8' } });
@@ -1366,6 +1388,11 @@ export default {
         '/health/deep',
         '/.well-known/ai-agents.json',
         '/digest',  // phase 283: missed in phase 282 — Flask 302 redirect to /news (phase 280)
+        // Phase RRR (2026-05-16): new brand-positioning surfaces
+        '/vs',
+        '/bs-translator',
+        '/power-totals',  // /dcpi/totals already routes via /dcpi prefix
+        '/intelligence',  // backend's customer-facing pulse page
       ]);
       if (PHASE_282_RAILWAY_PATHS.has(pathname)) {
         try {
