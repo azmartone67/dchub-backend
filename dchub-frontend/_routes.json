@@ -13,7 +13,8 @@
     "/pocket-listings",
     "/spare-capacity",
     "/spare-capacity/*",
-    "/sentinel"
+    "/sentinel",
+    "/transparency"
   ],
   "exclude": []
 }

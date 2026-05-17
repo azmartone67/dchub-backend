@@ -1,0 +1,23 @@
+name: L+P Alerts Nightly Firing
+# Phase JJJJ (2026-05-16): nightly cron that fires L+P email alerts
+# for saved sites where dcpi_change exceeded the configured threshold.
+# Per-alert 24h cooldown + per-email 5/day cap built into the endpoint.
+on:
+  schedule:
+    - cron: '0 7 * * *'   # 07:00 UTC daily (after DCPI recompute window)
+  workflow_dispatch: {}
+jobs:
+  fire-alerts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fire pending L+P alerts
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::error::DCHUB_ADMIN_KEY secret not set"; exit 1; fi
+          curl -sS --max-time 120 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "https://dchub.cloud/api/v1/lp/alerts/fire-pending" \
+            | python3 -m json.tool

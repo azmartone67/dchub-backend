@@ -1,0 +1,24 @@
+name: Facility Count Daily Snapshot
+# Phase HHHH (2026-05-16): writes facility_count_snapshots row daily so
+# the brain detector check_facility_count_stagnant has 7+ days of
+# baseline to compute the delta against. Without this, the detector
+# would never fire because there's no historical baseline.
+on:
+  schedule:
+    - cron: '17 5 * * *'   # 05:17 UTC daily — offset from DCPI/news crons
+  workflow_dispatch: {}
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Write daily facility count snapshot
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::error::DCHUB_ADMIN_KEY secret not set"; exit 1; fi
+          curl -sS --max-time 30 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "https://dchub.cloud/api/v1/facilities/snapshot" \
+            | python3 -m json.tool
