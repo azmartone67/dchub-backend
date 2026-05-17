@@ -1,0 +1,24 @@
+name: Tier Upgrade Nudge Weekly
+# Phase WWWW (2026-05-16): identifies IDENTIFIED-tier users hitting
+# 80%+ of their 200/day cap on 3+ of the last 7 days, emails them a
+# one-click DEVELOPER upgrade ($49/mo). Per-key 14-day cooldown
+# inside the endpoint prevents spam.
+on:
+  schedule:
+    - cron: '0 15 * * 2'   # Tuesday 15:00 UTC — after Monday digests
+  workflow_dispatch: {}
+jobs:
+  nudge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Send tier-upgrade nudges to heavy IDENTIFIED users
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::error::DCHUB_ADMIN_KEY secret not set"; exit 1; fi
+          curl -sS --max-time 60 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "https://dchub.cloud/api/v1/nudges/send-pending" \
+            | python3 -m json.tool

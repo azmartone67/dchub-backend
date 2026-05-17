@@ -33,3 +33,23 @@ jobs:
             -H "X-Admin-Key: $ADMIN_KEY" \
             "https://dchub.cloud/api/v1/radar/snapshot" \
             | python3 -m json.tool
+      # Phase TTTT (2026-05-16): daily citation-hunter probe — asks
+      # Claude 5 data-center research questions, tracks DC Hub mention
+      # share. Requires ANTHROPIC_API_KEY env on Railway.
+      - name: Citation hunter daily probe
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          curl -sS --max-time 120 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "https://dchub.cloud/api/v1/citations/hunt?queries=5" \
+            | python3 -m json.tool || true
+      # Phase XXXX (2026-05-16): daily competitor snapshot.
+      - name: Competitor intel scan
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          curl -sS --max-time 60 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "https://dchub.cloud/api/v1/competitors/scan" \
+            | python3 -m json.tool || true

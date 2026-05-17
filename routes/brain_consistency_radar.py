@@ -1191,6 +1191,158 @@ def check_enterprise_bot_present() -> list[dict]:
     return findings
 
 
+# ── Phase TTTT (2026-05-16) — citation-score detector ────────────
+def check_citation_score_dropped() -> list[dict]:
+    """Fires when DC Hub citation score in AI-platform responses
+    drops 10+ points week-over-week, OR is below 30% with 3+ days
+    of baseline. The 10/100 source-of-truth score is THE blocking
+    metric for being the most important industry source; this puts
+    real numbers behind the trend."""
+    try:
+        from routes.citation_hunter import read_score_history
+        d = read_score_history(days=14)
+    except Exception:
+        return []
+    rows = d.get("history") or []
+    if len(rows) < 3: return []
+    latest_pct = float(rows[-1].get("score_pct") or 0)
+    # 7-day delta if available
+    week_ago = next((r for r in rows[::-1]
+                     if r["date"] and rows[-1]["date"] and
+                     (datetime.datetime.fromisoformat(rows[-1]["date"]) -
+                      datetime.datetime.fromisoformat(r["date"])).days >= 7), None)
+    findings: list[dict] = []
+    if week_ago:
+        wow_delta = latest_pct - float(week_ago.get("score_pct") or 0)
+        if wow_delta <= -10:
+            findings.append({
+                "issue":  "citation_score_dropped",
+                "url":    "/api/v1/citations/score",
+                "count":  abs(int(wow_delta)),
+                "detail": (f"DC Hub citation score in AI-platform responses "
+                           f"fell {abs(wow_delta):.1f}pts WoW "
+                           f"({week_ago.get('score_pct')}% → {latest_pct}%). "
+                           f"Either AI platforms are mentioning us less OR "
+                           f"competitors are gaining share. See "
+                           f"/api/v1/citations/latest for the actual "
+                           f"Claude responses."),
+            })
+    if latest_pct < 30 and not findings:
+        findings.append({
+            "issue":  "citation_score_below_30pct",
+            "url":    "/api/v1/citations/score",
+            "count":  int(latest_pct),
+            "detail": (f"DC Hub appears in only {latest_pct}% of Claude "
+                       f"responses to data-center research queries. "
+                       f"Auto-triggering DC Hub Media press cycle won't "
+                       f"fix this — needs direct outreach to AI platforms "
+                       f"(see /api/v1/media/winback-pitches)."),
+        })
+    return findings
+
+
+# ── Phase UUUU (2026-05-16) — pattern-proposal candidate detector ─
+def check_pattern_proposal_candidates() -> list[dict]:
+    """Fires when 3+ identical (issue_prefix, action_taken) tuples
+    exist in brain_resolution_log without a matching pattern in the
+    library. Each surfaces a proposed pattern stub the operator can
+    paste into routes/brain_autopilot.py:_PATTERN_LIBRARY."""
+    try:
+        from routes.pattern_growth import compute_proposals
+        proposals = compute_proposals(min_matches=3) or []
+    except Exception:
+        return []
+    out = []
+    for p in proposals[:5]:  # cap so heartbeat doesn't bloat
+        out.append({
+            "issue":  f"pattern_proposal_candidate:{p['issue_prefix']}",
+            "url":    "/api/v1/brain/pattern-proposals",
+            "count":  int(p["match_count"]),
+            "detail": (f"Operator has manually resolved "
+                       f"'{p['issue_prefix']}' {p['match_count']} times "
+                       f"with action='{p['proposed_action']}'. Brain "
+                       f"proposes adding an autopilot pattern. Paste "
+                       f"the stub from /api/v1/brain/pattern-proposals "
+                       f"into routes/brain_autopilot.py:_PATTERN_LIBRARY."),
+        })
+    return out
+
+
+# ── Phase VVVV (2026-05-16) — page content drift detector ────────
+def check_page_content_drift() -> list[dict]:
+    """Fires when Sentinel detects a page's content_hash changed
+    AND its byte size moved by >25% (up or down) since the previous
+    scan. Catches stealth regressions: someone removes the schema
+    block, the deal table shrinks from 1,852 → 5, etc."""
+    conn = _db()
+    if conn is None: return []
+    findings: list[dict] = []
+    try:
+        import psycopg2.extras
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            try:
+                cur.execute("""
+                    SELECT path, label, bytes, prev_bytes, content_hash,
+                           prev_content_hash
+                      FROM site_sentinel_results
+                     WHERE healthy = TRUE
+                       AND content_hash IS NOT NULL
+                       AND prev_content_hash IS NOT NULL
+                       AND content_hash != prev_content_hash
+                       AND prev_bytes > 0
+                """)
+                for r in cur.fetchall():
+                    delta_pct = abs(100.0 * (int(r["bytes"] or 0) - int(r["prev_bytes"] or 0)) / max(1, int(r["prev_bytes"] or 1)))
+                    if delta_pct < 25:
+                        continue
+                    findings.append({
+                        "issue":  f"page_content_drift:{r['path']}",
+                        "url":    r["path"],
+                        "count":  int(delta_pct),
+                        "detail": (f"Page '{r.get('label') or r['path']}' "
+                                   f"content hash changed AND size moved by "
+                                   f"{delta_pct:.0f}% "
+                                   f"({r['prev_bytes']:,} → {r['bytes']:,} bytes). "
+                                   f"Could be legit content update OR a stealth "
+                                   f"regression (removed schema block, dropped "
+                                   f"rows, broken template). Inspect."),
+                    })
+                    if len(findings) >= 5: break
+            except Exception:
+                return findings
+    finally:
+        try: conn.close()
+        except Exception: pass
+    return findings
+
+
+# ── Phase XXXX (2026-05-16) — competitor announcement detector ────
+def check_competitor_announcement() -> list[dict]:
+    """Fires when a competitor's snapshot diffs vs yesterday by >10%
+    byte delta or title change. Auto-flags DC Hub Media so they can
+    respond with /vs updates or counter-positioning content."""
+    try:
+        from routes.competitor_intel import compute_diffs
+        diffs = compute_diffs(min_byte_delta_pct=10.0) or []
+    except Exception:
+        return []
+    if not diffs: return []
+    findings: list[dict] = []
+    for d in diffs[:3]:
+        findings.append({
+            "issue":  f"competitor_announcement:{d.get('competitor')}",
+            "url":    d.get("url"),
+            "count":  int(d.get("byte_delta_pct") or 0),
+            "detail": (f"{d.get('competitor')} updated {d.get('url')}: "
+                       f"{d.get('byte_delta_pct')}% byte delta"
+                       f"{' + TITLE CHANGED' if d.get('title_changed') else ''}. "
+                       f"Title: '{(d.get('title_now') or '')[:80]}'. "
+                       f"DC Hub Media should respond — update /vs or "
+                       f"publish counter-positioning content."),
+        })
+    return findings
+
+
 # ── Phase SSSS (2026-05-16) — winback pitches unsent detector ─────
 def check_winback_pitches_unsent() -> list[dict]:
     """Fires when winback-pitches identifies platforms but none have
@@ -1831,7 +1983,15 @@ def scan_all() -> list[dict]:
                # Phase RRRR DC Hub Media silence
                check_dchub_media_press_silent,
                # Phase SSSS winback pitches accumulating without delivery
-               check_winback_pitches_unsent):
+               check_winback_pitches_unsent,
+               # Phase TTTT citation score
+               check_citation_score_dropped,
+               # Phase UUUU pattern-proposal candidates
+               check_pattern_proposal_candidates,
+               # Phase VVVV Sentinel content drift
+               check_page_content_drift,
+               # Phase XXXX competitor announcements
+               check_competitor_announcement):
         try:
             out.extend(fn() or [])
         except Exception as e:

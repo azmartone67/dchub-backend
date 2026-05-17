@@ -19655,6 +19655,38 @@ try:
 except Exception as _e:
     print(f"[main] winback_outreach register failed: {_e}", file=sys.stderr)
 
+# Phase TTTT (2026-05-16): citation hunter — daily polls Claude for
+# data-center research queries, tracks DC Hub mention share.
+try:
+    from routes.citation_hunter import citation_hunter_bp
+    app.register_blueprint(citation_hunter_bp)
+except Exception as _e:
+    print(f"[main] citation_hunter register failed: {_e}", file=sys.stderr)
+
+# Phase UUUU (2026-05-16): pattern-library self-growth — operator
+# logs manual resolutions, brain proposes autopilot patterns.
+try:
+    from routes.pattern_growth import pattern_growth_bp
+    app.register_blueprint(pattern_growth_bp)
+except Exception as _e:
+    print(f"[main] pattern_growth register failed: {_e}", file=sys.stderr)
+
+# Phase WWWW (2026-05-16): tier-upgrade nudger — daily check + email
+# IDENTIFIED users hitting 80%+ cap.
+try:
+    from routes.upgrade_nudger import upgrade_nudger_bp
+    app.register_blueprint(upgrade_nudger_bp)
+except Exception as _e:
+    print(f"[main] upgrade_nudger register failed: {_e}", file=sys.stderr)
+
+# Phase XXXX (2026-05-16): competitor intel watcher — daily snapshot
+# of competitor sites, brain finding on significant drift.
+try:
+    from routes.competitor_intel import competitor_intel_bp
+    app.register_blueprint(competitor_intel_bp)
+except Exception as _e:
+    print(f"[main] competitor_intel register failed: {_e}", file=sys.stderr)
+
 # Phase BBBB (2026-05-16): /developers acquisition funnel.
 try:
     from routes.developers_funnel import developers_funnel_bp

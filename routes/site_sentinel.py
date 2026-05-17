@@ -193,6 +193,13 @@ ALTER TABLE site_sentinel_results
     ADD COLUMN IF NOT EXISTS has_nav      BOOLEAN,
     ADD COLUMN IF NOT EXISTS stale_days   REAL,
     ADD COLUMN IF NOT EXISTS data_age_src TEXT;
+-- Phase VVVV (2026-05-16): content-hash + previous snapshot for
+-- drift detection. The Sentinel knows IS the page up; now it'll
+-- also know DID the page change since yesterday in a meaningful way.
+ALTER TABLE site_sentinel_results
+    ADD COLUMN IF NOT EXISTS content_hash    TEXT,
+    ADD COLUMN IF NOT EXISTS prev_content_hash TEXT,
+    ADD COLUMN IF NOT EXISTS prev_bytes      INT;
 CREATE INDEX IF NOT EXISTS ix_site_sentinel_results_healthy
     ON site_sentinel_results(healthy, checked_at DESC);
 """
@@ -302,6 +309,15 @@ def _scan_one(entry: dict) -> dict:
         out["status_code"] = r.status_code
         out["bytes"] = len(body) if body else len(r.content)
         last_mod = r.headers.get("Last-Modified")
+        # Phase VVVV (2026-05-16): content-hash for drift detection.
+        # Use first 8KB to keep cost predictable + ignore tail noise
+        # (timestamps near the bottom of pages would flap otherwise).
+        try:
+            import hashlib
+            sample = (body or b"")[:8192]
+            out["content_hash"] = hashlib.sha256(sample).hexdigest()[:32]
+        except Exception:
+            out["content_hash"] = None
         try: r.close()
         except Exception: pass
 
@@ -383,15 +399,19 @@ def scan_all() -> list[dict]:
             if c is not None:
                 try:
                     with c.cursor() as cur:
+                        # Phase VVVV: roll content_hash → prev_content_hash
+                        # so the diff detector has yesterday's value
+                        # to compare against.
                         cur.execute("""
                             INSERT INTO site_sentinel_results
                               (path, category, label, status_code, bytes,
                                elapsed_ms, healthy, reason, checked_at,
                                last_healthy_at, has_nav, stale_days,
-                               data_age_src)
+                               data_age_src, content_hash,
+                               prev_content_hash, prev_bytes)
                             VALUES (%s,%s,%s,%s,%s,%s,%s,%s, NOW(),
                                     CASE WHEN %s THEN NOW() ELSE NULL END,
-                                    %s, %s, %s)
+                                    %s, %s, %s, %s, NULL, NULL)
                             ON CONFLICT (path) DO UPDATE SET
                               category     = EXCLUDED.category,
                               label        = EXCLUDED.label,
@@ -404,6 +424,9 @@ def scan_all() -> list[dict]:
                               has_nav      = EXCLUDED.has_nav,
                               stale_days   = EXCLUDED.stale_days,
                               data_age_src = EXCLUDED.data_age_src,
+                              prev_content_hash = site_sentinel_results.content_hash,
+                              prev_bytes        = site_sentinel_results.bytes,
+                              content_hash      = EXCLUDED.content_hash,
                               last_healthy_at = CASE
                                 WHEN EXCLUDED.healthy THEN NOW()
                                 ELSE site_sentinel_results.last_healthy_at
@@ -413,7 +436,8 @@ def scan_all() -> list[dict]:
                               scan["healthy"], scan["reason"],
                               scan["healthy"],
                               scan.get("has_nav"), scan.get("stale_days"),
-                              scan.get("data_age_src")))
+                              scan.get("data_age_src"),
+                              scan.get("content_hash")))
                 except Exception:
                     pass
     finally:
