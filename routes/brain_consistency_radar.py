@@ -1162,6 +1162,45 @@ def check_enterprise_bot_present() -> list[dict]:
     return findings
 
 
+# ── Phase AAAA (2026-05-16) — dormant-MCP detector ────────────────
+def check_mcp_dormant_agents() -> list[dict]:
+    """Surface the top-3 dormant MCP agents (>30 prior calls, idle 14+
+    days) as brain findings. The user reported /ai-integrations
+    showing ~90+ inactive MCP connections — those are real prospect
+    waste. This puts a regularly-refreshed count + the top winback
+    targets on the heartbeat so DC Hub Media has a structured outreach
+    worklist instead of guessing at AI-platform contact pages.
+
+    Cap at 3 to keep heartbeat readable; full list at
+    /api/v1/bots/dormant."""
+    findings: list[dict] = []
+    try:
+        from routes.bot_outreach import _compute_dormant
+        dormant = _compute_dormant(min_prior_calls=30, idle_days=14)
+    except Exception:
+        return findings
+    if not dormant:
+        return findings
+    # Aggregate count + top targets as one finding (less noise than 3)
+    high_priority = [d for d in dormant if d.get("suggested_action") == "high_priority_winback"]
+    top = dormant[0]
+    findings.append({
+        "issue":  "mcp_dormant_agents_present",
+        "url":    "/api/v1/bots/dormant",
+        "count":  len(dormant),
+        "detail": (f"{len(dormant)} MCP agents went dormant (no calls in "
+                   f"14+ days but >=30 prior calls in last 90 days). "
+                   f"{len(high_priority)} are HIGH-PRIORITY winback "
+                   f"candidates (>=100 prior calls). Top target: "
+                   f"ip_hash={top.get('ip_hash')} ua='"
+                   f"{(top.get('ua_fingerprint','') or '')[:50]}', "
+                   f"{top.get('prior_calls')} prior calls, idle "
+                   f"{top.get('days_idle')}d. Full list at "
+                   f"/api/v1/bots/dormant."),
+    })
+    return findings
+
+
 # ── Phase XXX (2026-05-16) — conversion-rate floor detector ───────
 def check_conversion_rate_floor() -> list[dict]:
     """Fires when MCP conversion rate over last 30 days is below the
@@ -1423,7 +1462,9 @@ def scan_all() -> list[dict]:
                # Phase WWW Site Sentinel — every public page polled
                check_site_sentinel,
                # Phase XXX conversion-rate floor detector
-               check_conversion_rate_floor):
+               check_conversion_rate_floor,
+               # Phase AAAA dormant-MCP detector
+               check_mcp_dormant_agents):
         try:
             out.extend(fn() or [])
         except Exception as e:

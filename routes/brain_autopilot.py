@@ -423,6 +423,32 @@ _PATTERN_LIBRARY: dict[str, dict[str, Any]] = {
         "use_admin":   False,
         "description": "Escalation-only: 30-day MCP conversion rate is below the configured floor. Inspect /api/v1/mcp/conversion-funnel for per-tool breakdown; the leak is usually concentrated in 1-2 tools that should be on a higher tier or have a tighter cap.",
     },
+    # Phase YYY — page-staleness pattern. Dynamic key
+    # `page_stale:<path>` resolves via prefix match. Escalation-only;
+    # fix is always upstream (cron / ingest), never the route itself.
+    "page_stale": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: a page in the Site Sentinel manifest is serving data older than its max_age_days SLA. Fix: bump the relevant ingest cron OR re-trigger the data source. See /sentinel for stale_days + data_age_src per page.",
+    },
+    # Phase ZZZ — nav-missing pattern. Dynamic key `nav_missing:<path>`.
+    # Escalation-only; fix is always template-level include.
+    "nav_missing": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: a page returns 200 but does NOT include dchub-nav.js. Users see a page with no top nav. Fix: add `<script src=\"/js/dchub-nav.js\" defer></script>` to the page template, or wire it via the standard page wrapper.",
+    },
+    # Phase AAAA — dormant-MCP outreach prompt. Escalation-only;
+    # autonomous wake isn't possible (no contact path from MCP call
+    # log), but flagging the worklist is high-leverage for humans.
+    "mcp_dormant_agents_present": {
+        "action":      lambda f: (None, None),
+        "method":      None,
+        "use_admin":   False,
+        "description": "Escalation-only: agents that previously hammered MCP have gone dormant. See /api/v1/bots/dormant for the structured outreach worklist (top targets ranked by prior_calls). High-priority targets (>=100 prior calls) are the likely enterprise prospects worth manual winback.",
+    },
 }
 
 
