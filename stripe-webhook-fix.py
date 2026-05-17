@@ -29,6 +29,7 @@ ALSO CHECK:
 # REPLACEMENT: stripe_webhook function (replace lines 5222-5269 in main.py)
 # =============================================================================
 
+# AUTO-REPAIR: duplicate route '/api/stripe/webhook' also in main.py:7425 — review and remove one
 @app.route('/api/stripe/webhook', methods=['POST'])
 def stripe_webhook():
     """Handle Stripe webhook events"""
@@ -94,6 +95,7 @@ def stripe_webhook():
 # =============================================================================
 # NEW: Diagnostic endpoint - ADD this to main.py (does NOT replace anything)
 # =============================================================================
+# AUTO-REPAIR: duplicate route '/api/stripe/webhook-test' also in main.py:7660 — review and remove one
 
 @app.route('/api/stripe/webhook-test', methods=['GET'])
 def stripe_webhook_test():
