@@ -5,7 +5,11 @@
     "/mcp",
     "/mcp/*",
     "/press-release",
-    "/press-release/*"
+    "/press-release/*",
+    "/vs",
+    "/bs-translator",
+    "/power-totals",
+    "/intelligence"
   ],
   "exclude": []
 }
