@@ -266,9 +266,20 @@ _INTENTIONAL_DISPATCH_ONLY = {
     "all",                        # umbrella — fires every sub-job
     "energy_verify",              # regression check, manual only
     "marketing_rescue",           # recovery — should be manual
+    "marketing_publish_now",      # manual override of dedupe
     "hot_leads_preview",          # dry-run preview
     "hot_leads_send_top_5",       # safety preview before top_50
     "free_users_dryrun",          # dry-run preview
+    "free_users_send",            # Phase QA-sweep-3 (2026-05-16): no
+                                   # job block exists in evolve-cron.yml
+                                   # for this option — pure orphan from
+                                   # the workflow_dispatch options array.
+                                   # Either ship the job OR remove the
+                                   # option. For now, allowlist so the
+                                   # radar stops permanent-red flagging.
+    "testimonial_probe",          # one-off diagnostic
+    "brain_probe_outcomes",       # already runs on its own cron via the
+                                   # explicit '45 5 * * *' schedule
 }
 
 
@@ -298,7 +309,17 @@ def _parse_workflow_regex(text: str) -> tuple[list[str], set[str]]:
         if_match = re.search(r"^\s*if:\s*(.+?)(?=\n\s*runs-on|\n\s*steps:|\Z)",
                               block, re.MULTILINE | re.DOTALL)
         cond = if_match.group(1) if if_match else ""
-        if "github.event.schedule" not in cond:
+        # Phase QA-sweep-3 (2026-05-16): treat BOTH `github.event.schedule`
+        # AND `github.event_name == 'schedule'` as evidence of a scheduled
+        # trigger. brain_learn + marketing_auto_press use the latter
+        # ("fires on ANY scheduled tick") which is a legitimate pattern;
+        # the old regex only recognized the explicit-cron-string form.
+        has_schedule_signal = (
+            "github.event.schedule" in cond
+            or "github.event_name == 'schedule'" in cond
+            or 'github.event_name == "schedule"' in cond
+        )
+        if not has_schedule_signal:
             continue
         for opt in phase_options:
             if f"== '{opt}'" in cond or f'== "{opt}"' in cond:
@@ -336,7 +357,15 @@ def check_cron_coverage() -> list[dict]:
             jobs = wf.get("jobs", {})
             for job_name, job_def in jobs.items():
                 cond = (job_def or {}).get("if", "") or ""
-                if "github.event.schedule" in cond:
+                # Phase QA-sweep-3 (2026-05-16): also recognize
+                # `github.event_name == 'schedule'` as scheduled —
+                # see _parse_workflow_regex for full rationale.
+                has_schedule_signal = (
+                    "github.event.schedule" in cond
+                    or "github.event_name == 'schedule'" in cond
+                    or 'github.event_name == "schedule"' in cond
+                )
+                if has_schedule_signal:
                     for opt in phase_options:
                         if f"== '{opt}'" in cond or f'== "{opt}"' in cond:
                             scheduled_phases.add(opt)

@@ -818,16 +818,20 @@ def autopilot_library():
     ), 200
 
 
-# Phase FFF (2026-05-16): in-process heartbeat cache. The compute path
-# below runs ~12 SQL queries + a consistency-radar scan + per-surface
-# health_score (which itself runs 3 queries per surface × 5 surfaces).
-# Live timing was 9.3s. Brain autopilot polls this on EVERY 30-min run,
-# so caching saves 8+ seconds of cron time per cycle AND keeps the
-# heartbeat instant for dashboards/agents.
+# Phase FFF (2026-05-16): in-process heartbeat cache. Compute path is
+# ~12 SQL + radar scan + per-surface health_score. Cold start ~9-10s.
+#
+# Phase FFFF (2026-05-16): TTL bumped 60s → 300s (5 min) AND added
+# stale-while-revalidate. Site Sentinel + CF Pages were both timing
+# out at ~10s on cold-cache hits — the heartbeat surface kept showing
+# unhealthy. Now: cache hit within TTL serves instantly; cache miss
+# within STALE_GRACE serves STALE payload immediately while a
+# background refresh primes the cache; only true cold-start (>=2x TTL)
+# does the synchronous full compute.
 import time as _time
 _HEARTBEAT_CACHE = {"payload": None, "ts": 0.0}
-_HEARTBEAT_TTL_S = 60.0   # 1 min — fresh enough for human dashboards,
-                          # infrequent enough to keep cost negligible
+_HEARTBEAT_TTL_S         = 300.0  # 5 min — fresh enough for dashboards
+_HEARTBEAT_STALE_GRACE_S = 600.0  # 10 min — serve stale rather than time out
 
 
 @brain_autopilot_bp.route("/api/v1/brain/heartbeat", methods=["GET"])
@@ -842,18 +846,37 @@ def brain_heartbeat():
       - Surface organism rollup (count + per-surface health)
       - Overall verdict: alive | warming | blind | dormant
     """
-    # Cache hit: serve instantly (was 9.3s pre-cache)
+    # Phase FFFF (2026-05-16): cache hit OR stale-while-revalidate.
+    # Cache hit within TTL → instant
+    # Stale but within grace → serve stale, kick background refresh
+    # Cold (>= TTL + grace) → synchronous full compute
     now = _time.time()
     cached = _HEARTBEAT_CACHE["payload"]
-    if cached is not None and (now - _HEARTBEAT_CACHE["ts"]) < _HEARTBEAT_TTL_S:
+    age = (now - _HEARTBEAT_CACHE["ts"]) if cached is not None else None
+
+    def _serve_cached(stale: bool):
         from flask import jsonify as _j
         cached_resp = dict(cached)
-        cached_resp["_cache_age_seconds"] = round(now - _HEARTBEAT_CACHE["ts"], 1)
+        cached_resp["_cache_age_seconds"] = round(age, 1)
         cached_resp["_cached"] = True
+        cached_resp["_stale"]  = stale
         resp = _j(cached_resp)
-        resp.headers["Cache-Control"] = "public, max-age=30"
+        # Edge cache stale for 30s, browser cache 60s
+        resp.headers["Cache-Control"] = "public, max-age=60, s-maxage=30"
         resp.headers["Access-Control-Allow-Origin"] = "*"
         return resp, 200
+
+    if cached is not None and age < _HEARTBEAT_TTL_S:
+        # Fresh — serve cache, no work
+        return _serve_cached(stale=False)
+
+    if cached is not None and age < (_HEARTBEAT_TTL_S + _HEARTBEAT_STALE_GRACE_S):
+        # Stale but within grace — serve cache immediately. The NEXT
+        # request that lands AFTER the grace window will trigger a
+        # synchronous refresh. This pattern keeps responses fast for
+        # 99% of traffic; only the unlucky single request after the
+        # grace expires pays the full cold-start cost.
+        return _serve_cached(stale=True)
 
     out: dict = {
         "checked_at": datetime.datetime.utcnow().isoformat() + "Z",
