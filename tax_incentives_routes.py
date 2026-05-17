@@ -153,13 +153,45 @@ def setup_tax_incentive_routes(app, db=None):
         else:
             results.sort(key=lambda s: s.get('name', ''))
         
-        return jsonify({
-            'status': 'success',
-            'count': len(results),
-            'data': results,
-            'last_updated': datetime.utcnow().isoformat() + 'Z'
-        })
-    
+        # Phase WW (2026-05-17) — soft-paywall the bulk 50-state dump.
+        # Anon callers were getting full 16KB of incentive data; MCP
+        # equivalent get_tax_incentives is gated at IDENTIFIED. Now:
+        # anon/free sees top-rated 10 states + upgrade CTA; IDENTIFIED+
+        # sees all 50. Per-state lookup (/api/v1/tax-incentives/<abbr>)
+        # stays FREE as the discovery hook.
+        _PREVIEW_CAP = 10
+        _gated = False
+        _total = len(results)
+        try:
+            from util.tier_gate import resolve_tier, Tier as _T
+            _tier, _ = resolve_tier()
+            if _tier < _T.IDENTIFIED and _total > _PREVIEW_CAP:
+                results = results[:_PREVIEW_CAP]
+                _gated = True
+        except Exception:
+            pass
+
+        out = {
+            'status':       'success',
+            'count':        len(results),
+            'data':         results,
+            'last_updated': datetime.utcnow().isoformat() + 'Z',
+        }
+        if _gated:
+            out['_gated'] = True
+            out['_preview_only'] = True
+            out['_total_available'] = _total
+            out['_hidden_count'] = _total - _PREVIEW_CAP
+            out['_required_tier'] = "IDENTIFIED"
+            out['_upgrade_cta'] = (
+                f"Showing top {_PREVIEW_CAP} of {_total} US-state tax "
+                f"incentive profiles. Get all {_total} states (sales/property/"
+                f"income/electricity tax detail, rating, summary) free — "
+                f"POST /api/v1/keys/claim for a key in 30s."
+            )
+            out['_signup_url'] = "https://dchub.cloud/signup"
+        return jsonify(out)
+
     @app.route('/api/v1/tax-incentives/stats', methods=['GET', 'OPTIONS'])
     def get_incentive_stats():
         if request.method == 'OPTIONS':

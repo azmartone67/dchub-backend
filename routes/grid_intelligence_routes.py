@@ -503,12 +503,42 @@ def list_grid_regions():
         except Exception: pass
 
 
-        return jsonify({
+        # Phase WW (2026-05-17) — soft-paywall the all-regions dump.
+        # MCP get_grid_intelligence is gated at IDENTIFIED. REST was wide
+        # open. Now: anon/free sees first 3 regions; IDENTIFIED+ all.
+        # Per-region detail at /api/v1/grid-intelligence/<region_id>
+        # stays FREE as the discovery hook.
+        _PREVIEW_CAP = 3
+        _gated = False
+        _total = len(regions)
+        try:
+            from util.tier_gate import resolve_tier, Tier as _T
+            _tier, _ = resolve_tier()
+            if _tier < _T.IDENTIFIED and _total > _PREVIEW_CAP:
+                regions = regions[:_PREVIEW_CAP]
+                _gated = True
+        except Exception:
+            pass
+
+        body = {
             'success': True,
             'regions': regions,
-            'total': len(regions),
-            'source': 'DC Hub Grid Intelligence',
-        })
+            'total':   len(regions),
+            'source':  'DC Hub Grid Intelligence',
+        }
+        if _gated:
+            body['_gated'] = True
+            body['_preview_only'] = True
+            body['_total_available'] = _total
+            body['_hidden_count'] = _total - _PREVIEW_CAP
+            body['_required_tier'] = "IDENTIFIED"
+            body['_upgrade_cta'] = (
+                f"Showing {_PREVIEW_CAP} of {_total} grid regions. Get all "
+                f"{_total} (queue GW, corridor count, key states, status) "
+                f"free — POST /api/v1/keys/claim or pass X-API-Key."
+            )
+            body['_signup_url'] = "https://dchub.cloud/signup"
+        return jsonify(body)
     except Exception as e:
 
         # grid fill — Phase B
