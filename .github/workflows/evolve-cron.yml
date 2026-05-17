@@ -87,13 +87,31 @@ on:
     # runway to land + insert distribution rows before this fires
     # publish-now to actually push them to LinkedIn + X.
     - cron: '25 13 * * *'
+    # Phase II (2026-05-17) — weekly AI citation probe, Mondays 12:00 UTC.
+    # Asks Claude each canonical prompt ("best DC market intelligence?",
+    # "where to build a 100MW DC in the US?", etc.) and records whether
+    # the response cites dchub.cloud, DCHawk, or dcByte. Drives the
+    # share-of-voice metric at /api/v1/ai-citations/share-of-voice and
+    # surfaces in the brain's source-of-truth score. Weekly is intentional
+    # — citation drift moves slowly + we want a clean time-series, not
+    # noise. Off-cycle from other Monday crons (14:00/15:00) to avoid
+    # thundering herd.
+    - cron: '0 12 * * 1'
+    # Phase FFFFF (2026-05-16) — verify autopilot outcomes every 4 hours.
+    # The verifier polls autopilot_outcomes for fired-but-not-verified
+    # actions and confirms whether each ACTION actually had the intended
+    # downstream effect. Without it, autopilot is fire-and-forget; with it,
+    # we close the loop. Currently 8+ unverified actions are backlogged
+    # because this cron was never scheduled (Phase FFFFF shipped the
+    # endpoint but not the cron). Phase KK detector flags backlogs >5.
+    - cron: '50 */4 * * *'
   workflow_dispatch:
     inputs:
       phase:
         description: 'Which phase to run on demand'
         required: true
         type: choice
-        options: [all, brain, outreach, audit, marketing, linkedin, testimonials, agent_vendor, weekly_digest, market_alerts, freshness_radar, brain_probe_outcomes, weekly_media_digest, marketing_rescue, marketing_publish_now, hot_leads_preview, hot_leads_send_top_5, hot_leads_send_top_50, free_users_dryrun, free_users_send, energy_verify, testimonial_probe]
+        options: [all, brain, outreach, audit, marketing, linkedin, testimonials, agent_vendor, weekly_digest, market_alerts, freshness_radar, brain_probe_outcomes, weekly_media_digest, marketing_rescue, marketing_publish_now, hot_leads_preview, hot_leads_send_top_5, hot_leads_send_top_50, free_users_dryrun, free_users_send, energy_verify, testimonial_probe, ai_citations_probe, autopilot_verify]
         default: all
       dry_run:
         description: 'Dry-run (preview audience + body, do NOT send emails) — DEFAULT TRUE for manual dispatch'
@@ -880,4 +898,69 @@ jobs:
               print(f\"::notice::Testimonial probe captured={d.get('captured',0)} skipped={d.get('skipped',0)} errors={d.get('errors',0)}\")
           else:
               print(f\"::warning::Testimonial probe failed: {d.get('error','?')}\")
+          " || true
+
+  ai_citations_probe:
+    # Phase II (2026-05-17) — weekly Claude citation probe.
+    # Asks Claude each of 8 canonical prompts (best DC market intelligence,
+    # where to build, dc_power_index, etc.) and INSERTs one row per prompt
+    # into ai_citations recording whether dchub.cloud / DCHawk / dcByte
+    # were cited. Powers share-of-voice metric + the new
+    # check_ai_citations_stale_v2 detector (Phase KK).
+    if: github.event.schedule == '0 12 * * 1' || (github.event_name == 'workflow_dispatch' && inputs.phase == 'ai_citations_probe')
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Run Claude citation probe
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::error::DCHUB_ADMIN_KEY secret not set"; exit 1; fi
+          response=$(curl -sS --max-time 360 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "https://dchub-backend-production.up.railway.app/api/v1/ai-citations/run-cron" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | head -c 3000
+          echo
+          echo "$response" | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          if d.get('ok'):
+              print(f\"::notice::Citation probe executed={d.get('executed',0)} recorded={d.get('recorded',0)} errors={len(d.get('errors',[]))}\")
+          else:
+              print(f\"::warning::Citation probe failed: {d.get('error','?')}\")
+          " || true
+
+  autopilot_verify:
+    # Phase FFFFF/KK (2026-05-17) — verify autopilot outcomes every 4h.
+    # Polls autopilot_outcomes for fired-but-unverified actions and checks
+    # whether each ACTION actually had the intended effect (e.g. did the
+    # auto-press release land? did the winback email send?). Without this,
+    # autopilot is fire-and-forget. Phase KK's check_autopilot_verifier_backlog
+    # flags when >5 actions accumulate unverified for >48h — this cron is
+    # the drain.
+    if: github.event.schedule == '50 */4 * * *' || (github.event_name == 'workflow_dispatch' && inputs.phase == 'autopilot_verify')
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Verify pending autopilot actions
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::error::DCHUB_ADMIN_KEY secret not set"; exit 1; fi
+          response=$(curl -sS --max-time 120 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "https://dchub-backend-production.up.railway.app/api/v1/autopilot/verify-pending" \
+            || echo '{"ok":false,"error":"curl_fail"}')
+          echo "$response" | head -c 2000
+          echo
+          echo "$response" | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          if d.get('ok'):
+              print(f\"::notice::Autopilot verifier processed={d.get('processed',0)} verified={d.get('verified',0)} still_pending={d.get('still_pending',0)}\")
+          else:
+              print(f\"::warning::Autopilot verifier failed: {d.get('error','?')}\")
           " || true
