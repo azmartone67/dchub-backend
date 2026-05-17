@@ -2657,6 +2657,84 @@ def check_autopilot_verifier_backlog() -> list[dict]:
     return findings
 
 
+# ═══════════════════════════════════════════════════════════════════
+# Phase XX (2026-05-17) — BREACH PREVENTION DETECTOR
+#
+# Closes the loop on Round 4's gating audit. Round 4 found Round 4
+# found 3 REST endpoints leaking high-value data anon (DCPI scores
+# 112KB, tax incentives 16KB, grid intelligence all regions). Phase
+# WW + WW-2 plugged them with soft-paywall. But the next time someone
+# adds an `@bp.route("/api/v1/expensive-thing")` and forgets the gate,
+# we'll leak again.
+#
+# This detector probes a list of HIGH-VALUE endpoints as anon and
+# flags any whose response > 8KB AND doesn't contain the `_gated`
+# field. The soft-paywall pattern always injects `_gated: true` so
+# that field's presence is the marker that the gate is wired up.
+# Absence + large size = leak.
+# ═══════════════════════════════════════════════════════════════════
+
+# Endpoints that SHOULD have a soft-paywall gate (any handler returning
+# bulk data should be on this list). Probe is GET, no body, no auth.
+_BREACH_PROBE_ENDPOINTS = [
+    "/api/v1/dcpi/scores",
+    "/api/v1/tax-incentives",
+    "/api/v1/grid-intelligence",
+    "/api/v1/intelligence/trends",
+    "/api/v1/intelligence/market-velocity",
+    "/api/v1/connectivity/providers",
+    "/api/v1/transactions",
+]
+_BREACH_SIZE_THRESHOLD_BYTES = 8000  # 8KB — anything bigger is "bulk"
+
+
+def check_rest_endpoint_leakage() -> list[dict]:
+    """Fires for any monitored endpoint returning > 8KB of data WITHOUT
+    a _gated marker. Catches the "added a new bulk endpoint and forgot
+    to gate it" failure mode that Round 4 surfaced.
+
+    Cheap to run: probes the platform's OWN endpoints, no external API
+    calls, ~7 GETs total. Fails-closed: if the probe itself errors,
+    return empty findings (don't false-positive on network noise)."""
+    findings: list[dict] = []
+    try:
+        import requests as _req
+    except Exception:
+        return findings
+    for path in _BREACH_PROBE_ENDPOINTS:
+        try:
+            r = _req.get(f"https://dchub.cloud{path}",
+                         timeout=10,
+                         headers={"User-Agent": "dchub-breach-detector/1.0"})
+        except Exception:
+            continue  # network noise — don't flag
+        if r.status_code != 200:
+            continue  # 402/403/404 is the gate working; skip
+        body = r.text or ""
+        size = len(body)
+        if size <= _BREACH_SIZE_THRESHOLD_BYTES:
+            continue  # small enough that it's probably a teaser/single-item
+        # Check for the soft-paywall marker
+        if '"_gated"' in body or '"_preview_only"' in body or '"_required_tier"' in body:
+            continue  # gate is wired
+        # Possible leak — flag it
+        findings.append({
+            "issue":  "rest_endpoint_leakage",
+            "url":    path,
+            "count":  size,
+            "detail": (f"REST endpoint `{path}` returns {size} bytes to "
+                       f"anon callers (threshold: {_BREACH_SIZE_THRESHOLD_BYTES}) "
+                       f"with no `_gated`/`_preview_only`/`_required_tier` field "
+                       f"in the body. Either it's a known-public dataset (add "
+                       f"to allowlist), it's already gated via a different "
+                       f"pattern (add the soft-paywall marker), or it's a real "
+                       f"leak. Apply `from routes._soft_paywall import "
+                       f"maybe_paywall` + `return maybe_paywall(payload, "
+                       f"list_key='data', preview_cap=10, teaser='...')`."),
+        })
+    return findings
+
+
 def scan_all() -> list[dict]:
     """Run every detector. Return a flat list of finding dicts ready
     to merge into actionable_backend_issues."""
@@ -2737,7 +2815,9 @@ def scan_all() -> list[dict]:
                check_data_freshness_sla_breach,
                check_mcp_tool_sunset_candidate,
                check_ai_citations_stale_v2,
-               check_autopilot_verifier_backlog):
+               check_autopilot_verifier_backlog,
+               # Phase XX (2026-05-17) — breach prevention
+               check_rest_endpoint_leakage):
         try:
             out.extend(fn() or [])
         except Exception as e:

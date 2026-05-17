@@ -152,7 +152,11 @@ def facility_trends():
 
         cur.close()
 
-        return jsonify({
+        # Phase WW-2 (2026-05-17) — soft-paywall the trend list.
+        # MCP equivalent get_intelligence_index is IDENTIFIED. The full
+        # time-series is high-value; anon gets 12 most recent buckets.
+        from routes._soft_paywall import maybe_paywall
+        payload = {
             'success': True,
             'data': {
                 'filters': {
@@ -164,8 +168,13 @@ def facility_trends():
                 },
                 'summary': summary,
                 'trend': trend_data,
-            }
-        })
+            },
+            # surface trend at top-level too so the helper can find it
+            'trend': trend_data,
+        }
+        resp = maybe_paywall(payload, list_key='trend', preview_cap=12,
+                              teaser='the full 24-month trend (+ filters)')
+        return resp
 
     except Exception as e:
         logger.error(f"Trends error: {e}")
@@ -488,15 +497,23 @@ def market_velocity():
 
         cur.close()
 
-        return jsonify({
+        # Phase WW-2 (2026-05-17) — soft-paywall the markets list.
+        # Market velocity is high-value broker-workflow data. MCP-side
+        # has no direct counterpart but the spirit matches get_market_intel
+        # (IDENTIFIED). Anon gets top 10 by growth; identified+ all.
+        from routes._soft_paywall import maybe_paywall
+        payload = {
             'success': True,
             'data': {
                 'period_months': months,
                 'min_facilities_threshold': min_fac,
                 'country_filter': country or None,
                 'markets': markets,
-            }
-        })
+            },
+            'markets': markets,  # surface at top-level for the helper
+        }
+        return maybe_paywall(payload, list_key='markets', preview_cap=10,
+                              teaser='all markets ranked by velocity')
 
     except Exception as e:
         logger.error(f"Market velocity error: {e}")

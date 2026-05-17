@@ -141,11 +141,19 @@ def _aggregate(surfaces):
 #   - Renewables: 168h (NREL slow data)
 #   - Gas: 24h
 DOMAIN_SLA_HOURS = {
-    "iso":       1,      # /api/v1/grid/<iso>
+    # Phase YY (2026-05-17): right-size aspirational SLAs to match the
+    # actual upstream cadence. iso=1h was unrealistic — the data-pulse
+    # cron runs every 15 min but several specific surfaces (supported-
+    # isos, summary, fuel-mix-live) update on EIA/gridstatus's hourly
+    # cadence with their own lag. Anything stricter than upstream's
+    # publish window guarantees a permanent breach finding that's just
+    # noise. news=1h was the same trap — RSS feeds update hourly at
+    # best, often every 2-4h. Use realistic operational targets:
+    "iso":       4,      # /api/v1/grid/<iso>  (was 1h, raised to upstream LMP cadence)
     "power":     168,    # /api/v1/energy/electricity-rates
     "renewable": 168,    # /api/renewable/*
     "dcpi":      24,     # /api/v1/dcpi/live-count
-    "news":      1,      # /api/news/live
+    "news":      6,      # /api/news/live  (was 1h, raised to RSS aggregation cadence)
     "mna":       24,     # /api/v1/deals
     "pipeline":  24,     # /api/v1/pipeline
     "fiber":     168,    # /api/v1/connectivity/*
