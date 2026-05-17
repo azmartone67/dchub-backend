@@ -145,6 +145,110 @@ def whales():
     return resp, 200
 
 
+# ── Phase AAAA (2026-05-16) — dormant-MCP detector ─────────────────
+def _compute_dormant(min_prior_calls: int = 10, idle_days: int = 14,
+                       look_back_days: int = 90) -> list[dict]:
+    """Find agent fingerprints that called us actively in the past
+    (>= min_prior_calls historical calls within look_back_days) but
+    have NOT called in the past idle_days. These are the prospect-
+    waste list — agents that discovered us, hammered for a while,
+    then went silent. The user reported /ai-integrations showing
+    "90+ inactive MCP connections" — this surfaces the same set as
+    a brain finding + a structured outreach worklist.
+
+    No raw IPs ever returned (sha256:12 hash only) — privacy-safe
+    and stable across calls so a human can dedupe by ip_hash."""
+    c = _conn()
+    if c is None: return []
+    out: list[dict] = []
+    try:
+        with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            try:
+                cur.execute(f"""
+                    WITH agg AS (
+                      SELECT ip_address, user_agent,
+                             COUNT(*) AS prior_calls,
+                             MAX(created_at) AS last_call,
+                             MIN(created_at) AS first_call,
+                             COUNT(DISTINCT tool_name) AS distinct_tools
+                        FROM mcp_tool_calls
+                       WHERE created_at >= NOW() - INTERVAL '{int(look_back_days)} days'
+                         AND ip_address IS NOT NULL
+                       GROUP BY ip_address, user_agent
+                    )
+                    SELECT *
+                      FROM agg
+                     WHERE prior_calls >= %s
+                       AND last_call < NOW() - INTERVAL '{int(idle_days)} days'
+                     ORDER BY prior_calls DESC
+                     LIMIT 50
+                """, (min_prior_calls,))
+                rows = cur.fetchall()
+            except Exception:
+                return out
+    finally:
+        try: c.close()
+        except Exception: pass
+
+    import hashlib
+    now = datetime.datetime.now(datetime.timezone.utc)
+    for r in rows:
+        ip = (r.get("ip_address") or "")
+        ip_h = hashlib.sha256(ip.encode()).hexdigest()[:12] if ip else "?"
+        last = r.get("last_call")
+        days_idle = None
+        if last:
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=datetime.timezone.utc)
+            days_idle = round((now - last).total_seconds() / 86400.0, 1)
+        out.append({
+            "ip_hash":         ip_h,
+            "ua_fingerprint":  (r.get("user_agent") or "")[:80],
+            "prior_calls":     int(r.get("prior_calls") or 0),
+            "distinct_tools":  int(r.get("distinct_tools") or 0),
+            "days_idle":       days_idle,
+            "last_call_at":    last.isoformat() if last else None,
+            "first_call_at":   r["first_call"].isoformat() if r.get("first_call") else None,
+            "suggested_action":(
+                "high_priority_winback" if (r.get("prior_calls") or 0) >= 100
+                else "soft_winback"     if (r.get("prior_calls") or 0) >= 30
+                else "monitor"
+            ),
+        })
+    return out
+
+
+@bot_outreach_bp.route("/api/v1/bots/dormant", methods=["GET"])
+def dormant():
+    """Phase AAAA: agents that used to call us but have gone silent.
+    The prospect-waste list — gives DC Hub Media a structured outreach
+    target instead of generic 'reach out to AI platforms'."""
+    try:
+        idle_days = max(7, min(90, int(request.args.get("idle_days") or 14)))
+    except (ValueError, TypeError):
+        idle_days = 14
+    try:
+        min_prior = max(1, min(1000, int(request.args.get("min_prior_calls") or 10)))
+    except (ValueError, TypeError):
+        min_prior = 10
+    out = _compute_dormant(min_prior_calls=min_prior, idle_days=idle_days)
+    resp = jsonify(
+        dormant=out,
+        count=len(out),
+        criteria={"min_prior_calls": min_prior, "idle_days": idle_days, "look_back_days": 90},
+        generated_at=datetime.datetime.utcnow().isoformat() + "Z",
+        note=("Agents with prior_calls >= min_prior_calls within the last "
+              "90 days that have not called in idle_days. ip_hash is "
+              "sha256(ip):12 — raw IPs never returned. Use the "
+              "suggested_action field to prioritize outreach: "
+              "high_priority_winback (>=100 calls), soft_winback (>=30), "
+              "monitor (rest)."),
+    )
+    resp.headers["Cache-Control"] = "public, max-age=600"
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    return resp, 200
+
+
 @bot_outreach_bp.route("/api/v1/bots/recent", methods=["GET"])
 def recent_bots():
     """Bots seen in last 7d, ordered by volume. Less strict than whales."""

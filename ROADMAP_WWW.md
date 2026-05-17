@@ -57,23 +57,24 @@ Once the sentinel scan runs, each of these surfaces as a finding in
 | 23 | Capture spare capacity from operators + broker fees + promo codes | New product surface |
 | 24 | ISO data-center batch tracking; operator build locations on L+P map | New data source ingest |
 
-## Next-phase candidates (XXX onwards)
+## Shipped after WWW
 
-- **Phase XXX** — Page Staleness Detector. Read the user's "stale" list
-  (#2, #9, #10, #12, #13) into a manifest with `max_age_days` per page;
-  surface findings when exceeded. Currently the Sentinel only catches
-  HTTP failures + body-too-small.
-- **Phase YYY** — Nav-injection auditor. Sentinel can fetch each page
-  and verify `dchub-nav.js` is loaded (string scan); surface
-  `nav_missing:<path>` findings. Fixes #5 and #6 automatically.
-- **Phase ZZZ** — Outbound MCP ping cron. Wake dormant agents from
-  `mcp_call_log` whose `last_call_at > 14d` with a polite re-discovery
-  ping. Closes #8.
-- **Phase AAAA** — Acquisition funnel for `/developers`. Mirror the
+| Phase | What | Where |
+|---|---|---|
+| **XXX** | Conversion Engine — tier moves (`search_facilities` + `get_news` → IDENTIFIED), FREE caps tightened (50→25/day, 5→3 rows), inline HTML paywall on `/transactions`, `mcp_conversion_rate_below_floor` brain detector | PR #226 |
+| **YYY** | Page Staleness Detector — `max_age_days` per manifest entry; Sentinel scans body for date signals (X-Generated-At, JSON-LD `dateModified`, visible "Updated YYYY-MM-DD"), surfaces `page_stale:<path>` findings. Closes the user's "stale" set (#2 daily, #9 ai-deals, #10 ai-inventory, #12 assets, #13 SOTD). | PR #227 |
+| **ZZZ** | Nav-injection Auditor — `wants_nav` per manifest entry; Sentinel scans body for `dchub-nav.js` reference and surfaces `nav_missing:<path>` findings. Auto-catches the user's nav-regression set (#5 sites/pocket, #6 dc-hub-media). | PR #227 |
+| **AAAA** | Dormant-MCP Detector — `/api/v1/bots/dormant` lists agent fingerprints with prior_calls ≥ 30 but idle 14+ days. Brain `check_mcp_dormant_agents` surfaces top + count. Closes the user's "/ai-integrations shows 90+ inactive" observation (#8). NOT autonomous wake — no contact path from MCP log. | PR #227 |
+
+## Still queued (not shipped)
+
+- **Phase BBBB** — Acquisition funnel for `/developers`. Mirror the
   MCP conversion funnel: visits → key claimed → first MCP call → 7d
-  retention. Closes #7.
-- **Phase BBBB** — Spare-capacity surface. New surface organism with
-  intake form + broker-credit tracking. Closes #23.
+  retention. Closes #7. Requires new tables (`developer_funnel_events`)
+  + instrumentation on `/developers` page + `/api/v1/keys/claim`.
+- **Phase CCCC** — Spare-capacity surface. New surface organism with
+  intake form + broker-credit tracking + promo code attribution.
+  Closes #23. Larger product surface — needs UX spec before build.
 
 ## How to extend the Sentinel manifest
 
@@ -82,6 +83,8 @@ Edit `routes/site_sentinel.py:_MANIFEST`. Each entry is one URL with:
 - `category` — `critical` / `high` / `normal`
 - `min_bytes` — fail if response body is smaller than this
 - `label` — human-readable name for the dashboard
+- `wants_nav` (optional, Phase ZZZ) — True if the page must include `dchub-nav.js`. Surfaces `nav_missing:<path>` if absent.
+- `max_age_days` (optional, Phase YYY) — Sentinel parses date signals from the response body. Surfaces `page_stale:<path>` if older.
 
 Add a URL there → next radar cycle picks it up → brain heartbeat
 surfaces failures.

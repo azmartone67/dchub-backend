@@ -48,40 +48,63 @@ site_sentinel_bp = Blueprint("site_sentinel", __name__)
 # ── The manifest. Every public URL we care about. Categorize so the
 #    detector knows how loud to be about each failure mode.
 #    Add new pages here — that's the only ongoing maintenance.
+#
+# Optional per-entry fields (Phase YYY + ZZZ extensions):
+#   max_age_days: int — Sentinel surfaces page_stale:<path> when the
+#                       page response includes a "data freshness signal"
+#                       (Last-Modified header, X-Generated-At, or visible
+#                       "Updated YYYY-MM-DD" text) older than this many
+#                       days. The user reported ai-deals stale since
+#                       April 26 + ai-inventory stuck at 12,553 facilities;
+#                       this surfaces those automatically.
+#   wants_nav: bool —   for HTML pages only. Sentinel scans the body for
+#                       "dchub-nav.js" or "DCHUB_NAV_CONFIG" and surfaces
+#                       nav_missing:<path> if neither is found. Catches
+#                       the user's report ("sites/pocket-listings/dc-hub-
+#                       media don't have main nav bar").
 _MANIFEST: list[dict] = [
     # Critical brand-positioning surfaces (NNN-OOO)
-    {"path": "/",                        "category": "critical", "min_bytes": 10000, "label": "Homepage"},
-    {"path": "/vs",                      "category": "critical", "min_bytes":  5000, "label": "BS Translator"},
-    {"path": "/dcpi/totals",             "category": "critical", "min_bytes":  3000, "label": "Total Power"},
+    {"path": "/",                        "category": "critical", "min_bytes": 10000, "label": "Homepage",         "wants_nav": True},
+    {"path": "/vs",                      "category": "critical", "min_bytes":  5000, "label": "BS Translator",    "wants_nav": True},
+    {"path": "/dcpi/totals",             "category": "critical", "min_bytes":  3000, "label": "Total Power",      "wants_nav": True},
     {"path": "/intelligence",            "category": "critical", "min_bytes":  3000, "label": "Live Pulse"},
-    {"path": "/pricing",                 "category": "critical", "min_bytes":  3000, "label": "Pricing"},
+    {"path": "/pricing",                 "category": "critical", "min_bytes":  3000, "label": "Pricing",          "wants_nav": True},
     {"path": "/api/v1/power/totals",     "category": "critical", "min_bytes":   300, "label": "Power Totals API"},
     {"path": "/api/v1/vs/claims",        "category": "critical", "min_bytes":   500, "label": "Claims API"},
 
-    # High-value intelligence pages
-    {"path": "/market-intelligence",     "category": "high", "min_bytes": 5000, "label": "Market Analytics"},
-    {"path": "/transactions",            "category": "high", "min_bytes": 5000, "label": "Transactions"},
-    {"path": "/rankings",                "category": "high", "min_bytes": 3000, "label": "Rankings"},
-    {"path": "/capacity-pipeline",       "category": "high", "min_bytes": 3000, "label": "Capacity Pipeline"},
-    {"path": "/ai-pipeline",             "category": "high", "min_bytes": 3000, "label": "AI Pipeline"},
-    {"path": "/ai-deals",                "category": "high", "min_bytes": 3000, "label": "AI Deals"},
-    {"path": "/ai-inventory",            "category": "high", "min_bytes": 3000, "label": "AI Inventory"},
-    {"path": "/powered-shell",           "category": "high", "min_bytes": 3000, "label": "Powered Shell"},
-    {"path": "/tax-incentives",          "category": "high", "min_bytes": 3000, "label": "Tax Incentives"},
-    {"path": "/news",                    "category": "high", "min_bytes": 3000, "label": "News"},
-    {"path": "/daily",                   "category": "high", "min_bytes": 3000, "label": "Daily Report"},
-    {"path": "/markets/",                "category": "high", "min_bytes": 3000, "label": "Markets"},
-    {"path": "/land-power",              "category": "high", "min_bytes": 3000, "label": "Land + Power"},
+    # High-value intelligence pages — wants_nav AND max_age_days because
+    # the user explicitly flagged staleness on ai-deals, ai-inventory,
+    # daily report. The Sentinel surfaces both regression types.
+    {"path": "/market-intelligence",     "category": "high", "min_bytes": 5000, "label": "Market Analytics", "wants_nav": True, "max_age_days": 7},
+    {"path": "/transactions",            "category": "high", "min_bytes": 5000, "label": "Transactions",     "wants_nav": True, "max_age_days": 14},
+    {"path": "/rankings",                "category": "high", "min_bytes": 3000, "label": "Rankings",         "wants_nav": True, "max_age_days": 7},
+    {"path": "/capacity-pipeline",       "category": "high", "min_bytes": 3000, "label": "Capacity Pipeline","wants_nav": True, "max_age_days": 14},
+    {"path": "/ai-pipeline",             "category": "high", "min_bytes": 3000, "label": "AI Pipeline",      "wants_nav": True, "max_age_days": 7},
+    {"path": "/ai-deals",                "category": "high", "min_bytes": 3000, "label": "AI Deals",         "wants_nav": True, "max_age_days": 14},
+    {"path": "/ai-inventory",            "category": "high", "min_bytes": 3000, "label": "AI Inventory",     "wants_nav": True, "max_age_days": 14},
+    {"path": "/powered-shell",           "category": "high", "min_bytes": 3000, "label": "Powered Shell",    "wants_nav": True, "max_age_days": 14},
+    {"path": "/tax-incentives",          "category": "high", "min_bytes": 3000, "label": "Tax Incentives",   "wants_nav": True, "max_age_days": 30},
+    {"path": "/news",                    "category": "high", "min_bytes": 3000, "label": "News",             "wants_nav": True, "max_age_days": 2},
+    {"path": "/daily",                   "category": "high", "min_bytes": 3000, "label": "Daily Report",     "wants_nav": True, "max_age_days": 1},
+    {"path": "/markets/",                "category": "high", "min_bytes": 3000, "label": "Markets",          "wants_nav": True},
+    {"path": "/land-power",              "category": "high", "min_bytes": 3000, "label": "Land + Power",     "wants_nav": True},
     {"path": "/land-power-map",          "category": "high", "min_bytes": 3000, "label": "L+P Map"},
     {"path": "/map",                     "category": "high", "min_bytes": 3000, "label": "Facility Map"},
 
-    # Platform / discovery
-    {"path": "/api-docs",                "category": "high", "min_bytes": 3000, "label": "API Docs"},
-    {"path": "/developers",              "category": "high", "min_bytes": 3000, "label": "Developers"},
-    {"path": "/ai",                      "category": "high", "min_bytes": 3000, "label": "AI Hub"},
-    {"path": "/ai-integrations",         "category": "high", "min_bytes": 3000, "label": "AI Integrations"},
-    {"path": "/ecosystem",               "category": "high", "min_bytes": 3000, "label": "Ecosystem"},
-    {"path": "/assets",                  "category": "high", "min_bytes": 3000, "label": "Assets Explorer"},
+    # Platform / discovery — user asked "are we acquiring AI agents?"
+    # Track these for both nav + staleness.
+    {"path": "/api-docs",                "category": "high", "min_bytes": 3000, "label": "API Docs",         "wants_nav": True},
+    {"path": "/developers",              "category": "high", "min_bytes": 3000, "label": "Developers",       "wants_nav": True},
+    {"path": "/ai",                      "category": "high", "min_bytes": 3000, "label": "AI Hub",           "wants_nav": True},
+    {"path": "/ai-integrations",         "category": "high", "min_bytes": 3000, "label": "AI Integrations",  "wants_nav": True, "max_age_days": 1},
+    {"path": "/ecosystem",               "category": "high", "min_bytes": 3000, "label": "Ecosystem",        "wants_nav": True},
+    {"path": "/assets",                  "category": "high", "min_bytes": 3000, "label": "Assets Explorer",  "wants_nav": True, "max_age_days": 14},
+
+    # User-flagged nav-missing pages — wants_nav=True so Sentinel
+    # surfaces the regression. Once fixed, these flip green.
+    {"path": "/sites",                   "category": "high", "min_bytes": 2000, "label": "Sites",            "wants_nav": True},
+    {"path": "/pocket-listings",         "category": "high", "min_bytes": 2000, "label": "Pocket Listings",  "wants_nav": True},
+    {"path": "/dc-hub-media",            "category": "high", "min_bytes": 2000, "label": "DC Hub Media",     "wants_nav": True},
 
     # Research / brand
     {"path": "/research/grid-intelligence","category":"normal","min_bytes": 2000,"label": "Grid Intel"},
@@ -144,46 +167,163 @@ CREATE TABLE IF NOT EXISTS site_sentinel_results (
     checked_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_healthy_at TIMESTAMPTZ
 );
+-- Phase YYY/ZZZ (2026-05-16): augment with nav-injection + staleness
+-- columns. Idempotent ADD COLUMN IF NOT EXISTS so the table self-
+-- migrates on first scan after deploy.
+ALTER TABLE site_sentinel_results
+    ADD COLUMN IF NOT EXISTS has_nav      BOOLEAN,
+    ADD COLUMN IF NOT EXISTS stale_days   REAL,
+    ADD COLUMN IF NOT EXISTS data_age_src TEXT;
 CREATE INDEX IF NOT EXISTS ix_site_sentinel_results_healthy
     ON site_sentinel_results(healthy, checked_at DESC);
 """
+
+
+# Phase YYY: regex patterns that pull a date out of the page body.
+# Order matters — try the most precise first. Returns (datetime, source)
+# or (None, None) when nothing useful was found.
+import re as _re
+_DATE_PATTERNS = [
+    # X-Generated-At / Last-Modified style ISO-8601 in meta or text
+    (_re.compile(r'X-Generated-At[:=]\s*["\']?(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?)', _re.I),  "x-generated-at"),
+    (_re.compile(r'<meta[^>]+name=["\']last-modified["\'][^>]+content=["\'](\d{4}-\d{2}-\d{2})', _re.I),                          "meta-last-modified"),
+    # JSON-LD or visible "dateModified": "2026-05-..."
+    (_re.compile(r'"dateModified"\s*:\s*"(\d{4}-\d{2}-\d{2})', _re.I),                                                              "json-ld-dateModified"),
+    (_re.compile(r'"datePublished"\s*:\s*"(\d{4}-\d{2}-\d{2})', _re.I),                                                             "json-ld-datePublished"),
+    # Visible "Updated: 2026-05-16" / "Last updated 2026-05-16"
+    (_re.compile(r'(?:updated|refreshed|generated|published)[^0-9<]{0,12}(\d{4}-\d{2}-\d{2})', _re.I),                              "visible-updated-iso"),
+    # Visible "Updated May 16, 2026" style — accept the year as a coarse
+    # signal (used as a fallback when nothing more precise is found)
+    (_re.compile(r'(?:updated|refreshed)[^<]{0,30}((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4})', _re.I), "visible-updated-text"),
+]
+
+
+def _extract_page_age_days(body_str: str, response_last_modified: str | None) -> tuple[float | None, str | None]:
+    """Return (age_in_days, source_label) or (None, None). Prefers in-body
+    signals (more truthful than HTTP Last-Modified, which usually reflects
+    deploy time not data refresh time). HTTP header is the last fallback."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    for pattern, label in _DATE_PATTERNS:
+        m = pattern.search(body_str)
+        if not m:
+            continue
+        raw = m.group(1)
+        # Try several parse formats
+        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M",
+                    "%Y-%m-%d", "%B %d, %Y", "%B %d %Y"):
+            try:
+                dt = datetime.datetime.strptime(raw, fmt)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=datetime.timezone.utc)
+                age = (now - dt).total_seconds() / 86400.0
+                if age >= 0:
+                    return round(age, 2), label
+            except ValueError:
+                continue
+    # Fallback: HTTP Last-Modified header
+    if response_last_modified:
+        try:
+            from email.utils import parsedate_to_datetime
+            dt = parsedate_to_datetime(response_last_modified)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=datetime.timezone.utc)
+            age = (now - dt).total_seconds() / 86400.0
+            if age >= 0:
+                return round(age, 2), "http-last-modified"
+        except Exception:
+            pass
+    return None, None
+
+
+def _has_dchub_nav(body_str: str) -> bool:
+    """Phase ZZZ: True if body contains a reference to dchub-nav.js or
+    the nav-config object. Case-insensitive cheap substring check —
+    no DOM parse needed."""
+    if not body_str:
+        return False
+    lo = body_str.lower()
+    return ("dchub-nav.js" in lo or "dchubnav.js" in lo
+            or "dchub_nav_config" in lo or "dchub-nav-brand" in lo)
 
 
 def _ensure_schema(cur):
     cur.execute(_SCHEMA)
 
 
-def _scan_one(path: str, category: str, min_bytes: int) -> tuple[int, int, int, bool, str]:
-    """Returns (status_code, bytes, elapsed_ms, healthy, reason)."""
+def _scan_one(entry: dict) -> dict:
+    """Phase YYY/ZZZ: returns full scan dict including nav + staleness.
+    Backward-compatible: callers that only need the basics can read
+    status_code/bytes/elapsed_ms/healthy/reason."""
     import requests
+    path     = entry["path"]
+    category = entry["category"]
+    min_bytes  = entry.get("min_bytes", 0)
+    wants_nav    = bool(entry.get("wants_nav", False))
+    max_age_days = entry.get("max_age_days")  # None means don't check
     url = f"{_SITE_BASE}{path}"
     t0 = time.time()
+    out: dict = {
+        "status_code": 0, "bytes": 0, "elapsed_ms": 0,
+        "healthy": False, "reason": "",
+        "has_nav": None, "stale_days": None, "data_age_src": None,
+    }
     try:
         r = requests.get(url, timeout=10, headers={
             "User-Agent":  "DCHub-Site-Sentinel/1.0",
             "Cache-Control": "no-cache",
         }, stream=True)
-        # Read at most 64KB — we only need a size signal, not the full body
         body = r.raw.read(64 * 1024, decode_content=True) if r.raw else r.content[:64*1024]
-        elapsed = int((time.time() - t0) * 1000)
-        status = r.status_code
-        n_bytes = len(body) if body else len(r.content)
+        out["elapsed_ms"] = int((time.time() - t0) * 1000)
+        out["status_code"] = r.status_code
+        out["bytes"] = len(body) if body else len(r.content)
+        last_mod = r.headers.get("Last-Modified")
         try: r.close()
         except Exception: pass
-        if status != 200:
-            return status, n_bytes, elapsed, False, f"http_status:{status}"
-        if n_bytes < min_bytes:
-            return status, n_bytes, elapsed, False, f"body_too_small:{n_bytes}<{min_bytes}"
-        return status, n_bytes, elapsed, True, "ok"
+
+        # HTTP status / size gates first (same as before)
+        if out["status_code"] != 200:
+            out["reason"] = f"http_status:{out['status_code']}"
+            return out
+        if out["bytes"] < min_bytes:
+            out["reason"] = f"body_too_small:{out['bytes']}<{min_bytes}"
+            return out
+
+        # Phase YYY/ZZZ analysis — only when basics pass
+        body_str = ""
+        try:
+            body_str = body.decode("utf-8", errors="ignore") if isinstance(body, bytes) else (body or "")
+        except Exception:
+            body_str = ""
+
+        if wants_nav:
+            out["has_nav"] = _has_dchub_nav(body_str)
+            if not out["has_nav"]:
+                out["reason"] = "nav_missing"
+                return out
+
+        if max_age_days is not None:
+            age, src = _extract_page_age_days(body_str, last_mod)
+            out["stale_days"] = age
+            out["data_age_src"] = src
+            if age is not None and age > max_age_days:
+                out["reason"] = f"stale:{age:.1f}d>max{max_age_days}d({src})"
+                return out
+
+        out["healthy"] = True
+        out["reason"] = "ok"
+        return out
     except requests.exceptions.Timeout:
-        elapsed = int((time.time() - t0) * 1000)
-        return 0, 0, elapsed, False, "timeout"
+        out["elapsed_ms"] = int((time.time() - t0) * 1000)
+        out["reason"] = "timeout"
+        return out
     except requests.exceptions.ConnectionError as e:
-        elapsed = int((time.time() - t0) * 1000)
-        return 0, 0, elapsed, False, f"connect_failed:{str(e)[:80]}"
+        out["elapsed_ms"] = int((time.time() - t0) * 1000)
+        out["reason"] = f"connect_failed:{str(e)[:80]}"
+        return out
     except Exception as e:
-        elapsed = int((time.time() - t0) * 1000)
-        return 0, 0, elapsed, False, f"{type(e).__name__}:{str(e)[:80]}"
+        out["elapsed_ms"] = int((time.time() - t0) * 1000)
+        out["reason"] = f"{type(e).__name__}:{str(e)[:80]}"
+        return out
 
 
 def scan_all() -> list[dict]:
@@ -200,18 +340,20 @@ def scan_all() -> list[dict]:
         for entry in _MANIFEST:
             path     = entry["path"]
             category = entry["category"]
-            mb       = entry.get("min_bytes", 0)
             label    = entry.get("label", "")
-            status, n, ms, healthy, reason = _scan_one(path, category, mb)
+            scan = _scan_one(entry)
             results.append({
-                "path":        path,
-                "category":    category,
-                "label":       label,
-                "status_code": status,
-                "bytes":       n,
-                "elapsed_ms":  ms,
-                "healthy":     healthy,
-                "reason":      reason,
+                "path":         path,
+                "category":     category,
+                "label":        label,
+                "status_code":  scan["status_code"],
+                "bytes":        scan["bytes"],
+                "elapsed_ms":   scan["elapsed_ms"],
+                "healthy":      scan["healthy"],
+                "reason":       scan["reason"],
+                "has_nav":      scan.get("has_nav"),
+                "stale_days":   scan.get("stale_days"),
+                "data_age_src": scan.get("data_age_src"),
             })
             if c is not None:
                 try:
@@ -220,24 +362,33 @@ def scan_all() -> list[dict]:
                             INSERT INTO site_sentinel_results
                               (path, category, label, status_code, bytes,
                                elapsed_ms, healthy, reason, checked_at,
-                               last_healthy_at)
+                               last_healthy_at, has_nav, stale_days,
+                               data_age_src)
                             VALUES (%s,%s,%s,%s,%s,%s,%s,%s, NOW(),
-                                    CASE WHEN %s THEN NOW() ELSE NULL END)
+                                    CASE WHEN %s THEN NOW() ELSE NULL END,
+                                    %s, %s, %s)
                             ON CONFLICT (path) DO UPDATE SET
-                              category    = EXCLUDED.category,
-                              label       = EXCLUDED.label,
-                              status_code = EXCLUDED.status_code,
-                              bytes       = EXCLUDED.bytes,
-                              elapsed_ms  = EXCLUDED.elapsed_ms,
-                              healthy     = EXCLUDED.healthy,
-                              reason      = EXCLUDED.reason,
-                              checked_at  = NOW(),
+                              category     = EXCLUDED.category,
+                              label        = EXCLUDED.label,
+                              status_code  = EXCLUDED.status_code,
+                              bytes        = EXCLUDED.bytes,
+                              elapsed_ms   = EXCLUDED.elapsed_ms,
+                              healthy      = EXCLUDED.healthy,
+                              reason       = EXCLUDED.reason,
+                              checked_at   = NOW(),
+                              has_nav      = EXCLUDED.has_nav,
+                              stale_days   = EXCLUDED.stale_days,
+                              data_age_src = EXCLUDED.data_age_src,
                               last_healthy_at = CASE
                                 WHEN EXCLUDED.healthy THEN NOW()
                                 ELSE site_sentinel_results.last_healthy_at
                               END
-                        """, (path, category, label, status, n, ms, healthy,
-                              reason, healthy))
+                        """, (path, category, label, scan["status_code"],
+                              scan["bytes"], scan["elapsed_ms"],
+                              scan["healthy"], scan["reason"],
+                              scan["healthy"],
+                              scan.get("has_nav"), scan.get("stale_days"),
+                              scan.get("data_age_src")))
                 except Exception:
                     pass
     finally:
@@ -259,7 +410,7 @@ def latest_results() -> list[dict]:
                 cur.execute("""
                     SELECT path, category, label, status_code, bytes,
                            elapsed_ms, healthy, reason, checked_at,
-                           last_healthy_at
+                           last_healthy_at, has_nav, stale_days, data_age_src
                       FROM site_sentinel_results
                      ORDER BY healthy ASC, category ASC, path ASC
                 """)
@@ -275,6 +426,9 @@ def latest_results() -> list[dict]:
                         "reason":      r["reason"],
                         "checked_at":  r["checked_at"].isoformat() if r["checked_at"] else None,
                         "last_healthy_at": r["last_healthy_at"].isoformat() if r["last_healthy_at"] else None,
+                        "has_nav":     r["has_nav"],
+                        "stale_days":  float(r["stale_days"]) if r["stale_days"] is not None else None,
+                        "data_age_src":r["data_age_src"],
                     })
             except Exception:
                 return out
@@ -295,12 +449,52 @@ def unhealthy_findings() -> list[dict]:
         rows = scan_all()
     for r in rows:
         if r.get("healthy"): continue
-        cat = r.get("category") or "normal"
+        cat    = r.get("category") or "normal"
+        reason = r.get("reason") or ""
         # Critical pages: every breakage is a finding. High: same. Normal:
         # only HTTP failures, not body-too-small (which can be legitimate
         # if a page is intentionally minimal).
-        if cat == "normal" and (r.get("reason") or "").startswith("body_too_small"):
+        if cat == "normal" and reason.startswith("body_too_small"):
             continue
+
+        # Phase ZZZ: nav-missing → its own finding type. The fix is
+        # always "include dchub-nav.js in the page template" not "fix
+        # the route", so separate it from generic site_sentinel_unhealthy
+        # to make the autopilot pattern lookup unambiguous.
+        if reason == "nav_missing":
+            findings.append({
+                "issue":  f"nav_missing:{r['path']}",
+                "url":    f"{_SITE_BASE}{r['path']}",
+                "count":  1,
+                "detail": (f"Page '{r.get('label') or r['path']}' returns 200 "
+                           f"with {r.get('bytes')} bytes but does NOT include "
+                           f"dchub-nav.js. Users see a page with no top nav — "
+                           f"must use browser back to escape. Add "
+                           f"`<script src=\"/js/dchub-nav.js\" defer></script>` "
+                           f"to the page template OR (for Flask routes) "
+                           f"wire dchub-nav.js include via the standard "
+                           f"page wrapper. Category: {cat}."),
+            })
+            continue
+
+        # Phase YYY: stale-page → its own finding type. The fix is
+        # always "bump the cron / re-ingest", not "fix the route".
+        if reason.startswith("stale:"):
+            findings.append({
+                "issue":  f"page_stale:{r['path']}",
+                "url":    f"{_SITE_BASE}{r['path']}",
+                "count":  int(r.get("stale_days") or 0),
+                "detail": (f"Page '{r.get('label') or r['path']}' has data "
+                           f"older than its freshness SLA. "
+                           f"Detected age: {r.get('stale_days')} days "
+                           f"(source: {r.get('data_age_src')}). "
+                           f"Fix: bump the ingest cron OR refresh the data "
+                           f"source. Category: {cat}. "
+                           f"Last healthy: {r.get('last_healthy_at') or 'never since tracked'}."),
+            })
+            continue
+
+        # Default: generic unhealthy
         findings.append({
             "issue":  f"site_sentinel_unhealthy:{r['path']}",
             "url":    f"{_SITE_BASE}{r['path']}",
@@ -308,15 +502,15 @@ def unhealthy_findings() -> list[dict]:
             "detail": (f"Page '{r.get('label') or r['path']}' is unhealthy. "
                        f"Status: {r.get('status_code')}, "
                        f"bytes: {r.get('bytes')}, "
-                       f"reason: {r.get('reason')}. "
+                       f"reason: {reason}. "
                        f"Category: {cat}. "
                        f"Last healthy: {r.get('last_healthy_at') or 'never since tracked'}. "
                        f"This is the Site Sentinel — fix the page OR adjust "
                        f"the manifest in routes/site_sentinel.py:_MANIFEST "
                        f"if the expectation is wrong."),
         })
-    # Cap at 12 so a mass outage doesn't drown the heartbeat
-    return findings[:12]
+    # Cap at 16 so a mass outage doesn't drown the heartbeat
+    return findings[:16]
 
 
 # ── HTTP endpoints ────────────────────────────────────────────────
